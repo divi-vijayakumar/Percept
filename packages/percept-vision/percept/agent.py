@@ -20,7 +20,7 @@ from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
 from .entity import EntityGraph
 from .episodes import EpisodeJudge, EpisodeLog
 from .events import EventLog, FrameWindow
-from .gate import ASK, FIRE, Gate, GateAction
+from .gate import ASK, FIRE, Gate, GateAction, classify
 from .goals import GoalOp, GoalRegistry
 from .observability import Metrics, health
 from .routing import RouteEngine
@@ -101,6 +101,7 @@ class Percept:
     windows: dict = field(default_factory=dict)  # source -> FrameWindow (temporal perception)
     event_log: Any = None  # EventLog — temporal dedup of detected events (built in create)
     scheduler: Any = None  # Scheduler — time-triggered proactive fires (built in create)
+    transitions: dict = field(default_factory=dict)  # (goal,entity) -> state-transition memory
     consent: ConsentProfile = field(default_factory=ConsentProfile)  # the act-modality gate
     action_log: ActionLog = field(default_factory=ActionLog)  # audit: every fire + act
 
@@ -281,7 +282,13 @@ class Percept:
 
         events: list[FireEvent] = []
         for goal in self.goals.active():
-            if goal.state.get("type", "watch") != "watch":
+            gtype = goal.state.get("type", "watch")
+            if gtype == "transition":
+                ev = await self._perceive_transition(goal, frame, focus)
+                if ev is not None:
+                    events.append(ev)
+                continue
+            if gtype != "watch":
                 continue  # event/count/remind goals are handled by their dedicated paths
             roi: Box | None = focus.box if focus else None
             corrections = focus.asserted() if focus else {}
@@ -298,6 +305,34 @@ class Percept:
                 events.append(FireEvent(goal.id, ASK, self._ask_text(goal), key[1], verdict))
         self._log_fires(events, now)
         return events
+
+    async def _perceive_transition(self, goal, frame, focus) -> FireEvent | None:
+        """Fire on a state change A->B, but ONLY after the 'from' state A was witnessed.
+
+        A transition goal carries ``state={"type":"transition","from":<cond A>,"to":<cond B>}``.
+        Per frame we judge BOTH states; observing a confident A arms (and re-arms) the goal, and a
+        confident B *after* A has been seen fires once. This is what a single-frame judge can't do
+        ("waking up" looks like "awake"): you must have seen the *before* state. Joining mid-stream
+        already in B (never saw A) correctly never fires.
+        """
+        from_cond, to_cond = goal.state.get("from"), goal.state.get("to")
+        if not from_cond or not to_cond:
+            return None
+        roi: Box | None = focus.box if focus else None
+        corrections = focus.asserted() if focus else {}
+        thr, fresh_min = self.settings.gate.threshold, self.gate.fresh_min
+        from_v = await self.vision.judge(from_cond, frame, roi=roi, corrections=corrections or None)
+        to_v = await self.vision.judge(to_cond, frame, roi=roi, corrections=corrections or None)
+        key = (goal.id, focus.id if focus else "scene")
+        st = self.transitions.setdefault(key, {"seen_from": False, "fired": False})
+        if classify(from_v, 1.0, thr, fresh_min) == "yes":
+            st["seen_from"], st["fired"] = True, False  # in 'from' -> arm (and re-arm) the edge
+        if st["seen_from"] and not st["fired"] and classify(to_v, 1.0, thr, fresh_min) == "yes":
+            st["fired"] = True
+            goal.state["count"] = goal.state.get("count", 0) + 1
+            self.metrics.incr("transition.fire")
+            return FireEvent(goal.id, FIRE, goal.say, key[1], to_v)
+        return None
 
     async def _judge(
         self,
