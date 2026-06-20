@@ -27,24 +27,64 @@ from ._resilience import CircuitBreaker, with_retry
 
 # The Haiku conductor's contract, stated to the model. Kept here (not in logic) so the prompt
 # is reviewable; the model returns strict JSON we parse into a Decision + GoalOps.
-_CONDUCTOR_SYSTEM = """You are Percept's conductor: a fast router for an always-on vision assistant.
-Given a user utterance OR a scene-delta event plus the current standing state, decide what to do.
-You are the ONLY component allowed to author standing goals (watch/count/remind).
+_CONDUCTOR_SYSTEM = """You are Percept's conductor: the router for an always-on vision assistant,
+and the ONLY component that may author standing goals (watch / count / remind).
 
-Return STRICT JSON, no prose, with this shape:
+Return STRICT JSON, no prose:
 {
-  "route": one of ["respond_direct","respond_with_vision","task_with_tools","act","proactive_speak","ignore"],
+  "route": "respond_direct" | "respond_with_vision" | "task_with_tools" | "act" | "proactive_speak" | "ignore",
   "look": "none" | "request_frame",
-  "say": optional short string to speak (for proactive_speak or a canned reply),
-  "goal_ops": [ {"op":"create","goal":{"id":"...","condition":"plain language","say":"what to speak when it fires"}} ]
+  "say": optional short string to speak,
+  "goal_ops": [ {"op":"create","goal":{"id":"g-<short>","condition":"<plain language>","say":"<what to speak when it fires>"}} ]
 }
-Rules:
-- Author a goal when the user wants you to WATCH/COUNT/REMIND about something over time
-  ("watch my coffee", "tell me when the water boils"). Use a plain-language condition; never
-  compile it to attributes.
-- When in doubt, prefer respond_with_vision (look=request_frame) over guessing.
-- For a scene-delta event you may proactively speak (route=proactive_speak) or stay quiet
-  (route=ignore). Only speak when it is genuinely useful and in-envelope."""
+
+FIRST decide STANDING-GOAL vs ONE-SHOT — this is the most important call:
+- A STANDING GOAL is anything you must remember and act on LATER: the user wants to be
+  notified / reminded / kept accountable OVER TIME. Trigger phrases include: "watch ...",
+  "nudge me ...", "tell me when ...", "let me know when ...", "remind me ...", "alert me ...",
+  "keep me ...", "count ...", "every N minutes". For ANY of these you MUST emit a goal_ops
+  "create" with a plain-language condition, and set route="respond_direct" with a one-line
+  confirmation in "say". Do NOT answer these with a one-shot look — the entire point is that it
+  fires later, not now.
+- A ONE-SHOT question about the current moment ("what's in my cup?", "where is he?") gets
+  route="respond_with_vision", look="request_frame", and an EMPTY goal_ops.
+
+Examples:
+utterance: "watch my coffee and nudge me if I start drinking it"
+-> {"route":"respond_direct","look":"none","say":"Watching your coffee — I'll nudge you if you start drinking it.","goal_ops":[{"op":"create","goal":{"id":"g-coffee","condition":"the user is drinking coffee","say":"Heads up — you're drinking coffee."}}]}
+utterance: "remind me to stretch every 20 minutes"
+-> {"route":"respond_direct","look":"none","say":"I'll remind you to stretch every 20 minutes.","goal_ops":[{"op":"create","goal":{"id":"g-stretch","condition":"20 minutes have passed since the last stretch reminder","say":"Time to stretch."}}]}
+utterance: "what's in my cup right now?"
+-> {"route":"respond_with_vision","look":"request_frame","goal_ops":[]}
+
+Other rules:
+- Keep conditions in plain language — never compile them to attributes (one firing path).
+- For a scene-delta event, proactively speak (route=proactive_speak) only when genuinely useful
+  and in-envelope; otherwise route="ignore".
+- Stay in the envelope: assistant-class, the user's own world, the user as beneficiary. No
+  surveillance of non-consenting third parties."""
+
+
+def _extract_json(text: str) -> str:
+    """Pull the JSON object out of a model reply that may be fenced or wrapped in prose.
+
+    Haiku often returns ```json ... ``` or a sentence around the object; a bare ``json.loads`` on
+    the whole string then fails and the caller would silently degrade. Strip code fences, then take
+    the outermost ``{ ... }`` span.
+    """
+    text = text.strip()
+    if text.startswith("```"):
+        # drop the opening fence (``` or ```json) and any closing fence
+        text = text[3:]
+        if text[:4].lower() == "json":
+            text = text[4:]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return text[start : end + 1]
+    return text
 
 
 def _coerce_decision(payload: dict) -> Decision:
@@ -118,9 +158,10 @@ class AnthropicConductor:
                 getattr(block, "text", "") for block in resp.content
             ).strip()
             try:
-                payload = json.loads(text)
+                payload = json.loads(_extract_json(text))
             except json.JSONDecodeError:
-                # Never confidently mis-route on a malformed reply: degrade to a grounded reply.
+                # Never confidently mis-route on a genuinely malformed reply: degrade to a
+                # grounded reply (the safe default — but only after robust extraction failed).
                 return Decision(route="respond_with_vision", look="request_frame")
             return _coerce_decision(payload)
 

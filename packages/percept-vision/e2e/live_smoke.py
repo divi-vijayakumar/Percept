@@ -64,17 +64,18 @@ async def _run() -> int:
         print(f"  [vision] -> satisfied={verdict.satisfied} conf={verdict.confidence:.2f} "
               f"evidence={verdict.evidence!r}")
 
-    # 2) conductor — author a goal from an utterance
+    # 2) conductor — a "watch ... and nudge me" command MUST author a standing goal
     utterance = "watch my coffee and nudge me if I start drinking it"
     print(f"  [conductor] utterance={utterance!r}")
     decision = await a.conductor.run("speech_endpoint", utterance, {})
     print(f"  [conductor] -> route={decision.route} goal_ops={len(decision.goal_ops)}")
-    assert decision.goal_ops or decision.route in {
-        "task_with_tools",
-        "proactive_speak",
-        "respond_direct",
-        "respond_with_vision",
-    }, "conductor should route or author a goal"
+    for op in decision.goal_ops:
+        if op.goal is not None:
+            print(f"  [conductor] authored: condition={op.goal.condition!r} say={op.goal.say!r}")
+    assert decision.goal_ops, (
+        "a 'watch X and nudge me' command must author a standing goal (goal_ops), "
+        f"not just route={decision.route!r}"
+    )
 
     print("e2e live smoke PASSED")
     return 0
