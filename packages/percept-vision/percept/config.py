@@ -25,6 +25,10 @@ def _as_bool(raw: str) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _as_actions(raw: str) -> frozenset:
+    return frozenset(a.strip() for a in raw.split(",") if a.strip())
+
+
 @dataclass(frozen=True)
 class GateSettings:
     threshold: float = 0.7  # PERCEPT_GATE_THRESHOLD — confident-yes cutoff
@@ -56,6 +60,12 @@ class ModelSettings:
     vision_model: str = "claude-opus-4-8"  # PERCEPT_VISION_MODEL
     conductor_model: str = "claude-haiku-4-5"  # PERCEPT_CONDUCTOR_MODEL
     specialist_model: str = "claude-haiku-4-5"  # PERCEPT_SPECIALIST_MODEL
+
+
+@dataclass(frozen=True)
+class ConsentSettings:
+    allow_computer_use: bool = False  # PERCEPT_ALLOW_COMPUTER_USE — gates the `act` modality
+    allowed_actions: frozenset = frozenset()  # PERCEPT_ACT_ALLOWED_ACTIONS — comma-separated scope
 
 
 @dataclass(frozen=True)
@@ -93,6 +103,7 @@ class Settings:
     identity: IdentitySettings = IdentitySettings()
     episodes: EpisodeSettings = EpisodeSettings()
     events: EventSettings = EventSettings()
+    consent: ConsentSettings = ConsentSettings()
 
 
 def load_settings() -> Settings:
@@ -137,6 +148,10 @@ def load_settings() -> Settings:
             window=_env("PERCEPT_FRAME_WINDOW", 12, int),
             merge_gap_s=_env("PERCEPT_EVENT_MERGE_GAP_S", 1.5, float),
         ),
+        consent=ConsentSettings(
+            allow_computer_use=_env("PERCEPT_ALLOW_COMPUTER_USE", False, _as_bool),
+            allowed_actions=_env("PERCEPT_ACT_ALLOWED_ACTIONS", frozenset(), _as_actions),
+        ),
     )
 
 
@@ -157,6 +172,7 @@ __all__ = [
     "IdentitySettings",
     "EpisodeSettings",
     "EventSettings",
+    "ConsentSettings",
     "load_settings",
     "as_dict",
 ]

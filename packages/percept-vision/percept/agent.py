@@ -9,13 +9,14 @@ episodes (Phase 4), events (Phase 5) — without editing the gate/graph contract
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
 from . import registry
 from .adapters import Box, Decision, Goal, TurnResult, Verdict
 from .cache import CacheCascade, CacheKey, FrameHashLayer
 from .config import Settings, load_settings
+from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
 from .entity import EntityGraph
 from .episodes import EpisodeJudge, EpisodeLog
 from .events import EventLog, FrameWindow
@@ -100,6 +101,8 @@ class Percept:
     windows: dict = field(default_factory=dict)  # source -> FrameWindow (temporal perception)
     event_log: Any = None  # EventLog — temporal dedup of detected events (built in create)
     scheduler: Any = None  # Scheduler — time-triggered proactive fires (built in create)
+    consent: ConsentProfile = field(default_factory=ConsentProfile)  # the act-modality gate
+    action_log: ActionLog = field(default_factory=ActionLog)  # audit: every fire + act
 
     # -- construction --------------------------------------------------------
     @classmethod
@@ -152,6 +155,11 @@ class Percept:
             router=RouteEngine.default(threshold=cfg.routing.confidence_threshold),
             event_log=EventLog(cfg.events.merge_gap_s),
             scheduler=Scheduler(clock=clk),
+            consent=ConsentProfile(
+                allow_computer_use=cfg.consent.allow_computer_use,
+                allowed_actions=cfg.consent.allowed_actions,
+            ),
+            action_log=ActionLog(),
         )
 
     # -- goal authoring ------------------------------------------------------
@@ -223,6 +231,8 @@ class Percept:
                     out.append(FireEvent(goal.id, FIRE, goal.say, distinct.id, verdict))
                 elif action == ASK:
                     out.append(FireEvent(goal.id, ASK, self._ask_text(goal), distinct.id, verdict))
+        latest = window.latest()
+        self._log_fires(out, latest[0] if latest else 0.0)
         return out
 
     # -- the scheduler (time-triggered proactive fires) ---------------------
@@ -242,6 +252,7 @@ class Percept:
             decision = await self.conductor.run("scheduler_tick", say, {"goal_id": timer.goal_id})
             if decision.route == "proactive_speak":
                 out.append(FireEvent(timer.goal_id, FIRE, decision.say or say, None, None))
+        self._log_fires(out, now)
         return out
 
     def apply_goal_ops(self, ops: list[GoalOp]) -> None:
@@ -285,6 +296,7 @@ class Percept:
                 events.append(FireEvent(goal.id, FIRE, goal.say, key[1], verdict))
             elif action == ASK:
                 events.append(FireEvent(goal.id, ASK, self._ask_text(goal), key[1], verdict))
+        self._log_fires(events, now)
         return events
 
     async def _judge(
@@ -498,6 +510,84 @@ class Percept:
             ],
             "in_focus": focus.id if focus else None,
         }
+
+    # -- consent + audit (SDK primitives; the strip UI is project 2) --------
+    def _log_fires(self, events: list[FireEvent], t: float) -> None:
+        """Record every fire/ask to the action log (the audit seed + V1 feedback corpus)."""
+        for ev in events:
+            self.action_log.record(
+                ActionRecord(
+                    kind=ev.action,
+                    goal_id=ev.goal_id,
+                    detail={"text": ev.text, "entity_id": ev.entity_id},
+                    t=t,
+                )
+            )
+
+    def act(
+        self, goal_id: str, action: str, detail: dict | None = None, *, t: float | None = None
+    ) -> ActionRecord:
+        """Perform a computer-use action — **flag-gated, scoped, logged** (spec §8).
+
+        Allowed only when the goal's ``modality == "act"`` AND the consent profile permits the
+        action. Every attempt is logged (allowed or blocked — nothing acts silently); a blocked
+        attempt raises :class:`ConsentDenied`. The returned record is the event the assistant's
+        consent strip renders.
+        """
+        now = self.clock() if t is None else t
+        goal = self.goals.get(goal_id)
+        modality_ok = goal is not None and goal.modality == "act"
+        allowed = bool(modality_ok and self.consent.permits(action))
+        record = self.action_log.record(
+            ActionRecord(
+                kind="act" if allowed else "act_blocked",
+                goal_id=goal_id,
+                detail={"action": action, **(detail or {})},
+                t=now,
+                allowed=allowed,
+            )
+        )
+        self.metrics.incr("act.allowed" if allowed else "act.blocked")
+        if not allowed:
+            why = (
+                "goal modality is not 'act'"
+                if not modality_ok
+                else f"action {action!r} not permitted "
+                f"(allow_computer_use={self.consent.allow_computer_use})"
+            )
+            raise ConsentDenied(f"act blocked for goal {goal_id!r}: {why}")
+        return record
+
+    # -- persistence (endurance: survive a disconnect) ----------------------
+    def snapshot(self) -> dict:
+        """A JSON-able snapshot of durable state: goals, entities, and the action log."""
+        return {
+            "version": 1,
+            "goals": self.goals.snapshot(),
+            "entities": self.graph.snapshot(),
+            "action_log": [asdict(r) for r in self.action_log.entries()],
+        }
+
+    def restore(self, snap: dict) -> "Percept":
+        """Rehydrate goals / entities / action-log from a :meth:`snapshot`."""
+        self.goals.restore(snap.get("goals", []))
+        self.graph.restore(snap.get("entities", []))
+        self.action_log = ActionLog()
+        for rd in snap.get("action_log", []):
+            self.action_log.record(ActionRecord(**rd))
+        return self
+
+    def save_state(self, persistence: Any, key: str = "percept") -> None:
+        """Persist the snapshot through a ``Persistence`` backend (in-memory / sqlite)."""
+        persistence.save(key, self.snapshot())
+
+    def load_state(self, persistence: Any, key: str = "percept") -> bool:
+        """Rehydrate from a ``Persistence`` backend. Returns False if nothing was stored."""
+        snap = persistence.load(key)
+        if snap is None:
+            return False
+        self.restore(snap)
+        return True
 
     # -- introspection -------------------------------------------------------
     def health(self) -> dict:

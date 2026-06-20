@@ -6,7 +6,7 @@ mutable registry and the op vocabulary the conductor emits.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Literal
 
 from .adapters import Goal
@@ -73,6 +73,21 @@ class GoalRegistry:
 
     def all(self) -> list[Goal]:
         return list(self._goals.values())
+
+    # -- persistence (durable goals; spec §9 / impl plan §7) -----------------
+    def snapshot(self) -> list[dict]:
+        return [
+            {"goal": asdict(g), "status": self._status.get(gid, "active")}
+            for gid, g in self._goals.items()
+        ]
+
+    def restore(self, items: list[dict]) -> None:
+        self._goals = {}
+        self._status = {}
+        for item in items:
+            goal = Goal(**item["goal"])
+            self._goals[goal.id] = goal
+            self._status[goal.id] = item.get("status", "active")
 
 
 __all__ = ["GoalStatus", "GoalOp", "GoalRegistry"]

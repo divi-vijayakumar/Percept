@@ -172,5 +172,49 @@ class EntityGraph:
     def __len__(self) -> int:
         return len(self._entities)
 
+    # -- persistence (durable entities; rehydrate on reconnect) --------------
+    def snapshot(self) -> list[dict]:
+        return [
+            {
+                "id": e.id,
+                "label": e.label,
+                "box": {"x": e.box.x, "y": e.box.y, "w": e.box.w, "h": e.box.h},
+                "first_seen": e.first_seen,
+                "last_seen": e.last_seen,
+                "attributes": {
+                    k: {
+                        "value": a.value,
+                        "source": a.source,
+                        "confidence": a.confidence,
+                        "last_confirmed": a.last_confirmed,
+                    }
+                    for k, a in e.attributes.items()
+                },
+                "sources": sorted(e.sources),
+                "appearance": list(e.appearance) if e.appearance is not None else None,
+            }
+            for e in self._entities.values()
+        ]
+
+    def restore(self, dumps: list[dict]) -> None:
+        self._entities = {}
+        self._last_frame_ids = []
+        max_n = 0
+        for d in dumps:
+            entity = Entity(
+                id=d["id"],
+                label=d["label"],
+                box=Box(**d["box"]),
+                first_seen=d["first_seen"],
+                last_seen=d["last_seen"],
+                attributes={k: Attribute(**a) for k, a in d.get("attributes", {}).items()},
+                sources=set(d.get("sources", [])),
+                appearance=d.get("appearance"),
+            )
+            self._entities[entity.id] = entity
+            if entity.id.startswith("e") and entity.id[1:].isdigit():
+                max_n = max(max_n, int(entity.id[1:]))
+        self._counter = max_n  # new mints continue past the restored ids
+
 
 __all__ = ["Entity", "EntityGraph"]

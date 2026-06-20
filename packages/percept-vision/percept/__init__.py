@@ -23,6 +23,7 @@ from .adapters import (
 )
 from .cache import CacheCascade, CacheKey, CacheResult, FrameHashLayer
 from .config import Settings, load_settings
+from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
 from .entity import Entity, EntityGraph
 from .episodes import Episode, EpisodeLog
 from .events import Event, EventLog, FrameWindow
@@ -31,6 +32,7 @@ from .goals import GoalOp, GoalRegistry
 from .identity import AppearanceIdentity, ContinuityIdentity
 from .scheduler import Scheduler, Timer
 from .observability import Metrics, get_logger, health
+from .persistence import InMemoryPersistence, SqlitePersistence
 from .routing import (
     DEFAULT_RULES,
     RegexRouteLayer,
@@ -83,6 +85,13 @@ __all__ = [
     "FrameWindow",
     "Scheduler",
     "Timer",
+    # persistence + consent (Phase 7 — endurance + safe act modality)
+    "InMemoryPersistence",
+    "SqlitePersistence",
+    "ConsentProfile",
+    "ConsentDenied",
+    "ActionLog",
+    "ActionRecord",
     # routing (Phase 3 — local fast-path; learned tier slots behind RouteLayer in V0.1)
     "RouteEngine",
     "RouteLayer",
