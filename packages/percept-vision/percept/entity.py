@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Callable
 
 from .adapters import Attribute, Box, Observation
+from .identity import ContinuityIdentity
 
 
 @dataclass
@@ -45,10 +46,17 @@ class EntityGraph:
         iou_match: float = 0.5,
         max_entities: int = 64,
         clock: Callable[[], float] | None = None,
+        *,
+        identity: Any = None,
+        embedder: Callable[[Any, Box], Any] | None = None,
     ) -> None:
         self._iou = iou_match
         self._max = max_entities
         self._clock = clock or time.monotonic
+        # The matcher decides "same thing?" — continuity by default; AppearanceIdentity re-ids
+        # across gaps when an embedder is supplied. Either way, ids are assigned here, below the LLM.
+        self._identity = identity if identity is not None else ContinuityIdentity(iou_match)
+        self._embedder = embedder
         self._entities: dict[str, Entity] = {}
         self._counter = 0
         self._last_frame_ids: list[str] = []
@@ -66,28 +74,31 @@ class EntityGraph:
         now = self._clock() if t is None else t
         touched: list[str] = []
         for obs in observations:
-            entity = self._match(obs)
+            signature = self._embedder(frame, obs.box) if self._embedder is not None else None
+            match_id = self._match_id(obs, signature)
+            entity = self._entities.get(match_id) if match_id else None
             if entity is None:
                 entity = self._mint(obs, now, source)
             else:
                 entity.box = obs.box
                 entity.last_seen = now
                 entity.sources.add(source)
+            if signature is not None:
+                entity.appearance = signature  # retain on every entity (forward-compat re-id)
             self._record_observed(entity, obs, now)
             touched.append(entity.id)
         self._last_frame_ids = touched
         self._evict()
         return [self._entities[i] for i in touched]
 
-    def _match(self, obs: Observation) -> Entity | None:
-        best, best_iou = None, self._iou
-        for entity in self._entities.values():
-            if entity.label != obs.label:
-                continue
-            iou = entity.box.iou(obs.box)
-            if iou >= best_iou:
-                best, best_iou = entity, iou
-        return best
+    def _match_id(self, obs: Observation, signature: Any) -> str | None:
+        """Ask the identity strategy for the matching entity id (None -> mint a new one)."""
+        known = list(self._entities.values())
+        try:
+            return self._identity.match(obs, known, signature=signature)
+        except TypeError:
+            # a custom Identity that conforms only to the frozen match(obs, known) signature
+            return self._identity.match(obs, known)
 
     def _mint(self, obs: Observation, now: float, source: str) -> Entity:
         self._counter += 1

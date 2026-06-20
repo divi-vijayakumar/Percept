@@ -24,8 +24,10 @@ from .adapters import (
 from .cache import CacheCascade, CacheKey, CacheResult, FrameHashLayer
 from .config import Settings, load_settings
 from .entity import Entity, EntityGraph
+from .episodes import Episode, EpisodeLog
 from .gate import ASK, FIRE, SILENT, Gate, GateAction
 from .goals import GoalOp, GoalRegistry
+from .identity import AppearanceIdentity, ContinuityIdentity
 from .observability import Metrics, get_logger, health
 from .routing import (
     DEFAULT_RULES,
@@ -68,6 +70,11 @@ __all__ = [
     "Entity",
     "GoalRegistry",
     "GoalOp",
+    # identity + episodes (Phase 4 — re-id across gaps; the cup problem)
+    "ContinuityIdentity",
+    "AppearanceIdentity",
+    "Episode",
+    "EpisodeLog",
     # routing (Phase 3 — local fast-path; learned tier slots behind RouteLayer in V0.1)
     "RouteEngine",
     "RouteLayer",

@@ -59,6 +59,17 @@ class ModelSettings:
 
 
 @dataclass(frozen=True)
+class IdentitySettings:
+    appearance_threshold: float = 0.8  # PERCEPT_APPEARANCE_MATCH — cosine sim to re-id across a gap
+
+
+@dataclass(frozen=True)
+class EpisodeSettings:
+    window_s: float = 3600.0  # PERCEPT_EPISODE_WINDOW_S — counting window ("today's cups")
+    max_episodes: int = 64  # PERCEPT_MAX_EPISODES — bound on the per-goal episode log
+
+
+@dataclass(frozen=True)
 class RoutingSettings:
     # Below this confidence the local router DEFERS to the conductor. Defer-on-miss is
     # structural: a match under the bar is indistinguishable from no match. Raise it to make
@@ -73,6 +84,8 @@ class Settings:
     cache: CacheSettings = CacheSettings()
     models: ModelSettings = ModelSettings()
     routing: RoutingSettings = RoutingSettings()
+    identity: IdentitySettings = IdentitySettings()
+    episodes: EpisodeSettings = EpisodeSettings()
 
 
 def load_settings() -> Settings:
@@ -106,6 +119,13 @@ def load_settings() -> Settings:
         routing=RoutingSettings(
             confidence_threshold=_env("PERCEPT_ROUTE_THRESHOLD", 0.6, float),
         ),
+        identity=IdentitySettings(
+            appearance_threshold=_env("PERCEPT_APPEARANCE_MATCH", 0.8, float),
+        ),
+        episodes=EpisodeSettings(
+            window_s=_env("PERCEPT_EPISODE_WINDOW_S", 3600.0, float),
+            max_episodes=_env("PERCEPT_MAX_EPISODES", 64, int),
+        ),
     )
 
 
@@ -123,6 +143,8 @@ __all__ = [
     "CacheSettings",
     "ModelSettings",
     "RoutingSettings",
+    "IdentitySettings",
+    "EpisodeSettings",
     "load_settings",
     "as_dict",
 ]

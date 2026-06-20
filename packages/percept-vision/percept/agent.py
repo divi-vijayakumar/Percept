@@ -17,6 +17,7 @@ from .adapters import Box, Decision, Goal, TurnResult, Verdict
 from .cache import CacheCascade, CacheKey, FrameHashLayer
 from .config import Settings, load_settings
 from .entity import EntityGraph
+from .episodes import EpisodeJudge, EpisodeLog
 from .gate import ASK, FIRE, Gate, GateAction
 from .goals import GoalOp, GoalRegistry
 from .observability import Metrics, health
@@ -93,6 +94,7 @@ class Percept:
     # (no RNG on the L1 path); injectable for custom policies. ``None`` -> never audit.
     audit: Callable[[object], bool] | None = None
     router: RouteEngine | None = None  # local fast-path; None -> always defer (built in create)
+    episodes: dict = field(default_factory=dict)  # goal_id -> EpisodeLog (counting goals)
 
     # -- construction --------------------------------------------------------
     @classmethod
@@ -108,6 +110,8 @@ class Percept:
         clock: Callable[[], float] | None = None,
         discover_plugins: bool = True,
         audit: Callable[[object], bool] | None = None,
+        identity: Any = None,
+        embedder: Callable[[Any, Box], Any] | None = None,
     ) -> "Percept":
         cfg = settings or load_settings()
         if discover_plugins:
@@ -128,7 +132,13 @@ class Percept:
             tts=_resolve("tts", tts, cfg),
             settings=cfg,
             metrics=Metrics(),
-            graph=EntityGraph(cfg.entity.iou_match, cfg.entity.max_entities, clock=clk),
+            graph=EntityGraph(
+                cfg.entity.iou_match,
+                cfg.entity.max_entities,
+                clock=clk,
+                identity=identity,
+                embedder=embedder,
+            ),
             gate=Gate(threshold=cfg.gate.threshold),
             goals=GoalRegistry(),
             cache=CacheCascade(layers=layers, threshold=cfg.cache.threshold),
@@ -140,6 +150,32 @@ class Percept:
     # -- goal authoring ------------------------------------------------------
     def add_goal(self, goal: Goal) -> Goal:
         return self.goals.create(goal)
+
+    # -- episode counting (the cup problem) ---------------------------------
+    def count_event(
+        self, goal_id: str, exemplar: Any, judge: EpisodeJudge, *, t: float | None = None
+    ) -> tuple[Any, bool]:
+        """Fold a candidate counting-event into the goal's episode log; sync ``goal.state['count']``.
+
+        ``judge`` decides new-episode-vs-continuation against the bounded log (an LLM in real use; a
+        stub in L1 — never assert backend intelligence with a fake). Returns ``(episode, is_new)``.
+        For goals whose ``state['type'] == 'count'`` (e.g. "how many cups today").
+        """
+        now = self.clock() if t is None else t
+        log = self.episodes.get(goal_id)
+        if log is None:
+            log = EpisodeLog(
+                goal_id,
+                window_s=self.settings.episodes.window_s,
+                max_episodes=self.settings.episodes.max_episodes,
+            )
+            self.episodes[goal_id] = log
+        episode, is_new = log.observe(now, exemplar, judge)
+        goal = self.goals.get(goal_id)
+        if goal is not None:
+            goal.state["count"] = log.count(now)
+        self.metrics.incr("episode.new" if is_new else "episode.continuation")
+        return episode, is_new
 
     def apply_goal_ops(self, ops: list[GoalOp]) -> None:
         self.goals.apply(ops)
