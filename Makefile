@@ -44,6 +44,9 @@ bench:
 scorecard:
 	cd $(SDK) && PYTHONPATH=. $(PY) -m eval.scorecard
 
+calibrate:
+	cd $(SDK) && PYTHONPATH=. $(PY) -m eval.calibrate
+
 check:
 	@cd $(SDK) && PYTHONPATH=. $(PY) -m compileall -q percept tests && echo "compileall ok"
 	@cd $(SDK) && (ruff check . || echo "ruff not installed — skipping lint")

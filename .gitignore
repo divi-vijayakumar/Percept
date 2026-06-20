@@ -27,3 +27,8 @@ scorecard.json
 results.json
 **/scorecard.json
 **/results.json
+
+# calibration artifacts (derived from private fixtures)
+calibration.json
+calibration_capture.json
+**/calibration*.json
