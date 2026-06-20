@@ -2,21 +2,31 @@
 #   L1 unit  : OUR deterministic logic, fakes only, no keys, <2s  -> `make test`
 #   L2 live  : backend INTELLIGENCE + integration, real+gated     -> `PERCEPT_LIVE=1 make eval-live`
 #   L3 e2e   : the real system a user drives, headless            -> `make e2e`
-SDK := packages/percept-vision
-PY  := python3
+SDK     := packages/percept-vision
+HARNESS := packages/percept-harness
+EDGE    := packages/percept-edge
+PY      := python3
 
-.PHONY: help test eval-live e2e bench check reproduce
+.PHONY: help test test-harness test-js test-all eval-live e2e bench check reproduce
 
 help:
-	@echo "test       L1 unit (fakes, no keys, fast)"
+	@echo "test       L1 unit — percept-vision + percept-harness (fakes, no keys, fast)"
+	@echo "test-js    L1 unit — @percept/edge (vitest; needs npm install)"
+	@echo "test-all   test + test-js"
 	@echo "eval-live  L2 live eval (needs keys; skips without PERCEPT_LIVE=1)"
-	@echo "e2e        L3 browser e2e (pre-release)"
-	@echo "bench      run percept-bench (sampled)"
+	@echo "e2e        L3 e2e — live smoke (needs keys; skips cleanly)"
+	@echo "bench      gating cost reduction (gated vs ungated vision calls)"
 	@echo "check      lint + types (best-effort; skips missing tools)"
 	@echo "reproduce  reproduce a published scorecard row"
 
 test:
-	cd $(SDK) && PYTHONPATH=. $(PY) -m unittest discover -s tests -v
+	cd $(SDK) && PYTHONPATH=. $(PY) -m unittest discover -s tests
+	PYTHONPATH=$(SDK):$(HARNESS) $(PY) -m unittest discover -s $(HARNESS)/tests
+
+test-js:
+	cd $(EDGE) && npm test
+
+test-all: test test-js
 
 eval-live:
 	@if [ "$$PERCEPT_LIVE" != "1" ]; then \
@@ -29,7 +39,7 @@ e2e:
 	cd $(SDK) && PYTHONPATH=. $(PY) -m e2e.live_smoke
 
 bench:
-	@echo "percept-bench: scaffolding only in Phase 0 (lands with the replay scorer). Skipping."
+	PYTHONPATH=$(SDK):$(HARNESS) $(PY) -m percept_harness.bench_gating
 
 check:
 	@cd $(SDK) && PYTHONPATH=. $(PY) -m compileall -q percept tests && echo "compileall ok"
