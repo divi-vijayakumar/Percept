@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "percept-harness"
+version = "0.0.0.dev0"
+description = "Server-side transport shell + tier-0 salience gate (WatchSpec down / Tier0Signal up) for the Percept cognition core."
+readme = "../../README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+# The tier-0 reference is pure stdlib; numpy is an OPTIONAL fast path, never required for L1.
+dependencies = ["percept-vision"]
+
+[project.optional-dependencies]
+fast = ["numpy>=1.24"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["percept_harness*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
