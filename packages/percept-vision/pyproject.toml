@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "percept-vision"
+version = "0.0.0.dev0"
+description = "The open-source cognition layer for goal-driven, proactive vision agents."
+readme = "../../README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+# Core is pure stdlib — `pip install percept-vision` then run with no keys, no heavy deps.
+dependencies = []
+
+[project.optional-dependencies]
+claude = ["anthropic>=0.40"]
+deepgram = ["deepgram-sdk>=3"]
+audio = ["numpy>=1.24"]
+ui = []
+all = ["anthropic>=0.40", "deepgram-sdk>=3", "numpy>=1.24"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["percept*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
