@@ -59,10 +59,10 @@ register("vision", "claude", _lazy("anthropic", "AnthropicVision"))
 register("vision", "gemini", _lazy("gemini", "GeminiVision"))
 
 register("specialist", "fake", lambda s: _fake.FakeSpecialist())
-register("specialist", "claude", _lazy("anthropic", "AnthropicSpecialist"))
+register("specialist", "claude", _lazy("anthropic_text", "AnthropicSpecialist"))
 
 register("conductor", "fake", lambda s: _fake.FakeConductor())
-register("conductor", "claude", _lazy("anthropic", "AnthropicConductor"))
+register("conductor", "claude", _lazy("anthropic_text", "AnthropicConductor"))
 
 register("stt", "fake", lambda s: _fake.FakeSTT())
 register("stt", "deepgram", _lazy("deepgram", "DeepgramSTT"))
