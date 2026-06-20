@@ -47,6 +47,9 @@ scorecard:
 calibrate:
 	cd $(SDK) && PYTHONPATH=. $(PY) -m eval.calibrate
 
+exp-categorical:
+	cd $(SDK) && PYTHONPATH=. $(PY) -m eval.exp_categorical
+
 check:
 	@cd $(SDK) && PYTHONPATH=. $(PY) -m compileall -q percept tests && echo "compileall ok"
 	@cd $(SDK) && (ruff check . || echo "ruff not installed — skipping lint")

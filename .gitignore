@@ -32,3 +32,8 @@ results.json
 calibration.json
 calibration_capture.json
 **/calibration*.json
+
+# categorical-judge experiment artifacts
+categorical_capture.json
+exp_categorical.json
+**/categorical_capture.json
