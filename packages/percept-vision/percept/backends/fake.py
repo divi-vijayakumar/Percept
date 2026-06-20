@@ -26,10 +26,24 @@ _UNKNOWN = Verdict(satisfied=False, confidence=0.2, evidence="scripted: unknown 
 
 
 class FakeVision:
-    """Returns a scripted verdict keyed off a string frame token."""
+    """Returns a scripted verdict keyed off a string frame token.
 
-    def __init__(self, script: dict[str, Verdict] | None = None) -> None:
+    ``judge`` is **scripted wiring, not intelligence**: it looks the frame token up in a dict.
+    When ``corrections`` are present it first tries a ``"<frame>|corrected"`` key — this lets a
+    test prove that a user-asserted fact actually *flows into* the judge and changes the outcome
+    (the assertion-beats-observation wiring), without claiming the fake understands anything.
+
+    ``detect`` returns scripted observations from ``detect_script`` so the entity graph has
+    something to track in offline tests.
+    """
+
+    def __init__(
+        self,
+        script: dict[str, Verdict] | None = None,
+        detect_script: dict[str, list[Observation]] | None = None,
+    ) -> None:
         self._script = {**_SCRIPT, **(script or {})}
+        self._detect = detect_script or {}
 
     async def judge(
         self,
@@ -40,10 +54,15 @@ class FakeVision:
         exemplar: Any = None,
         corrections: dict | None = None,
     ) -> Verdict:
-        return self._script.get(str(frame), _UNKNOWN)
+        token = str(frame)
+        if corrections:
+            corrected = f"{token}|corrected"
+            if corrected in self._script:
+                return self._script[corrected]
+        return self._script.get(token, _UNKNOWN)
 
     async def detect(self, frame: Any, goals: list[Goal]) -> list[Observation]:
-        return []
+        return list(self._detect.get(str(frame), []))
 
     async def detect_events(self, frames: list, goals: list[Goal]) -> list:
         return []
