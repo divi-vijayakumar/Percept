@@ -1,0 +1,29 @@
+{
+  "cam_type": "fixed-security",
+  "motion": "A man walks, stumbles, falls, and gets up.",
+  "lighting": "Overcast, daytime.",
+  "n_objects": 1,
+  "clip_summary": "A man walks towards a front door, stumbles, falls into bushes, and then slowly gets up, appearing to be in pain.",
+  "conditions": [
+    "Someone is at the door",
+    "Someone needs help",
+    "Suspicious activity"
+  ],
+  "goals": [
+    "Alert on suspicious activity",
+    "Alert on an emergency or someone who needs help",
+    "Alert when help is wanted",
+    "Alert if a child is in danger",
+    "Alert if an elder is in danger",
+    "Tell me when someone is at the door"
+  ],
+  "source": "YouTube \u2014 'CAUGHT IN 4K: Top Security Camera Fails 2026' (AFV)",
+  "license": "UNCLEARED: third-party YouTube source \u2014 dev/eval fixture only, not for redistribution (spec Principle 8). Re-source before publishing.",
+  "video": "eval3",
+  "t_start": 133.05,
+  "t_end": 138.05,
+  "duration": 5.0,
+  "recentered_on_verified_edge": false,
+  "proposer_model": "gemini-2.5-flash (shot-segmented)",
+  "review_status": "unreviewed"
+}

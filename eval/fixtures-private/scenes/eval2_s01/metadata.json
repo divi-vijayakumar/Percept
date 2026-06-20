@@ -1,0 +1,22 @@
+{
+  "cam_type": "static",
+  "motion": "low",
+  "lighting": "bright",
+  "n_objects": 3,
+  "clip_summary": "Andrew puts oil in a pan and adds sliced potatoes to start cooking.",
+  "conditions": [
+    "food is actively cooking in the pan"
+  ],
+  "goals": [
+    "Remind me to add salt while cooking (fire at the moment food is actively cooking and seasoning is appropriate; this is partly an ambiguous-ASK timing case)"
+  ],
+  "source": "https://www.youtube.com/watch?v=02LAx-CZ-0Q",
+  "license": "UNCLEARED: third-party YouTube source \u2014 dev/eval fixture only, not for redistribution (spec Principle 8). Re-source before publishing.",
+  "video": "eval2",
+  "t_start": 126.0,
+  "t_end": 142.0,
+  "duration": 16.0,
+  "recentered_on_verified_edge": true,
+  "proposer_model": "gemini-2.5-flash",
+  "review_status": "approved"
+}

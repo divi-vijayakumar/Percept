@@ -1,0 +1,9 @@
+# Heavy pixel data stays OUT of git history (~54MB). It is regenerable from source
+# and, being third-party YouTube material, is not redistributable anyway.
+# The label layer (*.jsonl, metadata.json, splits.json, *.md) IS tracked and PR-reviewed.
+fixtures-private/scenes/**/clip.mp4
+fixtures-private/scenes/**/clip.json
+fixtures-private/scenes/**/frames/
+
+# macOS junk
+.DS_Store

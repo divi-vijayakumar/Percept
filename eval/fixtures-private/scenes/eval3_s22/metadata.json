@@ -1,0 +1,29 @@
+{
+  "cam_type": "fixed-security",
+  "motion": "Significant motion from the adult falling into the pool and dogs running around.",
+  "lighting": "Daylight, overcast.",
+  "n_objects": 3,
+  "clip_summary": "An adult is cleaning a pool with a long pole when a dog runs up and pushes them into the water. The adult quickly resurfaces, and the dogs run around the pool.",
+  "conditions": [
+    "A person falls",
+    "A person is in the pool",
+    "A pet interacts with a person"
+  ],
+  "goals": [
+    "Alert on suspicious activity",
+    "Alert on an emergency or someone who needs help",
+    "Alert when help is wanted",
+    "Alert if a child is in danger",
+    "Alert if an elder is in danger",
+    "Tell me when someone is at the door"
+  ],
+  "source": "YouTube \u2014 'CAUGHT IN 4K: Top Security Camera Fails 2026' (AFV)",
+  "license": "UNCLEARED: third-party YouTube source \u2014 dev/eval fixture only, not for redistribution (spec Principle 8). Re-source before publishing.",
+  "video": "eval3",
+  "t_start": 505.046,
+  "t_end": 512.046,
+  "duration": 7.0,
+  "recentered_on_verified_edge": false,
+  "proposer_model": "gemini-2.5-flash (shot-segmented)",
+  "review_status": "unreviewed"
+}

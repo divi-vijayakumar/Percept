@@ -1,0 +1,33 @@
+{
+  "cam_type": "fixed-security",
+  "motion": "A person quickly drops to their knees and then stands up. Another person is mostly stationary. A car is parked in the driveway.",
+  "lighting": "Low light conditions, with the porch area illuminated by a light source.",
+  "n_objects": 3,
+  "clip_summary": "A person on a porch quickly drops to their knees, startled by a squirrel, then stands up. Another person is present.",
+  "conditions": [
+    "Person 1 is at the door",
+    "Person 2 is at the door",
+    "Suspicious activity detected",
+    "Person 1 needs help",
+    "Help is wanted by Person 1",
+    "Child is in danger",
+    "Elder is in danger"
+  ],
+  "goals": [
+    "Alert on suspicious activity",
+    "Alert on an emergency or someone who needs help",
+    "Alert when help is wanted",
+    "Alert if a child is in danger",
+    "Alert if an elder is in danger",
+    "Tell me when someone is at the door"
+  ],
+  "source": "YouTube \u2014 'CAUGHT IN 4K: Top Security Camera Fails 2026' (AFV)",
+  "license": "UNCLEARED: third-party YouTube source \u2014 dev/eval fixture only, not for redistribution (spec Principle 8). Re-source before publishing.",
+  "video": "eval3",
+  "t_start": 767.141,
+  "t_end": 771.141,
+  "duration": 4.0,
+  "recentered_on_verified_edge": false,
+  "proposer_model": "gemini-2.5-flash (shot-segmented)",
+  "review_status": "unreviewed"
+}

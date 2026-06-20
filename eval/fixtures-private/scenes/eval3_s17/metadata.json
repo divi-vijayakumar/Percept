@@ -1,0 +1,32 @@
+{
+  "cam_type": "fixed-security",
+  "motion": "A person runs quickly; a car door opens and closes.",
+  "lighting": "daytime",
+  "n_objects": 5,
+  "clip_summary": "A young man is on a porch, then runs to a parked black SUV, opens its door, and then runs back to the house.",
+  "conditions": [
+    "Someone is at the door",
+    "Suspicious activity",
+    "An emergency or someone needs help",
+    "Help is wanted",
+    "A child is in danger",
+    "An elder is in danger"
+  ],
+  "goals": [
+    "Alert on suspicious activity",
+    "Alert on an emergency or someone who needs help",
+    "Alert when help is wanted",
+    "Alert if a child is in danger",
+    "Alert if an elder is in danger",
+    "Tell me when someone is at the door"
+  ],
+  "source": "YouTube \u2014 'CAUGHT IN 4K: Top Security Camera Fails 2026' (AFV)",
+  "license": "UNCLEARED: third-party YouTube source \u2014 dev/eval fixture only, not for redistribution (spec Principle 8). Re-source before publishing.",
+  "video": "eval3",
+  "t_start": 258.383,
+  "t_end": 267.383,
+  "duration": 9.0,
+  "recentered_on_verified_edge": false,
+  "proposer_model": "gemini-2.5-flash (shot-segmented)",
+  "review_status": "unreviewed"
+}

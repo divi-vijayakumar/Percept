@@ -1,0 +1,23 @@
+{
+  "cam_type": "static",
+  "motion": "low",
+  "lighting": "bright",
+  "n_objects": 5,
+  "clip_summary": "A woman wakes up in her sunlit bedroom, stretches, and gets out of bed.",
+  "conditions": [
+    "I wake up"
+  ],
+  "goals": [
+    "Remind me to brush my teeth when I wake up (fire at the wake-up moment)",
+    "I'm avoiding caffeine \u2014 keep me accountable (fire/ask if I am about to consume or am consuming caffeine, e.g. coffee)"
+  ],
+  "source": "https://www.youtube.com/watch?v=Cqg8tQH4U8M",
+  "license": "UNCLEARED: third-party YouTube source \u2014 dev/eval fixture only, not for redistribution (spec Principle 8). Re-source before publishing.",
+  "video": "eval4",
+  "t_start": 0.0,
+  "t_end": 8.5,
+  "duration": 8.5,
+  "recentered_on_verified_edge": false,
+  "proposer_model": "gemini-2.5-pro",
+  "review_status": "approved"
+}
