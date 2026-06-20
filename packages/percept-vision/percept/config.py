@@ -86,6 +86,15 @@ class EpisodeSettings:
 
 
 @dataclass(frozen=True)
+class EdgeSettings:
+    # The on-device / server-side tier-0 salience gate (spec §6.3, impl plan §8). The coarse
+    # motion gate decides *when* to spend a cloud vision call: escalate only when the frame-diff
+    # motion score clears this threshold. A shipped default from an auditable sweep, with optional
+    # per-goal bias. (PERCEPT_MOTION_GATE)
+    motion_gate: float = 0.10  # PERCEPT_MOTION_GATE — motion salience escalation cutoff (0..1)
+
+
+@dataclass(frozen=True)
 class RoutingSettings:
     # Below this confidence the local router DEFERS to the conductor. Defer-on-miss is
     # structural: a match under the bar is indistinguishable from no match. Raise it to make
@@ -104,6 +113,7 @@ class Settings:
     episodes: EpisodeSettings = EpisodeSettings()
     events: EventSettings = EventSettings()
     consent: ConsentSettings = ConsentSettings()
+    edge: EdgeSettings = EdgeSettings()
 
 
 def load_settings() -> Settings:
@@ -152,6 +162,9 @@ def load_settings() -> Settings:
             allow_computer_use=_env("PERCEPT_ALLOW_COMPUTER_USE", False, _as_bool),
             allowed_actions=_env("PERCEPT_ACT_ALLOWED_ACTIONS", frozenset(), _as_actions),
         ),
+        edge=EdgeSettings(
+            motion_gate=_env("PERCEPT_MOTION_GATE", 0.10, float),
+        ),
     )
 
 
@@ -173,6 +186,7 @@ __all__ = [
     "EpisodeSettings",
     "EventSettings",
     "ConsentSettings",
+    "EdgeSettings",
     "load_settings",
     "as_dict",
 ]
