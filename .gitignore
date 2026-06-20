@@ -21,3 +21,9 @@ htmlcov/
 
 # Harness-managed agent worktrees (never track)
 .claude/worktrees/
+
+# eval run artifacts
+scorecard.json
+results.json
+**/scorecard.json
+**/results.json

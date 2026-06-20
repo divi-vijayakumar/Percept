@@ -7,7 +7,7 @@ HARNESS := packages/percept-harness
 EDGE    := packages/percept-edge
 PY      := python3
 
-.PHONY: help test test-harness test-js test-all eval-live e2e bench check reproduce
+.PHONY: help test test-harness test-js test-all eval-live e2e bench scorecard check reproduce
 
 help:
 	@echo "test       L1 unit — percept-vision + percept-harness (fakes, no keys, fast)"
@@ -40,6 +40,9 @@ e2e:
 
 bench:
 	PYTHONPATH=$(SDK):$(HARNESS) $(PY) -m percept_harness.bench_gating
+
+scorecard:
+	cd $(SDK) && PYTHONPATH=. $(PY) -m eval.scorecard
 
 check:
 	@cd $(SDK) && PYTHONPATH=. $(PY) -m compileall -q percept tests && echo "compileall ok"
