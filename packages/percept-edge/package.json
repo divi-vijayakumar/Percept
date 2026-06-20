@@ -1,0 +1,25 @@
+{
+  "name": "@percept/edge",
+  "version": "0.4.0",
+  "description": "On-device reactive edge for the Percept SDK: VAD + motion gate + the WatchSpec/Tier0Signal wire-contract.",
+  "type": "module",
+  "private": true,
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./contract": "./src/contract.js",
+    "./motion": "./src/motion.js",
+    "./vad": "./src/vad.js",
+    "./edge": "./src/edge.js"
+  },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "devDependencies": {
+    "vitest": "^2.1.8"
+  }
+}
