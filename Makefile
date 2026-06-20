@@ -26,7 +26,7 @@ eval-live:
 	fi
 
 e2e:
-	@echo "L3 e2e: scaffolding only in Phase 0 (lands with the voice loop). Skipping."
+	cd $(SDK) && PYTHONPATH=. $(PY) -m e2e.live_smoke
 
 bench:
 	@echo "percept-bench: scaffolding only in Phase 0 (lands with the replay scorer). Skipping."

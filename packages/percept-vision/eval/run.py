@@ -34,6 +34,7 @@ from percept.adapters import Goal
 from percept.config import load_settings
 from percept.eval import find_golden_root, load_golden
 
+from ._dotenv import load_dotenv
 from .replay import Edge, Fire, ReplayMetrics, score
 
 
@@ -158,6 +159,7 @@ def _selfcheck_metrics() -> tuple[ReplayMetrics, int]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv()  # pick up a local .env (real env still wins)
     settings = load_settings()
     live = os.environ.get("PERCEPT_LIVE") == "1"
     out_path = Path(os.environ.get("PERCEPT_EVAL_OUT", "results.json"))
