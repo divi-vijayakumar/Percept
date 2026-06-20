@@ -31,10 +31,26 @@ class TestRegistry(unittest.TestCase):
             registry.make("smell", "fake")
 
     def test_unavailable_vendor_raises_actionable_error(self):
-        # 'claude' is registered but its module doesn't ship in Phase 0 -> clear runtime error.
+        # A vendor whose adapter module doesn't ship yet -> clear runtime error at resolve time.
         with self.assertRaises(RuntimeError) as ctx:
-            registry.make_vision("claude")
+            registry.make_vision("gemini")
         self.assertIn("not available", str(ctx.exception))
+
+    def test_claude_vision_resolves_but_needs_key_or_sdk(self):
+        # Phase 2: the Claude vision adapter now SHIPS and imports cleanly (the core never imports
+        # a vendor SDK at module top level — invariant 7). Construction must succeed with no key;
+        # the lazy ``anthropic`` import / key requirement only bites when a method is actually
+        # called (L2 boundary). Without the SDK installed, calling raises the actionable error.
+        import asyncio
+
+        v = registry.make_vision("claude")
+        self.assertEqual(type(v).__name__, "AnthropicVision")
+        try:
+            import anthropic  # noqa: F401
+        except ModuleNotFoundError:
+            with self.assertRaises(RuntimeError) as ctx:
+                asyncio.run(v.judge("is this coffee?", b"\x89PNG-bytes"))
+            self.assertIn("anthropic", str(ctx.exception).lower())
 
     def test_available_lists_fake(self):
         self.assertIn("fake", registry.available("vision"))

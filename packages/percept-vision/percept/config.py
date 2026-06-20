@@ -39,6 +39,7 @@ class EntitySettings:
 
 @dataclass(frozen=True)
 class CacheSettings:
+    enabled: bool = False  # PERCEPT_CACHE_ENABLED — wire the FrameHashLayer into the cascade
     threshold: float = 0.0  # PERCEPT_CACHE_THRESHOLD — cascade short-circuit cutoff
     ttl_s: float = 8.0  # PERCEPT_CACHE_TTL_S — hard ceiling on slow drift
     tau_bits: int = 6  # PERCEPT_CACHE_TAU_BITS — dHash Hamming near-match radius
@@ -73,6 +74,7 @@ def load_settings() -> Settings:
             max_entities=_env("PERCEPT_MAX_ENTITIES", 64, int),
         ),
         cache=CacheSettings(
+            enabled=_env("PERCEPT_CACHE_ENABLED", False, _as_bool),
             threshold=_env("PERCEPT_CACHE_THRESHOLD", 0.0, float),
             ttl_s=_env("PERCEPT_CACHE_TTL_S", 8.0, float),
             tau_bits=_env("PERCEPT_CACHE_TAU_BITS", 6, int),

@@ -21,7 +21,7 @@ from .adapters import (
     WatchCondition,
     WatchSpec,
 )
-from .cache import CacheCascade, CacheResult
+from .cache import CacheCascade, CacheKey, CacheResult, FrameHashLayer
 from .config import Settings, load_settings
 from .entity import Entity, EntityGraph
 from .gate import ASK, FIRE, SILENT, Gate, GateAction
@@ -63,6 +63,8 @@ __all__ = [
     # cache
     "CacheCascade",
     "CacheResult",
+    "CacheKey",
+    "FrameHashLayer",
     # infra
     "Settings",
     "load_settings",
