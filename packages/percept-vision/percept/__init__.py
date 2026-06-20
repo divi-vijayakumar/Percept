@@ -27,6 +27,14 @@ from .entity import Entity, EntityGraph
 from .gate import ASK, FIRE, SILENT, Gate, GateAction
 from .goals import GoalOp, GoalRegistry
 from .observability import Metrics, get_logger, health
+from .routing import (
+    DEFAULT_RULES,
+    RegexRouteLayer,
+    RouteEngine,
+    RouteLayer,
+    RouteMatch,
+    Rule,
+)
 
 __version__ = "0.0.0.dev0"
 
@@ -60,6 +68,13 @@ __all__ = [
     "Entity",
     "GoalRegistry",
     "GoalOp",
+    # routing (Phase 3 — local fast-path; learned tier slots behind RouteLayer in V0.1)
+    "RouteEngine",
+    "RouteLayer",
+    "RouteMatch",
+    "RegexRouteLayer",
+    "Rule",
+    "DEFAULT_RULES",
     # cache
     "CacheCascade",
     "CacheResult",

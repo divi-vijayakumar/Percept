@@ -13,13 +13,14 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from . import registry
-from .adapters import Box, Goal, Verdict
+from .adapters import Box, Decision, Goal, TurnResult, Verdict
 from .cache import CacheCascade
 from .config import Settings, load_settings
 from .entity import EntityGraph
 from .gate import ASK, FIRE, Gate, GateAction
 from .goals import GoalOp, GoalRegistry
 from .observability import Metrics, health
+from .routing import RouteEngine
 
 
 @dataclass
@@ -56,6 +57,7 @@ class Percept:
     goals: GoalRegistry
     cache: CacheCascade
     clock: Callable[[], float] = field(default=time.monotonic)
+    router: RouteEngine | None = None  # local fast-path; None -> always defer (built in create)
 
     # -- construction --------------------------------------------------------
     @classmethod
@@ -88,6 +90,7 @@ class Percept:
             goals=GoalRegistry(),
             cache=CacheCascade(layers=[], threshold=cfg.cache.threshold),
             clock=clk,
+            router=RouteEngine.default(threshold=cfg.routing.confidence_threshold),
         )
 
     # -- goal authoring ------------------------------------------------------
@@ -176,6 +179,109 @@ class Percept:
         """Fuse a spoken mention onto the in-focus entity (voice -> visible-entity)."""
         now = self.clock() if t is None else t
         return self.graph.note_mention(text, t=now)
+
+    # -- the spoken turn (Phase 3) ------------------------------------------
+    # Added *beside* perceive_judged, never inside it: the reactive watch loop is untouched.
+    # The turn is router -> conductor -> specialist -> TTS, with the same "when in doubt,
+    # defer" trust posture as the gate: the local router only fast-paths confident,
+    # non-authoring intents; everything else falls to the conductor, the one tier that writes
+    # standing state (authors goals).
+
+    async def on_speech_endpoint(
+        self, utterance: str, *, frame: Any = None, t: float | None = None
+    ) -> TurnResult:
+        """Handle one finalized spoken turn end-to-end.
+
+        Pipeline: fuse any spoken mention onto the in-focus entity (voice -> visible-entity)
+        -> local route -> if confident, execute locally (stream a reply via the specialist)
+        -> else **defer to the conductor**, apply its goal ops, and act on its route /
+        proactive-speak. Returns a :class:`~percept.adapters.TurnResult` for the caller/log.
+        """
+        now = self.clock() if t is None else t
+        self.note_mention(utterance, t=now)
+
+        local = self.router.route(utterance) if self.router is not None else None
+        if local is not None:
+            self.metrics.incr(f"route.local.{local.route}")
+            reply = await self._execute(local, utterance, frame=frame)
+            return TurnResult(route=local.route, source="router", reply=reply)
+
+        # DEFER: the conductor routes + authors goals (the only tier that writes state).
+        self.metrics.incr("route.defer")
+        context = self._turn_context()
+        decision = await self.conductor.run("speech", utterance, context)
+        reply = await self._apply_decision(decision, utterance, frame=frame)
+        return TurnResult(route=decision.route, source="conductor", reply=reply)
+
+    async def on_scene_delta(
+        self, event: str, context: dict | None = None, *, frame: Any = None
+    ) -> TurnResult:
+        """A proactive turn: a scene delta (person entered / something appeared) reaches the
+        conductor so it can speak *unprompted* — not only fire pre-armed goals.
+
+        ``event`` is a short delta label (e.g. ``"person_entered"``). There is no utterance,
+        so the router is bypassed entirely; the conductor decides whether to proactively speak
+        and/or author a goal. Apply path is shared with the spoken turn.
+        """
+        ctx = {**self._turn_context(), **(context or {})}
+        decision = await self.conductor.run(event, "", ctx)
+        reply = await self._apply_decision(decision, "", frame=frame)
+        return TurnResult(route=decision.route, source="conductor", reply=reply)
+
+    async def _apply_decision(
+        self, decision: Decision, utterance: str, *, frame: Any = None
+    ) -> str:
+        """Fold a conductor :class:`Decision` into state + speech.
+
+        Order matters: author goals *first* (standing-state write), then act on the route.
+        """
+        if decision.goal_ops:
+            self.apply_goal_ops(decision.goal_ops)
+            self.metrics.incr("goals.authored")
+        return await self._execute(decision, utterance, frame=frame)
+
+    async def _execute(self, decision: Decision, utterance: str, *, frame: Any = None) -> str:
+        """Carry out a routed/conducted :class:`Decision`: speak (stream) or stay silent.
+
+        ``respond_with_vision`` streams grounded on a frame; ``respond_direct`` /
+        ``task_with_tools`` stream frame-free; ``proactive_speak`` speaks the conductor's
+        ``say`` (or streams if absent); ``ignore`` / ``act`` emit no speech here.
+        """
+        route = decision.route
+        if route == "ignore" or route == "act":
+            return ""
+        if route == "proactive_speak" and decision.say:
+            return self._speak(decision.say)
+        grounded = frame if decision.look == "request_frame" else None
+        prompt = decision.say or utterance
+        return await self._stream_reply(prompt, frame=grounded)
+
+    async def _stream_reply(self, prompt: str, *, frame: Any = None) -> str:
+        """Stream specialist tokens to the TTS sink, returning the assembled reply."""
+        chunks: list[str] = []
+        async for token in self.specialist.stream(prompt, frame=frame):
+            self.tts.push(token)
+            chunks.append(token)
+        self.tts.flush()
+        self.metrics.incr("specialist.reply")
+        return "".join(chunks).strip()
+
+    def _speak(self, text: str) -> str:
+        """Push a fixed line straight to TTS (no model turn)."""
+        self.tts.push(text)
+        self.tts.flush()
+        self.metrics.incr("tts.speak")
+        return text
+
+    def _turn_context(self) -> dict:
+        """The conductor's read-only view of standing state for a turn / scene delta."""
+        focus = self.graph.in_focus()
+        return {
+            "active_goals": [
+                {"id": g.id, "condition": g.condition} for g in self.goals.active()
+            ],
+            "in_focus": focus.id if focus else None,
+        }
 
     # -- introspection -------------------------------------------------------
     def health(self) -> dict:
