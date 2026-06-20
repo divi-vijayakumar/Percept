@@ -18,10 +18,12 @@ from .cache import CacheCascade, CacheKey, FrameHashLayer
 from .config import Settings, load_settings
 from .entity import EntityGraph
 from .episodes import EpisodeJudge, EpisodeLog
+from .events import EventLog, FrameWindow
 from .gate import ASK, FIRE, Gate, GateAction
 from .goals import GoalOp, GoalRegistry
 from .observability import Metrics, health
 from .routing import RouteEngine
+from .scheduler import Scheduler
 
 
 @dataclass
@@ -95,6 +97,9 @@ class Percept:
     audit: Callable[[object], bool] | None = None
     router: RouteEngine | None = None  # local fast-path; None -> always defer (built in create)
     episodes: dict = field(default_factory=dict)  # goal_id -> EpisodeLog (counting goals)
+    windows: dict = field(default_factory=dict)  # source -> FrameWindow (temporal perception)
+    event_log: Any = None  # EventLog — temporal dedup of detected events (built in create)
+    scheduler: Any = None  # Scheduler — time-triggered proactive fires (built in create)
 
     # -- construction --------------------------------------------------------
     @classmethod
@@ -145,6 +150,8 @@ class Percept:
             clock=clk,
             audit=auditor,
             router=RouteEngine.default(threshold=cfg.routing.confidence_threshold),
+            event_log=EventLog(cfg.events.merge_gap_s),
+            scheduler=Scheduler(clock=clk),
         )
 
     # -- goal authoring ------------------------------------------------------
@@ -177,6 +184,66 @@ class Percept:
         self.metrics.incr("episode.new" if is_new else "episode.continuation")
         return episode, is_new
 
+    # -- the event track (temporal perception) ------------------------------
+    def _window(self, source: str) -> FrameWindow:
+        window = self.windows.get(source)
+        if window is None:
+            window = FrameWindow(self.settings.events.window)
+            self.windows[source] = window
+        return window
+
+    def push_frame(self, frame: Any, source: str = "camera", *, t: float | None = None) -> None:
+        """Add a frame to the source's rolling window (for event-only flows; perceive_judged also feeds it)."""
+        self._window(source).push(self.clock() if t is None else t, frame)
+
+    async def perceive_events(self, source: str = "camera") -> list[FireEvent]:
+        """Detect events over the rolling window, dedup them, and run event goals through the gate.
+
+        A *new* deduped event is a rising edge -> FIRE (once, via the gate's refractory on the
+        event id); a continuation is SILENT; a low-confidence event is ASK. Counting falls out as
+        ``goal.state['count'] = distinct events of the type``.
+        """
+        window = self.windows.get(source)
+        if window is None or len(window) == 0:
+            return []
+        detected = await self.vision.detect_events(window.frames(), self.goals.active())
+        out: list[FireEvent] = []
+        for ev in detected:
+            distinct, _is_new = self.event_log.observe(
+                ev.type, ev.t, participants=ev.participants, confidence=ev.confidence
+            )
+            for goal in self.goals.active():
+                if goal.state.get("type") != "event" or goal.state.get("event_type") != ev.type:
+                    continue
+                verdict = Verdict(satisfied=True, confidence=distinct.confidence)
+                action = self.gate.evaluate((goal.id, distinct.id), verdict)
+                self.metrics.incr(f"event.gate.{action}")
+                goal.state["count"] = self.event_log.count(ev.type)
+                if action == FIRE:
+                    out.append(FireEvent(goal.id, FIRE, goal.say, distinct.id, verdict))
+                elif action == ASK:
+                    out.append(FireEvent(goal.id, ASK, self._ask_text(goal), distinct.id, verdict))
+        return out
+
+    # -- the scheduler (time-triggered proactive fires) ---------------------
+    def schedule_every(self, interval_s: float, goal_id: str, *, now: float | None = None):
+        return self.scheduler.every(interval_s, goal_id, now=now)
+
+    def schedule_at(self, when_s: float, goal_id: str):
+        return self.scheduler.at(when_s, goal_id)
+
+    async def tick(self, *, t: float | None = None) -> list[FireEvent]:
+        """Fire due timers via the conductor (timing in the clock; content judged by the model)."""
+        now = self.clock() if t is None else t
+        out: list[FireEvent] = []
+        for timer in self.scheduler.due(now):
+            goal = self.goals.get(timer.goal_id)
+            say = goal.say if goal is not None else ""
+            decision = await self.conductor.run("scheduler_tick", say, {"goal_id": timer.goal_id})
+            if decision.route == "proactive_speak":
+                out.append(FireEvent(timer.goal_id, FIRE, decision.say or say, None, None))
+        return out
+
     def apply_goal_ops(self, ops: list[GoalOp]) -> None:
         self.goals.apply(ops)
         # cache invalidation — goal-change (1st in the order): a goal whose condition/lifecycle
@@ -190,14 +257,21 @@ class Percept:
     async def perceive_judged(
         self, frame: Any, source: str = "camera", *, t: float | None = None
     ) -> list[FireEvent]:
-        """Judge every active goal against ``frame`` and emit gate actions on rising edges."""
+        """Judge every active *watch* goal against ``frame`` and emit gate actions on rising edges.
+
+        Event / scheduler goals run through their own paths (:meth:`perceive_events`, :meth:`tick`)
+        but feed the **same three-state gate** — one gate, two perception tracks (spec §5.6).
+        """
         now = self.clock() if t is None else t
+        self._window(source).push(now, frame)  # feed the rolling window for temporal perception
         observations = await self.vision.detect(frame, self.goals.active())
         self.graph.ingest(observations, frame, source, t=now)
         focus = self.graph.in_focus()
 
         events: list[FireEvent] = []
         for goal in self.goals.active():
+            if goal.state.get("type", "watch") != "watch":
+                continue  # event/count/remind goals are handled by their dedicated paths
             roi: Box | None = focus.box if focus else None
             corrections = focus.asserted() if focus else {}
             verdict = await self._judge(

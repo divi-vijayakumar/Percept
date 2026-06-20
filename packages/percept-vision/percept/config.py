@@ -59,6 +59,12 @@ class ModelSettings:
 
 
 @dataclass(frozen=True)
+class EventSettings:
+    window: int = 12  # PERCEPT_FRAME_WINDOW — rolling frames per source for temporal perception
+    merge_gap_s: float = 1.5  # PERCEPT_EVENT_MERGE_GAP_S — same-type detections within this = 1 event
+
+
+@dataclass(frozen=True)
 class IdentitySettings:
     appearance_threshold: float = 0.8  # PERCEPT_APPEARANCE_MATCH — cosine sim to re-id across a gap
 
@@ -86,6 +92,7 @@ class Settings:
     routing: RoutingSettings = RoutingSettings()
     identity: IdentitySettings = IdentitySettings()
     episodes: EpisodeSettings = EpisodeSettings()
+    events: EventSettings = EventSettings()
 
 
 def load_settings() -> Settings:
@@ -126,6 +133,10 @@ def load_settings() -> Settings:
             window_s=_env("PERCEPT_EPISODE_WINDOW_S", 3600.0, float),
             max_episodes=_env("PERCEPT_MAX_EPISODES", 64, int),
         ),
+        events=EventSettings(
+            window=_env("PERCEPT_FRAME_WINDOW", 12, int),
+            merge_gap_s=_env("PERCEPT_EVENT_MERGE_GAP_S", 1.5, float),
+        ),
     )
 
 
@@ -145,6 +156,7 @@ __all__ = [
     "RoutingSettings",
     "IdentitySettings",
     "EpisodeSettings",
+    "EventSettings",
     "load_settings",
     "as_dict",
 ]

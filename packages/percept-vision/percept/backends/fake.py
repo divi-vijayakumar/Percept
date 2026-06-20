@@ -41,9 +41,12 @@ class FakeVision:
         self,
         script: dict[str, Verdict] | None = None,
         detect_script: dict[str, list[Observation]] | None = None,
+        events_script: dict[str, list[tuple[str, float]]] | None = None,
     ) -> None:
         self._script = {**_SCRIPT, **(script or {})}
         self._detect = detect_script or {}
+        # frame token -> [(event_type, confidence), ...] emitted at that frame's timestamp
+        self._events = events_script or {}
 
     async def judge(
         self,
@@ -65,7 +68,16 @@ class FakeVision:
         return list(self._detect.get(str(frame), []))
 
     async def detect_events(self, frames: list, goals: list[Goal]) -> list:
-        return []
+        """Emit scripted events off the newest ``(t, frame)`` in the window (wiring, not intelligence)."""
+        if not frames:
+            return []
+        from ..events import Event
+
+        t, frame = frames[-1]
+        return [
+            Event(type=etype, t=float(t), confidence=conf)
+            for etype, conf in self._events.get(str(frame), [])
+        ]
 
 
 class FakeSpecialist:

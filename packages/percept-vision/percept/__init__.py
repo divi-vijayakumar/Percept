@@ -25,9 +25,11 @@ from .cache import CacheCascade, CacheKey, CacheResult, FrameHashLayer
 from .config import Settings, load_settings
 from .entity import Entity, EntityGraph
 from .episodes import Episode, EpisodeLog
+from .events import Event, EventLog, FrameWindow
 from .gate import ASK, FIRE, SILENT, Gate, GateAction
 from .goals import GoalOp, GoalRegistry
 from .identity import AppearanceIdentity, ContinuityIdentity
+from .scheduler import Scheduler, Timer
 from .observability import Metrics, get_logger, health
 from .routing import (
     DEFAULT_RULES,
@@ -75,6 +77,12 @@ __all__ = [
     "AppearanceIdentity",
     "Episode",
     "EpisodeLog",
+    # events + scheduler (Phase 5 — temporal perception; time-triggered fires)
+    "Event",
+    "EventLog",
+    "FrameWindow",
+    "Scheduler",
+    "Timer",
     # routing (Phase 3 — local fast-path; learned tier slots behind RouteLayer in V0.1)
     "RouteEngine",
     "RouteLayer",
