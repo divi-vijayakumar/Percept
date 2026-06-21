@@ -159,12 +159,15 @@ async def main():
     cases = [c for c in specific_cases(ann) if _find_video(c["video"])]
     models = [("haiku", "anthropic", "claude-haiku-4-5-20251001"),
               ("opus", "anthropic", "claude-opus-4-8")]
-    if os.environ.get("GEMINI_API_KEY"):
+    gem_key = (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+               or os.environ.get("GOOGLE_AISTUDIO_API_KEY"))
+    if gem_key:
+        os.environ["GEMINI_API_KEY"] = gem_key  # normalize for the client
         try:
             import google.genai  # noqa: F401
             models.append(("gemini", "gemini", os.environ.get("PERCEPT_GEMINI_MODEL", "gemini-2.5-flash")))
         except ImportError:
-            print("GEMINI_API_KEY set but google-genai SDK not installed — skipping Gemini.")
+            print("Gemini key set but google-genai SDK not installed — skipping Gemini.")
     print(f"A/B over {len(cases)} cases × {len(models)} models: {[m[0] for m in models]}")
 
     out = {}
