@@ -37,3 +37,10 @@ calibration_capture.json
 categorical_capture.json
 exp_categorical.json
 **/categorical_capture.json
+
+# Perception Test raw data (CC-BY; heavy, regenerable via download)
+eval/bench-staging/perception_test/raw/
+
+# perception test prevalence artifact
+perception_test_prevalence.json
+**/perception_test_prevalence.json

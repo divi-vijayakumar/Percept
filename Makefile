@@ -56,3 +56,6 @@ check:
 
 reproduce:
 	@echo "make reproduce: lands with percept-bench. Skipping."
+
+prevalence-pt:  ## Perception Test prevalence (needs PERCEPT_LIVE + opencv-python-headless + downloaded sample)
+	cd $(SDK) && PYTHONPATH=. $(PY) -m eval.exp_perception_test
