@@ -93,6 +93,115 @@ class Goal:
     expiry: str = "until_cancelled"
 
 
+# ---------------------------------------------------------------------------
+# Concern model (spec §1,§3,§5) — added BESIDE Goal. A0 introduces the DTOs + the
+# Goal->Concern compat shim ONLY; the agent/gate are untouched (byte-for-byte). Belief is
+# DERIVED from observations (see percept.concern), never stored. Logic lives in concern.py.
+# ---------------------------------------------------------------------------
+
+Cost = Literal["trivial", "mild", "severe"]
+FalseFireCost = Literal["trivial", "mild", "severe", "irreversible"]
+
+
+@dataclass(frozen=True)
+class Consequence:
+    """The decision weight (spec §5): a coarse (miss, false-fire) cost pair.
+
+    NOTE (R3): at today's non-discriminative confidence the *threshold* job is inert, so v1
+    consequence earns its keep via attention / escalation / verification (A3), not the threshold.
+    ``protected_floor`` pins ``miss_cost`` at maximum — refinement may never relax it.
+    """
+
+    miss_cost: Cost = "mild"
+    false_fire_cost: FalseFireCost = "mild"
+    protected_floor: bool = False
+
+
+@dataclass(frozen=True)
+class Evidence:
+    """One timestamped, sourced observation feeding a Concern's log (spec §3).
+
+    Named ``Evidence`` (not ``Observation``) to avoid colliding with the entity-substrate
+    ``Observation`` above. Belief is derived from these against expectations; never stored.
+    """
+
+    t: float
+    source_id: str
+    confidence: float
+    satisfied: bool
+    coverage: float = 1.0
+
+
+@dataclass(frozen=True)
+class TrackingBehavior:
+    """How a concern's state is maintained (spec §1,§4).
+
+    ``rearm`` is the per-concern ``R``. S2 proved each value is expressible WITHOUT changing the
+    gate: ``on_false``/``each_event``/``interval`` via key-synthesis; ``never`` with the adapter
+    contract (do not push a confident-false into the gate); ``deadline`` via the scheduler + an
+    absence adapter. The A1 firing collapse consumes this; A0 only carries it.
+    """
+
+    pattern: Literal["watch", "transition", "event", "count"] = "watch"
+    rearm: Literal["on_false", "never", "each_event", "interval", "deadline"] = "on_false"
+    cadence_s: float | None = None
+    deadline_s: float | None = None
+    exhaustive: bool = False
+
+
+@dataclass(frozen=True)
+class Subject:
+    """What a concern is about (spec §1): an entity ref | relation | expectation | event."""
+
+    kind: Literal["entity", "relation", "expectation", "event"] = "entity"
+    ref: str = ""
+
+
+@dataclass(frozen=True)
+class Priors:
+    """What to expect, when, and what 'satisfied' looks like (spec §1). Minimal in A0."""
+
+    expected_state: str | None = None
+    deadline_s: float | None = None
+
+
+@dataclass
+class Concern:
+    """The unit of consequence-weighted attention (spec §1) — sits above the entity.
+
+    Carries ``condition``/``say`` so today's Vision seam + fire path work unchanged through the
+    shim. Belief is DERIVED from ``observations`` against ``expectations`` (percept.concern), never
+    stored. The default produced by :meth:`from_goal` reproduces today's behavior byte-for-byte.
+    """
+
+    id: str
+    identity: Subject
+    condition: str
+    say: str
+    consequence: Consequence = field(default_factory=Consequence)
+    tracking: TrackingBehavior = field(default_factory=TrackingBehavior)
+    observations: list[Evidence] = field(default_factory=list)
+    expectations: Priors = field(default_factory=Priors)
+    source: str = "camera"
+
+    @classmethod
+    def from_goal(cls, goal: "Goal") -> "Concern":
+        """Compat shim: a ``Goal`` becomes a default ``Concern`` (watch / on_false / mild).
+
+        R15: the defaults are pinned to the measured current gate numbers (threshold 0.7 via
+        ``concern.threshold_for``, re-arm ``on_false``) so an existing goal's firing is unchanged.
+        """
+        return cls(
+            id=goal.id,
+            identity=Subject(kind="entity", ref=goal.condition),
+            condition=goal.condition,
+            say=goal.say,
+            source=goal.source,
+            consequence=Consequence(),
+            tracking=TrackingBehavior(),
+        )
+
+
 @dataclass
 class Decision:
     """Conductor / router output — what to do with a turn or scene delta."""
@@ -226,6 +335,14 @@ __all__ = [
     "Provenance",
     "Attribute",
     "Goal",
+    "Cost",
+    "FalseFireCost",
+    "Consequence",
+    "Evidence",
+    "TrackingBehavior",
+    "Subject",
+    "Priors",
+    "Concern",
     "Decision",
     "STTEvent",
     "TurnResult",
