@@ -1,39 +1,76 @@
 # Percept — Benchmark Findings
 
-**Version 1 · 2026-06-20** · maintained alongside the `eval/exp_*.py` runners. This is a living
-document: append a dated entry to the Changelog on every material result, and update *What's not
-working* as ceilings move. The goal is that anyone (incl. future us) can see, at a glance, **what the
-cognition layer is worth, where it isn't, and what to fix next.**
+**Version 2 · 2026-06-21** · maintained alongside the `eval/exp_*.py` runners. This is a living
+document: **§1 is the standing Eval Protocol — follow it for every new run**; append a dated entry to the
+Changelog on every material result, and update *What's not working* as ceilings move. The goal is that
+anyone (incl. future us) can see, at a glance, **what the cognition layer is worth, where it isn't, what's
+unmeasured, and what to fix next.**
 
 ---
 
-## 1. How we measure (read this before trusting any number)
+## 1. Eval Protocol — the standing plan (READ FIRST; every run follows this)
 
-There are **two different comparisons** in our results, with very different rigor. Never conflate them.
+This encodes what we learned about apples-to-apples comparison, the two different "latencies," and which
+architectural layer is actually under test. **Any new test / eval / benchmark must follow 1a–1g.**
 
-### 1a. Percept vs raw-VLM — a TRUE controlled A/B ✅ (the claim to trust)
-Perception is **held constant**: one VLM judgment per frame, captured once and *shared* by both systems.
-The only variable that changes is the cognition layer:
-- **baseline / "VLM-alone / raw loop"** — fire/answer/count on every confident per-frame signal (no memory).
-- **percept** — the stateful `Gate` (rising-edge + refractory) and the Phase-5 `EventLog` dedup.
+### 1a. Two comparison types — never conflate
+- **Controlled A/B (the trustworthy claim):** Percept vs a raw-VLM-loop with **perception held constant**
+  (one verdict/frame, captured once and *shared*). Only the cognition layer varies → the delta is
+  attributable to it. Deltas (positive, neutral, **and zero**) are real. **Lead with this.**
+- **Reference bar (context only):** vs an external leaderboard (TML, OmniPro models). **NOT** equal-conditions —
+  favorable subsets, our perception model, our metric impl, judge mismatch, closed competitor models. Never
+  state as a leaderboard "win." (e.g. TML's model + harness are closed → not reproducible; OmniPro we score
+  on the visual slice with their MIT scorer but Gemini-Flash ≠ Gemini-3-Flash perception.)
 
-Same data, same labels, same perception, same metric, same harness → the delta is *attributable to the
-cognition layer alone*. These deltas (positive, neutral, **and zero**) are real.
+### 1b. Metric taxonomy — report **Core** and **User-facing** in SEPARATE columns
+| Class | Metrics | Unit | On leaderboards? | Status |
+|---|---|---|---|---|
+| **Core** (accuracy, video-time) | time_F1, PAUC, mIoU, precision/recall, content/joint, off-by-one | video-sec / fraction | yes | **measured** |
+| **User-facing** (system, wall-clock) | event→alert latency, VLM call-rate, $/hr, interruption rate | wall-clock ms / $ | no | **NOT YET measured** |
 
-### 1b. vs TML (Thinking Machines "Interaction Models") — a REFERENCE BAR ⚠️ (context, not a win)
-The TML column is **TML's published number on TML's version of the benchmark**, not something we computed
-under matched conditions. It differs in: **data** (we use small, sometimes *favorably-selected* subsets),
-**metric implementation** (PAUC is a faithful port; our Charades mIoU is our own *lenient* version),
-**judge model** (Claude Haiku, not TML's GPT-4.1), and **protocol** (frame-replay vs real-time streaming).
-TML's model + eval harness are **closed**, so an equal-conditions head-to-head is not reproducible by us.
-Treat "matches/beats TML" as *ballpark context*, never a leaderboard result.
+A User-facing number requires a real-time run; if you don't have one, write **"not measured"** — never imply it.
 
-> Rule of thumb: **lead with 1a, footnote with 1b.** Reporting the honest negatives (below) is what makes
-> the positives believable.
+### 1c. The two "latencies" — say WHICH one, every time
+- **Temporal accuracy (video-time):** *where in the stream* you respond, scored ±tolerance (OmniPro time_F1
+  ±3s; our PAUC). **Compute-agnostic** — leaderboards run **offline, frame-by-frame**; a slow model isn't
+  penalized (the emit carries a video timestamp). We measure this; it's apples-to-apples.
+- **Wall-clock / voice-to-voice:** *event → response in real ms* (TML's "200ms"). **Not on any leaderboard**;
+  each lab self-reports. Percept's = edge gate (ms) + **VLM round-trip (dominant, ~0.5–2s)** + core gate (ms)
+  → a **~1–2s event-to-alert watcher** with a frontier VLM, **not** a 200ms native model. Different operating
+  point — state it.
+- **RULE: never compare a video-time number to a wall-clock number** (our time_F1 vs TML's 200ms = invalid).
 
-Perception model for the current suite: **Gemini 2.5 Flash** (held constant). Pricing ~$0.30/$2.50 per
-MTok; the entire suite to date cost ~a few dollars. Re-scoring is free — every runner caches per-frame
-verdicts/narrations/signals to a gitignored JSON, so sweeping policy/threshold/ω costs $0 after capture.
+### 1d. Layer-coverage declaration — every run states what it exercised
+Declare ✓/✗ for **Edge** (Tier0 motion/salience gate) · **Harness** (real-time loop, edge↔core) · **Core**
+(gate/dedup/episodes) · **Perception** (VLM) · **Latency** (wall-clock timed?).
+**All runs to date: Core ✓ · Perception ✓ · Edge ✗ · Harness ✗ · Latency ✗** (offline replay, uniform frame
+sampling — the edge gate was bypassed; nothing timed). Accuracy numbers therefore assume *every sampled frame
+gets a VLM call* (an upper bound) and say nothing about edge-gated latency/cost. **A real-time edge→harness→core
+run is required to fill the User-facing column.**
+
+### 1e. ASK is a *fire*, not a third state — eval it on the right shape
+The gate is **binary: silent vs engage.** FIRE and ASK are both *engagements*; **ASK = fire-as-a-question**
+(probing the user to resolve uncertainty). So the gate's firing discipline (timing/refractory) applies to ASK
+identically — ASK-vs-FIRE is a downstream *content* decision. ASK's value (ambiguous conditions, asymmetric
+error cost) is **invisible to clean-label benchmarks** (an ASK = time-hit, content-miss). **Do NOT eval ASK on
+Charades/OmniPro/RepCount/PAUC.** Eval it on **ambiguity-aware** sets (multi-annotator disagreement —
+RethinkingVAD / SmartHome-Bench) or as **selective prediction** (risk–coverage), as a **product/trust** metric.
+
+### 1f. Claims discipline
+1. Label which latency (video-time vs wall-clock); qualify "real-time" (**causal-streaming** ✓ vs **low-wall-clock** ✗).
+2. Never compare across axes (Core vs User-facing; video-time vs wall-clock).
+3. Lead with the controlled A/B; mark external comparisons as reference bars.
+4. State the operating point (cognition-on-VLM ~1–2s vs native ~200ms).
+5. Flag every favorable subset, perception-model substitution, and judge mismatch.
+
+### 1g. Standing checklist for any new run
+☐ Controlled A/B (perception constant) + reference bar if external · ☐ Layer-coverage declaration (1d) ·
+☐ Core metrics (separate column) · ☐ User-facing metrics IF real-time, else "not measured" · ☐ Caveats
+(subset / perception model / metric impl / judge) · ☐ Tag each number's axis — never cross.
+
+Perception model for the current suite: **Gemini 2.5 Flash** (held constant). ~$0.30/$2.50 per MTok; whole
+suite to date ~a few dollars. Re-scoring is free — every runner caches per-frame verdicts to a gitignored
+JSON, so sweeping policy/threshold/ω costs $0 after capture.
 
 ---
 
@@ -97,7 +134,8 @@ Cognition removes *redundancy*; it cannot manufacture a signal the eyes got wron
 |---|---|---|
 | **Perception ceiling on clear conditions** | RepCount wrong-count (Δ0); PT clear-condition false-fires | stronger model (Opus / Gemini-3); grounded VQA (ROI + deictic exemplar) — both UNTESTED e2e |
 | **Counting = undersampling + unreliable phase** | RepCount short clips ~2 frames/rep (sub-Nyquist); phase doesn't toggle once/rep | denser sampling; hysteresis/peak-detect counter; ask-VLM-to-count baseline |
-| **ASK structurally dead on numeric confidence** | only 1/405 frames < 0.70 | productionize categorical mode on `AnthropicVision` behind a setting (decision gate already MET) |
+| **Real-time latency UNMEASURED — edge + harness never run** | all runs are offline replay w/ uniform sampling; nothing timed; User-facing column empty (§1d) | wire edge→harness→core, log event→alert wall-clock + VLM call-rate on a few clips (the missing User-facing axis) |
+| **ASK mis-scoped, not "broken"** — it's a *fire*-shaped product/trust lever (§1e) | 1/405 frames<0.70 only on *clean-label* cases where ASK shouldn't engage; categorical revives it 0/5→3/5 on the *ambiguous* cases | eval ASK on ambiguity-aware / selective-prediction sets, NOT clean-label benchmarks; productionize categorical mode for the product |
 | **State transitions invisible to per-frame judge** | wake-up case; `detect_events` is a stub returning `[]` | wire a real event detector for the Phase-5 EVENT track |
 | **Data: subsets + favorable selection** | Charades clean-verb pick; 31 intervals / 15 q / 20 videos | scale to full sets; stratified (not cherry-picked) sampling |
 | **Metric caveats** | our Charades mIoU is lenient (no spurious-span penalty → flatters raw loop) | precision-aware mIoU (would *widen* the +24) |
@@ -169,6 +207,12 @@ easy ~16%). Gemini 2.5 Flash perception held constant; Percept (fire-once) vs Ge
 
 ## 7. Changelog
 
+- **v2 · 2026-06-21** — Rewrote §1 into the standing **Eval Protocol** (follow for every run): Core vs
+  User-facing metric taxonomy; the two "latencies" (video-time temporal accuracy — what leaderboards measure,
+  compute-agnostic/offline — vs wall-clock voice-to-voice — TML's 200ms, on no leaderboard, unmeasured);
+  layer-coverage declaration (all runs so far = Core+Perception only, offline, no edge/harness/latency); ASK
+  reframed as a fire-shaped product lever (eval on ambiguity/selective-prediction, not clean-label); claims
+  discipline + standing run checklist. §5: added "real-time latency unmeasured" + reclassified ASK.
 - **v1.2 · 2026-06-21** — Added §9: RAN OmniPro visual slice with its OWN scorer. Percept time_F1 25.1→44.6
   (+19.5, FP 277→64) over the raw loop; joint_F1 low (5.7) = content/perception ceiling. First result
   scored by an external benchmark's own code. Timing wins; content unsolved.
