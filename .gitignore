@@ -51,3 +51,7 @@ scratch/
 # model A/B artifact
 model_ab.json
 **/model_ab.json
+
+# e2e benchmark artifact
+e2e_result.json
+**/e2e_result.json

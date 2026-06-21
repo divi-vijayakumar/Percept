@@ -59,3 +59,6 @@ reproduce:
 
 prevalence-pt:  ## Perception Test prevalence (needs PERCEPT_LIVE + opencv-python-headless + downloaded sample)
 	cd $(SDK) && PYTHONPATH=. $(PY) -m eval.exp_perception_test
+
+e2e-bench:  ## E2E: full Percept (gate) vs raw-VLM-loop on Perception Test onsets (PERCEPT_LIVE)
+	cd $(SDK) && PYTHONPATH=. $(PY) -m eval.exp_e2e
