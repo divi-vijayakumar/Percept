@@ -225,13 +225,12 @@ class Percept:
                 if goal.state.get("type") != "event" or goal.state.get("event_type") != ev.type:
                     continue
                 verdict = Verdict(satisfied=True, confidence=distinct.confidence)
-                action = self.gate.evaluate((goal.id, distinct.id), verdict)
-                self.metrics.incr(f"event.gate.{action}")
+                ev_fire = self._fire_concern(
+                    goal, verdict, (goal.id, distinct.id), metric="event.gate"
+                )
                 goal.state["count"] = self.event_log.count(ev.type)
-                if action == FIRE:
-                    out.append(FireEvent(goal.id, FIRE, goal.say, distinct.id, verdict))
-                elif action == ASK:
-                    out.append(FireEvent(goal.id, ASK, self._ask_text(goal), distinct.id, verdict))
+                if ev_fire is not None:
+                    out.append(ev_fire)
         latest = window.latest()
         self._log_fires(out, latest[0] if latest else 0.0)
         return out
@@ -265,6 +264,46 @@ class Percept:
             if op.op in ("update", "complete", "cancel") and gid is not None:
                 self.invalidate_cache(gid)
 
+    # -- unified (C, R) firing (A1) -----------------------------------------
+    def _fire_concern(
+        self,
+        goal: Goal,
+        verdict: Verdict,
+        base_key: tuple,
+        *,
+        freshness: float = 1.0,
+        t: float = 0.0,
+        metric: str = "gate",
+    ) -> FireEvent | None:
+        """One firing path for every gate-based concern: apply the per-concern re-arm ``R`` via
+        key-synthesis, then feed the UNCHANGED gate.
+
+        ``R`` comes from ``goal.state['rearm']`` (default ``on_false`` -> byte-for-byte today). S2
+        proved each ``R`` is expressible without touching ``Gate.evaluate``/``classify``:
+          on_false / each_event -> the ``base_key`` (the gate's native confident-false re-arm, or a
+            caller-folded event id);
+          interval -> fold a time-bucket into the key so a new bucket is a fresh armed edge;
+          never (one-shot) -> the S2 CONTRACT: never push a confident-false into the gate, so the
+            edge never re-arms after its single fire.
+        """
+        rearm = goal.state.get("rearm", "on_false")
+        if rearm == "never":
+            truth = classify(verdict, freshness, self.gate.threshold, self.gate.fresh_min)
+            if truth == "no":
+                return None  # never-contract: a confident-false must not reach the gate (no re-arm)
+        key = base_key
+        if rearm == "interval":
+            cadence_s = goal.state.get("cadence_s")
+            if cadence_s:
+                key = (*base_key, int(t // cadence_s))  # new time-bucket = fresh edge
+        action = self.gate.evaluate(key, verdict, freshness=freshness)
+        self.metrics.incr(f"{metric}.{action}")
+        if action == FIRE:
+            return FireEvent(goal.id, FIRE, goal.say, base_key[-1], verdict)
+        if action == ASK:
+            return FireEvent(goal.id, ASK, self._ask_text(goal), base_key[-1], verdict)
+        return None
+
     # -- the watch path ------------------------------------------------------
     async def perceive_judged(
         self, frame: Any, source: str = "camera", *, t: float | None = None
@@ -296,13 +335,10 @@ class Percept:
                 goal, frame, roi, corrections, entity_id=focus.id if focus else None
             )
             freshness = self._freshness(focus, now)
-            key = (goal.id, focus.id if focus else None)
-            action = self.gate.evaluate(key, verdict, freshness=freshness)
-            self.metrics.incr(f"gate.{action}")
-            if action == FIRE:
-                events.append(FireEvent(goal.id, FIRE, goal.say, key[1], verdict))
-            elif action == ASK:
-                events.append(FireEvent(goal.id, ASK, self._ask_text(goal), key[1], verdict))
+            base_key = (goal.id, focus.id if focus else None)
+            ev_fire = self._fire_concern(goal, verdict, base_key, freshness=freshness, t=now)
+            if ev_fire is not None:
+                events.append(ev_fire)
         self._log_fires(events, now)
         return events
 
