@@ -143,8 +143,35 @@ omit it to re-score the cached capture for free.
     layer (edge has VAD/Deepgram but no wired audio perception). **Target the VISUAL + LONG-TERM
     sub-axes only.** Data access UNCHECKED — first step before any run.
 
+## 9. OmniPro — RAN on the visual slice with OmniPro's OWN scorer (the first real-leaderboard result)
+
+`exp_omnipro.py` imports OmniPro's official `metrics.online.scorer` (MIT) — greedy 1-to-1 emit↔trigger
+matching @±3s → `time_F1` + `joint_F1`. **Scope (honest):** OmniPro is ~84% audio-dependent; Percept is
+vision-only, so we ran ONLY the `audio_dependency=none` slice (20 samples / 72 triggers / 8 tasks = the
+easy ~16%). Gemini 2.5 Flash perception held constant; Percept (fire-once) vs Gemini-loop (fire-every-frame).
+
+| system | emits (TP/FP) | time_F1 | joint_F1 |
+|---|---|---|---|
+| gemini-loop | 50/277 | 0.251 | 0.030 |
+| **percept** | 39/64 | **0.446** | 0.057 |
+
+- **TIMING (the gate's competency): cognition nearly 2× time_F1 (25.1→44.6, +19.5), cuts FP 277→64**
+  (precision 0.15→0.38), modest recall cost (0.69→0.54). Per-task: big wins where the loop over-fires
+  (dedup 15→50, step-inst 18→48, event-alert 20→43); slight cost on closely-spaced triggers (state
+  34→33, cond-alert 40→36, where the refractory can merge distinct triggers).
+- **CEILING (no overclaim): joint_F1 stays LOW for both (5.7 vs 3.0)** — emits land at the right TIME but
+  CONTENT (counts/states) is wrong = perception/format ceiling, NOT cognition. **Do not claim a leaderboard
+  win:** our 44.6 is `time_F1` on the easy visual slice; the published "Online F1" band (MiniCPM-o 20.9 /
+  MMDuet2 11.3 / LiveStar 3.6) is ~`joint_F1` on the FULL omni set — not comparable. Like-for-like (joint),
+  Percept ~5.7 ≈ LiveStar, below MiniCPM-o. **Timing strong & beats the raw loop on OmniPro's own metric;
+  content is the unsolved perception problem** = the audio-modality + grounding roadmap target.
+- Confirms the §3 unifying principle on the most comprehensive proactive benchmark, scored by ITS OWN code.
+
 ## 7. Changelog
 
+- **v1.2 · 2026-06-21** — Added §9: RAN OmniPro visual slice with its OWN scorer. Percept time_F1 25.1→44.6
+  (+19.5, FP 277→64) over the raw loop; joint_F1 low (5.7) = content/perception ceiling. First result
+  scored by an external benchmark's own code. Timing wins; content unsolved.
 - **v1.1 · 2026-06-20** — Added §8: OmniPro as the most-aligned candidate *real-leaderboard* axis
   (proactive streaming; long-term-collapse axis = Percept's thesis; Online F1@±3s = the gate's job).
 - **v1 · 2026-06-20** — Initial. Three TML axes run with Gemini Flash held constant (Charades mIoU +24,
