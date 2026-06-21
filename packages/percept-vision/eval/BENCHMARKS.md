@@ -124,8 +124,29 @@ omit it to re-score the cached capture for free.
 
 ---
 
+## 8. External benchmarks worth running (real leaderboards, not reference bars)
+
+- **OmniPro** — *A Comprehensive Benchmark for Omni-Proactive Streaming Video Understanding*
+  (arXiv 2605.18577). Task: "autonomously decide **when** to speak and **what** to say from continuous
+  audio-visual streams" (9 sub-tasks / 3 cognitive levels). **Probe Mode** = accuracy 0-100 (easy);
+  **Online Mode = F1 @ ±3s tolerance** (the real streaming test). 11-model field. **The whole field is
+  weak:** Gemini-3-Flash 40.4% probe (top); best Online F1 ~20.9% (MiniCPM-o 4.5), most single-digit
+  (LiveStar 3.6%). Qwen3-Omni 22.6% (top open). **Two collapse axes:** (a) **long-term triggers** —
+  ~37% retention vs short-term; Online Mode craters 29.1%→0.3% at 180s+; (b) **visual+non-speech-sound**
+  (15-22%, shared bottleneck). Pure-visual best 31.1% (Qwen3-Omni).
+  - **Why it's the most aligned external benchmark for Percept:** the #1 failure axis (long-term
+    collapse) **is Percept's core thesis** — persistent state/episodes vs a forgetful raw-VLM loop;
+    OmniPro *measures the gap we claim to close*. Online-Mode F1@±3s = the gate's firing-timing job
+    (the over-firing our layer fixed on Charades/ProactiveVideoQA). PUBLISHED (unlike closed TML) → a
+    REAL leaderboard, not a reference bar.
+  - **Scope honesty:** OmniPro is omni-MODAL; the audio axes are out of scope for the vision cognition
+    layer (edge has VAD/Deepgram but no wired audio perception). **Target the VISUAL + LONG-TERM
+    sub-axes only.** Data access UNCHECKED — first step before any run.
+
 ## 7. Changelog
 
+- **v1.1 · 2026-06-20** — Added §8: OmniPro as the most-aligned candidate *real-leaderboard* axis
+  (proactive streaming; long-term-collapse axis = Percept's thesis; Online F1@±3s = the gate's job).
 - **v1 · 2026-06-20** — Initial. Three TML axes run with Gemini Flash held constant (Charades mIoU +24,
   ProactiveVideoQA PAUC parity/4×-less-spam, RepCount OBO Δ0 honest negative) + the trust investigation
   (dead ASK valve, two failure modes, model A/B). Established the unifying principle and the controlled-A/B
