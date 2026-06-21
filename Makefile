@@ -62,3 +62,6 @@ prevalence-pt:  ## Perception Test prevalence (needs PERCEPT_LIVE + opencv-pytho
 
 e2e-bench:  ## E2E: full Percept (gate) vs raw-VLM-loop on Perception Test onsets (PERCEPT_LIVE)
 	cd $(SDK) && PYTHONPATH=. $(PY) -m eval.exp_e2e
+
+charades-bench:  ## E2E on Charades (exhaustive labels): full Percept vs raw-VLM-loop (PERCEPT_LIVE)
+	cd $(SDK) && PYTHONPATH=. $(PY) -m eval.exp_charades

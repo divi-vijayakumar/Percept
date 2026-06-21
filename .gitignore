@@ -55,3 +55,13 @@ model_ab.json
 # e2e benchmark artifact
 e2e_result.json
 **/e2e_result.json
+
+# e2e verdicts cache
+e2e_verdicts.json
+**/e2e_verdicts.json
+
+# Charades data (non-commercial license) + artifacts
+eval/bench-staging/charades/raw/
+charades_verdicts.json
+charades_result.json
+**/charades_*.json
