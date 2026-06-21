@@ -32,8 +32,6 @@ Re-arm boundaries enumerated (from the (C, R) Concern model / TrackingBehavior):
 
 import unittest
 
-import pytest
-
 from percept.adapters import Verdict
 from percept.gate import ASK, FIRE, SILENT, Gate
 
@@ -194,21 +192,17 @@ class TestRearmInterval(unittest.TestCase):
 
 
 # --- R = deadline : overdue / absence -- NOT expressible by key/rearm alone -----------------------
-@pytest.mark.xfail(
-    reason=(
-        "R=deadline is an INVERTED, time-TRIGGERED edge: 'fire if NOT satisfied by time T'. The "
-        "gate only fires on a confident-TRUE rising edge fed to evaluate(); absence/overdue is the "
-        "absence of a YES, which the gate never observes and a scheduler timer must synthesize. "
-        "Two parts are needed and NEITHER is a gate change: (1) a SCHEDULER timer at T (already "
-        "exists: Agent.schedule_at / tick, agent.py:242) and (2) an upstream adapter that, at T, "
-        "checks 'was the concern satisfied?' and only then pushes a synthetic YES into the gate. "
-        "So deadline is NOT expressible by key-synthesis/rearm ALONE, but it ALSO does not require "
-        "an evaluate()/classify() change — it is composed OUTSIDE the gate. This xfail documents "
-        "that boundary: the gate stays unchanged; deadline lives in the scheduler+adapter layer.",
-    ),
-    strict=True,
-)
 class TestRearmDeadline(unittest.TestCase):
+    # R=deadline is an INVERTED, time-TRIGGERED edge: "fire if NOT satisfied by time T". The gate
+    # only fires on a confident-TRUE rising edge fed to evaluate(); absence/overdue is the absence
+    # of a YES, which the gate never observes and a scheduler timer must synthesize. Two parts are
+    # needed and NEITHER is a gate change: (1) a SCHEDULER timer at T (already exists:
+    # Agent.schedule_at / tick, agent.py:242) and (2) an upstream adapter that, at T, checks "was the
+    # concern satisfied?" and only then pushes a synthetic YES into the gate. So deadline is NOT
+    # expressible by key-synthesis/rearm ALONE, but it ALSO does not require an evaluate()/classify()
+    # change — it is composed OUTSIDE the gate. expectedFailure documents that boundary: the gate
+    # stays unchanged; deadline lives in the scheduler+adapter layer.
+    @unittest.expectedFailure
     def test_deadline_via_gate_alone(self):
         # There is NO sequence of (key, verdict) into the unchanged gate that, on its own, fires on
         # the ABSENCE of a satisfying verdict by a deadline. The gate has no clock and no inversion.
