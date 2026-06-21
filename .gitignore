@@ -44,3 +44,10 @@ eval/bench-staging/perception_test/raw/
 # perception test prevalence artifact
 perception_test_prevalence.json
 **/perception_test_prevalence.json
+
+# local-only scratch (never commit)
+scratch/
+
+# model A/B artifact
+model_ab.json
+**/model_ab.json
