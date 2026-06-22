@@ -185,6 +185,7 @@ class ConcernContext:
     transitions: dict[Hashable, dict] = field(default_factory=dict)  # focus_id -> {seen_from, fired}
     count: int = 0
     confusion: ConfusionSignal = field(default_factory=ConfusionSignal)
+    last_escalated_at: float = float("-inf")  # Posture-B deliberative refractory (escalation.py)
 
 
 @dataclass

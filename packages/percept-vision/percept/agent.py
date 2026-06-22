@@ -18,6 +18,7 @@ from .behavior import BehaviorExecutor, program_of
 from .cache import CacheCascade, CacheKey, FrameHashLayer
 from .concern import attention_weight, consequence_of, requires_verification
 from .config import Settings, load_settings
+from .escalation import should_escalate
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
 from .entity import EntityGraph
 from .episodes import EpisodeJudge, EpisodeLog
@@ -617,6 +618,33 @@ class Percept:
             self.apply_goal_ops(decision.goal_ops)
             self.metrics.incr("goals.authored")
         return await self._execute(decision, utterance, frame=frame)
+
+    async def deliberate(
+        self, goal: Goal, *, t: float | None = None, cooldown_s: float = 30.0
+    ) -> Decision | None:
+        """Posture-B escalation (the consequence×novelty dial): when a concern is recurrently AMBIGUOUS
+        and its stakes warrant it, re-invoke the conductor to REFINE the program (or decide to ask the
+        human) instead of re-asking every tick. Consequence-gated + rate-limited via the per-concern
+        ConfusionSignal + cooldown (the deliberative analog of the gate's refractory). Returns the
+        conductor's Decision, or ``None`` when escalation isn't warranted.
+        """
+        now = self.clock() if t is None else t
+        ctx = self.executor.ctx(goal.id)
+        if not should_escalate(ctx, consequence_of(goal), now, cooldown_s=cooldown_s):
+            return None
+        ctx.last_escalated_at = now  # stamp the deliberative refractory (prevents LLM thrash)
+        self.metrics.incr("deliberate.escalate")
+        context = {
+            **self._turn_context(),
+            "goal": {"id": goal.id, "condition": goal.condition, "state": dict(goal.state)},
+            "reason": "recurrent_ambiguity",
+            "recent_confidence": list(ctx.confusion.recent_conf),
+        }
+        decision = await self.conductor.run("refine_program", goal.condition, context)
+        if decision is not None and decision.goal_ops:
+            self.apply_goal_ops(decision.goal_ops)  # the LLM refined the program (the in-loop path)
+            self.metrics.incr("deliberate.refined")
+        return decision
 
     async def _execute(self, decision: Decision, utterance: str, *, frame: Any = None) -> str:
         """Carry out a routed/conducted :class:`Decision`: speak (stream) or stay silent.
