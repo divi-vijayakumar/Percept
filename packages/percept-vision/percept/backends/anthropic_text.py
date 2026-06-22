@@ -67,7 +67,12 @@ to track it; OMIT it when unsure (the safe default is a plain watch that fires o
   {"type":"transition","from":"<state A in plain language>","to":"<state B in plain language>"}
 - high stakes ("warn me", safety): {"consequence":{"miss_cost":"severe"}}; for an irreversible action also
   "false_fire_cost":"irreversible". Never lower stakes you are unsure about.
+- the Nth distinct time / a count threshold ("alert me the 3rd time ...", "the 2nd time ..."):
+  {"accumulate":{"fire_when":"n == 3"}} — each rising edge of the condition is one distinct time; the
+  expression may compare the count n (and time t in seconds) to numbers, joined by and/or — nothing else.
 Only these keys are honored; anything else is ignored and the goal stays a safe watch.
+utterance: "alert me the 3rd time the dog gets on the couch"
+-> {"route":"respond_direct","look":"none","say":"I'll alert you the 3rd time the dog gets on the couch.","goal_ops":[{"op":"create","goal":{"id":"g-dog","condition":"the dog is on the couch","say":"That's the 3rd time the dog got on the couch.","behavior":{"accumulate":{"fire_when":"n == 3"}}}}]}
 utterance: "tell me when the baby wakes up"
 -> {"route":"respond_direct","look":"none","say":"I'll let you know when the baby wakes up.","goal_ops":[{"op":"create","goal":{"id":"g-wake","condition":"the baby is awake","say":"The baby is waking up.","behavior":{"type":"transition","from":"the baby is asleep","to":"the baby is awake"}}}]}
 
