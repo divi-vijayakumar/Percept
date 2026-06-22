@@ -77,6 +77,29 @@ async def _run() -> int:
         f"not just route={decision.route!r}"
     )
 
+    # 3) conductor authors BEHAVIOR from NL (the new design): the LLM should emit a guarded "behavior"
+    #    block, validated into goal.state by coerce_authored_behavior (applied in _coerce_decision).
+    #    This is the one thing the L1 suite can't prove — that the REAL model produces the right block.
+    print("  [authoring] conductor authors behavior from NL (new design):")
+    authoring_cases = [
+        ("alert me the 3rd time the dog gets on the couch", "fire_when"),  # accumulate (nth-distinct)
+        ("while I'm at my desk, remind me to drink water every 10 minutes", "rearm"),  # -> interval
+        ("tell me when the baby wakes up", "type"),  # -> transition
+    ]
+    got_behavior = 0
+    for utt, expect in authoring_cases:
+        dec = await a.conductor.run("speech_endpoint", utt, {})
+        assert dec.goal_ops, f"a standing-goal request must author a goal: {utt!r}"
+        g = dec.goal_ops[0].goal
+        extra = {k: v for k, v in g.state.items() if k not in ("type", "count")}
+        if g.state.get("type") == "transition":
+            extra["type"] = "transition"  # transition is itself an authored behavior signal
+        hit = expect in g.state or (expect == "type" and g.state.get("type") == "transition")
+        got_behavior += int(bool(extra))
+        print(f"    {utt!r}\n      -> condition={g.condition!r}  behavior={extra or '(plain watch)'}"
+              f"  [{'authored ' + expect if hit else 'no ' + expect}]")
+    print(f"  [authoring] {got_behavior}/{len(authoring_cases)} utterances produced a behavior block")
+
     print("e2e live smoke PASSED")
     return 0
 

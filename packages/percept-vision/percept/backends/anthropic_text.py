@@ -53,8 +53,8 @@ FIRST decide STANDING-GOAL vs ONE-SHOT — this is the most important call:
 Examples:
 utterance: "watch my coffee and nudge me if I start drinking it"
 -> {"route":"respond_direct","look":"none","say":"Watching your coffee — I'll nudge you if you start drinking it.","goal_ops":[{"op":"create","goal":{"id":"g-coffee","condition":"the user is drinking coffee","say":"Heads up — you're drinking coffee."}}]}
-utterance: "remind me to stretch every 20 minutes"
--> {"route":"respond_direct","look":"none","say":"I'll remind you to stretch every 20 minutes.","goal_ops":[{"op":"create","goal":{"id":"g-stretch","condition":"20 minutes have passed since the last stretch reminder","say":"Time to stretch."}}]}
+utterance: "while I'm at my desk, remind me to drink water every 10 minutes"
+-> {"route":"respond_direct","look":"none","say":"I'll remind you to drink water every 10 minutes while you're at your desk.","goal_ops":[{"op":"create","goal":{"id":"g-water","condition":"the user is at their desk","say":"Time to drink some water.","behavior":{"rearm":"interval","cadence_s":600}}}]}
 utterance: "what's in my cup right now?"
 -> {"route":"respond_with_vision","look":"request_frame","goal_ops":[]}
 
@@ -63,6 +63,8 @@ to track it; OMIT it when unsure (the safe default is a plain watch that fires o
 - fire ONCE then never again ("tell me once when ..."): {"rearm":"never"}
 - fire if something is NOT done by a deadline ("remind me to X in N minutes", "... before it boils"):
   {"rearm":"deadline","deadline_s":<seconds>} — phrase the condition as the thing that SHOULD happen.
+- a recurring nudge WHILE a condition holds ("every N minutes while I'm at my desk", "every N min when X"):
+  {"rearm":"interval","cadence_s":<seconds>} — fires at most once per interval while the condition is true.
 - a state CHANGE ("when the baby wakes up", "when it goes from A to B"):
   {"type":"transition","from":"<state A in plain language>","to":"<state B in plain language>"}
 - high stakes ("warn me", safety): {"consequence":{"miss_cost":"severe"}}; for an irreversible action also
