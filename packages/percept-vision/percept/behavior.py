@@ -294,13 +294,20 @@ class BehaviorExecutor:
 
     # -- absence sense: replicates agent.check_deadlines firing for one concern -----------------
     def fire_absence(
-        self, goal, program: BehaviorProgram, *, now: float, satisfied: bool
+        self,
+        goal,
+        program: BehaviorProgram,
+        *,
+        now: float,
+        satisfied: bool,
+        metric: str = "overdue.gate",
     ) -> Fired | None:
         if program.deadline_s is None:
             return None
         overdue = now >= program.deadline_s and not satisfied
         verdict = Verdict(satisfied=overdue, confidence=1.0, evidence="overdue")
         action = self.gate.evaluate((goal.id, "__overdue__"), verdict)
+        self.metrics.incr(f"{metric}.{action}")
         if action == FIRE:
             return Fired(goal.id, FIRE, overdue_text(goal), None, verdict)
         return None

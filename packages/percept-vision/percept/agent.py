@@ -364,16 +364,15 @@ class Percept:
         for goal in self.goals.active():
             if goal.state.get("rearm") != "deadline":
                 continue
-            deadline = goal.state.get("deadline_s")
-            if deadline is None:
-                continue
-            satisfied = goal.id in self.last_satisfied  # the expected event happened at some point
-            overdue = now >= deadline and not satisfied
-            verdict = Verdict(satisfied=overdue, confidence=1.0, evidence="overdue")
-            action = self.gate.evaluate((goal.id, "__overdue__"), verdict)
-            self.metrics.incr(f"overdue.gate.{action}")
-            if action == FIRE:
-                out.append(FireEvent(goal.id, FIRE, self._overdue_text(goal), None, verdict))
+            # absence firing (synthetic overdue verdict on the __overdue__ key) lives in the executor;
+            # satisfaction is read from the agent's last_satisfied stamp.
+            fired = self.executor.fire_absence(
+                goal, program_of(goal), now=now, satisfied=goal.id in self.last_satisfied
+            )
+            if fired is not None:
+                out.append(
+                    FireEvent(fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict)
+                )
         self._log_fires(out, now)
         return out
 
@@ -437,19 +436,18 @@ class Percept:
             return None
         roi: Box | None = focus.box if focus else None
         corrections = focus.asserted() if focus else {}
-        thr, fresh_min = self.settings.gate.threshold, self.gate.fresh_min
         from_v = await self.vision.judge(from_cond, frame, roi=roi, corrections=corrections or None)
         to_v = await self.vision.judge(to_cond, frame, roi=roi, corrections=corrections or None)
-        key = (goal.id, focus.id if focus else "scene")
-        st = self.transitions.setdefault(key, {"seen_from": False, "fired": False})
-        if classify(from_v, 1.0, thr, fresh_min) == "yes":
-            st["seen_from"], st["fired"] = True, False  # in 'from' -> arm (and re-arm) the edge
-        if st["seen_from"] and not st["fired"] and classify(to_v, 1.0, thr, fresh_min) == "yes":
-            st["fired"] = True
-            goal.state["count"] = goal.state.get("count", 0) + 1
-            self.metrics.incr("transition.fire")
-            return FireEvent(goal.id, FIRE, goal.say, key[1], to_v)
-        return None
+        # Perception (judging from/to) stays here; the seen_from/fired state machine + firing now live
+        # in the executor, with that state ISOLATED in its per-concern context (never the gate).
+        fired = self.executor.fire_transition(
+            goal, from_v, to_v, focus_id=focus.id if focus else "scene"
+        )
+        if fired is None:
+            return None
+        goal.state["count"] = goal.state.get("count", 0) + 1
+        self.metrics.incr("transition.fire")
+        return FireEvent(fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict)
 
     async def _judge(
         self,
