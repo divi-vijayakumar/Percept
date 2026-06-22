@@ -27,6 +27,8 @@ from typing import Any, Iterable, Sequence
 from percept.adapters import Box, Goal, Tier0Signal, WatchCondition, WatchSpec
 from percept.config import Settings, load_settings
 
+from .detectors import Boundary, DetectorBank, detectors_for
+
 try:  # OPTIONAL fast path only — the stdlib path below is the source of truth for L1.
     import numpy as _np  # type: ignore
 except Exception:  # pragma: no cover - numpy is not a dependency of the L1 lane.
@@ -158,6 +160,7 @@ def compile_watchspec(
                 anchor_text=goal.condition,
                 threshold=_clamp01(threshold + bias),
                 region_hint=_coerce_box(goal.state.get(REGION_HINT_KEY)),
+                detectors=detectors_for(goal),  # cheap edge detectors the brain selects (sense-preset + override)
             )
         )
     return WatchSpec(conditions=conditions, version=version)
@@ -260,6 +263,15 @@ class LoopReport:
     escalations: int = 0
     fire_events: list = field(default_factory=list)
     signals: list[Tier0Signal] = field(default_factory=list)
+    # edge boundaries the detectors emit (the count comes from HERE, not from a per-frame VLM call):
+    # (goal_id, Boundary) pairs across the whole run.
+    boundaries: list[tuple[str, Boundary]] = field(default_factory=list)
+
+    def boundary_count(self, goal_id: str, *, kind: str | None = None) -> int:
+        """How many boundaries a goal's detectors proposed (e.g. peaks = reps), optionally by kind."""
+        return sum(
+            1 for gid, b in self.boundaries if gid == goal_id and (kind is None or b.kind == kind)
+        )
 
     @property
     def ungated_calls(self) -> int:
@@ -329,6 +341,11 @@ class GatedWatchLoop:
         thr = cfg.edge.motion_gate if threshold is None else threshold
         self._spec = compile_watchspec(active, threshold=thr)
         self._gate = MotionGate(self._spec, settings=cfg)
+        # One detector bank per goal that selected detectors — the edge proposes timed boundaries from
+        # the cheap motion signal at native fps (no extra vision calls). Default: no detectors -> no banks.
+        self._banks = {
+            c.goal_id: DetectorBank(c.detectors) for c in self._spec.conditions if c.detectors
+        }
 
     @property
     def spec(self) -> WatchSpec:
@@ -352,6 +369,20 @@ class GatedWatchLoop:
             decision = self._gate.evaluate(item.frame, ts=item.ts)
             report.frames += 1
             report.signals.append(decision.signal)  # report Tier0Signal UP every frame
+            # Edge detectors run on the cheap motion signal at native fps — the count/boundaries come
+            # from here, decoupled from the (sparse, motion-gated) vision calls below. Each boundary is
+            # fed to the brain as a distinct occurrence (edge proposes · brain counts), firing per the
+            # goal's accumulate.fire_when without spending a vision call.
+            count_boundary = getattr(self._core, "perceive_boundary", None)
+            for goal_id, bank in self._banks.items():
+                # feed every channel the loop has: motion (always) + the raw frame (for frame-backed
+                # detectors like pose). Audio energy is fed once the AudioWindow is wired (acoustic).
+                for b in bank.push(item.ts, motion=decision.signal.motion, frame=item.frame):
+                    report.boundaries.append((goal_id, b))
+                    if count_boundary is not None:
+                        fired = count_boundary(goal_id, t=b.t)
+                        if fired is not None:
+                            report.fire_events.append(fired)
             if decision.escalate:
                 report.escalations += 1
                 report.vision_calls += 1

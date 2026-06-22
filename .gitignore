@@ -65,3 +65,32 @@ eval/bench-staging/charades/raw/
 charades_verdicts.json
 charades_result.json
 **/charades_*.json
+
+# ProactiveVideoQA data + artifacts
+eval/bench-staging/proactiveqa/raw/
+proactiveqa_narrations.json
+proactiveqa_result.json
+**/proactiveqa_*.json
+
+# RepCount data (lmms-lab-eval lance mirror) + artifacts
+eval/bench-staging/repcount/raw/
+repcount_*.json
+**/repcount_*.json
+
+# OmniPro data + code + artifacts
+eval/bench-staging/omnipro/
+omnipro_*.json
+**/omnipro_*.json
+.worktrees/
+
+# Private eval corpus — UNCLEARED third-party (YouTube) sources, dev/eval fixture only, NEVER redistribute
+# (spec Principle 8). Lives at the canonical find_golden_root() path; also ignore a stray top-level drop.
+**/eval/fixtures-private/
+/golden/
+# Phase-0 perception probe clips (may contain personal recordings)
+**/eval/perception_probe/
+# BlazePose model binary (downloaded on demand for the pose-openness edge skill)
+*.task
+# env backups (may contain secrets) — never commit
+*.bak
+.env.*

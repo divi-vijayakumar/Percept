@@ -86,6 +86,20 @@ def _image_part(types: Any, frame: Any):
     return types.Part.from_bytes(data=raw, mime_type=media)
 
 
+def _audio_part(types: Any, clip: Any):
+    """Render an opaque audio clip to a Gemini audio ``Part``: ``(mime_type, bytes)`` | wav bytes."""
+    if isinstance(clip, tuple) and len(clip) == 2 and isinstance(clip[1], (bytes, bytearray)):
+        media, raw = str(clip[0]), bytes(clip[1])
+    elif isinstance(clip, (bytes, bytearray)):
+        media, raw = "audio/wav", bytes(clip)
+    else:
+        raise TypeError(
+            "GeminiVision audio needs raw bytes or a (mime_type, bytes) pair; "
+            f"got {type(clip).__name__}. Pre-encode the audio clip before judging."
+        )
+    return types.Part.from_bytes(data=raw, mime_type=media)
+
+
 class _GeminiBase:
     def __init__(self, settings: Any = None, *, client: Any = None, model_attr: str = "vision_model") -> None:
         self._settings = _settings_of(settings)
@@ -104,6 +118,7 @@ class GeminiVision(_GeminiBase):
 
     def __init__(self, settings: Any = None, *, client: Any = None) -> None:
         super().__init__(settings, client=client, model_attr="vision_model")
+        self._breaker = CircuitBreaker()  # transient-error resilience for batch captures
 
     async def judge(
         self,
@@ -113,18 +128,42 @@ class GeminiVision(_GeminiBase):
         roi: Box | None = None,
         exemplar: Any = None,
         corrections: dict | None = None,
+        frames: list | None = None,
+        audio: Any = None,
     ) -> Verdict:
         _, types = _require_genai()
         client = self._ensure_client()
-        parts: list[Any] = [_image_part(types, frame)]
+        # temporal strip: earlier context frames (oldest->newest), then the current frame last, so the
+        # model reads time from Part order. A single multimodal call — Gemini's native modality is why
+        # the strip + audio are token-cheap (one call, not N).
+        strip = [f for f in (frames or []) if f is not frame]
+        parts: list[Any] = [_image_part(types, f) for f in strip]
+        parts.append(_image_part(types, frame))
         if exemplar is not None:
             parts.append(_image_part(types, exemplar))
             question = (
                 f'Looking only at the image (and comparing to the reference exemplar): is this true — '
                 f'"{condition}" — about THIS specific object? '
             )
+        elif strip:
+            if os.environ.get("PERCEPT_STRIP_PROMPT", "change") == "neutral":
+                # ablation variant: do NOT invite the model to weigh the change — just judge the latest
+                # state, with the earlier frames as plain context (isolates the prompt-framing confound).
+                question = (
+                    f'Here are {len(strip) + 1} recent frames of the same scene. Looking especially at '
+                    f'the most recent frame, is this true right now — "{condition}"? '
+                )
+            else:
+                question = (
+                    f'These {len(strip) + 1} images are consecutive moments in TIME ORDER (oldest first). '
+                    f'Considering how the scene CHANGES across them, is this true by the latest moment — '
+                    f'"{condition}"? '
+                )
         else:
             question = f'Looking only at the image: is this true right now — "{condition}"? '
+        if audio is not None:
+            parts.append(_audio_part(types, audio))
+            question += "You may also use the attached audio clip as evidence. "
         if corrections:
             facts = "; ".join(f"{k}={v}" for k, v in corrections.items())
             question += (
@@ -133,11 +172,15 @@ class GeminiVision(_GeminiBase):
             )
         question += 'Answer as STRICT JSON {"satisfied", "confidence", "evidence"}.'
         parts.append(question)
-        resp = await client.aio.models.generate_content(
-            model=self._model,
-            contents=parts,
-            config=types.GenerateContentConfig(system_instruction=_JUDGE_SYSTEM, max_output_tokens=256),
-        )
+
+        async def _call():
+            return await client.aio.models.generate_content(
+                model=self._model,
+                contents=parts,
+                config=types.GenerateContentConfig(system_instruction=_JUDGE_SYSTEM, max_output_tokens=256),
+            )
+
+        resp = await with_retry(_call, breaker=self._breaker)  # survive transient resets in batch captures
         return _parse_verdict(resp.text or "")
 
     async def detect(self, frame: Any, goals: list[Goal]) -> list[Observation]:
@@ -149,11 +192,14 @@ class GeminiVision(_GeminiBase):
             '{"label": str, "box": [x,y,w,h] normalized 0..1, "confidence": 0..1}. '
             f"Goals of interest: {labels}. Return STRICT JSON list (possibly empty)."
         )
-        resp = await client.aio.models.generate_content(
-            model=self._model,
-            contents=[_image_part(types, frame), prompt],
-            config=types.GenerateContentConfig(max_output_tokens=512),
-        )
+        async def _call():
+            return await client.aio.models.generate_content(
+                model=self._model,
+                contents=[_image_part(types, frame), prompt],
+                config=types.GenerateContentConfig(max_output_tokens=512),
+            )
+
+        resp = await with_retry(_call, breaker=self._breaker)
         return _parse_observations(resp.text or "")
 
     async def detect_events(self, frames: list, goals: list[Goal]) -> list:

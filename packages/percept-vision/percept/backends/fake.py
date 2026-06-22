@@ -56,12 +56,21 @@ class FakeVision:
         roi: Any = None,
         exemplar: Any = None,
         corrections: dict | None = None,
+        frames: list | None = None,
+        audio: Any = None,
     ) -> Verdict:
         token = str(frame)
         if corrections:
             corrected = f"{token}|corrected"
             if corrected in self._script:
                 return self._script[corrected]
+        # Perception-escalation wiring: a strip or audio clip can route to a distinct scripted verdict,
+        # proving the PerceptionSpec assembly actually *reaches* judge (wiring, not intelligence). Audio
+        # takes precedence over a strip when both are present (the fused/escalated read).
+        if audio is not None and f"{token}|audio" in self._script:
+            return self._script[f"{token}|audio"]
+        if frames and f"{token}|strip" in self._script:
+            return self._script[f"{token}|strip"]
         return self._script.get(token, _UNKNOWN)
 
     async def detect(self, frame: Any, goals: list[Goal]) -> list[Observation]:

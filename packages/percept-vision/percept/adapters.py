@@ -244,6 +244,7 @@ class WatchCondition:
     anchor_text: str
     threshold: float
     region_hint: Box | None = None
+    detectors: list[str] = field(default_factory=list)  # cheap edge signal detectors to run for this goal
 
 
 @dataclass
@@ -275,8 +276,17 @@ class Vision(Protocol):
         roi: Box | None = None,
         exemplar: Any = None,
         corrections: dict | None = None,
+        frames: list | None = None,
+        audio: Any = None,
     ) -> Verdict:
-        """Judge whether ``condition`` is true of ``frame`` (optionally cropped to ``roi``)."""
+        """Judge whether ``condition`` is true of ``frame`` (optionally cropped to ``roi``).
+
+        ``frames`` (a temporal strip — earlier context frames in time order, oldest→newest, excluding
+        ``frame``) and ``audio`` (an opaque clip, bytes or a ``(mime, bytes)`` pair) are OPTIONAL
+        escalations the brain assembles per the concern's ``PerceptionSpec``. Both default ``None`` so a
+        single-frame call is byte-for-byte today. A backend lacking a modality (e.g. Claude + audio)
+        degrades gracefully to what it can read; the returned ``Verdict`` shape is unchanged either way
+        (the gate downstream is identical)."""
         ...
 
     async def detect(self, frame: Any, goals: list[Goal]) -> list[Observation]:

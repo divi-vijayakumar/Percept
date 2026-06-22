@@ -14,6 +14,7 @@ dependencies = ["percept-vision"]
 
 [project.optional-dependencies]
 fast = ["numpy>=1.24"]
+pose = ["mediapipe>=0.10"]  # opt-in: the model-backed pose-openness edge skill (BlazePose). Lazy-loaded.
 dev = ["pytest>=8", "ruff>=0.6"]
 
 [tool.setuptools.packages.find]

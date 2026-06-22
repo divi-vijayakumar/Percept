@@ -14,6 +14,17 @@ this is the Python server-side reference that speaks the same frozen wire contra
 
 from __future__ import annotations
 
+from .detectors import (
+    Boundary,
+    DetectorBank,
+    DetectorManifest,
+    coerce_authored_detectors,
+    detectors_for,
+    list_manifests,
+    make_detector,
+    register,
+    registered,
+)
 from .tier0 import (
     Frame,
     GateDecision,
@@ -36,4 +47,14 @@ __all__ = [
     "GatedWatchLoop",
     "LoopReport",
     "run_gated_watch",
+    # edge detector registry (the skills library)
+    "Boundary",
+    "DetectorBank",
+    "DetectorManifest",
+    "register",
+    "make_detector",
+    "registered",
+    "list_manifests",
+    "detectors_for",
+    "coerce_authored_detectors",
 ]

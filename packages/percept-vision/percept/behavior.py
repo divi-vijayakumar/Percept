@@ -23,7 +23,7 @@ a time.
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, Hashable, Literal
 
 from .adapters import Verdict
@@ -36,6 +36,13 @@ from .gate import ASK, FIRE, Gate, classify
 
 Sense = Literal["judge", "transition", "episode", "absence"]
 KeyBy = Literal["entity", "episode", "time_bucket", "const"]
+
+# The perception axis — HOW the eye looks (the VLM-side half of the concern program). Every default
+# reproduces today's behavior byte-for-byte: one vision-only, focus-cropped frame.
+Modality = Literal["vision", "audio", "fused"]
+Temporal = Literal["single", "strip", "window"]
+RoiMode = Literal["focus", "hint", "full"]
+Sampling = Literal["recent", "uniform"]
 
 
 @dataclass(frozen=True)
@@ -57,8 +64,23 @@ class Accumulator:
 
 
 @dataclass(frozen=True)
+class PerceptionSpec:
+    """HOW the eye looks for a concern — the VLM-side twin of the behavior program. The brain authors
+    it (or a sense-preset supplies it); the agent assembles the matching input and the backend makes
+    ONE multimodal call. Default == today: a single vision-only focus-cropped frame, so an
+    un-authored concern is byte-for-byte unchanged."""
+
+    modality: Modality = "vision"
+    temporal: Temporal = "single"
+    n_frames: int = 1  # strip/window width; clamped at authoring time (_MAX_STRIP)
+    roi: RoiMode = "focus"  # focus = in-focus entity box (today); hint = authored region; full = whole frame
+    sampling: Sampling = "recent"  # which frames from the window: most-recent vs evenly-spaced
+    audio_s: float | None = None  # audio clip seconds for the audio/fused modality
+
+
+@dataclass(frozen=True)
 class BehaviorProgram:
-    """The general behavior a concern runs — sense · key · accumulate · (deadline/cadence)."""
+    """The general behavior a concern runs — sense · key · accumulate · (deadline/cadence) · perception."""
 
     sense: Sense = "judge"
     predicate: str = ""
@@ -68,6 +90,7 @@ class BehaviorProgram:
     accumulate: Accumulator = field(default_factory=Accumulator)
     deadline_s: float | None = None
     cadence_s: float | None = None
+    perception: PerceptionSpec = field(default_factory=PerceptionSpec)  # HOW to look (defaults = today)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -346,33 +369,54 @@ class BehaviorExecutor:
 # --------------------------------------------------------------------------------------------------
 
 
+_PERCEPTION_FIELDS = {"modality", "temporal", "n_frames", "roi", "sampling", "audio_s"}
+
+# sense -> default PerceptionSpec. Empty for now (every sense -> single vision-only frame, byte-for-byte
+# with today). A non-single preset (e.g. transition -> strip) is switched on ONLY when the Phase-7
+# ablation proves its lift (the S1 discipline) AND its consumer (strip assembly) exists. Authored
+# perception always overrides the preset.
+_SENSE_PERCEPTION_PRESET: dict[str, PerceptionSpec] = {}
+
+
+def _perception_for(sense: Sense, authored: object) -> PerceptionSpec:
+    """The sense-preset default with any validated authored fields overlaid (authored wins)."""
+    base = _SENSE_PERCEPTION_PRESET.get(sense, PerceptionSpec())
+    if not isinstance(authored, dict):
+        return base
+    fields = {k: authored[k] for k in _PERCEPTION_FIELDS if k in authored}
+    return replace(base, **fields) if fields else base
+
+
 def program_of(goal) -> BehaviorProgram:
     """Compile a legacy ``goal.state`` dict into a :class:`BehaviorProgram` via presets, so existing
-    behavior is byte-for-byte preserved (the enum values become constructors, not dispatch paths)."""
+    behavior is byte-for-byte preserved (the enum values become constructors, not dispatch paths).
+    The perception axis is overlaid last: the sense-preset default + any authored override."""
     s = goal.state
     gtype, rearm = s.get("type", "watch"), s.get("rearm", "on_false")
     if gtype == "transition":
-        return BehaviorProgram(sense="transition", from_predicate=s.get("from"), to_predicate=s.get("to"))
-    if gtype == "count":
-        return BehaviorProgram(
+        prog = BehaviorProgram(sense="transition", from_predicate=s.get("from"), to_predicate=s.get("to"))
+    elif gtype == "count":
+        prog = BehaviorProgram(
             sense="episode", predicate=goal.condition, accumulate=Accumulator(kind="count_distinct")
         )
-    if rearm == "deadline":
-        return BehaviorProgram(sense="absence", predicate=goal.condition, deadline_s=s.get("deadline_s"))
-    if rearm == "never":
-        return BehaviorProgram(sense="judge", predicate=goal.condition, key=KeySpec(suppress_false=True))
-    if rearm == "interval":
-        return BehaviorProgram(
+    elif rearm == "deadline":
+        prog = BehaviorProgram(sense="absence", predicate=goal.condition, deadline_s=s.get("deadline_s"))
+    elif rearm == "never":
+        prog = BehaviorProgram(sense="judge", predicate=goal.condition, key=KeySpec(suppress_false=True))
+    elif rearm == "interval":
+        prog = BehaviorProgram(
             sense="judge",
             predicate=goal.condition,
             key=KeySpec(by=("entity", "time_bucket"), bucket_s=s.get("cadence_s")),
             cadence_s=s.get("cadence_s"),
         )
-    return BehaviorProgram(  # on_false default == today; carries an authored fire_when if present
-        sense="judge",
-        predicate=goal.condition,
-        accumulate=Accumulator(fire_when=s.get("fire_when"), window_s=s.get("window_s")),
-    )
+    else:
+        prog = BehaviorProgram(  # on_false default == today; carries an authored fire_when if present
+            sense="judge",
+            predicate=goal.condition,
+            accumulate=Accumulator(fire_when=s.get("fire_when"), window_s=s.get("window_s")),
+        )
+    return replace(prog, perception=_perception_for(prog.sense, s.get("perception")))
 
 
 # --------------------------------------------------------------------------------------------------
@@ -385,6 +429,12 @@ def program_of(goal) -> BehaviorProgram:
 _VALID_MISS = {"trivial", "mild", "severe"}
 _VALID_FF = {"trivial", "mild", "severe", "irreversible"}
 _MIN_CADENCE_S = 1.0  # floor so an authored cadence_s can't busy-loop the scheduler
+_VALID_MODALITY = {"vision", "audio", "fused"}
+_VALID_TEMPORAL = {"single", "strip", "window"}
+_VALID_ROI = {"focus", "hint", "full"}
+_VALID_SAMPLING = {"recent", "uniform"}
+_MAX_STRIP = 6  # ceiling on authored n_frames so an LLM can't author a token-bomb strip
+_MAX_AUDIO_S = 5.0  # ceiling on an authored audio clip (token budget)
 
 
 def _num(v) -> float | None:
@@ -441,10 +491,40 @@ def coerce_authored_behavior(raw) -> dict:
     return out
 
 
+def coerce_authored_perception(raw) -> dict:
+    """Validate a conductor ``perception`` block into a safe ``goal.state['perception']`` sub-dict — the
+    VLM-side HOW, sibling of :func:`coerce_authored_behavior`. Closed vocabularies + clamped numerics:
+    an LLM can never author an unknown modality, a token-bomb strip, or an oversized audio clip. Anything
+    malformed is DROPPED, so the concern falls back to the safe single-frame default (``PerceptionSpec()``)."""
+    if not isinstance(raw, dict):
+        return {}
+    spec: dict = {}
+    if raw.get("modality") in _VALID_MODALITY:
+        spec["modality"] = raw["modality"]
+    if raw.get("temporal") in _VALID_TEMPORAL:
+        spec["temporal"] = raw["temporal"]
+    if raw.get("roi") in _VALID_ROI:
+        spec["roi"] = raw["roi"]
+    if raw.get("sampling") in _VALID_SAMPLING:
+        spec["sampling"] = raw["sampling"]
+    n = _num(raw.get("n_frames"))
+    if n is not None and n >= 1:
+        spec["n_frames"] = int(min(_MAX_STRIP, n))
+    a = _num(raw.get("audio_s"))
+    if a is not None and a > 0:
+        spec["audio_s"] = min(_MAX_AUDIO_S, float(a))
+    return {"perception": spec} if spec else {}
+
+
 __all__ = [
     "Sense",
     "KeySpec",
     "Accumulator",
+    "PerceptionSpec",
+    "Modality",
+    "Temporal",
+    "RoiMode",
+    "Sampling",
     "BehaviorProgram",
     "UnsafeExpression",
     "compile_fire_when",
@@ -454,6 +534,7 @@ __all__ = [
     "BehaviorExecutor",
     "program_of",
     "coerce_authored_behavior",
+    "coerce_authored_perception",
     "ask_text",
     "escalate_text",
     "overdue_text",

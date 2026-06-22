@@ -22,7 +22,7 @@ import json
 from typing import Any, AsyncIterator
 
 from ..adapters import Decision, Goal
-from ..behavior import coerce_authored_behavior
+from ..behavior import coerce_authored_behavior, coerce_authored_perception
 from ..goals import GoalOp
 from ._resilience import CircuitBreaker, with_retry
 
@@ -127,6 +127,9 @@ def _coerce_decision(payload: dict) -> Decision:
             # Validated authored behavior (interval/never/deadline/transition/consequence) -> goal.state.
             # Untrusted: every value is checked against a closed vocab, malformed entries are dropped.
             goal.state.update(coerce_authored_behavior(g.get("behavior")))
+            # Validated authored perception (HOW to look: modality/temporal/roi/...) -> goal.state["perception"].
+            # Same firewall discipline; an un-authored or malformed block leaves the safe single-frame default.
+            goal.state.update(coerce_authored_perception(g.get("perception")))
             ops.append(GoalOp(op="create", goal=goal))
         else:
             ops.append(

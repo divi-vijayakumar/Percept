@@ -86,16 +86,22 @@ class AnthropicVision:
         roi: Box | None = None,
         exemplar: Any = None,
         corrections: dict | None = None,
+        frames: list | None = None,
+        audio: Any = None,
     ) -> Verdict:
         """Ask Claude a narrow grounded yes/no about ``condition`` over the cropped ROI.
 
         The prompt grounds on the ROI crop; when an ``exemplar`` is present it is attached as a
         second image and the question is phrased deictically ("...from THIS one <exemplar>?").
         Any user ``corrections`` are surfaced as authoritative context (asserted beats observed).
+        A temporal ``frames`` strip is attached as extra images; ``audio`` is IGNORED — Claude has no
+        audio modality, so a ``fused`` concern degrades to the visual strip (``fused``/``audio`` need
+        ``vision="gemini"``).
         """
+        del audio  # accepted for protocol parity; Claude is vision-only (honest degrade)
         client = self._ensure_client()
         content = self._build_content(condition, frame, roi=roi, exemplar=exemplar,
-                                      corrections=corrections)
+                                      corrections=corrections, frames=frames)
         resp = client.messages.create(
             model=self._model,
             max_tokens=256,
@@ -138,14 +144,25 @@ class AnthropicVision:
         roi: Box | None,
         exemplar: Any,
         corrections: dict | None,
+        frames: list | None = None,
     ) -> list:
-        """Build the multimodal user turn: the ROI crop, the exemplar, and the narrow question."""
-        content: list = [_image_block(frame, roi=roi, label="region of interest")]
+        """Build the multimodal user turn: the temporal strip + ROI crop, the exemplar, and the
+        narrow question. ``frames`` are earlier-context images (oldest→newest); the current frame is
+        last so the model reads time from image order."""
+        strip = [f for f in (frames or []) if f is not frame]  # earlier context, oldest->newest
+        content: list = [_image_block(f, roi=roi, label="earlier moment") for f in strip]
+        content.append(_image_block(frame, roi=roi, label="region of interest"))
         if exemplar is not None:
             content.append(_image_block(exemplar, label="reference exemplar"))
             question = (
                 f'Looking only at the region of interest, and comparing to the reference '
                 f'exemplar: is this true — "{condition}" — about THIS specific object? '
+            )
+        elif strip:
+            question = (
+                f'These {len(strip) + 1} region images are consecutive moments in TIME ORDER (oldest '
+                f'first). Considering how the scene CHANGES across them, is this true by the latest '
+                f'moment — "{condition}"? '
             )
         else:
             question = (

@@ -101,6 +101,7 @@ class Percept:
     audit: Callable[[object], bool] | None = None
     router: RouteEngine | None = None  # local fast-path; None -> always defer (built in create)
     episodes: dict = field(default_factory=dict)  # goal_id -> EpisodeLog (counting goals)
+    edge_counts: dict = field(default_factory=dict)  # goal_id -> running tally of edge detector boundaries
     windows: dict = field(default_factory=dict)  # source -> FrameWindow (temporal perception)
     event_log: Any = None  # EventLog — temporal dedup of detected events (built in create)
     scheduler: Any = None  # Scheduler — time-triggered proactive fires (built in create)
@@ -307,6 +308,24 @@ class Percept:
             return None
         return FireEvent(fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict)
 
+    def perceive_boundary(self, goal_id: str, *, t: float = 0.0) -> FireEvent | None:
+        """Consume one EDGE boundary (a detector's timed event — a rep peak, an audio onset) as a
+        distinct occurrence and route it through the executor's nth-distinct accumulator (reusing
+        :meth:`BehaviorExecutor.fire_episode`). This is the **brain-counts** half of
+        edge-proposes·brain-counts·VLM-confirms: the count comes from the cheap edge signal, NOT a
+        per-frame VLM call. Fires per the goal's ``accumulate.fire_when`` (e.g. "n == 10"), or on every
+        boundary when none is authored — counting reps without spending a single vision token."""
+        goal = self.goals.get(goal_id)
+        if goal is None:
+            return None
+        n = self.edge_counts.get(goal_id, 0) + 1
+        self.edge_counts[goal_id] = n
+        fired = self.executor.fire_episode(goal, program_of(goal), n=n, is_new=True, t=t)
+        if fired is None:
+            return None
+        self.metrics.incr("edge.boundary.fire")
+        return FireEvent(fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict)
+
     # -- observability: coverage-loss fires with the concern's consequence (A2, spec §3) ----
     def check_observability(
         self, *, t: float | None = None, staleness_s: float | None = None
@@ -411,10 +430,12 @@ class Percept:
                 continue
             if gtype != "watch":
                 continue  # event/count/remind goals are handled by their dedicated paths
-            roi: Box | None = focus.box if focus else None
+            spec = program_of(goal).perception  # HOW to look (sense-preset default + authored override)
+            roi = self._resolve_roi(goal, focus, spec)
             corrections = focus.asserted() if focus else {}
+            strip = self._strip_frames(source, spec)  # temporal strip per the spec; None = single (today)
             verdict = await self._judge(
-                goal, frame, roi, corrections, entity_id=focus.id if focus else None
+                goal, frame, roi, corrections, entity_id=focus.id if focus else None, frames=strip
             )
             freshness = self._freshness(focus, now)
             truth = classify(verdict, freshness, self.gate.threshold, self.gate.fresh_min)
@@ -457,6 +478,42 @@ class Percept:
         self.metrics.incr("transition.fire")
         return FireEvent(fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict)
 
+    def _resolve_roi(self, goal: Goal, focus, spec) -> Box | None:
+        """ROI per the ``PerceptionSpec``: ``focus`` = the in-focus entity box (today); ``hint`` = the
+        authored ``region_hint`` (reviving the previously-dead field); ``full`` = the whole frame."""
+        if spec.roi == "full":
+            return None
+        if spec.roi == "hint":
+            hint = goal.state.get("region_hint")
+            if isinstance(hint, Box):
+                return hint
+            if isinstance(hint, (list, tuple)) and len(hint) == 4:
+                return Box(*hint)
+            # no usable hint authored -> fall back to the focus box (never worse than today)
+        return focus.box if focus else None
+
+    def _strip_frames(self, source: str, spec) -> list | None:
+        """Assemble the temporal strip per the ``PerceptionSpec`` from the rolling FrameWindow: the
+        earlier-context frames (oldest→newest, EXCLUDING the current frame, which the backend appends
+        last). Returns None for single-frame perception — byte-for-byte today."""
+        if spec.temporal == "single":
+            return None
+        earlier = self._window(source).frames()[:-1]  # drop the current frame (passed as `frame`)
+        if not earlier:
+            return None
+        want = (spec.n_frames - 1) if spec.temporal == "strip" else len(earlier)
+        if want <= 0:
+            return None
+        if spec.sampling == "uniform" and len(earlier) > want:
+            if want == 1:
+                picked = [earlier[-1]]
+            else:
+                step = (len(earlier) - 1) / (want - 1)
+                picked = [earlier[round(i * step)] for i in range(want)]
+        else:  # "recent": the last `want` earlier frames
+            picked = earlier[-want:]
+        return [f for _, f in picked]
+
     async def _judge(
         self,
         goal: Goal,
@@ -465,7 +522,17 @@ class Percept:
         corrections: dict[str, str],
         *,
         entity_id: str | None = None,
+        frames: list | None = None,
+        audio: Any = None,
     ) -> Verdict:
+        if frames or audio:
+            # The strip/audio (escalation) path is rare-by-design and multi-frame; bypass the
+            # single-frame cache (its key dHashes ONE frame) so a strip verdict never pollutes — nor is
+            # served from — a single-frame slot. The cache stays single-frame-pure.
+            return await self.vision.judge(
+                goal.condition, frame, roi=roi, corrections=corrections or None,
+                frames=frames, audio=audio,
+            )
         # A structured key so the FrameHashLayer can ROI-crop + dHash the frame and scope its
         # entry to (goal, entity); the legacy stub cascade ignores the extra fields harmlessly.
         cache_key = CacheKey(

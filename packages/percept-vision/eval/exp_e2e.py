@@ -26,6 +26,7 @@ from pathlib import Path
 
 from percept.adapters import Verdict
 from percept.config import load_settings
+from percept.events import EventLog
 from percept.gate import FIRE, Gate, classify
 
 from ._dotenv import load_dotenv
@@ -70,6 +71,37 @@ def sample_indices(num_frames, fps, cap=30):
     return idx
 
 
+def interval_score(fires, seg_by_goal) -> dict:
+    """Score for STATE-watch goals: a fire inside an action segment [onset, offset] is correct.
+
+    Each segment is satisfied by at most one fire (the earliest inside it); extra fires in a segment
+    and fires outside every segment are false-fires; a segment with no fire is a miss.
+    """
+    by_goal: dict = {}
+    for f in fires:
+        by_goal.setdefault(f.goal_id, []).append(f)
+    tp = fp = fn = count_err = 0
+    for gid, segs in seg_by_goal.items():
+        gfires = sorted(by_goal.get(gid, []), key=lambda f: f.ts)
+        used: set = set()
+        for onset, offset in segs:
+            hit = None
+            for i, f in enumerate(gfires):
+                if i not in used and onset <= f.ts <= offset:
+                    hit = i
+                    break
+            if hit is None:
+                fn += 1
+            else:
+                used.add(hit); tp += 1
+        fp += len(gfires) - len(used)
+        count_err += abs(len(gfires) - len(segs))
+    prec = tp / (tp + fp) if (tp + fp) else 1.0
+    rec = tp / (tp + fn) if (tp + fn) else 1.0
+    return {"n_fires": len(fires), "tp": tp, "fp": fp, "fn": fn,
+            "precision": prec, "recall": rec, "count_err": count_err}
+
+
 async def main():
     load_dotenv()
     s = load_settings(); thr = s.gate.threshold
@@ -80,7 +112,10 @@ async def main():
     sem = asyncio.Semaphore(6)
     loop = asyncio.get_event_loop()
 
-    # build (video, label) goals over specific actions; edges = segment onsets (seconds)
+    merge_gap = float(os.environ.get("PERCEPT_EVENT_MERGE_GAP_S", 3.0))
+    cap_path = Path("e2e_verdicts.json")
+
+    # build (video, label) goals; each segment is an interval [onset, offset] in seconds.
     goals = []
     for vid, v in ann.items():
         if _find_video(vid) is None:
@@ -89,61 +124,80 @@ async def main():
         by_label = {}
         for seg in v.get("action_localisation", []):
             if seg["label"] in SPECIFIC:
-                by_label.setdefault(seg["label"], []).append(seg["frame_ids"][0] / fps)
-        for label, onsets in by_label.items():
-            goals.append({"vid": vid, "label": label, "fps": fps, "nframes": nframes, "onsets": onsets})
+                f0, f1 = seg["frame_ids"]
+                by_label.setdefault(seg["label"], []).append([f0 / fps, f1 / fps])
+        for label, segs in by_label.items():
+            goals.append({"gid": f"{vid}:{label}", "vid": vid, "label": label,
+                          "fps": fps, "nframes": nframes, "segments": segs})
 
-    print(f"E2E: {len(goals)} (video,action) goals across {len(ann)} clips · model={model} · omega={omega}s")
+    # ---- capture per-frame verdicts once (or reuse the saved capture for free re-scoring) ----
+    if cap_path.exists() and os.environ.get("PERCEPT_E2E_RECAPTURE") != "1":
+        caps = json.loads(cap_path.read_text())
+        print(f"loaded {len(caps)} goals' verdicts from {cap_path} (offline re-score)")
+    else:
+        caps = {}
+        for g in goals:
+            cond = condition(g["label"])
+            idxs = sample_indices(g["nframes"], g["fps"])
 
-    base_fires, perc_fires, edges = [], [], []
-    for g in goals:
-        gid = f"{g['vid']}:{g['label']}"
-        cond = condition(g["label"])
-        idxs = sample_indices(g["nframes"], g["fps"])
+            async def judge_idx(i, g=g, cond=cond):
+                frame = extract_jpeg(_find_video(g["vid"]), i)
+                if frame is None:
+                    return None
+                try:
+                    async with sem:
+                        sat, cf = await loop.run_in_executor(None, gemini_judge, client, model, cond, frame)
+                except Exception:
+                    return None
+                return [i / g["fps"], sat, cf]
 
-        async def judge_idx(i):
-            frame = extract_jpeg(_find_video(g["vid"]), i)
-            if frame is None:
-                return None
-            ts = i / g["fps"]
-            try:
-                async with sem:
-                    sat, cf = await loop.run_in_executor(None, gemini_judge, client, model, cond, frame)
-            except Exception:
-                return None
-            return ts, sat, cf
+            vs = [r for r in await asyncio.gather(*(judge_idx(i) for i in idxs)) if r]
+            vs.sort(key=lambda x: x[0])
+            caps[g["gid"]] = {"label": g["label"], "segments": g["segments"], "verdicts": vs}
+        cap_path.write_text(json.dumps(caps))
+        print(f"captured + saved {len(caps)} goals' verdicts -> {cap_path}")
 
-        verdicts = [r for r in await asyncio.gather(*(judge_idx(i) for i in idxs)) if r]
-        verdicts.sort(key=lambda x: x[0])
-        # edges
-        for t in g["onsets"]:
-            edges.append(Edge(gid, t))
-        # baseline: fire on every confident-yes frame
+    print(f"E2E: {len(caps)} (video,action) goals · model={model} · merge_gap={merge_gap}s · "
+          f"omega={omega}s (onset ref)")
+
+    # ---- three firing policies over the SAME verdicts ----
+    base_fires, perc_fires, event_fires, edges, seg_by_goal = [], [], [], [], {}
+    for gid, cap in caps.items():
+        seg_by_goal[gid] = cap["segments"]
+        for onset, _off in cap["segments"]:
+            edges.append(Edge(gid, onset))
         gate = Gate(threshold=thr)
-        for ts, sat, cf in verdicts:
+        elog = EventLog(merge_gap_s=merge_gap)
+        for ts, sat, cf in cap["verdicts"]:
             v = Verdict(satisfied=sat, confidence=cf)
             if classify(v, 1.0, thr, gate.fresh_min) == "yes":
                 base_fires.append(Fire(gid, ts, cf))
-            # percept: through the stateful gate (rising-edge + refractory)
+                _ev, is_new = elog.observe(cap["label"], ts, confidence=cf)
+                if is_new:
+                    event_fires.append(Fire(gid, ts, cf))
             if gate.evaluate((gid,), v, freshness=1.0) == FIRE:
                 perc_fires.append(Fire(gid, ts, cf))
 
-    b = score(base_fires, edges, omega)
-    p = score(perc_fires, edges, omega)
-    print("\n" + "=" * 76)
-    print("  E2E — FULL PERCEPT (gate) vs RAW-VLM-IN-A-LOOP  (same perception, same clips)")
-    print(f"  {len(edges)} ground-truth action onsets · omega={omega}s · perception held constant")
-    print("=" * 76)
-    hdr = f"  {'system':<10}{'fires':>7}{'TP':>5}{'FP':>5}{'FN':>5}{'precision':>11}{'recall':>9}{'PAUC':>7}{'count-err':>11}"
-    print(hdr)
-    for name, m in [("baseline", b), ("percept", p)]:
-        print(f"  {name:<10}{m.n_fires:>7}{m.tp:>5}{m.fp:>5}{m.fn:>5}"
-              f"{m.precision:>11.2f}{m.recall:>9.2f}{m.pauc:>7.2f}{m.count_off_by_one:>11}")
-    print("=" * 76)
-    print(f"  Percept fires {b.n_fires}->{p.n_fires} ({100*(1-p.n_fires/max(1,b.n_fires)):.0f}% fewer) at "
-          f"recall {p.recall:.2f} vs {b.recall:.2f}; precision {p.precision:.2f} vs {b.precision:.2f}; "
-          f"count-err {p.count_off_by_one} vs {b.count_off_by_one}")
-    Path("e2e_result.json").write_text(json.dumps({"baseline": b.as_dict(), "percept": p.as_dict()}, indent=2))
+    print("\n" + "=" * 82)
+    print("  E2E — PERCEPT vs RAW-VLM-IN-A-LOOP   (same perception, clips, model)")
+    print(f"  {len(edges)} action segments · INTERVAL scoring (a fire inside [onset,offset] = correct")
+    print("  for a state-watch goal) · onset@2s shown for reference")
+    print("=" * 82)
+    print(f"  {'system':<14}{'fires':>7}{'TP':>5}{'FP':>5}{'FN':>5}{'precision':>11}{'recall':>9}{'cnt-err':>9}{'  onset-prec':>12}")
+    out = {}
+    for name, fires in [("baseline(loop)", base_fires), ("percept-watch", perc_fires), ("percept-event", event_fires)]:
+        iv = interval_score(fires, seg_by_goal)
+        onset = score(fires, edges, omega)
+        out[name] = {"interval": iv, "onset_precision": onset.precision}
+        print(f"  {name:<14}{iv['n_fires']:>7}{iv['tp']:>5}{iv['fp']:>5}{iv['fn']:>5}"
+              f"{iv['precision']:>11.2f}{iv['recall']:>9.2f}{iv['count_err']:>9}{onset.precision:>12.2f}")
+    print("=" * 82)
+    biv, eiv = out["baseline(loop)"]["interval"], out["percept-event"]["interval"]
+    print(f"  event-track vs raw loop (interval): fires {biv['n_fires']}->{eiv['n_fires']}, "
+          f"precision {biv['precision']:.2f}->{eiv['precision']:.2f} "
+          f"({eiv['precision']/max(0.01,biv['precision']):.1f}x), recall {biv['recall']:.2f}->{eiv['recall']:.2f}, "
+          f"count-err {biv['count_err']}->{eiv['count_err']}")
+    Path("e2e_result.json").write_text(json.dumps(out, indent=2, default=str))
 
 
 if __name__ == "__main__":  # pragma: no cover
