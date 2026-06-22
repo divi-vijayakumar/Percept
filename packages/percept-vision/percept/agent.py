@@ -104,7 +104,6 @@ class Percept:
     windows: dict = field(default_factory=dict)  # source -> FrameWindow (temporal perception)
     event_log: Any = None  # EventLog — temporal dedup of detected events (built in create)
     scheduler: Any = None  # Scheduler — time-triggered proactive fires (built in create)
-    transitions: dict = field(default_factory=dict)  # (goal,entity) -> state-transition memory
     last_supported: dict = field(default_factory=dict)  # goal_id -> t of last CONFIDENT observation (A2)
     last_satisfied: dict = field(default_factory=dict)  # goal_id -> t of last confident-YES (A1 deadline)
     consent: ConsentProfile = field(default_factory=ConsentProfile)  # the act-modality gate
