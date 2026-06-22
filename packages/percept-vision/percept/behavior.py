@@ -363,6 +363,59 @@ def program_of(goal) -> BehaviorProgram:
     return BehaviorProgram(sense="judge", predicate=goal.condition)  # on_false default == today
 
 
+# --------------------------------------------------------------------------------------------------
+# Conductor authoring — turn an UNTRUSTED LLM "behavior" block into validated goal.state keys.
+# The firewall on authored behavior (sibling of the fire_when AST whitelist): every value is checked
+# against a closed vocabulary and coerced to a SAFE default on anything unknown; numerics are clamped.
+# An LLM can never author an out-of-vocab behavior, a negative deadline, or a busy-loop cadence.
+# --------------------------------------------------------------------------------------------------
+
+_VALID_MISS = {"trivial", "mild", "severe"}
+_VALID_FF = {"trivial", "mild", "severe", "irreversible"}
+_MIN_CADENCE_S = 1.0  # floor so an authored cadence_s can't busy-loop the scheduler
+
+
+def _num(v) -> float | None:
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return float(v)
+
+
+def coerce_authored_behavior(raw) -> dict:
+    """Validate a conductor ``behavior`` block into safe ``goal.state`` keys (the dispatch + executor
+    already understand them). Anything malformed is DROPPED -> the goal falls back to a plain watch."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict = {}
+    # tracking pattern (transition needs both from/to in plain language)
+    if raw.get("type") == "transition" and isinstance(raw.get("from"), str) and isinstance(raw.get("to"), str):
+        out.update(type="transition", **{"from": raw["from"], "to": raw["to"]})
+    elif raw.get("type") in {"event", "count"}:
+        out["type"] = raw["type"]
+    # re-arm (interval needs a positive cadence; deadline needs a non-negative deadline)
+    rearm = raw.get("rearm")
+    if rearm in {"never", "each_event"}:
+        out["rearm"] = rearm
+    elif rearm == "interval":
+        c = _num(raw.get("cadence_s"))
+        if c is not None and c > 0:
+            out.update(rearm="interval", cadence_s=max(_MIN_CADENCE_S, c))
+    elif rearm == "deadline":
+        d = _num(raw.get("deadline_s"))
+        if d is not None and d >= 0:
+            out.update(rearm="deadline", deadline_s=d)
+    # consequence (closed cost vocab; protected_floor can only be raised, never authored false-down)
+    cons = raw.get("consequence")
+    if isinstance(cons, dict):
+        if cons.get("miss_cost") in _VALID_MISS:
+            out["miss_cost"] = cons["miss_cost"]
+        if cons.get("false_fire_cost") in _VALID_FF:
+            out["false_fire_cost"] = cons["false_fire_cost"]
+        if cons.get("protected_floor") is True:
+            out["protected_floor"] = True
+    return out
+
+
 __all__ = [
     "Sense",
     "KeySpec",
@@ -375,6 +428,7 @@ __all__ = [
     "Fired",
     "BehaviorExecutor",
     "program_of",
+    "coerce_authored_behavior",
     "ask_text",
     "escalate_text",
     "overdue_text",

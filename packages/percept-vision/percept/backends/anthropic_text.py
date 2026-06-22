@@ -22,6 +22,7 @@ import json
 from typing import Any, AsyncIterator
 
 from ..adapters import Decision, Goal
+from ..behavior import coerce_authored_behavior
 from ..goals import GoalOp
 from ._resilience import CircuitBreaker, with_retry
 
@@ -35,7 +36,7 @@ Return STRICT JSON, no prose:
   "route": "respond_direct" | "respond_with_vision" | "task_with_tools" | "act" | "proactive_speak" | "ignore",
   "look": "none" | "request_frame",
   "say": optional short string to speak,
-  "goal_ops": [ {"op":"create","goal":{"id":"g-<short>","condition":"<plain language>","say":"<what to speak when it fires>"}} ]
+  "goal_ops": [ {"op":"create","goal":{"id":"g-<short>","condition":"<plain language>","say":"<what to speak when it fires>","behavior":<optional, see BEHAVIOR>}} ]
 }
 
 FIRST decide STANDING-GOAL vs ONE-SHOT — this is the most important call:
@@ -56,6 +57,19 @@ utterance: "remind me to stretch every 20 minutes"
 -> {"route":"respond_direct","look":"none","say":"I'll remind you to stretch every 20 minutes.","goal_ops":[{"op":"create","goal":{"id":"g-stretch","condition":"20 minutes have passed since the last stretch reminder","say":"Time to stretch."}}]}
 utterance: "what's in my cup right now?"
 -> {"route":"respond_with_vision","look":"request_frame","goal_ops":[]}
+
+BEHAVIOR (optional) — add a "behavior" block to a created goal ONLY when the request clearly implies HOW
+to track it; OMIT it when unsure (the safe default is a plain watch that fires on the rising edge):
+- fire ONCE then never again ("tell me once when ..."): {"rearm":"never"}
+- fire if something is NOT done by a deadline ("remind me to X in N minutes", "... before it boils"):
+  {"rearm":"deadline","deadline_s":<seconds>} — phrase the condition as the thing that SHOULD happen.
+- a state CHANGE ("when the baby wakes up", "when it goes from A to B"):
+  {"type":"transition","from":"<state A in plain language>","to":"<state B in plain language>"}
+- high stakes ("warn me", safety): {"consequence":{"miss_cost":"severe"}}; for an irreversible action also
+  "false_fire_cost":"irreversible". Never lower stakes you are unsure about.
+Only these keys are honored; anything else is ignored and the goal stays a safe watch.
+utterance: "tell me when the baby wakes up"
+-> {"route":"respond_direct","look":"none","say":"I'll let you know when the baby wakes up.","goal_ops":[{"op":"create","goal":{"id":"g-wake","condition":"the baby is awake","say":"The baby is waking up.","behavior":{"type":"transition","from":"the baby is asleep","to":"the baby is awake"}}}]}
 
 Other rules:
 - Keep conditions in plain language — never compile them to attributes (one firing path).
@@ -103,6 +117,9 @@ def _coerce_decision(payload: dict) -> Decision:
                 say=g.get("say", ""),
                 source=g.get("source", "camera"),
             )
+            # Validated authored behavior (interval/never/deadline/transition/consequence) -> goal.state.
+            # Untrusted: every value is checked against a closed vocab, malformed entries are dropped.
+            goal.state.update(coerce_authored_behavior(g.get("behavior")))
             ops.append(GoalOp(op="create", goal=goal))
         else:
             ops.append(
