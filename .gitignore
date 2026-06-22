@@ -94,3 +94,6 @@ omnipro_*.json
 # env backups (may contain secrets) — never commit
 *.bak
 .env.*
+
+# generated benchmark cards (regenerable; RELEASE cards committed deliberately)
+**/bench_card_*.txt
