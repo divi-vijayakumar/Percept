@@ -208,7 +208,9 @@ class ConcernContext:
     transitions: dict[Hashable, dict] = field(default_factory=dict)  # focus_id -> {seen_from, fired}
     count: int = 0
     confusion: ConfusionSignal = field(default_factory=ConfusionSignal)
-    last_escalated_at: float = float("-inf")  # Posture-B deliberative refractory (escalation.py)
+    last_escalated_at: float = float("-inf")  # Posture-B deliberative (LLM) refractory (escalation.py)
+    perception_level: int = 0  # escalation ladder rung: 0=single · 1=strip · 2=+audio (cheaper than the LLM)
+    last_perception_escalate_at: float = float("-inf")  # the perception-rung refractory (shorter than LLM's)
 
 
 @dataclass

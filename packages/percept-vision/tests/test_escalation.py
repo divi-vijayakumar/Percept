@@ -93,32 +93,60 @@ class TestDeliberateWiring(unittest.TestCase):
 
 
 class TestAutoDeliberateInPerceiveLoop(unittest.TestCase):
-    def test_recurrent_ambiguity_auto_refines_during_perception(self):
-        # A severe concern that keeps reading AMBIGUOUS auto-deliberates inside perceive_judged — no
-        # explicit deliberate() call. The conductor's refinement is applied in-loop.
+    def test_recurrent_ambiguity_climbs_perception_then_the_llm(self):
+        # The escalation LADDER: a severe concern that keeps reading AMBIGUOUS first escalates PERCEPTION
+        # (cheap, better-looking: single->strip->+audio) and ONLY once that is maxed re-invokes the LLM
+        # (more-thinking). No explicit deliberate() call — both rungs fire in-loop.
         refine = Decision(
             route="respond_direct",
             goal_ops=[GoalOp(op="create", goal=Goal(id="g-refined", condition="x", say="s"))],
         )
         vision = FakeVision(
-            script={"f": Verdict(True, 0.4, "unsure")},  # low confidence -> ASK -> confusion builds
+            script={"f": Verdict(True, 0.4, "unsure")},  # always ambiguous -> confusion never resolves
             detect_script={"f": [Observation("x", Box(0.4, 0.4, 0.2, 0.2), 0.9)]},
         )
         a = Percept.create(
             vision=vision, settings=Settings(gate=GateSettings(threshold=0.7)), discover_plugins=False
         )
         a.conductor = FakeConductor(refine)
+        a.perception_cooldown_s = 0.0  # let the ladder climb every tick for the test
         g = Goal(id="g", condition="is that suspicious?", say="heads up")
-        g.state["miss_cost"] = "severe"  # severe -> escalates after 2 ambiguous reads
+        g.state["miss_cost"] = "severe"  # severe -> threshold of 2 ambiguous reads
         a.add_goal(g)
 
         async def run():
-            for t in (0.0, 1.0):  # two ambiguous reads hit the severe threshold
+            for t in (0.0, 1.0, 2.0, 3.0):
                 await a.perceive_judged("f", t=t)
 
         asyncio.run(run())
-        self.assertEqual(a.metrics.get("deliberate.escalate"), 1)  # auto-fired once, in-loop
-        self.assertIsNotNone(a.goals.get("g-refined"))  # the refinement was auto-applied
+        # perception escalated TWICE (single->strip->+audio) before the LLM, and is now maxed ...
+        self.assertEqual(a.metrics.get("perception.escalate"), 2)
+        self.assertEqual(a.executor.ctx("g").perception_level, 2)
+        # ... then, perception maxed and STILL ambiguous, the LLM rung fired once and was applied in-loop
+        self.assertEqual(a.metrics.get("deliberate.escalate"), 1)
+        self.assertIsNotNone(a.goals.get("g-refined"))
+
+    def test_confident_read_decays_the_perception_ladder(self):
+        # once a confident read resolves the ambiguity, the rung decays back to the cheap single-frame default
+        vision = FakeVision(
+            script={"hard": Verdict(True, 0.4, "unsure"), "easy": Verdict(True, 0.95, "yes")},
+            detect_script={"hard": [Observation("x", Box(0.4, 0.4, 0.2, 0.2), 0.9)]},
+        )
+        a = Percept.create(
+            vision=vision, settings=Settings(gate=GateSettings(threshold=0.7)), discover_plugins=False
+        )
+        a.perception_cooldown_s = 0.0
+        g = Goal(id="g", condition="is that suspicious?", say="heads up")
+        g.state["miss_cost"] = "severe"
+        a.add_goal(g)
+
+        async def run():
+            for t in (0.0, 1.0, 2.0):  # ambiguous -> climbs the ladder
+                await a.perceive_judged("hard", t=t)
+            await a.perceive_judged("easy", t=3.0)  # confident read -> decays
+
+        asyncio.run(run())
+        self.assertEqual(a.executor.ctx("g").perception_level, 0)  # back to single-frame
 
     def test_calm_concern_never_triggers_a_conductor_call(self):
         # A mild, confident concern perceiving normally must NOT trigger deliberation (byte-for-byte).

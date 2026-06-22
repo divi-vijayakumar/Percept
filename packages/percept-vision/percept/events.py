@@ -44,6 +44,34 @@ class FrameWindow:
         return len(self._frames)
 
 
+class AudioWindow:
+    """A rolling ``(t, chunk)`` audio buffer per source, time-windowed by seconds — the audio analog of
+    :class:`FrameWindow`. Feeds the fused/acoustic perception path: the agent concatenates the last N
+    seconds into one clip for ``Vision.judge(audio=...)``. Fed by the voice loop's mic stream (the same
+    audio already flowing for STT) — no new capture path."""
+
+    def __init__(self, seconds: float = 4.0) -> None:
+        self._seconds = max(0.5, seconds)
+        self._chunks: list[tuple[float, Any]] = []
+
+    def push(self, t: float, chunk: Any) -> None:
+        self._chunks.append((t, chunk))
+        cutoff = t - self._seconds
+        while self._chunks and self._chunks[0][0] < cutoff:
+            self._chunks.pop(0)
+
+    def clip(self, seconds: float, *, now: float | None = None) -> list[Any]:
+        """The audio chunks within the last ``seconds`` (oldest→newest)."""
+        if not self._chunks:
+            return []
+        end = self._chunks[-1][0] if now is None else now
+        start = end - seconds
+        return [c for t, c in self._chunks if t >= start]
+
+    def __len__(self) -> int:
+        return len(self._chunks)
+
+
 class EventLog:
     """Dedups raw per-tick detections into **distinct** events (the temporal analog of continuity).
 

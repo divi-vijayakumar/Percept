@@ -9,7 +9,7 @@ episodes (Phase 4), events (Phase 5) — without editing the gate/graph contract
 from __future__ import annotations
 
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Callable
 
 from . import registry
@@ -18,11 +18,11 @@ from .behavior import BehaviorExecutor, program_of
 from .cache import CacheCascade, CacheKey, FrameHashLayer
 from .concern import attention_weight, consequence_of, requires_verification
 from .config import Settings, load_settings
-from .escalation import should_escalate
+from .escalation import MAX_PERCEPTION_LEVEL, escalate_perception, should_escalate
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
 from .entity import EntityGraph
 from .episodes import EpisodeJudge, EpisodeLog
-from .events import EventLog, FrameWindow
+from .events import AudioWindow, EventLog, FrameWindow
 from .gate import FIRE, Gate, GateAction, classify
 from .goals import GoalOp, GoalRegistry
 from .observability import Metrics, health
@@ -39,6 +39,31 @@ class FireEvent:
     text: str
     entity_id: str | None = None
     verdict: Verdict | None = None
+
+
+def _escalated_perception(base, level: int):
+    """Apply the escalation ladder to a base ``PerceptionSpec``: rung 1 adds a temporal strip, rung 2
+    adds fused audio. Never downgrades an already-richer authored spec (only escalates the cheap parts)."""
+    if level <= 0:
+        return base
+    spec = base
+    if spec.temporal == "single":
+        spec = replace(spec, temporal="strip", n_frames=max(3, spec.n_frames))
+    if level >= 2 and spec.modality == "vision":
+        spec = replace(spec, modality="fused", audio_s=spec.audio_s or 2.0)
+    return spec
+
+
+def _concat_audio(chunks: list) -> Any:
+    """Concatenate audio chunks into one clip: ``(mime, bytes)`` pairs or raw bytes; else pass through."""
+    if not chunks:
+        return None
+    first = chunks[0]
+    if isinstance(first, tuple) and len(first) == 2 and isinstance(first[1], (bytes, bytearray)):
+        return (str(first[0]), b"".join(bytes(c[1]) for c in chunks))
+    if isinstance(first, (bytes, bytearray)):
+        return b"".join(bytes(c) for c in chunks)
+    return chunks[-1]  # opaque descriptor — pass the latest through
 
 
 class DeterministicAuditor:
@@ -103,6 +128,8 @@ class Percept:
     episodes: dict = field(default_factory=dict)  # goal_id -> EpisodeLog (counting goals)
     edge_counts: dict = field(default_factory=dict)  # goal_id -> running tally of edge detector boundaries
     windows: dict = field(default_factory=dict)  # source -> FrameWindow (temporal perception)
+    audio_windows: dict = field(default_factory=dict)  # source -> AudioWindow (fused/acoustic perception)
+    perception_cooldown_s: float = 5.0  # the perception-rung refractory (shorter than the LLM's 30s)
     event_log: Any = None  # EventLog — temporal dedup of detected events (built in create)
     scheduler: Any = None  # Scheduler — time-triggered proactive fires (built in create)
     last_supported: dict = field(default_factory=dict)  # goal_id -> t of last CONFIDENT observation (A2)
@@ -217,6 +244,24 @@ class Percept:
     def push_frame(self, frame: Any, source: str = "camera", *, t: float | None = None) -> None:
         """Add a frame to the source's rolling window (for event-only flows; perceive_judged also feeds it)."""
         self._window(source).push(self.clock() if t is None else t, frame)
+
+    def _audio_window(self, source: str) -> AudioWindow:
+        win = self.audio_windows.get(source)
+        if win is None:
+            win = AudioWindow(getattr(self.settings.events, "audio_window_s", 4.0))
+            self.audio_windows[source] = win
+        return win
+
+    def push_audio(self, chunk: Any, source: str = "camera", *, t: float | None = None) -> None:
+        """Feed an audio chunk from the voice loop's mic stream (the same audio already flowing for STT)
+        into the rolling AudioWindow — the source for fused/acoustic perception. No new capture path."""
+        self._audio_window(source).push(self.clock() if t is None else t, chunk)
+
+    def _audio_clip(self, source: str, spec) -> Any:
+        """Assemble one audio clip for a fused/audio ``PerceptionSpec`` from the AudioWindow, else None."""
+        if spec.modality not in ("audio", "fused") or not spec.audio_s:
+            return None
+        return _concat_audio(self._audio_window(source).clip(spec.audio_s))
 
     async def perceive_events(self, source: str = "camera") -> list[FireEvent]:
         """Detect events over the rolling window, dedup them, and run event goals through the gate.
@@ -430,17 +475,23 @@ class Percept:
                 continue
             if gtype != "watch":
                 continue  # event/count/remind goals are handled by their dedicated paths
-            spec = program_of(goal).perception  # HOW to look (sense-preset default + authored override)
+            ctx = self.executor.ctx(goal.id)
+            # HOW to look = the authored/preset spec, escalated by this concern's current ladder rung
+            # (single→strip→+audio) when it's been recurrently ambiguous (set in _deliberate_confused).
+            spec = _escalated_perception(program_of(goal).perception, ctx.perception_level)
             roi = self._resolve_roi(goal, focus, spec)
             corrections = focus.asserted() if focus else {}
             strip = self._strip_frames(source, spec)  # temporal strip per the spec; None = single (today)
+            audio = self._audio_clip(source, spec)  # audio clip for a fused/audio spec; None otherwise
             verdict = await self._judge(
-                goal, frame, roi, corrections, entity_id=focus.id if focus else None, frames=strip
+                goal, frame, roi, corrections, entity_id=focus.id if focus else None,
+                frames=strip, audio=audio,
             )
             freshness = self._freshness(focus, now)
             truth = classify(verdict, freshness, self.gate.threshold, self.gate.fresh_min)
             if truth != "unknown":
                 self.last_supported[goal.id] = now  # A2: a confident read = perceptual coverage
+                ctx.perception_level = 0  # decay: the (escalated) look resolved → back to the cheap default
             if truth == "yes":
                 self.last_satisfied[goal.id] = now  # A1 deadline: the expected event happened
             base_key = (goal.id, focus.id if focus else None)
@@ -721,13 +772,20 @@ class Percept:
         return decision
 
     async def _deliberate_confused(self, now: float) -> None:
-        """Posture B in the perceive loop: auto-deliberate any concern that has become recurrently
-        ambiguous this tick. Each call is gated + rate-limited inside :meth:`deliberate` (consequence
-        threshold + per-concern cooldown), so a routine/calm concern costs nothing — no conductor call
-        is made unless a high-stakes concern is genuinely confused. The refinement takes effect next tick.
+        """Posture B in the perceive loop, as a LADDER: a recurrently-ambiguous concern first escalates
+        its PERCEPTION (single→strip→+audio — cheap, better-looking) and only once that's maxed and it is
+        STILL ambiguous does it re-invoke the LLM (expensive, more-thinking). Both rungs ride the same
+        consequence-set ambiguity threshold + a refractory; perception uses a shorter cooldown so it
+        always climbs first. A routine/calm concern costs nothing — neither rung fires.
         """
         for goal in list(self.goals.active()):
-            await self.deliberate(goal, t=now)
+            ctx = self.executor.ctx(goal.id)
+            if ctx.perception_level < MAX_PERCEPTION_LEVEL and escalate_perception(
+                ctx, consequence_of(goal), now, cooldown_s=self.perception_cooldown_s
+            ):
+                self.metrics.incr("perception.escalate")
+                continue  # took a perception rung this tick — give the better look a chance before the LLM
+            await self.deliberate(goal, t=now)  # perception maxed (or not warranted) → consider the LLM rung
 
     async def _execute(self, decision: Decision, utterance: str, *, frame: Any = None) -> str:
         """Carry out a routed/conducted :class:`Decision`: speak (stream) or stay silent.

@@ -39,4 +39,31 @@ def should_escalate(ctx, consequence: Consequence, now: float, *, cooldown_s: fl
     return (now - ctx.last_escalated_at) >= cooldown_s
 
 
-__all__ = ["escalation_threshold", "should_escalate"]
+MAX_PERCEPTION_LEVEL = 2  # 0=single · 1=strip · 2=+audio
+
+
+def escalate_perception(
+    ctx, consequence: Consequence, now: float, *, cooldown_s: float, max_level: int = MAX_PERCEPTION_LEVEL
+) -> bool:
+    """The CHEAP rung of the dial: when a concern is recurrently ambiguous, escalate its PERCEPTION
+    (single→strip→+audio) BEFORE re-invoking the LLM — better looking is cheaper than more thinking.
+
+    Same stakes-set ambiguity threshold as :func:`should_escalate`, but a SHORTER cooldown (so perception
+    climbs first) and capped at ``max_level``. Bumps ``ctx.perception_level`` + stamps the perception
+    refractory; returns ``True`` iff it escalated this tick. The agent maxes this ladder before the LLM
+    rung, and decays the level back to 0 on the next confident read."""
+    threshold = escalation_threshold(consequence)
+    if threshold is None:
+        return False
+    if ctx.confusion.consecutive_unknown < threshold:
+        return False
+    if ctx.perception_level >= max_level:
+        return False
+    if (now - ctx.last_perception_escalate_at) < cooldown_s:
+        return False
+    ctx.perception_level += 1
+    ctx.last_perception_escalate_at = now
+    return True
+
+
+__all__ = ["escalation_threshold", "should_escalate", "escalate_perception", "MAX_PERCEPTION_LEVEL"]
