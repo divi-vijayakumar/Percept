@@ -14,10 +14,11 @@ dependencies = []
 
 [project.optional-dependencies]
 claude = ["anthropic>=0.40"]
+gemini = ["google-genai>=1.0"]
 deepgram = ["deepgram-sdk>=3"]
 audio = ["numpy>=1.24"]
 ui = []
-all = ["anthropic>=0.40", "deepgram-sdk>=3", "numpy>=1.24"]
+all = ["anthropic>=0.40", "google-genai>=1.0", "deepgram-sdk>=3", "numpy>=1.24"]
 dev = ["pytest>=8", "ruff>=0.6"]
 
 [tool.setuptools.packages.find]

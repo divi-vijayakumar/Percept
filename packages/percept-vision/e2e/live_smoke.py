@@ -46,8 +46,18 @@ def _pick_scene_and_condition():
     return None
 
 
+def _backends() -> tuple[str, str]:
+    """Which backends to smoke (default claude); set PERCEPT_VISION_BACKEND / PERCEPT_CONDUCTOR_BACKEND."""
+    return (
+        os.environ.get("PERCEPT_VISION_BACKEND", "claude"),
+        os.environ.get("PERCEPT_CONDUCTOR_BACKEND", "claude"),
+    )
+
+
 async def _run() -> int:
-    a = Percept.create(vision="claude", conductor="claude", discover_plugins=False)
+    vb, cb = _backends()
+    print(f"  [backends] vision={vb} conductor={cb}")
+    a = Percept.create(vision=vb, conductor=cb, discover_plugins=False)
 
     # 1) vision — judge a real frame
     picked = _pick_scene_and_condition()
@@ -108,12 +118,25 @@ def main() -> int:
     load_dotenv()
     if os.environ.get("PERCEPT_LIVE") != "1":
         return _skip("set PERCEPT_LIVE=1 to run live")
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        return _skip("ANTHROPIC_API_KEY not set (paste it into .env)")
-    try:
-        import anthropic  # noqa: F401
-    except ModuleNotFoundError:
-        return _skip("anthropic SDK not installed (pip install anthropic)")
+    backends = set(_backends())
+    if "claude" in backends:
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            return _skip("ANTHROPIC_API_KEY not set (paste it into .env)")
+        try:
+            import anthropic  # noqa: F401
+        except ModuleNotFoundError:
+            return _skip("anthropic SDK not installed (pip install anthropic)")
+    if "gemini" in backends:
+        if not (
+            os.environ.get("GOOGLE_AISTUDIO_API_KEY")
+            or os.environ.get("GEMINI_API_KEY")
+            or os.environ.get("GOOGLE_API_KEY")
+        ):
+            return _skip("no Google key for the gemini backend (set GOOGLE_AISTUDIO_API_KEY)")
+        try:
+            import google.genai  # noqa: F401
+        except ModuleNotFoundError:
+            return _skip("google-genai not installed (pip install google-genai)")
     return asyncio.run(_run())
 
 

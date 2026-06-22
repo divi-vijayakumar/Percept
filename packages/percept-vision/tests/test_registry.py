@@ -31,10 +31,17 @@ class TestRegistry(unittest.TestCase):
             registry.make("smell", "fake")
 
     def test_unavailable_vendor_raises_actionable_error(self):
-        # A vendor whose adapter module doesn't ship yet -> clear runtime error at resolve time.
+        # A vendor whose adapter module doesn't ship -> clear runtime error at resolve time.
+        # (gemini now SHIPS, so register a throwaway backend pointing at a missing module.)
+        registry.register("vision", "_missing_", registry._lazy("does_not_exist", "Nope"))
         with self.assertRaises(RuntimeError) as ctx:
-            registry.make_vision("gemini")
+            registry.make_vision("_missing_")
         self.assertIn("not available", str(ctx.exception))
+
+    def test_gemini_vision_resolves_now_that_it_ships(self):
+        # Phase: the Gemini adapter ships and imports cleanly with no key (lazy google.genai).
+        v = registry.make_vision("gemini")
+        self.assertEqual(type(v).__name__, "GeminiVision")
 
     def test_claude_vision_resolves_but_needs_key_or_sdk(self):
         # Phase 2: the Claude vision adapter now SHIPS and imports cleanly (the core never imports
