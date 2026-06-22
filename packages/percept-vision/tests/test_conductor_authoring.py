@@ -54,6 +54,19 @@ class TestCoerceAuthoredBehavior(unittest.TestCase):
         )
         self.assertEqual(coerce_authored_behavior({"consequence": {"miss_cost": "catastrophic"}}), {})
 
+    def test_fire_when_validated_through_the_ast_firewall(self):
+        # a valid nth-distinct predicate is kept; window clamped/typed
+        self.assertEqual(
+            coerce_authored_behavior({"accumulate": {"fire_when": "n == 3"}}), {"fire_when": "n == 3"}
+        )
+        self.assertEqual(
+            coerce_authored_behavior({"accumulate": {"fire_when": "n >= 2", "window_s": 600}}),
+            {"fire_when": "n >= 2", "window_s": 600.0},
+        )
+        # an UNSAFE expression never reaches goal.state (same AST whitelist as firing time)
+        self.assertEqual(coerce_authored_behavior({"accumulate": {"fire_when": "__import__('os')"}}), {})
+        self.assertEqual(coerce_authored_behavior({"accumulate": {"fire_when": "open('x')"}}), {})
+
     def test_unknown_and_malformed_are_dropped(self):
         self.assertEqual(coerce_authored_behavior({"rearm": "explode"}), {})  # out-of-vocab rearm
         self.assertEqual(coerce_authored_behavior({"type": "wormhole"}), {})  # out-of-vocab type

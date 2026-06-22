@@ -268,6 +268,13 @@ class BehaviorExecutor:
         action = self.gate.evaluate(key, verdict, freshness=freshness)
         self.metrics.incr(f"{metric}.{action}")
         if action == FIRE:
+            # accumulate (nth-distinct): a rising edge IS a distinct occurrence, so gate the
+            # USER-facing fire on fire_when(n). No fire_when -> byte-for-byte (existing goals never
+            # accumulate). This is how "alert me the 3rd distinct time" composes with zero new code.
+            if program.accumulate.fire_when:
+                ctx.count += 1
+                if not self._fire_when(program.accumulate.fire_when)({"n": ctx.count, "t": t}):
+                    return None  # counted the occurrence, but it isn't the nth -> no alert
             if is_hard_quadrant(consequence_of(goal)):  # A3 hard-quadrant escalates to ASK
                 self.metrics.incr("consequence.escalate")
                 return Fired(goal.id, ASK, escalate_text(goal), base_key[-1], verdict)
@@ -360,7 +367,11 @@ def program_of(goal) -> BehaviorProgram:
             key=KeySpec(by=("entity", "time_bucket"), bucket_s=s.get("cadence_s")),
             cadence_s=s.get("cadence_s"),
         )
-    return BehaviorProgram(sense="judge", predicate=goal.condition)  # on_false default == today
+    return BehaviorProgram(  # on_false default == today; carries an authored fire_when if present
+        sense="judge",
+        predicate=goal.condition,
+        accumulate=Accumulator(fire_when=s.get("fire_when"), window_s=s.get("window_s")),
+    )
 
 
 # --------------------------------------------------------------------------------------------------
@@ -404,6 +415,19 @@ def coerce_authored_behavior(raw) -> dict:
         d = _num(raw.get("deadline_s"))
         if d is not None and d >= 0:
             out.update(rearm="deadline", deadline_s=d)
+    # accumulate (nth-distinct): fire_when is validated through the SAME AST whitelist that runs at
+    # firing time — an unsafe expression is dropped here, so it never reaches goal.state.
+    acc = raw.get("accumulate")
+    if isinstance(acc, dict) and isinstance(acc.get("fire_when"), str):
+        try:
+            compile_fire_when(acc["fire_when"])
+        except UnsafeExpression:
+            pass  # unsafe -> drop; the goal stays a plain watch
+        else:
+            out["fire_when"] = acc["fire_when"]
+            w = _num(acc.get("window_s"))
+            if w is not None and w > 0:
+                out["window_s"] = w
     # consequence (closed cost vocab; protected_floor can only be raised, never authored false-down)
     cons = raw.get("consequence")
     if isinstance(cons, dict):
