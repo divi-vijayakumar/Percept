@@ -357,27 +357,33 @@ class GatedWatchLoop:
         return self._gate
 
     async def run(
-        self, stream: Iterable[Any], *, clock_start: float = 0.0, dt: float = 1.0
+        self, stream: Iterable[Any], *, clock_start: float = 0.0, dt: float = 1.0,
+        energies: Sequence[float] | None = None,
     ) -> LoopReport:
         """Drive the loop over a frame stream; gate, report up, perceive only on escalation.
 
         ``stream`` yields either bare frames (timestamps synthesized from ``clock_start`` stepping
-        by ``dt``) or ``(ts, frame)`` pairs. Returns the :class:`LoopReport`.
+        by ``dt``) or ``(ts, frame)`` pairs. ``energies`` (optional) is a per-frame audio-energy signal
+        (one float per frame, same order) feeding energy-backed detectors like acoustic-onset — the audio
+        analog of the motion channel, the same energy already computed off the mic/STT stream. Returns
+        the :class:`LoopReport`.
         """
         report = LoopReport()
-        for item in _normalize_stream(stream, clock_start=clock_start, dt=dt):
+        items = _normalize_stream(stream, clock_start=clock_start, dt=dt)
+        for i, item in enumerate(items):
             decision = self._gate.evaluate(item.frame, ts=item.ts)
+            energy = energies[i] if energies is not None and i < len(energies) else None
             report.frames += 1
             report.signals.append(decision.signal)  # report Tier0Signal UP every frame
-            # Edge detectors run on the cheap motion signal at native fps — the count/boundaries come
-            # from here, decoupled from the (sparse, motion-gated) vision calls below. Each boundary is
-            # fed to the brain as a distinct occurrence (edge proposes · brain counts), firing per the
+            # Edge detectors run on the cheap motion/energy signals at native fps — the count/boundaries
+            # come from here, decoupled from the (sparse, motion-gated) vision calls below. Each boundary
+            # is fed to the brain as a distinct occurrence (edge proposes · brain counts), firing per the
             # goal's accumulate.fire_when without spending a vision call.
             count_boundary = getattr(self._core, "perceive_boundary", None)
             for goal_id, bank in self._banks.items():
                 # feed every channel the loop has: motion (always) + the raw frame (for frame-backed
-                # detectors like pose). Audio energy is fed once the AudioWindow is wired (acoustic).
-                for b in bank.push(item.ts, motion=decision.signal.motion, frame=item.frame):
+                # detectors like pose) + audio energy (for acoustic-onset).
+                for b in bank.push(item.ts, motion=decision.signal.motion, frame=item.frame, energy=energy):
                     report.boundaries.append((goal_id, b))
                     if count_boundary is not None:
                         fired = count_boundary(goal_id, t=b.t)
@@ -402,17 +408,19 @@ async def run_gated_watch(
     source: str = "camera",
     clock_start: float = 0.0,
     dt: float = 1.0,
+    energies: Sequence[float] | None = None,
     settings: Settings | None = None,
 ) -> LoopReport:
     """One-call entrypoint for the wired loop (the cross-package e2e drives this).
 
     Builds a :class:`GatedWatchLoop` (compiling ``goals`` — or the core's active goals — down to a
-    WatchSpec) and runs it over ``stream``. Returns the :class:`LoopReport`.
+    WatchSpec) and runs it over ``stream`` (optionally with a per-frame ``energies`` audio signal).
+    Returns the :class:`LoopReport`.
     """
     loop = GatedWatchLoop(
         core, goals, threshold=threshold, source=source, settings=settings
     )
-    return await loop.run(stream, clock_start=clock_start, dt=dt)
+    return await loop.run(stream, clock_start=clock_start, dt=dt, energies=energies)
 
 
 __all__ = [

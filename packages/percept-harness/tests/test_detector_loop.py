@@ -93,6 +93,18 @@ class TestEdgeBoundaryLoop(unittest.TestCase):
         self.assertEqual(report.boundary_count("fg", kind="peak"), 3)
         self.assertTrue(all(gid == "fg" for gid, _ in report.boundaries))
 
+    def test_acoustic_onset_fires_via_energy_channel(self):
+        # the live loop feeds a per-frame audio-energy signal to energy-backed detectors (acoustic-onset)
+        g = Goal(id="ag", condition="the kettle is boiling", say="!",
+                 state={"type": "watch", "count": 0, "detectors": ["acoustic-onset"]})
+        core = Percept.create()
+        core.add_goal(g)
+        loop = GatedWatchLoop(core, [g], threshold=0.05)
+        # a quiet→loud→quiet energy track: the onset (>=0.3 having been <0.15) fires once
+        report = asyncio.run(loop.run([still()] * 6, energies=[0.0, 0.0, 0.5, 0.5, 0.0, 0.0]))
+        self.assertGreaterEqual(report.boundary_count("ag", kind="onset"), 1)
+        self.assertTrue(all(b.detector == "acoustic-onset" for _, b in report.boundaries))
+
     def test_no_detectors_means_no_boundaries(self):
         g = Goal(id="w", condition="a cup is up", say="saw it")  # default: no detectors
         report = _run(g, [still(), moving(), still(), moving()])
