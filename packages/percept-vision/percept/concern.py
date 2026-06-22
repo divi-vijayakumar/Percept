@@ -13,7 +13,7 @@ numbers (plan R15): ``threshold_for(Consequence()) == 0.7`` == ``Gate().threshol
 
 from __future__ import annotations
 
-from .adapters import Concern, Consequence, Evidence, Verdict
+from .adapters import Concern, Consequence, Evidence, Goal, Verdict
 
 # Pinned to the measured current gate defaults (S2 capture; plan R15).
 DEFAULT_THRESHOLD = 0.7
@@ -68,4 +68,55 @@ def derive_belief(
     )
 
 
-__all__ = ["DEFAULT_THRESHOLD", "OBS_CAP", "threshold_for", "observe", "derive_belief"]
+# --- Consequence's three CALIBRATION-FREE jobs (A3, spec §5) -------------------------------------
+# These are how a coarse consequence earns its keep TODAY, while the threshold job (threshold_for)
+# stays inert (R3): none of them needs calibrated confidence — they read stakes, not a 0..1 number.
+
+_MISS_RANK = {"trivial": 0, "mild": 1, "severe": 2}
+_FF_RANK = {"trivial": 0, "mild": 1, "severe": 2, "irreversible": 3}
+
+
+def consequence_of(goal: Goal) -> Consequence:
+    """Read a goal's consequence from its state (the conductor authors these; default mild/mild).
+
+    ``protected_floor`` PINS ``miss_cost`` at maximum — refinement may relax convenience but never
+    that (spec §5). So a protected-floor concern is always ``severe`` miss, regardless of the stored tag.
+    """
+    floor = bool(goal.state.get("protected_floor", False))
+    miss = "severe" if floor else goal.state.get("miss_cost", "mild")
+    return Consequence(
+        miss_cost=miss,
+        false_fire_cost=goal.state.get("false_fire_cost", "mild"),
+        protected_floor=floor,
+    )
+
+
+def attention_weight(c: Consequence) -> int:
+    """Job — attention allocation (spec §5): perception budget ∝ stakes. Pure miss-cost rank, no
+    confidence. High-consequence concerns are tracked attentively; low ones loosely."""
+    return _MISS_RANK[c.miss_cost]
+
+
+def is_hard_quadrant(c: Consequence) -> bool:
+    """Job — hard-quadrant routing (spec §5): both costs high => no cheap threshold is safe =>
+    escalate to the deliberative tier / ASK the human instead of auto-firing."""
+    return _MISS_RANK[c.miss_cost] >= 2 and _FF_RANK[c.false_fire_cost] >= 2
+
+
+def requires_verification(c: Consequence) -> bool:
+    """Job — verification-required (spec §5,§7): a high false-fire cost must be verified before/after
+    acting (consumed by the action layer, A4). Irreversible always requires it."""
+    return _FF_RANK[c.false_fire_cost] >= 2
+
+
+__all__ = [
+    "DEFAULT_THRESHOLD",
+    "OBS_CAP",
+    "threshold_for",
+    "observe",
+    "derive_belief",
+    "consequence_of",
+    "attention_weight",
+    "is_hard_quadrant",
+    "requires_verification",
+]

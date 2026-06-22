@@ -15,6 +15,7 @@ from typing import Any, Callable
 from . import registry
 from .adapters import Box, Decision, Goal, TurnResult, Verdict
 from .cache import CacheCascade, CacheKey, FrameHashLayer
+from .concern import attention_weight, consequence_of, is_hard_quadrant
 from .config import Settings, load_settings
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
 from .entity import EntityGraph
@@ -300,6 +301,11 @@ class Percept:
         action = self.gate.evaluate(key, verdict, freshness=freshness)
         self.metrics.incr(f"{metric}.{action}")
         if action == FIRE:
+            # A3 hard-quadrant: both costs high -> no cheap threshold is safe -> escalate (ASK the
+            # human), do not auto-fire. Default mild/mild is not hard-quadrant -> byte-for-byte FIRE.
+            if is_hard_quadrant(consequence_of(goal)):
+                self.metrics.incr("consequence.escalate")
+                return FireEvent(goal.id, ASK, self._escalate_text(goal), base_key[-1], verdict)
             return FireEvent(goal.id, FIRE, goal.say, base_key[-1], verdict)
         if action == ASK:
             return FireEvent(goal.id, ASK, self._ask_text(goal), base_key[-1], verdict)
@@ -340,6 +346,19 @@ class Percept:
 
     def _coverage_text(self, goal: Goal) -> str:
         return f"I've lost sight of what I'm watching: {goal.condition}"
+
+    def _escalate_text(self, goal: Goal) -> str:
+        return f"High stakes either way — confirm before I act: {goal.condition}?"
+
+    def attention_order(self) -> list[Goal]:
+        """A3 attention allocation (spec §5): order active concerns by consequence stakes so a
+        budget-limited perception loop spends on the highest-consequence concerns first. Pure stakes,
+        no confidence — a calibration-free job."""
+        return sorted(
+            self.goals.active(),
+            key=lambda g: attention_weight(consequence_of(g)),
+            reverse=True,
+        )
 
     # -- the watch path ------------------------------------------------------
     async def perceive_judged(
