@@ -215,11 +215,19 @@ def overdue_text(goal) -> str:  # mirrors agent._overdue_text
 # --------------------------------------------------------------------------------------------------
 
 
+class _NoMetrics:
+    """Default metrics sink — a no-op so the executor runs standalone (tests/spike)."""
+
+    def incr(self, key: str) -> None:  # pragma: no cover - trivial
+        pass
+
+
 class BehaviorExecutor:
     """One executor for every concern. Produces ``(key, verdict)`` and calls the UNCHANGED gate."""
 
-    def __init__(self, gate: Gate) -> None:
+    def __init__(self, gate: Gate, metrics=None) -> None:
         self.gate = gate
+        self.metrics = metrics if metrics is not None else _NoMetrics()
         self._ctx: dict[str, ConcernContext] = {}  # isolated per-concern state, keyed by concern id
         self._fire_when_cache: dict[str, Callable[[dict], bool]] = {}
 
@@ -249,6 +257,7 @@ class BehaviorExecutor:
         *,
         freshness: float = 1.0,
         t: float = 0.0,
+        metric: str = "gate",
     ) -> Fired | None:
         ctx = self.ctx(goal.id)
         truth = classify(verdict, freshness, self.gate.threshold, self.gate.fresh_min)
@@ -257,8 +266,10 @@ class BehaviorExecutor:
             return None  # never-contract: a confident-false must not reach the gate
         key = self._synth_key(base_key, program.key, t)
         action = self.gate.evaluate(key, verdict, freshness=freshness)
+        self.metrics.incr(f"{metric}.{action}")
         if action == FIRE:
             if is_hard_quadrant(consequence_of(goal)):  # A3 hard-quadrant escalates to ASK
+                self.metrics.incr("consequence.escalate")
                 return Fired(goal.id, ASK, escalate_text(goal), base_key[-1], verdict)
             return Fired(goal.id, FIRE, goal.say, base_key[-1], verdict)
         if action == ASK:

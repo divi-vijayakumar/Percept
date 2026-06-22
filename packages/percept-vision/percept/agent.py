@@ -14,14 +14,15 @@ from typing import Any, Callable
 
 from . import registry
 from .adapters import Box, Decision, Goal, TurnResult, Verdict
+from .behavior import BehaviorExecutor, program_of
 from .cache import CacheCascade, CacheKey, FrameHashLayer
-from .concern import attention_weight, consequence_of, is_hard_quadrant, requires_verification
+from .concern import attention_weight, consequence_of, requires_verification
 from .config import Settings, load_settings
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
 from .entity import EntityGraph
 from .episodes import EpisodeJudge, EpisodeLog
 from .events import EventLog, FrameWindow
-from .gate import ASK, FIRE, Gate, GateAction, classify
+from .gate import FIRE, Gate, GateAction, classify
 from .goals import GoalOp, GoalRegistry
 from .observability import Metrics, health
 from .routing import RouteEngine
@@ -107,6 +108,7 @@ class Percept:
     last_satisfied: dict = field(default_factory=dict)  # goal_id -> t of last confident-YES (A1 deadline)
     consent: ConsentProfile = field(default_factory=ConsentProfile)  # the act-modality gate
     action_log: ActionLog = field(default_factory=ActionLog)  # audit: every fire + act
+    _executor: Any = None  # BehaviorExecutor — the unified firing path (lazily bound to self.gate)
 
     # -- construction --------------------------------------------------------
     @classmethod
@@ -267,7 +269,14 @@ class Percept:
             if op.op in ("update", "complete", "cancel") and gid is not None:
                 self.invalidate_cache(gid)
 
-    # -- unified (C, R) firing (A1) -----------------------------------------
+    # -- unified firing via the general executor ----------------------------
+    @property
+    def executor(self) -> BehaviorExecutor:
+        """The single firing path, lazily bound to THIS agent's gate + metrics (shared state)."""
+        if self._executor is None:
+            self._executor = BehaviorExecutor(self.gate, self.metrics)
+        return self._executor
+
     def _fire_concern(
         self,
         goal: Goal,
@@ -278,39 +287,18 @@ class Percept:
         t: float = 0.0,
         metric: str = "gate",
     ) -> FireEvent | None:
-        """One firing path for every gate-based concern: apply the per-concern re-arm ``R`` via
-        key-synthesis, then feed the UNCHANGED gate.
-
-        ``R`` comes from ``goal.state['rearm']`` (default ``on_false`` -> byte-for-byte today). S2
-        proved each ``R`` is expressible without touching ``Gate.evaluate``/``classify``:
-          on_false / each_event -> the ``base_key`` (the gate's native confident-false re-arm, or a
-            caller-folded event id);
-          interval -> fold a time-bucket into the key so a new bucket is a fresh armed edge;
-          never (one-shot) -> the S2 CONTRACT: never push a confident-false into the gate, so the
-            edge never re-arms after its single fire.
+        """One firing path — delegates to the :class:`~percept.behavior.BehaviorExecutor` (the general
+        ``sense·key·accumulate`` executor that now owns the per-concern re-arm key-synthesis, the
+        never-contract, the hard-quadrant escalation, and the confusion substrate). This method is a
+        thin boundary that adapts the executor's ``Fired`` back to the legacy ``FireEvent`` shape; the
+        watch + event paths route through here, so both now run on the unified executor (gate unchanged).
         """
-        rearm = goal.state.get("rearm", "on_false")
-        if rearm == "never":
-            truth = classify(verdict, freshness, self.gate.threshold, self.gate.fresh_min)
-            if truth == "no":
-                return None  # never-contract: a confident-false must not reach the gate (no re-arm)
-        key = base_key
-        if rearm == "interval":
-            cadence_s = goal.state.get("cadence_s")
-            if cadence_s:
-                key = (*base_key, int(t // cadence_s))  # new time-bucket = fresh edge
-        action = self.gate.evaluate(key, verdict, freshness=freshness)
-        self.metrics.incr(f"{metric}.{action}")
-        if action == FIRE:
-            # A3 hard-quadrant: both costs high -> no cheap threshold is safe -> escalate (ASK the
-            # human), do not auto-fire. Default mild/mild is not hard-quadrant -> byte-for-byte FIRE.
-            if is_hard_quadrant(consequence_of(goal)):
-                self.metrics.incr("consequence.escalate")
-                return FireEvent(goal.id, ASK, self._escalate_text(goal), base_key[-1], verdict)
-            return FireEvent(goal.id, FIRE, goal.say, base_key[-1], verdict)
-        if action == ASK:
-            return FireEvent(goal.id, ASK, self._ask_text(goal), base_key[-1], verdict)
-        return None
+        fired = self.executor.fire_judged(
+            goal, verdict, base_key, program_of(goal), freshness=freshness, t=t, metric=metric
+        )
+        if fired is None:
+            return None
+        return FireEvent(fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict)
 
     # -- observability: coverage-loss fires with the concern's consequence (A2, spec §3) ----
     def check_observability(
