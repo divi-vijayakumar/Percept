@@ -104,7 +104,7 @@ class AnthropicVision:
                                       corrections=corrections, frames=frames)
         resp = client.messages.create(
             model=self._model,
-            max_tokens=256,
+            max_tokens=512,  # 256 truncated verbose verdicts mid-JSON -> spurious "unparsed" misses
             system=_JUDGE_SYSTEM,
             messages=[{"role": "user", "content": content}],
         )
@@ -244,7 +244,10 @@ def _coerce_json(text: str) -> Any:
     )
     if start == -1:
         raise ValueError("no JSON found in model reply")
-    return json.loads(text[start:])
+    # bound to the LAST closing brace/bracket so a trailing ``` fence or prose can't break json.loads
+    # (the verdict parser previously took text[start:] unbounded -> a fenced reply parsed as "unparsed").
+    end = max(text.rfind("}"), text.rfind("]"))
+    return json.loads(text[start : end + 1] if end > start else text[start:])
 
 
 def _parse_verdict(text: str) -> Verdict:

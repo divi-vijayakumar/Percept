@@ -177,7 +177,7 @@ class GeminiVision(_GeminiBase):
             return await client.aio.models.generate_content(
                 model=self._model,
                 contents=parts,
-                config=types.GenerateContentConfig(system_instruction=_JUDGE_SYSTEM, max_output_tokens=256),
+                config=types.GenerateContentConfig(system_instruction=_JUDGE_SYSTEM, max_output_tokens=512),
             )
 
         resp = await with_retry(_call, breaker=self._breaker)  # survive transient resets in batch captures
