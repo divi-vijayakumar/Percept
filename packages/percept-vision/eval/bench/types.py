@@ -28,6 +28,7 @@ class TrackResult:
     measured: list = field(default_factory=list)  # provenance: measured cell labels
     modeled: list = field(default_factory=list)  # provenance: modeled cells (rendered with ~)
     excluded: list = field(default_factory=list)  # invalid items + reason
+    reference: dict = field(default_factory=dict)  # {metric: {"value": v, "by": "TransRAC CVPR'22"}} SOTA ref
     calls: int = 0  # live vision calls spent (cost)
     notes: str = ""
 

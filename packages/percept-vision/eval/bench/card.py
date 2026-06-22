@@ -46,20 +46,27 @@ def render_card(results: list[TrackResult], *, mode: str = "sampled", backend: s
             L.append(f"  {label:<36}: {val}")
     L.append(f"  {'total vision calls':<36}: {sum(r.calls for r in results)}")
 
-    L += ["", "## Per-track × config", f"  {'track':<12}{'metric':<18}" + "".join(f"{c:>11}" for c in CONFIGS)]
+    L += ["", "## Per-track × config   (ref = published SOTA, where the metric is comparable)",
+          f"  {'track':<12}{'metric':<16}" + "".join(f"{c:>10}" for c in CONFIGS) + f"   {'ref (SOTA)':<24}"]
     for r in results:
         for metric in r.metrics():
             cells = []
             for c in CONFIGS:
                 v = r.cells.get((c, metric))
                 if v is None:
-                    cells.append(f"{'n/a':>11}")
+                    cells.append(f"{'n/a':>10}")
                     continue
                 s = v if isinstance(v, str) else r.fmt(metric).format(v)
                 if f"{c}:{metric}" in r.modeled:
                     s = "~" + s
-                cells.append(f"{s:>11}")
-            L.append(f"  {r.track:<12}{metric:<18}" + "".join(cells))
+                cells.append(f"{s:>10}")
+            ref = r.reference.get(metric)
+            ref_s = ""
+            if ref:
+                rv = ref["value"]
+                rv = rv if isinstance(rv, str) else r.fmt(metric).format(rv)
+                ref_s = f"{rv} ({ref.get('by', '')})"
+            L.append(f"  {r.track:<12}{metric:<16}" + "".join(cells) + f"   {ref_s:<24}")
 
     measured = sorted({m for r in results for m in r.measured})
     modeled = sorted({m for r in results for m in r.modeled})
