@@ -97,3 +97,6 @@ omnipro_*.json
 
 # generated benchmark cards (regenerable; RELEASE cards committed deliberately)
 **/bench_card_*.txt
+
+# Perception Test raw data (CC-BY; range-fetched videos + annotations, regenerable)
+**/eval/bench-staging/perception_test/
