@@ -29,6 +29,20 @@ EDGE_KEEP = float(os.environ.get("PERCEPT_EDGE_KEEP", 0.17))  # 1 - 0.83 (bench_
 PRICE_IN = float(os.environ.get("PERCEPT_GEMINI_PRICE_IN", 0.30))
 PRICE_OUT = float(os.environ.get("PERCEPT_GEMINI_PRICE_OUT", 2.50))
 
+# Citations carried by the scorecard / Snapshot Card. The interaction-model concept (the native-ceiling
+# reference line) is Thinking Machines Lab; the public data/metrics are cited where used. See
+# eval/BENCHMARK_PLAN.md for full BibTeX.
+REFERENCES = [
+    'Thinking Machines Lab, "Interaction Models: A Scalable Approach to Human-AI Collaboration",',
+    "  Thinking Machines Lab: Connectionism, May 2026. doi:10.64434/tml.20260511",
+    '  https://thinkingmachines.ai/blog/interaction-models/',
+    'Patraucean et al., "Perception Test: A Diagnostic Benchmark for Multimodal Video Models",',
+    "  NeurIPS 2023 (arXiv:2305.13786; data CC-BY-4.0)",
+    "ProactiveVideoQA (PAUC), arXiv:2507.09313, 2025",
+    'Hu et al., "TransRAC ... Repetitive Action Counting" (RepCount-A), CVPR 2022',
+    'Li, Wang, Ramanan, "Towards Streaming Perception", ECCV 2020',
+]
+
 
 def _load(name: str):
     p = ROOT / name
@@ -148,7 +162,8 @@ def main() -> int:
     L += ["", f"  vision calls by dataset (raw=Core): " + ", ".join(f"{k}={v}" for k, v in calls.items()),
           "", "  NOTE: accuracy = MEASURED (cached Gemini verdicts). E2E cost/latency from the edge's",
           "  measured 83% call cut; E2E *accuracy* ≈ Core (edge escalates on motion → events preserved) —",
-          "  an exact E2E-accuracy number needs the real frames through the motion gate.", "=" * 78, ""]
+          "  an exact E2E-accuracy number needs the real frames through the motion gate.", "=" * 78]
+    L += ["  References:"] + [f"    {r}" for r in REFERENCES] + ["=" * 78, ""]
     print("\n".join(L))
     return 0
 

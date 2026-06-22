@@ -162,3 +162,68 @@ measured-vs-modeled plumbing.
 - **Accuracy story is narrow** — counting + acoustic, not relational. Sell relational as discipline + cost.
 - **PVQA comparability** needs reproducing published numbers on ProactiveVideoQA; if we can't, the dual-report
   comparability weakens to "directional."
+
+---
+
+## 6. References
+
+Every Snapshot Card carries a `references:` block citing the works the run builds on. Cite these (the
+verified three in full; confirm author lists for the rest before a `RELEASE` card):
+
+- **Interaction Models** — the *native interaction model* concept underlying the §2.1 native-ceiling
+  reference line (the duplex omni-model we measure the gap against, never claim to beat):
+
+  > Thinking Machines Lab, "Interaction Models: A Scalable Approach to Human-AI Collaboration",
+  > *Thinking Machines Lab: Connectionism*, May 2026.
+
+  ```bibtex
+  @article{thinkingmachines2026interactionmodels,
+    author  = {Thinking Machines Lab},
+    title   = {Interaction Models: A Scalable Approach to Human-AI Collaboration},
+    journal = {Thinking Machines Lab: Connectionism},
+    year    = {2026},
+    month   = {May},
+    note    = {https://thinkingmachines.ai/blog/interaction-models/},
+    doi     = {10.64434/tml.20260511},
+  }
+  ```
+
+- **Perception Test** — CC-BY-4.0 audio + onset data for the acoustic & timeliness tracks (§2):
+
+  > V. Pătrăucean, L. Smaira, A. Gupta, A. Recasens, et al., "Perception Test: A Diagnostic Benchmark for
+  > Multimodal Video Models", *NeurIPS 2023* (Datasets and Benchmarks). arXiv:2305.13786.
+
+  ```bibtex
+  @inproceedings{patraucean2023perception,
+    title     = {Perception Test: A Diagnostic Benchmark for Multimodal Video Models},
+    author    = {P{\u{a}}tr{\u{a}}ucean, Viorica and Smaira, Lucas and Gupta, Ankush and Recasens, Adri{\`a} and others},
+    booktitle = {Advances in Neural Information Processing Systems (NeurIPS), Datasets and Benchmarks Track},
+    year      = {2023},
+    note      = {arXiv:2305.13786; data CC-BY-4.0},
+  }
+  ```
+
+- **ProactiveVideoQA / PAUC** — the proactive timeliness metric we adapt into P-PAUC (§4.2 of the spec):
+
+  > "ProactiveVideoQA: A Comprehensive Benchmark Evaluating Proactive Interactions in Video Large Language
+  > Models", arXiv:2507.09313, 2025. (PAUC = Proactive Area Under Curve.)
+
+  ```bibtex
+  @article{proactivevideoqa2025,
+    title   = {ProactiveVideoQA: A Comprehensive Benchmark Evaluating Proactive Interactions in Video Large Language Models},
+    journal = {arXiv preprint arXiv:2507.09313},
+    year    = {2025},
+  }
+  ```
+
+- **RepCount-A** (counting track) — Hu et al., "TransRAC: Encoding Multi-scale Temporal Correlation with
+  Transformers for Repetitive Action Counting", *CVPR 2022*. *(confirm full author list before RELEASE)*
+- **Streaming perception** (latency-coupled scoring philosophy, §1.4) — Li, Wang, Ramanan, "Towards Streaming
+  Perception", *ECCV 2020*. *(confirm before RELEASE)*
+- **Charades** (if used) — Sigurdsson et al., "Hollywood in Homes: Crowdsourcing Data Collection for Activity
+  Understanding", *ECCV 2016*. *(confirm before RELEASE)*
+
+Where each is cited: the **interaction model** anchors the native-ceiling rung; **Perception Test** is the
+acoustic/timeliness/(v2 tracking) data; **ProactiveVideoQA** is the PAUC source we adapt + the PVQA-native
+comparability baseline; **RepCount-A** is the counting data; **streaming perception** is the timeliness
+scoring philosophy.
