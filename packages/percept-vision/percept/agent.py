@@ -15,7 +15,7 @@ from typing import Any, Callable
 from . import registry
 from .adapters import Box, Decision, Goal, TurnResult, Verdict
 from .cache import CacheCascade, CacheKey, FrameHashLayer
-from .concern import attention_weight, consequence_of, is_hard_quadrant
+from .concern import attention_weight, consequence_of, is_hard_quadrant, requires_verification
 from .config import Settings, load_settings
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
 from .entity import EntityGraph
@@ -701,7 +701,8 @@ class Percept:
         now = self.clock() if t is None else t
         goal = self.goals.get(goal_id)
         modality_ok = goal is not None and goal.modality == "act"
-        allowed = bool(modality_ok and self.consent.permits(action))
+        source_id = goal.source if goal is not None else None
+        allowed = bool(modality_ok and self.consent.permits(action, source_id))
         record = self.action_log.record(
             ActionRecord(
                 kind="act" if allowed else "act_blocked",
@@ -721,6 +722,62 @@ class Percept:
             )
             raise ConsentDenied(f"act blocked for goal {goal_id!r}: {why}")
         return record
+
+    def actuate(
+        self,
+        goal_id: str,
+        action: str,
+        *,
+        expect: str | None = None,
+        verify_within: float = 30.0,
+        detail: dict | None = None,
+        t: float | None = None,
+    ) -> ActionRecord:
+        """A world-changing action under the spec's full safety contract (§7, A4).
+
+        Goes through :meth:`act` (consent + per-source + modality enforced; a blocked attempt still
+        raises :class:`ConsentDenied`), and — for a concern whose false-fire cost is high enough to
+        REQUIRE VERIFICATION (A3) — instantiates a **verification concern** that confirms the action's
+        effect actually landed. "Every world-changing action instantiates a verification concern"
+        (spec §7) is enforced HERE, not left to the caller. OSS stays notify-first: actuate performs
+        no side effect beyond the audited ``act()`` and arming the verification concern.
+        """
+        now = self.clock() if t is None else t
+        record = self.act(goal_id, action, detail, t=now)  # consent gate; raises if blocked
+        goal = self.goals.get(goal_id)
+        if goal is not None and requires_verification(consequence_of(goal)):
+            v = self._instantiate_verification(goal, action, expect, now, verify_within)
+            record.detail["verification_goal_id"] = v.id
+        return record
+
+    def _instantiate_verification(
+        self, goal: Goal, action: str, expect: str | None, t: float, verify_within: float
+    ) -> Goal:
+        """Acting creates a concern that checks the effect LANDED (spec §7) — reusing A1's absence
+        machinery: a ``deadline`` concern that fires "couldn't confirm" if the expected post-condition
+        isn't observed within ``verify_within``. High miss-cost: an unverified world-change is exactly
+        what must not be silently dropped. Confirmation (a confident-yes on the effect) cancels it."""
+        vid = f"{goal.id}::verify::{action}"
+        v = Goal(
+            id=vid,
+            condition=expect or f"the effect of {action!r} is confirmed",
+            say=f"couldn't confirm the effect of {action!r}",
+            source=goal.source,
+        )
+        v.state["rearm"] = "deadline"
+        v.state["deadline_s"] = t + verify_within
+        v.state["miss_cost"] = "severe"
+        v.state["verifies"] = goal.id
+        self.add_goal(v)
+        self.action_log.record(
+            ActionRecord(
+                kind="verify_created",
+                goal_id=goal.id,
+                detail={"verification_goal_id": vid, "action": action},
+                t=t,
+            )
+        )
+        return v
 
     # -- persistence (endurance: survive a disconnect) ----------------------
     def snapshot(self) -> dict:

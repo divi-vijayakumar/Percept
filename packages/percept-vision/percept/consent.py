@@ -21,13 +21,24 @@ class ConsentDenied(PermissionError):
 
 @dataclass(frozen=True)
 class ConsentProfile:
-    """The act-modality gate. Default: computer-use OFF, no actions permitted."""
+    """The act-modality gate. Default: computer-use OFF, no actions permitted.
+
+    Consent is **per-source** (spec §9, A5): ``allowed_sources`` scopes acting to specific
+    ``source_id``s. Empty (the default) = no source restriction, so existing single-source configs are
+    byte-for-byte unchanged. A non-empty set is the single-node safety contract — a source NOT in it
+    (e.g. another node's camera) can never act, which is exactly the "no cross-node bind" guarantee.
+    """
 
     allow_computer_use: bool = False
     allowed_actions: frozenset = frozenset()
+    allowed_sources: frozenset = frozenset()
 
-    def permits(self, action: str) -> bool:
-        return self.allow_computer_use and action in self.allowed_actions
+    def permits(self, action: str, source_id: str | None = None) -> bool:
+        if not (self.allow_computer_use and action in self.allowed_actions):
+            return False
+        if self.allowed_sources and source_id not in self.allowed_sources:
+            return False  # per-source consent: an un-consented source can't act (no cross-node bind)
+        return True
 
 
 @dataclass
