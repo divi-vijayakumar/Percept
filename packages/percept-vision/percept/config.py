@@ -52,11 +52,11 @@ class CacheSettings:
 
 @dataclass(frozen=True)
 class ModelSettings:
-    vision: str = "claude"  # PERCEPT_VISION_BACKEND
-    conductor: str = "claude"  # PERCEPT_CONDUCTOR_BACKEND
-    specialist: str = "claude"  # PERCEPT_SPECIALIST_BACKEND
-    stt: str = "deepgram"  # PERCEPT_STT_BACKEND
-    tts: str = "deepgram"  # PERCEPT_TTS_BACKEND
+    vision: str = "fake"  # PERCEPT_VISION_BACKEND — set claude/gemini in prod
+    conductor: str = "fake"  # PERCEPT_CONDUCTOR_BACKEND
+    specialist: str = "fake"  # PERCEPT_SPECIALIST_BACKEND
+    stt: str = "fake"  # PERCEPT_STT_BACKEND — set deepgram for voice
+    tts: str = "fake"  # PERCEPT_TTS_BACKEND
     vision_model: str = "claude-opus-4-8"  # PERCEPT_VISION_MODEL
     conductor_model: str = "claude-haiku-4-5"  # PERCEPT_CONDUCTOR_MODEL
     specialist_model: str = "claude-haiku-4-5"  # PERCEPT_SPECIALIST_MODEL
@@ -135,11 +135,11 @@ def load_settings() -> Settings:
             audit_rate=_env("PERCEPT_CACHE_AUDIT_RATE", 0.05, float),
         ),
         models=ModelSettings(
-            vision=_env("PERCEPT_VISION_BACKEND", "claude", str),
-            conductor=_env("PERCEPT_CONDUCTOR_BACKEND", "claude", str),
-            specialist=_env("PERCEPT_SPECIALIST_BACKEND", "claude", str),
-            stt=_env("PERCEPT_STT_BACKEND", "deepgram", str),
-            tts=_env("PERCEPT_TTS_BACKEND", "deepgram", str),
+            vision=_env("PERCEPT_VISION_BACKEND", "fake", str),
+            conductor=_env("PERCEPT_CONDUCTOR_BACKEND", "fake", str),
+            specialist=_env("PERCEPT_SPECIALIST_BACKEND", "fake", str),
+            stt=_env("PERCEPT_STT_BACKEND", "fake", str),
+            tts=_env("PERCEPT_TTS_BACKEND", "fake", str),
             vision_model=_env("PERCEPT_VISION_MODEL", "claude-opus-4-8", str),
             conductor_model=_env("PERCEPT_CONDUCTOR_MODEL", "claude-haiku-4-5", str),
             specialist_model=_env("PERCEPT_SPECIALIST_MODEL", "claude-haiku-4-5", str),

@@ -63,7 +63,8 @@ async def run(live: bool, concurrency: int = 8) -> dict:
         if g.get("review_status") == "approved"
         and (root / "scenes" / g["scene_id"] / "clip.json").exists()
     ]
-    backend = "claude" if live else "fake"
+    # honor PERCEPT_VISION_BACKEND (settings.models.vision); live falls back to claude when unset
+    backend = (settings.models.vision if settings.models.vision != "fake" else "claude") if live else "fake"
     vision = registry.make_vision(backend, settings)
     sem = asyncio.Semaphore(concurrency)
     threshold = settings.gate.threshold

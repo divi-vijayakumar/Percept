@@ -115,11 +115,11 @@ class Percept:
     def create(
         cls,
         *,
-        vision: Any = "fake",
-        specialist: Any = "fake",
-        conductor: Any = "fake",
-        stt: Any = "fake",
-        tts: Any = "fake",
+        vision: Any = None,
+        specialist: Any = None,
+        conductor: Any = None,
+        stt: Any = None,
+        tts: Any = None,
         settings: Settings | None = None,
         clock: Callable[[], float] | None = None,
         discover_plugins: bool = True,
@@ -128,6 +128,13 @@ class Percept:
         embedder: Callable[[Any, Box], Any] | None = None,
     ) -> "Percept":
         cfg = settings or load_settings()
+        # A seam not explicitly passed falls back to the config/env selection (settings.models.*, i.e.
+        # the PERCEPT_*_BACKEND vars) so the .env controls which adapter each seam uses. Default: fake.
+        vision = cfg.models.vision if vision is None else vision
+        specialist = cfg.models.specialist if specialist is None else specialist
+        conductor = cfg.models.conductor if conductor is None else conductor
+        stt = cfg.models.stt if stt is None else stt
+        tts = cfg.models.tts if tts is None else tts
         if discover_plugins:
             registry.discover_entrypoints()
         clk = clock or time.monotonic
