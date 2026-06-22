@@ -102,6 +102,7 @@ class Percept:
     event_log: Any = None  # EventLog — temporal dedup of detected events (built in create)
     scheduler: Any = None  # Scheduler — time-triggered proactive fires (built in create)
     transitions: dict = field(default_factory=dict)  # (goal,entity) -> state-transition memory
+    last_supported: dict = field(default_factory=dict)  # goal_id -> t of last CONFIDENT observation (A2)
     consent: ConsentProfile = field(default_factory=ConsentProfile)  # the act-modality gate
     action_log: ActionLog = field(default_factory=ActionLog)  # audit: every fire + act
 
@@ -304,6 +305,42 @@ class Percept:
             return FireEvent(goal.id, ASK, self._ask_text(goal), base_key[-1], verdict)
         return None
 
+    # -- observability: coverage-loss fires with the concern's consequence (A2, spec §3) ----
+    def check_observability(
+        self, *, t: float | None = None, staleness_s: float | None = None
+    ) -> list[FireEvent]:
+        """Fire when a high-consequence concern LOSES perceptual coverage.
+
+        Observability falls out of belief-from-observations: a concern whose last *confident*
+        observation is older than ``staleness_s`` has gone blind. Losing coverage of a high-miss-cost
+        concern INHERITS its consequence — "I can't see the baby" fires with the baby's urgency. This
+        is perception-ROBUST: it fires on the ABSENCE of evidence, never by trusting a verdict.
+
+        De-duped via the UNCHANGED gate: coverage-loss is a ``(C, R)`` fire (C = lost; R = on_false)
+        on a dedicated ``__coverage__`` key, so it fires ONCE per loss episode and re-arms when
+        coverage returns. Only ``miss_cost == 'severe'`` concerns inherit it (default mild -> silent,
+        byte-for-byte). ``last is None`` (never yet observed) is not a loss — acquisition, not blindness.
+        """
+        now = self.clock() if t is None else t
+        bound = staleness_s if staleness_s is not None else self.settings.gate.validity_window_s
+        out: list[FireEvent] = []
+        for goal in self.goals.active():
+            if goal.state.get("miss_cost", "mild") != "severe":
+                continue
+            last = self.last_supported.get(goal.id)
+            lost = last is not None and (now - last) > bound
+            # observability is a derived FACT (we KNOW we haven't seen it), not a perceptual guess
+            verdict = Verdict(satisfied=lost, confidence=1.0, evidence="coverage")
+            action = self.gate.evaluate((goal.id, "__coverage__"), verdict)
+            self.metrics.incr(f"coverage.gate.{action}")
+            if action == FIRE:
+                out.append(FireEvent(goal.id, FIRE, self._coverage_text(goal), None, verdict))
+        self._log_fires(out, now)
+        return out
+
+    def _coverage_text(self, goal: Goal) -> str:
+        return f"I've lost sight of what I'm watching: {goal.condition}"
+
     # -- the watch path ------------------------------------------------------
     async def perceive_judged(
         self, frame: Any, source: str = "camera", *, t: float | None = None
@@ -335,6 +372,8 @@ class Percept:
                 goal, frame, roi, corrections, entity_id=focus.id if focus else None
             )
             freshness = self._freshness(focus, now)
+            if classify(verdict, freshness, self.gate.threshold, self.gate.fresh_min) != "unknown":
+                self.last_supported[goal.id] = now  # A2: a confident read = perceptual coverage
             base_key = (goal.id, focus.id if focus else None)
             ev_fire = self._fire_concern(goal, verdict, base_key, freshness=freshness, t=now)
             if ev_fire is not None:
