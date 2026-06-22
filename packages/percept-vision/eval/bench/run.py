@@ -12,7 +12,13 @@ import argparse
 import subprocess
 
 from . import card
-from . import track_acoustic, track_counting, track_relational
+from . import (
+    track_acoustic_pt,
+    track_counting,
+    track_edge_recall,
+    track_relational,
+    track_timeliness,
+)
 
 
 def _commit() -> str:
@@ -34,7 +40,8 @@ def main() -> int:
         load_dotenv()
 
     results = []
-    for mod in (track_relational, track_counting, track_acoustic):
+    tracks = (track_relational, track_counting, track_acoustic_pt, track_timeliness, track_edge_recall)
+    for mod in tracks:
         try:
             results.append(mod.score(live=args.live, n=args.n))
         except Exception as exc:  # a track failure must not sink the whole card
