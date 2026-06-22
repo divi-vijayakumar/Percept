@@ -104,6 +104,7 @@ class Percept:
     scheduler: Any = None  # Scheduler — time-triggered proactive fires (built in create)
     transitions: dict = field(default_factory=dict)  # (goal,entity) -> state-transition memory
     last_supported: dict = field(default_factory=dict)  # goal_id -> t of last CONFIDENT observation (A2)
+    last_satisfied: dict = field(default_factory=dict)  # goal_id -> t of last confident-YES (A1 deadline)
     consent: ConsentProfile = field(default_factory=ConsentProfile)  # the act-modality gate
     action_log: ActionLog = field(default_factory=ActionLog)  # audit: every fire + act
 
@@ -360,6 +361,37 @@ class Percept:
             reverse=True,
         )
 
+    # -- absence-native firing: an expected concern overdue (A1, spec §3,§4) -----------------
+    def check_deadlines(self, *, t: float | None = None) -> list[FireEvent]:
+        """An EXPECTED concern not satisfied by its deadline fires "overdue".
+
+        Absence IS the firing — there is no positive event to perceive, so this is perception-robust
+        by construction: it fires on the LACK of a confident-yes, never on a guess. Rides the existing
+        tick/scheduler loop (S2) and feeds a synthetic verdict to the UNCHANGED gate on a dedicated
+        ``__overdue__`` key -> fires ONCE per overdue episode, re-arms if the expected event arrives.
+        Only ``rearm == 'deadline'`` concerns (with a ``deadline_s``) participate -> byte-for-byte.
+        """
+        now = self.clock() if t is None else t
+        out: list[FireEvent] = []
+        for goal in self.goals.active():
+            if goal.state.get("rearm") != "deadline":
+                continue
+            deadline = goal.state.get("deadline_s")
+            if deadline is None:
+                continue
+            satisfied = goal.id in self.last_satisfied  # the expected event happened at some point
+            overdue = now >= deadline and not satisfied
+            verdict = Verdict(satisfied=overdue, confidence=1.0, evidence="overdue")
+            action = self.gate.evaluate((goal.id, "__overdue__"), verdict)
+            self.metrics.incr(f"overdue.gate.{action}")
+            if action == FIRE:
+                out.append(FireEvent(goal.id, FIRE, self._overdue_text(goal), None, verdict))
+        self._log_fires(out, now)
+        return out
+
+    def _overdue_text(self, goal: Goal) -> str:
+        return f"Still waiting on: {goal.condition}"
+
     # -- the watch path ------------------------------------------------------
     async def perceive_judged(
         self, frame: Any, source: str = "camera", *, t: float | None = None
@@ -391,8 +423,11 @@ class Percept:
                 goal, frame, roi, corrections, entity_id=focus.id if focus else None
             )
             freshness = self._freshness(focus, now)
-            if classify(verdict, freshness, self.gate.threshold, self.gate.fresh_min) != "unknown":
+            truth = classify(verdict, freshness, self.gate.threshold, self.gate.fresh_min)
+            if truth != "unknown":
                 self.last_supported[goal.id] = now  # A2: a confident read = perceptual coverage
+            if truth == "yes":
+                self.last_satisfied[goal.id] = now  # A1 deadline: the expected event happened
             base_key = (goal.id, focus.id if focus else None)
             ev_fire = self._fire_concern(goal, verdict, base_key, freshness=freshness, t=now)
             if ev_fire is not None:
