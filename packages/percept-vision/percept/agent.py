@@ -421,6 +421,7 @@ class Percept:
             if ev_fire is not None:
                 events.append(ev_fire)
         self._log_fires(events, now)
+        await self._deliberate_confused(now)  # Posture B: auto-refine recurrently-ambiguous concerns
         return events
 
     async def _perceive_transition(self, goal, frame, focus) -> FireEvent | None:
@@ -645,6 +646,15 @@ class Percept:
             self.apply_goal_ops(decision.goal_ops)  # the LLM refined the program (the in-loop path)
             self.metrics.incr("deliberate.refined")
         return decision
+
+    async def _deliberate_confused(self, now: float) -> None:
+        """Posture B in the perceive loop: auto-deliberate any concern that has become recurrently
+        ambiguous this tick. Each call is gated + rate-limited inside :meth:`deliberate` (consequence
+        threshold + per-concern cooldown), so a routine/calm concern costs nothing — no conductor call
+        is made unless a high-stakes concern is genuinely confused. The refinement takes effect next tick.
+        """
+        for goal in list(self.goals.active()):
+            await self.deliberate(goal, t=now)
 
     async def _execute(self, decision: Decision, utterance: str, *, frame: Any = None) -> str:
         """Carry out a routed/conducted :class:`Decision`: speak (stream) or stay silent.

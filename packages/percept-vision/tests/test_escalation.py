@@ -8,10 +8,11 @@ instead of re-asking the human.
 import asyncio
 import unittest
 
-from percept.adapters import Consequence, Decision, Goal
+from percept.adapters import Box, Consequence, Decision, Goal, Observation, Verdict
 from percept.agent import Percept
 from percept.backends.fake import FakeConductor, FakeVision
 from percept.behavior import ConcernContext
+from percept.config import GateSettings, Settings
 from percept.escalation import escalation_threshold, should_escalate
 from percept.goals import GoalOp
 
@@ -89,6 +90,49 @@ class TestDeliberateWiring(unittest.TestCase):
         a.executor.ctx("g").confusion.consecutive_unknown = 3  # mild needs 4
         self.assertIsNone(asyncio.run(a.deliberate(g, t=100.0)))
         self.assertEqual(a.metrics.get("deliberate.escalate"), 0)
+
+
+class TestAutoDeliberateInPerceiveLoop(unittest.TestCase):
+    def test_recurrent_ambiguity_auto_refines_during_perception(self):
+        # A severe concern that keeps reading AMBIGUOUS auto-deliberates inside perceive_judged — no
+        # explicit deliberate() call. The conductor's refinement is applied in-loop.
+        refine = Decision(
+            route="respond_direct",
+            goal_ops=[GoalOp(op="create", goal=Goal(id="g-refined", condition="x", say="s"))],
+        )
+        vision = FakeVision(
+            script={"f": Verdict(True, 0.4, "unsure")},  # low confidence -> ASK -> confusion builds
+            detect_script={"f": [Observation("x", Box(0.4, 0.4, 0.2, 0.2), 0.9)]},
+        )
+        a = Percept.create(
+            vision=vision, settings=Settings(gate=GateSettings(threshold=0.7)), discover_plugins=False
+        )
+        a.conductor = FakeConductor(refine)
+        g = Goal(id="g", condition="is that suspicious?", say="heads up")
+        g.state["miss_cost"] = "severe"  # severe -> escalates after 2 ambiguous reads
+        a.add_goal(g)
+
+        async def run():
+            for t in (0.0, 1.0):  # two ambiguous reads hit the severe threshold
+                await a.perceive_judged("f", t=t)
+
+        asyncio.run(run())
+        self.assertEqual(a.metrics.get("deliberate.escalate"), 1)  # auto-fired once, in-loop
+        self.assertIsNotNone(a.goals.get("g-refined"))  # the refinement was auto-applied
+
+    def test_calm_concern_never_triggers_a_conductor_call(self):
+        # A mild, confident concern perceiving normally must NOT trigger deliberation (byte-for-byte).
+        vision = FakeVision(
+            script={"f": Verdict(True, 0.95, "yes")},
+            detect_script={"f": [Observation("x", Box(0.4, 0.4, 0.2, 0.2), 0.9)]},
+        )
+        a = Percept.create(vision=vision, discover_plugins=False)
+        a.conductor = FakeConductor(Decision(route="respond_direct", goal_ops=[
+            GoalOp(op="create", goal=Goal(id="should-not-exist", condition="x", say="s"))]))
+        a.add_goal(Goal(id="g", condition="the dog is here", say="dog"))
+        asyncio.run(a.perceive_judged("f", t=0.0))
+        self.assertEqual(a.metrics.get("deliberate.escalate"), 0)  # no escalation
+        self.assertIsNone(a.goals.get("should-not-exist"))  # conductor never invoked
 
 
 if __name__ == "__main__":
