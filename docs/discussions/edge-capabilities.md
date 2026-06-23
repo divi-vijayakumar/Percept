@@ -114,10 +114,15 @@ All: brain-selected (the `detectors` field), lazy by device budget, deliberate r
   `contract.js` (`makeBoundary`/`parseBoundary`, `kind ∈ {peak,onset,threshold}`); the edge emits a
   per-tick batch of `{goal_id, boundary}` on a **separate** `onBoundary` channel, mirroring the harness's
   per-event `perceive_boundary` dispatch. `Tier0Signal` stays frozen. 61 vitest green.
-- **Remaining:** (c) the **capability handshake** (brain side, Python — `Edge.capabilities()` exists; the
-  brain must select detectors only within the advertised set + degrade gracefully); (d) `pose-openness`
-  (model-backed lazy skill — needs a JS pose model; the `loadSkills()` hook is ready); (e) the
-  **server-side receiver** that maps an incoming `Boundary` message 1:1 to `core.perceive_boundary(...)`.
+- ✅ **(c) capability handshake — brain side** (commit `84204ac`): `partition_by_capability(names, caps)`,
+  `compile_watchspec(..., edge_capabilities=)` filters each goal's detectors to the advertised set, and
+  `watchspec_unsupported(goals, caps)` reports the `(goal_id, dropped)` pairs for fallback.
+  `edge_capabilities=None` = in-process topology A (whole registry). 55 harness L1 green. The edge half
+  (`Edge.capabilities()`) was already done.
+- **Remaining:** (d) `pose-openness` (model-backed lazy JS skill — the `loadSkills()` hook is ready);
+  (e) the **wire transport** for topology B — the edge→brain `EdgeCapabilities` advertise message + the
+  server-side receiver that maps an incoming `Boundary` message 1:1 to `core.perceive_boundary(...)`
+  (the *logic* on both ends is done; this is the message framing + a thin server shim).
 
 ---
 
