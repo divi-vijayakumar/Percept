@@ -43,3 +43,5 @@ export {
   registered,
   signalOf,
 } from "./skills.js";
+
+export { openness, PoseOpenness, registerPoseSkill } from "./pose.js";

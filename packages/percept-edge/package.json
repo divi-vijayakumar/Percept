@@ -15,7 +15,8 @@
     "./motion": "./src/motion.js",
     "./vad": "./src/vad.js",
     "./edge": "./src/edge.js",
-    "./skills": "./src/skills.js"
+    "./skills": "./src/skills.js",
+    "./pose": "./src/pose.js"
   },
   "publishConfig": {
     "access": "public"
