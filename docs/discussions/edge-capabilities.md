@@ -125,9 +125,19 @@ All: brain-selected (the `detectors` field), lazy by device budget, deliberate r
   `on_boundaries(report)` → `core.perceive_boundary` 1:1 (no gate, no re-detect). 65 JS + 60 harness green.
   **The full topology-B loop now closes: advertise → filter down → run skills → BoundaryReport up →
   server → perceive_boundary.**
-- **Remaining:** (d) `pose-openness` (model-backed lazy JS skill — needs a JS pose model behind the
-  ready `loadSkills()`/`SkillBank.load()` hook). The DSP path + the whole wire are done; this is the one
-  model-backed skill left, and the lazy-load showcase.
+- ✅ **(d) `pose-openness`** (commit `fdd8826`): the model-backed lazy JS skill — `openness =
+  ankle-spread/shoulder-width + wrist-elevation` → inner `MotionPeriodicity` → peaks. Loads on
+  `load()`, never at construct; the pose model is a **pluggable landmarker adapter** the product supplies
+  via `registerPoseSkill(landmarker)` (mirrors `percept-harness[pose]`). 70 vitest green.
+- ✅ **EDGE ↔ HARNESS PARITY proven** (`parity/compare.py`): identical inputs through the JS edge and the
+  Python harness → **12/12 byte-for-byte MATCH** (motion-periodicity, acoustic-onset, motion-gate
+  scores). So the edge route ≡ the harness route by construction → it inherits the harness route's
+  precision/recall/proactivity (the routes differ only in WHERE the gate runs). **Edge latency ~5 µs/frame
+  (~193k fps)** — negligible vs the ~1 s VLM call.
+
+**The edge is feature-complete:** registry + all 3 skills (2 DSP + pose) + lazy-load + extension point +
+handshake (both ends) + the full topology-A/B wire + parity-validated against the harness. Remaining is
+optional: a fresh *live* P/R/proactivity re-run (needs the Perception-Test data re-fetched + a valid key).
 
 ---
 
