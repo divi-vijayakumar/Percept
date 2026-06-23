@@ -1,4 +1,4 @@
-// @percept/edge — on-device reactive edge for the Percept SDK.
+// percept-edge — on-device reactive edge for the Percept SDK.
 //
 // Public surface: the frozen wire-contract, the motion gate, the energy VAD,
 // and the Edge class that wires the WatchSpec-down / Tier0Signal-up loop.

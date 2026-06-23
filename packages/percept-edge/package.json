@@ -1,10 +1,8 @@
 {
-  "name": "@percept/edge",
+  "name": "percept-edge",
   "version": "0.6.0",
   "description": "On-device reactive edge for the Percept SDK: VAD + motion gate + the WatchSpec/Tier0Signal wire-contract.",
   "type": "module",
-  "//": "private:true is the publish safety-pin — set it false (or remove) to `npm publish` once review is done. publishConfig is ready for the public @percept scope.",
-  "private": true,
   "license": "Apache-2.0",
   "author": "Divi <divi@velvee.ai>",
   "keywords": ["percept", "vision", "edge", "on-device", "motion-gate", "vad", "wire-contract"],

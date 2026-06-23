@@ -11,7 +11,7 @@
 // SkillBank.load() / Edge.loadSkills() hook). The product supplies the model as a *landmarker adapter*
 // via registerPoseSkill(landmarker) — a build that never counts reps never ships or loads a pose model
 // (mirrors the Python `percept-harness[pose]` opt-in). The adapter is pluggable so the heavy model
-// (BlazePose via MediaPipe Tasks for Web, TF.js MoveNet, …) lives in the product, not in @percept/edge.
+// (BlazePose via MediaPipe Tasks for Web, TF.js MoveNet, …) lives in the product, not in percept-edge.
 //
 //   landmarker adapter = {
 //     async load(): Promise<void>,                          // init the model (weights, WASM, …)

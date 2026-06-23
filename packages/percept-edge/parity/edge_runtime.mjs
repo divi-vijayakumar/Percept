@@ -1,4 +1,4 @@
-// edge_runtime.mjs — run @percept/edge detectors + gate on test cases read from stdin (JSON), emit
+// edge_runtime.mjs — run percept-edge detectors + gate on test cases read from stdin (JSON), emit
 // results as JSON on stdout. Driven by parity/compare.py to prove the JS edge route ≡ the Python
 // percept-harness route (same frozen contract, same algorithms), and to measure edge frame latency.
 //

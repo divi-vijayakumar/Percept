@@ -7,7 +7,7 @@ cloud vision call.
   (:func:`compile_watchspec`) — anchors + thresholds, one ``WatchCondition`` per watch goal.
 - **up:** the gate reports a :class:`~percept.adapters.Tier0Signal` (motion / structural / semantic
   salience). This reference computes ``motion`` only (structural/semantic = 0.0); the real
-  ``@percept/edge`` adds CLIP / pose.
+  ``percept-edge`` adds CLIP / pose.
 - the expensive ``Percept.perceive_judged`` runs **only when salience clears threshold**.
 
 Frame-diff is arithmetic — pure stdlib, deterministic, zero user data (spec §6.3). ``numpy`` is an

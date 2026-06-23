@@ -1,6 +1,6 @@
 """Edge↔harness parity + edge latency.
 
-Proves the JS @percept/edge route ≡ the Python percept-harness route on identical inputs (same frozen
+Proves the JS percept-edge route ≡ the Python percept-harness route on identical inputs (same frozen
 contract, same detector algorithms) — the rigorous form of "do the edge benchmarks match the harness
 route": if every gate decision and boundary is identical, downstream precision / recall / proactivity
 are identical *by construction*, because the only difference between the two routes is WHERE the gate
@@ -106,7 +106,7 @@ def main():
         checks.append((f"motion-gate score[{i}]   = {ps:.6f}", abs(ps - jsc) <= 1e-9))
 
     print("=" * 72)
-    print("  EDGE <-> HARNESS PARITY   (@percept/edge JS  vs  percept-harness Python)")
+    print("  EDGE <-> HARNESS PARITY   (percept-edge JS  vs  percept-harness Python)")
     print("=" * 72)
     allok = True
     for name, ok in checks:

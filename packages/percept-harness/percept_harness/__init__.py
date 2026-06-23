@@ -8,7 +8,7 @@ reports a :class:`~percept.adapters.Tier0Signal` *up*, and the expensive
 impl plan §8). That single wired loop is the proof point.
 
 The harness is the transport shell around the core, not a second brain — it never re-judges; it
-only decides *when* to spend a vision call. The real on-device gate is ``@percept/edge`` (JS/WASM);
+only decides *when* to spend a vision call. The real on-device gate is ``percept-edge`` (JS/WASM);
 this is the Python server-side reference that speaks the same frozen wire contract.
 """
 

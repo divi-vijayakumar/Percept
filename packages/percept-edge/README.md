@@ -1,4 +1,4 @@
-# `@percept/edge`
+# `percept-edge`
 
 > **⚠️ Research preview (v0.6.0).** Published for real-life testing + feedback, **not production**. APIs
 > may change between `0.x` releases — pin a version.
@@ -35,7 +35,7 @@ output on identical input).
 ## The gate (the reflex)
 
 ```js
-import { Edge, makeFrame } from "@percept/edge";
+import { Edge, makeFrame } from "percept-edge";
 
 const edge = new Edge({ onSignal: (s) => console.log("salience", s) });
 edge.applyWatchSpec(/* the brain's WatchSpec JSON */);
@@ -78,15 +78,15 @@ The same runtime, different skill sets (a drone, AR glasses, and a fitness coach
 need). A skill is `registerSkill({ name, signal, manifest, factory })`, nothing more:
 
 ```js
-import { registerPoseSkill } from "@percept/edge/pose";
+import { registerPoseSkill } from "percept-edge/pose";
 registerPoseSkill(myLandmarker);   // opt-in: supply your pose model adapter (MediaPipe Tasks for Web, TF.js…)
 ```
 
 ## Deployment topologies
 
 - **A — all server-side:** the Python `percept-harness` runs the gate + skills in-process with the brain.
-  No `@percept/edge`.
-- **B — on-device:** `@percept/edge` gates + runs skills on the device, advertises `EdgeCapabilities`,
+  No `percept-edge`.
+- **B — on-device:** `percept-edge` gates + runs skills on the device, advertises `EdgeCapabilities`,
   and sends `Tier0Signal` + `BoundaryReport` up; the server maps boundaries to `perceive_boundary`. Use
   this to keep frames on-device until something matters (bandwidth + privacy).
 

@@ -11,7 +11,7 @@ PY      := python3
 
 help:
 	@echo "test       L1 unit — percept-vision + percept-harness (fakes, no keys, fast)"
-	@echo "test-js    L1 unit — @percept/edge (vitest; needs npm install)"
+	@echo "test-js    L1 unit — percept-edge (vitest; needs npm install)"
 	@echo "test-all   test + test-js"
 	@echo "eval-live  L2 live eval (needs keys; skips without PERCEPT_LIVE=1)"
 	@echo "e2e        L3 e2e — live smoke (needs keys; skips cleanly)"

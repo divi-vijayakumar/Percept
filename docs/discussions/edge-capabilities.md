@@ -7,7 +7,7 @@
 ---
 
 ## Why this doc exists
-Working through *how capable the on-device edge (`@percept/edge`) should be*, and whether the server
+Working through *how capable the on-device edge (`percept-edge`) should be*, and whether the server
 (brain) should provision skills to the edge on demand. The deployment architecture below is the
 settled foundation; the edge-capability + skill-provisioning questions are the open frontier.
 
@@ -24,14 +24,14 @@ is welded together.
 - `harness` (`percept-harness`) — wraps the core **in-process** (`GatedWatchLoop(core)` calls
   `core.perceive_judged(...)` directly — no JSON between them). It IS "gate + brain" in one deployable.
   It also hosts the **detector skill registry**.
-- `@percept/edge` — the **only relocatable half**: its entire conversation with the system is the JSON
+- `percept-edge` — the **only relocatable half**: its entire conversation with the system is the JSON
   contract, so it can run wherever the camera is (browser / phone / Pi). JS precisely so it can live
   off-server, next to the camera.
 
 **Rule:** the gate runs **exactly once**, on whichever side holds the edge. Never zero, never twice.
 
 ### What lives where
-| capability | `@percept/edge` (device) | `percept-harness` (server edge) | `percept-vision` (brain) |
+| capability | `percept-edge` (device) | `percept-harness` (server edge) | `percept-vision` (brain) |
 |---|:--:|:--:|:--:|
 | wire contract | mirrors (JS) | uses + `compile_watchspec` | **defines** (source of truth) |
 | motion gate · VAD | ✅ | ✅ | — |
@@ -43,15 +43,15 @@ is welded together.
 | executor · entity graph · memory · the count | — | emits boundaries | ✅ consumes |
 
 > **Correction captured:** the skills are **NOT on both edge + harness today.** The registry lives in
-> `percept-harness` (Python). `@percept/edge` has only the motion + VAD *primitives*; pose/periodicity
+> `percept-harness` (Python). `percept-edge` has only the motion + VAD *primitives*; pose/periodicity
 > are unported adapter slots. The `detectors` field now rides the wire (so the edge *receives* the
 > selection) but the JS edge can't *execute* the skills yet. That port is the on-device parity gap.
 
 ### Topologies
 - **A — all-server** (e.g. 20 cloud cameras / security): frames already centralized → run
   `percept-harness` in the cloud; its `MotionGate` is the edge, and it wraps the brain. **No
-  `@percept/edge`.** Full skills. ONE deployable.
-- **B — edge on-device** (e.g. fish-tank / glasses): `@percept/edge` gates locally, escalates only when
+  `percept-edge`.** Full skills. ONE deployable.
+- **B — edge on-device** (e.g. fish-tank / glasses): `percept-edge` gates locally, escalates only when
   something fires; server runs `percept-vision` (**brain only**) + a thin receiver shim. **Not** a
   second `GatedWatchLoop` (that would gate twice). TWO deployables. Skills = motion/VAD today.
 - **A′** — a bare IP camera (no JS runtime at the source) falls back to A.
@@ -74,7 +74,7 @@ Not "should the edge equal the harness," but **which axis**:
 - **judge axis** — *"does it mean what the goal cares about, given who/what/history?"* (expensive,
   central, high-precision) → **never** on the edge; that's the brain, always.
 
-**Test for porting a skill to `@percept/edge` — needs all three:**
+**Test for porting a skill to `percept-edge` — needs all three:**
 1. **continuous** — can't afford a cloud round-trip per frame;
 2. **constrained** — battery / bandwidth / privacy at the source;
 3. **locally cheap to detect** — DSP or a small model, not a frontier VLM.
@@ -99,7 +99,7 @@ Not "should the edge equal the harness," but **which axis**:
 3. `pose-openness` — heaviest; phone-class only, lazy adapter slot.
 All: brain-selected (the `detectors` field), lazy by device budget, deliberate register-and-calibrate.
 
-### Progress (2026-06-23) — `@percept/edge` 0.5.0
+### Progress (2026-06-23) — `percept-edge` 0.5.0
 - ✅ **JS skill registry shipped** (`src/skills.js`, commit `4243798`, 54 vitest green): the twin of
   `percept_harness/detectors.py` — registry (`registerSkill`/`makeDetector`/`manifestOf`/`listManifests`/
   `registered`/`signalOf`), `Boundary` + manifest matching the Python field names, **`MotionPeriodicity`
@@ -160,7 +160,7 @@ later** (security/latency/calibration — see below).
 
 ### Per-device customization — the registry IS the product extension point
 The reason #1+#2 matter: they let **each assistant built on Percept register the skill set *it* needs on
-its edge.** Same `@percept/edge` runtime, different registered skills:
+its edge.** Same `percept-edge` runtime, different registered skills:
 
 | product | edge skills it registers | signal |
 |---|---|---|

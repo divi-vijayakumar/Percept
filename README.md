@@ -139,7 +139,7 @@ the perception ceiling bites.
 |---|---|---|
 | **percept-vision** | the cognition core — gate, entity graph, executor, events, scheduler, consent, fakes. Pure stdlib. | `pip install percept-vision` (`packages/percept-vision/`) |
 | **percept-harness** | server-side transport shell + tier-0 salience gate (WatchSpec down / Tier0Signal up); the reference home of the edge detector skills. | `packages/percept-harness/` |
-| **@percept/edge** | on-device reactive edge in JS/WASM: VAD + motion gate over the same WatchSpec/Tier0Signal wire-contract. | `packages/percept-edge/` (npm `@percept/edge`) |
+| **percept-edge** | on-device reactive edge in JS/WASM: VAD + motion gate over the same WatchSpec/Tier0Signal wire-contract. | `packages/percept-edge/` (npm `percept-edge`) |
 
 ## Benchmark — Percept Benchmark v1 (v0.5 DRAFT)
 
@@ -168,7 +168,7 @@ and references:
 ```
 packages/percept-vision/    the SDK (pip install percept-vision; import percept)
 packages/percept-harness/   server-side tier-0 edge reference + detector skills
-packages/percept-edge/      @percept/edge — on-device JS/WASM edge
+packages/percept-edge/      percept-edge — on-device JS/WASM edge
 docs/                       architecture & flow traces
 eval/                       golden corpus (benchmark plan: packages/percept-vision/eval/)
 Spec/                       the spec + implementation plan

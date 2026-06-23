@@ -13,7 +13,7 @@ clears threshold**. It also hosts the **edge detector registry** — cheap, opt-
 acoustic-onset, pose-openness) the brain selects per goal to count/propose timed boundaries on-device.
 
 Pure stdlib for the L1 lane (`numpy` is an optional fast path; `mediapipe` is opt-in via `[pose]`). The real
-on-device gate is `@percept/edge` (JS/WASM); this is the Python server-side reference that speaks the same
+on-device gate is `percept-edge` (JS/WASM); this is the Python server-side reference that speaks the same
 contract.
 
 ```bash
