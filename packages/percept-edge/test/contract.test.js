@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import {
   ContractError,
   makeWatchCondition,
+  parseWatchCondition,
   makeWatchSpec,
   parseWatchSpec,
   makeTier0Signal,
@@ -14,9 +15,9 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// The exact JSON the Python side emits for a one-condition WatchSpec.
+// The exact JSON the Python side emits for a one-condition WatchSpec (no detectors selected -> []).
 const PY_WATCHSPEC =
-  '{"conditions":[{"goal_id":"g1","anchor_text":"the user is drinking coffee","threshold":0.3,"region_hint":null}],"version":1}';
+  '{"conditions":[{"goal_id":"g1","anchor_text":"the user is drinking coffee","threshold":0.3,"region_hint":null,"detectors":[]}],"version":1}';
 
 describe("parseWatchSpec — cross-language fixture", () => {
   it("parses the exact JSON the Python side emits", () => {
@@ -28,6 +29,7 @@ describe("parseWatchSpec — cross-language fixture", () => {
           anchor_text: "the user is drinking coffee",
           threshold: 0.3,
           region_hint: null,
+          detectors: [],
         },
       ],
       version: 1,
@@ -55,6 +57,7 @@ describe("parseWatchSpec — cross-language fixture", () => {
     expect(Object.keys(spec).sort()).toEqual(["conditions", "version"]);
     expect(Object.keys(spec.conditions[0]).sort()).toEqual([
       "anchor_text",
+      "detectors",
       "goal_id",
       "region_hint",
       "threshold",
@@ -105,11 +108,13 @@ describe("factories produce frozen-contract shapes", () => {
     });
     expect(Object.keys(c).sort()).toEqual([
       "anchor_text",
+      "detectors",
       "goal_id",
       "region_hint",
       "threshold",
     ]);
     expect(c.region_hint).toBeNull();
+    expect(c.detectors).toEqual([]);
   });
 
   it("makeWatchSpec defaults version to 1", () => {
@@ -123,6 +128,62 @@ describe("factories produce frozen-contract shapes", () => {
       w: 0.3,
       h: 0.4,
     });
+  });
+});
+
+describe("WatchCondition.detectors (the brain's edge-detector selection)", () => {
+  it("carries the detectors the Python side selected for a goal", () => {
+    const json =
+      '{"conditions":[{"goal_id":"reps","anchor_text":"one squat rep","threshold":0.3,"region_hint":null,"detectors":["motion-periodicity","acoustic-onset"]}],"version":1}';
+    const spec = parseWatchSpec(json);
+    expect(spec.conditions[0].detectors).toEqual([
+      "motion-periodicity",
+      "acoustic-onset",
+    ]);
+  });
+
+  it("tolerates an older Python side that omits detectors -> [] (back-compat)", () => {
+    const c = parseWatchCondition({
+      goal_id: "g1",
+      anchor_text: "x",
+      threshold: 0.3,
+    });
+    expect(c.detectors).toEqual([]);
+  });
+
+  it("makeWatchCondition accepts + copies detectors", () => {
+    const src = ["motion-periodicity"];
+    const c = makeWatchCondition({
+      goal_id: "g1",
+      anchor_text: "x",
+      detectors: src,
+    });
+    expect(c.detectors).toEqual(["motion-periodicity"]);
+    src.push("mutated"); // the factory copied, so the stored array is unaffected
+    expect(c.detectors).toEqual(["motion-periodicity"]);
+  });
+
+  it("rejects non-array / non-string detectors with a ContractError", () => {
+    expect(() =>
+      makeWatchCondition({ goal_id: "g", anchor_text: "x", detectors: "motion" })
+    ).toThrow(ContractError);
+    expect(() =>
+      parseWatchCondition({
+        goal_id: "g",
+        anchor_text: "x",
+        threshold: 0.3,
+        detectors: [1, 2],
+      })
+    ).toThrow(ContractError);
+  });
+
+  it("round-trips detectors through JSON", () => {
+    const spec = makeWatchSpec({
+      conditions: [
+        { goal_id: "g", anchor_text: "x", detectors: ["motion-periodicity"] },
+      ],
+    });
+    expect(parseWatchSpec(JSON.stringify(spec))).toEqual(spec);
   });
 });
 

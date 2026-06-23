@@ -1,0 +1,259 @@
+// src/skills.js
+//
+// The on-device EDGE SKILL REGISTRY — the JS twin of `percept_harness/detectors.py`.
+//
+// A curated, registry-extensible library of CHEAP, high-fps signal detectors the brain selects from
+// per goal — the **skills** model: register an impl + a manifest, and the brain composes it into
+// concerns by name, never a per-task `if`. Each detector consumes a scalar signal stream and emits
+// **timed boundaries**: the edge proposes WHERE a rep / onset / threshold-crossing happened; the brain
+// counts them and the VLM confirms the semantics sparingly at those boundaries.
+//
+// This is the product extension point: an assistant built on Percept registers ONLY the skills its
+// edge needs (fitness coach → motion-periodicity + pose; AR glasses → acoustic-onset + cry-spotter;
+// drone → optical-flow-obstacle), advertises that set up the wire, and the brain composes goals
+// against what's actually registered. Adding a skill is a deliberate `registerSkill(...)` + calibrate
+// event — never the LLM synthesizing detectors at runtime.
+//
+// Parity: the manifest + Boundary field names match the Python `DetectorManifest`/`Boundary`
+// byte-for-byte, so a manifest can ride the wire (the capability handshake) unchanged.
+//
+//   Manifest = { name, senses, when_to_use, output }
+//   Boundary = { detector, kind: "peak"|"onset"|"threshold", t, value }
+
+/**
+ * A timed event the edge reports UP: WHERE something happened, cheaply, at native fps.
+ * @returns {{detector:string,kind:string,t:number,value:number}}
+ */
+export function makeBoundary(detector, kind, t, value) {
+  return { detector, kind, t, value };
+}
+
+// ---------------------------------------------------------------------------
+// Detectors — stateful streaming DSP: push(t, value) -> Boundary[]
+// Each carries a `signal` channel ("motion" | "energy" | "frame") and may expose an OPTIONAL
+// async `load()` that the SkillBank awaits on activation (model-backed skills load their weights
+// there — never at register/construct time; that's the "lazy local load").
+// ---------------------------------------------------------------------------
+
+/**
+ * Counts oscillations in the motion signal — one `peak` boundary per completed bump (≈ one rep).
+ * Adaptive prominence: a bump is confirmed only once the signal falls to `(1-relDrop)` of its peak,
+ * so noise riding the way up doesn't over-count. `minHeight` ignores still-scene jitter; `refractoryS`
+ * debounces. Pure DSP — no model. Faithful port of Python `MotionPeriodicity`.
+ */
+export class MotionPeriodicity {
+  static signal = "motion";
+  static skillName = "motion-periodicity";
+
+  constructor({ minHeight = 0.02, relDrop = 0.5, refractoryS = 0.0 } = {}) {
+    this.minHeight = minHeight;
+    this.relDrop = relDrop;
+    this.refractoryS = refractoryS;
+    this.signal = MotionPeriodicity.signal;
+    this.name = MotionPeriodicity.skillName;
+    this.reset();
+  }
+
+  reset() {
+    this._peakV = 0.0;
+    this._peakT = 0.0;
+    this._havePeak = false;
+    this._lastEmitT = -Infinity;
+  }
+
+  push(t, v) {
+    if (v > this._peakV) {
+      // still climbing this bump -> track the running peak
+      this._peakV = v;
+      this._peakT = t;
+      this._havePeak = this._peakV >= this.minHeight;
+      return [];
+    }
+    if (this._havePeak && v <= this._peakV * (1.0 - this.relDrop)) {
+      // confirmed descent -> emit the peak
+      const out = [];
+      if (t - this._lastEmitT >= this.refractoryS) {
+        out.push(makeBoundary(this.name, "peak", this._peakT, this._peakV));
+        this._lastEmitT = t;
+      }
+      this._peakV = v; // start a new bump from the trough
+      this._peakT = t;
+      this._havePeak = false;
+      return out;
+    }
+    return [];
+  }
+}
+
+/**
+ * Detects energy onsets (a hiss/grunt/beep starting) — one `onset` boundary per rising spike.
+ * Hysteresis: fire when energy crosses `high` having been below `low` (armed), then re-arm only after
+ * it falls back under `low`. Pure DSP on the mic-energy stream. Faithful port of `AcousticOnset`.
+ */
+export class AcousticOnset {
+  static signal = "energy";
+  static skillName = "acoustic-onset";
+
+  constructor({ high = 0.3, low = 0.15, refractoryS = 0.0 } = {}) {
+    this.high = high;
+    this.low = low;
+    this.refractoryS = refractoryS;
+    this.signal = AcousticOnset.signal;
+    this.name = AcousticOnset.skillName;
+    this.reset();
+  }
+
+  reset() {
+    this._armed = true;
+    this._lastEmitT = -Infinity;
+  }
+
+  push(t, v) {
+    if (this._armed && v >= this.high) {
+      const out = [];
+      if (t - this._lastEmitT >= this.refractoryS) {
+        out.push(makeBoundary(this.name, "onset", t, v));
+        this._lastEmitT = t;
+      }
+      this._armed = false;
+      return out;
+    }
+    if (!this._armed && v < this.low) {
+      this._armed = true;
+    }
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The registry — register an impl + a manifest; the brain composes by name
+// ---------------------------------------------------------------------------
+
+/** @type {Map<string, {factory: Function, manifest: object, signal: string}>} */
+const _REGISTRY = new Map();
+
+/**
+ * Register a skill (a deliberate, calibratable event — never per-task code). This is the third-party
+ * extension point: a custom skill is `registerSkill({ name, signal, manifest, factory })`, nothing more.
+ * @param {{name:string, signal:string, manifest:object, factory:Function}} skill
+ */
+export function registerSkill({ name, signal, manifest, factory }) {
+  if (typeof name !== "string" || !name) throw new Error("registerSkill: name must be a non-empty string");
+  if (typeof factory !== "function") throw new Error(`registerSkill(${name}): factory must be a function`);
+  if (signal !== "motion" && signal !== "energy" && signal !== "frame") {
+    throw new Error(`registerSkill(${name}): signal must be "motion" | "energy" | "frame"`);
+  }
+  _REGISTRY.set(name, { factory, manifest: manifest ?? { name, senses: "", when_to_use: "", output: "" }, signal });
+}
+
+/** Construct a fresh detector instance by registry name. */
+export function makeDetector(name) {
+  const entry = _REGISTRY.get(name);
+  if (!entry) throw new Error(`unknown skill ${JSON.stringify(name)}; registered: ${registered().join(", ")}`);
+  return entry.factory();
+}
+
+/** The manifest for a registered skill (what the brain reads to compose it). */
+export function manifestOf(name) {
+  const entry = _REGISTRY.get(name);
+  if (!entry) throw new Error(`unknown skill ${JSON.stringify(name)}`);
+  return entry.manifest;
+}
+
+/** All manifests — what a capability handshake advertises up so the brain composes against them. */
+export function listManifests() {
+  return [..._REGISTRY.values()].map((e) => e.manifest);
+}
+
+/** Registered skill names (sorted) — the edge's advertised capability set. */
+export function registered() {
+  return [..._REGISTRY.keys()].sort();
+}
+
+/** The signal channel a registered skill consumes. */
+export function signalOf(name) {
+  const entry = _REGISTRY.get(name);
+  if (!entry) throw new Error(`unknown skill ${JSON.stringify(name)}`);
+  return entry.signal;
+}
+
+// ---- the built-in curated skills (pure-DSP; no model, no download) ----------
+
+registerSkill({
+  name: "motion-periodicity",
+  signal: "motion",
+  factory: () => new MotionPeriodicity(),
+  manifest: {
+    name: "motion-periodicity",
+    senses: "motion magnitude over time (frame-diff)",
+    when_to_use:
+      "counting repetitive movements — reps, strokes, paces; any 'count the N-th time' on a periodic motion",
+    output: "a 'peak' boundary per motion oscillation (≈ one rep), with no per-frame VLM call",
+  },
+});
+
+registerSkill({
+  name: "acoustic-onset",
+  signal: "energy",
+  factory: () => new AcousticOnset(),
+  manifest: {
+    name: "acoustic-onset",
+    senses: "audio energy over time (the mic stream already flowing for STT)",
+    when_to_use: "audio-cued events — a kettle/boil hiss rising, a timer beep, a rep grunt, a knock",
+    output: "an 'onset' boundary each time energy spikes up (a sound starting)",
+  },
+});
+
+// ---------------------------------------------------------------------------
+// SkillBank — run a goal's selected skills over a stream, routed by signal channel
+// ---------------------------------------------------------------------------
+
+/**
+ * Runs a goal's selected skills over a stream, routing each its channel (motion / energy / frame).
+ * The edge feeds the cheap signals it already computes; each skill reads its own channel and emits
+ * boundaries. A skill whose channel isn't provided this tick simply gets no input.
+ *
+ * Lazy local load (#2): `await bank.load()` once on activation initialises any model-backed skill
+ * (a skill instance may expose an optional async `load()`); DSP skills are no-ops. Construction
+ * (`makeDetector`) never loads a model — that happens here, only when a goal activates the skill.
+ */
+export class SkillBank {
+  /** @param {Iterable<string>} names registered skill names the brain selected for this goal */
+  constructor(names) {
+    this._dets = [...names].map((n) => ({ det: makeDetector(n), signal: signalOf(n) }));
+    this._loaded = false;
+  }
+
+  /** Lazily initialise any model-backed skill (called once on activation). Idempotent. */
+  async load() {
+    if (this._loaded) return;
+    for (const { det } of this._dets) {
+      if (typeof det.load === "function") await det.load();
+    }
+    this._loaded = true;
+  }
+
+  reset() {
+    for (const { det } of this._dets) det.reset();
+  }
+
+  /**
+   * Push one tick of the cheap signals; returns the boundaries emitted this tick.
+   * @param {number} t
+   * @param {{motion?:number, energy?:number, frame?:any}} channels
+   * @returns {object[]} Boundary[]
+   */
+  push(t, { motion = null, energy = null, frame = null } = {}) {
+    const out = [];
+    for (const { det, signal } of this._dets) {
+      if (signal === "frame") {
+        if (frame != null) out.push(...det.push(t, frame));
+        continue;
+      }
+      const sig = signal === "energy" ? energy : motion;
+      if (sig == null) continue;
+      out.push(...det.push(t, sig));
+    }
+    return out;
+  }
+}

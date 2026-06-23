@@ -4,7 +4,8 @@
 // dataclasses byte-for-byte so the two halves interoperate over JSON:
 //
 //   Box            = { x, y, w, h }                              # normalized 0..1
-//   WatchCondition = { goal_id, anchor_text, threshold, region_hint: Box|null }
+//   WatchCondition = { goal_id, anchor_text, threshold, region_hint: Box|null,
+//                      detectors: string[] }                     # cheap edge detectors the brain selected
 //   WatchSpec      = { conditions: WatchCondition[], version }   # version defaults to 1
 //   Tier0Signal    = { motion, structural, semantic, ts }
 //
@@ -27,6 +28,10 @@ function isFiniteNumber(v) {
 
 function isPlainObject(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+function isStringArray(v) {
+  return Array.isArray(v) && v.every((s) => typeof s === "string");
 }
 
 // ---------------------------------------------------------------------------
@@ -58,18 +63,22 @@ export function parseBox(obj, { path = "region_hint" } = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// WatchCondition  { goal_id, anchor_text, threshold, region_hint: Box|null }
+// WatchCondition  { goal_id, anchor_text, threshold, region_hint: Box|null,
+//                   detectors: string[] }
 // ---------------------------------------------------------------------------
 
 /**
- * Build a WatchCondition.
- * @returns {{goal_id:string,anchor_text:string,threshold:number,region_hint:object|null}}
+ * Build a WatchCondition. `detectors` are the cheap on-device detector names the
+ * brain selected for this goal (e.g. "motion-periodicity", "acoustic-onset");
+ * defaults to [] (the Python `field(default_factory=list)` default).
+ * @returns {{goal_id:string,anchor_text:string,threshold:number,region_hint:object|null,detectors:string[]}}
  */
 export function makeWatchCondition({
   goal_id,
   anchor_text,
   threshold = 0.3,
   region_hint = null,
+  detectors = [],
 } = {}) {
   if (typeof goal_id !== "string") {
     throw new ContractError("makeWatchCondition: goal_id must be a string");
@@ -80,11 +89,15 @@ export function makeWatchCondition({
   if (!isFiniteNumber(threshold)) {
     throw new ContractError("makeWatchCondition: threshold must be a finite number");
   }
+  if (!isStringArray(detectors)) {
+    throw new ContractError("makeWatchCondition: detectors must be an array of strings");
+  }
   return {
     goal_id,
     anchor_text,
     threshold,
     region_hint: region_hint == null ? null : makeBox(region_hint),
+    detectors: [...detectors],
   };
 }
 
@@ -111,11 +124,21 @@ export function parseWatchCondition(obj, { path = "condition" } = {}) {
   if (obj.region_hint != null) {
     region_hint = parseBox(obj.region_hint, { path: `${path}.region_hint` });
   }
+  // detectors is string[]. Missing is tolerated -> [] so an older Python side
+  // (pre-detector-registry) that omits the key still parses; [] is canonical.
+  let detectors = [];
+  if (obj.detectors != null) {
+    if (!isStringArray(obj.detectors)) {
+      throw new ContractError(`${path}.detectors: expected an array of strings`);
+    }
+    detectors = [...obj.detectors];
+  }
   return {
     goal_id: obj.goal_id,
     anchor_text: obj.anchor_text,
     threshold: obj.threshold,
     region_hint,
+    detectors,
   };
 }
 

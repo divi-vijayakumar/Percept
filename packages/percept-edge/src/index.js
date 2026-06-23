@@ -25,3 +25,16 @@ export {
 } from "./vad.js";
 
 export { Edge } from "./edge.js";
+
+export {
+  makeBoundary,
+  MotionPeriodicity,
+  AcousticOnset,
+  SkillBank,
+  registerSkill,
+  makeDetector,
+  manifestOf,
+  listManifests,
+  registered,
+  signalOf,
+} from "./skills.js";

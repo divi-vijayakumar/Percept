@@ -103,3 +103,6 @@ omnipro_*.json
 
 # RepCount-A range-fetched videos (lance blobs, regenerable)
 **/eval/bench-staging/repcount/
+
+# node
+node_modules/
