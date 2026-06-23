@@ -45,15 +45,17 @@ def _repcount(manifest: dict, n: int) -> None:
     meta = rc.load_meta()
     manifest["sources"]["repcount/meta"] = {"ok": True, "rows": len(meta)}
     print(f"RepCount: meta cached ({len(meta)} rows)")
+    # sample_repcount carries the lance row `index` take_blobs needs + the `video_id`
+    sample = rc.sample_repcount(n)
     got = 0
-    for row in meta[:n]:
+    for row in sample:
         try:
-            rc.fetch_video(row["video_id"])
+            rc.fetch_video(row["index"], row["video_id"])
             got += 1
         except Exception as ex:
-            print(f"  repcount video {row.get('video_id')}: {type(ex).__name__}")
-    manifest["sources"]["repcount/videos"] = {"ok": True, "cached": got, "asked": min(n, len(meta))}
-    print(f"RepCount: {got} videos materialized")
+            print(f"  repcount video {row.get('video_id')}: {type(ex).__name__}: {str(ex)[:60]}")
+    manifest["sources"]["repcount/videos"] = {"ok": True, "cached": got, "asked": len(sample)}
+    print(f"RepCount: {got}/{len(sample)} videos materialized")
 
 
 def _golden(manifest: dict) -> None:
