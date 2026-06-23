@@ -15,6 +15,10 @@ export {
   parseTier0Signal,
   makeBoundary,
   parseBoundary,
+  makeEdgeCapabilities,
+  parseEdgeCapabilities,
+  makeBoundaryReport,
+  parseBoundaryReport,
 } from "./contract.js";
 
 export { motionScore, makeFrame } from "./motion.js";

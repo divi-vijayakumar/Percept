@@ -452,11 +452,74 @@ async def run_gated_watch(
     return await loop.run(stream, clock_start=clock_start, dt=dt, energies=energies)
 
 
+# ---------------------------------------------------------------------------
+# RemoteEdgeReceiver — the TOPOLOGY-B server shim (consume a remote on-device edge)
+# ---------------------------------------------------------------------------
+
+
+class RemoteEdgeReceiver:
+    """Server-side consumer of a REMOTE on-device edge's up-channel (topology B).
+
+    Unlike :class:`GatedWatchLoop` (topology A — gates frames in-process), the remote edge already gated
+    and ran its skills on the device, and sends only messages up. This shim never gates or re-detects; it:
+
+    1. takes the edge's advertised capabilities (an ``EdgeCapabilities`` message) so the brain selects
+       skills within them — :meth:`watchspec` compiles the capability-filtered ``WatchSpec`` to send down;
+    2. maps each incoming boundary (a ``BoundaryReport``) 1:1 to ``core.perceive_boundary(goal_id, t)`` —
+       exactly what :class:`GatedWatchLoop` does inline (the ``count_boundary`` call), but driven by the
+       wire instead of a local :class:`~.detectors.DetectorBank`.
+
+    The frame/escalation path (the edge sends a frame up on salience -> ``core.perceive_judged``) is the
+    product's media transport; this shim covers the capability + boundary halves of the contract.
+    """
+
+    def __init__(self, core: Any) -> None:
+        self._core = core
+        self._capabilities: list[str] | None = None
+
+    def on_capabilities(self, capabilities: Iterable[str]) -> None:
+        """Record the edge's advertised skill set (from an ``EdgeCapabilities`` message)."""
+        self._capabilities = list(capabilities)
+
+    @property
+    def capabilities(self) -> list[str] | None:
+        """The advertised set, or ``None`` if the edge hasn't advertised yet (brain then sends all)."""
+        return None if self._capabilities is None else list(self._capabilities)
+
+    def watchspec(
+        self, *, threshold: float, goals: Sequence[Goal] | None = None, version: int = 1
+    ) -> WatchSpec:
+        """Compile the ``WatchSpec`` to send DOWN — detectors filtered to the edge's advertised skills."""
+        active = list(goals) if goals is not None else list(self._core.goals.active())
+        return compile_watchspec(
+            active, threshold=threshold, version=version, edge_capabilities=self._capabilities
+        )
+
+    def on_boundaries(self, report: Any) -> list:
+        """Consume a ``BoundaryReport`` (``{'boundaries': [{goal_id, ..., t}]}`` or a bare list of those
+        events): call ``core.perceive_boundary(goal_id, t=t)`` per event; return the fire events.
+
+        Mirrors :class:`GatedWatchLoop`'s inline boundary handling — the edge proposed the timed events,
+        the brain counts them and fires per the goal's accumulate, with no cloud call here.
+        """
+        events = report.get("boundaries", []) if isinstance(report, dict) else list(report)
+        perceive_boundary = getattr(self._core, "perceive_boundary", None)
+        fires: list = []
+        if perceive_boundary is None:
+            return fires
+        for ev in events:
+            fired = perceive_boundary(ev["goal_id"], t=ev["t"])
+            if fired is not None:
+                fires.append(fired)
+        return fires
+
+
 __all__ = [
     "Frame",
     "gray_frame",
     "motion_score",
     "compile_watchspec",
+    "watchspec_unsupported",
     "MOTION_BIAS_KEY",
     "REGION_HINT_KEY",
     "MotionGate",
@@ -464,4 +527,5 @@ __all__ = [
     "GatedWatchLoop",
     "LoopReport",
     "run_gated_watch",
+    "RemoteEdgeReceiver",
 ]

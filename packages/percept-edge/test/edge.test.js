@@ -204,3 +204,13 @@ describe("Edge — skill banks + the per-event Boundary up-channel (Option 2)", 
     expect(boundaries).toHaveLength(0);
   });
 });
+
+describe("Edge.advertise — the EdgeCapabilities message", () => {
+  it("returns the registered skill set as an EdgeCapabilities message", () => {
+    const edge = new Edge({});
+    const msg = edge.advertise();
+    expect(Array.isArray(msg.capabilities)).toBe(true);
+    expect(msg.capabilities).toContain("motion-periodicity");
+    expect(msg.capabilities).toContain("acoustic-onset");
+  });
+});

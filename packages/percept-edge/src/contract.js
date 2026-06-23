@@ -11,11 +11,13 @@
 //   Boundary       = { detector, kind, t, value }               # a discrete EVENT (a skill fired)
 //
 // Down channel  (cloud -> edge): WatchSpec
-// Up   channel  (edge -> cloud): Tier0Signal (per-frame gauge)  +  Boundary (per-event, on a skill fire)
+// Up   channel  (edge -> cloud): EdgeCapabilities (at connect) · Tier0Signal (per-frame gauge) ·
+//                                BoundaryReport (per-event, when skills fire)
 //
-// The two up-messages are DECOUPLED (Option 2): Tier0Signal is the dense gauge that drives
-// escalate-vs-skip; Boundary is the sparse event the brain counts (mirrors the harness's per-event
-// `perceive_boundary` dispatch). Tier0Signal stays frozen; boundaries ride their own message.
+// The up-messages are DECOUPLED (Option 2): Tier0Signal is the dense gauge that drives escalate-vs-skip;
+// a BoundaryReport carries the sparse events the brain counts (mirrors the harness's per-event
+// `perceive_boundary` dispatch); EdgeCapabilities advertises which skills the edge can run so the brain
+// selects within them. Tier0Signal stays frozen; boundaries + capabilities ride their own messages.
 //
 // Any change to a field name is an interop break. Treat these shapes as frozen.
 
@@ -308,4 +310,76 @@ export function parseBoundary(json, { path = "boundary" } = {}) {
   if (!isFiniteNumber(obj.t)) throw new ContractError(`${path}.t: expected a finite number`);
   if (!isFiniteNumber(obj.value)) throw new ContractError(`${path}.value: expected a finite number`);
   return { detector: obj.detector, kind: obj.kind, t: obj.t, value: obj.value };
+}
+
+// ---------------------------------------------------------------------------
+// EdgeCapabilities  { capabilities: string[] }     (edge -> brain, at connect)
+// The ADVERTISE half of the capability handshake: the edge tells the brain which skills it can run, so
+// the brain selects detectors only within this set (Python: compile_watchspec(edge_capabilities=...)).
+// ---------------------------------------------------------------------------
+
+export function makeEdgeCapabilities(capabilities = []) {
+  if (!isStringArray(capabilities)) {
+    throw new ContractError("makeEdgeCapabilities: capabilities must be an array of strings");
+  }
+  return { capabilities: [...capabilities] };
+}
+
+export function parseEdgeCapabilities(json) {
+  let obj = json;
+  if (typeof json === "string") {
+    try {
+      obj = JSON.parse(json);
+    } catch (e) {
+      throw new ContractError(`parseEdgeCapabilities: invalid JSON (${e.message})`);
+    }
+  }
+  if (!isPlainObject(obj)) throw new ContractError("parseEdgeCapabilities: expected an object");
+  if (!isStringArray(obj.capabilities)) {
+    throw new ContractError("parseEdgeCapabilities: capabilities must be an array of strings");
+  }
+  return { capabilities: [...obj.capabilities] };
+}
+
+// ---------------------------------------------------------------------------
+// BoundaryReport  { boundaries: [{ goal_id, detector, kind, t, value }] }   (edge -> brain, per-event)
+// The wire framing of the edge's onBoundary batch — each Boundary tagged with the goal_id it fired for.
+// The server maps each entry 1:1 to core.perceive_boundary(goal_id, t). Flattened (goal_id + Boundary)
+// for a clean wire object.
+// ---------------------------------------------------------------------------
+
+export function makeBoundaryReport(events = []) {
+  if (!Array.isArray(events)) throw new ContractError("makeBoundaryReport: events must be an array");
+  const boundaries = events.map((e, i) => {
+    // accept { goal_id, boundary } (the onBoundary shape) or a flat { goal_id, detector, kind, t, value }
+    const b = e.boundary ?? e;
+    if (typeof e.goal_id !== "string") {
+      throw new ContractError(`makeBoundaryReport: events[${i}].goal_id must be a string`);
+    }
+    const norm = makeBoundary(b.detector, b.kind, b.t, b.value);
+    return { goal_id: e.goal_id, ...norm };
+  });
+  return { boundaries };
+}
+
+export function parseBoundaryReport(json) {
+  let obj = json;
+  if (typeof json === "string") {
+    try {
+      obj = JSON.parse(json);
+    } catch (e) {
+      throw new ContractError(`parseBoundaryReport: invalid JSON (${e.message})`);
+    }
+  }
+  if (!isPlainObject(obj) || !Array.isArray(obj.boundaries)) {
+    throw new ContractError("parseBoundaryReport: expected { boundaries: [] }");
+  }
+  const boundaries = obj.boundaries.map((e, i) => {
+    if (!isPlainObject(e) || typeof e.goal_id !== "string") {
+      throw new ContractError(`parseBoundaryReport: boundaries[${i}].goal_id must be a string`);
+    }
+    const b = parseBoundary(e, { path: `boundaries[${i}]` });
+    return { goal_id: e.goal_id, ...b };
+  });
+  return { boundaries };
 }

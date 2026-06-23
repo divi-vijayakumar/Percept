@@ -12,6 +12,10 @@ import {
   parseTier0Signal,
   makeBoundary,
   parseBoundary,
+  makeEdgeCapabilities,
+  parseEdgeCapabilities,
+  makeBoundaryReport,
+  parseBoundaryReport,
   makeBox,
 } from "../src/contract.js";
 
@@ -237,5 +241,35 @@ describe("Boundary contract — the per-event up-message (Option 2)", () => {
     expect(parseBoundary(JSON.stringify(b))).toEqual(b);
     expect(() => parseBoundary('{"detector":"d","kind":"peak","t":"x","value":1}')).toThrow(ContractError);
     expect(() => parseBoundary('{"detector":"d","kind":"nope","t":1,"value":1}')).toThrow(ContractError);
+  });
+});
+
+describe("topology-B wire messages — EdgeCapabilities + BoundaryReport", () => {
+  it("EdgeCapabilities advertises the edge's skill set", () => {
+    const msg = makeEdgeCapabilities(["motion-periodicity", "acoustic-onset"]);
+    expect(msg).toEqual({ capabilities: ["motion-periodicity", "acoustic-onset"] });
+    expect(parseEdgeCapabilities(JSON.stringify(msg))).toEqual(msg);
+    expect(() => makeEdgeCapabilities([1, 2])).toThrow(ContractError);
+    expect(() => parseEdgeCapabilities('{"capabilities":"motion"}')).toThrow(ContractError);
+  });
+
+  it("BoundaryReport frames the onBoundary batch (goal_id + flattened Boundary)", () => {
+    // the shape the Edge emits up onBoundary: [{ goal_id, boundary }]
+    const batch = [
+      { goal_id: "reps", boundary: { detector: "motion-periodicity", kind: "peak", t: 12.3, value: 0.9 } },
+    ];
+    const report = makeBoundaryReport(batch);
+    expect(report).toEqual({
+      boundaries: [{ goal_id: "reps", detector: "motion-periodicity", kind: "peak", t: 12.3, value: 0.9 }],
+    });
+    // round-trips through JSON + validates
+    expect(parseBoundaryReport(JSON.stringify(report))).toEqual(report);
+  });
+
+  it("BoundaryReport also accepts already-flat events and rejects bad ones", () => {
+    const flat = [{ goal_id: "g", detector: "acoustic-onset", kind: "onset", t: 4, value: 0.5 }];
+    expect(makeBoundaryReport(flat).boundaries[0].kind).toBe("onset");
+    expect(() => makeBoundaryReport([{ detector: "d", kind: "peak", t: 1, value: 1 }])).toThrow(ContractError); // no goal_id
+    expect(() => parseBoundaryReport('{"boundaries":[{"goal_id":"g","kind":"nope","detector":"d","t":1,"value":1}]}')).toThrow(ContractError);
   });
 });

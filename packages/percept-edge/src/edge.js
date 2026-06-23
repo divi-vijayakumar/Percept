@@ -13,7 +13,7 @@
 // (see setStructuralAdapter / setSemanticAdapter / setPublisher) — they are
 // not required to run and not exercised by the test suite.
 
-import { makeTier0Signal, parseWatchSpec } from "./contract.js";
+import { makeTier0Signal, makeEdgeCapabilities, parseWatchSpec } from "./contract.js";
 import { motionScore } from "./motion.js";
 import { SkillBank, registered } from "./skills.js";
 
@@ -66,6 +66,11 @@ export class Edge {
   /** The skills this edge can run — its advertised capability set (the basis for the handshake). */
   capabilities() {
     return registered();
+  }
+
+  /** The EdgeCapabilities message to send the brain at connect (the advertise half of the handshake). */
+  advertise() {
+    return makeEdgeCapabilities(this.capabilities());
   }
 
   /** Detectors the brain selected that this edge has NOT registered (dropped, not run). */
