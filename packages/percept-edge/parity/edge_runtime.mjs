@@ -1,0 +1,64 @@
+// edge_runtime.mjs — run @percept/edge detectors + gate on test cases read from stdin (JSON), emit
+// results as JSON on stdout. Driven by parity/compare.py to prove the JS edge route ≡ the Python
+// percept-harness route (same frozen contract, same algorithms), and to measure edge frame latency.
+//
+//   in : { motionSignals: number[][], energySignals: number[][],
+//          framePairs: [{w,h,a:number[],b:number[]}], latency?: {width,height,frames} }
+//   out: { motionBoundaries: Boundary[][], onsetBoundaries: Boundary[][], motionScores: number[],
+//          latency?: {frames,width,height,totalMs,perFrameUs,fps} }
+
+import { MotionPeriodicity, AcousticOnset } from "../src/skills.js";
+import { motionScore } from "../src/motion.js";
+import { Edge } from "../src/edge.js";
+
+function readStdin() {
+  return new Promise((resolve) => {
+    let s = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (d) => (s += d));
+    process.stdin.on("end", () => resolve(s));
+  });
+}
+
+function runDetector(DetClass, signal) {
+  const det = new DetClass();
+  const out = [];
+  signal.forEach((v, t) => out.push(...det.push(t, v)));
+  return out;
+}
+
+const cases = JSON.parse(await readStdin());
+
+const result = {
+  motionBoundaries: (cases.motionSignals || []).map((s) => runDetector(MotionPeriodicity, s)),
+  onsetBoundaries: (cases.energySignals || []).map((s) => runDetector(AcousticOnset, s)),
+  motionScores: (cases.framePairs || []).map(({ w, h, a, b }) =>
+    motionScore({ width: w, height: h, data: a }, { width: w, height: h, data: b })
+  ),
+};
+
+if (cases.latency) {
+  const { width, height, frames } = cases.latency;
+  let clk = 0;
+  const edge = new Edge({ clock: () => clk++ });
+  edge.applyWatchSpec({
+    conditions: [{ goal_id: "reps", anchor_text: "rep", threshold: 0.3, region_hint: null, detectors: ["motion-periodicity"] }],
+    version: 1,
+  });
+  const fs = [];
+  for (let i = 0; i < frames; i++) {
+    const fill = i % 4 < 2 ? 0 : 255; // oscillating motion so the skill + gate both do real work
+    fs.push({ width, height, data: new Uint8Array(width * height).fill(fill) });
+  }
+  const t0 = process.hrtime.bigint();
+  for (const f of fs) edge.processFrame(f);
+  const t1 = process.hrtime.bigint();
+  const totalMs = Number(t1 - t0) / 1e6;
+  result.latency = {
+    frames, width, height, totalMs,
+    perFrameUs: (totalMs * 1000) / frames,
+    fps: Math.round(frames / (totalMs / 1000)),
+  };
+}
+
+process.stdout.write(JSON.stringify(result));
