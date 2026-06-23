@@ -15,6 +15,7 @@
 
 import { makeTier0Signal, parseWatchSpec } from "./contract.js";
 import { motionScore } from "./motion.js";
+import { SkillBank, registered } from "./skills.js";
 
 export class Edge {
   /**
@@ -24,15 +25,19 @@ export class Edge {
    *        conditions (so motion-only still gates). Default 0.05.
    * @param {()=>number} [opts.clock]  returns seconds; for deterministic ts.
    */
-  constructor({ onSignal = null, defaultThreshold = 0.05, clock = null } = {}) {
+  constructor({ onSignal = null, onBoundary = null, defaultThreshold = 0.05, clock = null } = {}) {
     this._listeners = new Set();
     if (typeof onSignal === "function") this._listeners.add(onSignal);
+    this._boundaryListeners = new Set();
+    if (typeof onBoundary === "function") this._boundaryListeners.add(onBoundary);
 
     this.defaultThreshold = defaultThreshold;
     this._clock = clock || (() => Date.now() / 1000);
 
     this._spec = null; // current WatchSpec (down channel)
     this._prevFrame = null; // motion history (1-frame buffer)
+    this._banks = new Map(); // goal_id -> SkillBank (the skills this goal selected, if registered)
+    this._unsupported = []; // {goal_id, detector} the brain selected but this edge hasn't registered
 
     // Adapter slots — optional, default to inert (return 0 salience).
     this._structuralAdapter = null; // e.g. pose/hands (MediaPipe)
@@ -48,6 +53,26 @@ export class Edge {
     return () => this._listeners.delete(fn);
   }
 
+  /**
+   * Subscribe a Boundary sink — the per-event up-channel (Option 2). Receives, per tick that produced
+   * any, an array of `{ goal_id, boundary }` (mirrors the harness's (goal_id, Boundary) pairs that feed
+   * `core.perceive_boundary(goal_id, t)`). Returns an unsubscribe fn.
+   */
+  onBoundary(fn) {
+    this._boundaryListeners.add(fn);
+    return () => this._boundaryListeners.delete(fn);
+  }
+
+  /** The skills this edge can run — its advertised capability set (the basis for the handshake). */
+  capabilities() {
+    return registered();
+  }
+
+  /** Detectors the brain selected that this edge has NOT registered (dropped, not run). */
+  get unsupportedDetectors() {
+    return this._unsupported.slice();
+  }
+
   // --- down channel: receive a WatchSpec --------------------------------
 
   /**
@@ -57,12 +82,34 @@ export class Edge {
    */
   applyWatchSpec(specOrJson) {
     this._spec = parseWatchSpec(specOrJson);
+    // Build one SkillBank per goal that selected detectors, from the skills this edge has REGISTERED.
+    // Unknown detectors degrade gracefully (dropped + recorded in unsupportedDetectors) rather than
+    // crash the edge loop — the capability handshake will keep the brain from selecting them at all.
+    const supported = new Set(registered());
+    this._banks = new Map();
+    this._unsupported = [];
+    for (const c of this._spec.conditions) {
+      const known = [];
+      for (const d of c.detectors ?? []) {
+        if (supported.has(d)) known.push(d);
+        else this._unsupported.push({ goal_id: c.goal_id, detector: d });
+      }
+      if (known.length) this._banks.set(c.goal_id, new SkillBank(known));
+    }
     return this._spec;
   }
 
   /** The WatchSpec currently in effect, or null. */
   get watchSpec() {
     return this._spec;
+  }
+
+  /**
+   * Lazily initialise any model-backed skill in the active banks — call once after applyWatchSpec,
+   * before processing frames. DSP skills are no-ops, so a pure-DSP edge need not call this.
+   */
+  async loadSkills() {
+    for (const bank of this._banks.values()) await bank.load();
   }
 
   /**
@@ -110,9 +157,24 @@ export class Edge {
    * @param {{width:number,height:number,data:Uint8Array}} frame grayscale frame
    * @returns {object|null} the emitted Tier0Signal, or null if gated out
    */
-  processFrame(frame) {
+  processFrame(frame, { energy = null } = {}) {
+    const ts = this._clock(); // one clock read per frame — shared by skills + the signal
     const motion = motionScore(this._prevFrame, frame);
     this._prevFrame = frame;
+
+    // Edge skills run EVERY frame on the cheap channels (motion / energy / frame) — DECOUPLED from the
+    // sparse, motion-gated Tier0Signal below. Each boundary is a discrete event the brain counts WITHOUT
+    // a cloud call (edge proposes · brain counts), tagged with the goal_id it fired for. This mirrors the
+    // harness's per-frame DetectorBank + per-event `perceive_boundary` dispatch.
+    if (this._banks.size) {
+      const batch = [];
+      for (const [goalId, bank] of this._banks) {
+        for (const boundary of bank.push(ts, { motion, energy, frame })) {
+          batch.push({ goal_id: goalId, boundary });
+        }
+      }
+      if (batch.length) this._emitBoundaries(batch); // one coalesced Boundary message per tick
+    }
 
     let structural = 0;
     if (this._structuralAdapter) {
@@ -131,12 +193,7 @@ export class Edge {
       return null; // gated: still scene -> no Tier0Signal, no cloud call
     }
 
-    const signal = makeTier0Signal({
-      motion,
-      structural,
-      semantic,
-      ts: this._clock(),
-    });
+    const signal = makeTier0Signal({ motion, structural, semantic, ts });
 
     if (this._publisher) this._publisher(frame, signal);
     this._emit(signal);
@@ -145,6 +202,10 @@ export class Edge {
 
   _emit(signal) {
     for (const fn of this._listeners) fn(signal);
+  }
+
+  _emitBoundaries(batch) {
+    for (const fn of this._boundaryListeners) fn(batch);
   }
 }
 

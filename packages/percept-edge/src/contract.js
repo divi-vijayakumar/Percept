@@ -7,10 +7,15 @@
 //   WatchCondition = { goal_id, anchor_text, threshold, region_hint: Box|null,
 //                      detectors: string[] }                     # cheap edge detectors the brain selected
 //   WatchSpec      = { conditions: WatchCondition[], version }   # version defaults to 1
-//   Tier0Signal    = { motion, structural, semantic, ts }
+//   Tier0Signal    = { motion, structural, semantic, ts }       # per-frame salience GAUGE
+//   Boundary       = { detector, kind, t, value }               # a discrete EVENT (a skill fired)
 //
 // Down channel  (cloud -> edge): WatchSpec
-// Up   channel  (edge -> cloud): Tier0Signal
+// Up   channel  (edge -> cloud): Tier0Signal (per-frame gauge)  +  Boundary (per-event, on a skill fire)
+//
+// The two up-messages are DECOUPLED (Option 2): Tier0Signal is the dense gauge that drives
+// escalate-vs-skip; Boundary is the sparse event the brain counts (mirrors the harness's per-event
+// `perceive_boundary` dispatch). Tier0Signal stays frozen; boundaries ride their own message.
 //
 // Any change to a field name is an interop break. Treat these shapes as frozen.
 
@@ -257,4 +262,50 @@ export function parseTier0Signal(json) {
     semantic: obj.semantic,
     ts: obj.ts,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Boundary  { detector, kind: "peak"|"onset"|"threshold", t, value }
+// The discrete up-channel EVENT a skill emits (mirrors the Python `Boundary` dataclass byte-for-byte).
+// The edge tags each with the goal_id it fired for when it sends it up (the envelope), exactly like the
+// harness's `(goal_id, Boundary)` pairs feeding `core.perceive_boundary(goal_id, t)`.
+// ---------------------------------------------------------------------------
+
+const _BOUNDARY_KINDS = new Set(["peak", "onset", "threshold"]);
+
+/**
+ * Build a Boundary. Positional to match the skills' call sites.
+ * @returns {{detector:string,kind:string,t:number,value:number}}
+ */
+export function makeBoundary(detector, kind, t, value) {
+  if (typeof detector !== "string") throw new ContractError("makeBoundary: detector must be a string");
+  if (!_BOUNDARY_KINDS.has(kind)) {
+    throw new ContractError(`makeBoundary: kind must be one of ${[..._BOUNDARY_KINDS].join("|")}`);
+  }
+  if (!isFiniteNumber(t)) throw new ContractError("makeBoundary: t must be a finite number");
+  if (!isFiniteNumber(value)) throw new ContractError("makeBoundary: value must be a finite number");
+  return { detector, kind, t, value };
+}
+
+/**
+ * Validate a Boundary off the wire (string or object). Returns a fresh, normalized Boundary.
+ * @throws {ContractError}
+ */
+export function parseBoundary(json, { path = "boundary" } = {}) {
+  let obj = json;
+  if (typeof json === "string") {
+    try {
+      obj = JSON.parse(json);
+    } catch (e) {
+      throw new ContractError(`parseBoundary: invalid JSON (${e.message})`);
+    }
+  }
+  if (!isPlainObject(obj)) throw new ContractError(`${path}: expected an object`);
+  if (typeof obj.detector !== "string") throw new ContractError(`${path}.detector: expected a string`);
+  if (!_BOUNDARY_KINDS.has(obj.kind)) {
+    throw new ContractError(`${path}.kind: expected one of ${[..._BOUNDARY_KINDS].join("|")}`);
+  }
+  if (!isFiniteNumber(obj.t)) throw new ContractError(`${path}.t: expected a finite number`);
+  if (!isFiniteNumber(obj.value)) throw new ContractError(`${path}.value: expected a finite number`);
+  return { detector: obj.detector, kind: obj.kind, t: obj.t, value: obj.value };
 }

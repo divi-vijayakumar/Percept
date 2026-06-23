@@ -10,6 +10,8 @@ import {
   parseWatchSpec,
   makeTier0Signal,
   parseTier0Signal,
+  makeBoundary,
+  parseBoundary,
   makeBox,
 } from "../src/contract.js";
 
@@ -213,5 +215,27 @@ describe("Tier0Signal contract", () => {
     expect(() =>
       parseTier0Signal('{"motion":0.1,"structural":0,"ts":1.0}')
     ).toThrow(ContractError); // no semantic
+  });
+});
+
+describe("Boundary contract — the per-event up-message (Option 2)", () => {
+  it("makeBoundary builds exactly { detector, kind, t, value }", () => {
+    const b = makeBoundary("motion-periodicity", "peak", 12.3, 0.9);
+    expect(Object.keys(b).sort()).toEqual(["detector", "kind", "t", "value"]);
+    expect(b).toEqual({ detector: "motion-periodicity", kind: "peak", t: 12.3, value: 0.9 });
+  });
+
+  it("accepts the three boundary kinds and rejects others", () => {
+    for (const kind of ["peak", "onset", "threshold"]) {
+      expect(makeBoundary("d", kind, 1, 1).kind).toBe(kind);
+    }
+    expect(() => makeBoundary("d", "wiggle", 1, 1)).toThrow(ContractError);
+  });
+
+  it("parseBoundary round-trips through JSON and validates fields", () => {
+    const b = makeBoundary("acoustic-onset", "onset", 4.0, 0.5);
+    expect(parseBoundary(JSON.stringify(b))).toEqual(b);
+    expect(() => parseBoundary('{"detector":"d","kind":"peak","t":"x","value":1}')).toThrow(ContractError);
+    expect(() => parseBoundary('{"detector":"d","kind":"nope","t":1,"value":1}')).toThrow(ContractError);
   });
 });

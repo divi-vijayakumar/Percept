@@ -20,13 +20,8 @@
 //   Manifest = { name, senses, when_to_use, output }
 //   Boundary = { detector, kind: "peak"|"onset"|"threshold", t, value }
 
-/**
- * A timed event the edge reports UP: WHERE something happened, cheaply, at native fps.
- * @returns {{detector:string,kind:string,t:number,value:number}}
- */
-export function makeBoundary(detector, kind, t, value) {
-  return { detector, kind, t, value };
-}
+// Boundary is a wire shape — defined (with validation) in the frozen contract; skills emit it.
+import { makeBoundary } from "./contract.js";
 
 // ---------------------------------------------------------------------------
 // Detectors — stateful streaming DSP: push(t, value) -> Boundary[]

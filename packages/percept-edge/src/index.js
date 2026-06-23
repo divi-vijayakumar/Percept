@@ -13,6 +13,8 @@ export {
   parseWatchSpec,
   makeTier0Signal,
   parseTier0Signal,
+  makeBoundary,
+  parseBoundary,
 } from "./contract.js";
 
 export { motionScore, makeFrame } from "./motion.js";
@@ -27,7 +29,6 @@ export {
 export { Edge } from "./edge.js";
 
 export {
-  makeBoundary,
   MotionPeriodicity,
   AcousticOnset,
   SkillBank,

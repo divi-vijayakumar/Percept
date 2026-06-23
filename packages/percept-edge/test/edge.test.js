@@ -141,3 +141,66 @@ describe("Edge — WatchSpec down / Tier0Signal up wired loop", () => {
     expect(got).toHaveLength(0);
   });
 });
+
+const SPEC_WITH_DETECTORS = JSON.stringify({
+  conditions: [
+    { goal_id: "reps", anchor_text: "one squat rep", threshold: 0.3, region_hint: null, detectors: ["motion-periodicity"] },
+  ],
+  version: 1,
+});
+
+// Frames whose consecutive motion oscillates 0,1,0,1,... (pairs of still/inverted) -> 4 reps.
+const OSC_FILLS = [0, 0, 255, 255, 0, 0, 255, 255, 0, 0];
+
+describe("Edge — skill banks + the per-event Boundary up-channel (Option 2)", () => {
+  it("runs a goal's selected skill and emits goal-tagged boundaries", () => {
+    const boundaries = [];
+    let t = 1000;
+    const edge = new Edge({ onBoundary: (batch) => boundaries.push(...batch), clock: () => t++ });
+    edge.applyWatchSpec(SPEC_WITH_DETECTORS);
+    for (const f of OSC_FILLS) edge.processFrame(makeFrame(8, 8, f));
+
+    expect(boundaries).toHaveLength(4);
+    expect(boundaries.every((e) => e.goal_id === "reps")).toBe(true);
+    expect(boundaries.every((e) => e.boundary.detector === "motion-periodicity" && e.boundary.kind === "peak")).toBe(true);
+  });
+
+  it("the Boundary channel is decoupled from the Tier0Signal channel (both flow)", () => {
+    const signals = [];
+    const boundaries = [];
+    let t = 1000;
+    const edge = new Edge({
+      onSignal: (s) => signals.push(s),
+      onBoundary: (batch) => boundaries.push(...batch),
+      clock: () => t++,
+    });
+    edge.applyWatchSpec(SPEC_WITH_DETECTORS); // threshold 0.3
+    for (const f of OSC_FILLS) edge.processFrame(makeFrame(8, 8, f));
+
+    expect(boundaries).toHaveLength(4); // sparse events (per rep)
+    expect(signals.length).toBeGreaterThan(0); // the high-motion frames also cleared the gate
+    expect(signals.every((s) => Object.keys(s).sort().join() === "motion,semantic,structural,ts")).toBe(true);
+  });
+
+  it("advertises its registered skills (the handshake basis)", () => {
+    const edge = new Edge({});
+    expect(edge.capabilities()).toContain("motion-periodicity");
+    expect(edge.capabilities()).toContain("acoustic-onset");
+  });
+
+  it("drops an unregistered detector gracefully — records it, never crashes", () => {
+    const edge = new Edge({});
+    edge.applyWatchSpec(
+      JSON.stringify({
+        conditions: [{ goal_id: "g", anchor_text: "x", threshold: 0.3, region_hint: null, detectors: ["no-such-skill"] }],
+        version: 1,
+      })
+    );
+    expect(edge.unsupportedDetectors).toEqual([{ goal_id: "g", detector: "no-such-skill" }]);
+    const boundaries = [];
+    edge.onBoundary((batch) => boundaries.push(...batch));
+    edge.processFrame(makeFrame(8, 8, 0));
+    edge.processFrame(makeFrame(8, 8, 255)); // would-be motion, but no bank -> no boundaries, no throw
+    expect(boundaries).toHaveLength(0);
+  });
+});
