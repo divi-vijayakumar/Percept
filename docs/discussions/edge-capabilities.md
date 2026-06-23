@@ -99,6 +99,19 @@ Not "should the edge equal the harness," but **which axis**:
 3. `pose-openness` — heaviest; phone-class only, lazy adapter slot.
 All: brain-selected (the `detectors` field), lazy by device budget, deliberate register-and-calibrate.
 
+### Progress (2026-06-23) — `@percept/edge` 0.5.0
+- ✅ **JS skill registry shipped** (`src/skills.js`, commit `4243798`, 54 vitest green): the twin of
+  `percept_harness/detectors.py` — registry (`registerSkill`/`makeDetector`/`manifestOf`/`listManifests`/
+  `registered`/`signalOf`), `Boundary` + manifest matching the Python field names, **`MotionPeriodicity`
+  + `AcousticOnset` ported** (pure DSP), and `SkillBank` (routes motion/energy/frame).
+- ✅ **#2 lazy local load** mechanism: `SkillBank.load()` inits a model-backed skill once on activation.
+- ✅ **`registerSkill(...)` extension point** live — the per-device customization surface.
+- ✅ contract `detectors` field verified by execution (was inspection-only).
+- **Remaining:** (a) wire `SkillBank` into the `Edge` class so a `WatchSpec`'s `detectors` actually run
+  on the edge loop; (b) the **boundary up-channel** (extend `Tier0Signal` vs a new `Boundary` message —
+  decision needed); (c) the **capability handshake** (brain side, Python — advertise-aware selection +
+  graceful degrade); (d) `pose-openness` (model-backed lazy skill — needs a JS pose model).
+
 ---
 
 ## OPEN THREAD — dynamic skill provisioning (continue here)
@@ -114,6 +127,25 @@ All: brain-selected (the `detectors` field), lazy by device budget, deliberate r
 The workout example (*"watch my workout, nudge me on a miss"*) runs **today in #1+#2** — brain selects
 pose, edge lazy-loads it, proposes rep boundaries, brain counts/judges/nudges, edge unloads after. No
 push required.
+
+**DECIDED (2026-06-23):** pursue **#1 + #2** (activation + lazy local load). **#3 runtime push = explore
+later** (security/latency/calibration — see below).
+
+### Per-device customization — the registry IS the product extension point
+The reason #1+#2 matter: they let **each assistant built on Percept register the skill set *it* needs on
+its edge.** Same `@percept/edge` runtime, different registered skills:
+
+| product | edge skills it registers | signal |
+|---|---|---|
+| **AI fitness coach** | `motion-periodicity` (reps) + `pose-openness` (form) | vision/pose |
+| **AR glasses** (baby/focus) | `acoustic-onset` + cry-spotter | audio |
+| **drone** | optical-flow-obstacle + altitude-hold | vision/IMU |
+
+A product bundles **only** the skills it needs (small app, right capabilities), the edge **advertises**
+that set up the wire, and the brain composes goals **against what's actually registered**. This is the
+"skills library" through-line extended to the device: a curated, self-describing registry, brain-composed,
+register-and-calibrate — never runtime-synthesized. The registry is the extension point third parties
+build on; their custom skill is a `defineSkill({manifest, load})` + `registerSkill(...)`, nothing more.
 
 **Why push (#3) is deliberately last** (aligns with build-plan locked decision #4 — "no runtime code
 download, a deferred security surface"):
