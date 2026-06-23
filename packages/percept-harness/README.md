@@ -1,5 +1,8 @@
 # percept-harness
 
+> **⚠️ Research preview — v0.1.0.** Published for real-life testing and feedback, not for production.
+> APIs may change between `0.1.x` releases — pin a version.
+
 The **server-side transport shell + tier-0 salience gate** for the
 [Percept](https://pypi.org/project/percept-vision/) cognition core.
 

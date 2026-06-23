@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "percept-vision"
 version = "0.1.0"
-description = "The open-source cognition layer for goal-driven, proactive vision agents."
+description = "Research preview — the open-source cognition layer for goal-driven, proactive vision agents."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }

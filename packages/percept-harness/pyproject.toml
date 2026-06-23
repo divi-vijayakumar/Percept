@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "percept-harness"
 version = "0.1.0"
-description = "Server-side transport shell + tier-0 salience gate (WatchSpec down / Tier0Signal up) for the Percept cognition core."
+description = "Research preview — server-side transport shell + tier-0 salience gate (WatchSpec down / Tier0Signal up) for the Percept cognition core."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }

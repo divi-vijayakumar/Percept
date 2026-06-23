@@ -15,9 +15,10 @@ The wedge is **temporal cognition** (entity memory + the three-state gate + reas
 which a raw VLM-in-a-loop and a per-frame pipeline both lack. percept builds on frontier models for
 perception behind vendor-neutral seams.
 
-> **Status: v0.1.0 — early.** The cognition core (gate, entity graph, executor, events, scheduler,
-> consent) runs and is tested; the benchmark card below is a **v0.5 DRAFT**. We're moving into
-> real-life testing. Expect rough edges and breaking changes. ([Status](#status).)
+> **⚠️ Research preview — v0.1.0.** Published for real-life testing and feedback, **not** for
+> production. The cognition core (gate, entity graph, executor, events, scheduler, consent) runs and is
+> tested; the benchmark card below is a **v0.5 DRAFT**. APIs may change between `0.1.x` releases —
+> pin a version. Issues and feedback welcome. ([Status](#status).)
 
 ## The envelope (refusals, stated proudly)
 
