@@ -106,3 +106,6 @@ omnipro_*.json
 
 # node
 node_modules/
+
+# persistent benchmark data cache (heavy/licensed; never commit)
+**/eval/bench-staging/

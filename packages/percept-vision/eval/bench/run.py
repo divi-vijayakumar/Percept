@@ -15,9 +15,11 @@ from . import card
 from . import (
     track_acoustic_pt,
     track_counting,
+    track_cuespeak,
     track_edge_recall,
     track_relational,
     track_timeliness,
+    track_timespeak,
 )
 
 
@@ -40,7 +42,8 @@ def main() -> int:
         load_dotenv()
 
     results = []
-    tracks = (track_relational, track_counting, track_acoustic_pt, track_timeliness, track_edge_recall)
+    tracks = (track_relational, track_counting, track_acoustic_pt, track_timeliness, track_edge_recall,
+              track_cuespeak, track_timespeak)
     for mod in tracks:
         try:
             results.append(mod.score(live=args.live, n=args.n))
