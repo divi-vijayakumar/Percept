@@ -119,10 +119,15 @@ All: brain-selected (the `detectors` field), lazy by device budget, deliberate r
   `watchspec_unsupported(goals, caps)` reports the `(goal_id, dropped)` pairs for fallback.
   `edge_capabilities=None` = in-process topology A (whole registry). 55 harness L1 green. The edge half
   (`Edge.capabilities()`) was already done.
-- **Remaining:** (d) `pose-openness` (model-backed lazy JS skill — the `loadSkills()` hook is ready);
-  (e) the **wire transport** for topology B — the edge→brain `EdgeCapabilities` advertise message + the
-  server-side receiver that maps an incoming `Boundary` message 1:1 to `core.perceive_boundary(...)`
-  (the *logic* on both ends is done; this is the message framing + a thin server shim).
+- ✅ **(e) topology-B wire transport** (commit `9446a4f`): JS `EdgeCapabilities` (advertise) +
+  `BoundaryReport` (the framed `onBoundary` batch) in `contract.js` with make/parse; `Edge.advertise()`;
+  Python **`RemoteEdgeReceiver`** — `on_capabilities` → `watchspec()` (capability-filtered down),
+  `on_boundaries(report)` → `core.perceive_boundary` 1:1 (no gate, no re-detect). 65 JS + 60 harness green.
+  **The full topology-B loop now closes: advertise → filter down → run skills → BoundaryReport up →
+  server → perceive_boundary.**
+- **Remaining:** (d) `pose-openness` (model-backed lazy JS skill — needs a JS pose model behind the
+  ready `loadSkills()`/`SkillBank.load()` hook). The DSP path + the whole wire are done; this is the one
+  model-backed skill left, and the lazy-load showcase.
 
 ---
 
