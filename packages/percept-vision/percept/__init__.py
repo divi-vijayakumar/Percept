@@ -42,7 +42,7 @@ from .routing import (
     Rule,
 )
 
-__version__ = "0.0.0.dev0"
+__version__ = "0.1.0"
 
 # Imported after __version__ so agent.health() can read it lazily without a cycle.
 from .agent import FireEvent, Percept  # noqa: E402
