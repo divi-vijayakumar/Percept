@@ -23,8 +23,10 @@ from percept_harness.detectors import (
     list_manifests,
     make_detector,
     manifest_of,
+    partition_by_capability,
     registered,
 )
+from percept_harness.tier0 import compile_watchspec, watchspec_unsupported
 
 
 def _drive(det, signal):
@@ -140,6 +142,50 @@ class TestDetectorBank(unittest.TestCase):
         for t, v in enumerate([0.0, 0.9, 0.0]):
             energy_out.extend(bank.push(float(t), energy=v))
         self.assertTrue(energy_out and all(b.detector == "acoustic-onset" for b in energy_out))
+
+
+class TestCapabilityHandshake(unittest.TestCase):
+    """The brain-side handshake: select edge skills only within what the connected edge advertised."""
+
+    def _goal(self, detectors):
+        return Goal(
+            id="reps", condition="count squats", say="done",
+            state={"type": "watch", "detectors": detectors},
+        )
+
+    def test_partition_none_means_all_supported(self):
+        supported, dropped = partition_by_capability(["motion-periodicity", "pose-openness"], None)
+        self.assertEqual(supported, ["motion-periodicity", "pose-openness"])
+        self.assertEqual(dropped, [])
+
+    def test_partition_splits_by_capability(self):
+        supported, dropped = partition_by_capability(
+            ["motion-periodicity", "pose-openness"], {"motion-periodicity"}
+        )
+        self.assertEqual(supported, ["motion-periodicity"])
+        self.assertEqual(dropped, ["pose-openness"])
+
+    def test_compile_filters_to_advertised_capabilities(self):
+        # a glasses-class edge that can do motion but not pose
+        spec = compile_watchspec(
+            [self._goal(["motion-periodicity", "pose-openness"])],
+            threshold=0.1, edge_capabilities={"motion-periodicity"},
+        )
+        self.assertEqual(spec.conditions[0].detectors, ["motion-periodicity"])
+
+    def test_compile_none_sends_full_selection(self):
+        spec = compile_watchspec([self._goal(["motion-periodicity", "pose-openness"])], threshold=0.1)
+        self.assertEqual(spec.conditions[0].detectors, ["motion-periodicity", "pose-openness"])
+
+    def test_watchspec_unsupported_reports_drops(self):
+        goals = [self._goal(["motion-periodicity", "pose-openness"])]
+        self.assertEqual(
+            watchspec_unsupported(goals, {"motion-periodicity"}), [("reps", ["pose-openness"])]
+        )
+
+    def test_watchspec_unsupported_empty_when_all_supported(self):
+        goals = [self._goal(["motion-periodicity"])]
+        self.assertEqual(watchspec_unsupported(goals, {"motion-periodicity", "pose-openness"}), [])
 
 
 if __name__ == "__main__":

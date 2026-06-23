@@ -27,7 +27,7 @@ from typing import Any, Iterable, Sequence
 from percept.adapters import Box, Goal, Tier0Signal, WatchCondition, WatchSpec
 from percept.config import Settings, load_settings
 
-from .detectors import Boundary, DetectorBank, detectors_for
+from .detectors import Boundary, DetectorBank, detectors_for, partition_by_capability
 
 try:  # OPTIONAL fast path only — the stdlib path below is the source of truth for L1.
     import numpy as _np  # type: ignore
@@ -134,7 +134,8 @@ REGION_HINT_KEY = "region_hint"
 
 
 def compile_watchspec(
-    goals: Iterable[Goal], *, threshold: float, version: int = 1
+    goals: Iterable[Goal], *, threshold: float, version: int = 1,
+    edge_capabilities: Iterable[str] | None = None,
 ) -> WatchSpec:
     """Compile active *watch* goals DOWN to a :class:`~percept.adapters.WatchSpec`.
 
@@ -145,6 +146,13 @@ def compile_watchspec(
     - ``threshold`` <- the gate default ``threshold`` + optional per-goal bias
       (``goal.state['motion_bias']``), clamped to ``0..1``
     - ``region_hint`` <- optional ``goal.state['region_hint']`` (a :class:`~percept.adapters.Box`)
+    - ``detectors`` <- the goal's selected edge skills (sense-preset + override), **filtered to**
+      ``edge_capabilities`` when given (the capability handshake)
+
+    ``edge_capabilities`` (optional): the skill set the connected edge advertised. When given, each goal's
+    detectors are intersected with it so the brain never sends a skill the edge can't run; ``None``
+    (default, in-process topology A — the edge runs the whole registry) sends the full selection. Use
+    :func:`watchspec_unsupported` to see what was dropped (to pick a fallback).
 
     Only goals whose ``state['type']`` is ``'watch'`` (the default) compile — event / count /
     remind goals run their own tracks and never gate the watch-frame stream.
@@ -154,16 +162,34 @@ def compile_watchspec(
         if goal.state.get("type", "watch") != "watch":
             continue
         bias = float(goal.state.get(MOTION_BIAS_KEY, 0.0))
+        supported, _dropped = partition_by_capability(detectors_for(goal), edge_capabilities)
         conditions.append(
             WatchCondition(
                 goal_id=goal.id,
                 anchor_text=goal.condition,
                 threshold=_clamp01(threshold + bias),
                 region_hint=_coerce_box(goal.state.get(REGION_HINT_KEY)),
-                detectors=detectors_for(goal),  # cheap edge detectors the brain selects (sense-preset + override)
+                detectors=supported,  # cheap edge skills the brain selected, filtered to what the edge can run
             )
         )
     return WatchSpec(conditions=conditions, version=version)
+
+
+def watchspec_unsupported(
+    goals: Iterable[Goal], edge_capabilities: Iterable[str]
+) -> list[tuple[str, list[str]]]:
+    """``(goal_id, dropped_detectors)`` the brain selected but the advertised edge can't run — so the
+    caller can pick a fallback (server-side detection / a coarser skill / skip). Empty when the edge
+    supports everything selected. The reporting half of :func:`compile_watchspec`'s capability handshake.
+    """
+    out: list[tuple[str, list[str]]] = []
+    for goal in goals:
+        if goal.state.get("type", "watch") != "watch":
+            continue
+        _, dropped = partition_by_capability(detectors_for(goal), edge_capabilities)
+        if dropped:
+            out.append((goal.id, dropped))
+    return out
 
 
 def _clamp01(v: float) -> float:
@@ -332,6 +358,7 @@ class GatedWatchLoop:
         threshold: float | None = None,
         source: str = "camera",
         settings: Settings | None = None,
+        edge_capabilities: Iterable[str] | None = None,
     ) -> None:
         self._core = core
         cfg = settings or getattr(core, "settings", None) or load_settings()
@@ -339,7 +366,9 @@ class GatedWatchLoop:
         self._source = source
         active = list(goals) if goals is not None else list(core.goals.active())
         thr = cfg.edge.motion_gate if threshold is None else threshold
-        self._spec = compile_watchspec(active, threshold=thr)
+        # edge_capabilities=None -> in-process edge runs the whole registry; a remote edge advertises a
+        # subset and the brain selects within it (the capability handshake).
+        self._spec = compile_watchspec(active, threshold=thr, edge_capabilities=edge_capabilities)
         self._gate = MotionGate(self._spec, settings=cfg)
         # One detector bank per goal that selected detectors — the edge proposes timed boundaries from
         # the cheap motion signal at native fps (no extra vision calls). Default: no detectors -> no banks.

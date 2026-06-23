@@ -286,6 +286,24 @@ def detectors_for(goal: Any) -> list[str]:
     return list(_TYPE_DETECTOR_PRESET.get(getattr(goal, "state", {}).get("type", "watch"), []))
 
 
+def partition_by_capability(
+    names: Iterable[str], capabilities: Iterable[str] | None
+) -> tuple[list[str], list[str]]:
+    """Split selected detectors into ``(supported, dropped)`` by the EDGE's advertised capability set —
+    the brain-side half of the capability handshake: select only what the connected edge can actually run.
+
+    ``capabilities=None`` means the in-process edge runs the whole registry (topology A) -> all supported.
+    A remote edge (topology B: glasses / drone / phone) advertises a SUBSET; detectors it lacks are
+    dropped here so the brain never sends a skill the edge can't execute — the caller picks the fallback.
+    """
+    if capabilities is None:
+        return list(names), []
+    cap = set(capabilities)
+    supported = [n for n in names if n in cap]
+    dropped = [n for n in names if n not in cap]
+    return supported, dropped
+
+
 # ---------------------------------------------------------------------------
 # DetectorBank — run a goal's selected detectors over a signal stream
 # ---------------------------------------------------------------------------
@@ -334,5 +352,6 @@ __all__ = [
     "registered",
     "coerce_authored_detectors",
     "detectors_for",
+    "partition_by_capability",
     "DetectorBank",
 ]
