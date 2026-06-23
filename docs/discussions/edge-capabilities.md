@@ -107,10 +107,17 @@ All: brain-selected (the `detectors` field), lazy by device budget, deliberate r
 - ✅ **#2 lazy local load** mechanism: `SkillBank.load()` inits a model-backed skill once on activation.
 - ✅ **`registerSkill(...)` extension point** live — the per-device customization surface.
 - ✅ contract `detectors` field verified by execution (was inspection-only).
-- **Remaining:** (a) wire `SkillBank` into the `Edge` class so a `WatchSpec`'s `detectors` actually run
-  on the edge loop; (b) the **boundary up-channel** (extend `Tier0Signal` vs a new `Boundary` message —
-  decision needed); (c) the **capability handshake** (brain side, Python — advertise-aware selection +
-  graceful degrade); (d) `pose-openness` (model-backed lazy skill — needs a JS pose model).
+- ✅ **(a) `SkillBank` wired into the `Edge` loop** (commit `e7eda43`): `applyWatchSpec` builds one bank
+  per goal from REGISTERED detectors (unknowns degrade → `unsupportedDetectors`); `processFrame` runs
+  them every frame; `Edge.capabilities()` advertises the set; `Edge.loadSkills()` lazy-inits models.
+- ✅ **(b) Boundary up-channel — Option 2 chosen + built**: `Boundary` is a frozen wire shape in
+  `contract.js` (`makeBoundary`/`parseBoundary`, `kind ∈ {peak,onset,threshold}`); the edge emits a
+  per-tick batch of `{goal_id, boundary}` on a **separate** `onBoundary` channel, mirroring the harness's
+  per-event `perceive_boundary` dispatch. `Tier0Signal` stays frozen. 61 vitest green.
+- **Remaining:** (c) the **capability handshake** (brain side, Python — `Edge.capabilities()` exists; the
+  brain must select detectors only within the advertised set + degrade gracefully); (d) `pose-openness`
+  (model-backed lazy skill — needs a JS pose model; the `loadSkills()` hook is ready); (e) the
+  **server-side receiver** that maps an incoming `Boundary` message 1:1 to `core.perceive_boundary(...)`.
 
 ---
 
