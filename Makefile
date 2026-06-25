@@ -2,15 +2,18 @@
 #   L1 unit  : OUR deterministic logic, fakes only, no keys, <2s  -> `make test`
 #   L2 live  : backend INTELLIGENCE + integration, real+gated     -> `PERCEPT_LIVE=1 make eval-live`
 #   L3 e2e   : the real system a user drives, headless            -> `make e2e`
-SDK     := packages/percept-vision
-HARNESS := packages/percept-harness
-EDGE    := packages/percept-edge
-PY      := python3
+SDK       := packages/percept-vision
+HARNESS   := packages/percept-harness
+EDGE      := packages/percept-edge
+CONTRACTS := packages/percept-contracts
+PY        := python3
+# absolute path to the zero-dep contract pkg (vision runs from inside $(SDK), so it needs this)
+CONTRACTS_ABS := $(abspath $(CONTRACTS))
 
 .PHONY: help test test-harness test-js test-all parity eval-live e2e bench scorecard check reproduce
 
 help:
-	@echo "test       L1 unit — percept-vision + percept-harness (fakes, no keys, fast)"
+	@echo "test       L1 unit — percept-contracts + percept-vision + percept-harness (fakes, no keys, fast)"
 	@echo "test-js    L1 unit — percept-edge (vitest; needs npm install)"
 	@echo "test-all   test + test-js"
 	@echo "eval-live  L2 live eval (needs keys; skips without PERCEPT_LIVE=1)"
@@ -20,8 +23,9 @@ help:
 	@echo "reproduce  reproduce a published scorecard row"
 
 test:
-	cd $(SDK) && PYTHONPATH=. $(PY) -m unittest discover -s tests
-	PYTHONPATH=$(SDK):$(HARNESS) $(PY) -m unittest discover -s $(HARNESS)/tests
+	PYTHONPATH=$(CONTRACTS) $(PY) -m unittest discover -s $(CONTRACTS)/tests
+	cd $(SDK) && PYTHONPATH=.:$(CONTRACTS_ABS) $(PY) -m unittest discover -s tests
+	PYTHONPATH=$(SDK):$(HARNESS):$(CONTRACTS) $(PY) -m unittest discover -s $(HARNESS)/tests
 
 test-js:
 	cd $(EDGE) && npm test
@@ -29,32 +33,33 @@ test-js:
 test-all: test test-js
 
 parity:  ## Edge<->harness conformance — JS percept-edge vs Python percept-harness, byte-for-byte
-	PYTHONPATH=$(HARNESS):$(SDK) $(PY) $(EDGE)/parity/compare.py
+	PYTHONPATH=$(HARNESS):$(SDK):$(CONTRACTS) $(PY) $(EDGE)/parity/compare.py
 
 eval-live:
 	@if [ "$$PERCEPT_LIVE" != "1" ]; then \
 		echo "L2 skipped: set PERCEPT_LIVE=1 and provide backend keys to run live eval."; \
 	else \
-		cd $(SDK) && PYTHONPATH=. $(PY) -m eval.run; \
+		cd $(SDK) && PYTHONPATH=.:$(CONTRACTS_ABS) $(PY) -m eval.run; \
 	fi
 
 e2e:
-	cd $(SDK) && PYTHONPATH=. $(PY) -m e2e.live_smoke
+	cd $(SDK) && PYTHONPATH=.:$(CONTRACTS_ABS) $(PY) -m e2e.live_smoke
 
 bench:
-	PYTHONPATH=$(SDK):$(HARNESS) $(PY) -m percept_harness.bench_gating
+	PYTHONPATH=$(SDK):$(HARNESS):$(CONTRACTS) $(PY) -m percept_harness.bench_gating
 
 scorecard:
-	cd $(SDK) && PYTHONPATH=. $(PY) -m eval.scorecard
+	cd $(SDK) && PYTHONPATH=.:$(CONTRACTS_ABS) $(PY) -m eval.scorecard
 
 calibrate:
-	cd $(SDK) && PYTHONPATH=. $(PY) -m eval.calibrate
+	cd $(SDK) && PYTHONPATH=.:$(CONTRACTS_ABS) $(PY) -m eval.calibrate
 
 exp-categorical:
-	cd $(SDK) && PYTHONPATH=. $(PY) -m eval.exp_categorical
+	cd $(SDK) && PYTHONPATH=.:$(CONTRACTS_ABS) $(PY) -m eval.exp_categorical
 
 check:
-	@cd $(SDK) && PYTHONPATH=. $(PY) -m compileall -q percept tests && echo "compileall ok"
+	@PYTHONPATH=$(CONTRACTS) $(PY) -m compileall -q $(CONTRACTS)/percept_contracts $(CONTRACTS)/tests && echo "compileall contracts ok"
+	@cd $(SDK) && PYTHONPATH=.:$(CONTRACTS_ABS) $(PY) -m compileall -q percept tests && echo "compileall ok"
 	@cd $(SDK) && (ruff check . || echo "ruff not installed — skipping lint")
 
 reproduce:

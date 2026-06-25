@@ -24,7 +24,8 @@ classifiers = [
     "Topic :: Multimedia :: Video",
 ]
 # Core is pure stdlib — `pip install percept-vision` then run with no keys, no heavy deps.
-dependencies = []
+# The frozen contract (DTOs + Protocols) is the one (zero-dep) package dependency.
+dependencies = ["percept-contracts>=1.0.0"]
 
 [project.optional-dependencies]
 claude = ["anthropic>=0.40"]

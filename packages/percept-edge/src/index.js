@@ -4,6 +4,7 @@
 // and the Edge class that wires the WatchSpec-down / Tier0Signal-up loop.
 
 export {
+  CONTRACT_VERSION,
   ContractError,
   makeBox,
   parseBox,
@@ -19,6 +20,10 @@ export {
   parseEdgeCapabilities,
   makeBoundaryReport,
   parseBoundaryReport,
+  makeIncidentSnippet,
+  parseIncidentSnippet,
+  makeIncident,
+  parseIncident,
 } from "./contract.js";
 
 export { motionScore, makeFrame } from "./motion.js";

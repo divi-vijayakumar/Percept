@@ -1,0 +1,225 @@
+"""L1: percept-contracts — DTO defaults, Concern.from_goal, Incident, version negotiation,
+and JSON-schema generation. Stdlib only, no backends, no keys."""
+
+import unittest
+
+import percept_contracts as pc
+from percept_contracts import (
+    CONTRACT_VERSION,
+    Box,
+    Concern,
+    Consequence,
+    ContractVersionMismatch,
+    Decision,
+    Evidence,
+    Goal,
+    Incident,
+    IncidentSnippet,
+    Subject,
+    TrackingBehavior,
+    Verdict,
+    WatchCondition,
+    WatchSpec,
+    negotiate,
+)
+
+
+class TestDTODefaults(unittest.TestCase):
+    def test_verdict_defaults(self):
+        v = Verdict(satisfied=True, confidence=0.8)
+        self.assertEqual(v.evidence, "")
+
+    def test_goal_default_state_is_watch(self):
+        g = Goal(id="g1", condition="user drinks coffee", say="careful")
+        self.assertEqual(g.state["type"], "watch")
+        self.assertEqual(g.state["count"], 0)
+        self.assertEqual(g.modality, "speak")
+        self.assertEqual(g.source, "camera")
+        self.assertEqual(g.expiry, "until_cancelled")
+
+    def test_decision_defaults(self):
+        d = Decision(route="ignore")
+        self.assertEqual(d.look, "none")
+        self.assertEqual(d.goal_ops, [])
+        self.assertEqual(d.endpoint, "n/a")
+
+    def test_box_is_frozen_and_iou(self):
+        b = Box(0.0, 0.0, 1.0, 1.0)
+        with self.assertRaises(Exception):
+            b.x = 0.5  # frozen
+        # identical boxes -> IoU 1.0; disjoint -> 0.0
+        self.assertAlmostEqual(b.iou(Box(0.0, 0.0, 1.0, 1.0)), 1.0)
+        self.assertAlmostEqual(b.iou(Box(5.0, 5.0, 1.0, 1.0)), 0.0)
+
+    def test_consequence_defaults(self):
+        c = Consequence()
+        self.assertEqual(c.miss_cost, "mild")
+        self.assertEqual(c.false_fire_cost, "mild")
+        self.assertFalse(c.protected_floor)
+
+    def test_tracking_defaults(self):
+        t = TrackingBehavior()
+        self.assertEqual(t.pattern, "watch")
+        self.assertEqual(t.rearm, "on_false")
+        self.assertIsNone(t.cadence_s)
+        self.assertFalse(t.exhaustive)
+
+    def test_watchspec_wire_version_unchanged(self):
+        # WatchSpec.version is the wire integer (NOT the contract semver) and must stay 1.
+        ws = WatchSpec(conditions=[])
+        self.assertEqual(ws.version, 1)
+
+    def test_evidence_default_coverage(self):
+        e = Evidence(t=1.0, source_id="cam", confidence=0.9, satisfied=True)
+        self.assertEqual(e.coverage, 1.0)
+
+
+class TestConcernFromGoal(unittest.TestCase):
+    def test_from_goal_equivalence(self):
+        g = Goal(id="g1", condition="the baby is awake", say="check on baby", source="crib")
+        c = Concern.from_goal(g)
+        self.assertIsInstance(c, Concern)
+        self.assertEqual(c.id, g.id)
+        self.assertEqual(c.condition, g.condition)
+        self.assertEqual(c.say, g.say)
+        self.assertEqual(c.source, g.source)
+        self.assertEqual(c.identity, Subject(kind="entity", ref=g.condition))
+        # defaults pinned to today's gate behavior (watch / on_false / mild)
+        self.assertEqual(c.consequence, Consequence())
+        self.assertEqual(c.tracking, TrackingBehavior())
+        self.assertEqual(c.observations, [])
+
+    def test_from_goal_independent_observation_lists(self):
+        a = Concern.from_goal(Goal(id="a", condition="x", say="y"))
+        b = Concern.from_goal(Goal(id="b", condition="x", say="y"))
+        a.observations.append(Evidence(t=0.0, source_id="s", confidence=1.0, satisfied=True))
+        self.assertEqual(b.observations, [])  # default_factory, not shared
+
+
+class TestIncident(unittest.TestCase):
+    def test_incident_minimal_defaults(self):
+        v = Verdict(satisfied=True, confidence=0.9, evidence="baby eyes open")
+        inc = Incident(id="inc-1", concern_id="c-baby-awake", verdict=v, ts=123.0)
+        self.assertIsNone(inc.label)
+        self.assertIsNone(inc.snippet)
+        self.assertIs(inc.verdict, v)
+
+    def test_incident_with_clip_snippet(self):
+        # the motivating example: baby-monitor "baby awake" fires with a short clip
+        snip = IncidentSnippet(
+            kind="clip",
+            media=b"\x00\x01fakeMP4",
+            mime="video/mp4",
+            t_start=10.0,
+            t_end=13.0,
+        )
+        inc = Incident(
+            id="inc-2",
+            concern_id="c-baby-awake",
+            verdict=Verdict(satisfied=True, confidence=0.95),
+            ts=200.0,
+            label="real",
+            snippet=snip,
+        )
+        self.assertEqual(inc.snippet.kind, "clip")
+        self.assertEqual(inc.snippet.mime, "video/mp4")
+        self.assertEqual(inc.label, "real")
+
+    def test_incident_snippet_frame_and_audio(self):
+        frame = IncidentSnippet(kind="frame", frames=[object()])
+        audio = IncidentSnippet(kind="audio", media=b"RIFF", mime="audio/wav", t_start=1.0, t_end=2.0)
+        self.assertEqual(frame.kind, "frame")
+        self.assertIsNone(frame.media)
+        self.assertEqual(audio.kind, "audio")
+
+    def test_redaction_clears_media_keeps_record(self):
+        # privacy redaction: null the media in place, keep kind/mime/timestamps + the Incident.
+        snip = IncidentSnippet(kind="clip", media=b"secret", mime="video/mp4", t_start=1.0, t_end=4.0)
+        inc = Incident(id="i", concern_id="c", verdict=Verdict(True, 0.9), ts=1.0, snippet=snip)
+        inc.snippet.media = None
+        inc.snippet.frames = None
+        self.assertIsNone(inc.snippet.media)
+        self.assertEqual(inc.snippet.kind, "clip")
+        self.assertEqual(inc.snippet.t_end, 4.0)
+
+
+class TestVersionNegotiation(unittest.TestCase):
+    def test_contract_version_is_semver(self):
+        self.assertEqual(CONTRACT_VERSION, "1.0.0")
+        parts = CONTRACT_VERSION.split(".")
+        self.assertEqual(len(parts), 3)
+        self.assertTrue(all(p.isdigit() for p in parts))
+
+    def test_negotiate_compatible_same_version(self):
+        self.assertTrue(negotiate(CONTRACT_VERSION, CONTRACT_VERSION))
+
+    def test_negotiate_compatible_minor_patch_differences(self):
+        self.assertTrue(negotiate("1.0.0", "1.4.2"))
+        self.assertTrue(negotiate("1.9.9", "1.0.0"))
+
+    def test_negotiate_raises_on_major_mismatch(self):
+        with self.assertRaises(ContractVersionMismatch):
+            negotiate("1.0.0", "2.0.0")
+        with self.assertRaises(ContractVersionMismatch):
+            negotiate("3.1.0", "1.0.0")
+
+
+class TestJsonSchema(unittest.TestCase):
+    def test_generate_all_has_defs_for_every_dto(self):
+        from percept_contracts import jsonschema as js
+
+        doc = js.generate_all()
+        self.assertEqual(doc["$schema"], "https://json-schema.org/draft/2020-12/schema")
+        self.assertEqual(doc["x-contract-version"], CONTRACT_VERSION)
+        for cls in js.DTOS:
+            self.assertIn(cls.__name__, doc["$defs"], f"missing $defs for {cls.__name__}")
+
+    def test_verdict_schema_required_and_types(self):
+        from percept_contracts import jsonschema as js
+
+        s = js.generate_all()["$defs"]["Verdict"]
+        self.assertEqual(s["type"], "object")
+        self.assertEqual(s["properties"]["satisfied"], {"type": "boolean"})
+        self.assertEqual(s["properties"]["confidence"], {"type": "number"})
+        # evidence has a default -> not required; satisfied/confidence are required
+        self.assertIn("satisfied", s["required"])
+        self.assertIn("confidence", s["required"])
+        self.assertNotIn("evidence", s["required"])
+
+    def test_incident_schema_refs_snippet_and_verdict(self):
+        from percept_contracts import jsonschema as js
+
+        s = js.generate_all()["$defs"]["Incident"]
+        self.assertEqual(s["properties"]["verdict"], {"$ref": "#/$defs/Verdict"})
+        # snippet is Optional[IncidentSnippet] -> anyOf containing the $ref + null
+        any_of = s["properties"]["snippet"]["anyOf"]
+        self.assertIn({"$ref": "#/$defs/IncidentSnippet"}, any_of)
+        self.assertIn({"type": "null"}, any_of)
+
+    def test_literal_becomes_enum(self):
+        from percept_contracts import jsonschema as js
+
+        snip = js.generate_all()["$defs"]["IncidentSnippet"]
+        self.assertEqual(snip["properties"]["kind"], {"enum": ["frame", "clip", "audio"]})
+
+    def test_committed_schema_matches_generator(self):
+        # the committed files under schema/ must be byte-identical to a fresh generation
+        import json
+        from pathlib import Path
+
+        from percept_contracts import jsonschema as js
+
+        combined_path = js.schema_dir() / "percept-contracts.schema.json"
+        self.assertTrue(combined_path.exists(), "run `python -m percept_contracts.jsonschema`")
+        on_disk = json.loads(Path(combined_path).read_text())
+        self.assertEqual(on_disk, js.generate_all())
+
+
+class TestPublicSurface(unittest.TestCase):
+    def test_all_names_importable(self):
+        for name in pc.__all__:
+            self.assertTrue(hasattr(pc, name), f"{name} missing from percept_contracts")
+
+
+if __name__ == "__main__":
+    unittest.main()
