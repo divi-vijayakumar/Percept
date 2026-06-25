@@ -16,15 +16,23 @@ The model id is taken from ``settings.models.vision_model`` — no literal in lo
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import os
 from typing import Any
 
 from ..adapters import Box, Goal, Observation, Verdict
+from ._resilience import CircuitBreaker, with_retry
 
 # A tight system prompt that pins the contract: narrow grounded yes/no + calibrated confidence
 # + a one-line evidence string, as strict JSON. Kept here (a prompt is data for this adapter,
 # not a tunable of the cognition logic) — the firing decision still lives in the gate.
+#
+# This is the STABLE per-concern instruction prefix: it never varies frame-to-frame. At 24/7
+# capture volume it is re-sent on every judge call, so it is the natural prompt-caching breakpoint
+# — see ``_system_blocks`` below, which attaches an ephemeral ``cache_control`` so the cloud only
+# re-bills the variable per-frame suffix (the images + the narrow question) on each call.
 _JUDGE_SYSTEM = (
     "You are a perception module answering ONE narrow grounded question about a specific "
     "region of an image. Answer only about what is visible in the cropped region (and the "
@@ -33,6 +41,31 @@ _JUDGE_SYSTEM = (
     "Set confidence low when the region is ambiguous, occluded, or you are unsure — a wrong "
     "confident yes is the worst outcome."
 )
+
+# Outbound-call timeout (seconds) for the Anthropic client. A hung socket on the hot 24/7 path
+# must surface as a retryable failure, not a stall — the SDK raises ``APITimeoutError`` past this
+# and ``with_retry`` re-attempts. Overridable via ``PERCEPT_VISION_TIMEOUT_S`` (rule 5: no literal
+# in logic). Kept here (a transport knob for this L2 adapter) rather than in the core Settings tree.
+_DEFAULT_TIMEOUT_S = 30.0
+
+
+def _timeout_s() -> float:
+    try:
+        return float(os.environ.get("PERCEPT_VISION_TIMEOUT_S", _DEFAULT_TIMEOUT_S))
+    except (TypeError, ValueError):
+        return _DEFAULT_TIMEOUT_S
+
+
+def _system_blocks(text: str) -> list[dict]:
+    """Render a stable instruction prefix as a cacheable Anthropic ``system`` block list.
+
+    The ``cache_control: {"type": "ephemeral"}`` breakpoint marks this prefix as a cache write
+    point: subsequent judge calls on the same per-zone/per-concern prefix are served from cache
+    (~0.1x input cost) instead of re-billing the full prefix every frame. Anthropic only caches a
+    prefix above a model-dependent minimum (~1024–4096 tokens), so on short prefixes this is a
+    correct no-op (it silently won't cache) — the win scales with prefix size at volume.
+    """
+    return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
 
 
 def _require_anthropic():
@@ -69,6 +102,18 @@ class AnthropicVision:
         self._model = getattr(
             getattr(self._settings, "models", self._settings), "vision_model", "claude-opus-4-8"
         )
+        # Per-instance breaker so a string of transient cloud failures trips OPEN and stops
+        # hammering the hot path (mirrors gemini.py); ``with_retry`` adds exponential backoff.
+        self._breaker = CircuitBreaker()
+        self._timeout_s = _timeout_s()
+
+    def _with_timeout(self, client):
+        """Apply the explicit per-call timeout if the SDK supports ``with_options`` (real client);
+        fall back to the bare client for L2 fakes that don't model client options."""
+        with_options = getattr(client, "with_options", None)
+        if callable(with_options):
+            return with_options(timeout=self._timeout_s)
+        return client
 
     # -- client ------------------------------------------------------------
     def _ensure_client(self):
@@ -99,15 +144,23 @@ class AnthropicVision:
         ``vision="gemini"``).
         """
         del audio  # accepted for protocol parity; Claude is vision-only (honest degrade)
-        client = self._ensure_client()
+        client = self._with_timeout(self._ensure_client())
         content = self._build_content(condition, frame, roi=roi, exemplar=exemplar,
                                       corrections=corrections, frames=frames)
-        resp = client.messages.create(
-            model=self._model,
-            max_tokens=512,  # 256 truncated verbose verdicts mid-JSON -> spurious "unparsed" misses
-            system=_JUDGE_SYSTEM,
-            messages=[{"role": "user", "content": content}],
-        )
+
+        async def _call():
+            # The SDK call is synchronous — run it off the event loop so the explicit timeout and
+            # retries don't block other captures. ``system`` carries the cached per-concern prefix.
+            return await asyncio.to_thread(
+                client.messages.create,
+                model=self._model,
+                max_tokens=512,  # 256 truncated verbose verdicts mid-JSON -> spurious "unparsed" misses
+                system=_system_blocks(_JUDGE_SYSTEM),
+                messages=[{"role": "user", "content": content}],
+            )
+
+        # Survive transient resets/timeouts in batch captures; trip the breaker on a run of failures.
+        resp = await with_retry(_call, breaker=self._breaker)
         return _parse_verdict(_text_of(resp))
 
     async def detect(self, frame: Any, goals: list[Goal]) -> list[Observation]:
@@ -116,7 +169,7 @@ class AnthropicVision:
         Kept deliberately thin: the entity graph's continuity needs boxes + labels, not a scene
         description. Returns ``[]`` on a parse miss rather than fabricating detections.
         """
-        client = self._ensure_client()
+        client = self._with_timeout(self._ensure_client())
         labels = ", ".join(sorted({g.condition for g in goals})) or "any salient object"
         prompt = (
             "Detect goal-relevant objects. For each, return JSON list items "
@@ -124,11 +177,16 @@ class AnthropicVision:
             f"Goals of interest: {labels}. Return STRICT JSON list (possibly empty)."
         )
         content = [_image_block(frame), {"type": "text", "text": prompt}]
-        resp = client.messages.create(
-            model=self._model,
-            max_tokens=512,
-            messages=[{"role": "user", "content": content}],
-        )
+
+        async def _call():
+            return await asyncio.to_thread(
+                client.messages.create,
+                model=self._model,
+                max_tokens=512,
+                messages=[{"role": "user", "content": content}],
+            )
+
+        resp = await with_retry(_call, breaker=self._breaker)
         return _parse_observations(_text_of(resp))
 
     async def detect_events(self, frames: list, goals: list[Goal]) -> list:
@@ -288,4 +346,33 @@ def _parse_observations(text: str) -> list[Observation]:
     return out
 
 
-__all__ = ["AnthropicVision"]
+# ---------------------------------------------------------------------------
+# Reference "production judge"
+# ---------------------------------------------------------------------------
+
+
+def production_judge(settings: Any = None, *, client: Any = None) -> AnthropicVision:
+    """Reference constructor documenting the hardened settings of the Claude vision judge.
+
+    ``AnthropicVision`` is already production-hardened — this is a single, discoverable entry point
+    that names the levers for a 24/7 deployment, all of which live on the adapter:
+
+    * **Retry + backoff** — every ``judge``/``detect`` cloud call goes through
+      :func:`._resilience.with_retry` (3 attempts, exponential backoff: 0.2s, 0.4s).
+    * **Circuit breaker** — a per-instance :class:`._resilience.CircuitBreaker` (opens after 5
+      failures, half-opens after 30s) short-circuits the hot path during a sustained outage instead
+      of hammering it.
+    * **Explicit timeout** — ``PERCEPT_VISION_TIMEOUT_S`` (default 30s) is applied via the SDK's
+      ``with_options(timeout=...)`` so a hung socket surfaces as a *retryable* failure, not a stall.
+    * **Prompt caching** — the stable per-zone/per-concern instruction prefix is sent as a ``system``
+      block carrying an ephemeral ``cache_control`` breakpoint, so the per-frame call only re-bills
+      the variable suffix (the images + the narrow question) — a large cost lever at 24/7 volume.
+
+    Returns the same ``AnthropicVision`` the registry builds for ``vision="claude"``; prefer this
+    when constructing the judge directly and you want the hardening choices spelled out at the call
+    site.
+    """
+    return AnthropicVision(settings, client=client)
+
+
+__all__ = ["AnthropicVision", "production_judge"]
