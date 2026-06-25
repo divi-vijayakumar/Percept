@@ -50,20 +50,25 @@ MEASURED = ["raw recall", "e2e recall", "e2e recall_flip", "e2e fusion_fp"]
 
 def score(*, live: bool, n: int) -> TrackResult:
     if not live:
-        # OFFLINE stub — no fetch, no API. Audio rescues most vision misses, with a low false-fire rate.
+        # OFFLINE card path: use the golden-v1 PT sample count when annotations are staged, but keep
+        # VLM/audio-fusion cells modeled until --live measures them.
+        try:
+            n_events = len(pt.golden_sound_events(require_media=False))
+        except Exception:
+            n_events = 0
         recall_raw, recall_e2e, recall_flip, fusion_fp = 0.30, 0.90, 0.85, 0.05
         return TrackResult(
             track=TRACK,
             cells=_cells(recall_raw, recall_e2e, recall_flip, fusion_fp),
             fmts=FMTS,
             headline={
-                "acoustic recall raw->fused (N PT sound)": f"{recall_raw:.2f} -> {recall_e2e:.2f} (N=0)",
+                "acoustic recall raw->fused (N PT sound)": f"{recall_raw:.2f} -> {recall_e2e:.2f} (N={n_events})",
                 "acoustic recall-flip [95% CI] / fusion-FP": f"{recall_flip:.2f} [n/a,n/a] / {fusion_fp:.2f}",
             },
-            measured=MEASURED,
-            modeled=[],
+            measured=[],
+            modeled=["raw:recall", "e2e:recall", "e2e:recall_flip", "e2e:fusion_fp"],
             calls=0,
-            notes="offline stub",
+            notes="offline modeled; run --live to measure golden-v1 Perception Test samples",
         )
 
     import asyncio

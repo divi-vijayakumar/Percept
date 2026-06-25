@@ -168,11 +168,11 @@ private **golden** ambiguity corpus, and **RepCount-A**; the e2e-relational accu
 | **acoustic** (PT Sound Loc., unseen source) | vision-only recall **0.00 → 0.25–0.33** fused; fusion-FP 0–0.17 | the **recall-flip**: fusion rescues ~a third of sound events vision-only never hears (honest at scale, not the single-clip 1.0) |
 | **relational** (golden) | confidence **AUROC ≈ 0.51** (≈ chance); ASK-rate ≈ 0.4 | the VLM's confidence does **not** separate right from wrong → justifies the **ASK** discipline over threshold-tuning |
 | **timeliness** (PT action onsets) | **P-PAUC ≈ 60**; reaction λ p50 ≈ 1s | first real proactive-timeliness numbers (adapted PAUC) |
-| **edge event-recall** (PT onsets) | **0.00** @ thr 0.10 | ⚠️ the motion-gate escalates on **none** of the subtle-action onsets (motion ~0.03–0.06 < 0.10) → e2e ≠ core there; a real **calibration** finding |
+| **edge event-recall** (locally staged PT sample onsets) | **0.12** @ thr 0.10 (N=8) | ⚠️ the motion-gate only catches **1/8** seeded action onsets → e2e ≠ core there; a real **calibration** finding |
 
 A v0.5 DRAFT, not a RELEASE claim. Two findings the benchmark surfaced that a self-congratulatory
-eval would hide: the **flat confidence AUROC** (*why* the gate refuses to guess) and the **edge
-event-recall of 0** on subtle actions (the motion-gate is mis-calibrated for them). Full plan, data,
+eval would hide: the **flat confidence AUROC** (*why* the gate refuses to guess) and the low **edge
+event-recall** on subtle actions (the motion-gate is mis-calibrated for them). Full plan, data,
 and references:
 [`packages/percept-vision/eval/BENCHMARK_PLAN.md`](packages/percept-vision/eval/BENCHMARK_PLAN.md).
 

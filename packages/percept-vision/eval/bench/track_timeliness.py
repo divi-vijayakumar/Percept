@@ -40,7 +40,7 @@ def _turn_score(t_hat, onset, *, floor):
     return 0.0
 
 
-def _result(p_pauc, pvqa_native, p50, p90, *, n_fired, total, calls, notes):
+def _result(p_pauc, pvqa_native, p50, p90, *, n_fired, total, calls, notes, modeled=None):
     """Assemble the TrackResult — raw cells only; core/e2e are n/a for the per-frame watcher."""
     cells = {
         ("raw", "p_pauc"): p_pauc,
@@ -73,8 +73,8 @@ def _result(p_pauc, pvqa_native, p50, p90, *, n_fired, total, calls, notes):
             "reaction_p90": "{:.1f}",
         },
         headline=headline,
-        measured=["raw p_pauc", "raw pvqa_native", "raw reaction_p50", "raw reaction_p90"],
-        modeled=[],
+        measured=[] if modeled else ["raw p_pauc", "raw pvqa_native", "raw reaction_p50", "raw reaction_p90"],
+        modeled=modeled or [],
         calls=calls,
         notes=notes,
     )
@@ -82,8 +82,25 @@ def _result(p_pauc, pvqa_native, p50, p90, *, n_fired, total, calls, notes):
 
 def score(*, live: bool, n: int) -> TrackResult:
     if not live:
-        # OFFLINE stub — no fetch, no API. Plausible placeholder numbers so the card renders.
-        return _result(62.0, 48.0, 0.8, 1.9, n_fired=4, total=5, calls=0, notes="offline stub")
+        # Offline card path: use the golden-v1 PT sample count when annotations are staged, but keep
+        # the VLM-dependent timeliness cells modeled until --live measures them.
+        from eval.bench import perception_test as pt
+
+        try:
+            total = len(pt.golden_action_events(require_media=False)) or 5
+        except Exception:
+            total = 5
+        return _result(
+            62.0,
+            48.0,
+            0.8,
+            1.9,
+            n_fired=min(4, total),
+            total=total,
+            calls=0,
+            notes="offline modeled; run --live to measure golden-v1 Perception Test samples",
+            modeled=["raw:p_pauc", "raw:pvqa_native", "raw:reaction_p50", "raw:reaction_p90"],
+        )
 
     import asyncio
     import statistics
