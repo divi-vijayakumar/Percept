@@ -71,4 +71,63 @@ def validate_golden_manifest(path: str | Path, *, release: bool = False) -> dict
     return data
 
 
-__all__ = ["ValidationError", "validate_baselines", "validate_golden_manifest"]
+def audit_artifacts(
+    *,
+    manifest: str | Path,
+    baselines: str | Path,
+    release: bool = False,
+) -> dict[str, Any]:
+    """Validate benchmark release artifacts and return a small machine-readable audit.
+
+    ``release=False`` is the OSS/default path: the artifacts must be well-formed, but a draft
+    manifest is allowed. ``release=True`` is intentionally stricter and fails until the golden set has
+    non-empty, license-cleared, content-hashed test rows.
+    """
+    golden = validate_golden_manifest(manifest, release=release)
+    baseline_data = validate_baselines(baselines)
+    status = "release-ready" if release else "draft-ok"
+    return {
+        "status": status,
+        "release": release,
+        "manifest": {
+            "version": golden["version"],
+            "status": golden["status"],
+            "tracks": len(golden["tracks"]),
+            "dev_items": len(golden["splits"].get("dev", [])),
+            "test_items": len(golden["splits"].get("test", [])),
+        },
+        "baselines": {
+            "version": baseline_data.get("version"),
+            "rows": len(baseline_data["baselines"]),
+            "controlled_ab": sum(1 for row in baseline_data["baselines"] if row.get("controlled_ab") is True),
+        },
+    }
+
+
+def format_audit(audit: dict[str, Any]) -> str:
+    manifest = audit["manifest"]
+    baselines = audit["baselines"]
+    lines = [
+        "",
+        "=" * 72,
+        "  PERCEPT BENCHMARK ARTIFACT AUDIT",
+        "=" * 72,
+        f"  status       : {audit['status']}",
+        f"  release mode : {audit['release']}",
+        f"  manifest     : {manifest['version']} ({manifest['status']})",
+        f"  tracks       : {manifest['tracks']}",
+        f"  split items  : dev={manifest['dev_items']} test={manifest['test_items']}",
+        f"  baselines    : {baselines['rows']} rows ({baselines['controlled_ab']} controlled A/B)",
+        "=" * 72,
+        "",
+    ]
+    return "\n".join(lines)
+
+
+__all__ = [
+    "ValidationError",
+    "audit_artifacts",
+    "format_audit",
+    "validate_baselines",
+    "validate_golden_manifest",
+]

@@ -19,6 +19,8 @@ PYTHONPATH=packages/percept-vision python3 -m percept.bench examples/benchmark/m
 For the multi-track public snapshot card:
 
 ```bash
+percept-bench audit --manifest eval/golden-v1/MANIFEST.json \
+    --baselines packages/percept-vision/eval/baselines.json
 percept-bench scorecard --manifest eval/golden-v1/MANIFEST.json --out scorecard.txt
 ```
 
@@ -212,3 +214,20 @@ validate_baselines("packages/percept-vision/eval/baselines.json")
 validate_golden_manifest("eval/golden-v1/MANIFEST.json")                 # draft-shape check
 validate_golden_manifest("eval/golden-v1/MANIFEST.json", release=True)   # must fail until release-ready
 ```
+
+From the CLI:
+
+```bash
+percept-bench audit \
+    --manifest eval/golden-v1/MANIFEST.json \
+    --baselines packages/percept-vision/eval/baselines.json
+
+percept-bench audit --release \
+    --manifest eval/golden-v1/MANIFEST.json \
+    --baselines packages/percept-vision/eval/baselines.json
+```
+
+The first command is the draft artifact check used by OSS contributors. The `--release` command is
+expected to fail until the golden manifest is marked `release` and its test split contains
+license-cleared, content-hashed media rows. That is the guardrail between “useful draft scorecard”
+and “publishable benchmark claim.”

@@ -27,7 +27,38 @@ from eval.benchmark import (  # noqa: F401
 )
 from eval.benchmark import main as _benchmark_main
 from eval.bench.run import main as _scorecard_main
-from eval.bench.validate import ValidationError, validate_baselines, validate_golden_manifest
+from eval.bench.validate import (
+    ValidationError,
+    audit_artifacts,
+    format_audit,
+    validate_baselines,
+    validate_golden_manifest,
+)
+
+
+def _audit_main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    ap = argparse.ArgumentParser(
+        prog="percept-bench audit",
+        description="Validate Percept benchmark manifest and baseline artifacts.",
+    )
+    ap.add_argument("--manifest", default="eval/golden-v1/MANIFEST.json")
+    ap.add_argument("--baselines", default="packages/percept-vision/eval/baselines.json")
+    ap.add_argument(
+        "--release",
+        action="store_true",
+        help="require release-ready artifacts: non-empty hashed test split and release manifest status",
+    )
+    args = ap.parse_args(argv)
+
+    try:
+        audit = audit_artifacts(manifest=args.manifest, baselines=args.baselines, release=args.release)
+    except ValidationError as exc:
+        print(f"BENCHMARK ARTIFACT AUDIT FAILED: {exc}")
+        return 1
+    print(format_audit(audit))
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -38,6 +69,8 @@ def main(argv: list[str] | None = None) -> int:
     """
     if argv is None:
         argv = sys.argv[1:]
+    if argv and argv[0] == "audit":
+        return _audit_main(argv[1:])
     if argv and argv[0] == "scorecard":
         return _scorecard_main(argv[1:])
     return _benchmark_main(argv)
@@ -56,6 +89,8 @@ __all__ = [
     "ManifestClip",
     "check_benchmark_gate",
     "edges_from_manifest",
+    "audit_artifacts",
+    "format_audit",
     "format_report",
     "per_concern_report",
     "run_manifest",
