@@ -95,6 +95,19 @@ class TestConcernFromGoal(unittest.TestCase):
         a.observations.append(Evidence(t=0.0, source_id="s", confidence=1.0, satisfied=True))
         self.assertEqual(b.observations, [])  # default_factory, not shared
 
+    def test_clip_declaration_defaults_off(self):
+        # B1: the clip/window_s fields default off, so an un-declared concern is single-frame unchanged.
+        c = Concern.from_goal(Goal(id="g", condition="x", say="y"))
+        self.assertFalse(c.clip)
+        self.assertIsNone(c.window_s)
+        self.assertFalse(c.wants_clip)
+
+    def test_wants_clip_reflects_declaration(self):
+        ident = Subject(kind="entity", ref="x")
+        self.assertTrue(Concern(id="a", identity=ident, condition="c", say="s", clip=True).wants_clip)
+        self.assertTrue(Concern(id="b", identity=ident, condition="c", say="s", window_s=4.0).wants_clip)
+        self.assertFalse(Concern(id="c", identity=ident, condition="c", say="s", window_s=0.0).wants_clip)
+
 
 class TestIncident(unittest.TestCase):
     def test_incident_minimal_defaults(self):

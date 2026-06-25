@@ -360,6 +360,19 @@
         },
         "source": {
           "type": "string"
+        },
+        "clip": {
+          "type": "boolean"
+        },
+        "window_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "description": "The unit of consequence-weighted attention (spec \u00a71) \u2014 sits above the entity.",
