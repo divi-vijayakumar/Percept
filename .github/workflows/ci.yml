@@ -43,6 +43,17 @@ jobs:
       - name: make parity
         run: make parity
 
+  benchmark-scorecard:
+    name: Benchmark scorecard (offline draft)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: public scorecard
+        run: make scorecard
+
   l2-live:
     name: L2 live eval (gated)
     runs-on: ubuntu-latest

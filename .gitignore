@@ -24,8 +24,10 @@ htmlcov/
 
 # eval run artifacts
 scorecard.json
+scorecard.txt
 results.json
 benchmark.json
+**/scorecard.txt
 **/scorecard.json
 **/results.json
 **/benchmark.json

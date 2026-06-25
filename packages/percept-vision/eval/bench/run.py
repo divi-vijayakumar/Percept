@@ -9,7 +9,9 @@ Live sampled (real Gemini):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import subprocess
+from pathlib import Path
 
 from . import card
 from . import (
@@ -30,11 +32,24 @@ def _commit() -> str:
         return "?"
 
 
+def _manifest_ref(path: str | None) -> str:
+    if not path:
+        return ""
+    p = Path(path)
+    digest = hashlib.sha256(p.read_bytes()).hexdigest()[:12]
+    return f"{p.as_posix()} sha256:{digest}"
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--live", action="store_true", help="run real Gemini (else offline stub cells)")
     ap.add_argument("--n", type=int, default=20, help="relational sample size")
     ap.add_argument("--out", default=None, help="also write the card to this path")
+    ap.add_argument("--manifest", default=None, help="path to the pinned data manifest to stamp on the card")
+    ap.add_argument("--mode", default="sampled", choices=["sampled", "full"], help="scorecard mode")
+    ap.add_argument("--device", default="?", help="device/runtime descriptor for the card header")
+    ap.add_argument("--fps", default="1", help="sampling/capture fps for the card header")
+    ap.add_argument("--seeds", type=int, default=1, help="number of seeds/runs represented")
     args = ap.parse_args(argv)
 
     if args.live:
@@ -55,7 +70,17 @@ def main(argv: list[str] | None = None) -> int:
 
     backend = "gemini-2.5-flash" if args.live else "fake (offline stub)"
     auroc = next((r.cells.get(("core", "auroc")) for r in results if r.track == "relational"), None)
-    out = card.render_card(results, mode="sampled", backend=backend, commit=_commit(), fps="1", auroc=auroc)
+    out = card.render_card(
+        results,
+        mode=args.mode,
+        backend=backend,
+        commit=_commit(),
+        manifest=_manifest_ref(args.manifest),
+        fps=args.fps,
+        device=args.device,
+        seeds=args.seeds,
+        auroc=auroc,
+    )
     print(out)
     if args.out:
         from pathlib import Path

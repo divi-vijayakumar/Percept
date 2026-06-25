@@ -19,7 +19,7 @@ PYTHONPATH=packages/percept-vision python3 -m percept.bench examples/benchmark/m
 For the multi-track public snapshot card:
 
 ```bash
-percept-bench scorecard --out scorecard.txt
+percept-bench scorecard --manifest eval/golden-v1/MANIFEST.json --out scorecard.txt
 ```
 
 ---
@@ -116,7 +116,7 @@ percept-bench examples/benchmark/manifest.json \
 ```
 
 ```bash
-percept-bench scorecard --out scorecard.txt
+percept-bench scorecard --manifest eval/golden-v1/MANIFEST.json --out scorecard.txt
 ```
 
 Writes the JSON report to `--out` and prints a table. Exits non-zero if the gate fails — so the CLI

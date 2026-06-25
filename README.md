@@ -179,7 +179,7 @@ and references:
 Run the public scorecard:
 
 ```bash
-percept-bench scorecard --out scorecard.txt
+percept-bench scorecard --manifest eval/golden-v1/MANIFEST.json --out scorecard.txt
 ```
 
 ## Layout
