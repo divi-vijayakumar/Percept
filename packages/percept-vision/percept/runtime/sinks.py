@@ -9,6 +9,7 @@ import json
 import time
 import urllib.request
 from dataclasses import asdict, is_dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -96,6 +97,29 @@ class WebhookSink:
             )
         if last_exc is not None:
             raise last_exc
+
+
+class FileDeadLetterQueue:
+    """Append failed webhook deliveries to a JSONL file."""
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+
+    def append(self, record: dict[str, Any]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        line = {
+            "url": record.get("url"),
+            "headers": record.get("headers"),
+            "error": record.get("error"),
+            "body": base64.b64encode(record.get("body", b"")).decode("ascii"),
+        }
+        with self.path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(line, sort_keys=True) + "\n")
+
+    def read_all(self) -> list[dict[str, Any]]:
+        if not self.path.exists():
+            return []
+        return [json.loads(line) for line in self.path.read_text().splitlines() if line.strip()]
 
 
 def webhook(url: str, **kwargs) -> WebhookSink:

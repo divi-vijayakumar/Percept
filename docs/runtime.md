@@ -5,7 +5,7 @@ thread, the live feed, and rising-edge **incident** emission — so your app sto
 
 ```python
 from percept import Percept, Goal
-from percept.runtime import RuntimeStats, run, webhook
+from percept.runtime import FileDeadLetterQueue, RuntimeStats, run, webhook
 
 agent = Percept.create(vision="gemini")            # pip install "percept-vision[gemini]" + GEMINI_API_KEY
 agent.add_goal(Goal(id="zone", condition="a person is in the restricted zone", say="Alert: person in zone"))
@@ -75,7 +75,7 @@ A goal's `state` carries three orthogonal levers (the conductor can author them 
 ```python
 from percept.runtime import webhook
 
-dead_letter = []
+dead_letter = FileDeadLetterQueue("var/percept-dead-letter.jsonl")
 sink = webhook(
     "https://example.com/percept/incidents",
     headers={"Authorization": "Bearer ..."},

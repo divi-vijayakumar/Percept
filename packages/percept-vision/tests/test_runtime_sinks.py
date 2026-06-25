@@ -6,9 +6,11 @@ import hmac
 import json
 import unittest
 from hashlib import sha256
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from percept.runtime.sinks import WebhookSink, incident_payload
+from percept.runtime.sinks import FileDeadLetterQueue, WebhookSink, incident_payload
 from percept_contracts import Incident, IncidentSnippet, Verdict
 
 
@@ -83,6 +85,24 @@ class WebhookSinkTests(unittest.TestCase):
                 sink(_incident())
         self.assertEqual(len(dead), 1)
         self.assertIn(b"Door alert", dead[0]["body"])
+
+    def test_file_dead_letter_records_jsonl(self):
+        with TemporaryDirectory() as d:
+            queue = FileDeadLetterQueue(Path(d) / "dead" / "webhooks.jsonl")
+            sink = WebhookSink(
+                "https://example.test/hook",
+                retries=0,
+                dead_letter=queue,
+                signing_secret="shh",
+            )
+            with patch("urllib.request.urlopen", side_effect=TimeoutError("slow")):
+                with self.assertRaises(TimeoutError):
+                    sink(_incident())
+            rows = queue.read_all()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["url"], "https://example.test/hook")
+            self.assertIn("X-Percept-Signature", rows[0]["headers"])
+            self.assertTrue(rows[0]["body"])
 
 
 if __name__ == "__main__":
