@@ -22,6 +22,23 @@ from typing import Any, Callable, Iterable
 
 
 # ---------------------------------------------------------------------------
+# Sense categories — the CLASS of physical signal a detector belongs to (B2)
+# ---------------------------------------------------------------------------
+#
+# A detector's ``category`` is the coarse modality of the signal it reads, so a whole CLASS of
+# detectors is discoverable at once — ``detectors_in_category(AUDIO)`` returns every audio Tier-0
+# detector the same way the motion ones group under ``MOTION``. This is what makes ``acoustic-onset``
+# a first-class *audio* sense (B2): it is the AUDIO category, distinct from the MOTION/FRAME detectors,
+# and the brain can ask "what audio senses does this edge have?" without hardcoding names.
+
+#: Built-in sense categories. ``MOTION`` = frame-diff magnitude; ``AUDIO`` = the mic/energy stream;
+#: ``FRAME`` = a model reading raw frames (e.g. pose). New categories are additive (semver MINOR).
+CATEGORY_MOTION = "motion"
+CATEGORY_AUDIO = "audio"
+CATEGORY_FRAME = "frame"
+
+
+# ---------------------------------------------------------------------------
 # The skills manifest + the timed boundary (the up-channel event)
 # ---------------------------------------------------------------------------
 
@@ -31,13 +48,20 @@ class DetectorManifest:
     """Self-describing entry so the brain can COMPOSE a detector without hardcoding it.
 
     ``when_to_use`` is what the conductor reads to author it and what a sense→default map keys on;
-    ``output`` documents the boundary it emits. This manifest contract is the one skills mechanism
-    shared across the three registries (sense primitives, perception specs, edge detectors)."""
+    ``output`` documents the boundary it emits. ``category`` is the coarse sense CLASS (one of
+    ``CATEGORY_MOTION``/``CATEGORY_AUDIO``/``CATEGORY_FRAME``) so a whole modality of detectors is
+    discoverable at once (``detectors_in_category(CATEGORY_AUDIO)``) — this is what marks
+    ``acoustic-onset`` as the first-class *audio* sense (B2). This manifest contract is the one skills
+    mechanism shared across the three registries (sense primitives, perception specs, edge detectors).
+
+    ``category`` is additive and optional (defaults ``""`` = uncategorized) so existing third-party
+    manifests stay valid; the field name matches the JS twin's manifest, so it rides the wire unchanged."""
 
     name: str
     senses: str  # the physical signal it reads (e.g. "motion magnitude over time")
     when_to_use: str  # so the conductor can author it / the preset can default to it
     output: str  # the boundary it emits (e.g. "a 'peak' per motion oscillation = one rep")
+    category: str = ""  # the coarse sense class: CATEGORY_MOTION | CATEGORY_AUDIO | CATEGORY_FRAME
 
 
 @dataclass(frozen=True)
@@ -231,6 +255,7 @@ def register_detector(
     senses: str = "",
     when_to_use: str = "",
     output: str = "",
+    category: str = "",
 ) -> DetectorManifest:
     """Ergonomic façade over :func:`register` — register a detector, deriving its manifest.
 
@@ -245,7 +270,7 @@ def register_detector(
     """
     if manifest is None:
         manifest = DetectorManifest(
-            name=name, senses=senses, when_to_use=when_to_use, output=output
+            name=name, senses=senses, when_to_use=when_to_use, output=output, category=category
         )
     register(manifest.name if manifest.name else name, detector, manifest)
     return manifest
@@ -271,6 +296,13 @@ def list_manifests() -> list[DetectorManifest]:
 def registered() -> list[str]:
     """Registered detector names (sorted) — the edge's advertised capability vocabulary."""
     return sorted(_REGISTRY)
+
+
+def detectors_in_category(category: str) -> list[str]:
+    """Registered detector names (sorted) whose manifest ``category`` matches — the modality-as-a-class
+    discovery: ``detectors_in_category(CATEGORY_AUDIO)`` lists every audio Tier-0 sense (B2), the way
+    callers already enumerate motion ones. Empty when nothing in that category is registered."""
+    return sorted(n for n, (_, m) in _REGISTRY.items() if m.category == category)
 
 
 def unregister(name: str) -> bool:
@@ -302,6 +334,7 @@ register(
         senses="motion magnitude over time (frame-diff)",
         when_to_use="counting repetitive movements — reps, strokes, paces; any 'count the N-th time' on a periodic motion",
         output="a 'peak' boundary per motion oscillation (≈ one rep), with no per-frame VLM call",
+        category=CATEGORY_MOTION,
     ),
 )
 register(
@@ -312,6 +345,7 @@ register(
         senses="audio energy over time (the mic stream already flowing for STT)",
         when_to_use="audio-cued events — a kettle/boil hiss rising, a timer beep, a rep grunt, a knock",
         output="an 'onset' boundary each time energy spikes up (a sound starting)",
+        category=CATEGORY_AUDIO,  # the first-class AUDIO sense (B2) — discoverable as a class
     ),
 )
 register(
@@ -323,6 +357,7 @@ register(
         when_to_use="counting FAST whole-body reps where motion-diff over-counts and the VLM aliases — "
         "jumping jacks, squats, push-ups; any rep with a clean open↔close body shape",
         output="one 'peak' boundary per rep (the open phase of the openness waveform)",
+        category=CATEGORY_FRAME,
     ),
 )
 
@@ -410,6 +445,9 @@ class DetectorBank:
 
 
 __all__ = [
+    "CATEGORY_MOTION",
+    "CATEGORY_AUDIO",
+    "CATEGORY_FRAME",
     "DetectorManifest",
     "Boundary",
     "MotionPeriodicity",
@@ -421,6 +459,7 @@ __all__ = [
     "manifest_of",
     "list_manifests",
     "registered",
+    "detectors_in_category",
     "unregister",
     "clear_detectors",
     "coerce_authored_detectors",

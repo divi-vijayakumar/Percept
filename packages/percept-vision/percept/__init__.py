@@ -25,7 +25,7 @@ from .adapters import (
     WatchCondition,
     WatchSpec,
 )
-from percept_contracts import CONTRACT_VERSION, Incident, IncidentSnippet
+from percept_contracts import AudioFrame, CONTRACT_VERSION, Incident, IncidentSnippet
 from .cache import CacheCascade, CacheKey, CacheResult, FrameHashLayer
 from .config import Settings, load_settings
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
@@ -83,6 +83,7 @@ __all__ = [
     "WatchSpec",
     "Tier0Signal",
     "Enricher",
+    "AudioFrame",
     "Incident",
     "IncidentSnippet",
     # contract version

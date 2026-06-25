@@ -8,8 +8,9 @@ not intelligence (a fused concern needs vision="gemini" to actually hear; here w
 import asyncio
 import unittest
 
-from percept.adapters import Goal, Verdict
+from percept.adapters import AudioFrame, Goal, Verdict
 from percept.agent import Percept
+from percept.backends.fake import FakeVision
 from percept.events import AudioWindow
 
 
@@ -75,6 +76,58 @@ class TestFusedAssembly(unittest.TestCase):
 
         asyncio.run(go())
         self.assertIsNone(rec.calls[-1]["audio"])  # a vision spec never assembles audio (byte-for-byte)
+
+
+class TestTypedAudioFrame(unittest.TestCase):
+    """B2 — a typed ``AudioFrame`` flows through ``judge(audio=...)`` (the typed-but-flexible param)."""
+
+    def test_audioframe_defaults_and_as_pair(self):
+        af = AudioFrame(pcm=b"\x01\x02\x03\x04", sample_rate=16000, channels=1)
+        self.assertEqual(af.sample_rate, 16000)
+        self.assertEqual(af.channels, 1)
+        self.assertEqual(af.sample_format, "s16le")
+        self.assertIsNone(af.encoded)
+        # raw-PCM render: a self-describing mime tag carrying rate/channels + the raw bytes
+        mime, raw = af.as_pair()
+        self.assertEqual(raw, b"\x01\x02\x03\x04")
+        self.assertEqual(mime, "audio/L16;rate=16000;channels=1")
+
+    def test_as_pair_prefers_encoded_blob(self):
+        af = AudioFrame(pcm=b"raw", encoded=b"RIFFfake", mime="audio/wav")
+        self.assertEqual(af.as_pair(), ("audio/wav", b"RIFFfake"))
+
+    def test_duration_from_bounds(self):
+        self.assertEqual(AudioFrame(t_start=1.0, t_end=3.5).duration_s, 2.5)
+        self.assertIsNone(AudioFrame().duration_s)  # unbounded
+
+    def test_frozen(self):
+        af = AudioFrame()
+        with self.assertRaises(Exception):
+            af.sample_rate = 8000  # frozen dataclass
+
+    def test_typed_audioframe_routes_through_fake_judge(self):
+        # The fake supports a "{token}|audio" script key — passing a TYPED AudioFrame as audio= must
+        # route to it, proving the typed object flows through the (typed-but-flexible) audio param.
+        token = "kettle"
+        audio_verdict = Verdict(satisfied=True, confidence=0.92, evidence="scripted: hiss heard")
+        vision = FakeVision(script={
+            token: Verdict(satisfied=False, confidence=0.6, evidence="scripted: silent frame"),
+            f"{token}|audio": audio_verdict,
+        })
+
+        async def go():
+            # no audio -> the vision-only scripted verdict
+            v_silent = await vision.judge("the kettle is boiling", token)
+            # typed AudioFrame -> routes to the |audio key (the audio modality is consulted)
+            v_audio = await vision.judge(
+                "the kettle is boiling", token,
+                audio=AudioFrame(pcm=b"\x10\x20\x30", sample_rate=16000, channels=1),
+            )
+            return v_silent, v_audio
+
+        v_silent, v_audio = asyncio.run(go())
+        self.assertFalse(v_silent.satisfied)
+        self.assertEqual(v_audio, audio_verdict)  # the typed audio object reached judge and changed the read
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@
 //     detect(frame): Array<{x:number, y:number}> | null,    // 33 BlazePose landmarks, or null if no person
 //   }
 
-import { MotionPeriodicity, registerSkill } from "./skills.js";
+import { CATEGORY_FRAME, MotionPeriodicity, registerSkill } from "./skills.js";
 
 // BlazePose landmark indices (identical to the Python side).
 const L_ANKLE = 27, R_ANKLE = 28, L_SHOULDER = 11, R_SHOULDER = 12, L_WRIST = 15, R_WRIST = 16;
@@ -88,6 +88,7 @@ export function registerPoseSkill(landmarker) {
       when_to_use:
         "counting FAST whole-body reps where motion-diff over-counts and the VLM aliases — jumping jacks, squats, push-ups",
       output: "one 'peak' boundary per rep (the open phase of the openness waveform)",
+      category: CATEGORY_FRAME,
     },
   });
 }

@@ -8,7 +8,10 @@ import {
   manifestOf,
   listManifests,
   registered,
+  detectorsInCategory,
   signalOf,
+  CATEGORY_MOTION,
+  CATEGORY_AUDIO,
 } from "../src/skills.js";
 
 // A clean oscillation: each rep climbs to 1.0 then drops to 0.0. Peaks emitted on the descent.
@@ -61,6 +64,7 @@ describe("the registry — register + compose by name", () => {
     expect(signalOf("acoustic-onset")).toBe("energy");
     // manifest is the wire-shaped self-description (matches the Python DetectorManifest fields)
     expect(Object.keys(manifestOf("motion-periodicity")).sort()).toEqual([
+      "category",
       "name",
       "output",
       "senses",
@@ -71,6 +75,21 @@ describe("the registry — register + compose by name", () => {
 
   it("makeDetector throws on an unknown skill (the firewall)", () => {
     expect(() => makeDetector("no-such-skill")).toThrow(/unknown skill/);
+  });
+});
+
+describe("sense categories (B2) — acoustic-onset is the first-class AUDIO sense", () => {
+  it("marks each built-in with its modality category", () => {
+    expect(manifestOf("acoustic-onset").category).toBe(CATEGORY_AUDIO);
+    expect(manifestOf("motion-periodicity").category).toBe(CATEGORY_MOTION);
+  });
+
+  it("discovers audio detectors as a class", () => {
+    // the modality-as-a-class query: every audio Tier-0 sense, mirroring Python detectors_in_category
+    expect(detectorsInCategory(CATEGORY_AUDIO)).toContain("acoustic-onset");
+    expect(detectorsInCategory(CATEGORY_AUDIO)).not.toContain("motion-periodicity");
+    expect(detectorsInCategory(CATEGORY_MOTION)).toContain("motion-periodicity");
+    expect(detectorsInCategory("smell")).toEqual([]);
   });
 });
 
