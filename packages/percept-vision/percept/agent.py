@@ -568,6 +568,14 @@ class Percept:
         earlier = self._window(source).frames()[:-1]  # drop the current frame (passed as `frame`)
         if not earlier:
             return None
+        # B1: a clip window (window_s) bounds the strip by TIME — keep only the earlier frames within
+        # window_s seconds of the current frame, so "a 4s clip" means the last 4s, not a frame count.
+        if getattr(spec, "window_s", None):
+            now_t = self._window(source).frames()[-1][0]  # current frame's timestamp
+            cutoff = now_t - spec.window_s
+            earlier = [(t, f) for t, f in earlier if t >= cutoff]
+            if not earlier:
+                return None
         want = (spec.n_frames - 1) if spec.temporal == "strip" else len(earlier)
         if want <= 0:
             return None
@@ -593,6 +601,33 @@ class Percept:
         verdict = await self.vision.judge(*args, **kwargs)
         self.funnel.record_judge(latency_s=self.clock() - t0, **judge_usage(verdict))
         return verdict
+
+    async def judge_clip(
+        self,
+        condition: str,
+        frames: list,
+        *,
+        roi: Box | None = None,
+        corrections: dict | None = None,
+        audio: Any = None,
+    ) -> Verdict:
+        """Judge a plain-language ``condition`` over a CLIP (multiple frames), returning a ``Verdict``.
+
+        The public temporal-judging seam (B1): a thin, ergonomic wrapper over the existing
+        ``Vision.judge(..., frames=...)`` path for callers who already hold a clip (e.g. a concern that
+        declared ``window_s``). ``frames`` is the clip oldest→newest; the LAST frame is the anchor passed
+        as ``frame`` and the earlier ones are the temporal strip (matching the agent's per-tick
+        assembly). A single-element clip degrades to a normal single-frame judge. Timing/usage telemetry
+        flows through the same ``_timed_judge`` wrapper as the watch path, so a clip judge is observable
+        identically. Raises ``ValueError`` on an empty clip — there is nothing to judge."""
+        if not frames:
+            raise ValueError("judge_clip requires a non-empty clip (oldest→newest frames)")
+        anchor = frames[-1]
+        strip = list(frames[:-1]) or None
+        return await self._timed_judge(
+            condition, anchor, roi=roi, corrections=corrections or None,
+            frames=strip, audio=audio,
+        )
 
     async def _judge(
         self,

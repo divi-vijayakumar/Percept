@@ -76,6 +76,7 @@ class PerceptionSpec:
     roi: RoiMode = "focus"  # focus = in-focus entity box (today); hint = authored region; full = whole frame
     sampling: Sampling = "recent"  # which frames from the window: most-recent vs evenly-spaced
     audio_s: float | None = None  # audio clip seconds for the audio/fused modality
+    window_s: float | None = None  # B1: time length of the temporal clip (seconds); bounds strip assembly
 
 
 @dataclass(frozen=True)
@@ -371,7 +372,7 @@ class BehaviorExecutor:
 # --------------------------------------------------------------------------------------------------
 
 
-_PERCEPTION_FIELDS = {"modality", "temporal", "n_frames", "roi", "sampling", "audio_s"}
+_PERCEPTION_FIELDS = {"modality", "temporal", "n_frames", "roi", "sampling", "audio_s", "window_s"}
 
 # sense -> default PerceptionSpec. Empty for now (every sense -> single vision-only frame, byte-for-byte
 # with today). A non-single preset (e.g. transition -> strip) is switched on ONLY when the Phase-7
@@ -437,6 +438,7 @@ _VALID_ROI = {"focus", "hint", "full"}
 _VALID_SAMPLING = {"recent", "uniform"}
 _MAX_STRIP = 6  # ceiling on authored n_frames so an LLM can't author a token-bomb strip
 _MAX_AUDIO_S = 5.0  # ceiling on an authored audio clip (token budget)
+_MAX_WINDOW_S = 30.0  # ceiling on an authored clip window (seconds) so a strip can't span minutes
 
 
 def _num(v) -> float | None:
@@ -493,6 +495,21 @@ def coerce_authored_behavior(raw) -> dict:
     return out
 
 
+def perception_for_concern(concern) -> dict:
+    """Map a :class:`~percept_contracts.Concern`'s B1 clip declaration to a ``goal.state['perception']``
+    sub-dict (the same shape :func:`coerce_authored_perception` emits). A concern declaring a positive
+    ``window_s`` asks for a time-bounded temporal clip; a bare ``clip=True`` (no window) asks for a
+    strip. A concern that declared neither yields ``{}`` -> the single-frame default is untouched. This
+    is the seam that lets a loitering-style concern feed the right window to the judge with no new
+    dispatch path: its output drops straight into ``goal.state`` and ``program_of`` consumes it."""
+    window_s = getattr(concern, "window_s", None)
+    if window_s is not None and window_s > 0:
+        return {"perception": {"temporal": "window", "window_s": min(_MAX_WINDOW_S, float(window_s))}}
+    if getattr(concern, "clip", False):
+        return {"perception": {"temporal": "strip"}}
+    return {}
+
+
 def coerce_authored_perception(raw) -> dict:
     """Validate a conductor ``perception`` block into a safe ``goal.state['perception']`` sub-dict — the
     VLM-side HOW, sibling of :func:`coerce_authored_behavior`. Closed vocabularies + clamped numerics:
@@ -515,6 +532,12 @@ def coerce_authored_perception(raw) -> dict:
     a = _num(raw.get("audio_s"))
     if a is not None and a > 0:
         spec["audio_s"] = min(_MAX_AUDIO_S, float(a))
+    w = _num(raw.get("window_s"))
+    if w is not None and w > 0:
+        # B1: a clip window implies a temporal strip — author the time bound and (unless overridden)
+        # default the temporal mode to "window" so strip assembly is time-bounded, not frame-counted.
+        spec["window_s"] = min(_MAX_WINDOW_S, float(w))
+        spec.setdefault("temporal", "window")
     return {"perception": spec} if spec else {}
 
 
@@ -537,6 +560,7 @@ __all__ = [
     "program_of",
     "coerce_authored_behavior",
     "coerce_authored_perception",
+    "perception_for_concern",
     "ask_text",
     "escalate_text",
     "overdue_text",

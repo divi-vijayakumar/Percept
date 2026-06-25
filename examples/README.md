@@ -7,6 +7,7 @@ rising edge** (false → true) of the condition — the same cognition layer; on
 |---|---|---|---|
 | [`watch_agent.py`](watch_agent.py) | `fake` (offline, scripted) | nothing — pure stdlib | **yes** |
 | [`webcam_agent.py`](webcam_agent.py) | `gemini` (real VLM) | `[gemini]` extra + key + camera | template only |
+| [`loitering_clip.py`](loitering_clip.py) | `fake` (offline, scripted) | nothing — pure stdlib | **yes** |
 
 ---
 
@@ -71,7 +72,29 @@ Key points:
 
 ---
 
-## 3. `benchmark/` — measure per-concern precision/recall + a CI gate (offline)
+## 3. `loitering_clip.py` — judge a CLIP, not one frame (offline)
+
+Some conditions can't be read from a single still: *loitering* looks identical to *standing there*
+in one frame — what makes it loitering is **dwelling over time**. The concern declares it needs a
+clip via `window_s` (seconds); the brain assembles a time-bounded temporal strip from its rolling
+window and feeds it to the judge. The public `judge_clip(condition, frames)` seam judges a clip you
+already hold, directly.
+
+```bash
+PYTHONPATH=packages/percept-vision:packages/percept-contracts python3 examples/loitering_clip.py
+```
+
+What to notice:
+
+- The concern sets `window_s=4.0` — `concern.wants_clip` reflects it, and `perception_for_concern`
+  maps it to the `goal.state["perception"]` the watch loop consumes (a single-frame concern is
+  unchanged — `window_s` defaults to `None`).
+- A single `"loiter"` frame reads inconclusive; once a multi-frame **strip** reaches `judge`, the
+  scripted backend returns the "dwelling" clip verdict — proof the clip flowed into perception.
+
+---
+
+## 4. `benchmark/` — measure per-concern precision/recall + a CI gate (offline)
 
 Evaluate Percept on *your* concerns: a manifest of labelled clips → per-concern precision, recall,
 false-fire, and refuse rates. Runs fully offline on the `fake` backend (no keys).

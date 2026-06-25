@@ -222,6 +222,17 @@ class Concern:
     observations: list[Evidence] = field(default_factory=list)
     expectations: Priors = field(default_factory=Priors)
     source: str = "camera"
+    # B1 — temporal/clip declaration: a concern can say "judge me on a CLIP, not one frame".
+    # ``clip`` requests multi-frame perception; ``window_s`` (>0 implies ``clip``) declares the clip's
+    # length in seconds, so the brain assembles a time-bounded temporal strip (oldest→newest) and feeds
+    # it to ``Vision.judge(..., frames=...)``. Both default off, so a single-frame concern is unchanged.
+    clip: bool = False
+    window_s: float | None = None
+
+    @property
+    def wants_clip(self) -> bool:
+        """True when this concern declared it needs a clip (``clip=True`` or a positive ``window_s``)."""
+        return self.clip or (self.window_s is not None and self.window_s > 0)
 
     @classmethod
     def from_goal(cls, goal: "Goal") -> "Concern":
