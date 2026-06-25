@@ -24,6 +24,10 @@ percept-bench audit --manifest eval/golden-v1/MANIFEST.json \
 percept-bench scorecard --manifest eval/golden-v1/MANIFEST.json --out scorecard.txt
 ```
 
+For the public-grade live benchmark plan, including sample-size gates, cost estimates, and the
+decision to use OpenAI/TML as reference rows rather than paid reproduced legs, see
+[`publishable-benchmark.md`](publishable-benchmark.md).
+
 ---
 
 ## What you get: per-concern P/R
