@@ -26,9 +26,10 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// The exact JSON the Python side emits for a one-condition WatchSpec (no detectors selected -> []).
+// The JSON the Python side emits for a one-condition WatchSpec (default cadence; `schedule` is dropped
+// tolerantly by the JS parse — a known, tracked parity gap, not mirrored here yet).
 const PY_WATCHSPEC =
-  '{"conditions":[{"goal_id":"g1","anchor_text":"the user is drinking coffee","threshold":0.3,"region_hint":null,"detectors":[]}],"version":1}';
+  '{"conditions":[{"goal_id":"g1","anchor_text":"the user is drinking coffee","threshold":0.3,"region_hint":null,"detectors":[],"cadence_s":null,"gate_on":"motion"}],"version":1}';
 
 describe("parseWatchSpec — cross-language fixture", () => {
   it("parses the exact JSON the Python side emits", () => {
@@ -41,6 +42,8 @@ describe("parseWatchSpec — cross-language fixture", () => {
           threshold: 0.3,
           region_hint: null,
           detectors: [],
+          cadence_s: null,
+          gate_on: "motion",
         },
       ],
       version: 1,
@@ -68,7 +71,9 @@ describe("parseWatchSpec — cross-language fixture", () => {
     expect(Object.keys(spec).sort()).toEqual(["conditions", "version"]);
     expect(Object.keys(spec.conditions[0]).sort()).toEqual([
       "anchor_text",
+      "cadence_s",
       "detectors",
+      "gate_on",
       "goal_id",
       "region_hint",
       "threshold",
@@ -119,7 +124,9 @@ describe("factories produce frozen-contract shapes", () => {
     });
     expect(Object.keys(c).sort()).toEqual([
       "anchor_text",
+      "cadence_s",
       "detectors",
+      "gate_on",
       "goal_id",
       "region_hint",
       "threshold",
