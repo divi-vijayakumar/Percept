@@ -195,23 +195,71 @@ class PoseOpenness:
 # ---------------------------------------------------------------------------
 # The registry — register an impl + a manifest; the brain composes by name
 # ---------------------------------------------------------------------------
+#
+# PUBLIC, SEMVER-STABLE API (see docs/registration.md). The names below are the supported
+# detector-registration surface: ``register`` / ``register_detector`` (add a skill),
+# ``make_detector`` (construct one), ``registered`` / ``list_manifests`` / ``manifest_of``
+# (introspect), ``unregister`` / ``clear_detectors`` (teardown). Their signatures and the
+# ``DetectorManifest`` shape are covered by the contract's semver guarantee: additive changes
+# only within a MAJOR. The registry is a process-global singleton keyed by detector name.
 
 _REGISTRY: dict[str, tuple[Callable[..., Any], DetectorManifest]] = {}
 
 
 def register(name: str, factory: Callable[..., Any], manifest: DetectorManifest) -> None:
-    """Register a detector (a deliberate, calibratable event — never per-task code)."""
+    """Register a detector under ``name`` (a deliberate, calibratable event — never per-task code).
+
+    ``factory`` is a zero-arg callable that constructs a fresh, stateful detector instance (the class
+    itself, when its ``__init__`` defaults suffice). ``manifest`` is the self-describing
+    :class:`DetectorManifest` the brain reads to COMPOSE the detector by name — it never writes the
+    detector. Re-registering the same ``name`` replaces the prior entry (last-writer-wins), which is how
+    a product overrides a built-in skill with a calibrated variant.
+
+    The lifecycle this opens: ``register`` -> the name becomes selectable into a
+    :class:`~percept.adapters.WatchSpec` (via the goal's ``state['detectors']`` and the capability
+    handshake) -> :class:`DetectorBank` constructs it per goal -> ``unregister`` / ``clear_detectors``
+    tears it down. See :func:`register_detector` for the ergonomic façade that derives a manifest.
+    """
     _REGISTRY[name] = (factory, manifest)
 
 
+def register_detector(
+    name: str,
+    detector: Callable[..., Any],
+    *,
+    manifest: DetectorManifest | None = None,
+    senses: str = "",
+    when_to_use: str = "",
+    output: str = "",
+) -> DetectorManifest:
+    """Ergonomic façade over :func:`register` — register a detector, deriving its manifest.
+
+    The minimal call is ``register_detector("my-skill", MySkill)``: the manifest is synthesized from the
+    name plus the optional ``senses`` / ``when_to_use`` / ``output`` keyword strings (empty by default).
+    Pass a fully-formed ``manifest=`` to supply it directly (its ``name`` is then authoritative). This is
+    the recommended public entrypoint for third parties; :func:`register` remains for callers that want to
+    pass a positional manifest. Returns the :class:`DetectorManifest` that was registered.
+
+    Backward-compatible: it delegates to :func:`register`, so a detector added either way is identical in
+    the registry and selectable by name into a :class:`~percept.adapters.WatchSpec`.
+    """
+    if manifest is None:
+        manifest = DetectorManifest(
+            name=name, senses=senses, when_to_use=when_to_use, output=output
+        )
+    register(manifest.name if manifest.name else name, detector, manifest)
+    return manifest
+
+
 def make_detector(name: str) -> Any:
-    """Construct a fresh detector by registry name."""
+    """Construct a fresh detector instance by registry ``name`` (raises ``KeyError`` if unknown)."""
     if name not in _REGISTRY:
         raise KeyError(f"unknown detector {name!r}; registered: {sorted(_REGISTRY)}")
     return _REGISTRY[name][0]()
 
 
 def manifest_of(name: str) -> DetectorManifest:
+    """The :class:`DetectorManifest` for a registered detector (raises ``KeyError`` if unknown)."""
     return _REGISTRY[name][1]
 
 
@@ -221,7 +269,29 @@ def list_manifests() -> list[DetectorManifest]:
 
 
 def registered() -> list[str]:
+    """Registered detector names (sorted) — the edge's advertised capability vocabulary."""
     return sorted(_REGISTRY)
+
+
+def unregister(name: str) -> bool:
+    """Tear down one detector by name. Returns ``True`` if it was registered, ``False`` if absent.
+
+    The teardown half of the lifecycle: after this, ``name`` is no longer in :func:`registered` and the
+    selection firewall (:func:`coerce_authored_detectors`) drops it, so no goal can activate it. Existing
+    :class:`DetectorBank` instances already constructed keep their own detector objects — teardown affects
+    *future* selection, not banks already built.
+    """
+    return _REGISTRY.pop(name, None) is not None
+
+
+def clear_detectors() -> None:
+    """Empty the detector registry (test isolation / a clean re-registration pass).
+
+    Removes ALL detectors, including the built-ins; call the module-level ``register(...)`` blocks again
+    (or re-import) to restore them. Primarily a test/teardown affordance — production wiring registers at
+    import and leaves the registry intact for the process lifetime.
+    """
+    _REGISTRY.clear()
 
 
 register(
@@ -346,10 +416,13 @@ __all__ = [
     "AcousticOnset",
     "PoseOpenness",
     "register",
+    "register_detector",
     "make_detector",
     "manifest_of",
     "list_manifests",
     "registered",
+    "unregister",
+    "clear_detectors",
     "coerce_authored_detectors",
     "detectors_for",
     "partition_by_capability",
