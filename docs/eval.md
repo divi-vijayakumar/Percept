@@ -202,3 +202,13 @@ rather than hiding behind a healthy average.
 
 These are intentionally separate from private fixtures. A release scorecard must use license-cleared,
 content-hashed test rows and cite the manifest hash.
+
+From Python:
+
+```python
+from percept.bench import validate_baselines, validate_golden_manifest
+
+validate_baselines("packages/percept-vision/eval/baselines.json")
+validate_golden_manifest("eval/golden-v1/MANIFEST.json")                 # draft-shape check
+validate_golden_manifest("eval/golden-v1/MANIFEST.json", release=True)   # must fail until release-ready
+```

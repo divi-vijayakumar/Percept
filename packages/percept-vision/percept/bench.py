@@ -27,6 +27,7 @@ from eval.benchmark import (  # noqa: F401
 )
 from eval.benchmark import main as _benchmark_main
 from eval.bench.run import main as _scorecard_main
+from eval.bench.validate import ValidationError, validate_baselines, validate_golden_manifest
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -59,6 +60,9 @@ __all__ = [
     "per_concern_report",
     "run_manifest",
     "score_concern",
+    "ValidationError",
+    "validate_baselines",
+    "validate_golden_manifest",
     "main",
     "scorecard_main",
 ]
