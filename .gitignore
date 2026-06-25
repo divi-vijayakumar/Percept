@@ -25,8 +25,10 @@ htmlcov/
 # eval run artifacts
 scorecard.json
 results.json
+benchmark.json
 **/scorecard.json
 **/results.json
+**/benchmark.json
 
 # calibration artifacts (derived from private fixtures)
 calibration.json

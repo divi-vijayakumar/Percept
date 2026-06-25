@@ -1,0 +1,43 @@
+{
+  "omega": 2.0,
+  "concerns": [
+    {
+      "id": "coffee",
+      "condition": "the user is drinking coffee",
+      "say": "Heads up — stepping back from caffeine?"
+    }
+  ],
+  "clips": [
+    {
+      "clip_id": "morning-coffee",
+      "frames": [
+        [0.0, "empty"],
+        [1.0, "sip-coffee"],
+        [2.0, "sip-coffee"]
+      ],
+      "expected": {
+        "coffee": [1.0]
+      }
+    },
+    {
+      "clip_id": "water-only",
+      "frames": [
+        [0.0, "empty"],
+        [1.0, "sip-water"]
+      ],
+      "expected": {
+        "coffee": []
+      }
+    },
+    {
+      "clip_id": "second-coffee",
+      "frames": [
+        [0.0, "empty"],
+        [1.0, "sip-coffee"]
+      ],
+      "expected": {
+        "coffee": [1.0]
+      }
+    }
+  ]
+}
