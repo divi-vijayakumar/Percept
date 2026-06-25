@@ -15,7 +15,7 @@
 
 import { makeTier0Signal, makeEdgeCapabilities, parseWatchSpec } from "./contract.js";
 import { motionScore } from "./motion.js";
-import { SkillBank, registered } from "./skills.js";
+import { SkillBank, registered, wakeScore } from "./skills.js";
 
 export class Edge {
   /**
@@ -25,7 +25,13 @@ export class Edge {
    *        conditions (so motion-only still gates). Default 0.05.
    * @param {()=>number} [opts.clock]  returns seconds; for deterministic ts.
    */
-  constructor({ onSignal = null, onBoundary = null, defaultThreshold = 0.05, clock = null } = {}) {
+  constructor({
+    onSignal = null,
+    onBoundary = null,
+    defaultThreshold = 0.05,
+    clock = null,
+    wakePolicy = null,
+  } = {}) {
     this._listeners = new Set();
     if (typeof onSignal === "function") this._listeners.add(onSignal);
     this._boundaryListeners = new Set();
@@ -38,6 +44,8 @@ export class Edge {
     this._prevFrame = null; // motion history (1-frame buffer)
     this._banks = new Map(); // goal_id -> SkillBank (the skills this goal selected, if registered)
     this._unsupported = []; // {goal_id, detector} the brain selected but this edge hasn't registered
+    this._lastEscalate = new Map(); // goal_id -> ts, for cadence_s / fixed cadence
+    this._wakePolicy = wakePolicy; // optional weighted cheap-signal fusion
 
     // Adapter slots — optional, default to inert (return 0 salience).
     this._structuralAdapter = null; // e.g. pose/hands (MediaPipe)
@@ -93,6 +101,7 @@ export class Edge {
     const supported = new Set(registered());
     this._banks = new Map();
     this._unsupported = [];
+    this._lastEscalate = new Map();
     for (const c of this._spec.conditions) {
       const known = [];
       for (const d of c.detectors ?? []) {
@@ -150,6 +159,12 @@ export class Edge {
     return this;
   }
 
+  /** Plug a weighted cheap-signal wake policy. Null restores legacy max-channel salience. */
+  setWakePolicy(policy) {
+    this._wakePolicy = policy;
+    return this;
+  }
+
   // --- the wired loop ----------------------------------------------------
 
   /**
@@ -162,9 +177,10 @@ export class Edge {
    * @param {{width:number,height:number,data:Uint8Array}} frame grayscale frame
    * @returns {object|null} the emitted Tier0Signal, or null if gated out
    */
-  processFrame(frame, { energy = null } = {}) {
+  processFrame(frame, { energy = null, signals = null } = {}) {
     const ts = this._clock(); // one clock read per frame — shared by skills + the signal
-    const motion = motionScore(this._prevFrame, frame);
+    const prevFrame = this._prevFrame;
+    const motion = motionScore(prevFrame, frame);
     this._prevFrame = frame;
 
     // Edge skills run EVERY frame on the cheap channels (motion / energy / frame) — DECOUPLED from the
@@ -183,7 +199,7 @@ export class Edge {
 
     let structural = 0;
     if (this._structuralAdapter) {
-      structural = clamp01(this._structuralAdapter(frame, this._prevFrame));
+      structural = clamp01(this._structuralAdapter(frame, prevFrame));
     }
 
     let semantic = 0;
@@ -191,10 +207,18 @@ export class Edge {
       semantic = clamp01(this._semanticAdapter(frame, this._spec));
     }
 
-    // Overall salience = the strongest channel. Motion alone can escalate.
-    const salience = Math.max(motion, structural, semantic);
+    const cheapSignals = {
+      motion,
+      change: motion,
+      structural,
+      semantic,
+      semantic_relevance: semantic,
+      ...(this._wakePolicy ? { audio: energy ?? 0, audio_event: energy ?? 0 } : {}),
+      ...(signals ?? {}),
+    };
+    const salience = wakeScore(cheapSignals, this._wakePolicy);
 
-    if (salience < this.activeThreshold) {
+    if (!this._shouldEscalate({ ts, motion, structural, semantic, salience })) {
       return null; // gated: still scene -> no Tier0Signal, no cloud call
     }
 
@@ -203,6 +227,33 @@ export class Edge {
     if (this._publisher) this._publisher(frame, signal);
     this._emit(signal);
     return signal;
+  }
+
+  _shouldEscalate({ ts, motion, structural, semantic, salience }) {
+    const conds = this._spec?.conditions ?? [];
+    if (conds.length === 0) return salience >= this.defaultThreshold;
+    for (const c of conds) {
+      if (c.cadence_s != null && ts - (this._lastEscalate.get(c.goal_id) ?? -Infinity) < c.cadence_s) {
+        continue;
+      }
+      let fired = false;
+      if (c.gate_on === "fixed") {
+        fired = c.cadence_s != null;
+      } else if (this._wakePolicy) {
+        fired = salience >= c.threshold;
+      } else if (c.gate_on === "structural") {
+        fired = structural >= c.threshold;
+      } else if (c.gate_on === "semantic") {
+        fired = semantic >= c.threshold;
+      } else {
+        fired = salience >= c.threshold;
+      }
+      if (fired) {
+        this._lastEscalate.set(c.goal_id, ts);
+        return true;
+      }
+    }
+    return false;
   }
 
   _emit(signal) {

@@ -24,6 +24,9 @@ Percept splits cleanly into two layers. Understanding the split is the key to us
 
 Everything below is in the cognition layer.
 
+For the cheap "should we spend a VLM call?" layer that runs before perception, see
+[Edge Wake Policy](edge-policy.md).
+
 ---
 
 ## The three-state gate

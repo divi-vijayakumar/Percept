@@ -17,7 +17,7 @@ registered detectors via the manifest; it never *writes* them.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
 
@@ -36,6 +36,107 @@ from typing import Any, Callable, Iterable
 CATEGORY_MOTION = "motion"
 CATEGORY_AUDIO = "audio"
 CATEGORY_FRAME = "frame"
+CATEGORY_PRESENCE = "presence"
+CATEGORY_POSE = "pose"
+CATEGORY_AUDIO_EVENT = "audio_event"
+CATEGORY_CHANGE = "change"
+CATEGORY_SEMANTIC_RELEVANCE = "semantic_relevance"
+
+
+# ---------------------------------------------------------------------------
+# Wake policy — cheap evidence fusion before a VLM call
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class WakePolicy:
+    """Fuse cheap edge signals into ``P(goal)`` before spending a heavy vision call.
+
+    The default Percept gate is intentionally simple: ``max(motion, structural, semantic)`` clears the
+    condition threshold. A policy turns the same channels into a calibrated, weighted OR:
+
+    ``1 - Π(1 - clamp(signal[channel] * weight[channel]))``
+
+    This preserves recall from multiple weak cues (e.g. person present + glass break + motion) without
+    making one detector authoritative. It is the concrete ``Scalar × Magnitude × known CV × CLIP`` hook:
+    scalar priors/weights live in ``weights``, magnitudes come from detector outputs, known-CV signals
+    use channels like ``presence``/``pose``/``audio_event``, and CLIP-like image relevance maps to
+    ``semantic_relevance``.
+    """
+
+    threshold: float = 0.1
+    weights: dict[str, float] = field(default_factory=dict)
+    floor: float = 0.0
+
+
+@dataclass(frozen=True)
+class WakeDecision:
+    """A cheap wake decision with the fused score and the channel that contributed most."""
+
+    wake: bool
+    score: float
+    threshold: float
+    top_channel: str | None = None
+
+
+def _clamp01(v: Any) -> float:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    if f < 0.0:
+        return 0.0
+    if f > 1.0:
+        return 1.0
+    return f
+
+
+def coerce_wake_policy(raw: WakePolicy | dict[str, Any] | None) -> WakePolicy | None:
+    """Normalize an optional policy object from Python code or JSON-ish config."""
+    if raw is None or isinstance(raw, WakePolicy):
+        return raw
+    weights_raw = raw.get("weights", {}) if isinstance(raw, dict) else {}
+    weights = {
+        str(k): float(v)
+        for k, v in weights_raw.items()
+        if isinstance(k, str) and isinstance(v, (int, float))
+    }
+    threshold = raw.get("threshold", 0.1) if isinstance(raw, dict) else 0.1
+    floor = raw.get("floor", 0.0) if isinstance(raw, dict) else 0.0
+    return WakePolicy(threshold=float(threshold), weights=weights, floor=float(floor))
+
+
+def wake_score(signals: dict[str, Any], policy: WakePolicy | dict[str, Any] | None = None) -> float:
+    """Return a fused cheap-evidence score in ``[0, 1]``.
+
+    With no explicit policy weights this is exactly ``max(signals)`` for backward compatibility. With
+    weights, it becomes a noisy-OR over the named channels, so several moderate cues can wake the gate
+    together without any single cue needing to be perfect.
+    """
+    p = coerce_wake_policy(policy)
+    clean = {k: _clamp01(v) for k, v in signals.items()}
+    if not clean:
+        base = 0.0
+    elif p is None or not p.weights:
+        base = max(clean.values())
+    else:
+        miss = 1.0
+        for channel, weight in p.weights.items():
+            miss *= 1.0 - _clamp01(clean.get(channel, 0.0) * weight)
+        base = 1.0 - miss
+    return _clamp01(max(base, _clamp01(p.floor) if p is not None else 0.0))
+
+
+def should_wake(
+    signals: dict[str, Any], policy: WakePolicy | dict[str, Any] | None = None
+) -> WakeDecision:
+    """Decide whether cheap evidence is strong enough to escalate to perception."""
+    p = coerce_wake_policy(policy)
+    threshold = p.threshold if p is not None else 0.1
+    score = wake_score(signals, p)
+    clean = {k: _clamp01(v) for k, v in signals.items()}
+    top = max(clean, key=clean.get) if clean else None
+    return WakeDecision(wake=score >= threshold, score=score, threshold=threshold, top_channel=top)
 
 
 # ---------------------------------------------------------------------------
@@ -448,6 +549,16 @@ __all__ = [
     "CATEGORY_MOTION",
     "CATEGORY_AUDIO",
     "CATEGORY_FRAME",
+    "CATEGORY_PRESENCE",
+    "CATEGORY_POSE",
+    "CATEGORY_AUDIO_EVENT",
+    "CATEGORY_CHANGE",
+    "CATEGORY_SEMANTIC_RELEVANCE",
+    "WakePolicy",
+    "WakeDecision",
+    "coerce_wake_policy",
+    "wake_score",
+    "should_wake",
     "DetectorManifest",
     "Boundary",
     "MotionPeriodicity",

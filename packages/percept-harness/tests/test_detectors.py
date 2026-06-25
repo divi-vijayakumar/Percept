@@ -16,11 +16,17 @@ from percept.adapters import Goal
 
 from percept_harness.detectors import (
     CATEGORY_AUDIO,
+    CATEGORY_AUDIO_EVENT,
+    CATEGORY_CHANGE,
     CATEGORY_FRAME,
     CATEGORY_MOTION,
+    CATEGORY_POSE,
+    CATEGORY_PRESENCE,
+    CATEGORY_SEMANTIC_RELEVANCE,
     AcousticOnset,
     DetectorBank,
     MotionPeriodicity,
+    WakePolicy,
     coerce_authored_detectors,
     detectors_for,
     detectors_in_category,
@@ -29,6 +35,8 @@ from percept_harness.detectors import (
     manifest_of,
     partition_by_capability,
     registered,
+    should_wake,
+    wake_score,
 )
 from percept_harness.tier0 import compile_watchspec, watchspec_unsupported
 
@@ -103,6 +111,30 @@ class TestSenseCategory(unittest.TestCase):
 
     def test_unknown_category_is_empty(self):
         self.assertEqual(detectors_in_category("smell"), [])
+
+    def test_wake_policy_categories_are_public(self):
+        self.assertEqual(CATEGORY_PRESENCE, "presence")
+        self.assertEqual(CATEGORY_POSE, "pose")
+        self.assertEqual(CATEGORY_AUDIO_EVENT, "audio_event")
+        self.assertEqual(CATEGORY_CHANGE, "change")
+        self.assertEqual(CATEGORY_SEMANTIC_RELEVANCE, "semantic_relevance")
+
+
+class TestWakePolicy(unittest.TestCase):
+    def test_no_policy_is_legacy_max_channel(self):
+        self.assertAlmostEqual(wake_score({"motion": 0.2, "semantic": 0.7}), 0.7)
+
+    def test_weighted_policy_combines_weak_cues(self):
+        policy = WakePolicy(threshold=0.45, weights={"presence": 0.7, "audio_event": 0.7})
+        score = wake_score({"presence": 0.5, "audio_event": 0.5}, policy)
+        self.assertGreater(score, 0.45)
+        d = should_wake({"presence": 0.5, "audio_event": 0.5}, policy)
+        self.assertTrue(d.wake)
+        self.assertEqual(d.top_channel, "presence")
+
+    def test_policy_clamps_out_of_range_inputs(self):
+        policy = WakePolicy(threshold=0.9, weights={"semantic_relevance": 2.0})
+        self.assertEqual(wake_score({"semantic_relevance": 9.0}, policy), 1.0)
 
 
 class TestSelectionFirewall(unittest.TestCase):

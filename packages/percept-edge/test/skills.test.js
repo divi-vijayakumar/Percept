@@ -3,6 +3,8 @@ import {
   MotionPeriodicity,
   AcousticOnset,
   SkillBank,
+  wakeScore,
+  shouldWake,
   registerSkill,
   makeDetector,
   manifestOf,
@@ -12,6 +14,11 @@ import {
   signalOf,
   CATEGORY_MOTION,
   CATEGORY_AUDIO,
+  CATEGORY_PRESENCE,
+  CATEGORY_POSE,
+  CATEGORY_AUDIO_EVENT,
+  CATEGORY_CHANGE,
+  CATEGORY_SEMANTIC_RELEVANCE,
 } from "../src/skills.js";
 
 // A clean oscillation: each rep climbs to 1.0 then drops to 0.0. Peaks emitted on the descent.
@@ -90,6 +97,32 @@ describe("sense categories (B2) — acoustic-onset is the first-class AUDIO sens
     expect(detectorsInCategory(CATEGORY_AUDIO)).not.toContain("motion-periodicity");
     expect(detectorsInCategory(CATEGORY_MOTION)).toContain("motion-periodicity");
     expect(detectorsInCategory("smell")).toEqual([]);
+  });
+
+  it("exports additive wake-policy categories", () => {
+    expect(CATEGORY_PRESENCE).toBe("presence");
+    expect(CATEGORY_POSE).toBe("pose");
+    expect(CATEGORY_AUDIO_EVENT).toBe("audio_event");
+    expect(CATEGORY_CHANGE).toBe("change");
+    expect(CATEGORY_SEMANTIC_RELEVANCE).toBe("semantic_relevance");
+  });
+});
+
+describe("wakeScore / shouldWake — cheap evidence fusion before VLM", () => {
+  it("preserves legacy max-channel salience without policy weights", () => {
+    expect(wakeScore({ motion: 0.2, semantic: 0.7 })).toBeCloseTo(0.7, 10);
+  });
+
+  it("combines weak weighted cues with noisy-OR", () => {
+    const policy = { threshold: 0.45, weights: { presence: 0.7, audio_event: 0.7 } };
+    expect(wakeScore({ presence: 0.5, audio_event: 0.5 }, policy)).toBeGreaterThan(0.45);
+    const decision = shouldWake({ presence: 0.5, audio_event: 0.5 }, policy);
+    expect(decision.wake).toBe(true);
+    expect(decision.top_channel).toBe("presence");
+  });
+
+  it("clamps out-of-range inputs", () => {
+    expect(wakeScore({ semantic_relevance: 9 }, { threshold: 0.9, weights: { semantic_relevance: 2 } })).toBe(1);
   });
 });
 

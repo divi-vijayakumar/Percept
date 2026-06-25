@@ -20,7 +20,8 @@
 //   Manifest = { name, senses, when_to_use, output, category }
 //   Boundary = { detector, kind: "peak"|"onset"|"threshold", t, value }
 //
-// `category` is the coarse sense CLASS a detector belongs to ("motion" | "audio" | "frame"), so a whole
+// `category` is the coarse sense CLASS a detector belongs to ("motion" | "audio" | "frame" plus
+// additive channels like "presence", "pose", "audio_event", "change", "semantic_relevance"), so a whole
 // modality is discoverable at once (`detectorsInCategory("audio")` lists every audio skill) — this is
 // what marks `acoustic-onset` as the first-class AUDIO sense (B2). It mirrors the Python
 // `DetectorManifest.category` byte-for-byte so the manifest rides the capability handshake unchanged.
@@ -133,6 +134,81 @@ export class AcousticOnset {
 export const CATEGORY_MOTION = "motion";
 export const CATEGORY_AUDIO = "audio";
 export const CATEGORY_FRAME = "frame";
+export const CATEGORY_PRESENCE = "presence";
+export const CATEGORY_POSE = "pose";
+export const CATEGORY_AUDIO_EVENT = "audio_event";
+export const CATEGORY_CHANGE = "change";
+export const CATEGORY_SEMANTIC_RELEVANCE = "semantic_relevance";
+
+// ---------------------------------------------------------------------------
+// Wake policy — cheap evidence fusion before a VLM call
+// ---------------------------------------------------------------------------
+
+function clamp01(v) {
+  if (typeof v !== "number" || !Number.isFinite(v)) return 0;
+  if (v < 0) return 0;
+  if (v > 1) return 1;
+  return v;
+}
+
+function normalizeWakePolicy(policy) {
+  if (policy == null) return null;
+  const weights = {};
+  for (const [k, v] of Object.entries(policy.weights ?? {})) {
+    if (typeof k === "string" && typeof v === "number" && Number.isFinite(v)) weights[k] = v;
+  }
+  return {
+    threshold:
+      typeof policy.threshold === "number" && Number.isFinite(policy.threshold) ? policy.threshold : 0.1,
+    weights,
+    floor: typeof policy.floor === "number" && Number.isFinite(policy.floor) ? policy.floor : 0,
+  };
+}
+
+/**
+ * Fuse cheap edge signals into `P(goal)` before spending a heavy perception call.
+ *
+ * No explicit weights preserves the legacy behavior exactly: `max(signals)`. With weights, this is a
+ * noisy-OR over named channels: several weak cues can wake together without making any single detector
+ * authoritative.
+ */
+export function wakeScore(signals = {}, policy = null) {
+  const p = normalizeWakePolicy(policy);
+  const clean = {};
+  for (const [k, v] of Object.entries(signals ?? {})) clean[k] = clamp01(v);
+  const values = Object.values(clean);
+  let base = 0;
+  if (values.length === 0) {
+    base = 0;
+  } else if (p == null || Object.keys(p.weights).length === 0) {
+    base = Math.max(...values);
+  } else {
+    let miss = 1;
+    for (const [channel, weight] of Object.entries(p.weights)) {
+      miss *= 1 - clamp01((clean[channel] ?? 0) * weight);
+    }
+    base = 1 - miss;
+  }
+  return clamp01(Math.max(base, p ? clamp01(p.floor) : 0));
+}
+
+/** Decide whether cheap evidence is strong enough to wake perception. */
+export function shouldWake(signals = {}, policy = null) {
+  const p = normalizeWakePolicy(policy);
+  const score = wakeScore(signals, p);
+  const threshold = p ? p.threshold : 0.1;
+  const clean = {};
+  for (const [k, v] of Object.entries(signals ?? {})) clean[k] = clamp01(v);
+  let topChannel = null;
+  let topValue = -Infinity;
+  for (const [k, v] of Object.entries(clean)) {
+    if (v > topValue) {
+      topChannel = k;
+      topValue = v;
+    }
+  }
+  return { wake: score >= threshold, score, threshold, top_channel: topChannel };
+}
 
 // ---------------------------------------------------------------------------
 // The registry — register an impl + a manifest; the brain composes by name

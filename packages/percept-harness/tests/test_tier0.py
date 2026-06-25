@@ -20,6 +20,7 @@ import unittest
 from percept.adapters import Box, Goal, Schedule, Tier0Signal, WatchCondition, WatchSpec
 from percept.agent import Percept
 from percept.config import load_settings
+from percept_harness.detectors import WakePolicy
 
 from percept_harness.tier0 import (
     CivilTime,
@@ -288,6 +289,26 @@ class MotionGateTests(unittest.TestCase):
                 del os.environ["PERCEPT_MOTION_GATE"]
             else:
                 os.environ["PERCEPT_MOTION_GATE"] = prev
+
+    def test_wake_policy_can_escalate_on_audio_event(self):
+        gate = MotionGate(
+            one_condition_spec(threshold=0.3),
+            settings=self.cfg,
+            wake_policy=WakePolicy(weights={"audio_event": 1.0}),
+        )
+        d = gate.evaluate(still(), ts=0.0, energy=0.5)
+        self.assertTrue(d.escalate)
+
+    def test_wake_policy_can_escalate_on_extra_presence_signal(self):
+        gate = MotionGate(
+            one_condition_spec(threshold=0.4),
+            settings=self.cfg,
+            wake_policy=WakePolicy(weights={"presence": 0.8, "semantic_relevance": 0.8}),
+        )
+        d = gate.evaluate(
+            still(), ts=0.0, signals={"presence": 0.4, "semantic_relevance": 0.4}
+        )
+        self.assertTrue(d.escalate)
 
 
 # ---------------------------------------------------------------------------

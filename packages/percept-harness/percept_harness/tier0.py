@@ -28,7 +28,14 @@ from typing import Any, Callable, Iterable, Sequence
 from percept.adapters import Box, Goal, Schedule, Tier0Signal, WatchCondition, WatchSpec
 from percept.config import Settings, load_settings
 
-from .detectors import Boundary, DetectorBank, detectors_for, partition_by_capability
+from .detectors import (
+    Boundary,
+    DetectorBank,
+    WakePolicy,
+    detectors_for,
+    partition_by_capability,
+    wake_score,
+)
 
 try:  # OPTIONAL fast path only — the stdlib path below is the source of truth for L1.
     import numpy as _np  # type: ignore
@@ -390,6 +397,7 @@ class MotionGate:
         *,
         settings: Settings | None = None,
         clock: Callable[[], CivilTime] | None = None,
+        wake_policy: WakePolicy | dict[str, Any] | None = None,
     ) -> None:
         self._spec = spec
         cfg = settings or load_settings()
@@ -401,6 +409,7 @@ class MotionGate:
         # Injected civil clock for the schedule gate. None -> schedules are not enforced (default
         # path) unless a `now` is passed to evaluate(); we never read the wall clock in pure logic.
         self._clock = clock
+        self._wake_policy = wake_policy
 
     @property
     def spec(self) -> WatchSpec:
@@ -417,7 +426,13 @@ class MotionGate:
         self._prev = None
 
     def evaluate(
-        self, frame: Any, *, ts: float, now: CivilTime | None = None
+        self,
+        frame: Any,
+        *,
+        ts: float,
+        now: CivilTime | None = None,
+        energy: float | None = None,
+        signals: dict[str, float] | None = None,
     ) -> GateDecision:
         """Score one frame against the prior, report a ``Tier0Signal``, decide escalate-vs-skip.
 
@@ -436,6 +451,18 @@ class MotionGate:
         # The reference gate is MOTION-only; structural/semantic are 0.0 here and filled by percept-edge
         # (CLIP/pose). A goal that gates on them can't escalate in this reference (honest, not a bug).
         structural, semantic = 0.0, 0.0
+        cheap_signals = {
+            "motion": motion,
+            "change": motion,
+            "structural": structural,
+            "semantic": semantic,
+            "semantic_relevance": semantic,
+            "audio": 0.0 if energy is None else energy,
+            "audio_event": 0.0 if energy is None else energy,
+        }
+        if signals:
+            cheap_signals.update(signals)
+        fused = wake_score(cheap_signals, self._wake_policy) if self._wake_policy is not None else None
         when = now if now is not None else (self._clock() if self._clock is not None else None)
         # Armed = in-schedule conditions only; an out-of-schedule goal cannot escalate or set the cutoff.
         armed = [c for c in self._spec.conditions if schedule_active(c.schedule, when)]
@@ -448,6 +475,8 @@ class MotionGate:
                 continue
             if c.gate_on == "fixed":
                 fired = c.cadence_s is not None  # cadence elapsed (checked above) -> escalate regardless of motion
+            elif fused is not None:
+                fired = fused >= c.threshold
             elif c.gate_on == "structural":
                 fired = structural >= c.threshold
             elif c.gate_on == "semantic":
@@ -554,6 +583,7 @@ class GatedWatchLoop:
         settings: Settings | None = None,
         edge_capabilities: Iterable[str] | None = None,
         clock: Callable[[], CivilTime] | None = None,
+        wake_policy: WakePolicy | dict[str, Any] | None = None,
     ) -> None:
         self._core = core
         cfg = settings or getattr(core, "settings", None) or load_settings()
@@ -566,7 +596,7 @@ class GatedWatchLoop:
         self._spec = compile_watchspec(active, threshold=thr, edge_capabilities=edge_capabilities)
         # clock=None -> schedules are not enforced (default path, byte-for-byte pre-C1). A caller that
         # arms scheduled goals injects a civil clock (e.g. civil_now) here; pure logic never reads wall-clock.
-        self._gate = MotionGate(self._spec, settings=cfg, clock=clock)
+        self._gate = MotionGate(self._spec, settings=cfg, clock=clock, wake_policy=wake_policy)
         # The standard telemetry funnel — this loop owns the seen/gated stages (frame seen; gate
         # escalate). Reuse the core's funnel (so judged/refused/fired land in the SAME Metrics) when the
         # core exposes one; else build one off the core's Metrics; else None (no telemetry sink wired).
@@ -607,6 +637,7 @@ class GatedWatchLoop:
     async def run(
         self, stream: Iterable[Any], *, clock_start: float = 0.0, dt: float = 1.0,
         energies: Sequence[float] | None = None,
+        cheap_signals: Sequence[dict[str, float]] | None = None,
     ) -> LoopReport:
         """Drive the loop over a frame stream; gate, report up, perceive only on escalation.
 
@@ -619,8 +650,9 @@ class GatedWatchLoop:
         report = LoopReport()
         items = _normalize_stream(stream, clock_start=clock_start, dt=dt)
         for i, item in enumerate(items):
-            decision = self._gate.evaluate(item.frame, ts=item.ts)
             energy = energies[i] if energies is not None and i < len(energies) else None
+            extra = cheap_signals[i] if cheap_signals is not None and i < len(cheap_signals) else None
+            decision = self._gate.evaluate(item.frame, ts=item.ts, energy=energy, signals=extra)
             report.frames += 1
             report.signals.append(decision.signal)  # report Tier0Signal UP every frame
             if self._funnel is not None:
@@ -661,7 +693,9 @@ async def run_gated_watch(
     clock_start: float = 0.0,
     dt: float = 1.0,
     energies: Sequence[float] | None = None,
+    cheap_signals: Sequence[dict[str, float]] | None = None,
     settings: Settings | None = None,
+    wake_policy: WakePolicy | dict[str, Any] | None = None,
 ) -> LoopReport:
     """One-call entrypoint for the wired loop (the cross-package e2e drives this).
 
@@ -670,9 +704,11 @@ async def run_gated_watch(
     Returns the :class:`LoopReport`.
     """
     loop = GatedWatchLoop(
-        core, goals, threshold=threshold, source=source, settings=settings
+        core, goals, threshold=threshold, source=source, settings=settings, wake_policy=wake_policy
     )
-    return await loop.run(stream, clock_start=clock_start, dt=dt, energies=energies)
+    return await loop.run(
+        stream, clock_start=clock_start, dt=dt, energies=energies, cheap_signals=cheap_signals
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -6,13 +6,14 @@ import { parseTier0Signal } from "../src/contract.js";
 const PY_WATCHSPEC =
   '{"conditions":[{"goal_id":"g1","anchor_text":"the user is drinking coffee","threshold":0.3,"region_hint":null}],"version":1}';
 
-function makeEdge() {
+function makeEdge(opts = {}) {
   const signals = [];
   // deterministic clock for stable ts in assertions
   let t = 1000;
   const edge = new Edge({
     onSignal: (s) => signals.push(s),
     clock: () => t++,
+    ...opts,
   });
   return { edge, signals };
 }
@@ -114,6 +115,52 @@ describe("Edge — WatchSpec down / Tier0Signal up wired loop", () => {
     // It keeps escalating on every still frame while the semantic gate is hot.
     edge.processFrame(still);
     expect(signals).toHaveLength(2);
+  });
+
+  it("fixed cadence escalates on a still stream", () => {
+    const { edge, signals } = makeEdge();
+    edge.applyWatchSpec({
+      conditions: [
+        {
+          goal_id: "screen",
+          anchor_text: "the shared screen needs help",
+          threshold: 0.3,
+          cadence_s: 2,
+          gate_on: "fixed",
+        },
+      ],
+      version: 1,
+    });
+    const still = makeFrame(8, 8, 120);
+    expect(edge.processFrame(still)).not.toBeNull(); // t=1000
+    expect(edge.processFrame(still)).toBeNull(); // t=1001, cadence suppressed
+    expect(edge.processFrame(still)).not.toBeNull(); // t=1002
+    expect(signals).toHaveLength(2);
+  });
+
+  it("a wake policy can escalate from an audio event without changing default behavior", () => {
+    const { edge, signals } = makeEdge({
+      wakePolicy: { weights: { audio_event: 1.0 } },
+    });
+    edge.applyWatchSpec(PY_WATCHSPEC); // threshold 0.3
+    const still = makeFrame(8, 8, 120);
+    const sig = edge.processFrame(still, { energy: 0.5 });
+    expect(sig).not.toBeNull();
+    expect(sig.motion).toBe(0);
+    expect(signals).toHaveLength(1);
+  });
+
+  it("a wake policy can combine weak presence and semantic-relevance signals", () => {
+    const { edge } = makeEdge({
+      wakePolicy: { weights: { presence: 0.8, semantic_relevance: 0.8 } },
+    });
+    edge.applyWatchSpec(PY_WATCHSPEC); // threshold 0.3
+    const still = makeFrame(8, 8, 120);
+    const sig = edge.processFrame(still, {
+      signals: { presence: 0.3, semantic_relevance: 0.3 },
+    });
+    expect(sig).not.toBeNull();
+    expect(sig.motion).toBe(0);
   });
 
   it("invokes the publisher slot with the gated frame + signal on escalation", () => {
