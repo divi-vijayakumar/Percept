@@ -1,9 +1,10 @@
-"""judge(frames=..., audio=...) wiring (L1) — the PerceptionSpec input actually reaches the eye.
+"""judge(frames=..., audio=..., context=...) wiring (L1) — the inputs actually reach the eye.
 
-Proves the additive ``frames``/``audio`` kwargs flow through ``Vision.judge`` and can change the call
-(routed to a distinct scripted verdict), WITHOUT asserting any model intelligence (rule 2 — FakeVision
-is scripted wiring). Also pins the gate-input invariant: every judge path returns a ``Verdict`` with the
-same three fields, so nothing downstream of the eye changes shape.
+Proves the additive ``frames``/``audio``/``context`` kwargs flow through ``Vision.judge`` and can change
+the call (routed to a distinct scripted verdict), WITHOUT asserting any model intelligence (rule 2 —
+FakeVision is scripted wiring). ``context`` is the structured specialist (Enricher) output — the F1
+enrichment seam's judge-side hop. Also pins the gate-input invariant: every judge path returns a
+``Verdict`` with the same three fields, so nothing downstream of the eye changes shape.
 """
 
 import asyncio
@@ -12,12 +13,13 @@ import unittest
 from percept.adapters import Verdict
 from percept.backends.fake import FakeVision
 
-# "boil" alone reads NO; the strip/audio escalations are scripted to flip it — so a passing test means
-# the extra modality genuinely reached judge (not that the fake "understood" anything).
+# "boil" alone reads NO; the strip/audio/context escalations are scripted to flip it — so a passing test
+# means the extra input genuinely reached judge (not that the fake "understood" anything).
 _SCRIPT = {
     "boil": Verdict(satisfied=False, confidence=0.4, evidence="single: ambiguous"),
     "boil|strip": Verdict(satisfied=True, confidence=0.9, evidence="strip: rising"),
     "boil|audio": Verdict(satisfied=True, confidence=0.95, evidence="audio: hiss"),
+    "boil|enriched": Verdict(satisfied=True, confidence=0.97, evidence="specialist: fact injected"),
 }
 
 
@@ -42,6 +44,16 @@ class TestJudgePerceptionWiring(unittest.TestCase):
         self.assertTrue(v.satisfied)
         self.assertEqual(v.evidence, "audio: hiss")
 
+    def test_context_reaches_judge(self):
+        # structured specialist (Enricher) facts flow into judge via context= and change the read
+        v = _judge(context={"plate": "7XYZ123"})
+        self.assertTrue(v.satisfied)
+        self.assertEqual(v.evidence, "specialist: fact injected")
+
+    def test_empty_context_does_not_route(self):
+        # context={} is falsy -> still the single-frame path (no spurious enrichment)
+        self.assertEqual(_judge(context={}).evidence, "single: ambiguous")
+
     def test_empty_strip_does_not_route(self):
         # frames=[] is falsy -> still the single-frame path (no spurious escalation)
         self.assertEqual(_judge(frames=[]).evidence, "single: ambiguous")
@@ -52,7 +64,8 @@ class TestJudgePerceptionWiring(unittest.TestCase):
 
     def test_verdict_shape_is_invariant_across_paths(self):
         # the gate downstream only ever sees Verdict{satisfied, confidence, evidence}
-        for v in (_judge(), _judge(frames=["a", "boil"]), _judge(audio=b"\x00")):
+        for v in (_judge(), _judge(frames=["a", "boil"]), _judge(audio=b"\x00"),
+                  _judge(context={"plate": "X"})):
             self.assertIsInstance(v, Verdict)
             self.assertIsInstance(v.satisfied, bool)
             self.assertIsInstance(v.confidence, float)

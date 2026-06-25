@@ -1,9 +1,10 @@
 # Registration
 
-Percept has two registries you extend by **registering**, never by editing the gate or adding a
-per-task `if`: the **detector registry** (cheap, high-fps edge signal skills the brain composes by name)
-and the **concern registry** (standing units of consequence-weighted attention the brain watches). Both
-are process-global singletons keyed by name/id, and both expose the same lifecycle shape:
+Percept has three registries you extend by **registering**, never by editing the gate or adding a
+per-task `if`: the **detector registry** (cheap, high-fps edge signal skills the brain composes by name),
+the **concern registry** (standing units of consequence-weighted attention the brain watches), and the
+**enricher registry** (specialist MODELS that turn a cheap signal into structured facts for the judge).
+All three are process-global singletons keyed by name/id, and all expose the same lifecycle shape:
 
 ```
 register  →  introspect / select into a WatchSpec  →  teardown
@@ -12,7 +13,8 @@ register  →  introspect / select into a WatchSpec  →  teardown
 These names are a **public, semver-stable API**. Within a contract MAJOR (`CONTRACT_VERSION`, see
 `percept_contracts`) the signatures and the `DetectorManifest` shape only change additively — new
 optional args, new functions beside the old ones. A breaking change to any name below is a MAJOR bump.
-Import them from `percept_harness` (or `percept_harness.detectors` / `percept_harness.concerns`).
+Import them from `percept_harness` (or `percept_harness.detectors` / `percept_harness.concerns` /
+`percept_harness.enrichers`).
 
 ---
 
@@ -178,6 +180,67 @@ captured.
 
 ---
 
+## Enricher registry — specialist models (signal → judge context)
+
+An **enricher** (`percept_contracts.Enricher`, beside `Specialist`) is a narrow specialist MODEL that
+turns a cheap Tier-0 signal into **structured facts** the general VLM judge can't cheaply produce — an
+LPR model for a `plate-presence` cue, a fire/smoke classifier for a hot-surface cue, a face-id model for
+a known-person cue. The registry routes a *signal/detector name* to the specialist it hands off to, runs
+it, and feeds the structured output into `Vision.judge(context=...)`:
+
+```
+signal name  →  Enricher.enrich(signal, frame) -> {facts}  →  Vision.judge(context={facts})
+```
+
+> Detector vs enricher: a *detector* is a cheap stdlib/edge signal skill that emits boundaries (it
+> *finds* a cue); an *enricher* is a heavier specialist model that *reads out structured facts* about a
+> cue. The detector says "a plate-shaped thing is here"; the enricher (LPR) says `{"plate": "7XYZ123"}`.
+
+Adding a specialist is the WHOLE integration cost — **no change to Percept core, the judge, or the
+contract**:
+
+```python
+from percept_harness import register_enricher
+
+register_enricher("plate-presence", LprEnricher())   # an LPR model for the plate cue
+register_enricher("smoke-cue", SmokeClassifier())     # a second specialist — one more call, nothing else
+```
+
+`register_enricher` keys on the signal name (last-writer-wins, so a product swaps a stub for a calibrated
+model in place) and returns the enricher for chaining. Any class with an `enrich(signal, frame) -> dict`
+method satisfies the protocol — no base class to inherit.
+
+### Run it (the driver)
+
+```python
+from percept_harness import enrich_signal
+
+enr = enrich_signal("plate-presence", signal=cue, frame=frame)  # -> an Enrichment
+verdict = await vision.judge(condition, frame, context=enr.context)   # facts injected into the judge
+```
+
+`enrich_signal` resolves the signal name, runs the specialist, and returns an `Enrichment(context,
+verdict)`:
+
+- `context` — the structured facts to pass as `Vision.judge(context=...)` (`{}` when no specialist is
+  registered or it returned nothing — the byte-for-byte un-enriched path).
+- `verdict` — present iff the enricher SHORT-CIRCUITED (returned a `{"verdict": Verdict}` key): the brain
+  uses that verdict directly and skips the VLM judge call. `enr.is_noop` is the cheap "nothing fired" test.
+
+A specialist that raises (a flaky model, a bad payload) degrades to a no-op — an enrichment failure never
+breaks the judge path. F1 ships only the SEAM plus fakes (`NullEnricher` / `FakeEnricher`); no real model.
+
+### Introspect / teardown
+
+```python
+enricher_for("plate-presence")   # -> the registered Enricher, or None
+registered_enrichers()           # -> the signal names (sorted)
+unregister_enricher("plate-presence")  # -> True if registered, False if absent (idempotent)
+clear_enrichers()                # -> empties the registry (no built-ins to restore)
+```
+
+---
+
 ## Stability guarantee
 
 | surface | guarantee |
@@ -185,4 +248,5 @@ captured.
 | `register`, `register_detector`, `make_detector`, `registered`, `list_manifests`, `manifest_of`, `unregister`, `clear_detectors` | semver-stable; additive-only within a contract MAJOR |
 | `DetectorManifest` (`name`, `senses`, `when_to_use`, `output`), `Boundary` (`detector`, `kind`, `t`, `value`) | frozen shapes; new fields are additive + optional |
 | `register_concern`, `registered_concerns`, `registered_concern_ids`, `get_concern`, `unregister_concern`, `clear_concerns`, `detectors_for_concern`, `concern_to_condition`, `compile_registered_watchspec` | semver-stable; additive-only within a contract MAJOR |
+| `register_enricher`, `enricher_for`, `registered_enrichers`, `unregister_enricher`, `clear_enrichers`, `enrich_signal`, `Enrichment` (`context`, `verdict`), `Enricher` protocol (`enrich(signal, frame) -> dict`) | semver-stable; additive-only within a contract MAJOR |
 | `Concern` and the wire DTOs (`WatchSpec`, `WatchCondition`) | live in the frozen `percept_contracts` membrane (§0) — a breaking change is a MAJOR bump, flagged not silent |

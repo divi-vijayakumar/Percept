@@ -375,6 +375,7 @@ class Vision(Protocol):
         corrections: dict | None = None,
         frames: list | None = None,
         audio: Any = None,
+        context: dict | None = None,
     ) -> Verdict:
         """Judge whether ``condition`` is true of ``frame`` (optionally cropped to ``roi``).
 
@@ -383,7 +384,12 @@ class Vision(Protocol):
         escalations the brain assembles per the concern's ``PerceptionSpec``. Both default ``None`` so a
         single-frame call is byte-for-byte today. A backend lacking a modality (e.g. Claude + audio)
         degrades gracefully to what it can read; the returned ``Verdict`` shape is unchanged either way
-        (the gate downstream is identical)."""
+        (the gate downstream is identical).
+
+        ``context`` is OPTIONAL structured facts from a specialist :class:`Enricher` (e.g. an LPR model's
+        ``{"plate": "7XYZ123"}`` for a ``plate-presence`` cue) — read as authoritative, distinct from the
+        user-asserted ``corrections``. It defaults ``None`` so an un-enriched call is byte-for-byte today;
+        a backend that ignores it degrades gracefully (the seam is wired even when the model is not)."""
         ...
 
     async def detect(self, frame: Any, goals: list[Goal]) -> list[Observation]:
@@ -399,6 +405,35 @@ class Vision(Protocol):
 class Specialist(Protocol):
     def stream(self, prompt: str, *, frame: Any = None, fast: bool = False):
         """Async-iterate reply tokens, optionally grounded on a frame."""
+        ...
+
+
+@runtime_checkable
+class Enricher(Protocol):
+    """A specialist MODEL that turns a cheap Tier-0 signal into STRUCTURED context for the judge.
+
+    The complement of :class:`Specialist` (an orchestration/Q&A token-stream): an ``Enricher`` is a
+    narrow, signal-triggered model whose output is *facts*, not prose. A Tier-0 signal or detector
+    declares it needs a specialist (e.g. a ``plate-presence`` cue wants an LPR model); the registry
+    resolves the signal name to the ``Enricher``, runs it, and injects its structured output into the
+    judge's context — assertion-style facts the VLM trusts over its own read (e.g.
+    ``{"plate": "7XYZ123", "region": "US-CA"}``).
+
+    The handoff is one method so a NEW specialist (LPR, fire/smoke classifier, face-id, …) is added by
+    REGISTERING an enricher — never by editing Percept core. The structured ``dict`` it returns is the
+    contract: it reaches the judge as ``context=`` (read alongside, not instead of, the frame). An
+    enricher MAY short-circuit the judge by returning a ``{"verdict": Verdict(...)}`` key — the brain
+    uses that verdict directly and skips the VLM call. All keys are optional; an empty dict is a no-op
+    enrichment (the judge proceeds exactly as it would untriggered)."""
+
+    def enrich(self, signal: Any, frame: Any = None) -> dict:
+        """Run the specialist on a triggering ``signal`` (+ optional ``frame``); return structured facts.
+
+        ``signal`` is the Tier-0 trigger that selected this enricher (a :class:`Tier0Signal`, a detector
+        :class:`Boundary`-like object, or a plain name/payload — enricher-defined). ``frame`` is the
+        current frame when one is available. Returns a JSON-ish ``dict`` of facts to inject into the judge
+        context; ``{"verdict": Verdict}`` to short-circuit; ``{}`` for no-op. MUST NOT raise on a normal
+        miss — return ``{}`` instead (the registry treats a raising enricher as a no-op)."""
         ...
 
 
@@ -466,6 +501,7 @@ __all__ = [
     # Protocols
     "Vision",
     "Specialist",
+    "Enricher",
     "Conductor",
     "STT",
     "TTS",

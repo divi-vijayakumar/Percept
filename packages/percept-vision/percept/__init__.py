@@ -14,6 +14,7 @@ from .adapters import (
     Concern,
     Consequence,
     Decision,
+    Enricher,
     Evidence,
     Goal,
     Observation,
@@ -81,6 +82,7 @@ __all__ = [
     "WatchCondition",
     "WatchSpec",
     "Tier0Signal",
+    "Enricher",
     "Incident",
     "IncidentSnippet",
     # contract version

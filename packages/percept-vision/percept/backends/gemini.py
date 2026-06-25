@@ -130,6 +130,7 @@ class GeminiVision(_GeminiBase):
         corrections: dict | None = None,
         frames: list | None = None,
         audio: Any = None,
+        context: dict | None = None,
     ) -> Verdict:
         _, types = _require_genai()
         client = self._ensure_client()
@@ -169,6 +170,12 @@ class GeminiVision(_GeminiBase):
             question += (
                 f"The user has told you these authoritative facts (trust them over your own read): "
                 f"{facts}. "
+            )
+        if context:
+            spec_facts = "; ".join(f"{k}={v}" for k, v in context.items())
+            question += (
+                f"A specialist model has reported these structured facts (trust them over your own "
+                f"read): {spec_facts}. "
             )
         question += 'Answer as STRICT JSON {"satisfied", "confidence", "evidence"}.'
         parts.append(question)
