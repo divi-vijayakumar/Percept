@@ -1,7 +1,7 @@
 """The runtime worker — ``run(core, source) -> incidents``.
 
 The IRA's #1 ask, made generic: own the camera→incidents lifecycle so apps stop writing the capture +
-threading + feed glue. Per frame it drives the tier-0 :class:`~percept_harness.tier0.MotionGate`, and on
+threading + feed glue. Per frame it drives the tier-0 :class:`~percept.edge.tier0.MotionGate`, and on
 the rising edge spends a cloud judgment (``core.perceive_judged``), turning each fire into a durable
 :class:`~percept_contracts.Incident` (with a pre-roll snippet) handed to the notification sink and yielded.
 
@@ -12,9 +12,11 @@ iterable of ``(t, gate_frame, judge_frame)`` (tests / a pre-decoded clip).
 from __future__ import annotations
 
 import asyncio
+import inspect
 from typing import Any, AsyncIterator, Callable
 
 from percept.events import FrameWindow
+from percept.gate import FIRE, ASK
 from percept.incidents import make_incident, snippet_from_window
 
 
@@ -34,22 +36,32 @@ async def _aiter(source: Any, fps: float) -> AsyncIterator[tuple]:
             await asyncio.sleep(0)  # cooperate with the event loop
 
 
+async def _call_sink(fn: Callable, *args) -> None:
+    result = fn(*args)
+    if inspect.isawaitable(result):
+        await result
+
+
 async def run(
     core: Any,
     *,
     source: Any,
     on_incident: Callable | None = None,
+    on_ask: Callable | None = None,
     on_frame: Callable | None = None,
     fps: float = 4.0,
     snippet_pre_s: float = 5.0,
     snippet_size: int = 48,
+    snippet_kind: str = "frame",
     gate_source: str = "camera",
 ) -> AsyncIterator:
     """Drive a live ``source`` through the gate + brain, yielding an :class:`Incident` on each rising edge.
 
     - ``on_incident(incident)`` — the notification sink (SMS / Slack / webhook lives here).
+    - ``on_ask(event)`` — optional refusal sink for low-confidence reads; asks are not incidents.
     - ``on_frame(t, judge_frame)`` — the live-feed hook (wire an MJPEG streamer here).
     - ``snippet_pre_s`` — seconds of pre-roll captured into each incident's snippet.
+    - ``snippet_kind`` — ``"frame"`` keeps decoded frames; ``"clip"`` emits a portable encoded bundle.
 
     Owns capture off the consumer thread; the per-goal cadence + the three-state gate decide *when* and
     *whether* to fire. Yields incidents lazily, so an ``async for incident in run(...)`` is the front door.
@@ -65,13 +77,19 @@ async def run(
     async for t, gate_frame, judge_frame in _aiter(source, fps):
         clips.push(t, judge_frame)
         if on_frame is not None:
-            on_frame(t, judge_frame)
+            await _call_sink(on_frame, t, judge_frame)
         if not gate.evaluate(gate_frame, ts=t).escalate:
             continue  # still / sub-cadence -> no cloud call, no incident
         fires = await core.perceive_judged(judge_frame, gate_source, t=t)
         for fire in fires or []:
-            snippet = snippet_from_window(clips, pre_s=snippet_pre_s)
+            if getattr(fire, "action", None) == ASK:
+                if on_ask is not None:
+                    await _call_sink(on_ask, fire)
+                continue
+            if getattr(fire, "action", None) != FIRE:
+                continue
+            snippet = snippet_from_window(clips, kind=snippet_kind, pre_s=snippet_pre_s)
             incident = make_incident(fire, ts=t, snippet=snippet)
             if on_incident is not None:
-                on_incident(incident)
+                await _call_sink(on_incident, incident)
             yield incident

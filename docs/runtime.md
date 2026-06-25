@@ -5,15 +5,14 @@ thread, the live feed, and rising-edge **incident** emission — so your app sto
 
 ```python
 from percept import Percept, Goal
-from percept.runtime import run
+from percept.runtime import run, webhook
 
 agent = Percept.create(vision="gemini")            # pip install "percept-vision[gemini]" + GEMINI_API_KEY
 agent.add_goal(Goal(id="zone", condition="a person is in the restricted zone", say="Alert: person in zone"))
 
-def notify(incident):                              # your SMS / Slack / webhook lives here
-    send(incident.message, evidence=incident.verdict.evidence, clip=incident.snippet)
+notify = webhook("https://example.com/percept/incidents")
 
-async for incident in run(agent, source="rtsp://door-cam/stream", on_incident=notify):
+async for incident in run(agent, source="rtsp://door-cam/stream", on_incident=notify, snippet_kind="clip"):
     ...                                            # run() owns capture + gate + judge + incident emission
 ```
 
@@ -25,17 +24,20 @@ extra — handy for tests and offline replay.
 1. push the frame into a rolling pre-roll buffer (for the incident clip);
 2. run the cheap **tier-0 gate** (motion + the per-goal cadence) — most frames skip here, no cloud call;
 3. on the rising edge, spend one **`vision.judge`** call (the brain — unchanged);
-4. each fire → an **`Incident`** (with a pre-roll snippet) → `on_incident(...)` → yielded.
+4. each `fire` → an **`Incident`** (with a pre-roll snippet) → `on_incident(...)` → yielded;
+5. each `ask` → `on_ask(...)` if provided, but not an Incident.
 
-`run(...)` parameters: `source` (a URI or iterable), `on_incident` (the notify sink), `on_frame(t, frame)`
-(the live-feed hook — wire an MJPEG streamer here), `fps`, `snippet_pre_s` (seconds of pre-roll per clip).
+`run(...)` parameters: `source` (a URI or iterable), `on_incident` (the notify sink), `on_ask` (the
+refusal sink), `on_frame(t, frame)` (the live-feed hook — wire an MJPEG streamer here), `fps`,
+`snippet_pre_s` (seconds of pre-roll per clip), and `snippet_kind` (`"frame"` or `"clip"`).
 
 ## The `Incident`
 ```
 Incident { id, concern_id, verdict{satisfied, confidence, evidence}, ts, label, snippet, message }
 ```
 `message` is the goal's `say` (the human alert line); `verdict.evidence` is the VLM's reasoning;
-`snippet` is the pre-roll (`kind="frame"` today; encoded clip storage is planned as a runtime add-on);
+`snippet` is the pre-roll (`kind="frame"` stores decoded frames; `kind="clip"` stores a portable encoded
+frame bundle suitable for webhook/storage sinks);
 `label` is `None` until a human / the calibration loop marks it `"real"` / `"false_alarm"`.
 
 ## Tuning a goal — three independent knobs
@@ -64,3 +66,16 @@ A goal's `state` carries three orthogonal levers (the conductor can author them 
 
 > **Assistant-class, not a guarantee.** The runtime *alerts a human who stays responsible*. It is not a
 > certified safety/detection system on a clock it can't promise. See the fall scenario for the disclaimer.
+
+## Webhook sink
+
+```python
+from percept.runtime import webhook
+
+sink = webhook("https://example.com/percept/incidents", headers={"Authorization": "Bearer ..."})
+async for incident in run(agent, source="webcam://0", on_incident=sink, snippet_kind="clip"):
+    ...
+```
+
+Webhook payloads redact media by default and keep incident metadata, message, evidence, timestamps, and
+snippet bounds. Pass `include_media=True` only for trusted local/dev sinks.

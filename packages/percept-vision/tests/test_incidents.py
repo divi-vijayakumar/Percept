@@ -25,7 +25,7 @@ class MakeIncidentTests(unittest.TestCase):
         self.assertEqual(inc.verdict, v)
         self.assertEqual(inc.message, "Possible fall - check on them")
         self.assertEqual(inc.ts, 12.5)
-        self.assertEqual(inc.id, "inc-fall-12.500")
+        self.assertRegex(inc.id, r"^inc-fall-12\.500-[0-9a-f]{8}$")
         self.assertIsNone(inc.label)  # unlabelled until a human / the calibration loop classifies it
 
     def test_none_verdict_gets_a_placeholder(self):

@@ -1,0 +1,40 @@
+{
+  "version": "golden-v1-draft",
+  "status": "draft",
+  "created": "2026-06-25",
+  "release_rule": "A RELEASE scorecard needs mode=full, no modeled cells, and this manifest pinned by content hash.",
+  "tracks": [
+    {
+      "id": "relational-ambiguity",
+      "source": "private/self-recorded or license-cleared ambiguity set",
+      "status": "needs_resourcing",
+      "metrics": ["precision", "recall", "ask_rate", "false_fire", "auroc"]
+    },
+    {
+      "id": "perception-test-acoustic",
+      "source": "Perception Test CC-BY-4.0",
+      "status": "candidate_public",
+      "metrics": ["recall", "fusion_fp", "recall_flip"]
+    },
+    {
+      "id": "repcount-a",
+      "source": "RepCount-A reference assets",
+      "status": "candidate_reference",
+      "metrics": ["obo", "mae"]
+    },
+    {
+      "id": "omnipro-visual",
+      "source": "OmniPro visual/no-audio slice",
+      "status": "candidate_public",
+      "metrics": ["time_F1", "joint_F1", "false_positive_count"]
+    }
+  ],
+  "splits": {
+    "dev": [],
+    "test": []
+  },
+  "notes": [
+    "Do not move private YouTube fixtures into this manifest.",
+    "Every test item must include source, license, split, task, and immutable media hash before v0.4 RELEASE."
+  ]
+}

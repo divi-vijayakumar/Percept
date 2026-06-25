@@ -30,12 +30,12 @@ def _commit() -> str:
         return "?"
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--live", action="store_true", help="run real Gemini (else offline stub cells)")
     ap.add_argument("--n", type=int, default=20, help="relational sample size")
     ap.add_argument("--out", default=None, help="also write the card to this path")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     if args.live:
         from eval._dotenv import load_dotenv

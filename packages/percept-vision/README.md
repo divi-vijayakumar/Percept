@@ -146,6 +146,14 @@ the perception ceiling bites.
 The repo stays internally modular (`packages/percept-harness/`, `packages/percept-contracts/`), but
 OSS users should start from one Python package plus the optional npm edge package.
 
+Release evidence:
+
+- Edge parity: [`../../docs/edge-parity.md`](../../docs/edge-parity.md)
+- Runtime worker: [`../../docs/runtime.md`](../../docs/runtime.md)
+- Benchmark/golden set: [`../../docs/eval.md`](../../docs/eval.md)
+- Enterprise architecture: [`../../docs/enterprise-architecture.md`](../../docs/enterprise-architecture.md)
+- Static OSS demo: [`../../examples/web-demo/index.html`](../../examples/web-demo/index.html)
+
 ## Benchmark — Percept Benchmark v1 (v0.5 DRAFT)
 
 The benchmark holds the **backbone fixed and measures the orchestration delta** across a `raw → core
@@ -167,6 +175,12 @@ eval would hide: the **flat confidence AUROC** (*why* the gate refuses to guess)
 event-recall of 0** on subtle actions (the motion-gate is mis-calibrated for them). Full plan, data,
 and references:
 [`packages/percept-vision/eval/BENCHMARK_PLAN.md`](packages/percept-vision/eval/BENCHMARK_PLAN.md).
+
+Run the public scorecard:
+
+```bash
+percept-bench scorecard --out scorecard.txt
+```
 
 ## Layout
 

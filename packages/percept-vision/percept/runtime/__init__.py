@@ -8,6 +8,7 @@ The worker code is pure stdlib (ships with `percept-vision`); the camera source 
 extra (`pip install "percept-vision[runtime]"` → opencv-python-headless). A pre-decoded/iterable source
 works with no extra (tests, offline replay).
 """
+from percept.runtime.sinks import WebhookSink, incident_payload, webhook
 from percept.runtime.worker import run
 
-__all__ = ["run"]
+__all__ = ["run", "WebhookSink", "incident_payload", "webhook"]

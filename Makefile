@@ -56,7 +56,7 @@ bench:
 	PYTHONPATH=$(SDK):$(HARNESS):$(CONTRACTS) $(PY) -m percept_harness.bench_gating
 
 scorecard:
-	cd $(SDK) && PYTHONPATH=.:$(CONTRACTS_ABS) $(PY) -m eval.scorecard
+	PYTHONPATH=$(SDK):$(HARNESS):$(CONTRACTS) $(PY) -m percept.bench scorecard --out scorecard.txt
 
 calibrate:
 	cd $(SDK) && PYTHONPATH=.:$(CONTRACTS_ABS) $(PY) -m eval.calibrate
@@ -70,7 +70,7 @@ check:
 	@cd $(SDK) && (ruff check . || echo "ruff not installed — skipping lint")
 
 reproduce:
-	@echo "make reproduce: lands with percept-bench. Skipping."
+	PYTHONPATH=$(SDK):$(HARNESS):$(CONTRACTS) $(PY) -m percept.bench scorecard --out scorecard.txt
 
 prevalence-pt:  ## Perception Test prevalence (needs PERCEPT_LIVE + opencv-python-headless + downloaded sample)
 	cd $(SDK) && PYTHONPATH=. $(PY) -m eval.exp_perception_test

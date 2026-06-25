@@ -1,0 +1,46 @@
+{
+  "version": "2026-06-25",
+  "policy": "Reference bars are context only unless the row says controlled_ab=true. Do not present unequal-condition references as leaderboard wins.",
+  "baselines": [
+    {
+      "id": "tml-interaction-models",
+      "system": "Thinking Machines Lab Interaction Models",
+      "kind": "reference_bar",
+      "controlled_ab": false,
+      "source": "https://thinkingmachines.ai/blog/interaction-models/",
+      "metric": "wall_clock_latency_ms",
+      "value": 200,
+      "comparability": "Different operating point: native interactive model latency, not Percept edge+VLM watcher latency."
+    },
+    {
+      "id": "perception-test",
+      "system": "Perception Test",
+      "kind": "dataset",
+      "controlled_ab": false,
+      "source": "https://arxiv.org/abs/2305.13786",
+      "license": "CC-BY-4.0",
+      "metric": "multimodal_video_diagnostic",
+      "comparability": "Useful public dataset for acoustic, action, and relation tracks; Percept must declare sampled/full mode."
+    },
+    {
+      "id": "transrac-repcount-a",
+      "system": "TransRAC",
+      "kind": "reference_bar",
+      "controlled_ab": false,
+      "source": "https://openaccess.thecvf.com/content/CVPR2022/html/Hu_TransRAC_Encoding_Multi-Scale_Temporal_Correlation_With_Transformers_for_Repetitive_Action_Counting_CVPR_2022_paper.html",
+      "metric": "RepCount-A OBO / MAE",
+      "value": {"obo": 0.291, "mae": 0.443},
+      "comparability": "Specialized trained counting baseline; Percept pose detector is training-free and should be labelled accordingly."
+    },
+    {
+      "id": "omnipro-visual-slice",
+      "system": "OmniPro visual slice",
+      "kind": "controlled_ab",
+      "controlled_ab": true,
+      "source": "packages/percept-vision/eval/BENCHMARKS.md",
+      "metric": "time_F1",
+      "value": {"raw_loop": 0.251, "percept": 0.446},
+      "comparability": "Controlled A/B on the visual slice with perception held constant; not comparable to full omni leaderboard joint F1."
+    }
+  ]
+}

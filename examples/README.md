@@ -8,6 +8,7 @@ rising edge** (false → true) of the condition — the same cognition layer; on
 | [`watch_agent.py`](watch_agent.py) | `fake` (offline, scripted) | nothing — pure stdlib | **yes** |
 | [`webcam_agent.py`](webcam_agent.py) | `gemini` (real VLM) | `[gemini]` extra + key + camera | template only |
 | [`loitering_clip.py`](loitering_clip.py) | `fake` (offline, scripted) | nothing — pure stdlib | **yes** |
+| [`web-demo/`](web-demo/) | static browser demo | browser only | **yes** |
 
 ---
 
@@ -111,6 +112,13 @@ PYTHONPATH=packages/percept-vision python3 examples/benchmark/ci_gate.py
 - [`benchmark/ci_gate.py`](benchmark/ci_gate.py) — wire a per-concern P/R threshold into CI.
 
 Full guide + the manifest spec: [`docs/eval.md`](../docs/eval.md).
+
+---
+
+## 5. `web-demo/` — hosted-looking OSS demo shell
+
+Open [`web-demo/index.html`](web-demo/index.html) in a browser. It is a static replay of the Percept
+loop: edge gate, perception read, cognition gate, incident snippet, and scorecard panel.
 
 ---
 

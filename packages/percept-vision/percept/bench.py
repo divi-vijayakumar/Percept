@@ -10,6 +10,8 @@ surface:
 
 from __future__ import annotations
 
+import sys
+
 from eval.benchmark import (  # noqa: F401
     BenchmarkGate,
     ConcernObservation,
@@ -23,12 +25,26 @@ from eval.benchmark import (  # noqa: F401
     run_manifest,
     score_concern,
 )
-from eval.benchmark import main as _main
+from eval.benchmark import main as _benchmark_main
+from eval.bench.run import main as _scorecard_main
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the per-concern benchmark CLI."""
-    return _main(argv)
+    """Run the public benchmark CLI.
+
+    ``percept-bench manifest.json`` runs the per-concern P/R harness.
+    ``percept-bench scorecard`` emits the multi-track snapshot card.
+    """
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv and argv[0] == "scorecard":
+        return _scorecard_main(argv[1:])
+    return _benchmark_main(argv)
+
+
+def scorecard_main(argv: list[str] | None = None) -> int:
+    """Emit the public multi-track benchmark snapshot card."""
+    return _scorecard_main(argv)
 
 
 __all__ = [
@@ -44,6 +60,7 @@ __all__ = [
     "run_manifest",
     "score_concern",
     "main",
+    "scorecard_main",
 ]
 
 

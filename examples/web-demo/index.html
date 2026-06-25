@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Percept OSS Demo</title>
+    <link rel="stylesheet" href="./style.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="topbar">
+        <div>
+          <h1>Percept</h1>
+          <p>Goal-driven ambient perception, shown as the loop developers actually need to debug.</p>
+        </div>
+        <a href="../../docs/quickstart.md">Quickstart</a>
+      </section>
+
+      <section class="workspace">
+        <div class="stream" aria-label="sample stream">
+          <canvas id="scene" width="720" height="420"></canvas>
+          <div class="caption">
+            <strong id="frameLabel">restricted zone</strong>
+            <span id="frameState">waiting for a rising edge</span>
+          </div>
+        </div>
+
+        <aside class="panel">
+          <h2>Live Incident</h2>
+          <div id="incident" class="incident idle">No incident yet</div>
+          <h2>Scorecard</h2>
+          <dl>
+            <div><dt>false-fire</dt><dd>0</dd></div>
+            <div><dt>precision</dt><dd>1.00</dd></div>
+            <div><dt>recall</dt><dd>1.00</dd></div>
+            <div><dt>edge parity</dt><dd>12/12</dd></div>
+          </dl>
+        </aside>
+      </section>
+
+      <section class="lanes" aria-label="percept loop">
+        <div><b>Edge</b><span>motion + detector boundaries</span></div>
+        <div><b>Perception</b><span>one VLM read on escalation</span></div>
+        <div><b>Cognition</b><span>fire once, ask when unsure</span></div>
+        <div><b>Incident</b><span>snippet + webhook sink</span></div>
+      </section>
+    </main>
+    <script src="./script.js"></script>
+  </body>
+</html>

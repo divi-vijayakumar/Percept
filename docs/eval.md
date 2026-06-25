@@ -16,6 +16,12 @@ script. From a source checkout, point `PYTHONPATH` at the package:
 PYTHONPATH=packages/percept-vision python3 -m percept.bench examples/benchmark/manifest.json
 ```
 
+For the multi-track public snapshot card:
+
+```bash
+percept-bench scorecard --out scorecard.txt
+```
+
 ---
 
 ## What you get: per-concern P/R
@@ -109,6 +115,10 @@ percept-bench examples/benchmark/manifest.json \
     --min-recall 0.9
 ```
 
+```bash
+percept-bench scorecard --out scorecard.txt
+```
+
 Writes the JSON report to `--out` and prints a table. Exits non-zero if the gate fails — so the CLI
 *is* a usable CI gate on its own. There's also a Make target:
 
@@ -137,7 +147,7 @@ If you replayed your clips against a real backend and captured the fires, skip t
 the recorded observations directly:
 
 ```python
-from eval.benchmark import ConcernObservation, per_concern_report
+from percept.bench import ConcernObservation, per_concern_report
 from eval.replay import Edge, Fire
 
 report = per_concern_report(
@@ -162,7 +172,7 @@ plus any per-concern precision/recall floor your product needs. `examples/benchm
 copy-pasteable template:
 
 ```python
-from eval.benchmark import BenchmarkGate, Manifest, check_benchmark_gate, run_manifest
+from percept.bench import BenchmarkGate, Manifest, check_benchmark_gate, run_manifest
 
 GATE = BenchmarkGate(max_false_fire=0, min_precision=1.0, min_recall=0.9)
 
@@ -184,3 +194,11 @@ rather than hiding behind a healthy average.
 
 > This consumer gate is **additive** — it does not touch the SDK's own `eval.run` gate
 > (`false_fire == 0` on the held-out golden test split), which keeps running unchanged.
+
+## Golden Set + Baselines
+
+- Golden v1 draft manifest: [`../eval/golden-v1/MANIFEST.json`](../eval/golden-v1/MANIFEST.json)
+- Baseline registry: [`../packages/percept-vision/eval/baselines.json`](../packages/percept-vision/eval/baselines.json)
+
+These are intentionally separate from private fixtures. A release scorecard must use license-cleared,
+content-hashed test rows and cite the manifest hash.
