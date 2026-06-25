@@ -324,6 +324,19 @@
         },
         "source": {
           "type": "string"
+        },
+        "clip": {
+          "type": "boolean"
+        },
+        "window_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "description": "The unit of consequence-weighted attention (spec \u00a71) \u2014 sits above the entity.",
@@ -521,6 +534,71 @@
         "semantic",
         "ts"
       ]
+    },
+    "AudioFrame": {
+      "type": "object",
+      "title": "AudioFrame",
+      "properties": {
+        "pcm": {
+          "type": "string",
+          "contentEncoding": "base64"
+        },
+        "sample_rate": {
+          "type": "integer"
+        },
+        "channels": {
+          "type": "integer"
+        },
+        "sample_format": {
+          "enum": [
+            "s16le",
+            "f32le",
+            "u8"
+          ]
+        },
+        "encoded": {
+          "anyOf": [
+            {
+              "type": "string",
+              "contentEncoding": "base64"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mime": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "t_start": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "t_end": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "description": "A typed audio signal \u2014 the first-class AUDIO modality the eye can read (B2)."
     },
     "IncidentSnippet": {
       "type": "object",

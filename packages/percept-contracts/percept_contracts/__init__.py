@@ -392,6 +392,58 @@ class IncidentSnippet:
     t_end: float | None = None
 
 
+@dataclass(frozen=True)
+class AudioFrame:
+    """A typed audio signal — the first-class AUDIO modality the eye can read (B2).
+
+    The vendor-neutral, stdlib-only container the brain assembles for an audio/fused
+    :class:`Vision.judge` escalation (the acoustic-onset wake path: an onset boundary on the mic
+    energy stream → escalate → ``judge(audio=AudioFrame(...))``). It carries a raw PCM buffer and
+    its rate/layout, plus optional encoded bytes (e.g. a WAV/Opus blob) so a backend can take
+    whichever form it prefers:
+
+    - ``pcm`` — raw little-endian PCM samples (signed 16-bit by default; see ``sample_format``).
+    - ``sample_rate`` — samples per second per channel (e.g. ``16000`` for the STT mic stream).
+    - ``channels`` — interleaved channel count (1 = mono, the default for a single mic).
+    - ``encoded``/``mime`` — an OPTIONAL pre-encoded blob (e.g. ``audio/wav``) for backends that
+      want a container rather than raw PCM; ``None`` when only PCM is carried.
+    - ``t_start``/``t_end`` — OPTIONAL clip bounds in seconds, for provenance/freshness.
+
+    This is the *typed* form of the previously-opaque ``judge(audio=...)`` payload. The param stays
+    typed-but-flexible — a backend still accepts raw ``bytes`` or a ``(mime, bytes)`` pair — but a
+    caller that wants a self-describing, schema-validated signal passes an :class:`AudioFrame`. The
+    :meth:`as_pair` helper renders it to the legacy ``(mime, bytes)`` shape the Gemini backend's
+    ``_audio_part`` already reads, so the typed object flows through the existing path unchanged.
+    """
+
+    pcm: bytes = b""
+    sample_rate: int = 16000
+    channels: int = 1
+    sample_format: Literal["s16le", "f32le", "u8"] = "s16le"
+    encoded: bytes | None = None
+    mime: str | None = None
+    t_start: float | None = None
+    t_end: float | None = None
+
+    @property
+    def duration_s(self) -> float | None:
+        """Best-effort clip duration in seconds from ``t_start``/``t_end`` (``None`` if unbounded)."""
+        if self.t_start is None or self.t_end is None:
+            return None
+        return self.t_end - self.t_start
+
+    def as_pair(self) -> tuple[str, bytes]:
+        """Render to the legacy ``(mime, bytes)`` audio shape the backends already accept.
+
+        Prefers the pre-``encoded`` blob (with its ``mime``) when present; otherwise returns the raw
+        ``pcm`` tagged as ``audio/L16`` (signed 16-bit) / ``audio/pcm`` so the opaque backend path
+        (``_audio_part``) consumes the typed object byte-for-byte as it did the opaque one."""
+        if self.encoded is not None:
+            return (self.mime or "audio/wav", self.encoded)
+        mime = "audio/L16" if self.sample_format == "s16le" else "audio/pcm"
+        return (f"{mime};rate={self.sample_rate};channels={self.channels}", self.pcm)
+
+
 @dataclass
 class Incident:
     """A fired-event record — the durable trace of one concern firing, with evidence.
@@ -434,13 +486,14 @@ class Vision(Protocol):
         exemplar: Any = None,
         corrections: dict | None = None,
         frames: list | None = None,
-        audio: Any = None,
+        audio: "AudioFrame | bytes | tuple[str, bytes] | None" = None,
         context: dict | None = None,
     ) -> Verdict:
         """Judge whether ``condition`` is true of ``frame`` (optionally cropped to ``roi``).
 
         ``frames`` (a temporal strip — earlier context frames in time order, oldest→newest, excluding
-        ``frame``) and ``audio`` (an opaque clip, bytes or a ``(mime, bytes)`` pair) are OPTIONAL
+        ``frame``) and ``audio`` (the first-class AUDIO modality — a typed :class:`AudioFrame`, or the
+        legacy-opaque ``bytes`` / ``(mime, bytes)`` pair the param still accepts) are OPTIONAL
         escalations the brain assembles per the concern's ``PerceptionSpec``. Both default ``None`` so a
         single-frame call is byte-for-byte today. A backend lacking a modality (e.g. Claude + audio)
         degrades gracefully to what it can read; the returned ``Verdict`` shape is unchanged either way
@@ -558,6 +611,7 @@ __all__ = [
     "WatchCondition",
     "WatchSpec",
     "Tier0Signal",
+    "AudioFrame",
     "IncidentSnippet",
     "Incident",
     # Protocols

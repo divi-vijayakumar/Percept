@@ -17,8 +17,13 @@
 // Parity: the manifest + Boundary field names match the Python `DetectorManifest`/`Boundary`
 // byte-for-byte, so a manifest can ride the wire (the capability handshake) unchanged.
 //
-//   Manifest = { name, senses, when_to_use, output }
+//   Manifest = { name, senses, when_to_use, output, category }
 //   Boundary = { detector, kind: "peak"|"onset"|"threshold", t, value }
+//
+// `category` is the coarse sense CLASS a detector belongs to ("motion" | "audio" | "frame"), so a whole
+// modality is discoverable at once (`detectorsInCategory("audio")` lists every audio skill) — this is
+// what marks `acoustic-onset` as the first-class AUDIO sense (B2). It mirrors the Python
+// `DetectorManifest.category` byte-for-byte so the manifest rides the capability handshake unchanged.
 
 // Boundary is a wire shape — defined (with validation) in the frozen contract; skills emit it.
 import { makeBoundary } from "./contract.js";
@@ -121,6 +126,15 @@ export class AcousticOnset {
 }
 
 // ---------------------------------------------------------------------------
+// Sense categories — the CLASS of physical signal a detector reads (B2)
+// ---------------------------------------------------------------------------
+
+/** The coarse modality of a detector's signal, mirrored from Python `CATEGORY_*`. */
+export const CATEGORY_MOTION = "motion";
+export const CATEGORY_AUDIO = "audio";
+export const CATEGORY_FRAME = "frame";
+
+// ---------------------------------------------------------------------------
 // The registry — register an impl + a manifest; the brain composes by name
 // ---------------------------------------------------------------------------
 
@@ -165,6 +179,20 @@ export function registered() {
   return [..._REGISTRY.keys()].sort();
 }
 
+/**
+ * Registered skill names (sorted) whose manifest `category` matches — modality-as-a-class discovery:
+ * `detectorsInCategory("audio")` lists every audio Tier-0 sense (B2), mirroring Python
+ * `detectors_in_category`. Empty when nothing in that category is registered.
+ * @param {string} category
+ * @returns {string[]}
+ */
+export function detectorsInCategory(category) {
+  return [..._REGISTRY.entries()]
+    .filter(([, e]) => (e.manifest?.category ?? "") === category)
+    .map(([name]) => name)
+    .sort();
+}
+
 /** The signal channel a registered skill consumes. */
 export function signalOf(name) {
   const entry = _REGISTRY.get(name);
@@ -184,6 +212,7 @@ registerSkill({
     when_to_use:
       "counting repetitive movements — reps, strokes, paces; any 'count the N-th time' on a periodic motion",
     output: "a 'peak' boundary per motion oscillation (≈ one rep), with no per-frame VLM call",
+    category: CATEGORY_MOTION,
   },
 });
 
@@ -196,6 +225,7 @@ registerSkill({
     senses: "audio energy over time (the mic stream already flowing for STT)",
     when_to_use: "audio-cued events — a kettle/boil hiss rising, a timer beep, a rep grunt, a knock",
     output: "an 'onset' boundary each time energy spikes up (a sound starting)",
+    category: CATEGORY_AUDIO, // the first-class AUDIO sense (B2) — discoverable as a class
   },
 });
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from percept_contracts import (
     Attribute,
+    AudioFrame,
     Box,
     Concern,
     Conductor,
@@ -73,6 +74,7 @@ __all__ = [
     "WatchCondition",
     "WatchSpec",
     "Tier0Signal",
+    "AudioFrame",
     "Vision",
     "Specialist",
     "Enricher",

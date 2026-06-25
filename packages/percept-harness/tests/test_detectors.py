@@ -15,11 +15,15 @@ import unittest
 from percept.adapters import Goal
 
 from percept_harness.detectors import (
+    CATEGORY_AUDIO,
+    CATEGORY_FRAME,
+    CATEGORY_MOTION,
     AcousticOnset,
     DetectorBank,
     MotionPeriodicity,
     coerce_authored_detectors,
     detectors_for,
+    detectors_in_category,
     list_manifests,
     make_detector,
     manifest_of,
@@ -79,6 +83,26 @@ class TestRegistryAndManifest(unittest.TestCase):
         self.assertIsInstance(make_detector("acoustic-onset"), AcousticOnset)
         with self.assertRaises(KeyError):
             make_detector("telepathy")
+
+
+class TestSenseCategory(unittest.TestCase):
+    """B2 — acoustic-onset is the first-class AUDIO sense; audio detectors are discoverable as a class."""
+
+    def test_acoustic_onset_marked_audio(self):
+        self.assertEqual(manifest_of("acoustic-onset").category, CATEGORY_AUDIO)
+
+    def test_categories_of_other_builtins(self):
+        self.assertEqual(manifest_of("motion-periodicity").category, CATEGORY_MOTION)
+        self.assertEqual(manifest_of("pose-openness").category, CATEGORY_FRAME)
+
+    def test_detectors_in_category_discovers_audio_class(self):
+        # the modality-as-a-class query: list every audio Tier-0 sense the way motion ones group
+        self.assertIn("acoustic-onset", detectors_in_category(CATEGORY_AUDIO))
+        self.assertNotIn("motion-periodicity", detectors_in_category(CATEGORY_AUDIO))
+        self.assertIn("motion-periodicity", detectors_in_category(CATEGORY_MOTION))
+
+    def test_unknown_category_is_empty(self):
+        self.assertEqual(detectors_in_category("smell"), [])
 
 
 class TestSelectionFirewall(unittest.TestCase):

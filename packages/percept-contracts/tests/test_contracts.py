@@ -6,6 +6,7 @@ import unittest
 import percept_contracts as pc
 from percept_contracts import (
     CONTRACT_VERSION,
+    AudioFrame,
     Box,
     Concern,
     Consequence,
@@ -219,6 +220,36 @@ class TestIncident(unittest.TestCase):
         self.assertEqual(inc.snippet.t_end, 4.0)
 
 
+class TestAudioFrame(unittest.TestCase):
+    """B2 — the typed first-class audio signal: defaults, render-to-pair, duration, frozen."""
+
+    def test_defaults(self):
+        af = AudioFrame()
+        self.assertEqual(af.pcm, b"")
+        self.assertEqual(af.sample_rate, 16000)
+        self.assertEqual(af.channels, 1)
+        self.assertEqual(af.sample_format, "s16le")
+        self.assertIsNone(af.encoded)
+        self.assertIsNone(af.mime)
+
+    def test_as_pair_raw_pcm(self):
+        af = AudioFrame(pcm=b"\x01\x02", sample_rate=8000, channels=2)
+        self.assertEqual(af.as_pair(), ("audio/L16;rate=8000;channels=2", b"\x01\x02"))
+
+    def test_as_pair_prefers_encoded(self):
+        af = AudioFrame(pcm=b"raw", encoded=b"RIFF", mime="audio/wav")
+        self.assertEqual(af.as_pair(), ("audio/wav", b"RIFF"))
+
+    def test_duration(self):
+        self.assertEqual(AudioFrame(t_start=2.0, t_end=5.0).duration_s, 3.0)
+        self.assertIsNone(AudioFrame().duration_s)
+
+    def test_frozen(self):
+        af = AudioFrame()
+        with self.assertRaises(Exception):
+            af.sample_rate = 8000
+
+
 class TestVersionNegotiation(unittest.TestCase):
     def test_contract_version_is_semver(self):
         self.assertEqual(CONTRACT_VERSION, "1.0.0")
@@ -289,6 +320,17 @@ class TestJsonSchema(unittest.TestCase):
         self.assertIn({"$ref": "#/$defs/Schedule"}, any_of)
         self.assertIn({"type": "null"}, any_of)
         self.assertNotIn("schedule", wc.get("required", []))
+
+    def test_audioframe_schema(self):
+        from percept_contracts import jsonschema as js
+
+        s = js.generate_all()["$defs"]["AudioFrame"]
+        self.assertEqual(s["type"], "object")
+        # pcm is base64-encoded bytes; sample_format Literal -> enum; all fields default -> none required
+        self.assertEqual(s["properties"]["pcm"], {"type": "string", "contentEncoding": "base64"})
+        self.assertEqual(s["properties"]["sample_format"], {"enum": ["s16le", "f32le", "u8"]})
+        self.assertEqual(s["properties"]["sample_rate"], {"type": "integer"})
+        self.assertNotIn("required", s)  # every field has a default
 
     def test_committed_schema_matches_generator(self):
         # the committed files under schema/ must be byte-identical to a fresh generation

@@ -22,7 +22,7 @@ import json
 import os
 from typing import Any, AsyncIterator
 
-from ..adapters import Box, Decision, Goal, Observation, Verdict
+from ..adapters import AudioFrame, Box, Decision, Goal, Observation, Verdict
 from ._resilience import CircuitBreaker, with_retry
 
 # Reuse the provider-agnostic prompts + JSON-contract parsers (the contract is identical).
@@ -87,7 +87,9 @@ def _image_part(types: Any, frame: Any):
 
 
 def _audio_part(types: Any, clip: Any):
-    """Render an opaque audio clip to a Gemini audio ``Part``: ``(mime_type, bytes)`` | wav bytes."""
+    """Render an audio clip to a Gemini audio ``Part``: typed :class:`AudioFrame` | ``(mime, bytes)`` | wav bytes."""
+    if isinstance(clip, AudioFrame):  # typed audio modality (B2): render via its legacy-pair view
+        clip = clip.as_pair()
     if isinstance(clip, tuple) and len(clip) == 2 and isinstance(clip[1], (bytes, bytearray)):
         media, raw = str(clip[0]), bytes(clip[1])
     elif isinstance(clip, (bytes, bytearray)):

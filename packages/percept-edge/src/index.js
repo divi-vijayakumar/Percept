@@ -46,7 +46,11 @@ export {
   manifestOf,
   listManifests,
   registered,
+  detectorsInCategory,
   signalOf,
+  CATEGORY_MOTION,
+  CATEGORY_AUDIO,
+  CATEGORY_FRAME,
 } from "./skills.js";
 
 export { openness, PoseOpenness, registerPoseSkill } from "./pose.js";

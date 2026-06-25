@@ -25,6 +25,7 @@ from typing import Any, Union, get_args, get_origin
 from . import (
     CONTRACT_VERSION,
     Attribute,
+    AudioFrame,
     Box,
     Concern,
     Consequence,
@@ -68,6 +69,7 @@ DTOS: tuple[type, ...] = (
     WatchCondition,
     WatchSpec,
     Tier0Signal,
+    AudioFrame,
     IncidentSnippet,
     Incident,
 )
