@@ -197,6 +197,8 @@ Makefile                    test · eval-live · e2e · bench · check · reprod
 ## Docs
 
 - **Quickstart** — the 60-second offline snippet above; `make test` runs the fake-only unit lane.
+- **AI-agent map** — [`llms.txt`](llms.txt) and [`AGENTS.md`](AGENTS.md) give Codex, Claude Code,
+  Cursor, Copilot, and humans the verified API and repo map without spelunking.
 - **Architecture / concepts** — [`docs/e2e-flow-milk-boilover.md`](docs/e2e-flow-milk-boilover.md)
   (the two layers, the firing path, the perception ceiling) and [`Spec/`](Spec/) (the full spec +
   phase plan).
