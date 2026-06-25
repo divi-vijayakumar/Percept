@@ -43,12 +43,12 @@ class RuntimeHealthEvent:
     data: dict[str, Any] | None = None
 
 
-async def _aiter(source: Any, fps: float) -> AsyncIterator[tuple]:
+async def _aiter(source: Any, fps: float, **source_kwargs) -> AsyncIterator[tuple]:
     """Normalize ``source`` to an async iterator of ``(t, gate_frame, judge_frame)``."""
     if isinstance(source, str):
         from percept.runtime.source import open_source
 
-        async for item in open_source(source, fps=fps):
+        async for item in open_source(source, fps=fps, **source_kwargs):
             yield item
     elif hasattr(source, "__aiter__"):
         async for item in source:  # already an async iterator
@@ -98,6 +98,10 @@ async def run(
     on_frame: Callable | None = None,
     on_health: Callable | None = None,
     fps: float = 4.0,
+    source_queue_size: int = 64,
+    source_reconnects: int = 0,
+    source_reconnect_backoff_s: float = 0.5,
+    source_rtsp_tcp: bool = True,
     snippet_pre_s: float = 5.0,
     snippet_size: int = 48,
     snippet_kind: str = "frame",
@@ -111,6 +115,7 @@ async def run(
     - ``on_ask(event)`` — optional refusal sink for low-confidence reads; asks are not incidents.
     - ``on_frame(t, judge_frame)`` — the live-feed hook (wire an MJPEG streamer here).
     - ``on_health(event)`` — optional structured health/telemetry hook.
+    - ``source_*`` — capture queue/reconnect/RTSP options for URI sources.
     - ``snippet_pre_s`` — seconds of pre-roll captured into each incident's snippet.
     - ``snippet_kind`` — ``"frame"`` keeps decoded frames; ``"clip"`` emits a portable encoded bundle.
     - ``sink_errors`` — ``"raise"`` (default) or ``"ignore"`` for notification/feed hook failures.
@@ -130,7 +135,13 @@ async def run(
     if on_health is not None:
         await _call_sink(on_health, RuntimeHealthEvent("runtime_started", data={"source": repr(source)}))
     try:
-        async for t, gate_frame, judge_frame in _aiter(source, fps):
+        source_kwargs = {
+            "maxsize": source_queue_size,
+            "reconnects": source_reconnects,
+            "reconnect_backoff_s": source_reconnect_backoff_s,
+            "rtsp_tcp": source_rtsp_tcp,
+        }
+        async for t, gate_frame, judge_frame in _aiter(source, fps, **source_kwargs):
             if stats is not None:
                 stats.frames += 1
             clips.push(t, judge_frame)

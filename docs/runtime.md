@@ -38,9 +38,10 @@ extra — handy for tests and offline replay.
 
 `run(...)` parameters: `source` (a URI or iterable), `on_incident` (the notify sink), `on_ask` (the
 refusal sink), `on_frame(t, frame)` (the live-feed hook — wire an MJPEG streamer here), `fps`,
-`snippet_pre_s` (seconds of pre-roll per clip), `snippet_kind` (`"frame"` or `"clip"`), and
-`sink_errors` (`"raise"` or `"ignore"`). Pass `stats=RuntimeStats()` to collect frame, escalation,
-judge-call, fire, ask, incident, and sink-error counters.
+`source_queue_size`, `source_reconnects`, `source_reconnect_backoff_s`, `source_rtsp_tcp`,
+`snippet_pre_s` (seconds of pre-roll per clip), `snippet_kind` (`"frame"` or `"clip"`), and `sink_errors`
+(`"raise"` or `"ignore"`). Pass `stats=RuntimeStats()` to collect frame, escalation, judge-call, fire,
+ask, incident, and sink-error counters.
 
 `on_health(event)` receives structured lifecycle events such as `runtime_started`, `escalation`, `ask`,
 `incident`, `incident_sink_error`, `runtime_error`, and `runtime_ended`.

@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import unittest
+from unittest.mock import patch
 
 from percept import Goal, Percept
 from percept.adapters import Verdict
@@ -171,6 +172,33 @@ class RuntimeWorkerTests(unittest.TestCase):
         self.assertEqual(_normalize_uri("webcam:1"), 1)
         self.assertEqual(_normalize_uri("webcam://2"), 2)
         self.assertEqual(_normalize_uri("video.mp4"), "video.mp4")
+
+    def test_uri_source_options_pass_through(self):
+        seen = {}
+
+        async def fake_open_source(uri, **kwargs):
+            seen["uri"] = uri
+            seen["kwargs"] = kwargs
+            for item in SOURCE[:2]:
+                yield item
+
+        with patch("percept.runtime.source.open_source", fake_open_source):
+            incidents = asyncio.run(
+                _collect(
+                    _core(),
+                    "rtsp://camera/stream",
+                    source_queue_size=7,
+                    source_reconnects=3,
+                    source_reconnect_backoff_s=0.1,
+                    source_rtsp_tcp=False,
+                )
+            )
+        self.assertEqual(len(incidents), 1)
+        self.assertEqual(seen["uri"], "rtsp://camera/stream")
+        self.assertEqual(seen["kwargs"]["maxsize"], 7)
+        self.assertEqual(seen["kwargs"]["reconnects"], 3)
+        self.assertEqual(seen["kwargs"]["reconnect_backoff_s"], 0.1)
+        self.assertIs(seen["kwargs"]["rtsp_tcp"], False)
 
     def test_still_stream_emits_nothing(self):
         still = [(float(t), STILL, "clear") for t in range(5)]  # no motion -> no escalation -> no cloud call
