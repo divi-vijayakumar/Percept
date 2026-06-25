@@ -11,7 +11,10 @@ from . import registry
 from .adapters import (
     Attribute,
     Box,
+    Concern,
+    Consequence,
     Decision,
+    Evidence,
     Goal,
     Observation,
     STTEvent,
@@ -21,6 +24,7 @@ from .adapters import (
     WatchCondition,
     WatchSpec,
 )
+from percept_contracts import CONTRACT_VERSION, Incident, IncidentSnippet
 from .cache import CacheCascade, CacheKey, CacheResult, FrameHashLayer
 from .config import Settings, load_settings
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
@@ -58,12 +62,19 @@ __all__ = [
     "Verdict",
     "Attribute",
     "Goal",
+    "Concern",
+    "Consequence",
+    "Evidence",
     "Decision",
     "STTEvent",
     "TurnResult",
     "WatchCondition",
     "WatchSpec",
     "Tier0Signal",
+    "Incident",
+    "IncidentSnippet",
+    # contract version
+    "CONTRACT_VERSION",
     # cognition core
     "Gate",
     "GateAction",

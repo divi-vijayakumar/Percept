@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
+  CONTRACT_VERSION,
   ContractError,
   makeWatchCondition,
   parseWatchCondition,
@@ -17,6 +18,10 @@ import {
   makeBoundaryReport,
   parseBoundaryReport,
   makeBox,
+  makeIncident,
+  parseIncident,
+  makeIncidentSnippet,
+  parseIncidentSnippet,
 } from "../src/contract.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -271,5 +276,79 @@ describe("topology-B wire messages — EdgeCapabilities + BoundaryReport", () =>
     expect(makeBoundaryReport(flat).boundaries[0].kind).toBe("onset");
     expect(() => makeBoundaryReport([{ detector: "d", kind: "peak", t: 1, value: 1 }])).toThrow(ContractError); // no goal_id
     expect(() => parseBoundaryReport('{"boundaries":[{"goal_id":"g","kind":"nope","detector":"d","t":1,"value":1}]}')).toThrow(ContractError);
+  });
+});
+
+describe("CONTRACT_VERSION", () => {
+  it("is the 1.0.0 semver twin of the Python contract version", () => {
+    expect(CONTRACT_VERSION).toBe("1.0.0");
+  });
+});
+
+describe("Incident / IncidentSnippet", () => {
+  it("builds a minimal Incident with null label + snippet", () => {
+    const inc = makeIncident({
+      id: "inc-1",
+      concern_id: "c-baby-awake",
+      verdict: { satisfied: true, confidence: 0.9 },
+      ts: 123.0,
+    });
+    expect(inc).toEqual({
+      id: "inc-1",
+      concern_id: "c-baby-awake",
+      verdict: { satisfied: true, confidence: 0.9, evidence: "" },
+      ts: 123.0,
+      label: null,
+      snippet: null,
+    });
+  });
+
+  it("builds + round-trips an Incident with a clip snippet (the baby-awake example)", () => {
+    const inc = makeIncident({
+      id: "inc-2",
+      concern_id: "c-baby-awake",
+      verdict: { satisfied: true, confidence: 0.95, evidence: "eyes open" },
+      ts: 200.0,
+      label: "real",
+      snippet: { kind: "clip", media: "AAFmYWtlTVA0", mime: "video/mp4", t_start: 10.0, t_end: 13.0 },
+    });
+    expect(inc.snippet.kind).toBe("clip");
+    expect(inc.label).toBe("real");
+    // round-trips through JSON + validates byte-for-byte
+    expect(parseIncident(JSON.stringify(inc))).toEqual(inc);
+  });
+
+  it("parses the exact JSON the Python side emits (snippet omitted -> null)", () => {
+    // Python `Incident("inc","c", Verdict(True,0.9), 5.0)` serialized (label/snippet None -> null).
+    const PY_INCIDENT =
+      '{"id":"inc","concern_id":"c","verdict":{"satisfied":true,"confidence":0.9,"evidence":""},"ts":5.0,"label":null,"snippet":null}';
+    expect(parseIncident(PY_INCIDENT)).toEqual({
+      id: "inc",
+      concern_id: "c",
+      verdict: { satisfied: true, confidence: 0.9, evidence: "" },
+      ts: 5.0,
+      label: null,
+      snippet: null,
+    });
+  });
+
+  it("snippet tolerates omitted payload fields -> null (redacted record shape)", () => {
+    const frame = makeIncidentSnippet({ kind: "frame" });
+    expect(frame).toEqual({ kind: "frame", media: null, mime: null, frames: null, t_start: null, t_end: null });
+    expect(parseIncidentSnippet({ kind: "audio", mime: "audio/wav", t_start: 1, t_end: 2 })).toEqual({
+      kind: "audio",
+      media: null,
+      mime: "audio/wav",
+      frames: null,
+      t_start: 1,
+      t_end: 2,
+    });
+  });
+
+  it("rejects bad Incident / snippet payloads", () => {
+    expect(() => makeIncident({ id: 1, concern_id: "c", verdict: { satisfied: true, confidence: 1 }, ts: 0 })).toThrow(ContractError);
+    expect(() => makeIncident({ id: "i", concern_id: "c", verdict: { confidence: 1 }, ts: 0 })).toThrow(ContractError); // no satisfied
+    expect(() => makeIncidentSnippet({ kind: "nope" })).toThrow(ContractError);
+    expect(() => parseIncident('{"id":"i","concern_id":"c","verdict":{"satisfied":true,"confidence":0.5},"ts":"x"}')).toThrow(ContractError);
   });
 });

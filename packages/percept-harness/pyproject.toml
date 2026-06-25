@@ -20,7 +20,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 # The tier-0 reference is pure stdlib; numpy is an OPTIONAL fast path, never required for L1.
-dependencies = ["percept-vision>=0.1.0"]
+dependencies = ["percept-vision>=0.1.0", "percept-contracts>=1.0.0"]
 
 [project.optional-dependencies]
 fast = ["numpy>=1.24"]

@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "percept-contracts"
+version = "1.0.0"
+description = "The frozen, vendor-neutral contract (DTOs + Protocols + wire shapes) shared across the Percept SDK. Zero runtime dependencies."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Divi", email = "divi@velvee.ai" }]
+keywords = ["percept", "contract", "dto", "schema", "vision", "agents", "wire-contract"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+# The frozen contract is pure stdlib (dataclasses only) — zero runtime dependencies, by design.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+percept-contracts-schema = "percept_contracts.jsonschema:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["percept_contracts*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

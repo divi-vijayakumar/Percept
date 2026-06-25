@@ -21,6 +21,13 @@
 //
 // Any change to a field name is an interop break. Treat these shapes as frozen.
 
+/**
+ * Semantic version of the whole frozen contract surface — the JS twin of the Python
+ * `percept_contracts.CONTRACT_VERSION`. Same major == wire-compatible. This is DISTINCT from
+ * `WatchSpec.version` (the wire integer, defaults to 1) which stays for payload compat.
+ */
+export const CONTRACT_VERSION = "1.0.0";
+
 /** Error thrown when an incoming wire payload violates the contract. */
 export class ContractError extends Error {
   constructor(message) {
@@ -382,4 +389,154 @@ export function parseBoundaryReport(json) {
     return { goal_id: e.goal_id, ...b };
   });
   return { boundaries };
+}
+
+// ---------------------------------------------------------------------------
+// Incident  { id, concern_id, verdict: { satisfied, confidence, evidence },
+//             ts, label: string|null, snippet: IncidentSnippet|null }
+// IncidentSnippet  { kind: "frame"|"clip"|"audio", media: string|null (base64),
+//                    mime: string|null, frames: array|null, t_start: number|null, t_end: number|null }
+//
+// The JS twin of the Python `percept_contracts.Incident` / `IncidentSnippet`: the durable record of
+// one concern firing, carrying an optional captured relevant snippet (e.g. a baby-monitor "baby awake"
+// fires an Incident whose snippet is a short clip). `media` is Python `bytes` -> a base64 string on the
+// wire (or null); `verdict` is the firing Verdict { satisfied, confidence, evidence }.
+// ---------------------------------------------------------------------------
+
+const _SNIPPET_KINDS = new Set(["frame", "clip", "audio"]);
+
+function _isStringOrNull(v) {
+  return v == null || typeof v === "string";
+}
+
+function _isNumberOrNull(v) {
+  return v == null || isFiniteNumber(v);
+}
+
+/** Build a Verdict { satisfied, confidence, evidence }. evidence defaults to "" (Python default). */
+function _makeVerdict(v, path) {
+  if (!isPlainObject(v)) throw new ContractError(`${path}: expected an object`);
+  if (typeof v.satisfied !== "boolean") throw new ContractError(`${path}.satisfied: expected a boolean`);
+  if (!isFiniteNumber(v.confidence)) throw new ContractError(`${path}.confidence: expected a finite number`);
+  const evidence = v.evidence == null ? "" : v.evidence;
+  if (typeof evidence !== "string") throw new ContractError(`${path}.evidence: expected a string`);
+  return { satisfied: v.satisfied, confidence: v.confidence, evidence };
+}
+
+/**
+ * Build an IncidentSnippet. `kind` is required; every payload field is optional (defaults null) so
+ * the same shape serves a full capture and a redacted record. `frames` is an opaque array.
+ * @returns {{kind:string,media:string|null,mime:string|null,frames:Array|null,t_start:number|null,t_end:number|null}}
+ */
+export function makeIncidentSnippet({
+  kind,
+  media = null,
+  mime = null,
+  frames = null,
+  t_start = null,
+  t_end = null,
+} = {}) {
+  if (!_SNIPPET_KINDS.has(kind)) {
+    throw new ContractError(`makeIncidentSnippet: kind must be one of ${[..._SNIPPET_KINDS].join("|")}`);
+  }
+  if (!_isStringOrNull(media)) throw new ContractError("makeIncidentSnippet: media must be a base64 string or null");
+  if (!_isStringOrNull(mime)) throw new ContractError("makeIncidentSnippet: mime must be a string or null");
+  if (frames != null && !Array.isArray(frames)) {
+    throw new ContractError("makeIncidentSnippet: frames must be an array or null");
+  }
+  if (!_isNumberOrNull(t_start)) throw new ContractError("makeIncidentSnippet: t_start must be a finite number or null");
+  if (!_isNumberOrNull(t_end)) throw new ContractError("makeIncidentSnippet: t_end must be a finite number or null");
+  return {
+    kind,
+    media,
+    mime,
+    frames: frames == null ? null : [...frames],
+    t_start,
+    t_end,
+  };
+}
+
+/**
+ * Validate an IncidentSnippet off the wire. Returns a fresh, normalized object.
+ * @throws {ContractError}
+ */
+export function parseIncidentSnippet(obj, { path = "snippet" } = {}) {
+  if (!isPlainObject(obj)) throw new ContractError(`${path}: expected an object`);
+  if (!_SNIPPET_KINDS.has(obj.kind)) {
+    throw new ContractError(`${path}.kind: expected one of ${[..._SNIPPET_KINDS].join("|")}`);
+  }
+  // Missing payload fields are tolerated -> null (Python `None` defaults).
+  const media = obj.media == null ? null : obj.media;
+  if (!_isStringOrNull(media)) throw new ContractError(`${path}.media: expected a base64 string or null`);
+  const mime = obj.mime == null ? null : obj.mime;
+  if (!_isStringOrNull(mime)) throw new ContractError(`${path}.mime: expected a string or null`);
+  let frames = null;
+  if (obj.frames != null) {
+    if (!Array.isArray(obj.frames)) throw new ContractError(`${path}.frames: expected an array or null`);
+    frames = [...obj.frames];
+  }
+  const t_start = obj.t_start == null ? null : obj.t_start;
+  if (!_isNumberOrNull(t_start)) throw new ContractError(`${path}.t_start: expected a finite number or null`);
+  const t_end = obj.t_end == null ? null : obj.t_end;
+  if (!_isNumberOrNull(t_end)) throw new ContractError(`${path}.t_end: expected a finite number or null`);
+  return { kind: obj.kind, media, mime, frames, t_start, t_end };
+}
+
+/**
+ * Build an Incident. `verdict` is { satisfied, confidence, evidence? }; `label` defaults to null
+ * (unlabelled — suggested vocab "real"/"false_alarm"); `snippet` defaults to null.
+ * @returns {{id:string,concern_id:string,verdict:object,ts:number,label:string|null,snippet:object|null}}
+ */
+export function makeIncident({
+  id,
+  concern_id,
+  verdict,
+  ts,
+  label = null,
+  snippet = null,
+} = {}) {
+  if (typeof id !== "string") throw new ContractError("makeIncident: id must be a string");
+  if (typeof concern_id !== "string") throw new ContractError("makeIncident: concern_id must be a string");
+  if (!isFiniteNumber(ts)) throw new ContractError("makeIncident: ts must be a finite number");
+  if (!_isStringOrNull(label)) throw new ContractError("makeIncident: label must be a string or null");
+  return {
+    id,
+    concern_id,
+    verdict: _makeVerdict(verdict, "makeIncident.verdict"),
+    ts,
+    label,
+    snippet: snippet == null ? null : makeIncidentSnippet(snippet),
+  };
+}
+
+/**
+ * Parse + validate an Incident from the wire (string or object). Returns a fresh, normalized object.
+ * The Python side emits exactly this shape.
+ * @param {string|object} json
+ * @throws {ContractError}
+ */
+export function parseIncident(json) {
+  let obj = json;
+  if (typeof json === "string") {
+    try {
+      obj = JSON.parse(json);
+    } catch (e) {
+      throw new ContractError(`parseIncident: invalid JSON (${e.message})`);
+    }
+  }
+  if (!isPlainObject(obj)) throw new ContractError("parseIncident: expected an object");
+  if (typeof obj.id !== "string") throw new ContractError("parseIncident: id must be a string");
+  if (typeof obj.concern_id !== "string") throw new ContractError("parseIncident: concern_id must be a string");
+  if (!isFiniteNumber(obj.ts)) throw new ContractError("parseIncident: ts must be a finite number");
+  const label = obj.label == null ? null : obj.label;
+  if (!_isStringOrNull(label)) throw new ContractError("parseIncident: label must be a string or null");
+  const snippet = obj.snippet == null ? null : parseIncidentSnippet(obj.snippet, { path: "snippet" });
+  return {
+    id: obj.id,
+    concern_id: obj.concern_id,
+    verdict: _makeVerdict(obj.verdict, "parseIncident.verdict"),
+    ts: obj.ts,
+    label,
+    snippet,
+  };
 }
