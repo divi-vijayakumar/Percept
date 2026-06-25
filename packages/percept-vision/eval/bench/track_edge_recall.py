@@ -1,9 +1,13 @@
-"""Phase B-4: edge event-recall — does the motion-gate escalate on PT event onsets? (validates amendment #3).
+"""Phase B-4: edge event-recall — does the edge wake on PT event onsets? (validates amendment #3).
 
 The card models e2e-relational accuracy as `core × edge-call-reduction`, ASSUMING the motion-gate escalates
 on every true event. This measures that assumption directly: over PT action onsets, the fraction where motion
 clears the gate threshold somewhere in the event window. If it's < ~1.0, the edge SKIPS low-motion events and
-the honest modeling is `e2e accuracy = core × edge_event_recall`, not ≈ core. Pure motion — no VLM calls.
+the honest modeling is `e2e accuracy = core × edge_event_recall`, not ≈ core.
+
+The legacy metric stays motion-only for continuity. The policy metric runs the actual server-side
+``MotionGate`` with ``WakePolicy`` so benchmark changes track the edge architecture, not a stale shortcut.
+Pure edge signals only — no VLM calls.
 """
 
 from __future__ import annotations
@@ -13,30 +17,43 @@ from .types import TrackResult
 
 TRACK = "edge-recall"
 GW, GH = 48, 36
+POLICY_CHANGE_WEIGHT = 2.0
 
 
-def _motion_series(path, fps: float = 4.0):
+def _frame_series(path, fps: float = 4.0):
     import cv2
 
-    from percept_harness.tier0 import Frame, motion_score
+    from percept_harness.tier0 import Frame
 
     from eval.count_video import decode
 
     _, full = decode(str(path), fps)
-    out, prev = [], None
+    out = []
     for t, bgr in full:
         g = cv2.resize(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), (GW, GH))
-        f = Frame(w=GW, h=GH, pixels=tuple(int(p) for p in g.flatten()))
+        out.append((t, Frame(w=GW, h=GH, pixels=tuple(int(p) for p in g.flatten()))))
+    return out
+
+
+def _motion_series(path, fps: float = 4.0):
+    from percept_harness.tier0 import motion_score
+
+    out, prev = [], None
+    for t, f in _frame_series(path, fps=fps):
         out.append((t, motion_score(prev, f)))
         prev = f
     return out
 
 
-def _score_events(events: list[dict], *, thr: float) -> tuple[float | None, float]:
+def _event_window(e: dict) -> tuple[float, float]:
+    return e["onset_s"], min(e["onset_s"] + 1.5, e["end_s"] + 0.5)
+
+
+def _score_motion_events(events: list[dict], *, thr: float) -> tuple[float | None, float]:
     escalates, max_motions = [], []
     for e in events:
         series = _motion_series(e["path"])
-        lo, hi = e["onset_s"], min(e["onset_s"] + 1.5, e["end_s"] + 0.5)
+        lo, hi = _event_window(e)
         win = [m for t, m in series if lo <= t <= hi]
         mm = max(win) if win else 0.0
         max_motions.append(mm)
@@ -46,17 +63,106 @@ def _score_events(events: list[dict], *, thr: float) -> tuple[float | None, floa
     return recall, avg_m
 
 
-def _result(recall, *, thr: float, n_events: int, avg_m: float, notes: str) -> TrackResult:
+def _score_policy_events(
+    events: list[dict], *, thr: float, change_weight: float = POLICY_CHANGE_WEIGHT
+) -> tuple[float | None, float | None, int, int]:
+    from percept.adapters import WatchCondition, WatchSpec
+    from percept_harness.detectors import WakePolicy
+    from percept_harness.tier0 import MotionGate
+
+    hit_events = 0
+    tp_frames = 0
+    fp_frames = 0
+    for e in events:
+        lo, hi = _event_window(e)
+        gate = MotionGate(
+            WatchSpec(
+                conditions=[
+                    WatchCondition(
+                        goal_id="pt-action",
+                        anchor_text="the action event is starting",
+                        threshold=thr,
+                    )
+                ]
+            ),
+            wake_policy=WakePolicy(weights={"change": change_weight}),
+        )
+        event_hit = False
+        for t, frame in _frame_series(e["path"]):
+            woke = gate.evaluate(frame, ts=t).escalate
+            if not woke:
+                continue
+            if lo <= t <= hi:
+                tp_frames += 1
+                event_hit = True
+            else:
+                fp_frames += 1
+        if event_hit:
+            hit_events += 1
+    recall = (hit_events / len(events)) if events else None
+    precision = (tp_frames / (tp_frames + fp_frames)) if (tp_frames + fp_frames) else None
+    return recall, precision, tp_frames, fp_frames
+
+
+def _result(
+    motion_recall,
+    policy_recall,
+    policy_precision,
+    *,
+    thr: float,
+    n_events: int,
+    avg_m: float,
+    policy_tp: int,
+    policy_fp: int,
+    notes: str,
+) -> TrackResult:
+    cells = {
+        ("e2e", "motion_recall"): motion_recall,
+        ("e2e", "policy_recall"): policy_recall,
+        ("e2e", "policy_precision"): policy_precision,
+    }
+    fmts = {
+        "motion_recall": "{:.2f}",
+        "policy_recall": "{:.2f}",
+        "policy_precision": "{:.2f}",
+    }
     return TrackResult(
         track=TRACK,
-        cells={("e2e", "event_recall"): recall},
-        fmts={"event_recall": "{:.2f}"},
+        cells=cells,
+        fmts=fmts,
         headline={
             f"edge event-recall @thr={thr:.2f} (motion clears gate on onset)":
-                f"{recall:.2f} (N={n_events}) -> e2e_acc = core x {recall:.2f}" if recall is not None else "n/a",
+                f"{motion_recall:.2f} (N={n_events}) -> e2e_acc = core x {motion_recall:.2f}"
+                if motion_recall is not None else "n/a",
+            f"edge policy-recall @thr={thr:.2f} (WakePolicy change×{POLICY_CHANGE_WEIGHT:g})":
+                f"{policy_recall:.2f} (precision proxy {policy_precision:.2f}, TP/FP frames {policy_tp}/{policy_fp})"
+                if policy_recall is not None and policy_precision is not None else "n/a",
         },
-        measured=["e2e:event_recall"],
-        notes=f"{notes}; thr={thr}; avg max-motion in window={avg_m:.3f}",
+        measured=["e2e:motion_recall", "e2e:policy_recall", "e2e:policy_precision"],
+        notes=f"{notes}; thr={thr}; avg max-motion in window={avg_m:.3f}; "
+        f"policy change_weight={POLICY_CHANGE_WEIGHT}",
+    )
+
+
+def _unavailable(exc: Exception | None = None) -> TrackResult:
+    suffix = f": {type(exc).__name__}: {exc}" if exc is not None else ""
+    return TrackResult(
+        track=TRACK,
+        cells={
+            ("e2e", "motion_recall"): None,
+            ("e2e", "policy_recall"): None,
+            ("e2e", "policy_precision"): None,
+        },
+        fmts={
+            "motion_recall": "{:.2f}",
+            "policy_recall": "{:.2f}",
+            "policy_precision": "{:.2f}",
+        },
+        headline={"edge event-recall / policy-recall": "n/a (local golden media unavailable)"},
+        measured=[],
+        modeled=[],
+        excluded=["edge-recall: local golden media unavailable"],
+        notes=f"offline stub; golden local measurement unavailable{suffix}",
     )
 
 
@@ -68,33 +174,37 @@ def score(*, live: bool, n: int) -> TrackResult:
         try:
             events = pt.golden_action_events(require_media=True)
             if events:
-                recall, avg_m = _score_events(events[:n], thr=thr)
-                return _result(recall, thr=thr, n_events=len(events[:n]), avg_m=avg_m,
-                               notes="golden-v1 Perception Test sample")
+                sample = events[:n]
+                motion_recall, avg_m = _score_motion_events(sample, thr=thr)
+                policy_recall, policy_precision, policy_tp, policy_fp = _score_policy_events(sample, thr=thr)
+                return _result(
+                    motion_recall,
+                    policy_recall,
+                    policy_precision,
+                    thr=thr,
+                    n_events=len(sample),
+                    avg_m=avg_m,
+                    policy_tp=policy_tp,
+                    policy_fp=policy_fp,
+                    notes="golden-v1 Perception Test sample",
+                )
         except Exception as exc:
-            return TrackResult(
-                track=TRACK,
-                cells={("e2e", "event_recall"): None},
-                fmts={"event_recall": "{:.2f}"},
-                headline={"edge event-recall (motion-gate escalates on onset)": "n/a (local golden media unavailable)"},
-                measured=[],
-                modeled=[],
-                excluded=["edge-recall: local golden media unavailable"],
-                notes=f"offline stub; golden local measurement unavailable: {type(exc).__name__}: {exc}",
-            )
-        return TrackResult(
-            track=TRACK,
-            cells={("e2e", "event_recall"): None},
-            fmts={"event_recall": "{:.2f}"},
-            headline={"edge event-recall (motion-gate escalates on onset)": "n/a (local golden media unavailable)"},
-            measured=[],
-            modeled=[],
-            excluded=["edge-recall: local golden media unavailable"],
-            notes="offline stub; golden local media unavailable",
-        )
+            return _unavailable(exc)
+        return _unavailable()
 
     events = pt.sample_events("action", n)
     for e in events:
         e["path"] = pt.fetch_video(e["video_id"])
-    recall, avg_m = _score_events(events, thr=thr)
-    return _result(recall, thr=thr, n_events=len(events), avg_m=avg_m, notes=f"manifest={pt.manifest_hash(events)}")
+    motion_recall, avg_m = _score_motion_events(events, thr=thr)
+    policy_recall, policy_precision, policy_tp, policy_fp = _score_policy_events(events, thr=thr)
+    return _result(
+        motion_recall,
+        policy_recall,
+        policy_precision,
+        thr=thr,
+        n_events=len(events),
+        avg_m=avg_m,
+        policy_tp=policy_tp,
+        policy_fp=policy_fp,
+        notes=f"manifest={pt.manifest_hash(events)}",
+    )
