@@ -29,7 +29,8 @@ extra — handy for tests and offline replay.
 
 `run(...)` parameters: `source` (a URI or iterable), `on_incident` (the notify sink), `on_ask` (the
 refusal sink), `on_frame(t, frame)` (the live-feed hook — wire an MJPEG streamer here), `fps`,
-`snippet_pre_s` (seconds of pre-roll per clip), and `snippet_kind` (`"frame"` or `"clip"`).
+`snippet_pre_s` (seconds of pre-roll per clip), `snippet_kind` (`"frame"` or `"clip"`), and
+`sink_errors` (`"raise"` or `"ignore"`).
 
 ## The `Incident`
 ```
@@ -72,10 +73,19 @@ A goal's `state` carries three orthogonal levers (the conductor can author them 
 ```python
 from percept.runtime import webhook
 
-sink = webhook("https://example.com/percept/incidents", headers={"Authorization": "Bearer ..."})
+dead_letter = []
+sink = webhook(
+    "https://example.com/percept/incidents",
+    headers={"Authorization": "Bearer ..."},
+    signing_secret="shared-secret",
+    retries=2,
+    dead_letter=dead_letter,
+)
 async for incident in run(agent, source="webcam://0", on_incident=sink, snippet_kind="clip"):
     ...
 ```
 
 Webhook payloads redact media by default and keep incident metadata, message, evidence, timestamps, and
-snippet bounds. Pass `include_media=True` only for trusted local/dev sinks.
+snippet bounds. Pass `include_media=True` only for trusted local/dev sinks. If `signing_secret` is set,
+the sink adds `X-Percept-Signature: sha256=<hmac>` over the JSON body. Failed deliveries retry, then append
+to `dead_letter` if supplied before re-raising to the runtime.

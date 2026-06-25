@@ -42,6 +42,15 @@ async def _call_sink(fn: Callable, *args) -> None:
         await result
 
 
+async def _call_sink_with_policy(fn: Callable, *args, errors: str = "raise") -> None:
+    try:
+        await _call_sink(fn, *args)
+    except Exception:
+        if errors == "ignore":
+            return
+        raise
+
+
 async def run(
     core: Any,
     *,
@@ -53,6 +62,7 @@ async def run(
     snippet_pre_s: float = 5.0,
     snippet_size: int = 48,
     snippet_kind: str = "frame",
+    sink_errors: str = "raise",
     gate_source: str = "camera",
 ) -> AsyncIterator:
     """Drive a live ``source`` through the gate + brain, yielding an :class:`Incident` on each rising edge.
@@ -62,6 +72,7 @@ async def run(
     - ``on_frame(t, judge_frame)`` — the live-feed hook (wire an MJPEG streamer here).
     - ``snippet_pre_s`` — seconds of pre-roll captured into each incident's snippet.
     - ``snippet_kind`` — ``"frame"`` keeps decoded frames; ``"clip"`` emits a portable encoded bundle.
+    - ``sink_errors`` — ``"raise"`` (default) or ``"ignore"`` for notification/feed hook failures.
 
     Owns capture off the consumer thread; the per-goal cadence + the three-state gate decide *when* and
     *whether* to fire. Yields incidents lazily, so an ``async for incident in run(...)`` is the front door.
@@ -77,19 +88,19 @@ async def run(
     async for t, gate_frame, judge_frame in _aiter(source, fps):
         clips.push(t, judge_frame)
         if on_frame is not None:
-            await _call_sink(on_frame, t, judge_frame)
+            await _call_sink_with_policy(on_frame, t, judge_frame, errors=sink_errors)
         if not gate.evaluate(gate_frame, ts=t).escalate:
             continue  # still / sub-cadence -> no cloud call, no incident
         fires = await core.perceive_judged(judge_frame, gate_source, t=t)
         for fire in fires or []:
             if getattr(fire, "action", None) == ASK:
                 if on_ask is not None:
-                    await _call_sink(on_ask, fire)
+                    await _call_sink_with_policy(on_ask, fire, errors=sink_errors)
                 continue
             if getattr(fire, "action", None) != FIRE:
                 continue
             snippet = snippet_from_window(clips, kind=snippet_kind, pre_s=snippet_pre_s)
             incident = make_incident(fire, ts=t, snippet=snippet)
             if on_incident is not None:
-                await _call_sink(on_incident, incident)
+                await _call_sink_with_policy(on_incident, incident, errors=sink_errors)
             yield incident

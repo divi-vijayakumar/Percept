@@ -83,6 +83,13 @@ class RuntimeWorkerTests(unittest.TestCase):
         self.assertEqual(len(incidents), 1)
         self.assertEqual(seen, [incidents[0].id])
 
+    def test_sink_errors_can_be_ignored(self):
+        def broken(_incident):
+            raise RuntimeError("sink down")
+
+        incidents = asyncio.run(_collect(_core(), SOURCE[:2], on_incident=broken, sink_errors="ignore"))
+        self.assertEqual(len(incidents), 1)
+
     def test_ask_events_do_not_become_incidents(self):
         asks = []
         source = [(0.0, STILL, "maybe"), (1.0, MOVED, "maybe")]
