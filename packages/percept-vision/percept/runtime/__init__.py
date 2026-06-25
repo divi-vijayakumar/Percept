@@ -9,6 +9,14 @@ extra (`pip install "percept-vision[runtime]"` → opencv-python-headless). A pr
 works with no extra (tests, offline replay).
 """
 from percept.runtime.sinks import FileDeadLetterQueue, WebhookSink, incident_payload, webhook
-from percept.runtime.worker import RuntimeStats, run
+from percept.runtime.worker import RuntimeHealthEvent, RuntimeStats, run
 
-__all__ = ["run", "RuntimeStats", "WebhookSink", "FileDeadLetterQueue", "incident_payload", "webhook"]
+__all__ = [
+    "run",
+    "RuntimeStats",
+    "RuntimeHealthEvent",
+    "WebhookSink",
+    "FileDeadLetterQueue",
+    "incident_payload",
+    "webhook",
+]

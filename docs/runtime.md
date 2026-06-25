@@ -12,8 +12,16 @@ agent.add_goal(Goal(id="zone", condition="a person is in the restricted zone", s
 
 notify = webhook("https://example.com/percept/incidents")
 stats = RuntimeStats()
+health = []
 
-async for incident in run(agent, source="rtsp://door-cam/stream", on_incident=notify, snippet_kind="clip", stats=stats):
+async for incident in run(
+    agent,
+    source="rtsp://door-cam/stream",
+    on_incident=notify,
+    on_health=health.append,
+    snippet_kind="clip",
+    stats=stats,
+):
     ...                                            # run() owns capture + gate + judge + incident emission
 ```
 
@@ -33,6 +41,9 @@ refusal sink), `on_frame(t, frame)` (the live-feed hook — wire an MJPEG stream
 `snippet_pre_s` (seconds of pre-roll per clip), `snippet_kind` (`"frame"` or `"clip"`), and
 `sink_errors` (`"raise"` or `"ignore"`). Pass `stats=RuntimeStats()` to collect frame, escalation,
 judge-call, fire, ask, incident, and sink-error counters.
+
+`on_health(event)` receives structured lifecycle events such as `runtime_started`, `escalation`, `ask`,
+`incident`, `incident_sink_error`, `runtime_error`, and `runtime_ended`.
 
 ## The `Incident`
 ```

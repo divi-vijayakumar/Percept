@@ -34,6 +34,15 @@ class RuntimeStats:
     sink_errors: int = 0
 
 
+@dataclass(frozen=True)
+class RuntimeHealthEvent:
+    """Structured runtime health event emitted through ``on_health``."""
+
+    kind: str
+    ts: float | None = None
+    data: dict[str, Any] | None = None
+
+
 async def _aiter(source: Any, fps: float) -> AsyncIterator[tuple]:
     """Normalize ``source`` to an async iterator of ``(t, gate_frame, judge_frame)``."""
     if isinstance(source, str):
@@ -61,12 +70,20 @@ async def _call_sink_with_policy(
     *args,
     errors: str = "raise",
     stats: RuntimeStats | None = None,
+    on_health: Callable | None = None,
+    health_kind: str = "sink_error",
 ) -> None:
     try:
         await _call_sink(fn, *args)
-    except Exception:
+    except Exception as exc:
         if stats is not None:
             stats.sink_errors += 1
+        if on_health is not None:
+            event = RuntimeHealthEvent(
+                health_kind,
+                data={"error": repr(exc), "sink": getattr(fn, "__name__", fn.__class__.__name__)},
+            )
+            await _call_sink(on_health, event)
         if errors == "ignore":
             return
         raise
@@ -79,6 +96,7 @@ async def run(
     on_incident: Callable | None = None,
     on_ask: Callable | None = None,
     on_frame: Callable | None = None,
+    on_health: Callable | None = None,
     fps: float = 4.0,
     snippet_pre_s: float = 5.0,
     snippet_size: int = 48,
@@ -92,6 +110,7 @@ async def run(
     - ``on_incident(incident)`` — the notification sink (SMS / Slack / webhook lives here).
     - ``on_ask(event)`` — optional refusal sink for low-confidence reads; asks are not incidents.
     - ``on_frame(t, judge_frame)`` — the live-feed hook (wire an MJPEG streamer here).
+    - ``on_health(event)`` — optional structured health/telemetry hook.
     - ``snippet_pre_s`` — seconds of pre-roll captured into each incident's snippet.
     - ``snippet_kind`` — ``"frame"`` keeps decoded frames; ``"clip"`` emits a portable encoded bundle.
     - ``sink_errors`` — ``"raise"`` (default) or ``"ignore"`` for notification/feed hook failures.
@@ -108,33 +127,64 @@ async def run(
     gate = MotionGate(spec, settings=settings)
     clips = FrameWindow(size=snippet_size)  # rolling pre-roll buffer for the incident snippet
 
-    async for t, gate_frame, judge_frame in _aiter(source, fps):
-        if stats is not None:
-            stats.frames += 1
-        clips.push(t, judge_frame)
-        if on_frame is not None:
-            await _call_sink_with_policy(on_frame, t, judge_frame, errors=sink_errors, stats=stats)
-        if not gate.evaluate(gate_frame, ts=t).escalate:
-            continue  # still / sub-cadence -> no cloud call, no incident
-        if stats is not None:
-            stats.escalations += 1
-            stats.judge_calls += 1
-        fires = await core.perceive_judged(judge_frame, gate_source, t=t)
-        for fire in fires or []:
-            if getattr(fire, "action", None) == ASK:
+    if on_health is not None:
+        await _call_sink(on_health, RuntimeHealthEvent("runtime_started", data={"source": repr(source)}))
+    try:
+        async for t, gate_frame, judge_frame in _aiter(source, fps):
+            if stats is not None:
+                stats.frames += 1
+            clips.push(t, judge_frame)
+            if on_frame is not None:
+                await _call_sink_with_policy(
+                    on_frame, t, judge_frame, errors=sink_errors, stats=stats, on_health=on_health, health_kind="frame_sink_error"
+                )
+            decision = gate.evaluate(gate_frame, ts=t)
+            if not decision.escalate:
+                continue  # still / sub-cadence -> no cloud call, no incident
+            if stats is not None:
+                stats.escalations += 1
+                stats.judge_calls += 1
+            if on_health is not None:
+                await _call_sink(on_health, RuntimeHealthEvent("escalation", ts=t, data={"source": gate_source}))
+            fires = await core.perceive_judged(judge_frame, gate_source, t=t)
+            for fire in fires or []:
+                if getattr(fire, "action", None) == ASK:
+                    if stats is not None:
+                        stats.asks += 1
+                    if on_health is not None:
+                        await _call_sink(on_health, RuntimeHealthEvent("ask", ts=t, data={"goal_id": fire.goal_id}))
+                    if on_ask is not None:
+                        await _call_sink_with_policy(
+                            on_ask, fire, errors=sink_errors, stats=stats, on_health=on_health, health_kind="ask_sink_error"
+                        )
+                    continue
+                if getattr(fire, "action", None) != FIRE:
+                    continue
                 if stats is not None:
-                    stats.asks += 1
-                if on_ask is not None:
-                    await _call_sink_with_policy(on_ask, fire, errors=sink_errors, stats=stats)
-                continue
-            if getattr(fire, "action", None) != FIRE:
-                continue
-            if stats is not None:
-                stats.fires += 1
-            snippet = snippet_from_window(clips, kind=snippet_kind, pre_s=snippet_pre_s)
-            incident = make_incident(fire, ts=t, snippet=snippet)
-            if on_incident is not None:
-                await _call_sink_with_policy(on_incident, incident, errors=sink_errors, stats=stats)
-            if stats is not None:
-                stats.incidents += 1
-            yield incident
+                    stats.fires += 1
+                snippet = snippet_from_window(clips, kind=snippet_kind, pre_s=snippet_pre_s)
+                incident = make_incident(fire, ts=t, snippet=snippet)
+                if on_health is not None:
+                    await _call_sink(
+                        on_health,
+                        RuntimeHealthEvent("incident", ts=t, data={"incident_id": incident.id, "goal_id": incident.concern_id}),
+                    )
+                if on_incident is not None:
+                    await _call_sink_with_policy(
+                        on_incident,
+                        incident,
+                        errors=sink_errors,
+                        stats=stats,
+                        on_health=on_health,
+                        health_kind="incident_sink_error",
+                    )
+                if stats is not None:
+                    stats.incidents += 1
+                yield incident
+    except Exception as exc:
+        if on_health is not None:
+            await _call_sink(on_health, RuntimeHealthEvent("runtime_error", data={"error": repr(exc)}))
+        raise
+    finally:
+        if on_health is not None:
+            await _call_sink(on_health, RuntimeHealthEvent("runtime_ended"))

@@ -13,7 +13,7 @@ from percept import Goal, Percept
 from percept.adapters import Verdict
 from percept.backends.fake import FakeVision
 from percept.incidents import make_incident
-from percept.runtime import RuntimeStats, incident_payload, run
+from percept.runtime import RuntimeHealthEvent, RuntimeStats, incident_payload, run
 from percept.runtime.source import _normalize_uri
 from percept.edge.tier0 import gray_frame
 
@@ -104,6 +104,36 @@ class RuntimeWorkerTests(unittest.TestCase):
         self.assertEqual(stats.fires, 2)
         self.assertEqual(stats.asks, 0)
         self.assertEqual(stats.incidents, 2)
+
+    def test_runtime_health_events_report_lifecycle_and_incidents(self):
+        events = []
+        incidents = asyncio.run(_collect(_core(), SOURCE[:2], on_health=events.append))
+        self.assertEqual(len(incidents), 1)
+        kinds = [e.kind for e in events]
+        self.assertEqual(kinds[0], "runtime_started")
+        self.assertIn("escalation", kinds)
+        self.assertIn("incident", kinds)
+        self.assertEqual(kinds[-1], "runtime_ended")
+        self.assertTrue(all(isinstance(e, RuntimeHealthEvent) for e in events))
+
+    def test_runtime_health_reports_sink_errors(self):
+        events = []
+
+        def broken(_incident):
+            raise RuntimeError("sink down")
+
+        asyncio.run(
+            _collect(
+                _core(),
+                SOURCE[:2],
+                on_incident=broken,
+                on_health=events.append,
+                sink_errors="ignore",
+            )
+        )
+        sink_errors = [e for e in events if e.kind == "incident_sink_error"]
+        self.assertEqual(len(sink_errors), 1)
+        self.assertIn("sink down", sink_errors[0].data["error"])
 
     def test_ask_events_do_not_become_incidents(self):
         asks = []
