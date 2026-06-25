@@ -21,6 +21,9 @@ class BenchmarkArtifactValidationTests(unittest.TestCase):
     def test_repo_golden_v1_draft_validates_as_draft(self):
         data = validate_golden_manifest(ROOT / "eval/golden-v1/MANIFEST.json")
         self.assertEqual(data["status"], "draft")
+        self.assertGreaterEqual(len(data["splits"]["test"]), 8)
+        self.assertTrue(any(item["track"] == "perception-test-acoustic" for item in data["splits"]["test"]))
+        self.assertTrue(any(item["track"] == "perception-test-action" for item in data["splits"]["test"]))
 
     def test_draft_manifest_fails_release_validation(self):
         with self.assertRaises(ValidationError):

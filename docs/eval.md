@@ -205,6 +205,11 @@ rather than hiding behind a healthy average.
 These are intentionally separate from private fixtures. A release scorecard must use license-cleared,
 content-hashed test rows and cite the manifest hash.
 
+The current golden v1 draft seeds its `test` split with public
+`google-deepmind/perception_test` sample videos by reference. Each row records the local staging path,
+video id, task, license, media SHA-256, and annotation SHA-256; the media stays in
+`eval/bench-staging/perception_test/raw/` and is not packaged.
+
 From Python:
 
 ```python
