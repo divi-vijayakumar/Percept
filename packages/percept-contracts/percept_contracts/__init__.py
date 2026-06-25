@@ -28,7 +28,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 #: Bump the MAJOR on any breaking change to a frozen shape; MINOR for additive (new optional
 #: field / new DTO); PATCH for docs/non-wire tweaks. This is distinct from ``WatchSpec.version``
 #: (a wire integer kept for byte-for-byte payload compat).
-CONTRACT_VERSION = "1.0.0"
+CONTRACT_VERSION = "1.1.0"  # 1.1: + WatchCondition.cadence_s/gate_on (optional, backward-compatible)
 
 
 class ContractVersionMismatch(Exception):
@@ -336,6 +336,13 @@ def minute_of_day(hour: int, minute: int = 0) -> int:
     return hour * 60 + minute
 
 
+GateOn = Literal["motion", "structural", "semantic", "fixed"]
+"""Which signal arms a goal's escalation. ``motion`` (default) = pixel-motion gate — right for physical
+events (a person, a package). ``structural``/``semantic`` = the richer Tier0 channels (CLIP/pose), for
+content/relational events. ``fixed`` = escalate on a fixed cadence regardless of motion — for low-pixel-
+motion content (a screenshare, a dashboard) the motion gate would silently under-sample."""
+
+
 @dataclass
 class WatchCondition:
     goal_id: str
@@ -344,6 +351,8 @@ class WatchCondition:
     region_hint: Box | None = None
     detectors: list[str] = field(default_factory=list)  # cheap edge signal detectors to run for this goal
     schedule: Schedule | None = None  # when armed (None -> always); the gate skips when out of schedule
+    cadence_s: float | None = None  # min seconds between escalations for this goal (None -> no cadence cap)
+    gate_on: GateOn = "motion"  # which signal arms this goal; "fixed" escalates every cadence_s regardless of motion
 
 
 @dataclass
@@ -608,6 +617,7 @@ __all__ = [
     "TurnResult",
     "Schedule",
     "minute_of_day",
+    "GateOn",
     "WatchCondition",
     "WatchSpec",
     "Tier0Signal",

@@ -222,6 +222,10 @@ MOTION_BIAS_KEY = "motion_bias"
 REGION_HINT_KEY = "region_hint"
 # Optional per-goal arming Schedule (a Schedule, or its windows/days dict) under this key.
 SCHEDULE_KEY = "schedule"
+# Optional per-goal temporal cadence (C2): {"min_judge_interval": float, "gate_on": motion|structural|
+# semantic|fixed} under this key. Controls how OFTEN to look (distinct from PerceptionSpec = how DEEP).
+CADENCE_KEY = "cadence"
+_GATE_ON_VOCAB = {"motion", "structural", "semantic", "fixed"}
 
 
 def compile_watchspec(
@@ -256,6 +260,7 @@ def compile_watchspec(
             continue
         bias = float(goal.state.get(MOTION_BIAS_KEY, 0.0))
         supported, _dropped = partition_by_capability(detectors_for(goal), edge_capabilities)
+        cadence_s, gate_on = _coerce_cadence(goal.state.get(CADENCE_KEY))
         conditions.append(
             WatchCondition(
                 goal_id=goal.id,
@@ -264,6 +269,8 @@ def compile_watchspec(
                 region_hint=_coerce_box(goal.state.get(REGION_HINT_KEY)),
                 detectors=supported,  # cheap edge skills the brain selected, filtered to what the edge can run
                 schedule=_coerce_schedule(goal.state.get(SCHEDULE_KEY)),
+                cadence_s=cadence_s,  # C2: how OFTEN to look (distinct from PerceptionSpec = how DEEP)
+                gate_on=gate_on,
             )
         )
     return WatchSpec(conditions=conditions, version=version)
@@ -313,6 +320,26 @@ def _coerce_schedule(obj: Any) -> Schedule | None:
             return Schedule(windows=windows)
         return Schedule(windows=windows, days=tuple(int(d) for d in days))
     return None  # pragma: no cover - defensive: unknown schedule shape -> always armed.
+
+
+def _coerce_cadence(obj: Any) -> tuple[float | None, str]:
+    """Goal-state cadence hint -> ``(cadence_s, gate_on)``; the firewall for the C2 temporal cadence.
+
+    Accepts ``{"min_judge_interval": float, "gate_on": "motion"|"structural"|"semantic"|"fixed"}``.
+    Unknown shape / out-of-vocab -> ``(None, "motion")`` (the default, no cadence cap). A non-positive
+    interval is dropped; ``gate_on="fixed"`` without an interval falls back to ``"motion"`` (a fixed
+    cadence with no period is meaningless), so a malformed hint can never silently break a watch.
+    """
+    if not isinstance(obj, dict):
+        return None, "motion"
+    raw = obj.get("min_judge_interval")
+    cadence_s = float(raw) if isinstance(raw, (int, float)) and raw > 0 else None
+    gate_on = obj.get("gate_on", "motion")
+    if gate_on not in _GATE_ON_VOCAB:
+        gate_on = "motion"
+    if gate_on == "fixed" and cadence_s is None:
+        gate_on = "motion"
+    return cadence_s, gate_on
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +395,9 @@ class MotionGate:
         cfg = settings or load_settings()
         self._default = cfg.edge.motion_gate
         self._prev: Frame | None = None
+        # Per-goal last-escalation time, for the cadence cap / fixed-cadence floor (C2). Empty when no
+        # condition sets cadence_s -> the default motion path is byte-for-byte unchanged.
+        self._last_escalate: dict[str, float] = {}
         # Injected civil clock for the schedule gate. None -> schedules are not enforced (default
         # path) unless a `now` is passed to evaluate(); we never read the wall clock in pure logic.
         self._clock = clock
@@ -403,19 +433,35 @@ class MotionGate:
         prev = self._prev
         # Full-frame motion is always reported up (the Tier0Signal is region-agnostic salience).
         motion = motion_score(prev, f)
+        # The reference gate is MOTION-only; structural/semantic are 0.0 here and filled by percept-edge
+        # (CLIP/pose). A goal that gates on them can't escalate in this reference (honest, not a bug).
+        structural, semantic = 0.0, 0.0
         when = now if now is not None else (self._clock() if self._clock is not None else None)
         # Armed = in-schedule conditions only; an out-of-schedule goal cannot escalate or set the cutoff.
         armed = [c for c in self._spec.conditions if schedule_active(c.schedule, when)]
         escalate = False
         for c in armed:
-            m = motion if c.region_hint is None else motion_score(prev, f, region=c.region_hint)
-            if m >= c.threshold:
+            # Cadence (C2): a goal can't escalate more than once per cadence_s. For gate_on="fixed" this
+            # cadence IS the escalation trigger (a floor — look every cadence_s even with no pixel motion,
+            # so content events like a screenshare aren't silently under-sampled by the motion gate).
+            if c.cadence_s is not None and ts - self._last_escalate.get(c.goal_id, float("-inf")) < c.cadence_s:
+                continue
+            if c.gate_on == "fixed":
+                fired = c.cadence_s is not None  # cadence elapsed (checked above) -> escalate regardless of motion
+            elif c.gate_on == "structural":
+                fired = structural >= c.threshold
+            elif c.gate_on == "semantic":
+                fired = semantic >= c.threshold
+            else:  # "motion" (default) — full-frame, or masked to the goal's region_hint
+                m = motion if c.region_hint is None else motion_score(prev, f, region=c.region_hint)
+                fired = m >= c.threshold
+            if fired:
                 escalate = True
-                break
+                self._last_escalate[c.goal_id] = ts
         self._prev = f
         # Reported cutoff = the most-sensitive ARMED goal's threshold (default when none is armed).
         thr = min((c.threshold for c in armed), default=self._default)
-        signal = Tier0Signal(motion=motion, structural=0.0, semantic=0.0, ts=ts)
+        signal = Tier0Signal(motion=motion, structural=structural, semantic=semantic, ts=ts)
         return GateDecision(signal=signal, escalate=escalate, threshold=thr)
 
 

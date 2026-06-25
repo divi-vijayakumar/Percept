@@ -3,7 +3,7 @@
   "$id": "https://percept.velvee.ai/contracts/percept-contracts.schema.json",
   "title": "percept-contracts",
   "description": "Vendor-neutral DTOs of the Percept frozen contract.",
-  "x-contract-version": "1.0.0",
+  "x-contract-version": "1.1.0",
   "$defs": {
     "Box": {
       "type": "object",
@@ -486,9 +486,27 @@
               "type": "null"
             }
           ]
+        },
+        "cadence_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "gate_on": {
+          "enum": [
+            "motion",
+            "structural",
+            "semantic",
+            "fixed"
+          ]
         }
       },
-      "description": "WatchCondition(goal_id: 'str', anchor_text: 'str', threshold: 'float', region_hint: 'Box | None' = None, detectors: 'list[str]' = <factory>, schedule: 'Schedule | None' = None)",
+      "description": "WatchCondition(goal_id: 'str', anchor_text: 'str', threshold: 'float', region_hint: 'Box | None' = None, detectors: 'list[str]' = <factory>, schedule: 'Schedule | None' = None, cadence_s: 'float | None' = None, gate_on: 'GateOn' = 'motion')",
       "required": [
         "goal_id",
         "anchor_text",

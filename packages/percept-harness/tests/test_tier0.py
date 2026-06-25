@@ -307,6 +307,48 @@ def one_condition_spec(*, threshold=0.2, region_hint=None, schedule=None) -> Wat
     )
 
 
+class CadenceGateTests(unittest.TestCase):
+    """C2: per-goal temporal cadence — how OFTEN to look, distinct from PerceptionSpec (how deep)."""
+
+    def setUp(self):
+        self.cfg = load_settings()
+
+    def _gate(self, **cadence):
+        spec = compile_watchspec(
+            [watch_goal("g1", "the screen changed", cadence=cadence)],
+            threshold=self.cfg.edge.motion_gate,
+        )
+        return MotionGate(spec, settings=self.cfg)
+
+    def test_fixed_cadence_escalates_on_a_still_stream(self):
+        # gate_on="fixed" escalates every cadence_s REGARDLESS of motion — the screenshare fix: a
+        # content stream with zero pixel motion would never escalate on the motion gate alone.
+        gate = self._gate(min_judge_interval=2.0, gate_on="fixed")
+        fires = [gate.evaluate(still(), ts=float(t)).escalate for t in range(5)]  # all STILL frames
+        self.assertEqual(fires, [True, False, True, False, True])  # ts 0,2,4 — every 2.0s
+
+    def test_motion_cadence_rate_limits(self):
+        # gate_on="motion" + cadence_s rate-limits: alternate still/motion -> a big diff every tick, but
+        # escalate at most every 3s (without cadence it would escalate on every one).
+        gate = self._gate(min_judge_interval=3.0, gate_on="motion")
+        frames = [still(), motion(), still(), motion(), still(), motion()]
+        gate.evaluate(frames[0], ts=0.0)  # prime prev-frame
+        fires = [gate.evaluate(frames[t], ts=float(t)).escalate for t in range(1, 6)]
+        self.assertEqual(fires, [True, False, False, True, False])  # ts 1 then 4 — capped to 3s
+
+    def test_no_cadence_is_byte_for_byte_motion_gate(self):
+        gate = self._gate()  # empty cadence -> (None, "motion") -> the default path
+        gate.evaluate(still(), ts=0.0)
+        self.assertFalse(gate.evaluate(still(), ts=1.0).escalate)   # still vs still -> silent
+        self.assertTrue(gate.evaluate(motion(), ts=2.0).escalate)   # still -> motion -> escalate
+
+    def test_fixed_without_interval_falls_back_to_motion(self):
+        # a fixed cadence with no period is meaningless -> the firewall drops it to motion
+        gate = self._gate(gate_on="fixed")  # no min_judge_interval
+        gate.evaluate(still(), ts=0.0)
+        self.assertFalse(gate.evaluate(still(), ts=1.0).escalate)   # no fixed cadence -> still=silent
+
+
 class ScheduleGateTests(unittest.TestCase):
     def setUp(self):
         self.cfg = load_settings()

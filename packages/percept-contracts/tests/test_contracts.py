@@ -252,7 +252,7 @@ class TestAudioFrame(unittest.TestCase):
 
 class TestVersionNegotiation(unittest.TestCase):
     def test_contract_version_is_semver(self):
-        self.assertEqual(CONTRACT_VERSION, "1.0.0")
+        self.assertEqual(CONTRACT_VERSION, "1.1.0")
         parts = CONTRACT_VERSION.split(".")
         self.assertEqual(len(parts), 3)
         self.assertTrue(all(p.isdigit() for p in parts))
