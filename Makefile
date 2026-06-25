@@ -10,7 +10,7 @@ PY        := python3
 # absolute path to the zero-dep contract pkg (vision runs from inside $(SDK), so it needs this)
 CONTRACTS_ABS := $(abspath $(CONTRACTS))
 
-.PHONY: help test test-harness test-js test-all parity eval-live eval-benchmark e2e bench scorecard check reproduce
+.PHONY: help test test-harness test-js test-all parity eval-live eval-benchmark e2e bench audit-benchmark scorecard check reproduce
 
 help:
 	@echo "test       L1 unit — percept-contracts + percept-vision + percept-harness (fakes, no keys, fast)"
@@ -20,6 +20,7 @@ help:
 	@echo "eval-benchmark  per-concern P/R on a labelled-clip manifest (offline; MANIFEST=path)"
 	@echo "e2e        L3 e2e — live smoke (needs keys; skips cleanly)"
 	@echo "bench      gating cost reduction (gated vs ungated vision calls)"
+	@echo "audit-benchmark  validate golden manifest + baseline registry artifacts"
 	@echo "check      lint + types (best-effort; skips missing tools)"
 	@echo "reproduce  reproduce a published scorecard row"
 
@@ -54,6 +55,9 @@ e2e:
 
 bench:
 	PYTHONPATH=$(SDK):$(HARNESS):$(CONTRACTS) $(PY) -m percept_harness.bench_gating
+
+audit-benchmark:
+	PYTHONPATH=$(SDK):$(HARNESS):$(CONTRACTS) $(PY) -m percept.bench audit --manifest eval/golden-v1/MANIFEST.json --baselines packages/percept-vision/eval/baselines.json
 
 scorecard:
 	PYTHONPATH=$(SDK):$(HARNESS):$(CONTRACTS) $(PY) -m percept.bench scorecard --manifest eval/golden-v1/MANIFEST.json --out scorecard.txt
