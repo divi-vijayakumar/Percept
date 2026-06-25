@@ -7,7 +7,7 @@ HARNESS := packages/percept-harness
 EDGE    := packages/percept-edge
 PY      := python3
 
-.PHONY: help test test-harness test-js test-all eval-live e2e bench scorecard check reproduce
+.PHONY: help test test-harness test-js test-all parity eval-live e2e bench scorecard check reproduce
 
 help:
 	@echo "test       L1 unit — percept-vision + percept-harness (fakes, no keys, fast)"
@@ -27,6 +27,9 @@ test-js:
 	cd $(EDGE) && npm test
 
 test-all: test test-js
+
+parity:  ## Edge<->harness conformance — JS percept-edge vs Python percept-harness, byte-for-byte
+	PYTHONPATH=$(HARNESS):$(SDK) $(PY) $(EDGE)/parity/compare.py
 
 eval-live:
 	@if [ "$$PERCEPT_LIVE" != "1" ]; then \

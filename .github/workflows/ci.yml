@@ -16,6 +16,33 @@ jobs:
       - name: make test
         run: make test
 
+  l1-js:
+    name: L1 unit — percept-edge (vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: install + test-js
+        run: |
+          cd packages/percept-edge && npm ci
+          cd "$GITHUB_WORKSPACE" && make test-js
+
+  l1-parity:
+    name: L1 parity — edge<->harness conformance (byte-for-byte)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: make parity
+        run: make parity
+
   l2-live:
     name: L2 live eval (gated)
     runs-on: ubuntu-latest
