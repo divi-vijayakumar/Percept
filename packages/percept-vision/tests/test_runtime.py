@@ -13,7 +13,7 @@ from percept import Goal, Percept
 from percept.adapters import Verdict
 from percept.backends.fake import FakeVision
 from percept.incidents import make_incident
-from percept.runtime import incident_payload, run
+from percept.runtime import RuntimeStats, incident_payload, run
 from percept.runtime.source import _normalize_uri
 from percept.edge.tier0 import gray_frame
 
@@ -87,8 +87,23 @@ class RuntimeWorkerTests(unittest.TestCase):
         def broken(_incident):
             raise RuntimeError("sink down")
 
-        incidents = asyncio.run(_collect(_core(), SOURCE[:2], on_incident=broken, sink_errors="ignore"))
+        stats = RuntimeStats()
+        incidents = asyncio.run(
+            _collect(_core(), SOURCE[:2], on_incident=broken, sink_errors="ignore", stats=stats)
+        )
         self.assertEqual(len(incidents), 1)
+        self.assertEqual(stats.sink_errors, 1)
+
+    def test_runtime_stats_count_frames_escalations_fires_and_incidents(self):
+        stats = RuntimeStats()
+        incidents = asyncio.run(_collect(_core(), SOURCE, stats=stats))
+        self.assertEqual(len(incidents), 2)
+        self.assertEqual(stats.frames, 4)
+        self.assertEqual(stats.escalations, 3)
+        self.assertEqual(stats.judge_calls, 3)
+        self.assertEqual(stats.fires, 2)
+        self.assertEqual(stats.asks, 0)
+        self.assertEqual(stats.incidents, 2)
 
     def test_ask_events_do_not_become_incidents(self):
         asks = []

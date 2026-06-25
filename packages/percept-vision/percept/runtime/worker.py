@@ -13,11 +13,25 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable
 
 from percept.events import FrameWindow
 from percept.gate import FIRE, ASK
 from percept.incidents import make_incident, snippet_from_window
+
+
+@dataclass
+class RuntimeStats:
+    """Mutable runtime counters for health dashboards and tests."""
+
+    frames: int = 0
+    escalations: int = 0
+    judge_calls: int = 0
+    fires: int = 0
+    asks: int = 0
+    incidents: int = 0
+    sink_errors: int = 0
 
 
 async def _aiter(source: Any, fps: float) -> AsyncIterator[tuple]:
@@ -42,10 +56,17 @@ async def _call_sink(fn: Callable, *args) -> None:
         await result
 
 
-async def _call_sink_with_policy(fn: Callable, *args, errors: str = "raise") -> None:
+async def _call_sink_with_policy(
+    fn: Callable,
+    *args,
+    errors: str = "raise",
+    stats: RuntimeStats | None = None,
+) -> None:
     try:
         await _call_sink(fn, *args)
     except Exception:
+        if stats is not None:
+            stats.sink_errors += 1
         if errors == "ignore":
             return
         raise
@@ -63,6 +84,7 @@ async def run(
     snippet_size: int = 48,
     snippet_kind: str = "frame",
     sink_errors: str = "raise",
+    stats: RuntimeStats | None = None,
     gate_source: str = "camera",
 ) -> AsyncIterator:
     """Drive a live ``source`` through the gate + brain, yielding an :class:`Incident` on each rising edge.
@@ -73,6 +95,7 @@ async def run(
     - ``snippet_pre_s`` — seconds of pre-roll captured into each incident's snippet.
     - ``snippet_kind`` — ``"frame"`` keeps decoded frames; ``"clip"`` emits a portable encoded bundle.
     - ``sink_errors`` — ``"raise"`` (default) or ``"ignore"`` for notification/feed hook failures.
+    - ``stats`` — optional mutable :class:`RuntimeStats` counters for health dashboards.
 
     Owns capture off the consumer thread; the per-goal cadence + the three-state gate decide *when* and
     *whether* to fire. Yields incidents lazily, so an ``async for incident in run(...)`` is the front door.
@@ -86,21 +109,32 @@ async def run(
     clips = FrameWindow(size=snippet_size)  # rolling pre-roll buffer for the incident snippet
 
     async for t, gate_frame, judge_frame in _aiter(source, fps):
+        if stats is not None:
+            stats.frames += 1
         clips.push(t, judge_frame)
         if on_frame is not None:
-            await _call_sink_with_policy(on_frame, t, judge_frame, errors=sink_errors)
+            await _call_sink_with_policy(on_frame, t, judge_frame, errors=sink_errors, stats=stats)
         if not gate.evaluate(gate_frame, ts=t).escalate:
             continue  # still / sub-cadence -> no cloud call, no incident
+        if stats is not None:
+            stats.escalations += 1
+            stats.judge_calls += 1
         fires = await core.perceive_judged(judge_frame, gate_source, t=t)
         for fire in fires or []:
             if getattr(fire, "action", None) == ASK:
+                if stats is not None:
+                    stats.asks += 1
                 if on_ask is not None:
-                    await _call_sink_with_policy(on_ask, fire, errors=sink_errors)
+                    await _call_sink_with_policy(on_ask, fire, errors=sink_errors, stats=stats)
                 continue
             if getattr(fire, "action", None) != FIRE:
                 continue
+            if stats is not None:
+                stats.fires += 1
             snippet = snippet_from_window(clips, kind=snippet_kind, pre_s=snippet_pre_s)
             incident = make_incident(fire, ts=t, snippet=snippet)
             if on_incident is not None:
-                await _call_sink_with_policy(on_incident, incident, errors=sink_errors)
+                await _call_sink_with_policy(on_incident, incident, errors=sink_errors, stats=stats)
+            if stats is not None:
+                stats.incidents += 1
             yield incident

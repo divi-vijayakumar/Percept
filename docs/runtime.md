@@ -5,14 +5,15 @@ thread, the live feed, and rising-edge **incident** emission — so your app sto
 
 ```python
 from percept import Percept, Goal
-from percept.runtime import run, webhook
+from percept.runtime import RuntimeStats, run, webhook
 
 agent = Percept.create(vision="gemini")            # pip install "percept-vision[gemini]" + GEMINI_API_KEY
 agent.add_goal(Goal(id="zone", condition="a person is in the restricted zone", say="Alert: person in zone"))
 
 notify = webhook("https://example.com/percept/incidents")
+stats = RuntimeStats()
 
-async for incident in run(agent, source="rtsp://door-cam/stream", on_incident=notify, snippet_kind="clip"):
+async for incident in run(agent, source="rtsp://door-cam/stream", on_incident=notify, snippet_kind="clip", stats=stats):
     ...                                            # run() owns capture + gate + judge + incident emission
 ```
 
@@ -30,7 +31,8 @@ extra — handy for tests and offline replay.
 `run(...)` parameters: `source` (a URI or iterable), `on_incident` (the notify sink), `on_ask` (the
 refusal sink), `on_frame(t, frame)` (the live-feed hook — wire an MJPEG streamer here), `fps`,
 `snippet_pre_s` (seconds of pre-roll per clip), `snippet_kind` (`"frame"` or `"clip"`), and
-`sink_errors` (`"raise"` or `"ignore"`).
+`sink_errors` (`"raise"` or `"ignore"`). Pass `stats=RuntimeStats()` to collect frame, escalation,
+judge-call, fire, ask, incident, and sink-error counters.
 
 ## The `Incident`
 ```
