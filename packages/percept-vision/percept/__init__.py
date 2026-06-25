@@ -35,7 +35,17 @@ from .gate import ASK, FIRE, SILENT, Gate, GateAction
 from .goals import GoalOp, GoalRegistry
 from .identity import AppearanceIdentity, ContinuityIdentity
 from .scheduler import Scheduler, Timer
-from .observability import Metrics, get_logger, health
+from .observability import (
+    FUNNEL_STAGES,
+    Funnel,
+    Metrics,
+    OTelExporter,
+    funnel_key,
+    get_logger,
+    health,
+    judge_usage,
+    otel_exporter,
+)
 from .persistence import InMemoryPersistence, SqlitePersistence
 from .routing import (
     DEFAULT_RULES,
@@ -119,6 +129,12 @@ __all__ = [
     "Settings",
     "load_settings",
     "Metrics",
+    "Funnel",
+    "FUNNEL_STAGES",
+    "funnel_key",
+    "judge_usage",
+    "OTelExporter",
+    "otel_exporter",
     "get_logger",
     "health",
 ]

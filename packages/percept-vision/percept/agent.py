@@ -25,7 +25,7 @@ from .episodes import EpisodeJudge, EpisodeLog
 from .events import AudioWindow, EventLog, FrameWindow
 from .gate import FIRE, Gate, GateAction, classify
 from .goals import GoalOp, GoalRegistry
-from .observability import Metrics, health
+from .observability import Funnel, Metrics, OTelExporter, health, judge_usage
 from .routing import RouteEngine
 from .scheduler import Scheduler
 
@@ -137,6 +137,8 @@ class Percept:
     consent: ConsentProfile = field(default_factory=ConsentProfile)  # the act-modality gate
     action_log: ActionLog = field(default_factory=ActionLog)  # audit: every fire + act
     _executor: Any = None  # BehaviorExecutor — the unified firing path (lazily bound to self.gate)
+    otel: OTelExporter | None = None  # optional OTel mirror for the funnel; None -> in-process only
+    _funnel: Any = None  # Funnel — the standard telemetry funnel (lazily bound to self.metrics)
 
     # -- construction --------------------------------------------------------
     @classmethod
@@ -330,6 +332,15 @@ class Percept:
             self._executor = BehaviorExecutor(self.gate, self.metrics)
         return self._executor
 
+    @property
+    def funnel(self) -> Funnel:
+        """The standard telemetry funnel (seen→gated→judged→refused→fired), bound to THIS agent's
+        metrics. The harness loop emits seen/gated; the watch path here emits judged/refused/fired and
+        the judge latency + token/cost. Lazily built; OTel mirror attached when ``self.otel`` is set."""
+        if self._funnel is None:
+            self._funnel = Funnel(self.metrics, otel=self.otel)
+        return self._funnel
+
     def _fire_concern(
         self,
         goal: Goal,
@@ -483,13 +494,16 @@ class Percept:
             corrections = focus.asserted() if focus else {}
             strip = self._strip_frames(source, spec)  # temporal strip per the spec; None = single (today)
             audio = self._audio_clip(source, spec)  # audio clip for a fused/audio spec; None otherwise
+            self.funnel.judged(concern=goal.id, camera=source)  # a judge call is being spent
             verdict = await self._judge(
                 goal, frame, roi, corrections, entity_id=focus.id if focus else None,
                 frames=strip, audio=audio,
             )
             freshness = self._freshness(focus, now)
             truth = classify(verdict, freshness, self.gate.threshold, self.gate.fresh_min)
-            if truth != "unknown":
+            if truth == "unknown":
+                self.funnel.refused(concern=goal.id, camera=source)  # abstained — refused to guess (ASK)
+            else:
                 self.last_supported[goal.id] = now  # A2: a confident read = perceptual coverage
                 ctx.perception_level = 0  # decay: the (escalated) look resolved → back to the cheap default
             if truth == "yes":
@@ -497,6 +511,8 @@ class Percept:
             base_key = (goal.id, focus.id if focus else None)
             ev_fire = self._fire_concern(goal, verdict, base_key, freshness=freshness, t=now)
             if ev_fire is not None:
+                if ev_fire.action == FIRE:
+                    self.funnel.fired(concern=goal.id, camera=source)  # a rising-edge fire emitted
                 events.append(ev_fire)
         self._log_fires(events, now)
         await self._deliberate_confused(now)  # Posture B: auto-refine recurrently-ambiguous concerns
@@ -565,6 +581,19 @@ class Percept:
             picked = earlier[-want:]
         return [f for _, f in picked]
 
+    async def _timed_judge(self, *args: Any, **kwargs: Any) -> Verdict:
+        """Call the vision judge, timing wall-clock latency and capturing token/cost off the verdict.
+
+        ONE place wraps the real cloud call so every judge path (strip/audio, cache-miss, audit)
+        records the same telemetry: ``judge.latency`` (always — we time it here) plus optional
+        ``judge.tokens.*`` / ``judge.cost.usd`` when the backend annotated its verdict
+        (:func:`~percept.observability.judge_usage`). Backends that don't report usage leave those
+        hooks unused; the timing is unconditional."""
+        t0 = self.clock()
+        verdict = await self.vision.judge(*args, **kwargs)
+        self.funnel.record_judge(latency_s=self.clock() - t0, **judge_usage(verdict))
+        return verdict
+
     async def _judge(
         self,
         goal: Goal,
@@ -580,7 +609,7 @@ class Percept:
             # The strip/audio (escalation) path is rare-by-design and multi-frame; bypass the
             # single-frame cache (its key dHashes ONE frame) so a strip verdict never pollutes — nor is
             # served from — a single-frame slot. The cache stays single-frame-pure.
-            return await self.vision.judge(
+            return await self._timed_judge(
                 goal.condition, frame, roi=roi, corrections=corrections or None,
                 frames=frames, audio=audio,
             )
@@ -593,7 +622,7 @@ class Percept:
         if hit.status == "HIT" and hit.verdict is not None:
             self.metrics.incr("cache.hit")
             return await self._audit_or_use(goal, frame, roi, corrections, cache_key, hit.verdict)
-        verdict = await self.vision.judge(
+        verdict = await self._timed_judge(
             goal.condition, frame, roi=roi, corrections=corrections or None
         )
         self.cache.store(cache_key, verdict, verdict.confidence)
@@ -618,7 +647,7 @@ class Percept:
         if self.audit is None or not self.audit(cache_key):
             return cached
         self.metrics.incr("cache.audit")
-        fresh = await self.vision.judge(
+        fresh = await self._timed_judge(
             goal.condition, frame, roi=roi, corrections=corrections or None
         )
         if fresh.satisfied != cached.satisfied:

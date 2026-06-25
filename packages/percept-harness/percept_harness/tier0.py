@@ -370,11 +370,33 @@ class GatedWatchLoop:
         # subset and the brain selects within it (the capability handshake).
         self._spec = compile_watchspec(active, threshold=thr, edge_capabilities=edge_capabilities)
         self._gate = MotionGate(self._spec, settings=cfg)
+        # The standard telemetry funnel — this loop owns the seen/gated stages (frame seen; gate
+        # escalate). Reuse the core's funnel (so judged/refused/fired land in the SAME Metrics) when the
+        # core exposes one; else build one off the core's Metrics; else None (no telemetry sink wired).
+        self._funnel = self._resolve_funnel(core)
         # One detector bank per goal that selected detectors — the edge proposes timed boundaries from
         # the cheap motion signal at native fps (no extra vision calls). Default: no detectors -> no banks.
         self._banks = {
             c.goal_id: DetectorBank(c.detectors) for c in self._spec.conditions if c.detectors
         }
+
+    @staticmethod
+    def _resolve_funnel(core: Any):
+        """The core's :class:`~percept.observability.Funnel`, or one built off its ``Metrics``, or None.
+
+        Reusing ``core.funnel`` keeps the seen/gated stages this loop emits in the same registry as the
+        judged/refused/fired stages the agent emits — one funnel per watch loop. A core without a funnel
+        but with a ``metrics`` registry gets a fresh funnel over it; a core with neither yields None (the
+        loop simply skips funnel emission)."""
+        funnel = getattr(core, "funnel", None)
+        if funnel is not None:
+            return funnel
+        metrics = getattr(core, "metrics", None)
+        if metrics is None:
+            return None
+        from percept.observability import Funnel
+
+        return Funnel(metrics)
 
     @property
     def spec(self) -> WatchSpec:
@@ -404,6 +426,8 @@ class GatedWatchLoop:
             energy = energies[i] if energies is not None and i < len(energies) else None
             report.frames += 1
             report.signals.append(decision.signal)  # report Tier0Signal UP every frame
+            if self._funnel is not None:
+                self._funnel.seen(camera=self._source)  # the ungated baseline: a frame was observed
             # Edge detectors run on the cheap motion/energy signals at native fps — the count/boundaries
             # come from here, decoupled from the (sparse, motion-gated) vision calls below. Each boundary
             # is fed to the brain as a distinct occurrence (edge proposes · brain counts), firing per the
@@ -421,6 +445,8 @@ class GatedWatchLoop:
             if decision.escalate:
                 report.escalations += 1
                 report.vision_calls += 1
+                if self._funnel is not None:
+                    self._funnel.gated(camera=self._source)  # the gate spent a cloud call this frame
                 fired = await self._core.perceive_judged(
                     item.frame, self._source, t=item.ts
                 )

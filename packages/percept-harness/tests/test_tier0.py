@@ -292,5 +292,70 @@ class WiredLoopTests(unittest.TestCase):
         self.assertEqual([s.ts for s in report.signals], [0.5, 1.5, 2.5])
 
 
+# ---------------------------------------------------------------------------
+# E2 — the standard telemetry funnel over the wired loop (seen→gated→judged→…→fired)
+# ---------------------------------------------------------------------------
+
+
+from percept.observability import funnel_key  # noqa: E402
+
+
+class FunnelTests(unittest.TestCase):
+    """The wired loop emits the funnel into the core's Metrics; the inequality chain holds."""
+
+    def _core(self) -> Percept:
+        core = Percept.create()  # offline fakes
+        core.add_goal(watch_goal("g1", "a cup is up"))
+        return core
+
+    def test_seen_ge_gated_ge_judged_chain(self):
+        core = self._core()
+        stream = fixture_stream(total=24, motion_at=(5, 6, 14))
+        report = asyncio.run(run_gated_watch(core, stream))
+        snap = core.metrics.snapshot()
+        seen = snap[funnel_key("seen", camera="camera")]
+        gated = snap[funnel_key("gated", camera="camera")]
+        judged = snap[funnel_key("judged", concern="g1")]
+        # the funnel narrows monotonically: every frame seen, fewer gated, fewer-or-equal judged.
+        self.assertEqual(seen, report.frames)  # one 'seen' per frame
+        self.assertEqual(gated, report.escalations)  # one 'gated' per escalation
+        self.assertEqual(judged, report.escalations)  # one judge per escalated frame (single goal)
+        self.assertGreaterEqual(seen, gated)
+        self.assertGreaterEqual(gated, judged)
+        self.assertGreater(gated, 0)  # the motion bursts did escalate
+
+    def test_still_scene_seen_but_never_gated_or_judged(self):
+        core = self._core()
+        report = asyncio.run(run_gated_watch(core, fixture_stream(total=12, motion_at=())))
+        snap = core.metrics.snapshot()
+        self.assertEqual(snap[funnel_key("seen", camera="camera")], 12)
+        self.assertEqual(report.vision_calls, 0)
+        self.assertNotIn(funnel_key("gated", camera="camera"), snap)  # nothing escalated
+        self.assertNotIn(funnel_key("judged", concern="g1"), snap)  # so nothing judged
+
+    def test_fired_counted_on_rising_edge(self):
+        # Script a confident-YES verdict for the motion frame so an escalation fires (once, rising edge).
+        from percept.adapters import Box, Observation, Verdict
+        from percept.backends.fake import FakeVision
+
+        mf = motion()
+        token = str(mf)
+        vision = FakeVision(
+            script={token: Verdict(True, 0.95, "cup up")},
+            detect_script={token: [Observation("cup", Box(0.4, 0.4, 0.2, 0.2), 0.95)]},
+        )
+        core = Percept.create(vision=vision)
+        core.add_goal(watch_goal("g1", "a cup is up"))
+        # still, MOTION (escalates -> judged YES -> FIRE), still (the still vs motion diff also
+        # escalates -> judged the still frame -> _UNKNOWN -> refused). Exactly ONE rising-edge fire.
+        report = asyncio.run(run_gated_watch(core, [still(), mf, still()]))
+        snap = core.metrics.snapshot()
+        self.assertEqual(snap[funnel_key("judged", concern="g1")], 2)  # both transitions escalate
+        self.assertEqual(snap[funnel_key("fired", concern="g1")], 1)  # but only the rising edge fires
+        self.assertEqual(snap[funnel_key("fired", camera="camera")], 1)
+        self.assertEqual(snap[funnel_key("refused", concern="g1")], 1)  # the still-frame judge abstained
+        self.assertTrue(any(getattr(e, "action", None) == "fire" for e in report.fire_events))
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
