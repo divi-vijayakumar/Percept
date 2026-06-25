@@ -35,6 +35,9 @@ percept-contracts-schema = "percept_contracts.jsonschema:main"
 where = ["."]
 include = ["percept_contracts*"]
 
+[tool.setuptools.data-files]
+"percept_contracts/schema" = ["schema/*.json"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"
