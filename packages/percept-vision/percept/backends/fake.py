@@ -58,8 +58,14 @@ class FakeVision:
         corrections: dict | None = None,
         frames: list | None = None,
         audio: Any = None,
+        context: dict | None = None,
     ) -> Verdict:
         token = str(frame)
+        # Enrichment wiring: structured specialist ``context`` can route to a distinct scripted verdict
+        # (a ``"<frame>|enriched"`` key), proving an Enricher's output actually *reaches* judge — the
+        # signal→specialist→judge-context seam — without claiming the fake understands anything.
+        if context and f"{token}|enriched" in self._script:
+            return self._script[f"{token}|enriched"]
         if corrections:
             corrected = f"{token}|corrected"
             if corrected in self._script:

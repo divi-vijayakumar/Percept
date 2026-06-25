@@ -133,20 +133,22 @@ class AnthropicVision:
         corrections: dict | None = None,
         frames: list | None = None,
         audio: Any = None,
+        context: dict | None = None,
     ) -> Verdict:
         """Ask Claude a narrow grounded yes/no about ``condition`` over the cropped ROI.
 
         The prompt grounds on the ROI crop; when an ``exemplar`` is present it is attached as a
         second image and the question is phrased deictically ("...from THIS one <exemplar>?").
-        Any user ``corrections`` are surfaced as authoritative context (asserted beats observed).
-        A temporal ``frames`` strip is attached as extra images; ``audio`` is IGNORED — Claude has no
-        audio modality, so a ``fused`` concern degrades to the visual strip (``fused``/``audio`` need
+        Any user ``corrections`` are surfaced as authoritative context (asserted beats observed), as is
+        structured specialist ``context`` from an :class:`~percept.adapters.Enricher` (e.g. an LPR plate
+        read). A temporal ``frames`` strip is attached as extra images; ``audio`` is IGNORED — Claude has
+        no audio modality, so a ``fused`` concern degrades to the visual strip (``fused``/``audio`` need
         ``vision="gemini"``).
         """
         del audio  # accepted for protocol parity; Claude is vision-only (honest degrade)
         client = self._with_timeout(self._ensure_client())
         content = self._build_content(condition, frame, roi=roi, exemplar=exemplar,
-                                      corrections=corrections, frames=frames)
+                                      corrections=corrections, frames=frames, context=context)
 
         async def _call():
             # The SDK call is synchronous — run it off the event loop so the explicit timeout and
@@ -203,6 +205,7 @@ class AnthropicVision:
         exemplar: Any,
         corrections: dict | None,
         frames: list | None = None,
+        context: dict | None = None,
     ) -> list:
         """Build the multimodal user turn: the temporal strip + ROI crop, the exemplar, and the
         narrow question. ``frames`` are earlier-context images (oldest→newest); the current frame is
@@ -232,6 +235,12 @@ class AnthropicVision:
             question += (
                 f"The user has told you these authoritative facts (trust them over your own "
                 f"read): {facts}. "
+            )
+        if context:
+            spec_facts = "; ".join(f"{k}={v}" for k, v in context.items())
+            question += (
+                f"A specialist model has reported these structured facts (trust them over your own "
+                f"read): {spec_facts}. "
             )
         question += 'Answer as STRICT JSON {"satisfied", "confidence", "evidence"}.'
         content.append({"type": "text", "text": question})
