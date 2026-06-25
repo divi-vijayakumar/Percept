@@ -33,6 +33,20 @@ class TestPublicBenchShim(unittest.TestCase):
             self.assertIn("Percept Benchmark Snapshot", text)
             self.assertIn("sha256:", text)
 
+    def test_scorecard_require_release_rejects_draft_card(self):
+        with TemporaryDirectory() as d:
+            out = Path(d) / "scorecard.txt"
+            manifest = Path(d) / "MANIFEST.json"
+            manifest.write_text('{"version":"test"}')
+            buf = StringIO()
+            with redirect_stdout(buf):
+                rc = bench.main(
+                    ["scorecard", "--manifest", str(manifest), "--out", str(out), "--require-release"]
+                )
+            self.assertEqual(rc, 1)
+            self.assertIn("SCORECARD RELEASE GATE FAILED", buf.getvalue())
+            self.assertIn("stamp: DRAFT", out.read_text())
+
     def test_audit_subcommand_accepts_draft_artifacts(self):
         with TemporaryDirectory() as d:
             manifest = Path(d) / "MANIFEST.json"

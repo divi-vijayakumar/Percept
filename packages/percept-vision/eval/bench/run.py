@@ -50,6 +50,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--device", default="?", help="device/runtime descriptor for the card header")
     ap.add_argument("--fps", default="1", help="sampling/capture fps for the card header")
     ap.add_argument("--seeds", type=int, default=1, help="number of seeds/runs represented")
+    ap.add_argument(
+        "--require-release",
+        action="store_true",
+        help="exit non-zero unless the rendered card is stamped RELEASE",
+    )
     args = ap.parse_args(argv)
 
     if args.live:
@@ -70,12 +75,14 @@ def main(argv: list[str] | None = None) -> int:
 
     backend = "gemini-2.5-flash" if args.live else "fake (offline stub)"
     auroc = next((r.cells.get(("core", "auroc")) for r in results if r.track == "relational"), None)
+    manifest_ref = _manifest_ref(args.manifest)
+    stamp = card.stamp_of(args.mode, results, manifest_ref)
     out = card.render_card(
         results,
         mode=args.mode,
         backend=backend,
         commit=_commit(),
-        manifest=_manifest_ref(args.manifest),
+        manifest=manifest_ref,
         fps=args.fps,
         device=args.device,
         seeds=args.seeds,
@@ -86,6 +93,9 @@ def main(argv: list[str] | None = None) -> int:
         from pathlib import Path
         Path(args.out).write_text(out)
         print(f"  card written -> {args.out}")
+    if args.require_release and stamp != "RELEASE":
+        print("SCORECARD RELEASE GATE FAILED: rendered card is DRAFT")
+        return 1
     return 0
 
 

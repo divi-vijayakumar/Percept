@@ -231,3 +231,14 @@ The first command is the draft artifact check used by OSS contributors. The `--r
 expected to fail until the golden manifest is marked `release` and its test split contains
 license-cleared, content-hashed media rows. That is the guardrail between “useful draft scorecard”
 and “publishable benchmark claim.”
+
+Use the scorecard gate in release automation:
+
+```bash
+percept-bench scorecard --mode full --require-release \
+    --manifest eval/golden-v1/MANIFEST.json \
+    --out scorecard.txt
+```
+
+`--require-release` writes the card, then exits non-zero unless the rendered stamp is `RELEASE`
+(`mode=full`, pinned manifest, and no modeled cells).
