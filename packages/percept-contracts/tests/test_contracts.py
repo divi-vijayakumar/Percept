@@ -15,11 +15,13 @@ from percept_contracts import (
     Goal,
     Incident,
     IncidentSnippet,
+    Schedule,
     Subject,
     TrackingBehavior,
     Verdict,
     WatchCondition,
     WatchSpec,
+    minute_of_day,
     negotiate,
 )
 
@@ -72,6 +74,67 @@ class TestDTODefaults(unittest.TestCase):
     def test_evidence_default_coverage(self):
         e = Evidence(t=1.0, source_id="cam", confidence=0.9, satisfied=True)
         self.assertEqual(e.coverage, 1.0)
+
+
+class TestSchedule(unittest.TestCase):
+    def test_default_is_always_armed(self):
+        # No windows + all seven days -> armed at every civil moment (the "always" default).
+        s = Schedule()
+        self.assertEqual(s.windows, ())
+        self.assertEqual(s.days, (1, 2, 3, 4, 5, 6, 7))
+        for wd in range(1, 8):
+            self.assertTrue(s.is_active(weekday=wd, minute_of_day=0))
+            self.assertTrue(s.is_active(weekday=wd, minute_of_day=12 * 60))
+            self.assertTrue(s.is_active(weekday=wd, minute_of_day=1439))
+
+    def test_is_frozen(self):
+        s = Schedule()
+        with self.assertRaises(Exception):
+            s.windows = ((0, 60),)  # frozen
+
+    def test_day_filter(self):
+        weekdays_only = Schedule(days=(1, 2, 3, 4, 5))
+        self.assertTrue(weekdays_only.is_active(weekday=1, minute_of_day=600))  # Monday
+        self.assertTrue(weekdays_only.is_active(weekday=5, minute_of_day=600))  # Friday
+        self.assertFalse(weekdays_only.is_active(weekday=6, minute_of_day=600))  # Saturday
+        self.assertFalse(weekdays_only.is_active(weekday=7, minute_of_day=600))  # Sunday
+
+    def test_time_of_day_window(self):
+        # Armed 09:00 (540) inclusive .. 17:00 (1020) exclusive.
+        office = Schedule(windows=((540, 1020),))
+        self.assertFalse(office.is_active(weekday=1, minute_of_day=539))  # 08:59
+        self.assertTrue(office.is_active(weekday=1, minute_of_day=540))  # 09:00 (inclusive start)
+        self.assertTrue(office.is_active(weekday=1, minute_of_day=1019))  # 16:59
+        self.assertFalse(office.is_active(weekday=1, minute_of_day=1020))  # 17:00 (exclusive end)
+
+    def test_window_wraps_past_midnight(self):
+        # Overnight watch: 22:00 (1320) -> 06:00 (360).
+        overnight = Schedule(windows=((1320, 360),))
+        self.assertTrue(overnight.is_active(weekday=1, minute_of_day=1320))  # 22:00
+        self.assertTrue(overnight.is_active(weekday=1, minute_of_day=1439))  # 23:59
+        self.assertTrue(overnight.is_active(weekday=1, minute_of_day=0))  # 00:00
+        self.assertTrue(overnight.is_active(weekday=1, minute_of_day=359))  # 05:59
+        self.assertFalse(overnight.is_active(weekday=1, minute_of_day=360))  # 06:00 (exclusive)
+        self.assertFalse(overnight.is_active(weekday=1, minute_of_day=720))  # noon
+
+    def test_days_and_windows_AND_together(self):
+        # Weekend mornings only: armed iff day in {Sat,Sun} AND time in 06:00..12:00.
+        s = Schedule(windows=((360, 720),), days=(6, 7))
+        self.assertTrue(s.is_active(weekday=6, minute_of_day=400))  # Sat morning
+        self.assertFalse(s.is_active(weekday=6, minute_of_day=800))  # Sat afternoon (bad time)
+        self.assertFalse(s.is_active(weekday=1, minute_of_day=400))  # Mon morning (bad day)
+
+    def test_minute_of_day_helper(self):
+        self.assertEqual(minute_of_day(0, 0), 0)
+        self.assertEqual(minute_of_day(9, 30), 570)
+        self.assertEqual(minute_of_day(23, 59), 1439)
+
+    def test_watchcondition_schedule_defaults_none(self):
+        # Optional field defaults to None (-> always armed) so the default path is unchanged.
+        c = WatchCondition(goal_id="g", anchor_text="x", threshold=0.3)
+        self.assertIsNone(c.schedule)
+        c2 = WatchCondition(goal_id="g", anchor_text="x", threshold=0.3, schedule=Schedule(days=(1,)))
+        self.assertEqual(c2.schedule.days, (1,))
 
 
 class TestConcernFromGoal(unittest.TestCase):
@@ -214,6 +277,18 @@ class TestJsonSchema(unittest.TestCase):
 
         snip = js.generate_all()["$defs"]["IncidentSnippet"]
         self.assertEqual(snip["properties"]["kind"], {"enum": ["frame", "clip", "audio"]})
+
+    def test_schedule_in_defs_and_watchcondition_optional(self):
+        from percept_contracts import jsonschema as js
+
+        defs = js.generate_all()["$defs"]
+        self.assertIn("Schedule", defs)  # the C1 schedule DTO is exported
+        wc = defs["WatchCondition"]
+        # schedule is Optional[Schedule] -> anyOf containing the $ref + null, and NOT required
+        any_of = wc["properties"]["schedule"]["anyOf"]
+        self.assertIn({"$ref": "#/$defs/Schedule"}, any_of)
+        self.assertIn({"type": "null"}, any_of)
+        self.assertNotIn("schedule", wc.get("required", []))
 
     def test_committed_schema_matches_generator(self):
         # the committed files under schema/ must be byte-identical to a fresh generation

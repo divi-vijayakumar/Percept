@@ -501,6 +501,15 @@
         "reply"
       ]
     },
+    "Schedule": {
+      "type": "object",
+      "title": "Schedule",
+      "properties": {
+        "windows": {},
+        "days": {}
+      },
+      "description": "When a watch is *armed* \u2014 a coarse, vendor-neutral, timezone-naive time gate (C1)."
+    },
     "WatchCondition": {
       "type": "object",
       "title": "WatchCondition",
@@ -529,9 +538,19 @@
           "items": {
             "type": "string"
           }
+        },
+        "schedule": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Schedule"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
-      "description": "WatchCondition(goal_id: 'str', anchor_text: 'str', threshold: 'float', region_hint: 'Box | None' = None, detectors: 'list[str]' = <factory>)",
+      "description": "WatchCondition(goal_id: 'str', anchor_text: 'str', threshold: 'float', region_hint: 'Box | None' = None, detectors: 'list[str]' = <factory>, schedule: 'Schedule | None' = None)",
       "required": [
         "goal_id",
         "anchor_text",

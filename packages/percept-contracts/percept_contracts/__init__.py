@@ -288,6 +288,54 @@ class TurnResult:
 # ---- edge wire-contract (down: WatchSpec · up: Tier0Signal) ----
 
 
+@dataclass(frozen=True)
+class Schedule:
+    """When a watch is *armed* — a coarse, vendor-neutral, timezone-naive time gate (C1).
+
+    The default constructed shape means **always armed** (empty ``windows`` + all seven days),
+    so a condition with no schedule behaves byte-for-byte as before. The gate consults
+    :meth:`is_active` with an *injected* civil time (no wall-clock read inside pure logic), and
+    skips the detector / escalation whenever the current moment falls outside the schedule.
+
+    - ``windows`` — inclusive-start, exclusive-end minute-of-day spans (``0..1440``). Empty means
+      "any time of day". A window may wrap past midnight (``start > end``, e.g. 22:00→06:00).
+    - ``days`` — ISO weekday numbers that are armed: Monday=1 … Sunday=7. Default = all seven.
+
+    Both halves AND together: armed iff the weekday is in ``days`` AND (no windows, or the
+    minute-of-day lands in some window). Minutes (not ``HH:MM`` strings) keep the wire trivially
+    typed and language-neutral; :func:`minute_of_day` is the convenience constructor helper.
+    """
+
+    windows: tuple[tuple[int, int], ...] = ()
+    days: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7)
+
+    def is_active(self, *, weekday: int, minute_of_day: int) -> bool:
+        """Is the watch armed at this civil moment? ``weekday`` is ISO (Mon=1…Sun=7).
+
+        ``weekday`` / ``minute_of_day`` are passed in (an injected clock), never read here, so the
+        decision is pure and testable. The default ("always") schedule returns ``True`` for every
+        moment. A window with ``start > end`` wraps over midnight.
+        """
+        if weekday not in self.days:
+            return False
+        if not self.windows:
+            return True
+        m = minute_of_day
+        for start, end in self.windows:
+            if start <= end:
+                if start <= m < end:
+                    return True
+            else:  # wraps past midnight (e.g. 22:00 -> 06:00)
+                if m >= start or m < end:
+                    return True
+        return False
+
+
+def minute_of_day(hour: int, minute: int = 0) -> int:
+    """``hour``/``minute`` (24h civil time) to minute-of-day ``0..1440`` — a :class:`Schedule` helper."""
+    return hour * 60 + minute
+
+
 @dataclass
 class WatchCondition:
     goal_id: str
@@ -295,6 +343,7 @@ class WatchCondition:
     threshold: float
     region_hint: Box | None = None
     detectors: list[str] = field(default_factory=list)  # cheap edge signal detectors to run for this goal
+    schedule: Schedule | None = None  # when armed (None -> always); the gate skips when out of schedule
 
 
 @dataclass
@@ -504,6 +553,8 @@ __all__ = [
     "Decision",
     "STTEvent",
     "TurnResult",
+    "Schedule",
+    "minute_of_day",
     "WatchCondition",
     "WatchSpec",
     "Tier0Signal",
