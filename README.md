@@ -185,6 +185,9 @@ Makefile                    test · eval-live · e2e · bench · check · reprod
   (`PERCEPT_*_BACKEND`); add via the `percept.backends` entry-point group. Extras:
   `[gemini]` · `[claude]` · `[deepgram]` · `[audio]`.
 - **Benchmark** — [`eval/BENCHMARK_PLAN.md`](packages/percept-vision/eval/BENCHMARK_PLAN.md).
+- **Evaluate your own concerns** — [`docs/eval.md`](docs/eval.md): per-concern precision/recall from
+  a labelled-clip manifest, runnable offline (`make eval-benchmark`), plus a copy-pasteable CI
+  regression-gate template ([`examples/benchmark/`](examples/benchmark/)).
 
 ## Status
 

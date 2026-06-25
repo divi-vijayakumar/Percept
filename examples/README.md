@@ -71,6 +71,26 @@ Key points:
 
 ---
 
+## 3. `benchmark/` — measure per-concern precision/recall + a CI gate (offline)
+
+Evaluate Percept on *your* concerns: a manifest of labelled clips → per-concern precision, recall,
+false-fire, and refuse rates. Runs fully offline on the `fake` backend (no keys).
+
+```bash
+# the report (also: make eval-benchmark)
+PYTHONPATH=packages/percept-vision python3 -m eval.benchmark examples/benchmark/manifest.json
+
+# the copy-pasteable CI regression gate (exits non-zero on a regression)
+PYTHONPATH=packages/percept-vision python3 examples/benchmark/ci_gate.py
+```
+
+- [`benchmark/manifest.json`](benchmark/manifest.json) — the input format (concerns + labelled clips).
+- [`benchmark/ci_gate.py`](benchmark/ci_gate.py) — wire a per-concern P/R threshold into CI.
+
+Full guide + the manifest spec: [`docs/eval.md`](../docs/eval.md).
+
+---
+
 See [`AGENTS.md`](../AGENTS.md) for the full integration cheat-sheet, and
 [`docs/quickstart.md`](../docs/quickstart.md) / [`docs/concepts.md`](../docs/concepts.md) for the
 deeper tour.

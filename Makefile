@@ -10,13 +10,14 @@ PY        := python3
 # absolute path to the zero-dep contract pkg (vision runs from inside $(SDK), so it needs this)
 CONTRACTS_ABS := $(abspath $(CONTRACTS))
 
-.PHONY: help test test-harness test-js test-all parity eval-live e2e bench scorecard check reproduce
+.PHONY: help test test-harness test-js test-all parity eval-live eval-benchmark e2e bench scorecard check reproduce
 
 help:
 	@echo "test       L1 unit — percept-contracts + percept-vision + percept-harness (fakes, no keys, fast)"
 	@echo "test-js    L1 unit — percept-edge (vitest; needs npm install)"
 	@echo "test-all   test + test-js"
 	@echo "eval-live  L2 live eval (needs keys; skips without PERCEPT_LIVE=1)"
+	@echo "eval-benchmark  per-concern P/R on a labelled-clip manifest (offline; MANIFEST=path)"
 	@echo "e2e        L3 e2e — live smoke (needs keys; skips cleanly)"
 	@echo "bench      gating cost reduction (gated vs ungated vision calls)"
 	@echo "check      lint + types (best-effort; skips missing tools)"
@@ -41,6 +42,12 @@ eval-live:
 	else \
 		cd $(SDK) && PYTHONPATH=.:$(CONTRACTS_ABS) $(PY) -m eval.run; \
 	fi
+
+# Per-concern precision/recall on a labelled-clip manifest (offline; fake backend; no keys).
+#   make eval-benchmark MANIFEST=examples/benchmark/manifest.json
+MANIFEST ?= $(abspath examples/benchmark/manifest.json)
+eval-benchmark:
+	cd $(SDK) && PYTHONPATH=.:$(CONTRACTS_ABS) $(PY) -m eval.benchmark $(abspath $(MANIFEST))
 
 e2e:
 	cd $(SDK) && PYTHONPATH=.:$(CONTRACTS_ABS) $(PY) -m e2e.live_smoke
