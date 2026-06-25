@@ -34,7 +34,7 @@ def _capture(uri: str, fps: float, q: "queue.Queue", stop: threading.Event) -> N
     """Blocking capture loop, run on a daemon thread; pushes frames into ``q`` until stopped/EOF."""
     import cv2  # lazy: the [runtime]/[rtsp] extra
 
-    from percept_harness.tier0 import Frame
+    from percept.edge.tier0 import Frame
 
     cap = cv2.VideoCapture(_normalize_uri(uri))
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0

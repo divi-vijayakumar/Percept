@@ -287,8 +287,8 @@ describe("topology-B wire messages — EdgeCapabilities + BoundaryReport", () =>
 });
 
 describe("CONTRACT_VERSION", () => {
-  it("is the 1.0.0 semver twin of the Python contract version", () => {
-    expect(CONTRACT_VERSION).toBe("1.0.0");
+  it("is the 1.1.0 semver twin of the Python contract version", () => {
+    expect(CONTRACT_VERSION).toBe("1.1.0");
   });
 });
 

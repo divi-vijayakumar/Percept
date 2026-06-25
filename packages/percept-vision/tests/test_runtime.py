@@ -12,7 +12,7 @@ from percept import Goal, Percept
 from percept.adapters import Verdict
 from percept.backends.fake import FakeVision
 from percept.runtime import run
-from percept_harness.tier0 import gray_frame
+from percept.edge.tier0 import gray_frame
 
 W, H = 8, 8
 STILL = gray_frame(W, H, 0)

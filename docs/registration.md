@@ -11,10 +11,11 @@ register  →  introspect / select into a WatchSpec  →  teardown
 ```
 
 These names are a **public, semver-stable API**. Within a contract MAJOR (`CONTRACT_VERSION`, see
-`percept_contracts`) the signatures and the `DetectorManifest` shape only change additively — new
-optional args, new functions beside the old ones. A breaking change to any name below is a MAJOR bump.
-Import them from `percept_harness` (or `percept_harness.detectors` / `percept_harness.concerns` /
-`percept_harness.enrichers`).
+`percept.CONTRACT_VERSION`) the signatures and the `DetectorManifest` shape only change additively —
+new optional args, new functions beside the old ones. A breaking change to any name below is a MAJOR
+bump. Import them through `percept.edge` (or `percept.edge.detectors` / `percept.edge.concerns` /
+`percept.edge.enrichers`). The implementation currently delegates to the internal `percept-harness`
+package.
 
 ---
 
@@ -30,7 +31,7 @@ event — the brain *composes* a registered detector into a goal; it never *writ
 Two interchangeable entrypoints (use whichever fits):
 
 ```python
-from percept_harness import register, register_detector, DetectorManifest
+from percept.edge import register, register_detector, DetectorManifest
 
 # Ergonomic façade — derives the manifest from keyword strings:
 register_detector(
@@ -77,7 +78,7 @@ skill that isn't registered. The brain then intersects the selection with the co
 capabilities (the **capability handshake**) so it never sends a skill the edge can't run:
 
 ```python
-from percept_harness import compile_watchspec
+from percept.edge import compile_watchspec
 spec = compile_watchspec(goals, threshold=0.5, edge_capabilities={"motion-periodicity"})
 # each WatchCondition.detectors holds the goal's selected, validated, capability-filtered skills
 ```
@@ -113,7 +114,7 @@ byte-for-byte so a manifest rides the wire unchanged.
 
 ## Concern registry — standing concerns
 
-A **concern** (`percept_contracts.Concern`) is a specific standing thing-to-watch — one per id, carrying
+A **concern** (`percept.Concern`) is a specific standing thing-to-watch — one per id, carrying
 its own plain-language `condition`, `consequence`, and `tracking`. Concerns were previously composed only
 per-call (the conductor authors goals; `compile_watchspec` turns each watch goal into a `WatchCondition`
 on the fly). The concern registry adds the missing **registration lifecycle**, mirroring the detector
@@ -127,8 +128,9 @@ byte-for-byte behavior.
 ### Register
 
 ```python
-from percept_harness import register_concern
-from percept_contracts import Concern, Subject
+from percept.edge import register_concern
+from percept import Concern
+from percept.adapters import Subject
 
 register_concern(Concern(
     id="milk",
@@ -156,7 +158,7 @@ get_concern("milk")        # -> the one concern (KeyError if absent)
 Registered concerns compile DOWN to a `WatchSpec`, one `WatchCondition` per concern (in id order):
 
 ```python
-from percept_harness import compile_registered_watchspec
+from percept.edge import compile_registered_watchspec
 spec = compile_registered_watchspec(threshold=0.5)              # all registered concerns
 spec = compile_registered_watchspec(threshold=0.5, concerns=[c])# an explicit subset, no registration
 spec = compile_registered_watchspec(threshold=0.5, edge_capabilities={"motion-periodicity"})
@@ -182,7 +184,7 @@ captured.
 
 ## Enricher registry — specialist models (signal → judge context)
 
-An **enricher** (`percept_contracts.Enricher`, beside `Specialist`) is a narrow specialist MODEL that
+An **enricher** (`percept.Enricher`, beside `Specialist`) is a narrow specialist MODEL that
 turns a cheap Tier-0 signal into **structured facts** the general VLM judge can't cheaply produce — an
 LPR model for a `plate-presence` cue, a fire/smoke classifier for a hot-surface cue, a face-id model for
 a known-person cue. The registry routes a *signal/detector name* to the specialist it hands off to, runs
@@ -200,7 +202,7 @@ Adding a specialist is the WHOLE integration cost — **no change to Percept cor
 contract**:
 
 ```python
-from percept_harness import register_enricher
+from percept.edge import register_enricher
 
 register_enricher("plate-presence", LprEnricher())   # an LPR model for the plate cue
 register_enricher("smoke-cue", SmokeClassifier())     # a second specialist — one more call, nothing else
@@ -213,7 +215,7 @@ method satisfies the protocol — no base class to inherit.
 ### Run it (the driver)
 
 ```python
-from percept_harness import enrich_signal
+from percept.edge import enrich_signal
 
 enr = enrich_signal("plate-presence", signal=cue, frame=frame)  # -> an Enrichment
 verdict = await vision.judge(condition, frame, context=enr.context)   # facts injected into the judge
@@ -249,4 +251,4 @@ clear_enrichers()                # -> empties the registry (no built-ins to rest
 | `DetectorManifest` (`name`, `senses`, `when_to_use`, `output`), `Boundary` (`detector`, `kind`, `t`, `value`) | frozen shapes; new fields are additive + optional |
 | `register_concern`, `registered_concerns`, `registered_concern_ids`, `get_concern`, `unregister_concern`, `clear_concerns`, `detectors_for_concern`, `concern_to_condition`, `compile_registered_watchspec` | semver-stable; additive-only within a contract MAJOR |
 | `register_enricher`, `enricher_for`, `registered_enrichers`, `unregister_enricher`, `clear_enrichers`, `enrich_signal`, `Enrichment` (`context`, `verdict`), `Enricher` protocol (`enrich(signal, frame) -> dict`) | semver-stable; additive-only within a contract MAJOR |
-| `Concern` and the wire DTOs (`WatchSpec`, `WatchCondition`) | live in the frozen `percept_contracts` membrane (§0) — a breaking change is a MAJOR bump, flagged not silent |
+| `Concern` and the wire DTOs (`WatchSpec`, `WatchCondition`) | live behind the frozen `percept` / contract membrane (§0) — a breaking change is a MAJOR bump, flagged not silent |

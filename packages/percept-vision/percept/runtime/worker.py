@@ -55,7 +55,7 @@ async def run(
     *whether* to fire. Yields incidents lazily, so an ``async for incident in run(...)`` is the front door.
     """
     from percept.config import load_settings
-    from percept_harness.tier0 import MotionGate, compile_watchspec
+    from percept.edge.tier0 import MotionGate, compile_watchspec
 
     settings = getattr(core, "settings", None) or load_settings()
     spec = compile_watchspec(list(core.goals.active()), threshold=settings.edge.motion_gate)

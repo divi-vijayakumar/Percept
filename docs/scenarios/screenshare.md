@@ -16,7 +16,7 @@ agent.add_goal(Goal(
         "cadence": {"min_judge_interval": 0.5, "gate_on": "fixed"},  # screen content != pixel motion
     },
 ))
-async for incident in run(agent, source="screen://0", on_incident=show_tip):
+async for incident in run(agent, source=my_screen_frames(), on_incident=show_tip):
     ...
 ```
 
@@ -25,7 +25,8 @@ motion gate would **never** spend a cloud call, and the assistant would see noth
 makes the gate escalate **every `min_judge_interval` seconds regardless of motion** (the demo fires on a
 constant, zero-motion screen). See [motion-and-strip](../concepts/motion-and-strip.md) for why.
 
-**Live screen source.** `source="screen://0"` needs a screen grabber. v1 ships the camera/RTSP source
-(`[runtime]`); a screen source is a thin adapter — capture the display with `mss`, downsample to a gray
-`Frame` for the gate + JPEG for the judge, and yield `(t, gate_frame, judge_frame)` (the same shape the
-iterable source uses). Wire it as the `source=` iterable until the `[screen]` extra lands.
+**Live screen source.** `pip install "percept-vision[screen]"` installs the screen-grab dependency
+(`mss`), but the runtime intentionally keeps the capture adapter thin: capture the display, downsample
+to a gray `Frame` for the gate + JPEG for the judge, and yield `(t, gate_frame, judge_frame)` (the same
+shape the iterable source uses). Wire that iterable into `source=` until the built-in `screen://` adapter
+lands.

@@ -17,7 +17,7 @@ signal that *gates* the expensive cloud read, never replaces it.
 
 Two pieces make this a *modality* and not a one-off:
 
-1. **`AudioFrame`** — a typed, vendor-neutral, zero-dependency audio signal in `percept-contracts`,
+1. **`AudioFrame`** — a typed, vendor-neutral, zero-dependency audio signal exposed from `percept`,
    the typed form of the (still-accepted) opaque `judge(audio=…)` payload.
 2. **the audio sense category** — `acoustic-onset` is marked `CATEGORY_AUDIO`, so audio detectors are
    discoverable *as a class* (`detectors_in_category("audio")`), the same way motion ones group.
@@ -27,7 +27,7 @@ Two pieces make this a *modality* and not a one-off:
 ## 1. The typed signal — `AudioFrame`
 
 ```python
-from percept_contracts import AudioFrame   # or: from percept.adapters import AudioFrame
+from percept import AudioFrame
 
 clip = AudioFrame(
     pcm=raw_pcm_bytes,     # raw little-endian PCM samples
@@ -75,7 +75,7 @@ downstream never changes.
 `category="audio"`, so a whole modality is discoverable at once:
 
 ```python
-from percept_harness import (
+from percept.edge import (
     CATEGORY_AUDIO, detectors_in_category, manifest_of, make_detector,
 )
 
@@ -96,8 +96,8 @@ below `low`) so a held tone is a single onset, not a stutter. Pure stdlib DSP �
 
 ```python
 import asyncio
-from percept_contracts import AudioFrame
-from percept_harness import CATEGORY_AUDIO, DetectorBank, detectors_in_category
+from percept import AudioFrame
+from percept.edge import CATEGORY_AUDIO, DetectorBank, detectors_in_category
 
 # 1. compose the audio detector(s) the brain selected for this concern
 bank = DetectorBank(detectors_in_category(CATEGORY_AUDIO))   # -> the acoustic-onset bank
@@ -114,7 +114,7 @@ async def wake(condition, frame, pcm_bytes, onset_t):
     from percept.backends.fake import FakeVision   # swap for GeminiVision to actually hear
     vision = FakeVision(script={
         # the fake supports a "{frame}|audio" key, proving the clip reaches judge (wiring, not magic)
-        f"{frame}|audio": __import__("percept_contracts").Verdict(True, 0.92, "scripted: hiss heard"),
+        f"{frame}|audio": __import__("percept").Verdict(True, 0.92, "scripted: hiss heard"),
     })
     clip = AudioFrame(pcm=pcm_bytes, sample_rate=16000, channels=1,
                       t_start=onset_t - 1.0, t_end=onset_t + 1.0)

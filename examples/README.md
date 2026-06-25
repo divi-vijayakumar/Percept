@@ -81,7 +81,7 @@ window and feeds it to the judge. The public `judge_clip(condition, frames)` sea
 already hold, directly.
 
 ```bash
-PYTHONPATH=packages/percept-vision:packages/percept-contracts python3 examples/loitering_clip.py
+PYTHONPATH=packages/percept-vision python3 examples/loitering_clip.py
 ```
 
 What to notice:
@@ -101,7 +101,7 @@ false-fire, and refuse rates. Runs fully offline on the `fake` backend (no keys)
 
 ```bash
 # the report (also: make eval-benchmark)
-PYTHONPATH=packages/percept-vision python3 -m eval.benchmark examples/benchmark/manifest.json
+PYTHONPATH=packages/percept-vision python3 -m percept.bench examples/benchmark/manifest.json
 
 # the copy-pasteable CI regression gate (exits non-zero on a regression)
 PYTHONPATH=packages/percept-vision python3 examples/benchmark/ci_gate.py

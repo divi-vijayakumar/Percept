@@ -32,14 +32,31 @@ claude = ["anthropic>=0.40"]
 gemini = ["google-genai>=1.0"]
 deepgram = ["deepgram-sdk>=3"]
 audio = ["numpy>=1.24"]
+runtime = ["opencv-python-headless>=4.8", "percept-harness>=0.1.0"]
+screen = ["mss>=9"]
+bench = ["numpy>=1.24", "opencv-python-headless>=4.8", "percept-harness>=0.1.0"]
+edge = ["percept-harness>=0.1.0"]
+pose = ["percept-harness[pose]>=0.1.0"]
 otel = ["opentelemetry-api>=1.20"]
 ui = []
-all = ["anthropic>=0.40", "google-genai>=1.0", "deepgram-sdk>=3", "numpy>=1.24", "opentelemetry-api>=1.20"]
+all = [
+    "anthropic>=0.40",
+    "google-genai>=1.0",
+    "deepgram-sdk>=3",
+    "numpy>=1.24",
+    "opencv-python-headless>=4.8",
+    "mss>=9",
+    "percept-harness[pose]>=0.1.0",
+    "opentelemetry-api>=1.20",
+]
 dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+percept-bench = "percept.bench:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["percept*"]
+include = ["percept*", "eval*"]
 
 [tool.ruff]
 line-length = 100

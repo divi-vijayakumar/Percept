@@ -17,8 +17,9 @@ async for incident in run(agent, source="rtsp://door-cam/stream", on_incident=no
     ...                                            # run() owns capture + gate + judge + incident emission
 ```
 
-`pip install "percept-vision[runtime]"` adds the camera capture (opencv). A pre-decoded **iterable**
-source (`(t, gate_frame, judge_frame)` tuples) needs no extra — handy for tests and offline replay.
+`pip install "percept-vision[runtime]"` adds the camera/video/RTSP capture path (opencv) plus the
+Python edge gate. A pre-decoded **iterable** source (`(t, gate_frame, judge_frame)` tuples) needs no
+extra — handy for tests and offline replay.
 
 ## What `run()` does, per frame
 1. push the frame into a rolling pre-roll buffer (for the incident clip);
@@ -34,7 +35,7 @@ source (`(t, gate_frame, judge_frame)` tuples) needs no extra — handy for test
 Incident { id, concern_id, verdict{satisfied, confidence, evidence}, ts, label, snippet, message }
 ```
 `message` is the goal's `say` (the human alert line); `verdict.evidence` is the VLM's reasoning;
-`snippet` is the pre-roll (`kind="frame"` today; the `[clips]` extra adds `kind="clip"` → mp4 in S3/R2/GCS);
+`snippet` is the pre-roll (`kind="frame"` today; encoded clip storage is planned as a runtime add-on);
 `label` is `None` until a human / the calibration loop marks it `"real"` / `"false_alarm"`.
 
 ## Tuning a goal — three independent knobs

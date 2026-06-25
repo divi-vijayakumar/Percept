@@ -9,10 +9,11 @@ manifest of labelled clips, runnable **fully offline** (the deterministic `fake`
 The SDK's own internal gate (`eval.run`, asserting `false_fire == 0` on a held-out golden split) is
 unchanged and documented separately in [`packages/percept-vision/eval/`](../packages/percept-vision/eval/).
 
-The harness lives in the `eval` package under `packages/percept-vision`. Point `PYTHONPATH` at it:
+The public harness is `percept.bench`; installed environments also get the `percept-bench` console
+script. From a source checkout, point `PYTHONPATH` at the package:
 
 ```bash
-PYTHONPATH=packages/percept-vision python3 -m eval.benchmark examples/benchmark/manifest.json
+PYTHONPATH=packages/percept-vision python3 -m percept.bench examples/benchmark/manifest.json
 ```
 
 ---
@@ -102,8 +103,7 @@ condition became true. The SDK's own labelling/review provenance pattern is docu
 ### CLI
 
 ```bash
-PYTHONPATH=packages/percept-vision \
-  python3 -m eval.benchmark examples/benchmark/manifest.json \
+percept-bench examples/benchmark/manifest.json \
     --out benchmark.json \
     --max-false-fire 0 \
     --min-recall 0.9
@@ -119,7 +119,7 @@ make eval-benchmark MANIFEST=examples/benchmark/manifest.json
 ### From Python
 
 ```python
-from eval.benchmark import Manifest, run_manifest, format_report
+from percept.bench import Manifest, run_manifest, format_report
 
 report = run_manifest(Manifest.load("examples/benchmark/manifest.json"))
 print(format_report(report))

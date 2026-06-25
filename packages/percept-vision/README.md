@@ -45,6 +45,9 @@ pip install "percept-vision[gemini]"     # GeminiVision
 pip install "percept-vision[claude]"     # AnthropicVision (Claude)
 pip install "percept-vision[deepgram]"   # Deepgram STT + TTS (voice)
 pip install "percept-vision[audio]"      # numpy fast-path for acoustic/edge
+pip install "percept-vision[runtime]"    # camera/video/RTSP runtime worker
+pip install "percept-vision[bench]"      # benchmark + scorecard tooling
+pip install "percept-vision[edge]"       # Python tier-0 gate + detector registry
 pip install "percept-vision[all]"        # everything
 ```
 
@@ -127,19 +130,21 @@ vision token per frame. Three reference skills ship as registered detectors:
 
 - **`motion-periodicity`** — frame-diff motion peaks (rep boundaries);
 - **`acoustic-onset`** — energy spikes on the existing mic stream (no new capture path);
-- **`pose-openness`** — BlazePose-based rep peaks (opt-in: `percept-harness[pose]`, MediaPipe).
+- **`pose-openness`** — BlazePose-based rep peaks (opt-in: `percept-vision[pose]`, MediaPipe).
 
 A full request trace — *"tell me when the milk is about to boil over"* — is in
 [`docs/e2e-flow-milk-boilover.md`](docs/e2e-flow-milk-boilover.md), including an honest map of where
 the perception ceiling bites.
 
-## The three packages
+## Packages
 
 | package | what | install |
 |---|---|---|
-| **percept-vision** | the cognition core — gate, entity graph, executor, events, scheduler, consent, fakes. Pure stdlib. | `pip install percept-vision` (`packages/percept-vision/`) |
-| **percept-harness** | server-side transport shell + tier-0 salience gate (WatchSpec down / Tier0Signal up); the reference home of the edge detector skills. | `packages/percept-harness/` |
-| **percept-edge** | on-device reactive edge in JS/WASM: VAD + motion gate over the same WatchSpec/Tier0Signal wire-contract. | `packages/percept-edge/` (npm `percept-edge`) |
+| **percept-vision** | the Python SDK: cognition core, fakes, runtime worker, Python edge/harness, and benchmark tooling via extras. | `pip install percept-vision` |
+| **percept-edge** | on-device reactive edge in JS/WASM: VAD + motion gate over the same WatchSpec/Tier0Signal wire-contract. | `npm install percept-edge` |
+
+The repo stays internally modular (`packages/percept-harness/`, `packages/percept-contracts/`), but
+OSS users should start from one Python package plus the optional npm edge package.
 
 ## Benchmark — Percept Benchmark v1 (v0.5 DRAFT)
 
@@ -167,7 +172,7 @@ and references:
 
 ```
 packages/percept-vision/    the SDK (pip install percept-vision; import percept)
-packages/percept-harness/   server-side tier-0 edge reference + detector skills
+packages/percept-harness/   internal Python tier-0 edge reference + detector skills
 packages/percept-edge/      percept-edge — on-device JS/WASM edge
 docs/                       architecture & flow traces
 eval/                       golden corpus (benchmark plan: packages/percept-vision/eval/)

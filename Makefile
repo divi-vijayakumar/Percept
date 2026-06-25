@@ -25,7 +25,7 @@ help:
 
 test:
 	PYTHONPATH=$(CONTRACTS) $(PY) -m unittest discover -s $(CONTRACTS)/tests
-	cd $(SDK) && PYTHONPATH=.:$(CONTRACTS_ABS) $(PY) -m unittest discover -s tests
+	cd $(SDK) && PYTHONPATH=.:$(CONTRACTS_ABS):$(abspath $(HARNESS)) $(PY) -m unittest discover -s tests
 	PYTHONPATH=$(SDK):$(HARNESS):$(CONTRACTS) $(PY) -m unittest discover -s $(HARNESS)/tests
 
 test-js:

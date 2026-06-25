@@ -27,6 +27,9 @@ pip install "percept-vision[gemini]"       # Google Gemini vision/conductor/spec
 pip install "percept-vision[claude]"       # Anthropic Claude vision/conductor/specialist
 pip install "percept-vision[deepgram]"     # Deepgram STT + TTS (voice)
 pip install "percept-vision[audio]"        # numpy — audio/acoustic processing
+pip install "percept-vision[runtime]"      # camera/video/RTSP runtime worker
+pip install "percept-vision[bench]"        # benchmark + scorecard tooling
+pip install "percept-vision[edge]"         # Python tier-0 gate + detector registry
 pip install "percept-vision[all]"          # everything above
 ```
 
@@ -36,6 +39,12 @@ pip install "percept-vision[all]"          # everything above
 | `[claude]`   | `anthropic`         | `vision="claude"`, `conductor`, `specialist`|
 | `[deepgram]` | `deepgram-sdk`      | `stt="deepgram"`, `tts="deepgram"`          |
 | `[audio]`    | `numpy`             | audio/acoustic signal processing            |
+| `[runtime]`  | `opencv-python-headless`, `percept-harness` | camera/video/RTSP runtime worker |
+| `[screen]`   | `mss`               | screen-capture dependency for custom iterable sources |
+| `[bench]`    | `numpy`, `opencv-python-headless`, `percept-harness` | `percept-bench` scorecards |
+| `[edge]`     | `percept-harness`   | public `percept.edge` tier-0 gate + detector registry |
+| `[pose]`     | `percept-harness[pose]` | opt-in pose detector dependencies |
+| `[otel]`     | `opentelemetry-api`, `opentelemetry-sdk` | OpenTelemetry export |
 
 ---
 

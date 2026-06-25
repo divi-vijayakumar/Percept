@@ -28,7 +28,7 @@ up   (edge → cloud):
 
 `detectors` carries the brain's skill selection; `EdgeCapabilities` advertises what this edge can run so
 the brain selects only within it (the capability handshake). Every shape has `make*`/`parse*` validators
-in `src/contract.js`, kept identical to the Python `percept-harness` dataclasses — verified by a
+in `src/contract.js`, kept identical to the Python `percept.edge` contract dataclasses — verified by a
 cross-language parity harness (12/12 byte-for-byte; the JS and Python detectors + gate produce identical
 output on identical input).
 
@@ -52,7 +52,7 @@ grayscale frame (`{ width, height, data: Uint8Array }`), normalized to `[0,1]`. 
 ## The skill registry (the on-device "skills")
 
 Cheap, high-fps detectors the brain selects per goal. Each consumes a signal channel and emits timed
-**boundaries** the brain counts. The JS twin of `percept_harness/detectors.py`:
+**boundaries** the brain counts. The JS twin of the Python `percept.edge.detectors` surface:
 
 | skill | channel | proposes | model? |
 |---|---|---|---|
@@ -84,7 +84,7 @@ registerPoseSkill(myLandmarker);   // opt-in: supply your pose model adapter (Me
 
 ## Deployment topologies
 
-- **A — all server-side:** the Python `percept-harness` runs the gate + skills in-process with the brain.
+- **A — all server-side:** Python `percept.edge` runs the gate + skills in-process with the brain.
   No `percept-edge`.
 - **B — on-device:** `percept-edge` gates + runs skills on the device, advertises `EdgeCapabilities`,
   and sends `Tier0Signal` + `BoundaryReport` up; the server maps boundaries to `perceive_boundary`. Use

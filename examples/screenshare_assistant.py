@@ -6,8 +6,8 @@ under-sample. The fix is the per-goal temporal CADENCE: `gate_on="fixed"` looks 
 seconds *regardless of motion*.
 
 Runnable offline (FakeVision scripts the screen; the gate frames are a STILL screen to prove the cadence
-escalates with no motion). Go live with a screen source:
-    source="screen://0"  (needs a screen grabber, e.g. `pip install mss`; see docs/scenarios/screenshare.md)
+escalates with no motion). Go live by passing an iterable screen source:
+    source=my_screen_frames()  (install `percept-vision[screen]`; see docs/scenarios/screenshare.md)
 
     python examples/screenshare_assistant.py
 """
@@ -16,8 +16,8 @@ import asyncio
 from percept import Goal, Percept
 from percept.adapters import Verdict
 from percept.backends.fake import FakeVision
+from percept.edge.tier0 import gray_frame
 from percept.runtime import run
-from percept_harness.tier0 import gray_frame
 
 
 def show_tip(incident):
