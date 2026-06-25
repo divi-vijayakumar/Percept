@@ -36,6 +36,9 @@
           "type": "null"
         }
       ]
+    },
+    "message": {
+      "type": "string"
     }
   },
   "description": "A fired-event record \u2014 the durable trace of one concern firing, with evidence.",

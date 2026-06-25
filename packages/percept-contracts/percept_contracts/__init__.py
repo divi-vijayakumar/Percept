@@ -28,7 +28,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 #: Bump the MAJOR on any breaking change to a frozen shape; MINOR for additive (new optional
 #: field / new DTO); PATCH for docs/non-wire tweaks. This is distinct from ``WatchSpec.version``
 #: (a wire integer kept for byte-for-byte payload compat).
-CONTRACT_VERSION = "1.1.0"  # 1.1: + WatchCondition.cadence_s/gate_on (optional, backward-compatible)
+CONTRACT_VERSION = "1.1.0"  # 1.1: + WatchCondition.cadence_s/gate_on + Incident.message (optional, back-compat)
 
 
 class ContractVersionMismatch(Exception):
@@ -477,6 +477,7 @@ class Incident:
     ts: float
     label: str | None = None  # e.g. "real" / "false_alarm" / None (unlabelled)
     snippet: IncidentSnippet | None = None
+    message: str = ""  # the human-facing alert line this fire emitted (the goal's `say`)
 
 
 # ---------------------------------------------------------------------------
