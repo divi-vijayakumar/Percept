@@ -115,3 +115,4 @@ node_modules/
 
 # persistent benchmark data cache (heavy/licensed; never commit)
 **/eval/bench-staging/
+docs/publish-readiness-plan.md
