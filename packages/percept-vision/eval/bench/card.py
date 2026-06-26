@@ -1,7 +1,8 @@
 """The Snapshot Card emitter (spec §7) — turns a list of TrackResults + run metadata into a stamped card.
 
-A card is DRAFT unless: mode=full AND no modeled cells AND a pinned data-manifest (spec §7.2). Phase A is
-sampled + modeled, so it emits DRAFT — by design.
+A card is DRAFT unless: mode=full, no non-dense modeled cells, no diagnostic/excluded tracks, all
+coverage gates pass, and a pinned data-manifest is present. That is intentionally strict: benchmark
+code should fail closed rather than accidentally publishing diagnostics as product E2E.
 """
 
 from __future__ import annotations
@@ -20,8 +21,16 @@ def _references() -> list[str]:
 
 
 def stamp_of(mode: str, results: list[TrackResult], manifest: str) -> str:
-    any_modeled = any(r.modeled for r in results)
-    return "RELEASE" if (mode == "full" and not any_modeled and manifest) else "DRAFT"
+    if mode != "full" or not manifest:
+        return "DRAFT"
+    return "RELEASE" if not release_blockers(results) else "DRAFT"
+
+
+def release_blockers(results: list[TrackResult]) -> list[str]:
+    blockers: list[str] = []
+    for result in results:
+        blockers.extend(result.invalid_reasons())
+    return blockers
 
 
 def render_card(results: list[TrackResult], *, mode: str = "sampled", backend: str = "?", commit: str = "?",
@@ -46,8 +55,11 @@ def render_card(results: list[TrackResult], *, mode: str = "sampled", backend: s
             L.append(f"  {label:<36}: {val}")
     L.append(f"  {'total vision calls':<36}: {sum(r.calls for r in results)}")
 
-    L += ["", "## Per-track × config   (ref = published SOTA, where the metric is comparable)",
-          f"  {'track':<12}{'metric':<16}" + "".join(f"{c:>10}" for c in CONFIGS) + f"   {'ref (SOTA)':<24}"]
+    track_w = max(14, *(len(r.track) + 2 for r in results))
+    metric_w = max(24, *(len(metric) + 2 for r in results for metric in r.metrics()))
+    lane_w = max(14, max(len(c) for c in CONFIGS) + 2)
+    L += ["", "## Per-track × benchmark lane   (ref = published SOTA, where the metric is comparable)",
+          f"  {'track':<{track_w}}{'metric':<{metric_w}}" + "".join(f"{c:>{lane_w}}" for c in CONFIGS) + f"   {'ref (SOTA)':<24}"]
     for r in results:
         for metric in r.metrics():
             cells = []
@@ -66,16 +78,27 @@ def render_card(results: list[TrackResult], *, mode: str = "sampled", backend: s
                 rv = ref["value"]
                 rv = rv if isinstance(rv, str) else r.fmt(metric).format(rv)
                 ref_s = f"{rv} ({ref.get('by', '')})"
-            L.append(f"  {r.track:<12}{metric:<16}" + "".join(cells) + f"   {ref_s:<24}")
+            L.append(f"  {r.track:<{track_w}}{metric:<{metric_w}}" + "".join(f"{c:>{lane_w}}" for c in cells) + f"   {ref_s:<24}")
 
     measured = sorted({m for r in results for m in r.measured})
     modeled = sorted({m for r in results for m in r.modeled})
     excluded = [e for r in results for e in r.excluded]
+    coverage = []
+    for r in results:
+        for c in r.normalized_coverage():
+            status = "pass" if c.passed else "fail"
+            coverage.append(
+                f"{r.track}:{c.dataset} {status} expected={c.expected} observed={c.observed} "
+                f"failed={c.failed} skipped={c.skipped}" + (f" ({c.notes})" if c.notes else "")
+            )
+    blockers = release_blockers(results)
     L += [
         "", "## Provenance",
         f"  measured : {measured}",
-        f"  modeled  : {modeled}   # must be EMPTY for a RELEASE stamp",
+        f"  modeled  : {modeled}   # non-dense modeled cells block RELEASE; dense-modeled is cost reference only",
         f"  excluded : {excluded}",
+        f"  coverage : {coverage}",
+        f"  release-blockers : {blockers}",
         "", "## References",
     ]
     L += [f"  {ref}" for ref in _references()]

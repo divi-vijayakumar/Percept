@@ -23,6 +23,8 @@ from . import (
     track_counting,
     track_cuespeak,
     track_edge_recall,
+    track_escalation_policy,
+    track_perception_test_e2e,
     track_relational,
     track_timeliness,
     track_timespeak,
@@ -73,7 +75,14 @@ def main(argv: list[str] | None = None) -> int:
 
     results = []
     if args.live:
-        tracks = (track_counting, track_edge_recall, track_cuespeak, track_timespeak)
+        tracks = (
+            track_perception_test_e2e,
+            track_edge_recall,
+            track_escalation_policy,
+            track_counting,
+            track_cuespeak,
+            track_timespeak,
+        )
     else:
         tracks = (track_relational, track_counting, track_acoustic_pt, track_timeliness, track_edge_recall,
                   track_cuespeak, track_timespeak)
@@ -87,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
                                        excluded=[f"{getattr(mod, 'TRACK', '?')}: {exc}"]))
 
     backend = _backend_label(args.live)
-    auroc = next((r.cells.get(("core", "auroc")) for r in results if r.track == "relational"), None)
+    auroc = next((r.cells.get(("core-replay", "auroc")) for r in results if r.track == "relational"), None)
     manifest_ref = _manifest_ref(args.manifest)
     stamp = card.stamp_of(args.mode, results, manifest_ref)
     out = card.render_card(

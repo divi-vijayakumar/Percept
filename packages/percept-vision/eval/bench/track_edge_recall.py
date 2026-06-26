@@ -1,9 +1,8 @@
-"""Phase B-4: edge event-recall — does the edge wake on PT event onsets? (validates amendment #3).
+"""Edge event-recall — does the conductor wake on PT event onsets?
 
-The card models e2e-relational accuracy as `core × edge-call-reduction`, ASSUMING the motion-gate escalates
-on every true event. This measures that assumption directly: over PT action onsets, the fraction where motion
-clears the gate threshold somewhere in the event window. If it's < ~1.0, the edge SKIPS low-motion events and
-the honest modeling is `e2e accuracy = core × edge_event_recall`, not ≈ core.
+This is an edge-only measurement. It does not call the VLM and it does not claim final alert quality.
+It asks whether the cheap conductor would wake near annotated Perception Test action onsets, and how
+many off-window candidate calls it would create.
 
 The legacy metric stays motion-only for continuity. The policy metric runs the actual server-side
 ``MotionGate`` with ``WakePolicy`` so benchmark changes track the edge architecture, not a stale shortcut.
@@ -125,9 +124,9 @@ def _result(
     notes: str,
 ) -> TrackResult:
     cells = {
-        ("e2e", "motion_recall"): motion_recall,
-        ("e2e", "policy_recall"): policy_recall,
-        ("e2e", "policy_precision"): policy_precision,
+        ("edge", "motion_recall"): motion_recall,
+        ("edge", "policy_recall"): policy_recall,
+        ("edge", "policy_precision"): policy_precision,
     }
     fmts = {
         "motion_recall": "{:.2f}",
@@ -140,13 +139,21 @@ def _result(
         fmts=fmts,
         headline={
             f"edge event-recall @thr={thr:.2f} (motion clears gate on onset)":
-                f"{motion_recall:.2f} (N={n_events}) -> e2e_acc = core x {motion_recall:.2f}"
+                f"{motion_recall:.2f} (N={n_events})"
                 if motion_recall is not None else "n/a",
             f"edge policy-recall @thr={thr:.2f} (WakePolicy change×{POLICY_CHANGE_WEIGHT:g})":
                 f"{policy_recall:.2f} (precision proxy {policy_precision:.2f}, TP/FP frames {policy_tp}/{policy_fp})"
                 if policy_recall is not None and policy_precision is not None else "n/a",
         },
-        measured=["e2e:motion_recall", "e2e:policy_recall", "e2e:policy_precision"],
+        measured=["edge:motion_recall", "edge:policy_recall", "edge:policy_precision"],
+        coverage=[{
+            "dataset": "perception-test/action",
+            "expected": n_events,
+            "observed": n_events,
+            "failed": 0,
+            "skipped": 0,
+            "notes": "edge-only wake windows; no VLM calls",
+        }],
         notes=f"{notes}; thr={thr}; avg max-motion in window={avg_m:.3f}; "
         f"policy change_weight={POLICY_CHANGE_WEIGHT}",
     )
@@ -157,9 +164,9 @@ def _unavailable(exc: Exception | None = None) -> TrackResult:
     return TrackResult(
         track=TRACK,
         cells={
-            ("e2e", "motion_recall"): None,
-            ("e2e", "policy_recall"): None,
-            ("e2e", "policy_precision"): None,
+            ("edge", "motion_recall"): None,
+            ("edge", "policy_recall"): None,
+            ("edge", "policy_precision"): None,
         },
         fmts={
             "motion_recall": "{:.2f}",

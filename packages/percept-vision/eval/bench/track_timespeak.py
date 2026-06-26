@@ -22,7 +22,14 @@ from . import sim
 from .types import TrackResult
 
 TRACK = "timespeak"
-_FMTS = {"latency": "{:.1f}", "p-pauc": "{:.0f}", "guess%": "{:.0f}"}
+_FMTS = {
+    "latency": "{:.1f}",
+    "p-pauc": "{:.0f}",
+    "guess%": "{:.0f}",
+    "naive_latency": "{:.1f}",
+    "naive_p-pauc": "{:.0f}",
+    "naive_guess%": "{:.0f}",
+}
 _MEASURED = ["latency", "p-pauc", "guess%"]
 
 
@@ -67,9 +74,12 @@ def score(*, live: bool = False, n: int = 8) -> TrackResult:
     cg, rg = _guess_rate(core, script, thr), _guess_rate(raw, script, thr)
 
     cells = {
-        ("raw", "latency"): rmed, ("core", "latency"): cmed, ("e2e", "latency"): cmed,
-        ("raw", "p-pauc"): _pauc(rlat, window), ("core", "p-pauc"): _pauc(clat, window), ("e2e", "p-pauc"): _pauc(clat, window),
-        ("raw", "guess%"): rg, ("core", "guess%"): cg, ("e2e", "guess%"): cg,
+        ("dense-modeled", "naive_latency"): rmed,
+        ("core-replay", "latency"): cmed,
+        ("dense-modeled", "naive_p-pauc"): _pauc(rlat, window),
+        ("core-replay", "p-pauc"): _pauc(clat, window),
+        ("dense-modeled", "naive_guess%"): rg,
+        ("core-replay", "guess%"): cg,
     }
     headline = {
         "timespeak reaction-latency naive/core (frames)": f"{rmed:.1f} / {cmed:.1f}",
@@ -77,9 +87,12 @@ def score(*, live: bool = False, n: int = 8) -> TrackResult:
     }
     return TrackResult(
         track=TRACK, cells=cells, fmts=_FMTS, headline=headline,
-        measured=_MEASURED, modeled=[],
+        measured=["core-replay:latency", "core-replay:p-pauc", "core-replay:guess%"],
+        modeled=["dense-modeled:naive_latency", "dense-modeled:naive_p-pauc", "dense-modeled:naive_guess%"],
         reference={"latency": {"value": 0.0, "by": "ideal: fire at onset"}},
         calls=0,
+        diagnostic=True,
+        excluded=["timespeak: deterministic sim regression, not held-out product E2E"],
         notes=(f"sim: {n} episodes x{dur}f, conf-ramp {ramp}f, window {window}f, gate_thr={thr}; "
                f"core waits for confidence (refuse-to-guess), raw fires on the first true frame."),
     )

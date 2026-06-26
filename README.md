@@ -154,27 +154,32 @@ Release evidence:
 - Enterprise architecture: [`docs/enterprise-architecture.md`](docs/enterprise-architecture.md)
 - Static OSS demo: [`examples/web-demo/index.html`](examples/web-demo/index.html)
 
-## Benchmark — Percept Benchmark v1 (v0.5 DRAFT)
+## Benchmark — Percept Benchmark v1 (DRAFT)
 
-The benchmark holds the **backbone fixed and measures the orchestration delta** across a `raw → core
-→ e2e` config ladder (no composite score — a vector of headlines). The current card is a **v0.5
-DRAFT** (sampled, N≈12/track, gemini-2.5-flash) on the DeepMind **Perception Test** (CC-BY-4.0), the
-private **golden** ambiguity corpus, and **RepCount-A**; the e2e-relational accuracy cell is modeled
-(flagged `~`), so the card is stamped `DRAFT`.
+The benchmark now separates the lanes the product actually claims:
 
-| track | measured (DRAFT, N≈12) | reading |
+- `dense-modeled`: no media calls; counts what a dense raw loop would have spent.
+- `edge`: cheap wake policy recall/precision and call economics.
+- `e2e`: goal -> edge candidates -> Gemini candidate judgments -> Percept fire/ask/silent.
+- `core-replay`: deterministic cognition diagnostics over already-captured observations.
+
+Current E2E adapters include Perception Test action notifications, RepCount-A counting through edge
+boundaries, and a Charades notification smoke. Legacy dense/raw media runners are diagnostic only and
+are blocked from live public runs by default. Charades mIoU and ProactiveVideoQA PAUC are not public
+Percept claims until their E2E adapters have full coverage.
+
+Recent sampled smoke signals:
+
+| track | status | reading |
 |---|---|---|
-| **counting** (RepCount-A) | pose OBO **0.33** vs **0.29** (TransRAC, CVPR'22); nMAE 0.80 vs 0.44 | training-free pose ties a *trained* baseline on OBO, but its failures on low-amplitude actions cost it on MAE |
-| **acoustic** (PT Sound Loc., unseen source) | vision-only recall **0.00 → 0.25–0.33** fused; fusion-FP 0–0.17 | the **recall-flip**: fusion rescues ~a third of sound events vision-only never hears (honest at scale, not the single-clip 1.0) |
-| **relational** (golden) | confidence **AUROC ≈ 0.51** (≈ chance); ASK-rate ≈ 0.4 | the VLM's confidence does **not** separate right from wrong → justifies the **ASK** discipline over threshold-tuning |
-| **timeliness** (PT action onsets) | **P-PAUC ≈ 60**; reaction λ p50 ≈ 1s | first real proactive-timeliness numbers (adapted PAUC) |
-| **edge event-recall** (locally staged PT sample onsets) | **0.12** @ thr 0.10 (N=8) | ⚠️ the motion-gate only catches **1/8** seeded action onsets → e2e ≠ core there; a real **calibration** finding |
+| **Charades notification E2E** | N=1 live smoke, Gemini 3 Flash preview | 217 dense-modeled goal-frame calls -> 35 candidate judgments; notification recall 0.57, precision 0.80 |
+| **RepCount-A E2E counting** | N=1 live smoke, RTMO pose path | architecture works with zero VLM calls, but the current counter over-counted one bench-press sample; detector calibration is the next target |
+| **ProactiveVideoQA E2E** | N=1 live smoke, Gemini 3 Flash preview | 65 dense-modeled calls -> 55 candidate judgments; no answers emitted, PAUC proxy stayed at the 25.0 no-response floor |
+| **Perception Test action E2E** | N=1 live smoke | product path runs end to end; early samples expose edge recall gaps rather than raw VLM benchmark claims |
 
-A v0.5 DRAFT, not a RELEASE claim. Two findings the benchmark surfaced that a self-congratulatory
-eval would hide: the **flat confidence AUROC** (*why* the gate refuses to guess) and the low **edge
-event-recall** on subtle actions (the motion-gate is mis-calibrated for them). Full plan, data,
-and references:
-[`packages/percept-vision/eval/BENCHMARK_PLAN.md`](packages/percept-vision/eval/BENCHMARK_PLAN.md).
+All of this remains DRAFT, not a RELEASE claim. Full methodology, runbook, and references:
+[`docs/benchmark-methodology.md`](docs/benchmark-methodology.md) and
+[`docs/publishable-benchmark.md`](docs/publishable-benchmark.md).
 
 Run the public scorecard:
 

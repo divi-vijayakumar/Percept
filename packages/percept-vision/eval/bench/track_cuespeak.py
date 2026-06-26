@@ -15,7 +15,14 @@ from . import sim
 from .types import TrackResult
 
 TRACK = "cuespeak"
-_FMTS = {"precision": "{:.2f}", "recall": "{:.2f}", "fires/ep": "{:.2f}"}
+_FMTS = {
+    "precision": "{:.2f}",
+    "recall": "{:.2f}",
+    "fires/ep": "{:.2f}",
+    "naive_precision": "{:.2f}",
+    "naive_recall": "{:.2f}",
+    "naive_fires/ep": "{:.2f}",
+}
 _MEASURED = ["precision", "recall", "fires/ep"]
 
 
@@ -48,9 +55,12 @@ def score(*, live: bool = False, n: int = 8) -> TrackResult:
     rp, rr, rf = _score(sim.raw_fires(script, frames), episodes)
 
     cells = {
-        ("raw", "precision"): rp, ("core", "precision"): cp, ("e2e", "precision"): cp,
-        ("raw", "recall"): rr, ("core", "recall"): cr, ("e2e", "recall"): cr,
-        ("raw", "fires/ep"): rf, ("core", "fires/ep"): cf, ("e2e", "fires/ep"): cf,
+        ("dense-modeled", "naive_precision"): rp,
+        ("core-replay", "precision"): cp,
+        ("dense-modeled", "naive_recall"): rr,
+        ("core-replay", "recall"): cr,
+        ("dense-modeled", "naive_fires/ep"): rf,
+        ("core-replay", "fires/ep"): cf,
     }
     headline = {
         "cuespeak precision naive/core": f"{rp:.2f} / {cp:.2f}",
@@ -58,9 +68,12 @@ def score(*, live: bool = False, n: int = 8) -> TrackResult:
     }
     return TrackResult(
         track=TRACK, cells=cells, fmts=_FMTS, headline=headline,
-        measured=_MEASURED, modeled=[],
+        measured=["core-replay:precision", "core-replay:recall", "core-replay:fires/ep"],
+        modeled=["dense-modeled:naive_precision", "dense-modeled:naive_recall", "dense-modeled:naive_fires/ep"],
         reference={"fires/ep": {"value": 1.0, "by": "ideal: 1 interjection/cue"}},
         calls=0,
+        diagnostic=True,
+        excluded=["cuespeak: deterministic sim regression, not held-out product E2E"],
         notes=(f"sim: {n} episodes x{dur}f + {len(noise)} noise spikes; "
-               f"raw=scripted naive emitter (every true frame), core=rising-edge gate. e2e=core (edge is parity-equal)."),
+               f"naive=scripted emitter (every true frame), core-replay=rising-edge gate."),
     )

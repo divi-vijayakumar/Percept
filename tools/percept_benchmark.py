@@ -36,6 +36,9 @@ DEFAULT_CACHE_DIR = ROOT / "eval" / "local-benchmark" / "cache"
 DEFAULT_MANIFEST = ROOT / "eval" / "golden-v1" / "MANIFEST.json"
 
 TRACK_MODULES = {
+    "pt-action-e2e": "eval.bench.track_perception_test_e2e",
+    "charades-e2e": "eval.bench.track_charades_e2e",
+    "proactiveqa-e2e": "eval.bench.track_proactiveqa_e2e",
     "relational": "eval.bench.track_relational",
     "counting": "eval.bench.track_counting",
     "acoustic": "eval.bench.track_acoustic_pt",
@@ -45,7 +48,7 @@ TRACK_MODULES = {
     "cuespeak": "eval.bench.track_cuespeak",
     "timespeak": "eval.bench.track_timespeak",
 }
-SAFE_LIVE_TRACKS = ("counting", "edge", "escalation", "cuespeak", "timespeak")
+SAFE_LIVE_TRACKS = ("pt-action-e2e", "edge", "escalation", "counting", "cuespeak", "timespeak")
 LEGACY_MEDIA_DENSE_TRACKS = ("relational", "acoustic", "timeliness")
 ALIASES = {
     "all": SAFE_LIVE_TRACKS,
@@ -551,7 +554,7 @@ def _repcount_candidate_rows(n: int) -> list[dict[str, Any]]:
                 "split": "test",
                 "track": "repcount-a",
                 "task": "repetition_counting",
-                "scope": "unbiased action sample; full-e2e counting row, no raw VLM baseline",
+                "scope": "unbiased action sample; edge-boundary detector(s) feed the Percept core count; no raw VLM baseline",
                 "video_id": row["video_id"],
                 "media_path": _display_path(media),
                 "media_sha256": _sha256(media),
@@ -615,7 +618,7 @@ def cmd_manifest_candidate(args: argparse.Namespace) -> int:
             "Perception Test rows are one event per video from valid annotations.",
             "Charades rows are deterministic hash samples from verified test videos with actions; Charades is non-commercial reference data.",
             "ProactiveQA rows are deterministic hash samples from EGO annotations with answers.",
-            "RepCount rows use an unbiased action sample. Counting scorecards must not use a raw per-frame VLM baseline; publish fallback/unresolved rates.",
+            "RepCount rows use an unbiased action sample. Counting scorecards must not use a raw per-frame VLM baseline; publish detector/provider failures and unresolved rates.",
         ],
     }
     out = Path(args.out) if args.out else paths["cache_dir"] / "golden-v1-candidate.json"
@@ -957,7 +960,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
     manifest = Path(args.manifest).resolve() if args.manifest else DEFAULT_MANIFEST
     manifest_ref = _manifest_ref(manifest)
     backend = _backend_label(bool(_run_meta(run_dir).get("live")))
-    auroc = next((r.cells.get(("core", "auroc")) for r in results if r.track == "relational"), None)
+    auroc = next((r.cells.get(("core-replay", "auroc")) for r in results if r.track == "relational"), None)
     rendered = card.render_card(
         results,
         mode=args.mode,

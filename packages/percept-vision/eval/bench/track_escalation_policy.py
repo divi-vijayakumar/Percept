@@ -3,9 +3,9 @@
 This track measures the conductor, not the oracle. A VLM fallback only helps if the cheap edge wakes
 near the true event; it only stays cheap if it avoids waking everywhere else. We therefore compare:
 
-* raw  = current motion gate at the configured threshold.
-* core = weighted cheap-evidence policy (the current ``WakePolicy`` path).
-* e2e  = selective fallback: lower candidate threshold + a fixed cadence floor.
+* motion   = current motion gate at the configured threshold.
+* weighted = weighted cheap-evidence policy (the current ``WakePolicy`` path).
+* fallback = selective fallback: lower candidate threshold + a fixed cadence floor.
 
 The precision here is an escalation precision proxy: "would this VLM call land inside the annotated
 event window?" The final alert precision can be higher after Gemini filters false candidates, but the
@@ -157,39 +157,61 @@ def _events(*, live: bool, n: int) -> list[dict]:
 def _result(stats: dict[str, PolicyStats], *, thr: float, n_events: int, notes: str) -> TrackResult:
     cells = {}
     measured = []
-    config_for = {"motion": "raw", "weighted": "core", "fallback": "e2e"}
-    for name, config in config_for.items():
+    for name in ("motion", "weighted", "fallback"):
         s = stats[name]
         values = {
-            "recall": s.recall,
-            "precision_proxy": s.precision_proxy,
-            "calls_per_min": s.calls_per_min,
-            "cost_reduction": s.reduction,
-            "median_latency_s": s.median_latency_s,
+            f"{name}_recall": s.recall,
+            f"{name}_precision_proxy": s.precision_proxy,
+            f"{name}_calls_per_min": s.calls_per_min,
+            f"{name}_cost_reduction": s.reduction,
+            f"{name}_median_latency_s": s.median_latency_s,
         }
         for metric, value in values.items():
-            cells[(config, metric)] = value
+            cells[("edge", metric)] = value
             if value is not None:
-                measured.append(f"{config}:{metric}")
+                measured.append(f"edge:{metric}")
 
     fb = stats["fallback"]
+    def _fmt(v: float | None, spec: str = ".2f") -> str:
+        return "n/a" if v is None else format(v, spec)
+
+    latency_s = "n/a" if fb.median_latency_s is None else f"{fb.median_latency_s:.2f}s"
     return TrackResult(
         track=TRACK,
         cells=cells,
         fmts={
-            "recall": "{:.2f}",
-            "precision_proxy": "{:.2f}",
-            "calls_per_min": "{:.1f}",
-            "cost_reduction": "{:.2f}",
-            "median_latency_s": "{:.2f}",
+            "motion_recall": "{:.2f}",
+            "weighted_recall": "{:.2f}",
+            "fallback_recall": "{:.2f}",
+            "motion_precision_proxy": "{:.2f}",
+            "weighted_precision_proxy": "{:.2f}",
+            "fallback_precision_proxy": "{:.2f}",
+            "motion_calls_per_min": "{:.1f}",
+            "weighted_calls_per_min": "{:.1f}",
+            "fallback_calls_per_min": "{:.1f}",
+            "motion_cost_reduction": "{:.2f}",
+            "weighted_cost_reduction": "{:.2f}",
+            "fallback_cost_reduction": "{:.2f}",
+            "motion_median_latency_s": "{:.2f}",
+            "weighted_median_latency_s": "{:.2f}",
+            "fallback_median_latency_s": "{:.2f}",
         },
         headline={
             "escalation recall motion/weighted/fallback":
-                f"{stats['motion'].recall:.2f} / {stats['weighted'].recall:.2f} / {fb.recall:.2f}",
+                f"{_fmt(stats['motion'].recall)} / {_fmt(stats['weighted'].recall)} / {_fmt(fb.recall)}",
             "fallback cost and latency":
-                f"{fb.calls_per_min:.1f} calls/min, {fb.reduction:.2f} reduction, median {fb.median_latency_s:.2f}s",
+                f"{_fmt(fb.calls_per_min, '.1f')} calls/min, {_fmt(fb.reduction)} reduction, "
+                f"median {latency_s}",
         },
         measured=measured,
+        coverage=[{
+            "dataset": "perception-test/action",
+            "expected": n_events,
+            "observed": n_events,
+            "failed": 0,
+            "skipped": 0,
+            "notes": "edge-only policy ablation; precision is candidate-window proxy",
+        }],
         notes=(
             f"{notes}; N={n_events}; motion_thr={thr:.2f}; weighted change x{POLICY_CHANGE_WEIGHT:g}; "
             f"fallback threshold={thr * FALLBACK_CANDIDATE_FACTOR:.2f}, "
@@ -204,9 +226,9 @@ def _unavailable(exc: Exception | None = None) -> TrackResult:
     return TrackResult(
         track=TRACK,
         cells={
-            ("raw", "recall"): None,
-            ("core", "recall"): None,
-            ("e2e", "recall"): None,
+            ("edge", "motion_recall"): None,
+            ("edge", "weighted_recall"): None,
+            ("edge", "fallback_recall"): None,
         },
         headline={"escalation policy ablation": "n/a (local golden media unavailable)"},
         excluded=["escalation: local golden media unavailable"],

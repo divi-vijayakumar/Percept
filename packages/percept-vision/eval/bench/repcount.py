@@ -10,6 +10,8 @@ pull only the rows we sample (no full download). 152 test videos across 8 action
   * :func:`pose_rep_count`               — configured pose provider -> PC1 waveform -> autocorrelation period
                                            -> rep count. General across actions (unlike the
                                            jumping-jack-specific openness signal).
+  * :func:`percept_e2e_rep_count`         — registered edge detector(s) -> core.perceive_boundary ->
+                                           core-owned count. This is the benchmark-spec E2E path.
 """
 
 from __future__ import annotations
@@ -198,3 +200,80 @@ def pose_rep_count(path, fps: int = 6) -> int:
     duration = (T - 1) / fps
     period_s = lag / fps
     return int(round(duration / period_s)) if period_s > 0 else 0
+
+
+def percept_e2e_rep_count(path, *, action: str, fps: int = 6, detectors: list[str] | None = None) -> dict:
+    """Run the Percept edge-boundary -> core-count path for one RepCount-A routine.
+
+    The whole video is the routine window supplied by RepCount-A. The "brain-owned" contract is encoded
+    as a Percept goal: a completed repetition of the action, with a registered detector selected in
+    ``goal.state['detectors']``. The edge proposes timed boundaries; the core consumes them via
+    :meth:`Percept.perceive_boundary` and owns the resulting count. No VLM calls are made.
+
+    ``detectors`` defaults to ``PERCEPT_REPCOUNT_DETECTORS`` or ``pose-openness``. That default is
+    intentionally global, not action-specific, so the benchmark exposes limitations rather than tuning
+    thresholds per class.
+    """
+    import cv2
+
+    from percept import Goal, Percept
+    from percept_harness.detectors import DetectorBank
+    from percept_harness.tier0 import motion_score
+
+    from eval.count_video import decode
+
+    names = detectors
+    if names is None:
+        raw = os.environ.get("PERCEPT_REPCOUNT_DETECTORS", "pose-openness")
+        names = [p.strip() for p in raw.split(",") if p.strip()]
+    if not names:
+        names = ["pose-openness"]
+
+    small, full = decode(str(path), fps)
+    if not small or not full:
+        return {
+            "count": 0,
+            "frames": 0,
+            "boundaries": [],
+            "detectors": names,
+            "goal": f"a completed {action} repetition",
+        }
+
+    goal_id = "repcount"
+    goal_text = f"a completed {action.replace('_', ' ')} repetition"
+    core = Percept.create(discover_plugins=False)
+    core.add_goal(
+        Goal(
+            id=goal_id,
+            condition=goal_text,
+            say="rep counted",
+            state={"type": "watch", "count": 0, "detectors": names},
+        )
+    )
+    bank = DetectorBank(names)
+
+    prev = None
+    boundaries = []
+    # decode() returns aligned lists sampled at the same fps.
+    for (t, gate_frame), (_tf, bgr) in zip(small, full):
+        motion = motion_score(prev, gate_frame)
+        prev = gate_frame
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        for boundary in bank.push(t, motion=motion, frame=rgb):
+            boundaries.append(
+                {
+                    "detector": boundary.detector,
+                    "kind": boundary.kind,
+                    "t": float(boundary.t),
+                    "value": float(boundary.value),
+                }
+            )
+            core.perceive_boundary(goal_id, t=boundary.t)
+
+    return {
+        "count": int(core.edge_counts.get(goal_id, 0)),
+        "frames": len(full),
+        "boundaries": boundaries,
+        "detectors": names,
+        "goal": goal_text,
+    }

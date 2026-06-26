@@ -830,6 +830,30 @@ The first publishable ProactiveVideoQA target is:
 - clear latency distribution for first useful answer.
 - no hidden cache failures or zero-response pollution.
 
+### Current Smoke Outcome
+
+The first `proactiveqa-e2e` N=1 live smoke is an honest negative:
+
+```text
+video: f6a6c5d5-3fe0-42af-9ddb-fa1a63521c0d-2160-2520.mp4
+duration: about 360s
+answer turns: 11
+dense_modeled_calls: 65
+e2e_candidate_calls: 55
+call_reduction: 15.4%
+edge_candidate_recall: 0.82
+edge_candidate_precision_proxy: 0.55
+interruptions: 0
+unresolved_rate: 1.00
+PAUC@0.5 proxy: 25.0
+```
+
+Interpretation: the product adapter is wired and the scorecard is reproducible, but this track carries
+a release blocker until an independent answer judge replaces the token-overlap PAUC proxy. The default
+motion edge wakes too often on first-person cooking video and the candidate-answer prompt is too
+conservative, producing no answers. The next PVQA work is goal-aware/semantic wake filtering plus a
+better answer-evidence prompt and an independent answer judge.
+
 ## CueSpeak / TimeSpeak
 
 CueSpeak and TimeSpeak should be treated as interaction-protocol benchmarks for Percept's speech
@@ -1108,22 +1132,26 @@ ambient conditions at once. Each annotated action label becomes a watch goal. Al
 active together so the benchmark measures the actual product shape: one stream, many user goals, cheap
 edge/conductor wakeups, selective VLM confirmation, and rising-edge notifications.
 
-This is also the shape that makes a TML-style comparison meaningful. TML's Interaction Models Charades
-task asks the model to say when an action starts and when it stops, then scores temporal IoU. Percept's
-comparable E2E task is: turn the same action label into a watch goal, emit the rising-edge notification
-when the action starts, close the predicted span when the action stops, and score the predicted span
-against the same Charades interval.
+This is also the shape that can eventually make a TML-style comparison meaningful. TML's Interaction
+Models Charades task asks the model to say when an action starts and when it stops, then scores temporal
+IoU. Percept's current public watch contract emits rising-edge notifications. The current publishable
+Charades adapter therefore reports notification recall/precision/latency and call reduction. A
+candidate-only sparse span mIoU may be shown as diagnostic, but direct TML mIoU comparability requires a
+first-class start/stop span contract.
 
 The comparison must stay precise:
 
 - TML reference: interaction quality, reported as Charades mIoU.
-- Percept E2E: interaction quality, reported as Charades mIoU/time-F1 on the same label-to-interval task.
+- Percept E2E today: goal-conditioned notification quality, reported as interval hit recall/precision,
+  notification latency, and heavy-model call reduction.
+- Percept E2E future: start/stop span quality, reported as Charades mIoU/time-F1 on the same
+  label-to-interval task.
 - Percept additional axis: heavy-model calls, calls/min, cost estimate, and latency.
 
 Do not claim direct TML reproduction unless the prompt protocol, scorer, dataset split, and sampling
-match. The default public wording should be: "On a Charades-style goal-conditioned temporal notification
-benchmark, Percept E2E achieves X mIoU at Y fewer heavy-model calls. TML reports 32.4 mIoU on its
-Interaction Models Charades setup."
+match. The default public wording today should be: "On a Charades-style goal-conditioned temporal
+notification benchmark, Percept E2E achieves X notification recall / Y precision at Z fewer heavy-model
+calls. TML reports 32.4 mIoU on its separate Interaction Models Charades setup."
 
 Charades row shape:
 
@@ -1178,9 +1206,7 @@ Per-row expected output:
       "vlm_calls": 4,
       "fires": [{"t": 1.2, "action": "fire"}],
       "asks": [],
-      "predicted_span": [1.2, 20.1],
-      "latency_s": 1.2,
-      "iou": 0.88
+      "latency_s": 1.2
     }
   ]
 }
@@ -1216,16 +1242,18 @@ complete row. It must not be included in the headline.
 
 ### E2E Charades
 
-E2E is the product benchmark adapter we should build next.
+E2E is now available as `charades-e2e` in `tools/percept_benchmark.py`. It is not part of
+`safe-live` because a single video can contain many active goals, so it should be run deliberately.
 
 Protocol:
 
 ```text
-TML-style prompt:
-  "Say start when the person starts doing {action}; say stop when they stop."
-
-Percept E2E equivalent:
+Current Percept E2E:
   "Notify me when someone is {action}."
+  start = first valid fire/rising edge
+
+Future TML-style Percept E2E:
+  "Say start when the person starts doing {action}; say stop when they stop."
   start = first valid fire/rising edge
   stop = predicted span close after confident no / timeout / end-of-evidence policy
 ```
@@ -1244,8 +1272,9 @@ core -> WatchSpec([g1, g2, g3, ...])
 edge scans frames at 4fps or configured fps
 on candidate wake:
   VLM judges candidate frame/window for active goals
-core turns verdicts into events/spans
-score spans per goal against Charades intervals
+core turns verdicts into fire/ask/silent events
+score fires per goal against Charades intervals
+derive sparse spans from candidate verdicts only as a diagnostic
 ```
 
 Expected:
@@ -1253,20 +1282,20 @@ Expected:
 - Fewer VLM calls than the dense modeled schedule.
 - Some recall loss is possible if edge misses low-motion events.
 - Final precision should improve after VLM confirmation and cognition dedupe.
-- The scorer must report goal-level misses, not only averaged mIoU, so we can see whether failures are
+- The scorer must report goal-level misses, not only an average, so we can see whether failures are
   systematic by verb family: holding, cleaning, locomotion, object interaction, etc.
 
 Actual outcome must report both quality and calls:
 
 ```text
 dense_modeled_calls=217
-e2e_calls=42
-call_reduction=80.6%
-e2e_mIoU=...
-event_recall=...
-notification_precision=...
-notification_latency_p50=...
-coverage=...
+e2e_calls=35
+call_reduction=83.9%
+notification_recall=0.57
+notification_precision=0.80
+notification_latency_p50=12.10s
+sparse_span_mIoU_diagnostic=0.12
+coverage=pass
 ```
 
 Failure classification:
@@ -1290,7 +1319,8 @@ These are current findings, not final benchmark claims.
 | Charades `5.6` mIoU | Dominated by zero-verdict cache entries after Gemini quota exhaustion | invalid as full-sample score |
 | Charades current scripts | Legacy dense/core replay over shared Gemini verdicts | do not run live; useful only for offline historical analysis |
 | Escalation track | Measures edge candidate recall/call tradeoff without final VLM judgment | valid as conductor diagnostic |
-| Full Charades E2E | Product architecture exists, dataset adapter/scorer does not | next implementation target |
+| Charades E2E notification N=1 | `LR9KL`: 217 dense-modeled calls -> 35 candidate Gemini calls; recall 0.57, precision 0.80 | valid smoke, sampled DRAFT only |
+| Full Charades start/stop E2E | Product architecture needs a span contract and scorer before direct TML mIoU comparison | future implementation target |
 
 ## Benchmark Implementation Order
 
@@ -1303,13 +1333,14 @@ These are current findings, not final benchmark claims.
    - vague action labels -> literal and operationalized goal variants.
    - core compiles WatchSpec before edge scoring.
    - report edge recall/precision, final notification recall/precision, latency, calls, ASK rate.
-3. Build Charades E2E adapter:
+3. Build Charades E2E notification adapter:
    - one WatchSpec per video with all sampled action goals.
    - edge selects candidate frames/windows.
    - VLM judges only candidates.
-   - score mIoU plus calls/cost/latency.
+   - score interval notification recall/precision plus calls/cost/latency.
 4. Add derived CueSpeak/TimeSpeak scorers over PT/PVQA E2E outputs.
-5. Only then create a product-level scorecard.
+5. Add start/stop span contract if direct TML Charades mIoU is required.
+6. Only then create a product-level scorecard.
 
 Legacy cleanup:
    - row status: `complete`, `incomplete`, `failed`.

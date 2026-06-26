@@ -40,7 +40,7 @@ As of the draft golden set:
 | --- | ---: | --- |
 | Perception Test action/timeliness | `8` events | no |
 | Perception Test sound/acoustic | `2` events | no |
-| Charades selection | `10` videos | no |
+| Charades selection | `100` videos cached; N=1 live notification smoke complete | no |
 | OmniPro visual slice | `20` samples | no |
 | CueSpeak / TimeSpeak | deterministic simulation only | no |
 
@@ -54,7 +54,7 @@ Minimum targets before stamping a scorecard as publishable:
 | --- | ---: | --- |
 | Perception Test action/timeliness | `100-200` events | public, license-cleared, content-hashed |
 | Perception Test sound/acoustic | `50-100` events | include visible and non-visible sources |
-| Charades temporal notification | `100+` video/action goals | TML-style start/stop scoring; E2E only; dense calls modeled |
+| Charades temporal notification | `100+` video/action goals | notification recall/precision/latency; E2E only; dense calls modeled |
 | RepCount-A full-E2E counting | full selected split | no raw VLM baseline; all action types included; report OBO/MAE, calls, fallback and unresolved rates |
 | ProactiveVideoQA edge-E2E | `100+` questions / answer turns | report PAUC, interruptions, first-answer latency, heavy-model calls, unresolved rate |
 | OmniPro visual-only | `100+` prompts | use official OmniPro scorer where possible |

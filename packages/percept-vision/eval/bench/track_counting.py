@@ -1,14 +1,9 @@
-"""COUNTING track — RepCount-A E2E counting.
+"""COUNTING track — RepCount-A Percept E2E counting.
 
 RepCount-A is a repetition-counting task, not a frame-level VLM task. This track does not call a raw
-VLM baseline. It samples across all valid action types, runs the current local Percept counting path,
-and reports unresolved/fallback pressure explicitly. Detector-specific or pose-friendly subsets belong
-in diagnostic cards, not the publishable RepCount-A row.
-
-This exercises the existing Percept architecture: the core/brain owns routine start/stop semantics,
-the action-specific unit to count, and the fallback policy. The edge attempts the cheap measurement. If
-a hard action such as pommelhorse defeats the current detector, the row stays in the sample and is
-reported as a failure or unresolved case.
+VLM baseline. It samples across all valid action types, creates a Percept count goal for each routine,
+lets registered edge detectors propose repetition boundaries, and lets the core own the count via
+``perceive_boundary``. Provider/detector failures are explicit failed coverage, never cached as success.
 
 Metrics (averaged over videos): obo (off-by-one accuracy, |pred-gt|<=1) and mae (|pred-gt|).
 Reference = TransRAC (CVPR'22) on RepCount-A, shown only as an external bar.
@@ -16,7 +11,6 @@ Reference = TransRAC (CVPR'22) on RepCount-A, shown only as an external bar.
 
 from __future__ import annotations
 
-import os
 from collections import Counter
 
 from . import repcount
@@ -30,7 +24,7 @@ _REFERENCE = {
     "mae": {"value": 0.44, "by": "TransRAC"},
 }
 _FMTS = {"obo": "{:.2f}", "mae": "{:.2f}", "unresolved_rate": "{:.2f}"}
-_MEASURED = ["e2e obo", "e2e mae", "e2e unresolved_rate"]
+_MEASURED = ["e2e:obo", "e2e:mae", "e2e:unresolved_rate"]
 
 
 def _short_error(exc: Exception) -> str:
@@ -42,7 +36,18 @@ def _short_error(exc: Exception) -> str:
     return msg[:120]
 
 
-def _result(cells, headline, notes, *, calls, measured, modeled, excluded=None) -> TrackResult:
+def _result(
+    cells,
+    headline,
+    notes,
+    *,
+    calls,
+    measured,
+    modeled,
+    excluded=None,
+    coverage=None,
+    diagnostic=False,
+) -> TrackResult:
     return TrackResult(
         track=TRACK,
         cells=cells,
@@ -54,61 +59,32 @@ def _result(cells, headline, notes, *, calls, measured, modeled, excluded=None) 
         calls=calls,
         notes=notes,
         excluded=list(excluded or []),
+        coverage=list(coverage or []),
+        diagnostic=diagnostic,
     )
 
 
 def score(*, live: bool, n: int) -> TrackResult:
     if not live:
-        # OFFLINE stub — no dataset, no API. Modeled until the full action-set runner executes.
+        # OFFLINE stub — no dataset, no pose runtime. Modeled diagnostic until live runs the detector path.
         cells = {
-            ("raw", "obo"): None,
-            ("raw", "mae"): None,
-            ("raw", "unresolved_rate"): None,
-            ("core", "obo"): None,
-            ("core", "mae"): None,
-            ("core", "unresolved_rate"): None,
             ("e2e", "obo"): 0.45,
             ("e2e", "mae"): 1.8,
             ("e2e", "unresolved_rate"): 0.20,
         }
         headline = {
-            "counting RepCount-A full-E2E OBO (N)": "0.45 (N=stub) [SOTA TransRAC 0.29]",
-            "counting full-E2E MAE": "1.80",
+            "counting RepCount-A E2E OBO (N)": "0.45 (N=stub) [SOTA TransRAC 0.29]",
+            "counting E2E MAE": "1.80",
             "counting unresolved rate": "0.20",
         }
         return _result(
             cells,
             headline,
-            "offline stub",
+            "offline modeled stub; live mode runs edge-boundaries -> core count",
             calls=0,
             measured=[],
             modeled=_MEASURED,
-        )
-
-    if os.environ.get("PERCEPT_ENABLE_POSE_COUNT") != "1":
-        cells = {
-            ("raw", "obo"): None,
-            ("raw", "mae"): None,
-            ("raw", "unresolved_rate"): None,
-            ("core", "obo"): None,
-            ("core", "mae"): None,
-            ("core", "unresolved_rate"): None,
-            ("e2e", "obo"): None,
-            ("e2e", "mae"): None,
-            ("e2e", "unresolved_rate"): None,
-        }
-        return _result(
-            cells,
-            {
-                "counting RepCount-A full-E2E OBO (N)": "n/a (pose runner disabled)",
-                "counting full-E2E MAE": "n/a",
-                "counting unresolved rate": "n/a",
-            },
-            "pose counting skipped locally; set PERCEPT_ENABLE_POSE_COUNT=1 to run the configured pose provider",
-            calls=0,
-            measured=[],
-            modeled=[],
-            excluded=["counting: pose runner disabled (PERCEPT_ENABLE_POSE_COUNT!=1)"],
+            diagnostic=True,
         )
 
     ev = repcount.sample_repcount_unbiased(n)
@@ -121,7 +97,8 @@ def score(*, live: bool, n: int) -> TrackResult:
         gt = e["count"]
 
         try:
-            e2e_pred = repcount.pose_rep_count(path)
+            counted = repcount.percept_e2e_rep_count(path, action=e["action"])
+            e2e_pred = counted["count"]
         except Exception as exc:
             unresolved.append((e["video_id"], e["action"], type(exc).__name__, _short_error(exc)))
             e2e_obos.append(0.0)
@@ -135,7 +112,18 @@ def score(*, live: bool, n: int) -> TrackResult:
         denom = max(gt, 1)  # normalized MAE matches RepCount-A reference convention.
         e2e_obos.append(1.0 if abs(e2e_pred - gt) <= 1 else 0.0)
         e2e_maes.append(abs(e2e_pred - gt) / denom)
-        per_video.append((e["video_id"], e["action"], gt, e2e_pred))
+        per_video.append(
+            (
+                e["video_id"],
+                e["action"],
+                gt,
+                e2e_pred,
+                counted["detectors"],
+                counted["frames"],
+                len(counted["boundaries"]),
+                [round(b["t"], 2) for b in counted["boundaries"][:20]],
+            )
+        )
 
     def _mean(xs):
         return sum(xs) / len(xs) if xs else 0.0
@@ -144,27 +132,23 @@ def score(*, live: bool, n: int) -> TrackResult:
     unresolved_rate = len(unresolved) / len(ev) if ev else 0.0
 
     cells = {
-        ("raw", "obo"): None,
-        ("raw", "mae"): None,
-        ("raw", "unresolved_rate"): None,
-        ("core", "obo"): None,
-        ("core", "mae"): None,
-        ("core", "unresolved_rate"): None,
         ("e2e", "obo"): e2e_obo,
         ("e2e", "mae"): e2e_mae,
         ("e2e", "unresolved_rate"): unresolved_rate,
     }
     headline = {
-        "counting RepCount-A full-E2E OBO (N)":
+        "counting RepCount-A E2E OBO (N)":
             f"{e2e_obo:.2f} (N={len(ev)}) [SOTA TransRAC 0.29]",
-        "counting full-E2E MAE": f"{e2e_mae:.2f}",
+        "counting E2E MAE": f"{e2e_mae:.2f}",
         "counting unresolved rate": f"{unresolved_rate:.2f}",
     }
     mix = Counter(e["action"] for e in ev)
     notes = (
-        f"unbiased action sample; no raw VLM baseline. action mix: {dict(mix)}; "
-        f"unresolved: {unresolved}; per-video (vid,action,gt,e2e): {per_video}"
+        f"unbiased action sample; edge-boundaries -> core count; no raw VLM baseline. "
+        f"action mix: {dict(mix)}; unresolved: {unresolved}; "
+        f"per-video (vid,action,gt,e2e,detectors,frames,boundaries,boundary_ts): {per_video}"
     )
+    failed = len([u for u in unresolved if len(u) >= 4])
     return _result(
         cells,
         headline,
@@ -172,4 +156,12 @@ def score(*, live: bool, n: int) -> TrackResult:
         calls=0,
         measured=_MEASURED,
         modeled=[],
+        coverage=[{
+            "dataset": "repcount-a",
+            "expected": len(ev),
+            "observed": len(ev) - failed,
+            "failed": failed,
+            "skipped": 0,
+            "notes": "edge-boundary detector(s) -> Percept core count; no VLM calls",
+        }],
     )
