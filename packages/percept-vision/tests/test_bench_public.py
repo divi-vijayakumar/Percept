@@ -32,6 +32,7 @@ class TestPublicBenchShim(unittest.TestCase):
             text = out.read_text()
             self.assertIn("Percept Benchmark Snapshot", text)
             self.assertIn("sha256:", text)
+            self.assertNotIn("escalation recall", text)
 
     def test_scorecard_require_release_rejects_draft_card(self):
         with TemporaryDirectory() as d:

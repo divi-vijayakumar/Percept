@@ -70,6 +70,21 @@ scorecard changes can re-score without paying again.
 
 ## Run Plan
 
+0. Prepare the local benchmark workspace.
+
+```bash
+# These live in ignored .env for the local machine:
+# PERCEPT_BENCH_DATA_DIR=eval/bench-staging
+# PERCEPT_BENCH_RUNS_DIR=eval/local-benchmark/runs
+# PERCEPT_BENCH_CACHE_DIR=eval/local-benchmark/cache
+make benchmark-prepare
+# Optional network/data materialization step:
+make benchmark-fetch VIDEOS=12 REPCOUNT=12
+```
+
+The tracked local control-room docs live in `eval/local-benchmark/`; datasets,
+logs, caches, and generated cards remain ignored.
+
 1. Expand and freeze the public manifest.
    - Add rows to `eval/golden-v1/MANIFEST.json`.
    - Require media SHA-256 and annotation SHA-256 for every row.
@@ -92,6 +107,9 @@ export PERCEPT_LIVE=1
 export GEMINI_API_KEY=...
 export PERCEPT_GEMINI_MODEL=gemini-3.5-flash
 
+make benchmark-run LIVE=1 TRACKS=stable N=20 WORKERS=2 ATTEMPTS=2
+
+# Direct lower-level experiment lanes remain available:
 PERCEPT_LIVE=1 make e2e-bench
 PERCEPT_LIVE=1 make charades-bench
 PERCEPT_LIVE=1 PYTHONPATH=packages/percept-vision python3 -m eval.exp_charades_miou
@@ -101,6 +119,9 @@ PERCEPT_LIVE=1 PYTHONPATH=packages/percept-vision python3 -m eval.exp_omnipro
 4. Render the public card.
 
 ```bash
+make benchmark-collect RUN_DIR=eval/local-benchmark/runs/<run-id>
+
+# Release gate still uses the official scorer/card command:
 percept-bench scorecard --mode full --require-release \
   --manifest eval/golden-v1/MANIFEST.json \
   --out scorecard.txt

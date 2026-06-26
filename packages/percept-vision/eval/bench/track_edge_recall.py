@@ -25,13 +25,21 @@ def _frame_series(path, fps: float = 4.0):
 
     from percept_harness.tier0 import Frame
 
-    from eval.count_video import decode
-
-    _, full = decode(str(path), fps)
+    cap = cv2.VideoCapture(str(path))
+    src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    step = max(1, int(round(src_fps / fps)))
     out = []
-    for t, bgr in full:
-        g = cv2.resize(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), (GW, GH))
-        out.append((t, Frame(w=GW, h=GH, pixels=tuple(int(p) for p in g.flatten()))))
+    i = 0
+    while True:
+        ok, bgr = cap.read()
+        if not ok:
+            break
+        if i % step == 0:
+            t = i / src_fps
+            g = cv2.resize(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), (GW, GH))
+            out.append((t, Frame(w=GW, h=GH, pixels=tuple(int(p) for p in g.flatten()))))
+        i += 1
+    cap.release()
     return out
 
 

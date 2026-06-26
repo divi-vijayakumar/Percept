@@ -10,7 +10,7 @@ PY        := python3
 # absolute path to the zero-dep contract pkg (vision runs from inside $(SDK), so it needs this)
 CONTRACTS_ABS := $(abspath $(CONTRACTS))
 
-.PHONY: help test test-harness test-js test-all parity eval-live eval-benchmark e2e bench audit-benchmark scorecard check reproduce
+.PHONY: help test test-harness test-js test-all parity eval-live eval-benchmark e2e bench audit-benchmark scorecard benchmark-prepare benchmark-fetch benchmark-fetch-charades benchmark-fetch-proactiveqa benchmark-index-proactiveqa benchmark-manifest benchmark-run benchmark-collect check reproduce
 
 help:
 	@echo "test       L1 unit — percept-contracts + percept-vision + percept-harness (fakes, no keys, fast)"
@@ -21,6 +21,14 @@ help:
 	@echo "e2e        L3 e2e — live smoke (needs keys; skips cleanly)"
 	@echo "bench      gating cost reduction (gated vs ungated vision calls)"
 	@echo "audit-benchmark  validate golden manifest + baseline registry artifacts"
+	@echo "benchmark-prepare  create ignored local benchmark folders + inventory"
+	@echo "benchmark-fetch  pre-cache benchmark media (VIDEOS=12 REPCOUNT=12)"
+	@echo "benchmark-fetch-charades  pre-cache Charades reference videos (CHARADES_N=100)"
+	@echo "benchmark-fetch-proactiveqa  pre-cache ProactiveVideoQA EGO videos (PVQA_N=100)"
+	@echo "benchmark-index-proactiveqa  rewrite ProactiveQA subset from local cache"
+	@echo "benchmark-manifest  write ignored content-hashed candidate manifest (PT_ACTION=200 PT_SOUND=100)"
+	@echo "benchmark-run  run reproducible local scorecard wrapper (TRACKS=stable N=8 WORKERS=2)"
+	@echo "benchmark-collect  re-render a local scorecard (RUN_DIR=eval/local-benchmark/runs/<id>)"
 	@echo "check      lint + types (best-effort; skips missing tools)"
 	@echo "reproduce  reproduce a published scorecard row"
 
@@ -61,6 +69,47 @@ audit-benchmark:
 
 scorecard:
 	PYTHONPATH=$(SDK):$(HARNESS):$(CONTRACTS) $(PY) -m percept.bench scorecard --manifest eval/golden-v1/MANIFEST.json --out scorecard.txt
+
+benchmark-prepare:
+	$(PY) tools/percept_benchmark.py prepare
+
+VIDEOS ?= 12
+REPCOUNT ?= 12
+benchmark-fetch:
+	$(PY) tools/percept_benchmark.py fetch --videos $(VIDEOS) --repcount $(REPCOUNT)
+
+CHARADES_N ?= 100
+benchmark-fetch-charades:
+	$(PY) tools/percept_benchmark.py fetch-charades --n $(CHARADES_N)
+
+PVQA_N ?= 100
+benchmark-fetch-proactiveqa:
+	$(PY) tools/percept_benchmark.py fetch-proactiveqa --n $(PVQA_N)
+
+benchmark-index-proactiveqa:
+	$(PY) tools/percept_benchmark.py index-proactiveqa
+
+PT_ACTION ?= 200
+PT_SOUND ?= 100
+MANIFEST_CHARADES ?= 100
+MANIFEST_PVQA ?= 100
+MANIFEST_REPCOUNT ?= 100
+benchmark-manifest:
+	$(PY) tools/percept_benchmark.py manifest-candidate --pt-action $(PT_ACTION) --pt-sound $(PT_SOUND) --charades $(MANIFEST_CHARADES) --proactiveqa $(MANIFEST_PVQA) --repcount $(MANIFEST_REPCOUNT)
+
+TRACKS ?= stable
+N ?= 8
+WORKERS ?= 2
+ATTEMPTS ?= 2
+LIVE ?= 0
+LIVE_FLAG := $(if $(filter 1,$(LIVE)),--live,)
+benchmark-run:
+	$(PY) tools/percept_benchmark.py run $(LIVE_FLAG) --tracks $(TRACKS) --n $(N) --workers $(WORKERS) --attempts $(ATTEMPTS)
+
+RUN_DIR ?=
+benchmark-collect:
+	@if [ -z "$(RUN_DIR)" ]; then echo "set RUN_DIR=eval/local-benchmark/runs/<run-id>"; exit 2; fi
+	$(PY) tools/percept_benchmark.py collect --run-dir $(RUN_DIR)
 
 calibrate:
 	cd $(SDK) && PYTHONPATH=.:$(CONTRACTS_ABS) $(PY) -m eval.calibrate

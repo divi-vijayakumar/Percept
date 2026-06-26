@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import zipfile
 from functools import lru_cache
 from pathlib import Path
@@ -24,12 +25,15 @@ ANN_ZIP = {
     "action": "challenge_action_localisation_valid_annotations.zip",
 }
 TASK_KEY = {"sound": "sound_localisation", "action": "action_localisation"}
+REPO_ROOT = Path(__file__).resolve().parents[4]
 VIDEOS_ZIP = f"{GCS}/valid_videos.zip"
 
-STAGE = Path(__file__).resolve().parent.parent / "bench-staging" / "perception_test"
+_DEFAULT_STAGE_ROOT = Path(__file__).resolve().parent.parent / "bench-staging"
+_STAGE_ROOT = Path(os.environ.get("PERCEPT_BENCH_DATA_DIR", _DEFAULT_STAGE_ROOT)).expanduser()
+STAGE = (_STAGE_ROOT if _STAGE_ROOT.is_absolute() else REPO_ROOT / _STAGE_ROOT) / "perception_test" / "raw"
 VIDEO_DIR = STAGE / "videos"
-REPO_ROOT = Path(__file__).resolve().parents[4]
 GOLDEN_MANIFEST = REPO_ROOT / "eval" / "golden-v1" / "MANIFEST.json"
+SAMPLE_SEED = os.environ.get("PERCEPT_BENCH_SAMPLE_SEED", "percept-golden-v1")
 
 
 def _download(url: str, dest: Path) -> Path:
@@ -70,9 +74,8 @@ def sample_events(task: str, n: int, *, is_visible: int | None = None) -> list[d
                 "fps": v["metadata"]["frame_rate"], "is_visible": s.get("is_visible"),
             })
             break  # one event per video -> diverse sample
-        if len(out) >= n:
-            break
-    return out
+    out.sort(key=lambda e: hashlib.sha256(f"{SAMPLE_SEED}|pt|{task}|{e['video_id']}".encode("utf-8")).hexdigest())
+    return out[:n]
 
 
 @lru_cache(maxsize=1)

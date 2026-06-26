@@ -13,6 +13,8 @@ pull only the rows we sample (no full download). 152 test videos across 8 action
 
 from __future__ import annotations
 
+import os
+import hashlib
 from functools import lru_cache
 from pathlib import Path
 
@@ -28,7 +30,12 @@ POSE_FRIENDLY = {
 }
 
 _DATASET_URI = "hf://datasets/lmms-lab-eval/repcounta-lance/data/test.lance"
-_STAGING = Path(__file__).resolve().parents[1] / "bench-staging" / "repcount"
+REPO_ROOT = Path(__file__).resolve().parents[4]
+_DEFAULT_STAGE_ROOT = Path(__file__).resolve().parents[1] / "bench-staging"
+_STAGE_ROOT = Path(os.environ.get("PERCEPT_BENCH_DATA_DIR", _DEFAULT_STAGE_ROOT)).expanduser()
+_STAGING = (_STAGE_ROOT if _STAGE_ROOT.is_absolute() else REPO_ROOT / _STAGE_ROOT) / "repcount" / "raw"
+_LOCAL_LANCE = _STAGING / "data" / "test.lance"
+SAMPLE_SEED = os.environ.get("PERCEPT_BENCH_SAMPLE_SEED", "percept-golden-v1")
 
 
 def _pose_model_path() -> str:
@@ -40,6 +47,8 @@ def load_ds():
     """The RepCount-A test Lance dataset (lazy — blobs read on demand)."""
     import lance
 
+    if _LOCAL_LANCE.exists():
+        return lance.dataset(str(_LOCAL_LANCE))
     return lance.dataset(_DATASET_URI)
 
 
@@ -66,7 +75,7 @@ def sample_repcount(n: int) -> list[dict]:
         for i, m in enumerate(meta)
         if m["action_type"] in POSE_FRIENDLY and 4 <= int(m["count"]) <= 20
     ]
-    rows.sort(key=lambda r: r["video_id"])
+    rows.sort(key=lambda r: hashlib.sha256(f"{SAMPLE_SEED}|repcount|{r['video_id']}".encode("utf-8")).hexdigest())
     return rows[:n]
 
 
