@@ -59,6 +59,13 @@ CHARADES_VIDEO_ZIP = "https://ai2-public-datasets.s3-us-west-2.amazonaws.com/cha
 PROACTIVEQA_EGO_ZIP = "https://huggingface.co/datasets/wangyueqian/ProactiveVideoQA/resolve/main/EGO/videos.zip"
 SAMPLE_SEED = os.environ.get("PERCEPT_BENCH_SAMPLE_SEED", "percept-golden-v1")
 
+# Front-load the pose checkpoint download (RTMO via MMPose) in a child that has the
+# benchmark PYTHONPATH + certifi TLS bundle, so the counting track never blocks on it.
+POSE_WARM_SNIPPET = (
+    "from percept_harness.pose import ensure_pose_ready; "
+    "print('pose provider ready:', ensure_pose_ready())"
+)
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -116,6 +123,25 @@ def _pythonpath() -> str:
     return os.pathsep.join(parts)
 
 
+def _ensure_tls_certs(env: dict[str, str]) -> dict[str, str]:
+    """Default SSL_CERT_FILE/REQUESTS_CA_BUNDLE to certifi's bundle.
+
+    macOS python.org builds ship without a usable system CA chain, so torch-hub
+    (urllib) RTMO checkpoint downloads fail with CERTIFICATE_VERIFY_FAILED. Point the
+    download paths at certifi unless the caller already pinned a bundle.
+    """
+    if env.get("SSL_CERT_FILE") and env.get("REQUESTS_CA_BUNDLE"):
+        return env
+    try:
+        import certifi
+    except ModuleNotFoundError:
+        return env
+    bundle = certifi.where()
+    env.setdefault("SSL_CERT_FILE", bundle)
+    env.setdefault("REQUESTS_CA_BUNDLE", bundle)
+    return env
+
+
 def _env() -> dict[str, str]:
     _load_dotenv()
     env = os.environ.copy()
@@ -126,6 +152,7 @@ def _env() -> dict[str, str]:
     env.setdefault("PERCEPT_BENCH_DATA_DIR", _display_path(paths["data_dir"]))
     env.setdefault("PERCEPT_BENCH_RUNS_DIR", _display_path(paths["runs_dir"]))
     env.setdefault("PERCEPT_BENCH_CACHE_DIR", _display_path(paths["cache_dir"]))
+    _ensure_tls_certs(env)
     return env
 
 
@@ -604,6 +631,51 @@ def cmd_manifest_candidate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _prefetch_pose(run_dir: Path) -> bool:
+    """Warm the configured pose provider checkpoint up front. Returns True on success.
+
+    A failure is non-fatal: the counting track will still run and report the real
+    unresolved reason. We only front-load so a slow/broken download surfaces early.
+    """
+    provider = os.environ.get("PERCEPT_POSE_PROVIDER", "rtmo")
+    log_path = run_dir / "logs" / "pose-prefetch.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_event(run_dir, {"event": "pose_prefetch_start", "provider": provider})
+    started = time.time()
+    with log_path.open("a") as log:
+        log.write(f"\n### pose prefetch ({provider}) {datetime.now(timezone.utc).isoformat()}\n")
+        proc = subprocess.run(
+            [sys.executable, "-c", POSE_WARM_SNIPPET],
+            cwd=ROOT,
+            env=_env(),
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    elapsed = round(time.time() - started, 2)
+    ok = proc.returncode == 0
+    _write_event(
+        run_dir,
+        {
+            "event": "pose_prefetch_done",
+            "provider": provider,
+            "ok": ok,
+            "returncode": proc.returncode,
+            "elapsed_s": elapsed,
+            "log": str(log_path),
+        },
+    )
+    return ok
+
+
+def cmd_prefetch_pose(_args: argparse.Namespace) -> int:
+    """Download/warm the configured pose provider checkpoint (RTMO by default)."""
+    provider = os.environ.get("PERCEPT_POSE_PROVIDER", "rtmo")
+    print(f"warming pose provider: {provider}")
+    proc = subprocess.run([sys.executable, "-c", POSE_WARM_SNIPPET], cwd=ROOT, env=_env(), text=True)
+    return proc.returncode
+
+
 def cmd_run_track(args: argparse.Namespace) -> int:
     _load_dotenv()
     if args.live:
@@ -739,6 +811,7 @@ def _background_cmd(args: argparse.Namespace, run_id: str) -> list[str]:
     if args.exclude:
         cmd.extend(["--exclude", args.exclude])
     cmd.append("--resume" if args.resume else "--no-resume")
+    cmd.append("--prefetch-pose" if args.prefetch_pose else "--no-prefetch-pose")
     return cmd
 
 
@@ -809,6 +882,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         f"mode: {'live' if args.live else 'offline'} · n={args.n} · workers={args.workers} "
         f"· attempts={args.attempts} · resume={args.resume} · start_delay_s={args.start_delay_s}"
     )
+
+    pose_needed = (
+        args.live and "counting" in tracks and os.environ.get("PERCEPT_ENABLE_POSE_COUNT") == "1"
+    )
+    if pose_needed and args.prefetch_pose:
+        provider = os.environ.get("PERCEPT_POSE_PROVIDER", "rtmo")
+        print(f"prefetching pose model ({provider}) ...")
+        ok = _prefetch_pose(run_dir)
+        print(f"pose prefetch: {'ok' if ok else 'failed (counting track will report the unresolved reason)'}")
 
     outcomes: list[dict[str, Any]] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
@@ -934,6 +1016,9 @@ def build_parser() -> argparse.ArgumentParser:
     pindex = sub.add_parser("index-proactiveqa", help="rewrite EGO_subset.json from locally cached videos")
     pindex.set_defaults(func=cmd_index_proactiveqa)
 
+    posewarm = sub.add_parser("prefetch-pose", help="download/warm the configured pose provider checkpoint (RTMO by default)")
+    posewarm.set_defaults(func=cmd_prefetch_pose)
+
     run = sub.add_parser("run", help="run benchmark tracks with retries and per-track logs")
     run.add_argument("--live", action="store_true", help="use live Gemini-backed track scorers")
     run.add_argument("--n", type=int, default=8, help="sample size per track")
@@ -965,6 +1050,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="stagger track subprocess starts by this many seconds per track index",
     )
     run.add_argument("--background", action="store_true", help="launch the run in the background and return immediately")
+    run.add_argument(
+        "--prefetch-pose",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="warm the pose model (download RTMO checkpoint) before the counting track runs",
+    )
     run.set_defaults(func=cmd_run)
 
     collect = sub.add_parser("collect", help="collect a scorecard from an existing run directory")

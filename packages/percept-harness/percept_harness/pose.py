@@ -50,6 +50,9 @@ class PoseProvider(Protocol):
     def detect(self, frame: Any) -> list[PoseDetection]:
         ...
 
+    def warm(self) -> str:
+        ...
+
 
 class RTMOPoseProvider:
     """RTMO/MMPose provider.
@@ -70,6 +73,11 @@ class RTMOPoseProvider:
         self._model = model or os.environ.get("PERCEPT_RTMO_MODEL", "rtmo")
         self._device = device or os.environ.get("PERCEPT_POSE_DEVICE", "cpu")
         self._inferencer = None
+
+    def warm(self) -> str:
+        """Build the inferencer now (downloads the RTMO checkpoint). Returns provider name."""
+        self._ensure()
+        return self.name
 
     def _ensure(self):
         if self._inferencer is not None:
@@ -131,6 +139,11 @@ class BlazePoseProvider:
         self._lmk = None
         self._mp = None
 
+    def warm(self) -> str:
+        """Build the landmarker now (loads the .task model). Returns provider name."""
+        self._ensure()
+        return self.name
+
     def _ensure(self):
         if self._lmk is not None:
             return self._lmk
@@ -188,6 +201,15 @@ def make_pose_provider(name: str | None = None) -> PoseProvider:
     raise KeyError(f"unknown pose provider {provider!r}; expected 'rtmo' or 'blazepose'")
 
 
+def ensure_pose_ready(name: str | None = None) -> str:
+    """Build the configured pose provider so its weights are downloaded and cached.
+
+    Front-loads (and surfaces failures from) the pose checkpoint download before a run,
+    instead of paying it lazily on the first frame. Returns the resolved provider name.
+    """
+    return make_pose_provider(name).warm()
+
+
 def _shape_hw(frame: Any) -> tuple[float | None, float | None]:
     shape = getattr(frame, "shape", None)
     if shape is not None and len(shape) >= 2:
@@ -218,4 +240,5 @@ __all__ = [
     "RTMOPoseProvider",
     "BlazePoseProvider",
     "make_pose_provider",
+    "ensure_pose_ready",
 ]
