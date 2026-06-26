@@ -15,6 +15,7 @@ import hashlib
 import importlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -44,10 +45,14 @@ TRACK_MODULES = {
     "cuespeak": "eval.bench.track_cuespeak",
     "timespeak": "eval.bench.track_timespeak",
 }
+SAFE_LIVE_TRACKS = ("counting", "edge", "escalation", "cuespeak", "timespeak")
+LEGACY_MEDIA_DENSE_TRACKS = ("relational", "acoustic", "timeliness")
 ALIASES = {
-    "all": tuple(TRACK_MODULES),
-    "no-counting": tuple(k for k in TRACK_MODULES if k != "counting"),
-    "stable": tuple(k for k in TRACK_MODULES if k != "counting"),
+    "all": SAFE_LIVE_TRACKS,
+    "safe-live": SAFE_LIVE_TRACKS,
+    "no-counting": tuple(k for k in SAFE_LIVE_TRACKS if k != "counting"),
+    "stable": SAFE_LIVE_TRACKS,
+    "legacy-all": tuple(TRACK_MODULES),
 }
 
 CHARADES_VIDEO_ZIP = "https://ai2-public-datasets.s3-us-west-2.amazonaws.com/charades/Charades_v1_480.zip"
@@ -124,6 +129,13 @@ def _env() -> dict[str, str]:
     return env
 
 
+def _backend_label(live: bool) -> str:
+    if not live:
+        return "fake (offline stub)"
+    _load_dotenv()
+    return os.environ.get("PERCEPT_VISION_MODEL") or os.environ.get("PERCEPT_GEMINI_MODEL") or "gemini"
+
+
 def _manifest_ref(path: Path | None) -> str:
     if not path or not path.exists():
         return ""
@@ -175,6 +187,16 @@ def _resolve_tracks(raw: str, exclude: str = "") -> list[str]:
     if unknown:
         raise SystemExit(f"unknown excluded track(s): {', '.join(sorted(unknown))}")
     return [name for name in selected if name not in excluded]
+
+
+def _guard_live_tracks(tracks: list[str]) -> None:
+    blocked = [t for t in tracks if t in LEGACY_MEDIA_DENSE_TRACKS]
+    if blocked and os.environ.get("PERCEPT_ALLOW_RAW_LIVE") != "1":
+        raise SystemExit(
+            "refusing live media-bearing dense/raw benchmark track(s): "
+            + ", ".join(blocked)
+            + ". Use E2E/edge tracks, or set PERCEPT_ALLOW_RAW_LIVE=1 for an explicit legacy diagnostic."
+        )
 
 
 def _write_event(run_dir: Path, event: dict[str, Any]) -> None:
@@ -490,7 +512,7 @@ def _repcount_candidate_rows(n: int) -> list[dict[str, Any]]:
     from eval.bench import repcount as rc
 
     out = []
-    for row in rc.sample_repcount(n):
+    for row in rc.sample_repcount_unbiased(n):
         media = rc.fetch_video(row["index"], row["video_id"])
         if not media.exists():
             continue
@@ -502,7 +524,7 @@ def _repcount_candidate_rows(n: int) -> list[dict[str, Any]]:
                 "split": "test",
                 "track": "repcount-a",
                 "task": "repetition_counting",
-                "scope": "pose-friendly subset selected before scoring; not full RepCount-A",
+                "scope": "unbiased action sample; full-e2e counting row, no raw VLM baseline",
                 "video_id": row["video_id"],
                 "media_path": _display_path(media),
                 "media_sha256": _sha256(media),
@@ -566,7 +588,7 @@ def cmd_manifest_candidate(args: argparse.Namespace) -> int:
             "Perception Test rows are one event per video from valid annotations.",
             "Charades rows are deterministic hash samples from verified test videos with actions; Charades is non-commercial reference data.",
             "ProactiveQA rows are deterministic hash samples from EGO annotations with answers.",
-            "RepCount rows use the current pose-friendly/count-bounded scoring subset; do not present as full RepCount-A until the runner supports all action types.",
+            "RepCount rows use an unbiased action sample. Counting scorecards must not use a raw per-frame VLM baseline; publish fallback/unresolved rates.",
         ],
     }
     out = Path(args.out) if args.out else paths["cache_dir"] / "golden-v1-candidate.json"
@@ -584,11 +606,27 @@ def cmd_manifest_candidate(args: argparse.Namespace) -> int:
 
 def cmd_run_track(args: argparse.Namespace) -> int:
     _load_dotenv()
+    if args.live:
+        _guard_live_tracks([args.track])
     module = importlib.import_module(TRACK_MODULES[args.track])
     result = module.score(live=args.live, n=args.n)
     payload = _json_safe_result(result)
-    Path(args.out).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name(f".{out.name}.tmp.{os.getpid()}")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    tmp.replace(out)
     return 0
+
+
+def _existing_result_ok(path: Path) -> bool:
+    if not path.exists() or path.stat().st_size == 0:
+        return False
+    try:
+        _track_result_from_json(json.loads(path.read_text()))
+        return True
+    except Exception:
+        return False
 
 
 def _attempt_track(
@@ -599,9 +637,16 @@ def _attempt_track(
     n: int,
     attempts: int,
     timeout_s: int,
+    resume: bool,
+    track_index: int,
+    start_delay_s: float,
 ) -> dict[str, Any]:
     result_path = run_dir / "results" / f"{track}.json"
     log_path = run_dir / "logs" / f"{track}.log"
+    if resume and _existing_result_ok(result_path):
+        _write_event(run_dir, {"event": "track_skip_existing", "track": track, "result": str(result_path)})
+        return {"track": track, "ok": True, "attempts": 0, "elapsed_s": 0, "result": str(result_path), "skipped": True}
+
     cmd = [
         sys.executable,
         str(Path(__file__).resolve()),
@@ -615,6 +660,9 @@ def _attempt_track(
     ]
     if live:
         cmd.append("--live")
+
+    if start_delay_s > 0:
+        time.sleep(track_index * start_delay_s)
 
     for attempt in range(1, attempts + 1):
         started = time.time()
@@ -656,6 +704,44 @@ def _attempt_track(
     return {"track": track, "ok": False, "attempts": attempts, "log": str(log_path)}
 
 
+def _background_cmd(args: argparse.Namespace, run_id: str) -> list[str]:
+    cmd = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "run",
+        "--run-id",
+        run_id,
+        "--n",
+        str(args.n),
+        "--tracks",
+        args.tracks,
+        "--workers",
+        str(args.workers),
+        "--attempts",
+        str(args.attempts),
+        "--timeout-s",
+        str(args.timeout_s),
+        "--manifest",
+        args.manifest,
+        "--mode",
+        args.mode,
+        "--device",
+        args.device,
+        "--fps",
+        args.fps,
+        "--seeds",
+        str(args.seeds),
+        "--start-delay-s",
+        str(args.start_delay_s),
+    ]
+    if args.live:
+        cmd.append("--live")
+    if args.exclude:
+        cmd.extend(["--exclude", args.exclude])
+    cmd.append("--resume" if args.resume else "--no-resume")
+    return cmd
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     paths = _bench_paths()
     paths["runs_dir"].mkdir(parents=True, exist_ok=True)
@@ -665,14 +751,49 @@ def cmd_run(args: argparse.Namespace) -> int:
     (run_dir / "results").mkdir(parents=True, exist_ok=True)
 
     tracks = _resolve_tracks(args.tracks, args.exclude)
+    if args.live:
+        _guard_live_tracks(tracks)
+    if args.background and os.environ.get("PERCEPT_BENCH_BACKGROUND_CHILD") != "1":
+        log_path = run_dir / "benchmark.log"
+        cmd = _background_cmd(args, run_id)
+        env = _env()
+        env["PERCEPT_BENCH_BACKGROUND_CHILD"] = "1"
+        with log_path.open("ab") as log:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=ROOT,
+                env=env,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        payload = {
+            "run_id": run_id,
+            "pid": proc.pid,
+            "cmd": cmd,
+            "cmd_display": shlex.join(cmd),
+            "log": _display_path(log_path),
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
+        (run_dir / "background.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        print(f"background run: {_display_path(run_dir)}")
+        print(f"pid: {proc.pid}")
+        print(f"log: {_display_path(log_path)}")
+        print(f"resume/collect: python3 tools/percept_benchmark.py collect --run-dir {_display_path(run_dir)}")
+        return 0
+
+    existing_meta = _run_meta(run_dir) if args.resume else {}
     meta = {
         "run_id": run_id,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": existing_meta.get("created_at") or datetime.now(timezone.utc).isoformat(),
+        "resumed_at": datetime.now(timezone.utc).isoformat() if existing_meta else None,
         "live": args.live,
         "n": args.n,
         "tracks": tracks,
         "attempts": args.attempts,
         "workers": args.workers,
+        "resume": args.resume,
+        "start_delay_s": args.start_delay_s,
         "data_dir": _display_path(paths["data_dir"]),
         "cache_dir": _display_path(paths["cache_dir"]),
         "manifest": _display_path(Path(args.manifest).resolve()) if args.manifest else None,
@@ -684,7 +805,10 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     print(f"run: {_display_path(run_dir)}")
     print(f"tracks: {', '.join(tracks)}")
-    print(f"mode: {'live' if args.live else 'offline'} · n={args.n} · workers={args.workers} · attempts={args.attempts}")
+    print(
+        f"mode: {'live' if args.live else 'offline'} · n={args.n} · workers={args.workers} "
+        f"· attempts={args.attempts} · resume={args.resume} · start_delay_s={args.start_delay_s}"
+    )
 
     outcomes: list[dict[str, Any]] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
@@ -697,8 +821,11 @@ def cmd_run(args: argparse.Namespace) -> int:
                 n=args.n,
                 attempts=args.attempts,
                 timeout_s=args.timeout_s,
+                resume=args.resume,
+                track_index=idx,
+                start_delay_s=args.start_delay_s,
             ): track
-            for track in tracks
+            for idx, track in enumerate(tracks)
         }
         total = len(futures)
         done = 0
@@ -706,7 +833,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             done += 1
             outcome = future.result()
             outcomes.append(outcome)
-            status = "ok" if outcome["ok"] else "failed"
+            status = "skipped" if outcome.get("skipped") else "ok" if outcome["ok"] else "failed"
             print(f"[{done}/{total}] {outcome['track']}: {status}")
 
     (run_dir / "outcomes.json").write_text(json.dumps(outcomes, indent=2, sort_keys=True) + "\n")
@@ -747,7 +874,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
 
     manifest = Path(args.manifest).resolve() if args.manifest else DEFAULT_MANIFEST
     manifest_ref = _manifest_ref(manifest)
-    backend = "gemini-2.5-flash" if _run_meta(run_dir).get("live") else "fake (offline stub)"
+    backend = _backend_label(bool(_run_meta(run_dir).get("live")))
     auroc = next((r.cells.get(("core", "auroc")) for r in results if r.track == "relational"), None)
     rendered = card.render_card(
         results,
@@ -810,7 +937,11 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="run benchmark tracks with retries and per-track logs")
     run.add_argument("--live", action="store_true", help="use live Gemini-backed track scorers")
     run.add_argument("--n", type=int, default=8, help="sample size per track")
-    run.add_argument("--tracks", default="all", help="comma list or alias: all, stable, no-counting")
+    run.add_argument(
+        "--tracks",
+        default="all",
+        help="comma list or alias: all/safe-live, stable, no-counting, legacy-all (offline or explicit override)",
+    )
     run.add_argument("--exclude", default="", help="comma list of tracks to skip")
     run.add_argument("--workers", type=int, default=2, help="parallel track subprocesses")
     run.add_argument("--attempts", type=int, default=2, help="attempts per track")
@@ -821,6 +952,19 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--device", default="local", help="device/runtime descriptor for scorecard")
     run.add_argument("--fps", default="1", help="sampling/capture fps descriptor for scorecard")
     run.add_argument("--seeds", type=int, default=1, help="number of seeds represented")
+    run.add_argument(
+        "--resume",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="skip valid existing per-track result JSON files in the run folder",
+    )
+    run.add_argument(
+        "--start-delay-s",
+        type=float,
+        default=0.0,
+        help="stagger track subprocess starts by this many seconds per track index",
+    )
+    run.add_argument("--background", action="store_true", help="launch the run in the background and return immediately")
     run.set_defaults(func=cmd_run)
 
     collect = sub.add_parser("collect", help="collect a scorecard from an existing run directory")

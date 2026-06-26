@@ -16,7 +16,6 @@ registered detectors via the manifest; it never *writes* them.
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
@@ -254,15 +253,16 @@ class AcousticOnset:
 
 
 class PoseOpenness:
-    """FRAME-backed edge skill (BlazePose) — an 'openness' waveform → one clean peak per rep.
+    """FRAME-backed edge skill (RTMO by default) — an 'openness' waveform → one clean peak per rep.
 
     Counts fast periodic reps where frame-diff motion conflates each rep's open+close (over-counts) and
     the per-frame VLM aliases on fast motion (under-counts). openness = ankle-spread/shoulder-width +
     wrist-elevation, so it tracks every variation (legs-only via the spread, full jacks add the arms).
 
-    The first MODEL-backed detector. BlazePose is edge-class (mobile, ~real-time CPU, ~3-6MB model), but
-    it's still heavier than DSP — so it is **lazy** (mediapipe + the .task model load on first ``push``,
-    never at import or registration) and **opt-in** (``percept-harness[pose]`` + a model path). The brain
+    The first MODEL-backed detector. RTMO is the default pose provider because it is multi-person and
+    deployment-friendly; BlazePose remains available as ``PERCEPT_POSE_PROVIDER=blazepose`` for
+    single-person/high-detail use cases. The provider is **lazy** (loaded on first ``push``, never at
+    import or registration) and **opt-in** (``percept-harness[pose]`` + provider runtime). The brain
     activates it per-goal via the WatchSpec; a user who never counts reps never loads it.
     """
 
@@ -270,33 +270,20 @@ class PoseOpenness:
     name = "pose-openness"
 
     def __init__(self, *, min_height: float = 0.6, rel_drop: float = 0.4, refractory_s: float = 0.4,
-                 model_path: str | None = None) -> None:
+                 provider: Any | None = None, provider_name: str | None = None) -> None:
         self._mh, self._rd, self._ref = min_height, rel_drop, refractory_s
-        self._model_path = model_path or os.environ.get("PERCEPT_POSE_MODEL", "")
-        self._lmk = None
-        self._mp = None
+        self._provider = provider
+        self._provider_name = provider_name
         self._peak = None
         self._last = 0.0
 
     def _ensure(self) -> None:
-        if self._lmk is not None:
-            return
-        if not self._model_path:
-            raise RuntimeError(
-                "pose-openness needs a BlazePose .task model — set PERCEPT_POSE_MODEL "
-                "(install percept-harness[pose] first)."
-            )
-        import mediapipe as mp  # lazy: heavy, optional; never imported at module load
-        from mediapipe.tasks import python
-        from mediapipe.tasks.python import vision
+        if self._provider is None:
+            from .pose import make_pose_provider
 
-        opts = vision.PoseLandmarkerOptions(
-            base_options=python.BaseOptions(model_asset_path=self._model_path),
-            running_mode=vision.RunningMode.IMAGE,
-        )
-        self._mp = mp
-        self._lmk = vision.PoseLandmarker.create_from_options(opts)
-        self._peak = MotionPeriodicity(min_height=self._mh, rel_drop=self._rd, refractory_s=self._ref)
+            self._provider = make_pose_provider(self._provider_name)
+        if self._peak is None:
+            self._peak = MotionPeriodicity(min_height=self._mh, rel_drop=self._rd, refractory_s=self._ref)
 
     def reset(self) -> None:
         self._last = 0.0
@@ -307,12 +294,24 @@ class PoseOpenness:
         """frame: an RGB uint8 HxWx3 array. Emits a 'peak' boundary per rep (relabeled from the inner
         peak detector to this detector's name)."""
         self._ensure()
-        res = self._lmk.detect(self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=frame))
-        if res.pose_landmarks:
-            lm = res.pose_landmarks[0]
-            spread = abs(lm[27].x - lm[28].x)
-            sw = abs(lm[11].x - lm[12].x) or 0.1
-            wrist_up = max(0.0, lm[11].y - lm[15].y) + max(0.0, lm[12].y - lm[16].y)
+        poses = self._provider.detect(frame)
+        if poses:
+            from .pose import (
+                COCO_LEFT_ANKLE,
+                COCO_LEFT_SHOULDER,
+                COCO_LEFT_WRIST,
+                COCO_RIGHT_ANKLE,
+                COCO_RIGHT_SHOULDER,
+                COCO_RIGHT_WRIST,
+            )
+
+            lm = max(poses, key=lambda p: p.confidence).keypoints
+            spread = abs(lm[COCO_LEFT_ANKLE].x - lm[COCO_RIGHT_ANKLE].x)
+            sw = abs(lm[COCO_LEFT_SHOULDER].x - lm[COCO_RIGHT_SHOULDER].x) or 0.1
+            wrist_up = (
+                max(0.0, lm[COCO_LEFT_SHOULDER].y - lm[COCO_LEFT_WRIST].y)
+                + max(0.0, lm[COCO_RIGHT_SHOULDER].y - lm[COCO_RIGHT_WRIST].y)
+            )
             self._last = spread / sw + wrist_up
         return [Boundary(self.name, b.kind, b.t, b.value) for b in self._peak.push(t, self._last)]
 
@@ -454,7 +453,7 @@ register(
     PoseOpenness,
     DetectorManifest(
         name="pose-openness",
-        senses="body pose over time (BlazePose keypoints: ankle-spread + wrist-elevation)",
+        senses="body pose over time (RTMO/COCO keypoints: ankle-spread + wrist-elevation)",
         when_to_use="counting FAST whole-body reps where motion-diff over-counts and the VLM aliases — "
         "jumping jacks, squats, push-ups; any rep with a clean open↔close body shape",
         output="one 'peak' boundary per rep (the open phase of the openness waveform)",

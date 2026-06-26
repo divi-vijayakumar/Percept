@@ -54,6 +54,13 @@ from .enrichers import (
     registered_enrichers,
     unregister_enricher,
 )
+from .pose import (
+    BlazePoseProvider,
+    PoseDetection,
+    PoseKeypoint,
+    RTMOPoseProvider,
+    make_pose_provider,
+)
 from .tier0 import (
     Frame,
     GateDecision,
@@ -93,6 +100,12 @@ __all__ = [
     "coerce_authored_detectors",
     "unregister",
     "clear_detectors",
+    # pose provider seam
+    "PoseKeypoint",
+    "PoseDetection",
+    "RTMOPoseProvider",
+    "BlazePoseProvider",
+    "make_pose_provider",
     # concern registry (the standing-concern lifecycle)
     "register_concern",
     "registered_concerns",

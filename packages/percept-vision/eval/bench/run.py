@@ -2,14 +2,18 @@
 
 Offline smoke (no API, renders the card with stub cells):
     PYTHONPATH=packages/percept-vision:packages/percept-harness python3.12 -m eval.bench.run
-Live sampled (real Gemini):
+Live sampled:
     PERCEPT_LIVE=1 PYTHONPATH=... python3.12 -m eval.bench.run --live --n 20
+
+Live mode intentionally skips legacy dense/raw media-bearing tracks. Publishable benchmark runs should
+use edge/E2E candidate calls only; dense call counts are modeled from the sampling schedule.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import subprocess
 from pathlib import Path
 
@@ -40,6 +44,12 @@ def _manifest_ref(path: str | None) -> str:
     return f"{p.as_posix()} sha256:{digest}"
 
 
+def _backend_label(live: bool) -> str:
+    if not live:
+        return "fake (offline stub)"
+    return os.environ.get("PERCEPT_VISION_MODEL") or os.environ.get("PERCEPT_GEMINI_MODEL") or "gemini"
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--live", action="store_true", help="run real Gemini (else offline stub cells)")
@@ -62,8 +72,11 @@ def main(argv: list[str] | None = None) -> int:
         load_dotenv()
 
     results = []
-    tracks = (track_relational, track_counting, track_acoustic_pt, track_timeliness, track_edge_recall,
-              track_cuespeak, track_timespeak)
+    if args.live:
+        tracks = (track_counting, track_edge_recall, track_cuespeak, track_timespeak)
+    else:
+        tracks = (track_relational, track_counting, track_acoustic_pt, track_timeliness, track_edge_recall,
+                  track_cuespeak, track_timespeak)
     for mod in tracks:
         try:
             results.append(mod.score(live=args.live, n=args.n))
@@ -73,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
                                        notes=f"FAILED: {type(exc).__name__}: {exc}",
                                        excluded=[f"{getattr(mod, 'TRACK', '?')}: {exc}"]))
 
-    backend = "gemini-2.5-flash" if args.live else "fake (offline stub)"
+    backend = _backend_label(args.live)
     auroc = next((r.cells.get(("core", "auroc")) for r in results if r.track == "relational"), None)
     manifest_ref = _manifest_ref(args.manifest)
     stamp = card.stamp_of(args.mode, results, manifest_ref)

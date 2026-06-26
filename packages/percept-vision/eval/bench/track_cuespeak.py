@@ -1,8 +1,13 @@
-"""CueSpeak — proactive interjection QUALITY.
+"""CueSpeak — sim-core proactive interjection quality.
 
 Does the agent speak ONCE on the rising edge of a cue (precision), catch every cue (recall), and NOT
 nag (fires-per-episode)? Contrasts the cognition layer (core = rising-edge three-state gate) against a
-raw VLM-in-a-loop (raw = fire on every true frame). Deterministic E2E sim — the gate/executor are real.
+naive scripted emitter (raw = fire on every true scripted frame). Deterministic E2E sim — the
+gate/executor are real and no VLM is called.
+
+This is a cognition regression track, not a publishable TML-comparable CueSpeak result. The release
+track needs a held-out prompt corpus, cue windows, expected utterance semantics, a judge, and an
+edge-E2E adapter.
 """
 from __future__ import annotations
 
@@ -48,8 +53,8 @@ def score(*, live: bool = False, n: int = 8) -> TrackResult:
         ("raw", "fires/ep"): rf, ("core", "fires/ep"): cf, ("e2e", "fires/ep"): cf,
     }
     headline = {
-        "cuespeak precision raw/core": f"{rp:.2f} / {cp:.2f}",
-        "cuespeak fires-per-episode raw/core": f"{rf:.1f} / {cf:.1f}  (1.0 = no nag)",
+        "cuespeak precision naive/core": f"{rp:.2f} / {cp:.2f}",
+        "cuespeak fires-per-episode naive/core": f"{rf:.1f} / {cf:.1f}  (1.0 = no nag)",
     }
     return TrackResult(
         track=TRACK, cells=cells, fmts=_FMTS, headline=headline,
@@ -57,5 +62,5 @@ def score(*, live: bool = False, n: int = 8) -> TrackResult:
         reference={"fires/ep": {"value": 1.0, "by": "ideal: 1 interjection/cue"}},
         calls=0,
         notes=(f"sim: {n} episodes x{dur}f + {len(noise)} noise spikes; "
-               f"raw=VLM-loop (every true frame), core=rising-edge gate. e2e=core (edge is parity-equal)."),
+               f"raw=scripted naive emitter (every true frame), core=rising-edge gate. e2e=core (edge is parity-equal)."),
     )

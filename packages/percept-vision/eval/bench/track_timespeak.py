@@ -1,14 +1,18 @@
-"""TimeSpeak — TIMELINESS of the proactive response.
+"""TimeSpeak — sim-core timeliness of the proactive response.
 
-How soon after a cue's true onset does the agent speak, and does it fire on a GUESS (raw) or wait for
-confidence to clear (core)? Each onset has a confidence RAMP (ambiguous -> clear). Contrasts core
-(rising-edge three-state gate — refuses to guess) vs raw (fires the instant the cue looks true).
+How soon after a cue's true onset does the agent speak, and does it fire on a GUESS (naive scripted
+emitter) or wait for confidence to clear (core)? Each onset has a confidence RAMP (ambiguous -> clear).
+Contrasts core (rising-edge three-state gate — refuses to guess) vs a no-VLM scripted baseline (fires
+the instant the cue looks true).
 
   latency  : frames from onset to the first fire of the episode (lower = more timely)
   P-PAUC   : proactive AUC — 1 - latency/window if fired in the window, else 0; mean ×100
   guess%   : fraction of fires made while confidence < the gate threshold (firing on an ambiguous read)
 
-Deterministic E2E sim — the gate/executor are the real code.
+Deterministic sim-core regression — the gate/executor are the real code.
+
+This is not a publishable TML-comparable TimeSpeak result. The release track needs a held-out prompt
+corpus, speak windows, early/late/guess accounting, and an edge-E2E adapter.
 """
 from __future__ import annotations
 
@@ -68,8 +72,8 @@ def score(*, live: bool = False, n: int = 8) -> TrackResult:
         ("raw", "guess%"): rg, ("core", "guess%"): cg, ("e2e", "guess%"): cg,
     }
     headline = {
-        "timespeak reaction-latency raw/core (frames)": f"{rmed:.1f} / {cmed:.1f}",
-        "timespeak guess% raw/core": f"{rg:.0f}% / {cg:.0f}%  (core refuses to guess)",
+        "timespeak reaction-latency naive/core (frames)": f"{rmed:.1f} / {cmed:.1f}",
+        "timespeak guess% naive/core": f"{rg:.0f}% / {cg:.0f}%  (core refuses to guess)",
     }
     return TrackResult(
         track=TRACK, cells=cells, fmts=_FMTS, headline=headline,

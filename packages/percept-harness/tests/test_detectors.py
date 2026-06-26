@@ -38,6 +38,7 @@ from percept_harness.detectors import (
     should_wake,
     wake_score,
 )
+from percept_harness.pose import PoseDetection, PoseKeypoint
 from percept_harness.tier0 import compile_watchspec, watchspec_unsupported
 
 
@@ -160,7 +161,7 @@ class TestSelectionFirewall(unittest.TestCase):
 
 
 class TestPoseSkillRegistration(unittest.TestCase):
-    """The first MODEL-backed skill must register + carry a manifest WITHOUT importing mediapipe (L1-safe)."""
+    """The first MODEL-backed skill must register + carry a manifest WITHOUT importing pose runtimes."""
 
     def test_pose_registered_with_manifest(self):
         from percept_harness.detectors import manifest_of
@@ -169,8 +170,8 @@ class TestPoseSkillRegistration(unittest.TestCase):
         m = manifest_of("pose-openness")
         self.assertTrue(m.senses and m.when_to_use and m.output)
 
-    def test_construct_is_lazy_no_mediapipe_required(self):
-        # constructing the detector must NOT import mediapipe — only push() loads it (opt-in/lazy)
+    def test_construct_is_lazy_no_pose_runtime_required(self):
+        # constructing the detector must NOT import mmpose/mediapipe — only push() loads it (opt-in/lazy)
         d = make_detector("pose-openness")
         self.assertEqual(getattr(d, "signal", None), "frame")
 
@@ -182,6 +183,28 @@ class TestPoseSkillRegistration(unittest.TestCase):
         for t, v in enumerate([0.0, 0.5, 1.0, 0.5, 0.0]):
             out.extend(bank.push(float(t), motion=v))  # no frame= -> pose is skipped, mediapipe never loads
         self.assertTrue(out and all(b.detector == "motion-periodicity" for b in out))
+
+    def test_pose_openness_counts_fake_coco_keypoint_peaks(self):
+        class FakePose:
+            def __init__(self):
+                self.values = iter([0.0, 0.8, 1.4, 0.8, 0.0, 0.8, 1.4, 0.8, 0.0])
+
+            def detect(self, frame):
+                openness = next(self.values)
+                k = [PoseKeypoint(0.0, 0.0, 0.0) for _ in range(17)]
+                # shoulders define width; ankles widen + wrists rise as openness increases.
+                k[5] = PoseKeypoint(0.4, 0.5)
+                k[6] = PoseKeypoint(0.6, 0.5)
+                k[9] = PoseKeypoint(0.4, 0.5 - openness * 0.1)
+                k[10] = PoseKeypoint(0.6, 0.5 - openness * 0.1)
+                k[15] = PoseKeypoint(0.5 - openness * 0.1, 0.9)
+                k[16] = PoseKeypoint(0.5 + openness * 0.1, 0.9)
+                return [PoseDetection(tuple(k), confidence=1.0, provider="fake")]
+
+        d = make_detector("pose-openness")
+        d._provider = FakePose()
+        out = [b for t in range(9) for b in d.push(float(t), object())]
+        self.assertEqual([b.t for b in out], [2.0, 6.0])
 
 
 class TestDetectorBank(unittest.TestCase):

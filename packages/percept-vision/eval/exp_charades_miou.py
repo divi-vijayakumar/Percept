@@ -1,17 +1,19 @@
-"""mIoU on CHARADES with GEMINI FLASH perception — Percept vs raw-Gemini-loop vs TML (32.4).
+"""Legacy Charades dense/core replay diagnostic — do not run live for publishable benchmarking.
 
 TML's Charades task: say "start" when an action begins and "stop" when it ends; graded on **mIoU** of
 the predicted [start,stop] span vs the ground-truth interval. That is the metric directly comparable
 to TML's reported **32.4** (vs **0** for GPT-realtime-2.0). Perception is held constant (Gemini 2.5
-Flash, one judgment per frame, shared by all three systems). Three span-builders over the SAME
-verdicts:
+Flash, one judgment per frame, shared by all three systems). That dense capture is expensive and is no
+longer the publishable Percept benchmark path. Three span-builders over the SAME verdicts:
 
-  * gemini-loop  — raw VLM in a loop: every contiguous run of confident-yes frames is a span (no memory)
+  * gemini-loop  — legacy dense VLM loop: every contiguous run of confident-yes frames is a span (no memory)
   * percept-gate — the stateful Gate: rising-edge "start" -> confident-false re-arm "stop" = one span/episode
   * percept-event— Gate + EventLog merge_gap: merge yes-runs within the gap into one clean span (the dedup track)
 
 mIoU = mean over ground-truth intervals of the best temporal IoU with any predicted span (unmatched GT = 0),
-reported x100 to sit on TML's scale. Live: PERCEPT_LIVE=1 + a Gemini key (GEMINI/GOOGLE_AISTUDIO key).
+reported x100 to sit on TML's scale. Retain this script for offline/historical analysis only. The
+publishable Charades adapter should run edge/E2E candidate calls only and model dense call counts
+without sending media through a raw loop.
 """
 
 from __future__ import annotations
@@ -112,13 +114,19 @@ async def main():
             goals.append({"gid": f"{vid}:{desc}", "vid": vid, "desc": desc, "fps": fps,
                           "nframes": nframes, "length": v["length"], "segments": segs})
 
-    if cap_path.exists() and os.environ.get("PERCEPT_RECAPTURE") != "1":
-        caps = json.loads(cap_path.read_text())
+    # Resume-friendly capture: load whatever is already cached and only judge the rest, checkpointing after
+    # every goal so progress is visible (the file grows) and a kill/crash is resumable. To force a full
+    # recapture, set PERCEPT_RECAPTURE=1 or delete cap_path.
+    recapture = os.environ.get("PERCEPT_RECAPTURE") == "1"
+    caps = {} if (recapture or not cap_path.exists()) else json.loads(cap_path.read_text())
+    todo = [g for g in goals if g["gid"] not in caps]
+    if not todo:
         print(f"loaded {len(caps)} goals' Gemini verdicts (offline re-score)")
     else:
+        if caps:
+            print(f"resuming: {len(caps)} cached, {len(todo)} to capture", flush=True)
         client = gemini_client(); sem = asyncio.Semaphore(4); loop = asyncio.get_event_loop()
-        caps = {}
-        for g in goals:
+        for i, g in enumerate(todo, 1):
             cond = condition(g["desc"])
             ts_list = [t for t in range(0, int(g["length"]) + 1) if round(t * g["fps"]) < g["nframes"]]
 
@@ -136,7 +144,8 @@ async def main():
             vs = [r for r in await asyncio.gather(*(judge_t(t) for t in ts_list)) if r]
             vs.sort(key=lambda x: x[0])
             caps[g["gid"]] = {"desc": g["desc"], "segments": g["segments"], "verdicts": vs}
-        cap_path.write_text(json.dumps(caps))
+            cap_path.write_text(json.dumps(caps))  # checkpoint per goal -> visible + resumable
+            print(f"  captured {i}/{len(todo)} {g['gid']} ({len(caps)} cached)", flush=True)
         print(f"captured {len(caps)} goals (Gemini {model}) -> {cap_path}")
 
     gt = {gid: c["segments"] for gid, c in caps.items()}

@@ -4,9 +4,10 @@ RepCount-A ships as a Lance dataset on HuggingFace with EMBEDDED video blobs —
 pull only the rows we sample (no full download). 152 test videos across 8 action types.
 
   * :func:`load_ds` / :func:`load_meta`  — cached dataset + ``{video_id, action_type, count}`` rows.
-  * :func:`sample_repcount`              — deterministic, pose-friendly, count-bounded sample.
+  * :func:`sample_repcount`              — deterministic, pose-friendly diagnostic sample.
+  * :func:`sample_repcount_unbiased`     — deterministic sample across all action types.
   * :func:`fetch_video`                  — materialize one embedded blob to a cached ``.mp4``.
-  * :func:`pose_rep_count`               — BlazePose landmarks -> PC1 waveform -> autocorrelation period
+  * :func:`pose_rep_count`               — configured pose provider -> PC1 waveform -> autocorrelation period
                                            -> rep count. General across actions (unlike the
                                            jumping-jack-specific openness signal).
 """
@@ -79,6 +80,47 @@ def sample_repcount(n: int) -> list[dict]:
     return rows[:n]
 
 
+def sample_repcount_unbiased(n: int | None = None) -> list[dict]:
+    """Deterministic action-stratified sample across every valid RepCount-A action type.
+
+    This is the sampler for publishable/counting E2E work. It does not filter by pose suitability or
+    count range. ``n=None`` or ``n <= 0`` returns the full split metadata.
+    """
+    rows = [
+        {
+            "video_id": m["video_id"],
+            "action": m["action_type"],
+            "count": int(m["count"]),
+            "index": i,
+        }
+        for i, m in enumerate(load_meta())
+        if str(m["count"]).isdigit()
+    ]
+    if n is None or n <= 0:
+        rows.sort(key=lambda r: hashlib.sha256(f"{SAMPLE_SEED}|repcount-full|{r['video_id']}".encode("utf-8")).hexdigest())
+        return rows
+
+    buckets: dict[str, list[dict]] = {}
+    for row in rows:
+        buckets.setdefault(row["action"], []).append(row)
+    for action_rows in buckets.values():
+        action_rows.sort(
+            key=lambda r: hashlib.sha256(
+                f"{SAMPLE_SEED}|repcount-full|{r['video_id']}".encode("utf-8")
+            ).hexdigest()
+        )
+
+    sample: list[dict] = []
+    actions = sorted(buckets)
+    while len(sample) < n and any(buckets.values()):
+        for action in actions:
+            if buckets[action]:
+                sample.append(buckets[action].pop(0))
+                if len(sample) >= n:
+                    break
+    return sample
+
+
 def fetch_video(index: int, video_id: str) -> Path:
     """Materialize the embedded blob at lance row ``index`` to a cached ``<video_id>.mp4``."""
     _STAGING.mkdir(parents=True, exist_ok=True)
@@ -90,23 +132,21 @@ def fetch_video(index: int, video_id: str) -> Path:
     return path
 
 
-# Landmark indices: wrists (15,16), ankles (27,28), knees (25,26), elbows (13,14), hips (23,24).
+# COCO-17 landmark indices: wrists (9,10), ankles (15,16), knees (13,14), elbows (7,8), hips (11,12).
 # These four limb pairs move once per rep across all pose-friendly actions, so their joint
 # trajectory carries the rep period regardless of which action it is.
-_JOINTS = (15, 16, 27, 28, 25, 26, 13, 14, 23, 24)
+_JOINTS = (9, 10, 15, 16, 13, 14, 7, 8, 11, 12)
 
 
 def pose_rep_count(path, fps: int = 6) -> int:
     """General pose-periodicity rep counter -> int.
 
-    BlazePose landmarks per frame -> 20-dim limb-position feature -> PC1 waveform (SVD) ->
+    Pose-provider landmarks per frame -> 20-dim limb-position feature -> PC1 waveform (SVD) ->
     first autocorrelation peak = the rep period -> ``round(duration / period)``.
     """
     import cv2
-    import mediapipe as mp
     import numpy as np
-    from mediapipe.tasks import python
-    from mediapipe.tasks.python import vision
+    from percept_harness.pose import make_pose_provider
 
     from eval.count_video import decode
 
@@ -114,19 +154,15 @@ def pose_rep_count(path, fps: int = 6) -> int:
     if not full:
         return 0
 
-    opts = vision.PoseLandmarkerOptions(
-        base_options=python.BaseOptions(model_asset_path=_pose_model_path()),
-        running_mode=vision.RunningMode.IMAGE,
-    )
-    landmarker = vision.PoseLandmarker.create_from_options(opts)
+    provider = make_pose_provider()
 
     feats: list[list[float]] = []
     last: list[float] | None = None
     for _t, bgr in full:
         rgb = np.ascontiguousarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
-        res = landmarker.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
-        if res.pose_landmarks:
-            lm = res.pose_landmarks[0]
+        poses = provider.detect(rgb)
+        if poses:
+            lm = max(poses, key=lambda p: p.confidence).keypoints
             feat = [coord for j in _JOINTS for coord in (lm[j].x, lm[j].y)]
             last = feat
         elif last is not None:

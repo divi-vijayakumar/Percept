@@ -133,12 +133,12 @@ Built-in detectors:
 |-----------------------|---------------------------------|-----------------------------------------------------|
 | `motion-periodicity`  | motion magnitude (frame-diff)   | counting repetitive motion — reps, strokes, paces   |
 | `acoustic-onset`      | audio energy (the mic stream)   | audio-cued events — a boil hiss, a timer beep, a knock |
-| `pose-openness`       | BlazePose keypoints (opt-in)    | fast whole-body reps — jumping jacks, squats, push-ups |
+| `pose-openness`       | RTMO/COCO pose keypoints (opt-in) | fast whole-body reps — jumping jacks, squats, push-ups |
 
 Detectors are **opt-in and brain-selected**, never synthesized at runtime: adding one is a deliberate
 `register(impl, manifest)` + calibrate event. The brain *composes* registered detectors by name (via
 the manifest's `when_to_use`); it never *writes* them. `motion-periodicity` and `acoustic-onset` are
-pure stdlib DSP (no numpy, no model); `pose-openness` lazily loads MediaPipe only on first use.
+pure stdlib DSP (no numpy, no model); `pose-openness` lazily loads the configured pose provider only on first use.
 
 ---
 

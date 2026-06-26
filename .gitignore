@@ -52,6 +52,7 @@ perception_test_prevalence.json
 
 # local-only scratch (never commit)
 scratch/
+handoff/
 
 # model A/B artifact
 model_ab.json

@@ -24,7 +24,8 @@ dependencies = ["percept-vision>=0.1.0", "percept-contracts>=1.0.0"]
 
 [project.optional-dependencies]
 fast = ["numpy>=1.24"]
-pose = ["mediapipe>=0.10"]  # opt-in: the model-backed pose-openness edge skill (BlazePose). Lazy-loaded.
+pose = ["mmpose>=1.3", "mmdet>=3.0,<4", "mmcv>=2.0,<2.2", "mmengine>=0.10", "opencv-python-headless>=4.8"]  # opt-in: RTMO/MMPose pose provider. Lazy-loaded.
+blazepose = ["mediapipe>=0.10"]  # optional single-person/high-detail fallback; macOS Metal can be fragile.
 dev = ["pytest>=8", "ruff>=0.6"]
 
 [tool.setuptools.packages.find]

@@ -104,7 +104,7 @@ at import and leaves the registry intact for the process lifetime; re-import to 
 |---------------------|----------|----------------------------------------------------------|
 | `motion-periodicity`| `motion` | reps/strokes/paces — one peak per motion oscillation     |
 | `acoustic-onset`    | `energy` | audio-cued onsets — a hiss rising, a beep, a knock       |
-| `pose-openness`     | `frame`  | fast whole-body reps (BlazePose; lazy + opt-in `[pose]`) |
+| `pose-openness`     | `frame`  | fast whole-body reps (RTMO by default; lazy + opt-in `[pose]`) |
 
 The JS edge twin (`percept-edge/src/skills.js`) mirrors this surface
 (`registerSkill` / `makeDetector` / `registered`); the manifest + `Boundary` field names match
