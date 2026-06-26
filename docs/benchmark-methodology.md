@@ -1070,8 +1070,35 @@ TimeSpeak:
 | `edge-e2e` | edge wakes candidate cue moments; backend confirms; core speaks once | product quality plus cost |
 
 The existing `track_cuespeak.py` and `track_timespeak.py` are `sim-core` tracks. They should stay as
-fast regression tests. Public CueSpeak/TimeSpeak rows should be computed from PT/PVQA `edge-e2e`
-outputs unless a separate held-out prompt corpus is explicitly introduced.
+fast regression tests when no E2E artifacts exist. When local PT/Charades/PVQA E2E artifacts are
+present, they now derive draft CueSpeak/TimeSpeak rows directly from those past runs, with no new video
+pass and no model calls.
+
+Current derived N=1 artifact snapshot:
+
+```text
+sources:
+  pt-action-e2e: 1 event
+  charades-e2e: 7 action windows
+  proactiveqa-e2e: 11 answer turns
+
+cuespeak:
+  precision: 0.80
+  recall: 0.21
+  fires_per_episode: 0.26
+  duplicate_rate: 0.00
+
+timespeak:
+  timing_accuracy: 0.00
+  p_pauc: 0
+  latency_p50: 10.1s
+  early_fire_rate: 0.05
+```
+
+Interpretation: the E2E runs are not spammy, and when Percept speaks the cue is usually in a valid
+window, but it misses most opportunities and its strict timing quality is currently poor. This derived
+view is useful for diagnosis, not a release claim, because the source runs are local sampled artifacts
+and PVQA still uses a proxy answer scorer.
 
 ### Release Scorecard
 

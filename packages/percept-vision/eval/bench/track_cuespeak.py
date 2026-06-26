@@ -1,17 +1,17 @@
-"""CueSpeak — sim-core proactive interjection quality.
+"""CueSpeak — derived proactive interjection quality.
 
-Does the agent speak ONCE on the rising edge of a cue (precision), catch every cue (recall), and NOT
-nag (fires-per-episode)? Contrasts the cognition layer (core = rising-edge three-state gate) against a
-naive scripted emitter (raw = fire on every true scripted frame). Deterministic E2E sim — the
-gate/executor are real and no VLM is called.
+When saved E2E benchmark artifacts exist, this track derives CueSpeak from those runs without a new
+video pass or model call: did the E2E system emit a cue/answer inside the labelled event window, and did
+it avoid duplicate speech? If no E2E artifacts are available, it falls back to the deterministic sim-core
+regression.
 
-This is a cognition regression track, not a publishable TML-comparable CueSpeak result. The release
-track needs a held-out prompt corpus, cue windows, expected utterance semantics, a judge, and an
-edge-E2E adapter.
+The derived-from-artifacts path is still DRAFT-only until the source E2E runs are full, manifest-backed,
+and have independent semantic judging where needed.
 """
 from __future__ import annotations
 
 from . import sim
+from .derived_interaction import cue_metrics, cues_from_latest_e2e, summarize_sources
 from .types import TrackResult
 
 TRACK = "cuespeak"
@@ -19,6 +19,8 @@ _FMTS = {
     "precision": "{:.2f}",
     "recall": "{:.2f}",
     "fires/ep": "{:.2f}",
+    "duplicate_rate": "{:.2f}",
+    "unresolved_rate": "{:.2f}",
     "naive_precision": "{:.2f}",
     "naive_recall": "{:.2f}",
     "naive_fires/ep": "{:.2f}",
@@ -44,6 +46,53 @@ def _score(fires, episodes):
 
 
 def score(*, live: bool = False, n: int = 8) -> TrackResult:
+    cues, refs, calls = cues_from_latest_e2e()
+    if cues:
+        m = cue_metrics(cues)
+        cells = {
+            ("e2e", "precision"): m["precision"],
+            ("e2e", "recall"): m["recall"],
+            ("e2e", "fires/ep"): m["fires_per_episode"],
+            ("e2e", "duplicate_rate"): m["duplicate_rate"],
+            ("e2e", "unresolved_rate"): m["unresolved_rate"],
+        }
+        precision = m["precision"]
+        recall = m["recall"]
+        fires_ep = m["fires_per_episode"]
+        return TrackResult(
+            track=TRACK,
+            cells=cells,
+            fmts=_FMTS,
+            headline={
+                "cuespeak derived precision/recall": (
+                    f"{precision:.2f} / {recall:.2f}" if precision is not None and recall is not None else "n/a"
+                ),
+                "cuespeak derived fires-per-episode": f"{fires_ep:.2f}" if fires_ep is not None else "n/a",
+            },
+            measured=[
+                "e2e:precision",
+                "e2e:recall",
+                "e2e:fires/ep",
+                "e2e:duplicate_rate",
+                "e2e:unresolved_rate",
+            ],
+            calls=0,
+            coverage=[{
+                "dataset": "local-e2e-artifacts",
+                "expected": len(cues),
+                "observed": len(cues),
+                "failed": 0,
+                "skipped": 0,
+                "notes": f"sources={summarize_sources(cues)}; artifacts={refs}",
+            }],
+            diagnostic=True,
+            excluded=["cuespeak: derived from local sampled E2E artifacts, not a full release split"],
+            notes=(
+                f"derived from latest E2E result artifacts; source_counts={summarize_sources(cues)}; "
+                f"source_calls={calls}; artifacts={refs}"
+            ),
+        )
+
     dur, gap = 5, 7
     episodes = [sim.Episode(onset=10 + i * (dur + gap), duration=dur) for i in range(n)]
     T = episodes[-1].onset + dur + gap

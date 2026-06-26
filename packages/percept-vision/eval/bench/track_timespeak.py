@@ -1,24 +1,21 @@
-"""TimeSpeak — sim-core timeliness of the proactive response.
+"""TimeSpeak — derived timeliness of the proactive response.
 
-How soon after a cue's true onset does the agent speak, and does it fire on a GUESS (naive scripted
-emitter) or wait for confidence to clear (core)? Each onset has a confidence RAMP (ambiguous -> clear).
-Contrasts core (rising-edge three-state gate — refuses to guess) vs a no-VLM scripted baseline (fires
-the instant the cue looks true).
+When saved E2E benchmark artifacts exist, this track derives TimeSpeak from those runs without another
+video pass: how soon after the labelled event/answer window opened did Percept emit a cue/answer? If no
+E2E artifacts exist, it falls back to the deterministic sim-core regression.
 
   latency  : frames from onset to the first fire of the episode (lower = more timely)
   P-PAUC   : proactive AUC — 1 - latency/window if fired in the window, else 0; mean ×100
   guess%   : fraction of fires made while confidence < the gate threshold (firing on an ambiguous read)
 
-Deterministic sim-core regression — the gate/executor are the real code.
-
-This is not a publishable TML-comparable TimeSpeak result. The release track needs a held-out prompt
-corpus, speak windows, early/late/guess accounting, and an edge-E2E adapter.
+The derived-from-artifacts path is DRAFT-only until the source E2E runs are full and manifest-backed.
 """
 from __future__ import annotations
 
 from statistics import median
 
 from . import sim
+from .derived_interaction import cues_from_latest_e2e, summarize_sources, time_metrics
 from .types import TrackResult
 
 TRACK = "timespeak"
@@ -26,6 +23,9 @@ _FMTS = {
     "latency": "{:.1f}",
     "p-pauc": "{:.0f}",
     "guess%": "{:.0f}",
+    "timing_accuracy": "{:.2f}",
+    "early_fire_rate": "{:.2f}",
+    "late_fire_rate": "{:.2f}",
     "naive_latency": "{:.1f}",
     "naive_p-pauc": "{:.0f}",
     "naive_guess%": "{:.0f}",
@@ -58,6 +58,54 @@ def _guess_rate(fires, script, thr):
 
 
 def score(*, live: bool = False, n: int = 8) -> TrackResult:
+    omega_s = 2.0
+    cues, refs, calls = cues_from_latest_e2e()
+    if cues:
+        m = time_metrics(cues, omega_s=omega_s)
+        cells = {
+            ("e2e", "timing_accuracy"): m["timing_accuracy"],
+            ("e2e", "p-pauc"): m["p_pauc"],
+            ("e2e", "latency"): m["latency_p50"],
+            ("e2e", "early_fire_rate"): m["early_fire_rate"],
+            ("e2e", "late_fire_rate"): m["late_fire_rate"],
+        }
+        timing = m["timing_accuracy"]
+        pauc = m["p_pauc"]
+        latency = m["latency_p50"]
+        return TrackResult(
+            track=TRACK,
+            cells=cells,
+            fmts=_FMTS,
+            headline={
+                "timespeak derived timing accuracy / P-PAUC": (
+                    f"{timing:.2f} / {pauc:.0f}" if timing is not None and pauc is not None else "n/a"
+                ),
+                "timespeak derived latency p50": f"{latency:.1f}s" if latency is not None else "n/a",
+            },
+            measured=[
+                "e2e:timing_accuracy",
+                "e2e:p-pauc",
+                "e2e:latency",
+                "e2e:early_fire_rate",
+                "e2e:late_fire_rate",
+            ],
+            calls=0,
+            coverage=[{
+                "dataset": "local-e2e-artifacts",
+                "expected": len(cues),
+                "observed": len(cues),
+                "failed": 0,
+                "skipped": 0,
+                "notes": f"sources={summarize_sources(cues)}; artifacts={refs}",
+            }],
+            diagnostic=True,
+            excluded=["timespeak: derived from local sampled E2E artifacts, not a full release split"],
+            notes=(
+                f"derived from latest E2E result artifacts; omega_s={omega_s}; "
+                f"source_counts={summarize_sources(cues)}; source_calls={calls}; artifacts={refs}"
+            ),
+        )
+
     dur, gap, ramp, window = 8, 7, 3, 5
     thr = sim.gate_threshold()
     episodes = [sim.Episode(onset=10 + i * (dur + gap), duration=dur) for i in range(n)]
