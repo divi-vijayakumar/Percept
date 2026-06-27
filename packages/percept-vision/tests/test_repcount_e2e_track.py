@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import math
 import unittest
 
+import percept_harness.detectors as harness_detectors
 from eval.bench import repcount
 from percept_harness.detectors import Boundary, DetectorManifest, register
 from percept_harness.tier0 import gray_frame
@@ -52,6 +54,40 @@ class RepCountE2ETests(unittest.TestCase):
         self.assertEqual(result["count"], 3)
         self.assertEqual(len(result["boundaries"]), 3)
         self.assertEqual(result["goal"], "a completed jump jack repetition")
+
+    def test_rhythm_path_counts_full_cycles_not_every_frame(self):
+        # The default (pose-channels) path runs the rhythm sense: the eye MEASURES a channel and the brain
+        # counts COMPLETE cycles. Patch the eye to emit a clean 5-cycle oscillation; expect 5, not 60.
+        import eval.count_video as count_video
+        import numpy as np
+
+        N, T = 60, 12  # 60 frames, 5 oscillations of period 12
+
+        class _FakeEye:
+            def __init__(self):
+                self.i = 0
+
+            def measure(self, _frame):
+                v = math.sin(2 * math.pi * self.i / T)
+                self.i += 1
+                return {"limb-vertical": v}
+
+        orig_decode, orig_make = count_video.decode, harness_detectors.make_detector
+        try:
+            count_video.decode = lambda _p, _f: (
+                [(i / 6.0, gray_frame(2, 2, 0)) for i in range(N)],
+                [(i / 6.0, np.zeros((2, 2, 3), dtype=np.uint8)) for i in range(N)],
+            )
+            harness_detectors.make_detector = lambda name: _FakeEye()
+            result = repcount.percept_e2e_rep_count("synthetic.mp4", action="jump_jack")  # default eye
+        finally:
+            count_video.decode, harness_detectors.make_detector = orig_decode, orig_make
+
+        self.assertEqual(result["detectors"], ["pose-channels"])
+        self.assertEqual(result["count"], 5)  # full cycles, NOT 60 frames
+        self.assertEqual(len(result["boundaries"]), 5)
+        self.assertEqual(result["boundaries"][0]["kind"], "rep")
+        self.assertIn("span", result["boundaries"][0])  # first-class start/peak/stop
 
 
 if __name__ == "__main__":

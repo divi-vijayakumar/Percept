@@ -202,7 +202,10 @@ def pose_rep_count(path, fps: int = 6) -> int:
     return int(round(duration / period_s)) if period_s > 0 else 0
 
 
-def percept_e2e_rep_count(path, *, action: str, fps: int = 6, detectors: list[str] | None = None) -> dict:
+def percept_e2e_rep_count(
+    path, *, action: str, fps: int = 6, capture_fps: int | None = None,
+    sense: dict | None = None, detectors: list[str] | None = None,
+) -> dict:
     """Run the Percept edge-boundary -> core-count path for one RepCount-A routine.
 
     The whole video is the routine window supplied by RepCount-A. The "brain-owned" contract is encoded
@@ -210,26 +213,34 @@ def percept_e2e_rep_count(path, *, action: str, fps: int = 6, detectors: list[st
     ``goal.state['detectors']``. The edge proposes timed boundaries; the core consumes them via
     :meth:`Percept.perceive_boundary` and owns the resulting count. No VLM calls are made.
 
-    ``detectors`` defaults to ``PERCEPT_REPCOUNT_DETECTORS`` or ``pose-openness``. That default is
-    intentionally global, not action-specific, so the benchmark exposes limitations rather than tuning
-    thresholds per class.
+    ``detectors`` defaults to ``PERCEPT_REPCOUNT_DETECTORS`` or ``pose-channels`` (the rhythm-sense eye).
+    That default is intentionally global, not action-specific, so the benchmark exposes limitations rather
+    than tuning thresholds per class — and it runs with NO goal-set prior, the unsupervised case.
+
+    The path is the **rhythm sense**: the ``pose-channels`` eye MEASURES a decomposed channel basis each
+    frame; the brain's :class:`~percept.rhythm.RhythmTracker` (driven by ``core.perceive_rhythm``) selects
+    the dominant channel and counts complete reps causally. No VLM calls. A legacy boundary-detector name
+    (e.g. ``pose-openness``) instead routes through the old ``perceive_boundary`` blind tally for A/B.
     """
     import cv2
 
     from percept import Goal, Percept
-    from percept_harness.detectors import DetectorBank
-    from percept_harness.tier0 import motion_score
+    from percept_harness.detectors import DetectorBank, make_detector
 
     from eval.count_video import decode
 
     names = detectors
     if names is None:
-        raw = os.environ.get("PERCEPT_REPCOUNT_DETECTORS", "pose-openness")
+        raw = os.environ.get("PERCEPT_REPCOUNT_DETECTORS", "pose-channels")
         names = [p.strip() for p in raw.split(",") if p.strip()]
     if not names:
-        names = ["pose-openness"]
+        names = ["pose-channels"]
+    rhythm_mode = names == ["pose-channels"]
 
-    small, full = decode(str(path), fps)
+    # Capture the cheap stream at capture_fps (the "retina" — high rate); the fovea (SamplingController)
+    # decides how DENSELY to spend the expensive pose measurement. Default capture == fps (reproducible).
+    capture = int(capture_fps or fps)
+    small, full = decode(str(path), capture)
     if not small or not full:
         return {
             "count": 0,
@@ -242,37 +253,69 @@ def percept_e2e_rep_count(path, *, action: str, fps: int = 6, detectors: list[st
     goal_id = "repcount"
     goal_text = f"a completed {action.replace('_', ' ')} repetition"
     core = Percept.create(discover_plugins=False)
-    core.add_goal(
-        Goal(
-            id=goal_id,
-            condition=goal_text,
-            say="rep counted",
-            state={"type": "watch", "count": 0, "detectors": names},
-        )
-    )
-    bank = DetectorBank(names)
+    state = {"type": "rhythm" if rhythm_mode else "watch", "count": 0, "detectors": names}
+    if sense is not None:
+        state["sense"] = sense
+    core.add_goal(Goal(id=goal_id, condition=goal_text, say="rep counted", state=state))
 
-    prev = None
-    boundaries = []
-    # decode() returns aligned lists sampled at the same fps.
-    for (t, gate_frame), (_tf, bgr) in zip(small, full):
-        motion = motion_score(prev, gate_frame)
-        prev = gate_frame
-        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-        for boundary in bank.push(t, motion=motion, frame=rgb):
-            boundaries.append(
-                {
-                    "detector": boundary.detector,
-                    "kind": boundary.kind,
-                    "t": float(boundary.t),
-                    "value": float(boundary.value),
-                }
-            )
-            core.perceive_boundary(goal_id, t=boundary.t)
+    boundaries: list[dict] = []
+    processed = 0
+    if rhythm_mode:
+        # The rhythm sense through the fovea: capture motion every frame, but run the expensive
+        # pose measure() ONLY on frames the SamplingController admits. A ``sense`` policy makes it adaptive
+        # (coast when quiet, escalate on motion); without one the default policy processes every frame
+        # (dense — today's behaviour, and the reproducible benchmark).
+        from percept.sampling import SamplingController, SensePolicy
+        from percept_harness.tier0 import motion_score
+
+        controller = SamplingController()
+        if isinstance(sense, dict):
+            controller.configure(goal_id, SensePolicy(**{
+                k: sense[k] for k in ("base_fps", "max_fps", "escalate_threshold") if k in sense
+            }))
+        else:  # dense default: process every captured frame
+            controller.configure(goal_id, SensePolicy(base_fps=capture, max_fps=capture, escalate_threshold=0.0))
+
+        eye = make_detector("pose-channels")
+        prev = None
+        for (t, gate_frame), (_tf, bgr) in zip(small, full):
+            motion = motion_score(prev, gate_frame)
+            prev = gate_frame
+            if not controller.should_process(goal_id, float(t), motion):
+                continue
+            processed += 1
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            core.perceive_rhythm(goal_id, t=float(t), channels=eye.measure(rgb))
+        tracker = core.rhythm.get(goal_id)
+        if tracker is not None:
+            boundaries = [
+                {"detector": "pose-channels", "kind": "rep", "t": float(r.stop_t),
+                 "value": float(r.amplitude), "channel": r.channel,
+                 "span": [float(r.start_t), float(r.peak_t), float(r.stop_t)]}
+                for r in tracker.reps
+            ]
+    else:
+        # Legacy A/B path: a boundary detector (e.g. pose-openness) -> blind perceive_boundary tally.
+        from percept_harness.tier0 import motion_score
+
+        bank = DetectorBank(names)
+        prev = None
+        for (t, gate_frame), (_tf, bgr) in zip(small, full):
+            motion = motion_score(prev, gate_frame)
+            prev = gate_frame
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            for boundary in bank.push(t, motion=motion, frame=rgb):
+                boundaries.append(
+                    {"detector": boundary.detector, "kind": boundary.kind,
+                     "t": float(boundary.t), "value": float(boundary.value)}
+                )
+                core.perceive_boundary(goal_id, t=boundary.t)
 
     return {
         "count": int(core.edge_counts.get(goal_id, 0)),
         "frames": len(full),
+        "capture_fps": capture,
+        "processed": processed if rhythm_mode else len(full),  # frames the expensive eye actually ran on
         "boundaries": boundaries,
         "detectors": names,
         "goal": goal_text,

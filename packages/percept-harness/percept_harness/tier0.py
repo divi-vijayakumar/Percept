@@ -755,21 +755,46 @@ class RemoteEdgeReceiver:
         )
 
     def on_boundaries(self, report: Any) -> list:
-        """Consume a ``BoundaryReport`` (``{'boundaries': [{goal_id, ..., t}]}`` or a bare list of those
-        events): call ``core.perceive_boundary(goal_id, t=t)`` per event; return the fire events.
+        """Consume a ``BoundaryReport`` (``{'boundaries': [{goal_id, ..., t[, channel]}]}`` or a bare list):
 
-        Mirrors :class:`GatedWatchLoop`'s inline boundary handling — the edge proposed the timed events,
-        the brain counts them and fires per the goal's accumulate, with no cloud call here.
+        * a peak/onset/threshold event -> ``core.perceive_boundary(goal_id, t)`` (the legacy blind tally);
+        * a ``"sample"`` event carrying a ``channel`` -> grouped per frame into a channel vector and routed
+          to ``core.perceive_rhythm(goal_id, t, channels)`` (the rhythm sense over the wire).
+
+        Both are additive and order-preserving; an edge that only sends peaks behaves exactly as before.
+        Returns the fire events. No cloud call here — the brain counts the edge's measurements.
         """
         events = report.get("boundaries", []) if isinstance(report, dict) else list(report)
         perceive_boundary = getattr(self._core, "perceive_boundary", None)
+        perceive_rhythm = getattr(self._core, "perceive_rhythm", None)
         fires: list = []
-        if perceive_boundary is None:
-            return fires
+        pending: tuple | None = None  # (goal_id, t, {channel: value}) buffer for one frame of samples
+
+        def flush() -> None:
+            nonlocal pending
+            if pending is not None and perceive_rhythm is not None:
+                gid, t, chans = pending
+                fired = perceive_rhythm(gid, t=t, channels=chans)
+                if fired is not None:
+                    fires.append(fired)
+            pending = None
+
         for ev in events:
-            fired = perceive_boundary(ev["goal_id"], t=ev["t"])
-            if fired is not None:
-                fires.append(fired)
+            channel = ev.get("channel")
+            if channel is not None:  # a rhythm channel sample
+                key = (ev["goal_id"], ev["t"])
+                if pending is not None and (pending[0], pending[1]) != key:
+                    flush()
+                if pending is None:
+                    pending = (ev["goal_id"], ev["t"], {})
+                pending[2][channel] = ev.get("value", 0.0)
+                continue
+            flush()  # a non-sample boundary ends any open sample frame
+            if perceive_boundary is not None:
+                fired = perceive_boundary(ev["goal_id"], t=ev["t"])
+                if fired is not None:
+                    fires.append(fired)
+        flush()
         return fires
 
 

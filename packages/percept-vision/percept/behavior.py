@@ -34,7 +34,7 @@ from .gate import ASK, FIRE, Gate, classify
 # The behavior program — authored data (the LLM fills these; presets compile legacy goal.state).
 # --------------------------------------------------------------------------------------------------
 
-Sense = Literal["judge", "transition", "episode", "absence"]
+Sense = Literal["judge", "transition", "episode", "absence", "rhythm"]
 KeyBy = Literal["entity", "episode", "time_bucket", "const"]
 
 # The perception axis — HOW the eye looks (the VLM-side half of the concern program). Every default
@@ -402,6 +402,15 @@ def program_of(goal) -> BehaviorProgram:
         prog = BehaviorProgram(
             sense="episode", predicate=goal.condition, accumulate=Accumulator(kind="count_distinct")
         )
+    elif gtype == "rhythm":
+        # The rhythm sense: a repeating cycle counted by the brain's RhythmTracker (percept.rhythm). A
+        # confirmed rep IS a distinct episode occurrence, so the FIRING mechanics reuse fire_episode (gate +
+        # nth-distinct) byte-for-byte; the new sense value only marks the dispatch + carries any fire_when.
+        prog = BehaviorProgram(
+            sense="rhythm",
+            predicate=goal.condition,
+            accumulate=Accumulator(kind="count_distinct", fire_when=s.get("fire_when")),
+        )
     elif rearm == "deadline":
         prog = BehaviorProgram(sense="absence", predicate=goal.condition, deadline_s=s.get("deadline_s"))
     elif rearm == "never":
@@ -495,6 +504,59 @@ def coerce_authored_behavior(raw) -> dict:
     return out
 
 
+_MAX_CHANNEL_LEN = 40  # bound an authored channel-hint string (no busy values / token bombs)
+
+
+def coerce_authored_rhythm(raw) -> dict:
+    """Validate a conductor ``rhythm`` PRIOR into a safe ``goal.state['rhythm']`` sub-dict — the
+    goal-setting half of the rhythm sense (the brain already knows the rep shape at authoring time, so the
+    eye never needs a runtime VLM round-trip on rep 1). Closed/bounded vocab, clamped numerics: a
+    ``channel`` hint biases :class:`~percept.rhythm.RhythmTracker` channel selection; ``cadence_s`` is a
+    rough expected rep period; ``whole_body`` flags a multi-limb action. Anything malformed is DROPPED, so
+    the tracker falls back to its unsupervised default (the benchmark runs with NO prior). The hint only
+    *biases* selection — it can never force a miscount, because a channel with zero reps is never selected."""
+    if not isinstance(raw, dict):
+        return {}
+    spec: dict = {}
+    ch = raw.get("channel")
+    if isinstance(ch, str) and 0 < len(ch) <= _MAX_CHANNEL_LEN:
+        spec["channel"] = ch
+    c = _num(raw.get("cadence_s"))
+    if c is not None and c > 0:
+        spec["cadence_s"] = min(_MAX_WINDOW_S, c)
+    if raw.get("whole_body") is True:
+        spec["whole_body"] = True
+    return {"rhythm": spec} if spec else {}
+
+
+_MAX_SENSE_FPS = 60.0  # a per-concern processing rate can't exceed the capture ceiling / busy-loop the eye
+
+
+def coerce_authored_sense(raw) -> dict:
+    """Validate a conductor ``sense`` block into a safe ``goal.state['sense']`` sub-dict — the per-concern
+    PROCESSING-density envelope for the fovea (:class:`~percept.sampling.SamplingController`). ``base_fps`` is
+    the quiet floor, ``max_fps`` the motion-escalated ceiling, ``escalate_threshold`` the motion level that
+    triggers the saccade. Clamped to ``[~0, 60]`` fps with ``base <= max`` and the threshold in ``[0, 1]`` —
+    so an LLM can never author a busy-loop rate or an inverted envelope. Malformed -> ``{}`` (the controller
+    falls back to its default policy). This is the sibling of :func:`coerce_authored_rhythm`, one tier up:
+    rhythm authors HOW to count, sense authors HOW DENSELY to look."""
+    if not isinstance(raw, dict):
+        return {}
+    spec: dict = {}
+    base = _num(raw.get("base_fps"))
+    if base is not None and base > 0:
+        spec["base_fps"] = min(_MAX_SENSE_FPS, base)
+    mx = _num(raw.get("max_fps"))
+    if mx is not None and mx > 0:
+        spec["max_fps"] = min(_MAX_SENSE_FPS, mx)
+    if "base_fps" in spec and "max_fps" in spec:
+        spec["max_fps"] = max(spec["max_fps"], spec["base_fps"])  # never an inverted envelope
+    thr = _num(raw.get("escalate_threshold"))
+    if thr is not None and 0.0 <= thr <= 1.0:
+        spec["escalate_threshold"] = thr
+    return {"sense": spec} if spec else {}
+
+
 def perception_for_concern(concern) -> dict:
     """Map a :class:`~percept_contracts.Concern`'s B1 clip declaration to a ``goal.state['perception']``
     sub-dict (the same shape :func:`coerce_authored_perception` emits). A concern declaring a positive
@@ -560,6 +622,8 @@ __all__ = [
     "program_of",
     "coerce_authored_behavior",
     "coerce_authored_perception",
+    "coerce_authored_rhythm",
+    "coerce_authored_sense",
     "perception_for_concern",
     "ask_text",
     "escalate_text",

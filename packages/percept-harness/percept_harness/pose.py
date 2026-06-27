@@ -233,6 +233,66 @@ def _coerce_bbox(obj: Any, w: float | None, h: float | None) -> tuple[float, flo
     return (_norm(x1, w), _norm(y1, h), _norm(x2, w), _norm(y2, h))
 
 
+# ---------------------------------------------------------------------------
+# Decomposed motion channels — the eye's fixed, system-tunable measurement basis
+# ---------------------------------------------------------------------------
+#
+# The rhythm sense (percept.rhythm, brain side) decides reps; the eye only MEASURES. Instead of fusing
+# landmarks into one action-shaped scalar (the pose-openness mistake), we emit a small basis of
+# DECOMPOSED channels — each oscillates once per rep for a family of actions — and let the brain select
+# the dominant one. The basis is system-level (this function), NOT per-goal. Orientation/sign is
+# irrelevant to the count: one full oscillation has exactly one min and one max per period either way.
+
+#: The default channel basis names (env ``PERCEPT_POSE_CHANNELS`` may restrict to a subset).
+POSE_CHANNEL_NAMES = ("limb-vertical", "ankle-spread", "hip-vertical", "torso-vertical")
+
+
+_MIN_BODY_SCALE = 0.05  # floor on the torso-length normalizer so a foreshortened/degenerate pose can't blow up
+
+
+def body_scale(keypoints: "tuple[PoseKeypoint, ...]") -> float:
+    """A stable per-pose length unit: mean vertical shoulder→hip distance (≈ torso length), floored.
+
+    Normalizing every channel by this makes their OSCILLATION amplitudes scale-comparable across channels
+    (a "0.3 torso-length" bob reads the same whether it's hips or wrists) — which is what lets the brain
+    select the dominant channel by amplitude without a per-channel unit bias."""
+    left = abs(keypoints[COCO_LEFT_HIP].y - keypoints[COCO_LEFT_SHOULDER].y)
+    right = abs(keypoints[COCO_RIGHT_HIP].y - keypoints[COCO_RIGHT_SHOULDER].y)
+    return max(0.5 * (left + right), _MIN_BODY_SCALE)
+
+
+def pose_channels(keypoints: "tuple[PoseKeypoint, ...]") -> dict[str, float]:
+    """Decompose one pose into the motion-channel basis, each normalized by torso length so amplitudes
+    are scale-comparable (COCO keypoints in 0..1).
+
+    * ``limb-vertical``  — wrist elevation vs shoulders (press / raise / pull-up).
+    * ``ankle-spread``   — ankle separation (jumping jacks / lateral).
+    * ``hip-vertical``   — hip height (squats / sit-ups).
+    * ``torso-vertical`` — shoulder height (push-ups / jumps / torso lifts).
+
+    Each is a plain measurement; the brain owns selection + counting. The baseline-relative tracker uses
+    only the oscillation (the DC offset cancels), so absolute-position channels are fine."""
+    L = body_scale(keypoints)
+    limb = 0.5 * (
+        (keypoints[COCO_LEFT_SHOULDER].y - keypoints[COCO_LEFT_WRIST].y)
+        + (keypoints[COCO_RIGHT_SHOULDER].y - keypoints[COCO_RIGHT_WRIST].y)
+    )
+    spread = abs(keypoints[COCO_LEFT_ANKLE].x - keypoints[COCO_RIGHT_ANKLE].x)
+    hip = 0.5 * (keypoints[COCO_LEFT_HIP].y + keypoints[COCO_RIGHT_HIP].y)
+    torso = 0.5 * (keypoints[COCO_LEFT_SHOULDER].y + keypoints[COCO_RIGHT_SHOULDER].y)
+    allch = {
+        "limb-vertical": float(limb / L),
+        "ankle-spread": float(spread / L),
+        "hip-vertical": float(hip / L),
+        "torso-vertical": float(torso / L),
+    }
+    sel = os.environ.get("PERCEPT_POSE_CHANNELS")
+    if sel:
+        want = {p.strip() for p in sel.split(",") if p.strip()}
+        return {k: v for k, v in allch.items() if k in want} or allch
+    return allch
+
+
 __all__ = [
     "PoseKeypoint",
     "PoseDetection",
@@ -241,4 +301,6 @@ __all__ = [
     "BlazePoseProvider",
     "make_pose_provider",
     "ensure_pose_ready",
+    "pose_channels",
+    "POSE_CHANNEL_NAMES",
 ]

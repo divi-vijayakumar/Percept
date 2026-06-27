@@ -29,9 +29,14 @@ class _FakeCore:
     def __init__(self, goals=()):
         self.goals = _Goals(goals)
         self.boundary_calls = []
+        self.rhythm_calls = []
 
     def perceive_boundary(self, goal_id, *, t):
         self.boundary_calls.append((goal_id, t))
+        return None
+
+    def perceive_rhythm(self, goal_id, *, t, channels):
+        self.rhythm_calls.append((goal_id, t, dict(channels)))
         return None
 
 
@@ -74,6 +79,23 @@ class TestRemoteEdgeReceiver(unittest.TestCase):
             [{"goal_id": "g", "detector": "acoustic-onset", "kind": "onset", "t": 4.0, "value": 0.5}]
         )
         self.assertEqual(core.boundary_calls, [("g", 4.0)])
+
+    def test_sample_boundaries_group_per_frame_into_perceive_rhythm(self):
+        # The rhythm sense over the wire: per-channel "sample" boundaries regroup into one frame vector.
+        core = _FakeCore()
+        report = {
+            "boundaries": [
+                {"goal_id": "reps", "detector": "pose-channels", "kind": "sample", "t": 1.0, "value": 0.3, "channel": "limb-vertical"},
+                {"goal_id": "reps", "detector": "pose-channels", "kind": "sample", "t": 1.0, "value": 0.9, "channel": "ankle-spread"},
+                {"goal_id": "reps", "detector": "pose-channels", "kind": "sample", "t": 2.0, "value": 0.4, "channel": "limb-vertical"},
+            ]
+        }
+        RemoteEdgeReceiver(core).on_boundaries(report)
+        self.assertEqual(core.boundary_calls, [])  # samples never hit the blind tally
+        self.assertEqual(core.rhythm_calls, [
+            ("reps", 1.0, {"limb-vertical": 0.3, "ankle-spread": 0.9}),
+            ("reps", 2.0, {"limb-vertical": 0.4}),
+        ])
 
     def test_returns_fire_events_from_perceive_boundary(self):
         core = _FakeCore()

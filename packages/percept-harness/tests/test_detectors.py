@@ -206,6 +206,48 @@ class TestPoseSkillRegistration(unittest.TestCase):
         out = [b for t in range(9) for b in d.push(float(t), object())]
         self.assertEqual([b.t for b in out], [2.0, 6.0])
 
+    def test_pose_channels_measures_decomposed_basis_without_deciding(self):
+        # The rhythm-sense eye MEASURES a channel basis and makes no rep decision.
+        class FakePose:
+            def detect(self, frame):
+                k = [PoseKeypoint(0.5, 0.5) for _ in range(17)]
+                k[5], k[6] = PoseKeypoint(0.4, 0.5), PoseKeypoint(0.6, 0.5)  # shoulders y=0.5
+                k[9], k[10] = PoseKeypoint(0.4, 0.2), PoseKeypoint(0.6, 0.2)  # wrists raised (y=0.2)
+                k[11], k[12] = PoseKeypoint(0.45, 0.8), PoseKeypoint(0.55, 0.8)  # hips y=0.8 -> torso L=0.3
+                k[15], k[16] = PoseKeypoint(0.2, 0.9), PoseKeypoint(0.8, 0.9)  # ankles spread
+                return [PoseDetection(tuple(k), confidence=0.9, provider="fake")]
+
+        self.assertEqual(manifest_of("pose-channels").category, CATEGORY_FRAME)
+        d = make_detector("pose-channels")
+        d._provider = FakePose()
+        ch = d.measure(object())
+        self.assertEqual(set(ch), {"limb-vertical", "ankle-spread", "hip-vertical", "torso-vertical"})
+        # wrist 0.3 above shoulder, normalized by torso length L=0.3 -> 1.0 (channels are scale-comparable)
+        self.assertAlmostEqual(ch["limb-vertical"], 1.0, places=6)
+        # push() carries each channel as a "sample" boundary (the remote-edge up-channel).
+        bs = d.push(1.0, object())
+        self.assertEqual({b.channel for b in bs}, set(ch))
+        self.assertTrue(all(b.kind == "sample" for b in bs))
+
+    def test_pose_channels_carries_forward_on_dropped_pose(self):
+        class FlakyPose:
+            def __init__(self):
+                self.n = 0
+
+            def detect(self, frame):
+                self.n += 1
+                if self.n == 2:
+                    return []  # dropped frame
+                k = [PoseKeypoint(0.5, 0.5) for _ in range(17)]
+                k[5], k[6] = PoseKeypoint(0.4, 0.5), PoseKeypoint(0.6, 0.5)
+                return [PoseDetection(tuple(k), confidence=0.9, provider="fake")]
+
+        d = make_detector("pose-channels")
+        d._provider = FlakyPose()
+        first = d.measure(object())
+        second = d.measure(object())  # dropped -> carries forward, never an empty/zero spike
+        self.assertEqual(first, second)
+
 
 class TestDetectorBank(unittest.TestCase):
     def test_routes_motion_and_energy_channels(self):

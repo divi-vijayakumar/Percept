@@ -169,9 +169,10 @@ class Boundary:
     """A timed event the edge reports UP: WHERE something happened, cheaply, at native fps."""
 
     detector: str
-    kind: str  # "peak" | "onset" | "threshold"
+    kind: str  # "peak" | "onset" | "threshold" | "sample"
     t: float
     value: float
+    channel: str | None = None  # which decomposed channel this came from (rhythm sense); additive/optional
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +315,90 @@ class PoseOpenness:
             )
             self._last = spread / sw + wrist_up
         return [Boundary(self.name, b.kind, b.t, b.value) for b in self._peak.push(t, self._last)]
+
+
+class PoseChannels:
+    """FRAME-backed edge skill — the eye that MEASURES and never decides (the rhythm-sense companion).
+
+    Unlike :class:`PoseOpenness`, which fuses landmarks into one jumping-jack-shaped scalar AND decides
+    reps, this detector emits a fixed, system-tunable BASIS of decomposed motion channels (wrist-elevation,
+    ankle-spread, hip-height, torso-height — see :func:`percept_harness.pose.pose_channels`) and makes NO
+    rep decision. The brain's :class:`~percept.rhythm.RhythmTracker` selects the dominant channel and counts
+    causally. Channels carry forward on a dropped pose so a missing frame never injects a phantom cycle.
+
+    Two ways to consume it:
+      * :meth:`measure` — the per-frame channel vector ``{name: value}`` the rhythm path feeds straight to
+        ``core.perceive_rhythm`` (in-process, the benchmark path).
+      * :meth:`push` — one ``"sample"`` :class:`Boundary` per channel (carrying ``channel``), so the remote
+        edge can ship the same measurements up over the existing BoundaryReport seam.
+    """
+
+    signal = "frame"
+    name = "pose-channels"
+
+    _MIN_POSE_CONF = 0.3  # ignore low-confidence detections (noise / partial people)
+
+    def __init__(self, *, provider: Any | None = None, provider_name: str | None = None) -> None:
+        self._provider = provider
+        self._provider_name = provider_name
+        self._last: dict[str, float] = {}
+        self._anchor: tuple[float, float] | None = None  # last selected person's hip centre (continuity)
+
+    def _ensure(self) -> None:
+        if self._provider is None:
+            from .pose import make_pose_provider
+
+            self._provider = make_pose_provider(self._provider_name)
+
+    def reset(self) -> None:
+        self._last = {}
+        self._anchor = None
+
+    @staticmethod
+    def _hip_centre(p: Any) -> tuple[float, float]:
+        from .pose import COCO_LEFT_HIP, COCO_RIGHT_HIP
+
+        k = p.keypoints
+        return (
+            0.5 * (k[COCO_LEFT_HIP].x + k[COCO_RIGHT_HIP].x),
+            0.5 * (k[COCO_LEFT_HIP].y + k[COCO_RIGHT_HIP].y),
+        )
+
+    def _select(self, poses: list) -> Any | None:
+        """Pick ONE person to track. Multi-person frames otherwise make ``max(confidence)`` jump between
+        bodies of different scales and inject phantom oscillations. Prefer the detection closest to the
+        previously-tracked hip centre (continuity, a mini-entity lock); fall back to most-confident."""
+        live = [p for p in poses if p.confidence >= self._MIN_POSE_CONF]
+        if not live:
+            return None
+        if self._anchor is not None:
+            ax, ay = self._anchor
+
+            def d2(p):
+                cx, cy = self._hip_centre(p)
+                return (cx - ax) ** 2 + (cy - ay) ** 2
+
+            return min(live, key=d2)
+        return max(live, key=lambda p: p.confidence)
+
+    def measure(self, frame: Any) -> dict[str, float]:
+        """RGB uint8 HxWx3 -> the decomposed channel vector. Tracks ONE person across frames and carries
+        forward on a dropped/low-confidence pose so a gap never injects a phantom oscillation."""
+        self._ensure()
+        from .pose import pose_channels
+
+        chosen = self._select(self._provider.detect(frame))
+        if chosen is not None:
+            self._anchor = self._hip_centre(chosen)
+            self._last = pose_channels(chosen.keypoints)
+        return dict(self._last)
+
+    def push(self, t: float, frame: Any) -> list[Boundary]:
+        """Emit one ``"sample"`` boundary per channel (the remote-edge up-channel for the rhythm sense)."""
+        return [
+            Boundary(self.name, "sample", t, v, channel=ch)
+            for ch, v in self.measure(frame).items()
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -460,6 +545,19 @@ register(
         category=CATEGORY_FRAME,
     ),
 )
+register(
+    "pose-channels",
+    PoseChannels,
+    DetectorManifest(
+        name="pose-channels",
+        senses="body pose over time as a DECOMPOSED channel basis (wrist-elevation, ankle-spread, "
+        "hip-height, torso-height) — the eye measures, it does not decide reps",
+        when_to_use="the rhythm sense — counting any repetitive action (reps, strokes, steps) where the "
+        "brain (percept.rhythm) selects the dominant channel and counts cycles causally with no VLM call",
+        output="per-frame channel measurements (via measure()) or one 'sample' boundary per channel",
+        category=CATEGORY_FRAME,
+    ),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -563,6 +661,7 @@ __all__ = [
     "MotionPeriodicity",
     "AcousticOnset",
     "PoseOpenness",
+    "PoseChannels",
     "register",
     "register_detector",
     "make_detector",

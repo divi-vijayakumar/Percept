@@ -55,11 +55,13 @@ from .enrichers import (
     unregister_enricher,
 )
 from .pose import (
+    POSE_CHANNEL_NAMES,
     BlazePoseProvider,
     PoseDetection,
     PoseKeypoint,
     RTMOPoseProvider,
     make_pose_provider,
+    pose_channels,
 )
 from .tier0 import (
     Frame,
@@ -106,6 +108,8 @@ __all__ = [
     "RTMOPoseProvider",
     "BlazePoseProvider",
     "make_pose_provider",
+    "pose_channels",
+    "POSE_CHANNEL_NAMES",
     # concern registry (the standing-concern lifecycle)
     "register_concern",
     "registered_concerns",

@@ -26,6 +26,7 @@ from .events import AudioWindow, EventLog, FrameWindow
 from .gate import FIRE, Gate, GateAction, classify
 from .goals import GoalOp, GoalRegistry
 from .observability import Funnel, Metrics, OTelExporter, health, judge_usage
+from .rhythm import RhythmTracker
 from .routing import RouteEngine
 from .scheduler import Scheduler
 
@@ -127,6 +128,7 @@ class Percept:
     router: RouteEngine | None = None  # local fast-path; None -> always defer (built in create)
     episodes: dict = field(default_factory=dict)  # goal_id -> EpisodeLog (counting goals)
     edge_counts: dict = field(default_factory=dict)  # goal_id -> running tally of edge detector boundaries
+    rhythm: dict = field(default_factory=dict)  # goal_id -> RhythmTracker (the rhythm sense; brain-owned count)
     windows: dict = field(default_factory=dict)  # source -> FrameWindow (temporal perception)
     audio_windows: dict = field(default_factory=dict)  # source -> AudioWindow (fused/acoustic perception)
     perception_cooldown_s: float = 5.0  # the perception-rung refractory (shorter than the LLM's 30s)
@@ -380,6 +382,38 @@ class Percept:
         if fired is None:
             return None
         self.metrics.incr("edge.boundary.fire")
+        return FireEvent(fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict)
+
+    def perceive_rhythm(
+        self, goal_id: str, *, t: float, channels: dict[str, float]
+    ) -> FireEvent | None:
+        """The **rhythm sense** (the brain-counts half done right): fold one frame's measured pose/motion
+        CHANNELS into the goal's :class:`~percept.rhythm.RhythmTracker` and fire only when a *complete* rep
+        is causally confirmed (rest→peak→return-to-rest). Unlike :meth:`perceive_boundary`'s blind ``+1``
+        per edge event, the count is the tracker's confirmed-rep tally — the eye measures, the brain decides
+        which excursions are reps. Counting reps with no VLM call and no per-action threshold tuning.
+
+        ``channels`` is the eye's decomposed measurement vector for this frame (e.g. the ``pose-channels``
+        detector's basis). A confirmed rep IS a distinct episode, so the firing reuses
+        :meth:`BehaviorExecutor.fire_episode` (gate + ``fire_when``) — same path, new sense."""
+        goal = self.goals.get(goal_id)
+        if goal is None or not channels:
+            return None
+        tracker = self.rhythm.get(goal_id)
+        if tracker is None:
+            prior = goal.state.get("rhythm") if isinstance(goal.state.get("rhythm"), dict) else {}
+            tracker = RhythmTracker(prior_channel=prior.get("channel"))
+            self.rhythm[goal_id] = tracker
+        rep = tracker.observe(t, channels)
+        if rep is None:
+            return None
+        n = tracker.count
+        self.edge_counts[goal_id] = n  # the brain-owned count, read uniformly by the bench/runtime
+        goal.state["count"] = n
+        fired = self.executor.fire_episode(goal, program_of(goal), n=n, is_new=True, t=rep.stop_t)
+        if fired is None:
+            return None
+        self.metrics.incr("rhythm.rep.fire")
         return FireEvent(fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict)
 
     # -- observability: coverage-loss fires with the concern's consequence (A2, spec §3) ----
