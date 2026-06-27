@@ -17,8 +17,14 @@ import asyncio
 import re
 from dataclasses import dataclass, field
 
+from typing import Any
+
 from percept import Goal, Percept
-from percept.runtime import RuntimeHealthEvent, RuntimeStats, run
+from percept.adapters import Goal as ContractGoal
+from percept.config import load_settings
+from percept.edge.tier0 import MotionGate, compile_watchspec
+from percept.gate import FIRE
+from percept.runtime.source import open_source
 
 from . import perception_test as pt
 from .types import TrackResult
@@ -40,6 +46,7 @@ class EventRun:
     fires: list[float] = field(default_factory=list)
     asks: list[float] = field(default_factory=list)
     escalations: list[float] = field(default_factory=list)
+    trace: list[dict[str, Any]] = field(default_factory=list)
     error: str | None = None
 
     @property
@@ -72,7 +79,45 @@ def _action_goal(label: str) -> str:
     return f"someone is {words}"
 
 
+class RecordingVision:
+    """Gemini judge wrapper that records the latest verdict for benchmark tracing."""
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+        self.calls = 0
+        self.last_verdict: dict[str, Any] | None = None
+
+    async def detect(self, frame: Any, goals: list[ContractGoal]) -> list:
+        return []
+
+    async def detect_events(self, frames: list, goals: list[ContractGoal]) -> list:
+        return []
+
+    async def judge(self, condition: str, frame: Any, **kwargs: Any):
+        self.calls += 1
+        verdict = await self.inner.judge(condition, frame, **kwargs)
+        self.last_verdict = {
+            "condition": condition,
+            "satisfied": bool(verdict.satisfied),
+            "confidence": float(verdict.confidence),
+            "evidence": str(getattr(verdict, "evidence", "") or "")[:240],
+        }
+        return verdict
+
+
+def _silent_reason(verdict: dict[str, Any] | None, threshold: float) -> str:
+    if verdict is None:
+        return "silent: no_verdict_recorded"
+    if not verdict.get("satisfied"):
+        return "silent: verdict_not_satisfied"
+    if float(verdict.get("confidence") or 0.0) < threshold:
+        return "silent: low_confidence"
+    return "silent: suppressed_or_refractory"
+
+
 async def _score_one(event: dict) -> EventRun:
+    from percept.backends.gemini import GeminiVision
+
     goal_text = _action_goal(event["label"])
     result = EventRun(
         video_id=event["video_id"],
@@ -81,44 +126,60 @@ async def _score_one(event: dict) -> EventRun:
         onset_s=float(event["onset_s"]),
         end_s=float(event["end_s"]),
     )
-    stats = RuntimeStats()
-    escalations: list[float] = []
-    asks: list[float] = []
-
-    core = Percept.create(vision="gemini", discover_plugins=False)
+    settings = load_settings()
+    vision = RecordingVision(GeminiVision(settings))
+    core = Percept.create(vision=vision, settings=settings, discover_plugins=False)
+    goal_id = f"pt-{event['video_id']}"
     core.add_goal(
         Goal(
-            id=f"pt-{event['video_id']}",
+            id=goal_id,
             condition=goal_text,
             say=f"Perception Test action detected: {goal_text}",
         )
     )
-
-    async def on_health(ev: RuntimeHealthEvent) -> None:
-        if ev.kind == "escalation" and ev.ts is not None:
-            escalations.append(float(ev.ts))
-
-    async def on_ask(_ev) -> None:
-        asks.append(-1.0)
+    spec = compile_watchspec(list(core.goals.active()), threshold=settings.edge.motion_gate)
+    gate = MotionGate(spec, settings=settings)
 
     try:
-        async for incident in run(
-            core,
-            source=str(event["path"]),
-            fps=FPS,
-            stats=stats,
-            on_health=on_health,
-            on_ask=on_ask,
-            snippet_kind="frame",
-        ):
-            result.fires.append(float(incident.ts))
+        async for t, gate_frame, judge_frame in open_source(str(event["path"]), fps=FPS):
+            result.frames += 1
+            decision = gate.evaluate(gate_frame, ts=float(t))
+            if not decision.escalate:
+                continue
+            result.escalations.append(float(t))
+            vision.last_verdict = None
+            events = await core.perceive_judged(judge_frame, "pt-action", t=float(t))
+            action = "silent"
+            for fire in events or []:
+                action = getattr(fire, "action", "silent")
+                if action == FIRE:
+                    result.fires.append(float(t))
+                else:
+                    result.asks.append(float(t))
+            verdict = vision.last_verdict
+            result.trace.append({
+                "ts": round(float(t), 3),
+                "edge": {
+                    "decision": "escalate",
+                    "motion": round(float(decision.signal.motion), 4),
+                    "structural": round(float(decision.signal.structural), 4),
+                    "semantic": round(float(decision.signal.semantic), 4),
+                    "threshold": round(float(decision.threshold), 4),
+                },
+                "goal_id": goal_id,
+                "goal": goal_text,
+                "gemini_verdict": {
+                    "satisfied": bool(verdict.get("satisfied")) if verdict else None,
+                    "confidence": round(float(verdict.get("confidence") or 0.0), 3) if verdict else None,
+                    "evidence": str(verdict.get("evidence", "") if verdict else "")[:240],
+                },
+                "core_gate_action": action,
+                "reason": f"{action}: emitted" if action != "silent" else _silent_reason(verdict, settings.gate.threshold),
+            })
     except Exception as exc:
         result.error = f"{type(exc).__name__}: {exc}"
 
-    result.frames = stats.frames
-    result.judge_calls = stats.judge_calls
-    result.escalations = escalations
-    result.asks = asks
+    result.judge_calls = vision.calls
     return result
 
 
@@ -206,6 +267,7 @@ def score(*, live: bool, n: int) -> TrackResult:
             "fire_hit": r.fire_hit,
             "fires": [round(t, 3) for t in r.fires],
             "escalations": [round(t, 3) for t in r.escalations[:20]],
+            "trace": r.trace,
             "error": r.error,
         }
         for r in runs

@@ -61,6 +61,7 @@ class QuestionRun:
     frames: int = 0
     escalations: list[float] = field(default_factory=list)
     answers: list[tuple[float, str, float]] = field(default_factory=list)
+    trace: list[dict[str, Any]] = field(default_factory=list)
     judge_calls: int = 0
     error: str | None = None
 
@@ -77,6 +78,7 @@ class PVQAVision:
         self.client = genai.Client(api_key=key)
         self.model = model or os.environ.get("PERCEPT_VISION_MODEL") or os.environ.get("PERCEPT_GEMINI_MODEL") or "gemini-3-flash-preview"
         self.calls = 0
+        self.last_verdict: dict[str, Any] | None = None
 
     async def detect(self, frame: Any, goals: list[ContractGoal]) -> list:
         return []
@@ -101,6 +103,12 @@ class PVQAVision:
         answer = str(data.get("answer", "") or "").strip()
         if sufficient and not answer:
             sufficient = False
+        self.last_verdict = {
+            "condition": condition,
+            "satisfied": sufficient,
+            "confidence": confidence,
+            "evidence": answer or "not enough evidence",
+        }
         return Verdict(satisfied=sufficient, confidence=confidence, evidence=answer or "not enough evidence")
 
 
@@ -236,6 +244,16 @@ def _candidate_metrics(runs: list[QuestionRun]) -> dict[str, float | int | None]
     }
 
 
+def _silent_reason(verdict: dict[str, Any] | None, threshold: float) -> str:
+    if verdict is None:
+        return "silent: no_verdict_recorded"
+    if not verdict.get("satisfied"):
+        return "silent: insufficient_answer_evidence"
+    if float(verdict.get("confidence") or 0.0) < threshold:
+        return "silent: low_confidence"
+    return "silent: suppressed_or_refractory"
+
+
 async def _score_one(row: dict[str, Any]) -> QuestionRun:
     question = _question(row)
     run = QuestionRun(
@@ -264,10 +282,35 @@ async def _score_one(row: dict[str, Any]) -> QuestionRun:
             if not decision.escalate:
                 continue
             run.escalations.append(float(t))
+            vision.last_verdict = None
             events = await core.perceive_judged(judge_frame, "proactiveqa", t=float(t))
+            action = "silent"
             for event in events:
                 if event.action == FIRE and event.verdict is not None:
+                    action = FIRE
                     run.answers.append((float(t), str(event.verdict.evidence or ""), float(event.verdict.confidence)))
+                else:
+                    action = getattr(event, "action", "ask")
+            verdict = vision.last_verdict
+            run.trace.append({
+                "ts": round(float(t), 3),
+                "edge": {
+                    "decision": "escalate",
+                    "motion": round(float(decision.signal.motion), 4),
+                    "structural": round(float(decision.signal.structural), 4),
+                    "semantic": round(float(decision.signal.semantic), 4),
+                    "threshold": round(float(decision.threshold), 4),
+                },
+                "goal_id": f"pvqa-{run.question_id}",
+                "goal": f"there is enough visual evidence to answer: {question}",
+                "gemini_verdict": {
+                    "satisfied": bool(verdict.get("satisfied")) if verdict else None,
+                    "confidence": round(float(verdict.get("confidence") or 0.0), 3) if verdict else None,
+                    "evidence": str(verdict.get("evidence", "") if verdict else "")[:240],
+                },
+                "core_gate_action": action,
+                "reason": f"{action}: emitted" if action != "silent" else _silent_reason(verdict, settings.gate.threshold),
+            })
     except Exception as exc:
         run.error = f"{type(exc).__name__}: {exc}"
     finally:
@@ -341,6 +384,7 @@ def score(*, live: bool, n: int) -> TrackResult:
             "escalations": len(r.escalations),
             "judge_calls": r.judge_calls,
             "answers": [{"t": round(t, 3), "text": text[:160], "confidence": round(conf, 3)} for t, text, conf in r.answers],
+            "trace": r.trace,
             "error": r.error,
         }
         for r in runs

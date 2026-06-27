@@ -57,6 +57,7 @@ class VideoRun:
     fires: list[tuple[str, float, float]] = field(default_factory=list)
     asks: list[tuple[str, float]] = field(default_factory=list)
     verdicts: dict[str, list[tuple[float, bool, float]]] = field(default_factory=dict)
+    trace: list[dict[str, Any]] = field(default_factory=list)
     judge_calls: int = 0
     error: str | None = None
 
@@ -73,6 +74,7 @@ class RecordingVision:
         self.current_t: float | None = None
         self.calls = 0
         self.by_condition: dict[str, list[tuple[float, bool, float]]] = {}
+        self.last_batch: list[dict[str, Any]] = []
 
     async def detect(self, frame: Any, goals: list[ContractGoal]) -> list:
         return []
@@ -87,6 +89,12 @@ class RecordingVision:
         self.by_condition.setdefault(condition, []).append(
             (t, bool(verdict.satisfied), float(verdict.confidence))
         )
+        self.last_batch.append({
+            "condition": condition,
+            "satisfied": bool(verdict.satisfied),
+            "confidence": float(verdict.confidence),
+            "evidence": str(getattr(verdict, "evidence", "") or "")[:240],
+        })
         return verdict
 
 
@@ -225,6 +233,14 @@ def _sparse_miou(runs: list[VideoRun]) -> float | None:
     return sum(scores) / len(scores) if scores else None
 
 
+def _silent_reason(verdict: dict[str, Any], threshold: float) -> str:
+    if not verdict.get("satisfied"):
+        return "silent: verdict_not_satisfied"
+    if float(verdict.get("confidence") or 0.0) < threshold:
+        return "silent: low_confidence"
+    return "silent: suppressed_or_refractory"
+
+
 async def _score_one(row: dict[str, Any]) -> VideoRun:
     from percept.backends.gemini import GeminiVision
 
@@ -251,13 +267,39 @@ async def _score_one(row: dict[str, Any]) -> VideoRun:
                 continue
             run.escalations.append(float(t))
             recorder.current_t = float(t)
+            recorder.last_batch = []
             events = await core.perceive_judged(judge_frame, "charades", t=float(t))
+            events_by_goal = {event.goal_id: event for event in events or []}
             for event in events:
                 if event.action == FIRE:
                     conf = float(event.verdict.confidence) if event.verdict else 0.0
                     run.fires.append((event.goal_id, float(t), conf))
                 else:
                     run.asks.append((event.goal_id, float(t)))
+            condition_to_goal = {goal.condition: goal.goal_id for goal in goals}
+            for verdict in recorder.last_batch:
+                goal_id = condition_to_goal.get(str(verdict["condition"]), "?")
+                event = events_by_goal.get(goal_id)
+                action = getattr(event, "action", "silent") if event is not None else "silent"
+                run.trace.append({
+                    "ts": round(float(t), 3),
+                    "edge": {
+                        "decision": "escalate",
+                        "motion": round(float(decision.signal.motion), 4),
+                        "structural": round(float(decision.signal.structural), 4),
+                        "semantic": round(float(decision.signal.semantic), 4),
+                        "threshold": round(float(decision.threshold), 4),
+                    },
+                    "goal_id": goal_id,
+                    "goal": verdict["condition"],
+                    "gemini_verdict": {
+                        "satisfied": verdict["satisfied"],
+                        "confidence": round(float(verdict["confidence"]), 3),
+                        "evidence": verdict["evidence"],
+                    },
+                    "core_gate_action": action,
+                    "reason": f"{action}: emitted" if action != "silent" else _silent_reason(verdict, settings.gate.threshold),
+                })
     except Exception as exc:
         run.error = f"{type(exc).__name__}: {exc}"
     finally:
@@ -330,6 +372,7 @@ def score(*, live: bool, n: int) -> TrackResult:
             "escalations": len(r.escalations),
             "judge_calls": r.judge_calls,
             "fires": [{"goal_id": gid, "t": round(t, 3), "confidence": round(conf, 3)} for gid, t, conf in r.fires],
+            "trace": r.trace,
             "error": r.error,
         }
         for r in runs
