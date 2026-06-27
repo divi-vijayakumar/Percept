@@ -64,6 +64,11 @@ class _ChannelState:
     name: str
     # --- tunables (swept offline across actions) -------------------------------------------------------
     floor: float = 0.04  # cold-start minimal prominence (reject still-scene jitter before any rep)
+    min_amp: float = 0.0  # ABSOLUTE prominence floor from the action prior (expected ROM × gate-frac), in THIS
+    #                       channel's NATIVE units — the same units as ``Rep.amplitude``. 0 = off. Distinct from
+    #                       ``floor`` (a tiny fixed cold-start jitter guard) and ``prom_frac`` (RELATIVE to the
+    #                       recent amplitude): this rejects movement too small to be the target rep — the fidget
+    #                       false-positive — and only the prior channel sets it (see RhythmTracker._state).
     # Direction-run debounce is in TIME, not sample-steps, so the counter is RATE-AGNOSTIC: a turn confirms
     # once the opposite direction has persisted >= min_run_s seconds. Cold-start ~0.3s (≈ 2 steps @6fps);
     # once a period is learned it scales to period_frac × period (clamped), so a fast 1 Hz rep keeps a short
@@ -146,7 +151,7 @@ class _ChannelState:
             # we departed from (causal).
             peak_v, peak_t = self._ext_v, self._ext_t
             prom = peak_v - self._last_trough_v
-            if prom >= self.prom_frac * self._effective_amp() and prom >= self.floor:
+            if prom >= self.prom_frac * self._effective_amp() and prom >= self.floor and prom >= self.min_amp:
                 med = self._median_interval()
                 debounced = (
                     med is not None and self.last_stop_t is not None
@@ -197,6 +202,9 @@ class RhythmTracker:
     """
 
     prior_channel: str | None = None
+    expected_rom: float | None = None  # expected rep prominence on the PRIOR channel, in that channel's native
+    #                                    units (see _ChannelState.min_amp). Set by the conductor; None = no gate.
+    amp_gate_frac: float = 0.5  # a rep must reach this fraction of expected_rom to be counted
     floor: float = 0.04
     amp_frac: float = 0.5  # a channel must oscillate at >= this fraction of the strongest to be eligible
     _channels: dict[str, _ChannelState] = field(default_factory=dict)
@@ -205,7 +213,12 @@ class RhythmTracker:
     def _state(self, channel: str) -> _ChannelState:
         st = self._channels.get(channel)
         if st is None:
-            st = _ChannelState(name=channel, floor=self.floor)
+            # The amplitude gate is bound to the PRIOR channel ONLY: expected_rom is in that channel's native
+            # units, so it is meaningless on any other channel (a horizontal/angular channel has different
+            # units). If there is no prior channel, or this is a different channel, the gate stays off.
+            min_amp = (self.amp_gate_frac * self.expected_rom
+                       if self.expected_rom is not None and channel == self.prior_channel else 0.0)
+            st = _ChannelState(name=channel, floor=self.floor, min_amp=min_amp)
             self._channels[channel] = st
         return st
 

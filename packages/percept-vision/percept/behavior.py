@@ -506,6 +506,7 @@ def coerce_authored_behavior(raw) -> dict:
 
 _MAX_CHANNEL_LEN = 40  # bound an authored channel-hint string (no busy values / token bombs)
 _VALID_RHYTHM_MODE = {"discrete", "continuous"}  # rep regime: rest-between (shipped) vs rest-less (research seam)
+_MAX_EXPECTED_ROM = 100.0  # bound the authored expected-ROM (channel-native units; generous — channels vary)
 
 
 def coerce_authored_rhythm(raw) -> dict:
@@ -535,6 +536,14 @@ def coerce_authored_rhythm(raw) -> dict:
     w = _num(raw.get("window_s"))  # endurance window for windowed rep counts ("reps in the last minute")
     if w is not None and w > 0:
         spec["window_s"] = min(_MAX_WINDOW_S, w)
+    # expected ROM: the prominence a REAL rep reaches, used to reject too-small movement (the fidget). UNIT
+    # CONTRACT — it is in the PRIOR ``channel``'s native units (same units as Rep.amplitude), so it is only
+    # honoured when a channel is named, and is marked ``channel_native`` (the only space supported today) so a
+    # frame-normalized number can never be silently fed once other channel families exist.
+    rom = _num(raw.get("expected_rom"))
+    if rom is not None and rom > 0 and "channel" in spec and raw.get("expected_rom_space", "channel_native") == "channel_native":
+        spec["expected_rom"] = min(_MAX_EXPECTED_ROM, rom)
+        spec["expected_rom_space"] = "channel_native"
     return {"rhythm": spec} if spec else {}
 
 

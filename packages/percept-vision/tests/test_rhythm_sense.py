@@ -100,6 +100,33 @@ class RhythmTrackerSignalTests(unittest.TestCase):
         tr, _ = _run([(i / 6.0, {"c": v}) for i, v in enumerate(vals)])
         self.assertEqual(tr.count, 3)
 
+    def test_expected_rom_gate_rejects_small_reps_relative_guard_misses(self):
+        # The fidget case: big reps to 1.0 (prom 1.0) then small reps to 0.4 (prom 0.4). The RELATIVE guard
+        # keeps the 0.4 reps (0.4 > 0.2×amp), but the ABSOLUTE expected-ROM gate (min_amp = 0.5×1.0) rejects
+        # them. This is the movement-too-small-to-be-a-rep case the relative guard can't see.
+        big = [0, 0.5, 1.0, 0.5, 0, 0.5, 1.0, 0.5, 0, 0.5, 1.0, 0.5, 0]
+        small = [0.2, 0.4, 0.2, 0, 0.2, 0.4, 0.2, 0, 0.2, 0.4, 0.2, 0]
+        samples = [(i / 6.0, {"c": v}) for i, v in enumerate(big + small)]
+        ungated, _ = _run(samples, prior_channel="c")
+        gated, _ = _run(samples, prior_channel="c", expected_rom=1.0)  # min_amp = 0.5
+        self.assertGreater(ungated.count, gated.count)
+        self.assertEqual(gated.count, 3)  # only the full-ROM reps survive
+
+    def test_expected_rom_off_by_default_is_backward_compatible(self):
+        big = [0, 0.5, 1.0, 0.5, 0, 0.5, 1.0, 0.5, 0, 0.5, 1.0, 0.5, 0]
+        small = [0.2, 0.4, 0.2, 0, 0.2, 0.4, 0.2, 0, 0.2, 0.4, 0.2, 0]
+        samples = [(i / 6.0, {"c": v}) for i, v in enumerate(big + small)]
+        tr, _ = _run(samples, prior_channel="c")  # no expected_rom → no absolute gate
+        self.assertGreaterEqual(tr.count, 5)  # both big and small counted
+
+    def test_expected_rom_binds_only_the_prior_channel(self):
+        # expected_rom is in the PRIOR channel's native units, so it must NOT gate a different channel.
+        big = [0, 0.5, 1.0, 0.5, 0, 0.5, 1.0, 0.5, 0, 0.5, 1.0, 0.5, 0]
+        small = [0.2, 0.4, 0.2, 0, 0.2, 0.4, 0.2, 0, 0.2, 0.4, 0.2, 0]
+        samples = [(i / 6.0, {"other": v}) for i, v in enumerate(big + small)]
+        tr, _ = _run(samples, prior_channel="c", expected_rom=1.0)  # prior names absent "c"; "other" ungated
+        self.assertGreaterEqual(tr.count, 5)
+
     def test_selects_rep_channel_over_noise_and_reports_span(self):
         base = _wave(10, channel="rep")
         for i, (_t, ch) in enumerate(base):
@@ -140,6 +167,17 @@ class RhythmProgramTests(unittest.TestCase):
         self.assertEqual(coerce_authored_rhythm({"channel": 123, "cadence_s": -5}), {})  # bad types/values
         self.assertEqual(coerce_authored_rhythm("nope"), {})
         self.assertEqual(coerce_authored_rhythm({"channel": "x" * 100}), {})  # over-long hint dropped
+
+    def test_expected_rom_firewall_channel_bound_and_unit_marked(self):
+        ok = coerce_authored_rhythm({"channel": "limb-vertical", "expected_rom": 0.18})["rhythm"]
+        self.assertEqual(ok["expected_rom"], 0.18)
+        self.assertEqual(ok["expected_rom_space"], "channel_native")  # marked, so units can't be confused later
+        # dropped WITHOUT a channel — expected_rom has no units without a channel to be native to
+        self.assertNotIn("expected_rom", coerce_authored_rhythm({"expected_rom": 0.18}).get("rhythm", {}))
+        # dropped for a non-channel-native space — the forward guard against frame-normalized numbers
+        self.assertNotIn("expected_rom", coerce_authored_rhythm(
+            {"channel": "c", "expected_rom": 0.18, "expected_rom_space": "frame_normalized"})["rhythm"])
+        self.assertNotIn("expected_rom", coerce_authored_rhythm({"channel": "c", "expected_rom": -1})["rhythm"])
 
 
 class RhythmAgentTests(unittest.TestCase):

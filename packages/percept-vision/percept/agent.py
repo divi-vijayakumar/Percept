@@ -402,7 +402,7 @@ class Percept:
         tracker = self.rhythm.get(goal_id)
         if tracker is None:
             prior = goal.state.get("rhythm") if isinstance(goal.state.get("rhythm"), dict) else {}
-            tracker = RhythmTracker(prior_channel=prior.get("channel"))
+            tracker = RhythmTracker(prior_channel=prior.get("channel"), expected_rom=prior.get("expected_rom"))
             self.rhythm[goal_id] = tracker
         rep = tracker.observe(t, channels)
         if rep is None:

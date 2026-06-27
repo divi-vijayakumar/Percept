@@ -104,6 +104,16 @@ class RhythmE2ETests(unittest.TestCase):
         _run(core, "reps", n_cycles=5)
         self.assertGreater(core.edge_counts["reps"], 0)                  # counts regardless of declared mode
 
+    def test_expected_rom_gate_rejects_too_small_reps_e2e(self):
+        # the fidget rejection end-to-end: a too-high expected ROM gates the (real-amplitude) reps to 0; a
+        # matching one keeps them. The eye measures, the prior says how big a real rep must be on that channel.
+        gated = self._core(channel="limb-vertical", expected_rom=20.0)  # min_amp 10 ≫ the rep prominence
+        self.assertEqual(len(_run(gated, "reps", n_cycles=6)), 0)
+        self.assertEqual(gated.edge_counts.get("reps", 0), 0)  # never written when every rep is gated out
+        kept = self._core(channel="limb-vertical", expected_rom=1.0)   # min_amp 0.5 < the rep prominence
+        _run(kept, "reps", n_cycles=6)
+        self.assertGreater(kept.edge_counts["reps"], 0)
+
     def test_legacy_boundary_path_untouched(self):
         core = Percept.create(discover_plugins=False)
         core.add_goal(Goal(id="g", condition="rep", say="x", state={"type": "watch"}))
