@@ -268,5 +268,13 @@ class RhythmTracker:
     def last_rep(self) -> Rep | None:
         return self._last_rep
 
+    def windowed_count(self, now: float, window_s: float) -> int:
+        """Reps confirmed within the last ``window_s`` seconds — the endurance/concern story (mirrors
+        :meth:`percept.episodes.EpisodeLog.count`): "how many reps in the last minute", bounded memory."""
+        sel = self.selected
+        if sel is None:
+            return 0
+        return sum(1 for r in self._channels[sel].reps if now - r.stop_t <= window_s)
+
 
 __all__ = ["Rep", "RhythmTracker"]

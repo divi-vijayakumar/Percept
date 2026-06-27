@@ -505,6 +505,7 @@ def coerce_authored_behavior(raw) -> dict:
 
 
 _MAX_CHANNEL_LEN = 40  # bound an authored channel-hint string (no busy values / token bombs)
+_VALID_RHYTHM_MODE = {"discrete", "continuous"}  # rep regime: rest-between (shipped) vs rest-less (research seam)
 
 
 def coerce_authored_rhythm(raw) -> dict:
@@ -526,6 +527,14 @@ def coerce_authored_rhythm(raw) -> dict:
         spec["cadence_s"] = min(_MAX_WINDOW_S, c)
     if raw.get("whole_body") is True:
         spec["whole_body"] = True
+    # the regime the brain declares for the eye (eye↔brain coordination): a DISCRETE rep has a rest between
+    # reps (bench, squat) and the shipped causal counter handles it; a CONTINUOUS rep is rest-less (pommel
+    # circles, cycling, strokes) and needs phase counting (research seam — recorded here, not yet counted).
+    if raw.get("mode") in _VALID_RHYTHM_MODE:
+        spec["mode"] = raw["mode"]
+    w = _num(raw.get("window_s"))  # endurance window for windowed rep counts ("reps in the last minute")
+    if w is not None and w > 0:
+        spec["window_s"] = min(_MAX_WINDOW_S, w)
     return {"rhythm": spec} if spec else {}
 
 
