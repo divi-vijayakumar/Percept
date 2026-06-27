@@ -204,9 +204,11 @@ Makefile                    test · eval-live · e2e · bench · check · reprod
 - **Quickstart** — the 60-second offline snippet above; `make test` runs the fake-only unit lane.
 - **AI-agent map** — [`llms.txt`](llms.txt) and [`AGENTS.md`](AGENTS.md) give Codex, Claude Code,
   Cursor, Copilot, and humans the verified API and repo map without spelunking.
-- **Architecture / concepts** — [`docs/e2e-flow-milk-boilover.md`](docs/e2e-flow-milk-boilover.md)
-  (the two layers, the firing path, the perception ceiling) and [`Spec/`](Spec/) (the full spec +
-  phase plan).
+- **Architecture** — [`docs/architecture.md`](docs/architecture.md) is the map: the full stack
+  (devices → edge → cognition → perception), the two firing paths (edge-only vs judged), and the
+  goal/watchspec surface you author. Then [`docs/concepts.md`](docs/concepts.md) (the cognition /
+  perception split), [`docs/e2e-flow-milk-boilover.md`](docs/e2e-flow-milk-boilover.md) (a worked
+  judged flow), and [`Spec/`](Spec/) (the full spec + phase plan).
 - **Backends** — select by name (`fake` · `gemini` · `claude` · `deepgram`) or env
   (`PERCEPT_*_BACKEND`); add via the `percept.backends` entry-point group. Extras:
   `[gemini]` · `[claude]` · `[deepgram]` · `[audio]`.
