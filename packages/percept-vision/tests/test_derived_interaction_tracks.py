@@ -1,5 +1,6 @@
 from eval.bench.derived_interaction import DerivedCue, cue_metrics, time_metrics
 from eval.bench import track_cuespeak, track_timespeak
+from eval.bench import derived_interaction
 
 
 def test_derived_cue_metrics_score_precision_recall_and_duplicates():
@@ -57,3 +58,28 @@ def test_timespeak_prefers_e2e_artifacts(monkeypatch):
     assert result.cells[("e2e", "timing_accuracy")] == 1.0
     assert result.cells[("e2e", "p-pauc")] == 75.0
     assert result.diagnostic is True
+
+
+def test_derived_reader_prefers_current_run_dir(tmp_path, monkeypatch):
+    run_dir = tmp_path / "run"
+    result_dir = run_dir / "results"
+    result_dir.mkdir(parents=True)
+    (result_dir / "pt-action-e2e.json").write_text(
+        """
+        {
+          "track": "pt-action-e2e",
+          "calls": 1,
+          "cells": {},
+          "coverage": [{"dataset": "pt", "expected": 1, "observed": 1}],
+          "notes": "per_event=[{'label':'current','window':[1,2],'fires':[1.5]}]"
+        }
+        """
+    )
+    monkeypatch.setenv("PERCEPT_BENCH_RUN_DIR", str(run_dir))
+    monkeypatch.setattr(derived_interaction, "_latest_result", derived_interaction._latest_result)
+
+    cues, refs, calls = derived_interaction.cues_from_latest_e2e()
+
+    assert any(c.label == "current" for c in cues)
+    assert any("pt-action-e2e.json" in ref for ref in refs)
+    assert calls >= 1

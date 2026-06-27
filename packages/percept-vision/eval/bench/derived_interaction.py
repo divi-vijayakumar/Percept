@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,18 +52,39 @@ class DerivedCue:
         return sum(1 for t in self.fires if t > self.window[0] + omega_s)
 
 
+def _read_result_path(path: Path) -> dict[str, Any] | None:
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        return None
+    if not data.get("coverage"):
+        return None
+    data["_artifact"] = str(path.relative_to(ROOT)) if path.is_relative_to(ROOT) else str(path)
+    return data
+
+
+def _current_run_result(track: str) -> dict[str, Any] | None:
+    raw = os.environ.get("PERCEPT_BENCH_RUN_DIR")
+    if not raw:
+        return None
+    run_dir = Path(raw)
+    path = run_dir / "results" / f"{track}.json"
+    if not path.exists():
+        return None
+    return _read_result_path(path)
+
+
 def _latest_result(track: str) -> dict[str, Any] | None:
+    current = _current_run_result(track)
+    if current is not None:
+        return current
     if not RUNS.exists():
         return None
     paths = [p for p in RUNS.glob(f"*/results/{track}.json") if p.is_file()]
     paths.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     for path in paths:
-        try:
-            data = json.loads(path.read_text())
-        except Exception:
-            continue
-        if not data.get("excluded") and data.get("coverage"):
-            data["_artifact"] = str(path.relative_to(ROOT))
+        data = _read_result_path(path)
+        if data is not None and not data.get("excluded"):
             return data
     return None
 

@@ -50,6 +50,7 @@ TRACK_MODULES = {
 }
 SAFE_LIVE_TRACKS = ("pt-action-e2e", "edge", "escalation", "counting", "cuespeak", "timespeak")
 LEGACY_MEDIA_DENSE_TRACKS = ("relational", "acoustic", "timeliness")
+DERIVED_ARTIFACT_TRACKS = ("cuespeak", "timespeak")
 ALIASES = {
     "all": SAFE_LIVE_TRACKS,
     "safe-live": SAFE_LIVE_TRACKS,
@@ -217,6 +218,19 @@ def _resolve_tracks(raw: str, exclude: str = "") -> list[str]:
     if unknown:
         raise SystemExit(f"unknown excluded track(s): {', '.join(sorted(unknown))}")
     return [name for name in selected if name not in excluded]
+
+
+def _order_tracks_for_dependencies(tracks: list[str]) -> list[str]:
+    """Run derived artifact tracks after their E2E source tracks when they share one run.
+
+    CueSpeak/TimeSpeak read result JSON from PT/Charades/PVQA artifacts. If they execute before those
+    source tracks, they can accidentally derive from older runs. Keep user selection but move derived
+    tracks to the end so a sequential run is coherent.
+    """
+
+    derived = [name for name in tracks if name in DERIVED_ARTIFACT_TRACKS]
+    base = [name for name in tracks if name not in DERIVED_ARTIFACT_TRACKS]
+    return base + derived
 
 
 def _guard_live_tracks(tracks: list[str]) -> None:
@@ -745,10 +759,12 @@ def _attempt_track(
         try:
             with log_path.open("a") as log:
                 log.write(f"\n### attempt {attempt} {datetime.now(timezone.utc).isoformat()}\n")
+                env = _env()
+                env["PERCEPT_BENCH_RUN_DIR"] = str(run_dir)
                 proc = subprocess.run(
                     cmd,
                     cwd=ROOT,
-                    env=_env(),
+                    env=env,
                     stdout=log,
                     stderr=subprocess.STDOUT,
                     text=True,
@@ -826,7 +842,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     (run_dir / "logs").mkdir(parents=True, exist_ok=True)
     (run_dir / "results").mkdir(parents=True, exist_ok=True)
 
-    tracks = _resolve_tracks(args.tracks, args.exclude)
+    tracks = _order_tracks_for_dependencies(_resolve_tracks(args.tracks, args.exclude))
     if args.live:
         _guard_live_tracks(tracks)
     if args.background and os.environ.get("PERCEPT_BENCH_BACKGROUND_CHILD") != "1":
