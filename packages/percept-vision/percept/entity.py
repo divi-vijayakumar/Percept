@@ -29,9 +29,32 @@ class Entity:
     attributes: dict[str, Attribute] = field(default_factory=dict)
     sources: set[str] = field(default_factory=set)
     appearance: object | None = None  # Phase 4 re-id signature; retained early for forward-compat
+    # Motion model for predictive continuity. ``vel`` is the box's (centre-x, centre-y, w, h) velocity per
+    # second, estimated from successive OBSERVED boxes; the anchor is the last observed box + its time, so a
+    # prediction can be made for any later moment. This is what lets continuity survive a fast displacement:
+    # match against where the subject *will be*, not its stale last box (the memoryless-IoU failure that
+    # fragments a moving hero).
+    vel: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    anchor_box: Box | None = None
+    anchor_t: float = 0.0
 
     def area(self) -> float:
         return self.box.w * self.box.h
+
+    def predicted_box(self, now: float) -> Box:
+        """Where the box should be at ``now``, advancing the last observed box by its velocity (constant
+        velocity). Falls back to the current box when there is no motion anchor yet."""
+        if self.anchor_box is None:
+            return self.box
+        dt = now - self.anchor_t
+        if dt <= 0:
+            return self.anchor_box
+        a, (vcx, vcy, vw, vh) = self.anchor_box, self.vel
+        w = max(0.02, a.w + vw * dt)
+        h = max(0.02, a.h + vh * dt)
+        cx = a.x + a.w / 2 + vcx * dt
+        cy = a.y + a.h / 2 + vcy * dt
+        return Box(cx - w / 2, cy - h / 2, w, h)
 
     def asserted(self) -> dict[str, str]:
         """The user-asserted facts on this entity (the corrections passed to vision.judge)."""
@@ -49,6 +72,9 @@ class EntityGraph:
         *,
         identity: Any = None,
         embedder: Callable[[Any, Box], Any] | None = None,
+        vel_alpha: float = 0.5,
+        predict_iou: float = 0.3,
+        coast_s: float = 1.0,
     ) -> None:
         self._iou = iou_match
         self._max = max_entities
@@ -57,6 +83,13 @@ class EntityGraph:
         # across gaps when an embedder is supplied. Either way, ids are assigned here, below the LLM.
         self._identity = identity if identity is not None else ContinuityIdentity(iou_match)
         self._embedder = embedder
+        # Predictive continuity: each entity learns a velocity from successive observations, and when normal
+        # continuity+appearance fails to match, the recovery path re-links to where the entity is PREDICTED
+        # to be. AUGMENT-only (it never overrides a successful match) and self-disabling on slow/static
+        # objects (velocity ~0 -> predicted box == last box), so it costs nothing until a subject moves fast.
+        self._vel_alpha = vel_alpha
+        self._predict_iou = predict_iou  # min IoU(predicted, obs) for the recovery match
+        self._coast_s = coast_s          # don't predict-match a track unseen longer than this (stale)
         self._entities: dict[str, Entity] = {}
         self._counter = 0
         self._last_frame_ids: list[str] = []
@@ -76,10 +109,17 @@ class EntityGraph:
         for obs in observations:
             signature = self._embedder(frame, obs.box) if self._embedder is not None else None
             match_id = self._match_id(obs, signature)
+            if match_id is None:
+                # AUGMENT, don't replace: only when normal continuity+appearance fails do we try where the
+                # entity is PREDICTED to be. So a held subject (crowd) is untouched; a fast displacement that
+                # broke memoryless IoU re-links instead of minting a new id.
+                match_id = self._predict_match(obs, now, exclude=set(touched))
             entity = self._entities.get(match_id) if match_id else None
             if entity is None:
                 entity = self._mint(obs, now, source)
+                entity.anchor_box, entity.anchor_t = obs.box, now
             else:
+                self._update_motion(entity, obs.box, now)
                 entity.box = obs.box
                 entity.last_seen = now
                 entity.sources.add(source)
@@ -90,6 +130,36 @@ class EntityGraph:
         self._last_frame_ids = touched
         self._evict()
         return [self._entities[i] for i in touched]
+
+    def _predict_match(self, obs: Observation, now: float, *, exclude: set) -> str | None:
+        """Recovery path (motion mode): match ``obs`` against each entity's PREDICTED box (constant
+        velocity), so a fast displacement re-links to the same id. Coasts only within ``_coast_s`` of the
+        last real observation — a stale track doesn't reach out and grab a passer-by."""
+        best, best_iou = None, self._predict_iou
+        for e in self._entities.values():
+            if e.id in exclude or e.label != obs.label or e.anchor_box is None:
+                continue
+            if now - e.anchor_t > self._coast_s:
+                continue
+            iou = e.predicted_box(now).iou(obs.box)
+            if iou >= best_iou:
+                best, best_iou = e, iou
+        return best.id if best is not None else None
+
+    def _update_motion(self, entity: Entity, new_box: Box, now: float) -> None:
+        """Re-estimate the entity's velocity from its last observed box → this one, then re-anchor."""
+        a = entity.anchor_box
+        dt = now - entity.anchor_t
+        if a is not None and dt > 0:
+            measured = (
+                (new_box.x + new_box.w / 2 - (a.x + a.w / 2)) / dt,
+                (new_box.y + new_box.h / 2 - (a.y + a.h / 2)) / dt,
+                (new_box.w - a.w) / dt,
+                (new_box.h - a.h) / dt,
+            )
+            al = self._vel_alpha
+            entity.vel = tuple(al * m + (1 - al) * v for m, v in zip(measured, entity.vel))
+        entity.anchor_box, entity.anchor_t = new_box, now
 
     def _match_id(self, obs: Observation, signature: Any) -> str | None:
         """Ask the identity strategy for the matching entity id (None -> mint a new one)."""
