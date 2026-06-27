@@ -293,6 +293,58 @@ def pose_channels(keypoints: "tuple[PoseKeypoint, ...]") -> dict[str, float]:
     return allch
 
 
+#: The keypoints each channel is MEASURED from — used to gate the phase source by their visibility
+#: (the *measured* signal, never the action name): an occluded prior channel (low keypoint confidence,
+#: e.g. pommel-horse legs ≈ 0) routes the count to the silhouette fallback instead of trusting the pose.
+CHANNEL_KEYPOINTS = {
+    "limb-vertical": (COCO_LEFT_WRIST, COCO_RIGHT_WRIST, COCO_LEFT_SHOULDER, COCO_RIGHT_SHOULDER),
+    "ankle-spread": (COCO_LEFT_ANKLE, COCO_RIGHT_ANKLE),
+    "hip-vertical": (COCO_LEFT_HIP, COCO_RIGHT_HIP),
+    "torso-vertical": (COCO_LEFT_SHOULDER, COCO_RIGHT_SHOULDER),
+}
+
+
+def channel_coverage(keypoints: "tuple[PoseKeypoint, ...]") -> dict[str, float]:
+    """Per-channel keypoint visibility: mean confidence of the joints each channel is built from."""
+    return {
+        ch: sum(keypoints[i].confidence for i in idx) / len(idx)
+        for ch, idx in CHANNEL_KEYPOINTS.items()
+    }
+
+
+def keypoints_bbox(keypoints: "tuple[PoseKeypoint, ...]") -> tuple[float, float, float, float]:
+    """A normalized ``(x, y, w, h)`` box enclosing the pose — the fallback when a provider gives no bbox."""
+    xs = [k.x for k in keypoints]
+    ys = [k.y for k in keypoints]
+    x0, y0 = min(xs), min(ys)
+    return (x0, y0, max(xs) - x0, max(ys) - y0)
+
+
+def bbox_xywh(bbox: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+    """Convert a provider ``(x1, y1, x2, y2)`` box to normalized ``(x, y, w, h)``."""
+    x1, y1, x2, y2 = bbox
+    return (x1, y1, max(0.0, x2 - x1), max(0.0, y2 - y1))
+
+
+def hip_centre(p: "PoseDetection") -> tuple[float, float]:
+    """The mid-hip point of a detection (the continuity anchor for single-subject selection)."""
+    k = p.keypoints
+    return (0.5 * (k[COCO_LEFT_HIP].x + k[COCO_RIGHT_HIP].x),
+            0.5 * (k[COCO_LEFT_HIP].y + k[COCO_RIGHT_HIP].y))
+
+
+def select_nearest_hip(poses, anchor, min_conf: float):
+    """The single-subject pick: detection closest to the prior hip centre (continuity), else the
+    most-confident. Module-level so it can run on any detection list, not only inside ``PoseChannels``."""
+    live = [p for p in poses if p.confidence >= min_conf]
+    if not live:
+        return None
+    if anchor is not None:
+        ax, ay = anchor
+        return min(live, key=lambda p: (hip_centre(p)[0] - ax) ** 2 + (hip_centre(p)[1] - ay) ** 2)
+    return max(live, key=lambda p: p.confidence)
+
+
 __all__ = [
     "PoseKeypoint",
     "PoseDetection",
@@ -303,4 +355,10 @@ __all__ = [
     "ensure_pose_ready",
     "pose_channels",
     "POSE_CHANNEL_NAMES",
+    "CHANNEL_KEYPOINTS",
+    "channel_coverage",
+    "keypoints_bbox",
+    "bbox_xywh",
+    "hip_centre",
+    "select_nearest_hip",
 ]

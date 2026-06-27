@@ -281,6 +281,16 @@ class RhythmTracker:
     def last_rep(self) -> Rep | None:
         return self._last_rep
 
+    @property
+    def regularity(self) -> float:
+        """Periodicity of the selected channel — ``1 / (1 + CV)`` of its inter-rep intervals, in (0, 1].
+        ``0.0`` with fewer than two reps (no interval evidence yet) so it reads as low confidence, not high."""
+        sel = self.selected
+        if sel is None:
+            return 0.0
+        st = self._channels[sel]
+        return st.regularity() if len(st.reps) >= 2 else 0.0
+
     def windowed_count(self, now: float, window_s: float) -> int:
         """Reps confirmed within the last ``window_s`` seconds — the endurance/concern story (mirrors
         :meth:`percept.episodes.EpisodeLog.count`): "how many reps in the last minute", bounded memory."""

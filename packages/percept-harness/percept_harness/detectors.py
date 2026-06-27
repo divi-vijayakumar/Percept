@@ -317,6 +317,42 @@ class PoseOpenness:
         return [Boundary(self.name, b.kind, b.t, b.value) for b in self._peak.push(t, self._last)]
 
 
+@dataclass(frozen=True)
+class PersonMeasure:
+    """One detected person's measurements for a frame — the multi-person rhythm-sense producer.
+
+    The eye MEASURES (box + decomposed channels + per-channel keypoint visibility) and stops there; the
+    brain's ``EntityGraph`` turns ``box`` into a stable entity id and counts ``channels`` per person."""
+
+    box: tuple[float, float, float, float]  # normalized (x, y, w, h) — for EntityGraph association
+    channels: dict[str, float]              # the decomposed pose-channel basis (same as measure())
+    pose_conf: float                        # the detection's overall confidence (the Observation score)
+    coverage: dict[str, float]              # per-channel keypoint visibility (the phase-source gate signal)
+    person_id: str | None = None            # the provider's frame-local index (NOT identity truth)
+
+
+def person_measures(detections: list, *, min_conf: float = 0.3) -> "list[PersonMeasure]":
+    """Turn a frame's pose detections into per-person measurements (drops sub-confidence detections).
+
+    Pure (no provider, no I/O): the same transform runs on live detections via
+    :meth:`PoseChannels.measure_entities` or on detections decoded elsewhere."""
+    from .pose import bbox_xywh, channel_coverage, keypoints_bbox, pose_channels
+
+    out: list[PersonMeasure] = []
+    for d in detections:
+        if d.confidence < min_conf:
+            continue
+        box = bbox_xywh(d.bbox) if d.bbox else keypoints_bbox(d.keypoints)
+        out.append(PersonMeasure(
+            box=box,
+            channels=pose_channels(d.keypoints),
+            pose_conf=float(d.confidence),
+            coverage=channel_coverage(d.keypoints),
+            person_id=d.person_id,
+        ))
+    return out
+
+
 class PoseChannels:
     """FRAME-backed edge skill — the eye that MEASURES and never decides (the rhythm-sense companion).
 
@@ -354,44 +390,35 @@ class PoseChannels:
         self._last = {}
         self._anchor = None
 
-    @staticmethod
-    def _hip_centre(p: Any) -> tuple[float, float]:
-        from .pose import COCO_LEFT_HIP, COCO_RIGHT_HIP
-
-        k = p.keypoints
-        return (
-            0.5 * (k[COCO_LEFT_HIP].x + k[COCO_RIGHT_HIP].x),
-            0.5 * (k[COCO_LEFT_HIP].y + k[COCO_RIGHT_HIP].y),
-        )
-
     def _select(self, poses: list) -> Any | None:
         """Pick ONE person to track. Multi-person frames otherwise make ``max(confidence)`` jump between
         bodies of different scales and inject phantom oscillations. Prefer the detection closest to the
-        previously-tracked hip centre (continuity, a mini-entity lock); fall back to most-confident."""
-        live = [p for p in poses if p.confidence >= self._MIN_POSE_CONF]
-        if not live:
-            return None
-        if self._anchor is not None:
-            ax, ay = self._anchor
+        previously-tracked hip centre (continuity, a mini-entity lock); fall back to most-confident.
 
-            def d2(p):
-                cx, cy = self._hip_centre(p)
-                return (cx - ax) ** 2 + (cy - ay) ** 2
+        This is the SINGLE-subject path (today's behaviour). The multi-person rhythm hero instead consumes
+        :meth:`measure_entities` and assigns identity via the ``EntityGraph`` (brain side)."""
+        from .pose import select_nearest_hip
 
-            return min(live, key=d2)
-        return max(live, key=lambda p: p.confidence)
+        return select_nearest_hip(poses, self._anchor, self._MIN_POSE_CONF)
 
     def measure(self, frame: Any) -> dict[str, float]:
         """RGB uint8 HxWx3 -> the decomposed channel vector. Tracks ONE person across frames and carries
         forward on a dropped/low-confidence pose so a gap never injects a phantom oscillation."""
         self._ensure()
-        from .pose import pose_channels
+        from .pose import hip_centre, pose_channels
 
         chosen = self._select(self._provider.detect(frame))
         if chosen is not None:
-            self._anchor = self._hip_centre(chosen)
+            self._anchor = hip_centre(chosen)
             self._last = pose_channels(chosen.keypoints)
         return dict(self._last)
+
+    def measure_entities(self, frame: Any) -> "list[PersonMeasure]":
+        """RGB uint8 HxWx3 -> ONE :class:`PersonMeasure` per detected person (the multi-person producer the
+        entity-scoped rhythm hero needs). The eye does NOT decide identity — it stops collapsing to a single
+        body; the brain's ``EntityGraph`` assigns stable ids and selects the performer."""
+        self._ensure()
+        return person_measures(self._provider.detect(frame), min_conf=self._MIN_POSE_CONF)
 
     def push(self, t: float, frame: Any) -> list[Boundary]:
         """Emit one ``"sample"`` boundary per channel (the remote-edge up-channel for the rhythm sense)."""
