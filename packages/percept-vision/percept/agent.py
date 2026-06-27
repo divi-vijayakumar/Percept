@@ -128,7 +128,8 @@ class Percept:
     router: RouteEngine | None = None  # local fast-path; None -> always defer (built in create)
     episodes: dict = field(default_factory=dict)  # goal_id -> EpisodeLog (counting goals)
     edge_counts: dict = field(default_factory=dict)  # goal_id -> running tally of edge detector boundaries
-    rhythm: dict = field(default_factory=dict)  # goal_id -> RhythmTracker (the rhythm sense; brain-owned count)
+    rhythm: dict = field(default_factory=dict)  # goal_id -> RhythmTracker (the SELECTED subject's; brain count)
+    _rhythm_multi: dict = field(default_factory=dict)  # (goal_id, entity_id) -> RhythmTracker (per-person streams)
     windows: dict = field(default_factory=dict)  # source -> FrameWindow (temporal perception)
     audio_windows: dict = field(default_factory=dict)  # source -> AudioWindow (fused/acoustic perception)
     perception_cooldown_s: float = 5.0  # the perception-rung refractory (shorter than the LLM's 30s)
@@ -384,37 +385,63 @@ class Percept:
         self.metrics.incr("edge.boundary.fire")
         return FireEvent(fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict)
 
-    def perceive_rhythm(
-        self, goal_id: str, *, t: float, channels: dict[str, float]
-    ) -> FireEvent | None:
-        """The **rhythm sense** (the brain-counts half done right): fold one frame's measured pose/motion
-        CHANNELS into the goal's :class:`~percept.rhythm.RhythmTracker` and fire only when a *complete* rep
-        is causally confirmed (rest→peak→return-to-rest). Unlike :meth:`perceive_boundary`'s blind ``+1``
-        per edge event, the count is the tracker's confirmed-rep tally — the eye measures, the brain decides
-        which excursions are reps. Counting reps with no VLM call and no per-action threshold tuning.
+    def _rhythm_tracker(self, goal) -> RhythmTracker:
+        prior = goal.state.get("rhythm") if isinstance(goal.state.get("rhythm"), dict) else {}
+        return RhythmTracker(prior_channel=prior.get("channel"), expected_rom=prior.get("expected_rom"))
 
-        ``channels`` is the eye's decomposed measurement vector for this frame (e.g. the ``pose-channels``
-        detector's basis). A confirmed rep IS a distinct episode, so the firing reuses
-        :meth:`BehaviorExecutor.fire_episode` (gate + ``fire_when``) — same path, new sense."""
-        goal = self.goals.get(goal_id)
-        if goal is None or not channels:
-            return None
-        tracker = self.rhythm.get(goal_id)
-        if tracker is None:
-            prior = goal.state.get("rhythm") if isinstance(goal.state.get("rhythm"), dict) else {}
-            tracker = RhythmTracker(prior_channel=prior.get("channel"), expected_rom=prior.get("expected_rom"))
-            self.rhythm[goal_id] = tracker
-        rep = tracker.observe(t, channels)
-        if rep is None:
-            return None
-        n = tracker.count
-        self.edge_counts[goal_id] = n  # the brain-owned count, read uniformly by the bench/runtime
-        goal.state["count"] = n
-        fired = self.executor.fire_episode(goal, program_of(goal), n=n, is_new=True, t=rep.stop_t)
+    def _fire_rep(self, goal, n: int, stop_t: float) -> FireEvent | None:
+        fired = self.executor.fire_episode(goal, program_of(goal), n=n, is_new=True, t=stop_t)
         if fired is None:
             return None
         self.metrics.incr("rhythm.rep.fire")
         return FireEvent(fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict)
+
+    def perceive_rhythm(
+        self, goal_id: str, *, t: float, channels: dict[str, float], entity_id: str | None = None
+    ) -> FireEvent | None:
+        """The **rhythm sense** (the brain-counts half done right): fold one frame's measured pose/motion
+        CHANNELS into the goal's :class:`~percept.rhythm.RhythmTracker` and fire only when a *complete* rep
+        is causally confirmed (rest→peak→return-to-rest). The count is the tracker's confirmed-rep tally —
+        the eye measures, the brain decides which excursions are reps. No VLM call, no per-action tuning.
+
+        ``channels`` is the eye's decomposed measurement vector for this frame (e.g. the ``pose-channels``
+        detector's basis). A confirmed rep IS a distinct episode, so the firing reuses
+        :meth:`BehaviorExecutor.fire_episode` (gate + ``fire_when``) — same path, new sense.
+
+        ``entity_id`` makes counting PER-PERSON: each subject gets its own tracker and the brain SELECTS the
+        performer (the entity with the most reps on the prior channel — a still bystander reps ~0), so the
+        goal's reported count is the performer's. ``None`` (the default) is the legacy single-subject stream
+        the benchmark/runtime read directly; behaviour there is unchanged."""
+        goal = self.goals.get(goal_id)
+        if goal is None or not channels:
+            return None
+        if entity_id is None:  # legacy single-subject stream — unchanged
+            tracker = self.rhythm.get(goal_id)
+            if tracker is None:
+                tracker = self.rhythm[goal_id] = self._rhythm_tracker(goal)
+            rep = tracker.observe(t, channels)
+            if rep is None:
+                return None
+            n = tracker.count
+            self.edge_counts[goal_id] = n  # the brain-owned count, read uniformly by the bench/runtime
+            goal.state["count"] = n
+            return self._fire_rep(goal, n, rep.stop_t)
+        # per-entity: the brain selects the performer (most reps for this goal) and reports their count
+        key = (goal_id, entity_id)
+        tracker = self._rhythm_multi.get(key)
+        if tracker is None:
+            tracker = self._rhythm_multi[key] = self._rhythm_tracker(goal)
+        rep = tracker.observe(t, channels)
+        perf_key, perf = max(((k, tr) for k, tr in self._rhythm_multi.items() if k[0] == goal_id),
+                             key=lambda kt: kt[1].count)
+        self.rhythm[goal_id] = perf  # so core.rhythm[goal_id] / .count read the SELECTED subject uniformly
+        n = perf.count
+        self.edge_counts[goal_id] = n
+        goal.state["count"] = n
+        goal.state["subject"] = perf_key[1]  # who the brain is counting (the selected performer entity)
+        if rep is None or key != perf_key:  # fire only when THE PERFORMER confirms a rep this frame
+            return None
+        return self._fire_rep(goal, n, rep.stop_t)
 
     # -- observability: coverage-loss fires with the concern's consequence (A2, spec §3) ----
     def check_observability(

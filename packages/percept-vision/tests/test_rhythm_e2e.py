@@ -114,6 +114,18 @@ class RhythmE2ETests(unittest.TestCase):
         _run(kept, "reps", n_cycles=6)
         self.assertGreater(kept.edge_counts["reps"], 0)
 
+    def test_entity_scoped_count_follows_the_performer_not_a_bystander(self):
+        # multi-person: two subjects through the SAME goal — A oscillates (real reps), B is still (a bystander).
+        # The brain selects the performer (most reps on the prior channel); the goal's count is A's, not B's.
+        core = self._core(channel="c")
+        for i in range(96):
+            tt = i / 6.0
+            core.perceive_rhythm("reps", t=tt, channels={"c": 0.3 * math.sin(2 * math.pi * i / 12)}, entity_id="A")
+            core.perceive_rhythm("reps", t=tt, channels={"c": 0.0}, entity_id="B")  # a still bystander
+        self.assertGreaterEqual(core.edge_counts["reps"], 6)                  # the performer's reps are the count
+        self.assertEqual(core.goals.get("reps").state["subject"], "A")        # the brain picked A, not the bystander
+        self.assertGreaterEqual(core.rhythm["reps"].count, 6)                 # core.rhythm[gid] mirrors the performer
+
     def test_legacy_boundary_path_untouched(self):
         core = Percept.create(discover_plugins=False)
         core.add_goal(Goal(id="g", condition="rep", say="x", state={"type": "watch"}))
