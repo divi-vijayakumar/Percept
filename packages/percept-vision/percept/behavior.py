@@ -73,9 +73,6 @@ class EvidenceSpec:
 
     k: int = 2  # positive observations required before the gate may fire (k-of-n)
     window_s: float = 30.0  # bound on the evidence ring
-    # Slice 4 lifecycle (opt-in within evidence; m=0 -> fire-once, today's Slice-3 behaviour):
-    m: int = 0  # sustained confident-negatives that mark the action ENDED (re-arm for the next occurrence)
-    emit_ended: bool = False  # also emit an "ended" fire when the action ends (started/ended lifecycle)
 
 
 @dataclass(frozen=True)
@@ -263,8 +260,6 @@ class ConcernContext:
     perception_level: int = 0  # escalation ladder rung: 0=single · 1=strip · 2=+audio (cheaper than the LLM)
     last_perception_escalate_at: float = float("-inf")  # the perception-rung refractory (shorter than LLM's)
     evidence: "EvidenceMemory | None" = None  # Slice 3: lazily created when a goal opts into accumulation
-    phase: str = "idle"  # Slice 4 lifecycle: "idle" <-> "active" (between start and end of the action)
-    neg_run: int = 0  # consecutive confident-negatives while active (toward the m-of-n end)
 
 
 @dataclass
@@ -340,41 +335,19 @@ class BehaviorExecutor:
         metric: str = "gate",
     ) -> Fired | None:
         ctx = self.ctx(goal.id)
-        ev = program.evidence
-        raw = verdict  # the per-frame verdict (kept for lifecycle end-detection; the gate sees `verdict`)
-        if ev is not None:  # Slice 3 OPT-IN: the gate sees an ACCUMULATED verdict, not one frame. Default
-            if ctx.evidence is None:  # goals (evidence is None) skip this entirely.
-                ctx.evidence = EvidenceMemory(k=ev.k, window_s=ev.window_s)
-            ctx.evidence.fold(t, raw)
+        if program.evidence is not None:  # Slice 3 OPT-IN: the gate sees an ACCUMULATED verdict, not one
+            if ctx.evidence is None:      # frame. Default goals (evidence is None) skip this entirely.
+                ctx.evidence = EvidenceMemory(k=program.evidence.k, window_s=program.evidence.window_s)
+            ctx.evidence.fold(t, verdict)
             verdict = ctx.evidence.derived(self.gate.threshold)
-        key = self._synth_key(base_key, program.key, t)
-        # Slice 4 lifecycle: while ACTIVE, count sustained confident-negatives; m of them END the action
-        # (re-arm the gate for the next occurrence, optionally emit "ended"). Hysteresis — a single flicker
-        # negative can't re-arm, so no duplicate fire. m=0 (default) disables this; default goals never enter.
-        if ev is not None and ev.m and ctx.phase == "active":
-            raw_truth = classify(raw, freshness, self.gate.threshold, self.gate.fresh_min)
-            if raw_truth == "yes":
-                ctx.neg_run = 0
-            elif raw_truth == "no":
-                ctx.neg_run += 1
-                if ctx.neg_run >= ev.m:
-                    ctx.phase, ctx.neg_run = "idle", 0
-                    if ctx.evidence is not None:
-                        ctx.evidence.obs.clear()  # the next occurrence accumulates fresh
-                    self.gate.rearm(key)
-                    self.metrics.incr(f"{metric}.ended")
-                    if ev.emit_ended:
-                        return Fired(goal.id, FIRE, f"ended: {goal.condition}", base_key[-1], raw)
-                    return None
         truth = classify(verdict, freshness, self.gate.threshold, self.gate.fresh_min)
         ctx.confusion.record(verdict, truth)  # constraint 2: additive, pre-gate, no trace effect
         if program.key.suppress_false and truth == "no":
             return None  # never-contract: a confident-false must not reach the gate
+        key = self._synth_key(base_key, program.key, t)
         action = self.gate.evaluate(key, verdict, freshness=freshness)
         self.metrics.incr(f"{metric}.{action}")
         if action == FIRE:
-            if ev is not None and ev.m:
-                ctx.phase, ctx.neg_run = "active", 0  # entered the action's active span on the start edge
             # accumulate (nth-distinct): a rising edge IS a distinct occurrence, so gate the
             # USER-facing fire on fire_when(n). No fire_when -> byte-for-byte (existing goals never
             # accumulate). This is how "alert me the 3rd distinct time" composes with zero new code.
@@ -520,11 +493,9 @@ def _evidence_for(raw) -> "EvidenceSpec | None":
     try:
         k = max(1, int(raw.get("k", 2)))
         w = float(raw.get("window_s", 30.0))
-        m = max(0, int(raw.get("m", 0)))
     except (TypeError, ValueError):
         return None
-    return EvidenceSpec(k=k, window_s=min(w, _MAX_WINDOW_S), m=m,
-                        emit_ended=bool(raw.get("emit_ended", False))) if w > 0 else None
+    return EvidenceSpec(k=k, window_s=min(w, _MAX_WINDOW_S)) if w > 0 else None
 
 
 # --------------------------------------------------------------------------------------------------
