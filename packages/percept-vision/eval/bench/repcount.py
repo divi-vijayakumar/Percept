@@ -260,6 +260,7 @@ def percept_e2e_rep_count(
 
     boundaries: list[dict] = []
     processed = 0
+    health: dict | None = None
     if rhythm_mode:
         # The rhythm sense through the fovea: capture motion every frame, but run the expensive
         # pose measure() ONLY on frames the SamplingController admits. A ``sense`` policy makes it adaptive
@@ -278,6 +279,8 @@ def percept_e2e_rep_count(
 
         eye = make_detector("pose-channels")
         prev = None
+        n_present = n_floored = 0
+        kp_conf_sum = 0.0
         for (t, gate_frame), (_tf, bgr) in zip(small, full):
             motion = motion_score(prev, gate_frame)
             prev = gate_frame
@@ -286,7 +289,23 @@ def percept_e2e_rep_count(
             processed += 1
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
             core.perceive_rhythm(goal_id, t=float(t), channels=eye.measure(rgb))
+            if getattr(eye, "_last_present", False):  # accumulate pose-quality for the health trace
+                n_present += 1
+                kp_conf_sum += eye._last_kp_conf
+                n_floored += int(eye._last_floored)
         tracker = core.rhythm.get(goal_id)
+        # Health trace — surface SILENT failures (degraded provider, no-op gate, inflated scale, weak
+        # periodicity) so a run announces when its count is untrustworthy instead of scoring quietly wrong.
+        from eval.bench.diagnostics import from_run
+
+        prior = state.get("rhythm") if isinstance(state.get("rhythm"), dict) else {}
+        health = from_run(
+            f"counting:{action}", tracker=tracker, n_frames=processed,
+            frac_no_detection=(1.0 - n_present / processed) if processed else 1.0,
+            mean_kp_conf=(kp_conf_sum / n_present) if n_present else 0.0,
+            frac_scale_floored=(n_floored / n_present) if n_present else 0.0,
+            expected_rom=prior.get("expected_rom"), amp_gate_frac=prior.get("amp_gate_frac", 0.5),
+        ).as_dict()
         if tracker is not None:
             boundaries = [
                 {"detector": "pose-channels", "kind": "rep", "t": float(r.stop_t),
@@ -319,4 +338,5 @@ def percept_e2e_rep_count(
         "boundaries": boundaries,
         "detectors": names,
         "goal": goal_text,
+        "health": health,  # None for the legacy path; the rhythm path emits a silent-failure trace
     }

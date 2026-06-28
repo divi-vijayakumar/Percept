@@ -544,6 +544,11 @@ def coerce_authored_rhythm(raw) -> dict:
     if rom is not None and rom > 0 and "channel" in spec and raw.get("expected_rom_space", "channel_native") == "channel_native":
         spec["expected_rom"] = min(_MAX_EXPECTED_ROM, rom)
         spec["expected_rom_space"] = "channel_native"
+    # amplitude-gate fraction override: the fraction of ``expected_rom`` a rep must reach to be counted.
+    # Lower = admit shallower/fatigued reps (fewer fidget rejections). Only meaningful with expected_rom.
+    frac = _num(raw.get("amp_gate_frac"))
+    if frac is not None and 0.0 < frac <= 1.0:
+        spec["amp_gate_frac"] = frac
     return {"rhythm": spec} if spec else {}
 
 

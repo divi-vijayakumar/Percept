@@ -213,7 +213,7 @@ class TestPoseSkillRegistration(unittest.TestCase):
                 k = [PoseKeypoint(0.5, 0.5) for _ in range(17)]
                 k[5], k[6] = PoseKeypoint(0.4, 0.5), PoseKeypoint(0.6, 0.5)  # shoulders y=0.5
                 k[9], k[10] = PoseKeypoint(0.4, 0.2), PoseKeypoint(0.6, 0.2)  # wrists raised (y=0.2)
-                k[11], k[12] = PoseKeypoint(0.45, 0.8), PoseKeypoint(0.55, 0.8)  # hips y=0.8 -> torso L=0.3
+                k[11], k[12] = PoseKeypoint(0.4, 0.8), PoseKeypoint(0.6, 0.8)  # hips below shoulders -> torso L=0.3
                 k[15], k[16] = PoseKeypoint(0.2, 0.9), PoseKeypoint(0.8, 0.9)  # ankles spread
                 return [PoseDetection(tuple(k), confidence=0.9, provider="fake")]
 
@@ -222,7 +222,8 @@ class TestPoseSkillRegistration(unittest.TestCase):
         d._provider = FakePose()
         ch = d.measure(object())
         self.assertEqual(set(ch), {"limb-vertical", "ankle-spread", "hip-vertical", "torso-vertical"})
-        # wrist 0.3 above shoulder, normalized by torso length L=0.3 -> 1.0 (channels are scale-comparable)
+        # wrist 0.3 above shoulder, normalized by the EUCLIDEAN torso length L=0.3 (hips directly below
+        # shoulders) -> 1.0. Euclidean keeps L stable for lying/horizontal poses where |Δy| would collapse.
         self.assertAlmostEqual(ch["limb-vertical"], 1.0, places=6)
         # push() carries each channel as a "sample" boundary (the remote-edge up-channel).
         bs = d.push(1.0, object())

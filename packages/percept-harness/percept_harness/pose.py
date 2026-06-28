@@ -251,13 +251,22 @@ _MIN_BODY_SCALE = 0.05  # floor on the torso-length normalizer so a foreshortene
 
 
 def body_scale(keypoints: "tuple[PoseKeypoint, ...]") -> float:
-    """A stable per-pose length unit: mean vertical shoulder→hip distance (≈ torso length), floored.
+    """A stable per-pose length unit: mean **Euclidean** shoulder→hip distance (≈ torso length), floored.
 
     Normalizing every channel by this makes their OSCILLATION amplitudes scale-comparable across channels
     (a "0.3 torso-length" bob reads the same whether it's hips or wrists) — which is what lets the brain
-    select the dominant channel by amplitude without a per-channel unit bias."""
-    left = abs(keypoints[COCO_LEFT_HIP].y - keypoints[COCO_LEFT_SHOULDER].y)
-    right = abs(keypoints[COCO_RIGHT_HIP].y - keypoints[COCO_RIGHT_SHOULDER].y)
+    select the dominant channel by amplitude without a per-channel unit bias.
+
+    Euclidean (not vertical-only): a vertical |Δy| torso length COLLAPSES toward zero for LYING/horizontal
+    poses — bench press, push-ups, sit-ups — so it hits ``_MIN_BODY_SCALE`` and every channel divided by it
+    EXPLODES (phantom 5-8x amplitudes, and the absolute amplitude gate becomes a no-op). The full
+    shoulder→hip distance is orientation-invariant, so the normalizer stays stable whatever the pose."""
+
+    def _dist(a: "PoseKeypoint", b: "PoseKeypoint") -> float:
+        return ((a.x - b.x) ** 2 + (a.y - b.y) ** 2) ** 0.5
+
+    left = _dist(keypoints[COCO_LEFT_HIP], keypoints[COCO_LEFT_SHOULDER])
+    right = _dist(keypoints[COCO_RIGHT_HIP], keypoints[COCO_RIGHT_SHOULDER])
     return max(0.5 * (left + right), _MIN_BODY_SCALE)
 
 

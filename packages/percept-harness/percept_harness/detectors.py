@@ -379,6 +379,10 @@ class PoseChannels:
         self._provider_name = provider_name
         self._last: dict[str, float] = {}
         self._anchor: tuple[float, float] | None = None  # last selected person's hip centre (continuity)
+        # per-frame health signals (read by the diagnostics trace; never affect the measurement):
+        self._last_present: bool = False   # did the most recent measure() see a usable person?
+        self._last_kp_conf: float = 0.0    # mean keypoint confidence of that person (degraded-provider signal)
+        self._last_floored: bool = False   # did the torso normalizer hit its floor (inflated amplitudes)?
 
     def _ensure(self) -> None:
         if self._provider is None:
@@ -389,6 +393,9 @@ class PoseChannels:
     def reset(self) -> None:
         self._last = {}
         self._anchor = None
+        self._last_present = False
+        self._last_kp_conf = 0.0
+        self._last_floored = False
 
     def _select(self, poses: list) -> Any | None:
         """Pick ONE person to track. Multi-person frames otherwise make ``max(confidence)`` jump between
@@ -405,12 +412,15 @@ class PoseChannels:
         """RGB uint8 HxWx3 -> the decomposed channel vector. Tracks ONE person across frames and carries
         forward on a dropped/low-confidence pose so a gap never injects a phantom oscillation."""
         self._ensure()
-        from .pose import hip_centre, pose_channels
+        from .pose import _MIN_BODY_SCALE, body_scale, hip_centre, pose_channels
 
         chosen = self._select(self._provider.detect(frame))
+        self._last_present = chosen is not None
         if chosen is not None:
             self._anchor = hip_centre(chosen)
             self._last = pose_channels(chosen.keypoints)
+            self._last_kp_conf = sum(k.confidence for k in chosen.keypoints) / len(chosen.keypoints)
+            self._last_floored = body_scale(chosen.keypoints) <= _MIN_BODY_SCALE * 1.01
         return dict(self._last)
 
     def measure_entities(self, frame: Any) -> "list[PersonMeasure]":

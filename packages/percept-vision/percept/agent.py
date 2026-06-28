@@ -387,7 +387,8 @@ class Percept:
 
     def _rhythm_tracker(self, goal) -> RhythmTracker:
         prior = goal.state.get("rhythm") if isinstance(goal.state.get("rhythm"), dict) else {}
-        return RhythmTracker(prior_channel=prior.get("channel"), expected_rom=prior.get("expected_rom"))
+        kw = {"amp_gate_frac": prior["amp_gate_frac"]} if "amp_gate_frac" in prior else {}
+        return RhythmTracker(prior_channel=prior.get("channel"), expected_rom=prior.get("expected_rom"), **kw)
 
     def _fire_rep(self, goal, n: int, stop_t: float) -> FireEvent | None:
         fired = self.executor.fire_episode(goal, program_of(goal), n=n, is_new=True, t=stop_t)
