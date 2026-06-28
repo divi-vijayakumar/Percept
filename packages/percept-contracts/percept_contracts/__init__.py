@@ -99,6 +99,11 @@ class Verdict:
     satisfied: bool
     confidence: float
     evidence: str = ""
+    # --- optional structured fields for temporal/clip judging (Slice 2) ---------------------------------
+    # Additive and defaulted: a single-frame judge that sets none of these reproduces today's behaviour
+    # byte-for-byte (the gate reads only ``satisfied``/``confidence``). A clip judge MAY fill them:
+    phase: str = ""  # "pre" | "during" | "post" | "" — where in the action the latest frame sits
+    action_present: bool | None = None  # explicit presence signal for action/counting goals (None = not assessed)
 
 
 # who said a fact, used for provenance + freshness reasoning in the core

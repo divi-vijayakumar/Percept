@@ -83,6 +83,19 @@
         },
         "evidence": {
           "type": "string"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "action_present": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "description": "The firing-contract return: is the plain-language condition true right now?",

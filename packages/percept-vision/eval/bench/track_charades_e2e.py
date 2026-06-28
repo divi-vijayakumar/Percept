@@ -102,6 +102,13 @@ def _condition(desc: str) -> str:
     text = desc.strip()
     if not text:
         text = "the annotated action"
+    # Charades descriptions are mixed: some already read "Someone is laughing", others are bare gerund
+    # phrases ("Holding a vacuum"). Prefix IDEMPOTENTLY so we never produce "someone is someone is ...".
+    low = text.lower()
+    for prefix in ("someone is ", "a person is ", "the person is ", "person is ", "a person "):
+        if low.startswith(prefix):
+            rest = text[len(prefix):].strip()
+            return "someone is " + (rest[0].lower() + rest[1:] if rest else "doing the annotated action")
     return "someone is " + text[0].lower() + text[1:]
 
 
