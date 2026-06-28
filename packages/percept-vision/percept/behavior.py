@@ -64,18 +64,6 @@ class Accumulator:
 
 
 @dataclass(frozen=True)
-class EvidenceSpec:
-    """Opt-in temporal-evidence accumulation for a judge goal (Slice 3). When present, the gate sees a
-    verdict DERIVED from the last ``window_s`` of observations — confident-yes only once ``k`` positive
-    observations agree (k-of-n), with their evidence COMPOSED into one answer (process-questions that no
-    single frame can answer). ``None`` (the default) is today's path: each frame's verdict reaches the
-    gate directly, byte-for-byte unchanged."""
-
-    k: int = 2  # positive observations required before the gate may fire (k-of-n)
-    window_s: float = 30.0  # bound on the evidence ring
-
-
-@dataclass(frozen=True)
 class PerceptionSpec:
     """HOW the eye looks for a concern — the VLM-side twin of the behavior program. The brain authors
     it (or a sense-preset supplies it); the agent assembles the matching input and the backend makes
@@ -104,7 +92,6 @@ class BehaviorProgram:
     deadline_s: float | None = None
     cadence_s: float | None = None
     perception: PerceptionSpec = field(default_factory=PerceptionSpec)  # HOW to look (defaults = today)
-    evidence: "EvidenceSpec | None" = None  # Slice 3: opt-in temporal-evidence accumulation (None = today)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -215,40 +202,6 @@ class ConfusionSignal:
         return self.consecutive_unknown >= min_unknown
 
 
-def _compose_evidence(snippets: "list[str]") -> str:
-    """Compose distinct observation snippets into one answer (order-preserving dedupe). This is the
-    process-question synthesis: t=5 'remove seed' + t=80 'cut pulp' -> 'remove seed; cut pulp'."""
-    seen: dict[str, None] = {}
-    for s in snippets:
-        s = (s or "").strip().rstrip(".")
-        if s and s.lower() not in ("not enough evidence", "accumulating evidence") and s not in seen:
-            seen[s] = None
-    return "; ".join(seen)
-
-
-@dataclass
-class EvidenceMemory:
-    """A bounded ring of recent (t, Verdict) observations for one concern (Slice 3). ``derived`` turns it
-    into the single Verdict the UNCHANGED gate consumes: confident-yes once ``k`` in-window positives
-    agree, evidence composed across them; otherwise low-confidence (the gate ASKs and keeps accumulating
-    rather than firing on one frame)."""
-
-    k: int = 2
-    window_s: float = 30.0
-    obs: list = field(default_factory=list)  # (t, Verdict)
-
-    def fold(self, t: float, verdict: Verdict) -> None:
-        self.obs.append((t, verdict))
-        self.obs = [(ot, v) for ot, v in self.obs if t - ot <= self.window_s]  # drop stale
-
-    def derived(self, threshold: float) -> Verdict:
-        pos = [v for _, v in self.obs if v.satisfied and v.confidence >= threshold]
-        if len(pos) >= self.k:
-            return Verdict(satisfied=True, confidence=max(v.confidence for v in pos),
-                           evidence=_compose_evidence([v.evidence for v in pos]) or pos[-1].evidence)
-        return Verdict(satisfied=False, confidence=0.0, evidence="accumulating evidence")
-
-
 @dataclass
 class ConcernContext:
     """Constraint 1 — ISOLATED per-concern runtime memory for stateful primitives. Never the gate."""
@@ -259,7 +212,6 @@ class ConcernContext:
     last_escalated_at: float = float("-inf")  # Posture-B deliberative (LLM) refractory (escalation.py)
     perception_level: int = 0  # escalation ladder rung: 0=single · 1=strip · 2=+audio (cheaper than the LLM)
     last_perception_escalate_at: float = float("-inf")  # the perception-rung refractory (shorter than LLM's)
-    evidence: "EvidenceMemory | None" = None  # Slice 3: lazily created when a goal opts into accumulation
 
 
 @dataclass
@@ -335,11 +287,6 @@ class BehaviorExecutor:
         metric: str = "gate",
     ) -> Fired | None:
         ctx = self.ctx(goal.id)
-        if program.evidence is not None:  # Slice 3 OPT-IN: the gate sees an ACCUMULATED verdict, not one
-            if ctx.evidence is None:      # frame. Default goals (evidence is None) skip this entirely.
-                ctx.evidence = EvidenceMemory(k=program.evidence.k, window_s=program.evidence.window_s)
-            ctx.evidence.fold(t, verdict)
-            verdict = ctx.evidence.derived(self.gate.threshold)
         truth = classify(verdict, freshness, self.gate.threshold, self.gate.fresh_min)
         ctx.confusion.record(verdict, truth)  # constraint 2: additive, pre-gate, no trace effect
         if program.key.suppress_false and truth == "no":
@@ -481,21 +428,7 @@ def program_of(goal) -> BehaviorProgram:
             predicate=goal.condition,
             accumulate=Accumulator(fire_when=s.get("fire_when"), window_s=s.get("window_s")),
         )
-    return replace(prog, perception=_perception_for(prog.sense, s.get("perception")),
-                   evidence=_evidence_for(s.get("evidence")))
-
-
-def _evidence_for(raw) -> "EvidenceSpec | None":
-    """Coerce an authored ``goal.state['evidence']`` dict into an :class:`EvidenceSpec` (None = today's
-    per-frame gate). Bounded/validated like the other authored sub-dicts."""
-    if not isinstance(raw, dict):
-        return None
-    try:
-        k = max(1, int(raw.get("k", 2)))
-        w = float(raw.get("window_s", 30.0))
-    except (TypeError, ValueError):
-        return None
-    return EvidenceSpec(k=k, window_s=min(w, _MAX_WINDOW_S)) if w > 0 else None
+    return replace(prog, perception=_perception_for(prog.sense, s.get("perception")))
 
 
 # --------------------------------------------------------------------------------------------------

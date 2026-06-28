@@ -254,37 +254,5 @@ class TestPresetCompile(unittest.TestCase):
         self.assertEqual(program_of(gc).sense, "episode")
 
 
-# --------------------------------------------------------------------------------------------------
-# Slice 3: opt-in temporal-evidence accumulation. Default goals unchanged; an evidence goal fires only
-# on k-of-n positives and composes their evidence into one answer (the process-question synthesis).
-# --------------------------------------------------------------------------------------------------
-class TestEvidenceAccumulation(unittest.TestCase):
-    def test_default_goal_has_no_evidence_and_fires_immediately(self):
-        _, ex = _ex()
-        g = Goal(id="g", condition="c", say="s")
-        self.assertIsNone(program_of(g).evidence)
-        self.assertEqual(_drive(ex, g, program_of(g), [YES]), [FIRE])  # byte-for-byte today
-
-    def test_k_of_n_defers_then_fires_with_composed_answer(self):
-        _, ex = _ex()
-        g = Goal(id="g", condition="how is tamarind processed", say="answer",
-                 state={"evidence": {"k": 2, "window_s": 30}})
-        p = program_of(g)
-        self.assertEqual(p.evidence.k, 2)
-        f1 = ex.fire_judged(g, Verdict(True, 0.9, "remove seed"), ("g", "e"), p, t=1.0)
-        f2 = ex.fire_judged(g, Verdict(True, 0.85, "cut pulp"), ("g", "e"), p, t=5.0)
-        self.assertEqual(f1.action, ASK)            # one positive isn't enough -> keep accumulating
-        self.assertEqual(f2.action, FIRE)           # the second confirms (k=2)
-        self.assertEqual(f2.verdict.evidence, "remove seed; cut pulp")  # synthesized across observations
-
-    def test_stale_observations_drop_out_of_window(self):
-        _, ex = _ex()
-        g = Goal(id="g", condition="c", say="s", state={"evidence": {"k": 2, "window_s": 10}})
-        p = program_of(g)
-        f1 = ex.fire_judged(g, Verdict(True, 0.9, "a"), ("g", "e"), p, t=0.0)
-        f2 = ex.fire_judged(g, Verdict(True, 0.9, "b"), ("g", "e"), p, t=20.0)  # 20s > window -> a expired
-        self.assertEqual([f1.action, f2.action], [ASK, ASK])  # never two in-window at once -> never fires
-
-
 if __name__ == "__main__":
     unittest.main()
