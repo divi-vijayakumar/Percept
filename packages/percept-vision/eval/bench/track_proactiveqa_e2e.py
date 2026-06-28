@@ -102,7 +102,9 @@ class PVQAVision:
         resp = await self.client.aio.models.generate_content(
             model=self.model,
             contents=[*parts, prompt],
-            config=types.GenerateContentConfig(max_output_tokens=256),
+            # gemini-3-flash is a THINKING model: a low cap is spent on reasoning tokens and the JSON gets
+            # truncated -> parse fails -> "not enough evidence" on every call (the n1-fresh 0-answers bug).
+            config=types.GenerateContentConfig(max_output_tokens=1024),
         )
         data = _json(resp.text or "")
         sufficient = bool(data.get("sufficient"))

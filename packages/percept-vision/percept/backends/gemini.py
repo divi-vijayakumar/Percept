@@ -193,7 +193,9 @@ class GeminiVision(_GeminiBase):
             return await client.aio.models.generate_content(
                 model=self._model,
                 contents=parts,
-                config=types.GenerateContentConfig(system_instruction=_JUDGE_SYSTEM, max_output_tokens=512),
+                # 1024 (not 512): gemini-3-flash is a thinking model whose reasoning tokens can otherwise
+                # truncate the STRICT-JSON verdict mid-string (parse fails -> false ASK/abstain).
+                config=types.GenerateContentConfig(system_instruction=_JUDGE_SYSTEM, max_output_tokens=1024),
             )
 
         resp = await with_retry(_call, breaker=self._breaker)  # survive transient resets in batch captures
