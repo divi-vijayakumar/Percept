@@ -108,6 +108,7 @@ async def run(
     sink_errors: str = "raise",
     stats: RuntimeStats | None = None,
     gate_source: str = "camera",
+    episode_inactivity_s: float | None = None,
 ) -> AsyncIterator:
     """Drive a live ``source`` through the gate + brain, yielding an :class:`Incident` on each rising edge.
 
@@ -141,29 +142,18 @@ async def run(
             "reconnect_backoff_s": source_reconnect_backoff_s,
             "rtsp_tcp": source_rtsp_tcp,
         }
-        async for t, gate_frame, judge_frame in _aiter(source, fps, **source_kwargs):
-            if stats is not None:
-                stats.frames += 1
-            clips.push(t, judge_frame)
-            if on_frame is not None:
-                await _call_sink_with_policy(
-                    on_frame, t, judge_frame, errors=sink_errors, stats=stats, on_health=on_health, health_kind="frame_sink_error"
-                )
-            decision = gate.evaluate(gate_frame, ts=t)
-            if not decision.escalate:
-                continue  # still / sub-cadence -> no cloud call, no incident
-            if stats is not None:
-                stats.escalations += 1
-                stats.judge_calls += 1
-            if on_health is not None:
-                await _call_sink(on_health, RuntimeHealthEvent("escalation", ts=t, data={"source": gate_source}))
-            fires = await core.perceive_judged(judge_frame, gate_source, t=t)
+        # Item 4 episode boundary: a process activity ends precisely on QUIET frames (no escalation), so the
+        # boundary check rides the per-frame cadence — only spending a summarize call when it actually fires.
+        check_boundary = getattr(core, "check_episode_boundary", None)
+
+        async def _emit_fires(fires, *, at):
+            """Turn a list of FireEvents (from perceive_judged OR the boundary) into incidents/asks."""
             for fire in fires or []:
                 if getattr(fire, "action", None) == ASK:
                     if stats is not None:
                         stats.asks += 1
                     if on_health is not None:
-                        await _call_sink(on_health, RuntimeHealthEvent("ask", ts=t, data={"goal_id": fire.goal_id}))
+                        await _call_sink(on_health, RuntimeHealthEvent("ask", ts=at, data={"goal_id": fire.goal_id}))
                     if on_ask is not None:
                         await _call_sink_with_policy(
                             on_ask, fire, errors=sink_errors, stats=stats, on_health=on_health, health_kind="ask_sink_error"
@@ -174,23 +164,43 @@ async def run(
                 if stats is not None:
                     stats.fires += 1
                 snippet = snippet_from_window(clips, kind=snippet_kind, pre_s=snippet_pre_s)
-                incident = make_incident(fire, ts=t, snippet=snippet)
+                incident = make_incident(fire, ts=at, snippet=snippet)
                 if on_health is not None:
                     await _call_sink(
                         on_health,
-                        RuntimeHealthEvent("incident", ts=t, data={"incident_id": incident.id, "goal_id": incident.concern_id}),
+                        RuntimeHealthEvent("incident", ts=at, data={"incident_id": incident.id, "goal_id": incident.concern_id}),
                     )
                 if on_incident is not None:
                     await _call_sink_with_policy(
-                        on_incident,
-                        incident,
-                        errors=sink_errors,
-                        stats=stats,
-                        on_health=on_health,
-                        health_kind="incident_sink_error",
+                        on_incident, incident, errors=sink_errors, stats=stats, on_health=on_health, health_kind="incident_sink_error",
                     )
                 if stats is not None:
                     stats.incidents += 1
+                yield incident
+
+        async for t, gate_frame, judge_frame in _aiter(source, fps, **source_kwargs):
+            if stats is not None:
+                stats.frames += 1
+            clips.push(t, judge_frame)
+            if on_frame is not None:
+                await _call_sink_with_policy(
+                    on_frame, t, judge_frame, errors=sink_errors, stats=stats, on_health=on_health, health_kind="frame_sink_error"
+                )
+
+            # boundary first: it must see quiet frames too (the episode ends when activity stops)
+            if check_boundary is not None:
+                async for incident in _emit_fires(await check_boundary(t=t, inactivity_s=episode_inactivity_s), at=t):
+                    yield incident
+
+            decision = gate.evaluate(gate_frame, ts=t)
+            if not decision.escalate:
+                continue  # still / sub-cadence -> no cloud call, no incident
+            if stats is not None:
+                stats.escalations += 1
+                stats.judge_calls += 1
+            if on_health is not None:
+                await _call_sink(on_health, RuntimeHealthEvent("escalation", ts=t, data={"source": gate_source}))
+            async for incident in _emit_fires(await core.perceive_judged(judge_frame, gate_source, t=t), at=t):
                 yield incident
     except Exception as exc:
         if on_health is not None:

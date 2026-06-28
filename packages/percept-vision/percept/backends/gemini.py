@@ -48,6 +48,24 @@ _PROCESS_QA_SYSTEM = (
     "satisfied=true once the running answer names at least one concrete step."
 )
 
+# Item 4 process-QA = log -> summarize -> wipe (eval-validated; scratch/pvqa_process_ab FINDINGS Run E).
+# The model is NEVER shown the accumulated memory: per clip it reports ONE short delta (cheap, constant
+# output, no anchoring/truncation), appended to a per-concern LOG; a SINGLE summarize pass consolidates
+# the whole log (global dedup -> tight answer) on boundary/on-demand, then the log is wiped.
+_OBSERVE_STEP_SYSTEM = (
+    "You are the perception backend for a proactive video assistant watching a PROCESS ('what are the "
+    "steps to do X'). Look ONLY at THIS short clip (frames in TIME ORDER, oldest first) and report the "
+    "single concrete step/action being performed RIGHT NOW, naming the SPECIFIC object/ingredient/tool. "
+    "Do not summarize the whole video — just this moment. If nothing clear, leave step empty. Reply STRICT "
+    'JSON {"confidence": 0..1, "step": "<the specific step happening now, or empty>"}.'
+)
+_SUMMARIZE_LOG_SYSTEM = (
+    "You are consolidating a TIME-ORDERED log of per-moment step-observations from a SINGLE video into the "
+    "answer to a process question. Merge duplicates and paraphrases (same action on the same object = ONE "
+    "step) but keep genuinely distinct steps separate (different object/tool = different step). Drop noise. "
+    'Output the distinct ordered steps. Reply STRICT JSON {"steps": ["<short step>", ...]}.'
+)
+
 
 def _require_genai():
     """Lazy-import google-genai with a clear error if absent (L2 boundary)."""
@@ -157,6 +175,9 @@ class GeminiVision(_GeminiBase):
             return await self._judge_process_qa(
                 condition, frame, frames, str(context.get("running_answer") or "")
             )
+        if context and context.get("observe_step"):
+            # Item 4 logsum: report ONLY this clip's step delta (no memory shown). evidence=the step.
+            return await self._observe_step(condition, frame, frames)
         _, types = _require_genai()
         client = self._ensure_client()
         # temporal strip: earlier context frames (oldest->newest), then the current frame last, so the
@@ -267,6 +288,66 @@ class GeminiVision(_GeminiBase):
             evidence=summary or "not enough evidence",
             running_answer=summary,
         )
+
+    async def _observe_step(self, condition: str, frame: Any, frames: list | None) -> Verdict:
+        """Item 4 logsum: report ONLY this clip's step delta. The model is NOT shown the accumulated log.
+
+        Returns ``Verdict(satisfied=False, evidence=<the step, or "">)`` — satisfied is False BY DESIGN so a
+        process goal never fires per-clip; the agent appends ``evidence`` to ``ConcernContext.process_log``
+        and the ANSWER is produced later by :meth:`summarize_process` at the episode boundary / on demand.
+        """
+        _, types = _require_genai()
+        client = self._ensure_client()
+        strip = [f for f in (frames or []) if f is not frame]
+        parts: list[Any] = [_image_part(types, f) for f in strip]
+        parts.append(_image_part(types, frame))
+        parts.append(
+            f"Process question: {condition}\n{len(strip) + 1} frame(s) in time order (oldest first). JSON only."
+        )
+
+        async def _call():
+            return await client.aio.models.generate_content(
+                model=self._model, contents=parts,
+                config=types.GenerateContentConfig(system_instruction=_OBSERVE_STEP_SYSTEM, max_output_tokens=1024),
+            )
+
+        resp = await with_retry(_call, breaker=self._breaker)
+        try:
+            data = json.loads(_extract_json(resp.text or ""))
+        except Exception:
+            data = {}
+        step = str(data.get("step", "") or "").strip()
+        confidence = float(data.get("confidence", 0.5) or 0.5)
+        return Verdict(satisfied=False, confidence=confidence, evidence=step)
+
+    async def summarize_process(self, condition: str, log: list[str]) -> str:
+        """Item 4: ONE consolidation pass over the whole per-concern log -> the ordered distinct steps.
+
+        Text-only (no frames). Returns the consolidated answer; the caller stores it and wipes the log.
+        ``max_output_tokens=4096`` — a thinking model summarizing a long log truncates at 1024 (validated).
+        """
+        _, types = _require_genai()
+        if not log:
+            return ""
+        client = self._ensure_client()
+        logged = "\n".join(f"- {s}" for s in log)
+        prompt = (
+            f"Process question: {condition}\nTIME-ORDERED OBSERVATION LOG:\n{logged}\nJSON only."
+        )
+
+        async def _call():
+            return await client.aio.models.generate_content(
+                model=self._model, contents=[prompt],
+                config=types.GenerateContentConfig(system_instruction=_SUMMARIZE_LOG_SYSTEM, max_output_tokens=4096),
+            )
+
+        resp = await with_retry(_call, breaker=self._breaker)
+        try:
+            data = json.loads(_extract_json(resp.text or ""))
+        except Exception:
+            data = {}
+        steps = [str(s).strip() for s in (data.get("steps") or []) if str(s).strip()]
+        return "; ".join(steps)
 
     async def detect(self, frame: Any, goals: list[Goal]) -> list[Observation]:
         _, types = _require_genai()

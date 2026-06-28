@@ -213,6 +213,11 @@ class ConcernContext:
     perception_level: int = 0  # escalation ladder rung: 0=single · 1=strip · 2=+audio (cheaper than the LLM)
     last_perception_escalate_at: float = float("-inf")  # the perception-rung refractory (shorter than LLM's)
     running_answer: str = ""  # Item 2: per-concern incremental process-QA answer (gate-irrelevant)
+    # Item 4 (log -> summarize -> wipe): the per-concern process LOG of cheap per-clip step deltas, plus
+    # the time the last step was logged (sustained absence of new steps = the episode boundary). The VLM
+    # is NEVER shown this log; a single summarize pass consolidates it on boundary/on-demand, then wipes.
+    process_log: list[str] = field(default_factory=list)
+    last_step_at: float = float("-inf")
 
 
 @dataclass

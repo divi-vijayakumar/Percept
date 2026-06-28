@@ -258,12 +258,13 @@ def compile_watchspec(
     (default, in-process topology A — the edge runs the whole registry) sends the full selection. Use
     :func:`watchspec_unsupported` to see what was dropped (to pick a fallback).
 
-    Only goals whose ``state['type']`` is ``'watch'`` (the default) compile — event / count /
-    remind goals run their own tracks and never gate the watch-frame stream.
+    Only goals whose ``state['type']`` is ``'watch'`` (the default) or ``'process'`` compile — event /
+    count / remind goals run their own tracks and never gate the watch-frame stream. A ``process`` goal
+    (Item 4 log→summarize) gates the same motion stream so the edge wakes it to observe a step delta.
     """
     conditions: list[WatchCondition] = []
     for goal in goals:
-        if goal.state.get("type", "watch") != "watch":
+        if goal.state.get("type", "watch") not in ("watch", "process"):
             continue
         bias = float(goal.state.get(MOTION_BIAS_KEY, 0.0))
         supported, _dropped = partition_by_capability(detectors_for(goal), edge_capabilities)
@@ -292,7 +293,7 @@ def watchspec_unsupported(
     """
     out: list[tuple[str, list[str]]] = []
     for goal in goals:
-        if goal.state.get("type", "watch") != "watch":
+        if goal.state.get("type", "watch") not in ("watch", "process"):
             continue
         _, dropped = partition_by_capability(detectors_for(goal), edge_capabilities)
         if dropped:

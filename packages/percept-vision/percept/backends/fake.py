@@ -61,6 +61,9 @@ class FakeVision:
         context: dict | None = None,
     ) -> Verdict:
         token = str(frame)
+        # Item 4 logsum: an observe-step call returns this clip's step delta (scripted via "<frame>|step").
+        if context and context.get("observe_step"):
+            return self._script.get(f"{token}|step", Verdict(satisfied=False, confidence=0.5, evidence=""))
         # Enrichment wiring: structured specialist ``context`` can route to a distinct scripted verdict
         # (a ``"<frame>|enriched"`` key), proving an Enricher's output actually *reaches* judge — the
         # signal→specialist→judge-context seam — without claiming the fake understands anything.
@@ -93,6 +96,14 @@ class FakeVision:
             Event(type=etype, t=float(t), confidence=conf)
             for etype, conf in self._events.get(str(frame), [])
         ]
+
+    async def summarize_process(self, condition: str, log: list[str]) -> str:
+        """Item 4 logsum L1: a trivial order-preserving dedup of the log (wiring, not intelligence)."""
+        seen: list[str] = []
+        for s in log:
+            if s and s not in seen:
+                seen.append(s)
+        return "; ".join(seen)
 
 
 class FakeSpecialist:

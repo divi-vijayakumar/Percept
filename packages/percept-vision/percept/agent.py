@@ -520,6 +520,41 @@ class Percept:
         self._log_fires(out, now)
         return out
 
+    # -- Item 4: the episode boundary fires the consolidated process answer -------------------
+    async def check_episode_boundary(
+        self, *, t: float | None = None, inactivity_s: float | None = None
+    ) -> list[FireEvent]:
+        """A process activity that has gone quiet (no NEW step for ``inactivity_s``) ENDED — summarize the
+        logged deltas, emit the answer, and wipe. Cognition-owned, perception-robust (fires on the
+        ABSENCE of new steps, never a guess). Mirrors :meth:`check_observability`: a synthetic verdict
+        through the UNCHANGED gate on a dedicated ``__episode__`` key -> fires ONCE per episode and re-arms
+        when the next step is logged. Only ``type=='process'`` goals participate -> byte-for-byte.
+        Run on the worker's cadence (it must see QUIET frames — the boundary IS an absence of activity)."""
+        now = self.clock() if t is None else t
+        bound = inactivity_s if inactivity_s is not None else self.settings.gate.validity_window_s
+        out: list[FireEvent] = []
+        for goal in self.goals.active():
+            if goal.state.get("type") != "process":
+                continue
+            ctx = self.executor.ctx(goal.id)
+            ended = (
+                bool(ctx.process_log)
+                and ctx.last_step_at != float("-inf")
+                and (now - ctx.last_step_at) > bound
+            )
+            verdict = Verdict(satisfied=ended, confidence=1.0, evidence="episode")
+            action = self.gate.evaluate((goal.id, "__episode__"), verdict)
+            self.metrics.incr(f"episode.gate.{action}")
+            if action == FIRE:
+                answer = await self.summarize_process(goal.id, wipe=True)  # consolidate + reset
+                v = Verdict(satisfied=True, confidence=1.0, evidence=answer, running_answer=answer)
+                out.append(FireEvent(goal.id, FIRE, answer or self._episode_text(goal), None, v))
+        self._log_fires(out, now)
+        return out
+
+    def _episode_text(self, goal: Goal) -> str:
+        return f"Here's what I saw for: {goal.condition}"
+
     def _overdue_text(self, goal: Goal) -> str:
         return f"Still waiting on: {goal.condition}"
 
@@ -545,6 +580,9 @@ class Percept:
                 ev = await self._perceive_transition(goal, frame, focus)
                 if ev is not None:
                     events.append(ev)
+                continue
+            if gtype == "process":
+                await self._observe_and_log(goal, frame, source, now)  # Item 4: log a delta, never fire here
                 continue
             if gtype != "watch":
                 continue  # event/count/remind goals are handled by their dedicated paths
@@ -616,6 +654,43 @@ class Percept:
         goal.state["count"] = goal.state.get("count", 0) + 1
         self.metrics.incr("transition.fire")
         return FireEvent(fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict)
+
+    async def _observe_and_log(self, goal: Goal, frame: Any, source: str, now: float) -> None:
+        """Item 4 (log→summarize→wipe): observe THIS clip's step delta and append it to the per-concern
+        log. NEVER fires here — a process goal's answer is produced by :meth:`summarize_process` at the
+        episode boundary / on demand. The gate is untouched (no verdict routed)."""
+        ctx = self.executor.ctx(goal.id)
+        spec = _escalated_perception(program_of(goal).perception, ctx.perception_level)
+        strip = self._strip_frames(source, spec)
+        self.funnel.judged(concern=goal.id, camera=source)  # an observe call is being spent
+        verdict = await self._judge(
+            goal, frame, None, {}, frames=strip, context={"observe_step": True}
+        )
+        step = (getattr(verdict, "evidence", "") or "").strip()
+        if step and step != "not enough evidence":
+            ctx.process_log.append(step)  # the VLM never sees this back — cheap append only
+            ctx.last_step_at = now
+
+    async def summarize_process(self, goal_id: str, *, wipe: bool = False) -> str:
+        """Consolidate a process goal's logged step-deltas into the ordered distinct steps (Item 4).
+
+        On-demand ("what have you seen?") with ``wipe=False``; the episode boundary calls it with
+        ``wipe=True`` (end the episode → emit → reset the log). Returns "" if nothing has been logged.
+        The summarize is gate-irrelevant — it never routes a verdict; only the boundary does (and through
+        the unchanged gate). Backends that don't implement ``summarize_process`` yield "" gracefully.
+        """
+        ctx = self.executor.ctx(goal_id)
+        log = list(ctx.process_log)
+        summarizer = getattr(self.vision, "summarize_process", None)
+        if not log or summarizer is None:
+            return ctx.running_answer
+        goal = self.goals.get(goal_id)
+        condition = goal.condition if goal is not None else ""
+        answer = await summarizer(condition, log)
+        ctx.running_answer = answer or ctx.running_answer
+        if wipe:
+            ctx.process_log = []
+        return ctx.running_answer
 
     def _resolve_roi(self, goal: Goal, focus, spec) -> Box | None:
         """ROI per the ``PerceptionSpec``: ``focus`` = the in-focus entity box (today); ``hint`` = the
@@ -713,14 +788,14 @@ class Percept:
         audio: Any = None,
         context: dict | None = None,
     ) -> Verdict:
-        process_qa = bool(context and context.get("process_qa"))
-        if frames or audio or process_qa:
+        process_mode = bool(context and (context.get("process_qa") or context.get("observe_step")))
+        if frames or audio or process_mode:
             # The strip/audio (escalation) path is rare-by-design and multi-frame; bypass the
             # single-frame cache (its key dHashes ONE frame) so a strip verdict never pollutes — nor is
             # served from — a single-frame slot. The cache stays single-frame-pure. A process-QA judge
-            # ALSO bypasses (its running answer accumulates per-call — must never be cached/served).
+            # ALSO bypasses (its running answer/step accumulates per-call — must never be cached/served).
             # ``context`` is passed ONLY for process-QA so a non-process strip judge is byte-for-byte.
-            extra = {"context": context} if process_qa else {}
+            extra = {"context": context} if process_mode else {}
             return await self._timed_judge(
                 goal.condition, frame, roi=roi, corrections=corrections or None,
                 frames=frames, audio=audio, **extra,
