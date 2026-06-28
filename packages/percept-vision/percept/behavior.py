@@ -212,6 +212,7 @@ class ConcernContext:
     last_escalated_at: float = float("-inf")  # Posture-B deliberative (LLM) refractory (escalation.py)
     perception_level: int = 0  # escalation ladder rung: 0=single · 1=strip · 2=+audio (cheaper than the LLM)
     last_perception_escalate_at: float = float("-inf")  # the perception-rung refractory (shorter than LLM's)
+    running_answer: str = ""  # Item 2: per-concern incremental process-QA answer (gate-irrelevant)
 
 
 @dataclass

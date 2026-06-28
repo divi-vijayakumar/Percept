@@ -28,7 +28,8 @@ from typing import Any, Literal, Protocol, runtime_checkable
 #: Bump the MAJOR on any breaking change to a frozen shape; MINOR for additive (new optional
 #: field / new DTO); PATCH for docs/non-wire tweaks. This is distinct from ``WatchSpec.version``
 #: (a wire integer kept for byte-for-byte payload compat).
-CONTRACT_VERSION = "1.1.0"  # 1.1: + WatchCondition.cadence_s/gate_on + Incident.message (optional, back-compat)
+CONTRACT_VERSION = "1.2.0"  # 1.2: + Verdict.running_answer (process-QA, optional, gate-irrelevant, back-compat)
+# 1.1: + WatchCondition.cadence_s/gate_on + Incident.message (optional, back-compat)
 
 
 class ContractVersionMismatch(Exception):
@@ -104,6 +105,11 @@ class Verdict:
     # byte-for-byte (the gate reads only ``satisfied``/``confidence``). A clip judge MAY fill them:
     phase: str = ""  # "pre" | "during" | "post" | "" — where in the action the latest frame sits
     action_present: bool | None = None  # explicit presence signal for action/counting goals (None = not assessed)
+    # Process-QA (Item 2): the model's incremental running answer for a process/QA goal ("what are the
+    # steps to X"). GATE-IRRELEVANT — the gate reads only satisfied/confidence; a judge that doesn't do
+    # process-QA leaves this "" and reproduces today's firing byte-for-byte. NOT a string-join: it is the
+    # model's rewritten summary, threaded per-concern via ConcernContext.running_answer.
+    running_answer: str = ""
 
 
 # who said a fact, used for provenance + freshness reasoning in the core

@@ -557,10 +557,20 @@ class Percept:
             strip = self._strip_frames(source, spec)  # temporal strip per the spec; None = single (today)
             audio = self._audio_clip(source, spec)  # audio clip for a fused/audio spec; None otherwise
             self.funnel.judged(concern=goal.id, camera=source)  # a judge call is being spent
+            # Item 2 process-QA: opt-in goals carry a per-concern running answer in/out of the judge.
+            # GATE-IRRELEVANT — the verdict's satisfied/confidence still drive the (unchanged) gate; the
+            # running answer is just threaded through ConcernContext. Default goals pass context=None and
+            # are byte-for-byte unchanged.
+            process_ctx = (
+                {"process_qa": True, "running_answer": ctx.running_answer}
+                if goal.state.get("process_qa") else None
+            )
             verdict = await self._judge(
                 goal, frame, roi, corrections, entity_id=focus.id if focus else None,
-                frames=strip, audio=audio,
+                frames=strip, audio=audio, context=process_ctx,
             )
+            if process_ctx is not None and getattr(verdict, "running_answer", ""):
+                ctx.running_answer = verdict.running_answer  # accumulate the model's rewritten summary
             freshness = self._freshness(focus, now)
             truth = classify(verdict, freshness, self.gate.threshold, self.gate.fresh_min)
             if truth == "unknown":
@@ -701,14 +711,19 @@ class Percept:
         entity_id: str | None = None,
         frames: list | None = None,
         audio: Any = None,
+        context: dict | None = None,
     ) -> Verdict:
-        if frames or audio:
+        process_qa = bool(context and context.get("process_qa"))
+        if frames or audio or process_qa:
             # The strip/audio (escalation) path is rare-by-design and multi-frame; bypass the
             # single-frame cache (its key dHashes ONE frame) so a strip verdict never pollutes — nor is
-            # served from — a single-frame slot. The cache stays single-frame-pure.
+            # served from — a single-frame slot. The cache stays single-frame-pure. A process-QA judge
+            # ALSO bypasses (its running answer accumulates per-call — must never be cached/served).
+            # ``context`` is passed ONLY for process-QA so a non-process strip judge is byte-for-byte.
+            extra = {"context": context} if process_qa else {}
             return await self._timed_judge(
                 goal.condition, frame, roi=roi, corrections=corrections or None,
-                frames=frames, audio=audio,
+                frames=frames, audio=audio, **extra,
             )
         # A structured key so the FrameHashLayer can ROI-crop + dHash the frame and scope its
         # entry to (goal, entity); the legacy stub cascade ignores the extra fields harmlessly.

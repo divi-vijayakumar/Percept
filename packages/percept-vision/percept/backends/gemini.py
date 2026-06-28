@@ -31,6 +31,23 @@ from .anthropic_text import _CONDUCTOR_SYSTEM, _coerce_decision, _extract_json
 
 GEMINI_DEFAULT = "gemini-2.5-flash"  # the benchmark A/B winner; override via PERCEPT_*_MODEL=gemini-...
 
+# Item 2 process-QA: the eval-validated running-summary prompt (append-only + specificity-preserving —
+# beats the holistic single answer on temporally-spread process questions; see scratch/pvqa_process_ab).
+_PROCESS_QA_SYSTEM = (
+    "You are the perception backend for a proactive, always-on video assistant answering a standing "
+    "PROCESS question (e.g. 'what are the steps to do X?'). The video arrives as a stream of short clips "
+    "over time; the process CONTINUES across the whole video, so new steps keep appearing late as well as "
+    "early. You are given the RUNNING ANSWER built from earlier clips. From THIS clip (frames in time "
+    "order, oldest first) and how the scene changes, identify any NEW step it shows, then return the "
+    "running answer. RULES: (1) APPEND-ONLY — never drop a step you already listed; carry ALL prior steps "
+    "forward and add any new one at the end. (2) BE SPECIFIC — name the exact object/ingredient/tool; "
+    "treat two steps as the same only if it is literally the same action on the same object. (3) KEEP "
+    "WATCHING for later steps even when you already have several. Reply STRICT JSON "
+    '{"satisfied": true|false, "confidence": 0..1, "new_step": "<the specific step this clip adds, or '
+    'empty>", "updated_summary": "<the full ordered list of ALL distinct steps so far>"}. '
+    "satisfied=true once the running answer names at least one concrete step."
+)
+
 
 def _require_genai():
     """Lazy-import google-genai with a clear error if absent (L2 boundary)."""
@@ -134,6 +151,12 @@ class GeminiVision(_GeminiBase):
         audio: Any = None,
         context: dict | None = None,
     ) -> Verdict:
+        if context and context.get("process_qa"):
+            # Process-QA goal: build the incremental running answer instead of a one-shot verdict. The
+            # gate still reads satisfied/confidence; running_answer rides alongside (Item 2).
+            return await self._judge_process_qa(
+                condition, frame, frames, str(context.get("running_answer") or "")
+            )
         _, types = _require_genai()
         client = self._ensure_client()
         # temporal strip: earlier context frames (oldest->newest), then the current frame last, so the
@@ -200,6 +223,50 @@ class GeminiVision(_GeminiBase):
 
         resp = await with_retry(_call, breaker=self._breaker)  # survive transient resets in batch captures
         return _parse_verdict(resp.text or "")
+
+    async def _judge_process_qa(
+        self, condition: str, frame: Any, frames: list | None, prior: str
+    ) -> Verdict:
+        """Item 2: one judge step of an incremental process-QA running answer.
+
+        Carries the prior running answer in, asks the model to integrate THIS clip's new step (if any)
+        and rewrite the full ordered answer, and returns it on ``Verdict.running_answer`` (also mirrored
+        to ``evidence``). On a parse miss the prior answer is preserved (never regress the accumulation).
+        """
+        _, types = _require_genai()
+        client = self._ensure_client()
+        strip = [f for f in (frames or []) if f is not frame]
+        parts: list[Any] = [_image_part(types, f) for f in strip]
+        parts.append(_image_part(types, frame))
+        parts.append(
+            f"Standing question: {condition}\n"
+            f"RUNNING ANSWER SO FAR: {prior or '(none yet)'}\n"
+            f"{len(strip) + 1} frame(s) in time order (oldest first). JSON only."
+        )
+
+        async def _call():
+            return await client.aio.models.generate_content(
+                model=self._model,
+                contents=parts,
+                config=types.GenerateContentConfig(
+                    system_instruction=_PROCESS_QA_SYSTEM, max_output_tokens=1024
+                ),
+            )
+
+        resp = await with_retry(_call, breaker=self._breaker)
+        try:
+            data = json.loads(_extract_json(resp.text or ""))
+        except Exception:
+            data = {}
+        summary = str(data.get("updated_summary", "") or "").strip() or prior
+        satisfied = bool(data.get("satisfied")) and bool(summary)
+        confidence = float(data.get("confidence", 0.5) or 0.5)
+        return Verdict(
+            satisfied=satisfied,
+            confidence=confidence,
+            evidence=summary or "not enough evidence",
+            running_answer=summary,
+        )
 
     async def detect(self, frame: Any, goals: list[Goal]) -> list[Observation]:
         _, types = _require_genai()
