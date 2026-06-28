@@ -179,7 +179,14 @@ class GeminiVision(_GeminiBase):
                 f"A specialist model has reported these structured facts (trust them over your own "
                 f"read): {spec_facts}. "
             )
-        question += 'Answer as STRICT JSON {"satisfied", "confidence", "evidence"}.'
+        if strip:
+            # clip judging: ask for the temporal structure too (parsed into Verdict.phase/action_present;
+            # single-frame replies omit these and default cleanly).
+            question += ('Answer as STRICT JSON {"satisfied", "confidence", "evidence", '
+                         '"action_present" (true if the action/event is visibly occurring across these '
+                         'frames), "phase" (one of "pre","during","post")}.')
+        else:
+            question += 'Answer as STRICT JSON {"satisfied", "confidence", "evidence"}.'
         parts.append(question)
 
         async def _call():

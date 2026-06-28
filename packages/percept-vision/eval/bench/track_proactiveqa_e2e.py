@@ -35,14 +35,16 @@ RAW = ROOT / "eval" / "bench-staging" / "proactiveqa" / "raw"
 SUBSET = RAW / "EGO_subset.json"
 VIDEO_DIR = RAW / "EGO_videos"
 FPS = 0.2  # 5s cadence, matching the legacy PVQA diagnostic runner.
+PVQA_WINDOW_S = 15.0  # clip window handed to the judge: a few 5s-spaced frames -> temporal evidence
 TML_PAUC = 33.5
 
 PVQA_SYSTEM = (
     "You are the perception backend for a proactive video assistant. A user asked a standing "
-    "question at the start of the video. Looking only at this candidate frame/window, decide whether "
-    "there is now enough visual evidence to answer. Reply STRICT JSON "
+    "question at the start of the video. Looking at this short clip (a few frames in TIME ORDER, oldest "
+    "first) and how the scene changes across them, decide whether there is now enough visual evidence to "
+    "answer. Reply STRICT JSON "
     '{"sufficient": true|false, "answer": "<short answer or empty>", "confidence": 0..1}. '
-    "If the frame does not contain enough evidence, set sufficient=false."
+    "If the clip does not contain enough evidence, set sufficient=false."
 )
 
 
@@ -90,11 +92,16 @@ class PVQAVision:
         from google.genai import types
 
         self.calls += 1
-        media, raw = _frame_bytes(frame)
-        prompt = f"{PVQA_SYSTEM}\nStanding question/evidence condition: {condition}\nJSON only."
+        # Use the temporal clip when perceive_judged supplied one (goal authored window_s); the strip is
+        # the earlier frames, current frame last (oldest->newest), matching the GeminiVision ordering.
+        strip = [f for f in (kwargs.get("frames") or []) if f is not frame]
+        clip = [*strip, frame]
+        parts = [types.Part.from_bytes(data=raw, mime_type=media)
+                 for media, raw in (_frame_bytes(f) for f in clip)]
+        prompt = f"{PVQA_SYSTEM}\nStanding question/evidence condition: {condition}\n{len(clip)} frames, JSON only."
         resp = await self.client.aio.models.generate_content(
             model=self.model,
-            contents=[types.Part.from_bytes(data=raw, mime_type=media), prompt],
+            contents=[*parts, prompt],
             config=types.GenerateContentConfig(max_output_tokens=256),
         )
         data = _json(resp.text or "")
@@ -270,6 +277,9 @@ async def _score_one(row: dict[str, Any]) -> QuestionRun:
             id=f"pvqa-{run.question_id}",
             condition=f"there is enough visual evidence to answer: {question}",
             say="answer ready",
+            # author a temporal clip so perceive_judged hands the judge a few frames of context (not one
+            # frame at 0.2fps) — the single-frame starvation behind 0 answers in n1-fresh.
+            state={"perception": {"temporal": "window", "window_s": PVQA_WINDOW_S}},
         )
     )
     spec = compile_watchspec(list(core.goals.active()), threshold=settings.edge.motion_gate)
