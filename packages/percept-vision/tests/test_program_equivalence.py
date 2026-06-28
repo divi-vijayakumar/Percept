@@ -286,5 +286,39 @@ class TestEvidenceAccumulation(unittest.TestCase):
         self.assertEqual([f1.action, f2.action], [ASK, ASK])  # never two in-window at once -> never fires
 
 
+# --------------------------------------------------------------------------------------------------
+# Slice 4: opt-in active/ended lifecycle. Suppresses duplicate fires while active, ends on m sustained
+# negatives (hysteresis), re-arms for the next occurrence — gate unchanged; m=0 + no-evidence untouched.
+# --------------------------------------------------------------------------------------------------
+class TestTemporalLifecycle(unittest.TestCase):
+    YES = Verdict(True, 0.95, "x")
+    NO = Verdict(False, 0.95, "y")
+
+    def _drive_life(self, ex, g, seq):
+        p = program_of(g)
+        return [(lambda f: None if f is None else f)(ex.fire_judged(g, v, ("g", "e"), p, t=float(i)))
+                for i, v in enumerate(seq)]
+
+    def test_started_dedup_ended_rearm(self):
+        _, ex = _ex()
+        g = Goal(id="g", condition="person is waving", say="started",
+                 state={"evidence": {"k": 1, "window_s": 30, "m": 2, "emit_ended": True}})
+        out = self._drive_life(ex, g, [self.YES, self.YES, self.NO, self.NO, self.YES])
+        self.assertEqual([None if f is None else f.action for f in out], [FIRE, None, None, FIRE, FIRE])
+        self.assertEqual(out[3].text, "ended: person is waving")  # the lifecycle 'ended' event
+
+    def test_single_flicker_negative_does_not_re_fire(self):
+        _, ex = _ex()
+        g = Goal(id="g", condition="c", say="s", state={"evidence": {"k": 1, "window_s": 30, "m": 2}})
+        out = self._drive_life(ex, g, [self.YES, self.NO, self.YES])  # one isolated flicker NO (< m)
+        self.assertEqual([None if f is None else f.action for f in out], [FIRE, None, None])  # no dup start
+
+    def test_m_zero_is_fire_once(self):
+        _, ex = _ex()
+        g = Goal(id="g", condition="c", say="s", state={"evidence": {"k": 1, "window_s": 30, "m": 0}})
+        out = self._drive_life(ex, g, [self.YES, self.NO, self.YES])
+        self.assertEqual([None if f is None else f.action for f in out], [FIRE, None, None])  # Slice-3 once
+
+
 if __name__ == "__main__":
     unittest.main()
