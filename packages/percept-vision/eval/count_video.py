@@ -6,7 +6,7 @@ model) counts discrete movements/gestures/reps. Reports two methods:
   * period — autocorrelation dominant period (duration/period) — right for strictly PERIODIC reps
 Optionally saves thumbnails for inspection, and scores against a known --count.
 
-Run: PYTHONPATH=packages/percept-vision:packages/percept-harness python3.12 -m eval.count_video <video> \\
+Run: PYTHONPATH=packages/percept-vision python3.12 -m eval.count_video <video> \\
         [--fps 5] [--count N] [--refractory 0.3] [--thumbs DIR]
 """
 

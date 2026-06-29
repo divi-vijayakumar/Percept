@@ -6,7 +6,7 @@ WatchSpec↓/Tier0Signal↑ loop and prints **vision calls gated vs ungated + th
 The point is *our gating economics*, not model intelligence: a still scene spends no cloud calls,
 motion escalates. Backends are the offline fakes (deterministic, no keys). Run::
 
-    PYTHONPATH=packages/percept-vision:packages/percept-harness \
+    PYTHONPATH=packages/percept-vision \
         python3 -m percept.harness.bench_gating
 """
 

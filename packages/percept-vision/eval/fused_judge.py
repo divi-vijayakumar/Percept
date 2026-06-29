@@ -5,7 +5,7 @@ This decodes frames (cv2) + audio (PyAV) -> a per-window energy signal -> acoust
 judges a representative frame two ways: vision-only vs fused (frame + the audio clip). If fused flips a
 vision-ambiguous verdict the right way, audio earned its place (the Phase-5 lever, finally on real data).
 
-Run: PERCEPT_LIVE=1 PYTHONPATH=packages/percept-vision:packages/percept-harness python3.12 -m eval.fused_judge \\
+Run: PERCEPT_LIVE=1 PYTHONPATH=packages/percept-vision python3.12 -m eval.fused_judge \\
         <video> --condition "the hairdryer is working" [--t 2.0] [--thumbs DIR] [--vlm]
 """
 

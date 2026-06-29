@@ -11,7 +11,7 @@ No API, no VLM — this is the *cheap edge signal*. Head-to-head vs the VLM is t
 CLIPS: any ``eval/perception_probe/<name>/clip.json`` that has a ``count`` field (ground-truth reps) and
 ``frames``. Record with: ``make_probe_clip <video> --name bench --count 8 --condition bench-press`` (rep mode).
 
-Run: PYTHONPATH=packages/percept-vision:packages/percept-harness python3.12 -m eval.exp_edge_count_frames
+Run: PYTHONPATH=packages/percept-vision python3.12 -m eval.exp_edge_count_frames
 """
 
 from __future__ import annotations

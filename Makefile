@@ -3,17 +3,14 @@
 #   L2 live  : backend INTELLIGENCE + integration, real+gated     -> `PERCEPT_LIVE=1 make eval-live`
 #   L3 e2e   : the real system a user drives, headless            -> `make e2e`
 SDK       := packages/percept-vision
-HARNESS   := packages/percept-harness
 EDGE      := packages/percept-edge
-CONTRACTS := packages/percept-contracts
 PY        := python3
 # absolute path to the zero-dep contract pkg (vision runs from inside $(SDK), so it needs this)
-CONTRACTS_ABS := $(abspath $(CONTRACTS))
 
 .PHONY: help test test-harness test-js test-all parity eval-live eval-benchmark e2e bench audit-benchmark scorecard benchmark-prepare benchmark-fetch benchmark-fetch-charades benchmark-fetch-proactiveqa benchmark-index-proactiveqa benchmark-manifest benchmark-run benchmark-collect check reproduce
 
 help:
-	@echo "test       L1 unit — percept-contracts + percept-vision + percept-harness (fakes, no keys, fast)"
+	@echo "test       L1 unit — percept-vision (incl. percept.harness + percept.contracts; fakes, no keys, fast)"
 	@echo "test-js    L1 unit — percept-edge (vitest; needs npm install)"
 	@echo "test-all   test + test-js"
 	@echo "eval-live  L2 live eval (needs keys; skips without PERCEPT_LIVE=1)"

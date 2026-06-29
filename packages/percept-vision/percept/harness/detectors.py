@@ -263,7 +263,7 @@ class PoseOpenness:
     The first MODEL-backed detector. RTMO is the default pose provider because it is multi-person and
     deployment-friendly; BlazePose remains available as ``PERCEPT_POSE_PROVIDER=blazepose`` for
     single-person/high-detail use cases. The provider is **lazy** (loaded on first ``push``, never at
-    import or registration) and **opt-in** (``percept-harness[pose]`` + provider runtime). The brain
+    import or registration) and **opt-in** (``percept-vision[pose]`` + provider runtime). The brain
     activates it per-goal via the WatchSpec; a user who never counts reps never loads it.
     """
 

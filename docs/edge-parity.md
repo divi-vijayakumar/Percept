@@ -2,7 +2,7 @@
 
 Percept has two edge runtimes:
 
-- **Python**: `percept.edge` / `percept-harness`, used server-side and by the runtime worker.
+- **Python**: `percept.edge` / `percept.harness`, used server-side and by the runtime worker.
 - **JavaScript**: `percept-edge`, used on device/browser/edge deployments.
 
 They are required to agree on the frozen wire contract and on the cheap detector outputs. The parity

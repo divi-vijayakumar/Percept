@@ -9,7 +9,7 @@ VLM that answered "not enough evidence" on every frame. None raised; all corrupt
 silently scoring wrong. `counting_health()` is the rule set for the rhythm/counting path; the same
 collector is meant to carry pose / VLM / decode issues too.
 
-    PYTHONPATH=packages/percept-vision:packages/percept-harness:packages/percept-contracts \
+    PYTHONPATH=packages/percept-vision \
         python -m eval.bench.diagnostics       # demo: the trace over the local N=8 counting set
 """
 from __future__ import annotations

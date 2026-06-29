@@ -20,7 +20,7 @@ the read is uncertain, and silence otherwise.
 - Python edge/harness: `pip install "percept-vision[edge]"`, imported as `percept.edge`.
 - Browser/device edge: `npm install percept-edge`.
 
-The repo keeps internal packages under `packages/percept-contracts/` and `packages/percept-harness/`,
+The repo bundles `percept.contracts` and `percept.harness` inside `percept-vision`,
 but OSS users should start from `percept-vision` plus the optional `percept-edge` npm package.
 
 ## Verified Python API

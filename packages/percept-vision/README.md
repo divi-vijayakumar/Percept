@@ -143,7 +143,7 @@ the perception ceiling bites.
 | **percept-vision** | the Python SDK: cognition core, fakes, runtime worker, Python edge/harness, and benchmark tooling via extras. | `pip install percept-vision` |
 | **percept-edge** | on-device reactive edge in JS/WASM: VAD + motion gate over the same WatchSpec/Tier0Signal wire-contract. | `npm install percept-edge` |
 
-The repo stays internally modular (`packages/percept-harness/`, `packages/percept-contracts/`), but
+The tier-0 harness and the frozen wire-contract are bundled in as `percept.harness` / `percept.contracts`, so
 OSS users should start from one Python package plus the optional npm edge package.
 
 Release evidence:
@@ -186,7 +186,7 @@ percept-bench scorecard --manifest ../../eval/golden-v1/MANIFEST.json --out scor
 
 ```
 packages/percept-vision/    the SDK (pip install percept-vision; import percept)
-packages/percept-harness/   internal Python tier-0 edge reference + detector skills
+                            └─ percept.harness / percept.contracts (bundled subpackages)
 packages/percept-edge/      percept-edge — on-device JS/WASM edge
 docs/                       architecture & flow traces
 eval/                       golden corpus (benchmark plan: packages/percept-vision/eval/)

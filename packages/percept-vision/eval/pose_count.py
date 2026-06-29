@@ -8,7 +8,7 @@ variations (legs-only contributes via ankle-spread; full jacks add wrist-elevati
 This is the first MODEL-backed edge skill (vs pure DSP). BlazePose is edge-class (mobile, real-time CPU,
 ~3MB lite model); lazy-imported so the L1 core never touches it.
 
-Run: PYTHONPATH=packages/percept-vision:packages/percept-harness python3.12 -m eval.pose_count <video> [--count N]
+Run: PYTHONPATH=packages/percept-vision python3.12 -m eval.pose_count <video> [--count N]
 """
 
 from __future__ import annotations

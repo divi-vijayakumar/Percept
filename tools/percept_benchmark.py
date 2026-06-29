@@ -27,8 +27,6 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SDK = ROOT / "packages" / "percept-vision"
-HARNESS = ROOT / "packages" / "percept-harness"
-CONTRACTS = ROOT / "packages" / "percept-contracts"
 
 DEFAULT_DATA_DIR = ROOT / "eval" / "bench-staging"
 DEFAULT_RUNS_DIR = ROOT / "eval" / "local-benchmark" / "runs"
@@ -120,7 +118,7 @@ def _bench_paths() -> dict[str, Path]:
 
 
 def _pythonpath() -> str:
-    parts = [str(SDK), str(HARNESS), str(CONTRACTS)]
+    parts = [str(SDK)]
     existing = os.environ.get("PYTHONPATH")
     if existing:
         parts.append(existing)
@@ -441,7 +439,7 @@ def cmd_index_proactiveqa(_args: argparse.Namespace) -> int:
 
 
 def _pt_candidate_rows(*, action_n: int, sound_n: int) -> list[dict[str, Any]]:
-    sys.path[:0] = [str(SDK), str(HARNESS), str(CONTRACTS)]
+    sys.path[:0] = [str(SDK)]
     from eval.bench import perception_test as pt
 
     rows: list[dict[str, Any]] = []
@@ -552,7 +550,7 @@ def _proactiveqa_candidate_rows(n: int) -> list[dict[str, Any]]:
 
 
 def _repcount_candidate_rows(n: int) -> list[dict[str, Any]]:
-    sys.path[:0] = [str(SDK), str(HARNESS), str(CONTRACTS)]
+    sys.path[:0] = [str(SDK)]
     from eval.bench import repcount as rc
 
     out = []
@@ -964,7 +962,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
     if not result_dir.exists():
         raise SystemExit(f"missing result dir: {result_dir}")
 
-    sys.path[:0] = [str(SDK), str(HARNESS), str(CONTRACTS)]
+    sys.path[:0] = [str(SDK)]
     from eval.bench import card
 
     results = []

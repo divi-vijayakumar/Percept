@@ -31,7 +31,7 @@ pip install "percept-vision[runtime]" # + camera/video/RTSP runtime worker
 
 Python **>=3.10**. Import is `import percept`. The server-side edge (tier-0 salience gate + the cheap
 on-device detector "skills") is imported as `percept.edge` and installed through the `[edge]` or
-`[runtime]` extras. The repo still keeps the implementation modular under `packages/percept-harness/`.
+`[runtime]` extras. The harness ships bundled inside `percept-vision` as the `percept.harness` subpackage.
 
 ## The minimal agent (verified API)
 
@@ -89,5 +89,5 @@ asyncio.run(main())
 - `docs/quickstart.md` · `docs/concepts.md` · `docs/backends.md` — adopter docs.
 - `examples/` — `watch_agent.py` (runnable offline) and `webcam_agent.py` (real-backend template).
 - `.claude/skills/percept-agent/` — a Claude Code skill that scaffolds an agent from a plain-language goal.
-- `percept.edge` / `packages/percept-harness/` — the server-side edge (tier-0 gate + detector registry)
+- `percept.edge` / `percept.harness` — the server-side edge (tier-0 gate + detector registry)
   for Python deployments.

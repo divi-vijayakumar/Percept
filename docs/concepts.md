@@ -121,7 +121,7 @@ Some questions shouldn't cost a cloud VLM call at all. **Counting reps** is the 
 "how many jumping jacks?" is an oscillation-counting job, not a per-frame semantic-vision job.
 
 The edge-detector registry (installed through `percept-vision[edge]`, implemented internally in
-`percept-harness`) is a curated, registry-extensible library of
+`percept.harness`) is a curated, registry-extensible library of
 **cheap, high-fps signal detectors** the brain selects from per goal — the *skills* model. Each
 detector consumes a scalar signal stream and emits **timed boundaries** (a rep peak, a sound onset).
 The pattern is **edge-proposes · brain-counts · VLM-confirms**: the edge says *where* something

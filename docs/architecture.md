@@ -41,10 +41,10 @@ collapses these two; Percept keeps them apart so the common case costs nothing.
 | layer | what it does | package | detail |
 |---|---|---|---|
 | **Devices / runtime** | capture a source into frames; own the `camera → incidents` loop | `percept-edge`, runtime | [runtime](runtime.md), [edge parity](edge-parity.md) |
-| **Edge** | cheap high-fps detectors propose timed boundaries; the wake policy decides *whether to spend a VLM call* | `percept-harness` | [registration](registration.md), [wake policy](edge-policy.md) |
+| **Edge** | cheap high-fps detectors propose timed boundaries; the wake policy decides *whether to spend a VLM call* | `percept.harness` | [registration](registration.md), [wake policy](edge-policy.md) |
 | **Cognition** ("the brain") | senses, the three-state gate, entity graph, concern/consequence — reasons over `Verdict` + `Boundary`, never pixels | `percept-vision` | [concepts](concepts.md) |
 | **Perception** ("the eyes") | one stateless seam: `vision.judge(condition, frame) → Verdict` | `percept-vision` backends | [backends](backends.md) |
-| **Wire contract** | the frozen types crossing every seam (`Verdict`, `Goal`, `Box`, protocols) | `percept-contracts` | — |
+| **Wire contract** | the frozen types crossing every seam (`Verdict`, `Goal`, `Box`, protocols) | `percept.contracts` | — |
 
 ## The two firing paths
 
@@ -110,6 +110,7 @@ agent = Percept.create(vision="gemini")    # pip install "percept-vision[gemini]
 
 ## See also
 
+- [Updated SDK architecture](updated-percept-sdk-architecture.md) — the model-plane architecture for VLMs and realtime interaction
 - [Concepts](concepts.md) — the cognition / perception split in depth
 - [Backends](backends.md) — the five seams and how to add one
 - [Registration](registration.md) — the detector / concern / enricher registries

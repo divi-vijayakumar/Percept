@@ -14,7 +14,7 @@ These names are a **public, semver-stable API**. Within a contract MAJOR (`CONTR
 `percept.CONTRACT_VERSION`) the signatures and the `DetectorManifest` shape only change additively —
 new optional args, new functions beside the old ones. A breaking change to any name below is a MAJOR
 bump. Import them through `percept.edge` (or `percept.edge.detectors` / `percept.edge.concerns` /
-`percept.edge.enrichers`). The implementation currently delegates to the internal `percept-harness`
+`percept.edge.enrichers`). The implementation currently delegates to the bundled `percept.harness`
 package.
 
 ---

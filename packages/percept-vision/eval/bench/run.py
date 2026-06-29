@@ -1,7 +1,7 @@
 """Phase-A v0.5 runner — score the tracks and emit the DRAFT Snapshot Card.
 
 Offline smoke (no API, renders the card with stub cells):
-    PYTHONPATH=packages/percept-vision:packages/percept-harness python3.12 -m eval.bench.run
+    PYTHONPATH=packages/percept-vision python3.12 -m eval.bench.run
 Live sampled:
     PERCEPT_LIVE=1 PYTHONPATH=... python3.12 -m eval.bench.run --live --n 20
 

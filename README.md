@@ -143,15 +143,15 @@ the perception ceiling bites.
 | **percept-vision** | the Python SDK: cognition core, fakes, runtime worker, Python edge/harness, and benchmark tooling via extras. | `pip install percept-vision` |
 | **percept-edge** | on-device reactive edge in JS/WASM: VAD + motion gate over the same WatchSpec/Tier0Signal wire-contract. | `npm install percept-edge` |
 
-The repo stays internally modular (`packages/percept-harness/`, `packages/percept-contracts/`), but
-OSS users should start from one Python package plus the optional npm edge package.
+The tier-0 edge harness and the frozen wire-contract are bundled inside `percept-vision` as the
+`percept.harness` and `percept.contracts` subpackages — so OSS users install **one** Python package
+(heavy deps are opt-in extras) plus the optional npm edge package.
 
 Release evidence:
 
 - Edge parity: [`docs/edge-parity.md`](docs/edge-parity.md)
 - Runtime worker: [`docs/runtime.md`](docs/runtime.md)
 - Benchmark/golden set: [`docs/eval.md`](docs/eval.md)
-- Enterprise architecture: [`docs/enterprise-architecture.md`](docs/enterprise-architecture.md)
 - Static OSS demo: [`examples/web-demo/index.html`](examples/web-demo/index.html)
 
 ## Benchmark — Percept Benchmark v1 (DRAFT)
@@ -191,12 +191,13 @@ percept-bench scorecard --manifest eval/golden-v1/MANIFEST.json --out scorecard.
 
 ```
 packages/percept-vision/    the SDK (pip install percept-vision; import percept)
-packages/percept-harness/   internal Python tier-0 edge reference + detector skills
-packages/percept-edge/      percept-edge — on-device JS/WASM edge
+                            ├─ percept.harness   bundled Python tier-0 edge + detector skills ([harness]/[pose])
+                            └─ percept.contracts  bundled frozen wire-contract (DTOs + Protocols)
+packages/percept-edge/      percept-edge — on-device JS/WASM edge (npm)
 docs/                       architecture & flow traces
 eval/                       golden corpus (benchmark plan: packages/percept-vision/eval/)
-Spec/                       the spec + implementation plan
-Makefile                    test · eval-live · e2e · bench · check · reproduce
+examples/                   runnable example agents
+Makefile                    test · parity · eval-live · e2e · bench · check
 ```
 
 ## Docs

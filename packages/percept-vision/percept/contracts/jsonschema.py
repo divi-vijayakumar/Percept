@@ -7,7 +7,7 @@ discover the shape — not a perfect reflection of every Python type.
 
 Regenerate the committed schema with::
 
-    python3 -m percept.contracts.jsonschema            # -> packages/percept-contracts/schema/*.json
+    python3 -m percept.contracts.jsonschema            # -> percept/contracts/schema/*.json
 
 or call :func:`generate_all` / :func:`write_schema_files` from code.
 """
@@ -167,7 +167,7 @@ def generate_all(dtos: tuple[type, ...] = DTOS) -> dict:
 
 
 def schema_dir() -> Path:
-    """The committed schema output directory: ``packages/percept-contracts/schema``."""
+    """The committed schema output directory: ``percept/contracts/schema``."""
     return Path(__file__).resolve().parent / "schema"
 
 

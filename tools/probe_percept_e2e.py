@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-for rel in ("packages/percept-vision", "packages/percept-harness", "packages/percept-contracts"):
+for rel in ("packages/percept-vision",):
     p = str(ROOT / rel)
     if p not in sys.path:
         sys.path.insert(0, p)

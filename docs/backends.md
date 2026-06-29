@@ -39,11 +39,12 @@ pip install "percept-vision[all]"          # everything above
 | `[claude]`   | `anthropic`         | `vision="claude"`, `conductor`, `specialist`|
 | `[deepgram]` | `deepgram-sdk`      | `stt="deepgram"`, `tts="deepgram"`          |
 | `[audio]`    | `numpy`             | audio/acoustic signal processing            |
-| `[runtime]`  | `opencv-python-headless`, `percept-harness` | camera/video/RTSP runtime worker |
+| `[harness]`  | `numpy`             | the bundled `percept.harness` tier-0 gate + detector registry |
+| `[runtime]`  | `opencv-python-headless`, `numpy` | camera/video/RTSP runtime worker |
 | `[screen]`   | `mss`               | screen-capture dependency for custom iterable sources |
-| `[bench]`    | `numpy`, `opencv-python-headless`, `percept-harness` | `percept-bench` scorecards |
-| `[edge]`     | `percept-harness`   | public `percept.edge` tier-0 gate + detector registry |
-| `[pose]`     | `percept-harness[pose]` | opt-in pose detector dependencies |
+| `[bench]`    | `numpy`, `opencv-python-headless` | `percept-bench` scorecards |
+| `[edge]`     | `numpy`             | public `percept.edge` / `percept.harness` tier-0 gate + detector registry |
+| `[pose]`     | `mmpose`, `mmdet`, `mmcv`, `mmengine`, `opencv-python-headless` | opt-in pose detector dependencies |
 | `[otel]`     | `opentelemetry-api`, `opentelemetry-sdk` | OpenTelemetry export |
 
 ---
