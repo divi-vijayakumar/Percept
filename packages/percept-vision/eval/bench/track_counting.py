@@ -92,12 +92,16 @@ def score(*, live: bool, n: int) -> TrackResult:
     e2e_obos, e2e_maes = [], []
     per_video = []
     unresolved = []
+    blind = []  # hero counts flagged escalate-worthy (low coverage/conf) — honesty signal, not a failure
     for e in ev:
         path = repcount.fetch_video(e["index"], e["video_id"])
         gt = e["count"]
 
         try:
-            counted = repcount.percept_e2e_rep_count(path, action=e["action"])
+            # The counting track runs the PER-PERFORMER hero path: the eye measures every person, the
+            # EntityGraph assigns stable ids, and the brain selects the performer (the multi-person fix for
+            # pommel horse / spotters). Channel prior comes from the manifest, never per-action ifs.
+            counted = repcount.percept_e2e_rep_count(path, action=e["action"], hero=True)
             e2e_pred = counted["count"]
         except Exception as exc:
             unresolved.append((e["video_id"], e["action"], type(exc).__name__, _short_error(exc)))
@@ -108,6 +112,13 @@ def score(*, live: bool, n: int) -> TrackResult:
 
         if e2e_pred <= 0:
             unresolved.append((e["video_id"], e["action"], "no_count"))
+
+        # OBSERVABILITY: the per-performer hero marks a low-coverage / low-confidence count as BLIND
+        # (escalate-worthy — arm C). Surface it so the track never reports a blind count as a clean one.
+        # It is an honesty signal, NOT a coverage failure, so it stays out of unresolved/failed.
+        hero = counted.get("hero")
+        if hero and hero.get("escalate"):
+            blind.append((e["video_id"], e["action"], hero.get("blind_reason")))
 
         denom = max(gt, 1)  # normalized MAE matches RepCount-A reference convention.
         e2e_obos.append(1.0 if abs(e2e_pred - gt) <= 1 else 0.0)
@@ -122,6 +133,11 @@ def score(*, live: bool, n: int) -> TrackResult:
                 counted["frames"],
                 len(counted["boundaries"]),
                 [round(b["t"], 2) for b in counted["boundaries"][:20]],
+                # hero observability: who the brain counted + the phase source + blind flag
+                {"subject": hero.get("subject"), "phase": hero.get("phase_source"),
+                 "cov": round(hero.get("channel_coverage", 0.0), 3),
+                 "htc": round(hero.get("hero_track_coverage", 0.0), 3),
+                 "escalate": hero.get("escalate")} if hero else None,
             )
         )
 
@@ -144,9 +160,10 @@ def score(*, live: bool, n: int) -> TrackResult:
     }
     mix = Counter(e["action"] for e in ev)
     notes = (
-        f"unbiased action sample; edge-boundaries -> core count; no raw VLM baseline. "
+        f"unbiased action sample; per-performer hero -> core count; no raw VLM baseline. "
         f"action mix: {dict(mix)}; unresolved: {unresolved}; "
-        f"per-video (vid,action,gt,e2e,detectors,frames,boundaries,boundary_ts): {per_video}"
+        f"blind/escalate-worthy (hero observability gate, arm-C candidates): {blind}; "
+        f"per-video (vid,action,gt,e2e,detectors,frames,boundaries,boundary_ts,hero): {per_video}"
     )
     failed = len([u for u in unresolved if len(u) >= 4])
     return _result(

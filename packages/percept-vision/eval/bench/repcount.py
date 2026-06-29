@@ -202,9 +202,25 @@ def pose_rep_count(path, fps: int = 6) -> int:
     return int(round(duration / period_s)) if period_s > 0 else 0
 
 
+# The conductor's goal-set prior is a MANIFEST it READS, not a chain of ``if action == ...``. It maps an
+# action LABEL to (the channel that action's rep lives on, that channel's expected range-of-motion in its
+# own torso-normalized units). The brain consumes the channel as the rhythm prior and the rom as the
+# absolute amplitude (anti-fidget) gate. ``hero_ab.VLM_PRIOR`` / ``EXPECTED_ROM`` is the canonical map; this
+# imports it lazily (``hero_ab`` imports ``repcount``, so a module-load import would be circular). A new
+# multi-person counting goal is supported by adding a row here — never a new ``if``.
+def _channel_prior(action: str) -> tuple[str | None, float | None]:
+    """(prior_channel, expected_rom) for ``action`` from the manifest — ``(None, None)`` if unmapped."""
+    from eval.bench.hero_ab import EXPECTED_ROM, VLM_PRIOR
+
+    channel = VLM_PRIOR.get(action)
+    erom = EXPECTED_ROM.get(channel) if channel else None
+    return channel, erom
+
+
 def percept_e2e_rep_count(
     path, *, action: str, fps: int = 6, capture_fps: int | None = None,
     sense: dict | None = None, detectors: list[str] | None = None,
+    hero: bool | None = None,
 ) -> dict:
     """Run the Percept edge-boundary -> core-count path for one RepCount-A routine.
 
@@ -221,6 +237,15 @@ def percept_e2e_rep_count(
     frame; the brain's :class:`~percept.rhythm.RhythmTracker` (driven by ``core.perceive_rhythm``) selects
     the dominant channel and counts complete reps causally. No VLM calls. A legacy boundary-detector name
     (e.g. ``pose-openness``) instead routes through the old ``perceive_boundary`` blind tally for A/B.
+
+    ``hero`` routes through the PER-PERFORMER hero: the eye measures EVERY person, the
+    ``EntityGraph``/``AppearanceIdentity`` seam assigns stable ids, and the brain SELECTS the performer (most
+    reps on the prior channel — a bystander/judge reps ~0). This is the fix for multi-person clips (pommel
+    horse, bench press with spotters) where the single-subject nearest-hip path can lock the wrong body. The
+    counting TRACK (:mod:`eval.bench.track_counting`) passes ``hero=True``; the default stays single-subject
+    so the in-process rhythm contract (one eye, one body) is unchanged. ``PERCEPT_REPCOUNT_HERO`` flips the
+    default globally (``1`` on, ``0`` off). The channel prior comes from :func:`_channel_prior` (the
+    manifest), never per-action ``if``s.
     """
     import cv2
 
@@ -236,6 +261,13 @@ def percept_e2e_rep_count(
     if not names:
         names = ["pose-channels"]
     rhythm_mode = names == ["pose-channels"]
+    if hero is None:  # the counting TRACK passes hero=True; env can flip the default globally
+        hero = os.environ.get("PERCEPT_REPCOUNT_HERO", "0") != "0"
+    hero_mode = rhythm_mode and hero
+    if hero_mode:
+        return _hero_e2e_rep_count(
+            path, action=action, fps=fps, capture_fps=capture_fps, sense=sense, names=names,
+        )
 
     # Capture the cheap stream at capture_fps (the "retina" — high rate); the fovea (SamplingController)
     # decides how DENSELY to spend the expensive pose measurement. Default capture == fps (reproducible).
@@ -339,4 +371,124 @@ def percept_e2e_rep_count(
         "detectors": names,
         "goal": goal_text,
         "health": health,  # None for the legacy path; the rhythm path emits a silent-failure trace
+    }
+
+
+# Observability gates (mirror hero_ab so a counting-track run honours the same blind-count policy).
+_TAU_KP = float(os.environ.get("PERCEPT_HERO_TAU_KP", "0.3"))    # prior-channel coverage < this → silhouette
+_TAU_SIL = float(os.environ.get("PERCEPT_HERO_TAU_SIL", "0.3"))  # silhouette period conf floor to accept it
+_TAU_CONF = float(os.environ.get("PERCEPT_HERO_TAU_CONF", "0.4"))  # period conf < this → BLIND (escalate)
+
+
+def _hero_e2e_rep_count(
+    path, *, action: str, fps: int, capture_fps: int | None, sense: dict | None, names: list[str],
+) -> dict:
+    """The PER-PERFORMER rhythm path for the counting track (the multi-person fix).
+
+    Mirrors ``hero_ab._arm_b`` but on a freshly decoded clip (live pose provider, no cache dependency): the
+    ``pose-channels`` eye measures EVERY person each frame, the ``EntityGraph``/``AppearanceIdentity`` seam
+    assigns stable ids, and :class:`~percept.rhythm_hero.RhythmHero` folds each id into its own tracker so the
+    brain SELECTS the performer (most reps on the prior channel — a judge/spectator reps ~0). The reported
+    count is the PERFORMER's. The channel prior + expected-ROM gate come from the manifest (:func:`_channel_prior`).
+
+    OBSERVABILITY gate (so a BLIND count is never reported clean): if the performer's prior channel is occluded
+    (``channel_coverage`` < ``_TAU_KP`` — e.g. the pommel apparatus hides the legs) we route to the measured
+    silhouette phase-source instead of the action name; and a count whose periodicity confidence is low (or
+    whose coverage is low) is flagged ``escalate=True`` (arm-C-worthy) rather than presented as trustworthy.
+    """
+    import cv2
+
+    from percept import Goal, Percept
+    from percept.identity import AppearanceIdentity
+    from percept.rhythm_hero import RhythmHero
+    from percept_harness.appearance import appearance_signature
+    from percept_harness.detectors import make_detector
+
+    from eval.bench.silhouette import dominant_period, silhouette_count
+    from eval.count_video import decode
+
+    capture = int(capture_fps or fps)
+    small, full = decode(str(path), capture)
+    goal_id = "repcount"
+    goal_text = f"a completed {action.replace('_', ' ')} repetition"
+    prior_channel, erom = _channel_prior(action)
+
+    if not small or not full:
+        return {
+            "count": 0, "frames": 0, "capture_fps": capture, "processed": 0,
+            "boundaries": [], "detectors": names, "goal": goal_text, "health": None,
+            "hero": {"subject": None, "n_entities": 0, "channel_coverage": 0.0,
+                     "hero_track_coverage": 0.0, "period_conf": 0.0, "phase_source": "pose",
+                     "prior_channel": prior_channel, "escalate": True, "blind_reason": "no_frames"},
+        }
+
+    # Goal state carries the manifest prior (channel + native-unit expected_rom) — the brain reads it as the
+    # rhythm prior + anti-fidget amplitude gate. Build-2/3 knobs (smooth_s/canonical_select) stay OFF.
+    state = {"type": "rhythm", "count": 0, "detectors": names}
+    if prior_channel is not None:
+        rhythm = {"channel": prior_channel}
+        if erom is not None:
+            rhythm["expected_rom"] = erom
+            rhythm["expected_rom_space"] = "channel_native"
+        state["rhythm"] = rhythm
+    if sense is not None:
+        state["sense"] = sense
+
+    core = Percept.create(discover_plugins=False, identity=AppearanceIdentity(), embedder=appearance_signature)
+    core.add_goal(Goal(id=goal_id, condition=goal_text, say="rep counted", state=state))
+    hero = RhythmHero(core, goal_id, prior_channel=prior_channel)
+
+    eye = make_detector("pose-channels")
+    processed = 0
+    for _t, bgr in full:
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        hero.observe(float(_t), eye.measure_entities(rgb), frame=bgr)
+        processed += 1
+    res = hero.result()
+
+    # periodicity confidence on the PERFORMER's prior-channel signal (autocorr — same units as silhouette).
+    vals = [v for _, v in res.signal]
+    _, pose_conf = dominant_period(vals, capture) if len(vals) >= 6 else (None, 0.0)
+
+    phase_source, count, period_conf, sil = "pose", res.count, pose_conf, None
+    blind_reason = None
+    # MEASURED phase-source gate: an occluded prior channel routes to the silhouette fallback — never the
+    # action name. Only meaningful when primed (an unsupervised run has no prior channel to measure coverage).
+    if prior_channel is not None and res.channel_coverage < _TAU_KP:
+        sil = silhouette_count(path)
+        if sil["period_confidence"] >= _TAU_SIL:
+            phase_source, count, period_conf = "silhouette", sil["count"], sil["period_confidence"]
+        else:
+            blind_reason = "low_channel_coverage"
+
+    # The OBSERVABILITY verdict: a low-confidence (or still-low-coverage) count is BLIND → escalate-worthy
+    # (arm C). We surface it; we do NOT silently report it as a clean count.
+    escalate = (period_conf or 0.0) < _TAU_CONF or res.hero_track_coverage < _TAU_KP
+    if escalate and blind_reason is None:
+        blind_reason = "low_period_conf" if (period_conf or 0.0) < _TAU_CONF else "low_track_coverage"
+
+    boundaries = [
+        {"detector": "pose-channels", "kind": "rep", "t": float(r.stop_t),
+         "value": float(r.amplitude), "channel": r.channel,
+         "span": [float(r.start_t), float(r.peak_t), float(r.stop_t)]}
+        for r in res.reps
+    ]
+
+    return {
+        "count": int(count),
+        "frames": len(full),
+        "capture_fps": capture,
+        "processed": processed,
+        "boundaries": boundaries,
+        "detectors": names,
+        "goal": goal_text,
+        "health": None,  # the hero path carries its observability in the "hero" block below
+        "hero": {
+            "subject": res.subject, "n_entities": res.n_entities,
+            "channel_coverage": res.channel_coverage, "hero_track_coverage": res.hero_track_coverage,
+            "regularity": res.regularity, "period_conf": period_conf or 0.0,
+            "phase_source": phase_source, "prior_channel": prior_channel,
+            "escalate": escalate, "blind_reason": blind_reason,
+            "pose_count": res.count, "silhouette": sil,
+        },
     }

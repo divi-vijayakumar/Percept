@@ -98,6 +98,104 @@ class RhythmHeroTests(unittest.TestCase):
         self.assertEqual(len(res.signal), 72)              # the performer's prior-channel stream, for autocorr
 
 
+class FakePommelCrowd:
+    """A pommel-horse-like crowd: a PERFORMER whose ankles oscillate cleanly (the rep DOF on the
+    apparatus) plus a near-static / irregularly-fidgeting BYSTANDER (a judge/spectator) at the edge of the
+    frame. The two never swap ``cx`` so the EntityGraph keeps them as distinct ids; the performer reps once
+    per ``period`` and the bystander only jitters slightly off-rhythm (no completed cycles)."""
+
+    def __init__(self, period: int = 10, amp: float = 0.35):
+        self.i, self.period, self.amp = 0, period, amp
+
+    def detect(self, _frame):
+        # performer: ankles spread/together once per period (a clean ankle-spread cycle)
+        spread = self.amp * (1.0 + math.sin(2 * math.pi * self.i / self.period)) / 2.0
+        performer = _pommel_performer(cx=0.25, spread=spread)
+        # bystander: a near-static judge/spectator far from the performer — a tiny irregular, off-period,
+        # sub-amplitude tremor that never completes a rep cycle (its ankle-spread reps ~0).
+        jitter = 0.004 * math.sin(2 * math.pi * self.i / 3.7) + 0.004 * math.sin(2 * math.pi * self.i / 5.3)
+        bystander = _pommel_performer(cx=0.85, spread=0.03 + jitter)
+        self.i += 1
+        return [performer, bystander]
+
+
+def _pommel_performer(cx: float, spread: float) -> PoseDetection:
+    """A COCO pose centred at ``cx`` whose ANKLES are separated by ``spread`` (the ankle-spread channel),
+    with arms held still (so the only moving DOF is the legs — pommel-like)."""
+    k = [PoseKeypoint(cx, 0.5) for _ in range(17)]
+    k[5], k[6] = PoseKeypoint(cx - 0.06, 0.45), PoseKeypoint(cx + 0.06, 0.45)        # shoulders
+    k[9], k[10] = PoseKeypoint(cx - 0.06, 0.45), PoseKeypoint(cx + 0.06, 0.45)        # wrists (still)
+    k[11], k[12] = PoseKeypoint(cx - 0.05, 0.75), PoseKeypoint(cx + 0.05, 0.75)       # hips
+    k[15] = PoseKeypoint(cx - spread / 2.0, 0.95)                                      # ankles (the rep DOF)
+    k[16] = PoseKeypoint(cx + spread / 2.0, 0.95)
+    return PoseDetection(tuple(k), confidence=0.9, person_id=str(int(cx * 100)))
+
+
+class PommelHeroSelectionTests(unittest.TestCase):
+    """The pommel-horse fix as an L1: on a multi-person stream the brain must SELECT the performer (not a
+    bystander) and report the PERFORMER's count, regardless of the wrong-person geometry trap."""
+
+    def _core(self):
+        from percept.identity import AppearanceIdentity
+        try:
+            from percept_harness.appearance import appearance_signature
+        except Exception:  # pragma: no cover
+            appearance_signature = None
+        core = Percept.create(discover_plugins=False,
+                              identity=AppearanceIdentity(), embedder=appearance_signature)
+        core.add_goal(Goal(id="g", condition="a completed pommel rep", say="rep",
+                           state={"type": "rhythm", "count": 0, "rhythm": self._prior()}))
+        return core
+
+    @staticmethod
+    def _prior():
+        # the manifest prior the conductor reads for a pommel/jack action: ankle-spread channel + the
+        # absolute anti-fidget gate (expected_rom in the channel's native units). Mirrors hero_ab.EXPECTED_ROM.
+        return {"channel": "ankle-spread", "expected_rom": 0.35, "expected_rom_space": "channel_native"}
+
+    def _single_performer_count(self, *, n, period, amp, fps):
+        """Reference: the SAME performer's ankle-spread stream alone (single-subject) → the count the
+        crowd hero must reproduce, proving the bystander does not perturb the performer's tally."""
+        core = Percept.create(discover_plugins=False)
+        core.add_goal(Goal(id="g", condition="a completed pommel rep", say="rep",
+                           state={"type": "rhythm", "count": 0, "rhythm": self._prior()}))
+        from percept_harness.pose import pose_channels
+        for i in range(n):
+            spread = amp * (1.0 + math.sin(2 * math.pi * i / period)) / 2.0
+            ch = pose_channels(_pommel_performer(cx=0.25, spread=spread).keypoints)
+            core.perceive_rhythm("g", t=i / fps, channels=ch)
+        tr = core.rhythm.get("g")
+        return tr.count if tr is not None else 0
+
+    def test_brain_picks_performer_and_counts_performer_reps(self):
+        n, period, amp, fps = 80, 10, 0.35, 6.0
+        core = self._core()
+        eye = make_detector("pose-channels")
+        eye._provider = FakePommelCrowd(period=period, amp=amp)
+        hero = RhythmHero(core, "g", prior_channel="ankle-spread")
+        for i in range(n):
+            hero.observe(i / fps, eye.measure_entities(None), frame=None)
+        res = hero.result()
+
+        # 1) the brain selected the PERFORMER, not a bystander: the reported subject is the entity whose
+        #    tracker carries the reps; every OTHER entity reps ~0 (the still/irregular bystander).
+        self.assertEqual(res.n_entities, 2)
+        self.assertEqual(res.subject, core.goals.get("g").state.get("subject"))
+        other_reps = [tr.count for k, tr in core._rhythm_multi.items() if k[1] != res.subject]
+        self.assertTrue(all(c <= 1 for c in other_reps), other_reps)
+        self.assertGreater(res.count, max(other_reps or [0]))  # performer out-reps the bystander
+
+        # 2) the reported count IS the performer's — identical to the same performer measured alone, so the
+        #    bystander provably does not perturb the count.
+        expected = self._single_performer_count(n=n, period=period, amp=amp, fps=fps)
+        self.assertGreaterEqual(expected, 4)                 # the reference actually reps (sanity)
+        self.assertEqual(res.count, expected)
+
+        # 3) the performer was tracked nearly the whole clip → a high-coverage, trustworthy count.
+        self.assertGreater(res.hero_track_coverage, 0.9)
+        self.assertGreater(res.channel_coverage, 0.5)        # ankles visible (not the occluded real clip)
+
+
 class EscalateCountTests(unittest.TestCase):
     def test_low_confidence_defers_to_the_backstop(self):
         calls = []
