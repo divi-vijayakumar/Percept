@@ -72,7 +72,9 @@ PRIMITIVES: dict[str, SensorPrimitive] = {
     ),
     "judge": SensorPrimitive(
         "judge", "sense",
-        "watch for a plain-language condition to become true — the rising-edge fire/ask",
+        "watch for a plain-language condition to become true — the rising-edge fire/ask; for a BRIEF "
+        "sub-second window ('tell me when X briefly happens') the cadence must be SENSITIVE — sample above "
+        "the window's Nyquist so a quiet-but-in-window frame is still judged, not suppressed by the motion gate",
         measurements=("vlm",), event_model={"kind": "edge"}, confirmation={"vlm": "each_escalation"},
     ),
     "transition": SensorPrimitive(
@@ -99,6 +101,36 @@ PRIMITIVES: dict[str, SensorPrimitive] = {
 
 _VLM_CONFIRM = {"none", "sparse", "each_escalation", "on_deadline"}
 _CONFIRM_WHEN = {"candidate_boundary", "each_escalation", "on_deadline", "never"}
+
+# A "tell me when X BRIEFLY happens" prior (``goal.state['sense']['brief_window_s']``): the expected
+# duration of the action's rising-edge window. A brief sub-second window can be missed entirely by a
+# motion-gated, coarse cadence — the window opens and closes between two coarse judged frames (the
+# pt-action coverage miss). To cover it we must sample/judge above the window's NYQUIST: at least two
+# in-window frames, so a quiet-but-in-window frame is still judged even if the motion gate would skip it.
+# This is driven by the goal's prior, not a per-activity constant — any brief-action judge goal benefits.
+_BRIEF_NYQUIST_SAMPLES = 2.0  # >=2 judged frames inside the window (Nyquist for the window's edge)
+_BRIEF_MAX_HEADROOM = 3.0  # escalated ceiling = headroom x the sensitive floor (still bounded by the firewall)
+_BRIEF_ESCALATE_THRESHOLD = 0.05  # a low motion floor: admit subtle in-window motion the default 0.15 suppresses
+
+
+def _sensitive_cadence(brief_window_s, base: dict) -> dict:
+    """Derive a SENSITIVE judge cadence from a brief-window prior (the coverage fix), without overriding
+    any cadence the goal already authored. Raises ``base_fps`` to at least the window's Nyquist
+    (``_BRIEF_NYQUIST_SAMPLES / brief_window_s``) so a sub-second window gets >=2 judged frames, lifts the
+    escalated ceiling to keep headroom, and lowers ``escalate_threshold`` to admit subtle in-window motion.
+    Authored values always win (``base.get(...) or ...``), so this only FILLS the unset knobs. Returns the
+    cadence dict unchanged when the prior is absent/non-positive — non-brief judge goals are untouched."""
+    bw = _num(brief_window_s)
+    if bw is None or bw <= 0:
+        return base
+    nyquist_fps = _BRIEF_NYQUIST_SAMPLES / bw  # e.g. a 1.0s window -> >=2 fps; a 0.5s window -> >=4 fps
+    out = dict(base)
+    out["base_fps"] = base.get("base_fps") or nyquist_fps
+    out["max_fps"] = base.get("max_fps") or out["base_fps"] * _BRIEF_MAX_HEADROOM
+    if base.get("escalate_threshold") is None:
+        out["escalate_threshold"] = _BRIEF_ESCALATE_THRESHOLD
+    out["brief_window_s"] = bw  # surfaced for explainability + so the adapter can read the prior back
+    return out
 
 
 @dataclass(frozen=True)
@@ -144,6 +176,12 @@ def sensor_plan_for(goal) -> SensorPlan:
         "max_fps": sense_cfg.get("max_fps"),
         "escalate_threshold": sense_cfg.get("escalate_threshold"),
     }
+    # The judge (rising-edge) sense compiles a SENSITIVE cadence when the goal carries a brief-window
+    # prior — driven by the prior, not a per-activity branch (the registry's ``judge.when_to_use`` is the
+    # cue). A brief sub-second window needs above-Nyquist coverage so a quiet-but-in-window frame is still
+    # judged; without the prior this is a no-op and the cadence is byte-for-byte the default judge cadence.
+    if prim.event_model.get("kind") == "edge":
+        cadence = _sensitive_cadence(sense_cfg.get("brief_window_s"), cadence)
     perception = {
         "primitive": p.temporal, "modality": p.modality, "temporal": p.temporal,
         "n_frames": p.n_frames, "roi": p.roi, "sampling": p.sampling,

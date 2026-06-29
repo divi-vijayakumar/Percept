@@ -25,13 +25,62 @@ from percept.config import load_settings
 from percept.edge.tier0 import MotionGate, compile_watchspec
 from percept.gate import FIRE
 from percept.runtime.source import open_source
+from percept.sampling import SamplingController, SensePolicy
+from percept.sensorplan import sensor_plan_for
 
 from . import perception_test as pt
 from .types import TrackResult
 
 TRACK = "pt-action-e2e"
-FPS = 2.0
+FPS = 2.0  # legacy coarse capture floor — the SensorPlan's sensitive cadence raises the EFFECTIVE rate
 WINDOW_PAD_S = 0.5
+# Headroom so the capture stream itself isn't the bottleneck: decode at least this dense when the goal's
+# SensorPlan asks for a sensitive above-Nyquist cadence (the controller still subsamples to the plan's fps).
+_CAPTURE_HEADROOM_FPS = 8.0
+
+
+def cadence_policy(cadence: dict) -> SensePolicy:
+    """Compile a SensorPlan ``cadence`` dict into the fovea's :class:`SensePolicy` (the processing-density
+    envelope). Absent knobs fall back to the SensePolicy defaults — so a plain (non-brief) judge goal is
+    byte-for-byte the controller default. This is the seam that lets the plan's SENSITIVE cadence drive
+    sampling density without any per-activity constant in the adapter."""
+    d = SensePolicy()
+    return SensePolicy(
+        base_fps=cadence.get("base_fps") or d.base_fps,
+        max_fps=cadence.get("max_fps") or d.max_fps,
+        escalate_threshold=(
+            cadence["escalate_threshold"] if cadence.get("escalate_threshold") is not None else d.escalate_threshold
+        ),
+        hold_s=d.hold_s,
+    )
+
+
+def capture_fps(cadence: dict) -> float:
+    """The rate to DECODE the stream at: dense enough that the controller's sensitive cadence isn't starved
+    by a coarse capture floor, but never below the legacy ``FPS`` (so non-brief goals decode as before)."""
+    want = cadence.get("max_fps") or cadence.get("base_fps") or 0.0
+    return max(FPS, min(_CAPTURE_HEADROOM_FPS, float(want)))
+
+
+def judged_timestamps(
+    samples: list[tuple[float, float]], cadence: dict, *, gate_escalations: set[float] | None = None
+) -> list[float]:
+    """PURE coverage helper (no video, no model) — given a captured ``(t, motion)`` stream and a SensorPlan
+    ``cadence``, return the timestamps that would be JUDGED.
+
+    A frame is judged when EITHER the motion gate escalated it (``gate_escalations``, the legacy path —
+    unchanged firing logic) OR the fovea's :class:`SamplingController` admits it at the plan's cadence (the
+    coverage floor: coast at ``base_fps``, escalate to ``max_fps`` on motion). The union is the fix: a
+    quiet-but-in-window frame the motion gate skipped is still judged because the sensitive base_fps coasts
+    over it. With the default (non-brief) cadence the controller coasts at the SensePolicy default and the
+    union is dominated by the gate exactly as before."""
+    ctrl = SamplingController(cadence_policy(cadence))
+    esc = gate_escalations or set()
+    out: list[float] = []
+    for t, motion in samples:
+        if ctrl.should_process("judge", t, motion) or t in esc:
+            out.append(t)
+    return out
 
 
 @dataclass
@@ -130,21 +179,34 @@ async def _score_one(event: dict) -> EventRun:
     vision = RecordingVision(GeminiVision(settings))
     core = Percept.create(vision=vision, settings=settings, discover_plugins=False)
     goal_id = f"pt-{event['video_id']}"
-    core.add_goal(
-        Goal(
-            id=goal_id,
-            condition=goal_text,
-            say=f"Perception Test action detected: {goal_text}",
-        )
+    # The pt-action notification goal IS a "tell me when X briefly happens" goal: the GT window's duration
+    # is the goal's brief-window PRIOR (data the goal-setter has — not a per-activity constant). It compiles
+    # the judge sense to a SENSITIVE above-Nyquist cadence so a sub-second action is covered. A non-brief
+    # goal carries no such prior and is byte-for-byte the legacy cadence.
+    brief_window_s = max(0.0, float(event["end_s"]) - float(event["onset_s"]))
+    goal = Goal(
+        id=goal_id,
+        condition=goal_text,
+        say=f"Perception Test action detected: {goal_text}",
+        state={"type": "watch", "count": 0, "sense": {"brief_window_s": brief_window_s}},
     )
+    core.add_goal(goal)
+    plan = sensor_plan_for(goal)
+    cadence = plan.cadence
+    policy = cadence_policy(cadence)
+    ctrl = SamplingController(policy)
     spec = compile_watchspec(list(core.goals.active()), threshold=settings.edge.motion_gate)
     gate = MotionGate(spec, settings=settings)
 
     try:
-        async for t, gate_frame, judge_frame in open_source(str(event["path"]), fps=FPS):
+        async for t, gate_frame, judge_frame in open_source(str(event["path"]), fps=capture_fps(cadence)):
             result.frames += 1
             decision = gate.evaluate(gate_frame, ts=float(t))
-            if not decision.escalate:
+            # JUDGE on EITHER the motion gate's escalation (legacy firing logic — UNCHANGED) OR the fovea's
+            # sensitive cadence coasting over a quiet-but-in-window frame (the coverage fix). The motion
+            # signal drives the controller's saccade, so a real motion burst still densifies to max_fps.
+            coast = ctrl.should_process("judge", float(t), float(decision.signal.motion))
+            if not (decision.escalate or coast):
                 continue
             result.escalations.append(float(t))
             vision.last_verdict = None
@@ -312,5 +374,8 @@ def score(*, live: bool, n: int) -> TrackResult:
             "skipped": 0,
             "notes": "runtime E2E path over sampled PT action rows",
         }],
-        notes=f"manifest={pt.manifest_hash(events)}; fps={FPS}; per_event={per_event}",
+        notes=(
+            f"manifest={pt.manifest_hash(events)}; capture_floor_fps={FPS}; "
+            f"cadence=sensorplan-sensitive(brief_window); per_event={per_event}"
+        ),
     )
