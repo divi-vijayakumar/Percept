@@ -76,11 +76,14 @@ class PVQAVision:
 
     def __init__(self, *, model: str | None = None) -> None:
         from google import genai
+        from google.genai import types
 
         import os
 
         key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or os.environ.get("GOOGLE_AISTUDIO_API_KEY")
-        self.client = genai.Client(api_key=key)
+        # Per-request timeout (ms): a stalled socket aborts instead of hanging the whole track forever
+        # (the N=4 PVQA 64-minute hang). 120s is generous for a thinking model.
+        self.client = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=120_000))
         self.model = model or os.environ.get("PERCEPT_VISION_MODEL") or os.environ.get("PERCEPT_GEMINI_MODEL") or "gemini-3-flash-preview"
         self.calls = 0
         self.last_verdict: dict[str, Any] | None = None
@@ -109,13 +112,21 @@ class PVQAVision:
         prior_line = f"\nYour PRIOR running answer: {prior or '(none yet)'}"
         prompt = (f"{PVQA_SYSTEM}\nStanding question/evidence condition: {condition}{prior_line}\n"
                   f"{len(clip)} frames, JSON only.")
-        resp = await self.client.aio.models.generate_content(
-            model=self.model,
-            contents=[*parts, prompt],
-            # gemini-3-flash is a THINKING model: a low cap is spent on reasoning tokens and the JSON gets
-            # truncated -> parse fails -> "not enough evidence" on every call (the n1-fresh 0-answers bug).
-            config=types.GenerateContentConfig(max_output_tokens=1024),
-        )
+        try:
+            resp = await self.client.aio.models.generate_content(
+                model=self.model,
+                contents=[*parts, prompt],
+                # gemini-3-flash is a THINKING model: a low cap is spent on reasoning tokens and the JSON gets
+                # truncated -> parse fails -> "not enough evidence" on every call (the n1-fresh 0-answers bug).
+                config=types.GenerateContentConfig(max_output_tokens=1024),
+            )
+        except Exception as exc:
+            # a timed-out / aborted call must not hang or fail the whole question: treat THIS escalation as
+            # insufficient and carry the prior running answer forward so accumulation isn't lost.
+            self.last_verdict = {"condition": condition, "satisfied": False, "confidence": 0.0,
+                                 "evidence": f"call_error: {type(exc).__name__}", "running_answer": prior}
+            return Verdict(satisfied=False, confidence=0.0,
+                           evidence="not enough evidence", running_answer=prior)
         data = _json(resp.text or "")
         sufficient = bool(data.get("sufficient"))
         confidence = float(data.get("confidence", 0.5) or 0.5)

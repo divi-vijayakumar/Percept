@@ -137,6 +137,11 @@ def _audio_part(types: Any, clip: Any):
     return types.Part.from_bytes(data=raw, mime_type=media)
 
 
+# Per-request timeout (ms): a stalled socket ABORTS and surfaces to with_retry instead of hanging the whole
+# run forever (the N=4 PVQA 64-minute hang). 120s is generous headroom for a thinking model.
+_REQUEST_TIMEOUT_MS = 120_000
+
+
 class _GeminiBase:
     def __init__(self, settings: Any = None, *, client: Any = None, model_attr: str = "vision_model") -> None:
         self._settings = _settings_of(settings)
@@ -145,8 +150,11 @@ class _GeminiBase:
 
     def _ensure_client(self):
         if self._client is None:
-            genai, _ = _require_genai()
-            self._client = genai.Client(api_key=_gemini_key())
+            genai, types = _require_genai()
+            self._client = genai.Client(
+                api_key=_gemini_key(),
+                http_options=types.HttpOptions(timeout=_REQUEST_TIMEOUT_MS),
+            )
         return self._client
 
 
