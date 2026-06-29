@@ -57,6 +57,7 @@ def _lazy(module: str, attr: str) -> Callable[[Any], Any]:
 register("vision", "fake", lambda s: _fake.FakeVision())
 register("vision", "claude", _lazy("anthropic", "AnthropicVision"))
 register("vision", "gemini", _lazy("gemini", "GeminiVision"))
+register("vision", "openrouter", _lazy("openrouter", "OpenRouterVision"))
 
 register("specialist", "fake", lambda s: _fake.FakeSpecialist())
 register("specialist", "claude", _lazy("anthropic_text", "AnthropicSpecialist"))
