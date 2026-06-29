@@ -89,6 +89,46 @@ async def _call_sink_with_policy(
         raise
 
 
+# Cap so a tiny brief-window prior can't explode the capture rate (mirrors the bench
+# _CAPTURE_HEADROOM_FPS): the fovea coast still drives JUDGING, but DECODE never exceeds this.
+_BRIEF_CAPTURE_CAP_FPS = 8.0
+
+
+def _capture_plan(goals: list, base_fps: float) -> tuple[float, Any]:
+    """Derive ``(capture_fps, coast_controller)`` from active goals' sensor plans (TODO 1 / Build 5).
+
+    A brief-action *judge* goal (one carrying a ``sense.brief_window_s`` prior) compiles a SENSITIVE
+    above-Nyquist cadence via :func:`~percept.sensorplan.sensor_plan_for`; ordinary goals compile no
+    cadence floor. So with no brief goal active this returns ``(base_fps, None)`` and the worker is
+    byte-for-byte the fixed-fps default. When a brief goal IS active we (a) raise the capture rate to
+    cover its cadence (capped) and (b) return a fovea :class:`~percept.sampling.SamplingController` whose
+    coast floor forces a judge on quiet, sub-threshold frames the motion gate would skip — so a
+    sub-second window is still covered. The coast tracks the MOST sensitive active goal."""
+    from percept.sampling import SamplingController, SensePolicy
+    from percept.sensorplan import sensor_plan_for
+
+    capture = float(base_fps)
+    policy: SensePolicy | None = None
+    for g in goals:
+        try:
+            cad = sensor_plan_for(g).cadence
+        except Exception:
+            continue  # a goal whose sense doesn't compile a plan never raises the floor
+        base = cad.get("base_fps")
+        if not base:
+            continue  # ordinary (non-brief) goal: no cadence floor
+        mx = cad.get("max_fps") or base
+        capture = max(capture, min(_BRIEF_CAPTURE_CAP_FPS, float(mx)))
+        et = cad.get("escalate_threshold")
+        pol = SensePolicy(
+            base_fps=float(base), max_fps=float(mx),
+            escalate_threshold=float(et) if et is not None else SensePolicy().escalate_threshold,
+        )
+        if policy is None or pol.base_fps > policy.base_fps:
+            policy = pol
+    return capture, (SamplingController(policy) if policy is not None else None)
+
+
 async def run(
     core: Any,
     *,
@@ -131,6 +171,9 @@ async def run(
     settings = getattr(core, "settings", None) or load_settings()
     spec = compile_watchspec(list(core.goals.active()), threshold=settings.edge.motion_gate)
     gate = MotionGate(spec, settings=settings)
+    # TODO 1 / Build 5: a brief-action goal raises the capture rate + arms a fovea coast so a sub-second
+    # window is covered above its Nyquist; no brief goal -> (fps, None) -> byte-for-byte the fixed-fps path.
+    capture_fps, coast = _capture_plan(list(core.goals.active()), fps)
     clips = FrameWindow(size=snippet_size)  # rolling pre-roll buffer for the incident snippet
 
     if on_health is not None:
@@ -178,7 +221,7 @@ async def run(
                     stats.incidents += 1
                 yield incident
 
-        async for t, gate_frame, judge_frame in _aiter(source, fps, **source_kwargs):
+        async for t, gate_frame, judge_frame in _aiter(source, capture_fps, **source_kwargs):
             if stats is not None:
                 stats.frames += 1
             clips.push(t, judge_frame)
@@ -193,7 +236,11 @@ async def run(
                     yield incident
 
             decision = gate.evaluate(gate_frame, ts=t)
-            if not decision.escalate:
+            # TODO 1: a brief-action goal's fovea coast forces a judge on a quiet, in-window frame the
+            # motion gate would skip (above-Nyquist coverage). No brief goal -> coast is None -> this is
+            # byte-for-byte the gate-only path.
+            coast_admit = bool(coast and coast.should_process("__coast__", t, float(decision.signal.motion)))
+            if not (decision.escalate or coast_admit):
                 continue  # still / sub-cadence -> no cloud call, no incident
             if stats is not None:
                 stats.escalations += 1

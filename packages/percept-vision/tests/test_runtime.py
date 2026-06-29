@@ -16,6 +16,7 @@ from percept.backends.fake import FakeVision
 from percept.incidents import make_incident
 from percept.runtime import RuntimeHealthEvent, RuntimeStats, incident_payload, run
 from percept.runtime.source import _normalize_uri
+from percept.runtime.worker import _capture_plan
 from percept.edge.tier0 import gray_frame
 
 W, H = 8, 8
@@ -203,6 +204,64 @@ class RuntimeWorkerTests(unittest.TestCase):
     def test_still_stream_emits_nothing(self):
         still = [(float(t), STILL, "clear") for t in range(5)]  # no motion -> no escalation -> no cloud call
         self.assertEqual(asyncio.run(_collect(_core(), still)), [])
+
+
+# --- TODO 1 / Build 5: the runtime worker is cadence-aware for brief-action goals ----------------
+def _brief_vision() -> FakeVision:
+    return FakeVision(script={
+        "wave": Verdict(satisfied=True, confidence=0.95, evidence="a hand waves"),
+        "clear": Verdict(satisfied=False, confidence=0.95, evidence="nothing"),
+    })
+
+
+def _brief_core() -> Percept:
+    core = Percept.create(vision=_brief_vision(), discover_plugins=False)
+    core.add_goal(Goal(id="wave", condition="someone briefly waves", say="waved",
+                       state={"sense": {"brief_window_s": 0.5}}))  # the brief-action prior
+    return core
+
+
+def _plain_wave_core() -> Percept:
+    core = Percept.create(vision=_brief_vision(), discover_plugins=False)
+    core.add_goal(Goal(id="wave", condition="someone waves", say="waved"))  # NO brief_window_s
+    return core
+
+
+# all-STILL stream: the motion gate NEVER escalates, so ONLY a brief-action coast can judge the quiet
+# in-window "wave" frame. base_fps = 2/0.5s = 4 fps -> coast judges at t = 0.0, 0.25, 0.5.
+QUIET_SRC = [
+    (0.0, STILL, "clear"),
+    (0.125, STILL, "clear"),
+    (0.25, STILL, "wave"),    # quiet, in-window: gate skips it, coast judges it -> FIRE
+    (0.375, STILL, "clear"),
+    (0.5, STILL, "clear"),
+]
+
+
+class BriefActionCadenceTests(unittest.TestCase):
+    def test_capture_plan_brief_goal_raises_capture_and_arms_coast(self):
+        g = Goal(id="b", condition="someone briefly waves", say="hi",
+                 state={"sense": {"brief_window_s": 0.5}})
+        cap, coast = _capture_plan([g], 4.0)
+        self.assertEqual(cap, 8.0)                                  # raised to min(headroom, max_fps)
+        self.assertIsNotNone(coast)                                 # fovea coast armed
+        self.assertEqual(coast.policy("__coast__").base_fps, 4.0)   # 2 / 0.5s window Nyquist
+
+    def test_capture_plan_ordinary_goal_is_byte_for_byte_default(self):
+        g = Goal(id="n", condition="a person is in the zone", say="alert")
+        cap, coast = _capture_plan([g], 4.0)
+        self.assertEqual(cap, 4.0)                                  # unchanged capture rate
+        self.assertIsNone(coast)                                    # no coast -> gate-only path
+
+    def test_brief_goal_coast_judges_a_quiet_in_window_frame(self):
+        # the win: the coast covers a sub-second window the motion gate would miss entirely.
+        incidents = asyncio.run(_collect(_brief_core(), QUIET_SRC))
+        self.assertEqual(len(incidents), 1)
+
+    def test_ordinary_goal_on_same_quiet_stream_emits_nothing(self):
+        # the A/B control: same quiet stream, a non-brief goal has no coast -> gate never escalates -> silent.
+        incidents = asyncio.run(_collect(_plain_wave_core(), QUIET_SRC))
+        self.assertEqual(len(incidents), 0)
 
 
 if __name__ == "__main__":
