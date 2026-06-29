@@ -55,6 +55,17 @@ def _escalated_perception(base, level: int):
     return spec
 
 
+def _try_make_sprite(frames):
+    """Montage the context frames into ONE image (Build 6), or ``None`` if they aren't images (so the
+    caller degrades to a plain strip — e.g. L1 mock frames)."""
+    try:
+        from .sprite import make_sprite
+
+        return make_sprite(frames)
+    except Exception:
+        return None
+
+
 def _concat_audio(chunks: list) -> Any:
     """Concatenate audio chunks into one clip: ``(mime, bytes)`` pairs or raw bytes; else pass through."""
     if not chunks:
@@ -727,7 +738,7 @@ class Percept:
             earlier = [(t, f) for t, f in earlier if t >= cutoff]
             if not earlier:
                 return None
-        want = (spec.n_frames - 1) if spec.temporal == "strip" else len(earlier)
+        want = (spec.n_frames - 1) if spec.temporal in ("strip", "sprite") else len(earlier)
         if want <= 0:
             return None
         if spec.sampling == "uniform" and len(earlier) > want:
@@ -738,7 +749,11 @@ class Percept:
                 picked = [earlier[round(i * step)] for i in range(want)]
         else:  # "recent": the last `want` earlier frames
             picked = earlier[-want:]
-        return [f for _, f in picked]
+        frames = [f for _, f in picked]
+        if spec.temporal == "sprite":  # fold the temporal CONTEXT into ONE montage image (VLM token budget);
+            sprite = _try_make_sprite(frames)  # the current frame is still sent separately for fidelity.
+            return [sprite] if sprite is not None else frames  # non-image frames degrade to a plain strip
+        return frames
 
     async def _timed_judge(self, *args: Any, **kwargs: Any) -> Verdict:
         """Call the vision judge, timing wall-clock latency and capturing token/cost off the verdict.

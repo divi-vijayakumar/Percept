@@ -40,7 +40,7 @@ KeyBy = Literal["entity", "episode", "time_bucket", "const"]
 # The perception axis — HOW the eye looks (the VLM-side half of the concern program). Every default
 # reproduces today's behavior byte-for-byte: one vision-only, focus-cropped frame.
 Modality = Literal["vision", "audio", "fused"]
-Temporal = Literal["single", "strip", "window"]
+Temporal = Literal["single", "strip", "window", "sprite"]
 RoiMode = Literal["focus", "hint", "full"]
 Sampling = Literal["recent", "uniform"]
 
@@ -448,7 +448,7 @@ _VALID_MISS = {"trivial", "mild", "severe"}
 _VALID_FF = {"trivial", "mild", "severe", "irreversible"}
 _MIN_CADENCE_S = 1.0  # floor so an authored cadence_s can't busy-loop the scheduler
 _VALID_MODALITY = {"vision", "audio", "fused"}
-_VALID_TEMPORAL = {"single", "strip", "window"}
+_VALID_TEMPORAL = {"single", "strip", "window", "sprite"}  # sprite = N frames -> 1 montage image (VLM-only)
 _VALID_ROI = {"focus", "hint", "full"}
 _VALID_SAMPLING = {"recent", "uniform"}
 _MAX_STRIP = 6  # ceiling on authored n_frames so an LLM can't author a token-bomb strip

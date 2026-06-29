@@ -90,6 +90,11 @@ PRIMITIVES: dict[str, SensorPrimitive] = {
     "single": SensorPrimitive("single", "perception", "one frame — cheapest; best for boundary timing"),
     "strip": SensorPrimitive("strip", "perception", "N ordered frames — when ordering/detail/small motion matters"),
     "window": SensorPrimitive("window", "perception", "N frames over a time window — temporal context"),
+    "sprite": SensorPrimitive(
+        "sprite", "perception",
+        "N frames as ONE montage image — 'what/steps' synthesis at ~single-frame token cost (VLM-only; "
+        "NOT for exact boundary timing — a grid trades temporal resolution for context)",
+    ),
 }
 
 _VLM_CONFIRM = {"none", "sparse", "each_escalation", "on_deadline"}
