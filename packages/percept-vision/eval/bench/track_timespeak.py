@@ -33,6 +33,24 @@ _FMTS = {
 _MEASURED = ["latency", "p-pauc", "guess%"]
 
 
+def _timing_cues(cues):
+    """Keep only cues that carry a real timing window for the lateness/latency derivation.
+
+    Some upstream artifacts (notably proactiveqa-e2e) do not record a per-turn ground-truth
+    window, so ``cues_from_latest_e2e`` emits them with a degenerate placeholder window of
+    ``(0.0, 0.0)`` (see ``derived_interaction.cues_from_latest_e2e``). Such a window opens and
+    closes at t=0, so EVERY emitted answer (e.g. an answer at t=60s) is mechanically scored as
+    "late by 60s" even though there is no ground truth onset to be late against. That floods
+    ``late_fire_rate`` with a meaningless signal (N=1 PVQA turn -> 11 identical placeholder cues
+    -> 0.58 late-fire on its own) and is not a real timeliness measurement.
+
+    We drop only TRULY degenerate windows (``lo == hi``). Cues that have a genuine window keep
+    their lateness/latency contribution unchanged, so this never trades precision for latency:
+    it removes rows that have no timing ground truth at all.
+    """
+    return [c for c in cues if c.window[1] > c.window[0]]
+
+
 def _first_latencies(fires, episodes):
     fire_ts = sorted(t for (a, t) in fires if a == "fire")
     out = []
@@ -61,7 +79,9 @@ def score(*, live: bool = False, n: int = 8) -> TrackResult:
     omega_s = 2.0
     cues, refs, calls = cues_from_latest_e2e()
     if cues:
-        m = time_metrics(cues, omega_s=omega_s)
+        timing_cues = _timing_cues(cues)
+        dropped = len(cues) - len(timing_cues)
+        m = time_metrics(timing_cues, omega_s=omega_s)
         cells = {
             ("e2e", "timing_accuracy"): m["timing_accuracy"],
             ("e2e", "p-pauc"): m["p_pauc"],
@@ -93,16 +113,21 @@ def score(*, live: bool = False, n: int = 8) -> TrackResult:
             coverage=[{
                 "dataset": "local-e2e-artifacts",
                 "expected": len(cues),
-                "observed": len(cues),
+                "observed": len(timing_cues),
                 "failed": 0,
-                "skipped": 0,
-                "notes": f"sources={summarize_sources(cues)}; artifacts={refs}",
+                "skipped": dropped,
+                "notes": (
+                    f"sources={summarize_sources(cues)}; artifacts={refs}; "
+                    f"timing_skipped={dropped} (placeholder/zero-width windows w/o timing ground truth)"
+                ),
             }],
             diagnostic=True,
             excluded=["timespeak: derived from local sampled E2E artifacts, not a full release split"],
             notes=(
                 f"derived from latest E2E result artifacts; omega_s={omega_s}; "
-                f"source_counts={summarize_sources(cues)}; source_calls={calls}; artifacts={refs}"
+                f"source_counts={summarize_sources(cues)}; source_calls={calls}; artifacts={refs}; "
+                f"timing_cues={len(timing_cues)}/{len(cues)} "
+                f"(dropped {dropped} placeholder/zero-width windows w/o timing ground truth)"
             ),
         )
 
