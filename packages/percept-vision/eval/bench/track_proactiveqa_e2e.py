@@ -42,9 +42,12 @@ PVQA_SYSTEM = (
     "You are the perception backend for a proactive video assistant. A user asked a standing "
     "question at the start of the video. Looking at this short clip (a few frames in TIME ORDER, oldest "
     "first) and how the scene changes across them, decide whether there is now enough visual evidence to "
-    "answer. Reply STRICT JSON "
-    '{"sufficient": true|false, "answer": "<short answer or empty>", "confidence": 0..1}. '
-    "If the clip does not contain enough evidence, set sufficient=false."
+    "answer. You are also given your PRIOR running answer (your best answer so far across earlier clips); "
+    "REVISE it with what this clip adds — keep what still holds, correct what changed, add new evidence. "
+    "Reply STRICT JSON "
+    '{"sufficient": true|false, "answer": "<short answer or empty>", '
+    '"running_answer": "<your best answer so far, revised>", "confidence": 0..1}. '
+    "Set sufficient=true ONLY when the clip alone is decisive; otherwise keep accumulating in running_answer."
 )
 
 
@@ -98,7 +101,14 @@ class PVQAVision:
         clip = [*strip, frame]
         parts = [types.Part.from_bytes(data=raw, mime_type=media)
                  for media, raw in (_frame_bytes(f) for f in clip)]
-        prompt = f"{PVQA_SYSTEM}\nStanding question/evidence condition: {condition}\n{len(clip)} frames, JSON only."
+        # process_qa: thread the per-concern PRIOR running answer in so the model REVISES rather than
+        # restarts (the core hands it via context["running_answer"]); its revised best-answer-so-far comes
+        # back out as Verdict.running_answer and the core accumulates + resolves it on the answer path.
+        ctx = kwargs.get("context") or {}
+        prior = str(ctx.get("running_answer") or "").strip()
+        prior_line = f"\nYour PRIOR running answer: {prior or '(none yet)'}"
+        prompt = (f"{PVQA_SYSTEM}\nStanding question/evidence condition: {condition}{prior_line}\n"
+                  f"{len(clip)} frames, JSON only.")
         resp = await self.client.aio.models.generate_content(
             model=self.model,
             contents=[*parts, prompt],
@@ -110,6 +120,9 @@ class PVQAVision:
         sufficient = bool(data.get("sufficient"))
         confidence = float(data.get("confidence", 0.5) or 0.5)
         answer = str(data.get("answer", "") or "").strip()
+        # The model's revised best-answer-so-far; fall back to a decisive answer or the threaded prior so
+        # the running answer only ever GROWS, never silently empties between escalations.
+        running = str(data.get("running_answer", "") or "").strip() or answer or prior
         if sufficient and not answer:
             sufficient = False
         self.last_verdict = {
@@ -117,8 +130,10 @@ class PVQAVision:
             "satisfied": sufficient,
             "confidence": confidence,
             "evidence": answer or "not enough evidence",
+            "running_answer": running,
         }
-        return Verdict(satisfied=sufficient, confidence=confidence, evidence=answer or "not enough evidence")
+        return Verdict(satisfied=sufficient, confidence=confidence,
+                       evidence=answer or "not enough evidence", running_answer=running)
 
 
 def _frame_bytes(frame: Any) -> tuple[str, bytes]:
@@ -281,7 +296,14 @@ async def _score_one(row: dict[str, Any]) -> QuestionRun:
             say="answer ready",
             # author a temporal clip so perceive_judged hands the judge a few frames of context (not one
             # frame at 0.2fps) — the single-frame starvation behind 0 answers in n1-fresh.
-            state={"perception": {"temporal": "window", "window_s": PVQA_WINDOW_S}},
+            # process_qa: thread a per-concern running answer across escalations and RESOLVE it once the
+            # accumulated evidence is complete/confident enough (the core's answer-path resolution). The
+            # gate still only fires on a confident-YES verdict; resolution is what lands an answer the
+            # metric can score, so unresolved_rate drops without trusting a single thin read.
+            state={
+                "process_qa": True,
+                "perception": {"temporal": "window", "window_s": PVQA_WINDOW_S},
+            },
         )
     )
     spec = compile_watchspec(list(core.goals.active()), threshold=settings.edge.motion_gate)
@@ -300,7 +322,10 @@ async def _score_one(row: dict[str, Any]) -> QuestionRun:
             for event in events:
                 if event.action == FIRE and event.verdict is not None:
                     action = FIRE
-                    run.answers.append((float(t), str(event.verdict.evidence or ""), float(event.verdict.confidence)))
+                    # the RESOLVED answer (running_answer) is the scorable text; fall back to per-clip
+                    # evidence for a plain satisfied-YES fire. Resolution is what drops unresolved_rate.
+                    text = str(getattr(event.verdict, "running_answer", "") or event.verdict.evidence or "")
+                    run.answers.append((float(t), text, float(event.verdict.confidence)))
                 else:
                     action = getattr(event, "action", "ask")
             verdict = vision.last_verdict

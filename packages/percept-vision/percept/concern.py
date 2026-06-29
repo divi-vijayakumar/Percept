@@ -109,9 +109,59 @@ def requires_verification(c: Consequence) -> bool:
     return _FF_RANK[c.false_fire_cost] >= 2
 
 
+# --- process-QA resolution: when a running answer is COMPLETE enough to resolve (Item 2 mvp2) ----
+# A process-QA concern accumulates a per-concern ``running_answer`` over many escalations (the model
+# rewrites its summary each time it sees more evidence). The shipped path NEVER resolves it: the gate
+# only fires on a confident-YES ``satisfied`` verdict, which an evidence-gathering judge returns rarely.
+# So the running answer grows but is never EMITTED as a recognized final answer — every turn reads as
+# unresolved. These pure adapters expose the missing "is this answer ready?" decision WITHOUT touching
+# the gate: resolution is an ANSWER-PATH concern (accumulated coverage + confidence), de-duped by the
+# agent through the same synthetic-verdict-on-a-dedicated-key mechanism as coverage/episode/overdue.
+
+# Resolution bar — accumulated COVERAGE (how many evidence-bearing observations folded into the answer)
+# and SUBSTANCE (the answer is non-trivial). Tuned to protect precision: a single thin fragment must
+# NOT resolve. All general — driven by accumulation, never by the question text.
+RESOLVE_MIN_EVIDENCE = 2  # at least two evidence-bearing observations must agree into the answer
+RESOLVE_MIN_CHARS = 12  # the running answer must carry real substance (not an empty/stub fragment)
+RESOLVE_MIN_CONFIDENCE = 0.6  # the latest read must not be a coin-flip guess
+
+
+def resolution_ready(
+    running_answer: str,
+    evidence_count: int,
+    confidence: float,
+    *,
+    min_evidence: int = RESOLVE_MIN_EVIDENCE,
+    min_chars: int = RESOLVE_MIN_CHARS,
+    min_confidence: float = RESOLVE_MIN_CONFIDENCE,
+    at_boundary: bool = False,
+) -> bool:
+    """Has an accumulated process-QA ``running_answer`` crossed the bar to RESOLVE into a final answer?
+
+    GENERAL (no per-question logic): resolution is driven by accumulated COVERAGE (``evidence_count`` —
+    how many evidence-bearing observations the running answer folds in), SUBSTANCE (the answer is long
+    enough to be real), and CONFIDENCE (the latest read isn't a coin-flip). An unseen process question
+    resolves with zero new branches — the predicate only reads accumulation.
+
+    Precision guard: a thin running answer (one fragment, or empty/stub) never resolves — a real partial
+    with numbers beats a hallucinated fix. ``at_boundary`` relaxes the coverage floor by ONE (an episode
+    that ended with a single substantive observation is allowed to resolve what little it confidently saw,
+    but still never resolves on empty/no-confidence)."""
+    answer = (running_answer or "").strip()
+    if not answer or len(answer) < min_chars:
+        return False  # nothing substantive accumulated — never hallucinate an answer
+    if confidence < min_confidence:
+        return False  # the latest read is too uncertain to commit to
+    floor = max(1, min_evidence - 1) if at_boundary else min_evidence
+    return evidence_count >= floor
+
+
 __all__ = [
     "DEFAULT_THRESHOLD",
     "OBS_CAP",
+    "RESOLVE_MIN_EVIDENCE",
+    "RESOLVE_MIN_CHARS",
+    "RESOLVE_MIN_CONFIDENCE",
     "threshold_for",
     "observe",
     "derive_belief",
@@ -119,4 +169,5 @@ __all__ = [
     "attention_weight",
     "is_hard_quadrant",
     "requires_verification",
+    "resolution_ready",
 ]

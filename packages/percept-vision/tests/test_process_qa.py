@@ -77,9 +77,12 @@ class TestProcessQARunningAnswer(unittest.TestCase):
         # ... and never grows a running answer
         self.assertEqual(a.executor.ctx("plain").running_answer, "")
 
-    def test_running_answer_is_gate_irrelevant(self):
-        # satisfied=False -> the gate must NOT fire, yet the running answer still threads/accumulates:
-        # the summary rides alongside the verdict, it does not drive the gate.
+    def test_running_answer_does_not_drive_the_satisfied_gate(self):
+        # satisfied=False -> the SATISFIED-keyed gate must NOT fire (the summary never sets the gate bit),
+        # yet the running answer still threads/accumulates. With mvp2 resolution, the accumulated answer
+        # CAN later resolve via the answer path (a separate __resolved__-keyed de-dup) — but that is NOT a
+        # satisfied-driven gate fire: every fire here is a resolution carrying the running answer, and the
+        # judge's satisfied bit stayed False throughout.
         vision = _ProcessFake(satisfied=False)
         a = Percept.create(vision=vision, discover_plugins=False)
         a.add_goal(Goal(id="proc", condition="enough evidence to answer: steps?",
@@ -87,7 +90,10 @@ class TestProcessQARunningAnswer(unittest.TestCase):
 
         events = _drive(a, "frame", 3)
 
-        self.assertEqual([e for e in events if e.action == "fire"], [])  # gate keyed on satisfied only
+        fires = [e for e in events if e.action == "fire"]
+        # the gate's satisfied/confidence rule never fired on its own: any fire is an answer-path
+        # resolution (it carries the running answer as the resolved text), never a bare satisfied gate fire.
+        self.assertTrue(all(e.verdict.running_answer for e in fires))
         self.assertEqual(a.executor.ctx("proc").running_answer, "step1 step2 step3")  # still accumulated
 
 

@@ -16,7 +16,7 @@ from . import registry
 from .adapters import Box, Decision, Goal, TurnResult, Verdict
 from .behavior import BehaviorExecutor, program_of
 from .cache import CacheCascade, CacheKey, FrameHashLayer
-from .concern import attention_weight, consequence_of, requires_verification
+from .concern import attention_weight, consequence_of, requires_verification, resolution_ready
 from .config import Settings, load_settings
 from .escalation import MAX_PERCEPTION_LEVEL, escalate_perception, should_escalate
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
@@ -549,21 +549,30 @@ class Percept:
         bound = inactivity_s if inactivity_s is not None else self.settings.gate.validity_window_s
         out: list[FireEvent] = []
         for goal in self.goals.active():
-            if goal.state.get("type") != "process":
-                continue
+            gtype = goal.state.get("type")
             ctx = self.executor.ctx(goal.id)
             ended = (
                 bool(ctx.process_log)
                 and ctx.last_step_at != float("-inf")
                 and (now - ctx.last_step_at) > bound
             )
-            verdict = Verdict(satisfied=ended, confidence=1.0, evidence="episode")
-            action = self.gate.evaluate((goal.id, "__episode__"), verdict)
-            self.metrics.incr(f"episode.gate.{action}")
-            if action == FIRE:
-                answer = await self.summarize_process(goal.id, wipe=True)  # consolidate + reset
-                v = Verdict(satisfied=True, confidence=1.0, evidence=answer, running_answer=answer)
-                out.append(FireEvent(goal.id, FIRE, answer or self._episode_text(goal), None, v))
+            if gtype == "process":
+                verdict = Verdict(satisfied=ended, confidence=1.0, evidence="episode")
+                action = self.gate.evaluate((goal.id, "__episode__"), verdict)
+                self.metrics.incr(f"episode.gate.{action}")
+                if action == FIRE:
+                    answer = await self.summarize_process(goal.id, wipe=True)  # consolidate + reset
+                    v = Verdict(satisfied=True, confidence=1.0, evidence=answer, running_answer=answer)
+                    out.append(FireEvent(goal.id, FIRE, answer or self._episode_text(goal), None, v))
+                continue
+            # process-QA (mvp2) watch goal: a quiet episode end RESOLVES whatever was confidently
+            # accumulated, with the coverage floor relaxed by one (``at_boundary``) — but still never
+            # resolving an empty/uncertain answer. Same answer-path resolver as the in-tick path.
+            if goal.state.get("process_qa") and ended:
+                resolved = self._resolve_process_qa(goal, ctx, 1.0, at_boundary=True)
+                if resolved is not None:
+                    ctx.process_log = []  # end the episode → wipe accumulated coverage, re-arm
+                    out.append(resolved)
         self._log_fires(out, now)
         return out
 
@@ -622,8 +631,22 @@ class Percept:
                 goal, frame, roi, corrections, entity_id=focus.id if focus else None,
                 frames=strip, audio=audio, context=process_ctx,
             )
+            resolved: FireEvent | None = None
             if process_ctx is not None and getattr(verdict, "running_answer", ""):
                 ctx.running_answer = verdict.running_answer  # accumulate the model's rewritten summary
+                # Accumulated-coverage stamp (answer-path only): each evidence-bearing observation that
+                # folded into the running answer is a unit of coverage. Reuse the per-concern process_log
+                # the boundary already owns, so len(process_log) IS the evidence count — no gate state.
+                # Bounded so a 24/7 process_qa concern that never hits a boundary can't leak memory (plan
+                # R14); the resolver only reads it as a >= floor count, so a cap never weakens resolution.
+                ctx.process_log.append(verdict.running_answer)
+                if len(ctx.process_log) > 256:
+                    del ctx.process_log[: len(ctx.process_log) - 256]
+                ctx.last_step_at = now
+                # RESOLVE the running answer once it's complete/confident enough (general — coverage +
+                # confidence, never the question text). De-duped through the UNCHANGED gate on a
+                # dedicated __resolved__ key, exactly like the coverage/episode/overdue absence fires.
+                resolved = self._resolve_process_qa(goal, ctx, verdict.confidence)
             freshness = self._freshness(focus, now)
             truth = classify(verdict, freshness, self.gate.threshold, self.gate.fresh_min)
             if truth == "unknown":
@@ -639,6 +662,9 @@ class Percept:
                 if ev_fire.action == FIRE:
                     self.funnel.fired(concern=goal.id, camera=source)  # a rising-edge fire emitted
                 events.append(ev_fire)
+            if resolved is not None:  # the process-QA running answer crossed the bar this tick
+                self.funnel.fired(concern=goal.id, camera=source)
+                events.append(resolved)
         self._log_fires(events, now)
         await self._deliberate_confused(now)  # Posture B: auto-refine recurrently-ambiguous concerns
         return events
@@ -706,6 +732,33 @@ class Percept:
         if wipe:
             ctx.process_log = []
         return ctx.running_answer
+
+    def _resolve_process_qa(self, goal: Goal, ctx, confidence: float, *, at_boundary: bool = False
+                            ) -> FireEvent | None:
+        """Emit a RESOLVED process-QA answer once the accumulated running answer is complete/confident
+        enough (Item 2 mvp2). This closes the gap behind ``unresolved_rate == 1.0``: the running answer
+        accumulates per escalation but the gate only fires on a confident-YES verdict, so an
+        evidence-gathering judge never RESOLVES — the answer the metric can score is never produced.
+
+        GENERAL, not per-question: :func:`~percept.concern.resolution_ready` reads only accumulated
+        COVERAGE (``len(ctx.process_log)`` — the evidence-bearing observations folded in), SUBSTANCE, and
+        CONFIDENCE. An unseen process question resolves with zero new branches. The gate stays UNCHANGED:
+        de-dup rides a synthetic verdict on a dedicated ``(goal, __resolved__)`` key — the same mechanism
+        :meth:`check_observability` / :meth:`check_episode_boundary` / :meth:`check_deadlines` already
+        use — so it resolves ONCE per accumulation and re-arms only when fresh evidence pushes a new,
+        different answer. Precision-guarded: a thin/empty/uncertain running answer never resolves."""
+        answer = (ctx.running_answer or "").strip()
+        ready = resolution_ready(
+            answer, len(ctx.process_log), confidence, at_boundary=at_boundary
+        )
+        # The de-dup key folds in the answer text so a *changed* answer (more evidence rewrote it) is a
+        # fresh edge that can resolve again, while a repeated identical answer fires only once.
+        verdict = Verdict(satisfied=ready, confidence=confidence, evidence=answer, running_answer=answer)
+        action = self.gate.evaluate((goal.id, "__resolved__", answer), verdict)
+        self.metrics.incr(f"process_qa.resolve.{action}")
+        if action != FIRE:
+            return None
+        return FireEvent(goal.id, FIRE, goal.say or answer, None, verdict)
 
     def _resolve_roi(self, goal: Goal, focus, spec) -> Box | None:
         """ROI per the ``PerceptionSpec``: ``focus`` = the in-focus entity box (today); ``hint`` = the
