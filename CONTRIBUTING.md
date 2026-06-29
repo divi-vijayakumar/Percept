@@ -32,4 +32,4 @@ runtime only when you need it: `percept-vision[gemini]`, `[claude]`, `[openroute
 ## Architecture
 
 Start with [`docs/quickstart.md`](docs/quickstart.md), [`docs/concepts.md`](docs/concepts.md), and
-[`docs/architecture.md`](docs/architecture.md). `llms.txt` is the agent-readable API surface.
+[`docs/architecture.md`](docs/architecture.md). `llms.txt` is the agent-readable SDK reference.

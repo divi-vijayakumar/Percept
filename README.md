@@ -147,6 +147,10 @@ The tier-0 edge harness and the frozen wire-contract are bundled inside `percept
 `percept.harness` and `percept.contracts` subpackages — so OSS users install **one** Python package
 (heavy deps are opt-in extras) plus the optional npm edge package.
 
+> **Versioning.** The package version is `percept-vision 0.6.0` (research preview). The **wire-contract**
+> version is separate — `CONTRACT_VERSION = "1.2.0"` (additive-only). Seeing a `0.6.0` install export
+> contract `1.2.0` is expected, not a bug.
+
 Release evidence:
 
 - Edge parity: [`docs/edge-parity.md`](docs/edge-parity.md)
