@@ -11,7 +11,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from percept.runtime.sinks import FileDeadLetterQueue, WebhookSink, incident_payload
-from percept_contracts import Incident, IncidentSnippet, Verdict
+from percept.contracts import Incident, IncidentSnippet, Verdict
 
 
 def _incident():

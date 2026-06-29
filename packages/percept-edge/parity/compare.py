@@ -19,8 +19,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from percept_harness.detectors import AcousticOnset, MotionPeriodicity
-from percept_harness.tier0 import motion_score
+from percept.harness.detectors import AcousticOnset, MotionPeriodicity
+from percept.harness.tier0 import motion_score
 
 HERE = Path(__file__).resolve().parent
 

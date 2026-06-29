@@ -15,7 +15,7 @@ registry draws: adding a specialist is a deliberate ``register_enricher(...)`` e
 NEVER edited to add an LPR/fire/face model. Register an :class:`~percept.adapters.Enricher`, and any goal
 whose cue carries that signal name gets the specialist's facts in its judge context, with zero core changes.
 
-The :class:`~percept.adapters.Enricher` protocol (in ``percept_contracts``, beside ``Specialist``):
+The :class:`~percept.adapters.Enricher` protocol (in ``percept.contracts``, beside ``Specialist``):
 ``enrich(signal, frame) -> dict``. The returned dict is injected as ``Vision.judge(context=...)``; a
 ``{"verdict": Verdict}`` key SHORT-CIRCUITS the judge (the brain uses that verdict and skips the VLM call).
 This module ships only fakes (``NullEnricher`` / ``FakeEnricher``) — no real model; F1 is the SEAM, not the
@@ -125,7 +125,7 @@ def register_enricher(signal: str, enricher: Enricher) -> Enricher:
     """Register a specialist :class:`~percept.adapters.Enricher` under a ``signal``/detector name.
 
     The deliberate-registration lifecycle for specialists (mirrors
-    :func:`~percept_harness.detectors.register`): after this, a cue carrying ``signal`` resolves to
+    :func:`~percept.harness.detectors.register`): after this, a cue carrying ``signal`` resolves to
     ``enricher`` via :func:`enricher_for`, and :func:`enrich_signal` runs it to produce judge context.
     Re-registering the same ``signal`` replaces the prior specialist (last-writer-wins — how a product
     swaps a stub for a calibrated model). Returns the enricher for convenient chaining.

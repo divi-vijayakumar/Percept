@@ -598,7 +598,7 @@ def coerce_authored_sense(raw) -> dict:
 
 
 def perception_for_concern(concern) -> dict:
-    """Map a :class:`~percept_contracts.Concern`'s B1 clip declaration to a ``goal.state['perception']``
+    """Map a :class:`~percept.contracts.Concern`'s B1 clip declaration to a ``goal.state['perception']``
     sub-dict (the same shape :func:`coerce_authored_perception` emits). A concern declaring a positive
     ``window_s`` asks for a time-bounded temporal clip; a bare ``clip=True`` (no window) asks for a
     strip. A concern that declared neither yields ``{}`` -> the single-frame default is untouched. This

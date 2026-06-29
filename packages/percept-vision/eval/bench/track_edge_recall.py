@@ -22,7 +22,7 @@ POLICY_CHANGE_WEIGHT = 2.0
 def _frame_series(path, fps: float = 4.0):
     import cv2
 
-    from percept_harness.tier0 import Frame
+    from percept.harness.tier0 import Frame
 
     cap = cv2.VideoCapture(str(path))
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -43,7 +43,7 @@ def _frame_series(path, fps: float = 4.0):
 
 
 def _motion_series(path, fps: float = 4.0):
-    from percept_harness.tier0 import motion_score
+    from percept.harness.tier0 import motion_score
 
     out, prev = [], None
     for t, f in _frame_series(path, fps=fps):
@@ -74,8 +74,8 @@ def _score_policy_events(
     events: list[dict], *, thr: float, change_weight: float = POLICY_CHANGE_WEIGHT
 ) -> tuple[float | None, float | None, int, int]:
     from percept.adapters import WatchCondition, WatchSpec
-    from percept_harness.detectors import WakePolicy
-    from percept_harness.tier0 import MotionGate
+    from percept.harness.detectors import WakePolicy
+    from percept.harness.tier0 import MotionGate
 
     hit_events = 0
     tp_frames = 0

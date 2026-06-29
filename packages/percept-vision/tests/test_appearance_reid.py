@@ -17,7 +17,7 @@ from percept.identity import AppearanceIdentity, ContinuityIdentity
 
 try:
     import numpy as np
-    from percept_harness.appearance import appearance_signature
+    from percept.harness.appearance import appearance_signature
     _HAVE = True
 except Exception:  # pragma: no cover - opencv/numpy not installed
     _HAVE = False

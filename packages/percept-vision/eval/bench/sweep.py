@@ -23,7 +23,7 @@ def arm_a_count(cache_frames, prior, erom, frac) -> int:
     ``prior is None`` reproduces the prior-less (unsupervised) scorecard regime. ``frac == 0`` turns the
     absolute amplitude gate OFF (min_amp = 0). Mirrors :func:`eval.bench.hero_ab._arm_a`."""
     from percept import Goal, Percept
-    from percept_harness.pose import hip_centre, pose_channels, select_nearest_hip
+    from percept.harness.pose import hip_centre, pose_channels, select_nearest_hip
 
     state: dict = {"type": "rhythm", "count": 0}
     if prior is not None:

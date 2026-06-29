@@ -32,7 +32,7 @@ def count_edges(seq) -> int:
 
 def count_motion_periodicity(seq) -> int:
     """The NEW edge detector on the same signal (bool→{0,1}); counts confirmed oscillation peaks."""
-    from percept_harness.detectors import MotionPeriodicity
+    from percept.harness.detectors import MotionPeriodicity
 
     det = MotionPeriodicity(min_height=0.5, rel_drop=0.5)
     n = 0

@@ -92,11 +92,11 @@ def clear_concerns() -> None:
 def detectors_for_concern(concern: Concern) -> list[str]:
     """The edge skills a concern selects — its ``detectors`` override (validated), else empty.
 
-    Mirrors :func:`~percept_harness.detectors.detectors_for` for the goal path. A concern carries no
+    Mirrors :func:`~percept.harness.detectors.detectors_for` for the goal path. A concern carries no
     ``state`` dict (it is a frozen DTO), so the selection reads an OPTIONAL ``detectors`` attribute a
     caller may attach to the concern before registering; absent -> ``[]`` (byte-for-byte: an
     un-annotated concern selects no detectors). Names are run through the registry firewall
-    (:func:`~percept_harness.detectors.coerce_authored_detectors`), so an unknown skill is dropped.
+    (:func:`~percept.harness.detectors.coerce_authored_detectors`), so an unknown skill is dropped.
     """
     return coerce_authored_detectors(getattr(concern, "detectors", None))
 
@@ -109,7 +109,7 @@ def concern_to_condition(
 ) -> WatchCondition:
     """Compile one :class:`~percept.adapters.Concern` to a :class:`~percept.adapters.WatchCondition`.
 
-    The concern analog of a watch goal's row in :func:`~percept_harness.tier0.compile_watchspec`:
+    The concern analog of a watch goal's row in :func:`~percept.harness.tier0.compile_watchspec`:
 
     - ``goal_id`` <- ``concern.id``
     - ``anchor_text`` <- ``concern.condition`` (the plain-language anchor the edge salience-matches)
@@ -140,7 +140,7 @@ def compile_registered_watchspec(
 ) -> WatchSpec:
     """Compile the REGISTERED concerns DOWN to a :class:`~percept.adapters.WatchSpec`.
 
-    The concern-registry counterpart of :func:`~percept_harness.tier0.compile_watchspec` (which compiles
+    The concern-registry counterpart of :func:`~percept.harness.tier0.compile_watchspec` (which compiles
     a per-call list of goals). One :class:`~percept.adapters.WatchCondition` per concern, in id order.
     ``concerns`` defaults to :func:`registered_concerns` — pass an explicit iterable to compile a subset
     without registering. ``edge_capabilities`` applies the same capability handshake as the goal path.

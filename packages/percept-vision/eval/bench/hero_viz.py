@@ -72,8 +72,8 @@ def _hero_pass(vid, action):
     from percept import Goal, Percept
     from percept.identity import AppearanceIdentity
     from percept.rhythm_hero import RhythmHero
-    from percept_harness.appearance import appearance_signature
-    from percept_harness.detectors import person_measures
+    from percept.harness.appearance import appearance_signature
+    from percept.harness.detectors import person_measures
 
     cache = load_detections(vid, FPS, "rtmo")
     _small, full = decode(str(_STAGING / f"{vid}.mp4"), FPS)

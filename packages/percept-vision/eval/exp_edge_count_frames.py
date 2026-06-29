@@ -27,7 +27,7 @@ GW, GH = 48, 36  # downscaled luma grid for the motion signal (tier-0 diffs a sm
 def _to_frame(jpeg):
     from PIL import Image
 
-    from percept_harness.tier0 import Frame
+    from percept.harness.tier0 import Frame
 
     _, raw = jpeg
     img = Image.open(io.BytesIO(raw)).convert("L").resize((GW, GH))
@@ -36,7 +36,7 @@ def _to_frame(jpeg):
 
 def _motion_series(frames):
     """frames: [(t, (media,bytes))] -> [(t, motion 0..1)] (frame-diff vs the previous frame)."""
-    from percept_harness.tier0 import motion_score
+    from percept.harness.tier0 import motion_score
 
     out, prev = [], None
     for t, jpeg in frames:
@@ -47,7 +47,7 @@ def _motion_series(frames):
 
 
 def _count_peaks(series) -> int:
-    from percept_harness.detectors import MotionPeriodicity
+    from percept.harness.detectors import MotionPeriodicity
 
     det = MotionPeriodicity(min_height=0.01, rel_drop=0.5)
     return sum(len(det.push(t, v)) for t, v in series)

@@ -18,8 +18,8 @@ from dataclasses import dataclass
 from statistics import median
 
 from percept.adapters import WatchCondition, WatchSpec
-from percept_harness.detectors import WakePolicy
-from percept_harness.tier0 import MotionGate
+from percept.harness.detectors import WakePolicy
+from percept.harness.tier0 import MotionGate
 
 from . import perception_test as pt
 from .track_edge_recall import _event_window, _frame_series

@@ -3,7 +3,7 @@
 This is the missing producer for the entity-scoped :meth:`Percept.perceive_rhythm`. Commit ``1d020f8``
 shipped the brain half — a tracker per ``entity_id`` and performer selection — but nothing ever fed it an
 ``entity_id``, so it ran dead. Here the eye's per-person measurements
-(:class:`percept_harness.detectors.PersonMeasure`) are associated by the committed ``EntityGraph`` /
+(:class:`percept.harness.detectors.PersonMeasure`) are associated by the committed ``EntityGraph`` /
 ``AppearanceIdentity`` seam into stable ids, each id's channels are folded into its own tracker, and the
 brain SELECTS the performer (the entity with the most reps on the prior channel — a still bystander reps
 ~0). The goal's reported count becomes the performer's, not whoever the geometry happened to lock.

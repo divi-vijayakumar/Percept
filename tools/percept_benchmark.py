@@ -66,7 +66,7 @@ SAMPLE_SEED = os.environ.get("PERCEPT_BENCH_SAMPLE_SEED", "percept-golden-v1")
 # Front-load the pose checkpoint download (RTMO via MMPose) in a child that has the
 # benchmark PYTHONPATH + certifi TLS bundle, so the counting track never blocks on it.
 POSE_WARM_SNIPPET = (
-    "from percept_harness.pose import ensure_pose_ready; "
+    "from percept.harness.pose import ensure_pose_ready; "
     "print('pose provider ready:', ensure_pose_ready())"
 )
 

@@ -14,7 +14,7 @@ import unittest
 
 from percept.adapters import Goal
 
-from percept_harness.detectors import (
+from percept.harness.detectors import (
     CATEGORY_AUDIO,
     CATEGORY_AUDIO_EVENT,
     CATEGORY_CHANGE,
@@ -38,8 +38,8 @@ from percept_harness.detectors import (
     should_wake,
     wake_score,
 )
-from percept_harness.pose import PoseDetection, PoseKeypoint
-from percept_harness.tier0 import compile_watchspec, watchspec_unsupported
+from percept.harness.pose import PoseDetection, PoseKeypoint
+from percept.harness.tier0 import compile_watchspec, watchspec_unsupported
 
 
 def _drive(det, signal):
@@ -164,7 +164,7 @@ class TestPoseSkillRegistration(unittest.TestCase):
     """The first MODEL-backed skill must register + carry a manifest WITHOUT importing pose runtimes."""
 
     def test_pose_registered_with_manifest(self):
-        from percept_harness.detectors import manifest_of
+        from percept.harness.detectors import manifest_of
 
         self.assertIn("pose-openness", registered())
         m = manifest_of("pose-openness")

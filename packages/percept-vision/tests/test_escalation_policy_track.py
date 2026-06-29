@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from eval.bench import track_escalation_policy as track
-from percept_harness.tier0 import gray_frame
+from percept.harness.tier0 import gray_frame
 
 
 class EscalationPolicyTrackTests(unittest.TestCase):

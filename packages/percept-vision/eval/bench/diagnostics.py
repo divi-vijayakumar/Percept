@@ -156,7 +156,7 @@ def _run_one(vid, action, gt):
     from eval.bench.hero_ab import EXPECTED_ROM, FPS, MIN_CONF, VLM_PRIOR
     from eval.bench.pose_cache import load_detections, reconstruct
     from percept import Goal, Percept
-    from percept_harness.pose import (_MIN_BODY_SCALE, body_scale, channel_coverage, hip_centre,
+    from percept.harness.pose import (_MIN_BODY_SCALE, body_scale, channel_coverage, hip_centre,
                                        pose_channels, select_nearest_hip)
 
     prior = VLM_PRIOR.get(action)

@@ -33,42 +33,43 @@ help:
 	@echo "reproduce  reproduce a published scorecard row"
 
 test:
-	PYTHONPATH=$(CONTRACTS) $(PY) -m unittest discover -s $(CONTRACTS)/tests
-	cd $(SDK) && PYTHONPATH=.:$(CONTRACTS_ABS):$(abspath $(HARNESS)) $(PY) -m unittest discover -s tests
-	PYTHONPATH=$(SDK):$(HARNESS):$(CONTRACTS) $(PY) -m unittest discover -s $(HARNESS)/tests
+	cd $(SDK) && PYTHONPATH=. $(PY) -m unittest discover -s tests
 
 test-js:
 	cd $(EDGE) && npm test
 
 test-all: test test-js
 
-parity:  ## Edge<->harness conformance — JS percept-edge vs Python percept-harness, byte-for-byte
-	PYTHONPATH=$(HARNESS):$(SDK):$(CONTRACTS) $(PY) $(EDGE)/parity/compare.py
+clean:  ## remove build artifacts
+	rm -rf packages/*/build packages/*/dist packages/*/*.egg-info
+
+parity:  ## Edge<->harness conformance — JS percept-edge vs Python percept.harness, byte-for-byte
+	PYTHONPATH=$(SDK) $(PY) $(EDGE)/parity/compare.py
 
 eval-live:
 	@if [ "$$PERCEPT_LIVE" != "1" ]; then \
 		echo "L2 skipped: set PERCEPT_LIVE=1 and provide backend keys to run live eval."; \
 	else \
-		cd $(SDK) && PYTHONPATH=.:$(CONTRACTS_ABS) $(PY) -m eval.run; \
+		cd $(SDK) && PYTHONPATH=. $(PY) -m eval.run; \
 	fi
 
 # Per-concern precision/recall on a labelled-clip manifest (offline; fake backend; no keys).
 #   make eval-benchmark MANIFEST=examples/benchmark/manifest.json
 MANIFEST ?= $(abspath examples/benchmark/manifest.json)
 eval-benchmark:
-	cd $(SDK) && PYTHONPATH=.:$(CONTRACTS_ABS) $(PY) -m eval.benchmark $(abspath $(MANIFEST))
+	cd $(SDK) && PYTHONPATH=. $(PY) -m eval.benchmark $(abspath $(MANIFEST))
 
 e2e:
-	cd $(SDK) && PYTHONPATH=.:$(CONTRACTS_ABS) $(PY) -m e2e.live_smoke
+	cd $(SDK) && PYTHONPATH=. $(PY) -m e2e.live_smoke
 
 bench:
-	PYTHONPATH=$(SDK):$(HARNESS):$(CONTRACTS) $(PY) -m percept_harness.bench_gating
+	PYTHONPATH=$(SDK) $(PY) -m percept.harness.bench_gating
 
 audit-benchmark:
-	PYTHONPATH=$(SDK):$(HARNESS):$(CONTRACTS) $(PY) -m percept.bench audit --manifest eval/golden-v1/MANIFEST.json --baselines packages/percept-vision/eval/baselines.json
+	PYTHONPATH=$(SDK) $(PY) -m percept.bench audit --manifest eval/golden-v1/MANIFEST.json --baselines packages/percept-vision/eval/baselines.json
 
 scorecard:
-	PYTHONPATH=$(SDK):$(HARNESS):$(CONTRACTS) $(PY) -m percept.bench scorecard --manifest eval/golden-v1/MANIFEST.json --out scorecard.txt
+	PYTHONPATH=$(SDK) $(PY) -m percept.bench scorecard --manifest eval/golden-v1/MANIFEST.json --out scorecard.txt
 
 benchmark-prepare:
 	$(PY) tools/percept_benchmark.py prepare
@@ -112,18 +113,17 @@ benchmark-collect:
 	$(PY) tools/percept_benchmark.py collect --run-dir $(RUN_DIR)
 
 calibrate:
-	cd $(SDK) && PYTHONPATH=.:$(CONTRACTS_ABS) $(PY) -m eval.calibrate
+	cd $(SDK) && PYTHONPATH=. $(PY) -m eval.calibrate
 
 exp-categorical:
-	cd $(SDK) && PYTHONPATH=.:$(CONTRACTS_ABS) $(PY) -m eval.exp_categorical
+	cd $(SDK) && PYTHONPATH=. $(PY) -m eval.exp_categorical
 
 check:
-	@PYTHONPATH=$(CONTRACTS) $(PY) -m compileall -q $(CONTRACTS)/percept_contracts $(CONTRACTS)/tests && echo "compileall contracts ok"
-	@cd $(SDK) && PYTHONPATH=.:$(CONTRACTS_ABS) $(PY) -m compileall -q percept tests && echo "compileall ok"
+	@cd $(SDK) && PYTHONPATH=. $(PY) -m compileall -q percept tests && echo "compileall ok"
 	@cd $(SDK) && (ruff check . || echo "ruff not installed — skipping lint")
 
 reproduce:
-	PYTHONPATH=$(SDK):$(HARNESS):$(CONTRACTS) $(PY) -m percept.bench scorecard --manifest eval/golden-v1/MANIFEST.json --out scorecard.txt
+	PYTHONPATH=$(SDK) $(PY) -m percept.bench scorecard --manifest eval/golden-v1/MANIFEST.json --out scorecard.txt
 
 prevalence-pt:  ## Perception Test prevalence (needs PERCEPT_LIVE + opencv-python-headless + downloaded sample)
 	cd $(SDK) && PYTHONPATH=. $(PY) -m eval.exp_perception_test

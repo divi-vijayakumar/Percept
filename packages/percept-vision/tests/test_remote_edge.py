@@ -12,7 +12,7 @@ import unittest
 
 from percept.adapters import Goal
 
-from percept_harness.tier0 import RemoteEdgeReceiver
+from percept.harness.tier0 import RemoteEdgeReceiver
 
 
 class _Goals:

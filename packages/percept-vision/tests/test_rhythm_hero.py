@@ -13,8 +13,8 @@ import unittest
 
 from percept import Goal, Percept
 from percept.rhythm_hero import RhythmHero, escalate_count
-from percept_harness.detectors import PersonMeasure, make_detector, person_measures
-from percept_harness.pose import PoseDetection, PoseKeypoint
+from percept.harness.detectors import PersonMeasure, make_detector, person_measures
+from percept.harness.pose import PoseDetection, PoseKeypoint
 
 
 def _person(wy: float, cx: float, conf: float = 0.9, leg_conf: float = 0.9) -> PoseDetection:
@@ -63,7 +63,7 @@ class RhythmHeroTests(unittest.TestCase):
     def _core(self):
         from percept.identity import AppearanceIdentity
         try:
-            from percept_harness.appearance import appearance_signature
+            from percept.harness.appearance import appearance_signature
         except Exception:  # pragma: no cover
             appearance_signature = None
         core = Percept.create(discover_plugins=False,
@@ -138,7 +138,7 @@ class PommelHeroSelectionTests(unittest.TestCase):
     def _core(self):
         from percept.identity import AppearanceIdentity
         try:
-            from percept_harness.appearance import appearance_signature
+            from percept.harness.appearance import appearance_signature
         except Exception:  # pragma: no cover
             appearance_signature = None
         core = Percept.create(discover_plugins=False,
@@ -159,7 +159,7 @@ class PommelHeroSelectionTests(unittest.TestCase):
         core = Percept.create(discover_plugins=False)
         core.add_goal(Goal(id="g", condition="a completed pommel rep", say="rep",
                            state={"type": "rhythm", "count": 0, "rhythm": self._prior()}))
-        from percept_harness.pose import pose_channels
+        from percept.harness.pose import pose_channels
         for i in range(n):
             spread = amp * (1.0 + math.sin(2 * math.pi * i / period)) / 2.0
             ch = pose_channels(_pommel_performer(cx=0.25, spread=spread).keypoints)

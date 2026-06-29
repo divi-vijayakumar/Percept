@@ -13,6 +13,7 @@ _CORE = (
     "percept.gate", "percept.agent", "percept.behavior", "percept.concern", "percept.sensorplan",
     "percept.individuation", "percept.rhythm", "percept.measurement", "percept.scheduler",
     "percept.observability", "percept.escalation", "percept.clock", "percept.goals", "percept.entity",
+    "percept.contracts",  # the folded-in wire-contract membrane — must stay pure stdlib
 )
 _VENDOR = ("google.genai", "anthropic", "openai", "deepgram")
 

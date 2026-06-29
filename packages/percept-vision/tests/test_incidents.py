@@ -5,7 +5,7 @@ import unittest
 
 from percept.events import FrameWindow
 from percept.incidents import make_incident, snippet_from_window
-from percept_contracts import IncidentSnippet, Verdict
+from percept.contracts import IncidentSnippet, Verdict
 
 
 class _Fire:

@@ -358,7 +358,7 @@ class PoseChannels:
 
     Unlike :class:`PoseOpenness`, which fuses landmarks into one jumping-jack-shaped scalar AND decides
     reps, this detector emits a fixed, system-tunable BASIS of decomposed motion channels (wrist-elevation,
-    ankle-spread, hip-height, torso-height — see :func:`percept_harness.pose.pose_channels`) and makes NO
+    ankle-spread, hip-height, torso-height — see :func:`percept.harness.pose.pose_channels`) and makes NO
     rep decision. The brain's :class:`~percept.rhythm.RhythmTracker` selects the dominant channel and counts
     causally. Channels carry forward on a dropped pose so a missing frame never injects a phantom cycle.
 

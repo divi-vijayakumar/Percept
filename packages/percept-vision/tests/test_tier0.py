@@ -20,9 +20,9 @@ import unittest
 from percept.adapters import Box, Goal, Schedule, Tier0Signal, WatchCondition, WatchSpec
 from percept.agent import Percept
 from percept.config import load_settings
-from percept_harness.detectors import WakePolicy
+from percept.harness.detectors import WakePolicy
 
-from percept_harness.tier0 import (
+from percept.harness.tier0 import (
     CivilTime,
     Frame,
     GatedWatchLoop,

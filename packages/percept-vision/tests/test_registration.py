@@ -14,7 +14,7 @@ import unittest
 
 from percept.adapters import Concern, Goal, Subject, WatchSpec
 
-from percept_harness.concerns import (
+from percept.harness.concerns import (
     clear_concerns,
     compile_registered_watchspec,
     concern_to_condition,
@@ -25,7 +25,7 @@ from percept_harness.concerns import (
     registered_concerns,
     unregister_concern,
 )
-from percept_harness.detectors import (
+from percept.harness.detectors import (
     DetectorManifest,
     MotionPeriodicity,
     clear_detectors,
@@ -100,7 +100,7 @@ class TestDetectorTeardown(unittest.TestCase):
         # restore the registry to its imported state for the rest of the suite
         import importlib
 
-        import percept_harness.detectors as det
+        import percept.harness.detectors as det
 
         importlib.reload(det)
 

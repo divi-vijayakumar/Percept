@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "percept-vision"
-version = "0.1.0"
+version = "0.6.0"
 description = "Research preview — the open-source cognition layer for goal-driven, proactive vision agents."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -23,9 +23,10 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Multimedia :: Video",
 ]
-# Core is pure stdlib — `pip install percept-vision` then run with no keys, no heavy deps.
-# The frozen contract (DTOs + Protocols) is the one (zero-dep) package dependency.
-dependencies = ["percept-contracts>=1.0.0"]
+# Core is PURE STDLIB — `pip install percept-vision` then run with fake backends, no keys, no heavy deps.
+# The frozen wire-contract (DTOs/Protocols) and the tier-0 salience harness now ship INSIDE this package as
+# `percept.contracts` and `percept.harness` (no separate packages). Opt into heavy deps only via extras.
+dependencies = []
 
 [project.optional-dependencies]
 claude = ["anthropic>=0.40"]
@@ -33,11 +34,13 @@ gemini = ["google-genai>=1.0"]
 openrouter = ["openai>=1.40"]
 deepgram = ["deepgram-sdk>=3"]
 audio = ["numpy>=1.24"]
-runtime = ["opencv-python-headless>=4.8", "percept-harness>=0.1.0"]
+harness = ["numpy>=1.24"]                                    # tier-0 salience gate + detectors fast path
+edge = ["numpy>=1.24"]                                       # Python tier-0 edge (parity with percept-edge JS)
+runtime = ["opencv-python-headless>=4.8", "numpy>=1.24"]     # camera/video/RTSP runtime worker
 screen = ["mss>=9"]
-bench = ["numpy>=1.24", "opencv-python-headless>=4.8", "percept-harness>=0.1.0"]
-edge = ["percept-harness>=0.1.0"]
-pose = ["percept-harness[pose]>=0.1.0"]
+bench = ["numpy>=1.24", "opencv-python-headless>=4.8"]
+pose = ["mmpose>=1.3", "mmdet>=3.0,<4", "mmcv>=2.0,<2.2", "mmengine>=0.10", "opencv-python-headless>=4.8", "numpy>=1.24"]
+blazepose = ["mediapipe>=0.10"]
 otel = ["opentelemetry-api>=1.20"]
 ui = []
 all = [
@@ -48,17 +51,24 @@ all = [
     "numpy>=1.24",
     "opencv-python-headless>=4.8",
     "mss>=9",
-    "percept-harness[pose]>=0.1.0",
+    "mmpose>=1.3",
+    "mmdet>=3.0,<4",
+    "mmcv>=2.0,<2.2",
+    "mmengine>=0.10",
     "opentelemetry-api>=1.20",
 ]
 dev = ["pytest>=8", "ruff>=0.6"]
 
 [project.scripts]
 percept-bench = "percept.bench:main"
+percept-schema = "percept.contracts.jsonschema:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["percept*", "eval*"]
+
+[tool.setuptools.package-data]
+"percept.contracts" = ["schema/*.json"]
 
 [tool.ruff]
 line-length = 100

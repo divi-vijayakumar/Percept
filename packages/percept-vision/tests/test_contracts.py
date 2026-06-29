@@ -3,8 +3,8 @@ and JSON-schema generation. Stdlib only, no backends, no keys."""
 
 import unittest
 
-import percept_contracts as pc
-from percept_contracts import (
+import percept.contracts as pc
+from percept.contracts import (
     CONTRACT_VERSION,
     AudioFrame,
     Box,
@@ -273,7 +273,7 @@ class TestVersionNegotiation(unittest.TestCase):
 
 class TestJsonSchema(unittest.TestCase):
     def test_generate_all_has_defs_for_every_dto(self):
-        from percept_contracts import jsonschema as js
+        from percept.contracts import jsonschema as js
 
         doc = js.generate_all()
         self.assertEqual(doc["$schema"], "https://json-schema.org/draft/2020-12/schema")
@@ -282,7 +282,7 @@ class TestJsonSchema(unittest.TestCase):
             self.assertIn(cls.__name__, doc["$defs"], f"missing $defs for {cls.__name__}")
 
     def test_verdict_schema_required_and_types(self):
-        from percept_contracts import jsonschema as js
+        from percept.contracts import jsonschema as js
 
         s = js.generate_all()["$defs"]["Verdict"]
         self.assertEqual(s["type"], "object")
@@ -294,7 +294,7 @@ class TestJsonSchema(unittest.TestCase):
         self.assertNotIn("evidence", s["required"])
 
     def test_incident_schema_refs_snippet_and_verdict(self):
-        from percept_contracts import jsonschema as js
+        from percept.contracts import jsonschema as js
 
         s = js.generate_all()["$defs"]["Incident"]
         self.assertEqual(s["properties"]["verdict"], {"$ref": "#/$defs/Verdict"})
@@ -304,13 +304,13 @@ class TestJsonSchema(unittest.TestCase):
         self.assertIn({"type": "null"}, any_of)
 
     def test_literal_becomes_enum(self):
-        from percept_contracts import jsonschema as js
+        from percept.contracts import jsonschema as js
 
         snip = js.generate_all()["$defs"]["IncidentSnippet"]
         self.assertEqual(snip["properties"]["kind"], {"enum": ["frame", "clip", "audio"]})
 
     def test_schedule_in_defs_and_watchcondition_optional(self):
-        from percept_contracts import jsonschema as js
+        from percept.contracts import jsonschema as js
 
         defs = js.generate_all()["$defs"]
         self.assertIn("Schedule", defs)  # the C1 schedule DTO is exported
@@ -322,7 +322,7 @@ class TestJsonSchema(unittest.TestCase):
         self.assertNotIn("schedule", wc.get("required", []))
 
     def test_audioframe_schema(self):
-        from percept_contracts import jsonschema as js
+        from percept.contracts import jsonschema as js
 
         s = js.generate_all()["$defs"]["AudioFrame"]
         self.assertEqual(s["type"], "object")
@@ -337,10 +337,10 @@ class TestJsonSchema(unittest.TestCase):
         import json
         from pathlib import Path
 
-        from percept_contracts import jsonschema as js
+        from percept.contracts import jsonschema as js
 
         combined_path = js.schema_dir() / "percept-contracts.schema.json"
-        self.assertTrue(combined_path.exists(), "run `python -m percept_contracts.jsonschema`")
+        self.assertTrue(combined_path.exists(), "run `python -m percept.contracts.jsonschema`")
         on_disk = json.loads(Path(combined_path).read_text())
         self.assertEqual(on_disk, js.generate_all())
 
@@ -348,7 +348,7 @@ class TestJsonSchema(unittest.TestCase):
 class TestPublicSurface(unittest.TestCase):
     def test_all_names_importable(self):
         for name in pc.__all__:
-            self.assertTrue(hasattr(pc, name), f"{name} missing from percept_contracts")
+            self.assertTrue(hasattr(pc, name), f"{name} missing from percept.contracts")
 
 
 if __name__ == "__main__":

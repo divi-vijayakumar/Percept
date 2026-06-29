@@ -13,8 +13,8 @@ import unittest
 from percept.adapters import Goal
 from percept.agent import Percept
 
-from percept_harness.detectors import Boundary, DetectorManifest, register
-from percept_harness.tier0 import Frame, GatedWatchLoop, gray_frame
+from percept.harness.detectors import Boundary, DetectorManifest, register
+from percept.harness.tier0 import Frame, GatedWatchLoop, gray_frame
 
 W, H = 8, 8
 

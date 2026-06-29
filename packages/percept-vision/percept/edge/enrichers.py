@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 try:
-    from percept_harness.enrichers import *  # noqa: F403
-    from percept_harness.enrichers import __all__ as _ALL
+    from percept.harness.enrichers import *  # noqa: F403
+    from percept.harness.enrichers import __all__ as _ALL
 except ModuleNotFoundError as exc:  # pragma: no cover
     raise ModuleNotFoundError(
         "percept.edge.enrichers needs the Python edge extra. Install with "

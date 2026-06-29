@@ -3,10 +3,10 @@ from __future__ import annotations
 import math
 import unittest
 
-import percept_harness.detectors as harness_detectors
+import percept.harness.detectors as harness_detectors
 from eval.bench import repcount
-from percept_harness.detectors import Boundary, DetectorManifest, register
-from percept_harness.tier0 import gray_frame
+from percept.harness.detectors import Boundary, DetectorManifest, register
+from percept.harness.tier0 import gray_frame
 
 
 class _EveryFrameBoundary:
@@ -20,19 +20,22 @@ class _EveryFrameBoundary:
         return [Boundary(self.name, "peak", t, 1.0)]
 
 
-register(
-    "test-every-frame-boundary",
-    _EveryFrameBoundary,
-    DetectorManifest(
-        "test-every-frame-boundary",
-        "synthetic motion",
-        "benchmark wiring test",
-        "one boundary per frame",
-    ),
-)
-
-
 class RepCountE2ETests(unittest.TestCase):
+    def setUp(self):
+        # register in setUp (not module level) so another suite's registry reset
+        # (test_registration's tearDown -> clear_detectors) can't leave us unregistered.
+        if "test-every-frame-boundary" not in harness_detectors.registered():
+            register(
+                "test-every-frame-boundary",
+                _EveryFrameBoundary,
+                DetectorManifest(
+                    "test-every-frame-boundary",
+                    "synthetic motion",
+                    "benchmark wiring test",
+                    "one boundary per frame",
+                ),
+            )
+
     def test_edge_boundaries_flow_into_core_count(self):
         import eval.count_video as count_video
         import numpy as np

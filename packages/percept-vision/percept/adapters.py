@@ -9,7 +9,7 @@ Cardinal rule (the firing contract): the Vision seam judges a goal's plain-langu
 *condition* and returns ``Verdict{satisfied, confidence, evidence}``. It never compiles the
 goal to a rigid ``attr_key=value`` and exact-matches. One firing path, one gate.
 
-The contract now lives in the standalone, zero-dependency ``percept_contracts`` package so that
+The contract now lives in the standalone, zero-dependency ``percept.contracts`` package so that
 non-vision consumers (clients, the IRA, dashboards, the JS edge twin) can import it directly
 instead of re-declaring it. This module is a backward-compatible **re-export shim**: every
 ``from percept.adapters import X`` (and ``from percept import X``) keeps working unchanged.
@@ -17,7 +17,7 @@ instead of re-declaring it. This module is a backward-compatible **re-export shi
 
 from __future__ import annotations
 
-from percept_contracts import (
+from percept.contracts import (
     Attribute,
     AudioFrame,
     Box,

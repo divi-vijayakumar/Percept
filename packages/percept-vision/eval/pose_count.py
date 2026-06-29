@@ -51,7 +51,7 @@ def openness_series(full):
 
 
 def count_reps(series, *, min_height, rel_drop, refractory):
-    from percept_harness.detectors import MotionPeriodicity
+    from percept.harness.detectors import MotionPeriodicity
 
     det = MotionPeriodicity(min_height=min_height, rel_drop=rel_drop, refractory_s=refractory)
     return [b for t, v in series for b in det.push(t, v)]

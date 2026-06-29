@@ -75,7 +75,7 @@ def _arm_a(cache_frames, prior, erom) -> int:
     """Committed single-subject path off cached poses: nearest-hip selection → single-subject perceive_rhythm
     (carries the last channel vector forward on a dropped pose, exactly like PoseChannels.measure())."""
     from percept import Goal, Percept
-    from percept_harness.pose import hip_centre, pose_channels, select_nearest_hip
+    from percept.harness.pose import hip_centre, pose_channels, select_nearest_hip
 
     core = Percept.create(discover_plugins=False)
     core.add_goal(Goal(id="g", condition="a completed repetition", say="rep", state=_goal_state(prior, erom)))
@@ -96,8 +96,8 @@ def _arm_b(cache_frames, full, prior, erom, video):
     from percept import Goal, Percept
     from percept.identity import AppearanceIdentity
     from percept.rhythm_hero import RhythmHero
-    from percept_harness.appearance import appearance_signature
-    from percept_harness.detectors import person_measures
+    from percept.harness.appearance import appearance_signature
+    from percept.harness.detectors import person_measures
 
     core = Percept.create(discover_plugins=False, identity=AppearanceIdentity(), embedder=appearance_signature)
     core.graph.motion = MOTION  # predictive continuity (predict + coast) when enabled

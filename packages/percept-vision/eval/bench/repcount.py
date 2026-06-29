@@ -148,7 +148,7 @@ def pose_rep_count(path, fps: int = 6) -> int:
     """
     import cv2
     import numpy as np
-    from percept_harness.pose import make_pose_provider
+    from percept.harness.pose import make_pose_provider
 
     from eval.count_video import decode
 
@@ -250,7 +250,7 @@ def percept_e2e_rep_count(
     import cv2
 
     from percept import Goal, Percept
-    from percept_harness.detectors import DetectorBank, make_detector
+    from percept.harness.detectors import DetectorBank, make_detector
 
     from eval.count_video import decode
 
@@ -299,7 +299,7 @@ def percept_e2e_rep_count(
         # (coast when quiet, escalate on motion); without one the default policy processes every frame
         # (dense — today's behaviour, and the reproducible benchmark).
         from percept.sampling import SamplingController, SensePolicy
-        from percept_harness.tier0 import motion_score
+        from percept.harness.tier0 import motion_score
 
         controller = SamplingController()
         if isinstance(sense, dict):
@@ -347,7 +347,7 @@ def percept_e2e_rep_count(
             ]
     else:
         # Legacy A/B path: a boundary detector (e.g. pose-openness) -> blind perceive_boundary tally.
-        from percept_harness.tier0 import motion_score
+        from percept.harness.tier0 import motion_score
 
         bank = DetectorBank(names)
         prev = None
@@ -401,8 +401,8 @@ def _hero_e2e_rep_count(
     from percept import Goal, Percept
     from percept.identity import AppearanceIdentity
     from percept.rhythm_hero import RhythmHero
-    from percept_harness.appearance import appearance_signature
-    from percept_harness.detectors import make_detector
+    from percept.harness.appearance import appearance_signature
+    from percept.harness.detectors import make_detector
 
     from eval.bench.silhouette import dominant_period, silhouette_count
     from eval.count_video import decode

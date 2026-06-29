@@ -3,7 +3,7 @@
 The IRA's #1 ask, made generic: own the camera→incidents lifecycle so apps stop writing the capture +
 threading + feed glue. Per frame it drives the tier-0 :class:`~percept.edge.tier0.MotionGate`, and on
 the rising edge spends a cloud judgment (``core.perceive_judged``), turning each fire into a durable
-:class:`~percept_contracts.Incident` (with a pre-roll snippet) handed to the notification sink and yielded.
+:class:`~percept.contracts.Incident` (with a pre-roll snippet) handed to the notification sink and yielded.
 
 The **cognition is unchanged** — this *drives* ``vision.judge`` / the three-state gate, it doesn't edit
 them. ``source`` is a URI string (file / RTSP / ``webcam:0``), opened on a capture thread, **or** an

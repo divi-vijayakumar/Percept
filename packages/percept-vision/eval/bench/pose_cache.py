@@ -35,7 +35,7 @@ def cache_detections(video, fps: int = 6, provider: str | None = None, *, force:
     import cv2
 
     from eval.count_video import decode
-    from percept_harness.pose import make_pose_provider
+    from percept.harness.pose import make_pose_provider
 
     video = Path(video)
     vid = video.stem
@@ -79,7 +79,7 @@ def load_detections(video_id: str, fps: int = 6, provider: str = "rtmo") -> list
 
 def reconstruct(frame_dets: list[dict]):
     """One cached frame's ``dets`` -> ``list[PoseDetection]`` (so the eye/measures layer sees real poses)."""
-    from percept_harness.pose import PoseDetection, PoseKeypoint
+    from percept.harness.pose import PoseDetection, PoseKeypoint
 
     out = []
     for d in frame_dets:

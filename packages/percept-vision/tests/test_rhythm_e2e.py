@@ -13,8 +13,8 @@ import unittest
 
 from percept import Goal, Percept
 from percept.behavior import coerce_authored_rhythm
-from percept_harness.detectors import make_detector
-from percept_harness.pose import PoseDetection, PoseKeypoint
+from percept.harness.detectors import make_detector
+from percept.harness.pose import PoseDetection, PoseKeypoint
 
 
 class FakeRepPose:

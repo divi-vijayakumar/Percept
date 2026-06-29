@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 try:
-    from percept_harness.tier0 import *  # noqa: F403
-    from percept_harness.tier0 import __all__ as _ALL
+    from percept.harness.tier0 import *  # noqa: F403
+    from percept.harness.tier0 import __all__ as _ALL
 except ModuleNotFoundError as exc:  # pragma: no cover
     raise ModuleNotFoundError(
         "percept.edge.tier0 needs the Python edge extra. Install with "

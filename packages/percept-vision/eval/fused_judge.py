@@ -87,7 +87,7 @@ def main() -> int:
         bars = " .:-=+*#@"
         spark = "".join(bars[min(len(bars) - 1, int(e / emax * (len(bars) - 1)))] for _, e in es)
         print(f"  audio energy (max={emax:.3f}):  {spark}")
-        from percept_harness.detectors import AcousticOnset
+        from percept.harness.detectors import AcousticOnset
         det = AcousticOnset(high=0.3 * emax, low=0.15 * emax)
         onsets = [b.t for t, e in es for b in det.push(t, e)]
         print(f"  acoustic-onset boundaries @ t={[round(o, 1) for o in onsets]}")

@@ -7,7 +7,7 @@ The point is *our gating economics*, not model intelligence: a still scene spend
 motion escalates. Backends are the offline fakes (deterministic, no keys). Run::
 
     PYTHONPATH=packages/percept-vision:packages/percept-harness \
-        python3 -m percept_harness.bench_gating
+        python3 -m percept.harness.bench_gating
 """
 
 from __future__ import annotations

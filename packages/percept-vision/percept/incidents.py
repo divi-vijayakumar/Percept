@@ -1,6 +1,6 @@
 """Incident producer — turn a fire (a :class:`FireEvent`) into a durable :class:`Incident` record.
 
-The `Incident`/`IncidentSnippet` DTOs live in `percept_contracts` but had no producer; this is it. The
+The `Incident`/`IncidentSnippet` DTOs live in `percept.contracts` but had no producer; this is it. The
 runtime worker calls :func:`make_incident` on every fire and hands the result to its `on_incident` sink.
 `fire` is duck-typed (``.goal_id`` / ``.text`` / ``.verdict``) so this module never imports the agent
 (no cycle). Pure stdlib.
@@ -12,7 +12,7 @@ import json
 import uuid
 from typing import Any
 
-from percept_contracts import Incident, IncidentSnippet, Verdict
+from percept.contracts import Incident, IncidentSnippet, Verdict
 
 
 def make_incident(fire: Any, *, ts: float, snippet: IncidentSnippet | None = None, id: str | None = None) -> Incident:

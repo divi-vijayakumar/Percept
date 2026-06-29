@@ -18,7 +18,7 @@ import unittest
 from percept.adapters import Enricher, Verdict
 from percept.backends.fake import FakeVision
 
-from percept_harness.enrichers import (
+from percept.harness.enrichers import (
     Enrichment,
     FakeEnricher,
     NullEnricher,
