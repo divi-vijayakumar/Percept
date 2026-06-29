@@ -26,9 +26,21 @@ publishable product benchmarks must set ``diagnostic=True`` and explain why in `
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 CONFIGS = ("dense-modeled", "edge", "e2e", "core-replay")
+
+
+def bench_vision(settings=None):
+    """Build the judge backend for a live track from ``PERCEPT_VISION_BACKEND`` (default ``gemini``).
+
+    Resolves through the registry, so one env var runs the same track on any registered vision backend
+    (``gemini`` · ``gemini-live`` · ``openrouter`` · ``claude``) — the seam the model sweep needs, replacing
+    the hardcoded ``GeminiVision`` import in each adapter."""
+    from percept import registry
+
+    return registry.make_vision(os.environ.get("PERCEPT_VISION_BACKEND", "gemini"), settings)
 
 
 @dataclass

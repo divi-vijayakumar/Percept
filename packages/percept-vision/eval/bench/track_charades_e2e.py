@@ -27,7 +27,7 @@ from percept.edge.tier0 import MotionGate, compile_watchspec
 from percept.gate import FIRE
 from percept.runtime.source import open_source
 
-from .types import TrackResult
+from .types import TrackResult, bench_vision
 
 TRACK = "charades-e2e"
 ROOT = Path(__file__).resolve().parents[4]
@@ -249,8 +249,6 @@ def _silent_reason(verdict: dict[str, Any], threshold: float) -> str:
 
 
 async def _score_one(row: dict[str, Any]) -> VideoRun:
-    from percept.backends.gemini import GeminiVision
-
     goals = _goals_for(row)
     run = VideoRun(
         video_id=str(row["id"]),
@@ -259,7 +257,7 @@ async def _score_one(row: dict[str, Any]) -> VideoRun:
         goals=goals,
     )
     settings = load_settings()
-    recorder = RecordingVision(GeminiVision(settings))
+    recorder = RecordingVision(bench_vision(settings))  # PERCEPT_VISION_BACKEND (gemini | gemini-live | ...)
     core = Percept.create(vision=recorder, settings=settings, discover_plugins=False)
     for goal in goals:
         core.add_goal(Goal(id=goal.goal_id, condition=goal.condition, say=f"Charades action detected: {goal.desc}"))

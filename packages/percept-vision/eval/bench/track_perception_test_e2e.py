@@ -29,7 +29,7 @@ from percept.sampling import SamplingController, SensePolicy
 from percept.sensorplan import sensor_plan_for
 
 from . import perception_test as pt
-from .types import TrackResult
+from .types import TrackResult, bench_vision
 
 TRACK = "pt-action-e2e"
 FPS = 2.0  # legacy coarse capture floor — the SensorPlan's sensitive cadence raises the EFFECTIVE rate
@@ -165,8 +165,6 @@ def _silent_reason(verdict: dict[str, Any] | None, threshold: float) -> str:
 
 
 async def _score_one(event: dict) -> EventRun:
-    from percept.backends.gemini import GeminiVision
-
     goal_text = _action_goal(event["label"])
     result = EventRun(
         video_id=event["video_id"],
@@ -176,7 +174,7 @@ async def _score_one(event: dict) -> EventRun:
         end_s=float(event["end_s"]),
     )
     settings = load_settings()
-    vision = RecordingVision(GeminiVision(settings))
+    vision = RecordingVision(bench_vision(settings))  # PERCEPT_VISION_BACKEND (gemini | gemini-live | ...)
     core = Percept.create(vision=vision, settings=settings, discover_plugins=False)
     goal_id = f"pt-{event['video_id']}"
     # The pt-action notification goal IS a "tell me when X briefly happens" goal: the GT window's duration
