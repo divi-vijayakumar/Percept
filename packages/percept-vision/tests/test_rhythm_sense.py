@@ -9,11 +9,13 @@ without asserting any backend intelligence.
 from __future__ import annotations
 
 import math
+import random
 import unittest
 
 from percept import Goal, Percept
 from percept.behavior import coerce_authored_rhythm, program_of
-from percept.rhythm import RhythmTracker
+from percept.measurement import ChannelScore
+from percept.rhythm import RhythmTracker, select_channel
 
 
 def _wave(n_cycles, T=12, amp=1.0, fps=6.0, jitter=0.0, decay=1.0, channel="c"):
@@ -148,6 +150,79 @@ class RhythmTrackerSignalTests(unittest.TestCase):
         self.assertEqual(tr.selected, "rep")
 
 
+class RhythmRateInvarianceTests(unittest.TestCase):
+    """Build 2 — the causal fixed-time (period-adaptive) low-pass keeps the count from COLLAPSING as fps
+    rises on NOISY signals (the rate-invariance fix), while staying exactly lossless on clean signals.
+    Synthetic + deterministic (seeded white noise), so the contract is asserted without pose/video."""
+
+    @staticmethod
+    def _noisy_count(freq, n_reps, fps, sigma, smooth_s, seed=1234):
+        rng = random.Random(seed)
+        tr = RhythmTracker(smooth_s=smooth_s)
+        for i in range(int(n_reps / freq * fps)):
+            t = i / fps
+            tr.observe(t, {"c": math.sin(2 * math.pi * freq * t) + sigma * rng.gauss(0, 1)})
+        return tr.count
+
+    def test_smoothing_prevents_high_fps_collapse_on_noise(self):
+        # The pathology + the fix, side by side at 60 fps: legacy (smooth_s=0) collapses; the default holds.
+        gt = 12
+        legacy = self._noisy_count(0.5, gt, 60.0, 0.30, smooth_s=0.0)
+        smoothed = self._noisy_count(0.5, gt, 60.0, 0.30, smooth_s=0.15)
+        self.assertLessEqual(legacy, gt // 2, f"legacy counter should collapse at high fps, got {legacy}")
+        self.assertGreaterEqual(smoothed, int(0.8 * gt), f"smoothed counter should hold recall, got {smoothed}")
+
+    def test_smoothed_count_does_not_collapse_across_fps(self):
+        # Above the Nyquist floor the noisy count holds >=80% recall at every rate (no denser-is-worse).
+        gt = 12
+        counts = {fps: self._noisy_count(0.5, gt, fps, 0.30, smooth_s=0.15) for fps in (6, 12, 30, 60, 160)}
+        for fps, c in counts.items():
+            self.assertGreaterEqual(c, int(0.8 * gt), f"recall collapsed at {fps}fps: {counts}")
+
+    def test_smoothing_is_lossless_on_clean_signal(self):
+        # The default smoothing must not change a clean count at any fps (no regression on noise-free signals).
+        for fps in (6, 30, 160):
+            self.assertEqual(self._noisy_count(0.5, 12, fps, 0.0, smooth_s=0.15), 12, f"clean changed @ {fps}fps")
+
+
+class CanonicalSelectorTests(unittest.TestCase):
+    """Build 3 — the canonical channel selector + its hysteresis policy. The selector picks the rep-owning
+    channel on the canonical grid (rate-invariant) with a prior/margin-over-dwell guard; it is OPT-IN, so
+    the default tracker is the unchanged legacy medoid."""
+
+    @staticmethod
+    def _score(ch, score):
+        return ChannelScore(ch, score=score, support=1.0, amplitude=1.0, regularity=1.0, stability=1.0, period_s=1.0)
+
+    def test_policy_trusts_viable_prior_but_ignores_dead_prior(self):
+        scores = {"hip": self._score("hip", 10.0), "torso": self._score("torso", 5.0)}
+        self.assertEqual(select_channel(scores, prior="torso"), "torso")  # prior wins despite lower score
+        dead = {"hip": self._score("hip", 10.0), "dead": self._score("dead", 0.0)}
+        self.assertEqual(select_channel(dead, prior="dead"), "hip")  # a zero-score prior is not viable
+
+    def test_policy_margin_holds_incumbent_until_decisive(self):
+        close = {"a": self._score("a", 1.1), "b": self._score("b", 1.0)}
+        self.assertEqual(select_channel(close, current="b", margin=0.25), "b")  # 10% lead < 25% margin -> hold
+        decisive = {"a": self._score("a", 1.6), "b": self._score("b", 1.0)}
+        self.assertEqual(select_channel(decisive, current="b", margin=0.25), "a")  # 60% lead -> switch
+
+    def test_policy_empty_returns_current(self):
+        self.assertEqual(select_channel({}, current="x"), "x")
+        self.assertIsNone(select_channel({"d": self._score("d", 0.0)}))
+
+    def test_canonical_tracker_picks_rep_channel_over_noise(self):
+        rng = random.Random(3)
+        tr = RhythmTracker(canonical_select=True, select_band_s=(1.0, 5.0))
+        for i in range(int(24 * 30)):  # 24 s @ 30 fps, 0.5 Hz -> ~12 reps
+            t = i / 30.0
+            tr.observe(t, {"rep": math.sin(2 * math.pi * 0.5 * t), "noise": 0.05 * rng.gauss(0, 1)})
+        self.assertEqual(tr.selected, "rep")
+        self.assertGreaterEqual(tr.count, 10)
+
+    def test_canonical_select_is_off_by_default(self):
+        self.assertFalse(RhythmTracker().canonical_select)
+
+
 class RhythmProgramTests(unittest.TestCase):
     def test_program_of_compiles_rhythm_sense(self):
         g = Goal(id="r", condition="a completed squat repetition", say="rep", state={"type": "rhythm"})
@@ -167,6 +242,19 @@ class RhythmProgramTests(unittest.TestCase):
         self.assertEqual(coerce_authored_rhythm({"channel": 123, "cadence_s": -5}), {})  # bad types/values
         self.assertEqual(coerce_authored_rhythm("nope"), {})
         self.assertEqual(coerce_authored_rhythm({"channel": "x" * 100}), {})  # over-long hint dropped
+
+    def test_smooth_s_firewall_bounds_the_optin_knob(self):
+        # smooth_s is an opt-in rate-invariance knob: accepted in (0, 1.0], clamped, else dropped (default off).
+        self.assertEqual(coerce_authored_rhythm({"smooth_s": 0.15})["rhythm"]["smooth_s"], 0.15)
+        self.assertNotIn("smooth_s", coerce_authored_rhythm({"smooth_s": 0}).get("rhythm", {}))  # 0 = off
+        self.assertNotIn("smooth_s", coerce_authored_rhythm({"smooth_s": -1}).get("rhythm", {}))
+        self.assertNotIn("smooth_s", coerce_authored_rhythm({"smooth_s": 5.0}).get("rhythm", {}))  # over max
+        self.assertNotIn("smooth_s", coerce_authored_rhythm({"smooth_s": "x"}).get("rhythm", {}))
+
+    def test_canonical_select_firewall_is_strict_bool(self):
+        self.assertIs(coerce_authored_rhythm({"canonical_select": True})["rhythm"]["canonical_select"], True)
+        self.assertNotIn("canonical_select", coerce_authored_rhythm({"canonical_select": "yes"}).get("rhythm", {}))
+        self.assertNotIn("canonical_select", coerce_authored_rhythm({"canonical_select": 1}).get("rhythm", {}))
 
     def test_expected_rom_firewall_channel_bound_and_unit_marked(self):
         ok = coerce_authored_rhythm({"channel": "limb-vertical", "expected_rom": 0.18})["rhythm"]

@@ -26,7 +26,10 @@ confirmed-rep tally.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
+
+from .measurement import CANON_HZ, ChannelScore, MeasurementSeries, channel_score
 
 
 @dataclass(frozen=True)
@@ -80,8 +83,24 @@ class _ChannelState:
     prom_frac: float = 0.2  # a peak counts only if prominence >= this fraction of the recent amplitude
     amp_alpha: float = 0.30  # EMA rate for the recent-prominence estimate (from confirmed reps)
     period_debounce: float = 0.45  # reject a rep closer than this fraction of the median rep interval
+    smooth_s: float = 0.0  # causal time-window moving-average span in SECONDS (0 = off; also the cold-start
+    #                        window before a period is learned). The rate-invariance fix: the differential
+    #                        sign ``sign(v - prev)`` is noise-dominated at high fps — per-sample jitter keeps
+    #                        flipping the tentative direction, resetting the unbroken-run clock so reversals
+    #                        are missed and the count COLLAPSES as fps rises (the "denser-is-worse"
+    #                        pathology). A fixed-TIME low-pass (a trailing window, so causal) pins the noise
+    #                        bandwidth to seconds, so the smoothed signal — and thus the count — survives at
+    #                        any fps above the floor. The validated offline shape used a fixed-seconds
+    #                        savgol; this is its streaming, causal equivalent.
+    smooth_period_frac: float = 0.18  # once a rep period is learned, the window tracks this fraction of it
+    #                                   (like ``min_run_s`` -> ``_min_run_s``): a fast rep gets a shorter
+    #                                   low-pass (its turns survive), a slow rep a longer one (more noise
+    #                                   killed) — so ONE setting is period-invariant across cadences, not a
+    #                                   per-activity constant. No goal-type table; the period is self-measured.
+    smooth_cap_s: float = 0.5  # never smooth over more than this (bound the lag / protect slow reps' turns)
 
     # --- causal streaming state ------------------------------------------------------------------------
+    _win: deque = field(default_factory=deque)  # recent (t, raw_v) inside smooth_s, for the causal smoother
     amp: float = 0.0  # recent prominence magnitude (causal EMA over confirmed reps)
     last_stop_t: float | None = None
     intervals: list[float] = field(default_factory=list)  # inter-rep gaps (for the period debounce)
@@ -114,11 +133,30 @@ class _ChannelState:
             return self.min_run_s
         return min(self.min_run_s, self.period_cap_frac * med)
 
+    def _smooth_window(self) -> float:
+        """The causal low-pass span in seconds. Off when ``smooth_s`` is 0. Until a period is learned it is
+        the cold-start ``smooth_s``; once the median rep interval is known it tracks
+        ``smooth_period_frac × period`` (clamped to ``smooth_cap_s``), so the SAME setting gives a short
+        window to a fast rep and a long one to a slow rep — period-invariant by construction, not tuned."""
+        if self.smooth_s <= 0.0:
+            return 0.0
+        med = self._median_interval()
+        if med is None:
+            return self.smooth_s
+        return min(self.smooth_cap_s, self.smooth_period_frac * med)
+
     def observe(self, t: float, v: float) -> Rep | None:
         """Fold one sample. A reversal confirms once the opposite direction has persisted ``min_run_s``
         SECONDS (time, not steps -> rate-agnostic); the running extreme of the confirmed segment is the
         turning point. (A retreat-from-extreme variant over-counts on noisy pose; an unbroken time-run is
         the better real-data trade-off — see git history / the fovea validation.)"""
+        w = self._smooth_window()
+        if w > 0.0:  # causal fixed-TIME low-pass: replace v with the mean over the trailing window (t-w, t].
+            self._win.append((t, v))  # trailing window -> bounded lag, rate-invariant noise bandwidth.
+            cutoff = t - w
+            while self._win and self._win[0][0] < cutoff:
+                self._win.popleft()
+            v = sum(val for _, val in self._win) / len(self._win)
         if self._prev is None:  # seed; nothing to count yet
             self._prev = v
             self._ext_v, self._ext_t = v, t
@@ -189,6 +227,36 @@ class _ChannelState:
         return len(self.reps) * self.amp * self.regularity()
 
 
+def select_channel(
+    scores: dict[str, ChannelScore],
+    prior: str | None = None,
+    current: str | None = None,
+    margin: float = 0.25,
+) -> str | None:
+    """Pick the rep-owning channel from canonical :class:`ChannelScore`s, with hysteresis (Build 3).
+
+    The policy that makes "which channel is the rep" stable, not jittery:
+
+      * **Trust a viable prior.** If the goal author named a channel and it has a positive score, use it —
+        the rep shape comes from goal-setting, not runtime guessing (the architecture's point).
+      * **Otherwise the highest canonical score wins** — but it only DISPLACES the incumbent ``current`` if
+        it beats it by ``margin`` (a relative margin), so a sampling wobble can't flip the selection without
+        real evidence. The dwell ("...for several reselects") is enforced by the caller (RhythmTracker).
+
+    ``scores`` should already be restricted to viable candidates (channels with confirmed reps), preserving
+    the invariant that a channel with zero reps is never selected. Returns ``current`` if nothing is viable."""
+    viable = {k: s for k, s in scores.items() if s.score > 0.0}
+    if not viable:
+        return current
+    if prior and prior in viable:
+        return prior
+    champion = max(viable.values(), key=lambda s: s.score).channel
+    if current and current in viable and champion != current:
+        if viable[champion].score <= viable[current].score * (1.0 + margin):
+            return current  # challenger not decisive enough -> hold the incumbent
+    return champion
+
+
 @dataclass
 class RhythmTracker:
     """Per-concern rhythm sense: run a causal detector per channel, count the dominant one.
@@ -207,8 +275,33 @@ class RhythmTracker:
     amp_gate_frac: float = 0.5  # a rep must reach this fraction of expected_rom to be counted
     floor: float = 0.04
     amp_frac: float = 0.5  # a channel must oscillate at >= this fraction of the strongest to be eligible
+    smooth_s: float = 0.0  # causal fixed-time smoothing cold-start span (seconds), applied to EVERY channel
+    #                        and then scaled to the measured period (see _ChannelState.smooth_s /
+    #                        _smooth_window). DEFAULT 0.0 = byte-for-byte legacy. It is an OPT-IN knob, not the
+    #                        default, on evidence: it fixes the high-fps COLLAPSE (synthetic 12->0 becomes
+    #                        recall>=0.8; real-pose fps12 |err| 4.0->2.5) but REGRESSES the cached fps=6 bench
+    #                        (primed OBO 0.50->0.38) — at low fps there is no high-fps noise to remove and the
+    #                        lag perturbs counts / couples to the still-fps-dependent selector. Revisit the
+    #                        default after Build 3 (rate-invariant selector) enables above-floor operation.
+    # --- Build 3: rate-invariant channel selection (opt-in; default off keeps the legacy medoid) ----------
+    canonical_select: bool = False  # score channels on the CANONICAL grid (support × robust_amplitude ×
+    #                                 regularity × stability, all in periods/seconds) instead of the medoid
+    #                                 over fps-dependent rep tallies — so "which channel is the rep" stops
+    #                                 flipping with fps (real-pose cross-fps consistency 0/4 -> 2/4; fps=6
+    #                                 bench accuracy unchanged 0.50/0.83). Default off = byte-for-byte legacy.
+    select_window_s: float = 30.0  # bounded recent history scored per reselect (live-stream memory cap)
+    reselect_every_s: float = 1.0  # recompute the selection at most this often (bounds the scoring cost)
+    select_hz: float = CANON_HZ  # canonical resample rate every channel is scored on (a shared electorate)
+    select_band_s: tuple[float, float] | None = (0.3, 5.0)  # plausible rep-period band (fast pommel .. slow bench)
+    select_margin: float = 0.25  # a challenger must beat the incumbent's score by this fraction to switch
+    select_dwell: int = 2  # ...and stay ahead for this many consecutive reselects (margin OVER a dwell)
     _channels: dict[str, _ChannelState] = field(default_factory=dict)
     _last_rep: Rep | None = None
+    _series: dict[str, deque] = field(default_factory=dict)  # raw (t, v) ring per channel, for canonical scoring
+    _sel_cache: str | None = None  # last canonical selection (recomputed on the reselect cadence)
+    _last_reselect_t: float | None = None
+    _pending: str | None = None  # a challenger awaiting its dwell before it displaces _sel_cache
+    _pending_count: int = 0
 
     def _state(self, channel: str) -> _ChannelState:
         st = self._channels.get(channel)
@@ -218,7 +311,7 @@ class RhythmTracker:
             # units). If there is no prior channel, or this is a different channel, the gate stays off.
             min_amp = (self.amp_gate_frac * self.expected_rom
                        if self.expected_rom is not None and channel == self.prior_channel else 0.0)
-            st = _ChannelState(name=channel, floor=self.floor, min_amp=min_amp)
+            st = _ChannelState(name=channel, floor=self.floor, min_amp=min_amp, smooth_s=self.smooth_s)
             self._channels[channel] = st
         return st
 
@@ -230,15 +323,57 @@ class RhythmTracker:
             rep = self._state(ch).observe(t, float(v))
             if rep is not None:
                 confirmed[ch] = rep
+        if self.canonical_select:  # accumulate raw samples + recompute the canonical selection on a cadence
+            for ch, v in channels.items():
+                dq = self._series.setdefault(ch, deque())
+                dq.append((t, float(v)))
+                cutoff = t - self.select_window_s
+                while dq and dq[0][0] < cutoff:
+                    dq.popleft()
+            if self._last_reselect_t is None or (t - self._last_reselect_t) >= self.reselect_every_s:
+                self._reselect(t)
         sel = self.selected
         if sel is not None and sel in confirmed:
             self._last_rep = confirmed[sel]
             return confirmed[sel]
         return None
 
+    def _reselect(self, t: float) -> None:
+        """Recompute the canonical channel selection (Build 3). Scores only channels that have confirmed
+        reps (so a dead channel is never selected), on the shared canonical grid, then applies
+        :func:`select_channel`'s prior/margin hysteresis with a dwell: a challenger must beat the incumbent
+        by ``select_margin`` for ``select_dwell`` consecutive reselects before it displaces the selection."""
+        self._last_reselect_t = t
+        scores: dict[str, ChannelScore] = {}
+        for name, st in self._channels.items():
+            dq = self._series.get(name)
+            if st.reps and dq is not None and len(dq) >= 6:
+                series = MeasurementSeries(channel=name, samples=tuple(dq))
+                scores[name] = channel_score(series, hz=self.select_hz, band_s=self.select_band_s)
+        if not scores:
+            return
+        prior = self.prior_channel if (self.prior_channel and self.prior_channel in scores) else None
+        champion = select_channel(scores, prior=prior, current=self._sel_cache, margin=self.select_margin)
+        if champion == self._sel_cache or champion is None:
+            self._pending, self._pending_count = None, 0
+            return
+        if champion == self._pending:  # same challenger winning again -> advance its dwell
+            self._pending_count += 1
+        else:
+            self._pending, self._pending_count = champion, 1
+        if self._sel_cache is None or self._pending_count >= self.select_dwell:
+            self._sel_cache = champion  # cold-start commits immediately; a switch waits out the dwell
+            self._pending, self._pending_count = None, 0
+
     @property
     def selected(self) -> str | None:
-        """The channel that owns the count.
+        """The channel that owns the count — the canonical score (Build 3, opt-in) or the legacy medoid."""
+        if self.canonical_select and self._sel_cache is not None:
+            return self._sel_cache  # canonical selection (recomputed on the reselect cadence)
+        return self._medoid_selected()  # legacy / canonical cold-start before the first reselect
+
+    def _medoid_selected(self) -> str | None:
+        """The legacy selector: trust a viable prior, else the amplitude-gated medoid.
 
         With a goal-set ``prior_channel`` (e.g. the conductor knows "bench press" → the arms), trust it —
         that is the architecture's point: the rep shape comes from goal-setting, not runtime guessing.
@@ -300,4 +435,4 @@ class RhythmTracker:
         return sum(1 for r in self._channels[sel].reps if now - r.stop_t <= window_s)
 
 
-__all__ = ["Rep", "RhythmTracker"]
+__all__ = ["Rep", "RhythmTracker", "select_channel"]

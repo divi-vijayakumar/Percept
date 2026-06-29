@@ -388,6 +388,10 @@ class Percept:
     def _rhythm_tracker(self, goal) -> RhythmTracker:
         prior = goal.state.get("rhythm") if isinstance(goal.state.get("rhythm"), dict) else {}
         kw = {"amp_gate_frac": prior["amp_gate_frac"]} if "amp_gate_frac" in prior else {}
+        if "smooth_s" in prior:  # opt-in rate-invariance smoothing (Build 2); default off keeps legacy counts
+            kw["smooth_s"] = prior["smooth_s"]
+        if prior.get("canonical_select"):  # opt-in rate-invariant channel selection (Build 3); default off
+            kw["canonical_select"] = True
         return RhythmTracker(prior_channel=prior.get("channel"), expected_rom=prior.get("expected_rom"), **kw)
 
     def _fire_rep(self, goal, n: int, stop_t: float) -> FireEvent | None:

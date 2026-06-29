@@ -513,6 +513,7 @@ def coerce_authored_behavior(raw) -> dict:
 _MAX_CHANNEL_LEN = 40  # bound an authored channel-hint string (no busy values / token bombs)
 _VALID_RHYTHM_MODE = {"discrete", "continuous"}  # rep regime: rest-between (shipped) vs rest-less (research seam)
 _MAX_EXPECTED_ROM = 100.0  # bound the authored expected-ROM (channel-native units; generous — channels vary)
+_MAX_SMOOTH_S = 1.0  # bound the authored causal-smoothing cold-start span (seconds); >1s over-lags any rep
 
 
 def coerce_authored_rhythm(raw) -> dict:
@@ -555,6 +556,16 @@ def coerce_authored_rhythm(raw) -> dict:
     frac = _num(raw.get("amp_gate_frac"))
     if frac is not None and 0.0 < frac <= 1.0:
         spec["amp_gate_frac"] = frac
+    # causal smoothing span (seconds): an OPT-IN rate-invariance knob (Build 2). It scales to the measured
+    # period, killing the per-sample-noise that COLLAPSES the count at high fps. Off (0/absent) by default —
+    # only worth enabling above the Nyquist floor, where it pays off (see RhythmTracker.smooth_s).
+    sm = _num(raw.get("smooth_s"))
+    if sm is not None and 0.0 < sm <= _MAX_SMOOTH_S:
+        spec["smooth_s"] = sm
+    # canonical channel selection (Build 3): score channels on the canonical grid instead of the medoid, so
+    # the rep-owning channel stops flipping with fps. Opt-in bool, default off (legacy medoid).
+    if raw.get("canonical_select") is True:
+        spec["canonical_select"] = True
     return {"rhythm": spec} if spec else {}
 
 
