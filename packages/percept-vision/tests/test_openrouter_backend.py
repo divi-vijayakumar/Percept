@@ -72,6 +72,19 @@ class OpenRouterBackendTests(unittest.TestCase):
         self.assertFalse(verdict.satisfied)
         self.assertEqual(verdict.confidence, 0.0)
 
+    def test_process_qa_returns_rewritten_running_answer(self):
+        content = json.dumps({"updated_summary": "peel; slice", "satisfied": False, "confidence": 0.8})
+        v = OpenRouterVision(_settings(), client=_FakeClient(content))
+        verdict = asyncio.run(v.judge("steps?", b"cur", frames=[b"a", b"cur"],
+                                      context={"process_qa": True, "running_answer": "peel"}))
+        self.assertEqual(verdict.running_answer, "peel; slice")
+        self.assertAlmostEqual(verdict.confidence, 0.8)
+
+    def test_process_qa_parse_miss_preserves_prior(self):
+        v = OpenRouterVision(_settings(), client=_FakeClient("garbled"))
+        verdict = asyncio.run(v.judge("steps?", b"cur", context={"process_qa": True, "running_answer": "peel"}))
+        self.assertEqual(verdict.running_answer, "peel")  # never regress the accumulation
+
     def test_registry_resolves_openrouter(self):
         self.assertIn("openrouter", registry._REGISTRY["vision"])
 

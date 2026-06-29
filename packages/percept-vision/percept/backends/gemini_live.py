@@ -31,6 +31,14 @@ _SPOKEN_JUDGE = (
     "CONFIDENCE followed by a number between 0 and 1, then the word BECAUSE followed by a short reason. "
     "Example: 'NO confidence 0.8 because the person is standing.'"
 )
+# process_qa (Item 2) for the live model: the spoken equivalent of GeminiVision._judge_process_qa — the
+# model SPEAKS its updated full answer-so-far, integrating any new step it sees; the transcript IS the
+# running answer the core accumulates and resolves.
+_SPOKEN_PROCESS_QA = (
+    "You are watching a process to answer a standing question. Each turn you are given your ANSWER SO FAR "
+    "and new frames. Speak your UPDATED best answer: keep what still holds, add any new step you now see, "
+    "in order. Speak ONLY the answer itself, as a short ordered description — no preamble."
+)
 _DEFAULT_TIMEOUT_S = 60.0
 
 
@@ -116,14 +124,38 @@ class GeminiLiveVision:
     async def judge(self, condition: str, frame: Any, *, roi: Box | None = None, exemplar: Any = None,
                     corrections: dict | None = None, frames: list | None = None, audio: Any = None,
                     context: dict | None = None) -> Verdict:
-        del audio, roi
+        del audio, roi, exemplar, corrections
+        ctx = context or {}
+        if ctx.get("process_qa"):  # accumulating-answer question — the spoken twin of GeminiVision._judge_process_qa
+            return await self._judge_process_qa(condition, frame, frames, str(ctx.get("running_answer") or ""))
         _, types = _require_genai()
-        client = self._ensure_client()
         parts = self._build_parts(condition, frame, types, frames=frames)
+        transcript = await self._speak(parts, _SPOKEN_JUDGE, types)
+        return parse_spoken_verdict(transcript)
+
+    async def _judge_process_qa(self, condition: str, frame: Any, frames: list | None, prior: str) -> Verdict:
+        """One process-QA step on the live model: the model SPEAKS its updated full answer-so-far; the
+        transcript IS the running answer the core accumulates + resolves. satisfied stays False (resolution
+        is the answer-path's job, not the satisfied gate); a blank transcript preserves the prior answer."""
+        _, types = _require_genai()
+        strip = [f for f in (frames or []) if f is not frame]
+        parts: list = [_part_from_frame(f, types) for f in strip]
+        parts.append(_part_from_frame(frame, types))
+        parts.append(types.Part(text=(f"Standing question: {condition}\nYOUR ANSWER SO FAR: {prior or '(none yet)'}"
+                                       f"\nSpeak your updated full answer.")))
+        transcript = (await self._speak(parts, _SPOKEN_PROCESS_QA, types)).strip()
+        answer = transcript or prior
+        return Verdict(satisfied=False, confidence=0.7 if transcript else 0.0,
+                       evidence=answer or "not enough evidence", running_answer=answer)
+
+    async def _speak(self, parts: list, system_text: str, types) -> str:
+        """Run one clean Live session: send the turn, collect the spoken transcript. A per-call timeout means
+        a hung session (stalled WS / no turn_complete) aborts and retries instead of stalling the run."""
+        client = self._ensure_client()
         config = types.LiveConnectConfig(
             response_modalities=["AUDIO"],                                  # live models only speak
             output_audio_transcription=types.AudioTranscriptionConfig(),    # ...so transcribe the speech
-            system_instruction=types.Content(parts=[types.Part(text=_SPOKEN_JUDGE)]),
+            system_instruction=types.Content(parts=[types.Part(text=system_text)]),
         )
 
         async def _session() -> str:
@@ -139,13 +171,10 @@ class GeminiLiveVision:
                         break
             return "".join(said)
 
-        # Per-call timeout: a hung Live session (stalled WS / no turn_complete) aborts and retries instead of
-        # stalling the whole run (the PVQA-hang lesson, applied to the realtime seam).
         async def _call() -> str:
             return await asyncio.wait_for(_session(), timeout=self._timeout_s)
 
-        transcript = await with_retry(_call, breaker=self._breaker)
-        return parse_spoken_verdict(transcript)
+        return await with_retry(_call, breaker=self._breaker)
 
     async def detect(self, frame: Any, goals: list[Goal]) -> list[Observation]:
         return []

@@ -1,9 +1,11 @@
-"""Gemini Live backend (L1) — spoken-verdict parsing + registry + bench backend selection. No network."""
+"""Gemini Live backend (L1) — spoken-verdict parsing + process_qa branch + registry + bench selection. No network."""
+import asyncio
 import os
 import unittest
+from types import SimpleNamespace
 
 from percept import registry
-from percept.backends.gemini_live import parse_spoken_verdict
+from percept.backends.gemini_live import GeminiLiveVision, parse_spoken_verdict
 
 
 class SpokenVerdictParseTests(unittest.TestCase):
@@ -33,6 +35,35 @@ class SpokenVerdictParseTests(unittest.TestCase):
 
     def test_registry_resolves_gemini_live(self):
         self.assertIn("gemini-live", registry._REGISTRY["vision"])
+
+
+class ProcessQALiveTests(unittest.TestCase):
+    def test_process_qa_spoken_answer_becomes_running_answer(self):
+        # process_qa routes to _judge_process_qa; the spoken transcript IS the running answer the core
+        # accumulates. Monkeypatch _speak so there's no network — we test the branch + Verdict shape.
+        v = GeminiLiveVision(SimpleNamespace(models=SimpleNamespace(vision_model="gemini-3.1-flash-live-preview")),
+                             client=object())
+
+        async def fake_speak(parts, system_text, types):
+            return "peel the onion, then slice it"
+
+        v._speak = fake_speak
+        verd = asyncio.run(v.judge("what are the steps?", b"cur", frames=[b"earlier", b"cur"],
+                                   context={"process_qa": True, "running_answer": "peel the onion"}))
+        self.assertEqual(verd.running_answer, "peel the onion, then slice it")
+        self.assertFalse(verd.satisfied)            # resolution is the core's job, not the satisfied gate
+        self.assertAlmostEqual(verd.confidence, 0.7)
+
+    def test_blank_transcript_preserves_prior_answer(self):
+        v = GeminiLiveVision(SimpleNamespace(models=SimpleNamespace(vision_model="x")), client=object())
+
+        async def fake_speak(parts, system_text, types):
+            return "   "
+
+        v._speak = fake_speak
+        verd = asyncio.run(v.judge("steps?", b"cur", context={"process_qa": True, "running_answer": "peel"}))
+        self.assertEqual(verd.running_answer, "peel")  # never regress the accumulation
+        self.assertEqual(verd.confidence, 0.0)
 
 
 class BenchVisionSelectionTests(unittest.TestCase):

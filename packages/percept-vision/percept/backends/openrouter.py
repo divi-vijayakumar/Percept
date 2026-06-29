@@ -28,6 +28,11 @@ from ._resilience import CircuitBreaker, with_retry
 from .anthropic import _JUDGE_SYSTEM, _coerce_json, _parse_observations, _parse_verdict
 
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+_PROCESS_QA_SYSTEM = (
+    "You answer a standing question by watching a process unfold. Each turn you get your running answer so "
+    "far and new frames; integrate any new step and rewrite the FULL ordered answer (keep what holds, add "
+    "what's new). Reply STRICT JSON only."
+)
 _DEFAULT_TIMEOUT_S = 120.0  # generous headroom for a slow open-weight model; a stall surfaces as retryable
 
 
@@ -151,6 +156,9 @@ class OpenRouterVision:
         last so the model reads time from image order. ``audio`` is IGNORED (these models are vision-only
         here; a ``fused`` concern honestly degrades to the visual strip)."""
         del audio, roi  # accepted for protocol parity; ROI cropping is the caller's job (real pixels)
+        ctx = context or {}
+        if ctx.get("process_qa"):  # accumulating-answer question (mirror GeminiVision._judge_process_qa)
+            return await self._judge_process_qa(condition, frame, frames, str(ctx.get("running_answer") or ""))
         client = self._ensure_client()
         content = self._build_content(condition, frame, exemplar=exemplar,
                                       corrections=corrections, frames=frames, context=context)
@@ -166,6 +174,35 @@ class OpenRouterVision:
 
         resp = await with_retry(_call, breaker=self._breaker)
         return _parse_verdict(_text_of(resp))
+
+    async def _judge_process_qa(self, condition: str, frame: Any, frames: list | None, prior: str) -> Verdict:
+        """One process-QA step: integrate this clip into the running answer (Item 2). Returns the rewritten
+        ordered answer on ``Verdict.running_answer``; on a parse miss the prior answer is preserved."""
+        import json
+
+        client = self._ensure_client()
+        strip = [f for f in (frames or []) if f is not frame]
+        content: list = [_image_block(f) for f in strip]
+        content.append(_image_block(frame))
+        content.append({"type": "text", "text": (
+            f"Standing question: {condition}\nRUNNING ANSWER SO FAR: {prior or '(none yet)'}\n"
+            f"{len(strip) + 1} frame(s) in time order (oldest first). Integrate any NEW step and rewrite the "
+            'full ordered answer. STRICT JSON {"updated_summary": "<answer>", "satisfied": true|false, '
+            '"confidence": 0..1}.')})
+        messages = [{"role": "system", "content": _PROCESS_QA_SYSTEM}, {"role": "user", "content": content}]
+
+        async def _call():
+            return await client.chat.completions.create(model=self._model, messages=messages, max_tokens=1024)
+
+        resp = await with_retry(_call, breaker=self._breaker)
+        try:
+            data = _coerce_json(_text_of(resp))
+        except (ValueError, TypeError):
+            data = {}
+        summary = str(data.get("updated_summary", "") or "").strip() or prior
+        return Verdict(satisfied=bool(data.get("satisfied")) and bool(summary),
+                       confidence=float(data.get("confidence", 0.5) or 0.5),
+                       evidence=summary or "not enough evidence", running_answer=summary)
 
     async def detect(self, frame: Any, goals: list[Goal]) -> list[Observation]:
         client = self._ensure_client()

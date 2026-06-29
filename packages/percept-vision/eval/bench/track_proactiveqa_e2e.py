@@ -13,7 +13,6 @@ The dense baseline is modeled only. No dense media-bearing VLM loop is executed.
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import re
 from dataclasses import dataclass, field
@@ -27,7 +26,7 @@ from percept.edge.tier0 import MotionGate, compile_watchspec
 from percept.gate import FIRE
 from percept.runtime.source import open_source
 
-from .types import TrackResult
+from .types import TrackResult, bench_vision
 
 TRACK = "proactiveqa-e2e"
 ROOT = Path(__file__).resolve().parents[4]
@@ -37,19 +36,6 @@ VIDEO_DIR = RAW / "EGO_videos"
 FPS = 0.2  # 5s cadence, matching the legacy PVQA diagnostic runner.
 PVQA_WINDOW_S = 15.0  # clip window handed to the judge: a few 5s-spaced frames -> temporal evidence
 TML_PAUC = 33.5
-
-PVQA_SYSTEM = (
-    "You are the perception backend for a proactive video assistant. A user asked a standing "
-    "question at the start of the video. Looking at this short clip (a few frames in TIME ORDER, oldest "
-    "first) and how the scene changes across them, decide whether there is now enough visual evidence to "
-    "answer. You are also given your PRIOR running answer (your best answer so far across earlier clips); "
-    "REVISE it with what this clip adds — keep what still holds, correct what changed, add new evidence. "
-    "Reply STRICT JSON "
-    '{"sufficient": true|false, "answer": "<short answer or empty>", '
-    '"running_answer": "<your best answer so far, revised>", "confidence": 0..1}. '
-    "Set sufficient=true ONLY when the clip alone is decisive; otherwise keep accumulating in running_answer."
-)
-
 
 @dataclass
 class AnswerTurn:
@@ -71,20 +57,14 @@ class QuestionRun:
     error: str | None = None
 
 
-class PVQAVision:
-    """Gemini-backed answer-evidence vision adapter."""
+class _RecordingVision:
+    """Records calls + the latest verdict (with the running answer) for the trace, and delegates judging to
+    the ``PERCEPT_VISION_BACKEND``-selected SDK backend — which owns the process_qa running-answer round-trip
+    (gemini · gemini-live · openrouter). Replaces the old bench-local ``PVQAVision`` duplicate, so the pvqa
+    track measures the SHIPPING SDK process_qa path (and runs on any backend, incl. the Live model)."""
 
-    def __init__(self, *, model: str | None = None) -> None:
-        from google import genai
-        from google.genai import types
-
-        import os
-
-        key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or os.environ.get("GOOGLE_AISTUDIO_API_KEY")
-        # Per-request timeout (ms): a stalled socket aborts instead of hanging the whole track forever
-        # (the N=4 PVQA 64-minute hang). 120s is generous for a thinking model.
-        self.client = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=120_000))
-        self.model = model or os.environ.get("PERCEPT_VISION_MODEL") or os.environ.get("PERCEPT_GEMINI_MODEL") or "gemini-3-flash-preview"
+    def __init__(self, settings: Any = None) -> None:
+        self.inner = bench_vision(settings)
         self.calls = 0
         self.last_verdict: dict[str, Any] | None = None
 
@@ -95,75 +75,17 @@ class PVQAVision:
         return []
 
     async def judge(self, condition: str, frame: Any, **kwargs: Any) -> Verdict:
-        from google.genai import types
-
         self.calls += 1
-        # Use the temporal clip when perceive_judged supplied one (goal authored window_s); the strip is
-        # the earlier frames, current frame last (oldest->newest), matching the GeminiVision ordering.
-        strip = [f for f in (kwargs.get("frames") or []) if f is not frame]
-        clip = [*strip, frame]
-        parts = [types.Part.from_bytes(data=raw, mime_type=media)
-                 for media, raw in (_frame_bytes(f) for f in clip)]
-        # process_qa: thread the per-concern PRIOR running answer in so the model REVISES rather than
-        # restarts (the core hands it via context["running_answer"]); its revised best-answer-so-far comes
-        # back out as Verdict.running_answer and the core accumulates + resolves it on the answer path.
-        ctx = kwargs.get("context") or {}
-        prior = str(ctx.get("running_answer") or "").strip()
-        prior_line = f"\nYour PRIOR running answer: {prior or '(none yet)'}"
-        prompt = (f"{PVQA_SYSTEM}\nStanding question/evidence condition: {condition}{prior_line}\n"
-                  f"{len(clip)} frames, JSON only.")
-        try:
-            resp = await self.client.aio.models.generate_content(
-                model=self.model,
-                contents=[*parts, prompt],
-                # gemini-3-flash is a THINKING model: a low cap is spent on reasoning tokens and the JSON gets
-                # truncated -> parse fails -> "not enough evidence" on every call (the n1-fresh 0-answers bug).
-                config=types.GenerateContentConfig(max_output_tokens=1024),
-            )
-        except Exception as exc:
-            # a timed-out / aborted call must not hang or fail the whole question: treat THIS escalation as
-            # insufficient and carry the prior running answer forward so accumulation isn't lost.
-            self.last_verdict = {"condition": condition, "satisfied": False, "confidence": 0.0,
-                                 "evidence": f"call_error: {type(exc).__name__}", "running_answer": prior}
-            return Verdict(satisfied=False, confidence=0.0,
-                           evidence="not enough evidence", running_answer=prior)
-        data = _json(resp.text or "")
-        sufficient = bool(data.get("sufficient"))
-        confidence = float(data.get("confidence", 0.5) or 0.5)
-        answer = str(data.get("answer", "") or "").strip()
-        # The model's revised best-answer-so-far; fall back to a decisive answer or the threaded prior so
-        # the running answer only ever GROWS, never silently empties between escalations.
-        running = str(data.get("running_answer", "") or "").strip() or answer or prior
-        if sufficient and not answer:
-            sufficient = False
+        verdict = await self.inner.judge(condition, frame, **kwargs)  # context (process_qa + running_answer) threads through
+        ra = str(getattr(verdict, "running_answer", "") or "")
         self.last_verdict = {
             "condition": condition,
-            "satisfied": sufficient,
-            "confidence": confidence,
-            "evidence": answer or "not enough evidence",
-            "running_answer": running,
+            "satisfied": bool(verdict.satisfied),
+            "confidence": float(verdict.confidence),
+            "evidence": ra or str(verdict.evidence or ""),
+            "running_answer": ra,
         }
-        return Verdict(satisfied=sufficient, confidence=confidence,
-                       evidence=answer or "not enough evidence", running_answer=running)
-
-
-def _frame_bytes(frame: Any) -> tuple[str, bytes]:
-    if isinstance(frame, tuple) and len(frame) == 2 and isinstance(frame[1], (bytes, bytearray)):
-        return str(frame[0]), bytes(frame[1])
-    if isinstance(frame, (bytes, bytearray)):
-        return "image/jpeg", bytes(frame)
-    if isinstance(frame, dict) and frame.get("type") == "image":
-        src = frame.get("source", {})
-        return src.get("media_type", "image/jpeg"), base64.b64decode(src.get("data", ""))
-    raise TypeError(f"unsupported frame shape {type(frame).__name__}")
-
-
-def _json(text: str) -> dict[str, Any]:
-    start, end = text.find("{"), text.rfind("}")
-    try:
-        return json.loads(text[start:end + 1])
-    except Exception:
-        return {}
+        return verdict
 
 
 def _question(row: dict[str, Any]) -> str:
@@ -298,7 +220,7 @@ async def _score_one(row: dict[str, Any]) -> QuestionRun:
         turns=_turns(row),
     )
     settings = load_settings()
-    vision = PVQAVision()
+    vision = _RecordingVision(settings)  # PERCEPT_VISION_BACKEND (gemini | gemini-live | openrouter)
     core = Percept.create(vision=vision, settings=settings, discover_plugins=False)
     core.add_goal(
         Goal(
