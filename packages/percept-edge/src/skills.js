@@ -1,6 +1,6 @@
 // src/skills.js
 //
-// The on-device EDGE SKILL REGISTRY — the JS twin of `percept_harness/detectors.py`.
+// The on-device EDGE SKILL REGISTRY — the JS twin of `percept/harness/detectors.py`.
 //
 // A curated, registry-extensible library of CHEAP, high-fps signal detectors the brain selects from
 // per goal — the **skills** model: register an impl + a manifest, and the brain composes it into

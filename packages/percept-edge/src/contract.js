@@ -23,7 +23,7 @@
 
 /**
  * Semantic version of the whole frozen contract surface — the JS twin of the Python
- * `percept_contracts.CONTRACT_VERSION`. Same major == wire-compatible. This is DISTINCT from
+ * `percept.contracts.CONTRACT_VERSION`. Same major == wire-compatible. This is DISTINCT from
  * `WatchSpec.version` (the wire integer, defaults to 1) which stays for payload compat.
  */
 export const CONTRACT_VERSION = "1.1.0";
@@ -429,7 +429,7 @@ export function parseBoundaryReport(json) {
 // IncidentSnippet  { kind: "frame"|"clip"|"audio", media: string|null (base64),
 //                    mime: string|null, frames: array|null, t_start: number|null, t_end: number|null }
 //
-// The JS twin of the Python `percept_contracts.Incident` / `IncidentSnippet`: the durable record of
+// The JS twin of the Python `percept.contracts.Incident` / `IncidentSnippet`: the durable record of
 // one concern firing, carrying an optional captured relevant snippet (e.g. a baby-monitor "baby awake"
 // fires an Incident whose snippet is a short clip). `media` is Python `bytes` -> a base64 string on the
 // wire (or null); `verdict` is the firing Verdict { satisfied, confidence, evidence }.

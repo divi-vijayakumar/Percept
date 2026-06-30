@@ -86,7 +86,7 @@ asyncio.run(main())
   perception logic on the perception side of the seam.
 
 ## Where to look
-- `docs/quickstart.md` · `docs/concepts.md` · `docs/backends.md` — adopter docs.
+- `docs/README.md` (index) · `docs/tutorials/quickstart.md` · `docs/explanation/concepts.md` · `docs/reference/backends.md` — adopter docs.
 - `examples/` — `watch_agent.py` (runnable offline) and `webcam_agent.py` (real-backend template).
 - `.claude/skills/percept-agent/` — a Claude Code skill that scaffolds an agent from a plain-language goal.
 - `percept.edge` / `percept.harness` — the server-side edge (tier-0 gate + detector registry)

@@ -55,4 +55,4 @@ state = {"cadence": {"min_judge_interval": 0.5, "gate_on": "fixed"}}
 `cadence_s` also rate-limits a motion goal (a ceiling). The lesson: **if the gate's signal doesn't match
 the event type, the strip never even gets assembled — you have to clear the gate first.**
 
-See [the runtime guide](../runtime.md) for using these on a live `run(source) → incidents` loop.
+See [the runtime guide](../how-to/runtime.md) for using these on a live `run(source) → incidents` loop.

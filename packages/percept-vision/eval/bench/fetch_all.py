@@ -8,7 +8,7 @@ Run:
 Sources:
   * Perception Test (CC-BY-4.0)  — sound + action annotations (~550KB) + N range-fetched ~2MB videos/task
   * RepCount-A (lmms-lab lance)  — meta + N materialized video blobs
-  * golden (relational)          — already local (fixtures-private); just verified + recorded
+  * golden (relational)          — already local (fixtures-golden); just verified + recorded
 """
 from __future__ import annotations
 

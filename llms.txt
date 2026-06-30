@@ -8,9 +8,10 @@ the read is uncertain, and silence otherwise.
 
 - `README.md`: product overview, install commands, architecture, package map, benchmark status.
 - `AGENTS.md`: verified integration guide for Codex, Claude Code, Cursor, Copilot, and other coding agents.
-- `docs/quickstart.md`: 60-second offline first run with the fake backend.
-- `docs/concepts.md`: cognition/perception split, gate, entity memory, detector registry.
-- `docs/backends.md`: fake, Gemini, Claude, Deepgram, and backend selection.
+- `docs/README.md`: documentation index (Diátaxis: tutorials / how-to / reference / explanation).
+- `docs/tutorials/quickstart.md`: 60-second offline first run with the fake backend.
+- `docs/explanation/concepts.md`: cognition/perception split, gate, entity memory, detector registry.
+- `docs/reference/backends.md`: fake, Gemini, Claude, Deepgram, and backend selection.
 
 ## Package Choices
 
@@ -38,10 +39,10 @@ to guess, not as a fire.
 
 ## Key Docs
 
-- Runtime worker: `docs/runtime.md`
-- Edge parity and detector handshake: `docs/edge-parity.md`
-- Benchmark and golden set: `docs/eval.md`
-- Enterprise architecture direction: `docs/enterprise-architecture.md`
+- Architecture (generated diagram + the four tiers): `docs/explanation/architecture.md`
+- Runtime worker: `docs/how-to/runtime.md`
+- Edge parity and detector handshake: `docs/reference/edge-parity.md`
+- Benchmark and golden set: `docs/how-to/eval.md`
 - Public static demo: `examples/web-demo/index.html`
 - Offline examples: `examples/watch_agent.py`, `examples/webcam_agent.py`, `examples/fall_notification.py`
 

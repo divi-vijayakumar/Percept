@@ -30,6 +30,6 @@ Why each knob:
 - **motion gate** (default) — a fall is high-motion, so the cheap gate escalates reliably.
 
 Recall caveat: a **fast fall** the gate catches well; a **slow slump** (low motion) risks being skipped —
-tune the gate threshold for the deployment, and see [motion-and-strip](../concepts/motion-and-strip.md).
+tune the gate threshold for the deployment, and see [motion-and-strip](../explanation/motion-and-strip.md).
 For better cost/recall, register a fall **edge skill** (pose-centroid vertical velocity) — framework
 supported, not yet shipped.

@@ -57,7 +57,18 @@ from .routing import (
     Rule,
 )
 
-__version__ = "0.1.0"
+# Single-sourced from the installed package metadata (pyproject ``[project].version``), so
+# ``percept.__version__`` can never drift from the wheel version. The literal fallback only fires
+# in a bare source checkout where the dist metadata isn't installed.
+from importlib.metadata import PackageNotFoundError as _PkgNotFound  # noqa: E402
+from importlib.metadata import version as _pkg_version  # noqa: E402
+
+try:
+    __version__ = _pkg_version("percept-vision")
+except _PkgNotFound:  # pragma: no cover - dev-only path (uninstalled source tree)
+    __version__ = "0.6.0"
+
+del _pkg_version, _PkgNotFound
 
 # Imported after __version__ so agent.health() can read it lazily without a cycle.
 from .agent import FireEvent, Percept  # noqa: E402

@@ -74,10 +74,10 @@ A goal's `state` carries three orthogonal levers (the conductor can author them 
 - **`structural` / `semantic`** — the richer Tier-0 channels (CLIP/pose); filled by `percept-edge`.
 
 ## Worked scenarios
-- [`examples/fall_notification.py`](../examples/fall_notification.py) — a **physical** event: motion-gated,
-  `miss_cost="severe"`, `temporal="strip"`. See [docs/scenarios/fall.md](scenarios/fall.md).
-- [`examples/screenshare_assistant.py`](../examples/screenshare_assistant.py) — a **content** event:
-  `gate_on="fixed"` on a zero-motion screen. See [docs/scenarios/screenshare.md](scenarios/screenshare.md).
+- [`examples/fall_notification.py`](../../examples/fall_notification.py) — a **physical** event: motion-gated,
+  `miss_cost="severe"`, `temporal="strip"`. See [docs/scenarios/fall.md](fall.md).
+- [`examples/screenshare_assistant.py`](../../examples/screenshare_assistant.py) — a **content** event:
+  `gate_on="fixed"` on a zero-motion screen. See [docs/scenarios/screenshare.md](screenshare.md).
 
 > **Assistant-class, not a guarantee.** The runtime *alerts a human who stays responsible*. It is not a
 > certified safety/detection system on a clock it can't promise. See the fall scenario for the disclaimer.

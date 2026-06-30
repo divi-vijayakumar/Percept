@@ -7,7 +7,7 @@ EDGE      := packages/percept-edge
 PY        := python3
 # absolute path to the zero-dep contract pkg (vision runs from inside $(SDK), so it needs this)
 
-.PHONY: help test test-harness test-js test-all parity eval-live eval-benchmark e2e bench audit-benchmark scorecard benchmark-prepare benchmark-fetch benchmark-fetch-charades benchmark-fetch-proactiveqa benchmark-index-proactiveqa benchmark-manifest benchmark-run benchmark-collect check reproduce
+.PHONY: help test test-harness test-js test-all parity eval-live eval-benchmark e2e bench audit-benchmark scorecard benchmark-prepare benchmark-fetch benchmark-fetch-charades benchmark-fetch-proactiveqa benchmark-index-proactiveqa benchmark-manifest benchmark-run benchmark-collect check reproduce clean architecture architecture-check
 
 help:
 	@echo "test       L1 unit — percept-vision (incl. percept.harness + percept.contracts; fakes, no keys, fast)"
@@ -37,8 +37,10 @@ test-js:
 
 test-all: test test-js
 
-clean:  ## remove build artifacts
+clean:  ## remove build + tooling artifacts (leaves out/ — that's intentional local run output)
 	rm -rf packages/*/build packages/*/dist packages/*/*.egg-info
+	rm -rf .pytest_cache .ruff_cache .mypy_cache packages/*/.pytest_cache
+	find . -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
 
 parity:  ## Edge<->harness conformance — JS percept-edge vs Python percept.harness, byte-for-byte
 	PYTHONPATH=$(SDK) $(PY) $(EDGE)/parity/compare.py
@@ -115,9 +117,16 @@ calibrate:
 exp-categorical:
 	cd $(SDK) && PYTHONPATH=. $(PY) -m eval.exp_categorical
 
-check:
+check: architecture-check
 	@cd $(SDK) && PYTHONPATH=. $(PY) -m compileall -q percept tests && echo "compileall ok"
 	@cd $(SDK) && (ruff check . || echo "ruff not installed — skipping lint")
+
+architecture:  ## (re)generate architecture.html + docs/architecture.svg from code + meta
+	$(PY) tools/build_architecture.py --meta docs/architecture.meta.json --out architecture.html --svg docs/architecture.svg
+
+architecture-check:  ## CI gate: fail if the committed diagram is stale vs code/meta
+	$(PY) tools/build_architecture.py --check --meta docs/architecture.meta.json --out architecture.html --svg docs/architecture.svg
+	git diff --exit-code architecture.html docs/architecture.svg
 
 reproduce:
 	PYTHONPATH=$(SDK) $(PY) -m percept.bench scorecard --manifest eval/golden-v1/MANIFEST.json --out scorecard.txt

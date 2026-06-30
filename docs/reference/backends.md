@@ -194,4 +194,4 @@ logic without asserting any model intelligence. This split is deliberate:
 - **L2/L3 (live):** real backends, keys present. The only place model behavior is exercised.
 
 So a green offline test means *your integration is correct*; testing whether Percept actually
-*perceives* the world is a live-backend job. See [quickstart.md](quickstart.md) for both paths.
+*perceives* the world is a live-backend job. See [quickstart.md](../tutorials/quickstart.md) for both paths.

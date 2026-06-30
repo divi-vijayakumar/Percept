@@ -2,6 +2,11 @@
 
 Status: draft
 
+> **No Percept accuracy claims yet.** Every number in this document is one of: an *external reference bar*
+> (e.g. a TML-reported figure), an *illustrative scorecard-format example*, or a *proxy* with a stated
+> release blocker. Percept's own measured results are **not published until the model-sweep phase** runs a
+> reproducible, full-mode scorecard. Treat the figures here as methodology, not as benchmarks.
+
 This spec replaces the current "one benchmark answers everything" framing. Percept's benchmark must run
 the product path first: edge/conductor wakes candidate moments, the backend judges only candidates, and
 the core emits `fire`/`ask`/`silent`.

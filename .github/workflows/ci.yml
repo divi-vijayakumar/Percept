@@ -56,6 +56,19 @@ jobs:
       - name: public scorecard
         run: make scorecard
 
+  architecture-drift:
+    name: Architecture diagram not stale
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so git rev-parse / git log resolve the HEAD sha + date
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: architecture diagram == generated (no drift)
+        run: make architecture-check
+
   l2-live:
     name: L2 live eval (gated)
     runs-on: ubuntu-latest

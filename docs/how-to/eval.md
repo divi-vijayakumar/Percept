@@ -7,7 +7,7 @@ shouldn't, and **refuse to guess** when it isn't sure?
 This page covers the **consumer-facing** path — a per-concern precision / recall report from a
 manifest of labelled clips, runnable **fully offline** (the deterministic `fake` backend, no keys).
 The SDK's own internal gate (`eval.run`, asserting `false_fire == 0` on a held-out golden split) is
-unchanged and documented separately in [`packages/percept-vision/eval/`](../packages/percept-vision/eval/).
+unchanged and documented separately in [`packages/percept-vision/eval/`](../../packages/percept-vision/eval/).
 
 The public harness is `percept.bench`; installed environments also get the `percept-bench` console
 script. From a source checkout, point `PYTHONPATH` at the package:
@@ -26,7 +26,7 @@ percept-bench scorecard --manifest eval/golden-v1/MANIFEST.json --out scorecard.
 
 For the public-grade live benchmark plan, including sample-size gates, cost estimates, and the
 decision to use OpenAI/TML as reference rows rather than paid reproduced legs, see
-[`publishable-benchmark.md`](publishable-benchmark.md).
+[`publishable-benchmark.md`](../reference/publishable-benchmark.md).
 
 ---
 
@@ -106,7 +106,7 @@ A benchmark is one JSON file: the **concerns** under test plus the **labelled cl
 
 `expected` is *your* ground truth — the moment a human (or a stronger adjudicator model) says the
 condition became true. The SDK's own labelling/review provenance pattern is documented in
-[`eval/LABELING_PIPELINE.md`](../packages/percept-vision/eval/LABELING_PIPELINE.md).
+[`eval/LABELING_PIPELINE.md`](../../packages/percept-vision/eval/LABELING_PIPELINE.md).
 
 ---
 
@@ -203,8 +203,8 @@ rather than hiding behind a healthy average.
 
 ## Golden Set + Baselines
 
-- Golden v1 draft manifest: [`../eval/golden-v1/MANIFEST.json`](../eval/golden-v1/MANIFEST.json)
-- Baseline registry: [`../packages/percept-vision/eval/baselines.json`](../packages/percept-vision/eval/baselines.json)
+- Golden v1 draft manifest: [`../eval/golden-v1/MANIFEST.json`](../../eval/golden-v1/MANIFEST.json)
+- Baseline registry: [`../packages/percept-vision/eval/baselines.json`](../../packages/percept-vision/eval/baselines.json)
 
 These are intentionally separate from private fixtures. A release scorecard must use license-cleared,
 content-hashed test rows and cite the manifest hash.

@@ -1,9 +1,12 @@
 # Heavy pixel data stays OUT of git history (~54MB). It is regenerable from source
 # and, being third-party YouTube material, is not redistributable anyway.
-# The label layer (*.jsonl, metadata.json, splits.json, *.md) IS tracked and PR-reviewed.
-fixtures-private/scenes/**/clip.mp4
-fixtures-private/scenes/**/clip.json
-fixtures-private/scenes/**/frames/
+# The label layer (*.jsonl, metadata.json, splits.json) IS tracked and PR-reviewed.
+fixtures-golden/scenes/**/clip.mp4
+fixtures-golden/scenes/**/clip.json
+fixtures-golden/scenes/**/frames/
+
+# Internal human-review notes — curation provenance, not part of the public golden set.
+fixtures-golden/REVIEW_QUEUE.md
 
 # macOS junk
 .DS_Store

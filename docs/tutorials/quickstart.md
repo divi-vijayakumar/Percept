@@ -23,7 +23,7 @@ import percept
 
 The **core runs offline** with deterministic `fake` backends, so you can build and test the whole
 cognition path — goals, the gate, entity memory, escalation — with no API keys. Real model backends
-are optional extras (see [backends.md](backends.md)).
+are optional extras (see [backends.md](../reference/backends.md)).
 
 ---
 
@@ -133,14 +133,14 @@ refractory, entity memory, and escalation are unchanged — they only ever see t
 never pixels.
 
 You can also select backends per-seam via env vars without touching code
-(`PERCEPT_VISION_BACKEND=gemini`, etc.) — see [backends.md](backends.md).
+(`PERCEPT_VISION_BACKEND=gemini`, etc.) — see [backends.md](../reference/backends.md).
 
 ---
 
 ## Where to go next
 
-- **[concepts.md](concepts.md)** — the three-state gate, rising-edge firing, BehaviorProgram vs
+- **[concepts.md](../explanation/concepts.md)** — the three-state gate, rising-edge firing, BehaviorProgram vs
   PerceptionSpec, edge detectors, and the escalation ladder.
-- **[backends.md](backends.md)** — install extras, keys, env-var selection, and swapping backends.
-- **[e2e-flow-milk-boilover.md](e2e-flow-milk-boilover.md)** — a full trace of one request through
+- **[backends.md](../reference/backends.md)** — install extras, keys, env-var selection, and swapping backends.
+- **[e2e-flow-milk-boilover.md](../explanation/e2e-flow-milk-boilover.md)** — a full trace of one request through
   the whole system, and where the perception bottleneck lives.

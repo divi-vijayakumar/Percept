@@ -1,5 +1,9 @@
 # Publishable Benchmark Runbook
 
+> **No Percept accuracy claims yet.** The numbers below are *external reference bars* (TML / OpenAI
+> Realtime rows, cited as comparators) and *target sample sizes* — not Percept results. Percept's own
+> scorecard is produced by the model-sweep phase, which this runbook describes how to run.
+
 Start with the methodology split in [`benchmark-methodology.md`](benchmark-methodology.md). The
 runbook below is operational; the methodology spec defines what each lane is allowed to claim.
 

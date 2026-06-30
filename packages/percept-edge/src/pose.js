@@ -1,6 +1,6 @@
 // src/pose.js
 //
-// pose-openness — the first MODEL-backed edge skill (the JS twin of percept_harness's PoseOpenness).
+// pose-openness — the first MODEL-backed edge skill (the JS twin of percept.harness's PoseOpenness).
 //
 // Counts fast whole-body reps where frame-diff motion OVER-counts (it conflates each rep's open+close)
 // and a per-frame VLM ALIASES on fast motion. openness = ankle-spread/shoulder-width + wrist-elevation

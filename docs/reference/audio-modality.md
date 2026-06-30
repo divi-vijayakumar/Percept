@@ -135,4 +135,4 @@ acoustic-onset boundary is what tells the gate *when* that escalation is worth a
 > never becomes a second, ungated judge.
 
 See also: [`docs/registration.md`](registration.md) (register your own detector + category),
-[`docs/concepts.md`](concepts.md) (the gate + the one perception seam).
+[`docs/concepts.md`](../explanation/concepts.md) (the gate + the one perception seam).

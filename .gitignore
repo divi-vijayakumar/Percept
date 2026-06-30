@@ -91,6 +91,9 @@ omnipro_*.json
 
 # Private eval corpus — UNCLEARED third-party (YouTube) sources, dev/eval fixture only, NEVER redistribute
 # (spec Principle 8). Lives at the canonical find_golden_root() path; also ignore a stray top-level drop.
+# (The tracked label layer under eval/fixtures-golden/ predates this rule and stays tracked; this guards
+# against new pixel/media drops. REVIEW_QUEUE.md is internal curation notes — excluded from the public tree.)
+**/eval/fixtures-golden/REVIEW_QUEUE.md
 **/eval/fixtures-private/
 /golden/
 # Phase-0 perception probe clips (may contain personal recordings)
@@ -121,6 +124,13 @@ docs/publish-readiness-plan.md
 /Spec/
 /handoff/
 /review/
+internal-docs/
+# internal release-planning brief (rules of engagement) — never published
+RELEASE_BRIEF.md
+# release-run reports/scratch (resumable overnight runs) — never published
+docs/_release/
+# consolidated home for local run artifacts (verdicts/scorecards/signals) — never published
+out/
 docs/discussions/
 docs/enterprise-architecture.md
 docs/*handoff*.md
