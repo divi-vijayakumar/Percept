@@ -8,6 +8,7 @@ episodes (Phase 4), events (Phase 5) — without editing the gate/graph contract
 
 from __future__ import annotations
 
+import inspect
 import time
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Callable
@@ -586,6 +587,21 @@ class Percept:
         return f"Still waiting on: {goal.condition}"
 
     # -- the watch path ------------------------------------------------------
+    async def _emit_trace(self, trace_id: str, t: float, stage: str, *, goal_id: str | None = None,
+                          **data: Any) -> None:
+        """Invoke ``on_trace`` safely: await an async callback, and never let a bad tracer break the
+        loop (observability must not crash perception). Caller guards on ``self.on_trace is not None``
+        first so no trace kwargs are built on the default (untraced) hot path."""
+        cb = self.on_trace
+        if cb is None:
+            return
+        try:
+            result = cb(TraceEvent(trace_id=trace_id, stage=stage, t=t, goal_id=goal_id, data=data))
+            if inspect.isawaitable(result):
+                await result
+        except Exception:  # noqa: BLE001 — a tracer is observability; swallow its failures
+            pass
+
     async def perceive_judged(
         self, frame: Any, source: str = "camera", *, t: float | None = None
     ) -> list[FireEvent]:
@@ -595,15 +611,14 @@ class Percept:
         but feed the **same three-state gate** — one gate, two perception tracks (spec §5.6).
         """
         now = self.clock() if t is None else t
-        # Per-frame decision trace (opt-in via on_trace; no-op otherwise). trace_id correlates every
-        # stage of this frame; derived from source+timestamp so traced runs stay deterministic.
+        # Per-frame decision trace (opt-in via on_trace; no-op otherwise). trace_id correlates this
+        # frame's stages; derived from source+timestamp — deterministic WHEN t is supplied (as in
+        # tests). With t=None it uses the wall clock, like any production run.
         trace_id = f"{source}@{now}"
+        tracing = self.on_trace is not None  # guard so the default (untraced) path builds no trace kwargs
 
-        def _tr(stage: str, *, goal_id: str | None = None, **data: Any) -> None:
-            if self.on_trace is not None:
-                self.on_trace(TraceEvent(trace_id=trace_id, stage=stage, t=now, goal_id=goal_id, data=data))
-
-        _tr("source.frame")
+        if tracing:
+            await self._emit_trace(trace_id, now, "source.frame")
         self._window(source).push(now, frame)  # feed the rolling window for temporal perception
         observations = await self.vision.detect(frame, self.goals.active())
         self.graph.ingest(observations, frame, source, t=now)
@@ -639,15 +654,17 @@ class Percept:
                 {"process_qa": True, "running_answer": ctx.running_answer}
                 if goal.state.get("process_qa") else None
             )
-            _tr("judge.started", goal_id=goal.id,
-                temporal=getattr(spec, "temporal", None), roi=roi is not None)
+            if tracing:
+                await self._emit_trace(trace_id, now, "judge.started", goal_id=goal.id,
+                                       temporal=getattr(spec, "temporal", None), roi=roi is not None)
             verdict = await self._judge(
                 goal, frame, roi, corrections, entity_id=focus.id if focus else None,
                 frames=strip, audio=audio, context=process_ctx,
             )
-            _tr("judge.finished", goal_id=goal.id,
-                satisfied=getattr(verdict, "satisfied", None),
-                confidence=getattr(verdict, "confidence", None))
+            if tracing:
+                await self._emit_trace(trace_id, now, "judge.finished", goal_id=goal.id,
+                                       satisfied=getattr(verdict, "satisfied", None),
+                                       confidence=getattr(verdict, "confidence", None))
             resolved: FireEvent | None = None
             if process_ctx is not None and getattr(verdict, "running_answer", ""):
                 ctx.running_answer = verdict.running_answer  # accumulate the model's rewritten summary
@@ -675,8 +692,6 @@ class Percept:
                 self.last_satisfied[goal.id] = now  # A1 deadline: the expected event happened
             base_key = (goal.id, focus.id if focus else None)
             ev_fire = self._fire_concern(goal, verdict, base_key, freshness=freshness, t=now)
-            _tr("gate.classified", goal_id=goal.id, truth=truth,
-                action=(ev_fire.action if ev_fire is not None else "silent"))
             if ev_fire is not None:
                 if ev_fire.action == FIRE:
                     self.funnel.fired(concern=goal.id, camera=source)  # a rising-edge fire emitted
@@ -684,6 +699,12 @@ class Percept:
             if resolved is not None:  # the process-QA running answer crossed the bar this tick
                 self.funnel.fired(concern=goal.id, camera=source)
                 events.append(resolved)
+            if tracing:
+                # AFTER both fire paths: a resolved process-QA answer IS a fire even when ev_fire is None.
+                action = (ev_fire.action if ev_fire is not None
+                          else ("fire" if resolved is not None else "silent"))
+                await self._emit_trace(trace_id, now, "gate.classified", goal_id=goal.id,
+                                       truth=truth, action=action)
         self._log_fires(events, now)
         await self._deliberate_confused(now)  # Posture B: auto-refine recurrently-ambiguous concerns
         return events

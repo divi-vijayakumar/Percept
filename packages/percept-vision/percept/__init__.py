@@ -58,18 +58,30 @@ from .routing import (
     Rule,
 )
 
-# Single-sourced from the installed package metadata (pyproject ``[project].version``), so
-# ``percept.__version__`` can never drift from the wheel version. The literal fallback only fires
-# in a bare source checkout where the dist metadata isn't installed.
+# Single-sourced from pyproject ``[project].version`` — never a hand-synced literal. Installed: read
+# the dist metadata. Bare source checkout (no metadata): read pyproject directly (it isn't in the
+# wheel, but a checkout always has it), so a version bump can't leave a stale fallback here.
 from importlib.metadata import PackageNotFoundError as _PkgNotFound  # noqa: E402
 from importlib.metadata import version as _pkg_version  # noqa: E402
 
-try:
-    __version__ = _pkg_version("percept-vision")
-except _PkgNotFound:  # pragma: no cover - dev-only path (uninstalled source tree)
-    __version__ = "0.6.0"
 
-del _pkg_version, _PkgNotFound
+def _resolve_version() -> str:
+    try:
+        return _pkg_version("percept-vision")
+    except _PkgNotFound:  # pragma: no cover - dev-only path (uninstalled source tree)
+        import pathlib
+        import re
+
+        try:
+            text = (pathlib.Path(__file__).resolve().parent.parent / "pyproject.toml").read_text()
+        except OSError:
+            return "0.0.0+unknown"
+        m = re.search(r'(?m)^\s*version\s*=\s*"([^"]+)"', text)
+        return m.group(1) if m else "0.0.0+unknown"
+
+
+__version__ = _resolve_version()
+del _resolve_version, _pkg_version, _PkgNotFound
 
 # Imported after __version__ so agent.health() can read it lazily without a cycle.
 from .agent import FireEvent, Percept  # noqa: E402

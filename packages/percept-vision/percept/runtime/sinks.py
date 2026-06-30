@@ -20,34 +20,51 @@ class UrlPolicyError(ValueError):
     """Raised when a sink/source URL is rejected by its :class:`UrlPolicy`."""
 
 
+# CGNAT (RFC 6598) is internal but is_global only returns False for it on CPython >= 3.12.4; check it
+# explicitly so the SSRF block holds on every supported interpreter (>=3.10).
+_CGNAT4 = ipaddress.ip_network("100.64.0.0/10")
+
+
+def _is_internal_ip(ip: "ipaddress._BaseAddress") -> bool:
+    """True for any address that is NOT a publicly routable target (SSRF-blocked)."""
+    return (not ip.is_global) or (ip.version == 4 and ip in _CGNAT4)
+
+
 @dataclass(frozen=True)
 class UrlPolicy:
     """SSRF-safe URL policy for outbound sinks.
 
-    Defaults are strict: **https only**, and **private / loopback / link-local** targets (incl. the
-    cloud metadata IP ``169.254.169.254``) are blocked, so a `WebhookSink` URL — which an app may take
-    from user input — can't be aimed at an internal service. ``file://`` and friends fail the scheme
-    check. Use :meth:`dev` for a permissive local-dev policy.
+    Defaults are strict: **https only**, and any **non-globally-routable** target (private, loopback,
+    link-local incl. the metadata IP ``169.254.169.254``, CGNAT ``100.64/10``, reserved …) is blocked,
+    so a ``WebhookSink`` URL — which an app may take from user input — can't be aimed at an internal
+    service. ``file://`` fails the scheme check. Use :meth:`dev` for a permissive local-dev policy.
+
+    Checks are split: :meth:`check_static` is DNS-free (scheme + IP literals) and runs at construction;
+    :meth:`check_resolved` does the DNS lookup and runs at **send** time, so the constructor never
+    blocks on DNS and the host is re-resolved close to use. (Residual DNS-rebinding TOCTOU remains —
+    urllib re-resolves when it connects — so this narrows, not closes, the window.)
     """
 
     allowed_schemes: frozenset = field(default_factory=lambda: frozenset({"https"}))
     block_private: bool = True
     allowed_hosts: frozenset | None = None
-    resolve: bool = True  # resolve hostnames so a name pointing at a private IP is also blocked
+    resolve: bool = True  # resolve hostnames so a name pointing at an internal IP is also blocked
 
     @classmethod
     def dev(cls) -> "UrlPolicy":
         """Permissive policy for local development: allow http + loopback/private targets."""
         return cls(allowed_schemes=frozenset({"https", "http"}), block_private=False)
 
-    def validate(self, url: str) -> None:
+    def check_static(self, url: str) -> None:
+        """Cheap, DNS-free checks: scheme, host present, allowlist, and IP-literal not-global."""
         try:
             parts = urllib.parse.urlsplit(url)
         except ValueError as exc:
             raise UrlPolicyError(f"unparseable URL: {url!r}") from exc
         if parts.scheme not in self.allowed_schemes:
             raise UrlPolicyError(
-                f"scheme {parts.scheme!r} not allowed (allowed: {sorted(self.allowed_schemes)})"
+                f"scheme {parts.scheme!r} not allowed (allowed: {sorted(self.allowed_schemes)}) — "
+                "pass url_policy=UrlPolicy.dev() for local http/loopback sinks"
             )
         host = parts.hostname
         if not host:
@@ -55,25 +72,47 @@ class UrlPolicy:
         if self.allowed_hosts is not None and host not in self.allowed_hosts:
             raise UrlPolicyError(f"host {host!r} not in the allowlist")
         if self.block_private:
-            self._reject_internal(host)
+            lowered = host.lower()
+            if lowered == "localhost" or lowered.endswith(".local") or lowered == "metadata.google.internal":
+                raise UrlPolicyError(
+                    f"host {host!r} is an internal/loopback name (SSRF-blocked) — use UrlPolicy.dev() locally"
+                )
+            try:
+                ip = ipaddress.ip_address(host)  # IP literal
+            except ValueError:
+                return  # a DNS name — resolved at send time by check_resolved()
+            if _is_internal_ip(ip):
+                raise UrlPolicyError(f"host {host!r} -> {ip} is not globally routable (SSRF-blocked)")
 
-    def _reject_internal(self, host: str) -> None:
-        lowered = host.lower()
-        if lowered == "localhost" or lowered.endswith(".local") or lowered == "metadata.google.internal":
-            raise UrlPolicyError(f"host {host!r} is an internal/loopback name (SSRF-blocked)")
-        ips: list = []
+    def check_resolved(self, url: str) -> None:
+        """DNS-resolving check, run at SEND time: block when a host resolves to an internal address.
+
+        Catches encoded-IP literals (``0x7f.0.0.1``, ``2130706433``) the OS resolver decodes, and names
+        that point at internal IPs. ``block_private=False`` or ``resolve=False`` skips it.
+        """
+        if not (self.block_private and self.resolve):
+            return
+        host = urllib.parse.urlsplit(url).hostname
+        if not host:
+            return
         try:
-            ips = [ipaddress.ip_address(host)]  # IP literal
+            ipaddress.ip_address(host)
+            return  # already covered by check_static
         except ValueError:
-            if self.resolve:
-                try:
-                    ips = [ipaddress.ip_address(info[4][0]) for info in socket.getaddrinfo(host, None)]
-                except OSError:
-                    ips = []  # unresolvable — let the request fail naturally rather than guess
-        for ip in ips:
-            if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
-                    or ip.is_multicast or ip.is_unspecified):
-                raise UrlPolicyError(f"host {host!r} -> {ip} is private/loopback/link-local (SSRF-blocked)")
+            pass
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except OSError:
+            return  # unresolvable — the request fails naturally
+        for info in infos:
+            ip = ipaddress.ip_address(info[4][0])
+            if _is_internal_ip(ip):
+                raise UrlPolicyError(f"host {host!r} -> {ip} is not globally routable (SSRF-blocked)")
+
+    def validate(self, url: str) -> None:
+        """Full validation (static + DNS) — used by tests and explicit pre-checks."""
+        self.check_static(url)
+        self.check_resolved(url)
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -92,15 +131,23 @@ def _send(req: urllib.request.Request, timeout: float):
 
 
 def redact_url(url: str) -> str:
-    """Strip ``user:pass@`` userinfo from a URL so credentials never land in a log/DLQ record."""
+    """Reduce a URL to ``scheme://host[:port]`` for logs/DLQ records.
+
+    Drops userinfo **and the path/query/fragment** — the most common webhook-secret locations
+    (Slack/Discord ``/services/T/B/SECRET`` path tokens, ``?token=`` query). Re-brackets IPv6 hosts.
+    """
     try:
         p = urllib.parse.urlsplit(url)
-        netloc = p.hostname or ""
-        if p.port is not None:
-            netloc = f"{netloc}:{p.port}"
-        return urllib.parse.urlunsplit((p.scheme, netloc, p.path, p.query, p.fragment))
     except ValueError:
         return "<unparseable-url>"
+    host = p.hostname or ""
+    if ":" in host:  # IPv6 literal — re-bracket
+        host = f"[{host}]"
+    if p.port is not None:
+        host = f"{host}:{p.port}"
+    if not host:
+        return "<no-host>"
+    return f"{p.scheme}://{host}" if p.scheme else host
 
 
 def _jsonable(value: Any) -> Any:
@@ -146,10 +193,11 @@ class WebhookSink:
         dead_letter: list[dict[str, Any]] | None = None,
         url_policy: UrlPolicy | None = None,
     ) -> None:
-        # Default to the strict SSRF policy; validate the URL up front so a bad target fails loudly at
-        # construction, not on the first incident. Pass UrlPolicy.dev() for local http/loopback sinks.
+        # Strict SSRF policy by default. Cheap, DNS-free checks run now (a bad scheme/IP fails loudly at
+        # construction without blocking on DNS); the resolving check runs per send (see __call__), so a
+        # name is re-resolved close to use. Pass UrlPolicy.dev() for local http/loopback sinks.
         self.url_policy = url_policy if url_policy is not None else UrlPolicy()
-        self.url_policy.validate(url)
+        self.url_policy.check_static(url)
         self.url = url
         self.timeout_s = timeout_s
         self.headers = {"Content-Type": "application/json", **(headers or {})}
@@ -167,6 +215,9 @@ class WebhookSink:
         return headers
 
     def __call__(self, incident: Any) -> None:
+        # Re-resolve the host against the policy immediately before sending (narrows DNS-rebinding TOCTOU;
+        # a name public at construction but flipped to an internal IP is blocked here).
+        self.url_policy.check_resolved(self.url)
         body = json.dumps(incident_payload(incident, include_media=self.include_media)).encode("utf-8")
         last_exc: Exception | None = None
         for attempt in range(self.retries + 1):
@@ -221,5 +272,11 @@ class FileDeadLetterQueue:
 
 
 def webhook(url: str, **kwargs) -> WebhookSink:
-    """Convenience factory for ``run(..., on_incident=webhook(url))``."""
+    """Convenience factory for ``run(..., on_incident=webhook(url))``.
+
+    By default the URL must be **https to a public host** (SSRF-safe — see :class:`UrlPolicy`). For a
+    local/dev sink (``http://localhost:8080`` …) pass ``url_policy=UrlPolicy.dev()``::
+
+        webhook("http://localhost:8080/hook", url_policy=UrlPolicy.dev())
+    """
     return WebhookSink(url, **kwargs)

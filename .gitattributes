@@ -1,0 +1,5 @@
+# Generated architecture artifacts are byte-checked by `make architecture-check` — pin them to LF so
+# an autocrlf checkout can't introduce CRLF and defeat the byte-determinism gate.
+architecture.html       text eol=lf
+docs/architecture.svg   text eol=lf
+docs/architecture.meta.json text eol=lf

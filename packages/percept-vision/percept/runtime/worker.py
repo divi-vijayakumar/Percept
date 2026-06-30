@@ -19,7 +19,6 @@ from typing import Any, AsyncIterator, Callable
 from percept.events import FrameWindow
 from percept.gate import FIRE, ASK
 from percept.incidents import make_incident, snippet_from_window
-from percept.observability import TraceEvent
 
 
 @dataclass
@@ -172,6 +171,9 @@ async def run(
     from percept.edge.tier0 import MotionGate, compile_watchspec
 
     settings = getattr(core, "settings", None) or load_settings()
+    # This run's tracer takes precedence; a tracer set via Percept.create(on_trace=) is preserved when
+    # run() gets none. Restored in the finally so a tracer never leaks into the next run(core).
+    _prev_on_trace = getattr(core, "on_trace", None)
     if on_trace is not None:
         core.on_trace = on_trace  # the per-frame decision trace flows out of perceive_judged
     spec = compile_watchspec(list(core.goals.active()), threshold=settings.edge.motion_gate)
@@ -196,7 +198,7 @@ async def run(
         # boundary check rides the per-frame cadence — only spending a summarize call when it actually fires.
         check_boundary = getattr(core, "check_episode_boundary", None)
 
-        async def _emit_fires(fires, *, at):
+        async def _emit_fires(fires, *, at, from_boundary=False):
             """Turn a list of FireEvents (from perceive_judged OR the boundary) into incidents/asks."""
             for fire in fires or []:
                 if getattr(fire, "action", None) == ASK:
@@ -215,11 +217,14 @@ async def run(
                     stats.fires += 1
                 snippet = snippet_from_window(clips, kind=snippet_kind, pre_s=snippet_pre_s)
                 incident = make_incident(fire, ts=at, snippet=snippet)
-                if on_trace is not None:
-                    on_trace(TraceEvent(
-                        trace_id=f"{gate_source}@{at}", stage="incident.created", t=at,
-                        goal_id=incident.concern_id, data={"incident_id": incident.id},
-                    ))
+                if core.on_trace is not None:
+                    # Routed through the safe core emitter (awaits async, swallows tracer errors).
+                    # from_boundary flags incidents that did NOT pass through perceive_judged, so their
+                    # trace_id has no upstream judge stages (an honest marker, not an orphan).
+                    await core._emit_trace(
+                        f"{gate_source}@{at}", at, "incident.created",
+                        goal_id=incident.concern_id, incident_id=incident.id, from_boundary=from_boundary,
+                    )
                 if on_health is not None:
                     await _call_sink(
                         on_health,
@@ -245,7 +250,7 @@ async def run(
 
             # boundary first: it must see quiet frames too (the episode ends when activity stops)
             if check_boundary is not None:
-                async for incident in _emit_fires(await check_boundary(t=t, inactivity_s=episode_inactivity_s), at=t):
+                async for incident in _emit_fires(await check_boundary(t=t, inactivity_s=episode_inactivity_s), at=t, from_boundary=True):
                     yield incident
 
             decision = gate.evaluate(gate_frame, ts=t)
@@ -267,5 +272,6 @@ async def run(
             await _call_sink(on_health, RuntimeHealthEvent("runtime_error", data={"error": repr(exc)}))
         raise
     finally:
+        core.on_trace = _prev_on_trace  # restore — don't leak this run's tracer into the next run(core)
         if on_health is not None:
             await _call_sink(on_health, RuntimeHealthEvent("runtime_ended"))

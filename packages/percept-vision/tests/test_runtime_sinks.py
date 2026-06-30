@@ -86,9 +86,9 @@ class WebhookSinkTests(unittest.TestCase):
 
     def test_dead_letter_records_are_redacted(self):
         dead = []
-        # credentialed URL + signing secret: NEITHER may appear in the DLQ record.
+        # a Slack-style URL with the secret in the PATH + userinfo + signing secret: NONE may appear.
         sink = WebhookSink(
-            "https://user:pass@example.test/hook",
+            "https://user:pass@hooks.example.com/services/T000/B000/SECRETTOKEN?token=QUERYSECRET",
             retries=1, retry_backoff_s=0, dead_letter=dead, signing_secret="shh",
         )
         with patch("percept.runtime.sinks._send", side_effect=TimeoutError("slow")):
@@ -97,12 +97,12 @@ class WebhookSinkTests(unittest.TestCase):
         self.assertEqual(len(dead), 1)
         rec = dead[0]
         self.assertEqual(set(rec), {"url", "body_sha256", "error", "attempts"})
-        self.assertEqual(rec["url"], "https://example.test/hook")  # user:pass@ stripped
+        self.assertEqual(rec["url"], "https://hooks.example.com")  # userinfo + path + query stripped
         self.assertEqual(len(rec["body_sha256"]), 64)
         self.assertEqual(rec["attempts"], 2)
-        # no raw payload, no signing secret, no credentials anywhere in the serialized record
+        # no raw payload, no signing secret, no path/query/userinfo secret anywhere in the record
         blob = json.dumps(rec)
-        for leaked in ("Door alert", "shh", "user:pass"):
+        for leaked in ("Door alert", "shh", "user:pass", "SECRETTOKEN", "QUERYSECRET"):
             self.assertNotIn(leaked, blob)
 
     def test_file_dead_letter_records_jsonl_redacted(self):
@@ -119,7 +119,7 @@ class WebhookSinkTests(unittest.TestCase):
                     sink(_incident())
             rows = queue.read_all()
             self.assertEqual(len(rows), 1)
-            self.assertEqual(rows[0]["url"], "https://example.test/hook")
+            self.assertEqual(rows[0]["url"], "https://example.test")
             self.assertEqual(len(rows[0]["body_sha256"]), 64)
             self.assertNotIn("headers", rows[0])
             self.assertNotIn("body", rows[0])
@@ -143,8 +143,21 @@ class UrlPolicyTests(unittest.TestCase):
             with self.assertRaises(UrlPolicyError):
                 UrlPolicy().validate(bad)
 
+    def test_default_blocks_cgnat_literal(self):
+        # RFC 6598 CGNAT — internal, but ip.is_global only catches it on CPython >= 3.12.4
+        with self.assertRaises(UrlPolicyError):
+            UrlPolicy().validate("https://100.64.0.1/hook")
+
     def test_default_allows_public_https(self):
         UrlPolicy().validate("https://hooks.example.com/abc")  # unresolved public name -> allowed
+
+    def test_redact_url_drops_path_query_and_brackets_ipv6(self):
+        from percept.runtime.sinks import redact_url
+        self.assertEqual(
+            redact_url("https://u:p@hooks.example.com/services/T/B/SECRET?token=x"),
+            "https://hooks.example.com",
+        )
+        self.assertEqual(redact_url("https://[2001:db8::1]:8443/hook"), "https://[2001:db8::1]:8443")
 
     def test_dev_policy_allows_http_and_loopback(self):
         UrlPolicy.dev().validate("http://localhost:8080/hook")

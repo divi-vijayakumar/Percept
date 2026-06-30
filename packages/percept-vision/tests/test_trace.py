@@ -46,6 +46,29 @@ class TraceEventTests(unittest.IsolatedAsyncioTestCase):
         fires = await agent.perceive_judged("sip", source="cam", t=1.0)
         self.assertEqual([f.action for f in fires], ["fire"])
 
+    async def test_raising_tracer_does_not_crash_perception(self):
+        def boom(_ev):
+            raise RuntimeError("bad tracer")
+        agent = _agent(on_trace=boom)
+        fires = await agent.perceive_judged("sip", source="cam", t=1.0)  # must not propagate
+        self.assertEqual([f.action for f in fires], ["fire"])
+
+    async def test_async_tracer_is_awaited(self):
+        seen: list[str] = []
+        async def atrace(ev):
+            seen.append(ev.stage)
+        agent = _agent(on_trace=atrace)
+        await agent.perceive_judged("sip", source="cam", t=1.0)
+        self.assertIn("gate.classified", seen)  # the coroutine was awaited, not dropped
+
+    async def test_run_restores_core_on_trace(self):
+        from percept.runtime.worker import run
+        sentinel = lambda _ev: None  # noqa: E731
+        agent = _agent(on_trace=sentinel)
+        async for _ in run(agent, source=[], on_trace=lambda _ev: None):  # empty source
+            pass
+        self.assertIs(agent.on_trace, sentinel)  # this run's tracer was restored, not leaked
+
     def test_format_trace_is_readable(self):
         ev = TraceEvent(trace_id="cam@1.0", stage="gate.classified", goal_id="caffeine",
                         data={"truth": "yes", "action": "fire"})

@@ -34,7 +34,9 @@ def load_run(run):
     """Build one run's {track: {cells, cov}} from the git-ignored runs/ dir (refresh path only)."""
     out = {}
     for f in glob.glob(f"{RUNS}/{run}/results/*.json"):
-        t = os.path.basename(f)[:-5]; d = json.load(open(f))
+        t = os.path.basename(f)[:-5]
+        with open(f) as fh:
+            d = json.load(fh)
         c = {(":".join(k) if isinstance(k, tuple) else k): v for k, v in (d.get("cells") or {}).items()}
         out[t] = {"cells": c, "cov": (d.get("coverage") or [{}])[0]}
     return out
@@ -44,7 +46,8 @@ def refresh_snapshot():
     for s, *_ in MODELS:
         data[f"sweep2-{s}"] = load_run(f"sweep2-{s}")
         data[f"sweep-{s}"] = load_run(f"sweep-{s}")
-    json.dump(data, open(DATA_SNAPSHOT, "w"), indent=1)
+    with open(DATA_SNAPSHOT, "w") as fh:
+        json.dump(data, fh, indent=1)
     print(f"refreshed {DATA_SNAPSHOT} from {RUNS}")
     return data
 
@@ -112,13 +115,14 @@ def build_scorecard(N8, N10):
         row = [f"| {tlabel} | {tok_per_call(track)} |"]
         for s, *_ in MODELS:
             calls = cell(N8, s, track, "e2e:candidate_calls"); obs = N8.get(s, {}).get(track, {}).get("cov", {}).get("observed")
-            if calls and obs:
+            if calls is not None and obs:  # a measured 0 calls is a real datum, not a missing cell
                 tot = int(calls) * tok_per_call(track) / 1000
                 row.append(f" {tot:.0f}k ({tot/obs:.0f}k/clip) |")
             else:
                 row.append(" — |")
         lines.append("".join(row))
-    open(f"{HERE}/scorecard.md", "w").write("\n".join(lines) + "\n")
+    with open(f"{HERE}/scorecard.md", "w") as fh:
+        fh.write("\n".join(lines) + "\n")
     print("wrote scorecard.md")
 
 # ================= curves =================
@@ -153,7 +157,7 @@ def build_curves(N8):
 
     def cost_per_clip(s, t):  # coverage-normalized: removes the "fewer-clips-completed" artifact
         calls = cell(N8, s, t, "e2e:candidate_calls"); obs = N8.get(s, {}).get(t, {}).get("cov", {}).get("observed")
-        return (calls * tok_per_call(t) / obs / 1000) if (calls and obs) else None
+        return (calls * tok_per_call(t) / obs / 1000) if (calls is not None and obs) else None
     scatter(f"{HERE}/cost-quality.png", cost_per_clip,
             "est tokens per COMPLETED clip (k)  [better = up-left]",
             "Quality vs Cost (tokens per completed clip, coverage-normalized) - higher & cheaper is better")
@@ -166,7 +170,11 @@ def main():
     ap.add_argument("--refresh", action="store_true",
                     help=f"rebuild _data.json from {RUNS}/ (git-ignored) before building")
     args = ap.parse_args()
-    data = refresh_snapshot() if args.refresh else json.load(open(DATA_SNAPSHOT))
+    if args.refresh:
+        data = refresh_snapshot()
+    else:
+        with open(DATA_SNAPSHOT) as fh:
+            data = json.load(fh)
     N8 = {s: data[f"sweep2-{s}"] for s, *_ in MODELS if f"sweep2-{s}" in data}
     N10 = {s: data[f"sweep-{s}"] for s, *_ in MODELS if f"sweep-{s}" in data}
     build_scorecard(N8, N10)

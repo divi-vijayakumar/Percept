@@ -76,18 +76,22 @@ def main(argv: list[str] | None = None) -> int:
             return _scorecard_main(argv[1:])
         return _benchmark_main(argv)
     except FileNotFoundError as exc:
-        # The bundled golden set is repo data, not packaged in the wheel — so the default-manifest
-        # commands only work from a source checkout. Fail with guidance instead of a bare traceback.
-        missing = getattr(exc, "filename", None) or exc
-        print(
-            f"percept-bench: input not found: {missing}\n"
-            "The bundled golden benchmark set ships with the source repo, not the installed wheel.\n"
-            "Run from a repo checkout, or pass your own manifest, e.g.:\n"
-            "  percept-bench <manifest.json>                              # per-concern P/R on your clips\n"
-            "  percept-bench scorecard --manifest <path/to/MANIFEST.json>\n"
-            "Docs: https://github.com/divi-vijayakumar/Percept/blob/main/docs/how-to/eval.md",
-            file=sys.stderr,
-        )
+        missing = getattr(exc, "filename", None) or str(exc)
+        # Only the DEFAULT (bundled-golden) paths get the "ships with the repo" guidance — a user's
+        # own --manifest/clip typo must surface the real missing file, not a misdiagnosis.
+        defaults = ("eval/golden-v1/MANIFEST.json", "packages/percept-vision/eval/baselines.json")
+        if any(str(missing).replace("\\", "/").endswith(d) for d in defaults):
+            print(
+                f"percept-bench: bundled input not found: {missing}\n"
+                "The golden benchmark set ships with the source repo, not the installed wheel.\n"
+                "Run from a repo checkout, or pass your own manifest, e.g.:\n"
+                "  percept-bench <manifest.json>                              # per-concern P/R on your clips\n"
+                "  percept-bench scorecard --manifest <path/to/MANIFEST.json>\n"
+                "Docs: https://github.com/divi-vijayakumar/Percept/blob/main/docs/how-to/eval.md",
+                file=sys.stderr,
+            )
+        else:
+            print(f"percept-bench: input not found: {missing}", file=sys.stderr)
         return 2
 
 

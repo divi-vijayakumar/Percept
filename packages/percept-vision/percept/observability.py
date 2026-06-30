@@ -41,10 +41,10 @@ class TraceEvent:
 
     Counters answer *aggregate* questions ("are we firing?"); a trace answers the *specific* one:
     "why did THIS frame + goal fire / ask / stay silent?". ``trace_id`` correlates the steps of one
-    frame; ``stage`` is one of the documented stages (``source.frame``, ``judge.started/finished``,
-    ``gate.classified``, ``incident.created``, ``sink.delivered/failed`` …); ``data`` carries the
-    decision inputs/outputs for that stage. Emitted only when an ``on_trace`` callback is wired —
-    default off, so the hot path is unchanged.
+    frame; ``stage`` is one of the emitted stages — ``source.frame``, ``judge.started``,
+    ``judge.finished``, ``gate.classified`` (from ``perceive_judged``) and ``incident.created`` (from
+    the runtime worker); ``data`` carries the decision inputs/outputs for that stage. Emitted only when
+    an ``on_trace`` callback is wired — default off, so the hot path is unchanged.
     """
 
     trace_id: str

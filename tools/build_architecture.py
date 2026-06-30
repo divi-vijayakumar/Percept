@@ -209,6 +209,7 @@ def _ensure_path():
         sys.path.insert(0, p)
 
 
+@functools.lru_cache(maxsize=None)
 def module_resolves(dotted: str) -> bool:
     import importlib.util
     _ensure_path()
@@ -442,6 +443,10 @@ def render_html(model, prov: Provenance) -> str:
     tiers, scenarios, glossary, adaptors, status, vlm_nodes = model
     stage = "".join(render_tier(t, adaptors, status, vlm_nodes) for t in tiers)
     s_json = json.dumps(scenarios, ensure_ascii=False, separators=(",", ":"))
+    # Escape <, >, & so a "</script>" or "<…>" in meta can't break out of the <script> block or corrupt
+    # the artifact. These unescape back to the real characters when JSON.parse runs (rendered text is
+    # unchanged); it just can't terminate the tag.
+    s_json = s_json.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
     glos = "".join(f'<div class="gi"><b>{E(g["term"])}</b> — {E(g["def"])}</div>' for g in glossary)
     n_int = sum(1 for v in status.values() if v)
     n_seam = len(status) - n_int
@@ -511,7 +516,7 @@ def render_svg(model, prov: Provenance) -> str:
         n = len(nodes)
         inner_x = PAD + 14
         avail = (W - 2 * PAD - 28) - (n - 1) * 10
-        cw = avail // n
+        cw = avail // n if n else 0  # a tier with 0 nodes draws an empty band (no ZeroDivision)
         cy = by + 54
         ch = BAND_H - 66
         for j, node in enumerate(nodes):
@@ -551,18 +556,22 @@ def fail_report() -> int:
 
 
 def emit(path: Path, text: str, check: bool) -> bool:
-    """Return True if the file would change (check mode) / did change is irrelevant otherwise."""
-    existing = path.read_text(encoding="utf-8") if path.exists() else None
+    """Return True if the file would change. Compares RAW BYTES (not read_text, which would translate
+    CRLF->LF on an autocrlf checkout and falsely report 'no drift' while the CI git-diff gate flags it)."""
+    want = text.encode("utf-8")
+    existing = path.read_bytes() if path.exists() else None
     if check:
-        if existing != text:
+        if existing != want:
             import difflib
-            diff = difflib.unified_diff((existing or "").splitlines(True), text.splitlines(True),
-                                        fromfile=f"{path} (committed)", tofile=f"{path} (regenerated)")
+            diff = difflib.unified_diff(
+                (existing.decode("utf-8", "replace") if existing else "").splitlines(True),
+                text.splitlines(True),
+                fromfile=f"{path} (committed)", tofile=f"{path} (regenerated)")
             sys.stderr.writelines(diff)
             return True
         return False
-    path.write_text(text, encoding="utf-8", newline="\n")
-    return existing != text
+    path.write_bytes(want)  # bytes -> no newline translation on any platform
+    return existing != want
 
 
 def main(argv=None) -> int:
