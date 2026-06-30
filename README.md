@@ -140,6 +140,8 @@ percept-bench scorecard --manifest eval/golden-v1/MANIFEST.json --out out/scorec
 
 Full index: **[`docs/README.md`](docs/README.md)** (organized by Diátaxis). Highlights:
 
+- **New here?** [`docs/tutorials/choose-your-path.md`](docs/tutorials/choose-your-path.md) — the narrow
+  first path (pick one row, ignore the rest).
 - **Quickstart** — [`docs/tutorials/quickstart.md`](docs/tutorials/quickstart.md) (the snippet above).
 - **Architecture** — [`docs/explanation/architecture.md`](docs/explanation/architecture.md): the four
   tiers, the two-layer brain, the firing paths — every claim anchored to code. Then

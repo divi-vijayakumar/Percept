@@ -19,6 +19,7 @@ from typing import Any, AsyncIterator, Callable
 from percept.events import FrameWindow
 from percept.gate import FIRE, ASK
 from percept.incidents import make_incident, snippet_from_window
+from percept.observability import TraceEvent
 
 
 @dataclass
@@ -26,6 +27,7 @@ class RuntimeStats:
     """Mutable runtime counters for health dashboards and tests."""
 
     frames: int = 0
+    frames_dropped: int = 0  # frames the bounded capture queue discarded (slow consumer)
     escalations: int = 0
     judge_calls: int = 0
     fires: int = 0
@@ -137,6 +139,7 @@ async def run(
     on_ask: Callable | None = None,
     on_frame: Callable | None = None,
     on_health: Callable | None = None,
+    on_trace: Callable | None = None,
     fps: float = 4.0,
     source_queue_size: int = 64,
     source_reconnects: int = 0,
@@ -169,6 +172,8 @@ async def run(
     from percept.edge.tier0 import MotionGate, compile_watchspec
 
     settings = getattr(core, "settings", None) or load_settings()
+    if on_trace is not None:
+        core.on_trace = on_trace  # the per-frame decision trace flows out of perceive_judged
     spec = compile_watchspec(list(core.goals.active()), threshold=settings.edge.motion_gate)
     gate = MotionGate(spec, settings=settings)
     # TODO 1 / Build 5: a brief-action goal raises the capture rate + arms a fovea coast so a sub-second
@@ -179,11 +184,13 @@ async def run(
     if on_health is not None:
         await _call_sink(on_health, RuntimeHealthEvent("runtime_started", data={"source": repr(source)}))
     try:
+        dropped: list[int] = [0]  # shared with the capture thread; surfaced as stats.frames_dropped
         source_kwargs = {
             "maxsize": source_queue_size,
             "reconnects": source_reconnects,
             "reconnect_backoff_s": source_reconnect_backoff_s,
             "rtsp_tcp": source_rtsp_tcp,
+            "dropped": dropped,
         }
         # Item 4 episode boundary: a process activity ends precisely on QUIET frames (no escalation), so the
         # boundary check rides the per-frame cadence — only spending a summarize call when it actually fires.
@@ -208,6 +215,11 @@ async def run(
                     stats.fires += 1
                 snippet = snippet_from_window(clips, kind=snippet_kind, pre_s=snippet_pre_s)
                 incident = make_incident(fire, ts=at, snippet=snippet)
+                if on_trace is not None:
+                    on_trace(TraceEvent(
+                        trace_id=f"{gate_source}@{at}", stage="incident.created", t=at,
+                        goal_id=incident.concern_id, data={"incident_id": incident.id},
+                    ))
                 if on_health is not None:
                     await _call_sink(
                         on_health,
@@ -224,6 +236,7 @@ async def run(
         async for t, gate_frame, judge_frame in _aiter(source, capture_fps, **source_kwargs):
             if stats is not None:
                 stats.frames += 1
+                stats.frames_dropped = dropped[0]
             clips.push(t, judge_frame)
             if on_frame is not None:
                 await _call_sink_with_policy(

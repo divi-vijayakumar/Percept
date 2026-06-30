@@ -47,13 +47,19 @@ def _normalize_uri(uri: str):
     return uri
 
 
-def _put_latest(q: "queue.Queue", item) -> None:
-    """Put without letting a slow consumer make capture block forever."""
+def _put_latest(q: "queue.Queue", item, dropped: "list[int] | None" = None) -> None:
+    """Put without letting a slow consumer make capture block forever.
+
+    On a full queue the oldest frame is discarded to make room for the latest; ``dropped`` (a 1-elem
+    shared counter) is bumped so the worker can surface a ``frames_dropped`` telemetry count.
+    """
     try:
         q.put(item, timeout=0.1)
     except queue.Full:
         try:
             q.get_nowait()
+            if dropped is not None:
+                dropped[0] += 1
         except queue.Empty:
             pass
         q.put(item, timeout=0.1)
@@ -66,7 +72,8 @@ def _open_capture(cv2, uri: str, config: SourceConfig):
     return cv2.VideoCapture(source)
 
 
-def _capture(uri: str, config: SourceConfig, q: "queue.Queue", stop: threading.Event) -> None:
+def _capture(uri: str, config: SourceConfig, q: "queue.Queue", stop: threading.Event,
+             dropped: "list[int] | None" = None) -> None:
     """Blocking capture loop, run on a daemon thread; pushes frames into ``q`` until stopped/EOF."""
     import cv2  # lazy: the [runtime]/[rtsp] extra
 
@@ -93,7 +100,7 @@ def _capture(uri: str, config: SourceConfig, q: "queue.Queue", stop: threading.E
                         g = cv2.resize(gray, (GATE_W, GATE_H))
                         gate_frame = Frame(w=GATE_W, h=GATE_H, pixels=tuple(int(p) for p in g.flatten()))
                         _, buf = cv2.imencode(".jpg", bgr)
-                        _put_latest(q, (t, gate_frame, ("image/jpeg", buf.tobytes())))
+                        _put_latest(q, (t, gate_frame, ("image/jpeg", buf.tobytes())), dropped)
                     i += 1
             finally:
                 cap.release()
@@ -115,6 +122,7 @@ async def open_source(
     reconnects: int = 0,
     reconnect_backoff_s: float = 0.5,
     rtsp_tcp: bool = True,
+    dropped: "list[int] | None" = None,
 ) -> AsyncIterator[tuple]:
     """Threaded capture: read frames off a daemon thread (so capture never blocks the consumer/event
     loop), yield ``(t, gate_frame, judge_frame)`` asynchronously. Stops the thread on consumer exit."""
@@ -127,7 +135,7 @@ async def open_source(
     )
     q: "queue.Queue" = queue.Queue(maxsize=config.queue_size)
     stop = threading.Event()
-    thread = threading.Thread(target=_capture, args=(uri, config, q, stop), daemon=True)
+    thread = threading.Thread(target=_capture, args=(uri, config, q, stop, dropped), daemon=True)
     thread.start()
     try:
         while True:

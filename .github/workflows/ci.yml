@@ -69,6 +69,33 @@ jobs:
       - name: architecture diagram == generated (no drift)
         run: make architecture-check
 
+  installed-wheel-smoke:
+    name: Installed wheel smoke (no source checkout on PATH)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: build the wheel
+        run: |
+          python -m pip install -q build
+          python -m build packages/percept-vision
+      - name: install into a clean venv and smoke the installed surface
+        run: |
+          set -euo pipefail
+          python -m venv /tmp/wheelsmoke
+          /tmp/wheelsmoke/bin/pip install -q packages/percept-vision/dist/percept_vision-*.whl
+          # import the public surface with NO extras and NO repo on sys.path (run from /tmp)
+          cd /tmp
+          /tmp/wheelsmoke/bin/python -c "import percept; import percept.contracts; from percept.harness import tier0; print('import ok', percept.__version__, percept.contracts.CONTRACT_VERSION)"
+          /tmp/wheelsmoke/bin/percept-schema
+          # the golden set is repo data, not packaged — percept-bench must fail with a usable message, not a traceback
+          out="$(/tmp/wheelsmoke/bin/percept-bench audit 2>&1 || true)"
+          echo "$out"
+          echo "$out" | grep -q "ships with the source repo" || { echo "::error::percept-bench audit did not emit the actionable not-found message"; exit 1; }
+          echo "installed-wheel smoke OK"
+
   l2-live:
     name: L2 live eval (gated)
     runs-on: ubuntu-latest

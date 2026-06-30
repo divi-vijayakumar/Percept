@@ -23,6 +23,7 @@ class CircuitBreaker:
     reset_after_s: float = 30.0
     _failures: int = field(default=0, init=False)
     _opened_at: float | None = field(default=None, init=False)
+    _opens: int = field(default=0, init=False)  # telemetry: total closed->open transitions
 
     def _now(self) -> float:
         return asyncio.get_event_loop().time()
@@ -43,8 +44,18 @@ class CircuitBreaker:
 
     def record_failure(self) -> None:
         self._failures += 1
-        if self._failures >= self.fail_threshold:
+        if self._failures >= self.fail_threshold and self._opened_at is None:
             self._opened_at = self._now()
+            self._opens += 1
+
+    @property
+    def state(self) -> str:
+        """``"open"`` (short-circuiting) or ``"closed"`` (passing calls through)."""
+        return "open" if self._opened_at is not None else "closed"
+
+    def snapshot(self) -> dict:
+        """Telemetry surface — current state, the live failure count, and total opens."""
+        return {"state": self.state, "failures": self._failures, "opens": self._opens}
 
 
 async def with_retry(

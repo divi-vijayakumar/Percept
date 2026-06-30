@@ -10,7 +10,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from percept.runtime.sinks import FileDeadLetterQueue, WebhookSink, incident_payload
+from percept.runtime.sinks import (
+    FileDeadLetterQueue,
+    UrlPolicy,
+    UrlPolicyError,
+    WebhookSink,
+    _NoRedirect,
+    incident_payload,
+)
 from percept.contracts import Incident, IncidentSnippet, Verdict
 
 
@@ -53,7 +60,7 @@ class WebhookSinkTests(unittest.TestCase):
             return _Resp()
 
         sink = WebhookSink("https://example.test/hook", signing_secret="shh", timeout_s=3.0)
-        with patch("urllib.request.urlopen", fake_urlopen):
+        with patch("percept.runtime.sinks._send", fake_urlopen):
             sink(_incident())
         req, timeout = seen[0]
         body = req.data
@@ -73,20 +80,32 @@ class WebhookSinkTests(unittest.TestCase):
             return _Resp()
 
         sink = WebhookSink("https://example.test/hook", retries=1, retry_backoff_s=0)
-        with patch("urllib.request.urlopen", fake_urlopen):
+        with patch("percept.runtime.sinks._send", fake_urlopen):
             sink(_incident())
         self.assertEqual(len(attempts), 2)
 
-    def test_dead_letter_records_failed_delivery(self):
+    def test_dead_letter_records_are_redacted(self):
         dead = []
-        sink = WebhookSink("https://example.test/hook", retries=1, retry_backoff_s=0, dead_letter=dead)
-        with patch("urllib.request.urlopen", side_effect=TimeoutError("slow")):
+        # credentialed URL + signing secret: NEITHER may appear in the DLQ record.
+        sink = WebhookSink(
+            "https://user:pass@example.test/hook",
+            retries=1, retry_backoff_s=0, dead_letter=dead, signing_secret="shh",
+        )
+        with patch("percept.runtime.sinks._send", side_effect=TimeoutError("slow")):
             with self.assertRaises(TimeoutError):
                 sink(_incident())
         self.assertEqual(len(dead), 1)
-        self.assertIn(b"Door alert", dead[0]["body"])
+        rec = dead[0]
+        self.assertEqual(set(rec), {"url", "body_sha256", "error", "attempts"})
+        self.assertEqual(rec["url"], "https://example.test/hook")  # user:pass@ stripped
+        self.assertEqual(len(rec["body_sha256"]), 64)
+        self.assertEqual(rec["attempts"], 2)
+        # no raw payload, no signing secret, no credentials anywhere in the serialized record
+        blob = json.dumps(rec)
+        for leaked in ("Door alert", "shh", "user:pass"):
+            self.assertNotIn(leaked, blob)
 
-    def test_file_dead_letter_records_jsonl(self):
+    def test_file_dead_letter_records_jsonl_redacted(self):
         with TemporaryDirectory() as d:
             queue = FileDeadLetterQueue(Path(d) / "dead" / "webhooks.jsonl")
             sink = WebhookSink(
@@ -95,14 +114,55 @@ class WebhookSinkTests(unittest.TestCase):
                 dead_letter=queue,
                 signing_secret="shh",
             )
-            with patch("urllib.request.urlopen", side_effect=TimeoutError("slow")):
+            with patch("percept.runtime.sinks._send", side_effect=TimeoutError("slow")):
                 with self.assertRaises(TimeoutError):
                     sink(_incident())
             rows = queue.read_all()
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["url"], "https://example.test/hook")
-            self.assertIn("X-Percept-Signature", rows[0]["headers"])
-            self.assertTrue(rows[0]["body"])
+            self.assertEqual(len(rows[0]["body_sha256"]), 64)
+            self.assertNotIn("headers", rows[0])
+            self.assertNotIn("body", rows[0])
+            self.assertNotIn("shh", "\n".join(json.dumps(r) for r in rows))
+
+
+class UrlPolicyTests(unittest.TestCase):
+    def test_default_blocks_non_https_and_file(self):
+        for bad in ("http://example.test/hook", "file:///etc/passwd", "ftp://example.test/x"):
+            with self.assertRaises(UrlPolicyError):
+                UrlPolicy().validate(bad)
+
+    def test_default_blocks_metadata_loopback_and_private(self):
+        for bad in (
+            "https://169.254.169.254/latest/meta-data/",  # cloud metadata (link-local)
+            "https://127.0.0.1/hook",                      # loopback
+            "https://localhost/hook",                      # loopback name
+            "https://10.0.0.5/hook",                       # private
+            "https://[::1]/hook",                          # IPv6 loopback
+        ):
+            with self.assertRaises(UrlPolicyError):
+                UrlPolicy().validate(bad)
+
+    def test_default_allows_public_https(self):
+        UrlPolicy().validate("https://hooks.example.com/abc")  # unresolved public name -> allowed
+
+    def test_dev_policy_allows_http_and_loopback(self):
+        UrlPolicy.dev().validate("http://localhost:8080/hook")
+        UrlPolicy.dev().validate("http://127.0.0.1/hook")
+
+    def test_allowlist_restricts_hosts(self):
+        pol = UrlPolicy(allowed_hosts=frozenset({"hooks.example.com"}))
+        pol.validate("https://hooks.example.com/x")
+        with self.assertRaises(UrlPolicyError):
+            pol.validate("https://evil.example.com/x")
+
+    def test_webhook_constructor_rejects_unsafe_url(self):
+        with self.assertRaises(UrlPolicyError):
+            WebhookSink("http://169.254.169.254/")  # default policy blocks at construction
+
+    def test_redirect_handler_refuses_to_follow(self):
+        with self.assertRaises(UrlPolicyError):
+            _NoRedirect().redirect_request(None, None, 302, "Found", {}, "http://169.254.169.254/")
 
 
 if __name__ == "__main__":

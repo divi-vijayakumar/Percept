@@ -7,6 +7,7 @@ The architecture diagram is **generated from the code** ([`architecture.svg`](ar
 interactive [`architecture.html`](../architecture.html)) — it cannot drift from what ships.
 
 ## Tutorials — learning-oriented
+- [Choose your path](tutorials/choose-your-path.md) — the narrow first path: pick one row, ignore the rest.
 - [Quickstart](tutorials/quickstart.md) — install, run offline on the fake backend, then a real backend.
 
 ## How-to — task-oriented

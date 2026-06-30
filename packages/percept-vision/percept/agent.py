@@ -25,7 +25,7 @@ from .episodes import EpisodeJudge, EpisodeLog
 from .events import AudioWindow, EventLog, FrameWindow
 from .gate import FIRE, Gate, GateAction, classify
 from .goals import GoalOp, GoalRegistry
-from .observability import Funnel, Metrics, OTelExporter, health, judge_usage
+from .observability import Funnel, Metrics, OTelExporter, TraceEvent, health, judge_usage
 from .rhythm import RhythmTracker
 from .routing import RouteEngine
 from .scheduler import Scheduler
@@ -137,6 +137,7 @@ class Percept:
     # (no RNG on the L1 path); injectable for custom policies. ``None`` -> never audit.
     audit: Callable[[object], bool] | None = None
     router: RouteEngine | None = None  # local fast-path; None -> always defer (built in create)
+    on_trace: "Callable[[Any], None] | None" = None  # opt-in per-frame decision tracer; None -> no-op
     episodes: dict = field(default_factory=dict)  # goal_id -> EpisodeLog (counting goals)
     edge_counts: dict = field(default_factory=dict)  # goal_id -> running tally of edge detector boundaries
     rhythm: dict = field(default_factory=dict)  # goal_id -> RhythmTracker (the SELECTED subject's; brain count)
@@ -170,6 +171,7 @@ class Percept:
         audit: Callable[[object], bool] | None = None,
         identity: Any = None,
         embedder: Callable[[Any, Box], Any] | None = None,
+        on_trace: Callable[[Any], None] | None = None,
     ) -> "Percept":
         cfg = settings or load_settings()
         # A seam not explicitly passed falls back to the config/env selection (settings.models.*, i.e.
@@ -209,6 +211,7 @@ class Percept:
             cache=CacheCascade(layers=layers, threshold=cfg.cache.threshold),
             clock=clk,
             audit=auditor,
+            on_trace=on_trace,
             router=RouteEngine.default(threshold=cfg.routing.confidence_threshold),
             event_log=EventLog(cfg.events.merge_gap_s),
             scheduler=Scheduler(clock=clk),
@@ -592,6 +595,15 @@ class Percept:
         but feed the **same three-state gate** — one gate, two perception tracks (spec §5.6).
         """
         now = self.clock() if t is None else t
+        # Per-frame decision trace (opt-in via on_trace; no-op otherwise). trace_id correlates every
+        # stage of this frame; derived from source+timestamp so traced runs stay deterministic.
+        trace_id = f"{source}@{now}"
+
+        def _tr(stage: str, *, goal_id: str | None = None, **data: Any) -> None:
+            if self.on_trace is not None:
+                self.on_trace(TraceEvent(trace_id=trace_id, stage=stage, t=now, goal_id=goal_id, data=data))
+
+        _tr("source.frame")
         self._window(source).push(now, frame)  # feed the rolling window for temporal perception
         observations = await self.vision.detect(frame, self.goals.active())
         self.graph.ingest(observations, frame, source, t=now)
@@ -627,10 +639,15 @@ class Percept:
                 {"process_qa": True, "running_answer": ctx.running_answer}
                 if goal.state.get("process_qa") else None
             )
+            _tr("judge.started", goal_id=goal.id,
+                temporal=getattr(spec, "temporal", None), roi=roi is not None)
             verdict = await self._judge(
                 goal, frame, roi, corrections, entity_id=focus.id if focus else None,
                 frames=strip, audio=audio, context=process_ctx,
             )
+            _tr("judge.finished", goal_id=goal.id,
+                satisfied=getattr(verdict, "satisfied", None),
+                confidence=getattr(verdict, "confidence", None))
             resolved: FireEvent | None = None
             if process_ctx is not None and getattr(verdict, "running_answer", ""):
                 ctx.running_answer = verdict.running_answer  # accumulate the model's rewritten summary
@@ -658,6 +675,8 @@ class Percept:
                 self.last_satisfied[goal.id] = now  # A1 deadline: the expected event happened
             base_key = (goal.id, focus.id if focus else None)
             ev_fire = self._fire_concern(goal, verdict, base_key, freshness=freshness, t=now)
+            _tr("gate.classified", goal_id=goal.id, truth=truth,
+                action=(ev_fire.action if ev_fire is not None else "silent"))
             if ev_fire is not None:
                 if ev_fire.action == FIRE:
                     self.funnel.fired(concern=goal.id, camera=source)  # a rising-edge fire emitted

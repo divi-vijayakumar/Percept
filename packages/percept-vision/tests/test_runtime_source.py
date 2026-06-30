@@ -85,6 +85,14 @@ class RuntimeSourceTests(unittest.TestCase):
         _put_latest(q, "new")
         self.assertEqual(q.get_nowait(), "new")
 
+    def test_put_latest_counts_drops(self):
+        q = queue.Queue(maxsize=1)
+        dropped = [0]
+        _put_latest(q, "old", dropped)
+        _put_latest(q, "new", dropped)  # full -> discard "old", bump the counter
+        self.assertEqual(dropped[0], 1)
+        self.assertEqual(q.get_nowait(), "new")
+
     def test_capture_reports_open_failure(self):
         cap = _FakeCap(opened=False)
         cv2 = _FakeCv2(cap)
