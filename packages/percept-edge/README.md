@@ -14,7 +14,7 @@ cheap, high-fps reflex that runs next to the camera. It does two jobs:
 Pure ESM JavaScript, **zero runtime dependencies** (vitest is the only devDep). The DSP skills + the gate
 need no model and no native deps; the one model-backed skill (pose) takes a pluggable adapter you supply.
 
-## The wire contract (FROZEN — byte-for-byte with the Python SDK)
+## The wire contract (detector + gate OUTPUTS: byte-for-byte with the Python SDK)
 
 ```text
 down (cloud → edge):
@@ -31,6 +31,13 @@ the brain selects only within it (the capability handshake). Every shape has `ma
 in `src/contract.js`, kept identical to the Python `percept.edge` contract dataclasses — verified by a
 cross-language parity harness (12/12 byte-for-byte; the JS and Python detectors + gate produce identical
 output on identical input).
+
+> **WatchSpec is a documented subset on-device.** The edge consumes a *subset* of the Python
+> `WatchCondition`: server-only fields — `schedule` and `cadence_s` — are **not** mirrored here (see the
+> `parseWatchCondition` note in `src/contract.js`). The edge only *proposes* (Tier0Signal + boundaries);
+> the cognition layer enforces schedule/cadence when it gates. So the "byte-for-byte" guarantee is on the
+> **detector + gate outputs** (verified 12/12), not full `WatchCondition` field parity — an edge never
+> fires on its own, so it cannot wake "outside" a window the server still gates.
 
 ## The gate (the reflex)
 

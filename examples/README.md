@@ -111,7 +111,7 @@ PYTHONPATH=packages/percept-vision python3 examples/benchmark/ci_gate.py
 - [`benchmark/manifest.json`](benchmark/manifest.json) — the input format (concerns + labelled clips).
 - [`benchmark/ci_gate.py`](benchmark/ci_gate.py) — wire a per-concern P/R threshold into CI.
 
-Full guide + the manifest spec: [`docs/eval.md`](../docs/eval.md).
+Full guide + the manifest spec: [`docs/how-to/eval.md`](../docs/how-to/eval.md).
 
 ---
 
@@ -123,5 +123,5 @@ loop: edge gate, perception read, cognition gate, incident snippet, and scorecar
 ---
 
 See [`AGENTS.md`](../AGENTS.md) for the full integration cheat-sheet, and
-[`docs/quickstart.md`](../docs/quickstart.md) / [`docs/concepts.md`](../docs/concepts.md) for the
-deeper tour.
+[`docs/tutorials/quickstart.md`](../docs/tutorials/quickstart.md) /
+[`docs/explanation/concepts.md`](../docs/explanation/concepts.md) for the deeper tour.

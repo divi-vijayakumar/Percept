@@ -28,6 +28,12 @@ classifiers = [
 # `percept.contracts` and `percept.harness` (no separate packages). Opt into heavy deps only via extras.
 dependencies = []
 
+[project.urls]
+Homepage = "https://github.com/divi-vijayakumar/Percept"
+Repository = "https://github.com/divi-vijayakumar/Percept"
+Documentation = "https://github.com/divi-vijayakumar/Percept/blob/main/docs/README.md"
+Issues = "https://github.com/divi-vijayakumar/Percept/issues"
+
 [project.optional-dependencies]
 claude = ["anthropic>=0.40"]
 gemini = ["google-genai>=1.0"]

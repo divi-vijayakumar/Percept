@@ -69,11 +69,26 @@ def main(argv: list[str] | None = None) -> int:
     """
     if argv is None:
         argv = sys.argv[1:]
-    if argv and argv[0] == "audit":
-        return _audit_main(argv[1:])
-    if argv and argv[0] == "scorecard":
-        return _scorecard_main(argv[1:])
-    return _benchmark_main(argv)
+    try:
+        if argv and argv[0] == "audit":
+            return _audit_main(argv[1:])
+        if argv and argv[0] == "scorecard":
+            return _scorecard_main(argv[1:])
+        return _benchmark_main(argv)
+    except FileNotFoundError as exc:
+        # The bundled golden set is repo data, not packaged in the wheel — so the default-manifest
+        # commands only work from a source checkout. Fail with guidance instead of a bare traceback.
+        missing = getattr(exc, "filename", None) or exc
+        print(
+            f"percept-bench: input not found: {missing}\n"
+            "The bundled golden benchmark set ships with the source repo, not the installed wheel.\n"
+            "Run from a repo checkout, or pass your own manifest, e.g.:\n"
+            "  percept-bench <manifest.json>                              # per-concern P/R on your clips\n"
+            "  percept-bench scorecard --manifest <path/to/MANIFEST.json>\n"
+            "Docs: https://github.com/divi-vijayakumar/Percept/blob/main/docs/how-to/eval.md",
+            file=sys.stderr,
+        )
+        return 2
 
 
 def scorecard_main(argv: list[str] | None = None) -> int:

@@ -39,7 +39,7 @@ def build_agent() -> Percept:
     agent.add_goal(Goal(
         id="cc-setup",
         condition="the user is stuck on a Claude Code setup step - a visible error, a missing API key, a wrong command",
-        say="Looks like ANTHROPIC_API_KEY isn't set - run:  export ANTHROPIC_API_KEY=sk-...",
+        say="Looks like ANTHROPIC_API_KEY isn't set - set it in your shell or .env (export ANTHROPIC_API_KEY=<your_key>)",
         state={
             "perception": {"temporal": "strip", "n_frames": 3},
             # the screen has ~0 pixel motion -> the motion gate never escalates -> look on a FIXED cadence

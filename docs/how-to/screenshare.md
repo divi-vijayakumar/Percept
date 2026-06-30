@@ -10,7 +10,7 @@ Full runnable demo: [`examples/screenshare_assistant.py`](../../examples/screens
 agent.add_goal(Goal(
     id="cc-setup",
     condition="the user is stuck on a Claude Code setup step - a visible error, a missing API key, a wrong command",
-    say="Looks like ANTHROPIC_API_KEY isn't set - run:  export ANTHROPIC_API_KEY=sk-...",
+    say="Looks like ANTHROPIC_API_KEY isn't set - set it in your shell or .env (export ANTHROPIC_API_KEY=<your_key>)",
     state={
         "perception": {"temporal": "strip", "n_frames": 3},
         "cadence": {"min_judge_interval": 0.5, "gate_on": "fixed"},  # screen content != pixel motion
