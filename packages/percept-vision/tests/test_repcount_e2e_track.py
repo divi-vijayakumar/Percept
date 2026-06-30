@@ -8,6 +8,12 @@ from eval.bench import repcount
 from percept.harness.detectors import Boundary, DetectorManifest, register
 from percept.harness.tier0 import gray_frame
 
+try:
+    import numpy  # noqa: F401
+    _HAVE_NUMPY = True
+except ImportError:  # pragma: no cover - numpy is an extra, absent in the L1 stdlib lane
+    _HAVE_NUMPY = False
+
 
 class _EveryFrameBoundary:
     signal = "motion"
@@ -20,6 +26,7 @@ class _EveryFrameBoundary:
         return [Boundary(self.name, "peak", t, 1.0)]
 
 
+@unittest.skipUnless(_HAVE_NUMPY, "needs numpy (the rhythm/repcount signal path)")
 class RepCountE2ETests(unittest.TestCase):
     def setUp(self):
         # register in setUp (not module level) so another suite's registry reset

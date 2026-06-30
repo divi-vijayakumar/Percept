@@ -7,6 +7,12 @@ from types import SimpleNamespace
 from percept import registry
 from percept.backends.gemini_live import GeminiLiveVision, parse_spoken_verdict
 
+try:
+    import google.genai  # noqa: F401
+    _HAVE_GENAI = True
+except Exception:  # pragma: no cover - google-genai is the [gemini] extra, absent in the L1 lane
+    _HAVE_GENAI = False
+
 
 class SpokenVerdictParseTests(unittest.TestCase):
     def test_yes_with_confidence_and_reason(self):
@@ -37,6 +43,7 @@ class SpokenVerdictParseTests(unittest.TestCase):
         self.assertIn("gemini-live", registry._REGISTRY["vision"])
 
 
+@unittest.skipUnless(_HAVE_GENAI, "needs google-genai (percept-vision[gemini])")
 class ProcessQALiveTests(unittest.TestCase):
     def test_process_qa_spoken_answer_becomes_running_answer(self):
         # process_qa routes to _judge_process_qa; the spoken transcript IS the running answer the core

@@ -10,13 +10,18 @@ from __future__ import annotations
 import asyncio
 import unittest
 
-import numpy as np
-
 from percept.adapters import Goal, Verdict
 from percept.agent import Percept
-from percept.sprite import make_sprite
+
+try:
+    import numpy as np
+    from percept.sprite import make_sprite
+    _HAVE = True
+except Exception:  # pragma: no cover - numpy is an extra, absent in the L1 stdlib lane
+    _HAVE = False
 
 
+@unittest.skipUnless(_HAVE, "needs numpy for the sprite montage math")
 class MakeSpriteTests(unittest.TestCase):
     def test_montages_n_frames_into_one_grid_image(self):
         frames = [np.full((10, 8, 3), i * 20, dtype=np.uint8) for i in range(4)]  # 4 same-size frames
@@ -61,6 +66,7 @@ def _sprite_goal():
                 state={"type": "watch", "count": 0, "perception": {"temporal": "sprite", "n_frames": 4}})
 
 
+@unittest.skipUnless(_HAVE, "needs numpy for the sprite montage math")
 class SpriteAssemblyTests(unittest.TestCase):
     def test_sprite_collapses_context_to_one_montage_image(self):
         rec = _RecordingVision()
