@@ -1,11 +1,19 @@
 {
   "name": "percept-edge",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Research preview — on-device reactive edge for the Percept SDK: VAD + motion gate + the WatchSpec/Tier0Signal wire-contract.",
   "type": "module",
   "license": "Apache-2.0",
   "author": "Divi <divi@velvee.ai>",
-  "keywords": ["percept", "vision", "edge", "on-device", "motion-gate", "vad", "wire-contract"],
+  "keywords": [
+    "percept",
+    "vision",
+    "edge",
+    "on-device",
+    "motion-gate",
+    "vad",
+    "wire-contract"
+  ],
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js",
