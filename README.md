@@ -127,13 +127,15 @@ The tier-0 edge harness and the frozen wire-contract are bundled inside `percept
 model-sweep run is a separate, later phase. What exists today is the *methodology* and the *runbook*:
 [`docs/reference/benchmark-methodology.md`](docs/reference/benchmark-methodology.md) and
 [`docs/reference/publishable-benchmark.md`](docs/reference/publishable-benchmark.md). Figures in those
-docs are external reference bars or illustrative examples — not Percept claims. The scorecard tooling
-operates on a manifest you provide; the bundled golden set is **repo data, not packaged in the wheel**,
-so the default-manifest command runs from a source checkout:
+docs are external reference bars or illustrative examples — not Percept claims. The benchmark harness
+and the golden set are **repo/dev tooling, not packaged in the wheel** (the wheel is just `import
+percept`), so benchmark commands run from a source checkout:
 
 ```bash
-# from a repo checkout (or point --manifest at your own labelled-clip manifest):
-percept-bench scorecard --manifest eval/golden-v1/MANIFEST.json --out out/scorecard.txt
+# from a repo checkout (the [bench] extra installs numpy/opencv; --manifest can be your own clips):
+pip install -e "packages/percept-vision[bench]"
+PYTHONPATH=packages/percept-vision percept-bench scorecard \
+    --manifest eval/golden-v1/MANIFEST.json --out out/scorecard.txt
 ```
 
 ## Docs

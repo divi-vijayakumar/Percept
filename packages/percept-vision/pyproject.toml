@@ -71,7 +71,10 @@ percept-schema = "percept.contracts.jsonschema:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["percept*", "eval*"]
+# Ship ONLY the `percept` namespace. The top-level `eval` benchmark harness is repo/dev tooling
+# (needs golden data that isn't packaged), so it stays out of the wheel — no `eval` namespace squat in
+# every installer's site-packages. `percept.bench` imports it lazily and degrades gracefully.
+include = ["percept*"]
 
 [tool.setuptools.package-data]
 "percept.contracts" = ["schema/*.json"]

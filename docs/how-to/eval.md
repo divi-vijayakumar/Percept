@@ -9,11 +9,16 @@ manifest of labelled clips, runnable **fully offline** (the deterministic `fake`
 The SDK's own internal gate (`eval.run`, asserting `false_fire == 0` on a held-out golden split) is
 unchanged and documented separately in [`packages/percept-vision/eval/`](../../packages/percept-vision/eval/).
 
-The public harness is `percept.bench`; installed environments also get the `percept-bench` console
-script. From a source checkout, point `PYTHONPATH` at the package:
+The benchmark harness **runs from a source checkout** — it is repo/dev tooling and is **not** shipped
+in the `percept-vision` wheel (only `import percept` is). The `percept-bench` console script exists on
+an install, but from a bare wheel it prints a "run from a checkout" note; to actually run it, clone the
+repo and put the package on `PYTHONPATH` (the `[bench]` extra provides the deps — numpy, opencv):
 
 ```bash
+git clone https://github.com/divi-vijayakumar/Percept && cd Percept
+pip install -e "packages/percept-vision[bench]"
 PYTHONPATH=packages/percept-vision python3 -m percept.bench examples/benchmark/manifest.json
+# or, equivalently, the Makefile targets: `make eval-benchmark` / `make scorecard` / `make audit-benchmark`
 ```
 
 For the multi-track public snapshot card:
