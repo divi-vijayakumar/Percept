@@ -14,6 +14,9 @@ Notable changes to Percept. This is a **research preview** — the SDK's public 
   `from percept_contracts import Z` → `from percept.contracts import Z`.
 - **Deprecated:** the standalone `percept-harness` PyPI package is deprecated in favor of
   `percept-vision (>=0.6.0)`. `percept-contracts` was never published standalone.
+- The wheel ships **only the `percept` namespace** — the benchmark harness (top-level `eval`) is
+  repo/dev tooling and is no longer installed (no `eval` name squat in site-packages). `percept-bench`
+  from a bare wheel install prints a "run from a checkout" note instead of importing it.
 
 ### Versioning
 - Package version is `0.6.0`. The **wire-contract** version is separate: `CONTRACT_VERSION = "1.2.0"`

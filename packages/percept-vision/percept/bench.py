@@ -1,43 +1,67 @@
 """Public benchmark CLI shim.
 
-The implementation lives in ``eval.benchmark`` for repo continuity, but installed users should not
-need to know about the historical top-level ``eval`` package. This module gives them the stable
-surface:
+The benchmark harness lives in the top-level ``eval`` package, which ships with the SOURCE REPO, not
+the installed wheel (the golden data isn't packaged either). So this shim must import cleanly WITHOUT
+``eval`` present — only actually *running* the CLI, or touching a re-exported harness symbol, needs it.
+The public names are re-exported **lazily** (PEP 562 ``__getattr__``), and the CLI degrades to a
+"run from a checkout" note instead of crashing at import on a bare wheel install.
 
-    python -m percept.bench examples/benchmark/manifest.json
-    percept-bench examples/benchmark/manifest.json
+    percept-bench examples/benchmark/manifest.json     # per-concern P/R
+    percept-bench scorecard --manifest <path>          # multi-track card
+    percept-bench audit                                # validate golden artifacts
 """
 
 from __future__ import annotations
 
+import importlib
 import sys
 
-from eval.benchmark import (  # noqa: F401
-    BenchmarkGate,
-    ConcernObservation,
-    ConcernReport,
-    Manifest,
-    ManifestClip,
-    check_benchmark_gate,
-    edges_from_manifest,
-    format_report,
-    per_concern_report,
-    run_manifest,
-    score_concern,
+_HARNESS_MISSING = (
+    "percept-bench: the benchmark harness ships with the source repo, not the installed wheel.\n"
+    "Run it from a repo checkout (the top-level `eval` package must be importable), e.g.:\n"
+    "  git clone https://github.com/divi-vijayakumar/Percept && cd Percept\n"
+    "  percept-bench <manifest.json>\n"
+    "Docs: https://github.com/divi-vijayakumar/Percept/blob/main/docs/how-to/eval.md"
 )
-from eval.benchmark import main as _benchmark_main
-from eval.bench.run import main as _scorecard_main
-from eval.bench.validate import (
-    ValidationError,
-    audit_artifacts,
-    format_audit,
-    validate_baselines,
-    validate_golden_manifest,
-)
+
+# Public re-exports, resolved lazily from the repo-only harness so ``import percept.bench`` never
+# requires ``eval``. ``bench.Manifest`` etc. still resolve in a checkout; out-of-repo they raise a
+# clear ImportError only when actually accessed.
+_LAZY = {
+    "BenchmarkGate": "eval.benchmark",
+    "ConcernObservation": "eval.benchmark",
+    "ConcernReport": "eval.benchmark",
+    "Manifest": "eval.benchmark",
+    "ManifestClip": "eval.benchmark",
+    "check_benchmark_gate": "eval.benchmark",
+    "edges_from_manifest": "eval.benchmark",
+    "format_report": "eval.benchmark",
+    "per_concern_report": "eval.benchmark",
+    "run_manifest": "eval.benchmark",
+    "score_concern": "eval.benchmark",
+    "ValidationError": "eval.bench.validate",
+    "audit_artifacts": "eval.bench.validate",
+    "format_audit": "eval.bench.validate",
+    "validate_baselines": "eval.bench.validate",
+    "validate_golden_manifest": "eval.bench.validate",
+}
+
+
+def __getattr__(name: str):  # PEP 562 — lazy re-exports from the repo-only harness
+    module = _LAZY.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(importlib.import_module(module), name)
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_LAZY))
 
 
 def _audit_main(argv: list[str] | None = None) -> int:
     import argparse
+
+    from eval.bench.validate import ValidationError, audit_artifacts, format_audit  # lazy: repo-only
 
     ap = argparse.ArgumentParser(
         prog="percept-bench audit",
@@ -51,7 +75,6 @@ def _audit_main(argv: list[str] | None = None) -> int:
         help="require release-ready artifacts: non-empty hashed test split and release manifest status",
     )
     args = ap.parse_args(argv)
-
     try:
         audit = audit_artifacts(manifest=args.manifest, baselines=args.baselines, release=args.release)
     except ValidationError as exc:
@@ -73,12 +96,23 @@ def main(argv: list[str] | None = None) -> int:
         if argv and argv[0] == "audit":
             return _audit_main(argv[1:])
         if argv and argv[0] == "scorecard":
+            from eval.bench.run import main as _scorecard_main  # lazy: repo-only harness
+
             return _scorecard_main(argv[1:])
+        from eval.benchmark import main as _benchmark_main  # lazy: repo-only harness
+
         return _benchmark_main(argv)
+    except ImportError as exc:
+        # The `eval` harness isn't importable — a wheel install without the source repo. This is why
+        # the imports above are lazy: it protects the `percept.bench:main` entry point from crashing
+        # at import, so we can print guidance instead of a bare traceback.
+        print(_HARNESS_MISSING, file=sys.stderr)
+        print(f"  (missing: {exc.name or exc})", file=sys.stderr)
+        return 2
     except FileNotFoundError as exc:
         missing = getattr(exc, "filename", None) or str(exc)
-        # Only the DEFAULT (bundled-golden) paths get the "ships with the repo" guidance — a user's
-        # own --manifest/clip typo must surface the real missing file, not a misdiagnosis.
+        # Only the DEFAULT (bundled-golden) paths get the "ships with the repo" guidance — a user's own
+        # --manifest/clip typo must surface the real missing file, not a misdiagnosis.
         defaults = ("eval/golden-v1/MANIFEST.json", "packages/percept-vision/eval/baselines.json")
         if any(str(missing).replace("\\", "/").endswith(d) for d in defaults):
             print(
@@ -97,6 +131,8 @@ def main(argv: list[str] | None = None) -> int:
 
 def scorecard_main(argv: list[str] | None = None) -> int:
     """Emit the public multi-track benchmark snapshot card."""
+    from eval.bench.run import main as _scorecard_main  # lazy: repo-only harness
+
     return _scorecard_main(argv)
 
 
@@ -120,7 +156,3 @@ __all__ = [
     "main",
     "scorecard_main",
 ]
-
-
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())
