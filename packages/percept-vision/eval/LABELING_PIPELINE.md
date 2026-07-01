@@ -36,9 +36,9 @@ golden set to the wild.
 | Gate | `percept/gate.py` `classify` / `Gate.evaluate` | maps `(verdict, freshness, threshold)` → `fire`/`ask`/`silent` |
 | Fire audit log | `percept/consent.py` `ActionLog` / `ActionRecord` | append-only `{kind, goal_id, detail, t, allowed}`; written by `agent.py:_log_fires`. Audits *fires*, **not verdicts** — see gap below |
 | Golden loader + split discipline | `percept/eval/__init__.py` | `load_golden`, `find_golden_root`; enforces disjoint train/dev/test, `test` held out |
-| Gate cases (human labels) | `eval/fixtures-private/gate_cases.jsonl` | per scene: `expected_verdict`, `proposer_verdict`, `proposer_confidence`, `review_status`, `difficulty`, `split` |
-| Review audit trail | `eval/fixtures-private/reviews.jsonl` | per scene: `{scene_id, reviewer, decision, reviewed_at, notes, proposal{...}}` — **the existing label-provenance pattern to reuse** |
-| Calibration capture | `eval/fixtures-private/calibration_capture.json` | list of `{scene_id, split, expected, verdicts:[[satisfied, confidence], ...]}` |
+| Gate cases (human labels) | `eval/fixtures-golden/gate_cases.jsonl` | per scene: `expected_verdict`, `proposer_verdict`, `proposer_confidence`, `review_status`, `difficulty`, `split` |
+| Review audit trail | `eval/fixtures-golden/reviews.jsonl` | per scene: `{scene_id, reviewer, decision, reviewed_at, notes, proposal{...}}` — **the existing label-provenance pattern to reuse** |
+| Calibration capture | `eval/fixtures-golden/calibration_capture.json` | list of `{scene_id, split, expected, verdicts:[[satisfied, confidence], ...]}` |
 | Calibration sweep | `eval/calibrate.py` | captures once live, sweeps threshold offline, writes `calibration.json` |
 | Trust scorecard | `eval/scorecard.py` | replays golden gate cases, reports false-fire / agreement |
 | Frame decode | `eval/frames.py` | `frames_for_scene` → `(ts, (media_type, bytes))` |
@@ -67,7 +67,7 @@ label can be attached later. That sink is part 1.
                                extends eval/calibrate.py; TESTS whether confidence discriminates
 ```
 
-Three append-only JSONL files under a single `eval/fixtures-private/audits/` dir, joined by a
+Three append-only JSONL files under a single `eval/fixtures-golden/audits/` dir, joined by a
 stable `verdict_id`. Everything offline after capture; nothing on the hot path beyond one append.
 
 ---
@@ -94,7 +94,7 @@ self.cache.store(cache_key, verdict, verdict.confidence)
 return verdict
 ```
 
-**What it writes** — `eval/fixtures-private/audits/verdicts-<date>.jsonl`, one row per judged verdict:
+**What it writes** — `eval/fixtures-golden/audits/verdicts-<date>.jsonl`, one row per judged verdict:
 
 ```json
 {
@@ -163,7 +163,7 @@ marked `label_source:"opus"` so a later human pass can spot-audit them; on disag
 > Provider note: the adjudicator is an Anthropic (Opus) or Gemini call. Before wiring it, read the
 > `claude-api` skill for current model IDs/pricing — do not hardcode from memory.
 
-**The labeled row** — `eval/fixtures-private/audits/labels-<date>.jsonl`:
+**The labeled row** — `eval/fixtures-golden/audits/labels-<date>.jsonl`:
 
 ```json
 {

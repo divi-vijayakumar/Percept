@@ -1,4 +1,4 @@
-"""ProactiveVideoQA (EGO subset) PAUC — GEMINI FLASH perception, Percept vs Gemini-loop vs TML (33.5).
+"""ProactiveVideoQA (EGO subset) PAUC — core-replay diagnostic, not full Percept E2E.
 
 ProactiveVideoQA: a question is posed at t=0; the model watches a streamed first-person video and must
 proactively answer at the moment the answer becomes visible. Graded by **PAUC** — for each answer turn,
@@ -16,7 +16,14 @@ Three response policies over the SAME per-frame narrations:
   * percept-gate — emit once on each rising edge (first visible frame after a gap)
   * percept-event— rising edge + merge within merge_gap (the dedup track) -> one clean answer per episode
 PAUC ignores out-of-window spam, so we also report INTERRUPTIONS (total responses emitted) — the user-
-facing cost the metric doesn't price. Live: PERCEPT_LIVE=1 + a Gemini key + ANTHROPIC_API_KEY (judge).
+facing cost the metric doesn't price.
+
+This runner is useful only for offline/historical ``core-replay`` analysis: it measures whether Percept
+reduces repeated answers given identical backend observations. It does not measure E2E call suppression
+because Gemini still narrates every sampled frame. Do not run it live for publishable benchmarking. The
+publishable product lane should be ``edge-e2e``: edge wakes only candidate answer-evidence moments, the
+backend answers candidates, and core emits sparse answers.
+Live: PERCEPT_LIVE=1 + a Gemini key + ANTHROPIC_API_KEY (judge).
 """
 
 from __future__ import annotations
@@ -125,13 +132,19 @@ async def main():
     sub = [x for x in sub if (VID / x["video"]).exists()]
     cap_path = ROOT / "proactiveqa_narrations.json"
 
-    if cap_path.exists() and os.environ.get("PERCEPT_RECAPTURE") != "1":
-        caps = json.loads(cap_path.read_text())
+    # Resume-friendly capture: load whatever is already cached and only narrate the rest, checkpointing
+    # after every question so progress is visible (the file grows) and a kill/crash is resumable. To force
+    # a full recapture, set PERCEPT_RECAPTURE=1 or delete cap_path.
+    recapture = os.environ.get("PERCEPT_RECAPTURE") == "1"
+    caps = {} if (recapture or not cap_path.exists()) else json.loads(cap_path.read_text())
+    todo = [x for x in sub if x["question_id"] not in caps]
+    if not todo:
         print(f"loaded {len(caps)} questions' narrations (offline re-score)")
     else:
+        if caps:
+            print(f"resuming: {len(caps)} cached, {len(todo)} to capture", flush=True)
         client = gemini_client(); sem = asyncio.Semaphore(4); loop = asyncio.get_event_loop()
-        caps = {}
-        for x in sub:
+        for i, x in enumerate(todo, 1):
             q = x["conversation"][0]["content"]; fps, nfr = fps_of(x["video"])
             if nfr == 0:
                 continue
@@ -151,7 +164,8 @@ async def main():
             narr = [r for r in await asyncio.gather(*(narrate_t(t) for t in ts_list)) if r]
             narr.sort(key=lambda r: r[0])
             caps[x["question_id"]] = {"question": q, "answer": x["answer"], "narr": narr}
-        cap_path.write_text(json.dumps(caps))
+            cap_path.write_text(json.dumps(caps))  # checkpoint per question -> visible + resumable
+            print(f"  captured {i}/{len(todo)} {x['question_id']} ({len(caps)} cached)", flush=True)
         print(f"captured {len(caps)} questions (Gemini {gmodel}) -> {cap_path}")
 
     # ---- judge (Claude Haiku, independent of Gemini) with an in-run cache ----

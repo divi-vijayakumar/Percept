@@ -8,16 +8,20 @@ Run:
 Sources:
   * Perception Test (CC-BY-4.0)  — sound + action annotations (~550KB) + N range-fetched ~2MB videos/task
   * RepCount-A (lmms-lab lance)  — meta + N materialized video blobs
-  * golden (relational)          — already local (fixtures-private); just verified + recorded
+  * golden (relational)          — already local (fixtures-golden); just verified + recorded
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from pathlib import Path
 
-STAGING = Path(__file__).resolve().parents[1] / "bench-staging"
+REPO_ROOT = Path(__file__).resolve().parents[4]
+_DEFAULT_STAGE_ROOT = Path(__file__).resolve().parents[1] / "bench-staging"
+_STAGE_ROOT = Path(os.environ.get("PERCEPT_BENCH_DATA_DIR", _DEFAULT_STAGE_ROOT)).expanduser()
+STAGING = _STAGE_ROOT if _STAGE_ROOT.is_absolute() else REPO_ROOT / _STAGE_ROOT
 
 
 def _pt(manifest: dict, n_videos: int) -> None:
@@ -27,7 +31,7 @@ def _pt(manifest: dict, n_videos: int) -> None:
         ann = pt.load_annotations(task)
         manifest["sources"][f"perception_test/{task}/annotations"] = {"ok": True, "rows": len(ann)}
         print(f"PT {task}: annotations cached ({len(ann)} rows)")
-        events = pt.sample_events(task, n_videos)
+        events = pt.sample_events(task, n_videos, is_visible=0) if task == "sound" else pt.sample_events(task, n_videos)
         got = 0
         for e in events:
             try:

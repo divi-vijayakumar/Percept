@@ -1,0 +1,349 @@
+{
+ "sweep2-gem35": {
+  "pt-action-e2e": {
+   "cells": {
+    "dense-modeled:dense_frame_calls": 444,
+    "e2e:call_reduction": 0.4414414414414415,
+    "e2e:candidate_calls": 248,
+    "e2e:median_latency_s": 2.0679139154159163,
+    "e2e:notification_precision": 0.4,
+    "e2e:notification_recall": 0.625,
+    "edge:candidate_precision_proxy": 0.2540322580645161,
+    "edge:candidate_recall": 0.875
+   },
+   "cov": {
+    "dataset": "perception-test/action",
+    "expected": 8,
+    "failed": 0,
+    "notes": "runtime E2E path over sampled PT action rows",
+    "observed": 8,
+    "skipped": 0
+   }
+  },
+  "timespeak": {
+   "cells": {
+    "e2e:early_fire_rate": 0.06756756756756757,
+    "e2e:late_fire_rate": 0.0,
+    "e2e:latency": 2.9395000000000007,
+    "e2e:p-pauc": 2.0128378378378367,
+    "e2e:timing_accuracy": 0.05405405405405406
+   },
+   "cov": {
+    "dataset": "local-e2e-artifacts",
+    "expected": 113,
+    "failed": 0,
+    "notes": "sources={'pt-action-e2e': 8, 'charades-e2e': 66, 'proactiveqa-e2e': 39}; artifacts=['eval/local-benchmark/runs/sweep2-gem35/results/pt-action-e2e.json', 'eval/local-benchmark/runs/sweep2-gem35/results/charades-e2e.json', 'eval/local-benchmark/runs/sweep2-gem35/results/proactiveqa-e2e.json']; timing_skipped=39 (placeholder/zero-width windows w/o timing ground truth)",
+    "observed": 74,
+    "skipped": 39
+   }
+  },
+  "charades-e2e": {
+   "cells": {
+    "dense-modeled:dense_goal_frame_calls": 1776,
+    "e2e:call_reduction": 0.8603603603603603,
+    "e2e:candidate_calls": 248,
+    "e2e:median_latency_s": 4.119999999999999,
+    "e2e:notification_precision": 0.6774193548387096,
+    "e2e:notification_recall": 0.3181818181818182,
+    "e2e:sparse_span_miou_diagnostic": 0.12256302336025314,
+    "edge:candidate_precision_proxy": 0.9166666666666666,
+    "edge:candidate_recall": 0.5151515151515151
+   },
+   "cov": {
+    "dataset": "charades/test-selection",
+    "expected": 8,
+    "failed": 0,
+    "notes": "goal-labeled Charades videos through edge-gated Percept watch path",
+    "observed": 8,
+    "skipped": 0
+   }
+  },
+  "cuespeak": {
+   "cells": {
+    "e2e:duplicate_rate": 0.008379888268156424,
+    "e2e:fires/ep": 6.336283185840708,
+    "e2e:precision": 0.0446927374301676,
+    "e2e:recall": 0.23008849557522124,
+    "e2e:unresolved_rate": 0.0
+   },
+   "cov": {
+    "dataset": "local-e2e-artifacts",
+    "expected": 113,
+    "failed": 0,
+    "notes": "sources={'pt-action-e2e': 8, 'charades-e2e': 66, 'proactiveqa-e2e': 39}; artifacts=['eval/local-benchmark/runs/sweep2-gem35/results/pt-action-e2e.json', 'eval/local-benchmark/runs/sweep2-gem35/results/charades-e2e.json', 'eval/local-benchmark/runs/sweep2-gem35/results/proactiveqa-e2e.json']",
+    "observed": 113,
+    "skipped": 0
+   }
+  },
+  "proactiveqa-e2e": {
+   "cells": {
+    "dense-modeled:dense_frame_calls": 526,
+    "e2e:call_reduction": 0.15019011406844107,
+    "e2e:calls_per_min": 10.197718631178706,
+    "e2e:candidate_calls": 447,
+    "e2e:duplicate_rate": 0.0375,
+    "e2e:first_answer_latency_p50": 6.060000000000002,
+    "e2e:interruptions": 160,
+    "e2e:pauc@0.5_proxy": 42.885423935081526,
+    "e2e:pauc@0_proxy": 37.69392479323999,
+    "e2e:pauc@1_proxy": 48.07692307692308,
+    "e2e:unresolved_rate": 0.4358974358974359,
+    "edge:candidate_precision_proxy": 0.31543624161073824,
+    "edge:candidate_recall": 0.8717948717948718
+   },
+   "cov": {
+    "dataset": "proactiveqa/ego-subset",
+    "expected": 8,
+    "failed": 0,
+    "notes": "question rows through edge-gated Percept answer-evidence path",
+    "observed": 8,
+    "skipped": 0
+   }
+  }
+ },
+ "sweep2-qwen": {
+  "pt-action-e2e": {
+   "cells": {
+    "dense-modeled:dense_frame_calls": 445,
+    "e2e:call_reduction": 0.44044943820224725,
+    "e2e:candidate_calls": 249,
+    "e2e:median_latency_s": 2.0679139154159163,
+    "e2e:notification_precision": 0.3684210526315789,
+    "e2e:notification_recall": 0.625,
+    "edge:candidate_precision_proxy": 0.2570281124497992,
+    "edge:candidate_recall": 0.875
+   },
+   "cov": {
+    "dataset": "perception-test/action",
+    "expected": 8,
+    "failed": 0,
+    "notes": "runtime E2E path over sampled PT action rows",
+    "observed": 8,
+    "skipped": 0
+   }
+  },
+  "timespeak": {
+   "cells": {
+    "e2e:early_fire_rate": 0.08108108108108109,
+    "e2e:late_fire_rate": 0.02702702702702703,
+    "e2e:latency": 3.7885,
+    "e2e:p-pauc": 1.9804054054054057,
+    "e2e:timing_accuracy": 0.04054054054054054
+   },
+   "cov": {
+    "dataset": "local-e2e-artifacts",
+    "expected": 113,
+    "failed": 0,
+    "notes": "sources={'pt-action-e2e': 8, 'charades-e2e': 66, 'proactiveqa-e2e': 39}; artifacts=['eval/local-benchmark/runs/sweep2-qwen/results/pt-action-e2e.json', 'eval/local-benchmark/runs/sweep2-qwen/results/charades-e2e.json', 'eval/local-benchmark/runs/sweep2-qwen/results/proactiveqa-e2e.json']; timing_skipped=39 (placeholder/zero-width windows w/o timing ground truth)",
+    "observed": 74,
+    "skipped": 39
+   }
+  },
+  "charades-e2e": {
+   "cells": {
+    "dense-modeled:dense_goal_frame_calls": 1776,
+    "e2e:call_reduction": 0.8603603603603603,
+    "e2e:candidate_calls": 248,
+    "e2e:median_latency_s": 4.111920236839419,
+    "e2e:notification_precision": 0.5757575757575758,
+    "e2e:notification_recall": 0.2878787878787879,
+    "e2e:sparse_span_miou_diagnostic": 0.13080688832215198,
+    "edge:candidate_precision_proxy": 0.9166666666666666,
+    "edge:candidate_recall": 0.5151515151515151
+   },
+   "cov": {
+    "dataset": "charades/test-selection",
+    "expected": 8,
+    "failed": 0,
+    "notes": "goal-labeled Charades videos through edge-gated Percept watch path",
+    "observed": 8,
+    "skipped": 0
+   }
+  },
+  "cuespeak": {
+   "cells": {
+    "e2e:duplicate_rate": 0.008,
+    "e2e:fires/ep": 6.6371681415929205,
+    "e2e:precision": 0.04,
+    "e2e:recall": 0.21238938053097345,
+    "e2e:unresolved_rate": 0.0
+   },
+   "cov": {
+    "dataset": "local-e2e-artifacts",
+    "expected": 113,
+    "failed": 0,
+    "notes": "sources={'pt-action-e2e': 8, 'charades-e2e': 66, 'proactiveqa-e2e': 39}; artifacts=['eval/local-benchmark/runs/sweep2-qwen/results/pt-action-e2e.json', 'eval/local-benchmark/runs/sweep2-qwen/results/charades-e2e.json', 'eval/local-benchmark/runs/sweep2-qwen/results/proactiveqa-e2e.json']",
+    "observed": 113,
+    "skipped": 0
+   }
+  },
+  "proactiveqa-e2e": {
+   "cells": {
+    "dense-modeled:dense_frame_calls": 528,
+    "e2e:call_reduction": 0.15340909090909094,
+    "e2e:calls_per_min": 10.159090909090908,
+    "e2e:candidate_calls": 447,
+    "e2e:duplicate_rate": 0.0658682634730539,
+    "e2e:first_answer_latency_p50": 3.9499999999999886,
+    "e2e:interruptions": 167,
+    "e2e:pauc@0.5_proxy": 52.85922038701168,
+    "e2e:pauc@0_proxy": 46.10305615863876,
+    "e2e:pauc@1_proxy": 59.61538461538461,
+    "e2e:unresolved_rate": 0.4871794871794872,
+    "edge:candidate_precision_proxy": 0.31543624161073824,
+    "edge:candidate_recall": 0.8717948717948718
+   },
+   "cov": {
+    "dataset": "proactiveqa/ego-subset",
+    "expected": 8,
+    "failed": 0,
+    "notes": "question rows through edge-gated Percept answer-evidence path",
+    "observed": 8,
+    "skipped": 0
+   }
+  }
+ },
+ "sweep2-gemlive": {
+  "pt-action-e2e": {
+   "cells": {
+    "dense-modeled:dense_frame_calls": 387,
+    "e2e:call_reduction": 0.4702842377260982,
+    "e2e:candidate_calls": 205,
+    "e2e:median_latency_s": 2.0679139154159163,
+    "e2e:notification_precision": 0.4666666666666667,
+    "e2e:notification_recall": 0.5,
+    "edge:candidate_precision_proxy": 0.3121951219512195,
+    "edge:candidate_recall": 0.875
+   },
+   "cov": {
+    "dataset": "perception-test/action",
+    "expected": 8,
+    "failed": 2,
+    "notes": "runtime E2E path over sampled PT action rows",
+    "observed": 6,
+    "skipped": 0
+   }
+  },
+  "timespeak": {
+   "cells": {
+    "e2e:early_fire_rate": 0.08108108108108109,
+    "e2e:late_fire_rate": 0.06756756756756757,
+    "e2e:latency": 4.116,
+    "e2e:p-pauc": 2.6020270270270274,
+    "e2e:timing_accuracy": 0.04054054054054054
+   },
+   "cov": {
+    "dataset": "local-e2e-artifacts",
+    "expected": 85,
+    "failed": 0,
+    "notes": "sources={'pt-action-e2e': 8, 'charades-e2e': 66, 'proactiveqa-e2e': 11}; artifacts=['eval/local-benchmark/runs/sweep2-gemlive/results/pt-action-e2e.json', 'eval/local-benchmark/runs/sweep2-gemlive/results/charades-e2e.json', 'eval/local-benchmark/runs/proactiveqa-e2e-n1/results/proactiveqa-e2e.json']; timing_skipped=11 (placeholder/zero-width windows w/o timing ground truth)",
+    "observed": 74,
+    "skipped": 11
+   }
+  },
+  "charades-e2e": {
+   "cells": {
+    "dense-modeled:dense_goal_frame_calls": 1692,
+    "e2e:call_reduction": 0.8977541371158393,
+    "e2e:candidate_calls": 173,
+    "e2e:median_latency_s": 4.719999999999999,
+    "e2e:notification_precision": 0.7142857142857143,
+    "e2e:notification_recall": 0.3787878787878788,
+    "e2e:sparse_span_miou_diagnostic": 0.10455629991853392,
+    "edge:candidate_precision_proxy": 0.8846153846153846,
+    "edge:candidate_recall": 0.48484848484848486
+   },
+   "cov": {
+    "dataset": "charades/test-selection",
+    "expected": 8,
+    "failed": 1,
+    "notes": "goal-labeled Charades videos through edge-gated Percept watch path",
+    "observed": 7,
+    "skipped": 0
+   }
+  },
+  "cuespeak": {
+   "cells": {
+    "e2e:duplicate_rate": 0.1,
+    "e2e:fires/ep": 0.5882352941176471,
+    "e2e:precision": 0.66,
+    "e2e:recall": 0.32941176470588235,
+    "e2e:unresolved_rate": 0.0
+   },
+   "cov": {
+    "dataset": "local-e2e-artifacts",
+    "expected": 85,
+    "failed": 0,
+    "notes": "sources={'pt-action-e2e': 8, 'charades-e2e': 66, 'proactiveqa-e2e': 11}; artifacts=['eval/local-benchmark/runs/sweep2-gemlive/results/pt-action-e2e.json', 'eval/local-benchmark/runs/sweep2-gemlive/results/charades-e2e.json', 'eval/local-benchmark/runs/proactiveqa-e2e-n1/results/proactiveqa-e2e.json']",
+    "observed": 85,
+    "skipped": 0
+   }
+  }
+ },
+ "sweep-gem35": {
+  "pt-action-e2e": {
+   "cells": {
+    "dense-modeled:dense_frame_calls": 579,
+    "e2e:call_reduction": 0.46804835924006905,
+    "e2e:candidate_calls": 308,
+    "e2e:median_latency_s": 2.20151749728143,
+    "e2e:notification_precision": 0.3333333333333333,
+    "e2e:notification_recall": 0.4,
+    "edge:candidate_precision_proxy": 0.21103896103896103,
+    "edge:candidate_recall": 0.7
+   },
+   "cov": {
+    "dataset": "perception-test/action",
+    "expected": 10,
+    "failed": 0,
+    "notes": "runtime E2E path over sampled PT action rows",
+    "observed": 10,
+    "skipped": 0
+   }
+  }
+ },
+ "sweep-qwen": {
+  "pt-action-e2e": {
+   "cells": {
+    "dense-modeled:dense_frame_calls": 582,
+    "e2e:call_reduction": 0.46563573883161513,
+    "e2e:candidate_calls": 311,
+    "e2e:median_latency_s": 2.0679139154159163,
+    "e2e:notification_precision": 0.32,
+    "e2e:notification_recall": 0.6,
+    "edge:candidate_precision_proxy": 0.21543408360128619,
+    "edge:candidate_recall": 0.8
+   },
+   "cov": {
+    "dataset": "perception-test/action",
+    "expected": 10,
+    "failed": 0,
+    "notes": "runtime E2E path over sampled PT action rows",
+    "observed": 10,
+    "skipped": 0
+   }
+  }
+ },
+ "sweep-gemlive": {
+  "pt-action-e2e": {
+   "cells": {
+    "dense-modeled:dense_frame_calls": 528,
+    "e2e:call_reduction": 0.46590909090909094,
+    "e2e:candidate_calls": 282,
+    "e2e:median_latency_s": 0.709365807891092,
+    "e2e:notification_precision": 0.3,
+    "e2e:notification_recall": 0.5,
+    "edge:candidate_precision_proxy": 0.25886524822695034,
+    "edge:candidate_recall": 0.9
+   },
+   "cov": {
+    "dataset": "perception-test/action",
+    "expected": 10,
+    "failed": 1,
+    "notes": "runtime E2E path over sampled PT action rows",
+    "observed": 9,
+    "skipped": 0
+   }
+  }
+ }
+}

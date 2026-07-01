@@ -8,6 +8,7 @@ episodes (Phase 4), events (Phase 5) — without editing the gate/graph contract
 
 from __future__ import annotations
 
+import inspect
 import time
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Callable
@@ -16,7 +17,7 @@ from . import registry
 from .adapters import Box, Decision, Goal, TurnResult, Verdict
 from .behavior import BehaviorExecutor, program_of
 from .cache import CacheCascade, CacheKey, FrameHashLayer
-from .concern import attention_weight, consequence_of, requires_verification
+from .concern import attention_weight, consequence_of, requires_verification, resolution_ready
 from .config import Settings, load_settings
 from .escalation import MAX_PERCEPTION_LEVEL, escalate_perception, should_escalate
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
@@ -25,7 +26,8 @@ from .episodes import EpisodeJudge, EpisodeLog
 from .events import AudioWindow, EventLog, FrameWindow
 from .gate import FIRE, Gate, GateAction, classify
 from .goals import GoalOp, GoalRegistry
-from .observability import Funnel, Metrics, OTelExporter, health, judge_usage
+from .observability import Funnel, Metrics, OTelExporter, TraceEvent, health, judge_usage
+from .rhythm import RhythmTracker
 from .routing import RouteEngine
 from .scheduler import Scheduler
 
@@ -52,6 +54,17 @@ def _escalated_perception(base, level: int):
     if level >= 2 and spec.modality == "vision":
         spec = replace(spec, modality="fused", audio_s=spec.audio_s or 2.0)
     return spec
+
+
+def _try_make_sprite(frames):
+    """Montage the context frames into ONE image (Build 6), or ``None`` if they aren't images (so the
+    caller degrades to a plain strip — e.g. L1 mock frames)."""
+    try:
+        from .sprite import make_sprite
+
+        return make_sprite(frames)
+    except Exception:
+        return None
 
 
 def _concat_audio(chunks: list) -> Any:
@@ -125,8 +138,11 @@ class Percept:
     # (no RNG on the L1 path); injectable for custom policies. ``None`` -> never audit.
     audit: Callable[[object], bool] | None = None
     router: RouteEngine | None = None  # local fast-path; None -> always defer (built in create)
+    on_trace: "Callable[[Any], None] | None" = None  # opt-in per-frame decision tracer; None -> no-op
     episodes: dict = field(default_factory=dict)  # goal_id -> EpisodeLog (counting goals)
     edge_counts: dict = field(default_factory=dict)  # goal_id -> running tally of edge detector boundaries
+    rhythm: dict = field(default_factory=dict)  # goal_id -> RhythmTracker (the SELECTED subject's; brain count)
+    _rhythm_multi: dict = field(default_factory=dict)  # (goal_id, entity_id) -> RhythmTracker (per-person streams)
     windows: dict = field(default_factory=dict)  # source -> FrameWindow (temporal perception)
     audio_windows: dict = field(default_factory=dict)  # source -> AudioWindow (fused/acoustic perception)
     perception_cooldown_s: float = 5.0  # the perception-rung refractory (shorter than the LLM's 30s)
@@ -156,6 +172,7 @@ class Percept:
         audit: Callable[[object], bool] | None = None,
         identity: Any = None,
         embedder: Callable[[Any, Box], Any] | None = None,
+        on_trace: Callable[[Any], None] | None = None,
     ) -> "Percept":
         cfg = settings or load_settings()
         # A seam not explicitly passed falls back to the config/env selection (settings.models.*, i.e.
@@ -195,6 +212,7 @@ class Percept:
             cache=CacheCascade(layers=layers, threshold=cfg.cache.threshold),
             clock=clk,
             audit=auditor,
+            on_trace=on_trace,
             router=RouteEngine.default(threshold=cfg.routing.confidence_threshold),
             event_log=EventLog(cfg.events.merge_gap_s),
             scheduler=Scheduler(clock=clk),
@@ -382,6 +400,69 @@ class Percept:
         self.metrics.incr("edge.boundary.fire")
         return FireEvent(fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict)
 
+    def _rhythm_tracker(self, goal) -> RhythmTracker:
+        prior = goal.state.get("rhythm") if isinstance(goal.state.get("rhythm"), dict) else {}
+        kw = {"amp_gate_frac": prior["amp_gate_frac"]} if "amp_gate_frac" in prior else {}
+        if "smooth_s" in prior:  # opt-in rate-invariance smoothing (Build 2); default off keeps legacy counts
+            kw["smooth_s"] = prior["smooth_s"]
+        if prior.get("canonical_select"):  # opt-in rate-invariant channel selection (Build 3); default off
+            kw["canonical_select"] = True
+        return RhythmTracker(prior_channel=prior.get("channel"), expected_rom=prior.get("expected_rom"), **kw)
+
+    def _fire_rep(self, goal, n: int, stop_t: float) -> FireEvent | None:
+        fired = self.executor.fire_episode(goal, program_of(goal), n=n, is_new=True, t=stop_t)
+        if fired is None:
+            return None
+        self.metrics.incr("rhythm.rep.fire")
+        return FireEvent(fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict)
+
+    def perceive_rhythm(
+        self, goal_id: str, *, t: float, channels: dict[str, float], entity_id: str | None = None
+    ) -> FireEvent | None:
+        """The **rhythm sense** (the brain-counts half done right): fold one frame's measured pose/motion
+        CHANNELS into the goal's :class:`~percept.rhythm.RhythmTracker` and fire only when a *complete* rep
+        is causally confirmed (rest→peak→return-to-rest). The count is the tracker's confirmed-rep tally —
+        the eye measures, the brain decides which excursions are reps. No VLM call, no per-action tuning.
+
+        ``channels`` is the eye's decomposed measurement vector for this frame (e.g. the ``pose-channels``
+        detector's basis). A confirmed rep IS a distinct episode, so the firing reuses
+        :meth:`BehaviorExecutor.fire_episode` (gate + ``fire_when``) — same path, new sense.
+
+        ``entity_id`` makes counting PER-PERSON: each subject gets its own tracker and the brain SELECTS the
+        performer (the entity with the most reps on the prior channel — a still bystander reps ~0), so the
+        goal's reported count is the performer's. ``None`` (the default) is the legacy single-subject stream
+        the benchmark/runtime read directly; behaviour there is unchanged."""
+        goal = self.goals.get(goal_id)
+        if goal is None or not channels:
+            return None
+        if entity_id is None:  # legacy single-subject stream — unchanged
+            tracker = self.rhythm.get(goal_id)
+            if tracker is None:
+                tracker = self.rhythm[goal_id] = self._rhythm_tracker(goal)
+            rep = tracker.observe(t, channels)
+            if rep is None:
+                return None
+            n = tracker.count
+            self.edge_counts[goal_id] = n  # the brain-owned count, read uniformly by the bench/runtime
+            goal.state["count"] = n
+            return self._fire_rep(goal, n, rep.stop_t)
+        # per-entity: the brain selects the performer (most reps for this goal) and reports their count
+        key = (goal_id, entity_id)
+        tracker = self._rhythm_multi.get(key)
+        if tracker is None:
+            tracker = self._rhythm_multi[key] = self._rhythm_tracker(goal)
+        rep = tracker.observe(t, channels)
+        perf_key, perf = max(((k, tr) for k, tr in self._rhythm_multi.items() if k[0] == goal_id),
+                             key=lambda kt: kt[1].count)
+        self.rhythm[goal_id] = perf  # so core.rhythm[goal_id] / .count read the SELECTED subject uniformly
+        n = perf.count
+        self.edge_counts[goal_id] = n
+        goal.state["count"] = n
+        goal.state["subject"] = perf_key[1]  # who the brain is counting (the selected performer entity)
+        if rep is None or key != perf_key:  # fire only when THE PERFORMER confirms a rep this frame
+            return None
+        return self._fire_rep(goal, n, rep.stop_t)
+
     # -- observability: coverage-loss fires with the concern's consequence (A2, spec §3) ----
     def check_observability(
         self, *, t: float | None = None, staleness_s: float | None = None
@@ -458,10 +539,69 @@ class Percept:
         self._log_fires(out, now)
         return out
 
+    # -- Item 4: the episode boundary fires the consolidated process answer -------------------
+    async def check_episode_boundary(
+        self, *, t: float | None = None, inactivity_s: float | None = None
+    ) -> list[FireEvent]:
+        """A process activity that has gone quiet (no NEW step for ``inactivity_s``) ENDED — summarize the
+        logged deltas, emit the answer, and wipe. Cognition-owned, perception-robust (fires on the
+        ABSENCE of new steps, never a guess). Mirrors :meth:`check_observability`: a synthetic verdict
+        through the UNCHANGED gate on a dedicated ``__episode__`` key -> fires ONCE per episode and re-arms
+        when the next step is logged. Only ``type=='process'`` goals participate -> byte-for-byte.
+        Run on the worker's cadence (it must see QUIET frames — the boundary IS an absence of activity)."""
+        now = self.clock() if t is None else t
+        bound = inactivity_s if inactivity_s is not None else self.settings.gate.validity_window_s
+        out: list[FireEvent] = []
+        for goal in self.goals.active():
+            gtype = goal.state.get("type")
+            ctx = self.executor.ctx(goal.id)
+            ended = (
+                bool(ctx.process_log)
+                and ctx.last_step_at != float("-inf")
+                and (now - ctx.last_step_at) > bound
+            )
+            if gtype == "process":
+                verdict = Verdict(satisfied=ended, confidence=1.0, evidence="episode")
+                action = self.gate.evaluate((goal.id, "__episode__"), verdict)
+                self.metrics.incr(f"episode.gate.{action}")
+                if action == FIRE:
+                    answer = await self.summarize_process(goal.id, wipe=True)  # consolidate + reset
+                    v = Verdict(satisfied=True, confidence=1.0, evidence=answer, running_answer=answer)
+                    out.append(FireEvent(goal.id, FIRE, answer or self._episode_text(goal), None, v))
+                continue
+            # process-QA (mvp2) watch goal: a quiet episode end RESOLVES whatever was confidently
+            # accumulated, with the coverage floor relaxed by one (``at_boundary``) — but still never
+            # resolving an empty/uncertain answer. Same answer-path resolver as the in-tick path.
+            if goal.state.get("process_qa") and ended:
+                resolved = self._resolve_process_qa(goal, ctx, 1.0, at_boundary=True)
+                if resolved is not None:
+                    ctx.process_log = []  # end the episode → wipe accumulated coverage, re-arm
+                    out.append(resolved)
+        self._log_fires(out, now)
+        return out
+
+    def _episode_text(self, goal: Goal) -> str:
+        return f"Here's what I saw for: {goal.condition}"
+
     def _overdue_text(self, goal: Goal) -> str:
         return f"Still waiting on: {goal.condition}"
 
     # -- the watch path ------------------------------------------------------
+    async def _emit_trace(self, trace_id: str, t: float, stage: str, *, goal_id: str | None = None,
+                          **data: Any) -> None:
+        """Invoke ``on_trace`` safely: await an async callback, and never let a bad tracer break the
+        loop (observability must not crash perception). Caller guards on ``self.on_trace is not None``
+        first so no trace kwargs are built on the default (untraced) hot path."""
+        cb = self.on_trace
+        if cb is None:
+            return
+        try:
+            result = cb(TraceEvent(trace_id=trace_id, stage=stage, t=t, goal_id=goal_id, data=data))
+            if inspect.isawaitable(result):
+                await result
+        except Exception:  # noqa: BLE001 — a tracer is observability; swallow its failures
+            pass
+
     async def perceive_judged(
         self, frame: Any, source: str = "camera", *, t: float | None = None
     ) -> list[FireEvent]:
@@ -471,6 +611,14 @@ class Percept:
         but feed the **same three-state gate** — one gate, two perception tracks (spec §5.6).
         """
         now = self.clock() if t is None else t
+        # Per-frame decision trace (opt-in via on_trace; no-op otherwise). trace_id correlates this
+        # frame's stages; derived from source+timestamp — deterministic WHEN t is supplied (as in
+        # tests). With t=None it uses the wall clock, like any production run.
+        trace_id = f"{source}@{now}"
+        tracing = self.on_trace is not None  # guard so the default (untraced) path builds no trace kwargs
+
+        if tracing:
+            await self._emit_trace(trace_id, now, "source.frame")
         self._window(source).push(now, frame)  # feed the rolling window for temporal perception
         observations = await self.vision.detect(frame, self.goals.active())
         self.graph.ingest(observations, frame, source, t=now)
@@ -484,6 +632,9 @@ class Percept:
                 if ev is not None:
                     events.append(ev)
                 continue
+            if gtype == "process":
+                await self._observe_and_log(goal, frame, source, now)  # Item 4: log a delta, never fire here
+                continue
             if gtype != "watch":
                 continue  # event/count/remind goals are handled by their dedicated paths
             ctx = self.executor.ctx(goal.id)
@@ -495,10 +646,41 @@ class Percept:
             strip = self._strip_frames(source, spec)  # temporal strip per the spec; None = single (today)
             audio = self._audio_clip(source, spec)  # audio clip for a fused/audio spec; None otherwise
             self.funnel.judged(concern=goal.id, camera=source)  # a judge call is being spent
+            # Item 2 process-QA: opt-in goals carry a per-concern running answer in/out of the judge.
+            # GATE-IRRELEVANT — the verdict's satisfied/confidence still drive the (unchanged) gate; the
+            # running answer is just threaded through ConcernContext. Default goals pass context=None and
+            # are byte-for-byte unchanged.
+            process_ctx = (
+                {"process_qa": True, "running_answer": ctx.running_answer}
+                if goal.state.get("process_qa") else None
+            )
+            if tracing:
+                await self._emit_trace(trace_id, now, "judge.started", goal_id=goal.id,
+                                       temporal=getattr(spec, "temporal", None), roi=roi is not None)
             verdict = await self._judge(
                 goal, frame, roi, corrections, entity_id=focus.id if focus else None,
-                frames=strip, audio=audio,
+                frames=strip, audio=audio, context=process_ctx,
             )
+            if tracing:
+                await self._emit_trace(trace_id, now, "judge.finished", goal_id=goal.id,
+                                       satisfied=getattr(verdict, "satisfied", None),
+                                       confidence=getattr(verdict, "confidence", None))
+            resolved: FireEvent | None = None
+            if process_ctx is not None and getattr(verdict, "running_answer", ""):
+                ctx.running_answer = verdict.running_answer  # accumulate the model's rewritten summary
+                # Accumulated-coverage stamp (answer-path only): each evidence-bearing observation that
+                # folded into the running answer is a unit of coverage. Reuse the per-concern process_log
+                # the boundary already owns, so len(process_log) IS the evidence count — no gate state.
+                # Bounded so a 24/7 process_qa concern that never hits a boundary can't leak memory (plan
+                # R14); the resolver only reads it as a >= floor count, so a cap never weakens resolution.
+                ctx.process_log.append(verdict.running_answer)
+                if len(ctx.process_log) > 256:
+                    del ctx.process_log[: len(ctx.process_log) - 256]
+                ctx.last_step_at = now
+                # RESOLVE the running answer once it's complete/confident enough (general — coverage +
+                # confidence, never the question text). De-duped through the UNCHANGED gate on a
+                # dedicated __resolved__ key, exactly like the coverage/episode/overdue absence fires.
+                resolved = self._resolve_process_qa(goal, ctx, verdict.confidence)
             freshness = self._freshness(focus, now)
             truth = classify(verdict, freshness, self.gate.threshold, self.gate.fresh_min)
             if truth == "unknown":
@@ -514,6 +696,21 @@ class Percept:
                 if ev_fire.action == FIRE:
                     self.funnel.fired(concern=goal.id, camera=source)  # a rising-edge fire emitted
                 events.append(ev_fire)
+            if resolved is not None:  # the process-QA running answer crossed the bar this tick
+                self.funnel.fired(concern=goal.id, camera=source)
+                events.append(resolved)
+            if tracing:
+                # AFTER both fire paths: label a FIRE whenever an incident was actually emitted this tick
+                # — either the gate fired OR a resolved process-QA answer crossed the bar (which fires even
+                # when the gate abstained/ASK'd on this same tick). Only ask/silent when nothing fired.
+                if resolved is not None or (ev_fire is not None and ev_fire.action == FIRE):
+                    action = "fire"
+                elif ev_fire is not None:
+                    action = ev_fire.action
+                else:
+                    action = "silent"
+                await self._emit_trace(trace_id, now, "gate.classified", goal_id=goal.id,
+                                       truth=truth, action=action)
         self._log_fires(events, now)
         await self._deliberate_confused(now)  # Posture B: auto-refine recurrently-ambiguous concerns
         return events
@@ -544,6 +741,70 @@ class Percept:
         goal.state["count"] = goal.state.get("count", 0) + 1
         self.metrics.incr("transition.fire")
         return FireEvent(fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict)
+
+    async def _observe_and_log(self, goal: Goal, frame: Any, source: str, now: float) -> None:
+        """Item 4 (log→summarize→wipe): observe THIS clip's step delta and append it to the per-concern
+        log. NEVER fires here — a process goal's answer is produced by :meth:`summarize_process` at the
+        episode boundary / on demand. The gate is untouched (no verdict routed)."""
+        ctx = self.executor.ctx(goal.id)
+        spec = _escalated_perception(program_of(goal).perception, ctx.perception_level)
+        strip = self._strip_frames(source, spec)
+        self.funnel.judged(concern=goal.id, camera=source)  # an observe call is being spent
+        verdict = await self._judge(
+            goal, frame, None, {}, frames=strip, context={"observe_step": True}
+        )
+        step = (getattr(verdict, "evidence", "") or "").strip()
+        if step and step != "not enough evidence":
+            ctx.process_log.append(step)  # the VLM never sees this back — cheap append only
+            ctx.last_step_at = now
+
+    async def summarize_process(self, goal_id: str, *, wipe: bool = False) -> str:
+        """Consolidate a process goal's logged step-deltas into the ordered distinct steps (Item 4).
+
+        On-demand ("what have you seen?") with ``wipe=False``; the episode boundary calls it with
+        ``wipe=True`` (end the episode → emit → reset the log). Returns "" if nothing has been logged.
+        The summarize is gate-irrelevant — it never routes a verdict; only the boundary does (and through
+        the unchanged gate). Backends that don't implement ``summarize_process`` yield "" gracefully.
+        """
+        ctx = self.executor.ctx(goal_id)
+        log = list(ctx.process_log)
+        summarizer = getattr(self.vision, "summarize_process", None)
+        if not log or summarizer is None:
+            return ctx.running_answer
+        goal = self.goals.get(goal_id)
+        condition = goal.condition if goal is not None else ""
+        answer = await summarizer(condition, log)
+        ctx.running_answer = answer or ctx.running_answer
+        if wipe:
+            ctx.process_log = []
+        return ctx.running_answer
+
+    def _resolve_process_qa(self, goal: Goal, ctx, confidence: float, *, at_boundary: bool = False
+                            ) -> FireEvent | None:
+        """Emit a RESOLVED process-QA answer once the accumulated running answer is complete/confident
+        enough (Item 2 mvp2). This closes the gap behind ``unresolved_rate == 1.0``: the running answer
+        accumulates per escalation but the gate only fires on a confident-YES verdict, so an
+        evidence-gathering judge never RESOLVES — the answer the metric can score is never produced.
+
+        GENERAL, not per-question: :func:`~percept.concern.resolution_ready` reads only accumulated
+        COVERAGE (``len(ctx.process_log)`` — the evidence-bearing observations folded in), SUBSTANCE, and
+        CONFIDENCE. An unseen process question resolves with zero new branches. The gate stays UNCHANGED:
+        de-dup rides a synthetic verdict on a dedicated ``(goal, __resolved__)`` key — the same mechanism
+        :meth:`check_observability` / :meth:`check_episode_boundary` / :meth:`check_deadlines` already
+        use — so it resolves ONCE per accumulation and re-arms only when fresh evidence pushes a new,
+        different answer. Precision-guarded: a thin/empty/uncertain running answer never resolves."""
+        answer = (ctx.running_answer or "").strip()
+        ready = resolution_ready(
+            answer, len(ctx.process_log), confidence, at_boundary=at_boundary
+        )
+        # The de-dup key folds in the answer text so a *changed* answer (more evidence rewrote it) is a
+        # fresh edge that can resolve again, while a repeated identical answer fires only once.
+        verdict = Verdict(satisfied=ready, confidence=confidence, evidence=answer, running_answer=answer)
+        action = self.gate.evaluate((goal.id, "__resolved__", answer), verdict)
+        self.metrics.incr(f"process_qa.resolve.{action}")
+        if action != FIRE:
+            return None
+        return FireEvent(goal.id, FIRE, goal.say or answer, None, verdict)
 
     def _resolve_roi(self, goal: Goal, focus, spec) -> Box | None:
         """ROI per the ``PerceptionSpec``: ``focus`` = the in-focus entity box (today); ``hint`` = the
@@ -576,7 +837,7 @@ class Percept:
             earlier = [(t, f) for t, f in earlier if t >= cutoff]
             if not earlier:
                 return None
-        want = (spec.n_frames - 1) if spec.temporal == "strip" else len(earlier)
+        want = (spec.n_frames - 1) if spec.temporal in ("strip", "sprite") else len(earlier)
         if want <= 0:
             return None
         if spec.sampling == "uniform" and len(earlier) > want:
@@ -587,7 +848,11 @@ class Percept:
                 picked = [earlier[round(i * step)] for i in range(want)]
         else:  # "recent": the last `want` earlier frames
             picked = earlier[-want:]
-        return [f for _, f in picked]
+        frames = [f for _, f in picked]
+        if spec.temporal == "sprite":  # fold the temporal CONTEXT into ONE montage image (VLM token budget);
+            sprite = _try_make_sprite(frames)  # the current frame is still sent separately for fidelity.
+            return [sprite] if sprite is not None else frames  # non-image frames degrade to a plain strip
+        return frames
 
     async def _timed_judge(self, *args: Any, **kwargs: Any) -> Verdict:
         """Call the vision judge, timing wall-clock latency and capturing token/cost off the verdict.
@@ -639,14 +904,19 @@ class Percept:
         entity_id: str | None = None,
         frames: list | None = None,
         audio: Any = None,
+        context: dict | None = None,
     ) -> Verdict:
-        if frames or audio:
+        process_mode = bool(context and (context.get("process_qa") or context.get("observe_step")))
+        if frames or audio or process_mode:
             # The strip/audio (escalation) path is rare-by-design and multi-frame; bypass the
             # single-frame cache (its key dHashes ONE frame) so a strip verdict never pollutes — nor is
-            # served from — a single-frame slot. The cache stays single-frame-pure.
+            # served from — a single-frame slot. The cache stays single-frame-pure. A process-QA judge
+            # ALSO bypasses (its running answer/step accumulates per-call — must never be cached/served).
+            # ``context`` is passed ONLY for process-QA so a non-process strip judge is byte-for-byte.
+            extra = {"context": context} if process_mode else {}
             return await self._timed_judge(
                 goal.condition, frame, roi=roi, corrections=corrections or None,
-                frames=frames, audio=audio,
+                frames=frames, audio=audio, **extra,
             )
         # A structured key so the FrameHashLayer can ROI-crop + dHash the frame and scope its
         # entry to (goal, entity); the legacy stub cascade ignores the extra fields harmlessly.

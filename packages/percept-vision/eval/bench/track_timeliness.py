@@ -10,8 +10,7 @@ the harsh PVQA zero, because no-response is safer than a confidently wrong fire.
   * pvqa_native  — the SAME score with PVQA's native silent floor of 0 (no-fire = 0)
   * reaction_p50/p90 — latency lambda = t_hat - onset over the events that actually fired.
 
-This measures the per-frame watcher only: raw cells carry the numbers; core/e2e are n/a because the
-gate/edge don't change WHEN the first confident-yes appears.
+This measures a legacy per-frame watcher only. It is a dense diagnostic, not product E2E.
 """
 
 from __future__ import annotations
@@ -40,21 +39,13 @@ def _turn_score(t_hat, onset, *, floor):
     return 0.0
 
 
-def _result(p_pauc, pvqa_native, p50, p90, *, n_fired, total, calls, notes):
-    """Assemble the TrackResult — raw cells only; core/e2e are n/a for the per-frame watcher."""
+def _result(p_pauc, pvqa_native, p50, p90, *, n_fired, total, calls, notes, modeled=None):
+    """Assemble the TrackResult — dense-modeled/diagnostic cells only."""
     cells = {
-        ("raw", "p_pauc"): p_pauc,
-        ("raw", "pvqa_native"): pvqa_native,
-        ("raw", "reaction_p50"): p50,
-        ("raw", "reaction_p90"): p90,
-        ("core", "p_pauc"): None,
-        ("core", "pvqa_native"): None,
-        ("core", "reaction_p50"): None,
-        ("core", "reaction_p90"): None,
-        ("e2e", "p_pauc"): None,
-        ("e2e", "pvqa_native"): None,
-        ("e2e", "reaction_p50"): None,
-        ("e2e", "reaction_p90"): None,
+        ("dense-modeled", "p_pauc"): p_pauc,
+        ("dense-modeled", "pvqa_native"): pvqa_native,
+        ("dense-modeled", "reaction_p50"): p50,
+        ("dense-modeled", "reaction_p90"): p90,
     }
     p50s = "n/a" if p50 is None else f"{p50:.1f}"
     p90s = "n/a" if p90 is None else f"{p90:.1f}"
@@ -73,17 +64,36 @@ def _result(p_pauc, pvqa_native, p50, p90, *, n_fired, total, calls, notes):
             "reaction_p90": "{:.1f}",
         },
         headline=headline,
-        measured=["raw p_pauc", "raw pvqa_native", "raw reaction_p50", "raw reaction_p90"],
-        modeled=[],
+        measured=[] if modeled else ["dense-modeled:p_pauc", "dense-modeled:pvqa_native", "dense-modeled:reaction_p50", "dense-modeled:reaction_p90"],
+        modeled=modeled or [],
         calls=calls,
         notes=notes,
+        diagnostic=True,
+        excluded=["timeliness: legacy dense watcher diagnostic, not product E2E"],
     )
 
 
 def score(*, live: bool, n: int) -> TrackResult:
     if not live:
-        # OFFLINE stub — no fetch, no API. Plausible placeholder numbers so the card renders.
-        return _result(62.0, 48.0, 0.8, 1.9, n_fired=4, total=5, calls=0, notes="offline stub")
+        # Offline card path: use the golden-v1 PT sample count when annotations are staged, but keep
+        # the VLM-dependent timeliness cells modeled until --live measures them.
+        from eval.bench import perception_test as pt
+
+        try:
+            total = len(pt.golden_action_events(require_media=False)) or 5
+        except Exception:
+            total = 5
+        return _result(
+            62.0,
+            48.0,
+            0.8,
+            1.9,
+            n_fired=min(4, total),
+            total=total,
+            calls=0,
+            notes="offline modeled; run --live to measure golden-v1 Perception Test samples",
+            modeled=["dense-modeled:p_pauc", "dense-modeled:pvqa_native", "dense-modeled:reaction_p50", "dense-modeled:reaction_p90"],
+        )
 
     import asyncio
     import statistics

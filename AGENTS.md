@@ -25,10 +25,13 @@ cognition = "should I act, given the history".
 pip install percept-vision            # CORE — pure stdlib, runs OFFLINE with the fake backend, no keys
 pip install "percept-vision[gemini]"  # + Gemini backend   -> export GEMINI_API_KEY=...  (or GOOGLE_API_KEY)
 pip install "percept-vision[claude]"  # + Claude backend   -> export ANTHROPIC_API_KEY=...
+pip install "percept-vision[edge]"    # + Python tier-0 gate + detector registry
+pip install "percept-vision[runtime]" # + camera/video/RTSP runtime worker
 ```
 
 Python **>=3.10**. Import is `import percept`. The server-side edge (tier-0 salience gate + the cheap
-on-device detector "skills") is a separate package: `pip install percept-harness`.
+on-device detector "skills") is imported as `percept.edge` and installed through the `[edge]` or
+`[runtime]` extras. The harness ships bundled inside `percept-vision` as the `percept.harness` subpackage.
 
 ## The minimal agent (verified API)
 
@@ -83,7 +86,8 @@ asyncio.run(main())
   perception logic on the perception side of the seam.
 
 ## Where to look
-- `docs/quickstart.md` · `docs/concepts.md` · `docs/backends.md` — adopter docs.
+- `docs/README.md` (index) · `docs/tutorials/quickstart.md` · `docs/explanation/concepts.md` · `docs/reference/backends.md` — adopter docs.
 - `examples/` — `watch_agent.py` (runnable offline) and `webcam_agent.py` (real-backend template).
 - `.claude/skills/percept-agent/` — a Claude Code skill that scaffolds an agent from a plain-language goal.
-- `packages/percept-harness/` — the server-side edge (tier-0 gate + detector registry) for Python deployments.
+- `percept.edge` / `percept.harness` — the server-side edge (tier-0 gate + detector registry)
+  for Python deployments.

@@ -1,6 +1,6 @@
 // src/pose.js
 //
-// pose-openness — the first MODEL-backed edge skill (the JS twin of percept_harness's PoseOpenness).
+// pose-openness — the first MODEL-backed edge skill (the JS twin of percept.harness's PoseOpenness).
 //
 // Counts fast whole-body reps where frame-diff motion OVER-counts (it conflates each rep's open+close)
 // and a per-frame VLM ALIASES on fast motion. openness = ankle-spread/shoulder-width + wrist-elevation
@@ -10,7 +10,7 @@
 // MODEL-backed → LAZY + opt-in: the pose model loads on `load()`, never at register/construct (the
 // SkillBank.load() / Edge.loadSkills() hook). The product supplies the model as a *landmarker adapter*
 // via registerPoseSkill(landmarker) — a build that never counts reps never ships or loads a pose model
-// (mirrors the Python `percept-harness[pose]` opt-in). The adapter is pluggable so the heavy model
+// (mirrors the Python `percept-vision[pose]` opt-in). The adapter is pluggable so the heavy model
 // (BlazePose via MediaPipe Tasks for Web, TF.js MoveNet, …) lives in the product, not in percept-edge.
 //
 //   landmarker adapter = {
@@ -74,7 +74,7 @@ export class PoseOpenness {
 
 /**
  * Register pose-openness with a product-supplied landmarker (the model). Opt-in, like the Python
- * `percept-harness[pose]` extra: a build that wants on-device rep-counting calls this once with its
+ * `percept-vision[pose]` extra: a build that wants on-device rep-counting calls this once with its
  * pose model adapter, and the brain can then select "pose-openness" for a goal.
  */
 export function registerPoseSkill(landmarker) {

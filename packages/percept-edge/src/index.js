@@ -41,6 +41,8 @@ export {
   MotionPeriodicity,
   AcousticOnset,
   SkillBank,
+  wakeScore,
+  shouldWake,
   registerSkill,
   makeDetector,
   manifestOf,
@@ -51,6 +53,11 @@ export {
   CATEGORY_MOTION,
   CATEGORY_AUDIO,
   CATEGORY_FRAME,
+  CATEGORY_PRESENCE,
+  CATEGORY_POSE,
+  CATEGORY_AUDIO_EVENT,
+  CATEGORY_CHANGE,
+  CATEGORY_SEMANTIC_RELEVANCE,
 } from "./skills.js";
 
 export { openness, PoseOpenness, registerPoseSkill } from "./pose.js";

@@ -4,14 +4,14 @@ The golden corpus measures two different things (spec §9.1), so it lives in two
 
 | Dir | What | Redistributable? | Tracked in git |
 |---|---|---|---|
-| `fixtures-private/` | The hand-assembled dev fixture set (currently YouTube-sourced). Drives local L2 eval and iteration. | **No** — third-party YouTube, envelope-conflicting domains in places. Private fixture only. | Labels only; pixels git-ignored. |
+| `fixtures-golden/` | The hand-assembled dev fixture set (currently YouTube-sourced). Drives local L2 eval and iteration. | **No** — third-party YouTube, envelope-conflicting domains in places. Private fixture only. | Labels only; pixels git-ignored. |
 | `bench-staging/` | The real public benchmark set, to be built per spec §9.1. | **Yes** (that's the point). | Everything, once it exists. |
 
 ## Why the split
 
 The spec is explicit (§9.1, Principle 8): the published benchmark must **avoid YouTube** — wrong
 domain (produced/third-person vs first-person webcam) and not redistributable. The current set under
-`fixtures-private/` violates that, so it can never feed `percept-bench`. It is still useful as a
+`fixtures-golden/` violates that, so it can never feed `percept-bench`. It is still useful as a
 *private* dev fixture; it is walled off here so it can't leak into a public release by accident.
 
 ## What `bench-staging/` needs (per spec §9.1)

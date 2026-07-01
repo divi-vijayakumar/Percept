@@ -31,7 +31,31 @@ import json
 import logging
 import sys
 from collections import Counter
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Callable
+
+
+@dataclass(frozen=True)
+class TraceEvent:
+    """One step in a per-frame decision trace.
+
+    Counters answer *aggregate* questions ("are we firing?"); a trace answers the *specific* one:
+    "why did THIS frame + goal fire / ask / stay silent?". ``trace_id`` correlates the steps of one
+    frame; ``stage`` is one of the emitted stages — ``source.frame``, ``judge.started``,
+    ``judge.finished``, ``gate.classified`` (from ``perceive_judged``) and ``incident.created`` (from
+    the runtime worker); ``data`` carries the decision inputs/outputs for that stage. Emitted only when
+    an ``on_trace`` callback is wired — default off, so the hot path is unchanged.
+    """
+
+    trace_id: str
+    stage: str
+    t: float | None = None
+    goal_id: str | None = None
+    data: dict = field(default_factory=dict)
+
+
+# An ``on_trace`` callback: receives each :class:`TraceEvent`. Wire one on ``Percept`` / ``run(...)``.
+Tracer = Callable[[TraceEvent], None]
 
 
 class _JsonFormatter(logging.Formatter):
@@ -309,6 +333,8 @@ def health(version: str, backends: dict[str, str], metrics: Metrics | None = Non
 __all__ = [
     "get_logger",
     "log",
+    "TraceEvent",
+    "Tracer",
     "Metrics",
     "Funnel",
     "FUNNEL_STAGES",

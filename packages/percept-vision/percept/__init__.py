@@ -25,7 +25,7 @@ from .adapters import (
     WatchCondition,
     WatchSpec,
 )
-from percept_contracts import AudioFrame, CONTRACT_VERSION, Incident, IncidentSnippet
+from percept.contracts import AudioFrame, CONTRACT_VERSION, Incident, IncidentSnippet
 from .cache import CacheCascade, CacheKey, CacheResult, FrameHashLayer
 from .config import Settings, load_settings
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
@@ -41,6 +41,7 @@ from .observability import (
     Funnel,
     Metrics,
     OTelExporter,
+    TraceEvent,
     funnel_key,
     get_logger,
     health,
@@ -57,7 +58,30 @@ from .routing import (
     Rule,
 )
 
-__version__ = "0.1.0"
+# Single-sourced from pyproject ``[project].version`` — never a hand-synced literal. Installed: read
+# the dist metadata. Bare source checkout (no metadata): read pyproject directly (it isn't in the
+# wheel, but a checkout always has it), so a version bump can't leave a stale fallback here.
+from importlib.metadata import PackageNotFoundError as _PkgNotFound  # noqa: E402
+from importlib.metadata import version as _pkg_version  # noqa: E402
+
+
+def _resolve_version() -> str:
+    try:
+        return _pkg_version("percept-vision")
+    except _PkgNotFound:  # pragma: no cover - dev-only path (uninstalled source tree)
+        import pathlib
+        import re
+
+        try:
+            text = (pathlib.Path(__file__).resolve().parent.parent / "pyproject.toml").read_text()
+        except OSError:
+            return "0.0.0+unknown"
+        m = re.search(r'(?m)^\s*version\s*=\s*"([^"]+)"', text)
+        return m.group(1) if m else "0.0.0+unknown"
+
+
+__version__ = _resolve_version()
+del _resolve_version, _pkg_version, _PkgNotFound
 
 # Imported after __version__ so agent.health() can read it lazily without a cycle.
 from .agent import FireEvent, Percept  # noqa: E402
@@ -134,6 +158,7 @@ __all__ = [
     "Metrics",
     "Funnel",
     "FUNNEL_STAGES",
+    "TraceEvent",
     "funnel_key",
     "judge_usage",
     "OTelExporter",

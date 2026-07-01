@@ -8,6 +8,7 @@ rising edge** (false → true) of the condition — the same cognition layer; on
 | [`watch_agent.py`](watch_agent.py) | `fake` (offline, scripted) | nothing — pure stdlib | **yes** |
 | [`webcam_agent.py`](webcam_agent.py) | `gemini` (real VLM) | `[gemini]` extra + key + camera | template only |
 | [`loitering_clip.py`](loitering_clip.py) | `fake` (offline, scripted) | nothing — pure stdlib | **yes** |
+| [`web-demo/`](web-demo/) | static browser demo | browser only | **yes** |
 
 ---
 
@@ -81,7 +82,7 @@ window and feeds it to the judge. The public `judge_clip(condition, frames)` sea
 already hold, directly.
 
 ```bash
-PYTHONPATH=packages/percept-vision:packages/percept-contracts python3 examples/loitering_clip.py
+PYTHONPATH=packages/percept-vision python3 examples/loitering_clip.py
 ```
 
 What to notice:
@@ -101,7 +102,7 @@ false-fire, and refuse rates. Runs fully offline on the `fake` backend (no keys)
 
 ```bash
 # the report (also: make eval-benchmark)
-PYTHONPATH=packages/percept-vision python3 -m eval.benchmark examples/benchmark/manifest.json
+PYTHONPATH=packages/percept-vision python3 -m percept.bench examples/benchmark/manifest.json
 
 # the copy-pasteable CI regression gate (exits non-zero on a regression)
 PYTHONPATH=packages/percept-vision python3 examples/benchmark/ci_gate.py
@@ -110,10 +111,17 @@ PYTHONPATH=packages/percept-vision python3 examples/benchmark/ci_gate.py
 - [`benchmark/manifest.json`](benchmark/manifest.json) — the input format (concerns + labelled clips).
 - [`benchmark/ci_gate.py`](benchmark/ci_gate.py) — wire a per-concern P/R threshold into CI.
 
-Full guide + the manifest spec: [`docs/eval.md`](../docs/eval.md).
+Full guide + the manifest spec: [`docs/how-to/eval.md`](../docs/how-to/eval.md).
+
+---
+
+## 5. `web-demo/` — hosted-looking OSS demo shell
+
+Open [`web-demo/index.html`](web-demo/index.html) in a browser. It is a static replay of the Percept
+loop: edge gate, perception read, cognition gate, incident snippet, and scorecard panel.
 
 ---
 
 See [`AGENTS.md`](../AGENTS.md) for the full integration cheat-sheet, and
-[`docs/quickstart.md`](../docs/quickstart.md) / [`docs/concepts.md`](../docs/concepts.md) for the
-deeper tour.
+[`docs/tutorials/quickstart.md`](../docs/tutorials/quickstart.md) /
+[`docs/explanation/concepts.md`](../docs/explanation/concepts.md) for the deeper tour.

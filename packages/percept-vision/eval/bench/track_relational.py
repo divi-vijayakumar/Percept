@@ -4,11 +4,11 @@ The question this track answers: does the three-state gate *refuse to guess* wit
 missed fires? We replay the approved golden gate-cases through the real vision judge once, then derive
 two configs from the *same* per-frame verdicts (no extra calls):
 
-- ``raw``  — naive: fire if any frame says yes, else silent. Never ASK.
-- ``core`` — the actual gate (:func:`eval.scorecard._predict`): yes->fire / unknown->ask / silent.
+- ``dense-modeled`` — naive diagnostic: fire if any frame says yes, else silent. Never ASK.
+- ``core-replay`` — the actual gate (:func:`eval.scorecard._predict`): yes->fire / unknown->ask / silent.
 
 P/R/F1 are strict over ``expected_verdict in {fire,silent}`` (ask/silent predictions count as not-fire);
-``expected=="ask"`` cases are excluded from P/R. ``e2e`` accuracy is MODELED ~= core (no e2e path is run).
+``expected=="ask"`` cases are excluded from P/R. This is a core replay diagnostic, not product E2E.
 
 ``score(live=False)`` returns a clearly-fake offline stub (no API, no key) so the card still renders.
 """
@@ -130,23 +130,17 @@ def _live(n: int) -> TrackResult:
 
     cells: dict = {}
     measured: list[str] = []
-    for cfg, (P, R, F) in (("raw", (rawP, rawR, rawF)), ("core", (coreP, coreR, coreF))):
+    for cfg, (P, R, F) in (("dense-modeled", (rawP, rawR, rawF)), ("core-replay", (coreP, coreR, coreF))):
         for metric, val in (("precision", P), ("recall", R), ("f1", F)):
             cells[(cfg, metric)] = val
             measured.append(f"{cfg}:{metric}")
     for metric, val in (("ask_rate", ask_rate), ("auroc", auroc)):
-        for cfg in ("raw", "core"):
-            cells[(cfg, metric)] = val if cfg == "core" else (ask_rate if metric == "ask_rate" else val)
+        for cfg in ("dense-modeled", "core-replay"):
+            cells[(cfg, metric)] = val
             measured.append(f"{cfg}:{metric}")
 
-    # e2e P/R/F1 = COPY core's values, flagged MODELED (no e2e path executed).
-    modeled = []
-    for metric, val in (("precision", coreP), ("recall", coreR), ("f1", coreF)):
-        cells[("e2e", metric)] = val
-        modeled.append(f"e2e:{metric}")
-
     return _result(cells, _FMTS, rawP, rawR, rawF, coreP, coreR, coreF, ask_rate, auroc,
-                   measured, modeled, calls, notes="live")
+                   measured, ["dense-modeled:precision", "dense-modeled:recall", "dense-modeled:f1"], calls, notes="live")
 
 
 def _result(cells, fmts, rawP, rawR, rawF, coreP, coreR, coreF, ask_rate, auroc,
@@ -162,6 +156,8 @@ def _result(cells, fmts, rawP, rawR, rawF, coreP, coreR, coreF, ask_rate, auroc,
     return TrackResult(
         track=TRACK, cells=cells, fmts=fmts, headline=headline,
         measured=measured, modeled=modeled, calls=calls, notes=notes,
+        diagnostic=True,
+        excluded=["relational: core replay diagnostic, not product E2E"],
     )
 
 
@@ -172,21 +168,17 @@ def _offline() -> TrackResult:
     ask_rate, auroc = 0.25, 0.55
     cells: dict = {}
     measured: list[str] = []
-    for cfg, (P, R, F) in (("raw", (rawP, rawR, rawF)), ("core", (coreP, coreR, coreF))):
+    for cfg, (P, R, F) in (("dense-modeled", (rawP, rawR, rawF)), ("core-replay", (coreP, coreR, coreF))):
         for metric, val in (("precision", P), ("recall", R), ("f1", F)):
             cells[(cfg, metric)] = val
             measured.append(f"{cfg}:{metric}")
-    for cfg in ("raw", "core"):
+    for cfg in ("dense-modeled", "core-replay"):
         cells[(cfg, "ask_rate")] = ask_rate
         cells[(cfg, "auroc")] = auroc
         measured.append(f"{cfg}:ask_rate")
         measured.append(f"{cfg}:auroc")
-    modeled = []
-    for metric, val in (("precision", coreP), ("recall", coreR), ("f1", coreF)):
-        cells[("e2e", metric)] = val
-        modeled.append(f"e2e:{metric}")
     return _result(cells, _FMTS, rawP, rawR, rawF, coreP, coreR, coreF, ask_rate, auroc,
-                   measured, modeled, calls=0, notes="offline stub")
+                   measured, ["dense-modeled:precision", "dense-modeled:recall", "dense-modeled:f1"], calls=0, notes="offline stub")
 
 
 def score(*, live: bool, n: int) -> TrackResult:

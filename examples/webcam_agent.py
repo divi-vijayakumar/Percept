@@ -25,6 +25,7 @@ on the rising edge regardless of how densely you sample.
 """
 
 import asyncio
+import os
 
 import cv2  # pip install opencv-python
 
@@ -41,6 +42,13 @@ def encode_frame(bgr) -> tuple[str, bytes]:
 
 
 async def main() -> None:
+    # Real-backend example: degrade to a one-line instruction (never a stack trace) when the key
+    # is absent. For a fully offline run with no keys, see examples/watch_agent.py (fake backend).
+    if not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")):
+        print('Set GEMINI_API_KEY (or GOOGLE_API_KEY) to run the live webcam agent, '
+              'or try the offline examples/watch_agent.py (no keys).')
+        return
+
     # Resolve the real backend BY NAME via the registry. Needs percept-vision[gemini] +
     # GEMINI_API_KEY (or GOOGLE_API_KEY). discover_plugins=False keeps resolution to built-ins.
     agent = percept.Percept.create(vision="gemini", discover_plugins=False)

@@ -15,7 +15,7 @@ proving the clip actually flows into perception. No keys, no camera, no network.
 
 Run it:
 
-    PYTHONPATH=packages/percept-vision:packages/percept-contracts python3 examples/loitering_clip.py
+    PYTHONPATH=packages/percept-vision python3 examples/loitering_clip.py
 """
 
 import asyncio

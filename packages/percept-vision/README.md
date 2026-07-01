@@ -1,35 +1,21 @@
-# percept
+# percept-vision
 
 The open-source **cognition layer** for goal-driven, proactive vision agents.
+**Package: `percept-vision` · import: `import percept`** (name ≠ import).
+
+> **⚠️ Research preview — v0.6.0.** Published for real-life testing and feedback, **not** for
+> production. The cognition core (gate, entity graph, executor, events, scheduler, consent) runs and is
+> tested offline with fakes. APIs may change between `0.6.x` releases — pin a version. **No benchmark
+> numbers are published yet** (the model-sweep phase comes later). Issues and feedback welcome.
 
 You state a goal in plain language — *"nudge me when I drink a coffee"*, *"tell me when the kettle
-boils"* — and percept turns a live audio-visual stream into an agent that:
+boils"* — and percept turns a live audio-visual stream into an agent that **reasons over entities
+across time**, **fires only on the rising edge** of a condition becoming true, and **refuses to
+guess** — a three-state gate maps *known → act · not → silent · unknown → ask*.
 
-- **reasons over entities across time** — tracked things with stable ids, attributes carrying
-  provenance (*observed* vs *you-told-me*) and freshness;
-- **fires proactively**, but only on the **rising edge** of a condition becoming true;
-- **refuses to guess** — a three-state gate maps *known → act · not → silent · unknown → ask*, so it
-  never delivers a confidently-wrong nag.
-
-The wedge is **temporal cognition** (entity memory + the three-state gate + reasoning over events),
+The wedge is **temporal cognition** — entity memory + the three-state gate + reasoning over events —
 which a raw VLM-in-a-loop and a per-frame pipeline both lack. percept builds on frontier models for
 perception behind vendor-neutral seams.
-
-> **⚠️ Research preview — v0.1.0.** Published for real-life testing and feedback, **not** for
-> production. The cognition core (gate, entity graph, executor, events, scheduler, consent) runs and is
-> tested; the benchmark card below is a **v0.5 DRAFT**. APIs may change between `0.1.x` releases —
-> pin a version. Issues and feedback welcome. ([Status](#status).)
-
-## The envelope (refusals, stated proudly)
-
-- **Assistant-class, never the safety mechanism.** percept informs a human who stays responsible. It
-  is never the thing standing between a person and harm on a clock it can't guarantee. *Out:*
-  driver-drowsiness intervention, turn detection. *In:* a post-hoc driving debrief.
-- **Watches the user's own world, with the user as beneficiary** — never a non-consenting third party
-  to the wearer's advantage. *Out:* covert analysis of someone you're negotiating with; card-counting
-  against a live casino. *In:* a play-money practice trainer.
-
-These refusals are a feature. **Do not lead with surveillance demos.**
 
 ## Install
 
@@ -37,22 +23,22 @@ These refusals are a feature. **Do not lead with surveillance demos.**
 pip install percept-vision        # core: PURE STDLIB — runs offline with fake backends, no keys
 ```
 
-The **core has zero dependencies** and runs with deterministic fake backends, so `pip install` then
-run works with no API keys. Frontier backends are opt-in extras:
+The core has **zero dependencies** and runs with deterministic fake backends, so `pip install` then run
+works with no API keys. Python **≥ 3.10**. Frontier backends are opt-in extras:
 
 ```bash
 pip install "percept-vision[gemini]"     # GeminiVision
 pip install "percept-vision[claude]"     # AnthropicVision (Claude)
 pip install "percept-vision[deepgram]"   # Deepgram STT + TTS (voice)
-pip install "percept-vision[audio]"      # numpy fast-path for acoustic/edge
+pip install "percept-vision[runtime]"    # camera/video/RTSP runtime worker
+pip install "percept-vision[bench]"      # benchmark + scorecard tooling
+pip install "percept-vision[edge]"       # Python tier-0 gate + detector registry
 pip install "percept-vision[all]"        # everything
 ```
 
-Python **>= 3.10**. The package name is `percept-vision`; the import is `import percept`.
-
 ## 60-second quickstart (no keys)
 
-Fully offline — fake backends, deterministic, nothing to configure. This script runs as-is:
+Fully offline — fake backends, deterministic, nothing to configure. This script runs **as-is**:
 
 ```python
 import asyncio
@@ -81,117 +67,71 @@ asyncio.run(main())
 ```
 
 `perceive_judged(frame)` returns a list of `FireEvent(goal_id, action, text, entity_id, verdict)`,
-where `action` is `"fire"` or `"ask"`. With real eyes, swap the fake for a frontier vision backend —
-the cognition layer above is unchanged:
+where `action` is `"fire"` or `"ask"`. Swap the fake for real eyes — the cognition layer is unchanged:
 
 ```python
 agent = Percept.create(vision="gemini")          # needs percept-vision[gemini] + GEMINI_API_KEY
-# frame is now real image bytes; everything downstream (gate, graph, executor) is identical.
 ```
 
-Backends are selected by name (`"fake"` · `"gemini"` · `"claude"`) or by passing an adapter instance,
-and can also be set via env (`PERCEPT_VISION_BACKEND`, etc.).
+Backends are selected by name (`"fake"` · `"gemini"` · `"claude"`), by adapter instance, or by env
+(`PERCEPT_VISION_BACKEND`).
 
-## Architecture — two layers
+## Architecture — two layers, four tiers
 
-percept cleanly splits the **eyes** from the **brain**. Perception is one stateless seam;
-everything stateful and proactive is cognition.
+percept cleanly splits the **eyes** from the **brain**: a cheap, stateful **System-1 cognition** that
+reasons over a stream of small structured facts (the three-state gate, the entity graph, the concern
+primitive — always in the loop), and an expensive, stateless **System-2 perception** it summons only
+when it must (`vision.judge(condition, frame) → Verdict`, behind vendor-neutral registry seams). A raw
+VLM-in-a-loop collapses the two; percept keeps them apart so the common case costs nothing.
 
+Full architecture — the four tiers (Feeds → Measures → Cognition → VLM), every claim anchored to code,
+plus the **generated** architecture diagram — is in the repo:
+[Architecture](https://github.com/divi-vijayakumar/Percept/blob/main/docs/explanation/architecture.md)
+· [Concepts](https://github.com/divi-vijayakumar/Percept/blob/main/docs/explanation/concepts.md)
+· [docs index](https://github.com/divi-vijayakumar/Percept/blob/main/docs/README.md).
+
+## The envelope (refusals, stated proudly)
+
+- **Assistant-class, never the safety mechanism.** percept informs a human who stays responsible. It is
+  never the thing standing between a person and harm on a clock it can't guarantee.
+- **Watches the user's own world, with the user as beneficiary** — never a non-consenting third party.
+
+These refusals are a feature. **Do not lead with surveillance demos.**
+
+## Packages & versioning
+
+- **percept-vision** (this package) — the Python SDK: cognition core, fakes, runtime worker, the
+  Python tier-0 edge/harness, and benchmark tooling (extras). The tier-0 harness and the frozen
+  wire-contract are bundled in as the `percept.harness` and `percept.contracts` subpackages.
+- **percept-edge** (npm) — the on-device reactive edge in JS/WASM: VAD + motion gate that share the
+  Tier0Signal/detector wire-contract. The edge's detector + gate **outputs** are byte-for-byte
+  identical to the Python harness (verified, 12/12); the WatchSpec it consumes is a documented subset
+  (server-only fields like `schedule`/`cadence` are enforced in the cognition layer, not on-device).
+
+> **Versioning.** Package version `percept-vision 0.6.0` (research preview). The **wire-contract**
+> version is separate — `CONTRACT_VERSION = "1.2.0"` (additive-only). A `0.6.0` install exporting
+> contract `1.2.0` is expected, not a bug.
+
+## Benchmark status
+
+**No Percept accuracy numbers are published yet.** The benchmark is designed but the reproducible
+model-sweep run is a separate, later phase — see the
+[methodology](https://github.com/divi-vijayakumar/Percept/blob/main/docs/reference/benchmark-methodology.md).
+The scorecard tooling operates on a manifest you provide; the bundled golden set ships with the **source
+repo, not the wheel**, so the default-manifest commands run from a repo checkout:
+
+```bash
+# from a repo checkout (the golden set is repo data, not packaged):
+percept-bench scorecard --manifest eval/golden-v1/MANIFEST.json --out out/scorecard.txt
+# or point --manifest at your own labelled-clip manifest, anywhere.
 ```
-┌───────────────────────── COGNITION — the "brain" ──────────────────────────┐
-│  three-state GATE       fire (known-yes) · ask (unknown) · silent (known-no) │
-│      ▲ rising edge: fires only on false→true, with a refractory (no nag)      │
-│  EXECUTOR               one firing path (sense · key · accumulate);           │
-│                         transitions A→B, counting, deadlines/absence, verify  │
-│  ENTITY GRAPH           stable ids; attributes with provenance + freshness    │
-│                         (observed vs you-told-me)                             │
-│  EDGE DETECTOR REGISTRY opt-in cheap signals propose; the brain counts/gates  │
-│  general · deterministic · cheap · STATEFUL (has memory)                      │
-└──────────────────────────────────────────────────────────────────────────────┘
-                          ▲  feeds on  Verdict{satisfied, confidence}
-┌───────────────────────── PERCEPTION — the "eyes" ──────────────────────────┐
-│  vision.judge(condition, frame) -> Verdict        ★ ONE seam                  │
-│  GeminiVision / AnthropicVision · stateless · one frame · ~1s/call cloud      │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
-
-The **gate** turns a noisy verdict stream into at most one alert on the rising edge, and falls back
-to **ASK** rather than guess when confidence is unreliable. The **executor** is the single firing
-path for every concern shape (watch, transition, count, deadline/absence, verification). The
-**entity graph** carries memory: stable ids and attributes that know whether they were *observed* or
-*asserted by the user*, and whether they're still fresh.
-
-The **edge detector registry** is the *edge-proposes · brain-counts · VLM-confirms* split: cheap,
-opt-in detectors emit timed boundaries that the brain accumulates — counting reps without spending a
-vision token per frame. Three reference skills ship as registered detectors:
-
-- **`motion-periodicity`** — frame-diff motion peaks (rep boundaries);
-- **`acoustic-onset`** — energy spikes on the existing mic stream (no new capture path);
-- **`pose-openness`** — BlazePose-based rep peaks (opt-in: `percept-harness[pose]`, MediaPipe).
-
-A full request trace — *"tell me when the milk is about to boil over"* — is in
-[`docs/e2e-flow-milk-boilover.md`](docs/e2e-flow-milk-boilover.md), including an honest map of where
-the perception ceiling bites.
-
-## The three packages
-
-| package | what | install |
-|---|---|---|
-| **percept-vision** | the cognition core — gate, entity graph, executor, events, scheduler, consent, fakes. Pure stdlib. | `pip install percept-vision` (`packages/percept-vision/`) |
-| **percept-harness** | server-side transport shell + tier-0 salience gate (WatchSpec down / Tier0Signal up); the reference home of the edge detector skills. | `packages/percept-harness/` |
-| **percept-edge** | on-device reactive edge in JS/WASM: VAD + motion gate over the same WatchSpec/Tier0Signal wire-contract. | `packages/percept-edge/` (npm `percept-edge`) |
-
-## Benchmark — Percept Benchmark v1 (v0.5 DRAFT)
-
-The benchmark holds the **backbone fixed and measures the orchestration delta** across a `raw → core
-→ e2e` config ladder (no composite score — a vector of headlines). The current card is a **v0.5
-DRAFT** (sampled, N≈12/track, gemini-2.5-flash) on the DeepMind **Perception Test** (CC-BY-4.0), the
-private **golden** ambiguity corpus, and **RepCount-A**; the e2e-relational accuracy cell is modeled
-(flagged `~`), so the card is stamped `DRAFT`.
-
-| track | measured (DRAFT, N≈12) | reading |
-|---|---|---|
-| **counting** (RepCount-A) | pose OBO **0.33** vs **0.29** (TransRAC, CVPR'22); nMAE 0.80 vs 0.44 | training-free pose ties a *trained* baseline on OBO, but its failures on low-amplitude actions cost it on MAE |
-| **acoustic** (PT Sound Loc., unseen source) | vision-only recall **0.00 → 0.25–0.33** fused; fusion-FP 0–0.17 | the **recall-flip**: fusion rescues ~a third of sound events vision-only never hears (honest at scale, not the single-clip 1.0) |
-| **relational** (golden) | confidence **AUROC ≈ 0.51** (≈ chance); ASK-rate ≈ 0.4 | the VLM's confidence does **not** separate right from wrong → justifies the **ASK** discipline over threshold-tuning |
-| **timeliness** (PT action onsets) | **P-PAUC ≈ 60**; reaction λ p50 ≈ 1s | first real proactive-timeliness numbers (adapted PAUC) |
-| **edge event-recall** (PT onsets) | **0.00** @ thr 0.10 | ⚠️ the motion-gate escalates on **none** of the subtle-action onsets (motion ~0.03–0.06 < 0.10) → e2e ≠ core there; a real **calibration** finding |
-
-A v0.5 DRAFT, not a RELEASE claim. Two findings the benchmark surfaced that a self-congratulatory
-eval would hide: the **flat confidence AUROC** (*why* the gate refuses to guess) and the **edge
-event-recall of 0** on subtle actions (the motion-gate is mis-calibrated for them). Full plan, data,
-and references:
-[`packages/percept-vision/eval/BENCHMARK_PLAN.md`](packages/percept-vision/eval/BENCHMARK_PLAN.md).
-
-## Layout
-
-```
-packages/percept-vision/    the SDK (pip install percept-vision; import percept)
-packages/percept-harness/   server-side tier-0 edge reference + detector skills
-packages/percept-edge/      percept-edge — on-device JS/WASM edge
-docs/                       architecture & flow traces
-eval/                       golden corpus (benchmark plan: packages/percept-vision/eval/)
-Spec/                       the spec + implementation plan
-Makefile                    test · eval-live · e2e · bench · check · reproduce
-```
-
-## Docs
-
-- **Quickstart** — the 60-second offline snippet above; `make test` runs the fake-only unit lane.
-- **Architecture / concepts** — [`docs/e2e-flow-milk-boilover.md`](docs/e2e-flow-milk-boilover.md)
-  (the two layers, the firing path, the perception ceiling) and [`Spec/`](Spec/) (the full spec +
-  phase plan).
-- **Backends** — select by name (`fake` · `gemini` · `claude` · `deepgram`) or env
-  (`PERCEPT_*_BACKEND`); add via the `percept.backends` entry-point group. Extras:
-  `[gemini]` · `[claude]` · `[deepgram]` · `[audio]`.
-- **Benchmark** — [`eval/BENCHMARK_PLAN.md`](packages/percept-vision/eval/BENCHMARK_PLAN.md).
 
 ## Status
 
-**v0.1.0 — early / first public release.** The cognition core runs and is tested offline with fakes
-(the L1 lane, no keys); the frontier backends (Gemini, Claude, Deepgram) and the edge packages are
-wired behind their seams. The benchmark is a **v0.5 DRAFT** card. We are now in **real-life
-testing** — APIs and numbers may change. Issues and contributions welcome.
+**v0.6.0 — research preview.** The cognition core runs and is tested offline with fakes (the L1 lane,
+no keys); the frontier backends and the edge packages are wired behind their seams. No benchmark
+numbers yet. We are in **real-life testing** — APIs may change. Issues and contributions welcome:
+[github.com/divi-vijayakumar/Percept](https://github.com/divi-vijayakumar/Percept).
 
 ## License
 

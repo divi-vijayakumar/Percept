@@ -74,17 +74,22 @@ JSON, so sweeping policy/threshold/ω costs $0 after capture.
 
 ---
 
-## 2. Results — Gemini Flash perception, Percept vs Gemini-alone vs TML
+## 2. Historical Results — do not publish as current scorecard
+
+The table below is retained as historical context only. The Charades headline came from an incomplete,
+biased verdict cache and is invalid as a public claim. Current benchmark work must follow
+`docs/benchmark-methodology.md`: report capture coverage, avoid empty successful caches, separate
+raw/core cognition diagnostics from edge/e2e cost claims, and publish only fully covered runs.
 
 | Benchmark (TML metric) | Gemini alone | **Percept + Gemini** | Δ (controlled A/B) | TML (ref) | runner |
 |---|---|---|---|---|---|
-| **Charades** — mIoU ×100 | 36.1 | **60.3** | **+24.3** ✅ | 32.4 | `exp_charades_miou.py` |
+| **Charades** — mIoU ×100 | 36.1 | ~~**60.3**~~ | invalid biased cache | 32.4 | `exp_charades_miou.py` |
 | **ProactiveVideoQA** — PAUC@0.5 | 44.6 *(321 interrupts)* | 33.0 *(91)* | parity, **4× less spam** ⚠️ | 33.5 | `exp_proactiveqa.py` |
 | **RepCount** — off-by-one ×100 | 15.0 | 15.0 | **0** ❌ | 35.4 | `exp_repcount.py` |
 
 Notes: GPT-realtime-2.0 (TML's baseline) = 0 on Charades, 25.0 no-response floor on PAUC (our port
 reproduces 25.0 exactly), 1.3 competitors on RepCount. ProactiveVideoQA also: PAUC@0 loop 39.2/percept
-30.9; PAUC@1 loop 50.0/percept 35.0.
+30.9; PAUC@1 loop 50.0/percept 35.0. Re-run these with the methodology gates before citing them.
 
 ### 2a. Earlier controlled e2e (interval scoring, replay-and-align)
 - **Charades (Haiku perception), interval precision:** baseline 325 fires / prec 0.08 / recall 0.81 →
@@ -100,7 +105,7 @@ reproduces 25.0 exactly), 1.3 competitors on RepCount. ProactiveVideoQA also: PA
 Across three controlled A/Bs, the cognition layer's value has a sharp, **predictable boundary**:
 
 > **The gate / event-dedup helps when the raw per-frame signal OVER-FIRES** — fragmented detections
-> (Charades → +24 mIoU, 5.9× interval precision) or answer-spam (ProactiveVideoQA → 4× fewer
+> (historical Charades shard → cleaner spans, 5.9× interval precision) or answer-spam (ProactiveVideoQA → 4× fewer
 > interruptions). **It does NOT help when the raw signal has the WRONG COUNT or CONTENT** (RepCount →
 > Δ0) — that is a *perception ceiling*, the same wall as the wake-up / state-vs-event findings.
 

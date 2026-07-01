@@ -325,10 +325,15 @@ def _parse_verdict(text: str) -> Verdict:
     """
     try:
         data = _coerce_json(text)
+        ap = data.get("action_present")
+        phase = str(data.get("phase", "")).lower()
         return Verdict(
             satisfied=bool(data.get("satisfied", False)),
             confidence=float(data.get("confidence", 0.0)),
             evidence=str(data.get("evidence", "")),
+            # optional structured fields (clip judging); absent in single-frame replies -> defaults
+            phase=phase if phase in ("pre", "during", "post") else "",
+            action_present=(bool(ap) if isinstance(ap, bool) else None),
         )
     except (ValueError, TypeError, AttributeError, KeyError):
         return Verdict(satisfied=False, confidence=0.0, evidence=f"unparsed: {text[:120]}")

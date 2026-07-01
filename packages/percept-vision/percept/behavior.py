@@ -34,13 +34,13 @@ from .gate import ASK, FIRE, Gate, classify
 # The behavior program — authored data (the LLM fills these; presets compile legacy goal.state).
 # --------------------------------------------------------------------------------------------------
 
-Sense = Literal["judge", "transition", "episode", "absence"]
+Sense = Literal["judge", "transition", "episode", "absence", "rhythm"]
 KeyBy = Literal["entity", "episode", "time_bucket", "const"]
 
 # The perception axis — HOW the eye looks (the VLM-side half of the concern program). Every default
 # reproduces today's behavior byte-for-byte: one vision-only, focus-cropped frame.
 Modality = Literal["vision", "audio", "fused"]
-Temporal = Literal["single", "strip", "window"]
+Temporal = Literal["single", "strip", "window", "sprite"]
 RoiMode = Literal["focus", "hint", "full"]
 Sampling = Literal["recent", "uniform"]
 
@@ -212,6 +212,12 @@ class ConcernContext:
     last_escalated_at: float = float("-inf")  # Posture-B deliberative (LLM) refractory (escalation.py)
     perception_level: int = 0  # escalation ladder rung: 0=single · 1=strip · 2=+audio (cheaper than the LLM)
     last_perception_escalate_at: float = float("-inf")  # the perception-rung refractory (shorter than LLM's)
+    running_answer: str = ""  # Item 2: per-concern incremental process-QA answer (gate-irrelevant)
+    # Item 4 (log -> summarize -> wipe): the per-concern process LOG of cheap per-clip step deltas, plus
+    # the time the last step was logged (sustained absence of new steps = the episode boundary). The VLM
+    # is NEVER shown this log; a single summarize pass consolidates it on boundary/on-demand, then wipes.
+    process_log: list[str] = field(default_factory=list)
+    last_step_at: float = float("-inf")
 
 
 @dataclass
@@ -402,6 +408,15 @@ def program_of(goal) -> BehaviorProgram:
         prog = BehaviorProgram(
             sense="episode", predicate=goal.condition, accumulate=Accumulator(kind="count_distinct")
         )
+    elif gtype == "rhythm":
+        # The rhythm sense: a repeating cycle counted by the brain's RhythmTracker (percept.rhythm). A
+        # confirmed rep IS a distinct episode occurrence, so the FIRING mechanics reuse fire_episode (gate +
+        # nth-distinct) byte-for-byte; the new sense value only marks the dispatch + carries any fire_when.
+        prog = BehaviorProgram(
+            sense="rhythm",
+            predicate=goal.condition,
+            accumulate=Accumulator(kind="count_distinct", fire_when=s.get("fire_when")),
+        )
     elif rearm == "deadline":
         prog = BehaviorProgram(sense="absence", predicate=goal.condition, deadline_s=s.get("deadline_s"))
     elif rearm == "never":
@@ -433,7 +448,7 @@ _VALID_MISS = {"trivial", "mild", "severe"}
 _VALID_FF = {"trivial", "mild", "severe", "irreversible"}
 _MIN_CADENCE_S = 1.0  # floor so an authored cadence_s can't busy-loop the scheduler
 _VALID_MODALITY = {"vision", "audio", "fused"}
-_VALID_TEMPORAL = {"single", "strip", "window"}
+_VALID_TEMPORAL = {"single", "strip", "window", "sprite"}  # sprite = N frames -> 1 montage image (VLM-only)
 _VALID_ROI = {"focus", "hint", "full"}
 _VALID_SAMPLING = {"recent", "uniform"}
 _MAX_STRIP = 6  # ceiling on authored n_frames so an LLM can't author a token-bomb strip
@@ -495,8 +510,95 @@ def coerce_authored_behavior(raw) -> dict:
     return out
 
 
+_MAX_CHANNEL_LEN = 40  # bound an authored channel-hint string (no busy values / token bombs)
+_VALID_RHYTHM_MODE = {"discrete", "continuous"}  # rep regime: rest-between (shipped) vs rest-less (research seam)
+_MAX_EXPECTED_ROM = 100.0  # bound the authored expected-ROM (channel-native units; generous — channels vary)
+_MAX_SMOOTH_S = 1.0  # bound the authored causal-smoothing cold-start span (seconds); >1s over-lags any rep
+
+
+def coerce_authored_rhythm(raw) -> dict:
+    """Validate a conductor ``rhythm`` PRIOR into a safe ``goal.state['rhythm']`` sub-dict — the
+    goal-setting half of the rhythm sense (the brain already knows the rep shape at authoring time, so the
+    eye never needs a runtime VLM round-trip on rep 1). Closed/bounded vocab, clamped numerics: a
+    ``channel`` hint biases :class:`~percept.rhythm.RhythmTracker` channel selection; ``cadence_s`` is a
+    rough expected rep period; ``whole_body`` flags a multi-limb action. Anything malformed is DROPPED, so
+    the tracker falls back to its unsupervised default (the benchmark runs with NO prior). The hint only
+    *biases* selection — it can never force a miscount, because a channel with zero reps is never selected."""
+    if not isinstance(raw, dict):
+        return {}
+    spec: dict = {}
+    ch = raw.get("channel")
+    if isinstance(ch, str) and 0 < len(ch) <= _MAX_CHANNEL_LEN:
+        spec["channel"] = ch
+    c = _num(raw.get("cadence_s"))
+    if c is not None and c > 0:
+        spec["cadence_s"] = min(_MAX_WINDOW_S, c)
+    if raw.get("whole_body") is True:
+        spec["whole_body"] = True
+    # the regime the brain declares for the eye (eye↔brain coordination): a DISCRETE rep has a rest between
+    # reps (bench, squat) and the shipped causal counter handles it; a CONTINUOUS rep is rest-less (pommel
+    # circles, cycling, strokes) and needs phase counting (research seam — recorded here, not yet counted).
+    if raw.get("mode") in _VALID_RHYTHM_MODE:
+        spec["mode"] = raw["mode"]
+    w = _num(raw.get("window_s"))  # endurance window for windowed rep counts ("reps in the last minute")
+    if w is not None and w > 0:
+        spec["window_s"] = min(_MAX_WINDOW_S, w)
+    # expected ROM: the prominence a REAL rep reaches, used to reject too-small movement (the fidget). UNIT
+    # CONTRACT — it is in the PRIOR ``channel``'s native units (same units as Rep.amplitude), so it is only
+    # honoured when a channel is named, and is marked ``channel_native`` (the only space supported today) so a
+    # frame-normalized number can never be silently fed once other channel families exist.
+    rom = _num(raw.get("expected_rom"))
+    if rom is not None and rom > 0 and "channel" in spec and raw.get("expected_rom_space", "channel_native") == "channel_native":
+        spec["expected_rom"] = min(_MAX_EXPECTED_ROM, rom)
+        spec["expected_rom_space"] = "channel_native"
+    # amplitude-gate fraction override: the fraction of ``expected_rom`` a rep must reach to be counted.
+    # Lower = admit shallower/fatigued reps (fewer fidget rejections). Only meaningful with expected_rom.
+    frac = _num(raw.get("amp_gate_frac"))
+    if frac is not None and 0.0 < frac <= 1.0:
+        spec["amp_gate_frac"] = frac
+    # causal smoothing span (seconds): an OPT-IN rate-invariance knob (Build 2). It scales to the measured
+    # period, killing the per-sample-noise that COLLAPSES the count at high fps. Off (0/absent) by default —
+    # only worth enabling above the Nyquist floor, where it pays off (see RhythmTracker.smooth_s).
+    sm = _num(raw.get("smooth_s"))
+    if sm is not None and 0.0 < sm <= _MAX_SMOOTH_S:
+        spec["smooth_s"] = sm
+    # canonical channel selection (Build 3): score channels on the canonical grid instead of the medoid, so
+    # the rep-owning channel stops flipping with fps. Opt-in bool, default off (legacy medoid).
+    if raw.get("canonical_select") is True:
+        spec["canonical_select"] = True
+    return {"rhythm": spec} if spec else {}
+
+
+_MAX_SENSE_FPS = 60.0  # a per-concern processing rate can't exceed the capture ceiling / busy-loop the eye
+
+
+def coerce_authored_sense(raw) -> dict:
+    """Validate a conductor ``sense`` block into a safe ``goal.state['sense']`` sub-dict — the per-concern
+    PROCESSING-density envelope for the fovea (:class:`~percept.sampling.SamplingController`). ``base_fps`` is
+    the quiet floor, ``max_fps`` the motion-escalated ceiling, ``escalate_threshold`` the motion level that
+    triggers the saccade. Clamped to ``[~0, 60]`` fps with ``base <= max`` and the threshold in ``[0, 1]`` —
+    so an LLM can never author a busy-loop rate or an inverted envelope. Malformed -> ``{}`` (the controller
+    falls back to its default policy). This is the sibling of :func:`coerce_authored_rhythm`, one tier up:
+    rhythm authors HOW to count, sense authors HOW DENSELY to look."""
+    if not isinstance(raw, dict):
+        return {}
+    spec: dict = {}
+    base = _num(raw.get("base_fps"))
+    if base is not None and base > 0:
+        spec["base_fps"] = min(_MAX_SENSE_FPS, base)
+    mx = _num(raw.get("max_fps"))
+    if mx is not None and mx > 0:
+        spec["max_fps"] = min(_MAX_SENSE_FPS, mx)
+    if "base_fps" in spec and "max_fps" in spec:
+        spec["max_fps"] = max(spec["max_fps"], spec["base_fps"])  # never an inverted envelope
+    thr = _num(raw.get("escalate_threshold"))
+    if thr is not None and 0.0 <= thr <= 1.0:
+        spec["escalate_threshold"] = thr
+    return {"sense": spec} if spec else {}
+
+
 def perception_for_concern(concern) -> dict:
-    """Map a :class:`~percept_contracts.Concern`'s B1 clip declaration to a ``goal.state['perception']``
+    """Map a :class:`~percept.contracts.Concern`'s B1 clip declaration to a ``goal.state['perception']``
     sub-dict (the same shape :func:`coerce_authored_perception` emits). A concern declaring a positive
     ``window_s`` asks for a time-bounded temporal clip; a bare ``clip=True`` (no window) asks for a
     strip. A concern that declared neither yields ``{}`` -> the single-frame default is untouched. This
@@ -560,6 +662,8 @@ __all__ = [
     "program_of",
     "coerce_authored_behavior",
     "coerce_authored_perception",
+    "coerce_authored_rhythm",
+    "coerce_authored_sense",
     "perception_for_concern",
     "ask_text",
     "escalate_text",

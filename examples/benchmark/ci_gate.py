@@ -19,7 +19,7 @@ the step exits non-zero and the PR goes red — with the offending concern named
 
 from pathlib import Path
 
-from eval.benchmark import (
+from percept.bench import (
     BenchmarkGate,
     Manifest,
     check_benchmark_gate,

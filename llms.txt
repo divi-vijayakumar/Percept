@@ -1,0 +1,61 @@
+# Percept
+
+Percept is an open-source cognition layer for goal-driven, proactive audio-visual agents. It turns
+plain-language watch goals into rising-edge events: `fire` when a condition becomes true, `ask` when
+the read is uncertain, and silence otherwise.
+
+## Start Here
+
+- `README.md`: product overview, install commands, architecture, package map, benchmark status.
+- `AGENTS.md`: verified integration guide for Codex, Claude Code, Cursor, Copilot, and other coding agents.
+- `docs/README.md`: documentation index (Diátaxis: tutorials / how-to / reference / explanation).
+- `docs/tutorials/quickstart.md`: 60-second offline first run with the fake backend.
+- `docs/explanation/concepts.md`: cognition/perception split, gate, entity memory, detector registry.
+- `docs/reference/backends.md`: fake, Gemini, Claude, Deepgram, and backend selection.
+
+## Package Choices
+
+- Python core: `pip install percept-vision`, then `import percept`.
+- Runtime capture worker: `pip install "percept-vision[runtime]"`.
+- Benchmark tooling: `pip install "percept-vision[bench]"`, then `percept-bench`.
+- Python edge/harness: `pip install "percept-vision[edge]"`, imported as `percept.edge`.
+- Browser/device edge: `npm install percept-edge`.
+
+The repo bundles `percept.contracts` and `percept.harness` inside `percept-vision`,
+but OSS users should start from `percept-vision` plus the optional `percept-edge` npm package.
+
+## Verified Python API
+
+```python
+from percept import Percept, Goal
+
+agent = Percept.create(discover_plugins=False)
+agent.add_goal(Goal(id="kettle", condition="the kettle has finished boiling", say="The kettle is done."))
+events = await agent.perceive_judged("stopped", source="camera", t=1.0)
+```
+
+`events` is a list of `FireEvent`s. `FireEvent.action` is `fire` or `ask`. Treat `ask` as a refusal
+to guess, not as a fire.
+
+## Key Docs
+
+- Architecture (generated diagram + the four tiers): `docs/explanation/architecture.md`
+- Runtime worker: `docs/how-to/runtime.md`
+- Edge parity and detector handshake: `docs/reference/edge-parity.md`
+- Benchmark and golden set: `docs/how-to/eval.md`
+- Public static demo: `examples/web-demo/index.html`
+- Offline examples: `examples/watch_agent.py`, `examples/webcam_agent.py`, `examples/fall_notification.py`
+
+## Quality Gates
+
+```bash
+make test
+make test-js
+make parity
+make audit-benchmark
+make scorecard
+```
+
+`make audit-benchmark` validates the draft golden manifest and baseline registry. Release benchmark
+claims require `percept-bench audit --release`, a full-mode scorecard, no modeled cells, and a
+content-hashed release manifest.

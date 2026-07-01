@@ -6,8 +6,8 @@ the Perception Test (CC-BY) sound-localisation split, restricted to events whose
 sampled event we judge a frame two ways at the sound onset: vision-only vs fused (frame + the 2 s of
 audio ending at onset). Audio earns its place when it FLIPS a vision recall-miss to a satisfied verdict.
 
-  raw  = vision-only recall over the positives (frame at onset).
-  e2e  = fused recall, the recall-flip (fraction of vision misses audio rescues), and the fusion-FP
+  dense-modeled = vision-only recall over the positives (frame at onset).
+  core-replay   = fused recall, the recall-flip (fraction of vision misses audio rescues), and the fusion-FP
          (fused false-fires on a silent moment where there is no sound).
   core = n/a — the gate adds no fusion (no cells).
 
@@ -32,38 +32,40 @@ NEG_MIN_ONSET = 1.5  # only probe a negative when the real onset is comfortably 
 
 def _cells(recall_raw, recall_e2e, recall_flip, fusion_fp):
     return {
-        ("raw", "recall"): recall_raw,
-        ("raw", "recall_flip"): None,
-        ("raw", "fusion_fp"): None,
-        ("core", "recall"): None,
-        ("core", "recall_flip"): None,
-        ("core", "fusion_fp"): None,
-        ("e2e", "recall"): recall_e2e,
-        ("e2e", "recall_flip"): recall_flip,
-        ("e2e", "fusion_fp"): fusion_fp,
+        ("dense-modeled", "vision_recall"): recall_raw,
+        ("core-replay", "fused_recall"): recall_e2e,
+        ("core-replay", "recall_flip"): recall_flip,
+        ("core-replay", "fusion_fp"): fusion_fp,
     }
 
 
-FMTS = {"recall": "{:.2f}", "recall_flip": "{:.2f}", "fusion_fp": "{:.2f}"}
-MEASURED = ["raw recall", "e2e recall", "e2e recall_flip", "e2e fusion_fp"]
+FMTS = {"vision_recall": "{:.2f}", "fused_recall": "{:.2f}", "recall_flip": "{:.2f}", "fusion_fp": "{:.2f}"}
+MEASURED = ["dense-modeled:vision_recall", "core-replay:fused_recall", "core-replay:recall_flip", "core-replay:fusion_fp"]
 
 
 def score(*, live: bool, n: int) -> TrackResult:
     if not live:
-        # OFFLINE stub — no fetch, no API. Audio rescues most vision misses, with a low false-fire rate.
+        # OFFLINE card path: use the golden-v1 PT sample count when annotations are staged, but keep
+        # VLM/audio-fusion cells modeled until --live measures them.
+        try:
+            n_events = len(pt.golden_sound_events(require_media=False))
+        except Exception:
+            n_events = 0
         recall_raw, recall_e2e, recall_flip, fusion_fp = 0.30, 0.90, 0.85, 0.05
         return TrackResult(
             track=TRACK,
             cells=_cells(recall_raw, recall_e2e, recall_flip, fusion_fp),
             fmts=FMTS,
             headline={
-                "acoustic recall raw->fused (N PT sound)": f"{recall_raw:.2f} -> {recall_e2e:.2f} (N=0)",
+                "acoustic recall raw->fused (N PT sound)": f"{recall_raw:.2f} -> {recall_e2e:.2f} (N={n_events})",
                 "acoustic recall-flip [95% CI] / fusion-FP": f"{recall_flip:.2f} [n/a,n/a] / {fusion_fp:.2f}",
             },
-            measured=MEASURED,
-            modeled=[],
+            measured=[],
+            modeled=["dense-modeled:vision_recall", "core-replay:fused_recall", "core-replay:recall_flip", "core-replay:fusion_fp"],
             calls=0,
-            notes="offline stub",
+            notes="offline modeled; run --live to measure golden-v1 Perception Test samples",
+            diagnostic=True,
+            excluded=["acoustic: legacy dense/fusion diagnostic, not product E2E"],
         )
 
     import asyncio
@@ -167,4 +169,6 @@ def score(*, live: bool, n: int) -> TrackResult:
         modeled=[],
         calls=calls,
         notes=notes,
+        diagnostic=True,
+        excluded=["acoustic: legacy dense/fusion diagnostic, not product E2E"],
     )

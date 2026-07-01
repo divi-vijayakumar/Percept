@@ -7,7 +7,7 @@ are identical *by construction*, because the only difference between the two rou
 runs, not WHAT it decides. Also measures edge frame latency (JS Edge.processFrame throughput).
 
 Run (node auto-discovered via PATH or ~/.nvm; or set PERCEPT_NODE):
-    PYTHONPATH=packages/percept-harness:packages/percept-vision \
+    PYTHONPATH=packages/percept-vision \
         python3.12 packages/percept-edge/parity/compare.py
 """
 from __future__ import annotations
@@ -19,8 +19,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from percept_harness.detectors import AcousticOnset, MotionPeriodicity
-from percept_harness.tier0 import motion_score
+from percept.harness.detectors import AcousticOnset, MotionPeriodicity
+from percept.harness.tier0 import motion_score
 
 HERE = Path(__file__).resolve().parent
 

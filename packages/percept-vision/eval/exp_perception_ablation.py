@@ -74,7 +74,7 @@ async def run(n: int) -> int:
     settings = load_settings()
     root = find_golden_root()
     if root is None:
-        raise SystemExit("no golden fixtures found (expected eval/fixtures-private/)")
+        raise SystemExit("no golden fixtures found (expected eval/fixtures-golden/)")
     golden = load_golden(root)
     cases = [
         g for g in golden.gate_cases

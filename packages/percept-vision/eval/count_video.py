@@ -6,7 +6,7 @@ model) counts discrete movements/gestures/reps. Reports two methods:
   * period — autocorrelation dominant period (duration/period) — right for strictly PERIODIC reps
 Optionally saves thumbnails for inspection, and scores against a known --count.
 
-Run: PYTHONPATH=packages/percept-vision:packages/percept-harness python3.12 -m eval.count_video <video> \\
+Run: PYTHONPATH=packages/percept-vision python3.12 -m eval.count_video <video> \\
         [--fps 5] [--count N] [--refractory 0.3] [--thumbs DIR]
 """
 
@@ -22,7 +22,7 @@ def decode(video: str, target_fps: float):
     """-> (list[(t, small_gray_Frame)], list[(t, bgr_full)]) sampled at ~target_fps."""
     import cv2
 
-    from percept_harness.tier0 import Frame
+    from percept.harness.tier0 import Frame
 
     cap = cv2.VideoCapture(video)
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -44,7 +44,7 @@ def decode(video: str, target_fps: float):
 
 
 def motion_series(small):
-    from percept_harness.tier0 import motion_score
+    from percept.harness.tier0 import motion_score
 
     out, prev = [], None
     for t, f in small:
@@ -54,7 +54,7 @@ def motion_series(small):
 
 
 def count_peaks(series, *, min_height, rel_drop, refractory):
-    from percept_harness.detectors import MotionPeriodicity
+    from percept.harness.detectors import MotionPeriodicity
 
     det = MotionPeriodicity(min_height=min_height, rel_drop=rel_drop, refractory_s=refractory)
     bs = []

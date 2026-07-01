@@ -24,8 +24,11 @@ htmlcov/
 
 # eval run artifacts
 scorecard.json
+scorecard.txt
+scorecard-live-*.txt
 results.json
 benchmark.json
+**/scorecard.txt
 **/scorecard.json
 **/results.json
 **/benchmark.json
@@ -49,6 +52,7 @@ perception_test_prevalence.json
 
 # local-only scratch (never commit)
 scratch/
+handoff/
 
 # model A/B artifact
 model_ab.json
@@ -87,6 +91,9 @@ omnipro_*.json
 
 # Private eval corpus — UNCLEARED third-party (YouTube) sources, dev/eval fixture only, NEVER redistribute
 # (spec Principle 8). Lives at the canonical find_golden_root() path; also ignore a stray top-level drop.
+# (The tracked label layer under eval/fixtures-golden/ predates this rule and stays tracked; this guards
+# against new pixel/media drops. REVIEW_QUEUE.md is internal curation notes — excluded from the public tree.)
+**/eval/fixtures-golden/REVIEW_QUEUE.md
 **/eval/fixtures-private/
 /golden/
 # Phase-0 perception probe clips (may contain personal recordings)
@@ -111,3 +118,31 @@ node_modules/
 
 # persistent benchmark data cache (heavy/licensed; never commit)
 **/eval/bench-staging/
+docs/publish-readiness-plan.md
+
+# --- OSS publish: internal/confidential docs (kept local, never published) ---
+/Spec/
+/handoff/
+/review/
+internal-docs/
+# internal release-planning brief (rules of engagement) — never published
+RELEASE_BRIEF.md
+# release-run reports/scratch (resumable overnight runs) — never published
+docs/_release/
+# consolidated home for local run artifacts (verdicts/scorecards/signals) — never published
+out/
+docs/discussions/
+docs/enterprise-architecture.md
+docs/*handoff*.md
+docs/*research*.md
+docs/*scope*.md
+docs/*strategic*.md
+docs/*positioning*.md
+docs/*opportunity*.md
+docs/*v3-implementation*.md
+docs/*architecture-topologies*.md
+docs/*implementation-prompt*.md
+docs/*publish-readiness*.md
+docs/updated-percept-sdk-architecture.md
+docs/perception-event-individuation-research.md
+docs/benchmark-scorecard-runbook.md

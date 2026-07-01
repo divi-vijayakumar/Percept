@@ -9,7 +9,7 @@ If both score ~the same (~15% OBO), the counter isn't the lever — the SIGNAL i
 claim (a cheap MOTION signal oscillates cleanly where the VLM phase doesn't) can only be tested on raw
 frames (record a few rep clips → exp_edge_count_frames). This run needs no API and no frames.
 
-Run: PYTHONPATH=packages/percept-vision:packages/percept-harness python3.12 -m eval.exp_edge_count
+Run: PYTHONPATH=packages/percept-vision python3.12 -m eval.exp_edge_count
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ def count_edges(seq) -> int:
 
 def count_motion_periodicity(seq) -> int:
     """The NEW edge detector on the same signal (bool→{0,1}); counts confirmed oscillation peaks."""
-    from percept_harness.detectors import MotionPeriodicity
+    from percept.harness.detectors import MotionPeriodicity
 
     det = MotionPeriodicity(min_height=0.5, rel_drop=0.5)
     n = 0

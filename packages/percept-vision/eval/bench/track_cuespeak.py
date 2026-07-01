@@ -1,16 +1,30 @@
-"""CueSpeak — proactive interjection QUALITY.
+"""CueSpeak — derived proactive interjection quality.
 
-Does the agent speak ONCE on the rising edge of a cue (precision), catch every cue (recall), and NOT
-nag (fires-per-episode)? Contrasts the cognition layer (core = rising-edge three-state gate) against a
-raw VLM-in-a-loop (raw = fire on every true frame). Deterministic E2E sim — the gate/executor are real.
+When saved E2E benchmark artifacts exist, this track derives CueSpeak from those runs without a new
+video pass or model call: did the E2E system emit a cue/answer inside the labelled event window, and did
+it avoid duplicate speech? If no E2E artifacts are available, it falls back to the deterministic sim-core
+regression.
+
+The derived-from-artifacts path is still DRAFT-only until the source E2E runs are full, manifest-backed,
+and have independent semantic judging where needed.
 """
 from __future__ import annotations
 
 from . import sim
+from .derived_interaction import cue_metrics, cues_from_latest_e2e, summarize_sources
 from .types import TrackResult
 
 TRACK = "cuespeak"
-_FMTS = {"precision": "{:.2f}", "recall": "{:.2f}", "fires/ep": "{:.2f}"}
+_FMTS = {
+    "precision": "{:.2f}",
+    "recall": "{:.2f}",
+    "fires/ep": "{:.2f}",
+    "duplicate_rate": "{:.2f}",
+    "unresolved_rate": "{:.2f}",
+    "naive_precision": "{:.2f}",
+    "naive_recall": "{:.2f}",
+    "naive_fires/ep": "{:.2f}",
+}
 _MEASURED = ["precision", "recall", "fires/ep"]
 
 
@@ -32,6 +46,53 @@ def _score(fires, episodes):
 
 
 def score(*, live: bool = False, n: int = 8) -> TrackResult:
+    cues, refs, calls = cues_from_latest_e2e()
+    if cues:
+        m = cue_metrics(cues)
+        cells = {
+            ("e2e", "precision"): m["precision"],
+            ("e2e", "recall"): m["recall"],
+            ("e2e", "fires/ep"): m["fires_per_episode"],
+            ("e2e", "duplicate_rate"): m["duplicate_rate"],
+            ("e2e", "unresolved_rate"): m["unresolved_rate"],
+        }
+        precision = m["precision"]
+        recall = m["recall"]
+        fires_ep = m["fires_per_episode"]
+        return TrackResult(
+            track=TRACK,
+            cells=cells,
+            fmts=_FMTS,
+            headline={
+                "cuespeak derived precision/recall": (
+                    f"{precision:.2f} / {recall:.2f}" if precision is not None and recall is not None else "n/a"
+                ),
+                "cuespeak derived fires-per-episode": f"{fires_ep:.2f}" if fires_ep is not None else "n/a",
+            },
+            measured=[
+                "e2e:precision",
+                "e2e:recall",
+                "e2e:fires/ep",
+                "e2e:duplicate_rate",
+                "e2e:unresolved_rate",
+            ],
+            calls=0,
+            coverage=[{
+                "dataset": "local-e2e-artifacts",
+                "expected": len(cues),
+                "observed": len(cues),
+                "failed": 0,
+                "skipped": 0,
+                "notes": f"sources={summarize_sources(cues)}; artifacts={refs}",
+            }],
+            diagnostic=True,
+            excluded=["cuespeak: derived from local sampled E2E artifacts, not a full release split"],
+            notes=(
+                f"derived from latest E2E result artifacts; source_counts={summarize_sources(cues)}; "
+                f"source_calls={calls}; artifacts={refs}"
+            ),
+        )
+
     dur, gap = 5, 7
     episodes = [sim.Episode(onset=10 + i * (dur + gap), duration=dur) for i in range(n)]
     T = episodes[-1].onset + dur + gap
@@ -43,19 +104,25 @@ def score(*, live: bool = False, n: int = 8) -> TrackResult:
     rp, rr, rf = _score(sim.raw_fires(script, frames), episodes)
 
     cells = {
-        ("raw", "precision"): rp, ("core", "precision"): cp, ("e2e", "precision"): cp,
-        ("raw", "recall"): rr, ("core", "recall"): cr, ("e2e", "recall"): cr,
-        ("raw", "fires/ep"): rf, ("core", "fires/ep"): cf, ("e2e", "fires/ep"): cf,
+        ("dense-modeled", "naive_precision"): rp,
+        ("core-replay", "precision"): cp,
+        ("dense-modeled", "naive_recall"): rr,
+        ("core-replay", "recall"): cr,
+        ("dense-modeled", "naive_fires/ep"): rf,
+        ("core-replay", "fires/ep"): cf,
     }
     headline = {
-        "cuespeak precision raw/core": f"{rp:.2f} / {cp:.2f}",
-        "cuespeak fires-per-episode raw/core": f"{rf:.1f} / {cf:.1f}  (1.0 = no nag)",
+        "cuespeak precision naive/core": f"{rp:.2f} / {cp:.2f}",
+        "cuespeak fires-per-episode naive/core": f"{rf:.1f} / {cf:.1f}  (1.0 = no nag)",
     }
     return TrackResult(
         track=TRACK, cells=cells, fmts=_FMTS, headline=headline,
-        measured=_MEASURED, modeled=[],
+        measured=["core-replay:precision", "core-replay:recall", "core-replay:fires/ep"],
+        modeled=["dense-modeled:naive_precision", "dense-modeled:naive_recall", "dense-modeled:naive_fires/ep"],
         reference={"fires/ep": {"value": 1.0, "by": "ideal: 1 interjection/cue"}},
         calls=0,
+        diagnostic=True,
+        excluded=["cuespeak: deterministic sim regression, not held-out product E2E"],
         notes=(f"sim: {n} episodes x{dur}f + {len(noise)} noise spikes; "
-               f"raw=VLM-loop (every true frame), core=rising-edge gate. e2e=core (edge is parity-equal)."),
+               f"naive=scripted emitter (every true frame), core-replay=rising-edge gate."),
     )

@@ -23,10 +23,10 @@
 
 /**
  * Semantic version of the whole frozen contract surface — the JS twin of the Python
- * `percept_contracts.CONTRACT_VERSION`. Same major == wire-compatible. This is DISTINCT from
+ * `percept.contracts.CONTRACT_VERSION`. Same major == wire-compatible. This is DISTINCT from
  * `WatchSpec.version` (the wire integer, defaults to 1) which stays for payload compat.
  */
-export const CONTRACT_VERSION = "1.0.0";
+export const CONTRACT_VERSION = "1.1.0";
 
 /** Error thrown when an incoming wire payload violates the contract. */
 export class ContractError extends Error {
@@ -78,7 +78,8 @@ export function parseBox(obj, { path = "region_hint" } = {}) {
 
 // ---------------------------------------------------------------------------
 // WatchCondition  { goal_id, anchor_text, threshold, region_hint: Box|null,
-//                   detectors: string[] }
+//                   detectors: string[], cadence_s: number|null,
+//                   gate_on: "motion"|"structural"|"semantic"|"fixed" }
 // ---------------------------------------------------------------------------
 
 /**
@@ -87,12 +88,16 @@ export function parseBox(obj, { path = "region_hint" } = {}) {
  * defaults to [] (the Python `field(default_factory=list)` default).
  * @returns {{goal_id:string,anchor_text:string,threshold:number,region_hint:object|null,detectors:string[]}}
  */
+export const GATE_ON = new Set(["motion", "structural", "semantic", "fixed"]);
+
 export function makeWatchCondition({
   goal_id,
   anchor_text,
   threshold = 0.3,
   region_hint = null,
   detectors = [],
+  cadence_s = null,
+  gate_on = "motion",
 } = {}) {
   if (typeof goal_id !== "string") {
     throw new ContractError("makeWatchCondition: goal_id must be a string");
@@ -106,12 +111,20 @@ export function makeWatchCondition({
   if (!isStringArray(detectors)) {
     throw new ContractError("makeWatchCondition: detectors must be an array of strings");
   }
+  if (cadence_s != null && !isFiniteNumber(cadence_s)) {
+    throw new ContractError("makeWatchCondition: cadence_s must be a finite number or null");
+  }
+  if (!GATE_ON.has(gate_on)) {
+    throw new ContractError(`makeWatchCondition: gate_on must be one of ${[...GATE_ON].join("|")}`);
+  }
   return {
     goal_id,
     anchor_text,
     threshold,
     region_hint: region_hint == null ? null : makeBox(region_hint),
     detectors: [...detectors],
+    cadence_s: cadence_s == null ? null : cadence_s,
+    gate_on,
   };
 }
 
@@ -147,12 +160,31 @@ export function parseWatchCondition(obj, { path = "condition" } = {}) {
     }
     detectors = [...obj.detectors];
   }
+  // cadence (C2): how often to look. Missing tolerated -> (null, "motion"), the default.
+  let cadence_s = null;
+  if (obj.cadence_s != null) {
+    if (!isFiniteNumber(obj.cadence_s)) {
+      throw new ContractError(`${path}.cadence_s: expected a finite number or null`);
+    }
+    cadence_s = obj.cadence_s;
+  }
+  let gate_on = "motion";
+  if (obj.gate_on != null) {
+    if (!GATE_ON.has(obj.gate_on)) {
+      throw new ContractError(`${path}.gate_on: expected one of ${[...GATE_ON].join("|")}`);
+    }
+    gate_on = obj.gate_on;
+  }
+  // NOTE: `schedule` (Python C1) is not mirrored here yet — it is tolerantly dropped (a known parity
+  // drift, tracked separately). The on-device gate executes neither schedule nor cadence today.
   return {
     goal_id: obj.goal_id,
     anchor_text: obj.anchor_text,
     threshold: obj.threshold,
     region_hint,
     detectors,
+    cadence_s,
+    gate_on,
   };
 }
 
@@ -397,7 +429,7 @@ export function parseBoundaryReport(json) {
 // IncidentSnippet  { kind: "frame"|"clip"|"audio", media: string|null (base64),
 //                    mime: string|null, frames: array|null, t_start: number|null, t_end: number|null }
 //
-// The JS twin of the Python `percept_contracts.Incident` / `IncidentSnippet`: the durable record of
+// The JS twin of the Python `percept.contracts.Incident` / `IncidentSnippet`: the durable record of
 // one concern firing, carrying an optional captured relevant snippet (e.g. a baby-monitor "baby awake"
 // fires an Incident whose snippet is a short clip). `media` is Python `bytes` -> a base64 string on the
 // wire (or null); `verdict` is the firing Verdict { satisfied, confidence, evidence }.

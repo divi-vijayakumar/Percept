@@ -87,10 +87,10 @@ def load_golden(root: str | Path) -> GoldenSet:
 
 
 def find_golden_root(start: str | Path | None = None) -> Path | None:
-    """Walk up from ``start`` looking for ``eval/fixtures-private/splits.json``."""
+    """Walk up from ``start`` looking for ``eval/fixtures-golden/splits.json``."""
     here = Path(start or __file__).resolve()
     for parent in [here, *here.parents]:
-        candidate = parent / "eval" / "fixtures-private"
+        candidate = parent / "eval" / "fixtures-golden"
         if (candidate / "splits.json").exists():
             return candidate
     return None
