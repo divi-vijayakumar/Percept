@@ -102,4 +102,32 @@ async for incident in run(agent, source="webcam://0", on_incident=sink, snippet_
 Webhook payloads redact media by default and keep incident metadata, message, evidence, timestamps, and
 snippet bounds. Pass `include_media=True` only for trusted local/dev sinks. If `signing_secret` is set,
 the sink adds `X-Percept-Signature: sha256=<hmac>` over the JSON body. Failed deliveries retry, then append
-to `dead_letter` if supplied before re-raising to the runtime.
+to `dead_letter` if supplied before re-raising to the runtime. Dead-letter records are redacted (the URL is
+reduced to `scheme://host[:port]`; the body is stored only as a SHA-256; no headers/signature).
+
+### URL safety (SSRF)
+
+By default a webhook URL must be **https to a publicly routable host** — `UrlPolicy` blocks `http://`,
+loopback, private, link-local (the cloud metadata IP), CGNAT, and reserved targets, so a delivery can't be
+aimed at an internal service. For a local/dev sink, opt out explicitly:
+
+```python
+from percept.runtime.sinks import UrlPolicy
+sink = webhook("http://localhost:8080/hook", url_policy=UrlPolicy.dev())
+```
+
+**If the webhook URL comes from untrusted input** (e.g. a multi-tenant app where users choose where alerts
+go), pin the hosts you actually deliver to — this is the recommended hardening and closes the vector:
+
+```python
+sink = webhook(user_url, url_policy=UrlPolicy(
+    allowed_hosts=frozenset({"hooks.slack.com", "discord.com"}),
+))
+```
+
+> **Known limitation.** The private-IP check re-resolves the host just before sending, but `urllib` resolves
+> again when it connects, so a DNS-rebinding attacker with a very short TTL has a narrow residual window
+> (time-of-check/time-of-use). The default policy plus `allowed_hosts` closes the practical vector; for an
+> untrusted-input deployment you should **also restrict egress at the network layer** (no route to
+> `169.254.169.254` / internal ranges) — the real backstop for SSRF. Closing the residual in-library
+> (pinning the resolved IP through the TLS connection) is planned but not yet shipped.

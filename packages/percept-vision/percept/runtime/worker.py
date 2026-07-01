@@ -171,11 +171,6 @@ async def run(
     from percept.edge.tier0 import MotionGate, compile_watchspec
 
     settings = getattr(core, "settings", None) or load_settings()
-    # This run's tracer takes precedence; a tracer set via Percept.create(on_trace=) is preserved when
-    # run() gets none. Restored in the finally so a tracer never leaks into the next run(core).
-    _prev_on_trace = getattr(core, "on_trace", None)
-    if on_trace is not None:
-        core.on_trace = on_trace  # the per-frame decision trace flows out of perceive_judged
     spec = compile_watchspec(list(core.goals.active()), threshold=settings.edge.motion_gate)
     gate = MotionGate(spec, settings=settings)
     # TODO 1 / Build 5: a brief-action goal raises the capture rate + arms a fovea coast so a sub-second
@@ -183,9 +178,16 @@ async def run(
     capture_fps, coast = _capture_plan(list(core.goals.active()), fps)
     clips = FrameWindow(size=snippet_size)  # rolling pre-roll buffer for the incident snippet
 
-    if on_health is not None:
-        await _call_sink(on_health, RuntimeHealthEvent("runtime_started", data={"source": repr(source)}))
+    # This run's tracer takes precedence; a tracer set via Percept.create(on_trace=) is preserved when
+    # run() gets none. Set immediately before the try so the finally ALWAYS restores it — a tracer never
+    # leaks into the next run(core), even if the body below raises. (Setup above runs first, so a setup
+    # failure happens before the tracer is wired and leaks nothing.)
+    _prev_on_trace = getattr(core, "on_trace", None)
+    if on_trace is not None:
+        core.on_trace = on_trace  # the per-frame decision trace flows out of perceive_judged
     try:
+        if on_health is not None:
+            await _call_sink(on_health, RuntimeHealthEvent("runtime_started", data={"source": repr(source)}))
         dropped: list[int] = [0]  # shared with the capture thread; surfaced as stats.frames_dropped
         source_kwargs = {
             "maxsize": source_queue_size,
@@ -217,11 +219,13 @@ async def run(
                     stats.fires += 1
                 snippet = snippet_from_window(clips, kind=snippet_kind, pre_s=snippet_pre_s)
                 incident = make_incident(fire, ts=at, snippet=snippet)
-                if core.on_trace is not None:
-                    # Routed through the safe core emitter (awaits async, swallows tracer errors).
+                emit_trace = getattr(core, "_emit_trace", None)
+                if getattr(core, "on_trace", None) is not None and emit_trace is not None:
+                    # Routed through the safe core emitter (awaits async, swallows tracer errors); guarded
+                    # with getattr since `core` is duck-typed (a custom core may lack _emit_trace).
                     # from_boundary flags incidents that did NOT pass through perceive_judged, so their
                     # trace_id has no upstream judge stages (an honest marker, not an orphan).
-                    await core._emit_trace(
+                    await emit_trace(
                         f"{gate_source}@{at}", at, "incident.created",
                         goal_id=incident.concern_id, incident_id=incident.id, from_boundary=from_boundary,
                     )

@@ -42,7 +42,20 @@ class _Resp:
         return False
 
 
+def _gai(ip: str):
+    """A minimal socket.getaddrinfo() return value resolving to a single ``ip``."""
+    return [(2, 1, 6, "", (ip, 0))]
+
+
 class WebhookSinkTests(unittest.TestCase):
+    def setUp(self):
+        # Send-time SSRF re-check calls socket.getaddrinfo; stub it so unit tests never touch the network
+        # (an unresolvable host -> check_resolved skips, exactly as offline). Tests needing a specific
+        # resolution override this patch locally.
+        p = patch("percept.runtime.sinks.socket.getaddrinfo", side_effect=OSError("no DNS in tests"))
+        p.start()
+        self.addCleanup(p.stop)
+
     def test_payload_redacts_media_by_default(self):
         payload = incident_payload(_incident())
         self.assertIsNone(payload["snippet"]["media"])
@@ -105,6 +118,18 @@ class WebhookSinkTests(unittest.TestCase):
         for leaked in ("Door alert", "shh", "user:pass", "SECRETTOKEN", "QUERYSECRET"):
             self.assertNotIn(leaked, blob)
 
+    def test_send_time_rebind_to_internal_is_blocked_and_dead_lettered(self):
+        # A name public at construction (passes check_static) that RESOLVES to an internal IP at send is
+        # blocked by check_resolved — and because the check now runs inside the retry/DLQ path, the block
+        # is dead-lettered (redacted) rather than escaping uncaught before any DLQ record is written.
+        dead = []
+        sink = WebhookSink("https://flips.example.com/hook", dead_letter=dead)
+        with patch("percept.runtime.sinks.socket.getaddrinfo", return_value=_gai("169.254.169.254")):
+            with self.assertRaises(UrlPolicyError):
+                sink(_incident())
+        self.assertEqual(len(dead), 1)
+        self.assertEqual(dead[0]["url"], "https://flips.example.com")
+
     def test_file_dead_letter_records_jsonl_redacted(self):
         with TemporaryDirectory() as d:
             queue = FileDeadLetterQueue(Path(d) / "dead" / "webhooks.jsonl")
@@ -127,6 +152,13 @@ class WebhookSinkTests(unittest.TestCase):
 
 
 class UrlPolicyTests(unittest.TestCase):
+    def setUp(self):
+        # Default: names are unresolvable (offline) so hostname tests are hermetic. Resolution-specific
+        # tests override this patch.
+        p = patch("percept.runtime.sinks.socket.getaddrinfo", side_effect=OSError("no DNS in tests"))
+        p.start()
+        self.addCleanup(p.stop)
+
     def test_default_blocks_non_https_and_file(self):
         for bad in ("http://example.test/hook", "file:///etc/passwd", "ftp://example.test/x"):
             with self.assertRaises(UrlPolicyError):
@@ -151,6 +183,16 @@ class UrlPolicyTests(unittest.TestCase):
     def test_default_allows_public_https(self):
         UrlPolicy().validate("https://hooks.example.com/abc")  # unresolved public name -> allowed
 
+    def test_resolved_name_to_private_is_blocked(self):
+        # a name that RESOLVES to an internal IP is blocked at send-time check_resolved (not just literals)
+        with patch("percept.runtime.sinks.socket.getaddrinfo", return_value=_gai("10.0.0.5")):
+            with self.assertRaises(UrlPolicyError):
+                UrlPolicy().validate("https://sneaky.example.com/hook")
+
+    def test_resolved_name_to_public_is_allowed(self):
+        with patch("percept.runtime.sinks.socket.getaddrinfo", return_value=_gai("93.184.216.34")):
+            UrlPolicy().validate("https://ok.example.com/hook")  # resolves public -> allowed
+
     def test_redact_url_drops_path_query_and_brackets_ipv6(self):
         from percept.runtime.sinks import redact_url
         self.assertEqual(
@@ -158,6 +200,23 @@ class UrlPolicyTests(unittest.TestCase):
             "https://hooks.example.com",
         )
         self.assertEqual(redact_url("https://[2001:db8::1]:8443/hook"), "https://[2001:db8::1]:8443")
+
+    def test_redact_url_tolerates_malformed_port(self):
+        from percept.runtime.sinks import redact_url
+        # SplitResult.port raises ValueError on out-of-range/non-numeric ports; redact_url must NOT crash
+        # (it runs on the DLQ path when a delivery has already failed) — it drops the bad port.
+        self.assertEqual(redact_url("https://hooks.example.com:99999/hook?token=x"), "https://hooks.example.com")
+        self.assertEqual(redact_url("https://hooks.example.com:notaport/x"), "https://hooks.example.com")
+
+    def test_blocked_redirect_error_is_redacted(self):
+        # _NoRedirect embeds the redirect target in the raised error, which lands in the DLQ 'error' field;
+        # its path/query (a secret Location) must be redacted.
+        with self.assertRaises(UrlPolicyError) as cm:
+            _NoRedirect().redirect_request(
+                None, None, 302, "Found", {}, "https://internal.svc/callback?token=SUPERSECRET"
+            )
+        self.assertNotIn("SUPERSECRET", str(cm.exception))
+        self.assertIn("https://internal.svc", str(cm.exception))
 
     def test_dev_policy_allows_http_and_loopback(self):
         UrlPolicy.dev().validate("http://localhost:8080/hook")

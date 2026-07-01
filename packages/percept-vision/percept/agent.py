@@ -700,9 +700,15 @@ class Percept:
                 self.funnel.fired(concern=goal.id, camera=source)
                 events.append(resolved)
             if tracing:
-                # AFTER both fire paths: a resolved process-QA answer IS a fire even when ev_fire is None.
-                action = (ev_fire.action if ev_fire is not None
-                          else ("fire" if resolved is not None else "silent"))
+                # AFTER both fire paths: label a FIRE whenever an incident was actually emitted this tick
+                # — either the gate fired OR a resolved process-QA answer crossed the bar (which fires even
+                # when the gate abstained/ASK'd on this same tick). Only ask/silent when nothing fired.
+                if resolved is not None or (ev_fire is not None and ev_fire.action == FIRE):
+                    action = "fire"
+                elif ev_fire is not None:
+                    action = ev_fire.action
+                else:
+                    action = "silent"
                 await self._emit_trace(trace_id, now, "gate.classified", goal_id=goal.id,
                                        truth=truth, action=action)
         self._log_fires(events, now)

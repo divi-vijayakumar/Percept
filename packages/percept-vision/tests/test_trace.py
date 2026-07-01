@@ -69,6 +69,22 @@ class TraceEventTests(unittest.IsolatedAsyncioTestCase):
             pass
         self.assertIs(agent.on_trace, sentinel)  # this run's tracer was restored, not leaked
 
+    async def test_run_restores_core_on_trace_on_error(self):
+        # the restore must hold even when the run body raises mid-stream (the finally path), not only on
+        # a clean/empty source — otherwise this run's tracer leaks into the next run(core).
+        from percept.runtime.worker import run
+        sentinel = lambda _ev: None  # noqa: E731
+        agent = _agent(on_trace=sentinel)
+
+        def boom_source():
+            raise RuntimeError("capture blew up")
+            yield  # pragma: no cover - makes this a generator
+
+        with self.assertRaises(RuntimeError):
+            async for _ in run(agent, source=boom_source(), on_trace=lambda _ev: None):
+                pass
+        self.assertIs(agent.on_trace, sentinel)  # restored despite the error
+
     def test_format_trace_is_readable(self):
         ev = TraceEvent(trace_id="cam@1.0", stage="gate.classified", goal_id="caffeine",
                         data={"truth": "yes", "action": "fire"})

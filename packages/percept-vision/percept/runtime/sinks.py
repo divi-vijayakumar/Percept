@@ -17,7 +17,11 @@ from typing import Any
 
 
 class UrlPolicyError(ValueError):
-    """Raised when a sink/source URL is rejected by its :class:`UrlPolicy`."""
+    """Raised when an outbound sink URL is rejected by its :class:`UrlPolicy`.
+
+    The policy guards **outbound sinks** (e.g. :class:`WebhookSink`). Capture *source* URIs
+    (RTSP / ``file://`` / ``webcam:``) are operator config and are NOT policy-validated here.
+    """
 
 
 # CGNAT (RFC 6598) is internal but is_global only returns False for it on CPython >= 3.12.4; check it
@@ -119,7 +123,9 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """Refuse to follow 3xx redirects — a redirect could bounce a validated URL to a blocked host."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401
-        raise UrlPolicyError(f"webhook target redirected to {newurl!r}; redirects are not followed")
+        # Redact the redirect target: its path/query can carry a secret (a redirect Location is
+        # attacker-influenced) and this message lands in the DLQ 'error' field.
+        raise UrlPolicyError(f"webhook target redirected to {redact_url(newurl)}; redirects are not followed")
 
 
 _OPENER = urllib.request.build_opener(_NoRedirect)
@@ -143,8 +149,12 @@ def redact_url(url: str) -> str:
     host = p.hostname or ""
     if ":" in host:  # IPv6 literal — re-bracket
         host = f"[{host}]"
-    if p.port is not None:
-        host = f"{host}:{p.port}"
+    try:
+        port = p.port  # SplitResult.port raises ValueError on a malformed/out-of-range port
+    except ValueError:
+        port = None  # omit an unparseable port rather than crash the log/DLQ path
+    if port is not None:
+        host = f"{host}:{port}"
     if not host:
         return "<no-host>"
     return f"{p.scheme}://{host}" if p.scheme else host
@@ -215,13 +225,15 @@ class WebhookSink:
         return headers
 
     def __call__(self, incident: Any) -> None:
-        # Re-resolve the host against the policy immediately before sending (narrows DNS-rebinding TOCTOU;
-        # a name public at construction but flipped to an internal IP is blocked here).
-        self.url_policy.check_resolved(self.url)
         body = json.dumps(incident_payload(incident, include_media=self.include_media)).encode("utf-8")
         last_exc: Exception | None = None
         for attempt in range(self.retries + 1):
             try:
+                # Re-resolve the host against the policy immediately before sending (narrows DNS-rebinding
+                # TOCTOU; a name public at construction but flipped to an internal IP is blocked here). A
+                # block raises UrlPolicyError, which flows through the failure path below so it is
+                # dead-lettered (with a redacted URL) instead of escaping uncaught before the DLQ record.
+                self.url_policy.check_resolved(self.url)
                 req = urllib.request.Request(self.url, data=body, headers=self._headers(body), method="POST")
                 with _send(req, self.timeout_s) as resp:
                     status = getattr(resp, "status", 200)

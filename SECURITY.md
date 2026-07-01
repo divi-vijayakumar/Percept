@@ -21,7 +21,21 @@ Percept is built defense-in-depth for an LLM perception runtime:
   degrades to a low-confidence ASK, never a confident-wrong fire and never code execution.
 - **No network exposure** — the runtime worker is a driver loop, not a server; webhook sinks are POST-only
   and HMAC-signed.
+- **Outbound URL policy (SSRF)** — `WebhookSink` defaults to https-only and blocks non-globally-routable
+  targets (loopback, private, link-local incl. the metadata IP, CGNAT, reserved), so a user-supplied
+  webhook URL can't be aimed at an internal service. Dead-letter records are redacted (URL reduced to
+  `scheme://host[:port]`, body stored as a SHA-256, no headers/signature).
 - **Secrets** — never hardcoded; read from the environment / a gitignored `.env`.
+
+## Known limitations
+
+- **Webhook SSRF — DNS-rebinding residual.** The private-IP check re-resolves the host just before sending,
+  but `urllib` resolves again at connect time, leaving a narrow time-of-check/time-of-use window a
+  short-TTL rebinding attacker could exploit. For an untrusted-input deployment, pin hosts
+  (`UrlPolicy(allowed_hosts=…)`) **and** restrict egress at the network layer (no route to
+  `169.254.169.254` / internal ranges) — the real backstop for SSRF. Pinning the resolved IP through the
+  TLS connection to close it in-library is planned. Capture *source* URIs (RTSP / `file://`) are operator
+  config and are not URL-policy-checked.
 
 ## Model checkpoints (supply chain)
 
