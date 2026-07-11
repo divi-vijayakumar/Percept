@@ -30,6 +30,14 @@ class GoalRegistry:
     def __init__(self) -> None:
         self._goals: dict[str, Goal] = {}
         self._status: dict[str, GoalStatus] = {}
+        # Monotonic version bumped on every goal mutation. The runtime worker watches it to re-arm the
+        # tier-0 gate when a goal is armed/cancelled MID-RUN (e.g. by voice) — the gate's WatchSpec is
+        # otherwise compiled once at run() start, so a voice-armed goal never reaches the gate. (PR 2.1.)
+        self._revision = 0
+
+    @property
+    def revision(self) -> int:
+        return self._revision
 
     def apply(self, ops: list[GoalOp]) -> None:
         for op in ops:
@@ -42,6 +50,7 @@ class GoalRegistry:
                 goal = self._goals[op.goal_id]  # type: ignore[index]
                 for k, v in op.fields.items():
                     setattr(goal, k, v)
+                self._revision += 1
             elif op.op == "complete":
                 self._set_status(op.goal_id, "complete")
             elif op.op == "cancel":
@@ -52,6 +61,7 @@ class GoalRegistry:
     def create(self, goal: Goal) -> Goal:
         self._goals[goal.id] = goal
         self._status[goal.id] = "active"
+        self._revision += 1
         return goal
 
     def _require(self, goal_id: str | None) -> None:
@@ -61,6 +71,7 @@ class GoalRegistry:
     def _set_status(self, goal_id: str | None, status: GoalStatus) -> None:
         self._require(goal_id)
         self._status[goal_id] = status  # type: ignore[index]
+        self._revision += 1
 
     def status(self, goal_id: str) -> GoalStatus | None:
         return self._status.get(goal_id)

@@ -72,6 +72,7 @@ class ConsentSettings:
 class EventSettings:
     window: int = 12  # PERCEPT_FRAME_WINDOW — rolling frames per source for temporal perception
     merge_gap_s: float = 1.5  # PERCEPT_EVENT_MERGE_GAP_S — same-type detections within this = 1 event
+    audio_window_s: float = 4.0  # PERCEPT_AUDIO_WINDOW_S — rolling seconds of audio per source for fused/acoustic perception
 
 
 @dataclass(frozen=True)
@@ -157,6 +158,7 @@ def load_settings() -> Settings:
         events=EventSettings(
             window=_env("PERCEPT_FRAME_WINDOW", 12, int),
             merge_gap_s=_env("PERCEPT_EVENT_MERGE_GAP_S", 1.5, float),
+            audio_window_s=_env("PERCEPT_AUDIO_WINDOW_S", 4.0, float),
         ),
         consent=ConsentSettings(
             allow_computer_use=_env("PERCEPT_ALLOW_COMPUTER_USE", False, _as_bool),

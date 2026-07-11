@@ -33,6 +33,10 @@ class RuntimeStats:
     asks: int = 0
     incidents: int = 0
     sink_errors: int = 0
+    audio_chunks: int = 0  # audio chunks pumped into the AudioWindow (fused/acoustic perception)
+    audio_wakes: int = 0  # audio onsets that admitted a frame the visual gate would have skipped
+    boundaries: int = 0  # edge-detector boundaries (rep peaks / onsets) fed to perceive_boundary
+    utterances: int = 0  # complete spoken utterances endpointed and handed to on_utterance
 
 
 @dataclass(frozen=True)
@@ -58,6 +62,23 @@ async def _aiter(source: Any, fps: float, **source_kwargs) -> AsyncIterator[tupl
         for item in source:
             yield item
             await asyncio.sleep(0)  # cooperate with the event loop
+
+
+async def _audio_aiter(source: Any, **source_kwargs) -> AsyncIterator[tuple]:
+    """Normalize an audio ``source`` to an async iterator of ``(t, chunk, energy)`` — the audio twin
+    of :func:`_aiter`. A ``str`` is a mic/wav URI; anything else is an (async) iterable (tests/replay)."""
+    if isinstance(source, str):
+        from percept.runtime.audio import open_audio_source
+
+        async for item in open_audio_source(source, **source_kwargs):
+            yield item
+    elif hasattr(source, "__aiter__"):
+        async for item in source:
+            yield item
+    else:
+        for item in source:
+            yield item
+            await asyncio.sleep(0)
 
 
 async def _call_sink(fn: Callable, *args) -> None:
@@ -88,6 +109,34 @@ async def _call_sink_with_policy(
         if errors == "ignore":
             return
         raise
+
+
+def _utterance_clip(core: Any, source: str, dur_s: float) -> Any:
+    """Assemble ONE audio clip covering the last ``dur_s`` seconds of the source's AudioWindow — the
+    endpointed utterance handed to ``on_utterance``. The window holds typed :class:`AudioFrame` chunks
+    (from :func:`percept.runtime.audio.open_audio_source`), so we concatenate their PCM into one frame;
+    for a raw-bytes/tuple test source we fall back to :func:`percept.agent._concat_audio`. Returns
+    ``None`` when the window is empty (nothing to send)."""
+    from percept.agent import _concat_audio
+
+    try:
+        chunks = core._audio_window(source).clip(max(0.0, dur_s))  # noqa: SLF001 - worker drives core internals
+    except Exception:  # noqa: BLE001 - a missing/odd window must not kill the pump
+        return None
+    if not chunks:
+        return None
+    pcm_frames = [c for c in chunks if hasattr(c, "pcm")]
+    if not pcm_frames:
+        return _concat_audio(chunks)  # raw bytes / (mime, bytes) test source
+    from percept.contracts import AudioFrame
+
+    first = pcm_frames[0]
+    return AudioFrame(
+        pcm=b"".join(bytes(f.pcm) for f in pcm_frames),
+        sample_rate=first.sample_rate,
+        channels=first.channels,
+        sample_format=first.sample_format,
+    )
 
 
 # Cap so a tiny brief-window prior can't explode the capture rate (mirrors the bench
@@ -151,6 +200,23 @@ async def run(
     stats: RuntimeStats | None = None,
     gate_source: str = "camera",
     episode_inactivity_s: float | None = None,
+    coverage_staleness_s: float | None = None,
+    audio_source: Any = None,
+    audio_gate: Any = "acoustic-onset",
+    audio_wake: dict | None = None,
+    on_utterance: Callable | None = None,
+    vad: Any = None,
+    utterance_threshold: float = 0.01,
+    utterance_hangover_frames: int = 8,
+    utterance_min_speech_frames: int = 3,
+    wake_policy: Any = None,
+    regate_on_goal_change: bool = False,
+    paused: Callable | None = None,
+    muted: Callable | None = None,
+    clock: Callable | None = None,
+    persistence: Any = None,
+    restore: bool = False,
+    autosave_every_s: float | None = None,
 ) -> AsyncIterator:
     """Drive a live ``source`` through the gate + brain, yielding an :class:`Incident` on each rising edge.
 
@@ -163,16 +229,56 @@ async def run(
     - ``snippet_kind`` — ``"frame"`` keeps decoded frames; ``"clip"`` emits a portable encoded bundle.
     - ``sink_errors`` — ``"raise"`` (default) or ``"ignore"`` for notification/feed hook failures.
     - ``stats`` — optional mutable :class:`RuntimeStats` counters for health dashboards.
+    - ``audio_source`` — optional mic/wav URI (``"mic:0"``) **or** an (async) iterable of
+      ``(t, chunk, energy)`` (see :func:`percept.runtime.audio.open_audio_source`). When set, the worker
+      pumps each chunk into ``core.push_audio`` — **filling the ``AudioWindow`` that ``modality="fused"/
+      "audio"`` goals judge over** (otherwise it stays empty and fused judges degrade to vision-only) —
+      and feeds ``energy`` to the gate, so an off-camera sound (a cry, glass breaking) can escalate a
+      frame the visual motion gate would skip. Default ``None`` → the video-only path is byte-for-byte.
+    - ``audio_gate`` — the tier-0 audio detector: a name (``"acoustic-onset"``), an instance with
+      ``push(t, v) -> [Boundary]``, or ``None`` to only fill the window + feed energy (no onset wake).
+    - ``audio_wake`` — kwargs for the onset detector, e.g. ``{"high": 0.3, "low": 0.15, "refractory_s": 5.0}``.
+    - ``on_utterance(audio, t)`` — the **voice-escalation seam**. When the audio pump endpoints a complete
+      spoken utterance (energy rose, then fell for ``utterance_hangover_frames``), the utterance's PCM clip
+      (an :class:`~percept.contracts.AudioFrame`) is handed here — the hook the voice layer turns into an
+      ephemeral reply. Percept owns the mic + the "when is a turn done" decision; the app owns the reply.
+      Default ``None`` → no endpointing, the audio path is byte-for-byte. ``vad`` overrides the endpointer
+      (any object with ``push(energy) -> event.{started,endpoint}``); else an :class:`EnergyVad` built from
+      the ``utterance_*`` knobs is used.
 
     Owns capture off the consumer thread; the per-goal cadence + the three-state gate decide *when* and
     *whether* to fire. Yields incidents lazily, so an ``async for incident in run(...)`` is the front door.
     """
     from percept.config import load_settings
+    from percept.edge.detectors import DetectorBank
     from percept.edge.tier0 import MotionGate, compile_watchspec
 
     settings = getattr(core, "settings", None) or load_settings()
-    spec = compile_watchspec(list(core.goals.active()), threshold=settings.edge.motion_gate)
-    gate = MotionGate(spec, settings=settings)
+
+    # PR 2.2: restart durability. Rehydrate goals/entities/action-log from a persistence store BEFORE
+    # compiling the gate, so a restarted 24/7 watch resumes its armed goals + refractory state instead
+    # of re-arming edges (which would double-fire). Default (persistence=None) is byte-for-byte.
+    if persistence is not None and restore:
+        load = getattr(core, "load_state", None)
+        if load is not None:
+            load(persistence)
+
+    def _build_gate():
+        """(Re)compile the WatchSpec → gate + detector banks from the core's CURRENT active goals.
+        Called once at start, and again on a goal-registry revision change when regate_on_goal_change
+        is set (so a goal armed mid-run — e.g. by voice — actually reaches the tier-0 gate)."""
+        s = compile_watchspec(list(core.goals.active()), threshold=settings.edge.motion_gate)
+        # clock (PR 2.2): a civil-time source arms per-goal Schedules (C1); None -> always-armed (default).
+        g = MotionGate(s, settings=settings, wake_policy=wake_policy, clock=clock)
+        # PR 1.3: one detector bank per goal that selected edge detectors (state['detectors']). The bank
+        # emits timed boundaries (rep peaks, acoustic onsets) from the CHEAP motion/energy signals at
+        # native fps — never spends a cloud judge. No detectors -> no banks -> byte-for-byte pre-PR.
+        b = {c.goal_id: DetectorBank(c.detectors) for c in s.conditions if getattr(c, "detectors", None)}
+        return s, g, b
+
+    spec, gate, banks = _build_gate()
+    perceive_boundary = getattr(core, "perceive_boundary", None)
+    goals_revision = getattr(core.goals, "revision", None)  # PR 2.1: watch for mid-run goal changes
     # TODO 1 / Build 5: a brief-action goal raises the capture rate + arms a fovea coast so a sub-second
     # window is covered above its Nyquist; no brief goal -> (fps, None) -> byte-for-byte the fixed-fps path.
     capture_fps, coast = _capture_plan(list(core.goals.active()), fps)
@@ -185,6 +291,8 @@ async def run(
     _prev_on_trace = getattr(core, "on_trace", None)
     if on_trace is not None:
         core.on_trace = on_trace  # the per-frame decision trace flows out of perceive_judged
+    audio_task = None  # bound before try so the finally can always cancel it, even on setup failure
+    autosave_task = None
     try:
         if on_health is not None:
             await _call_sink(on_health, RuntimeHealthEvent("runtime_started", data={"source": repr(source)}))
@@ -199,6 +307,102 @@ async def run(
         # Item 4 episode boundary: a process activity ends precisely on QUIET frames (no escalation), so the
         # boundary check rides the per-frame cadence — only spending a summarize call when it actually fires.
         check_boundary = getattr(core, "check_episode_boundary", None)
+        # PR 1.4: the absence-native differentiators, driven every frame (they fire on QUIET frames the
+        # gate skips). Both are perception-robust (fire on the LACK of evidence, never a guess) and opt-in
+        # per concern — check_observability only for miss_cost=='severe' ("I can't see the baby"), and
+        # check_deadlines only for rearm=='deadline' ("overdue"). Default concerns -> both silent,
+        # byte-for-byte. Sync (unlike the async boundary check).
+        check_coverage = getattr(core, "check_observability", None)
+        check_deadlines = getattr(core, "check_deadlines", None)
+
+        # --- autosave (PR 2.2): periodically persist state so a crash/restart resumes, not restarts. ----
+        if persistence is not None and autosave_every_s and getattr(core, "save_state", None):
+            async def _autosave():
+                while True:
+                    await asyncio.sleep(autosave_every_s)
+                    try:
+                        core.save_state(persistence)
+                        if on_health is not None:
+                            await _call_sink(on_health, RuntimeHealthEvent("state_saved"))
+                    except Exception as exc:  # noqa: BLE001 - a save failure must not kill the watch
+                        if on_health is not None:
+                            await _call_sink(on_health, RuntimeHealthEvent("state_save_error", data={"error": repr(exc)}))
+            autosave_task = asyncio.ensure_future(_autosave())
+
+        # --- audio ingress (PR 1.2): fill the AudioWindow + feed the gate an energy/onset signal --------
+        # `audio` holds the latest energy and a one-shot onset-wake flag, shared with the pump task below
+        # (same event loop, cooperative — no lock). Default (audio_source=None) leaves it inert: energy
+        # stays None and wake stays False, so gate.evaluate and the admit test are byte-for-byte the
+        # video-only path.
+        audio = {"energy": None, "wake": False}
+        audio_task = None
+        if audio_source is not None:
+            onset = None
+            if audio_gate is not None:
+                if isinstance(audio_gate, str):
+                    from percept.edge.detectors import AcousticOnset
+                    onset = AcousticOnset(**(audio_wake or {})) if audio_gate == "acoustic-onset" else None
+                else:
+                    onset = audio_gate  # a caller-supplied detector instance
+
+            # Voice-escalation endpointer (PR 3.x): only built when on_utterance is wired — default None
+            # leaves the audio path byte-for-byte. `vad` can be any object with push(energy)->ev.endpoint.
+            _vad = None
+            _utt = {"start": None}  # start time of the utterance currently being spoken
+            if on_utterance is not None:
+                if vad is not None:
+                    _vad = vad
+                else:
+                    from percept.runtime._vad import EnergyVad
+                    _vad = EnergyVad(
+                        threshold=utterance_threshold,
+                        hangover_frames=utterance_hangover_frames,
+                        min_speech_frames=utterance_min_speech_frames,
+                    )
+
+            async def _pump_audio():
+                # Pump every chunk into the AudioWindow (un-strands modality="fused"/"audio") and track
+                # energy + onsets. Never lets a bad audio chunk kill the run — the watch survives a mic drop.
+                async for at, chunk, energy in _audio_aiter(audio_source):
+                    # MUTED (RuntimeSession.detach_audio_source): keep draining the mic stream but stop
+                    # FEEDING it to perception — the fused judge goes video-only and the energy/onset gate
+                    # signals freeze, without ending the session. Default (muted=None) is byte-for-byte.
+                    if muted is not None and muted():
+                        continue
+                    try:
+                        core.push_audio(chunk, source=gate_source, t=at)
+                    except Exception:  # noqa: BLE001 - audio ingress must not crash the video watch
+                        pass
+                    if stats is not None:
+                        stats.audio_chunks += 1
+                    audio["energy"] = float(energy) if energy is not None else audio["energy"]
+                    if onset is not None and energy is not None:
+                        for b in onset.push(at, float(energy)):
+                            if getattr(b, "kind", None) == "onset":
+                                audio["wake"] = True
+
+                    # Voice escalation: endpoint a complete utterance and hand its clip to on_utterance.
+                    # Runs AFTER push_audio so the just-heard chunk is already in the window we clip from.
+                    if _vad is not None and energy is not None:
+                        ev = _vad.push(float(energy))
+                        if getattr(ev, "started", False):
+                            _utt["start"] = at
+                        if getattr(ev, "endpoint", False):
+                            start_t = _utt["start"] if _utt["start"] is not None else at
+                            _utt["start"] = None
+                            clip = _utterance_clip(core, gate_source, at - start_t)
+                            if clip is not None:
+                                if stats is not None:
+                                    stats.utterances += 1
+                                if on_health is not None:
+                                    await _call_sink(on_health, RuntimeHealthEvent(
+                                        "utterance", ts=at, data={"dur_s": at - start_t}))
+                                await _call_sink_with_policy(
+                                    on_utterance, clip, at, errors=sink_errors, stats=stats,
+                                    on_health=on_health, health_kind="utterance_sink_error",
+                                )
+
+            audio_task = asyncio.ensure_future(_pump_audio())
 
         async def _emit_fires(fires, *, at, from_boundary=False):
             """Turn a list of FireEvents (from perceive_judged OR the boundary) into incidents/asks."""
@@ -243,6 +447,15 @@ async def run(
                 yield incident
 
         async for t, gate_frame, judge_frame in _aiter(source, capture_fps, **source_kwargs):
+            # PR 2.1: pick up goals armed/cancelled mid-run (e.g. by voice via RuntimeSession.arm) by
+            # recompiling the gate+banks when the registry revision moved. Opt-in — default off keeps the
+            # gate compiled-once (byte-for-byte). Capture fps is fixed for the open source; only the
+            # escalation logic re-arms (the important part for arm-at-runtime).
+            if regate_on_goal_change and goals_revision is not None:
+                rev = getattr(core.goals, "revision", goals_revision)
+                if rev != goals_revision:
+                    spec, gate, banks = _build_gate()
+                    goals_revision = rev
             if stats is not None:
                 stats.frames += 1
                 stats.frames_dropped = dropped[0]
@@ -252,23 +465,77 @@ async def run(
                     on_frame, t, judge_frame, errors=sink_errors, stats=stats, on_health=on_health, health_kind="frame_sink_error"
                 )
 
+            # SLEEP (RuntimeSession.pause): keep capturing + streaming frames to subscribers (the camera
+            # panel stays live) but spend NO gate/judge/incident this tick — a cost-free pause that resumes
+            # instantly. Default (paused=None) is byte-for-byte.
+            if paused is not None and paused():
+                continue
+
             # boundary first: it must see quiet frames too (the episode ends when activity stops)
             if check_boundary is not None:
                 async for incident in _emit_fires(await check_boundary(t=t, inactivity_s=episode_inactivity_s), at=t, from_boundary=True):
                     yield incident
+            # PR 1.4: absence-native fires — coverage loss ("I can't see the baby") + overdue deadlines.
+            # Sync; ride every frame so they fire on quiet frames the gate skips. from_boundary=True marks
+            # that they did NOT pass through perceive_judged (no upstream judge stage in their trace).
+            if check_coverage is not None:
+                async for incident in _emit_fires(check_coverage(t=t, staleness_s=coverage_staleness_s), at=t, from_boundary=True):
+                    yield incident
+            if check_deadlines is not None:
+                async for incident in _emit_fires(check_deadlines(t=t), at=t, from_boundary=True):
+                    yield incident
 
-            decision = gate.evaluate(gate_frame, ts=t)
+            # Feed the latest audio energy so a goal with a WakePolicy can fuse it; None (no audio_source)
+            # leaves the gate byte-for-byte the visual-only path.
+            decision = gate.evaluate(gate_frame, ts=t, energy=audio["energy"])
+
+            # PR 1.3: run edge detectors on the cheap motion/energy signals at native fps. Each emitted
+            # boundary (a rep peak, an acoustic onset) is a distinct occurrence fed to the brain via
+            # perceive_boundary (edge proposes · brain counts) — firing per the goal's accumulate.fire_when
+            # WITHOUT a cloud judge. No banks -> this whole block is skipped (byte-for-byte the pre-PR path).
+            if banks and perceive_boundary is not None:
+                for goal_id, bank in banks.items():
+                    for b in bank.push(t, motion=decision.signal.motion, frame=judge_frame, energy=audio["energy"]):
+                        if stats is not None:
+                            stats.boundaries += 1
+                        fired = perceive_boundary(goal_id, t=b.t)
+                        if fired is not None:
+                            async for incident in _emit_fires([fired], at=b.t):
+                                yield incident
+
+            # PR 1.3: run edge detectors on the cheap motion/energy signals at native fps. Each emitted
+            # boundary (a rep peak, an acoustic onset) is a distinct occurrence fed to the brain via
+            # perceive_boundary (edge proposes · brain counts) — firing per the goal's accumulate.fire_when
+            # WITHOUT a cloud judge. No banks -> this whole block is skipped (byte-for-byte the pre-PR path).
+            if banks and perceive_boundary is not None:
+                for goal_id, bank in banks.items():
+                    for b in bank.push(t, motion=decision.signal.motion, frame=judge_frame, energy=audio["energy"]):
+                        if stats is not None:
+                            stats.boundaries += 1
+                        fired = perceive_boundary(goal_id, t=b.t)
+                        if fired is not None:
+                            async for incident in _emit_fires([fired], at=b.t):
+                                yield incident
             # TODO 1: a brief-action goal's fovea coast forces a judge on a quiet, in-window frame the
             # motion gate would skip (above-Nyquist coverage). No brief goal -> coast is None -> this is
             # byte-for-byte the gate-only path.
             coast_admit = bool(coast and coast.should_process("__coast__", t, float(decision.signal.motion)))
-            if not (decision.escalate or coast_admit):
+            # An audio onset admits a frame the visual gate would skip (off-camera cry / glass break). One-shot:
+            # consumed here so a single onset causes one judge, not a run of them (AcousticOnset hysteresis +
+            # refractory already debounce the signal itself).
+            audio_admit = audio["wake"]
+            audio["wake"] = False
+            if not (decision.escalate or coast_admit or audio_admit):
                 continue  # still / sub-cadence -> no cloud call, no incident
             if stats is not None:
                 stats.escalations += 1
                 stats.judge_calls += 1
+                if audio_admit and not (decision.escalate or coast_admit):
+                    stats.audio_wakes += 1
             if on_health is not None:
-                await _call_sink(on_health, RuntimeHealthEvent("escalation", ts=t, data={"source": gate_source}))
+                cause = "audio" if (audio_admit and not (decision.escalate or coast_admit)) else \
+                    ("both" if (audio_admit and decision.escalate) else ("coast" if coast_admit and not decision.escalate else "motion"))
+                await _call_sink(on_health, RuntimeHealthEvent("escalation", ts=t, data={"source": gate_source, "cause": cause}))
             async for incident in _emit_fires(await core.perceive_judged(judge_frame, gate_source, t=t), at=t):
                 yield incident
     except Exception as exc:
@@ -276,6 +543,16 @@ async def run(
             await _call_sink(on_health, RuntimeHealthEvent("runtime_error", data={"error": repr(exc)}))
         raise
     finally:
+        if audio_task is not None:  # stop the audio pump; a dangling capture thread outlives the run otherwise
+            audio_task.cancel()
+        if autosave_task is not None:
+            autosave_task.cancel()
+        # PR 2.2: one last save on the way out so a clean shutdown loses nothing since the last autosave.
+        if persistence is not None and getattr(core, "save_state", None):
+            try:
+                core.save_state(persistence)
+            except Exception:  # noqa: BLE001 - teardown; a failed final save must not mask the real exit
+                pass
         core.on_trace = _prev_on_trace  # restore — don't leak this run's tracer into the next run(core)
         if on_health is not None:
             await _call_sink(on_health, RuntimeHealthEvent("runtime_ended"))
