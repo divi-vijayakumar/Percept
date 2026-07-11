@@ -124,12 +124,18 @@ class GeminiLiveVision:
     async def judge(self, condition: str, frame: Any, *, roi: Box | None = None, exemplar: Any = None,
                     corrections: dict | None = None, frames: list | None = None, audio: Any = None,
                     context: dict | None = None) -> Verdict:
-        del audio, roi, exemplar, corrections
+        # PR 2.3 honesty: `exemplar` (deictic "is this THE X") and `corrections` (user-asserted
+        # authoritative facts) are now HONORED — silently dropping them produced confidently-wrong
+        # verdicts on vision="gemini-live" with no signal. `roi` is pre-cropped by the caller (as for
+        # GeminiVision) and `audio` is not used as evidence by the spoken-judge (the live model is
+        # audio-OUT); both are honest, documented no-ops here rather than silent correctness cliffs.
+        del audio, roi
         ctx = context or {}
         if ctx.get("process_qa"):  # accumulating-answer question — the spoken twin of GeminiVision._judge_process_qa
             return await self._judge_process_qa(condition, frame, frames, str(ctx.get("running_answer") or ""))
         _, types = _require_genai()
-        parts = self._build_parts(condition, frame, types, frames=frames)
+        parts = self._build_parts(condition, frame, types, frames=frames, exemplar=exemplar,
+                                  corrections=corrections)
         transcript = await self._speak(parts, _SPOKEN_JUDGE, types)
         return parse_spoken_verdict(transcript)
 
@@ -182,15 +188,23 @@ class GeminiLiveVision:
     async def detect_events(self, frames: list, goals: list[Goal]) -> list:
         return []
 
-    def _build_parts(self, condition: str, frame: Any, types_mod, *, frames: list | None = None) -> list:
+    def _build_parts(self, condition: str, frame: Any, types_mod, *, frames: list | None = None,
+                     exemplar: Any = None, corrections: dict | None = None) -> list:
         strip = [f for f in (frames or []) if f is not frame]
         parts: list = [_part_from_frame(f, types_mod) for f in strip]
         parts.append(_part_from_frame(frame, types_mod))
-        if strip:
+        if exemplar is not None:  # deictic grounding: attach the reference image + ask about THIS object
+            parts.append(_part_from_frame(exemplar, types_mod))
+            q = (f'Comparing to the reference exemplar image, is this true about THIS specific object: '
+                 f'"{condition}"? ')
+        elif strip:
             q = (f'These {len(strip) + 1} images are consecutive moments in TIME ORDER (oldest first). '
                  f'Considering how the scene changes, is this true by the latest moment: "{condition}"? ')
         else:
             q = f'Is this true in the image right now: "{condition}"? '
+        if corrections:  # user-asserted authoritative facts (trust over the model's own read)
+            facts = "; ".join(f"{k}={v}" for k, v in corrections.items())
+            q += f"The user has told you these authoritative facts (trust them over your own read): {facts}. "
         parts.append(types_mod.Part(text=q))
         return parts
 

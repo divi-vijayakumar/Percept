@@ -907,6 +907,10 @@ class Percept:
         context: dict | None = None,
     ) -> Verdict:
         process_mode = bool(context and (context.get("process_qa") or context.get("observe_step")))
+        # PR 1.5: a per-goal reference image ("is this THE mug <exemplar>?") — deictic/individuation
+        # grounding the backends already implement but the watch path never supplied. Stable per goal
+        # (set in goal.state), so it rides the goal's cache scope; None (the default) is byte-for-byte.
+        exemplar = goal.state.get("exemplar")
         if frames or audio or process_mode:
             # The strip/audio (escalation) path is rare-by-design and multi-frame; bypass the
             # single-frame cache (its key dHashes ONE frame) so a strip verdict never pollutes — nor is
@@ -915,7 +919,7 @@ class Percept:
             # ``context`` is passed ONLY for process-QA so a non-process strip judge is byte-for-byte.
             extra = {"context": context} if process_mode else {}
             return await self._timed_judge(
-                goal.condition, frame, roi=roi, corrections=corrections or None,
+                goal.condition, frame, roi=roi, exemplar=exemplar, corrections=corrections or None,
                 frames=frames, audio=audio, **extra,
             )
         # A structured key so the FrameHashLayer can ROI-crop + dHash the frame and scope its
@@ -928,7 +932,7 @@ class Percept:
             self.metrics.incr("cache.hit")
             return await self._audit_or_use(goal, frame, roi, corrections, cache_key, hit.verdict)
         verdict = await self._timed_judge(
-            goal.condition, frame, roi=roi, corrections=corrections or None
+            goal.condition, frame, roi=roi, exemplar=exemplar, corrections=corrections or None
         )
         self.cache.store(cache_key, verdict, verdict.confidence)
         return verdict
@@ -953,7 +957,7 @@ class Percept:
             return cached
         self.metrics.incr("cache.audit")
         fresh = await self._timed_judge(
-            goal.condition, frame, roi=roi, corrections=corrections or None
+            goal.condition, frame, roi=roi, exemplar=goal.state.get("exemplar"), corrections=corrections or None
         )
         if fresh.satisfied != cached.satisfied:
             self.metrics.incr("cache.false_serve")  # the cache's analog of false-fire
@@ -1050,6 +1054,23 @@ class Percept:
         decision = await self.conductor.run("speech", utterance, context)
         reply = await self._apply_decision(decision, utterance, frame=frame)
         return TurnResult(route=decision.route, source="conductor", reply=reply)
+
+    async def arm_from_language(self, command: str, *, t: float | None = None) -> Decision:
+        """Author + arm a standing watch from RAW LANGUAGE, WITHOUT executing a spoken reply.
+
+        The explicit ``watch``-verb path, distinct from :meth:`on_speech_endpoint` (which also *answers*
+        the turn by streaming the specialist). A realtime wire has already said "on it", so the conductor's
+        only job here is to author the watchspec; streaming the specialist's frame answer back would poison
+        the held voice session and add seconds of latency. Returns the conductor's :class:`Decision` — its
+        ``say`` is the confirmation, its ``goal_ops`` are what got armed.
+        """
+        now = self.clock() if t is None else t
+        self.note_mention(command, t=now)
+        decision = await self.conductor.run("speech", command, self._turn_context())
+        if decision.goal_ops:
+            self.apply_goal_ops(decision.goal_ops)
+            self.metrics.incr("goals.authored")
+        return decision
 
     async def on_scene_delta(
         self, event: str, context: dict | None = None, *, frame: Any = None
