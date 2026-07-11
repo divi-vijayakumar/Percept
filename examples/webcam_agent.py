@@ -1,58 +1,44 @@
-"""A real-backend "watch X" agent: cv2 webcam -> Gemini vision -> fires on the rising edge.
+"""A real-backend "watch X" agent: webcam -> Gemini vision -> speaks/notifies on the rising edge.
 
-This is the SAME agent as watch_agent.py with one substitution — the eyes. Everything above
-the perception seam (the goal, the three-state gate, the rising-edge firing) is identical;
-only `vision="fake"` becomes `vision="gemini"` and the frames become real JPEG bytes.
+The batteries-included path: `percept.run` OWNS the camera → tier-0 gate → judge → incident lifecycle.
+You bring a goal and a sink; Percept brings the capture loop, the motion gate (only spends a cloud
+call when something moves), the three-state gate (fires once on the rising edge, ASKs when unsure),
+and a durable Incident (with a pre-roll snippet) per fire.
 
-    ┌─ DO NOT run this without a camera + key. It is a correct, copy-pasteable template. ─┐
+    ┌─ Needs a camera + key. This is a correct, copy-pasteable template. ─┐
 
 Requirements:
 
-    pip install "percept-vision[gemini]" opencv-python
-    export GEMINI_API_KEY=...        # or GOOGLE_API_KEY
+    pip install "percept-vision[gemini,runtime]"   # gemini judge + opencv camera capture
+    export GEMINI_API_KEY=...                        # or GOOGLE_API_KEY
 
 Then:
 
     python3 examples/webcam_agent.py
 
-Frame format for the gemini/claude backends: image bytes, or a (media_type, bytes) pair.
-We encode each BGR webcam frame to JPEG and pass ("image/jpeg", <bytes>) — the explicit,
-unambiguous form. (The fake backend, by contrast, takes a plain string token.)
+Source URIs `percept.run` accepts: "webcam:0" / "webcam://0" (a local camera), an "rtsp://..." URL,
+or a video file path. No manual cv2 loop, no frame encoding — the runtime does it.
 
-Cost / latency note: each judged frame is one ~1s cloud VLM call per active goal. Sample
-slowly (e.g. ~1 fps, as below) rather than judging every camera frame — the gate fires once
-on the rising edge regardless of how densely you sample.
+Add sound with two words: `audio_source="mic:0"` (needs the [mic] extra) turns this into a fused
+audio+video watch — an off-camera sound can wake the gate, and a `modality="fused"` goal hears it.
 """
 
 import asyncio
 import os
 
-import cv2  # pip install opencv-python
-
 import percept
 from percept.adapters import Goal
 
 
-def encode_frame(bgr) -> tuple[str, bytes]:
-    """Encode an OpenCV BGR frame to the (media_type, bytes) pair the VLM backends accept."""
-    ok, buf = cv2.imencode(".jpg", bgr)
-    if not ok:
-        raise RuntimeError("cv2.imencode failed to encode the frame")
-    return ("image/jpeg", buf.tobytes())
-
-
 async def main() -> None:
-    # Real-backend example: degrade to a one-line instruction (never a stack trace) when the key
-    # is absent. For a fully offline run with no keys, see examples/watch_agent.py (fake backend).
+    # Real-backend example: degrade to a one-line instruction (never a stack trace) when the key is
+    # absent. For a fully offline run with no keys, see examples/watch_agent.py (fake backend).
     if not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")):
         print('Set GEMINI_API_KEY (or GOOGLE_API_KEY) to run the live webcam agent, '
               'or try the offline examples/watch_agent.py (no keys).')
         return
 
-    # Resolve the real backend BY NAME via the registry. Needs percept-vision[gemini] +
-    # GEMINI_API_KEY (or GOOGLE_API_KEY). discover_plugins=False keeps resolution to built-ins.
     agent = percept.Percept.create(vision="gemini", discover_plugins=False)
-
     agent.add_goal(
         Goal(
             id="caffeine",
@@ -61,34 +47,15 @@ async def main() -> None:
         )
     )
 
-    cap = cv2.VideoCapture(0)  # default webcam
-    if not cap.isOpened():
-        raise RuntimeError("Could not open webcam (device 0). Is a camera connected?")
-
-    print("Watching... (Ctrl-C to stop)")
+    print("Watching webcam:0 ... (Ctrl-C to stop)")
+    # percept.run owns capture + gate + judge; it YIELDS an Incident on each rising-edge fire. The
+    # motion gate means a still scene spends no cloud calls; the three-state gate means one fire per
+    # rising edge (no nagging) and an ASK instead of a confident-wrong alert.
     try:
-        while True:
-            ok, bgr = cap.read()
-            if not ok:
-                # Transient read failure — skip this tick rather than crash.
-                await asyncio.sleep(1.0)
-                continue
-
-            frame = encode_frame(bgr)  # ("image/jpeg", bytes)
-
-            # YOU feed frames — Percept has no built-in capture. The cognition layer below this
-            # call is identical to the offline example; only the eyes (and frame type) changed.
-            events = await agent.perceive_judged(frame, source="camera")
-            for ev in events:  # FireEvent(goal_id, action, text, ...); action is "fire" or "ask"
-                print(f"[{ev.action.upper()}] {ev.goal_id}: {ev.text}")
-
-            # Sample ~1 fps: each judged frame is a cloud VLM call. The rising-edge gate means
-            # slower sampling does NOT cause missed or duplicate fires for a sustained condition.
-            await asyncio.sleep(1.0)
+        async for incident in percept.run(agent, source="webcam:0", on_incident=None):
+            print(f"[FIRE] {incident.concern_id}: {incident.message}")
     except KeyboardInterrupt:
         print("\nStopped.")
-    finally:
-        cap.release()
 
 
 if __name__ == "__main__":

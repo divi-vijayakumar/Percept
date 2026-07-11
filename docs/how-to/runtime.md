@@ -82,6 +82,25 @@ A goal's `state` carries three orthogonal levers (the conductor can author them 
 > **Assistant-class, not a guarantee.** The runtime *alerts a human who stays responsible*. It is not a
 > certified safety/detection system on a clock it can't promise. See the fall scenario for the disclaimer.
 
+## Beyond fires — what else `run()` surfaces
+
+`run()` isn't only rising-edge fires. These ride the same loop, opt-in per goal (default off → unchanged):
+
+- **Listen too (fused audio).** `run(agent, source="webcam:0", audio_source="mic:0")` fills the audio
+  window so a `modality="fused"` goal judges sound + vision together, and an off-camera sound onset can
+  escalate a frame the motion gate would skip. Extra: `[mic]`. See [audio-modality.md](../reference/audio-modality.md).
+- **Absence-native fires.** A goal with `state["miss_cost"]="severe"` fires a **coverage-loss** incident
+  when it stops being observed ("I can't see the stove") — perception-robust (fires on the *lack* of
+  evidence). A goal with `state["rearm"]="deadline", state["deadline_s"]=…` fires **overdue** when an
+  expected event doesn't happen in time. Both flow through `on_incident`.
+- **Cost / escalation metering.** Pass `stats=RuntimeStats()` for frame/escalation/judge/fire counters;
+  `agent.metrics` carries the `seen→gated→judged→refused→fired` funnel plus per-judge **token counts**
+  (each `Verdict.usage`, mirrored to OpenTelemetry via the `[otel]` extra).
+- **Deictic grounding (`exemplar`).** Give a goal a reference image via `state["exemplar"]=(mime, bytes)`
+  and the judge answers "is this **the** specific X?" against it — individuation, not just category.
+- **Drive it live.** Wrap the watch in a `RuntimeSession` to arm goals, ask frame-grounded questions,
+  and pause/mute at runtime — the command seam: [command-seam.md](../reference/command-seam.md).
+
 ## Webhook sink
 
 ```python

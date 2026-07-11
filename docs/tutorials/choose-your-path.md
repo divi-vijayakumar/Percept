@@ -7,7 +7,9 @@ until you need it.
 | I want to… | Start here | Install | Ignore for now |
 |---|---|---|---|
 | Build a simple watcher (no keys) | [`examples/watch_agent.py`](../../examples/watch_agent.py) | `pip install percept-vision` | edge, harness, benchmarks |
-| Watch a webcam / video | [`examples/webcam_agent.py`](../../examples/webcam_agent.py) | `[runtime]` + a backend (`[gemini]`/`[claude]`) | JS edge, rhythm |
+| Watch a webcam / video / RTSP | **`percept.run(source="webcam:0")`** — [runtime how-to](../how-to/runtime.md), [`examples/webcam_agent.py`](../../examples/webcam_agent.py) | `[runtime]` + a backend (`[gemini]`/`[claude]`) | JS edge, rhythm |
+| Watch **and listen** (fused audio) | `run(audio_source="mic:0")` — [audio modality](../reference/audio-modality.md) | `[runtime,mic]` + a backend | JS edge, rhythm |
+| Drive a live watch (arm/ask/pause by voice or code) | [Command seam](../reference/command-seam.md) — `RuntimeSession` | `[runtime]` + a backend | — |
 | Watch my screen | [Screenshare how-to](../how-to/screenshare.md) | `[runtime]` (+ `[screen]`) | camera/benchmark internals |
 | Use a real VLM | [Backends reference](../reference/backends.md) | `[gemini]` or `[claude]` | harness internals |
 | Run on-device edge gating | [Edge parity reference](../reference/edge-parity.md) | `npm install percept-edge` | process-QA, benchmark methodology |

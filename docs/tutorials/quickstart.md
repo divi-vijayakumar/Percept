@@ -137,8 +137,51 @@ You can also select backends per-seam via env vars without touching code
 
 ---
 
+## Watch a live source — the batteries-included path
+
+The example above calls `perceive_judged` frame-by-frame so you can see the gate work. For a **real**
+watch agent you don't write a capture loop — **`percept.run` owns it**: it opens the source, runs the
+tier-0 motion gate (so a still scene spends no cloud calls), judges, and **yields an `Incident` on each
+rising-edge fire**.
+
+```bash
+pip install "percept-vision[gemini,runtime]"   # + a camera; runtime = opencv capture
+export GEMINI_API_KEY=...
+```
+
+```python
+import asyncio
+import percept
+from percept.adapters import Goal
+
+
+async def main():
+    agent = percept.Percept.create(vision="gemini", discover_plugins=False)
+    agent.add_goal(Goal(id="milk", condition="the milk is boiling over",
+                        say="Heads up — the milk is boiling over!"))
+
+    # source: "webcam:0" | an "rtsp://…" URL | a video file path. No manual cv2 loop, no frame encoding.
+    async for incident in percept.run(agent, source="webcam:0"):
+        print(f"[FIRE] {incident.concern_id}: {incident.message}")
+
+asyncio.run(main())
+```
+
+That's the whole agent. `run` also takes `on_incident=` (a notification sink — webhook/SMS/log),
+`on_ask=` (low-confidence refusals), `audio_source="mic:0"` (fused audio+video — hear a kettle whistle,
+not just see steam), and returns `RuntimeStats` for cost/escalation counters. Full options:
+[how-to/runtime.md](../how-to/runtime.md).
+
+To **drive** a running watch — arm goals by voice, ask "what do you see?", pause/mute it — wrap it in a
+`RuntimeSession` (the command seam): [reference/command-seam.md](../reference/command-seam.md).
+
+---
+
 ## Where to go next
 
+- **[how-to/runtime.md](../how-to/runtime.md)** — `percept.run` in full: sources, sinks, audio, tuning.
+- **[reference/command-seam.md](../reference/command-seam.md)** — `RuntimeSession`: arm/ask/pause/mute a
+  live watch; the interface voice / programmatic / text apps build on.
 - **[concepts.md](../explanation/concepts.md)** — the three-state gate, rising-edge firing, BehaviorProgram vs
   PerceptionSpec, edge detectors, and the escalation ladder.
 - **[backends.md](../reference/backends.md)** — install extras, keys, env-var selection, and swapping backends.

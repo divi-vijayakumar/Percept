@@ -28,9 +28,11 @@ pip install "percept-vision[claude]"   # then: export ANTHROPIC_API_KEY=...
 
 The package is `percept-vision`; the import is `import percept`. Python >= 3.10.
 
-## 2. The minimal agent
+## 2. The real watch agent — `percept.run` owns the capture loop
 
-Three steps — create, add a goal, run the perceive loop:
+**Default path.** `percept.run` opens the source, runs the tier-0 motion gate (a still scene spends no
+cloud calls), judges, and **yields an `Incident` on each rising-edge fire**. You do NOT write a capture
+loop. Needs `[runtime]` (opencv) + a backend + a key.
 
 ```python
 import asyncio
@@ -38,26 +40,43 @@ import percept
 from percept.adapters import Goal
 
 async def main():
-    # vision="fake" (default, offline) | "gemini" | "claude". discover_plugins=False skips plugin lookup.
-    agent = percept.Percept.create(vision="fake", discover_plugins=False)
-
+    agent = percept.Percept.create(vision="gemini", discover_plugins=False)
     agent.add_goal(Goal(
         id="kettle",
         condition="the kettle has finished boiling",   # plain language — the VLM judges this
-        say="The kettle's done!",                       # what to surface when it fires
+        say="The kettle's done!",                       # spoken/surfaced when it fires
     ))
-
-    for frame in source:                                 # your frame source (see §4)
-        for ev in await agent.perceive_judged(frame, t=now()):
-            if ev.action == "fire":
-                handle(ev.text)
-            elif ev.action == "ask":
-                clarify(ev.text)                         # low-confidence: ask, don't guess
+    # source: "webcam:0" | an "rtsp://…" URL | a video file path. Add audio_source="mic:0" to also LISTEN.
+    async for incident in percept.run(agent, source="webcam:0", on_incident=notify):
+        print(incident.concern_id, incident.message)
 
 asyncio.run(main())
 ```
 
+`run` also takes `on_ask=` (low-confidence refusals), `on_frame=` (a live-feed hook), `stats=RuntimeStats()`
+(cost/escalation counters), and `audio_source="mic:0"` (fused audio+video). To **drive** a running watch —
+arm goals by voice, ask "what do you see?", pause/mute — wrap it in a `RuntimeSession` (the command seam):
+`docs/reference/command-seam.md`.
+
+## 2b. Offline / test path (no keys) — `perceive_judged` + FakeVision
+
+For deterministic tests you control the *perception* by hand: `FakeVision` maps a string token to a
+scripted `Verdict`, and you drive the cognition layer frame-by-frame. This is the "bring-your-own-frames"
+low-level path — use it for tests, not for a real capture loop.
+
+```python
+agent = percept.Percept.create(vision="fake", discover_plugins=False)
+agent.add_goal(Goal(id="kettle", condition="the kettle has finished boiling", say="The kettle's done!"))
+for token, t in [("calm", 1.0), ("boiling", 2.0)]:      # scripted tokens, not a live camera
+    for ev in await agent.perceive_judged(token, t=t):
+        if ev.action == "fire": handle(ev.text)
+        elif ev.action == "ask": clarify(ev.text)        # low-confidence: ask, don't guess
+```
+
 Confirmed signatures (from `packages/percept-vision/percept/agent.py` and `adapters.py`):
+
+- `percept.run(core, *, source, on_incident=None, on_ask=None, on_frame=None, audio_source=None,
+  stats=None, ...) -> AsyncIterator[Incident]` — the batteries-included watch (async generator).
 
 - `Percept.create(*, vision=None, discover_plugins=True, ...)` — `vision` is a backend **name**
   (`"fake"`/`"gemini"`/`"claude"`) or an adapter instance. Pass `discover_plugins=False` for the

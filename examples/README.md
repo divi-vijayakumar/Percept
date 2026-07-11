@@ -63,8 +63,9 @@ python3 examples/webcam_agent.py
 
 Key points:
 
-- **You feed frames.** Percept has no built-in capture; the example's `cv2.VideoCapture(0)`
-  loop is yours to own. The cognition layer below `perceive_judged(...)` is unchanged.
+- **`percept.run` owns capture.** Point it at `source="webcam:0"` / an RTSP URL / a video file and
+  it drives the camera → gate → judge → incident loop for you (add `audio_source="mic:0"` for sound).
+  Dropping to a manual `perceive_judged(...)` frame loop is the advanced "bring-your-own-capture" path.
 - **Frame format** for `gemini`/`claude` is image bytes or a `(media_type, bytes)` pair. The
   example encodes each BGR frame with `cv2.imencode(".jpg", bgr)` and passes
   `("image/jpeg", buf.tobytes())`.
