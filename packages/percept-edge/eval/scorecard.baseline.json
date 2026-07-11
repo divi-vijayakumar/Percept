@@ -1,0 +1,63 @@
+{
+  "recall": 1,
+  "precision": 1,
+  "leakRate": 0,
+  "overMaskRate": 0,
+  "confusion": {
+    "tp": 17,
+    "fp": 0,
+    "fn": 0,
+    "tn": 7
+  },
+  "perCategory": {
+    "pii-id": {
+      "recall": 1,
+      "precision": 1,
+      "leakRate": 0,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0
+    },
+    "payment": {
+      "recall": 1,
+      "precision": 1,
+      "leakRate": 0,
+      "tp": 2,
+      "fp": 0,
+      "fn": 0
+    },
+    "financial": {
+      "recall": 1,
+      "precision": 1,
+      "leakRate": 0,
+      "tp": 3,
+      "fp": 0,
+      "fn": 0
+    },
+    "credential": {
+      "recall": 1,
+      "precision": 1,
+      "leakRate": 0,
+      "tp": 6,
+      "fp": 0,
+      "fn": 0
+    },
+    "document-id": {
+      "recall": 1,
+      "precision": 1,
+      "leakRate": 0,
+      "tp": 2,
+      "fp": 0,
+      "fn": 0
+    },
+    "sexual": {
+      "recall": 1,
+      "precision": 1,
+      "leakRate": 0,
+      "tp": 1,
+      "fp": 0,
+      "fn": 0
+    }
+  },
+  "actionMismatches": []
+}

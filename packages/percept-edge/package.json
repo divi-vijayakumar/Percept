@@ -1,11 +1,11 @@
 {
   "name": "percept-edge",
-  "version": "0.6.0",
-  "description": "Research preview — on-device reactive edge for the Percept SDK: VAD + motion gate + the WatchSpec/Tier0Signal wire-contract.",
+  "version": "0.7.0",
+  "description": "Research preview — on-device reactive edge for the Percept SDK: VAD + motion gate + on-device multi-modal PrivacyScreen + the WatchSpec/Tier0Signal wire-contract.",
   "type": "module",
   "license": "Apache-2.0",
   "author": "Divi <divi@velvee.ai>",
-  "keywords": ["percept", "vision", "edge", "on-device", "motion-gate", "vad", "wire-contract"],
+  "keywords": ["percept", "vision", "edge", "on-device", "motion-gate", "vad", "privacy", "pii", "wire-contract"],
   "main": "src/index.js",
   "exports": {
     ".": "./src/index.js",
@@ -14,13 +14,18 @@
     "./vad": "./src/vad.js",
     "./edge": "./src/edge.js",
     "./skills": "./src/skills.js",
-    "./pose": "./src/pose.js"
+    "./pose": "./src/pose.js",
+    "./privacy": "./src/privacy.js",
+    "./privacy-text": "./src/privacy-text.js",
+    "./privacy-image": "./src/privacy-image.js",
+    "./privacy-audio": "./src/privacy-audio.js"
   },
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
-    "test": "vitest run"
+    "test": "vitest run",
+    "eval": "node eval/run.mjs"
   },
   "files": [
     "src",
