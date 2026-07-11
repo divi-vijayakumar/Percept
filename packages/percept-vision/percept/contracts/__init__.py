@@ -18,7 +18,7 @@ a thin re-export shim so every existing ``from percept.adapters import X`` keeps
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, Awaitable, Callable, Literal, Protocol, runtime_checkable
 
 # ---------------------------------------------------------------------------
 # Global contract version + negotiation
@@ -28,7 +28,9 @@ from typing import Any, Literal, Protocol, runtime_checkable
 #: Bump the MAJOR on any breaking change to a frozen shape; MINOR for additive (new optional
 #: field / new DTO); PATCH for docs/non-wire tweaks. This is distinct from ``WatchSpec.version``
 #: (a wire integer kept for byte-for-byte payload compat).
-CONTRACT_VERSION = "1.2.0"  # 1.2: + Verdict.running_answer (process-QA, optional, gate-irrelevant, back-compat)
+CONTRACT_VERSION = "1.3.0"  # 1.3: + Verdict.usage/.events (+ClipEvent), Concern.fps/verify_only/version,
+#                                   Tier0Signal.energy (all optional, gate-irrelevant, back-compat)
+# 1.2: + Verdict.running_answer (process-QA, optional, gate-irrelevant, back-compat)
 # 1.1: + WatchCondition.cadence_s/gate_on + Incident.message (optional, back-compat)
 
 
@@ -93,6 +95,21 @@ class Observation:
     attrs: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class ClipEvent:
+    """One timestamped event a clip judge saw inside the judged window (1.3).
+
+    Times are seconds RELATIVE to the start of the judged clip (not wall-clock), because that is
+    what a video-native model returns. ``t_end`` is ``None`` for an instantaneous event; ``label``
+    is the model's short description (e.g. ``"item concealed in bag"``). These are the incident-card
+    evidence for a clip verdict — carried on :attr:`Verdict.events`.
+    """
+
+    t_start: float
+    t_end: float | None = None
+    label: str = ""
+
+
 @dataclass
 class Verdict:
     """The firing-contract return: is the plain-language condition true right now?"""
@@ -110,6 +127,13 @@ class Verdict:
     # process-QA leaves this "" and reproduces today's firing byte-for-byte. NOT a string-join: it is the
     # model's rewritten summary, threaded per-concern via ConcernContext.running_answer.
     running_answer: str = ""
+    # Token/cost accounting for THIS judge call (1.3). GATE-IRRELEVANT and optional: a backend that
+    # reports nothing leaves ``{}`` and reproduces today's behaviour byte-for-byte. Suggested keys
+    # (read by ``observability.judge_usage``): ``input_tokens`` / ``output_tokens`` / ``cost_usd``.
+    usage: dict[str, Any] = field(default_factory=dict)
+    # Clip judging (1.3): the timestamped events the judge saw inside the judged window, clip-relative
+    # seconds (see :class:`ClipEvent`). Empty for single-frame/strip judges — additive and defaulted.
+    events: list[ClipEvent] = field(default_factory=list)
 
 
 # who said a fact, used for provenance + freshness reasoning in the core
@@ -239,6 +263,16 @@ class Concern:
     # it to ``Vision.judge(..., frames=...)``. Both default off, so a single-frame concern is unchanged.
     clip: bool = False
     window_s: float | None = None
+    # 1.3 — native-clip judging knobs, both inert unless ``wants_clip``: ``fps`` is the sampling rate a
+    # video-native judge should read the clip at (None -> backend default; 1fps suits behaviour concerns,
+    # sub-second events need more). ``verify_only`` bounds cost: the clip runs ONLY to confirm a candidate
+    # FIRE/ASK from the cheaper rungs (single/strip), never as the first look.
+    fps: float | None = None
+    verify_only: bool = False
+    # 1.3 — the version of THIS authored concern (the "versioned detection asset"), so a condition
+    # library can roll a concern forward/back and slice metrics per version. Not the contract semver
+    # (``CONTRACT_VERSION``) and not the wire integer (``WatchSpec.version``).
+    version: int = 1
 
     @property
     def wants_clip(self) -> bool:
@@ -378,6 +412,10 @@ class Tier0Signal:
     structural: float
     semantic: float
     ts: float
+    # 1.3 — the audio-energy channel value (mean-of-squares of float PCM in [-1,1], so 0..1) when this
+    # signal came from an audio/frame-free ingest path (edge ``processAudio``). ``None`` means "not an
+    # audio-carrying signal" — distinct from 0.0 (measured silence) — so the frame path is unchanged.
+    energy: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -591,6 +629,117 @@ class TTS(Protocol):
     def flush(self) -> None: ...
 
 
+@dataclass(frozen=True)
+class UtteranceEvent:
+    """A complete spoken user turn, endpointed by a :class:`VoiceTransport` (with AEC applied).
+
+    ``text`` is the transcript when the transport did its own STT (Pipecat/LiveKit, or a speech-to-speech
+    model); ``audio`` carries raw PCM when the transport ships audio for the brain to transcribe. At least
+    one is set. ``t`` is the transport clock at the endpoint."""
+
+    text: str | None = None
+    audio: "AudioFrame | None" = None
+    t: float | None = None
+
+
+@dataclass(frozen=True)
+class Reply:
+    """The brain's answer handed back to a :class:`VoiceTransport`. ``text`` for a component transport to
+    synthesize (TTS); ``audio`` when the brain already holds speech (e.g. from a live model). Both may be
+    ``None`` for a speech-to-speech transport that already spoke on its own."""
+
+    text: str | None = None
+    audio: "AudioFrame | None" = None
+
+
+@runtime_checkable
+class VoiceTransport(Protocol):
+    """The bidirectional VOICE seam: whoever owns mic + speaker, acoustic echo cancellation (AEC),
+    voice-activity endpointing, and barge-in (Pipecat, LiveKit, browser WebRTC, a speech-to-speech
+    model). Distinct from the chunk-level :class:`STT`/:class:`TTS` *component* seams — a transport owns
+    the whole audio *pipe*.
+
+    Percept never hand-rolls this (no AEC in Python). A client implements this Protocol against a real
+    transport and hands it to :meth:`percept.runtime.RuntimeSession.attach_transport`, which wires it to
+    cognition (endpointed utterance -> frame-grounded turn -> streamed reply; barge-in -> interrupt).
+
+    Two archetypes, one interface:
+      * component (Pipecat/LiveKit + STT/TTS): delivers ``text``; :meth:`say` synthesizes the reply.
+      * speech-to-speech (Gemini Live, OpenAI Realtime): its own model hears + speaks; the brain's role is
+        to expose command tools (:meth:`register_tool`), keep the wire GROUNDED (:meth:`sync_state`), and
+        speak proactive fires (:meth:`say`). The wire is not an independent oracle — it answers reactive
+        questions from what the brain has told it, not from raw frames alone.
+
+    **Resume is transparent.** A real transport's underlying session may end + reconnect (a realtime model
+    caps duration; context compacts). Across an internal resume the transport MUST silently re-establish
+    registered tools, the frame provider, and the last :meth:`sync_state` — the caller sees ONE continuous
+    session and never re-registers anything. All registration methods are therefore idempotent.
+    """
+
+    async def start(self) -> None:
+        """Open the transport (room / PeerConnection / mic). Idempotent."""
+        ...
+
+    async def stop(self) -> None:
+        """Tear the transport down. MUST NOT raise (teardown path)."""
+        ...
+
+    def on_utterance(self, cb: "Callable[[UtteranceEvent], Awaitable[None] | None]") -> None:
+        """Register the up-channel sink for a complete (AEC'd, endpointed) user turn. Sync or async cb."""
+        ...
+
+    def on_barge_in(self, cb: "Callable[[], Awaitable[None] | None]") -> None:
+        """Register a sink fired when the user starts speaking during playout (-> ``interrupt``)."""
+        ...
+
+    def on_event(self, cb: "Callable[[dict], Awaitable[None] | None]") -> None:
+        """Optional telemetry sink: ``{"kind": "agent_reply"|"partial"|"error"|..., ...}``. A
+        speech-to-speech transport surfaces what it SAID here so the brain can log + arm goals."""
+        ...
+
+    def on_user_speaking(self, cb: "Callable[[bool], Awaitable[None] | None]") -> None:
+        """Register an up-channel signal that the user's turn started (``True``) / ended (``False``). The
+        brain uses it to time proactive fires (interrupt vs. queue vs. drop) and to price ``SILENT``
+        correctly during a live conversation — a fire mid-sentence, or stale, is worse than silence."""
+        ...
+
+    def on_transcript(self, cb: "Callable[[str], Awaitable[None] | None]") -> None:
+        """Register an up-channel sink for the user's turn TRANSCRIPT (a realtime model emits these
+        natively — this reads a field you already pay for, it is NOT adding STT). LOW priority: the brain
+        mines it for evidence ("that's my daughter Maya") + latent intent; nobody is waiting on it."""
+        ...
+
+    async def say(self, reply: "Reply", *, verbatim: bool = False) -> None:
+        """Deliver the brain's line (a reply, or a proactive fire). ``verbatim=False`` (default) = CONVEY:
+        the transport may re-render the intent in its own voice (all a speech-to-speech wire can reliably
+        do). ``verbatim=True`` requests the EXACT wording — a **capability a transport may not honor**
+        (an S2S model best-efforts it; a TTS transport guarantees it). Policy-exact wording that MUST be
+        verbatim should also ride the act channel (``on_incident`` records the message verbatim)."""
+        ...
+
+    async def sync_state(self, summary: str) -> None:
+        """Push a compact BRAIN-STATE summary into the transport's context WITHOUT triggering a response
+        (armed goals, recent evidence labels, last fires). Keeps a speech-to-speech wire's reactive answers
+        coherent with the brain — so "do you see my coffee?" agrees with a caffeine fire 90s ago — and
+        makes any drift in the wire's own memory harmless. Idempotent; re-pushed transparently on resume."""
+        ...
+
+    async def interrupt(self) -> None:
+        """Stop the current playout (the downstream half of barge-in). Idempotent."""
+        ...
+
+    def set_frame_provider(self, provider: "Callable[[], Any]") -> None:
+        """Give the transport a pull for the current visual frame (``('image/jpeg', bytes)`` | None) so a
+        speech-to-speech model can attach it per turn (frame-grounded 'what do you see?')."""
+        ...
+
+    def register_tool(self, name: str, schema: dict,
+                      handler: "Callable[[dict], Awaitable[dict] | dict]") -> None:
+        """Expose a tool (e.g. ``arm_goal``) to a transport whose model can call tools. Best-effort: a
+        transport that can't host tools drops it and the brain routes tool intent via the conductor."""
+        ...
+
+
 @runtime_checkable
 class Identity(Protocol):  # Phase 4
     def match(self, obs: Observation, known: list) -> str | None:
@@ -612,6 +761,7 @@ __all__ = [
     # DTOs
     "Box",
     "Observation",
+    "ClipEvent",
     "Verdict",
     "Provenance",
     "Attribute",
@@ -643,6 +793,9 @@ __all__ = [
     "Conductor",
     "STT",
     "TTS",
+    "UtteranceEvent",
+    "Reply",
+    "VoiceTransport",
     "Identity",
     "Persistence",
 ]

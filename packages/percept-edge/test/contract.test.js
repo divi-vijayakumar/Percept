@@ -206,7 +206,7 @@ describe("WatchCondition.detectors (the brain's edge-detector selection)", () =>
 });
 
 describe("Tier0Signal contract", () => {
-  it("makeTier0Signal has exactly { motion, structural, semantic, ts }", () => {
+  it("makeTier0Signal has exactly { motion, structural, semantic, ts, energy }", () => {
     const s = makeTier0Signal({
       motion: 0.5,
       structural: 0,
@@ -214,12 +214,14 @@ describe("Tier0Signal contract", () => {
       ts: 123.5,
     });
     expect(Object.keys(s).sort()).toEqual([
+      "energy",
       "motion",
       "semantic",
       "structural",
       "ts",
     ]);
-    expect(s).toEqual({ motion: 0.5, structural: 0, semantic: 0, ts: 123.5 });
+    // energy defaults null (1.3): "not an audio-carrying signal", distinct from 0 = silence
+    expect(s).toEqual({ motion: 0.5, structural: 0, semantic: 0, ts: 123.5, energy: null });
   });
 
   it("round-trips through JSON via parseTier0Signal", () => {
@@ -231,6 +233,22 @@ describe("Tier0Signal contract", () => {
     expect(() =>
       parseTier0Signal('{"motion":0.1,"structural":0,"ts":1.0}')
     ).toThrow(ContractError); // no semantic
+  });
+
+  it("energy (1.3) round-trips, defaults null on a 1.2-era payload, rejects junk", () => {
+    // an audio-ingest signal carries its energy
+    const s = makeTier0Signal({ ts: 5.0, energy: 0.031 });
+    expect(parseTier0Signal(JSON.stringify(s)).energy).toBe(0.031);
+    // measured silence (0) is preserved, not coerced to null
+    expect(makeTier0Signal({ ts: 5.0, energy: 0 }).energy).toBe(0);
+    // a pre-1.3 payload (no energy key) parses unchanged -> energy null
+    const old = parseTier0Signal('{"motion":0.1,"structural":0,"semantic":0,"ts":1.0}');
+    expect(old.energy).toBe(null);
+    // junk is rejected on both paths
+    expect(() => makeTier0Signal({ ts: 1, energy: "loud" })).toThrow(ContractError);
+    expect(() =>
+      parseTier0Signal('{"motion":0,"structural":0,"semantic":0,"ts":1,"energy":"loud"}')
+    ).toThrow(ContractError);
   });
 });
 
@@ -287,8 +305,8 @@ describe("topology-B wire messages — EdgeCapabilities + BoundaryReport", () =>
 });
 
 describe("CONTRACT_VERSION", () => {
-  it("is the 1.1.0 semver twin of the Python contract version", () => {
-    expect(CONTRACT_VERSION).toBe("1.1.0");
+  it("is the 1.3.0 semver twin of the Python contract version", () => {
+    expect(CONTRACT_VERSION).toBe("1.3.0");
   });
 });
 

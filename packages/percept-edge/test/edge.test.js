@@ -47,8 +47,9 @@ describe("Edge — WatchSpec down / Tier0Signal up wired loop", () => {
     const sig = edge.processFrame(moved); // big motion -> escalate
 
     expect(sig).not.toBeNull();
-    // Field set is exactly the frozen contract.
+    // Field set is exactly the frozen contract (energy joined in 1.3, null on the frame path).
     expect(Object.keys(sig).sort()).toEqual([
+      "energy",
       "motion",
       "semantic",
       "structural",
@@ -57,6 +58,7 @@ describe("Edge — WatchSpec down / Tier0Signal up wired loop", () => {
     expect(sig.motion).toBeGreaterThan(0.3);
     expect(sig.structural).toBe(0);
     expect(sig.semantic).toBe(0);
+    expect(sig.energy).toBe(null); // frame path carries no audio energy
     expect(typeof sig.ts).toBe("number");
 
     // It was emitted up the channel and is a valid wire Tier0Signal.
@@ -226,7 +228,7 @@ describe("Edge — skill banks + the per-event Boundary up-channel (Option 2)", 
 
     expect(boundaries).toHaveLength(4); // sparse events (per rep)
     expect(signals.length).toBeGreaterThan(0); // the high-motion frames also cleared the gate
-    expect(signals.every((s) => Object.keys(s).sort().join() === "motion,semantic,structural,ts")).toBe(true);
+    expect(signals.every((s) => Object.keys(s).sort().join() === "energy,motion,semantic,structural,ts")).toBe(true);
   });
 
   it("advertises its registered skills (the handshake basis)", () => {

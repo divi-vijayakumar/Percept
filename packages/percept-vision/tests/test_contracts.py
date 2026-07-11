@@ -8,6 +8,7 @@ from percept.contracts import (
     CONTRACT_VERSION,
     AudioFrame,
     Box,
+    ClipEvent,
     Concern,
     Consequence,
     ContractVersionMismatch,
@@ -18,6 +19,7 @@ from percept.contracts import (
     IncidentSnippet,
     Schedule,
     Subject,
+    Tier0Signal,
     TrackingBehavior,
     Verdict,
     WatchCondition,
@@ -173,6 +175,62 @@ class TestConcernFromGoal(unittest.TestCase):
         self.assertFalse(Concern(id="c", identity=ident, condition="c", say="s", window_s=0.0).wants_clip)
 
 
+class TestContract130Additions(unittest.TestCase):
+    """1.3 additive fields: every one defaults inert, so a 1.2-shaped construction is unchanged."""
+
+    def test_verdict_usage_defaults_empty(self):
+        v = Verdict(satisfied=True, confidence=0.8)
+        self.assertEqual(v.usage, {})
+        self.assertEqual(v.events, [])
+
+    def test_verdict_usage_independent_dicts(self):
+        a = Verdict(satisfied=True, confidence=0.5)
+        b = Verdict(satisfied=True, confidence=0.5)
+        a.usage["input_tokens"] = 100
+        self.assertEqual(b.usage, {})  # default_factory, not shared
+
+    def test_verdict_carries_usage_and_events(self):
+        v = Verdict(
+            satisfied=True,
+            confidence=0.9,
+            usage={"input_tokens": 258, "output_tokens": 40, "cost_usd": 0.002},
+            events=[ClipEvent(t_start=4.0, t_end=7.5, label="item concealed in bag")],
+        )
+        self.assertEqual(v.usage["input_tokens"], 258)
+        self.assertEqual(v.events[0].label, "item concealed in bag")
+
+    def test_clip_event_defaults_and_frozen(self):
+        e = ClipEvent(t_start=2.0)
+        self.assertIsNone(e.t_end)  # instantaneous event
+        self.assertEqual(e.label, "")
+        with self.assertRaises(Exception):
+            e.t_start = 3.0  # frozen
+
+    def test_concern_clip_knobs_default_inert(self):
+        c = Concern.from_goal(Goal(id="g", condition="x", say="y"))
+        self.assertIsNone(c.fps)
+        self.assertFalse(c.verify_only)
+        self.assertEqual(c.version, 1)
+
+    def test_concern_clip_knobs_declared(self):
+        ident = Subject(kind="entity", ref="x")
+        c = Concern(
+            id="a", identity=ident, condition="c", say="s",
+            clip=True, window_s=22.0, fps=1.0, verify_only=True, version=3,
+        )
+        self.assertTrue(c.wants_clip)
+        self.assertEqual(c.fps, 1.0)
+        self.assertTrue(c.verify_only)
+        self.assertEqual(c.version, 3)
+
+    def test_tier0signal_energy_default_none(self):
+        # a 1.2-shaped positional construction is unchanged; None != 0.0 (measured silence)
+        s = Tier0Signal(0.5, 0.0, 0.0, 123.0)
+        self.assertIsNone(s.energy)
+        s2 = Tier0Signal(0.0, 0.0, 0.0, 124.0, energy=0.0)
+        self.assertEqual(s2.energy, 0.0)
+
+
 class TestIncident(unittest.TestCase):
     def test_incident_minimal_defaults(self):
         v = Verdict(satisfied=True, confidence=0.9, evidence="baby eyes open")
@@ -252,13 +310,18 @@ class TestAudioFrame(unittest.TestCase):
 
 class TestVersionNegotiation(unittest.TestCase):
     def test_contract_version_is_semver(self):
-        self.assertEqual(CONTRACT_VERSION, "1.2.0")
+        self.assertEqual(CONTRACT_VERSION, "1.3.0")
         parts = CONTRACT_VERSION.split(".")
         self.assertEqual(len(parts), 3)
         self.assertTrue(all(p.isdigit() for p in parts))
 
     def test_negotiate_compatible_same_version(self):
         self.assertTrue(negotiate(CONTRACT_VERSION, CONTRACT_VERSION))
+
+    def test_negotiate_prior_minor_still_compatible(self):
+        # a 1.2.0 consumer (pre-1.3 additive fields) negotiates cleanly with this release
+        self.assertTrue(negotiate("1.2.0", CONTRACT_VERSION))
+        self.assertTrue(negotiate(CONTRACT_VERSION, "1.2.0"))
 
     def test_negotiate_compatible_minor_patch_differences(self):
         self.assertTrue(negotiate("1.0.0", "1.4.2"))
@@ -331,6 +394,25 @@ class TestJsonSchema(unittest.TestCase):
         self.assertEqual(s["properties"]["sample_format"], {"enum": ["s16le", "f32le", "u8"]})
         self.assertEqual(s["properties"]["sample_rate"], {"type": "integer"})
         self.assertNotIn("required", s)  # every field has a default
+
+    def test_130_fields_in_schema(self):
+        from percept.contracts import jsonschema as js
+
+        defs = js.generate_all()["$defs"]
+        self.assertIn("ClipEvent", defs)
+        v = defs["Verdict"]
+        self.assertEqual(v["properties"]["usage"], {"type": "object", "additionalProperties": {}})
+        self.assertEqual(v["properties"]["events"], {"type": "array", "items": {"$ref": "#/$defs/ClipEvent"}})
+        self.assertNotIn("usage", v.get("required", []))
+        self.assertNotIn("events", v.get("required", []))
+        t = defs["Tier0Signal"]
+        self.assertIn({"type": "null"}, t["properties"]["energy"]["anyOf"])
+        self.assertNotIn("energy", t.get("required", []))
+        c = defs["Concern"]
+        self.assertEqual(c["properties"]["verify_only"], {"type": "boolean"})
+        self.assertEqual(c["properties"]["version"], {"type": "integer"})
+        for name in ("fps", "verify_only", "version"):
+            self.assertNotIn(name, c.get("required", []))
 
     def test_committed_schema_matches_generator(self):
         # the committed files under schema/ must be byte-identical to a fresh generation

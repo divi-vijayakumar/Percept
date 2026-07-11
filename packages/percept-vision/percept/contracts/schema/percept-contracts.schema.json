@@ -3,7 +3,7 @@
   "$id": "https://percept.velvee.ai/contracts/percept-contracts.schema.json",
   "title": "percept-contracts",
   "description": "Vendor-neutral DTOs of the Percept frozen contract.",
-  "x-contract-version": "1.2.0",
+  "x-contract-version": "1.3.0",
   "$defs": {
     "Box": {
       "type": "object",
@@ -57,6 +57,32 @@
         "confidence"
       ]
     },
+    "ClipEvent": {
+      "type": "object",
+      "title": "ClipEvent",
+      "properties": {
+        "t_start": {
+          "type": "number"
+        },
+        "t_end": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "description": "One timestamped event a clip judge saw inside the judged window (1.3).",
+      "required": [
+        "t_start"
+      ]
+    },
     "Verdict": {
       "type": "object",
       "title": "Verdict",
@@ -85,6 +111,16 @@
         },
         "running_answer": {
           "type": "string"
+        },
+        "usage": {
+          "type": "object",
+          "additionalProperties": {}
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ClipEvent"
+          }
         }
       },
       "description": "The firing-contract return: is the plain-language condition true right now?",
@@ -348,6 +384,22 @@
               "type": "null"
             }
           ]
+        },
+        "fps": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "verify_only": {
+          "type": "boolean"
+        },
+        "version": {
+          "type": "integer"
         }
       },
       "description": "The unit of consequence-weighted attention (spec \u00a71) \u2014 sits above the entity.",
@@ -563,9 +615,19 @@
         },
         "ts": {
           "type": "number"
+        },
+        "energy": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
-      "description": "Tier0Signal(motion: 'float', structural: 'float', semantic: 'float', ts: 'float')",
+      "description": "Tier0Signal(motion: 'float', structural: 'float', semantic: 'float', ts: 'float', energy: 'float | None' = None)",
       "required": [
         "motion",
         "structural",

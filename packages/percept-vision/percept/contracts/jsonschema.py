@@ -27,6 +27,7 @@ from . import (
     Attribute,
     AudioFrame,
     Box,
+    ClipEvent,
     Concern,
     Consequence,
     Decision,
@@ -53,6 +54,7 @@ _NoneType = type(None)
 DTOS: tuple[type, ...] = (
     Box,
     Observation,
+    ClipEvent,
     Verdict,
     Attribute,
     Goal,

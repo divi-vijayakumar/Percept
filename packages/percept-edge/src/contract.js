@@ -26,7 +26,7 @@
  * `percept.contracts.CONTRACT_VERSION`. Same major == wire-compatible. This is DISTINCT from
  * `WatchSpec.version` (the wire integer, defaults to 1) which stays for payload compat.
  */
-export const CONTRACT_VERSION = "1.1.0";
+export const CONTRACT_VERSION = "1.3.0"; // 1.3: + Tier0Signal.energy (optional, back-compat; mirrors Python 1.3)
 
 /** Error thrown when an incoming wire payload violates the contract. */
 export class ContractError extends Error {
@@ -246,20 +246,24 @@ export function parseWatchSpec(json) {
 }
 
 // ---------------------------------------------------------------------------
-// Tier0Signal  { motion, structural, semantic, ts }
+// Tier0Signal  { motion, structural, semantic, ts, energy? }
 // ---------------------------------------------------------------------------
 
 /**
  * Build a Tier0Signal (the up-channel salience report). Unsupplied salience
  * channels default to 0; ts defaults to wall-clock seconds (to match the
- * Python `ts: float` seconds convention).
- * @returns {{motion:number,structural:number,semantic:number,ts:number}}
+ * Python `ts: float` seconds convention). `energy` (1.3) is the audio-energy
+ * channel from a frame-free audio ingest — null means "not an audio-carrying
+ * signal" (distinct from 0 = measured silence), so frame-path signals are
+ * byte-for-byte unchanged.
+ * @returns {{motion:number,structural:number,semantic:number,ts:number,energy:number|null}}
  */
 export function makeTier0Signal({
   motion = 0,
   structural = 0,
   semantic = 0,
   ts = Date.now() / 1000,
+  energy = null,
 } = {}) {
   for (const [k, v] of [
     ["motion", motion],
@@ -271,7 +275,10 @@ export function makeTier0Signal({
       throw new ContractError(`makeTier0Signal: ${k} must be a finite number`);
     }
   }
-  return { motion, structural, semantic, ts };
+  if (energy !== null && !isFiniteNumber(energy)) {
+    throw new ContractError("makeTier0Signal: energy must be a finite number or null");
+  }
+  return { motion, structural, semantic, ts, energy };
 }
 
 /**
@@ -297,11 +304,21 @@ export function parseTier0Signal(json) {
       throw new ContractError(`parseTier0Signal: ${k} must be a finite number`);
     }
   }
+  // energy (1.3) is optional on the wire: absent/undefined normalizes to null so a 1.2-era
+  // payload parses unchanged; when present it must be a finite number or null.
+  let energy = null;
+  if (obj.energy !== undefined && obj.energy !== null) {
+    if (!isFiniteNumber(obj.energy)) {
+      throw new ContractError("parseTier0Signal: energy must be a finite number or null");
+    }
+    energy = obj.energy;
+  }
   return {
     motion: obj.motion,
     structural: obj.structural,
     semantic: obj.semantic,
     ts: obj.ts,
+    energy,
   };
 }
 
