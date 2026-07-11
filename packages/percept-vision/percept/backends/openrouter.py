@@ -87,6 +87,24 @@ def _image_block(frame: Any) -> dict:
     return {"type": "image_url", "image_url": {"url": _data_url(frame)}}
 
 
+def _usage_of(resp: Any) -> dict:
+    """Pull token usage off an OpenAI/OpenRouter chat completion for ``Verdict.usage`` (read by
+    ``observability.judge_usage`` → the cost/token funnel). Defensive: no ``usage`` → ``{}``."""
+    usage = getattr(resp, "usage", None)
+    if usage is None and isinstance(resp, dict):
+        usage = resp.get("usage")
+    if usage is None:
+        return {}
+    get = usage.get if isinstance(usage, dict) else lambda k: getattr(usage, k, None)
+    out: dict[str, int] = {}
+    pt, ct = get("prompt_tokens"), get("completion_tokens")
+    if isinstance(pt, int):
+        out["input_tokens"] = pt
+    if isinstance(ct, int):
+        out["output_tokens"] = ct
+    return out
+
+
 def _text_of(resp: Any) -> str:
     """Pull the assistant text out of an OpenAI/OpenRouter chat completion (object or dict)."""
     choices = getattr(resp, "choices", None)
@@ -173,7 +191,9 @@ class OpenRouterVision:
             )
 
         resp = await with_retry(_call, breaker=self._breaker)
-        return _parse_verdict(_text_of(resp))
+        verdict = _parse_verdict(_text_of(resp))
+        verdict.usage = _usage_of(resp)  # 1.3 metering: token/cost funnel (was always {})
+        return verdict
 
     async def _judge_process_qa(self, condition: str, frame: Any, frames: list | None, prior: str) -> Verdict:
         """One process-QA step: integrate this clip into the running answer (Item 2). Returns the rewritten

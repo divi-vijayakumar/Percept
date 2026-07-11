@@ -163,7 +163,9 @@ class AnthropicVision:
 
         # Survive transient resets/timeouts in batch captures; trip the breaker on a run of failures.
         resp = await with_retry(_call, breaker=self._breaker)
-        return _parse_verdict(_text_of(resp))
+        verdict = _parse_verdict(_text_of(resp))
+        verdict.usage = _usage_of(resp)  # 1.3 metering: token/cost funnel (was always {})
+        return verdict
 
     async def detect(self, frame: Any, goals: list[Goal]) -> list[Observation]:
         """Detect goal-relevant things in a frame (the entity-attribute substrate).
@@ -282,6 +284,25 @@ def _image_block(frame: Any, *, roi: Box | None = None, label: str | None = None
             "data": base64.b64encode(raw).decode("ascii"),
         },
     }
+
+
+def _usage_of(resp: Any) -> dict:
+    """Pull token usage off an Anthropic Messages response for ``Verdict.usage`` (read by
+    ``observability.judge_usage`` → the cost/token funnel). Defensive: a response/mapping without
+    ``usage`` (fakes/tests) yields ``{}`` and the metering hook stays a no-op."""
+    usage = getattr(resp, "usage", None)
+    if usage is None and isinstance(resp, dict):
+        usage = resp.get("usage")
+    if usage is None:
+        return {}
+    out: dict[str, int] = {}
+    it = getattr(usage, "input_tokens", None) if not isinstance(usage, dict) else usage.get("input_tokens")
+    ot = getattr(usage, "output_tokens", None) if not isinstance(usage, dict) else usage.get("output_tokens")
+    if isinstance(it, int):
+        out["input_tokens"] = it
+    if isinstance(ot, int):
+        out["output_tokens"] = ot
+    return out
 
 
 def _text_of(resp: Any) -> str:

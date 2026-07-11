@@ -137,6 +137,23 @@ def _audio_part(types: Any, clip: Any):
     return types.Part.from_bytes(data=raw, mime_type=media)
 
 
+def _usage_of(resp: Any) -> dict:
+    """Pull token usage off a google-genai response for ``Verdict.usage`` (read by
+    ``observability.judge_usage`` → the cost/token funnel). Defensive: a response without
+    ``usage_metadata`` (fakes/tests) yields ``{}`` and the metering hook stays a no-op."""
+    um = getattr(resp, "usage_metadata", None)
+    if um is None:
+        return {}
+    out: dict[str, int] = {}
+    pt = getattr(um, "prompt_token_count", None)
+    ct = getattr(um, "candidates_token_count", None)
+    if isinstance(pt, int):
+        out["input_tokens"] = pt
+    if isinstance(ct, int):
+        out["output_tokens"] = ct
+    return out
+
+
 # Per-request timeout (ms): a stalled socket ABORTS and surfaces to with_retry instead of hanging the whole
 # run forever (the N=4 PVQA 64-minute hang). 120s is generous headroom for a thinking model.
 _REQUEST_TIMEOUT_MS = 120_000
@@ -251,7 +268,9 @@ class GeminiVision(_GeminiBase):
             )
 
         resp = await with_retry(_call, breaker=self._breaker)  # survive transient resets in batch captures
-        return _parse_verdict(resp.text or "")
+        verdict = _parse_verdict(resp.text or "")
+        verdict.usage = _usage_of(resp)  # 1.3 metering: light up the token/cost funnel (was always {})
+        return verdict
 
     async def _judge_process_qa(
         self, condition: str, frame: Any, frames: list | None, prior: str
@@ -295,6 +314,7 @@ class GeminiVision(_GeminiBase):
             confidence=confidence,
             evidence=summary or "not enough evidence",
             running_answer=summary,
+            usage=_usage_of(resp),
         )
 
     async def _observe_step(self, condition: str, frame: Any, frames: list | None) -> Verdict:
@@ -326,7 +346,7 @@ class GeminiVision(_GeminiBase):
             data = {}
         step = str(data.get("step", "") or "").strip()
         confidence = float(data.get("confidence", 0.5) or 0.5)
-        return Verdict(satisfied=False, confidence=confidence, evidence=step)
+        return Verdict(satisfied=False, confidence=confidence, evidence=step, usage=_usage_of(resp))
 
     async def summarize_process(self, condition: str, log: list[str]) -> str:
         """Item 4: ONE consolidation pass over the whole per-concern log -> the ordered distinct steps.
