@@ -146,3 +146,6 @@ docs/*publish-readiness*.md
 docs/updated-percept-sdk-architecture.md
 docs/perception-event-individuation-research.md
 docs/benchmark-scorecard-runbook.md
+
+# Dispatch board activity feed (Tasks/ board)
+Tasks/.board-events.jsonl
