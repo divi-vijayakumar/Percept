@@ -11,9 +11,10 @@ be used to assert backend *intelligence*. Real-model behaviour is tested in L2/L
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, AsyncIterator
 
-from ..adapters import Decision, Goal, Observation, STTEvent, Verdict
+from ..adapters import Decision, Goal, Observation, Reply, STTEvent, UtteranceEvent, Verdict
 
 # frame-token -> scripted verdict. Tests pass a string frame like "sip-coffee".
 _SCRIPT: dict[str, Verdict] = {
@@ -154,10 +155,120 @@ class FakeTTS:
         self.flushes += 1
 
 
+class FakeVoiceTransport:
+    """A deterministic, vendor-free :class:`~percept.contracts.VoiceTransport` — the reference impl and
+    the test double for the voice seam. It owns no real audio; a test **drives** it and it **records**
+    what the brain sent back, so :meth:`~percept.runtime.RuntimeSession.attach_transport` orchestration
+    is fully assertable offline (rule 2: proves wiring, not model intelligence).
+
+    Drive (transport -> brain):
+      * ``await emit_utterance(text=...)`` — deliver a completed user turn to the on_utterance sink.
+      * ``await emit_barge_in()`` — fire barge-in.
+      * ``await call_tool("arm_goal", {...})`` — simulate the transport's model invoking a tool.
+
+    Record (brain -> transport): ``said`` (Reply objects from :meth:`say`), ``events``, ``interrupts``,
+    ``tools`` (registered), plus ``started``/``stopped``. ``self_reply=True`` puts it in speech-to-speech
+    mode where :meth:`say` is a no-op (the model already spoke)."""
+
+    def __init__(self, *, self_reply: bool = False) -> None:
+        self.self_reply = self_reply
+        self.started = False
+        self.stopped = False
+        self.said: list[Reply] = []
+        self.spoke_verbatim: list[bool] = []   # parallel to `said`: the verbatim flag per say()
+        self.events: list[dict] = []
+        self.state_pulses: list[str] = []      # sync_state summaries pushed by the brain
+        self.interrupts = 0
+        self.tools: dict[str, tuple[dict, Any]] = {}
+        self.frame_provider: Any = None
+        self._on_utterance: Any = None
+        self._on_barge_in: Any = None
+        self._on_event: Any = None
+        self._on_user_speaking: Any = None
+        self._on_transcript: Any = None
+
+    # -- lifecycle --------------------------------------------------------
+    async def start(self) -> None:
+        self.started = True
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+    # -- up-channel registration -----------------------------------------
+    def on_utterance(self, cb: Any) -> None:
+        self._on_utterance = cb
+
+    def on_barge_in(self, cb: Any) -> None:
+        self._on_barge_in = cb
+
+    def on_event(self, cb: Any) -> None:
+        self._on_event = cb
+
+    def on_user_speaking(self, cb: Any) -> None:
+        self._on_user_speaking = cb
+
+    def on_transcript(self, cb: Any) -> None:
+        self._on_transcript = cb
+
+    # -- down-channel -----------------------------------------------------
+    async def say(self, reply: Reply, *, verbatim: bool = False) -> None:
+        # Records even in self_reply mode: a proactive FIRE is a real say() the brain drove, distinct from
+        # a reply to a user turn. Tests assert on `said` + `spoke_verbatim`.
+        self.said.append(reply)
+        self.spoke_verbatim.append(verbatim)
+
+    async def interrupt(self) -> None:
+        self.interrupts += 1
+
+    async def sync_state(self, summary: str) -> None:
+        self.state_pulses.append(summary)
+
+    # -- context ----------------------------------------------------------
+    def set_frame_provider(self, provider: Any) -> None:
+        self.frame_provider = provider
+
+    def register_tool(self, name: str, schema: dict, handler: Any) -> None:
+        self.tools[name] = (schema, handler)
+
+    # -- test drivers (NOT part of the Protocol) -------------------------
+    async def emit_utterance(self, text: str | None = None, *, audio: Any = None, t: float | None = None) -> None:
+        ev = UtteranceEvent(text=text, audio=audio, t=t)
+        await self._fire(self._on_utterance, ev)
+
+    async def emit_barge_in(self) -> None:
+        await self._fire(self._on_barge_in)
+
+    async def emit_event(self, event: dict) -> None:
+        await self._fire(self._on_event, event)
+
+    async def emit_user_speaking(self, speaking: bool) -> None:
+        await self._fire(self._on_user_speaking, speaking)
+
+    async def emit_transcript(self, text: str) -> None:
+        await self._fire(self._on_transcript, text)
+
+    async def call_tool(self, name: str, args: dict) -> Any:
+        _schema, handler = self.tools[name]
+        res = handler(args)
+        return await res if inspect.isawaitable(res) else res
+
+    def current_frame(self) -> Any:
+        return self.frame_provider() if self.frame_provider is not None else None
+
+    @staticmethod
+    async def _fire(cb: Any, *args: Any) -> None:
+        if cb is None:
+            return
+        res = cb(*args)
+        if inspect.isawaitable(res):
+            await res
+
+
 __all__ = [
     "FakeVision",
     "FakeSpecialist",
     "FakeConductor",
     "FakeSTT",
     "FakeTTS",
+    "FakeVoiceTransport",
 ]

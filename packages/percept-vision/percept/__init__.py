@@ -86,11 +86,22 @@ del _resolve_version, _pkg_version, _PkgNotFound
 # Imported after __version__ so agent.health() can read it lazily without a cycle.
 from .agent import FireEvent, Percept  # noqa: E402
 
+# The runtime worker — the batteries-included "watch a source" front door. Surfaced at top level
+# (PR: Wave 0) so `percept.run` / `percept.RuntimeSession` are the FIRST thing a builder reaches,
+# instead of being two import-hops deep at `percept.runtime.worker.run`. Import is stdlib-pure
+# (cv2/numpy are lazy inside run()), so the zero-vendor-import invariant holds.
+from .runtime import RuntimeSession, RuntimeStats, run, start  # noqa: E402
+
 __all__ = [
     "__version__",
     "Percept",
     "FireEvent",
     "registry",
+    # the runtime front door (start here)
+    "run",
+    "start",
+    "RuntimeSession",
+    "RuntimeStats",
     # DTOs
     "Box",
     "Observation",

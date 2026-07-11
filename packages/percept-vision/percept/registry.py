@@ -24,6 +24,7 @@ _REGISTRY: dict[str, dict[str, Callable[[Any], Any]]] = {
     "conductor": {},
     "stt": {},
     "tts": {},
+    "transport": {},
 }
 
 _SEAMS = tuple(_REGISTRY)
@@ -73,6 +74,11 @@ register("stt", "deepgram", _lazy("deepgram", "DeepgramSTT"))
 
 register("tts", "fake", lambda s: _fake.FakeTTS())
 register("tts", "deepgram", _lazy("deepgram", "DeepgramTTS"))
+
+# The VOICE TRANSPORT seam (mic+speaker+AEC+endpointing+barge-in). Only the fake ships in-core; a real
+# Pipecat/LiveKit transport is a vendor dep + a WebRTC room to test, so it's client-side — registered via
+# the `percept.backends` entry-point group (see discover_entrypoints), never imported here.
+register("transport", "fake", lambda s: _fake.FakeVoiceTransport())
 
 
 def discover_entrypoints() -> None:
@@ -124,6 +130,10 @@ def make_tts(name: str, settings: Any = None) -> Any:
     return make("tts", name, settings)
 
 
+def make_transport(name: str, settings: Any = None) -> Any:
+    return make("transport", name, settings)
+
+
 def available(seam: str) -> list[str]:
     return sorted(_REGISTRY.get(seam, {}))
 
@@ -137,5 +147,6 @@ __all__ = [
     "make_conductor",
     "make_stt",
     "make_tts",
+    "make_transport",
     "available",
 ]
