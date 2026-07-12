@@ -21,17 +21,17 @@ Branch: `feat/overnight-oss-hardening` (off `main`). **Nothing pushed, no PRs, n
 - **Paid product** (024) — G-0 local-VLM, dashboard, API, playground, supervise. **Cannot live in this Apache-2.0 public repo** (licensing: world-readable + permissive = competitors can lift it). Needs the private `percept-cloud` repo (open-core). This resolves your licensing question: OSS here, paid in a private repo consuming it, meeting only at the LabelRecord seam.
 - **Live browser demo test** — run-book in PCPT-023; needs a human at a webcam + a `GEMINI_API_KEY`.
 
-## Pending your decision
+## R-1 — now shipped (you greenlit it in the morning)
 
-- **R-1** (021) sustained-duration `hold_s` — the last R-track item. It's flagged **risky**: it adds another field to the (frozen) `WatchCondition` contract AND must preserve the gate's byte-for-byte goldens. I held it for your go-ahead now that you're back, rather than making a second contract/gate change unattended.
+- **R-1** (021) sustained-duration `hold_s` — DONE. Implemented in the **cognition gate** (the natural home for a per-key sustained-true timer), authored via `goal.state["hold_s"]` exactly like `deadline_s`/`cadence_s` — so **no contract/WatchCondition/Concern/JS change** (lower risk than the spec's "add to WatchCondition" framing). "No hard hat for more than 10s" now fires only after 10s of sustained truth; a blip resets it. **Gate goldens (33) byte-for-byte unchanged**; py 961 (+8), parity 21/21, js 135.
 
 ## Human-action checklist
 
 1. **Ratify L-1 design calls** (PCPT-020 feedback): `record_label()` method name (vs spec's `label()`), `verdict_ref` hash scheme, `deployment_id` source, and the **LabelRecord schema freeze** (three producers depend on it).
-2. **Decide R-1** — proceed or hold.
+2. **Ratify R-1 placement** (PCPT-021 feedback): dwell shipped via `goal.state["hold_s"]`, not a first-class `Concern` field — flag if you want it authorable/persistable on the contract.
 3. **Create the private `percept-cloud` repo** to start the paid tracks.
 4. **Run the live v2v demo** (PCPT-023 run-book).
-5. **Review + push/PR** `feat/overnight-oss-hardening` (9 code/docs commits). Consider renaming it off the stale `feat/pcpt-001-contract-1.3.0` lineage.
+5. **Review + push/PR** `feat/overnight-oss-hardening` (all 8 tractable cards; ~13 code/docs commits). Consider renaming it off the stale `feat/pcpt-001-contract-1.3.0` lineage.
 
 ## Note
 The contract is now **1.0.0** (renumbered from the unreleased 1.3.0 during the salience work); the specs still say 1.3.0→1.4.0 — every "bump" was folded additively into 1.0.0 instead, since nothing shipped under the old numbers.
