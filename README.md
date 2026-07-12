@@ -78,6 +78,29 @@ Backends are selected by name (`"fake"` · `"gemini"` · `"claude"`), by adapter
 print a one-line instruction when a key is missing — never a stack trace. See
 [`examples/`](examples/) (start with [`examples/watch_agent.py`](examples/watch_agent.py)).
 
+## Watch a live source
+
+For a real watch agent you don't write a capture loop — **`percept.run` owns it**: it opens the source,
+runs the cheap tier-0 motion gate (a still scene spends no cloud calls), judges, and **yields an
+`Incident` on each rising-edge fire**. `pip install "percept-vision[gemini,runtime]"` + a `GEMINI_API_KEY`:
+
+```python
+import asyncio, percept
+
+async def main():
+    async for incident in percept.run(
+        source="webcam:0",                       # "rtsp://…" URL | a video file path, too
+        goals=["the milk is boiling over"],      # each string becomes a Goal
+        vision="gemini",
+    ):
+        print(f"[FIRE] {incident.message}")
+
+asyncio.run(main())
+```
+
+Full options — sinks (`on_incident`), refusals (`on_ask`), fused audio (`audio_source="mic:0"`), the
+decision trace (`on_trace`), and gate tuning: [`docs/how-to/runtime.md`](docs/how-to/runtime.md).
+
 ## Architecture
 
 The diagram below is **generated from the code** by

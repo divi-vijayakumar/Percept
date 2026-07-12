@@ -132,6 +132,11 @@ That's the whole substitution: `vision="fake"` → `vision="gemini"` (or `"claud
 refractory, entity memory, and escalation are unchanged — they only ever see the `Verdict` stream,
 never pixels.
 
+> **This frame-by-frame `perceive_judged` call is the teaching path, not the deploy path** — it exists so
+> you can watch one frame move through the gate. For a real watch agent you don't write the capture loop:
+> jump to [Watch a live source](#watch-a-live-source--the-batteries-included-path) below, where
+> `percept.run` owns capture, gating, and incident emission.
+
 You can also select backends per-seam via env vars without touching code
 (`PERCEPT_VISION_BACKEND=gemini`, etc.) — see [backends.md](../reference/backends.md).
 
