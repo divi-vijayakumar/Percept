@@ -91,6 +91,7 @@ class BehaviorProgram:
     accumulate: Accumulator = field(default_factory=Accumulator)
     deadline_s: float | None = None
     cadence_s: float | None = None
+    hold_s: float | None = None  # R-1 sustained-duration: fire only after the condition holds this long
     perception: PerceptionSpec = field(default_factory=PerceptionSpec)  # HOW to look (defaults = today)
 
 
@@ -298,7 +299,9 @@ class BehaviorExecutor:
         if program.key.suppress_false and truth == "no":
             return None  # never-contract: a confident-false must not reach the gate
         key = self._synth_key(base_key, program.key, t)
-        action = self.gate.evaluate(key, verdict, freshness=freshness)
+        # R-1: pass the goal's dwell (hold_s) + the frame time. hold_s=None -> the gate ignores `now`
+        # and this is byte-for-byte the rising-edge path.
+        action = self.gate.evaluate(key, verdict, freshness=freshness, hold_s=program.hold_s, now=t)
         self.metrics.incr(f"{metric}.{action}")
         if action == FIRE:
             # accumulate (nth-distinct): a rising edge IS a distinct occurrence, so gate the
@@ -434,7 +437,18 @@ def program_of(goal) -> BehaviorProgram:
             predicate=goal.condition,
             accumulate=Accumulator(fire_when=s.get("fire_when"), window_s=s.get("window_s")),
         )
-    return replace(prog, perception=_perception_for(prog.sense, s.get("perception")))
+    # R-1: sustained-duration dwell, authored via goal.state["hold_s"] (same channel as deadline_s /
+    # cadence_s). Absent -> None -> byte-for-byte the rising-edge gate. Coerced defensively (untrusted).
+    hold = _coerce_hold_s(s.get("hold_s"))
+    return replace(prog, perception=_perception_for(prog.sense, s.get("perception")), hold_s=hold)
+
+
+def _coerce_hold_s(v: object) -> float | None:
+    """goal.state['hold_s'] -> a positive float dwell, or None. A non-numeric / non-positive hint -> None
+    (no dwell), so a malformed value can never silently suppress firing."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return float(v) if v > 0 else None
 
 
 # --------------------------------------------------------------------------------------------------
