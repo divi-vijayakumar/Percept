@@ -179,10 +179,30 @@ def _capture_plan(goals: list, base_fps: float) -> tuple[float, Any]:
     return capture, (SamplingController(policy) if policy is not None else None)
 
 
+def _as_goal(g: Any, i: int) -> Any:
+    """Coerce a convenience `goals=[...]` entry into a Goal: a plain condition string, a dict of Goal
+    fields, or a Goal passthrough. A string `"the milk is boiling over"` -> Goal(id=f"g{i}", condition=,
+    say=) so the one-liner `percept.run(source=, goals=["..."])` needs no Goal import."""
+    from percept.adapters import Goal
+
+    if isinstance(g, Goal):
+        return g
+    if isinstance(g, str):
+        return Goal(id=f"g{i}", condition=g, say=g)
+    if isinstance(g, dict):
+        d = dict(g)
+        d.setdefault("id", f"g{i}")
+        d.setdefault("say", d.get("condition", ""))
+        return Goal(**d)
+    raise TypeError(f"goals[{i}] must be a str, dict, or Goal, not {type(g).__name__}")
+
+
 async def run(
-    core: Any,
+    core: Any = None,
     *,
     source: Any,
+    goals: Any = None,
+    vision: Any = None,
     on_incident: Callable | None = None,
     on_ask: Callable | None = None,
     on_frame: Callable | None = None,
@@ -252,6 +272,20 @@ async def run(
     from percept.config import load_settings
     from percept.edge.detectors import DetectorBank
     from percept.edge.tier0 import MotionGate, compile_watchspec
+
+    # R-0 convenience: `percept.run(source=..., goals=[...])` with no pre-built core. Build a Percept
+    # here and arm each goal, so the one-line quickstart is real. Passing an explicit `core` (the
+    # canonical form) is unchanged and takes precedence — `goals`/`vision` are ignored when core is given.
+    if core is None:
+        if not goals:
+            raise TypeError(
+                "percept.run needs either a core (positional) or goals=[...]; got neither"
+            )
+        from percept.agent import Percept
+
+        core = Percept.create(vision=vision) if vision is not None else Percept.create()
+        for i, g in enumerate(goals):
+            core.add_goal(_as_goal(g, i))
 
     settings = getattr(core, "settings", None) or load_settings()
 
