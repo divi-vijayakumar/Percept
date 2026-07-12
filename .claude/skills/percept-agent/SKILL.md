@@ -4,6 +4,10 @@ description: Build a proactive vision/perception agent with Percept — watch a 
   condition and fire/ask only on the rising edge. Use when the user wants a "watch X / tell me when Y" agent.
 ---
 
+<!-- KEEP IN SYNC: this file is duplicated at .claude/skills/percept-agent/SKILL.md and
+     .agents/skills/percept-agent/SKILL.md. Edit BOTH together (no symlink). Same for the
+     template_watch_agent.py / template_watch_agent_live.py pairs in each dir. -->
+
 # Build a Percept watch agent
 
 Percept is the OSS **cognition layer** for goal-driven, proactive vision agents. You state a goal in
@@ -130,12 +134,17 @@ deterministically, then swap `vision=` and the frame source for the real thing �
 
 ## Scaffold from the template
 
-`template_watch_agent.py` (in this directory) is a SHORT, runnable offline watch agent: it scripts a
-few frames and prints an ASK (on a low-confidence frame) then a FIRE (on the rising edge). Copy it,
-rename the goal, and either keep the FAKE backend for tests or swap to `vision="gemini"` + a real frame
-source (a `cv2.VideoCapture` loop yielding JPEG bytes).
+Two templates ship in this directory — start from whichever matches what you're building:
 
-Verified output of the template (offline, no keys):
+- **`template_watch_agent_live.py` — the real watch agent (start here).** `create(vision="gemini")`
+  → `add_goal(...)` → `async for incident in percept.run(agent, source="webcam:0", on_incident=...)`.
+  `run` owns the capture loop; to point it elsewhere just change `source=` to an `"rtsp://…"` URL or a
+  video-file path. Do **not** hand-roll a `cv2.VideoCapture` loop — that's what `run` is for.
+- **`template_watch_agent.py` — the offline / BYO-frames path (tests).** A SHORT, runnable, keyless agent
+  that scripts a few frames and prints an ASK (low-confidence frame) then a FIRE (rising edge). Copy it,
+  rename the goal, keep the FAKE backend for deterministic tests.
+
+Verified output of the offline template (no keys):
 
 ```
 [ASK ] kettle: About "the kettle has finished boiling" — can you confirm?
