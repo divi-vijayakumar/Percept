@@ -514,20 +514,6 @@ async def run(
                         if fired is not None:
                             async for incident in _emit_fires([fired], at=b.t):
                                 yield incident
-
-            # PR 1.3: run edge detectors on the cheap motion/energy signals at native fps. Each emitted
-            # boundary (a rep peak, an acoustic onset) is a distinct occurrence fed to the brain via
-            # perceive_boundary (edge proposes · brain counts) — firing per the goal's accumulate.fire_when
-            # WITHOUT a cloud judge. No banks -> this whole block is skipped (byte-for-byte the pre-PR path).
-            if banks and perceive_boundary is not None:
-                for goal_id, bank in banks.items():
-                    for b in bank.push(t, motion=decision.signal.motion, frame=judge_frame, energy=audio["energy"]):
-                        if stats is not None:
-                            stats.boundaries += 1
-                        fired = perceive_boundary(goal_id, t=b.t)
-                        if fired is not None:
-                            async for incident in _emit_fires([fired], at=b.t):
-                                yield incident
             # TODO 1: a brief-action goal's fovea coast forces a judge on a quiet, in-window frame the
             # motion gate would skip (above-Nyquist coverage). No brief goal -> coast is None -> this is
             # byte-for-byte the gate-only path.
