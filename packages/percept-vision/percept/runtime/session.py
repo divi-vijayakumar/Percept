@@ -104,6 +104,15 @@ class RuntimeSession:
     def muted(self) -> bool:
         return self._muted
 
+    def mute(self) -> None:
+        """Alias for :meth:`detach_audio_source` — the spec's power-ladder verb. MUTED: drop the mic
+        from perception (video-only judging, frozen audio gate) without ending the session."""
+        self.detach_audio_source()
+
+    def unmute(self) -> None:
+        """Alias for :meth:`attach_audio_source` — resume feeding the mic to perception."""
+        self.attach_audio_source()
+
     # -- read side --------------------------------------------------------
     def latest_frame(self) -> Any | None:
         """The most recent judge frame the watch captured (what ``ask`` scopes a vision answer to)."""

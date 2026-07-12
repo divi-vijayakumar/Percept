@@ -65,6 +65,20 @@ class MuteTests(unittest.TestCase):
         self.assertEqual(win_muted, 0, "no audio should reach the AudioWindow while muted")
         self.assertGreater(win_after, 0, "audio resumes feeding perception after attach")
 
+    def test_mute_unmute_aliases(self):
+        """R-3: mute()/unmute() are the spec's power-ladder verbs, aliasing detach/attach_audio_source."""
+        async def go():
+            core = _core()
+            session = await start(core, source=_paced_video(2), audio_source=_paced_audio(2))
+            self.assertFalse(session.muted())
+            session.mute()
+            self.assertTrue(session.muted())   # mute() == detach_audio_source()
+            session.unmute()
+            self.assertFalse(session.muted())  # unmute() == attach_audio_source()
+            await session.stop()
+
+        asyncio.run(go())
+
 
 if __name__ == "__main__":
     unittest.main()
