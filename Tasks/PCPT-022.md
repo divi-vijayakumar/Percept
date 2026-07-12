@@ -1,7 +1,7 @@
 ---
 id: PCPT-022
 title: Docs P1/P2 — runtime param list, motion-gate-vs-cadence callout, on_trace, README/quickstart
-status: ready
+status: done
 priority: P1
 owner: claude
 wave: docs
@@ -19,5 +19,8 @@ updated: 2026-07-11
 - choose-your-path.md:10-11: honest signature (depends on PCPT-017 outcome).
 
 ## Acceptance criteria
-- [ ] All run() kwargs documented; cadence + salience-mode callout present; on_trace stages documented
-- [ ] Docs snippets match the real signature (post PCPT-017)
+- [x] All run() kwargs documented; cadence + salience-mode callout present; on_trace stages documented
+- [x] Docs snippets match the real signature (post PCPT-017)
+
+## Feedback
+- **2026-07-11 claude:** DONE. runtime.md full param list + gate-choice callout (fixed/block_max/ego) + on_trace stages; quickstart pointer; choose-your-path + README made honest with goals=. Docs-only; snippets match the real signature.
