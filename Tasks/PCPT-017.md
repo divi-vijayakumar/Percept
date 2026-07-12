@@ -1,7 +1,7 @@
 ---
 id: PCPT-017
 title: R-0 — run(goals=...) convenience wrapper (make the one-line docs honest)
-status: ready
+status: done
 priority: P0
 owner: claude
 wave: r-track
@@ -17,10 +17,13 @@ updated: 2026-07-11
 Add a thin convenience (wrapper or overload) `percept.run(source=..., goals=[...], vision=..., priors=..., exemplar=..., detectors=...)` that builds a `Percept` core internally (Percept.create + add_goal per goal) and delegates to the existing `run(core, ...)`. Keep the existing `run(core, ...)` positional form working (back-compat). Verify the goal-string->Goal/Concern compilation path (agent.add_goal at agent.py:227; goals.py) — reuse it, don't reinvent.
 
 ## Acceptance criteria
-- [ ] `percept.run(source=..., goals=["..."], vision="fake")` builds a core with those goals and runs (unit test, no network)
-- [ ] `percept.run(core, source=...)` (existing form) still works unchanged
-- [ ] The exact quickstart/choose-your-path one-liner imports + constructs without error
-- [ ] make test green
+- [x] `percept.run(source=..., goals=["..."], vision="fake")` builds a core with those goals and runs (unit test, no network)
+- [x] `percept.run(core, source=...)` (existing form) still works unchanged
+- [x] The exact quickstart/choose-your-path one-liner imports + constructs without error
+- [x] make test green
 
 ## Human test
 Confirm the API surface matches OSS-SPEC §2; decide if `watch=` is a better name than `goals=`.
+
+## Feedback
+- **2026-07-11 claude:** DONE (commit c85edc5). run(core=None,*,source,goals=,vision=) builds a Percept from goal strings/dicts/Goal when core omitted; canonical run(core,...) unchanged. 4 tests + full suite 922 green. NOTE for human: used `goals=` (matches OSS-SPEC §2). Docs one-liner is now honest.
