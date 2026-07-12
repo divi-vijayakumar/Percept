@@ -44,6 +44,8 @@ describe("parseWatchSpec — cross-language fixture", () => {
           detectors: [],
           cadence_s: null,
           gate_on: "motion",
+          salience_stat: "mean",
+          ego_compensate: false,
         },
       ],
       version: 1,
@@ -73,9 +75,11 @@ describe("parseWatchSpec — cross-language fixture", () => {
       "anchor_text",
       "cadence_s",
       "detectors",
+      "ego_compensate",
       "gate_on",
       "goal_id",
       "region_hint",
+      "salience_stat",
       "threshold",
     ]);
   });
@@ -126,13 +130,17 @@ describe("factories produce frozen-contract shapes", () => {
       "anchor_text",
       "cadence_s",
       "detectors",
+      "ego_compensate",
       "gate_on",
       "goal_id",
       "region_hint",
+      "salience_stat",
       "threshold",
     ]);
     expect(c.region_hint).toBeNull();
     expect(c.detectors).toEqual([]);
+    expect(c.salience_stat).toBe("mean");
+    expect(c.ego_compensate).toBe(false);
   });
 
   it("makeWatchSpec defaults version to 1", () => {
@@ -305,8 +313,8 @@ describe("topology-B wire messages — EdgeCapabilities + BoundaryReport", () =>
 });
 
 describe("CONTRACT_VERSION", () => {
-  it("is the 1.3.0 semver twin of the Python contract version", () => {
-    expect(CONTRACT_VERSION).toBe("1.3.0");
+  it("is the 1.0.0 semver twin of the Python contract version", () => {
+    expect(CONTRACT_VERSION).toBe("1.0.0");
   });
 });
 

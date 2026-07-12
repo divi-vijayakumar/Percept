@@ -267,7 +267,19 @@ async def run(
         """(Re)compile the WatchSpec → gate + detector banks from the core's CURRENT active goals.
         Called once at start, and again on a goal-registry revision change when regate_on_goal_change
         is set (so a goal armed mid-run — e.g. by voice — actually reaches the tier-0 gate)."""
-        s = compile_watchspec(list(core.goals.active()), threshold=settings.edge.motion_gate)
+        s = compile_watchspec(
+            list(core.goals.active()),
+            threshold=settings.edge.motion_gate,
+            # Deployment-wide salience-mode defaults (per-goal goal.state may override); resolved onto
+            # each WatchCondition so the gate/edge honor the effective value.
+            salience_stat=settings.edge.salience_stat,
+            ego_compensate=settings.edge.ego_compensate,
+            # Per-stat base cutoffs — block_max/p95 need a higher threshold than the mean-tuned default.
+            stat_thresholds={
+                "block_max": settings.edge.motion_gate_block_max,
+                "p95": settings.edge.motion_gate_p95,
+            },
+        )
         # clock (PR 2.2): a civil-time source arms per-goal Schedules (C1); None -> always-armed (default).
         g = MotionGate(s, settings=settings, wake_policy=wake_policy, clock=clock)
         # PR 1.3: one detector bank per goal that selected edge detectors (state['detectors']). The bank

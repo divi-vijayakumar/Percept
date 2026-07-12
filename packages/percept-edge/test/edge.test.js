@@ -102,13 +102,20 @@ describe("Edge — WatchSpec down / Tier0Signal up wired loop", () => {
     expect(edge.activeThreshold).toBeCloseTo(0.2, 10);
   });
 
-  it("a wired semantic adapter can escalate even when motion is 0", () => {
+  it("a wired semantic adapter can escalate a semantic-gated goal even when motion is 0", () => {
     const { edge, signals } = makeEdge();
-    edge.applyWatchSpec(PY_WATCHSPEC); // threshold 0.3
+    // A goal that gates on the semantic channel (gate_on:"semantic") — mirrors the Python reference,
+    // where semantic only arms escalation for a goal that asked for it (a motion goal stays motion-only;
+    // a hot semantic channel does NOT silently escalate it — the opt-in invariant).
+    edge.applyWatchSpec({
+      conditions: [
+        { goal_id: "g1", anchor_text: "the user is drinking coffee", threshold: 0.3, gate_on: "semantic" },
+      ],
+      version: 1,
+    });
     edge.setSemanticAdapter(() => 0.9); // pretend CLIP fired
     const still = makeFrame(8, 8, 120);
-    // First frame has no motion history (motion 0), but semantic 0.9 alone
-    // clears the 0.3 threshold -> escalates anyway.
+    // First frame has no motion history (motion 0), but semantic 0.9 clears the 0.3 threshold.
     const sig = edge.processFrame(still);
     expect(sig).not.toBeNull();
     expect(sig.motion).toBe(0);
@@ -261,5 +268,74 @@ describe("Edge.advertise — the EdgeCapabilities message", () => {
     expect(Array.isArray(msg.capabilities)).toBe(true);
     expect(msg.capabilities).toContain("motion-periodicity");
     expect(msg.capabilities).toContain("acoustic-onset");
+  });
+});
+
+describe("Edge — salience modes (per-condition) + energy on the signal", () => {
+  function localized(w, h, size = 2, val = 255) {
+    const data = new Uint8Array(w * h);
+    for (let r = 0; r < size; r++) for (let c = 0; c < size; c++) data[r * w + c] = val;
+    return { width: w, height: h, data };
+  }
+
+  it("a block_max condition escalates a localized event a mean condition misses", () => {
+    const bmaxSpec = {
+      conditions: [{ goal_id: "g1", anchor_text: "sip", threshold: 0.1, salience_stat: "block_max" }],
+      version: 1,
+    };
+    const meanSpec = {
+      conditions: [{ goal_id: "g1", anchor_text: "sip", threshold: 0.1, salience_stat: "mean" }],
+      version: 1,
+    };
+    const still = makeFrame(8, 8, 0);
+    const loc = localized(8, 8);
+
+    const mean = makeEdge();
+    mean.edge.applyWatchSpec(meanSpec);
+    mean.edge.processFrame(still); // prime history
+    expect(mean.edge.processFrame(loc)).toBeNull(); // mean misses the localized event
+
+    const bmax = makeEdge();
+    bmax.edge.applyWatchSpec(bmaxSpec);
+    bmax.edge.processFrame(still);
+    expect(bmax.edge.processFrame(loc)).not.toBeNull(); // block_max catches it
+  });
+
+  it("an ego_compensate condition suppresses a pan a mean condition fires on", () => {
+    const w = 16, h = 16;
+    const base = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) base[y * w + x] = (x * 60 + y * 30) % 256;
+    const panned = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++) panned[y * w + x] = base[y * w + Math.min(x + 1, w - 1)];
+    const prev = { width: w, height: h, data: base };
+    const cur = { width: w, height: h, data: panned };
+
+    const mean = makeEdge();
+    mean.edge.applyWatchSpec({
+      conditions: [{ goal_id: "g", anchor_text: "x", threshold: 0.1, salience_stat: "mean" }],
+      version: 1,
+    });
+    mean.edge.processFrame(prev);
+    expect(mean.edge.processFrame(cur)).not.toBeNull(); // mean false-fires on the pan
+
+    const ego = makeEdge();
+    ego.edge.applyWatchSpec({
+      conditions: [{ goal_id: "g", anchor_text: "x", threshold: 0.1, ego_compensate: true }],
+      version: 1,
+    });
+    ego.edge.processFrame(prev);
+    expect(ego.edge.processFrame(cur)).toBeNull(); // ego suppresses it
+  });
+
+  it("carries audio energy through onto the emitted Tier0Signal", () => {
+    const { edge } = makeEdge();
+    edge.applyWatchSpec(PY_WATCHSPEC);
+    const a = makeFrame(8, 8, 0);
+    const b = makeFrame(8, 8, 255); // full motion -> escalates
+    edge.processFrame(a, { energy: 0.42 });
+    const sig = edge.processFrame(b, { energy: 0.42 });
+    expect(sig).not.toBeNull();
+    expect(sig.energy).toBeCloseTo(0.42, 10);
   });
 });

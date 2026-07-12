@@ -5,7 +5,7 @@ Notable changes to Percept. This is a **research preview** — the SDK's public 
 
 ## Unreleased
 
-### Contract — wire version 1.2.0 → 1.3.0 (additive-only; same MAJOR, so 1.2 consumers negotiate cleanly)
+### Contract — wire version 1.0.0 (initial public contract; consolidates pre-release surface that iterated internally through 1.1–1.3 but never shipped)
 - `Verdict.usage` — optional token/cost accounting for the judge call (`{input_tokens, output_tokens,
   cost_usd}`); gate-irrelevant, defaults `{}`.
 - `Verdict.events` + new `ClipEvent` DTO — clip-relative event timestamps a video-native judge saw
@@ -16,8 +16,8 @@ Notable changes to Percept. This is a **research preview** — the SDK's public 
   from `CONTRACT_VERSION` and the `WatchSpec.version` wire integer.
 - `Tier0Signal.energy` — the audio-energy channel for frame-free audio ingest; `null`/`None` means
   "not an audio-carrying signal" (distinct from `0.0` = measured silence). Mirrored in
-  `@percept/edge` `makeTier0Signal`/`parseTier0Signal` (JS contract also bumped to 1.3.0); a 1.2-era
-  payload without the key parses unchanged.
+  `@percept/edge` `makeTier0Signal`/`parseTier0Signal` (JS contract twin at 1.0.0); the field is
+  optional, so a payload omitting the key parses unchanged.
 - JSON Schemas regenerated (`percept/contracts/schema/`), including the new `ClipEvent.schema.json`.
 
 ### `@percept/edge` (npm) — 0.6.0 → 0.7.0
@@ -26,7 +26,7 @@ Notable changes to Percept. This is a **research preview** — the SDK's public 
   existing `allow`/`redact`/`drop`/`confirm` vocabulary. Text tier (deterministic regex + Luhn/ABA/SSN
   checksums) is full; image tier is an adapter **slot** (app supplies the ONNX model — zero-dep preserved);
   audio tier is a coarse, bounded acoustic head (provisional). Ships with an eval harness + CI-gated
-  scorecard (`npm run eval`). No wire-contract change — `CONTRACT_VERSION` stays 1.3.0. See
+  scorecard (`npm run eval`). No wire-contract change — `CONTRACT_VERSION` stays 1.0.0. See
   `packages/percept-edge/CHANGELOG.md`.
 
 ## 0.6.0 — Research preview (2026-06)

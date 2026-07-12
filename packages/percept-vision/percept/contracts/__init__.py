@@ -28,10 +28,9 @@ from typing import Any, Awaitable, Callable, Literal, Protocol, runtime_checkabl
 #: Bump the MAJOR on any breaking change to a frozen shape; MINOR for additive (new optional
 #: field / new DTO); PATCH for docs/non-wire tweaks. This is distinct from ``WatchSpec.version``
 #: (a wire integer kept for byte-for-byte payload compat).
-CONTRACT_VERSION = "1.3.0"  # 1.3: + Verdict.usage/.events (+ClipEvent), Concern.fps/verify_only/version,
-#                                   Tier0Signal.energy (all optional, gate-irrelevant, back-compat)
-# 1.2: + Verdict.running_answer (process-QA, optional, gate-irrelevant, back-compat)
-# 1.1: + WatchCondition.cadence_s/gate_on + Incident.message (optional, back-compat)
+CONTRACT_VERSION = "1.0.0"  # initial public wire contract (research-preview launch). Consolidates the
+#                             pre-release surface that iterated internally through 1.1–1.3 but never
+#                             shipped; nothing was published under those, so we launch clean at 1.0.0.
 
 
 class ContractVersionMismatch(Exception):
@@ -388,6 +387,13 @@ content/relational events. ``fixed`` = escalate on a fixed cadence regardless of
 motion content (a screenshare, a dashboard) the motion gate would silently under-sample."""
 
 
+SalienceStat = Literal["mean", "block_max", "p95"]
+"""How the motion channel summarizes a frame's abs-diff. ``mean`` (default) = whole-area mean — right
+for scene-filling events. ``block_max``/``p95`` = a coarse block grid's top / 95th-percentile block, so
+a *localized* event (a hand, a cup) on a static camera clears threshold even when its whole-frame mean
+is ~0. Tracks the camera MOUNT, not the goal: a static desk/security cam picks ``block_max``."""
+
+
 @dataclass
 class WatchCondition:
     goal_id: str
@@ -398,6 +404,8 @@ class WatchCondition:
     schedule: Schedule | None = None  # when armed (None -> always); the gate skips when out of schedule
     cadence_s: float | None = None  # min seconds between escalations for this goal (None -> no cadence cap)
     gate_on: GateOn = "motion"  # which signal arms this goal; "fixed" escalates every cadence_s regardless of motion
+    salience_stat: SalienceStat = "mean"  # localizing statistic for the motion channel (mean -> legacy path)
+    ego_compensate: bool = False  # remove whole-frame translation (camera pan / head turn) before diffing
 
 
 @dataclass
@@ -780,6 +788,7 @@ __all__ = [
     "Schedule",
     "minute_of_day",
     "GateOn",
+    "SalienceStat",
     "WatchCondition",
     "WatchSpec",
     "Tier0Signal",

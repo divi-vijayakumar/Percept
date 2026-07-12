@@ -17,14 +17,22 @@ It checks:
 
 - `motion-periodicity` detector boundaries.
 - `acoustic-onset` detector boundaries.
-- `motion_score` gate values.
+- `motion_score` gate values (whole-frame `mean`).
+- `motion_score` **salience modes** — `block_max` / `p95` over the block grid, including a localized-event
+  fixture (block_max ≫ mean), a non-divisible frame (locks the block-boundary math), and a region+block
+  compose.
+- `ego_residual_score` — the ego-compensation residual, including a pure-pan fixture (residual ≈ 0 while
+  the raw mean is high).
 - JS `Edge.processFrame` latency with gate + detector active.
 
-Current local result, measured during the v0.3 pass:
+The salience/ego arithmetic is intentionally integer-only (floor-of-product block boundaries, integer
+per-block denominators, an integer nearest-rank percentile) so the two languages match as exact equality,
+not just within tolerance.
+
+Current local result:
 
 ```text
-12 checks - ALL MATCH: the two routes are byte-for-byte equivalent
-EDGE LATENCY: 5,000 frames in 14.9 ms -> 2.99 us/frame ~334,562 fps
+21 checks - ALL MATCH: the two routes are byte-for-byte equivalent
 ```
 
 Latency is a local microbenchmark, not a hosted SLA claim. The release claim is byte-for-byte parity.

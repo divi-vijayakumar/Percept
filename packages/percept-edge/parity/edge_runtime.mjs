@@ -8,7 +8,7 @@
 //          latency?: {frames,width,height,totalMs,perFrameUs,fps} }
 
 import { MotionPeriodicity, AcousticOnset } from "../src/skills.js";
-import { motionScore } from "../src/motion.js";
+import { motionScore, egoResidualScore } from "../src/motion.js";
 import { Edge } from "../src/edge.js";
 
 function readStdin() {
@@ -34,6 +34,20 @@ const result = {
   onsetBoundaries: (cases.energySignals || []).map((s) => runDetector(AcousticOnset, s)),
   motionScores: (cases.framePairs || []).map(({ w, h, a, b }) =>
     motionScore({ width: w, height: h, data: a }, { width: w, height: h, data: b })
+  ),
+  saliences: (cases.saliencePairs || []).map(({ w, h, a, b, stat, region, blockGrid }) =>
+    motionScore(
+      { width: w, height: h, data: a },
+      { width: w, height: h, data: b },
+      { stat: stat ?? "mean", region: region ?? null, blockGrid: blockGrid ?? [8, 6] }
+    )
+  ),
+  egoScores: (cases.egoPairs || []).map(({ w, h, a, b, k }) =>
+    egoResidualScore(
+      { width: w, height: h, data: a },
+      { width: w, height: h, data: b },
+      { k: k ?? 4 }
+    )
   ),
 };
 

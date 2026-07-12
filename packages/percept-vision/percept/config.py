@@ -93,6 +93,16 @@ class EdgeSettings:
     # motion score clears this threshold. A shipped default from an auditable sweep, with optional
     # per-goal bias. (PERCEPT_MOTION_GATE)
     motion_gate: float = 0.10  # PERCEPT_MOTION_GATE — motion salience escalation cutoff (0..1)
+    # Deployment-wide default salience MODE (tracks the camera mount; overridable per goal). Default
+    # "mean" / False preserve the legacy whole-frame gate byte-for-byte.
+    salience_stat: str = "mean"  # PERCEPT_SALIENCE_STAT — "mean" | "block_max" | "p95" (localized recall)
+    ego_compensate: bool = False  # PERCEPT_EGO_COMPENSATE — remove global camera motion before diffing
+    # Per-stat escalation cutoffs. block_max/p95 live on a HIGHER value scale than the whole-frame mean
+    # (a single active block >= the frame average), so they need their own thresholds — the mean-tuned
+    # 0.10 over-fires them. Calibrated on Perception Test action events (N=80, 7.8k frames): block_max
+    # @0.20 -> 0.85 recall, p95 @0.15 -> 0.79, vs the mean's 0.06 at 0.10. See docs/reference/edge-policy.
+    motion_gate_block_max: float = 0.20  # PERCEPT_MOTION_GATE_BLOCK_MAX
+    motion_gate_p95: float = 0.15  # PERCEPT_MOTION_GATE_P95
 
 
 @dataclass(frozen=True)
@@ -166,6 +176,10 @@ def load_settings() -> Settings:
         ),
         edge=EdgeSettings(
             motion_gate=_env("PERCEPT_MOTION_GATE", 0.10, float),
+            salience_stat=_env("PERCEPT_SALIENCE_STAT", "mean", str),
+            ego_compensate=_env("PERCEPT_EGO_COMPENSATE", False, _as_bool),
+            motion_gate_block_max=_env("PERCEPT_MOTION_GATE_BLOCK_MAX", 0.20, float),
+            motion_gate_p95=_env("PERCEPT_MOTION_GATE_P95", 0.15, float),
         ),
     )
 

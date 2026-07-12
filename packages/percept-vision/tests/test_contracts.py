@@ -310,7 +310,7 @@ class TestAudioFrame(unittest.TestCase):
 
 class TestVersionNegotiation(unittest.TestCase):
     def test_contract_version_is_semver(self):
-        self.assertEqual(CONTRACT_VERSION, "1.3.0")
+        self.assertEqual(CONTRACT_VERSION, "1.0.0")
         parts = CONTRACT_VERSION.split(".")
         self.assertEqual(len(parts), 3)
         self.assertTrue(all(p.isdigit() for p in parts))
@@ -318,10 +318,10 @@ class TestVersionNegotiation(unittest.TestCase):
     def test_negotiate_compatible_same_version(self):
         self.assertTrue(negotiate(CONTRACT_VERSION, CONTRACT_VERSION))
 
-    def test_negotiate_prior_minor_still_compatible(self):
-        # a 1.2.0 consumer (pre-1.3 additive fields) negotiates cleanly with this release
-        self.assertTrue(negotiate("1.2.0", CONTRACT_VERSION))
-        self.assertTrue(negotiate(CONTRACT_VERSION, "1.2.0"))
+    def test_negotiate_future_minor_still_compatible(self):
+        # 1.0.0 is the launch contract; a future additive 1.x minor negotiates cleanly (same MAJOR).
+        self.assertTrue(negotiate(CONTRACT_VERSION, "1.9.0"))
+        self.assertTrue(negotiate("1.9.0", CONTRACT_VERSION))
 
     def test_negotiate_compatible_minor_patch_differences(self):
         self.assertTrue(negotiate("1.0.0", "1.4.2"))

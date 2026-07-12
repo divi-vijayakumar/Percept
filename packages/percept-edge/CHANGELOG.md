@@ -10,7 +10,7 @@ New capability: **`PrivacyScreen`** — a multi-modal, on-device privacy classif
 boundary, sibling to `Edge`, filling the previously-inert `semantic` Tier-0 channel with an owned safety
 verdict. Multi-modal in (`text` | `image` | `audio`), one `PrivacyVerdict` out, in the existing
 `allow` / `redact` / `drop` / `confirm` action vocabulary. No wire-contract change — `CONTRACT_VERSION`
-stays `1.3.0` (the verdict is a package-local shape, not a Python↔JS message).
+stays `1.0.0` (the verdict is a package-local shape, not a Python↔JS message).
 
 ### Added
 - `PrivacyScreen` (`src/privacy.js`) — orchestrator with a synchronous `screen(input)` (text-only,
