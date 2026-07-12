@@ -55,8 +55,11 @@ WHATS_ARMED_SCHEMA = {"type": "object", "properties": {}}
 class RuntimeSession:
     """A live session wrapping a background ``run()``: `ask`/`arm`/`disarm`/`interrupt`/`latest_frame`."""
 
-    def __init__(self, core: Any, *, store: Any = None) -> None:
+    def __init__(self, core: Any, *, store: Any = None, label_store: Any = None) -> None:
         self._core = core
+        # L-1: the local LabelStore for out-of-band triage (`session.label(...)`) and the sink bound to
+        # each yielded incident (so `incident.record_label(...)` writes). Injected; None -> labeling off.
+        self._label_store = label_store
         # STUB / DEFERRED (control-plane): a shared store (EvidenceMemory / WatchPlan) is INJECTED at
         # construction — the session *uses* it, does not *own* it (multi-device shared memory). The
         # constructor argument is added now, while RuntimeSession is unreleased, so wiring it later is
@@ -179,6 +182,34 @@ class RuntimeSession:
         """Cancel a goal at runtime (stops watching for it); also re-arms the gate under regate."""
         self._core.apply_goal_ops([GoalOp(op="cancel", goal_id=goal_id)])
         await self._pulse_state()   # goal changed → re-ground the wire (§4.1)
+
+    # -- flywheel intake: out-of-band triage of a past fire (L-1, §4.3) ----
+    def label(self, incident_id: str, good: bool, note: str | None = None,
+              tags: tuple[str, ...] | list[str] = (), *,
+              source: str = "api") -> Any:
+        """Record a ground-truth label for a PAST incident by id — out-of-band triage.
+
+        Looks the incident up in this session's history (so ``goal_id`` / ``verdict_ref`` come along) and
+        delegates to :meth:`Incident.record_label`; if the id is unknown it still writes a minimal
+        :class:`~percept.contracts.LabelRecord` (id only). A LOCAL write — no key, no network. Requires a
+        ``label_store`` (pass one to :func:`start` / the constructor); raises :class:`RuntimeError` if
+        none is bound."""
+        if self._label_store is None:
+            raise RuntimeError(
+                "RuntimeSession has no label_store — pass label_store= to percept.runtime.start() "
+                "(or construct RuntimeSession(label_store=...)). label() is a LOCAL write."
+            )
+        for inc in reversed(self.incidents):
+            if getattr(inc, "id", None) == incident_id:
+                return inc.record_label(good, note=note, tags=tags, source=source)  # type: ignore[arg-type]
+        # Unknown incident (e.g. from a prior process): record what we can.
+        from percept.contracts import LabelRecord
+
+        rec = LabelRecord(
+            incident_id=incident_id, verdict_ref="", goal_id="", ts=time.time(),
+            good=bool(good), note=note, tags=list(tags), source=source,  # type: ignore[arg-type]
+        )
+        return self._label_store.append(rec)
 
     # -- voice transport: bind an AEC'd mic+speaker pipe (Pipecat/LiveKit/browser/S2S) ----
     async def attach_transport(self, transport: Any, *, arm_tool: bool = True, watch_tools: bool = True,
@@ -434,7 +465,7 @@ class RuntimeSession:
 
 async def start(core: Any, *, source: Any, on_frame: Callable | None = None,
                 on_incident: Callable | None = None, on_utterance: Callable | None = None,
-                store: Any = None, **run_kwargs: Any) -> RuntimeSession:
+                store: Any = None, label_store: Any = None, **run_kwargs: Any) -> RuntimeSession:
     """Start a background watch and return a :class:`RuntimeSession` to drive it.
 
     Wraps ``run(core, source=..., regate_on_goal_change=True, ...)`` in a task. Incidents still flow to
@@ -444,14 +475,14 @@ async def start(core: Any, *, source: Any, on_frame: Callable | None = None,
     utterance to the voice layer, so there's no push-to-talk / fixed record window. ``store`` is the
     injected shared store (deferred; see :class:`RuntimeSession`). ``async for incident in run(...)``
     remains the headless front door; this is the interactive layer on top."""
-    session = RuntimeSession(core, store=store)
+    session = RuntimeSession(core, store=store, label_store=label_store)
     if on_frame is not None:  # the start-provided consumer is just the first subscriber (back-compat)
         session.subscribe(on_frame)
 
     async def _drain() -> None:
         async for incident in run(
             core, source=source, on_frame=session._notify_frame, on_incident=on_incident,  # noqa: SLF001
-            on_utterance=on_utterance,
+            on_utterance=on_utterance, label_store=label_store,
             regate_on_goal_change=True, paused=session.paused, muted=session.muted, **run_kwargs,
         ):
             session.incidents.append(incident)

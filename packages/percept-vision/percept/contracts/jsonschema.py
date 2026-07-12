@@ -35,6 +35,7 @@ from . import (
     Goal,
     Incident,
     IncidentSnippet,
+    LabelRecord,
     Observation,
     Priors,
     Schedule,
@@ -74,6 +75,7 @@ DTOS: tuple[type, ...] = (
     AudioFrame,
     IncidentSnippet,
     Incident,
+    LabelRecord,
 )
 
 _PRIMITIVE: dict[Any, dict] = {

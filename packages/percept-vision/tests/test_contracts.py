@@ -278,6 +278,124 @@ class TestIncident(unittest.TestCase):
         self.assertEqual(inc.snippet.t_end, 4.0)
 
 
+class TestLabelRecord(unittest.TestCase):
+    """L-1: the flywheel keystone — schema, round-trip, and the media-free egress guarantee."""
+
+    def _rec(self, **over):
+        base = dict(
+            incident_id="inc-1", verdict_ref="abc123", goal_id="stove", ts=42.0, good=False,
+            note="that was steam", tags=["steam", "kitchen"], frame_ref="/home/u/.percept/frames/x.png",
+            calibration_version="v3", source="api",
+        )
+        base.update(over)
+        return pc.LabelRecord(**base)
+
+    def test_minimal_defaults(self):
+        r = pc.LabelRecord(incident_id="i", verdict_ref="v", goal_id="g", ts=1.0, good=True)
+        self.assertIsNone(r.note)
+        self.assertEqual(r.tags, [])
+        self.assertIsNone(r.frame_ref)
+        self.assertIsNone(r.calibration_version)
+        self.assertEqual(r.source, "api")
+
+    def test_is_frozen(self):
+        r = self._rec()
+        with self.assertRaises(Exception):
+            r.good = True  # frozen
+
+    def test_source_enum_is_the_four_frozen_values(self):
+        # The four producers (BUILD-BOTH rule 1) — do not redesign.
+        import typing
+        from percept.contracts import LabelRecord
+
+        hints = typing.get_type_hints(LabelRecord)
+        self.assertEqual(
+            set(typing.get_args(hints["source"])),
+            {"api", "voice", "ask_answer", "watch_calibration"},
+        )
+
+    def test_tags_independent_default(self):
+        a = pc.LabelRecord(incident_id="a", verdict_ref="v", goal_id="g", ts=1.0, good=True)
+        b = pc.LabelRecord(incident_id="b", verdict_ref="v", goal_id="g", ts=1.0, good=True)
+        a.tags.append("x")
+        self.assertEqual(b.tags, [])  # default_factory, not shared
+
+    def test_local_round_trip(self):
+        r = self._rec()
+        r2 = pc.LabelRecord.from_dict(r.to_local_dict())
+        self.assertEqual(r, r2)  # frozen dataclass __eq__ — full field-for-field round-trip
+
+    def test_egress_cannot_emit_frame_ref(self):
+        # THE media-free guarantee: the egress serializer structurally cannot carry the local path.
+        r = self._rec(frame_ref="/very/secret/local/pixels.png")
+        egress = r.to_egress()
+        self.assertNotIn("frame_ref", egress)
+        self.assertNotIn("frame_ref", pc.LabelRecord.EGRESS_FIELDS)
+        # everything ABOVE frame_ref (the metadata head) IS present
+        for name in ("incident_id", "verdict_ref", "goal_id", "ts", "good", "note", "tags",
+                     "calibration_version", "source"):
+            self.assertIn(name, egress)
+        # and the secret value appears nowhere in the serialized head
+        import json
+        self.assertNotIn("secret", json.dumps(egress))
+
+    def test_local_dict_keeps_frame_ref(self):
+        # the LOCAL store keeps the tail — that is the point; only egress drops it.
+        r = self._rec(frame_ref="/local/x.png")
+        self.assertEqual(r.to_local_dict()["frame_ref"], "/local/x.png")
+
+    def test_in_json_schema(self):
+        from percept.contracts import jsonschema as js
+
+        defs = js.generate_all()["$defs"]
+        self.assertIn("LabelRecord", defs)
+        s = defs["LabelRecord"]
+        self.assertEqual(s["properties"]["source"], {"enum": ["api", "voice", "ask_answer", "watch_calibration"]})
+        self.assertEqual(s["properties"]["tags"], {"type": "array", "items": {"type": "string"}})
+        self.assertNotIn("EGRESS_FIELDS", s["properties"])  # ClassVar is not a field
+        for name in ("incident_id", "verdict_ref", "goal_id", "ts", "good"):
+            self.assertIn(name, s["required"])
+        for name in ("note", "tags", "frame_ref", "calibration_version", "source"):
+            self.assertNotIn(name, s.get("required", []))
+
+
+class TestIncidentLabeling(unittest.TestCase):
+    """incident.record_label + label_url (the surfacing half of L-1)."""
+
+    def test_label_url_reserved_default_none(self):
+        inc = Incident(id="i", concern_id="c", verdict=Verdict(True, 0.9), ts=1.0)
+        self.assertIsNone(inc.label_url)  # reserved, wired by paid
+
+    def test_record_label_without_bind_raises(self):
+        inc = Incident(id="i", concern_id="c", verdict=Verdict(True, 0.9), ts=1.0)
+        with self.assertRaises(RuntimeError):
+            inc.record_label(good=False)
+
+    def test_record_label_writes_to_bound_sink(self):
+        captured = []
+        inc = Incident(id="inc-9", concern_id="stove", verdict=Verdict(True, 0.9), ts=5.0)
+        inc.bind_labeler(captured.append, verdict_ref="vref", goal_id="stove", calibration_version="v2")
+        rec = inc.record_label(good=False, note="steam", tags=("kitchen",))
+        self.assertEqual(len(captured), 1)
+        self.assertIs(captured[0], rec)
+        self.assertEqual(rec.incident_id, "inc-9")
+        self.assertEqual(rec.verdict_ref, "vref")
+        self.assertEqual(rec.goal_id, "stove")
+        self.assertEqual(rec.calibration_version, "v2")
+        self.assertFalse(rec.good)
+        self.assertEqual(rec.tags, ["kitchen"])
+        self.assertEqual(rec.source, "api")
+
+    def test_bind_state_is_not_a_dataclass_field(self):
+        # the bound sink/ctx must NOT leak into the schema or asdict (private instance attrs only)
+        import dataclasses
+
+        field_names = {f.name for f in dataclasses.fields(Incident)}
+        self.assertNotIn("_label_sink", field_names)
+        self.assertNotIn("_label_ctx", field_names)
+        self.assertIn("label_url", field_names)
+
+
 class TestAudioFrame(unittest.TestCase):
     """B2 — the typed first-class audio signal: defaults, render-to-pair, duration, frozen."""
 

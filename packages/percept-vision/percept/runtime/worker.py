@@ -48,6 +48,24 @@ class RuntimeHealthEvent:
     data: dict[str, Any] | None = None
 
 
+def _log_disposition(log: Any, *, incident_id: str, fire: Any, disposition: str, ts: float) -> None:
+    """Append one gate disposition to the :class:`~percept.labelstore.DispositionLog` (§4.3).
+
+    Best-effort: a disposition-log IO error must never kill the watch (it is telemetry, not the trust
+    surface). ``incident_id`` is ``""`` for an ASK (asks are not incidents)."""
+    from percept.labelstore import verdict_ref as _vr
+
+    try:
+        log.append(
+            incident_id=incident_id,
+            verdict_ref=_vr(getattr(fire, "verdict", None)),
+            disposition=disposition,
+            ts=float(ts),
+        )
+    except Exception:  # noqa: BLE001 - telemetry write must not crash the run
+        pass
+
+
 async def _aiter(source: Any, fps: float, **source_kwargs) -> AsyncIterator[tuple]:
     """Normalize ``source`` to an async iterator of ``(t, gate_frame, judge_frame)``."""
     if isinstance(source, str):
@@ -237,6 +255,8 @@ async def run(
     persistence: Any = None,
     restore: bool = False,
     autosave_every_s: float | None = None,
+    label_store: Any = None,
+    disposition_log: Any = None,
 ) -> AsyncIterator:
     """Drive a live ``source`` through the gate + brain, yielding an :class:`Incident` on each rising edge.
 
@@ -266,9 +286,18 @@ async def run(
       (any object with ``push(energy) -> event.{started,endpoint}``); else an :class:`EnergyVad` built from
       the ``utterance_*`` knobs is used.
 
+    - ``label_store`` — optional :class:`~percept.labelstore.LabelStore` (L-1). When set, every yielded
+      incident is bound to it, so ``incident.record_label(good, ...)`` writes a LOCAL
+      :class:`~percept.contracts.LabelRecord` (the flywheel intake). Default ``None`` → ``record_label``
+      raises (nothing bound); the firing path is byte-for-byte either way.
+    - ``disposition_log`` — optional :class:`~percept.labelstore.DispositionLog` (§4.3). When set, every
+      gate ``FIRE``/``ASK`` appends a ``{incident_id, verdict_ref, disposition, ts}`` row (the escalation
+      meter's raw feed, distinct from ``Verdict.usage``). Default ``None`` → nothing written, byte-for-byte.
+
     Owns capture off the consumer thread; the per-goal cadence + the three-state gate decide *when* and
     *whether* to fire. Yields incidents lazily, so an ``async for incident in run(...)`` is the front door.
     """
+    from percept.labelstore import verdict_ref as _verdict_ref
     from percept.config import load_settings
     from percept.edge.detectors import DetectorBank
     from percept.edge.tier0 import MotionGate, compile_watchspec
@@ -456,6 +485,8 @@ async def run(
                 if getattr(fire, "action", None) == ASK:
                     if stats is not None:
                         stats.asks += 1
+                    if disposition_log is not None:  # §4.3: escalation-meter raw feed (asks are not incidents)
+                        _log_disposition(disposition_log, incident_id="", fire=fire, disposition="ask", ts=at)
                     if on_health is not None:
                         await _call_sink(on_health, RuntimeHealthEvent("ask", ts=at, data={"goal_id": fire.goal_id}))
                     if on_ask is not None:
@@ -469,6 +500,14 @@ async def run(
                     stats.fires += 1
                 snippet = snippet_from_window(clips, kind=snippet_kind, pre_s=snippet_pre_s)
                 incident = make_incident(fire, ts=at, snippet=snippet)
+                if label_store is not None:  # L-1: bind the local label sink so incident.record_label() writes
+                    incident.bind_labeler(
+                        label_store.append,
+                        verdict_ref=_verdict_ref(getattr(fire, "verdict", None)),
+                        goal_id=getattr(fire, "goal_id", None),
+                    )
+                if disposition_log is not None:  # §4.3: escalation-meter raw feed
+                    _log_disposition(disposition_log, incident_id=incident.id, fire=fire, disposition="fire", ts=at)
                 emit_trace = getattr(core, "_emit_trace", None)
                 if getattr(core, "on_trace", None) is not None and emit_trace is not None:
                     # Routed through the safe core emitter (awaits async, swallows tracer errors); guarded

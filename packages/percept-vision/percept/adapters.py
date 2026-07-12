@@ -31,6 +31,7 @@ from percept.contracts import (
     FalseFireCost,
     Goal,
     Identity,
+    LabelRecord,
     Observation,
     Persistence,
     Priors,
@@ -89,4 +90,5 @@ __all__ = [
     "VoiceTransport",
     "Identity",
     "Persistence",
+    "LabelRecord",
 ]

@@ -25,7 +25,8 @@ from .adapters import (
     WatchCondition,
     WatchSpec,
 )
-from percept.contracts import AudioFrame, CONTRACT_VERSION, Incident, IncidentSnippet
+from percept.contracts import AudioFrame, CONTRACT_VERSION, Incident, IncidentSnippet, LabelRecord
+from .labelstore import DispositionLog, LabelStore, verdict_ref
 from .cache import CacheCascade, CacheKey, CacheResult, FrameHashLayer
 from .config import Settings, load_settings
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
@@ -121,6 +122,11 @@ __all__ = [
     "AudioFrame",
     "Incident",
     "IncidentSnippet",
+    # flywheel rail (L-1) — local label + disposition stores
+    "LabelRecord",
+    "LabelStore",
+    "DispositionLog",
+    "verdict_ref",
     # contract version
     "CONTRACT_VERSION",
     # cognition core

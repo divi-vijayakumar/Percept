@@ -17,8 +17,9 @@ a thin re-export shim so every existing ``from percept.adapters import X`` keeps
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Literal, Protocol, runtime_checkable
+from typing import Any, Awaitable, Callable, ClassVar, Literal, Protocol, runtime_checkable
 
 # ---------------------------------------------------------------------------
 # Global contract version + negotiation
@@ -535,6 +536,163 @@ class Incident:
     label: str | None = None  # e.g. "real" / "false_alarm" / None (unlabelled)
     snippet: IncidentSnippet | None = None
     message: str = ""  # the human-facing alert line this fire emitted (the goal's `say`)
+    # L-1 (§4.3): a reserved link a webhook consumer follows to label this fire. Filled by the paid
+    # side (which serves the label endpoint); ``None`` on the keyless path. Reserved now so the wire
+    # shape is stable when paid wires it — OSS never populates it.
+    label_url: str | None = None
+
+    def bind_labeler(
+        self,
+        sink: "Callable[[LabelRecord], Any]",
+        *,
+        verdict_ref: str = "",
+        goal_id: str | None = None,
+        calibration_version: str | None = None,
+        frame_ref: str | None = None,
+    ) -> "Incident":
+        """Attach the LOCAL label sink + join context so :meth:`record_label` can write a
+        :class:`LabelRecord` (L-1). The producer (``percept.run(label_store=...)`` /
+        :class:`RuntimeSession`) calls this on each emitted incident. The bound state lives in a
+        private instance attribute — NOT a dataclass field — so it never serializes, egresses, or
+        appears in the JSON schema. Returns ``self`` for chaining."""
+        self._label_sink = sink  # type: ignore[attr-defined]
+        self._label_ctx = {  # type: ignore[attr-defined]
+            "verdict_ref": verdict_ref,
+            "goal_id": goal_id if goal_id is not None else self.concern_id,
+            "calibration_version": calibration_version,
+            "frame_ref": frame_ref,
+        }
+        return self
+
+    def record_label(
+        self,
+        good: bool,
+        note: str | None = None,
+        tags: "tuple[str, ...] | list[str]" = (),
+        *,
+        source: Literal["api", "voice", "ask_answer", "watch_calibration"] = "api",
+    ) -> "LabelRecord":
+        """Record a ground-truth label on THIS fire — the flywheel intake (L-1, §4.3).
+
+        Builds a :class:`LabelRecord` (``source="api"`` by default — a human via the SDK) and appends it
+        to the local label store bound by the producer (``percept.run(label_store=...)``). Named
+        ``record_label`` — NOT ``label`` — because :attr:`Incident.label` is already the ``str | None``
+        display field; a dataclass field and a method cannot share a name, and renaming the field would
+        break every existing reader (``feedback(incident_id, label)``, dashboards). Raises
+        :class:`RuntimeError` if no store is bound (there is nothing local to write to)."""
+        sink = getattr(self, "_label_sink", None)
+        if sink is None:
+            raise RuntimeError(
+                "no label store bound to this incident — pass label_store= to percept.run()/start() "
+                "(or append to a LabelStore directly). incident.record_label() is a LOCAL write."
+            )
+        ctx = getattr(self, "_label_ctx", {})
+        rec = LabelRecord(
+            incident_id=self.id,
+            verdict_ref=ctx.get("verdict_ref", ""),
+            goal_id=ctx.get("goal_id") or self.concern_id,
+            ts=time.time(),
+            good=bool(good),
+            note=note,
+            tags=list(tags),
+            frame_ref=ctx.get("frame_ref"),
+            calibration_version=ctx.get("calibration_version"),
+            source=source,
+        )
+        sink(rec)
+        return rec
+
+
+# ---------------------------------------------------------------------------
+# LabelRecord (L-1) — the flywheel's raw material: one ground-truth label on a fire.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LabelRecord:
+    """A single ground-truth label on a fired verdict — the OSS flywheel's keystone (L-1, §4.1).
+
+    **One schema, three producers** (BUILD-BOTH rule 1 — do not fork it): manual
+    :meth:`Incident.record_label` (``source="api"``), ASK answers (``source="ask_answer"``, L-2), and
+    watch-calibration reviews (``source="watch_calibration"``, paid W-3). Designed once here so paid
+    never re-derives it.
+
+    **The egress invariant (media-free head / local-only tail).** The record splits in two: every field
+    ABOVE ``frame_ref`` is the *metadata head* and MAY cross the key line; ``frame_ref`` is a LOCAL
+    filesystem path (the pixels' whereabouts) that must NEVER egress. :meth:`to_egress` is built from an
+    explicit :attr:`EGRESS_FIELDS` whitelist that structurally excludes ``frame_ref`` — so the no-pixels
+    rule is a *type-level fact*, not a runtime filter you can forget to apply. The full record (incl.
+    ``frame_ref``) is written LOCALLY by the :class:`~percept.labelstore.LabelStore` via
+    :meth:`to_local_dict`; only :meth:`to_egress` ever feeds a network path.
+    """
+
+    incident_id: str
+    verdict_ref: str  # hash/id of the Verdict that fired — the join key to metering (see labelstore.verdict_ref)
+    goal_id: str
+    ts: float
+    good: bool  # was this fire correct? (False -> billing credit on the paid side)
+    note: str | None = None
+    tags: list[str] = field(default_factory=list)
+    frame_ref: str | None = None  # LOCAL filesystem path ONLY; the local-only tail — NEVER egressed
+    calibration_version: str | None = None  # which prior policy produced the fire
+    source: Literal["api", "voice", "ask_answer", "watch_calibration"] = "api"
+
+    #: The egress whitelist — the metadata head, in declaration order, EXCLUDING ``frame_ref`` (the
+    #: local tail). :meth:`to_egress` emits exactly these names, so ``frame_ref`` is structurally
+    #: un-emittable. A ``ClassVar`` (not a dataclass field): it never serializes and never reaches the
+    #: JSON schema.
+    EGRESS_FIELDS: ClassVar[tuple[str, ...]] = (
+        "incident_id",
+        "verdict_ref",
+        "goal_id",
+        "ts",
+        "good",
+        "note",
+        "tags",
+        "calibration_version",
+        "source",
+    )
+
+    def to_egress(self) -> dict[str, Any]:
+        """The metadata-head dict that MAY cross the key line — structurally cannot contain ``frame_ref``.
+
+        Built from the :attr:`EGRESS_FIELDS` whitelist (which omits ``frame_ref``), so there is no code
+        path — no ``**asdict``, no field iteration — by which the local media pointer leaks to egress."""
+        return {name: getattr(self, name) for name in self.EGRESS_FIELDS}
+
+    def to_local_dict(self) -> dict[str, Any]:
+        """The FULL record — including the local-only ``frame_ref`` — for the on-box
+        :class:`~percept.labelstore.LabelStore`. NEVER hand this to a network sink; use
+        :meth:`to_egress` for anything that crosses the key line."""
+        return {
+            "incident_id": self.incident_id,
+            "verdict_ref": self.verdict_ref,
+            "goal_id": self.goal_id,
+            "ts": self.ts,
+            "good": self.good,
+            "note": self.note,
+            "tags": list(self.tags),
+            "frame_ref": self.frame_ref,
+            "calibration_version": self.calibration_version,
+            "source": self.source,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "LabelRecord":
+        """Reconstruct a record from a JSONL row (the inverse of :meth:`to_local_dict`). Unknown keys
+        are ignored; missing optionals fall back to their defaults, so an older row still loads."""
+        return cls(
+            incident_id=d["incident_id"],
+            verdict_ref=d.get("verdict_ref", ""),
+            goal_id=d.get("goal_id", ""),
+            ts=d["ts"],
+            good=bool(d["good"]),
+            note=d.get("note"),
+            tags=list(d.get("tags") or []),
+            frame_ref=d.get("frame_ref"),
+            calibration_version=d.get("calibration_version"),
+            source=d.get("source", "api"),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -795,6 +953,7 @@ __all__ = [
     "AudioFrame",
     "IncidentSnippet",
     "Incident",
+    "LabelRecord",
     # Protocols
     "Vision",
     "Specialist",
