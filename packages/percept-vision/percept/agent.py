@@ -756,7 +756,7 @@ class Percept:
                 # confidence, never the question text). De-duped through the UNCHANGED gate on a
                 # dedicated __resolved__ key, exactly like the coverage/episode/overdue absence fires.
                 resolved = self._resolve_process_qa(goal, ctx, verdict.confidence)
-            freshness = self._freshness(focus, now)
+            freshness = self._freshness(focus, now, goal.id)
             truth = classify(verdict, freshness, self.gate.threshold, self.gate.fresh_min)
             if truth == "unknown":
                 self.funnel.refused(concern=goal.id, camera=source)  # abstained — refused to guess (ASK)
@@ -1047,15 +1047,35 @@ class Percept:
             return fresh
         return cached
 
-    def _freshness(self, focus, now: float) -> float:
-        """1.0 if no asserted fact or it's still within the validity window, else 0.0 (stale)."""
-        if focus is None:
-            return 1.0
-        confirmed = [a.last_confirmed for a in focus.attributes.values() if a.source == "asserted"]
-        if not confirmed:
-            return 1.0
-        age = now - max(confirmed)
-        return 1.0 if age < self.settings.gate.validity_window_s else 0.0
+    def _freshness(self, focus, now: float, goal_id: str | None = None) -> float:
+        """Freshness in [0,1]: 1.0 = supported/current, 0.0 = stale (-> ASK, invariant 2).
+
+        Two independent staleness signals, combined as the STRICTER (min) — either going to 0.0 drives
+        freshness below ``fresh_min`` -> ASK, matching invariant 2's OR ("low confidence OR stale -> ASK"):
+
+        * ASSERTED-fact age (always on): a user-asserted attribute older than ``validity_window_s`` is stale.
+        * PERCEPTION recency (A-3b, opt-in via ``gate.stale_ask``): a goal not confidently read within
+          ``validity_window_s`` is stale. ``last_supported[goal_id]`` is stamped on every confident read;
+          because ``classify`` runs BEFORE that stamp, a goal with NO prior read (missing entry) is treated
+          as fresh — the current judgment IS the fresh perception, so a first-ever read must not ASK.
+
+        With ``stale_ask`` OFF (default) the perception term is never consulted and this is byte-for-byte
+        the asserted-only path.
+        """
+        asserted = 1.0
+        if focus is not None:
+            confirmed = [a.last_confirmed for a in focus.attributes.values() if a.source == "asserted"]
+            if confirmed:
+                age = now - max(confirmed)
+                asserted = 1.0 if age < self.settings.gate.validity_window_s else 0.0
+        if not self.settings.gate.stale_ask or goal_id is None:
+            return asserted  # OFF: byte-for-byte the asserted-fact freshness
+        perception = 1.0
+        last = self.last_supported.get(goal_id)
+        if last is not None:
+            age = now - last
+            perception = 1.0 if age < self.settings.gate.validity_window_s else 0.0
+        return min(asserted, perception)
 
     def _ask_text(self, goal: Goal) -> str:
         return f'About "{goal.condition}" — can you confirm?'

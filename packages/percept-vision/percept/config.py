@@ -39,6 +39,13 @@ class GateSettings:
     # unbounded (byte-for-byte) unless a bound is passed. Never-goals + per-goal singletons are exempt.
     key_ttl_s: float = 3600.0  # PERCEPT_GATE_KEY_TTL_S — evict a gate key untouched this long (0/neg = off)
     max_keys: int = 0  # PERCEPT_GATE_MAX_KEYS — hard LRU ceiling on gate keys (0 = no ceiling)
+    # A-3b: fold PERCEPTION recency into freshness, not just user-asserted facts. A goal not confidently
+    # read within ``validity_window_s`` contributes freshness 0.0 -> ASK (invariant 2's stale->ASK arm,
+    # which is otherwise dead because ``_freshness`` only measured asserted-fact age). OFF is byte-for-byte
+    # the asserted-only path; this is the ONE switch in the hardening pass that changes WHAT FIRES (goals
+    # begin ASK-ing on stale perception where they stayed SILENT), so it lands INERT — enabling it is a
+    # separate human decision with its own eval pass.
+    stale_ask: bool = False  # PERCEPT_GATE_STALE_ASK — perception-recency freshness (opt-in)
 
 
 @dataclass(frozen=True)
@@ -141,6 +148,7 @@ def load_settings() -> Settings:
             validity_window_s=_env("PERCEPT_GATE_VALIDITY_S", 90.0, float),
             key_ttl_s=_env("PERCEPT_GATE_KEY_TTL_S", 3600.0, float),
             max_keys=_env("PERCEPT_GATE_MAX_KEYS", 0, int),
+            stale_ask=_env("PERCEPT_GATE_STALE_ASK", False, _as_bool),
         ),
         entity=EntitySettings(
             iou_match=_env("PERCEPT_IOU_MATCH", 0.5, float),
