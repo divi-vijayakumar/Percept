@@ -37,6 +37,10 @@ from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 
 _USER_STARTED = {"UserStartedSpeakingFrame"}
 _USER_STOPPED = {"UserStoppedSpeakingFrame"}
+# Pipecat emits Bot{Started,Stopped}SpeakingFrame the moment the model's TTS AUDIO begins/ends playing —
+# the honest end of the A2V latency window (measuring to say()/enqueue understates by the TTS first-token time).
+_BOT_STARTED = {"BotStartedSpeakingFrame"}
+_BOT_STOPPED = {"BotStoppedSpeakingFrame"}
 _USER_TEXT = {"TranscriptionFrame"}
 _IMAGE = {"InputImageRawFrame", "UserImageRawFrame"}
 _IN_RATE, _OUT_RATE = 16000, 24000
@@ -74,6 +78,10 @@ class _SeamObserver(BaseObserver):
                 await self._t._fire(self._t._on_user_speaking, True)
             elif name in _USER_STOPPED:
                 await self._t._fire(self._t._on_user_speaking, False)
+            elif name in _BOT_STARTED:
+                await self._t._fire(self._t._on_bot_speaking, True)   # TTS audio-out began — the A2V end
+            elif name in _BOT_STOPPED:
+                await self._t._fire(self._t._on_bot_speaking, False)
             elif name in _USER_TEXT:
                 text = getattr(frame, "text", "") or ""
                 if text.strip():
@@ -142,6 +150,7 @@ class PipecatRealtimeTransport:
         self._on_barge_in: Any = None
         self._on_event: Any = None
         self._on_user_speaking: Any = None
+        self._on_bot_speaking: Any = None
         self._on_transcript: Any = None
         self._on_utterance: Any = None
         self._frame_provider: Any = None
@@ -154,6 +163,7 @@ class PipecatRealtimeTransport:
     def on_barge_in(self, cb: Any) -> None: self._on_barge_in = cb
     def on_event(self, cb: Any) -> None: self._on_event = cb
     def on_user_speaking(self, cb: Any) -> None: self._on_user_speaking = cb
+    def on_bot_speaking(self, cb: Any) -> None: self._on_bot_speaking = cb  # audio-out edge (A2V end)
     def on_transcript(self, cb: Any) -> None: self._on_transcript = cb
     def set_frame_provider(self, provider: Any) -> None: self._frame_provider = provider
 

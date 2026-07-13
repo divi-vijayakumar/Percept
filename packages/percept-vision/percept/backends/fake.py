@@ -219,6 +219,7 @@ class FakeVoiceTransport:
         self._on_barge_in: Any = None
         self._on_event: Any = None
         self._on_user_speaking: Any = None
+        self._on_bot_speaking: Any = None
         self._on_transcript: Any = None
 
     # -- lifecycle --------------------------------------------------------
@@ -240,6 +241,9 @@ class FakeVoiceTransport:
 
     def on_user_speaking(self, cb: Any) -> None:
         self._on_user_speaking = cb
+
+    def on_bot_speaking(self, cb: Any) -> None:
+        self._on_bot_speaking = cb
 
     def on_transcript(self, cb: Any) -> None:
         self._on_transcript = cb
@@ -277,6 +281,10 @@ class FakeVoiceTransport:
 
     async def emit_user_speaking(self, speaking: bool) -> None:
         await self._fire(self._on_user_speaking, speaking)
+
+    async def emit_bot_speaking(self, speaking: bool) -> None:
+        # Simulate the wire's audio-out edge (BotStarted/StoppedSpeakingFrame) — the honest A2V end.
+        await self._fire(self._on_bot_speaking, speaking)
 
     async def emit_transcript(self, text: str) -> None:
         await self._fire(self._on_transcript, text)

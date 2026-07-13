@@ -114,6 +114,12 @@ class RuntimeSession:
         self._transport_stt: Any = None   # optional STT for audio-only utterances (a transport that
         self._act_sink: Any = None        # the ACT channel for fires (webhook/callback/log)
         self._user_speaking = False       # transport's turn-in-progress signal (fire timing)
+        # A2V latency: the wall time a response was TRIGGERED (a user turn ended, or a fire was enqueued to
+        # the transport) and its kind; on the transport's on_bot_speaking(True) edge (audio-out actually
+        # began) we record `now - since` into metrics. Measuring to say()/enqueue instead understates true
+        # latency by the model's TTS first-token time — the number the realtime demo/paid pitch rests on.
+        self._pending_response_since: float | None = None
+        self._pending_response_kind: str | None = None
         self._queued_fires: list[tuple] = []  # (incident, delivery, queued_at) held behind a live turn
         self._pulsed = ""                 # last brain-state summary sent (dedup the pulse)
         self._arm_tasks: set[asyncio.Task] = set()  # in-flight async watch-arming (watch verb, §3 #1)
@@ -320,6 +326,8 @@ class RuntimeSession:
         transport.on_barge_in(self._on_transport_barge_in)
         transport.on_utterance(self._on_transport_utterance)      # component archetype
         transport.on_user_speaking(self._set_user_speaking)        # fire timing (§4.3)
+        if hasattr(transport, "on_bot_speaking"):                  # optional/additive: audio-out edge -> A2V
+            transport.on_bot_speaking(self._on_bot_speaking)
         transport.on_transcript(self._on_transport_transcript)     # evidence tee (§4.6)
         await transport.start()
         await self._pulse_state(force=True)                        # ground the wire at connect (§4.1)
@@ -415,7 +423,34 @@ class RuntimeSession:
     async def _set_user_speaking(self, speaking: bool) -> None:
         self._user_speaking = bool(speaking)
         if not speaking:
+            # Turn ended → the A2V clock starts: an S2S wire (Gemini Live) now renders its reply, and the
+            # honest latency is until on_bot_speaking(True) (audio-out), not until say()/enqueue.
+            self._mark_pending_response("reactive")
             await self._flush_queued_fires()   # turn ended → deliver anything queued behind it
+
+    def _mark_pending_response(self, kind: str) -> None:
+        """Stamp the moment a spoken response was TRIGGERED (a user turn ended, or a fire was enqueued).
+        The transport's on_bot_speaking(True) edge closes the window and records the A2V latency."""
+        self._pending_response_since = self._wall_clock()
+        self._pending_response_kind = kind
+
+    async def _on_bot_speaking(self, speaking: bool) -> None:
+        """The agent's voice output actually began (``True``) / ended (``False``) — the HONEST A2V end.
+        Record ``now - trigger`` into ``core.metrics`` ONCE per turn (subsequent audio frames of the same
+        turn find no pending stamp and are ignored). Only the transport can see its own playout, so a wire
+        that never emits this simply yields no A2V metric — everything else is unaffected."""
+        if not speaking or self._pending_response_since is None:
+            return
+        dt = max(0.0, self._wall_clock() - self._pending_response_since)
+        kind = self._pending_response_kind or "reply"
+        metrics = getattr(self._core, "metrics", None)
+        if metrics is not None:
+            metrics.add("voice.a2v_latency_s.total", dt)
+            metrics.incr("voice.a2v_latency_s.count")
+            metrics.add(f"voice.a2v_latency_s.{kind}.total", dt)
+            metrics.incr(f"voice.a2v_latency_s.{kind}.count")
+        self._pending_response_since = None
+        self._pending_response_kind = None
 
     async def _on_transport_transcript(self, text: str) -> None:
         """A user-turn transcript (free from a realtime model) → low-priority evidence; nobody waits."""
@@ -454,6 +489,7 @@ class RuntimeSession:
             else:                                        # gentle → hold behind the turn
                 self._queued_fires.append((incident, delivery, time.monotonic()))
                 return
+        self._mark_pending_response("proactive")  # A2V clock for a spoken fire: enqueue -> audio-out
         await self._transport.say(Reply(text=getattr(incident, "message", "")),
                                   verbatim=bool(delivery.get("verbatim", False)))
 
@@ -465,6 +501,7 @@ class RuntimeSession:
             if ttl is not None and (now - queued_at) > float(ttl):
                 continue   # went stale while the user talked → drop (a late nudge is worse than none)
             if self._transport is not None:
+                self._mark_pending_response("proactive")  # A2V clock for the (now-flushed) spoken fire
                 await self._transport.say(Reply(text=getattr(incident, "message", "")),
                                           verbatim=bool(delivery.get("verbatim", False)))
 

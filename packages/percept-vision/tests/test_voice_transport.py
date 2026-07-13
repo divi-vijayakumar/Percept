@@ -9,6 +9,7 @@ goal; and a speech-to-speech transport's `say` is a no-op. (Rule 2: fakes prove 
 from __future__ import annotations
 
 import asyncio
+import types
 import unittest
 
 from percept import Percept
@@ -186,6 +187,84 @@ class TeardownTests(unittest.TestCase):
     def test_fresh_session_has_no_transport(self):
         session = RuntimeSession(_core())
         self.assertIsNone(session._transport)   # byte-for-byte: nothing attached by default
+
+
+class A2VLatencyTests(unittest.TestCase):
+    """`on_bot_speaking` closes the HONEST audio-to-voice window. Latency is measured to audio-out
+    (BotStartedSpeaking), not to say()/enqueue — which understates by the model's TTS first-token time,
+    the exact number the realtime demo/paid pitch rests on. Driven deterministically via FakeVoiceTransport
+    + an injected clock (the live Pipecat path is a manual verify)."""
+
+    async def _attach(self, reply="ok"):
+        core = _core(reply)
+        session = RuntimeSession(core)
+        clock = {"t": 0.0}
+        session._wall_clock = lambda: clock["t"]  # deterministic time  # noqa: SLF001
+        t = FakeVoiceTransport(self_reply=True)
+        await session.attach_transport(t)
+        return core, session, t, clock
+
+    def test_reactive_a2v_user_stop_to_audio_out(self):
+        async def go():
+            core, _session, t, clock = await self._attach()
+            clock["t"] = 100.0
+            await t.emit_user_speaking(True)
+            await t.emit_user_speaking(False)   # turn ended -> A2V clock starts at 100.0
+            clock["t"] = 100.6                  # 600 ms until the wire's voice actually begins
+            await t.emit_bot_speaking(True)     # audio-out edge -> close the window
+            snap = core.metrics.snapshot()
+            self.assertAlmostEqual(snap["voice.a2v_latency_s.total"], 0.6, places=6)
+            self.assertEqual(snap["voice.a2v_latency_s.count"], 1)
+            self.assertAlmostEqual(snap["voice.a2v_latency_s.reactive.total"], 0.6, places=6)
+
+        asyncio.run(go())
+
+    def test_proactive_a2v_enqueue_to_audio_out(self):
+        async def go():
+            core, session, t, clock = await self._attach()
+            clock["t"] = 200.0
+            inc = types.SimpleNamespace(concern_id="g", message="water's boiling")
+            await session.deliver_fire(inc)     # enqueue a spoken fire -> A2V clock starts at 200.0
+            clock["t"] = 200.4
+            await t.emit_bot_speaking(True)
+            snap = core.metrics.snapshot()
+            self.assertAlmostEqual(snap["voice.a2v_latency_s.proactive.total"], 0.4, places=6)
+            self.assertEqual(snap["voice.a2v_latency_s.proactive.count"], 1)
+
+        asyncio.run(go())
+
+    def test_spurious_audio_out_records_nothing_and_only_first_edge_counts(self):
+        async def go():
+            core, _session, t, clock = await self._attach()
+            await t.emit_bot_speaking(True)     # no pending trigger -> nothing recorded
+            self.assertNotIn("voice.a2v_latency_s.count", core.metrics.snapshot())
+            clock["t"] = 300.0
+            await t.emit_user_speaking(False)
+            clock["t"] = 300.2
+            await t.emit_bot_speaking(True)     # counted once...
+            await t.emit_bot_speaking(True)     # ...subsequent frames of the same turn are ignored
+            self.assertEqual(core.metrics.snapshot()["voice.a2v_latency_s.count"], 1)
+
+        asyncio.run(go())
+
+    def test_transport_without_on_bot_speaking_still_attaches(self):
+        # Backward-compat: an older transport lacking on_bot_speaking binds fine (hasattr-guarded); it just
+        # yields no A2V metric. Simulate "no such seam" with a property that raises AttributeError (hasattr
+        # catches it -> the wiring is skipped).
+        class _NoBotSeam(FakeVoiceTransport):
+            @property
+            def on_bot_speaking(self):
+                raise AttributeError("this transport predates the on_bot_speaking seam")
+
+        async def go():
+            core = _core()
+            session = RuntimeSession(core)
+            t = _NoBotSeam(self_reply=True)
+            self.assertFalse(hasattr(t, "on_bot_speaking"))
+            await session.attach_transport(t)   # must not raise despite the missing seam
+            self.assertIs(session._transport, t)
+
+        asyncio.run(go())
 
 
 if __name__ == "__main__":

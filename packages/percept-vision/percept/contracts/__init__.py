@@ -869,6 +869,15 @@ class VoiceTransport(Protocol):
         correctly during a live conversation — a fire mid-sentence, or stale, is worse than silence."""
         ...
 
+    def on_bot_speaking(self, cb: "Callable[[bool], Awaitable[None] | None]") -> None:
+        """Register an up-channel signal that the AGENT's voice output started (``True``) / stopped
+        (``False``) — the moment audio actually begins playing, NOT when a reply was enqueued. This is the
+        honest end of the audio-to-voice (A2V) latency window: measuring to ``say()``/enqueue understates
+        true latency by the model's TTS first-token time. **Optional/additive** — a transport that can't
+        observe its own playout simply never calls it (the brain then can't price A2V for that wire, but
+        everything else works). Consumers wire it defensively (``hasattr``) so older transports still bind."""
+        ...
+
     def on_transcript(self, cb: "Callable[[str], Awaitable[None] | None]") -> None:
         """Register an up-channel sink for the user's turn TRANSCRIPT (a realtime model emits these
         natively — this reads a field you already pay for, it is NOT adding STT). LOW priority: the brain
