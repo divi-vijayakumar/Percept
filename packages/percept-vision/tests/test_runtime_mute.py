@@ -79,6 +79,22 @@ class MuteTests(unittest.TestCase):
 
         asyncio.run(go())
 
+    def test_deafen_sets_a_future_deadline(self):
+        """deafen(seconds) sets a wall-clock deadline (in run()'s wall_clock timebase); the LATEST/longest
+        window wins. This is what run(deaf_until=session.deaf_until) reads to suppress echo endpointing."""
+        async def go():
+            core = _core()
+            session = await start(core, source=_paced_video(2), audio_source=_paced_audio(2))
+            self.assertLessEqual(session.deaf_until(), session._wall_clock())  # not deafened at start
+            session.deafen(5.0)
+            self.assertGreater(session.deaf_until(), session._wall_clock() + 4.0)
+            far = session.deaf_until()
+            session.deafen(0.1)                     # a shorter window must not shrink the active one
+            self.assertEqual(session.deaf_until(), far)
+            await session.stop()
+
+        asyncio.run(go())
+
 
 if __name__ == "__main__":
     unittest.main()

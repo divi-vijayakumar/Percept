@@ -1,9 +1,18 @@
-"""Phase-0 spike — the general behavior-program executor (NEW module; gate + agent untouched).
+"""LIVE — the general behavior-program executor: THE single firing path of the whole SDK.
 
-Proves the go/no-go for the generalization direction (see the direction doc): ONE executor + a general
-key-synthesis reproduces the legacy firing behaviors (judge / transition / absence + the
-on_false / never / each_event / interval / deadline re-arms) byte-for-byte, while honoring the three
-review constraints:
+Every fire in the runtime routes through :class:`BehaviorExecutor` here. ``agent.py`` imports
+``BehaviorExecutor`` + ``program_of`` and, via its lazily-bound ``self.executor``, dispatches EVERY
+concern through one of the four fire methods below:
+
+  * ``_fire_concern``      -> :meth:`BehaviorExecutor.fire_judged`   (agent.py:378)
+  * ``_fire_count`` / rep  -> :meth:`BehaviorExecutor.fire_episode`  (agent.py:397, 413)
+  * absence coverage       -> :meth:`BehaviorExecutor.fire_absence`  (agent.py:532)
+  * state transition       -> :meth:`BehaviorExecutor.fire_transition` (agent.py:736)
+
+It began as a Phase-0 spike (see the direction doc) but is now wired and load-bearing: ONE executor
++ a general key-synthesis reproduces the legacy firing behaviors (judge / transition / episode /
+absence + the on_false / never / each_event / interval / deadline re-arms) byte-for-byte, while
+honoring the three review constraints:
 
   1. STATE ISOLATION — stateful primitives (transition's seen_from/fired) keep cross-tick memory in a
      per-concern :class:`ConcernContext` owned HERE, keyed by concern id, NEVER in ``gate._armed``. The
@@ -15,9 +24,9 @@ review constraints:
      evaluated by a hand-written recursive walker over a strict whitelist. ``eval``/``exec``/``compile``
      are never called on it — the prompt-injection firewall on LLM-authored expressions.
 
-This module is NOT wired into agent.py. It imports ``gate.classify``/``Gate`` but never edits gate.py.
-If ``test_program_equivalence`` is green, this executor is the seed for the real refactor, one sense at
-a time.
+It imports ``gate.classify``/``Gate`` but NEVER edits gate.py — the gate stays a pure ``key -> armed
+bit`` and this executor is the only thing that drives it. ``test_program_equivalence`` pins the
+byte-for-byte equivalence with the legacy per-sense firing paths it replaced.
 """
 
 from __future__ import annotations

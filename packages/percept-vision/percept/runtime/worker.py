@@ -13,12 +13,16 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import time
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable
 
 from percept.events import FrameWindow
 from percept.gate import FIRE, ASK
 from percept.incidents import make_incident, snippet_from_window
+from percept.observability import get_logger
+
+_log = get_logger("percept.runtime.worker")
 
 
 @dataclass
@@ -247,8 +251,11 @@ async def run(
     utterance_threshold: float = 0.01,
     utterance_hangover_frames: int = 8,
     utterance_min_speech_frames: int = 3,
+    deaf_until: Callable[[], float] | None = None,
+    stale_audio_s: float | None = None,
+    wall_clock: Callable[[], float] = time.monotonic,
     wake_policy: Any = None,
-    regate_on_goal_change: bool = False,
+    regate_on_goal_change: bool = True,
     paused: Callable | None = None,
     muted: Callable | None = None,
     clock: Callable | None = None,
@@ -285,6 +292,28 @@ async def run(
       Default ``None`` → no endpointing, the audio path is byte-for-byte. ``vad`` overrides the endpointer
       (any object with ``push(energy) -> event.{started,endpoint}``); else an :class:`EnergyVad` built from
       the ``utterance_*`` knobs is used.
+
+      **The handler runs OFF the pump** (spawned as a tracked task, cancelled on exit): a handler that
+      takes real time — STT + a voice turn + playback — must not block capture, or the backlog it creates
+      is replayed through the endpointer the instant it returns and Percept endpoints its own reply
+      (self-echo). Two utterances can therefore overlap; the runtime does NOT serialize them — the app
+      owns concurrency (guard at capture time, e.g. a ``speaking`` flag). ``on_utterance`` opens an
+      **un-AEC'd** mic and hands raw PCM; if the app plays audio into the same room it MUST call
+      ``deaf_until``/``session.deafen(...)`` around playback or the mic will hear it. For a speakers-on,
+      always-on deployment prefer ``attach_transport`` (the transport owns AEC).
+    - ``deaf_until`` — optional ``() -> deadline`` (in the ``wall_clock`` timebase). While
+      ``wall_clock() < deaf_until()`` the endpointer is suppressed (the app is about to / is speaking):
+      chunks still fill the AudioWindow (fused judging is unaffected) but are not fed to the VAD, and the
+      VAD is reset so a half-built utterance cannot straddle the window. Turn-taking, not perception —
+      checked immediately before the VAD, never above ``push_audio``. Default ``None`` → never deafened.
+    - ``stale_audio_s`` — optional staleness guard for the VAD path. When the pump has fallen behind
+      real time (a slow turn outran the drop-oldest capture queue) draining the backlog would replay
+      minutes-old audio through the endpointer as if live. When pump lag (wall-elapsed minus stream-elapsed
+      since the first chunk) exceeds this, the chunk is dropped from the VAD path and a
+      ``RuntimeHealthEvent("audio_stale")`` is emitted — it is still ``push_audio``'d (the AudioWindow
+      wants the history). Default ``None`` → off (byte-for-byte).
+    - ``wall_clock`` — monotonic time source for ``deaf_until`` + ``stale_audio_s`` (default
+      :func:`time.monotonic`; injectable for tests). Distinct from ``clock`` (civil time for schedules).
 
     - ``label_store`` — optional :class:`~percept.labelstore.LabelStore` (L-1). When set, every yielded
       incident is bound to it, so ``incident.record_label(good, ...)`` writes a LOCAL
@@ -368,16 +397,30 @@ async def run(
         core.on_trace = on_trace  # the per-frame decision trace flows out of perceive_judged
     audio_task = None  # bound before try so the finally can always cancel it, even on setup failure
     autosave_task = None
+    # R1: in-flight on_utterance handlers, spawned OFF the pump. Tracked so the finally can cancel them —
+    # a voice turn must not outlive the run (a dangling STT/Live turn after stop() is a leak).
+    _utt_tasks: set = set()
+
+    def _utt_done(task: "asyncio.Task") -> None:
+        # Discard from the set AND retrieve the result: a raising handler (sink_errors="raise") re-raises
+        # inside this off-pump task; without retrieval asyncio logs "exception never retrieved". The error
+        # was already surfaced via on_health in _call_sink_with_policy — the pump stays alive regardless.
+        _utt_tasks.discard(task)
+        if not task.cancelled():
+            task.exception()
+
     try:
         if on_health is not None:
             await _call_sink(on_health, RuntimeHealthEvent("runtime_started", data={"source": repr(source)}))
         dropped: list[int] = [0]  # shared with the capture thread; surfaced as stats.frames_dropped
+        source_health: list = []  # A-4: capture thread appends (kind, data); drained → on_health below
         source_kwargs = {
             "maxsize": source_queue_size,
             "reconnects": source_reconnects,
             "reconnect_backoff_s": source_reconnect_backoff_s,
             "rtsp_tcp": source_rtsp_tcp,
             "dropped": dropped,
+            "health": source_health,
         }
         # Item 4 episode boundary: a process activity ends precisely on QUIET frames (no escalation), so the
         # boundary check rides the per-frame cadence — only spending a summarize call when it actually fires.
@@ -424,6 +467,7 @@ async def run(
             # leaves the audio path byte-for-byte. `vad` can be any object with push(energy)->ev.endpoint.
             _vad = None
             _utt = {"start": None}  # start time of the utterance currently being spoken
+            _wall_anchor: list = [None]  # (wall0, stream0) at the first VAD chunk — R4 lag reference
             if on_utterance is not None:
                 if vad is not None:
                     _vad = vad
@@ -459,23 +503,51 @@ async def run(
                     # Voice escalation: endpoint a complete utterance and hand its clip to on_utterance.
                     # Runs AFTER push_audio so the just-heard chunk is already in the window we clip from.
                     if _vad is not None and energy is not None:
-                        ev = _vad.push(float(energy))
-                        if getattr(ev, "started", False):
-                            _utt["start"] = at
-                        if getattr(ev, "endpoint", False):
-                            start_t = _utt["start"] if _utt["start"] is not None else at
+                        # R2/R4: suppress the endpointer while the app is about to speak (deafen) or while
+                        # the pump is replaying a stale capture backlog (staleness). The chunk still filled
+                        # the AudioWindow above — this is turn-taking, not perception. Reset the VAD when
+                        # suppressed so a half-built utterance cannot straddle (survive) the window.
+                        suppress = False
+                        if stale_audio_s is not None or deaf_until is not None:
+                            wnow = wall_clock()
+                            if stale_audio_s is not None:
+                                if _wall_anchor[0] is None:
+                                    _wall_anchor[0] = (wnow, at)
+                                w0, s0 = _wall_anchor[0]
+                                if (wnow - w0) - (at - s0) > stale_audio_s:  # pump lag vs real time
+                                    suppress = True
+                                    if on_health is not None:
+                                        await _call_sink(on_health, RuntimeHealthEvent(
+                                            "audio_stale", ts=at, data={"lag_s": (wnow - w0) - (at - s0)}))
+                            if deaf_until is not None and wnow < deaf_until():
+                                suppress = True
+                        if suppress:
+                            _vad.reset()
                             _utt["start"] = None
-                            clip = _utterance_clip(core, gate_source, at - start_t)
-                            if clip is not None:
-                                if stats is not None:
-                                    stats.utterances += 1
-                                if on_health is not None:
-                                    await _call_sink(on_health, RuntimeHealthEvent(
-                                        "utterance", ts=at, data={"dur_s": at - start_t}))
-                                await _call_sink_with_policy(
-                                    on_utterance, clip, at, errors=sink_errors, stats=stats,
-                                    on_health=on_health, health_kind="utterance_sink_error",
-                                )
+                        else:
+                            ev = _vad.push(float(energy))
+                            if getattr(ev, "started", False):
+                                _utt["start"] = at
+                            if getattr(ev, "endpoint", False):
+                                start_t = _utt["start"] if _utt["start"] is not None else at
+                                _utt["start"] = None
+                                clip = _utterance_clip(core, gate_source, at - start_t)
+                                if clip is not None:
+                                    if stats is not None:
+                                        stats.utterances += 1
+                                    if on_health is not None:
+                                        await _call_sink(on_health, RuntimeHealthEvent(
+                                            "utterance", ts=at, data={"dur_s": at - start_t}))
+                                    # R1: hand off OFF the pump — a real handler (STT + voice turn + playback)
+                                    # blocking here guarantees a capture backlog replayed as self-echo the
+                                    # instant it returns. The app owns concurrency (overlaps are possible;
+                                    # the runtime does not serialize). Errors still route through the policy.
+                                    task = asyncio.ensure_future(_call_sink_with_policy(
+                                        on_utterance, clip, at, errors=sink_errors, stats=stats,
+                                        on_health=on_health, health_kind="utterance_sink_error",
+                                    ))
+                                    _utt_tasks.add(task)
+                                    task.add_done_callback(_utt_done)
 
             audio_task = asyncio.ensure_future(_pump_audio())
 
@@ -532,15 +604,38 @@ async def run(
                 yield incident
 
         async for t, gate_frame, judge_frame in _aiter(source, capture_fps, **source_kwargs):
-            # PR 2.1: pick up goals armed/cancelled mid-run (e.g. by voice via RuntimeSession.arm) by
-            # recompiling the gate+banks when the registry revision moved. Opt-in — default off keeps the
-            # gate compiled-once (byte-for-byte). Capture fps is fixed for the open source; only the
-            # escalation logic re-arms (the important part for arm-at-runtime).
-            if regate_on_goal_change and goals_revision is not None:
+            # PR 2.1 / E5: pick up goals armed/cancelled mid-run (e.g. by voice via RuntimeSession.arm)
+            # by recompiling the gate+banks when the registry revision moved. Default ON (a goal armed
+            # mid-run MUST reach the gate — the proactive premise). Capture fps is fixed for the open
+            # source; only the escalation logic re-arms (the important part for arm-at-runtime). When
+            # regate is explicitly OFF and goals STILL move, that is the silent-default trap the shipped
+            # realtime demo hit (goal lands in core, gate never re-arms, nothing ever fires) — so we fail
+            # LOUD (warning + health event) instead of doing nothing.
+            if goals_revision is not None:
                 rev = getattr(core.goals, "revision", goals_revision)
                 if rev != goals_revision:
-                    spec, gate, banks = _build_gate()
+                    if regate_on_goal_change:
+                        spec, gate, banks = _build_gate()
+                    else:
+                        _log.warning(
+                            "goals_changed_without_regate: core.goals.revision moved %s->%s while "
+                            "regate_on_goal_change=False — the running gate will NOT re-arm, so the "
+                            "new/changed goal cannot fire. Pass regate_on_goal_change=True "
+                            "(RuntimeSession.start does this for you).",
+                            goals_revision, rev,
+                        )
+                        if on_health is not None:
+                            await _call_sink(on_health, RuntimeHealthEvent(
+                                "goals_changed_without_regate", ts=t,
+                                data={"from_revision": goals_revision, "to_revision": rev}))
                     goals_revision = rev
+            # A-4: surface any capture-thread health events (e.g. a source whose DELIVERED fps diverges
+            # from its reported CAP_PROP_FPS — the previously-silent half-rate decimation). Drained on the
+            # frame cadence so it fails LOUD through on_health instead of sitting in an unread list.
+            if source_health and on_health is not None:
+                while source_health:
+                    _hk, _hd = source_health.pop(0)
+                    await _call_sink(on_health, RuntimeHealthEvent(_hk, ts=t, data=_hd))
             if stats is not None:
                 stats.frames += 1
                 stats.frames_dropped = dropped[0]
@@ -616,6 +711,8 @@ async def run(
     finally:
         if audio_task is not None:  # stop the audio pump; a dangling capture thread outlives the run otherwise
             audio_task.cancel()
+        for _t in list(_utt_tasks):  # R1: an in-flight voice turn must not outlive the run
+            _t.cancel()
         if autosave_task is not None:
             autosave_task.cancel()
         # PR 2.2: one last save on the way out so a clean shutdown loses nothing since the last autosave.

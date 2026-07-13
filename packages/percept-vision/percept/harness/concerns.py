@@ -1,5 +1,11 @@
 """Concern registry — the standing-concern twin of the detector registry (ticket A2).
 
+FUTURE (public API, exercised only by tests): this registry + :func:`compile_registered_watchspec`
+are a complete, semver-stable surface, but NOTHING in ``percept/runtime/`` calls them today — the
+live path is still the per-call ``tier0.compile_watchspec``. Kept as the forward seam for standing
+(registered) concerns; wire a runtime consumer before treating registration as load-bearing. Verified
+2026-07-12: ``grep -rn 'compile_registered_watchspec\\|register_concern' percept/runtime/`` is empty.
+
 Concerns were previously composed per-call only (the conductor authors goals, ``tier0.compile_watchspec``
 turns each watch goal into a :class:`~percept.adapters.WatchCondition` on the fly). This module adds the
 missing *registration lifecycle* for concerns, mirroring ``detectors.py``:

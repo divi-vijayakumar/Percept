@@ -17,9 +17,10 @@ import array
 import math
 import queue
 import threading
+import time
 import wave
 from dataclasses import dataclass
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable, Literal
 
 from percept.contracts import AudioFrame
 
@@ -34,6 +35,10 @@ class AudioSourceConfig:
     channels: int = 1
     chunk_s: float = 0.25  # gate cadence: ~4 energy readings/sec
     queue_size: int = 256
+    # Timestamp origin for the yielded event ``t`` (A-clock switch, introduced NO-OP). ``"media"`` =
+    # today's ``(i+step)/sr`` byte-for-byte; ``"wall"`` = ``time.monotonic()`` per emitted chunk. The
+    # ``AudioFrame.t_start/t_end`` PCM-slice offsets stay MEDIA under BOTH modes (two jobs, two fields).
+    timebase: Literal["media", "wall"] = "media"
 
 
 def _normalize_uri(uri: str):
@@ -77,15 +82,20 @@ def _put_latest(q: "queue.Queue", item, dropped: "list[int] | None" = None) -> N
         q.put(item, timeout=0.1)
 
 
-def _emit(q, t0: float, t1: float, pcm: bytes, sr: int, ch: int, dropped) -> None:
+def _emit(q, t_event: float, t0: float, t1: float, pcm: bytes, sr: int, ch: int, dropped) -> None:
+    # ``t_event`` is the event timestamp on the yielded tuple (media or wall per timebase); ``t0``/``t1``
+    # are the MEDIA PCM-slice offsets on the AudioFrame — always media, regardless of timebase.
     frame = AudioFrame(pcm=pcm, sample_rate=sr, channels=ch, sample_format="s16le",
                        t_start=t0, t_end=t1)
-    _put_latest(q, (t1, frame, _rms_energy(pcm)), dropped)
+    _put_latest(q, (t_event, frame, _rms_energy(pcm)), dropped)
 
 
 def _capture_wav(path: str, config: AudioSourceConfig, q: "queue.Queue",
-                 stop: threading.Event, dropped: "list[int] | None") -> None:
+                 stop: threading.Event, dropped: "list[int] | None",
+                 *, now: "Callable[[], float] | None" = None) -> None:
     """Stream a wav file in chunk_s slices (stdlib; deterministic — used by tests/replay)."""
+    if now is None:
+        now = time.monotonic
     try:
         with wave.open(path, "rb") as w:
             sr = w.getframerate()
@@ -97,7 +107,8 @@ def _capture_wav(path: str, config: AudioSourceConfig, q: "queue.Queue",
                 if not pcm:
                     break
                 t0, t1 = i / sr, (i + step) / sr
-                _emit(q, t0, t1, pcm, sr, ch, dropped)
+                t_event = now() if config.timebase == "wall" else t1
+                _emit(q, t_event, t0, t1, pcm, sr, ch, dropped)
                 i += step
     except Exception as exc:  # surface to the consumer, like source.py
         _put_latest(q, exc)
@@ -106,9 +117,12 @@ def _capture_wav(path: str, config: AudioSourceConfig, q: "queue.Queue",
 
 
 def _capture_mic(device: "int | None", config: AudioSourceConfig, q: "queue.Queue",
-                 stop: threading.Event, dropped: "list[int] | None") -> None:
+                 stop: threading.Event, dropped: "list[int] | None",
+                 *, now: "Callable[[], float] | None" = None) -> None:
     """Blocking mic capture on a daemon thread; lazy sounddevice import (the [mic] extra). ``device``
     is an explicit input index, or ``None`` to use sounddevice's default input device."""
+    if now is None:
+        now = time.monotonic
     try:
         import sounddevice as sd  # lazy: the [mic] extra
     except Exception as exc:  # pragma: no cover - exercised only without the extra
@@ -129,7 +143,8 @@ def _capture_mic(device: "int | None", config: AudioSourceConfig, q: "queue.Queu
                 if not pcm:
                     continue
                 t0, t1 = i / sr, (i + step) / sr
-                _emit(q, t0, t1, pcm, sr, ch, dropped)
+                t_event = now() if config.timebase == "wall" else t1
+                _emit(q, t_event, t0, t1, pcm, sr, ch, dropped)
                 i += step
     except Exception as exc:
         _put_latest(q, exc)
@@ -144,13 +159,17 @@ async def open_audio_source(
     channels: int = 1,
     chunk_s: float = 0.25,
     maxsize: int = 256,
+    timebase: "Literal['media', 'wall']" = "media",
     dropped: "list[int] | None" = None,
 ) -> AsyncIterator[tuple]:
-    """Threaded audio capture → async ``(t, AudioFrame, energy)`` iterator. Stops the thread on exit."""
+    """Threaded audio capture → async ``(t, AudioFrame, energy)`` iterator. Stops the thread on exit.
+
+    ``timebase`` selects the event ``t`` origin (``"media"`` = today's ``(i+step)/sr``; ``"wall"`` =
+    monotonic per chunk). ``AudioFrame.t_start/t_end`` remain MEDIA offsets under both modes."""
     import asyncio
 
     config = AudioSourceConfig(sample_rate=sample_rate, channels=channels,
-                               chunk_s=chunk_s, queue_size=maxsize)
+                               chunk_s=chunk_s, queue_size=maxsize, timebase=timebase)
     target = _normalize_uri(uri)
     q: "queue.Queue" = queue.Queue(maxsize=config.queue_size)
     stop = threading.Event()

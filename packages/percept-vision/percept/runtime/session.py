@@ -20,7 +20,7 @@ import inspect
 import time
 from typing import Any, Callable
 
-from percept.adapters import Reply, UtteranceEvent
+from percept.adapters import Reply
 from percept.goals import GoalOp
 from percept.runtime.worker import run
 
@@ -71,6 +71,8 @@ class RuntimeSession:
         self._frame_subscribers: list[Callable] = []
         self._paused = False
         self._muted = False
+        self._deaf_until = 0.0            # wall-clock deadline through which utterance endpointing is suppressed
+        self._wall_clock = time.monotonic  # timebase for deafen (matches run()'s default wall_clock)
         self._transport: Any = None       # the attached VoiceTransport, if any
         self._transport_stt: Any = None   # optional STT for audio-only utterances (a transport that
         self._act_sink: Any = None        # the ACT channel for fires (webhook/callback/log)
@@ -115,6 +117,26 @@ class RuntimeSession:
     def unmute(self) -> None:
         """Alias for :meth:`attach_audio_source` — resume feeding the mic to perception."""
         self.attach_audio_source()
+
+    # -- turn-taking: DEAFEN (suppress endpointing while the app speaks) ---------
+    def deafen(self, seconds: float) -> None:
+        """Suppress utterance endpointing for ``seconds`` — the app is **about to speak**.
+
+        ``on_utterance`` opens an un-AEC'd mic; if the app plays audio into the same room, the tail of its
+        own speech is captured (before any app-side ``speaking`` flag can fall) and would be endpointed as
+        a user turn — Percept answers itself, and loops. A flag set at *delivery* cannot express "ignore
+        what I'm about to say"; a deadline can. Call this with ``playback_duration + margin`` (margin >
+        the endpointer hangover) immediately before playback.
+
+        Chunks captured in the window still fill the AudioWindow (fused judging is unaffected); they are
+        simply not fed to the VAD, and the VAD is reset on exit so a half-built utterance cannot survive
+        the window. Idempotent-ish: the LATEST deadline wins (a longer/overlapping window extends it)."""
+        deadline = self._wall_clock() + max(0.0, float(seconds))
+        self._deaf_until = max(self._deaf_until, deadline)
+
+    def deaf_until(self) -> float:
+        """The current deafen deadline in the ``wall_clock`` timebase (wired into ``run(deaf_until=...)``)."""
+        return self._deaf_until
 
     # -- read side --------------------------------------------------------
     def latest_frame(self) -> Any | None:
@@ -231,7 +253,9 @@ class RuntimeSession:
           transport falls back to it (assistant-class: notify when no one's listening).
         - ``stt`` — transcriber for a component transport that ships audio-only utterances.
 
-        Percept never touches raw audio — no echo to hand-cancel. Returns the started transport."""
+        On THIS path Percept never touches raw audio — the transport owns mic + speaker + AEC, so there is
+        no echo to hand-cancel. (This does NOT hold for the ``on_utterance`` path — see :func:`start` —
+        which opens the mic itself with no AEC.) Returns the started transport."""
         self._transport = transport
         self._transport_stt = stt
         self._act_sink = act_sink
@@ -471,10 +495,15 @@ async def start(core: Any, *, source: Any, on_frame: Callable | None = None,
     Wraps ``run(core, source=..., regate_on_goal_change=True, ...)`` in a task. Incidents still flow to
     ``on_incident`` (pass it here); ``on_frame`` is wrapped so the session always holds the latest frame
     for :meth:`RuntimeSession.ask`. Pass ``audio_source="mic:0"`` + ``on_utterance`` (peer of
-    ``on_frame``) for the **ambient voice** entry — Percept owns the mic and hands each endpointed
-    utterance to the voice layer, so there's no push-to-talk / fixed record window. ``store`` is the
-    injected shared store (deferred; see :class:`RuntimeSession`). ``async for incident in run(...)``
-    remains the headless front door; this is the interactive layer on top."""
+    ``on_frame``) for the ambient voice entry — Percept owns the mic and hands each endpointed utterance
+    to the voice layer, so there's no push-to-talk / fixed record window.
+
+    ``on_utterance`` gives you an **un-AEC'd mic**. The handler runs off the pump, so a slow voice turn
+    no longer blocks capture — but if the app plays audio into the same room it **must** call
+    :meth:`RuntimeSession.deafen` around playback (with ``playback_duration + margin``), or Percept will
+    hear itself and loop. For a speakers-on, always-on deployment prefer :meth:`RuntimeSession.attach_transport`
+    — that path owns AEC. ``store`` is the injected shared store (deferred; see :class:`RuntimeSession`).
+    ``async for incident in run(...)`` remains the headless front door; this is the interactive layer on top."""
     session = RuntimeSession(core, store=store, label_store=label_store)
     if on_frame is not None:  # the start-provided consumer is just the first subscriber (back-compat)
         session.subscribe(on_frame)
@@ -483,7 +512,8 @@ async def start(core: Any, *, source: Any, on_frame: Callable | None = None,
         async for incident in run(
             core, source=source, on_frame=session._notify_frame, on_incident=on_incident,  # noqa: SLF001
             on_utterance=on_utterance, label_store=label_store,
-            regate_on_goal_change=True, paused=session.paused, muted=session.muted, **run_kwargs,
+            regate_on_goal_change=True, paused=session.paused, muted=session.muted,
+            deaf_until=session.deaf_until, **run_kwargs,
         ):
             session.incidents.append(incident)
 

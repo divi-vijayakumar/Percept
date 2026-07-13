@@ -26,7 +26,7 @@ from .episodes import EpisodeJudge, EpisodeLog
 from .events import AudioWindow, EventLog, FrameWindow
 from .gate import FIRE, Gate, GateAction, classify
 from .goals import GoalOp, GoalRegistry
-from .observability import Funnel, Metrics, OTelExporter, TraceEvent, health, judge_usage
+from .observability import Funnel, Metrics, OTelExporter, TraceEvent, get_logger, health, judge_usage
 from .rhythm import RhythmTracker
 from .routing import RouteEngine
 from .scheduler import Scheduler
@@ -118,6 +118,16 @@ def _resolve(seam: str, value: Any, cfg: Settings):
     return value  # already an adapter (handy for tests / custom wiring)
 
 
+def _is_fake_backend(obj: Any) -> bool:
+    """True iff ``obj`` is one of Percept's in-core scripted fakes (``percept.backends.fake``).
+
+    A real vendor adapter (``percept.backends.anthropic`` …) OR any custom/test double counts as
+    NOT fake. The point is to catch a REAL pipeline silently paired with a scripted stub — not to
+    classify third-party wiring — so identity is by the fake module, never a heuristic on the name.
+    """
+    return type(obj).__module__ == "percept.backends.fake"
+
+
 @dataclass
 class Percept:
     """The cognition core: backends behind the seams + the memory structures + the gate."""
@@ -155,6 +165,10 @@ class Percept:
     _executor: Any = None  # BehaviorExecutor — the unified firing path (lazily bound to self.gate)
     otel: OTelExporter | None = None  # optional OTel mirror for the funnel; None -> in-process only
     _funnel: Any = None  # Funnel — the standard telemetry funnel (lazily bound to self.metrics)
+    # E3: set by create() when a REAL vision backend is paired with the scripted FakeConductor — a
+    # silent trap (the conductor's default Decision(route="ignore") discards standing-goal requests).
+    # None -> not degraded; a reason string -> health() reports degraded=True. NOT a construction input.
+    _degraded_conductor: str | None = None
 
     # -- construction --------------------------------------------------------
     @classmethod
@@ -173,6 +187,7 @@ class Percept:
         identity: Any = None,
         embedder: Callable[[Any, Box], Any] | None = None,
         on_trace: Callable[[Any], None] | None = None,
+        on_health: Callable[[str], None] | None = None,
     ) -> "Percept":
         cfg = settings or load_settings()
         # A seam not explicitly passed falls back to the config/env selection (settings.models.*, i.e.
@@ -192,7 +207,7 @@ class Percept:
             [FrameHashLayer(cfg.cache, clock=clk)] if cfg.cache.enabled else []
         )
         auditor = audit if audit is not None else DeterministicAuditor(cfg.cache.audit_rate)
-        return cls(
+        obj = cls(
             vision=_resolve("vision", vision, cfg),
             specialist=_resolve("specialist", specialist, cfg),
             conductor=_resolve("conductor", conductor, cfg),
@@ -222,6 +237,22 @@ class Percept:
             ),
             action_log=ActionLog(),
         )
+        # E3 loud-failure: a REAL vision backend behind the scripted FakeConductor is a silent trap.
+        # FakeConductor's default Decision(route="ignore") DISCARDS every standing-goal request, so a
+        # voice-authored "watch X" never arms and the proactive premise is dead — with no error. Flag
+        # it out loud (warning + health()["degraded"]) instead of letting it look like it works. The
+        # all-fake L1 lane (fake vision) is exempt: a fake vision is obviously fake, not a trap.
+        if not _is_fake_backend(obj.vision) and _is_fake_backend(obj.conductor):
+            reason = (
+                "real vision backend paired with FakeConductor: its default Decision(route='ignore') "
+                "discards standing-goal requests, so voice-authored watches never arm. Set "
+                "PERCEPT_CONDUCTOR_BACKEND (or conductor=) to a real backend."
+            )
+            obj._degraded_conductor = reason
+            get_logger("percept.agent").warning("degraded_stub_conductor: %s", reason)
+            if on_health is not None:
+                on_health("degraded_stub_conductor")
+        return obj
 
     # -- goal authoring ------------------------------------------------------
     def add_goal(self, goal: Goal) -> Goal:
@@ -1331,7 +1362,16 @@ class Percept:
         }
         from . import __version__
 
-        return health(__version__, backends, self.metrics)
+        payload = health(__version__, backends, self.metrics)
+        # E3: surface a degraded stub conductor (real vision + FakeConductor) in the health payload so
+        # a dashboard / smoke test SEES the silent trap instead of a green "ok".
+        if self._degraded_conductor is not None:
+            payload["degraded"] = True
+            payload["conductor"] = "fake"
+            payload["reason"] = self._degraded_conductor
+        else:
+            payload["degraded"] = False
+        return payload
 
 
 __all__ = ["Percept", "FireEvent"]

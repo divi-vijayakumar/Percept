@@ -17,9 +17,18 @@ import queue
 import threading
 import time
 from dataclasses import dataclass
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable, Literal
 
 GATE_W, GATE_H = 48, 36  # tier-0 downsample (still vs moved; full res not needed for the gate)
+
+# A-4 delivered-fps misreport heuristic. Measure the RAW read rate over a rolling wall-clock window
+# and compare it to the source's REPORTED CAP_PROP_FPS. A camera that reports 30 but delivers 15 keeps
+# every Nth frame at half the intended rate — the gate/fovea-coast Nyquist guarantee silently halves.
+# Only evaluated once ``>= _FPS_MIN_EVAL_S`` of wall time has actually elapsed, so an offline/instant
+# fixture (span ~0) can never false-fire.
+_FPS_WINDOW_S = 2.0      # rolling window the delivered rate is measured over
+_FPS_MIN_EVAL_S = 1.0    # minimum elapsed wall time before we trust a measurement
+_FPS_TOL = 0.25          # relative gap (|measured-reported|/reported) that counts as a misreport
 
 
 @dataclass(frozen=True)
@@ -31,6 +40,10 @@ class SourceConfig:
     reconnects: int = 0
     reconnect_backoff_s: float = 0.5
     rtsp_tcp: bool = True
+    # Timestamp origin for the yielded ``t`` (A-clock switch, introduced NO-OP). ``"media"`` = today's
+    # arithmetic byte-for-byte (``t = i / src_fps``, unclamped reported fps). ``"wall"`` = ``time.monotonic()``
+    # stamped per KEPT frame. Default stays ``"media"`` — a later PR flips it.
+    timebase: Literal["media", "wall"] = "media"
 
 
 def _normalize_uri(uri: str):
@@ -73,12 +86,20 @@ def _open_capture(cv2, uri: str, config: SourceConfig):
 
 
 def _capture(uri: str, config: SourceConfig, q: "queue.Queue", stop: threading.Event,
-             dropped: "list[int] | None" = None) -> None:
-    """Blocking capture loop, run on a daemon thread; pushes frames into ``q`` until stopped/EOF."""
+             dropped: "list[int] | None" = None, *, now: "Callable[[], float] | None" = None,
+             health: "list | None" = None) -> None:
+    """Blocking capture loop, run on a daemon thread; pushes frames into ``q`` until stopped/EOF.
+
+    ``now`` is the wall clock used for ``timebase="wall"`` stamps AND for the A-4 delivered-fps measure
+    (injectable so tests need no real sleeping; defaults to ``time.monotonic``). ``health`` mirrors the
+    ``dropped`` shared-list telemetry pattern: the capture thread appends ``(kind, data)`` events (today
+    only ``("fps_misreported", {"reported", "measured"})``) for the worker to surface via ``on_health``."""
     import cv2  # lazy: the [runtime]/[rtsp] extra
 
     from percept.edge.tier0 import Frame
 
+    if now is None:
+        now = time.monotonic
     attempts = 0
     try:
         while not stop.is_set():
@@ -89,13 +110,31 @@ def _capture(uri: str, config: SourceConfig, q: "queue.Queue", stop: threading.E
             src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
             step = max(1, round(src_fps / config.fps))
             i = 0
+            read_ts: "list[float]" = []   # wall times of recent raw reads (A-4 delivered-fps window)
+            fps_reported = False           # emit the misreport at most once per open
             try:
                 while not stop.is_set():
                     ok, bgr = cap.read()
                     if not ok:
                         break
+                    # A-4: measure the RAW read rate over a rolling wall-clock window and flag a source
+                    # whose delivered fps diverges from its reported CAP_PROP_FPS. Emit-only (does NOT
+                    # touch `step`/`t`), so the media lane stays byte-for-byte. Guarded by `health`.
+                    if health is not None and not fps_reported:
+                        tw = now()
+                        read_ts.append(tw)
+                        cutoff = tw - _FPS_WINDOW_S
+                        while read_ts and read_ts[0] < cutoff:
+                            read_ts.pop(0)
+                        span = read_ts[-1] - read_ts[0]
+                        if span >= _FPS_MIN_EVAL_S and len(read_ts) >= 2:
+                            measured = (len(read_ts) - 1) / span
+                            if abs(measured - src_fps) > _FPS_TOL * src_fps:
+                                health.append(("fps_misreported",
+                                               {"reported": src_fps, "measured": measured}))
+                                fps_reported = True
                     if i % step == 0:
-                        t = i / src_fps
+                        t = now() if config.timebase == "wall" else i / src_fps
                         gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
                         g = cv2.resize(gray, (GATE_W, GATE_H))
                         gate_frame = Frame(w=GATE_W, h=GATE_H, pixels=tuple(int(p) for p in g.flatten()))
@@ -122,20 +161,28 @@ async def open_source(
     reconnects: int = 0,
     reconnect_backoff_s: float = 0.5,
     rtsp_tcp: bool = True,
+    timebase: "Literal['media', 'wall']" = "media",
     dropped: "list[int] | None" = None,
+    health: "list | None" = None,
 ) -> AsyncIterator[tuple]:
     """Threaded capture: read frames off a daemon thread (so capture never blocks the consumer/event
-    loop), yield ``(t, gate_frame, judge_frame)`` asynchronously. Stops the thread on consumer exit."""
+    loop), yield ``(t, gate_frame, judge_frame)`` asynchronously. Stops the thread on consumer exit.
+
+    ``timebase`` selects the ``t`` origin (``"media"`` = today's ``i/src_fps``; ``"wall"`` = monotonic).
+    ``health`` is an optional shared list the capture thread appends A-4 ``fps_misreported`` events to."""
     config = SourceConfig(
         fps=fps,
         queue_size=maxsize,
         reconnects=reconnects,
         reconnect_backoff_s=reconnect_backoff_s,
         rtsp_tcp=rtsp_tcp,
+        timebase=timebase,
     )
     q: "queue.Queue" = queue.Queue(maxsize=config.queue_size)
     stop = threading.Event()
-    thread = threading.Thread(target=_capture, args=(uri, config, q, stop, dropped), daemon=True)
+    thread = threading.Thread(
+        target=_capture, args=(uri, config, q, stop, dropped), kwargs={"health": health}, daemon=True
+    )
     thread.start()
     try:
         while True:
