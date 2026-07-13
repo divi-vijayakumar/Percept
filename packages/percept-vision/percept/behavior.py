@@ -98,7 +98,10 @@ class BehaviorProgram:
     to_predicate: str | None = None
     key: KeySpec = field(default_factory=KeySpec)
     accumulate: Accumulator = field(default_factory=Accumulator)
-    deadline_s: float | None = None
+    # An ABSOLUTE deadline stamp on the SAME clock the executor compares against (``now``). Resolved at
+    # ARM time from the authored ``deadline_after_s`` duration (agent._arm_deadline) — never a raw duration,
+    # never a cross-timeline value. (R3: one field, one meaning, one clock.)
+    deadline_at: float | None = None
     cadence_s: float | None = None
     hold_s: float | None = None  # R-1 sustained-duration: fire only after the condition holds this long
     perception: PerceptionSpec = field(default_factory=PerceptionSpec)  # HOW to look (defaults = today)
@@ -354,9 +357,9 @@ class BehaviorExecutor:
         satisfied: bool,
         metric: str = "overdue.gate",
     ) -> Fired | None:
-        if program.deadline_s is None:
+        if program.deadline_at is None:
             return None
-        overdue = now >= program.deadline_s and not satisfied
+        overdue = now >= program.deadline_at and not satisfied
         verdict = Verdict(satisfied=overdue, confidence=1.0, evidence="overdue")
         action = self.gate.evaluate((goal.id, "__overdue__"), verdict)
         self.metrics.incr(f"{metric}.{action}")
@@ -430,7 +433,7 @@ def program_of(goal) -> BehaviorProgram:
             accumulate=Accumulator(kind="count_distinct", fire_when=s.get("fire_when")),
         )
     elif rearm == "deadline":
-        prog = BehaviorProgram(sense="absence", predicate=goal.condition, deadline_s=s.get("deadline_s"))
+        prog = BehaviorProgram(sense="absence", predicate=goal.condition, deadline_at=s.get("deadline_at"))
     elif rearm == "never":
         prog = BehaviorProgram(sense="judge", predicate=goal.condition, key=KeySpec(suppress_false=True))
     elif rearm == "interval":
@@ -446,7 +449,7 @@ def program_of(goal) -> BehaviorProgram:
             predicate=goal.condition,
             accumulate=Accumulator(fire_when=s.get("fire_when"), window_s=s.get("window_s")),
         )
-    # R-1: sustained-duration dwell, authored via goal.state["hold_s"] (same channel as deadline_s /
+    # R-1: sustained-duration dwell, authored via goal.state["hold_s"] (same channel as deadline_after_s /
     # cadence_s). Absent -> None -> byte-for-byte the rising-edge gate. Coerced defensively (untrusted).
     hold = _coerce_hold_s(s.get("hold_s"))
     return replace(prog, perception=_perception_for(prog.sense, s.get("perception")), hold_s=hold)
@@ -505,9 +508,12 @@ def coerce_authored_behavior(raw) -> dict:
         if c is not None and c > 0:
             out.update(rearm="interval", cadence_s=max(_MIN_CADENCE_S, c))
     elif rearm == "deadline":
-        d = _num(raw.get("deadline_s"))
+        # ``deadline_after_s`` is a DURATION (seconds from arm), NOT an absolute stamp. The agent resolves
+        # it to an absolute ``deadline_at`` on its clock at arm time. An authored absolute would fire on the
+        # wrong timeline (A-2); keeping the authored field a duration is what makes that impossible.
+        d = _num(raw.get("deadline_after_s"))
         if d is not None and d >= 0:
-            out.update(rearm="deadline", deadline_s=d)
+            out.update(rearm="deadline", deadline_after_s=d)
     # accumulate (nth-distinct): fire_when is validated through the SAME AST whitelist that runs at
     # firing time — an unsafe expression is dropped here, so it never reaches goal.state.
     acc = raw.get("accumulate")

@@ -10,17 +10,22 @@ import unittest
 from percept.adapters import Goal, Verdict
 from percept.agent import Percept
 from percept.backends.fake import FakeVision
+from percept.clock import FakeClock
 from percept.gate import FIRE
 
 
-def _agent():
-    return Percept.create(vision=FakeVision(script={}), discover_plugins=False)
+def _agent(clock_start=0.0):
+    # Arm-time clock and the check_deadlines `t` MUST share a timeline (R3). A FakeClock at 0 makes the
+    # authored duration resolve to an absolute stamp on the same scale as the explicit stream `t` below.
+    return Percept.create(
+        vision=FakeVision(script={}), discover_plugins=False, clock=FakeClock(clock_start)
+    )
 
 
 def _deadline_goal(a, gid="salt", deadline=10.0):
     g = Goal(id=gid, condition="salt has been added", say="don't forget the salt")
     g.state["rearm"] = "deadline"
-    g.state["deadline_s"] = deadline
+    g.state["deadline_after_s"] = deadline  # a DURATION from arm; resolved to deadline_at at add_goal
     a.add_goal(g)
     return g
 

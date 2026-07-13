@@ -109,5 +109,28 @@ class Gate:
         for key in [k for k in self._dwell_since if isinstance(k, tuple) and k and k[0] == goal_id]:
             del self._dwell_since[key]
 
+    # -- persistence (R4: the armed edge must survive a restart, or a 24/7 watch re-fires) ---------
+    def snapshot(self) -> dict:
+        """Durable edge state. Keys are tuples ``(goal_id, entity[, answer])`` -> serialized as lists so
+        the whole snapshot stays JSON-able through the persistence backend. The in-progress dwell timer
+        is included for inspection but is NOT restored (see :meth:`restore`)."""
+        return {
+            "armed": [[list(k), bool(v)] for k, v in self._armed.items()],
+            "dwell_since": [[list(k), float(t)] for k, t in self._dwell_since.items()],
+        }
+
+    def restore(self, snap: "dict | None") -> None:
+        """Rehydrate the armed/disarmed edge per key (the anti-re-fire bit). A missing/empty snapshot is a
+        no-op (byte-for-byte a fresh gate).
+
+        The in-progress dwell (``_dwell_since``) is EXPLICITLY DROPPED: its start is a wall-clock stamp on
+        the pre-restart timeline with no anchor to rebase from, so a half-completed dwell cannot be
+        resumed correctly. Dropping it re-arms that edge's dwell from now — the loud, correct failure — in
+        preference to silently resurrecting a stamp that would fire early or late."""
+        if not snap:
+            return
+        self._armed = {tuple(k): bool(v) for k, v in snap.get("armed", [])}
+        self._dwell_since = {}
+
 
 __all__ = ["GateAction", "FIRE", "ASK", "SILENT", "classify", "Gate"]

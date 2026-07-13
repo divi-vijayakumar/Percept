@@ -13,6 +13,7 @@ import unittest
 from percept import Goal, Percept
 from percept.adapters import Verdict
 from percept.backends.fake import FakeVision
+from percept.clock import FakeClock
 from percept.edge.tier0 import gray_frame
 from percept.runtime import run
 
@@ -23,7 +24,9 @@ MOVED = gray_frame(W, H, 255)
 
 def _core(*, state) -> Percept:
     vision = FakeVision(script={"x": Verdict(satisfied=False, confidence=0.9, evidence="not yet")})
-    core = Percept.create(vision=vision, discover_plugins=False)
+    # FakeClock(0): the goal is armed BEFORE run(), so a deadline duration must resolve on the same 0-based
+    # timeline the synthetic source stamps its frames on (the worker drives check_deadlines with frame t).
+    core = Percept.create(vision=vision, discover_plugins=False, clock=FakeClock(0.0))
     core.add_goal(Goal(id="g", condition="the thing is present", say="fired", state=state))
     return core
 
@@ -42,7 +45,7 @@ class RuntimeAbsenceTests(unittest.TestCase):
         self.assertTrue(any(i.concern_id == "g" for i in incidents), "coverage-loss should fire")
 
     def test_overdue_deadline_fires_in_run(self):
-        core = _core(state={"rearm": "deadline", "deadline_s": 3.0})
+        core = _core(state={"rearm": "deadline", "deadline_after_s": 3.0})
         source = [(float(t), STILL, "x") for t in range(6)]  # never satisfied; crosses t=3
         incidents = asyncio.run(_collect(core, source))
         self.assertTrue(any(i.concern_id == "g" for i in incidents), "overdue should fire past the deadline")

@@ -35,11 +35,12 @@ class _EvalVision:
         return list(self._detect.get(str(frame), []))
 
 
-def _agent(judge_fn, detect):
+def _agent(judge_fn, detect, clock=None):
     return Percept.create(
         vision=_EvalVision(judge_fn, detect),
         settings=Settings(gate=GateSettings(threshold=0.7)),
         discover_plugins=False,
+        clock=clock,
     )
 
 
@@ -87,9 +88,11 @@ class TestNovelTasks(unittest.TestCase):
 
     def test_warn_me_if_stove_not_off_in_time(self):
         # NL: "warn me if the stove isn't turned off within 30 seconds"  -> absence(deadline) + severe
-        a = _agent(lambda f, c: YES, {})
+        # Arm at clock=0 so the 30s DURATION resolves to an absolute deadline_at=30 on the check `t` scale.
+        from percept.clock import FakeClock
+        a = _agent(lambda f, c: YES, {}, clock=FakeClock(0.0))
         a.add_goal(_author(Goal(id="g", condition="the stove is off", say="stove still on!"),
-                           {"rearm": "deadline", "deadline_s": 30, "consequence": {"miss_cost": "severe"}}))
+                           {"rearm": "deadline", "deadline_after_s": 30, "consequence": {"miss_cost": "severe"}}))
         self.assertEqual(a.check_deadlines(t=10.0), [])  # within the deadline -> waiting
         self.assertEqual([e.action for e in a.check_deadlines(t=31.0)], [FIRE])  # overdue -> warn
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import inspect
 import time
+import warnings
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Callable
 
@@ -256,7 +257,32 @@ class Percept:
 
     # -- goal authoring ------------------------------------------------------
     def add_goal(self, goal: Goal) -> Goal:
+        self._arm_deadline(goal)  # R3: resolve an authored duration into an absolute stamp at ARM time
         return self.goals.create(goal)
+
+    def _arm_deadline(self, goal: Goal) -> None:
+        """Resolve a ``deadline`` concern's authored DURATION into an absolute ``deadline_at`` on THIS
+        agent's clock, at the moment the goal is armed (R3: one field, one meaning, one clock).
+
+        ``deadline_after_s`` (a duration) -> ``deadline_at = clock() + deadline_after_s``. The executor
+        only ever compares against ``deadline_at``, on the same timeline the worker stamps frames on
+        (wall for live capture). A legacy absolute ``deadline_s`` in ``goal.state`` (an old author or a
+        v1 snapshot) has NO recoverable duration base, so it is refused LOUDLY — never silently reused
+        under a new meaning that would fire on the wrong frame or never fire at all."""
+        st = goal.state
+        if st.get("rearm") != "deadline":
+            return
+        if st.get("deadline_at") is not None:
+            return  # already absolute (e.g. a verification concern that stamped it directly)
+        if "deadline_after_s" in st:
+            st["deadline_at"] = self.clock() + float(st["deadline_after_s"])
+            return
+        if "deadline_s" in st:
+            raise ValueError(
+                f"goal {goal.id!r} carries a legacy 'deadline_s' (ambiguous absolute-vs-duration, the "
+                "A-2 clock bug). Re-author as 'deadline_after_s' (a duration from arm). Refusing to arm "
+                "a deadline concern whose stamp would fire on the wrong timeline or never fire."
+            )
 
     # -- episode counting (the cup problem) ---------------------------------
     def count_event(
@@ -366,10 +392,16 @@ class Percept:
 
     def apply_goal_ops(self, ops: list[GoalOp]) -> None:
         self.goals.apply(ops)
-        # cache invalidation — goal-change (1st in the order): a goal whose condition/lifecycle
-        # changed must not be served from a verdict cached under its old meaning.
         for op in ops:
             gid = op.goal.id if op.op == "create" and op.goal is not None else op.goal_id
+            # R3: resolve an authored deadline duration to an absolute stamp at ARM time — a goal armed
+            # mid-run (voice) must get its deadline_at on the live clock, not silently stay a duration.
+            if op.op in ("create", "update") and gid is not None:
+                g = self.goals.get(gid)
+                if g is not None:
+                    self._arm_deadline(g)
+            # cache invalidation — goal-change (1st in the order): a goal whose condition/lifecycle
+            # changed must not be served from a verdict cached under its old meaning.
             if op.op in ("update", "complete", "cancel") and gid is not None:
                 self.invalidate_cache(gid)
 
@@ -551,7 +583,7 @@ class Percept:
         by construction: it fires on the LACK of a confident-yes, never on a guess. Rides the existing
         tick/scheduler loop (S2) and feeds a synthetic verdict to the UNCHANGED gate on a dedicated
         ``__overdue__`` key -> fires ONCE per overdue episode, re-arms if the expected event arrives.
-        Only ``rearm == 'deadline'`` concerns (with a ``deadline_s``) participate -> byte-for-byte.
+        Only ``rearm == 'deadline'`` concerns (with a resolved ``deadline_at``) participate -> byte-for-byte.
         """
         now = self.clock() if t is None else t
         out: list[FireEvent] = []
@@ -1306,7 +1338,10 @@ class Percept:
             source=goal.source,
         )
         v.state["rearm"] = "deadline"
-        v.state["deadline_s"] = t + verify_within
+        # ``t`` is this agent's clock reading (actuate's ``now``); the worker stamps frames on that SAME
+        # clock (wall for live capture), so this absolute deadline is comparable against ``check_deadlines``
+        # -> the verification concern can actually fire (A-1: previously a monotonic stamp vs a stream t).
+        v.state["deadline_at"] = t + verify_within
         v.state["miss_cost"] = "severe"
         v.state["verifies"] = goal.id
         self.add_goal(v)
@@ -1322,21 +1357,73 @@ class Percept:
 
     # -- persistence (endurance: survive a disconnect) ----------------------
     def snapshot(self) -> dict:
-        """A JSON-able snapshot of durable state: goals, entities, and the action log."""
+        """A JSON-able snapshot of durable state: goals, entities, the action log, and (v2) the gate's
+        armed edge state + deadlines rebased into EPOCH time.
+
+        Absolute deadlines live on the monotonic clock, which resets on restart — a raw monotonic value
+        is meaningless after a reboot. Each ``deadline_at`` is converted to a wall-clock (``time.time``)
+        instant here and rebased back into the fresh monotonic frame in :meth:`restore`. The
+        ``clock_anchor`` records the ``(epoch, monotonic)`` pair the conversion was taken against."""
+        now_mono = self.clock()
+        now_epoch = time.time()
+        goals = self.goals.snapshot()
+        for item in goals:
+            st = item.get("goal", {}).get("state", {})
+            da = st.get("deadline_at")
+            if da is not None:
+                st["deadline_at_epoch"] = now_epoch + (da - now_mono)  # monotonic -> epoch (rebasable)
+                del st["deadline_at"]
         return {
-            "version": 1,
-            "goals": self.goals.snapshot(),
+            "version": 2,
+            "clock_anchor": [now_epoch, now_mono],
+            "goals": goals,
+            "gate": self.gate.snapshot(),
             "entities": self.graph.snapshot(),
             "action_log": [asdict(r) for r in self.action_log.entries()],
         }
 
     def restore(self, snap: dict) -> "Percept":
-        """Rehydrate goals / entities / action-log from a :meth:`snapshot`."""
+        """Rehydrate goals / entities / action-log / gate from a :meth:`snapshot`, rebasing epoch
+        deadlines into THIS process's monotonic frame.
+
+        v1 back-compat is a TRAP: a v1 goal carries an old absolute ``deadline_s`` with no recoverable
+        duration base, so it cannot be rebased. Accepting it silently would leave the concern with no
+        ``deadline_at`` and it would never fire again — the exact silent-inertness this pass exists to
+        kill. So a legacy ``deadline_s`` is handled LOUDLY: a warning + metric, then re-resolved as a
+        duration-from-restore-now so the concern still fires."""
+        # v1 vs v2 is detected structurally (a v2 goal carries deadline_at_epoch; a v1 goal a legacy
+        # deadline_s), so a missing/renumbered version field can never silently mis-route a deadline.
         self.goals.restore(snap.get("goals", []))
         self.graph.restore(snap.get("entities", []))
         self.action_log = ActionLog()
         for rd in snap.get("action_log", []):
             self.action_log.record(ActionRecord(**rd))
+
+        now_mono = self.clock()
+        now_epoch = time.time()
+        for goal in self.goals.all():
+            st = goal.state
+            if st.get("rearm") != "deadline":
+                continue
+            if "deadline_at_epoch" in st:  # v2: rebase epoch -> the fresh monotonic frame
+                remaining = st.pop("deadline_at_epoch") - now_epoch
+                st["deadline_at"] = now_mono + remaining
+            elif "deadline_at" not in st and "deadline_after_s" not in st and "deadline_s" in st:
+                legacy = st.pop("deadline_s")  # v1 legacy absolute — LOUD, never silent
+                try:
+                    st["deadline_at"] = now_mono + float(legacy)
+                except (TypeError, ValueError):
+                    st["deadline_at"] = now_mono
+                self.metrics.incr("snapshot.deadline_unmigratable")
+                warnings.warn(
+                    f"restore(): goal {goal.id!r} carried a legacy absolute 'deadline_s' from a v1 "
+                    f"snapshot that cannot be rebased (no duration base). Re-resolved as a duration from "
+                    f"restore-time so it still fires — verify the new deadline. Re-author with "
+                    f"'deadline_after_s' to remove this warning.",
+                    stacklevel=2,
+                )
+
+        self.gate.restore(snap.get("gate"))
         return self
 
     def save_state(self, persistence: Any, key: str = "percept") -> None:

@@ -52,6 +52,44 @@ class RuntimeHealthEvent:
     data: dict[str, Any] | None = None
 
 
+# R6 — per-path timebase-skew tolerances. The tripwire compares a frame/chunk `t` against the core
+# clock; a divergence past the path's tolerance means the two timelines have come apart (a live source
+# left on "media", or a wedged pump replaying stale timestamps). Per-path because the two capture queues
+# have very different legitimate backlogs: the video queue is ~64 deep @ ~4fps (~16s), while the audio
+# queue is ~256 deep @ ~4 chunks/s (~64s) and a chunk sitting behind a blocked pump is exactly the
+# SPEC-B backlog condition — one global tolerance would false-fire on normal audio lag. Both are far
+# below a media/wall confusion (~1e6 s), so a real skew still trips; both are comfortably above the
+# queue's own worst-case lag, so a healthy backlog never does.
+_VIDEO_SKEW_TOL_S = 30.0   # video queue worst-case ~16s + margin
+_AUDIO_SKEW_TOL_S = 120.0  # audio queue worst-case ~64s + margin (a blocked pump is legitimate)
+
+
+async def _assert_timebase(
+    t: float,
+    clock: "Callable[[], float] | None",
+    *,
+    tol: float,
+    path: str,
+    emitted: "set[str]",
+    on_health: "Callable | None",
+) -> None:
+    """R6 CI net: emit ``on_health("timebase_skew", …)`` ONCE per path when a frame/chunk ``t`` and the
+    core clock diverge past ``tol``. Only meaningful on a LIVE path (where ``t`` is supposed to BE the
+    wall clock); an offline/media source deliberately runs ``t`` on a synthetic timeline and is never
+    checked. Idempotent: once a path has emitted, it stays quiet (no per-frame spam). Best-effort — a
+    missing clock or ``on_health`` is a no-op."""
+    if clock is None or on_health is None or path in emitted:
+        return
+    now = clock()
+    skew = abs(t - now)
+    if skew > tol:
+        emitted.add(path)
+        await _call_sink(on_health, RuntimeHealthEvent(
+            "timebase_skew", ts=t,
+            data={"path": path, "frame_t": t, "clock": now, "skew_s": skew, "tolerance_s": tol},
+        ))
+
+
 def _log_disposition(log: Any, *, incident_id: str, fire: Any, disposition: str, ts: float) -> None:
     """Append one gate disposition to the :class:`~percept.labelstore.DispositionLog` (§4.3).
 
@@ -422,6 +460,21 @@ async def run(
             "dropped": dropped,
             "health": source_health,
         }
+        # R3/Step-1: a LIVE capture (a webcam/rtsp/file URI opened via open_source) stamps each frame on
+        # the WALL clock, so frame `t` shares the timeline the agent resolves deadlines / verification
+        # concerns on (self.clock). Deterministic sources (iterables, replay, the eval harness, every
+        # offline test) feed explicit `t` and MUST stay on "media" — the kwarg only reaches open_source
+        # for a str source (see _aiter), so a non-str source is byte-for-byte untouched. A live source is
+        # therefore also the only path _assert_timebase (R6) guards.
+        live_video = isinstance(source, str)
+        if live_video:
+            source_kwargs["timebase"] = "wall"
+        live_audio = isinstance(audio_source, str)
+        audio_kwargs = {"timebase": "wall"} if live_audio else {}
+        # R6: emit-once skew tripwires, one per capture path (frame queue ~64 @4fps ~16s; audio queue
+        # ~256 @4/s ~64s — a single global tolerance would false-fire on a legitimately-backlogged audio
+        # chunk behind a blocked pump, the SPEC-B condition). Only armed on live paths (media is offline).
+        _skew_emitted: set[str] = set()
         # Item 4 episode boundary: a process activity ends precisely on QUIET frames (no escalation), so the
         # boundary check rides the per-frame cadence — only spending a summarize call when it actually fires.
         check_boundary = getattr(core, "check_episode_boundary", None)
@@ -482,7 +535,14 @@ async def run(
             async def _pump_audio():
                 # Pump every chunk into the AudioWindow (un-strands modality="fused"/"audio") and track
                 # energy + onsets. Never lets a bad audio chunk kill the run — the watch survives a mic drop.
-                async for at, chunk, energy in _audio_aiter(audio_source):
+                async for at, chunk, energy in _audio_aiter(audio_source, **audio_kwargs):
+                    # R6: a LIVE mic stamps chunks on the wall clock; a divergence past the AUDIO tolerance
+                    # (wider than video — a backlogged chunk behind a blocked pump is legitimate) trips once.
+                    if live_audio:
+                        await _assert_timebase(
+                            at, getattr(core, "clock", None),
+                            tol=_AUDIO_SKEW_TOL_S, path="audio", emitted=_skew_emitted, on_health=on_health,
+                        )
                     # MUTED (RuntimeSession.detach_audio_source): keep draining the mic stream but stop
                     # FEEDING it to perception — the fused judge goes video-only and the energy/onset gate
                     # signals freeze, without ending the session. Default (muted=None) is byte-for-byte.
@@ -604,6 +664,13 @@ async def run(
                 yield incident
 
         async for t, gate_frame, judge_frame in _aiter(source, capture_fps, **source_kwargs):
+            # R6: on a LIVE source, frame `t` IS the wall clock — if it has drifted from the core clock
+            # past the video tolerance, the timelines the gate/deadlines share have come apart. Emit once.
+            if live_video:
+                await _assert_timebase(
+                    t, getattr(core, "clock", None),
+                    tol=_VIDEO_SKEW_TOL_S, path="video", emitted=_skew_emitted, on_health=on_health,
+                )
             # PR 2.1 / E5: pick up goals armed/cancelled mid-run (e.g. by voice via RuntimeSession.arm)
             # by recompiling the gate+banks when the registry revision moved. Default ON (a goal armed
             # mid-run MUST reach the gate — the proactive premise). Capture fps is fixed for the open

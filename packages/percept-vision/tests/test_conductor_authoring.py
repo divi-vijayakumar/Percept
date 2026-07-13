@@ -33,10 +33,13 @@ class TestCoerceAuthoredBehavior(unittest.TestCase):
 
     def test_deadline_valid_and_negative_dropped(self):
         self.assertEqual(
-            coerce_authored_behavior({"rearm": "deadline", "deadline_s": 300}),
-            {"rearm": "deadline", "deadline_s": 300.0},
+            coerce_authored_behavior({"rearm": "deadline", "deadline_after_s": 300}),
+            {"rearm": "deadline", "deadline_after_s": 300.0},
         )
-        self.assertEqual(coerce_authored_behavior({"rearm": "deadline", "deadline_s": -5}), {})
+        self.assertEqual(coerce_authored_behavior({"rearm": "deadline", "deadline_after_s": -5}), {})
+        # a legacy absolute `deadline_s` is NOT understood -> dropped (the goal falls back to a plain
+        # watch); the authored duration field is `deadline_after_s`.
+        self.assertEqual(coerce_authored_behavior({"rearm": "deadline", "deadline_s": 300}), {})
 
     def test_transition_needs_from_and_to(self):
         self.assertEqual(
@@ -70,7 +73,7 @@ class TestCoerceAuthoredBehavior(unittest.TestCase):
     def test_unknown_and_malformed_are_dropped(self):
         self.assertEqual(coerce_authored_behavior({"rearm": "explode"}), {})  # out-of-vocab rearm
         self.assertEqual(coerce_authored_behavior({"type": "wormhole"}), {})  # out-of-vocab type
-        self.assertEqual(coerce_authored_behavior({"rearm": "deadline", "deadline_s": "__import__"}), {})
+        self.assertEqual(coerce_authored_behavior({"rearm": "deadline", "deadline_after_s": "__import__"}), {})
         self.assertEqual(coerce_authored_behavior(None), {})
         self.assertEqual(coerce_authored_behavior("interval"), {})
         self.assertEqual(coerce_authored_behavior({"rearm": "interval", "cadence_s": True}), {})  # bool != num

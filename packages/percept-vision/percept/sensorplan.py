@@ -196,7 +196,9 @@ def sensor_plan_for(goal) -> SensorPlan:
             canonical_select=bool(rhythm.get("canonical_select", False)),  # Build 3 knob
         )
     elif sense == "absence":
-        event_model["deadline_s"] = prog.deadline_s
+        # Explainability: surface the AUTHORED duration (timeline-independent) — the absolute ``deadline_at``
+        # only exists after the goal is armed, and the plan compiler runs on the unarmed, authored goal.
+        event_model["deadline_after_s"] = state.get("deadline_after_s")
     elif prog.cadence_s is not None:
         event_model["cadence_s"] = prog.cadence_s
 
