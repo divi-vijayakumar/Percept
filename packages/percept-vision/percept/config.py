@@ -33,6 +33,12 @@ def _as_actions(raw: str) -> frozenset:
 class GateSettings:
     threshold: float = 0.7  # PERCEPT_GATE_THRESHOLD — confident-yes cutoff
     validity_window_s: float = 90.0  # PERCEPT_GATE_VALIDITY_S — asserted-fact freshness
+    # R-1 growth bound for the 24/7 gate. A per-entity edge key untouched (unevaluated) longer than the TTL
+    # is swept; ``max_keys`` is the hard LRU backstop. ``run()`` installs ``key_ttl_s`` as the batteries-
+    # included default (an unbounded gate is not a sane always-on default); a bare ``Percept`` stays
+    # unbounded (byte-for-byte) unless a bound is passed. Never-goals + per-goal singletons are exempt.
+    key_ttl_s: float = 3600.0  # PERCEPT_GATE_KEY_TTL_S — evict a gate key untouched this long (0/neg = off)
+    max_keys: int = 0  # PERCEPT_GATE_MAX_KEYS — hard LRU ceiling on gate keys (0 = no ceiling)
 
 
 @dataclass(frozen=True)
@@ -133,6 +139,8 @@ def load_settings() -> Settings:
         gate=GateSettings(
             threshold=_env("PERCEPT_GATE_THRESHOLD", 0.7, float),
             validity_window_s=_env("PERCEPT_GATE_VALIDITY_S", 90.0, float),
+            key_ttl_s=_env("PERCEPT_GATE_KEY_TTL_S", 3600.0, float),
+            max_keys=_env("PERCEPT_GATE_MAX_KEYS", 0, int),
         ),
         entity=EntitySettings(
             iou_match=_env("PERCEPT_IOU_MATCH", 0.5, float),

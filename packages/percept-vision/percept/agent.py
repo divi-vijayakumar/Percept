@@ -238,6 +238,11 @@ class Percept:
             ),
             action_log=ActionLog(),
         )
+        # R3: when the entity graph evicts a track (it caps at max_entities), sweep that entity's derived
+        # state — its ``(goal_id, entity_id)`` gate keys AND any cached verdicts resting on it — so a 24/7
+        # churn of entities can't leave orphan edges accumulating in the gate. Wired here (not at graph
+        # construction) because the gate is built alongside the graph in the same call.
+        obj.graph.on_evict = obj._on_entity_evicted
         # E3 loud-failure: a REAL vision backend behind the scripted FakeConductor is a silent trap.
         # FakeConductor's default Decision(route="ignore") DISCARDS every standing-goal request, so a
         # voice-authored "watch X" never arms and the proactive premise is dead — with no error. Flag
@@ -558,7 +563,8 @@ class Percept:
             lost = last is not None and (now - last) > bound
             # observability is a derived FACT (we KNOW we haven't seen it), not a perceptual guess
             verdict = Verdict(satisfied=lost, confidence=1.0, evidence="coverage")
-            action = self.gate.evaluate((goal.id, "__coverage__"), verdict)
+            # per-goal singleton -> exempt from the R-1 TTL sweep (a dropped edge would re-fire coverage-loss)
+            action = self.gate.evaluate((goal.id, "__coverage__"), verdict, no_evict=True)
             self.metrics.incr(f"coverage.gate.{action}")
             if action == FIRE:
                 out.append(FireEvent(goal.id, FIRE, self._coverage_text(goal), None, verdict))
@@ -631,7 +637,7 @@ class Percept:
             )
             if gtype == "process":
                 verdict = Verdict(satisfied=ended, confidence=1.0, evidence="episode")
-                action = self.gate.evaluate((goal.id, "__episode__"), verdict)
+                action = self.gate.evaluate((goal.id, "__episode__"), verdict, no_evict=True)  # singleton
                 self.metrics.incr(f"episode.gate.{action}")
                 if action == FIRE:
                     answer = await self.summarize_process(goal.id, wipe=True)  # consolidate + reset
@@ -866,10 +872,17 @@ class Percept:
         ready = resolution_ready(
             answer, len(ctx.process_log), confidence, at_boundary=at_boundary
         )
-        # The de-dup key folds in the answer text so a *changed* answer (more evidence rewrote it) is a
-        # fresh edge that can resolve again, while a repeated identical answer fires only once.
+        # R2b: the answer TEXT used to be folded into the gate key (``(goal, __resolved__, answer)``) — a
+        # permanent key per distinct answer, unbounded over a long process. The discriminator now lives in
+        # ctx: a *changed* answer (more evidence rewrote it) rolls it over and re-arms the ONE singleton
+        # key, so a new answer resolves again while a repeated identical answer fires only once. Marked
+        # no_evict (a per-goal singleton, exempt from the TTL sweep).
+        key = (goal.id, "__resolved__")
+        if ctx.last_resolved_answer is not None and answer != ctx.last_resolved_answer:
+            self.gate.rearm(key)
+        ctx.last_resolved_answer = answer
         verdict = Verdict(satisfied=ready, confidence=confidence, evidence=answer, running_answer=answer)
-        action = self.gate.evaluate((goal.id, "__resolved__", answer), verdict)
+        action = self.gate.evaluate(key, verdict, no_evict=True)
         self.metrics.incr(f"process_qa.resolve.{action}")
         if action != FIRE:
             return None
@@ -1071,6 +1084,13 @@ class Percept:
         # fact is re-judged, never served stale. Empty/stub cascades are a harmless no-op.
         self.invalidate_cache_entity(target)
         return target
+
+    def _on_entity_evicted(self, entity_id: str) -> None:
+        """R3 eviction hook: an entity died (graph cap) -> drop its gate keys and its cached verdicts, so no
+        orphan state survives it. Ties ``FrameHashLayer.invalidate_entity`` to entity DEATH (it previously
+        fired only on assertion-override), closing the adjacent-audit gap."""
+        self.gate.reset_entity(entity_id)
+        self.invalidate_cache_entity(entity_id)
 
     def invalidate_cache(self, goal_id: str | None = None) -> None:
         """Goal-change invalidation: drop a goal's cached verdicts (``None`` clears all)."""

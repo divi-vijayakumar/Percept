@@ -433,6 +433,21 @@ async def run(
 
     settings = getattr(core, "settings", None) or load_settings()
 
+    # R-1: batteries-included gate bound. A 24/7 watch must not carry an unbounded gate; install the
+    # configured TTL/LRU as the DEFAULT the instant we drive it (a bare Percept stays unbounded — the
+    # opt-out — but the runtime is the always-on entry point, so it opts IN). Explicit gate bounds win: we
+    # only fill an UNSET (None) bound, never override one the caller already chose. The TTL sweep rides the
+    # stream `now` the judge path already passes; never-goals + per-goal singletons are exempt (the trap).
+    _gate = getattr(core, "gate", None)
+    if _gate is not None:
+        gs = getattr(settings, "gate", None)
+        ttl = getattr(gs, "key_ttl_s", 0.0) or 0.0
+        if getattr(_gate, "key_ttl_s", None) is None and ttl > 0:
+            _gate.key_ttl_s = float(ttl)
+        mk = getattr(gs, "max_keys", 0) or 0
+        if getattr(_gate, "max_keys", None) is None and mk > 0:
+            _gate.max_keys = int(mk)
+
     # PR 2.2: restart durability. Rehydrate goals/entities/action-log from a persistence store BEFORE
     # compiling the gate, so a restarted 24/7 watch resumes its armed goals + refractory state instead
     # of re-arming edges (which would double-fire). Default (persistence=None) is byte-for-byte.

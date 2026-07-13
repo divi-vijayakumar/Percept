@@ -75,9 +75,15 @@ class EntityGraph:
         vel_alpha: float = 0.5,
         predict_iou: float = 0.3,
         coast_s: float = 1.0,
+        on_evict: Callable[[str], None] | None = None,
     ) -> None:
         self._iou = iou_match
         self._max = max_entities
+        # R3: called with an entity id the instant it is evicted (the graph caps at ``max_entities``), so a
+        # downstream owner can drop that entity's derived state. :class:`Percept` wires it to
+        # ``Gate.reset_entity`` (+ cache invalidation) so a dead entity leaves no orphan gate key behind.
+        # Settable after construction too (the gate is built after the graph). Default None -> no-op.
+        self.on_evict = on_evict
         self._clock = clock or time.monotonic
         # The matcher decides "same thing?" — continuity by default; AppearanceIdentity re-ids
         # across gaps when an embedder is supplied. Either way, ids are assigned here, below the LLM.
@@ -197,6 +203,8 @@ class EntityGraph:
         while len(self._entities) > self._max:
             oldest = min(self._entities.values(), key=lambda e: e.last_seen)
             del self._entities[oldest.id]
+            if self.on_evict is not None:
+                self.on_evict(oldest.id)  # R3: sweep this entity's downstream state (gate keys, cache)
 
     # -- assertions / fusion -------------------------------------------------
     def assert_attribute(

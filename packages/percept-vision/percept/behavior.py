@@ -231,6 +231,13 @@ class ConcernContext:
     # is NEVER shown this log; a single summarize pass consolidates it on boundary/on-demand, then wipes.
     process_log: list[str] = field(default_factory=list)
     last_step_at: float = float("-inf")
+    # R2/R2b — the re-arm DISCRIMINATORS that used to be folded into the gate key (making every time
+    # bucket / episode number / resolved-answer a permanent key). They live HERE now (constraint 1: the
+    # gate stays one bit per key); the executor calls ``gate.rearm(key)`` when one rolls over, restoring
+    # the exact firing edge with ONE key per (goal, entity) instead of one per bucket/rep/answer.
+    last_bucket: int | None = None       # interval: the elapsed time bucket last seen (int(t // cadence_s))
+    last_episode_n: int | None = None    # episode: the last distinct rep number fired
+    last_resolved_answer: str | None = None  # process-QA: the last resolved running-answer text
 
 
 @dataclass
@@ -287,11 +294,19 @@ class BehaviorExecutor:
             self._fire_when_cache[expr] = pred
         return pred
 
-    def _synth_key(self, base_key: tuple, key: KeySpec, t: float) -> tuple:
-        """Generalizes agent._fire_concern's key-synthesis. Default => base_key (byte-for-byte)."""
-        if "time_bucket" in key.by and key.bucket_s:
-            return (*base_key, int(t // key.bucket_s))  # new bucket = fresh armed edge (interval)
-        return base_key
+    def _interval_rearm(self, ctx: "ConcernContext", key: tuple, spec: KeySpec, t: float) -> None:
+        """R2: an ``interval`` re-arm without leaking a key per bucket. The bucket number USED to be folded
+        into the gate key (``(goal, entity, floor(t/cadence))``), so a 30-day watch minted 43,200 permanent
+        keys. Instead the key is just ``(goal, entity)`` and the elapsed bucket is remembered in the
+        per-concern ctx; when it rolls over we ``gate.rearm(key)`` — the SAME fresh edge a new bucket used
+        to give, byte-for-byte (see test_interval_firing_trace_byte_for_byte). This is behavior.py's own
+        stated invariant: stateful primitives keep cross-tick memory in ConcernContext, never gate._armed."""
+        if not ("time_bucket" in spec.by and spec.bucket_s):
+            return
+        bucket = int(t // spec.bucket_s)
+        if ctx.last_bucket is not None and bucket != ctx.last_bucket:
+            self.gate.rearm(key)  # bucket rolled over -> fresh armed edge (was: a brand-new key)
+        ctx.last_bucket = bucket
 
     # -- judge / event sense: replicates agent._fire_concern byte-for-byte ----------------------
     def fire_judged(
@@ -310,10 +325,15 @@ class BehaviorExecutor:
         ctx.confusion.record(verdict, truth)  # constraint 2: additive, pre-gate, no trace effect
         if program.key.suppress_false and truth == "no":
             return None  # never-contract: a confident-false must not reach the gate
-        key = self._synth_key(base_key, program.key, t)
+        key = base_key  # R2: the key is ONLY (goal, entity) now — the interval bucket moved to ctx
+        self._interval_rearm(ctx, key, program.key, t)
         # R-1: pass the goal's dwell (hold_s) + the frame time. hold_s=None -> the gate ignores `now`
-        # and this is byte-for-byte the rising-edge path.
-        action = self.gate.evaluate(key, verdict, freshness=freshness, hold_s=program.hold_s, now=t)
+        # and this is byte-for-byte the rising-edge path. A never-goal's key is marked no_evict so a TTL
+        # drop can never re-arm it (the fire-once-ever contract; see Gate.evaluate).
+        action = self.gate.evaluate(
+            key, verdict, freshness=freshness, hold_s=program.hold_s, now=t,
+            no_evict=program.key.suppress_false,
+        )
         self.metrics.incr(f"{metric}.{action}")
         if action == FIRE:
             # accumulate (nth-distinct): a rising edge IS a distinct occurrence, so gate the
@@ -361,7 +381,8 @@ class BehaviorExecutor:
             return None
         overdue = now >= program.deadline_at and not satisfied
         verdict = Verdict(satisfied=overdue, confidence=1.0, evidence="overdue")
-        action = self.gate.evaluate((goal.id, "__overdue__"), verdict)
+        # per-goal singleton -> exempt from TTL (a dropped __overdue__ edge would re-fire the deadline)
+        action = self.gate.evaluate((goal.id, "__overdue__"), verdict, no_evict=True)
         self.metrics.incr(f"{metric}.{action}")
         if action == FIRE:
             return Fired(goal.id, FIRE, overdue_text(goal), None, verdict)
@@ -380,9 +401,15 @@ class BehaviorExecutor:
         fw = program.accumulate.fire_when
         if fw and not self._fire_when(fw)({"n": n, "t": t}):
             return None
-        key = (goal.id, f"__episode__{n}")  # a fresh key per distinct episode (each_event analog)
+        # R2b: ONE key per goal (was ``__episode__{n}`` — a permanent key per rep, unbounded over a long
+        # count). A new distinct rep number rolls the discriminator in ctx and re-arms the singleton key —
+        # the same fresh edge the per-n key used to give, so every new episode still fires exactly once.
+        key = (goal.id, "__episode__")
+        if ctx.last_episode_n is not None and n != ctx.last_episode_n:
+            self.gate.rearm(key)
+        ctx.last_episode_n = n
         verdict = Verdict(satisfied=True, confidence=1.0, evidence=f"episode {n}")
-        action = self.gate.evaluate(key, verdict)
+        action = self.gate.evaluate(key, verdict, no_evict=True)  # per-goal singleton -> exempt from TTL
         if action == FIRE:
             return Fired(goal.id, FIRE, goal.say, n, verdict)
         return None

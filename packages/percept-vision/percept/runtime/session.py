@@ -18,7 +18,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import inspect
+import os
 import time
+from collections import deque
 from typing import Any, Callable
 
 from percept.adapters import Reply
@@ -53,6 +55,17 @@ STOP_WATCHING_SCHEMA = {
 WHATS_ARMED_SCHEMA = {"type": "object", "properties": {}}
 
 
+def _env_int(name: str, default: int) -> int:
+    """Read a positive int env override, falling back to ``default`` on absent/malformed (never raises)."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
 def _arm_slug(raw_id: Any, condition: str) -> str:
     """Derive a STABLE, COLLISION-RESISTANT goal id for a voice-armed watch.
 
@@ -73,7 +86,13 @@ def _arm_slug(raw_id: Any, condition: str) -> str:
 class RuntimeSession:
     """A live session wrapping a background ``run()``: `ask`/`arm`/`disarm`/`interrupt`/`latest_frame`."""
 
-    def __init__(self, core: Any, *, store: Any = None, label_store: Any = None) -> None:
+    #: Default cap on retained incidents — the steepest 24/7 leak (each incident pins an IncidentSnippet
+    #: with up to ~48 DECODED frames, so an unbounded list is MB/day). ``label()`` needs recent history, not
+    #: unbounded history; the pulse reads only the last 3. Overridable per-session or via ``PERCEPT_MAX_INCIDENTS``.
+    DEFAULT_MAX_INCIDENTS = 500
+
+    def __init__(self, core: Any, *, store: Any = None, label_store: Any = None,
+                 max_incidents: int | None = None) -> None:
         self._core = core
         # L-1: the local LabelStore for out-of-band triage (`session.label(...)`) and the sink bound to
         # each yielded incident (so `incident.record_label(...)` writes). Injected; None -> labeling off.
@@ -98,7 +117,14 @@ class RuntimeSession:
         self._queued_fires: list[tuple] = []  # (incident, delivery, queued_at) held behind a live turn
         self._pulsed = ""                 # last brain-state summary sent (dedup the pulse)
         self._arm_tasks: set[asyncio.Task] = set()  # in-flight async watch-arming (watch verb, §3 #1)
-        self.incidents: list[Any] = []    # ships raw PCM instead of text)
+        # BOUNDED incident history (24/7 leak fix). A ``deque(maxlen=N)`` keeps the N most-recent incidents
+        # and DROPS the oldest — bounding both the count and the decoded snippet frames they pin. Precedence:
+        # explicit arg > PERCEPT_MAX_INCIDENTS > DEFAULT_MAX_INCIDENTS. deque supports append + reversed()
+        # (label lookup); the pulse takes list(...)[-3:] since a deque isn't sliceable.
+        if max_incidents is None:
+            max_incidents = _env_int("PERCEPT_MAX_INCIDENTS", self.DEFAULT_MAX_INCIDENTS)
+        self.max_incidents = max(1, int(max_incidents))
+        self.incidents: deque[Any] = deque(maxlen=self.max_incidents)
 
     # -- power ladder: SLEEP (pause judging, keep the socket + frame stream) ----
     def pause(self) -> None:
@@ -439,7 +465,7 @@ class RuntimeSession:
     def _brain_state_summary(self) -> str:
         watching = "; ".join(f"{g.id}: {getattr(g, 'condition', '')}"
                              for g in self._core.goals.active()) or "nothing yet"
-        recent = self.incidents[-3:]
+        recent = list(self.incidents)[-3:]  # deque isn't sliceable; materialize the last 3
         fired = "; ".join(getattr(i, "message", "") for i in recent) if recent else "none"
         return f"[percept state] watching for → {watching}. recent alerts → {fired}."
 
@@ -507,7 +533,8 @@ class RuntimeSession:
 
 async def start(core: Any, *, source: Any, on_frame: Callable | None = None,
                 on_incident: Callable | None = None, on_utterance: Callable | None = None,
-                store: Any = None, label_store: Any = None, **run_kwargs: Any) -> RuntimeSession:
+                store: Any = None, label_store: Any = None, max_incidents: int | None = None,
+                **run_kwargs: Any) -> RuntimeSession:
     """Start a background watch and return a :class:`RuntimeSession` to drive it.
 
     Wraps ``run(core, source=..., regate_on_goal_change=True, ...)`` in a task. Incidents still flow to
@@ -522,7 +549,7 @@ async def start(core: Any, *, source: Any, on_frame: Callable | None = None,
     hear itself and loop. For a speakers-on, always-on deployment prefer :meth:`RuntimeSession.attach_transport`
     — that path owns AEC. ``store`` is the injected shared store (deferred; see :class:`RuntimeSession`).
     ``async for incident in run(...)`` remains the headless front door; this is the interactive layer on top."""
-    session = RuntimeSession(core, store=store, label_store=label_store)
+    session = RuntimeSession(core, store=store, label_store=label_store, max_incidents=max_incidents)
     if on_frame is not None:  # the start-provided consumer is just the first subscriber (back-compat)
         session.subscribe(on_frame)
 
