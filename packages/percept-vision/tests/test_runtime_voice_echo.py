@@ -20,6 +20,7 @@ from percept import Goal, Percept
 from percept.adapters import Verdict
 from percept.backends.fake import FakeVision
 from percept.contracts import AudioFrame
+from percept.edge.detectors import WakePolicy
 from percept.edge.tier0 import gray_frame
 from percept.runtime import RuntimeStats, run
 
@@ -289,6 +290,152 @@ class StaleAudioTests(unittest.TestCase):
         self.assertEqual(heard, [], "stale (replayed) speech must not endpoint")
         self.assertIn("audio_stale", health)
         self.assertGreater(stats.audio_chunks, 0, "but the AudioWindow was still filled")
+
+
+class UtteranceTruncationTests(unittest.TestCase):
+    """B1: a long turn is handed WHOLE from the endpointer's OWN buffer, not sliced from the shared
+    (fused-judge) AudioWindow whose size is the small fused default. Slicing that rolling window
+    silently truncated any utterance longer than ``audio_window_s`` to its last N seconds."""
+
+    def test_long_utterance_handed_whole_not_truncated_to_window(self):
+        core = _core()
+        heard: list = []
+        health: list = []
+        done = asyncio.Event()
+        # 2 silence, 120 speech (=12s @ dt=0.1), 12 trailing silence -> one endpoint. The shared fused
+        # AudioWindow default is ~4s; a window-sliced clip carries only its last ~4s (~40 chunks, ~80 B).
+        energies = [0.0] * 2 + [0.9] * 120 + [0.0] * 12
+
+        async def handler(clip, t):
+            heard.append(clip)
+
+        async def go():
+            await asyncio.wait_for(_collect(
+                core, _held_video(done), audio_source=_audio_gen(energies, done=done),
+                on_utterance=handler, on_health=lambda e: health.append(e.kind)), timeout=5.0)
+
+        asyncio.run(go())
+        self.assertEqual(len(heard), 1)
+        clip = heard[0]
+        self.assertIsInstance(clip, AudioFrame)
+        # ~128 chunks * 2 bytes = ~256 B; a 4s window slice would be ~80 B. The whole turn survives.
+        self.assertGreater(len(clip.pcm), 2 * 100)
+        self.assertNotIn("utterance_truncated", health)
+
+    def test_over_long_utterance_trips_truncation_health(self):
+        """The OWN buffer is bounded by ``utterance_max_s`` (a stuck-open mic must not OOM). When a turn
+        exceeds the cap the handed clip is shorter than the utterance's known duration — and that is
+        surfaced LOUD via on_health('utterance_truncated'), never silently dropped."""
+        core = _core()
+        heard: list = []
+        health: list = []
+        done = asyncio.Event()
+        energies = [0.0] * 2 + [0.9] * 40 + [0.0] * 12  # ~4s turn, capped to 1s
+
+        async def go():
+            await asyncio.wait_for(_collect(
+                core, _held_video(done), audio_source=_audio_gen(energies, done=done),
+                on_utterance=lambda a, t: heard.append(a), utterance_max_s=1.0,
+                on_health=lambda e: health.append(e.kind)), timeout=5.0)
+
+        asyncio.run(go())
+        self.assertEqual(len(heard), 1)
+        self.assertIn("utterance_truncated", health)
+
+
+class PumpWatchdogTests(unittest.TestCase):
+    """B3-residual: a raise at the pump COROUTINE level (not inside the on_utterance handler) died
+    silently — only the per-utterance task had a done-callback. The pump/autosave tasks now carry
+    watchdogs that surface the death through on_health."""
+
+    def test_pump_coroutine_death_surfaces_health(self):
+        core = _core()
+        health: list = []
+        pump_dead = asyncio.Event()
+        gate = asyncio.Event()
+
+        async def audio_gen():
+            yield (0.05, _frame(0x00), 0.0)
+            yield (0.15, _frame(0x00), 0.0)
+            raise RuntimeError("pump boom")  # a coroutine-level failure, NOT a handler failure
+
+        def on_health(e):
+            health.append(e.kind)
+            if e.kind == "audio_pump_died":
+                pump_dead.set()
+
+        async def go():
+            task = asyncio.ensure_future(_collect(
+                core, _held_video(gate), audio_source=audio_gen(), on_health=on_health))
+            await asyncio.wait_for(pump_dead.wait(), timeout=2.0)  # times out today: silent death
+            gate.set()  # release the video so the run ends cleanly
+            await asyncio.wait_for(task, timeout=2.0)
+
+        asyncio.run(go())
+        self.assertIn("audio_pump_died", health)
+
+
+class EnergyFreshnessTests(unittest.TestCase):
+    """B2/R7: a dead/stalled mic leaves ``audio['energy']`` pinned at its last (speech-level) value. A
+    WakePolicy that fuses that channel would then keep escalating on phantom audio forever. The frame
+    loop must read energy only while FRESH; a stale reading degrades the gate to VIDEO-ONLY."""
+
+    def _wake(self):
+        return WakePolicy(threshold=0.5, weights={"audio": 1.0})
+
+    def test_stale_energy_degrades_gate_to_video_only(self):
+        # Baseline: no audio at all, STILL video, wake_policy armed -> zero escalations.
+        base = RuntimeStats()
+        video0 = [(2.0 + i, STILL, "quiet") for i in range(10)]
+        asyncio.run(_collect(_core(), video0, wake_policy=self._wake(), stats=base))
+
+        # Dead mic: two early LOUD chunks then silence-of-death; the video runs seconds later, so the
+        # pinned 0.9 energy is stale for every video frame. Without the freshness guard those pinned
+        # readings escalate the gate every frame -> judge_calls climbs well above the no-audio baseline.
+        stats = RuntimeStats()
+        video = [(2.0 + i, STILL, "quiet") for i in range(10)]
+        audio = [(0.05, _frame(0x40), 0.9), (0.15, _frame(0x40), 0.9)]  # loud, then the mic dies
+        # audio_gate=None isolates the ENERGY→WakePolicy path from the separate acoustic-onset wake.
+        asyncio.run(_collect(_core(), video, audio_source=audio, audio_gate=None,
+                             wake_policy=self._wake(), stats=stats))
+        self.assertEqual(stats.judge_calls, base.judge_calls,
+                         "a dead mic's pinned energy must not keep escalating the gate")
+
+    def test_fresh_energy_still_admits(self):
+        """The guard must not be over-aggressive: a live mic whose energy tracks the frame clock stays
+        FRESH and still wakes the gate (otherwise the 'fix' silently disables audio — the same trap)."""
+        stats = RuntimeStats()
+        video = [(i * 0.1, STILL, "quiet") for i in range(1, 12)]
+        audio = [(i * 0.1 + 0.02, _frame(0x40), 0.9) for i in range(1, 12)]  # in-step, always fresh
+        # audio_gate=None -> only the ENERGY→WakePolicy path can escalate (no acoustic-onset wake).
+        asyncio.run(_collect(_core(), video, audio_source=audio, audio_gate=None,
+                             wake_policy=self._wake(), stats=stats))
+        self.assertGreater(stats.judge_calls, 0, "fresh loud energy must still wake the gate")
+
+
+class StaleGuardRevalidationTests(unittest.TestCase):
+    """Re-validation (post-A2 clock flip): the ``stale_audio_s`` VAD guard compares a delta-of-deltas
+    ((wall-elapsed) - (stream-elapsed) since the first chunk), which is magnitude-robust to the absolute
+    value of the chunk timestamp. It must NOT false-fire on a healthy real-time pump."""
+
+    def test_healthy_pump_does_not_false_fire_audio_stale(self):
+        core = _core()
+        clock = [0.0]
+        heard: list = []
+        health: list = []
+        energies = [0.0] * 2 + [0.9] * 5 + [0.0] * 12
+        video = [(float(i), STILL, "quiet") for i in range(len(energies) + 12)]
+
+        async def go():
+            await _collect(
+                core, video, audio_source=_audio_gen(energies, clock=clock),
+                on_utterance=lambda a, t: heard.append(t),
+                stale_audio_s=2.0, wall_clock=lambda: clock[0],
+                on_health=lambda e: health.append(e.kind))
+
+        asyncio.run(go())
+        self.assertEqual(len(heard), 1, "a healthy utterance still endpoints post-A2")
+        self.assertNotIn("audio_stale", health, "a healthy real-time pump must not false-fire audio_stale")
 
 
 if __name__ == "__main__":

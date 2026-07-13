@@ -171,18 +171,15 @@ async def _call_sink_with_policy(
         raise
 
 
-def _utterance_clip(core: Any, source: str, dur_s: float) -> Any:
-    """Assemble ONE audio clip covering the last ``dur_s`` seconds of the source's AudioWindow — the
-    endpointed utterance handed to ``on_utterance``. The window holds typed :class:`AudioFrame` chunks
-    (from :func:`percept.runtime.audio.open_audio_source`), so we concatenate their PCM into one frame;
-    for a raw-bytes/tuple test source we fall back to :func:`percept.agent._concat_audio`. Returns
-    ``None`` when the window is empty (nothing to send)."""
+def _clip_from_chunks(chunks: list, *, t_start: float | None = None, t_end: float | None = None) -> Any:
+    """Assemble ONE audio clip from a list of raw audio chunks — the endpointed utterance handed to
+    ``on_utterance``. B1: the chunks come from the endpointer's OWN accumulation buffer (started→endpoint),
+    NOT from slicing the shared rolling AudioWindow (whose small fused-judge size silently truncated any
+    utterance longer than it). Typed :class:`AudioFrame` chunks are concatenated PCM-wise; a raw-bytes/
+    tuple test source falls back to :func:`percept.agent._concat_audio`. Returns ``None`` for an empty
+    list (nothing to send). ``t_start``/``t_end`` stamp the returned frame's clip bounds (provenance)."""
     from percept.agent import _concat_audio
 
-    try:
-        chunks = core._audio_window(source).clip(max(0.0, dur_s))  # noqa: SLF001 - worker drives core internals
-    except Exception:  # noqa: BLE001 - a missing/odd window must not kill the pump
-        return None
     if not chunks:
         return None
     pcm_frames = [c for c in chunks if hasattr(c, "pcm")]
@@ -196,7 +193,30 @@ def _utterance_clip(core: Any, source: str, dur_s: float) -> Any:
         sample_rate=first.sample_rate,
         channels=first.channels,
         sample_format=first.sample_format,
+        t_start=t_start,
+        t_end=t_end,
     )
+
+
+# B2/R7 — energy-freshness. A dead/stalled mic leaves the pump's last energy pinned at a (possibly
+# speech-level) value; a WakePolicy fusing that channel would then escalate on phantom audio forever.
+# The frame loop reads energy only while FRESH — within ~2 chunk periods of the last real reading — so a
+# stale reading reads None and the gate degrades to VIDEO-ONLY (a dead mic must never pin the gate open).
+_DEFAULT_CHUNK_DT_S = 0.25   # ~4 chunks/s documented mic cadence, until an inter-chunk delta is observed
+_ENERGY_STALE_FACTOR = 2.0   # "~2 chunk periods" per the spec
+_ENERGY_STALE_FLOOR_S = 0.5  # floor so a fast mic (small dt) still tolerates normal jitter (~2 @ 4/s)
+
+
+def _energy_fresh(energy_t: float | None, now: float | None, chunk_dt: float | None) -> bool:
+    """True when the last real energy reading (at ``energy_t``) is recent enough to feed the gate at
+    frame time ``now``. Both must share a timebase (post-A2 live capture stamps wall on both). Unknown
+    ``energy_t`` (no reading yet) is never fresh; an unknown ``now`` can't judge staleness → fresh."""
+    if energy_t is None:
+        return False
+    if now is None:
+        return True
+    dt = chunk_dt if (chunk_dt and chunk_dt > 0) else _DEFAULT_CHUNK_DT_S
+    return (now - energy_t) <= max(_ENERGY_STALE_FACTOR * dt, _ENERGY_STALE_FLOOR_S)
 
 
 # Cap so a tiny brief-window prior can't explode the capture rate (mirrors the bench
@@ -289,6 +309,8 @@ async def run(
     utterance_threshold: float = 0.01,
     utterance_hangover_frames: int = 8,
     utterance_min_speech_frames: int = 3,
+    utterance_max_s: float = 60.0,
+    audio_window_s: float | None = None,
     deaf_until: Callable[[], float] | None = None,
     stale_audio_s: float | None = None,
     wall_clock: Callable[[], float] = time.monotonic,
@@ -330,6 +352,16 @@ async def run(
       Default ``None`` → no endpointing, the audio path is byte-for-byte. ``vad`` overrides the endpointer
       (any object with ``push(energy) -> event.{started,endpoint}``); else an :class:`EnergyVad` built from
       the ``utterance_*`` knobs is used.
+
+      **The utterance is reconstructed from the endpointer's OWN chunk buffer** (accumulated started→
+      endpoint), NOT sliced from the shared rolling AudioWindow — so a turn longer than the fused window
+      is handed WHOLE, not truncated to the window's last N seconds (B1). ``utterance_max_s`` (default
+      ``60``) bounds that buffer so a stuck-open mic can't grow it without limit; a turn exceeding the cap
+      is handed capped AND ``on_health("utterance_truncated")`` fires (never a silent drop).
+    - ``audio_window_s`` — size (seconds) of the shared AudioWindow the FUSED/audio judge reads (distinct
+      from the utterance buffer above). Default ``None`` → the ``settings.events.audio_window_s`` default,
+      except a voice-enabled session (``on_utterance`` set) raises it to ``≥30`` so fused judges get real
+      acoustic context. Byte-for-byte the settings default when no ``audio_source`` is wired.
 
       **The handler runs OFF the pump** (spawned as a tracked task, cancelled on exit): a handler that
       takes real time — STT + a voice turn + playback — must not block capture, or the backlog it creates
@@ -447,6 +479,24 @@ async def run(
         if not task.cancelled():
             task.exception()
 
+    def _task_watchdog(kind: str) -> "Callable[[asyncio.Task], None]":
+        # B3-residual: a raise at the pump/autosave COROUTINE level (not in a handler) died silently —
+        # only the per-utterance task had a done-callback. Retrieve the exception (so asyncio doesn't log
+        # "exception never retrieved") and surface it through on_health. We do NOT re-raise into the run —
+        # the run decides; a dead pump must fail LOUD, not silently. A normal-exit/cancelled task is quiet.
+        def _cb(task: "asyncio.Task") -> None:
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc is None or on_health is None:
+                return
+            try:
+                asyncio.ensure_future(_call_sink(
+                    on_health, RuntimeHealthEvent(kind, data={"error": repr(exc)})))
+            except RuntimeError:
+                pass  # event loop already closed on teardown — nothing to surface into
+        return _cb
+
     try:
         if on_health is not None:
             await _call_sink(on_health, RuntimeHealthEvent("runtime_started", data={"source": repr(source)}))
@@ -499,15 +549,29 @@ async def run(
                         if on_health is not None:
                             await _call_sink(on_health, RuntimeHealthEvent("state_save_error", data={"error": repr(exc)}))
             autosave_task = asyncio.ensure_future(_autosave())
+            autosave_task.add_done_callback(_task_watchdog("autosave_died"))
 
         # --- audio ingress (PR 1.2): fill the AudioWindow + feed the gate an energy/onset signal --------
-        # `audio` holds the latest energy and a one-shot onset-wake flag, shared with the pump task below
-        # (same event loop, cooperative — no lock). Default (audio_source=None) leaves it inert: energy
-        # stays None and wake stays False, so gate.evaluate and the admit test are byte-for-byte the
-        # video-only path.
-        audio = {"energy": None, "wake": False}
+        # `audio` holds the latest energy (+ the time of that reading and the observed chunk cadence, for
+        # the R7 freshness guard) and a one-shot onset-wake flag, shared with the pump task below (same
+        # event loop, cooperative — no lock). Default (audio_source=None) leaves it inert: energy stays
+        # None and wake stays False, so gate.evaluate and the admit test are byte-for-byte the video path.
+        audio = {"energy": None, "energy_t": None, "chunk_dt": None, "wake": False}
+        _prev_chunk_at: list = [None]  # last chunk's t — for the observed inter-chunk cadence (chunk_dt)
         audio_task = None
         if audio_source is not None:
+            # B1: size the SHARED fused-judge AudioWindow (distinct from the per-utterance buffer below).
+            # A voice-enabled session wants richer acoustic context than the small fused default; the
+            # utterance itself no longer slices this window, so growing it can't truncate a turn. Only set
+            # a fresh window (a restored/pre-existing one keeps its history).
+            _fused_win_s = audio_window_s
+            if _fused_win_s is None and on_utterance is not None:
+                _fused_win_s = max(30.0, float(getattr(settings.events, "audio_window_s", 4.0)))
+            if _fused_win_s is not None:
+                _windows = getattr(core, "audio_windows", None)
+                if isinstance(_windows, dict) and gate_source not in _windows:
+                    from percept.events import AudioWindow
+                    _windows[gate_source] = AudioWindow(float(_fused_win_s))
             onset = None
             if audio_gate is not None:
                 if isinstance(audio_gate, str):
@@ -520,6 +584,7 @@ async def run(
             # leaves the audio path byte-for-byte. `vad` can be any object with push(energy)->ev.endpoint.
             _vad = None
             _utt = {"start": None}  # start time of the utterance currently being spoken
+            _utt_buf: list = []  # B1: (at, chunk) accumulated started→endpoint — the OWN utterance buffer
             _wall_anchor: list = [None]  # (wall0, stream0) at the first VAD chunk — R4 lag reference
             if on_utterance is not None:
                 if vad is not None:
@@ -554,7 +619,16 @@ async def run(
                         pass
                     if stats is not None:
                         stats.audio_chunks += 1
-                    audio["energy"] = float(energy) if energy is not None else audio["energy"]
+                    # R7: track the cadence + the time of the last REAL reading (a None-energy chunk is not
+                    # a fresh reading). The frame loop reads energy only while fresh (dead mic → video-only).
+                    if _prev_chunk_at[0] is not None:
+                        _d = at - _prev_chunk_at[0]
+                        if _d > 0:
+                            audio["chunk_dt"] = _d
+                    _prev_chunk_at[0] = at
+                    if energy is not None:
+                        audio["energy"] = float(energy)
+                        audio["energy_t"] = at
                     if onset is not None and energy is not None:
                         for b in onset.push(at, float(energy)):
                             if getattr(b, "kind", None) == "onset":
@@ -584,20 +658,43 @@ async def run(
                         if suppress:
                             _vad.reset()
                             _utt["start"] = None
+                            _utt_buf.clear()  # a suppressed span must not straddle into the next turn
                         else:
                             ev = _vad.push(float(energy))
                             if getattr(ev, "started", False):
                                 _utt["start"] = at
+                                _utt_buf.clear()  # a fresh turn — drop any pre-start residue
+                            # B1: accumulate the turn into our OWN buffer (started→endpoint), bounded by
+                            # utterance_max_s so a stuck-open mic can't grow it without limit.
+                            if _utt["start"] is not None:
+                                _utt_buf.append((at, chunk))
+                                _cutoff = at - utterance_max_s
+                                while _utt_buf and _utt_buf[0][0] < _cutoff:
+                                    _utt_buf.pop(0)
                             if getattr(ev, "endpoint", False):
                                 start_t = _utt["start"] if _utt["start"] is not None else at
                                 _utt["start"] = None
-                                clip = _utterance_clip(core, gate_source, at - start_t)
+                                buf = list(_utt_buf)
+                                _utt_buf.clear()
+                                first_t = buf[0][0] if buf else start_t
+                                # B1: hand the WHOLE turn from the own buffer (never a window slice).
+                                clip = _clip_from_chunks(
+                                    [c for _, c in buf], t_start=first_t, t_end=at)
                                 if clip is not None:
                                     if stats is not None:
                                         stats.utterances += 1
+                                    # Truncation tripwire: if the handed clip covers less than the turn's
+                                    # known duration (buffer capped, or leading chunks lost), shout — a
+                                    # truncated utterance must NEVER be handed off silently.
+                                    _covered = at - first_t
+                                    _expected = at - start_t
+                                    if on_health is not None and _covered < _expected - 0.25:
+                                        await _call_sink(on_health, RuntimeHealthEvent(
+                                            "utterance_truncated", ts=at,
+                                            data={"covered_s": _covered, "expected_s": _expected}))
                                     if on_health is not None:
                                         await _call_sink(on_health, RuntimeHealthEvent(
-                                            "utterance", ts=at, data={"dur_s": at - start_t}))
+                                            "utterance", ts=at, data={"dur_s": _expected}))
                                     # R1: hand off OFF the pump — a real handler (STT + voice turn + playback)
                                     # blocking here guarantees a capture backlog replayed as self-echo the
                                     # instant it returns. The app owns concurrency (overlaps are possible;
@@ -610,6 +707,7 @@ async def run(
                                     task.add_done_callback(_utt_done)
 
             audio_task = asyncio.ensure_future(_pump_audio())
+            audio_task.add_done_callback(_task_watchdog("audio_pump_died"))
 
         async def _emit_fires(fires, *, at, from_boundary=False):
             """Turn a list of FireEvents (from perceive_judged OR the boundary) into incidents/asks."""
@@ -733,8 +831,11 @@ async def run(
                     yield incident
 
             # Feed the latest audio energy so a goal with a WakePolicy can fuse it; None (no audio_source)
-            # leaves the gate byte-for-byte the visual-only path.
-            decision = gate.evaluate(gate_frame, ts=t, energy=audio["energy"])
+            # leaves the gate byte-for-byte the visual-only path. R7: read it ONLY while fresh — a dead/
+            # stalled mic leaves energy pinned at its last (speech-level) value, which would otherwise keep
+            # escalating the gate forever. A stale reading reads None → the gate degrades to VIDEO-ONLY.
+            energy_now = audio["energy"] if _energy_fresh(audio["energy_t"], t, audio["chunk_dt"]) else None
+            decision = gate.evaluate(gate_frame, ts=t, energy=energy_now)
 
             # PR 1.3: run edge detectors on the cheap motion/energy signals at native fps. Each emitted
             # boundary (a rep peak, an acoustic onset) is a distinct occurrence fed to the brain via
@@ -742,7 +843,7 @@ async def run(
             # WITHOUT a cloud judge. No banks -> this whole block is skipped (byte-for-byte the pre-PR path).
             if banks and perceive_boundary is not None:
                 for goal_id, bank in banks.items():
-                    for b in bank.push(t, motion=decision.signal.motion, frame=judge_frame, energy=audio["energy"]):
+                    for b in bank.push(t, motion=decision.signal.motion, frame=judge_frame, energy=energy_now):
                         if stats is not None:
                             stats.boundaries += 1
                         fired = perceive_boundary(goal_id, t=b.t)
