@@ -117,6 +117,33 @@ def test_attach_transport_scripted_conductor_raises(monkeypatch):
         asyncio.run(session.attach_transport(FakeVoiceTransport()))
 
 
+def test_language_seam_scripted_conductor_raises_the_fourth_door(monkeypatch):
+    # session.ask() / on_speech_endpoint and arm_from_language route straight to the conductor, bypassing
+    # run()/start()/attach_transport. Guarding only those three wiring points left this FOURTH door open
+    # (a custom-STT integration: `start(core, source=…)` then `session.ask(text)` -> scripted brain ->
+    # route="ignore" -> silence). The guard now lives at the language<->conductor crossing, so every door
+    # is covered by one check, not each wiring point separately.
+    monkeypatch.delenv("PERCEPT_MODE", raising=False)  # LIVE
+    core = percept.Percept.create(
+        mode="live", vision=FakeVision(), conductor=FakeConductor(), discover_plugins=False
+    )
+    with pytest.raises(ModeError):  # the session.ask(...) path
+        asyncio.run(core.on_speech_endpoint("tell me when someone arrives"))
+    with pytest.raises(ModeError):  # the raw-language arming path
+        asyncio.run(core.arm_from_language("tell me when someone arrives"))
+
+
+def test_offline_conductor_is_the_honest_double_not_a_null_object():
+    # The RFC's thesis: a double must never return the value indistinguishable from success. mode="offline"
+    # is the door people explore through, so it must resolve the conductor to the HONEST ScriptedConductor
+    # (no-match -> route="respond_direct"), NOT FakeConductor (route="ignore", which looks exactly like a
+    # real conductor correctly declining — the one value that silently looks like it worked).
+    core = percept.Percept.create(mode="offline", discover_plugins=False)
+    assert type(core.conductor).__name__ == "ScriptedConductor"
+    decision = asyncio.run(core.conductor.run("speech", "tell me when the kettle boils", {}))
+    assert decision.route == "respond_direct"  # honest no-author, NEVER "ignore"
+
+
 # --------------------------- §9.3 code-armed watch (no language path) -> constructs, loud ----
 def test_code_armed_real_vision_scripted_conductor_constructs_loud():
     # vision="gemini" (real object) + default scripted conductor + NO language path: the common

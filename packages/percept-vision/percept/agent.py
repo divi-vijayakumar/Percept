@@ -262,12 +262,13 @@ class Percept:
         # unset seam becomes "scripted" offline. In LIVE mode an unset VISION is the bare-create() trap
         # (no real perception, no key) -> ModeError; conductor/specialist fall back to scripted and are
         # announced LOUDLY below (the code-armed watch is a legitimate pattern — see §5, not a crash).
-        def _pick(name: str, kwarg: Any, cfg_value: Any, *, required: bool) -> Any:
+        def _pick(name: str, kwarg: Any, cfg_value: Any, *, required: bool,
+                  scripted_default: str = "scripted") -> Any:
             sel = kwarg if kwarg is not None else cfg_value
             if sel is not None:
                 return sel
             if offline:
-                return "scripted"
+                return scripted_default
             if required:
                 raise ModeError(
                     f"no {name} backend selected and this is a LIVE run — Percept will not silently "
@@ -275,11 +276,17 @@ class Percept:
                     f"backends (proves WIRING, not intelligence), or select a real backend "
                     f"({name}='claude'/'gemini') and set its API key."
                 )
-            return "scripted"
+            return scripted_default
 
         vision = _pick("vision", vision, cfg.models.vision, required=True)
         specialist = _pick("specialist", specialist, cfg.models.specialist, required=False)
-        conductor = _pick("conductor", conductor, cfg.models.conductor, required=False)
+        # The conductor is the language-authoring seam: an UNSET one defaults to the HONEST scripted double
+        # (ScriptedConductor — no-match -> route="respond_direct"), NEVER FakeConductor whose default
+        # route="ignore" is the one value indistinguishable from a real conductor declining (RFC §8). So
+        # `mode="offline"` — the door people explore through — no longer hands back a brain that discards
+        # every utterance and looks like it worked.
+        conductor = _pick("conductor", conductor, cfg.models.conductor, required=False,
+                          scripted_default="scripted-conductor")
         stt = cfg.models.stt if stt is None else stt
         tts = cfg.models.tts if tts is None else tts
         # LIVE credential check: a SELECTED real backend name whose key is absent raises ModeError
@@ -1268,6 +1275,12 @@ class Percept:
             return TurnResult(route=local.route, source="router", reply=reply)
 
         # DEFER: the conductor routes + authors goals (the only tier that writes state).
+        # FATAL seam (RFC §5): guard HERE, at the language↔conductor crossing, not at the wiring points.
+        # A spoken turn that reaches a SCRIPTED brain is silently discarded (FakeConductor -> route="ignore").
+        # session.ask() -> on_speech_endpoint bypasses run()/start()/attach_transport, so guarding those
+        # three left a fourth door open; guarding the crossing covers every door with one check. (Router-
+        # handled turns above never reach here, so a turn the conductor was never needed for isn't refused.)
+        _guard_live_language_path(self)
         self.metrics.incr("route.defer")
         context = self._turn_context()
         decision = await self.conductor.run("speech", utterance, context)
@@ -1285,6 +1298,7 @@ class Percept:
         """
         now = self.clock() if t is None else t
         self.note_mention(command, t=now)
+        _guard_live_language_path(self)  # FATAL seam (RFC §5): raw language -> a scripted brain authors nothing
         decision = await self.conductor.run("speech", command, self._turn_context())
         if decision.goal_ops:
             self.apply_goal_ops(decision.goal_ops)
