@@ -44,6 +44,9 @@ import percept
 from percept.adapters import Goal
 
 async def main():
+    # vision="gemini" needs GEMINI_API_KEY. Code-armed watch (goal armed below, no voice): the default
+    # conductor stays SCRIPTED, so this constructs with a loud "language goal-authoring is off" log — not
+    # a crash. For a keyless smoke test use mode="offline"; to author goals from speech, conductor="gemini".
     agent = percept.Percept.create(vision="gemini", discover_plugins=False)
     agent.add_goal(Goal(
         id="kettle",
@@ -69,7 +72,7 @@ scripted `Verdict`, and you drive the cognition layer frame-by-frame. This is th
 low-level path — use it for tests, not for a real capture loop.
 
 ```python
-agent = percept.Percept.create(vision="fake", discover_plugins=False)
+agent = percept.Percept.create(mode="offline", vision="scripted", discover_plugins=False)  # "scripted" is canonical; "fake" still works
 agent.add_goal(Goal(id="kettle", condition="the kettle has finished boiling", say="The kettle's done!"))
 for token, t in [("calm", 1.0), ("boiling", 2.0)]:      # scripted tokens, not a live camera
     for ev in await agent.perceive_judged(token, t=t):
@@ -82,9 +85,13 @@ Confirmed signatures (from `packages/percept-vision/percept/agent.py` and `adapt
 - `percept.run(core, *, source, on_incident=None, on_ask=None, on_frame=None, audio_source=None,
   stats=None, ...) -> AsyncIterator[Incident]` — the batteries-included watch (async generator).
 
-- `Percept.create(*, vision=None, discover_plugins=True, ...)` — `vision` is a backend **name**
-  (`"fake"`/`"gemini"`/`"claude"`) or an adapter instance. Pass `discover_plugins=False` for the
-  offline/no-plugin path.
+- `Percept.create(*, vision=None, conductor=None, mode=None, allow_scripted_brain=False,
+  discover_plugins=True, ...)` — `vision`/`conductor` are a backend **name** (`"scripted"` (canonical;
+  `"fake"` still works) / `"gemini"` / `"claude"`) or an adapter instance. **The default is NOT
+  scripted:** a bare `create()` in live mode raises `ModeError` rather than silently faking — pass
+  `mode="offline"` for keyless scripted backends, or select a real backend + its API key. A scripted
+  conductor behind a live voice path (`on_utterance` / `attach_transport`) is a `ModeError` ("scripted
+  brain behind a live voice"); `allow_scripted_brain=True` is the ugly-on-purpose override.
 - `agent.add_goal(Goal(id, condition, say))` — `Goal` also has optional `source="camera"`,
   `modality="speak"`, `state`, `expiry`.
 - `await agent.perceive_judged(frame, source="camera", *, t=None) -> list[FireEvent]` — async.

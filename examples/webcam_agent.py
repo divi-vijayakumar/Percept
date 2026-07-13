@@ -38,6 +38,9 @@ async def main() -> None:
               'or try the offline examples/watch_agent.py (no keys).')
         return
 
+    # Code-armed watch: goals are armed below via add_goal(), there is no voice/on_utterance, so the
+    # default conductor stays SCRIPTED — this constructs with a loud "language goal-authoring is off"
+    # log (not a crash). Needs GEMINI_API_KEY for the real vision judge; keyless? use mode="offline".
     agent = percept.Percept.create(vision="gemini", discover_plugins=False)
     agent.add_goal(
         Goal(

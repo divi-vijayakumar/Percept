@@ -33,7 +33,7 @@ async def main() -> None:
     )
 
     # discover_plugins=False skips third-party backend lookup — pure offline.
-    agent = percept.Percept.create(vision=vision, discover_plugins=False)
+    agent = percept.Percept.create(mode="offline", vision=vision, discover_plugins=False)
 
     agent.add_goal(
         Goal(

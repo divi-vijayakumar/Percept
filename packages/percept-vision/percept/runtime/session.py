@@ -279,7 +279,8 @@ class RuntimeSession:
 
     # -- voice transport: bind an AEC'd mic+speaker pipe (Pipecat/LiveKit/browser/S2S) ----
     async def attach_transport(self, transport: Any, *, arm_tool: bool = True, watch_tools: bool = True,
-                               stt: Any = None, act_sink: Any = None) -> Any:
+                               stt: Any = None, act_sink: Any = None,
+                               allow_scripted_brain: bool = False) -> Any:
         """Bind a :class:`~percept.contracts.VoiceTransport` and wire it to cognition — the ONE call an
         app makes for voice. The transport owns mic + speaker + AEC + endpointing + barge-in.
 
@@ -300,6 +301,12 @@ class RuntimeSession:
         On THIS path Percept never touches raw audio — the transport owns mic + speaker + AEC, so there is
         no echo to hand-cancel. (This does NOT hold for the ``on_utterance`` path — see :func:`start` —
         which opens the mic itself with no AEC.) Returns the started transport."""
+        # FATAL seam (RFC §5): an attached transport IS a live language path (it emits utterances and
+        # exposes watch/arm tools that route raw language to the conductor). Behind a scripted brain
+        # those tools silently author nothing — refuse it here, at the wiring call.
+        from percept.agent import _guard_live_language_path
+
+        _guard_live_language_path(self._core, allow_scripted_brain=allow_scripted_brain)
         self._transport = transport
         self._transport_stt = stt
         self._act_sink = act_sink
@@ -534,6 +541,7 @@ class RuntimeSession:
 async def start(core: Any, *, source: Any, on_frame: Callable | None = None,
                 on_incident: Callable | None = None, on_utterance: Callable | None = None,
                 store: Any = None, label_store: Any = None, max_incidents: int | None = None,
+                allow_scripted_brain: bool = False,
                 **run_kwargs: Any) -> RuntimeSession:
     """Start a background watch and return a :class:`RuntimeSession` to drive it.
 
@@ -549,6 +557,14 @@ async def start(core: Any, *, source: Any, on_frame: Callable | None = None,
     hear itself and loop. For a speakers-on, always-on deployment prefer :meth:`RuntimeSession.attach_transport`
     — that path owns AEC. ``store`` is the injected shared store (deferred; see :class:`RuntimeSession`).
     ``async for incident in run(...)`` remains the headless front door; this is the interactive layer on top."""
+    # FATAL seam (RFC §5): guard SYNCHRONOUSLY at the start() call (not inside the drain task, where a
+    # ModeError would surface late/awkwardly) when a live voice path (on_utterance) is wired behind a
+    # scripted brain. Passing on_utterance later is caught by run()'s own guard.
+    if on_utterance is not None:
+        from percept.agent import _guard_live_language_path
+
+        _guard_live_language_path(core, allow_scripted_brain=allow_scripted_brain)
+
     session = RuntimeSession(core, store=store, label_store=label_store, max_incidents=max_incidents)
     if on_frame is not None:  # the start-provided consumer is just the first subscriber (back-compat)
         session.subscribe(on_frame)
@@ -556,7 +572,7 @@ async def start(core: Any, *, source: Any, on_frame: Callable | None = None,
     async def _drain() -> None:
         async for incident in run(
             core, source=source, on_frame=session._notify_frame, on_incident=on_incident,  # noqa: SLF001
-            on_utterance=on_utterance, label_store=label_store,
+            on_utterance=on_utterance, label_store=label_store, allow_scripted_brain=allow_scripted_brain,
             regate_on_goal_change=True, paused=session.paused, muted=session.muted,
             deaf_until=session.deaf_until, **run_kwargs,
         ):

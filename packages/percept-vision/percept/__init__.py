@@ -28,7 +28,7 @@ from .adapters import (
 from percept.contracts import AudioFrame, CONTRACT_VERSION, Incident, IncidentSnippet, LabelRecord
 from .labelstore import DispositionLog, LabelStore, verdict_ref
 from .cache import CacheCascade, CacheKey, CacheResult, FrameHashLayer
-from .config import Settings, load_settings
+from .config import ModeError, Settings, load_settings
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
 from .entity import Entity, EntityGraph
 from .episodes import Episode, EpisodeLog
@@ -97,6 +97,7 @@ __all__ = [
     "__version__",
     "Percept",
     "FireEvent",
+    "ModeError",
     "registry",
     # the runtime front door (start here)
     "run",

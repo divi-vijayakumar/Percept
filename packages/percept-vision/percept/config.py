@@ -11,6 +11,57 @@ from dataclasses import dataclass, fields, is_dataclass
 from typing import Any
 
 
+class ModeError(RuntimeError):
+    """A run would silently fake, and we refuse to let it look like success.
+
+    Raised for the two configurations the offline/scripted RFC makes impossible to reach by
+    accident: a LIVE run with no backend selected (or a selected backend missing its credential),
+    and a SCRIPTED brain wired behind a LIVE voice path. The message always names the fix.
+    """
+
+
+# Which env var(s) supply each LIVE backend's credential. A name absent here (``scripted``/``fake``/a
+# passed adapter instance) needs no credential. Do NOT hardcode a single vendor — every wired backend
+# is checked against its OWN keys. (Grepped from percept.backends.*.)
+_BACKEND_CREDENTIALS: dict[str, tuple[str, ...]] = {
+    "claude": ("ANTHROPIC_API_KEY",),
+    "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_AISTUDIO_API_KEY"),
+    "gemini-live": ("GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_AISTUDIO_API_KEY"),
+    "openrouter": ("OPENROUTER_API_KEY", "OPENROUTER_KEY"),
+    "deepgram": ("DEEPGRAM_API_KEY",),
+}
+
+
+def resolve_mode(mode: str | None = None) -> str:
+    """Resolve the run mode. Precedence: explicit ``mode`` kwarg > ``PERCEPT_MODE`` env > ``"live"``.
+
+    Only ``"offline"`` is special-cased downstream (it selects scripted seams); any other value is
+    treated as live (real backends, credential-checked). Returned lowercased/stripped.
+    """
+    if mode is not None:
+        return mode.strip().lower()
+    env = os.environ.get("PERCEPT_MODE")
+    if env:
+        return env.strip().lower()
+    return "live"
+
+
+def missing_credential(name: Any) -> tuple[str, ...] | None:
+    """For a LIVE backend *name*, the credential env keys if NONE is set, else ``None``.
+
+    Returns ``None`` (no requirement) for a scripted/fake/unknown name or a non-string (an adapter
+    instance the caller wired directly — that object raises its own error if it needs a key).
+    """
+    if not isinstance(name, str):
+        return None
+    keys = _BACKEND_CREDENTIALS.get(name)
+    if not keys:
+        return None
+    if any(os.environ.get(k) for k in keys):
+        return None
+    return keys
+
+
 def _env(name: str, default: Any, cast) -> Any:
     raw = os.environ.get(name)
     if raw is None:
@@ -65,9 +116,12 @@ class CacheSettings:
 
 @dataclass(frozen=True)
 class ModelSettings:
-    vision: str = "fake"  # PERCEPT_VISION_BACKEND — set claude/gemini in prod
-    conductor: str = "fake"  # PERCEPT_CONDUCTOR_BACKEND
-    specialist: str = "fake"  # PERCEPT_SPECIALIST_BACKEND
+    # None (not "fake") is the default: you do NOT land on a scripted backend by NOT typing something.
+    # The mode (offline -> scripted) or an explicit selection fills these; a bare LIVE run with them
+    # unset raises ModeError instead of silently faking. env (PERCEPT_*_BACKEND) still overrides.
+    vision: str | None = None  # PERCEPT_VISION_BACKEND — set claude/gemini in prod, or mode="offline"
+    conductor: str | None = None  # PERCEPT_CONDUCTOR_BACKEND
+    specialist: str | None = None  # PERCEPT_SPECIALIST_BACKEND
     stt: str = "fake"  # PERCEPT_STT_BACKEND — set deepgram for voice
     tts: str = "fake"  # PERCEPT_TTS_BACKEND
     vision_model: str = "claude-opus-4-8"  # PERCEPT_VISION_MODEL
@@ -162,9 +216,9 @@ def load_settings() -> Settings:
             audit_rate=_env("PERCEPT_CACHE_AUDIT_RATE", 0.05, float),
         ),
         models=ModelSettings(
-            vision=_env("PERCEPT_VISION_BACKEND", "fake", str),
-            conductor=_env("PERCEPT_CONDUCTOR_BACKEND", "fake", str),
-            specialist=_env("PERCEPT_SPECIALIST_BACKEND", "fake", str),
+            vision=_env("PERCEPT_VISION_BACKEND", None, str),
+            conductor=_env("PERCEPT_CONDUCTOR_BACKEND", None, str),
+            specialist=_env("PERCEPT_SPECIALIST_BACKEND", None, str),
             stt=_env("PERCEPT_STT_BACKEND", "fake", str),
             tts=_env("PERCEPT_TTS_BACKEND", "fake", str),
             vision_model=_env("PERCEPT_VISION_MODEL", "claude-opus-4-8", str),
@@ -219,6 +273,9 @@ __all__ = [
     "EventSettings",
     "ConsentSettings",
     "EdgeSettings",
+    "ModeError",
+    "resolve_mode",
+    "missing_credential",
     "load_settings",
     "as_dict",
 ]

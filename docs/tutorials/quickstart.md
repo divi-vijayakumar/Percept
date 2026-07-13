@@ -48,7 +48,7 @@ async def main():
         "boiling":  Verdict(satisfied=True,  confidence=0.95, evidence="foam at the rim"),
     })
 
-    agent = percept.Percept.create(vision=vision, discover_plugins=False)
+    agent = percept.Percept.create(mode="offline", vision=vision, discover_plugins=False)
     agent.add_goal(Goal(
         id="milk",
         condition="the milk is boiling over",
@@ -109,7 +109,10 @@ from percept.adapters import Goal
 
 
 async def main():
-    # Resolve the real backend by NAME via the registry. Needs the [gemini] extra + a key.
+    # Resolve the real backend by NAME via the registry. Needs the [gemini] extra + GEMINI_API_KEY.
+    # Code-armed watch (goals via add_goal, no voice): the default conductor stays SCRIPTED, so this
+    # constructs with a loud "language goal-authoring is off" log — not a crash (a spoken "watch X"
+    # would be ignored). To author goals from language too, pass conductor="gemini"/"claude".
     agent = percept.Percept.create(vision="gemini", discover_plugins=False)
     agent.add_goal(Goal(
         id="milk",

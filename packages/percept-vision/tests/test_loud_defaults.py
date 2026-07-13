@@ -4,9 +4,9 @@ Every bug in this hardening pass shares one shape — a default that runs, looks
 silently does nothing. These tests pin the two dangerous defaults in ``Percept.create`` and
 ``run()`` so a fifth one cannot hide:
 
-  * E3 — ``conductor="fake"`` behind a REAL vision backend. FakeConductor's default
+  * scripted conductor behind a REAL vision backend. A scripted conductor's default
     ``Decision(route="ignore")`` discards every standing-goal request, so a voice-authored
-    "watch X" never arms. Must warn + report ``health()["degraded"]``.
+    "watch X" never arms. Must warn + report it in ``health()["scripted"]`` (RFC §4/§5 vocabulary).
   * E5 — ``regate_on_goal_change=False``. A goal armed mid-run bumps the registry revision but
     the compiled-once gate never re-arms → no rising edge → no fire, silently, for the whole
     session (the shipped realtime-demo bug). The default is now True; when it IS off and goals
@@ -68,15 +68,19 @@ class _CaptureWarnings:
         return [r.getMessage() for r in self.records if r.levelno >= logging.WARNING]
 
 
-# ---------------------------------------------------------------- E3: degraded stub conductor ----
-class DegradedStubConductorTests(unittest.TestCase):
-    def test_real_vision_default_conductor_is_degraded(self):
-        # Real vision + the DEFAULT (fake) conductor: health() must report the degradation LOUDLY.
+# ------------------------------------------------------------- scripted-conductor announce (§4/§5) --
+# (Was E3's "degraded stub conductor". The offline/scripted RFC §6 RE-KEYS this to one consistent
+# vocabulary: health() reports {"mode","scripted":[...]} and the event is "scripted_conductor". The
+# mechanism is unchanged — object-check the CONSTRUCTED class, announce loudly at create() — only the
+# words and the payload shape changed, so these assertions were updated to the new contract.)
+class ScriptedConductorAnnounceTests(unittest.TestCase):
+    def test_real_vision_default_conductor_is_scripted(self):
+        # Real vision + the fallback (scripted) conductor: health() must list the conductor as scripted
+        # LOUDLY (§4), so a dashboard SEES that language goal-authoring is off instead of a green "ok".
         a = percept.Percept.create(vision=_RealishVision(), discover_plugins=False)
         h = a.health()
-        self.assertTrue(h["degraded"], "real vision + FakeConductor must report degraded=True")
-        self.assertEqual(h["conductor"], "fake")
-        self.assertIn("reason", h)
+        self.assertIn("conductor", h["scripted"], "conductor must be reported scripted")
+        self.assertIn("vision", h["backends"])
 
     def test_real_vision_fake_conductor_warns_and_emits_health(self):
         events: list = []
@@ -84,20 +88,22 @@ class DegradedStubConductorTests(unittest.TestCase):
             percept.Percept.create(
                 vision=_RealishVision(), on_health=events.append, discover_plugins=False
             )
-        self.assertIn("degraded_stub_conductor", events)
+        self.assertIn("scripted_conductor", events)
         self.assertTrue(
-            any("degraded_stub_conductor" in w or "FakeConductor" in w for w in cap.warnings()),
-            f"expected a degraded-conductor warning, got {cap.warnings()}",
+            any("scripted_conductor" in w or "SCRIPTED" in w for w in cap.warnings()),
+            f"expected a scripted-conductor warning, got {cap.warnings()}",
         )
 
-    def test_all_fake_is_not_degraded(self):
-        # The all-fake default (the L1 test lane) must NOT be flagged — a fake vision is obviously
-        # fake, so a fake conductor beside it is expected, not a trap. Guards a false positive.
-        a = percept.Percept.create(vision="fake", discover_plugins=False)
-        self.assertFalse(a.health()["degraded"])
+    def test_all_scripted_reports_every_seam_scripted(self):
+        # The all-scripted default (the L1 test lane) is honestly LABELLED, not hidden: health()
+        # lists every scripted seam. A scripted vision beside a scripted conductor is announced —
+        # never a green "ok" that looks intelligent (the whole point of the RFC).
+        a = percept.Percept.create(vision="scripted", discover_plugins=False)
+        self.assertIn("vision", a.health()["scripted"])
+        self.assertIn("conductor", a.health()["scripted"])
 
-    def test_real_vision_real_conductor_is_not_degraded(self):
-        # A real conductor beside real vision is the correct production wiring — not degraded.
+    def test_real_vision_real_conductor_conductor_not_scripted(self):
+        # A real conductor beside real vision is the correct production wiring — NOT reported scripted.
         class _RealishConductor:
             async def run(self, *a, **k):  # pragma: no cover
                 from percept.adapters import Decision
@@ -107,7 +113,8 @@ class DegradedStubConductorTests(unittest.TestCase):
         a = percept.Percept.create(
             vision=_RealishVision(), conductor=_RealishConductor(), discover_plugins=False
         )
-        self.assertFalse(a.health()["degraded"])
+        self.assertNotIn("conductor", a.health()["scripted"])
+        self.assertNotIn("vision", a.health()["scripted"])
 
 
 # ------------------------------------------------------------------ E5: regate default + health --

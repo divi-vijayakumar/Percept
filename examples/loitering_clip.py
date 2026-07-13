@@ -35,7 +35,7 @@ async def main() -> None:
             "loiter|strip": Verdict(satisfied=True,  confidence=0.92, evidence="same person, dwelling across the clip -> loitering"),
         }
     )
-    agent = percept.Percept.create(vision=vision, discover_plugins=False)
+    agent = percept.Percept.create(mode="offline", vision=vision, discover_plugins=False)
 
     # The concern DECLARES it needs a 4-second clip. `wants_clip` reflects the declaration, and
     # `perception_for_concern` maps it to the perception sub-dict the watch loop consumes.

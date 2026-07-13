@@ -87,14 +87,16 @@ agent = percept.Percept.create(
 )
 ```
 
-Any seam you omit falls back to the config/env selection (default: `fake`). You can also pass an
-**adapter instance** instead of a name — handy for tests or custom wiring:
+A seam you omit takes the config/env selection (`PERCEPT_*_BACKEND`), else the mode: `mode="offline"`
+selects scripted backends; a bare LIVE run with vision unset raises `ModeError` (no silent fake). You
+can also pass an **adapter instance** instead of a name — handy for tests or custom wiring:
 
 ```python
 from percept.backends.fake import FakeVision
 from percept.adapters import Verdict
 
 agent = percept.Percept.create(
+    mode="offline",
     vision=FakeVision(script={"frame-1": Verdict(satisfied=True, confidence=0.9)}),
     discover_plugins=False,
 )

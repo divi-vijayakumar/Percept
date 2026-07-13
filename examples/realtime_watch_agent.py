@@ -84,7 +84,10 @@ def _to_rgb(image_frame):
 
 async def on_connection(connection):
     """Per browser: ONE watch agent + the voice wire, explicitly wired (this is the app, not the SDK)."""
-    core = percept.Percept.create(vision="gemini", discover_plugins=False)   # the brain (judge = gemini vision)
+    # A spoken "watch X" routes raw language -> the CONDUCTOR to author the watchspec, so a live voice
+    # here needs a REAL conductor: a scripted one authors nothing and attach_transport() below refuses it
+    # (ModeError: scripted brain behind a live voice). Wire both the vision judge AND the conductor.
+    core = percept.Percept.create(vision="gemini", conductor="gemini", discover_plugins=False)
     frame_q: asyncio.Queue = asyncio.Queue(maxsize=8)
     session = RuntimeSession(core)
 

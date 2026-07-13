@@ -130,6 +130,40 @@ class FakeConductor:
         return self._decision
 
 
+class ScriptedConductor:
+    """A scripted conductor double: maps an utterance SUBSTRING to a :class:`Decision` that authors a
+    real goal, exactly as :class:`FakeVision` maps a frame token to a :class:`Verdict`.
+
+    It exists because the goal-authoring path had no keyless test — :class:`FakeConductor` returns
+    ``Decision(route="ignore")`` for every input, which is the ONE value indistinguishable from a real
+    conductor correctly declining, so *"'tell me when the kettle boils' -> a goal exists"* could never
+    be asserted offline. That gap is plausibly why the watch-authoring bug shipped: nothing failed.
+
+    Wiring, not intelligence (standing rule 2): it does a lowercased substring match; it does not
+    understand language. Its **no-match fallback is** ``Decision(route="respond_direct")`` — an honest
+    "I heard you and authored nothing", **never** ``route="ignore"``: a scripted backend must never
+    return the value that is indistinguishable from success.
+    """
+
+    def __init__(self, script: dict[str, Goal] | None = None) -> None:
+        # utterance-substring -> the Goal to author when the utterance contains it (matched lowercased).
+        self._script = dict(script or {})
+
+    async def run(self, event: str, utterance: str, context: dict) -> Decision:
+        from ..goals import GoalOp
+
+        text = (utterance or "").lower()
+        for key, goal in self._script.items():
+            if key.lower() in text:
+                return Decision(
+                    route="respond_direct",
+                    say=getattr(goal, "say", "") or f"Watching: {getattr(goal, 'condition', key)}",
+                    goal_ops=[GoalOp(op="create", goal=goal)],
+                )
+        # HONEST no-author — NOT route="ignore" (which is indistinguishable from real success).
+        return Decision(route="respond_direct")
+
+
 class FakeSTT:
     """Emits scripted final STT events from a list of utterances."""
 
@@ -268,6 +302,7 @@ __all__ = [
     "FakeVision",
     "FakeSpecialist",
     "FakeConductor",
+    "ScriptedConductor",
     "FakeSTT",
     "FakeTTS",
     "FakeVoiceTransport",

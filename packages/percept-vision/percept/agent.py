@@ -19,7 +19,7 @@ from .adapters import Box, Decision, Goal, TurnResult, Verdict
 from .behavior import BehaviorExecutor, program_of
 from .cache import CacheCascade, CacheKey, FrameHashLayer
 from .concern import attention_weight, consequence_of, requires_verification, resolution_ready
-from .config import Settings, load_settings
+from .config import ModeError, Settings, load_settings, missing_credential, resolve_mode
 from .escalation import MAX_PERCEPTION_LEVEL, escalate_perception, should_escalate
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
 from .entity import EntityGraph
@@ -119,14 +119,70 @@ def _resolve(seam: str, value: Any, cfg: Settings):
     return value  # already an adapter (handy for tests / custom wiring)
 
 
-def _is_fake_backend(obj: Any) -> bool:
-    """True iff ``obj`` is one of Percept's in-core scripted fakes (``percept.backends.fake``).
+def _is_scripted_backend(obj: Any) -> bool:
+    """True iff ``obj`` is one of Percept's in-core scripted doubles (``percept.backends.fake``).
 
     A real vendor adapter (``percept.backends.anthropic`` …) OR any custom/test double counts as
-    NOT fake. The point is to catch a REAL pipeline silently paired with a scripted stub — not to
-    classify third-party wiring — so identity is by the fake module, never a heuristic on the name.
+    NOT scripted. The point is to catch a REAL pipeline silently paired with a scripted double — not
+    to classify third-party wiring — so identity is by the module (the class is the FACT), never a
+    heuristic on the requested name (a registry miss / plugin / stray ``PERCEPT_*_BACKEND`` can land
+    you on a scripted double after you asked for real; the string is the request, the class the fact).
     """
     return type(obj).__module__ == "percept.backends.fake"
+
+
+# One announced vocabulary: "offline" (the mode) selects "scripted" (the backends).
+_SCRIPTED_SEAMS = ("vision", "specialist", "conductor", "stt", "tts")
+_BANNER_EMITTED = False  # once-per-process guard for the loud stderr banner (§4 banner discipline)
+
+
+def _scripted_seams(core: Any) -> list[str]:
+    """The seams whose CONSTRUCTED backend is a scripted double, in a stable order (health/§4)."""
+    return [s for s in _SCRIPTED_SEAMS if _is_scripted_backend(getattr(core, s, None))]
+
+
+def _emit_banner(mode: str, scripted: list[str]) -> None:
+    """The loud stderr banner — once per process, suppressed under pytest (895 banners self-defeat)."""
+    global _BANNER_EMITTED
+    import os
+    import sys
+
+    if _BANNER_EMITTED or "pytest" in sys.modules or os.environ.get("PERCEPT_NO_BANNER"):
+        return
+    _BANNER_EMITTED = True
+    header = "OFFLINE" if mode == "offline" else "SCRIPTED BACKENDS"
+    sys.stderr.write(
+        f"[percept] ⚠ {header} — scripted backends: {', '.join(scripted)}.\n"
+        f"          This proves WIRING, not intelligence. A scripted conductor authors NO goals.\n"
+    )
+
+
+def _guard_live_language_path(core: Any, *, allow_scripted_brain: bool = False) -> None:
+    """FATAL seam: refuse to wire a LIVE voice/language path behind a SCRIPTED brain (§5).
+
+    The conductor is the language-authoring seam — it turns an utterance into ``goal_ops``. A scripted
+    conductor's default ``Decision(route="ignore")`` silently discards every spoken "watch/tell me
+    when…", so the user wired a voice that can't author. That is the demo bug; refuse it at the wiring
+    call. Called from ``run(on_utterance=…)`` / ``session.start(on_utterance=…)`` /
+    ``attach_transport`` — the places a language path is ACTUALLY wired (NOT at ``create()``, which
+    cannot yet know a language path is coming).
+
+    Skipped when the whole run is declared scripted (``mode="offline"`` — everything is announced
+    scripted, including the voice) or when the ugly-on-purpose ``allow_scripted_brain`` hatch is set.
+    """
+    if allow_scripted_brain or getattr(core, "_allow_scripted_brain", False):
+        return
+    if getattr(core, "_mode", "live") == "offline":
+        return
+    conductor = getattr(core, "conductor", None)
+    if conductor is not None and _is_scripted_backend(conductor):
+        raise ModeError(
+            "scripted brain behind a live voice: a language path (on_utterance / an attached "
+            "transport) is wired, but the conductor is SCRIPTED — it authors NO goals, so every "
+            "spoken 'watch X' / 'tell me when…' is silently dropped. Fix: select a real conductor "
+            "(conductor='claude'/'gemini' or PERCEPT_CONDUCTOR_BACKEND=…) with its API key; or, to "
+            "test the voice plumbing only, run mode='offline' or pass allow_scripted_brain=True."
+        )
 
 
 @dataclass
@@ -166,10 +222,13 @@ class Percept:
     _executor: Any = None  # BehaviorExecutor — the unified firing path (lazily bound to self.gate)
     otel: OTelExporter | None = None  # optional OTel mirror for the funnel; None -> in-process only
     _funnel: Any = None  # Funnel — the standard telemetry funnel (lazily bound to self.metrics)
-    # E3: set by create() when a REAL vision backend is paired with the scripted FakeConductor — a
-    # silent trap (the conductor's default Decision(route="ignore") discards standing-goal requests).
-    # None -> not degraded; a reason string -> health() reports degraded=True. NOT a construction input.
-    _degraded_conductor: str | None = None
+    # The announced-scripted state (RFC §4). Set by create(): the resolved mode ("offline"/"live"),
+    # the seams whose CONSTRUCTED backend is a scripted double, and the ugly escape hatch. Read by
+    # health() (the single §4 payload) and by the language-path FATAL seam. NOT construction inputs the
+    # caller passes as dataclass fields — create() fills them.
+    _mode: str = "live"
+    _scripted: tuple = ()
+    _allow_scripted_brain: bool = False
 
     # -- construction --------------------------------------------------------
     @classmethod
@@ -189,15 +248,53 @@ class Percept:
         embedder: Callable[[Any, Box], Any] | None = None,
         on_trace: Callable[[Any], None] | None = None,
         on_health: Callable[[str], None] | None = None,
+        mode: str | None = None,
+        allow_scripted_brain: bool = False,
     ) -> "Percept":
         cfg = settings or load_settings()
-        # A seam not explicitly passed falls back to the config/env selection (settings.models.*, i.e.
-        # the PERCEPT_*_BACKEND vars) so the .env controls which adapter each seam uses. Default: fake.
-        vision = cfg.models.vision if vision is None else vision
-        specialist = cfg.models.specialist if specialist is None else specialist
-        conductor = cfg.models.conductor if conductor is None else conductor
+        # The mode is the switch: explicit kwarg > PERCEPT_MODE env > live. It is never "offline" by
+        # NOT typing something — you fall onto scripted backends only by naming the mode or selecting a
+        # scripted seam, which is the whole point (faking must be a choice you make and see).
+        resolved_mode = resolve_mode(mode)
+        offline = resolved_mode == "offline"
+        # Per-seam resolution: explicit kwarg > settings.models.* (env/ModelSettings) > mode default.
+        # vision/conductor/specialist now default None (config.py); stt/tts still default "fake". An
+        # unset seam becomes "scripted" offline. In LIVE mode an unset VISION is the bare-create() trap
+        # (no real perception, no key) -> ModeError; conductor/specialist fall back to scripted and are
+        # announced LOUDLY below (the code-armed watch is a legitimate pattern — see §5, not a crash).
+        def _pick(name: str, kwarg: Any, cfg_value: Any, *, required: bool) -> Any:
+            sel = kwarg if kwarg is not None else cfg_value
+            if sel is not None:
+                return sel
+            if offline:
+                return "scripted"
+            if required:
+                raise ModeError(
+                    f"no {name} backend selected and this is a LIVE run — Percept will not silently "
+                    f"fall back to a scripted double. Fix: pass mode='offline' for keyless scripted "
+                    f"backends (proves WIRING, not intelligence), or select a real backend "
+                    f"({name}='claude'/'gemini') and set its API key."
+                )
+            return "scripted"
+
+        vision = _pick("vision", vision, cfg.models.vision, required=True)
+        specialist = _pick("specialist", specialist, cfg.models.specialist, required=False)
+        conductor = _pick("conductor", conductor, cfg.models.conductor, required=False)
         stt = cfg.models.stt if stt is None else stt
         tts = cfg.models.tts if tts is None else tts
+        # LIVE credential check: a SELECTED real backend name whose key is absent raises ModeError
+        # naming the exact env var(s) — never construct-then-fail-silently at first call. Per-backend
+        # (not hardcoded to one vendor). Skipped offline (a declared real seam offline needs no key —
+        # it is not going to make a live call). Adapter instances the caller wired directly are skipped.
+        if not offline:
+            for seam_name, sel in (("vision", vision), ("specialist", specialist),
+                                   ("conductor", conductor), ("stt", stt), ("tts", tts)):
+                keys = missing_credential(sel)
+                if keys:
+                    raise ModeError(
+                        f"{seam_name} backend {sel!r} needs a credential and none is set. Fix: export "
+                        f"one of {list(keys)}, or run mode='offline' (keyless scripted backends)."
+                    )
         if discover_plugins:
             registry.discover_entrypoints()
         clk = clock or time.monotonic
@@ -237,27 +334,40 @@ class Percept:
                 allowed_actions=cfg.consent.allowed_actions,
             ),
             action_log=ActionLog(),
+            _mode=resolved_mode,
+            _allow_scripted_brain=allow_scripted_brain,
         )
         # R3: when the entity graph evicts a track (it caps at max_entities), sweep that entity's derived
         # state — its ``(goal_id, entity_id)`` gate keys AND any cached verdicts resting on it — so a 24/7
         # churn of entities can't leave orphan edges accumulating in the gate. Wired here (not at graph
         # construction) because the gate is built alongside the graph in the same call.
         obj.graph.on_evict = obj._on_entity_evicted
-        # E3 loud-failure: a REAL vision backend behind the scripted FakeConductor is a silent trap.
-        # FakeConductor's default Decision(route="ignore") DISCARDS every standing-goal request, so a
-        # voice-authored "watch X" never arms and the proactive premise is dead — with no error. Flag
-        # it out loud (warning + health()["degraded"]) instead of letting it look like it works. The
-        # all-fake L1 lane (fake vision) is exempt: a fake vision is obviously fake, not a trap.
-        if not _is_fake_backend(obj.vision) and _is_fake_backend(obj.conductor):
-            reason = (
-                "real vision backend paired with FakeConductor: its default Decision(route='ignore') "
-                "discards standing-goal requests, so voice-authored watches never arm. Set "
-                "PERCEPT_CONDUCTOR_BACKEND (or conductor=) to a real backend."
-            )
-            obj._degraded_conductor = reason
-            get_logger("percept.agent").warning("degraded_stub_conductor: %s", reason)
-            if on_health is not None:
-                on_health("degraded_stub_conductor")
+        # Announce scripted backends LOUDLY at construction, in the one consistent vocabulary (RFC §4/§5).
+        # This decides on the CONSTRUCTED CLASS (the fact), not the requested name — a registry miss /
+        # plugin / stray PERCEPT_*_BACKEND can land a scripted double after you asked for real.
+        scripted = _scripted_seams(obj)
+        obj._scripted = tuple(scripted)
+        if scripted:
+            log = get_logger("percept.agent")
+            conductor_scripted = _is_scripted_backend(obj.conductor)
+            # create() can only LOG — it CANNOT know whether a language path (on_utterance / a
+            # transport) will be wired later (those attach at run()/start()/attach_transport). So the
+            # FATAL "scripted brain behind a live voice" check lives at those seams; here we only warn.
+            if conductor_scripted:
+                # The common, LEGITIMATE code-armed pattern: goals via add_goal(), no voice. Non-fatal.
+                log.warning(
+                    "scripted_conductor: the conductor is SCRIPTED — language goal-authoring is OFF; "
+                    "goals must be code-armed via add_goal(). A spoken 'tell me when…' will be ignored. "
+                    "(scripted seams: %s; mode=%s)", ", ".join(scripted), resolved_mode,
+                )
+                if on_health is not None:
+                    on_health("scripted_conductor")
+            else:
+                log.warning(
+                    "scripted_backends: %s are SCRIPTED — this proves WIRING, not intelligence. "
+                    "(mode=%s)", ", ".join(scripted), resolved_mode,
+                )
+            _emit_banner(resolved_mode, scripted)
         return obj
 
     # -- goal authoring ------------------------------------------------------
@@ -1496,14 +1606,11 @@ class Percept:
         from . import __version__
 
         payload = health(__version__, backends, self.metrics)
-        # E3: surface a degraded stub conductor (real vision + FakeConductor) in the health payload so
-        # a dashboard / smoke test SEES the silent trap instead of a green "ok".
-        if self._degraded_conductor is not None:
-            payload["degraded"] = True
-            payload["conductor"] = "fake"
-            payload["reason"] = self._degraded_conductor
-        else:
-            payload["degraded"] = False
+        # RFC §4: the single scripted-state payload — one vocabulary, asked not guessed. ``mode`` is the
+        # resolved switch ("offline"/"live"); ``scripted`` lists the seams whose CONSTRUCTED backend is a
+        # scripted double (computed at create() from the class, the fact — not the requested name).
+        payload["mode"] = self._mode
+        payload["scripted"] = list(self._scripted)
         return payload
 
 

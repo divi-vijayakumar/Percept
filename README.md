@@ -45,8 +45,9 @@ import asyncio
 from percept import Percept, Goal
 
 async def main():
-    # Fake backends by default — offline, no keys. discover_plugins=False skips plugin lookup.
-    agent = Percept.create(discover_plugins=False)
+    # mode="offline" selects scripted backends — keyless, deterministic; proves WIRING, not
+    # intelligence. (You ask for scripted OUT LOUD; you never fall onto it by omission.)
+    agent = Percept.create(mode="offline", discover_plugins=False)
 
     agent.add_goal(Goal(
         id="caffeine",
@@ -73,9 +74,10 @@ where `action` is `"fire"` or `"ask"`. Swap the fake for real eyes — the cogni
 agent = Percept.create(vision="gemini")          # needs percept-vision[gemini] + GEMINI_API_KEY
 ```
 
-Backends are selected by name (`"fake"` · `"gemini"` · `"claude"`), by adapter instance, or by env
-(`PERCEPT_VISION_BACKEND`). Canonical examples are **key-free by default** (fake backend); the live ones
-print a one-line instruction when a key is missing — never a stack trace. See
+Backends are selected by name (`"scripted"` (canonical) · `"gemini"` · `"claude"`), by adapter instance,
+or by env (`PERCEPT_VISION_BACKEND`). Keyless runs are **`mode="offline"`** (scripted backends, announced
+out loud) — you never fall onto scripted doubles by omission; the live ones print a one-line instruction
+when a key is missing — never a stack trace. See
 [`examples/`](examples/) (start with [`examples/watch_agent.py`](examples/watch_agent.py)).
 
 ## Watch a live source

@@ -7,7 +7,9 @@ thread, the live feed, and rising-edge **incident** emission — so your app sto
 from percept import Percept, Goal
 from percept.runtime import FileDeadLetterQueue, RuntimeStats, run, webhook
 
-agent = Percept.create(vision="gemini")            # pip install "percept-vision[gemini]" + GEMINI_API_KEY
+agent = Percept.create(vision="gemini")            # [gemini] extra + GEMINI_API_KEY; code-armed watch
+                                                   # (goals via add_goal) — the default conductor stays
+                                                   # SCRIPTED (loud log, no crash). Keyless? mode="offline".
 agent.add_goal(Goal(id="zone", condition="a person is in the restricted zone", say="Alert: person in zone"))
 
 notify = webhook("https://example.com/percept/incidents")

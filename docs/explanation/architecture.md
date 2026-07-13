@@ -115,7 +115,7 @@ System-2 intelligence is summoned through five named seams — `vision · specia
 layer is unchanged.
 
 ```python
-agent = Percept.create()                  # fakes, offline, no keys — System-1 only
+agent = Percept.create(mode="offline")    # scripted backends, no keys — proves WIRING, not intelligence
 agent = Percept.create(vision="gemini")   # pip install "percept-vision[gemini]" + GEMINI_API_KEY
 ```
 

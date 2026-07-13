@@ -38,7 +38,7 @@ def build_agent() -> Percept:
             "on-floor": Verdict(satisfied=True, confidence=0.92, evidence="person on the floor, not moving"),
         }
     )
-    agent = Percept.create(vision=vision, discover_plugins=False)
+    agent = Percept.create(mode="offline", vision=vision, discover_plugins=False)
     agent.add_goal(Goal(
         id="fall",
         condition="a person has fallen and is on the floor",

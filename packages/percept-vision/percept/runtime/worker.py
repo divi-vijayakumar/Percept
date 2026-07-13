@@ -321,6 +321,7 @@ async def run(
     audio_gate: Any = "acoustic-onset",
     audio_wake: dict | None = None,
     on_utterance: Callable | None = None,
+    allow_scripted_brain: bool = False,
     vad: Any = None,
     utterance_threshold: float = 0.01,
     utterance_hangover_frames: int = 8,
@@ -430,6 +431,14 @@ async def run(
         core = Percept.create(vision=vision) if vision is not None else Percept.create()
         for i, g in enumerate(goals):
             core.add_goal(_as_goal(g, i))
+
+    # FATAL seam (RFC §5): a live voice-escalation path (on_utterance) behind a SCRIPTED brain is the
+    # demo bug — every spoken "watch X" is silently dropped. Refuse it here, where the language path is
+    # actually wired. A code-armed watch (no on_utterance) with a scripted conductor is fine (§5).
+    if on_utterance is not None:
+        from percept.agent import _guard_live_language_path
+
+        _guard_live_language_path(core, allow_scripted_brain=allow_scripted_brain)
 
     settings = getattr(core, "settings", None) or load_settings()
 

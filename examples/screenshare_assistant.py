@@ -35,7 +35,7 @@ def build_agent() -> Percept:
             ),
         }
     )
-    agent = Percept.create(vision=vision, discover_plugins=False)
+    agent = Percept.create(mode="offline", vision=vision, discover_plugins=False)
     agent.add_goal(Goal(
         id="cc-setup",
         condition="the user is stuck on a Claude Code setup step - a visible error, a missing API key, a wrong command",
