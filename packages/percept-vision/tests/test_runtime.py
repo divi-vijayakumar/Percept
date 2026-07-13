@@ -242,16 +242,18 @@ class BriefActionCadenceTests(unittest.TestCase):
     def test_capture_plan_brief_goal_raises_capture_and_arms_coast(self):
         g = Goal(id="b", condition="someone briefly waves", say="hi",
                  state={"sense": {"brief_window_s": 0.5}})
-        cap, coast = _capture_plan([g], 4.0)
+        cap, coast, required = _capture_plan([g], 4.0)              # D1c: also returns the Nyquist floor
         self.assertEqual(cap, 8.0)                                  # raised to min(headroom, max_fps)
         self.assertIsNotNone(coast)                                 # fovea coast armed
         self.assertEqual(coast.policy("__coast__").base_fps, 4.0)   # 2 / 0.5s window Nyquist
+        self.assertEqual(required, 4.0)                             # coverage floor the source must meet
 
     def test_capture_plan_ordinary_goal_is_byte_for_byte_default(self):
         g = Goal(id="n", condition="a person is in the zone", say="alert")
-        cap, coast = _capture_plan([g], 4.0)
+        cap, coast, required = _capture_plan([g], 4.0)
         self.assertEqual(cap, 4.0)                                  # unchanged capture rate
         self.assertIsNone(coast)                                    # no coast -> gate-only path
+        self.assertEqual(required, 0.0)                             # nothing promised -> no tripwire
 
     def test_brief_goal_coast_judges_a_quiet_in_window_frame(self):
         # the win: the coast covers a sub-second window the motion gate would miss entirely.

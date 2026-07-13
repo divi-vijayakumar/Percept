@@ -637,6 +637,23 @@ class MotionGate:
         """Forget the previous frame (e.g. a stream discontinuity / new source)."""
         self._prev = None
 
+    def adopt_state(self, prev: "MotionGate") -> None:
+        """Carry a PRIOR gate's per-goal throttle + prev frame into this freshly-recompiled gate (D2).
+
+        A regate (a goal armed/cancelled mid-run) rebuilds the gate from scratch; without this, the new
+        gate starts with an EMPTY ``_last_escalate`` — so arming ONE goal by voice released the per-goal
+        cadence brake on ALL the others (they could re-escalate before their ``cadence_s`` elapsed). We
+        copy the throttle ONLY for goal_ids still present in THIS gate's spec: a cancelled goal's brake is
+        correctly forgotten, and a re-armed id keeps its cadence. The ``prev`` frame is carried too, so
+        the first frame after a regate diffs against the real predecessor instead of a spurious 0-motion
+        cold start. Deliberately touches ONLY ``_last_escalate`` + ``_prev`` — NOT any gate-key/dwell
+        state (that is SPEC-C's territory)."""
+        live_ids = {c.goal_id for c in self._spec.conditions}
+        self._last_escalate = {
+            gid: t for gid, t in prev._last_escalate.items() if gid in live_ids
+        }
+        self._prev = prev._prev
+
     def evaluate(
         self,
         frame: Any,

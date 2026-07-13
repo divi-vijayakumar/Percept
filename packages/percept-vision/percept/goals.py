@@ -10,6 +10,9 @@ from dataclasses import asdict, dataclass, field
 from typing import Literal
 
 from .adapters import Goal
+from .observability import get_logger
+
+_log = get_logger("percept.goals")
 
 GoalStatus = Literal["active", "complete", "cancelled"]
 
@@ -59,6 +62,17 @@ class GoalRegistry:
                 raise ValueError(f"unknown goal op {op.op!r}")
 
     def create(self, goal: Goal) -> Goal:
+        # A bare dict write is last-writer-wins: re-using an id silently DROPS the prior goal (a lost
+        # watch instruction — e.g. two voice conditions that slugged to the same id). Report it loudly;
+        # never overwrite in silence. (D3b: the slug is now hash-suffixed, so a genuine collision here is
+        # a real re-arm/override — still worth surfacing so it's never invisible.)
+        prior = self._goals.get(goal.id)
+        if prior is not None and self._status.get(goal.id) == "active":
+            _log.warning(
+                "goal_overwritten: id %r is already armed (%r); replacing it last-writer-wins with %r. "
+                "If these are different watches, give them distinct ids — one instruction is being lost.",
+                goal.id, getattr(prior, "condition", ""), getattr(goal, "condition", ""),
+            )
         self._goals[goal.id] = goal
         self._status[goal.id] = "active"
         self._revision += 1

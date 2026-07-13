@@ -223,21 +223,36 @@ def _energy_fresh(energy_t: float | None, now: float | None, chunk_dt: float | N
 # _CAPTURE_HEADROOM_FPS): the fovea coast still drives JUDGING, but DECODE never exceeds this.
 _BRIEF_CAPTURE_CAP_FPS = 8.0
 
+# D1c — coverage-guarantee tripwire tolerances. A brief goal promises >= its window Nyquist in CAPTURED
+# frames; if the OPEN source can't deliver that (a slow live source, or the cap clamping below Nyquist for
+# a very short window), the guarantee is silently downgraded. We measure the OBSERVED capture cadence over
+# a short window of real frame timestamps and report ONCE when it falls short — the durable rule (report an
+# unmeetable guarantee) that generalizes past this one bug.
+_CAPTURE_UNMET_MIN_SPAN_S = 1.0  # measure over >=1s of real frames before judging delivery (avoid startup jitter)
+_CAPTURE_UNMET_TOL = 0.85        # observed must reach 85% of the promised Nyquist floor or we report
 
-def _capture_plan(goals: list, base_fps: float) -> tuple[float, Any]:
-    """Derive ``(capture_fps, coast_controller)`` from active goals' sensor plans (TODO 1 / Build 5).
+
+def _capture_plan(goals: list, base_fps: float) -> tuple[float, Any, float]:
+    """Derive ``(capture_fps, coast_controller, required_fps)`` from active goals' sensor plans (TODO 1
+    / Build 5).
 
     A brief-action *judge* goal (one carrying a ``sense.brief_window_s`` prior) compiles a SENSITIVE
     above-Nyquist cadence via :func:`~percept.sensorplan.sensor_plan_for`; ordinary goals compile no
-    cadence floor. So with no brief goal active this returns ``(base_fps, None)`` and the worker is
+    cadence floor. So with no brief goal active this returns ``(base_fps, None, 0.0)`` and the worker is
     byte-for-byte the fixed-fps default. When a brief goal IS active we (a) raise the capture rate to
     cover its cadence (capped) and (b) return a fovea :class:`~percept.sampling.SamplingController` whose
     coast floor forces a judge on quiet, sub-threshold frames the motion gate would skip — so a
-    sub-second window is still covered. The coast tracks the MOST sensitive active goal."""
+    sub-second window is still covered. The coast tracks the MOST sensitive active goal.
+
+    ``required_fps`` is the highest brief-goal Nyquist floor (``base_fps`` of its sensitive cadence) —
+    the coverage GUARANTEE the open source must actually deliver. The worker compares the observed
+    capture cadence against it and emits ``capture_plan_unmet`` when it can't be met (D1c): a coverage
+    guarantee that can't be honored is REPORTED, never silently downgraded."""
     from percept.sampling import SamplingController, SensePolicy
     from percept.sensorplan import sensor_plan_for
 
     capture = float(base_fps)
+    required = 0.0
     policy: SensePolicy | None = None
     for g in goals:
         try:
@@ -249,6 +264,7 @@ def _capture_plan(goals: list, base_fps: float) -> tuple[float, Any]:
             continue  # ordinary (non-brief) goal: no cadence floor
         mx = cad.get("max_fps") or base
         capture = max(capture, min(_BRIEF_CAPTURE_CAP_FPS, float(mx)))
+        required = max(required, float(base))  # the window Nyquist we PROMISED to cover
         et = cad.get("escalate_threshold")
         pol = SensePolicy(
             base_fps=float(base), max_fps=float(mx),
@@ -256,7 +272,7 @@ def _capture_plan(goals: list, base_fps: float) -> tuple[float, Any]:
         )
         if policy is None or pol.base_fps > policy.base_fps:
             policy = pol
-    return capture, (SamplingController(policy) if policy is not None else None)
+    return capture, (SamplingController(policy) if policy is not None else None), required
 
 
 def _as_goal(g: Any, i: int) -> Any:
@@ -425,12 +441,16 @@ async def run(
         if load is not None:
             load(persistence)
 
-    def _build_gate():
-        """(Re)compile the WatchSpec → gate + detector banks from the core's CURRENT active goals.
-        Called once at start, and again on a goal-registry revision change when regate_on_goal_change
-        is set (so a goal armed mid-run — e.g. by voice — actually reaches the tier-0 gate)."""
+    def _build_gate(prev_gate=None, prev_banks=None):
+        """(Re)compile the WatchSpec → gate + detector banks + fovea coast from the core's CURRENT active
+        goals. Called once at start, and again on a goal-registry revision change when
+        regate_on_goal_change is set (so a goal armed mid-run — e.g. by voice — actually reaches the
+        tier-0 gate). On a regate the new gate ADOPTS the prior gate's per-goal throttle + prev frame
+        (D2), and a surviving goal's detector bank is REUSED (its running rep-peak / refractory state must
+        not reset mid-rep) — so arming one goal never disturbs the others."""
+        active = list(core.goals.active())
         s = compile_watchspec(
-            list(core.goals.active()),
+            active,
             threshold=settings.edge.motion_gate,
             # Deployment-wide salience-mode defaults (per-goal goal.state may override); resolved onto
             # each WatchCondition so the gate/edge honor the effective value.
@@ -444,19 +464,45 @@ async def run(
         )
         # clock (PR 2.2): a civil-time source arms per-goal Schedules (C1); None -> always-armed (default).
         g = MotionGate(s, settings=settings, wake_policy=wake_policy, clock=clock)
+        if prev_gate is not None:
+            g.adopt_state(prev_gate)  # D2: carry throttle + prev for surviving goal_ids
         # PR 1.3: one detector bank per goal that selected edge detectors (state['detectors']). The bank
         # emits timed boundaries (rep peaks, acoustic onsets) from the CHEAP motion/energy signals at
         # native fps — never spends a cloud judge. No detectors -> no banks -> byte-for-byte pre-PR.
-        b = {c.goal_id: DetectorBank(c.detectors) for c in s.conditions if getattr(c, "detectors", None)}
-        return s, g, b
+        # D2: reuse a surviving goal's bank so a regate mid-rep doesn't drop/double-count a rep.
+        b = {}
+        for c in s.conditions:
+            if not getattr(c, "detectors", None):
+                continue
+            if prev_banks is not None and c.goal_id in prev_banks:
+                b[c.goal_id] = prev_banks[c.goal_id]
+            else:
+                b[c.goal_id] = DetectorBank(c.detectors)
+        # TODO 1 / Build 5 (D1a): rebuild the fovea coast alongside the spec/gate/banks so a brief-action
+        # goal armed MID-RUN gets its above-Nyquist coast too (it was previously computed once at t0 and a
+        # mid-run brief goal never received one). `_req` is the coverage floor (D1c) the open source must
+        # meet. No brief goal -> (None, 0.0) -> byte-for-byte the fixed-fps path.
+        _cap, _coast, _req = _capture_plan(active, fps)
+        return s, g, b, _coast, _req
 
-    spec, gate, banks = _build_gate()
+    spec, gate, banks, coast, required_fps = _build_gate()
     perceive_boundary = getattr(core, "perceive_boundary", None)
     goals_revision = getattr(core.goals, "revision", None)  # PR 2.1: watch for mid-run goal changes
     # TODO 1 / Build 5: a brief-action goal raises the capture rate + arms a fovea coast so a sub-second
     # window is covered above its Nyquist; no brief goal -> (fps, None) -> byte-for-byte the fixed-fps path.
-    capture_fps, coast = _capture_plan(list(core.goals.active()), fps)
+    # The source-open rate is FIXED once (a live source can't change fps mid-stream), so when a brief goal
+    # could be armed MID-RUN (regate on) over a LIVE source we open at the headroom cap now, leaving the
+    # capture headroom a voice-armed brief goal will need — gate/coast then ration the actual judging (D1b).
+    capture_fps, _, _ = _capture_plan(list(core.goals.active()), fps)
+    if regate_on_goal_change and isinstance(source, str):
+        capture_fps = max(capture_fps, _BRIEF_CAPTURE_CAP_FPS)
     clips = FrameWindow(size=snippet_size)  # rolling pre-roll buffer for the incident snippet
+    # D1c coverage-guarantee tripwire (emit-once). Tracks the observed capture cadence against the brief
+    # goal's required Nyquist floor (required_fps); reset when a regate RAISES the requirement.
+    _cap_req_seen = 0.0
+    _cap_t0: float | None = None
+    _cap_n = 0
+    _cap_unmet_emitted = False
 
     # This run's tracer takes precedence; a tracer set via Percept.create(on_trace=) is preserved when
     # run() gets none. Set immediately before the try so the finally ALWAYS restores it — a tracer never
@@ -780,7 +826,11 @@ async def run(
                 rev = getattr(core.goals, "revision", goals_revision)
                 if rev != goals_revision:
                     if regate_on_goal_change:
-                        spec, gate, banks = _build_gate()
+                        # D2: pass the live gate + banks so the rebuild ADOPTS per-goal throttle + prev
+                        # frame and REUSES surviving goals' detector banks (no throttle release / rep
+                        # drop). D1a: coast + required_fps are rebuilt too (a mid-run brief goal gets its
+                        # coast).
+                        spec, gate, banks, coast, required_fps = _build_gate(gate, banks)
                     else:
                         _log.warning(
                             "goals_changed_without_regate: core.goals.revision moved %s->%s while "
@@ -794,6 +844,28 @@ async def run(
                                 "goals_changed_without_regate", ts=t,
                                 data={"from_revision": goals_revision, "to_revision": rev}))
                     goals_revision = rev
+            # D1c: a brief goal promised >= required_fps CAPTURED frames (its window Nyquist). Measure the
+            # OBSERVED capture cadence over a short window of real frame timestamps; if the open source
+            # can't meet it, REPORT it once (never silently downgrade). Reset when a regate raises the
+            # requirement. No brief goal -> required_fps == 0 -> this whole block is skipped.
+            if required_fps > 0.0:
+                if required_fps > _cap_req_seen:  # a (new/more-demanding) brief goal -> fresh window
+                    _cap_req_seen = required_fps
+                    _cap_t0 = t
+                    _cap_n = 0
+                    _cap_unmet_emitted = False
+                _cap_n += 1
+                if not _cap_unmet_emitted and _cap_t0 is not None:
+                    _span = t - _cap_t0
+                    if _span >= _CAPTURE_UNMET_MIN_SPAN_S and _cap_n >= 2:
+                        _observed = (_cap_n - 1) / _span
+                        if _observed < required_fps * _CAPTURE_UNMET_TOL:
+                            _cap_unmet_emitted = True
+                            if on_health is not None:
+                                await _call_sink(on_health, RuntimeHealthEvent(
+                                    "capture_plan_unmet", ts=t,
+                                    data={"required_fps": required_fps, "observed_fps": _observed,
+                                          "capture_fps": capture_fps}))
             # A-4: surface any capture-thread health events (e.g. a source whose DELIVERED fps diverges
             # from its reported CAP_PROP_FPS — the previously-silent half-rate decimation). Drained on the
             # frame cadence so it fails LOUD through on_health instead of sitting in an unread list.

@@ -258,7 +258,13 @@ class Percept:
     # -- goal authoring ------------------------------------------------------
     def add_goal(self, goal: Goal) -> Goal:
         self._arm_deadline(goal)  # R3: resolve an authored duration into an absolute stamp at ARM time
-        return self.goals.create(goal)
+        result = self.goals.create(goal)
+        # D3a: cache-invalidate on the direct arm() path too (only apply_goal_ops did before). A goal id
+        # re-armed with a new condition must not be served a verdict cached under its OLD meaning — the
+        # goal-change step of the invalidation order (§6.2). Runs AFTER _arm_deadline so a legacy
+        # deadline_s still raises loudly (never silently cached-then-armed).
+        self.invalidate_cache(goal.id)
+        return result
 
     def _arm_deadline(self, goal: Goal) -> None:
         """Resolve a ``deadline`` concern's authored DURATION into an absolute ``deadline_at`` on THIS
@@ -988,7 +994,7 @@ class Percept:
         # A structured key so the FrameHashLayer can ROI-crop + dHash the frame and scope its
         # entry to (goal, entity); the legacy stub cascade ignores the extra fields harmlessly.
         cache_key = CacheKey(
-            goal_id=goal.id, frame=frame, roi=roi, entity_id=entity_id
+            goal_id=goal.id, frame=frame, roi=roi, entity_id=entity_id, condition=goal.condition
         )
         hit = self.cache.resolve(cache_key)
         if hit.status == "HIT" and hit.verdict is not None:

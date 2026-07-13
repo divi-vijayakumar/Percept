@@ -16,6 +16,7 @@ frame-scoped answer, the runtime goal ops, and a clean cancellation point.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import time
 from typing import Any, Callable
@@ -50,6 +51,23 @@ STOP_WATCHING_SCHEMA = {
     "required": ["what"],
 }
 WHATS_ARMED_SCHEMA = {"type": "object", "properties": {}}
+
+
+def _arm_slug(raw_id: Any, condition: str) -> str:
+    """Derive a STABLE, COLLISION-RESISTANT goal id for a voice-armed watch.
+
+    An explicit ``id`` (from the tool args) is honored verbatim (kebab-cased, bounded). Otherwise the
+    id is derived from the condition — but a plain ``condition[:40]`` slug silently COLLIDES for two
+    watches sharing a 40-char prefix ("the red car is parked in the driveway near the mailbox on
+    monday" vs "…tuesday"), and ``GoalRegistry.create`` is last-writer-wins, so one instruction is lost
+    with no signal. We suffix a short content hash of the FULL condition so distinct conditions get
+    distinct ids even when their prefixes match (D3b)."""
+    explicit = str(raw_id or "").strip()
+    if explicit:
+        return explicit.lower().replace(" ", "-")[:40] or "goal"
+    slug = condition.strip().lower().replace(" ", "-")
+    digest = hashlib.sha1(condition.encode("utf-8")).hexdigest()[:6]
+    return f"{slug[:32]}-{digest}" if slug else f"goal-{digest}"
 
 
 class RuntimeSession:
@@ -313,7 +331,7 @@ class RuntimeSession:
         condition = str(args.get("condition") or "").strip()
         if not condition:
             return {"error": "condition required"}
-        gid = str(args.get("id") or condition).strip().lower().replace(" ", "-")[:40] or "goal"
+        gid = _arm_slug(args.get("id"), condition)
         say = str(args.get("say") or f"Heads up — {condition}.").strip()
         await self.arm(Goal(id=gid, condition=condition, say=say))
         return {"output": f"now watching for {condition}"}

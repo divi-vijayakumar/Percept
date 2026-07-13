@@ -189,13 +189,15 @@ class FrameHashLayer:
         self._settings = settings
         self._clock = clock
         self._key_fn = key_fn or _default_key_fn
-        # (goal_id, entity_id) -> _Entry
-        self._entries: dict[tuple[str, str | None], _Entry] = {}
+        # (goal_id, entity_id, condition) -> _Entry. Condition is part of the slot so a goal re-armed
+        # under a new condition can't be served its stale verdict (D3a); invalidate*() still key off
+        # slot[0]/slot[1] (goal_id/entity_id), so their scoping is unchanged.
+        self._entries: dict[tuple[str, str | None, str | None], _Entry] = {}
 
     # -- the CacheLayer protocol ------------------------------------------
     def lookup(self, key: Any) -> CacheResult:
         ck = self._key_fn(key)
-        slot = (ck.goal_id, ck.entity_id)
+        slot = (ck.goal_id, ck.entity_id, ck.condition)
         entry = self._entries.get(slot)
         if entry is None:
             return CacheResult.defer()
@@ -234,7 +236,7 @@ class FrameHashLayer:
         bits = dhash(ck.frame, ck.roi)
         if bits is None:
             return  # un-hashable frame: nothing to cache against -> leave the slot empty.
-        slot = (ck.goal_id, ck.entity_id)
+        slot = (ck.goal_id, ck.entity_id, ck.condition)
         self._entries[slot] = _Entry(
             goal_id=ck.goal_id,
             entity_id=ck.entity_id,
@@ -304,12 +306,18 @@ class FrameHashLayer:
 
 @dataclass(frozen=True)
 class CacheKey:
-    """The information the frame-hash layer needs to key + hash an ROI lookup."""
+    """The information the frame-hash layer needs to key + hash an ROI lookup.
+
+    ``condition`` scopes the entry to the goal's CURRENT plain-language meaning: a goal id re-armed with
+    a new condition (voice re-arm) must not be served a verdict cached under its OLD condition. It is
+    part of the entry slot, so a condition change is a clean miss (D3a). ``None`` (the default) keeps the
+    pre-D3a keying — every existing caller that omits it shares one condition-agnostic slot, unchanged."""
 
     goal_id: str
     frame: Any
     roi: Box | None = None
     entity_id: str | None = None
+    condition: str | None = None
 
 
 def _default_key_fn(key: Any) -> CacheKey:
@@ -326,7 +334,10 @@ def _default_key_fn(key: Any) -> CacheKey:
         frame = key[1] if len(key) > 1 else None
         roi = key[2] if len(key) > 2 else None
         entity_id = key[3] if len(key) > 3 else None
-        return CacheKey(goal_id=str(goal_id), frame=frame, roi=roi, entity_id=entity_id)
+        condition = key[4] if len(key) > 4 else None
+        return CacheKey(
+            goal_id=str(goal_id), frame=frame, roi=roi, entity_id=entity_id, condition=condition
+        )
     return CacheKey(goal_id=str(key), frame=key)
 
 
