@@ -139,8 +139,8 @@ def _offline(monkeypatch):
 
 **Examples / docs / skill — a bounded, known list** (grepped) that must gain `mode="offline"` or a real key. Doing this sweep is itself the point: each edit converts a silent assumption into a stated one.
 - `docs/explanation/architecture.md:118` (`Percept.create()` documented as "fakes, offline, no keys" → `mode="offline"`)
-- `docs/tutorials/quickstart.md:51`, `examples/watch_agent.py`, `loitering_clip.py`, `fall_notification.py`, `screenshare_assistant.py` (pass a scripted `vision` object → add `mode="offline"` for clarity, or they already read as scripted)
-- `examples/webcam_agent.py:41`, `realtime_watch_agent.py:87`, `quickstart.md:113`, `docs/how-to/runtime.md:10` (`vision="gemini"` + default conductor → these are exactly the §5 cases; each must declare its intent: code-armed watch, or wire a real conductor)
+- `docs/tutorials/quickstart.md:51` plus the since-removed `examples/*.py` demos (passed a scripted `vision` object → gained `mode="offline"` for clarity before `examples/` was consolidated into `templates/`)
+- `quickstart.md:113`, `docs/how-to/runtime.md:10` and the since-removed `examples/webcam_agent.py`/`realtime_watch_agent.py` (`vision="gemini"` + default conductor → exactly the §5 cases; each declared its intent: code-armed watch, or wire a real conductor)
 
 **Positioning note (needs a one-line ruling, not code):** the OSS story is "free = keyless agent," and `architecture.md` sells keyless `create()` as a feature. Under this RFC, **keyless first-run is `Percept.create(mode="offline")`** — a keyless agent that is *honestly labelled scripted* rather than one that looks intelligent and isn't. Lead the README/quickstart with `mode="offline"` and the offline→scripted vocabulary. This is a strictly more honest keyless story; confirm it's the one we want before the OSS cut.
 

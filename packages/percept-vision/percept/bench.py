@@ -6,7 +6,7 @@ the installed wheel (the golden data isn't packaged either). So this shim must i
 The public names are re-exported **lazily** (PEP 562 ``__getattr__``), and the CLI degrades to a
 "run from a checkout" note instead of crashing at import on a bare wheel install.
 
-    percept-bench examples/benchmark/manifest.json     # per-concern P/R
+    percept-bench eval/benchmark_ci_gate/manifest.json  # per-concern P/R
     percept-bench scorecard --manifest <path>          # multi-track card
     percept-bench audit                                # validate golden artifacts
 """

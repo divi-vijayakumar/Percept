@@ -56,7 +56,7 @@
       ] },
     { "id": "judge", "label": "is the stove left on?", "vf": "judge · VLM CALL",
       "title": "judge sense — System 2 summoned",
-      "example": "examples/watch_agent.py",
+      "example": ".claude/skills/percept-agent/template_watch_agent.py",
       "hops": [
         { "node": "n-feed-cam",  "fn": "camera frame",            "file": "percept-edge",                      "ds": "→ raw frame" },
         { "node": "n-meas-eye",  "fn": "MotionGate.evaluate",     "file": "percept/harness/tier0.py:429",      "ds": "motion clears threshold → Tier0Signal" },
