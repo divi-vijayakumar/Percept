@@ -43,8 +43,7 @@ to guess, not as a fire.
 - Runtime worker: `docs/how-to/runtime.md`
 - Edge parity and detector handshake: `docs/reference/edge-parity.md`
 - Benchmark and golden set: `docs/how-to/eval.md`
-- Public static demo: `examples/web-demo/index.html`
-- Offline examples: `examples/watch_agent.py`, `examples/webcam_agent.py`, `examples/fall_notification.py`
+- Reference voice/realtime application: `templates/realtime_voice_watch_agent/`
 
 ## Quality Gates
 

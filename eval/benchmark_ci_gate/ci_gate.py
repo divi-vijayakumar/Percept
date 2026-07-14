@@ -6,12 +6,12 @@ manifest, choose the floors your product needs, and let a non-zero exit code fai
 
 Run it (fully offline — fake backend, no keys):
 
-    PYTHONPATH=packages/percept-vision python3 examples/benchmark/ci_gate.py
+    PYTHONPATH=packages/percept-vision python3 eval/benchmark_ci_gate/ci_gate.py
 
 Wire it into CI as a step that must succeed, e.g. GitHub Actions::
 
     - name: Percept per-concern regression gate
-      run: PYTHONPATH=packages/percept-vision python3 examples/benchmark/ci_gate.py
+      run: PYTHONPATH=packages/percept-vision python3 eval/benchmark_ci_gate/ci_gate.py
 
 When a code/prompt change regresses a concern below its floor (or introduces *any* false-fire),
 the step exits non-zero and the PR goes red — with the offending concern named in the output.

@@ -4,7 +4,7 @@ A **content** event — the template for "watch my screen and help / tell me whe
 physical event: the screen changes *content* with **~zero pixel motion**, so the motion gate would never
 escalate. The fix is a **fixed cadence**.
 
-Full runnable demo: [`examples/screenshare_assistant.py`](../../examples/screenshare_assistant.py).
+Here's how to set it up:
 
 ```python
 agent.add_goal(Goal(

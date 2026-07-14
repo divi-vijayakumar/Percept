@@ -78,7 +78,7 @@ Backends are selected by name (`"scripted"` (canonical) · `"gemini"` · `"claud
 or by env (`PERCEPT_VISION_BACKEND`). Keyless runs are **`mode="offline"`** (scripted backends, announced
 out loud) — you never fall onto scripted doubles by omission; the live ones print a one-line instruction
 when a key is missing — never a stack trace. See
-[`examples/`](examples/) (start with [`examples/watch_agent.py`](examples/watch_agent.py)).
+[`templates/`](templates/) for copyable reference applications.
 
 ## Watch a live source
 
@@ -182,7 +182,7 @@ Full index: **[`docs/README.md`](docs/README.md)** (organized by Diátaxis). Hig
 - **Edge parity** — [`docs/reference/edge-parity.md`](docs/reference/edge-parity.md).
 - **Evaluate your own concerns** — [`docs/how-to/eval.md`](docs/how-to/eval.md): per-concern
   precision/recall from a labelled-clip manifest, offline (`make eval-benchmark`), with a CI
-  regression-gate template ([`examples/benchmark/`](examples/benchmark/)).
+  regression-gate template ([`eval/benchmark_ci_gate/`](eval/benchmark_ci_gate/)).
 - **AI-agent map** — [`llms.txt`](llms.txt) and [`AGENTS.md`](AGENTS.md).
 
 ## Layout
@@ -193,8 +193,8 @@ packages/percept-vision/    the SDK (pip install percept-vision; import percept)
                             └─ percept.contracts  bundled frozen wire-contract (DTOs + Protocols)
 packages/percept-edge/      percept-edge — on-device JS/WASM edge (npm)
 docs/                       Diátaxis docs + the generated architecture.svg
-eval/                       golden corpus (benchmark plan: packages/percept-vision/eval/)
-examples/                   runnable example agents (fake-backed by default)
+templates/                  copyable reference applications (e.g., realtime voice watch agent)
+eval/                       golden corpus + regression gate CI template
 tools/build_architecture.py the architecture-diagram generator
 Makefile                    test · parity · architecture · check · eval-live · e2e
 ```

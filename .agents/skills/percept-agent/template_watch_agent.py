@@ -50,7 +50,9 @@ def build_agent() -> "percept.Percept":
             "blurry": Verdict(satisfied=True, confidence=0.30, evidence="cannot tell — blurry"),
         }
     )
-    agent = percept.Percept.create(vision=vision, discover_plugins=False)
+    # mode="offline" declares the scripted backends OUT LOUD (proves WIRING, not intelligence) — you
+    # do not fall onto scripted doubles by accident; asking for them is a visible act.
+    agent = percept.Percept.create(mode="offline", vision=vision, discover_plugins=False)
     agent.add_goal(GOAL)
     return agent
 
