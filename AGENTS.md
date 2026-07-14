@@ -75,7 +75,8 @@ asyncio.run(main())
 
 ## Gotchas / conventions
 - **You own the frame loop.** Percept does not capture video — pull frames (webcam via `cv2.VideoCapture`,
-  a video file, a screen grab) and call `perceive_judged` per frame. See `examples/webcam_agent.py`.
+  a video file, a screen grab) and call `perceive_judged` per frame. Or wrap in `percept.run(agent, source=)`
+  to own the capture loop directly.
 - **Rising-edge, not level.** A goal fires once when its condition goes false→true, then stays quiet
   (refractory) — so the agent never nags. Don't poll for "is it true now"; react to the `FireEvent`.
 - **`ask` is a feature.** Low confidence yields `ask`, not a guess. This is the "refuse to deliver a
@@ -87,7 +88,7 @@ asyncio.run(main())
 
 ## Where to look
 - `docs/README.md` (index) · `docs/tutorials/quickstart.md` · `docs/explanation/concepts.md` · `docs/reference/backends.md` — adopter docs.
-- `examples/` — `watch_agent.py` (runnable offline) and `webcam_agent.py` (real-backend template).
-- `.claude/skills/percept-agent/` — a Claude Code skill that scaffolds an agent from a plain-language goal.
+- `templates/` — copyable reference applications; `templates/realtime_voice_watch_agent/` is the flagship voice+vision agent.
+- `.claude/skills/percept-agent/` — a Claude Code skill that scaffolds an agent from a plain-language goal (kept in sync with `.agents/skills/percept-agent/`).
 - `percept.edge` / `percept.harness` — the server-side edge (tier-0 gate + detector registry)
   for Python deployments.

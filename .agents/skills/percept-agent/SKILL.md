@@ -23,7 +23,7 @@ For a real (perceiving) agent, add one extra + its key:
 
 ```bash
 pip install "percept-vision[gemini]"   # then: export GEMINI_API_KEY=...   (or GOOGLE_API_KEY)
-pip install "percept-vision[Codex]"   # then: export ANTHROPIC_API_KEY=...
+pip install "percept-vision[claude]"   # then: export ANTHROPIC_API_KEY=...
 ```
 
 The package is `percept-vision`; the import is `import percept`. Python >= 3.10.
@@ -38,7 +38,7 @@ import percept
 from percept.adapters import Goal
 
 async def main():
-    # vision="fake" (default, offline) | "gemini" | "Codex". discover_plugins=False skips plugin lookup.
+    # vision="fake" (default, offline) | "gemini" | "claude". discover_plugins=False skips plugin lookup.
     agent = percept.Percept.create(vision="fake", discover_plugins=False)
 
     agent.add_goal(Goal(
@@ -60,7 +60,7 @@ asyncio.run(main())
 Confirmed signatures (from `packages/percept-vision/percept/agent.py` and `adapters.py`):
 
 - `Percept.create(*, vision=None, discover_plugins=True, ...)` — `vision` is a backend **name**
-  (`"fake"`/`"gemini"`/`"Codex"`) or an adapter instance. Pass `discover_plugins=False` for the
+  (`"fake"`/`"gemini"`/`"claude"`) or an adapter instance. Pass `discover_plugins=False` for the
   offline/no-plugin path.
 - `agent.add_goal(Goal(id, condition, say))` — `Goal` also has optional `source="camera"`,
   `modality="speak"`, `state`, `expiry`.
@@ -92,7 +92,7 @@ A "frame" is whatever the chosen backend accepts:
   offline tests: you control perception by hand while the cognition layer does real work. Build it with
   `FakeVision(script={"token": Verdict(satisfied=..., confidence=..., evidence=...)})` and pass the
   instance as `vision=`. (Bare `vision="fake"` uses a few built-in demo tokens like `"sip-coffee"`.)
-- **gemini / Codex** — a frame is **real image input**: image bytes, or a `(media_type, bytes)` pair,
+- **gemini / claude** — a frame is **real image input**: image bytes, or a `(media_type, bytes)` pair,
   e.g. from a webcam via OpenCV: `cv2.imencode(".jpg", bgr_frame)[1].tobytes()`. Everything above the
   perception seam (gate, rising edge, memory) is identical — only the eyes change.
 

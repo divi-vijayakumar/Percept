@@ -7,7 +7,7 @@ EDGE      := packages/percept-edge
 PY        := python3
 # absolute path to the zero-dep contract pkg (vision runs from inside $(SDK), so it needs this)
 
-.PHONY: help test test-harness test-js test-all parity eval-live eval-benchmark e2e bench audit-benchmark scorecard benchmark-prepare benchmark-fetch benchmark-fetch-charades benchmark-fetch-proactiveqa benchmark-index-proactiveqa benchmark-manifest benchmark-run benchmark-collect check reproduce clean architecture architecture-check
+.PHONY: help test test-harness test-js test-all parity eval-live eval-benchmark e2e bench audit-benchmark scorecard benchmark-prepare benchmark-fetch benchmark-fetch-charades benchmark-fetch-proactiveqa benchmark-index-proactiveqa benchmark-manifest benchmark-run benchmark-collect check check-skills-sync reproduce clean architecture architecture-check
 
 help:
 	@echo "test       L1 unit — percept-vision (incl. percept.harness + percept.contracts; fakes, no keys, fast)"
@@ -53,8 +53,8 @@ eval-live:
 	fi
 
 # Per-concern precision/recall on a labelled-clip manifest (offline; fake backend; no keys).
-#   make eval-benchmark MANIFEST=examples/benchmark/manifest.json
-MANIFEST ?= $(abspath examples/benchmark/manifest.json)
+#   make eval-benchmark MANIFEST=eval/benchmark_ci_gate/manifest.json
+MANIFEST ?= $(abspath eval/benchmark_ci_gate/manifest.json)
 eval-benchmark:
 	cd $(SDK) && PYTHONPATH=. $(PY) -m eval.benchmark $(abspath $(MANIFEST))
 
@@ -117,7 +117,10 @@ calibrate:
 exp-categorical:
 	cd $(SDK) && PYTHONPATH=. $(PY) -m eval.exp_categorical
 
-check: architecture-check
+check-skills-sync:  ## Verify skill directories are byte-identical
+	@diff -r .claude/skills/percept-agent .agents/skills/percept-agent --exclude="__pycache__" > /dev/null && echo "skills sync ok" || (echo "ERROR: skill directories out of sync (KEEP IN SYNC: edit BOTH)"; exit 1)
+
+check: architecture-check check-skills-sync
 	@cd $(SDK) && PYTHONPATH=. $(PY) -m compileall -q percept tests && echo "compileall ok"
 	@cd $(SDK) && (ruff check . || echo "ruff not installed — skipping lint")
 
