@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable
 
@@ -41,6 +42,13 @@ class RuntimeStats:
     audio_wakes: int = 0  # audio onsets that admitted a frame the visual gate would have skipped
     boundaries: int = 0  # edge-detector boundaries (rep peaks / onsets) fed to perceive_boundary
     utterances: int = 0  # complete spoken utterances endpointed and handed to on_utterance
+    # judge_dispatch="async" accounting. The scheduler is single-flight + one latest-pending, so under
+    # overload an admitted frame may be replaced before its judge launches (superseded) or discarded
+    # because goals changed after admission (revision_dropped). The honest budget invariant is
+    # ``judge_calls + judge_superseded + judge_revision_dropped == admitted escalations`` (once drained);
+    # inline mode never touches either counter.
+    judge_superseded: int = 0  # pending judge candidate replaced by a newer admitted frame
+    judge_revision_dropped: int = 0  # pending candidate dropped: goals.revision moved after admission
 
 
 @dataclass(frozen=True)
@@ -50,6 +58,164 @@ class RuntimeHealthEvent:
     kind: str
     ts: float | None = None
     data: dict[str, Any] | None = None
+
+
+class _JudgeScheduler:
+    """Off-loop judge dispatch (``run(judge_dispatch="async")``): the capture loop never awaits a
+    network judgment.
+
+    The inline path (``async for … perceive_judged(…)`` at the admit site) makes perception wait on
+    cognition — one slow VLM turn stalls capture, the gate, the absence checks, and every subscriber
+    (the 47s-stall class of bugs). This scheduler moves the judgment onto an ``asyncio`` task with a
+    strict budget shape:
+
+    - **single-flight** — at most ONE judgment in flight per source (``run()`` drives one source, so
+      one scheduler instance; completion order == submission order, preserving on_incident ordering);
+    - **one latest-pending** — while a judgment is in flight, newly admitted frames REPLACE the queued
+      candidate (latest wins, ``stats.judge_superseded``): under overload we judge the freshest
+      evidence, never build a backlog;
+    - **admission-revision pinning** — the goal-registry revision is captured when the frame is
+      ADMITTED and travels with it into ``perceive_judged(expected_goals_revision=…)``. A pending
+      frame admitted under revision N is never launched once goals moved to N+1
+      (``stats.judge_revision_dropped``) — old evidence is not reinterpreted under a newly authored
+      watch plan; the in-flight call aborts itself the same way (see ``Percept.perceive_judged``);
+    - **fail-loud** — a judge exception is held in ``_fatal`` and re-raised by the next ``drain()``
+      on the capture loop, preserving the existing ``runtime_error`` health path; nothing new is
+      launched after a failure.
+
+    ``stats.judge_calls`` counts at LAUNCH time (a superseded/dropped candidate never spent a call).
+    Results carry the ADMISSION ``t`` so ``incident.ts`` stays the admitting frame's timestamp.
+    Lives in this module on purpose: the E1 parity test scans ``inspect.getsource(run)``'s module.
+    """
+
+    def __init__(self, core: Any, source: str, stats: RuntimeStats | None) -> None:
+        self._core = core
+        self._source = source
+        self._stats = stats
+        self._active: "asyncio.Task | None" = None
+        self._active_t: float | None = None  # admission t of the in-flight judgment (rides the result)
+        self._pending: tuple[float, Any, Any] | None = None  # (t, judge_frame, admission_revision)
+        self._results: deque = deque()  # completed (t, [FireEvent]) awaiting drain()
+        self._fatal: BaseException | None = None
+        self._closing = False
+
+    # 0/1 by construction — surfaced through the escalation health event for live observability.
+    @property
+    def active(self) -> int:
+        return 0 if self._active is None else 1
+
+    @property
+    def pending(self) -> int:
+        return 0 if self._pending is None else 1
+
+    def submit(self, t: float, judge_frame: Any) -> None:
+        """Admit a frame for judgment. Never blocks; never launches after a failure or during close."""
+        if self._fatal is not None or self._closing:
+            return  # drain() re-raises the failure on the next loop tick; a closing run spends nothing
+        revision = getattr(self._core.goals, "revision", None)  # ADMISSION-time, never launch-time
+        if self._active is None:
+            self._launch(t, judge_frame, revision)
+            return
+        if self._pending is not None and self._stats is not None:
+            self._stats.judge_superseded += 1  # latest wins: the older queued candidate is dropped
+        self._pending = (t, judge_frame, revision)
+
+    def _launch(self, t: float, frame: Any, revision: Any) -> None:
+        if self._stats is not None:
+            self._stats.judge_calls += 1  # counted at launch — a superseded candidate spent nothing
+        self._active_t = t
+        self._active = asyncio.create_task(
+            self._core.perceive_judged(frame, self._source, t=t, expected_goals_revision=revision)
+        )
+        self._active.add_done_callback(self._on_done)
+
+    def _launch_pending(self) -> None:
+        if self._pending is None or self._fatal is not None or self._closing:
+            self._pending = None
+            return
+        t, frame, revision = self._pending
+        self._pending = None
+        current = getattr(self._core.goals, "revision", None)
+        if revision != current:
+            # Admitted under revision N, goals now at N+1: old evidence must not be judged as-if
+            # under the new plan. Drop it and wait for the next frame (which admits under N+1).
+            if self._stats is not None:
+                self._stats.judge_revision_dropped += 1
+            return
+        self._launch(t, frame, revision)
+
+    def _on_done(self, task: "asyncio.Task") -> None:
+        # ORDERED checks — cancellation FIRST (close(drain=False) must not become a fatal error),
+        # then failure (fatal: never launch pending after a failure), then result + pending launch.
+        if task.cancelled():
+            self._active = None
+            return
+        exc = task.exception()
+        if exc is not None:
+            self._fatal = exc
+            self._pending = None
+            self._active = None
+            return
+        self._results.append((self._active_t, task.result()))
+        self._active = None
+        if self._closing:  # shutdown in progress: don't start new work
+            self._pending = None
+            return
+        self._launch_pending()
+
+    def drain(self) -> list:
+        """Pop completed ``(t, fires)`` results; re-raise a held judge failure into the capture loop
+        (the existing fail-loud ``runtime_error`` health path catches it there)."""
+        if self._fatal is not None:
+            raise self._fatal
+        out = []
+        while self._results:
+            out.append(self._results.popleft())
+        return out
+
+    async def flush(self) -> None:
+        """Drain to QUIESCENCE: completing the active task may LAUNCH the pending one, so one await
+        is not enough — loop until neither exists. A held failure stops the loop (drain re-raises)."""
+        while self._fatal is None and (self._active is not None or self._pending is not None):
+            task = self._active
+            if task is None:
+                # pending-without-active never persists (submit/_on_done launch immediately) — defensive.
+                self._launch_pending()
+                continue
+            if task.done():
+                # Completed, but _on_done may still be QUEUED: awaiting a done task returns WITHOUT
+                # yielding, so spinning here would starve the loop and the callback forever (a real
+                # deadlock, found by test). One tick: call_soon callbacks run FIFO, so _on_done has
+                # run when we resume and the loop test sees the settled state.
+                await asyncio.sleep(0)
+                continue
+            try:
+                # _on_done (added at launch, ahead of this await) runs before we resume, so
+                # results/pending/active are settled for the next loop test.
+                await task
+            except asyncio.CancelledError:
+                if not task.cancelled():
+                    raise  # OUR cancellation (run() teardown) must propagate, not be eaten here
+                # the TASK was cancelled: _on_done handled it (not fatal) — keep draining
+            except BaseException:  # noqa: BLE001 — routed through _on_done into _fatal; drain re-raises
+                pass
+
+    async def close(self, *, drain: bool) -> None:
+        """Shut down. ``_closing`` is set FIRST so a completion racing this can't launch new work.
+        ``drain=True`` (finite files/tests): let the in-flight judgment finish and keep its result.
+        ``drain=False`` (live shutdown/cancellation): cancel it and swallow the CancelledError."""
+        self._closing = True
+        if drain:
+            await self.flush()
+            return
+        self._pending = None
+        task = self._active
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except BaseException:  # noqa: BLE001 — expected: the cancel we just requested
+                pass
 
 
 # R6 — per-path timebase-skew tolerances. The tripwire compares a frame/chunk `t` against the core
@@ -342,6 +508,7 @@ async def run(
     autosave_every_s: float | None = None,
     label_store: Any = None,
     disposition_log: Any = None,
+    judge_dispatch: str = "inline",
 ) -> AsyncIterator:
     """Drive a live ``source`` through the gate + brain, yielding an :class:`Incident` on each rising edge.
 
@@ -410,6 +577,17 @@ async def run(
     - ``disposition_log`` — optional :class:`~percept.labelstore.DispositionLog` (§4.3). When set, every
       gate ``FIRE``/``ASK`` appends a ``{incident_id, verdict_ref, disposition, ts}`` row (the escalation
       meter's raw feed, distinct from ``Verdict.usage``). Default ``None`` → nothing written, byte-for-byte.
+    - ``judge_dispatch`` — how an admitted frame's cloud judgment is driven. ``"inline"`` (default)
+      awaits ``perceive_judged`` at the admit site — byte-for-byte the historical loop, where one slow
+      VLM turn stalls capture/gate/absence checks. ``"async"`` hands it to a single-flight
+      :class:`_JudgeScheduler` (one in flight + one latest-pending; the capture loop NEVER awaits a
+      network judgment). The admit condition is unchanged either way; in async mode fires trail the
+      admitting frame by ≤1 frame interval + the judge duration (``incident.ts`` stays the admission
+      ``t``), a stale in-flight judgment aborts when goals change mid-flight (see
+      ``Percept.perceive_judged`` ``expected_goals_revision``), and ``stats.judge_superseded`` /
+      ``stats.judge_revision_dropped`` count the frames overload/goal-changes discarded. A
+      ``RuntimeHealthEvent("judge_dispatch")`` announces the mode once at start; escalation health
+      events carry live ``judge_active``/``judge_pending`` (each 0/1) in async mode.
 
     Owns capture off the consumer thread; the per-goal cadence + the three-state gate decide *when* and
     *whether* to fire. Yields incidents lazily, so an ``async for incident in run(...)`` is the front door.
@@ -442,6 +620,15 @@ async def run(
         _guard_live_language_path(core, allow_scripted_brain=allow_scripted_brain)
 
     settings = getattr(core, "settings", None) or load_settings()
+
+    if judge_dispatch not in ("inline", "async"):
+        raise ValueError(
+            f"judge_dispatch must be 'inline' or 'async', got {judge_dispatch!r}"
+        )
+    # Non-blocking judge dispatch: in "async" mode the admit site routes to this single-flight
+    # scheduler instead of awaiting the network judgment inline. ONE scheduler per run() — run drives
+    # one source (the slot is per-source; a future multi-source runner would key a dict of these).
+    _judge_sched = _JudgeScheduler(core, gate_source, stats) if judge_dispatch == "async" else None
 
     # R-1: batteries-included gate bound. A 24/7 watch must not carry an unbounded gate; install the
     # configured TTL/LRU as the DEFAULT the instant we drive it (a bare Percept stays unbounded — the
@@ -571,6 +758,10 @@ async def run(
     try:
         if on_health is not None:
             await _call_sink(on_health, RuntimeHealthEvent("runtime_started", data={"source": repr(source)}))
+            # Announce the dispatch mode ONCE so a live dashboard can tell which loop shape it is
+            # observing (inline = judge latency shows up as capture stall; async = it shows up as
+            # fire-emission lag instead).
+            await _call_sink(on_health, RuntimeHealthEvent("judge_dispatch", data={"mode": judge_dispatch}))
         dropped: list[int] = [0]  # shared with the capture thread; surfaced as stats.frames_dropped
         source_health: list = []  # A-4: capture thread appends (kind, data); drained → on_health below
         source_kwargs = {
@@ -833,6 +1024,15 @@ async def run(
                 yield incident
 
         async for t, gate_frame, judge_frame in _aiter(source, capture_fps, **source_kwargs):
+            # Async judge dispatch: surface everything the off-loop scheduler finished since the last
+            # frame — fires route through the SAME _emit_fires machinery at their ADMISSION time `jt`
+            # (incident.ts is the admitting frame, not the completion time). drain() also re-raises a
+            # held judge failure here, so the fail-loud runtime_error path below is preserved. Runs
+            # FIRST (before the paused check): these judgments were spent before any pause.
+            if _judge_sched is not None:
+                for _jt, _jfires in _judge_sched.drain():
+                    async for incident in _emit_fires(_jfires, at=_jt):
+                        yield incident
             # R6: on a LIVE source, frame `t` IS the wall clock — if it has drifted from the core clock
             # past the video tolerance, the timelines the gate/deadlines share have come apart. Emit once.
             if live_video:
@@ -970,20 +1170,48 @@ async def run(
                 continue  # still / sub-cadence -> no cloud call, no incident
             if stats is not None:
                 stats.escalations += 1
-                stats.judge_calls += 1
                 if audio_admit and not (decision.escalate or coast_admit):
                     stats.audio_wakes += 1
             if on_health is not None:
                 cause = "audio" if (audio_admit and not (decision.escalate or coast_admit)) else \
                     ("both" if (audio_admit and decision.escalate) else ("coast" if coast_admit and not decision.escalate else "motion"))
-                await _call_sink(on_health, RuntimeHealthEvent("escalation", ts=t, data={"source": gate_source, "cause": cause}))
-            async for incident in _emit_fires(await core.perceive_judged(judge_frame, gate_source, t=t), at=t):
-                yield incident
+                _esc_data = {"source": gate_source, "cause": cause}
+                if _judge_sched is not None:
+                    # Live scheduler-shape proof (each 0/1 by construction): read BEFORE this frame's
+                    # submit so the payload reflects the state the admit decision was made under.
+                    _esc_data["judge_active"] = _judge_sched.active
+                    _esc_data["judge_pending"] = _judge_sched.pending
+                await _call_sink(on_health, RuntimeHealthEvent("escalation", ts=t, data=_esc_data))
+            # The admit CONDITION above is unchanged by dispatch mode — only what "spend a judgment"
+            # means changes. judge_calls is counted at LAUNCH either way (inline: launch == admit;
+            # async: a superseded/revision-dropped candidate never spent a call — the scheduler counts).
+            if _judge_sched is not None:
+                _judge_sched.submit(t, judge_frame)
+            else:
+                if stats is not None:
+                    stats.judge_calls += 1
+                async for incident in _emit_fires(await core.perceive_judged(judge_frame, gate_source, t=t), at=t):
+                    yield incident
+        # Source exhausted (finite file / test stream): a judgment may still be IN FLIGHT and one more
+        # PENDING behind it. Flush to QUIESCENCE (completing the active may launch the pending — one
+        # await is not enough) and emit everything, so a collect-all consumer sees every incident the
+        # stream earned. Still inside the try: a held judge failure re-raised by drain() routes through
+        # the fail-loud runtime_error path below, exactly like an inline judge failure.
+        if _judge_sched is not None:
+            await _judge_sched.flush()
+            for _jt, _jfires in _judge_sched.drain():
+                async for incident in _emit_fires(_jfires, at=_jt):
+                    yield incident
     except Exception as exc:
         if on_health is not None:
             await _call_sink(on_health, RuntimeHealthEvent("runtime_error", data={"error": repr(exc)}))
         raise
     finally:
+        # Async judge dispatch: never start new work past this point; cancel an in-flight judgment and
+        # swallow its CancelledError (live shutdown / consumer break / cancellation). The normal
+        # end-of-source path already flushed to quiescence above, so this is a no-op there.
+        if _judge_sched is not None:
+            await _judge_sched.close(drain=False)
         if audio_task is not None:  # stop the audio pump; a dangling capture thread outlives the run otherwise
             audio_task.cancel()
         for _t in list(_utt_tasks):  # R1: an in-flight voice turn must not outlive the run

@@ -813,14 +813,48 @@ class Percept:
             pass
 
     async def perceive_judged(
-        self, frame: Any, source: str = "camera", *, t: float | None = None
+        self, frame: Any, source: str = "camera", *, t: float | None = None,
+        expected_goals_revision: int | None = None,
     ) -> list[FireEvent]:
         """Judge every active *watch* goal against ``frame`` and emit gate actions on rising edges.
 
         Event / scheduler goals run through their own paths (:meth:`perceive_events`, :meth:`tick`)
         but feed the **same three-state gate** — one gate, two perception tracks (spec §5.6).
+
+        ``expected_goals_revision`` (the non-blocking-dispatch seam): the goal-registry revision this
+        frame was ADMITTED under. When set, the call aborts — returning without applying anything —
+        the moment ``self.goals.revision`` no longer matches, checked **after every network await and
+        before the mutation it feeds**. This is what makes an OFF-LOOP judgment safe: while the vision
+        call is in flight the conductor may disarm a goal or replace it under the same id, and a stale
+        verdict must not flip a rising-edge latch, write a disposition/action record, stamp
+        coverage/deadline satisfaction, or judge old evidence as-if under the newly authored plan.
+        Filtering the *returned* fires would be too late — the gate mutates inside this call
+        (:meth:`_fire_concern` / the executor), so the abort lives here, before the gate.
+
+        Abort semantics (what is protected vs what may proceed):
+
+        - **Aborted on staleness** — every goal-conditioned application: gate/latch evaluation,
+          executor context (running answer / process log / transition state), ``last_supported`` /
+          ``last_satisfied`` stamps, action-log records, and the confusion auto-refinement pass.
+        - **Allowed to proceed** — frame-level, goal-independent perception: the rolling FrameWindow
+          push and the entity-graph ingest of ``vision.detect`` observations. The graph records what
+          was IN the frame regardless of which goals asked; that world-state stays valid across a
+          goal-registry change (and the verdict cache is keyed by condition text, so a same-id replace
+          can't be served a stale write).
+        - **Mid-loop staleness** (multi-goal): goals already gated under the matching revision keep
+          their (already-applied) fires — swallowing them would strand a flipped latch with no emitted
+          incident — and all *subsequent* judgment/mutation is aborted. With a single active goal this
+          reduces to the plain contract: abort ⇒ ``[]`` and untouched state.
+
+        ``None`` (the default) never checks — byte-for-byte the inline path.
         """
         now = self.clock() if t is None else t
+
+        def _stale() -> bool:
+            return (
+                expected_goals_revision is not None
+                and self.goals.revision != expected_goals_revision
+            )
         # Per-frame decision trace (opt-in via on_trace; no-op otherwise). trace_id correlates this
         # frame's stages; derived from source+timestamp — deterministic WHEN t is supplied (as in
         # tests). With t=None it uses the wall clock, like any production run.
@@ -830,20 +864,27 @@ class Percept:
         if tracing:
             await self._emit_trace(trace_id, now, "source.frame")
         self._window(source).push(now, frame)  # feed the rolling window for temporal perception
+        if _stale():
+            return []  # admitted under an old revision; spend nothing, apply nothing
         observations = await self.vision.detect(frame, self.goals.active())
-        self.graph.ingest(observations, frame, source, t=now)
+        self.graph.ingest(observations, frame, source, t=now)  # goal-independent world-state: proceeds
         focus = self.graph.in_focus()
+        if _stale():
+            return []  # revision moved during the detect call — nothing goal-conditioned applied yet
 
         events: list[FireEvent] = []
         for goal in self.goals.active():
+            if _stale():
+                break  # revision moved during a prior goal's judge — stop before judging under it
             gtype = goal.state.get("type", "watch")
             if gtype == "transition":
-                ev = await self._perceive_transition(goal, frame, focus)
+                ev = await self._perceive_transition(goal, frame, focus, stale=_stale)
                 if ev is not None:
                     events.append(ev)
                 continue
             if gtype == "process":
-                await self._observe_and_log(goal, frame, source, now)  # Item 4: log a delta, never fire here
+                # Item 4: log a delta, never fire here
+                await self._observe_and_log(goal, frame, source, now, stale=_stale)
                 continue
             if gtype != "watch":
                 continue  # event/count/remind goals are handled by their dedicated paths
@@ -875,6 +916,9 @@ class Percept:
                 await self._emit_trace(trace_id, now, "judge.finished", goal_id=goal.id,
                                        satisfied=getattr(verdict, "satisfied", None),
                                        confidence=getattr(verdict, "confidence", None))
+            if _stale():
+                break  # THE choke point: the judge returned, but the plan changed while it was in
+                # flight — abort before ANY application (ctx, coverage stamps, gate, disposition).
             resolved: FireEvent | None = None
             if process_ctx is not None and getattr(verdict, "running_answer", ""):
                 ctx.running_answer = verdict.running_answer  # accumulate the model's rewritten summary
@@ -922,10 +966,14 @@ class Percept:
                 await self._emit_trace(trace_id, now, "gate.classified", goal_id=goal.id,
                                        truth=truth, action=action)
         self._log_fires(events, now)
+        if _stale():
+            return events  # aborted mid-loop: skip auto-refinement (it authors goal changes)
         await self._deliberate_confused(now)  # Posture B: auto-refine recurrently-ambiguous concerns
         return events
 
-    async def _perceive_transition(self, goal, frame, focus) -> FireEvent | None:
+    async def _perceive_transition(
+        self, goal, frame, focus, *, stale: Callable[[], bool] | None = None
+    ) -> FireEvent | None:
         """Fire on a state change A->B, but ONLY after the 'from' state A was witnessed.
 
         A transition goal carries ``state={"type":"transition","from":<cond A>,"to":<cond B>}``.
@@ -941,6 +989,8 @@ class Percept:
         corrections = focus.asserted() if focus else {}
         from_v = await self.vision.judge(from_cond, frame, roi=roi, corrections=corrections or None)
         to_v = await self.vision.judge(to_cond, frame, roi=roi, corrections=corrections or None)
+        if stale is not None and stale():
+            return None  # goals changed while the from/to judges were in flight — apply nothing
         # Perception (judging from/to) stays here; the seen_from/fired state machine + firing now live
         # in the executor, with that state ISOLATED in its per-concern context (never the gate).
         fired = self.executor.fire_transition(
@@ -952,7 +1002,10 @@ class Percept:
         self.metrics.incr("transition.fire")
         return FireEvent(fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict)
 
-    async def _observe_and_log(self, goal: Goal, frame: Any, source: str, now: float) -> None:
+    async def _observe_and_log(
+        self, goal: Goal, frame: Any, source: str, now: float,
+        *, stale: Callable[[], bool] | None = None,
+    ) -> None:
         """Item 4 (log→summarize→wipe): observe THIS clip's step delta and append it to the per-concern
         log. NEVER fires here — a process goal's answer is produced by :meth:`summarize_process` at the
         episode boundary / on demand. The gate is untouched (no verdict routed)."""
@@ -963,6 +1016,8 @@ class Percept:
         verdict = await self._judge(
             goal, frame, None, {}, frames=strip, context={"observe_step": True}
         )
+        if stale is not None and stale():
+            return  # goals changed while the observe call was in flight — don't log a step under it
         step = (getattr(verdict, "evidence", "") or "").strip()
         if step and step != "not enough evidence":
             ctx.process_log.append(step)  # the VLM never sees this back — cheap append only
