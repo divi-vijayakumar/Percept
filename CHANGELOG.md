@@ -5,6 +5,39 @@ Notable changes to Percept. This is a **research preview** — the SDK's public 
 
 ## Unreleased
 
+### Contract — wire version 1.0.0 → 1.1.0 (additive; same MAJOR, wire-compatible)
+- **`AttentionIntent`** — a new frozen DTO carrying the **effective** (post-policy), channel-neutral
+  attention request a fired incident makes: `message`, `goal_id`, `incident_id`, `ts`, `preempt`
+  (`interrupt`/`queue`/`drop`), `ttl_s`, `verbatim`, and an optional `preferred_channel` **hint** (not a
+  modality enum — the SDK does not prescribe application channels; the app decides speech/UI/webhook/action).
+- **`GoalOrigin`** enum + **`Goal.origin`** field — durable goal PROVENANCE
+  (`structured_trusted`/`language_authored`/`restored`/`system_template`). Stamped by the SDK entry point
+  that admits the goal (`Percept.add_goal` → `structured_trusted`; conductor GoalOps / `arm_from_language`
+  → `language_authored`), **overwriting** any caller-supplied value — a caller cannot claim interrupt-trust
+  by filling a field. Persisted with the goal, so trust survives `snapshot`/`restore` +
+  `save_state`/`load_state`; a pre-provenance snapshot restores as neutral `restored`. Additive + defaulted
+  (`language_authored`, the least-privileged), so an existing goal round-trips unchanged.
+- **`AttentionPolicy`** (in `percept.incidents`, not the frozen membrane — it is behaviour, not a wire
+  shape) + `attention_intent_for(incident, goal, policy)` + `parse_requested_delivery(delivery)`: the
+  single, deterministic requested→effective clamp. A requested `preempt="interrupt"` is clamped to `queue`
+  unless the goal's origin is trusted (`structured_trusted`/`system_template`), its consequence class is
+  allowlisted, or an explicit per-goal allowlist entry matches. `parse_requested_delivery` is now the one
+  interpreter of the legacy `goal.state['delivery']` dict (`preempt`/`ttl_s`/`verbatim` semantics unchanged
+  from `RuntimeSession._speak_fire`, plus the additive `preferred_channel` hint).
+- JSON Schemas regenerated (`percept/contracts/schema/`), including the new `AttentionIntent.schema.json`
+  and `Goal.origin`; `CONTRACT_VERSION` bumped to `1.1.0`.
+
+### Runtime — session seams (public, additive)
+- **`RuntimeSession.on_goal_change(cb) → unsubscribe`** — fires on EVERY goal-set change, subscribed at
+  the authoritative `GoalRegistry` revision-change point (not `arm`/`disarm`), so it catches the
+  `arm_from_language`/`apply_goal_ops` command path, restore, and same-id replacement — the paths a
+  callback wired to `arm` would silently miss. Purpose: grounding-snapshot invalidation. Callbacks are
+  additive + isolated (one raising subscriber can't break another).
+- **`RuntimeSession.list_goals()`** — a bounded public read of active goals (`{id, condition, status}`),
+  so an application never reaches into `core.goals`.
+- **`percept.agent.guard_live_language_path`** — public rename of `_guard_live_language_path` (the
+  underscore name is kept as an alias for one release), so applications import no underscore symbol.
+
 ### Contract — wire version 1.0.0 (initial public contract; consolidates pre-release surface that iterated internally through 1.1–1.3 but never shipped)
 - `Verdict.usage` — optional token/cost accounting for the judge call (`{input_tokens, output_tokens,
   cost_usd}`); gate-irrelevant, defaults `{}`.

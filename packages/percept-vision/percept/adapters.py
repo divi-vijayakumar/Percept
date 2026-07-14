@@ -18,6 +18,7 @@ instead of re-declaring it. This module is a backward-compatible **re-export shi
 from __future__ import annotations
 
 from percept.contracts import (
+    AttentionIntent,
     Attribute,
     AudioFrame,
     Box,
@@ -30,6 +31,7 @@ from percept.contracts import (
     Evidence,
     FalseFireCost,
     Goal,
+    GoalOrigin,
     Identity,
     LabelRecord,
     Observation,
@@ -62,6 +64,7 @@ __all__ = [
     "Provenance",
     "Attribute",
     "Goal",
+    "GoalOrigin",
     "Cost",
     "FalseFireCost",
     "Consequence",
@@ -91,4 +94,5 @@ __all__ = [
     "Identity",
     "Persistence",
     "LabelRecord",
+    "AttentionIntent",
 ]

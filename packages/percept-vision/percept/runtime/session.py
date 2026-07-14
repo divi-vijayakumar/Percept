@@ -255,6 +255,45 @@ class RuntimeSession:
         self._core.apply_goal_ops([GoalOp(op="cancel", goal_id=goal_id)])
         await self._pulse_state()   # goal changed → re-ground the wire (§4.1)
 
+    def on_goal_change(self, cb: Callable[[], Any]) -> Callable[[], None]:
+        """Register ``cb()`` to fire on EVERY goal-set change; returns an ``unsubscribe()`` closure.
+
+        Subscribes at the AUTHORITATIVE mutation point — the :class:`~percept.goals.GoalRegistry`
+        revision change — not at :meth:`arm`/:meth:`disarm`. That is the whole point: the rich command
+        path ``core.arm_from_language`` / ``apply_goal_ops`` mutates the registry WITHOUT going through
+        ``session.arm``, so a callback wired to ``arm`` would silently miss every voice-authored watch.
+        Binding to the registry catches all of it: structured arm, language-authored add/update/remove,
+        disarm, restore, and same-id replacement.
+
+        Purpose is **snapshot invalidation** (mark a grounding cache dirty), NOT wire injection. The
+        callback takes no arguments; callbacks are additive + ISOLATED — one raising subscriber can never
+        break another (the registry swallows it)."""
+        registry = self._core.goals
+
+        def _on_revision(_revision: int) -> None:
+            cb()
+
+        subscribe = getattr(registry, "subscribe_revision", None)
+        if subscribe is None:  # a registry without the hook (older core) -> a no-op unsubscribe
+            return lambda: None
+        return subscribe(_on_revision)
+
+    def list_goals(self) -> list[dict]:
+        """A bounded, public read of the ACTIVE goals — ``[{id, condition, status}, …]``.
+
+        So an application (e.g. a ``whats_armed`` voice tool) can answer "what am I watching?" without
+        reaching into ``core.goals``. Returns plain dicts (no goal objects, no core references), only the
+        three safe fields; inactive (completed/cancelled) goals are excluded."""
+        registry = self._core.goals
+        out: list[dict] = []
+        for g in registry.active():
+            out.append({
+                "id": g.id,
+                "condition": getattr(g, "condition", ""),
+                "status": registry.status(g.id) or "active",
+            })
+        return out
+
     # -- flywheel intake: out-of-band triage of a past fire (L-1, §4.3) ----
     def label(self, incident_id: str, good: bool, note: str | None = None,
               tags: tuple[str, ...] | list[str] = (), *,

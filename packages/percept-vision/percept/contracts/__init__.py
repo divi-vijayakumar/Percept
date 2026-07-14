@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Awaitable, Callable, ClassVar, Literal, Protocol, runtime_checkable
 
 # ---------------------------------------------------------------------------
@@ -29,7 +30,9 @@ from typing import Any, Awaitable, Callable, ClassVar, Literal, Protocol, runtim
 #: Bump the MAJOR on any breaking change to a frozen shape; MINOR for additive (new optional
 #: field / new DTO); PATCH for docs/non-wire tweaks. This is distinct from ``WatchSpec.version``
 #: (a wire integer kept for byte-for-byte payload compat).
-CONTRACT_VERSION = "1.0.0"  # initial public wire contract (research-preview launch). Consolidates the
+CONTRACT_VERSION = "1.1.0"  # 1.1: + AttentionIntent DTO + GoalOrigin enum + Goal.origin (all additive,
+# defaulted, back-compat — the effective-attention membrane + durable goal provenance, PCPT-026).
+# 1.0.0: initial public wire contract (research-preview launch). Consolidates the
 #                             pre-release surface that iterated internally through 1.1–1.3 but never
 #                             shipped; nothing was published under those, so we launch clean at 1.0.0.
 
@@ -154,6 +157,30 @@ class Attribute:
     last_confirmed: float  # monotonic seconds
 
 
+class GoalOrigin(Enum):
+    """Durable PROVENANCE of a goal — *who authored it*, which decides its attention TRUST.
+
+    Interrupt authority (may a fire cut into a live turn?) requires durable provenance, not inference
+    from which function happens to hold the goal. This enum is **stamped by the SDK entry point** that
+    admitted the goal, OVERWRITING whatever a caller supplied — a caller cannot claim trust by filling
+    the field. It is persisted with the goal so trust survives ``snapshot``/``restore``:
+
+    - ``STRUCTURED_TRUSTED`` — armed through the structured API (:meth:`Percept.add_goal` /
+      ``RuntimeSession.arm``). The developer wrote it in code; it MAY request ``preempt="interrupt"``.
+    - ``LANGUAGE_AUTHORED`` — authored by the conductor from raw language (``arm_from_language`` /
+      ``apply_goal_ops``). The conductor is an UNTRUSTED author; its interrupt requests are clamped.
+    - ``RESTORED`` — rehydrated from a snapshot that predates provenance (no persisted origin). Neutral.
+    - ``SYSTEM_TEMPLATE`` — authored by a trusted first-party template/policy; MAY interrupt.
+
+    Default on a freshly-constructed :class:`Goal` is the LEAST-privileged ``LANGUAGE_AUTHORED`` — trust
+    is granted only by the API path that stamps it, never by construction."""
+
+    STRUCTURED_TRUSTED = "structured_trusted"
+    LANGUAGE_AUTHORED = "language_authored"
+    RESTORED = "restored"
+    SYSTEM_TEMPLATE = "system_template"
+
+
 @dataclass
 class Goal:
     """A standing watch/count/remind goal, stated as a plain-language condition."""
@@ -165,6 +192,11 @@ class Goal:
     modality: Literal["speak", "act"] = "speak"
     state: dict = field(default_factory=lambda: {"type": "watch", "count": 0})
     expiry: str = "until_cancelled"
+    # Durable provenance (1.1) — additive + defaulted. STAMPED by the SDK entry point that admits the
+    # goal (structured arm -> STRUCTURED_TRUSTED; conductor GoalOps -> LANGUAGE_AUTHORED), overwriting
+    # whatever the caller supplied. Persisted with the goal so interrupt-trust survives restore. Default
+    # is the LEAST-privileged origin so an un-stamped/directly-constructed goal never carries trust.
+    origin: "GoalOrigin" = GoalOrigin.LANGUAGE_AUTHORED
 
 
 # ---------------------------------------------------------------------------
@@ -604,6 +636,50 @@ class Incident:
 
 
 # ---------------------------------------------------------------------------
+# AttentionIntent — the channel-neutral EFFECTIVE-attention membrane (spec §2.2).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AttentionIntent:
+    """What a fired :class:`Incident` asks of the human's attention — the EFFECTIVE, not authored, request.
+
+    The application embodiment plane (floor, speech, delivery) consumes this instead of reaching into the
+    goal's raw ``delivery`` dict, so two hard invariants live in one place (see ``AttentionPolicy``):
+
+    1. **Priority is effective, never authored.** ``preempt`` here is the value AFTER deterministic
+       clamping — a conductor (an untrusted language author) cannot grant itself ``"interrupt"`` merely by
+       emitting a delivery dict; only a trusted :class:`GoalOrigin` (or an explicit policy allowlist) keeps
+       it. The gap between requested and effective is the spec's two-value pattern.
+    2. **No channel prescription.** ``preferred_channel`` is a free-form HINT, not a modality enum. The SDK
+       must not prescribe application channels: a robot ACT is not just another notification modality (it
+       may need separate authorization), so the app — not this contract — decides speech/UI/webhook/action.
+
+    Fields:
+
+    - ``message`` — the human-facing line to deliver (the goal's ``say`` / the incident message).
+    - ``goal_id`` / ``incident_id`` — provenance handles back to the firing goal + durable incident record.
+    - ``ts`` — the incident timestamp (source clock), or ``None`` when unstamped.
+    - ``preempt`` — the EFFECTIVE floor disposition: ``"interrupt"`` (cut into a live turn), ``"queue"``
+      (hold behind the current turn), or ``"drop"`` (discard if it cannot be delivered now).
+    - ``ttl_s`` — how many seconds a queued intent stays fresh; past it a late nudge is worse than none
+      and the floor drops it. ``None`` = no expiry.
+    - ``verbatim`` — deliver ``message`` exactly (no paraphrase) — for scripted/compliance alerts.
+    - ``preferred_channel`` — an OPTIONAL app-defined hint (e.g. ``"speech"`` / ``"webhook"``); ``None``
+      lets the app choose. NEVER an authorization: the app validates capability + permission per channel.
+    """
+
+    message: str
+    goal_id: str
+    incident_id: str
+    ts: float | None
+    preempt: Literal["interrupt", "queue", "drop"]
+    ttl_s: float | None
+    verbatim: bool
+    preferred_channel: str | None = None
+
+
+# ---------------------------------------------------------------------------
 # LabelRecord (L-1) — the flywheel's raw material: one ground-truth label on a fire.
 # ---------------------------------------------------------------------------
 
@@ -947,6 +1023,7 @@ __all__ = [
     "Provenance",
     "Attribute",
     "Goal",
+    "GoalOrigin",
     "Cost",
     "FalseFireCost",
     "Consequence",
@@ -968,6 +1045,7 @@ __all__ = [
     "AudioFrame",
     "IncidentSnippet",
     "Incident",
+    "AttentionIntent",
     "LabelRecord",
     # Protocols
     "Vision",

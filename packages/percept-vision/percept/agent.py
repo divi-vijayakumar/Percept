@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Callable
 
 from . import registry
-from .adapters import Box, Decision, Goal, TurnResult, Verdict
+from .adapters import Box, Decision, Goal, GoalOrigin, TurnResult, Verdict
 from .behavior import BehaviorExecutor, program_of
 from .cache import CacheCascade, CacheKey, FrameHashLayer
 from .concern import attention_weight, consequence_of, requires_verification, resolution_ready
@@ -157,7 +157,7 @@ def _emit_banner(mode: str, scripted: list[str]) -> None:
     )
 
 
-def _guard_live_language_path(core: Any, *, allow_scripted_brain: bool = False) -> None:
+def guard_live_language_path(core: Any, *, allow_scripted_brain: bool = False) -> None:
     """FATAL seam: refuse to wire a LIVE voice/language path behind a SCRIPTED brain (§5).
 
     The conductor is the language-authoring seam — it turns an utterance into ``goal_ops``. A scripted
@@ -183,6 +183,13 @@ def _guard_live_language_path(core: Any, *, allow_scripted_brain: bool = False) 
             "(conductor='claude'/'gemini' or PERCEPT_CONDUCTOR_BACKEND=…) with its API key; or, to "
             "test the voice plumbing only, run mode='offline' or pass allow_scripted_brain=True."
         )
+
+
+# Backwards-compatible alias: this seam was named ``_guard_live_language_path`` before it was made a
+# public template import (PCPT-026). The underscore name is kept so existing internal callers and
+# ``from percept.agent import _guard_live_language_path`` sites keep working; new code imports the
+# public ``guard_live_language_path``.
+_guard_live_language_path = guard_live_language_path
 
 
 @dataclass
@@ -379,6 +386,10 @@ class Percept:
 
     # -- goal authoring ------------------------------------------------------
     def add_goal(self, goal: Goal) -> Goal:
+        # PROVENANCE (PCPT-026): the STRUCTURED entry point stamps STRUCTURED_TRUSTED, OVERWRITING
+        # whatever the caller supplied — a caller cannot claim interrupt-trust by pre-filling ``origin``.
+        # ``replace`` (not in-place set) so this is correct even if Goal is later frozen.
+        goal = replace(goal, origin=GoalOrigin.STRUCTURED_TRUSTED)
         self._arm_deadline(goal)  # R3: resolve an authored duration into an absolute stamp at ARM time
         result = self.goals.create(goal)
         # D3a: cache-invalidate on the direct arm() path too (only apply_goal_ops did before). A goal id
@@ -519,6 +530,13 @@ class Percept:
         return out
 
     def apply_goal_ops(self, ops: list[GoalOp]) -> None:
+        # PROVENANCE (PCPT-026): goal ops arrive from the CONDUCTOR (the language-authoring seam —
+        # arm_from_language / _apply_decision), an UNTRUSTED author. Stamp every created goal
+        # LANGUAGE_AUTHORED, OVERWRITING whatever it supplied, so its interrupt requests are clamped
+        # (see AttentionPolicy). ``update`` ops can never touch ``origin`` (GoalRegistry drops that key).
+        for op in ops:
+            if op.op == "create" and op.goal is not None:
+                op.goal = replace(op.goal, origin=GoalOrigin.LANGUAGE_AUTHORED)
         self.goals.apply(ops)
         for op in ops:
             gid = op.goal.id if op.op == "create" and op.goal is not None else op.goal_id
@@ -1628,4 +1646,4 @@ class Percept:
         return payload
 
 
-__all__ = ["Percept", "FireEvent"]
+__all__ = ["Percept", "FireEvent", "guard_live_language_path"]
