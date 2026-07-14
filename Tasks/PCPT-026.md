@@ -1,7 +1,7 @@
 ---
 id: PCPT-026
 title: AttentionIntent + GoalOrigin provenance + session seams (on_goal_change, list_goals)
-status: doing
+status: done
 priority: P0
 owner: opus
 wave: boundary-cleanup-1

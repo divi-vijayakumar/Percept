@@ -1,7 +1,7 @@
 ---
 id: PCPT-027
 title: Demo cleanup — delete examples demos, benchmark → eval/, doc links, skill-dir resync
-status: doing
+status: done
 priority: P1
 owner: haiku
 wave: boundary-cleanup-1

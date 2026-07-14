@@ -1,7 +1,7 @@
 ---
 id: PCPT-025
 title: Non-blocking judge scheduler — _JudgeScheduler + revision-abort in perceive_judged
-status: doing
+status: done
 priority: P0
 owner: fable-5
 wave: boundary-cleanup-1
