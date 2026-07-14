@@ -60,6 +60,11 @@ class D1CoverageParityTests(unittest.TestCase):
                 if i == 1:
                     core_b.add_goal(_brief_goal())
                 yield item
+                # Explicit yield, matching what _aiter gives run A's sync list. A never-yielding async
+                # generator starves the off-loop judge scheduler (judge_dispatch="async" default) —
+                # every coast admit would supersede the last and this would measure overload
+                # coalescing, not coverage parity.
+                await asyncio.sleep(0)
 
         asyncio.run(_drain(core_b, source_b(), stats=stats_b))
 

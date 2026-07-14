@@ -122,10 +122,21 @@ class TestBoundaryThroughRuntimeWorker(unittest.TestCase):
         a.add_goal(_proc_goal())
 
         incidents = asyncio.run(
-            self._collect(a, source, episode_inactivity_s=1.5)
+            self._collect(a, self._paced(source), episode_inactivity_s=1.5)
         )
         self.assertEqual(len(incidents), 1)  # one episode-boundary incident, no per-clip fires
         self.assertEqual(incidents[0].verdict.evidence, "peel the onion; slice the onion")
+
+    @staticmethod
+    async def _paced(items):
+        # Explicitly-yielding source: with the off-loop judge scheduler (judge_dispatch="async"
+        # default) the observe call for a frame completes BETWEEN frames only if the loop gets ticks
+        # — as it does on any real capture cadence. A single tick per frame would let the t=3 quiet
+        # frame see last_step_at lagging one observe behind and fire the boundary early/truncated.
+        for item in items:
+            yield item
+            for _ in range(4):
+                await asyncio.sleep(0)
 
     @staticmethod
     async def _collect(core, source, **kw):

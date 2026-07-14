@@ -12,6 +12,13 @@
     paused/muted gating, and it turns each FIRE into a durable ``Incident`` (ASKs route to ``on_ask``,
     never yielded). So a shared stream can make the shipped loop JUDGE MORE (coast) and it always
     produces a DIFFERENT OUTPUT TYPE (Incident, FIRE-only) than the bench loop (FireEvent, fire+ask).
+  * judge dispatch (off-loop scheduler): worker.run defaults to ``judge_dispatch="async"`` — a
+    single-flight ``_JudgeScheduler`` (one in flight + one latest-pending; overload SUPERSEDES the
+    queued candidate) so capture never awaits a network judgment. GatedWatchLoop still awaits
+    ``perceive_judged`` inline (its fake judges are never slower than frame cadence), so under a
+    bursty/slow-judge stream the shipped loop can spend FEWER judge calls than admits
+    (``judge_calls + judge_superseded + judge_revision_dropped == escalations``) while the bench
+    loop's vision_calls always equals its escalations.
 
 That means every gating-economics number in the repo is measured on a strictly CHEAPER loop than ships.
 This file is ``percept-edge/parity/compare.py`` pointed INWARD: one synthetic stream through BOTH loops,
@@ -19,9 +26,10 @@ enumerating the exact known divergences so any FURTHER drift (e.g. GatedWatchLoo
 coast, or worker dropping a path) breaks CI. The final ``test_loops_are_at_full_parity`` is the
 aspirational identical-output assertion, ``@expectedFailure`` because the loops genuinely diverge TODAY.
 
-Filed divergence: the two run-loops share a ``MotionGate`` core (judge counts match on a plain stream)
-but NOT the escalation surface or the output type. Reconciling them is a real refactor (synthesizing a
-``LoopReport`` from ``RuntimeStats``, or teaching the bench the five paths); until then this pins reality.
+Filed divergences: the two run-loops share a ``MotionGate`` core (admit counts match on a plain stream)
+but NOT the escalation surface, the judge DISPATCH (off-loop scheduler above), or the output type.
+Reconciling them is a real refactor (synthesizing a ``LoopReport`` from ``RuntimeStats``, or teaching
+the bench the five paths + the scheduler); until then this pins reality.
 """
 from __future__ import annotations
 
@@ -133,16 +141,23 @@ class LoopParityTests(unittest.TestCase):
         self.assertTrue(all(isinstance(i, Incident) for i in incidents))
         self.assertFalse(any(isinstance(i, FireEvent) for i in incidents))
 
-    # -- divergence 2: the GATE CORE is shared -> judge counts match on a plain stream --------------
+    # -- divergence 2: the GATE CORE is shared -> ADMIT counts match on a plain stream --------------
     def test_judge_counts_match_on_shared_stream_the_gate_core_is_one(self):
         """The reassuring half: both loops drive the SAME MotionGate, so on a stream with no coast/
-        audio/absence paths engaged the JUDGE COUNT is identical (this is what makes the 83% number
-        *nearly* transferable — see test_cost_reduction_number below)."""
+        audio/absence paths engaged the ADMIT (escalation) count is identical (this is what makes the
+        83% number *nearly* transferable — see test_cost_reduction_number below). Under
+        judge_dispatch="async" (the shipped default) we deliberately do NOT assert
+        ``judge_calls == vision_calls``: that would encode the fakes completing before the next frame.
+        The honest, scheduling-independent pin is the budget invariant — every admitted frame either
+        spent a judge call, was superseded latest-wins, or was revision-dropped."""
         _loop, report = _run_bench_loop(_fire_core())
         stats, _incidents = _run_shipped_loop(_fire_core())
         self.assertEqual(report.vision_calls, 8)           # bench_gating's headline escalation count
-        self.assertEqual(stats.judge_calls, report.vision_calls)  # shipped loop judges the same 8 frames
-        self.assertEqual(stats.escalations, report.escalations)
+        self.assertEqual(stats.escalations, report.escalations)  # the shared gate admits the same frames
+        self.assertEqual(
+            stats.judge_calls + stats.judge_superseded + stats.judge_revision_dropped,
+            stats.escalations,
+        )
 
     # -- divergence 3: fire-count vs incident-count gap on the SAME stream --------------------------
     def test_fire_count_and_incident_count_diverge_on_shared_stream(self):
@@ -191,6 +206,7 @@ class LoopParityTests(unittest.TestCase):
             "coast_admit", "audio_admit",
             "check_episode_boundary", "check_observability", "check_deadlines",
             "paused", "muted",
+            "judge_dispatch",  # off-loop scheduler: shipped loop never awaits a judgment inline
         ]
         for token in shipped_only:
             self.assertIn(token, shipped_src, f"{token} should be a shipped-loop escalation path")

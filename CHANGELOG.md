@@ -38,6 +38,27 @@ Notable changes to Percept. This is a **research preview** — the SDK's public 
 - **`percept.agent.guard_live_language_path`** — public rename of `_guard_live_language_path` (the
   underscore name is kept as an alias for one release), so applications import no underscore symbol.
 
+### Runtime — judge dispatch moves off the capture loop (default `judge_dispatch="async"`)
+- `percept.runtime.run` / `percept.runtime.start` no longer await the cloud judgment inline at the
+  admit site. A single-flight scheduler (one judgment in flight + one latest-pending per source)
+  drives `perceive_judged` off-loop, so a slow VLM turn no longer stalls capture, the tier-0 gate,
+  frame subscribers, or the absence/deadline checks. The admit condition itself is unchanged.
+- **Emission latency note:** fires can now trail their admitting frame by up to ~1 frame interval
+  plus the judge duration (`incident.ts` remains the admission timestamp, not completion time).
+  Because the pre-roll buffer keeps rolling while the judgment is in flight, incident snippets are
+  assembled slightly *newer* than before (the pre-roll window ends nearer the emission instant).
+- Under overload, newly admitted frames replace the queued candidate (latest wins —
+  `RuntimeStats.judge_superseded`); a candidate admitted before a goal change is discarded rather
+  than judged under the new watch plan (`RuntimeStats.judge_revision_dropped`). The budget
+  invariant is `judge_calls + judge_superseded + judge_revision_dropped == escalations`.
+  `perceive_judged(expected_goals_revision=…)` aborts a stale in-flight judgment before any
+  gate/disposition mutation. A `RuntimeHealthEvent("judge_dispatch")` announces the mode once;
+  escalation health events carry `judge_active`/`judge_pending` (each 0/1) for live observability.
+- **Escape hatch (one release):** pass `judge_dispatch="inline"` to `run(...)` for the byte-for-byte
+  historical loop (fires emitted before the next frame is read). The benchmark harness loop
+  (`percept.harness.tier0.GatedWatchLoop`) intentionally stays inline; the divergence is filed in
+  `tests/test_harden_e1_loop_parity.py`.
+
 ### Contract — wire version 1.0.0 (initial public contract; consolidates pre-release surface that iterated internally through 1.1–1.3 but never shipped)
 - `Verdict.usage` — optional token/cost accounting for the judge call (`{input_tokens, output_tokens,
   cost_usd}`); gate-irrelevant, defaults `{}`.

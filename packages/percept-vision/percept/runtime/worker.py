@@ -508,7 +508,7 @@ async def run(
     autosave_every_s: float | None = None,
     label_store: Any = None,
     disposition_log: Any = None,
-    judge_dispatch: str = "inline",
+    judge_dispatch: str = "async",
 ) -> AsyncIterator:
     """Drive a live ``source`` through the gate + brain, yielding an :class:`Incident` on each rising edge.
 
@@ -577,17 +577,19 @@ async def run(
     - ``disposition_log`` — optional :class:`~percept.labelstore.DispositionLog` (§4.3). When set, every
       gate ``FIRE``/``ASK`` appends a ``{incident_id, verdict_ref, disposition, ts}`` row (the escalation
       meter's raw feed, distinct from ``Verdict.usage``). Default ``None`` → nothing written, byte-for-byte.
-    - ``judge_dispatch`` — how an admitted frame's cloud judgment is driven. ``"inline"`` (default)
-      awaits ``perceive_judged`` at the admit site — byte-for-byte the historical loop, where one slow
-      VLM turn stalls capture/gate/absence checks. ``"async"`` hands it to a single-flight
-      :class:`_JudgeScheduler` (one in flight + one latest-pending; the capture loop NEVER awaits a
-      network judgment). The admit condition is unchanged either way; in async mode fires trail the
-      admitting frame by ≤1 frame interval + the judge duration (``incident.ts`` stays the admission
-      ``t``), a stale in-flight judgment aborts when goals change mid-flight (see
-      ``Percept.perceive_judged`` ``expected_goals_revision``), and ``stats.judge_superseded`` /
-      ``stats.judge_revision_dropped`` count the frames overload/goal-changes discarded. A
-      ``RuntimeHealthEvent("judge_dispatch")`` announces the mode once at start; escalation health
-      events carry live ``judge_active``/``judge_pending`` (each 0/1) in async mode.
+    - ``judge_dispatch`` — how an admitted frame's cloud judgment is driven. ``"async"`` (default)
+      hands it to a single-flight :class:`_JudgeScheduler` (one in flight + one latest-pending; the
+      capture loop NEVER awaits a network judgment — one slow VLM turn no longer stalls capture, the
+      gate, or the absence checks). ``"inline"`` awaits ``perceive_judged`` at the admit site —
+      byte-for-byte the historical loop, kept for one release as the escape hatch for consumers that
+      depend on fires being emitted before the next frame is read. The admit condition is unchanged
+      either way; in async mode fires trail the admitting frame by ≤1 frame interval + the judge
+      duration (``incident.ts`` stays the admission ``t``), a stale in-flight judgment aborts when
+      goals change mid-flight (see ``Percept.perceive_judged`` ``expected_goals_revision``), and
+      ``stats.judge_superseded`` / ``stats.judge_revision_dropped`` count the frames
+      overload/goal-changes discarded. A ``RuntimeHealthEvent("judge_dispatch")`` announces the mode
+      once at start; escalation health events carry live ``judge_active``/``judge_pending`` (each
+      0/1) in async mode.
 
     Owns capture off the consumer thread; the per-goal cadence + the three-state gate decide *when* and
     *whether* to fire. Yields incidents lazily, so an ``async for incident in run(...)`` is the front door.
