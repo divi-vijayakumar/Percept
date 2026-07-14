@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://percept.velvee.ai/contracts/Decision.schema.json",
-  "x-contract-version": "1.0.0",
+  "x-contract-version": "1.1.0",
   "type": "object",
   "title": "Decision",
   "properties": {
@@ -235,6 +235,14 @@
         "state": {},
         "expiry": {
           "type": "string"
+        },
+        "origin": {
+          "enum": [
+            "structured_trusted",
+            "language_authored",
+            "restored",
+            "system_template"
+          ]
         }
       },
       "description": "A standing watch/count/remind goal, stated as a plain-language condition.",
@@ -828,6 +836,71 @@
         "concern_id",
         "verdict",
         "ts"
+      ]
+    },
+    "AttentionIntent": {
+      "type": "object",
+      "title": "AttentionIntent",
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "goal_id": {
+          "type": "string"
+        },
+        "incident_id": {
+          "type": "string"
+        },
+        "ts": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "preempt": {
+          "enum": [
+            "interrupt",
+            "queue",
+            "drop"
+          ]
+        },
+        "ttl_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "verbatim": {
+          "type": "boolean"
+        },
+        "preferred_channel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "description": "What a fired :class:`Incident` asks of the human's attention \u2014 the EFFECTIVE, not authored, request.",
+      "required": [
+        "message",
+        "goal_id",
+        "incident_id",
+        "ts",
+        "preempt",
+        "ttl_s",
+        "verbatim"
       ]
     },
     "LabelRecord": {

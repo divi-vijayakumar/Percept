@@ -10,9 +10,12 @@ from __future__ import annotations
 import base64
 import json
 import uuid
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Literal
 
-from percept.contracts import Incident, IncidentSnippet, Verdict
+from percept.contracts import AttentionIntent, Consequence, GoalOrigin, Incident, IncidentSnippet, Verdict
+
+from .concern import consequence_of
 
 
 def make_incident(fire: Any, *, ts: float, snippet: IncidentSnippet | None = None, id: str | None = None) -> Incident:
@@ -74,3 +77,127 @@ def snippet_from_window(window: Any, *, kind: str = "frame", pre_s: float | None
         mime, media = _encode_frame_bundle(payload_frames, t_start=t_start, t_end=t_end)
         return IncidentSnippet(kind="clip", media=media, mime=mime, t_start=t_start, t_end=t_end)
     return IncidentSnippet(kind=kind, frames=payload_frames, t_start=t_start, t_end=t_end)
+
+
+# ---------------------------------------------------------------------------
+# Attention policy — turn a fire + its goal into the EFFECTIVE :class:`AttentionIntent`.
+#
+# This lives here (not in the frozen contracts membrane) because it is *behaviour*, not a wire shape:
+# it consumes an :class:`Incident` + a :class:`Goal`'s durable ``origin``/consequence and returns the
+# clamped intent. Keeping the policy beside the incident producer keeps the contract package pure and
+# puts the requested->effective decision in one deterministic, testable place (spec §2.2).
+# ---------------------------------------------------------------------------
+
+_Preempt = Literal["interrupt", "queue", "drop"]
+
+
+@dataclass(frozen=True)
+class RequestedDelivery:
+    """The AUTHORED delivery request, parsed out of the legacy ``goal.state['delivery']`` dict.
+
+    This is what the goal's author *asked for* — distinct from the effective intent, which is what the
+    policy *grants* after clamping. Defaults reproduce the legacy ``_speak_fire`` semantics: an absent
+    ``preempt`` means "hold behind the current turn" (``"queue"``), never a silent interrupt."""
+
+    preempt: _Preempt = "queue"
+    ttl_s: float | None = None
+    verbatim: bool = False
+    preferred_channel: str | None = None
+
+
+def parse_requested_delivery(delivery: Any) -> RequestedDelivery:
+    """Interpret the legacy ``delivery`` dict (``goal.state['delivery']``) into a :class:`RequestedDelivery`.
+
+    The SINGLE interpreter of that dict — matches the semantics ``RuntimeSession._speak_fire`` read
+    inline: ``preempt`` is a bare string (only ``"interrupt"`` cut into a turn; anything else, including
+    a missing key, held behind it), ``ttl_s`` a float-or-None drop-if-stale bound, ``verbatim`` a bool.
+    ``preferred_channel`` is the additive, optional app hint (absent in the legacy dict -> ``None``).
+
+    Unknown/garbage ``preempt`` values collapse to the safe ``"queue"`` (never an accidental interrupt);
+    a non-dict / ``None`` ``delivery`` yields all defaults."""
+    d = delivery if isinstance(delivery, dict) else {}
+    raw = d.get("preempt")
+    preempt: _Preempt = raw if raw in ("interrupt", "queue", "drop") else "queue"
+    ttl = d.get("ttl_s")
+    ttl_s = None if ttl is None else float(ttl)
+    channel = d.get("preferred_channel")
+    return RequestedDelivery(
+        preempt=preempt,
+        ttl_s=ttl_s,
+        verbatim=bool(d.get("verbatim", False)),
+        preferred_channel=None if channel is None else str(channel),
+    )
+
+
+@dataclass(frozen=True)
+class AttentionPolicy:
+    """Deterministic requested->effective attention clamp (spec §2.2). No I/O, no clock, no RNG.
+
+    The one rule that matters: a requested ``preempt="interrupt"`` is CLAMPED to ``"queue"`` unless the
+    request carries earned authority. Authority comes ONLY from:
+
+    - a TRUSTED :class:`GoalOrigin` — ``STRUCTURED_TRUSTED`` (armed in code) or ``SYSTEM_TEMPLATE`` (a
+      trusted first-party template). A ``LANGUAGE_AUTHORED`` goal (the untrusted conductor) never earns
+      it by asking; a ``RESTORED`` goal is neutral;
+    - an allowlisted consequence CLASS — the goal's ``miss_cost`` is in ``allow_interrupt_consequences``
+      (e.g. a deployment that lets ``"severe"``-miss watches interrupt regardless of who authored them);
+    - an explicit per-goal allowlist entry — ``goal_id`` in ``allow_interrupt_goal_ids``.
+
+    Both allowlists default EMPTY, so the out-of-the-box policy grants interrupt on trusted origin alone.
+    ``"queue"``/``"drop"`` requests pass through untouched — the policy only ever *reduces* authority, it
+    never elevates a request the author did not make."""
+
+    allow_interrupt_consequences: frozenset[str] = field(default_factory=frozenset)
+    allow_interrupt_goal_ids: frozenset[str] = field(default_factory=frozenset)
+
+    def _may_interrupt(self, origin: GoalOrigin, consequence: Consequence | None, incident: Any) -> bool:
+        if origin in (GoalOrigin.STRUCTURED_TRUSTED, GoalOrigin.SYSTEM_TEMPLATE):
+            return True
+        if consequence is not None and getattr(consequence, "miss_cost", None) in self.allow_interrupt_consequences:
+            return True
+        gid = getattr(incident, "concern_id", None)
+        return gid is not None and gid in self.allow_interrupt_goal_ids
+
+    def clamp(
+        self,
+        *,
+        requested: RequestedDelivery,
+        origin: GoalOrigin,
+        consequence: Consequence | None,
+        incident: Any,
+    ) -> AttentionIntent:
+        """Fold a :class:`RequestedDelivery` + provenance + consequence + the fired incident into the
+        EFFECTIVE :class:`AttentionIntent`. The only field the policy may change is ``preempt`` (an
+        unauthorized ``"interrupt"`` becomes ``"queue"``); ttl/verbatim/channel pass through verbatim."""
+        preempt = requested.preempt
+        if preempt == "interrupt" and not self._may_interrupt(origin, consequence, incident):
+            preempt = "queue"
+        return AttentionIntent(
+            message=getattr(incident, "message", "") or "",
+            goal_id=getattr(incident, "concern_id", "") or "",
+            incident_id=getattr(incident, "id", "") or "",
+            ts=getattr(incident, "ts", None),
+            preempt=preempt,
+            ttl_s=requested.ttl_s,
+            verbatim=requested.verbatim,
+            preferred_channel=requested.preferred_channel,
+        )
+
+
+#: The out-of-the-box policy: interrupt-authority from a trusted origin only (empty allowlists).
+DEFAULT_ATTENTION_POLICY = AttentionPolicy()
+
+
+def attention_intent_for(incident: Any, goal: Any, policy: AttentionPolicy | None = None) -> AttentionIntent:
+    """Map a fired ``incident`` + its ``goal`` to the EFFECTIVE :class:`AttentionIntent` (§2.2).
+
+    The application seam calls this instead of reading ``goal.state['delivery']`` itself — so the
+    requested->effective clamp (a conductor cannot self-grant an interrupt) is enforced in ONE place.
+    ``goal`` supplies the durable ``origin`` (interrupt-trust) and consequence (derived via
+    :func:`~percept.concern.consequence_of`); ``incident`` supplies id/ts/message/goal_id. ``policy``
+    defaults to :data:`DEFAULT_ATTENTION_POLICY` (trusted-origin-only interrupt authority)."""
+    pol = policy if policy is not None else DEFAULT_ATTENTION_POLICY
+    requested = parse_requested_delivery((getattr(goal, "state", None) or {}).get("delivery"))
+    origin = getattr(goal, "origin", GoalOrigin.LANGUAGE_AUTHORED)
+    consequence = consequence_of(goal) if goal is not None else None
+    return pol.clamp(requested=requested, origin=origin, consequence=consequence, incident=incident)

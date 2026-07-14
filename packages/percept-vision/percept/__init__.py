@@ -17,6 +17,7 @@ from .adapters import (
     Enricher,
     Evidence,
     Goal,
+    GoalOrigin,
     Observation,
     STTEvent,
     Tier0Signal,
@@ -25,7 +26,14 @@ from .adapters import (
     WatchCondition,
     WatchSpec,
 )
-from percept.contracts import AudioFrame, CONTRACT_VERSION, Incident, IncidentSnippet, LabelRecord
+from percept.contracts import (
+    AttentionIntent,
+    AudioFrame,
+    CONTRACT_VERSION,
+    Incident,
+    IncidentSnippet,
+    LabelRecord,
+)
 from .labelstore import DispositionLog, LabelStore, verdict_ref
 from .cache import CacheCascade, CacheKey, CacheResult, FrameHashLayer
 from .config import ModeError, Settings, load_settings
@@ -110,6 +118,7 @@ __all__ = [
     "Verdict",
     "Attribute",
     "Goal",
+    "GoalOrigin",
     "Concern",
     "Consequence",
     "Evidence",
@@ -123,6 +132,7 @@ __all__ = [
     "AudioFrame",
     "Incident",
     "IncidentSnippet",
+    "AttentionIntent",
     # flywheel rail (L-1) — local label + disposition stores
     "LabelRecord",
     "LabelStore",
