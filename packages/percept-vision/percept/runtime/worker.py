@@ -332,6 +332,7 @@ async def run(
     stale_audio_s: float | None = None,
     wall_clock: Callable[[], float] = time.monotonic,
     wake_policy: Any = None,
+    energy_provider: Callable | None = None,
     regate_on_goal_change: bool = True,
     paused: Callable | None = None,
     muted: Callable | None = None,
@@ -931,6 +932,16 @@ async def run(
             # stalled mic leaves energy pinned at its last (speech-level) value, which would otherwise keep
             # escalating the gate forever. A stale reading reads None → the gate degrades to VIDEO-ONLY.
             energy_now = audio["energy"] if _energy_fresh(audio["energy_t"], t, audio["chunk_dt"]) else None
+            # Channel B without an audio_source pump (e.g. the browser transport owns the mic and tees it
+            # in via _AudioTap → push_audio): the caller supplies tier-0 energy through `energy_provider`,
+            # so a WakePolicy can escalate a near-still frame on SOUND. None (the default, or a provider
+            # returning None) leaves the gate byte-for-byte the video-only path.
+            if energy_now is None and energy_provider is not None:
+                try:
+                    ep = energy_provider()
+                    energy_now = float(ep) if ep is not None else None
+                except Exception:  # noqa: BLE001 - a bad energy provider must never crash the watch
+                    energy_now = None
             decision = gate.evaluate(gate_frame, ts=t, energy=energy_now)
 
             # PR 1.3: run edge detectors on the cheap motion/energy signals at native fps. Each emitted

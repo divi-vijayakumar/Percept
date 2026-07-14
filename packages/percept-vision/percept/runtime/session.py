@@ -510,8 +510,11 @@ class RuntimeSession:
         watching = "; ".join(f"{g.id}: {getattr(g, 'condition', '')}"
                              for g in self._core.goals.active()) or "nothing yet"
         recent = list(self.incidents)[-3:]  # deque isn't sliceable; materialize the last 3
-        fired = "; ".join(getattr(i, "message", "") for i in recent) if recent else "none"
-        return f"[percept state] watching for → {watching}. recent alerts → {fired}."
+        # Goal ids ONLY — never incident messages. Those are DELIVERY scripts (the goal's `say` text);
+        # a grounding channel that carries them invites an S2S wire to re-speak old alerts on later
+        # turns. Delivery text reaches the voice through deliver_fire and nothing else.
+        fired = ", ".join(str(getattr(i, "concern_id", "") or "?") for i in recent) if recent else "none"
+        return f"[percept state] watching for → {watching}. recent alerts (goal ids) → {fired}."
 
     async def _pulse_state(self, *, force: bool = False) -> None:
         """Push the brain's current state into the transport's context (no response triggered) so the

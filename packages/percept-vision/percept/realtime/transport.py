@@ -43,6 +43,7 @@ _BOT_STARTED = {"BotStartedSpeakingFrame"}
 _BOT_STOPPED = {"BotStoppedSpeakingFrame"}
 _USER_TEXT = {"TranscriptionFrame"}
 _IMAGE = {"InputImageRawFrame", "UserImageRawFrame"}
+_AUDIO_IN = {"InputAudioRawFrame"}  # the browser mic frames — AEC'd in-browser before they arrive
 _IN_RATE, _OUT_RATE = 16000, 24000
 
 # Proven-working model (verified end-to-end in scratch/watch_demo/test_wav_input.py: hears + tool-calls).
@@ -61,6 +62,7 @@ class _SeamObserver(BaseObserver):
     def __init__(self, transport: "PipecatRealtimeTransport") -> None:
         super().__init__()
         self._t = transport
+        self._last_turn_end = 0.0   # last SYNTHESIZED turn-end edge (dedup a burst of transcripts)
         self._dbg_in = 0            # mic → pipeline input-audio frames seen
         self._dbg_out = 0           # Gemini → pipeline output-audio frames seen
         self._dbg_last = 0.0        # last stderr summary time
@@ -85,6 +87,16 @@ class _SeamObserver(BaseObserver):
             elif name in _USER_TEXT:
                 text = getattr(frame, "text", "") or ""
                 if text.strip():
+                    # SYNTHESIZED turn-end: GeminiLiveLLMService never emits UserStarted/Stopped
+                    # SpeakingFrame (pipecat llm.py — "the API exposes an `interrupted` event but no
+                    # turn-start/-end"), so on this backend a transcript is the ONLY turn boundary we
+                    # ever see. Without this edge, every on_user_speaking consumer is dead code: the
+                    # session's queue-behind-turn never flushes and a V2V clock never starts. A turn's
+                    # transcripts can arrive as a burst — collapse edges within 1s into one.
+                    now = time.monotonic()
+                    if now - self._last_turn_end > 1.0:
+                        self._last_turn_end = now
+                        await self._t._fire(self._t._on_user_speaking, False)
                     await self._t._fire(self._t._on_transcript, text)
         except Exception:  # noqa: BLE001 - an observer must never crash the pipeline
             pass
@@ -131,6 +143,28 @@ class _VideoTap(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class _AudioTap(FrameProcessor):
+    """Pass-through processor teeing inbound MIC frames to the watch (Channel B: audio fusion).
+
+    The exact mirror of :class:`_VideoTap`, one channel over. The browser mic reaches the pipeline as
+    ``InputAudioRawFrame`` (already AEC'd in-browser, so Aoede's own voice is gone) — the app tees it into
+    ``core.push_audio`` for a fused/acoustic judge AND derives the tier-0 energy a ``WakePolicy`` escalates
+    on. The frame is passed through untouched, so Gemini still hears the user for the conversation."""
+
+    def __init__(self, on_audio: Callable[[Any], None] | None) -> None:
+        super().__init__()
+        self._on_audio = on_audio
+
+    async def process_frame(self, frame: Any, direction: Any) -> None:
+        await super().process_frame(frame, direction)
+        if self._on_audio is not None and type(frame).__name__ in _AUDIO_IN:
+            try:
+                self._on_audio(frame)
+            except Exception:  # noqa: BLE001 - a bad tap consumer must never crash the wire
+                pass
+        await self.push_frame(frame, direction)
+
+
 class PipecatRealtimeTransport:
     """A held Gemini-Live voice wire over Pipecat SmallWebRTC, implementing the extended VoiceTransport.
 
@@ -139,36 +173,72 @@ class PipecatRealtimeTransport:
     connection. Gemini's own VAD drives turns — no Silero gate."""
 
     def __init__(self, webrtc_connection: Any, *, gemini_api_key: str, model: str | None = None,
-                 voice: str = "Aoede", system: str = "", on_video_frame: Callable[[Any], None] | None = None) -> None:
+                 voice: str = "Aoede", system: str = "", on_video_frame: Callable[[Any], None] | None = None,
+                 on_audio_frame: Callable[[Any], None] | None = None) -> None:
         self._conn = webrtc_connection
         self._api_key = gemini_api_key
         self._model = model
         self._voice = voice
         self._system = system
         self._on_video_frame = on_video_frame
+        self._on_audio_frame = on_audio_frame   # Channel B: tee AEC'd mic → push_audio + tier-0 energy
         self._tools: dict[str, tuple[dict, Any]] = {}
         self._on_barge_in: Any = None
         self._on_event: Any = None
-        self._on_user_speaking: Any = None
-        self._on_bot_speaking: Any = None
-        self._on_transcript: Any = None
+        # user-speaking / bot-speaking / transcript are SUBSCRIBER LISTS, not slots: both the app
+        # (telemetry, mute-guards) and attach_transport (fire timing, evidence tee) register for the
+        # same edges, in either order. A single slot made that last-write-wins — attach_transport
+        # silently killed the app's handlers (dead V2V clocks, dead mute-guards).
+        self._on_user_speaking: list[Any] = []
+        self._on_bot_speaking: list[Any] = []
+        self._on_transcript: list[Any] = []
         self._on_utterance: Any = None
         self._frame_provider: Any = None
         self._task: Any = None
         self._runner_task: Any = None
         self._llm: Any = None
+        self._state_summary: str = ""   # last sync_state summary — served via the percept_state tool (pull)
 
-    # -- registration (before start; idempotent) -------------------------
+    # -- registration (before start; the speaking/transcript edges are ADDITIVE — see __init__) -----
     def on_utterance(self, cb: Any) -> None: self._on_utterance = cb          # unused in S2S (Gemini replies)
     def on_barge_in(self, cb: Any) -> None: self._on_barge_in = cb
     def on_event(self, cb: Any) -> None: self._on_event = cb
-    def on_user_speaking(self, cb: Any) -> None: self._on_user_speaking = cb
-    def on_bot_speaking(self, cb: Any) -> None: self._on_bot_speaking = cb  # audio-out edge (A2V end)
-    def on_transcript(self, cb: Any) -> None: self._on_transcript = cb
+    def on_user_speaking(self, cb: Any) -> None: self._on_user_speaking.append(cb)
+    def on_bot_speaking(self, cb: Any) -> None: self._on_bot_speaking.append(cb)  # audio-out edge (A2V end)
+    def on_transcript(self, cb: Any) -> None: self._on_transcript.append(cb)
     def set_frame_provider(self, provider: Any) -> None: self._frame_provider = provider
 
     def register_tool(self, name: str, schema: dict, handler: Any) -> None:
         self._tools[name] = (schema, handler)
+
+    def _ensure_state_tool(self) -> None:
+        """Self-register the GROUNDING pull tool (idempotent; an app-registered `percept_state` wins).
+
+        On this backend grounding must be PULL (see :meth:`sync_state`): the model calls
+        ``percept_state`` when it needs to know what the brain is doing, instead of the brain pushing
+        state into the conversation as user turns it would answer out loud."""
+        if "percept_state" in self._tools:
+            return
+
+        async def _percept_state(_args: dict) -> dict:
+            return {"state": self._state_summary or "no state yet"}
+
+        self._tools["percept_state"] = (
+            {"description": "current Percept brain state — armed watches + recent alert goal-ids. "
+                            "Call when asked what you are watching or doing.",
+             "properties": {}, "required": []},
+            _percept_state)
+
+    # The channel-separation contract, appended to every system instruction: state summaries are
+    # metadata (never speech), and a watch's `say` text belongs to DELIVERY — the model must never
+    # perform it on its own. Without this, the wire recites armed-goal scripts on every noise-turn.
+    _GROUNDING_CONTRACT = (
+        "\n\nGROUNDING CONTRACT: call `percept_state` when you need to know what is being watched. "
+        "State summaries and tool results are machine metadata — never recite or announce them "
+        "unprompted. A watch's `say` text is spoken ONLY when the system explicitly tells you a watch "
+        "fired; never say it on your own, and never speak unless the user addressed you or the system "
+        "instructed you to."
+    )
 
     # -- lifecycle -------------------------------------------------------
     async def start(self) -> None:
@@ -178,6 +248,7 @@ class PipecatRealtimeTransport:
                                  audio_in_sample_rate=_IN_RATE, audio_out_sample_rate=_OUT_RATE)
         transport = SmallWebRTCTransport(webrtc_connection=self._conn, params=params)
 
+        self._ensure_state_tool()   # grounding = pull: the model fetches state; nothing is pushed
         fn_schemas = [FunctionSchema(name=n, description=str(s.get("description") or f"call {n}"),
                                      properties=s.get("properties", {}), required=s.get("required", []))
                       for n, (s, _h) in self._tools.items()]
@@ -186,7 +257,8 @@ class PipecatRealtimeTransport:
         # _reconnect() in GeminiLiveLLMService ("tools provided both at init time and in context"). Dispatch
         # still works via register_function below.
         llm = GeminiLiveLLMService(api_key=self._api_key, voice_id=self._voice,
-                                   system_instruction=self._system, model=self._model or _DEFAULT_MODEL)
+                                   system_instruction=self._system + self._GROUNDING_CONTRACT,
+                                   model=self._model or _DEFAULT_MODEL)
         self._llm = llm
         for n, (_s, handler) in self._tools.items():
             llm.register_function(n, self._wrap_tool(handler))
@@ -201,7 +273,10 @@ class PipecatRealtimeTransport:
                    else LLMContext(messages=seed))
         agg = LLMContextAggregatorPair(context, realtime_service_mode=True)
 
-        procs: list[Any] = [transport.input(), agg.user()]
+        procs: list[Any] = [transport.input()]
+        if self._on_audio_frame is not None:   # tap raw mic BEFORE aggregation (Channel B)
+            procs.append(_AudioTap(self._on_audio_frame))
+        procs.append(agg.user())
         if self._on_video_frame is not None:
             procs.append(_VideoTap(self._on_video_frame))
         procs += [llm, transport.output(), agg.assistant()]
@@ -236,9 +311,17 @@ class PipecatRealtimeTransport:
         await self._queue(instr, run_llm=True)
 
     async def sync_state(self, summary: str) -> None:
-        """Ground the wire: push brain-state into context WITHOUT a response (run_llm=False)."""
-        if summary:
-            await self._queue(summary, run_llm=False)
+        """Ground the wire — PULL, not push: stash the summary for the `percept_state` tool.
+
+        The seam contract says "without triggering a response", and this backend CANNOT honor a silent
+        push: pipecat's GeminiLiveLLMService handles LLMMessagesAppendFrame via
+        ``_create_single_response`` → ``send_client_content(turn_complete=True)`` (plus a forced
+        realtime input on Gemini 3.x) — ``run_llm=False`` is ignored and every push is answered OUT
+        LOUD. Worse, the pushed state lands as a user-role turn, so the model reads machine state as
+        human speech and recites it back on every later noise-turn (the "keeps talking about the
+        armed goals" bug). So nothing is queued: the summary is stashed and the model fetches it via
+        the self-registered ``percept_state`` tool when it actually needs grounding."""
+        self._state_summary = summary or ""
 
     async def interrupt(self) -> None:
         return  # Gemini Live handles barge-in natively (server VAD)
@@ -266,8 +349,15 @@ class PipecatRealtimeTransport:
 
     @staticmethod
     async def _fire(cb: Any, *args: Any) -> None:
+        """Invoke a callback slot — a single callable OR a subscriber list (fan-out, registration
+        order). One subscriber raising must not silence the others."""
         if cb is None:
             return
-        res = cb(*args)
-        if inspect.isawaitable(res):
-            await res
+        cbs = cb if isinstance(cb, (list, tuple)) else (cb,)
+        for c in cbs:
+            try:
+                res = c(*args)
+                if inspect.isawaitable(res):
+                    await res
+            except Exception:  # noqa: BLE001 - a bad subscriber must never break its peers
+                pass

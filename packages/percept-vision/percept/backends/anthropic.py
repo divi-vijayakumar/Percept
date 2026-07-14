@@ -20,6 +20,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 from typing import Any
 
 from ..adapters import Box, Goal, Observation, Verdict
@@ -338,11 +339,38 @@ def _coerce_json(text: str) -> Any:
     return json.loads(text[start : end + 1] if end > start else text[start:])
 
 
+# Field-level salvage for a TRUNCATED verdict. A thinking model (gemini-2.5/3-flash) can spend its
+# output budget on reasoning and cut the STRICT-JSON reply mid-``evidence`` string — but ``satisfied``
+# and ``confidence`` come FIRST and are intact. Recovering them beats discarding a real read as
+# ``unparsed`` -> confidence 0.0 -> a spurious ASK (the false-abstain the token bump was meant to avoid).
+_SATISFIED_RE = re.compile(r'"satisfied"\s*:\s*(true|false)', re.IGNORECASE)
+_CONFIDENCE_RE = re.compile(r'"confidence"\s*:\s*(-?\d*\.?\d+)')
+_EVIDENCE_RE = re.compile(r'"evidence"\s*:\s*"([^"]*)')  # may be unterminated (truncation point)
+
+
+def _salvage_verdict(text: str) -> Verdict | None:
+    """Recover ``satisfied``/``confidence`` from a truncated/malformed reply, else ``None``.
+
+    Requires BOTH fields (a verdict is meaningless without them); if either is missing the caller
+    keeps the conservative 0.0 default and the gate still defers to ASK (invariant 1 preserved)."""
+    m_sat, m_conf = _SATISFIED_RE.search(text), _CONFIDENCE_RE.search(text)
+    if m_sat is None or m_conf is None:
+        return None
+    try:
+        conf = max(0.0, min(1.0, float(m_conf.group(1))))
+    except ValueError:
+        return None
+    m_ev = _EVIDENCE_RE.search(text)
+    return Verdict(satisfied=m_sat.group(1).lower() == "true", confidence=conf,
+                   evidence=(m_ev.group(1).strip() if m_ev else ""))
+
+
 def _parse_verdict(text: str) -> Verdict:
     """Parse the strict-JSON judge reply into a ``Verdict`` (defensive defaults on a bad read).
 
     A parse failure is treated as *low-confidence unknown* (satisfied=False, confidence=0.0) so
-    the gate defers to ASK rather than risking a confident-wrong fire (invariant 1).
+    the gate defers to ASK rather than risking a confident-wrong fire (invariant 1) — UNLESS the
+    decisive fields survive a truncation, in which case :func:`_salvage_verdict` recovers them.
     """
     try:
         data = _coerce_json(text)
@@ -357,6 +385,9 @@ def _parse_verdict(text: str) -> Verdict:
             action_present=(bool(ap) if isinstance(ap, bool) else None),
         )
     except (ValueError, TypeError, AttributeError, KeyError):
+        salvaged = _salvage_verdict(text)
+        if salvaged is not None:
+            return salvaged
         return Verdict(satisfied=False, confidence=0.0, evidence=f"unparsed: {text[:120]}")
 
 

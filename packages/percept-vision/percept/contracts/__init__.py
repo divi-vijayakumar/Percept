@@ -893,10 +893,16 @@ class VoiceTransport(Protocol):
         ...
 
     async def sync_state(self, summary: str) -> None:
-        """Push a compact BRAIN-STATE summary into the transport's context WITHOUT triggering a response
-        (armed goals, recent evidence labels, last fires). Keeps a speech-to-speech wire's reactive answers
-        coherent with the brain — so "do you see my coffee?" agrees with a caffeine fire 90s ago — and
-        makes any drift in the wire's own memory harmless. Idempotent; re-pushed transparently on resume."""
+        """Make a compact BRAIN-STATE summary available to the wire WITHOUT triggering a response
+        (armed goals, recent evidence labels, last fires — goal ids, never delivery scripts). Keeps a
+        speech-to-speech wire's reactive answers coherent with the brain — so "do you see my coffee?"
+        agrees with a caffeine fire 90s ago — and makes any drift in the wire's own memory harmless.
+        Idempotent; re-synced transparently on resume.
+
+        "Without triggering a response" is a HARD requirement, not advisory: only :meth:`say` may cause
+        unprompted audio. A backend that cannot append context silently (e.g. Gemini Live answers every
+        appended turn out loud) must NOT push — stash the summary and expose it for PULL instead (a
+        state tool the model calls), which is how :class:`PipecatRealtimeTransport` implements it."""
         ...
 
     async def interrupt(self) -> None:
