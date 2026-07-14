@@ -49,6 +49,9 @@ def on_ask(event) -> None:
 
 async def main() -> None:
     # vision="gemini" | "claude" (+ its API key). discover_plugins=False skips plugin lookup.
+    # Code-armed watch (GOAL armed below, no voice) -> the default conductor stays SCRIPTED and this
+    # constructs with a loud "language goal-authoring is off" log (not a crash). Want spoken "watch X"?
+    # pass conductor="gemini"/"claude". Keyless smoke test? mode="offline".
     agent = percept.Percept.create(vision="gemini", discover_plugins=False)
     agent.add_goal(GOAL)
 
