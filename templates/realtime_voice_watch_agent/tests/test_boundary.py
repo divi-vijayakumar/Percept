@@ -18,7 +18,7 @@ import unittest
 from pathlib import Path
 
 TEMPLATE_DIR = Path(__file__).resolve().parent.parent
-SOURCES = ("app.py", "engagement.py", "engine_adapter.py", "fire_renderer.py",
+SOURCES = ("app.py", "capsule.py", "engagement.py", "engine_adapter.py", "fire_renderer.py",
            "floor.py", "media.py", "percept_bridge.py", "telemetry.py")
 
 # -- the grant ---------------------------------------------------------------------------------
@@ -34,6 +34,9 @@ ALLOWED_FROM_IMPORTS: dict[str, set[str]] = {
     # video into tier-0 gate frames itself, and `percept.edge.tier0` is the documented public shim
     # for that (`pip install "percept-vision[edge]"`). No other edge symbol is granted.
     "percept.edge.tier0": {"Frame"},
+    # C1 event capsule folds the recent window into one montage judge frame (PCPT-032); make_sprite
+    # is the SDK's public montage primitive (VLM token-budget temporal context).
+    "percept.sprite": {"make_sprite"},
 }
 #: attributes reachable as `percept.<attr>` after a plain `import percept`.
 ALLOWED_PERCEPT_ATTRS = ALLOWED_FROM_IMPORTS["percept"] | {"runtime", "incidents", "agent"}
@@ -131,9 +134,10 @@ class BoundaryTests(unittest.TestCase):
                          + "\n".join(violations))
 
     def test_all_template_sources_are_scanned(self):
-        # A new module must be added to SOURCES (and thereby scanned) — the scan can't silently
-        # narrow as the template grows.
-        actual = {p.name for p in TEMPLATE_DIR.glob("*.py")}
+        # A new SHIPPED module must be added to SOURCES (and thereby scanned) — the scan can't
+        # silently narrow as the template grows. scratch_*.py are gitignored diagnostic harnesses
+        # (not shipped, not import-clean), so they are excluded from the boundary contract.
+        actual = {p.name for p in TEMPLATE_DIR.glob("*.py") if not p.name.startswith("scratch_")}
         self.assertEqual(actual, set(SOURCES))
 
     def test_the_scanner_actually_catches_a_violation(self):

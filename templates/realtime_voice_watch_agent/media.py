@@ -71,9 +71,17 @@ class VideoTee:
     video tap and hand :meth:`source` to ``percept.start(source=...)``. The watch is a sampler —
     dropping a frame under load is fine (bounded queue, drop-newest)."""
 
-    def __init__(self, *, maxsize: int = 8, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(self, *, maxsize: int = 8, clock: Callable[[], float] = time.monotonic,
+                 capsule: bool = True, capsule_window: int = 6) -> None:
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
         self._clock = clock
+        # C1 event capsule ON by default: the judge frame is a montage of the recent window so a brief
+        # event survives the single-flight judge scheduler (PCPT-031/032). Set capsule=False for the
+        # legacy single-frame judge frame.
+        self._capsule = None
+        if capsule:
+            from capsule import CapsuleBuilder
+            self._capsule = CapsuleBuilder(window=capsule_window)
 
     def on_video_frame(self, image_frame: Any) -> None:
         rgb = _to_rgb(image_frame)
@@ -82,9 +90,14 @@ class VideoTee:
         img = Image.fromarray(rgb, "RGB")
         gray = np.asarray(img.convert("L").resize((GATE_W, GATE_H)))   # tier-0 motion-gate downsample
         gate_frame = Frame(w=GATE_W, h=GATE_H, pixels=tuple(int(p) for p in gray.flatten()))
-        bio = io.BytesIO()
-        img.save(bio, format="JPEG", quality=70)                        # judge frame the VLM reads
-        item = (self._clock(), gate_frame, ("image/jpeg", bio.getvalue()))
+        if self._capsule is not None:
+            self._capsule.push(rgb)
+            judge_frame = self._capsule.montage_jpeg()                  # {first,peak,last} montage
+        else:
+            bio = io.BytesIO()
+            img.save(bio, format="JPEG", quality=70)                    # single judge frame
+            judge_frame = ("image/jpeg", bio.getvalue())
+        item = (self._clock(), gate_frame, judge_frame)
         try:
             self._queue.put_nowait(item)
         except asyncio.QueueFull:
