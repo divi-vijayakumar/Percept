@@ -1,13 +1,18 @@
-"""percept.realtime — a held speech-to-speech voice wire for the VoiceTransport seam.
+"""percept.realtime — MOVED (v0.6 SDK voice diet).
 
-    from percept.realtime import PipecatRealtimeTransport, serve_realtime
+The held speech-to-speech voice wire (Pipecat + serverless P2P WebRTC driving Gemini Live) and its
+signaling boilerplate no longer ship inside the SDK. The perception package must not own the voice stack.
+The full working embodiment now lives, app-side, in ``templates/realtime_voice_watch_agent`` — copy that
+template (``cd templates/realtime_voice_watch_agent && pip install -e .``) and wire a ``VoiceEngine`` to
+Percept through its ``PerceptBridge``/``Floor`` and the SDK's public seams.
 
-Gemini Live over Pipecat serverless P2P WebRTC (browser AEC, no key), grounded by the brain via the
-extended VoiceTransport seam. NOT a framework — you keep ``percept.run``/``attach_transport`` visible;
-this ships the transport + the signaling boilerplate. Needs ``pip install "percept-vision[realtime]"``.
-See ``scratch/watch_demo/REALTIME-V2V-DESIGN.md`` and ``examples/realtime_watch_agent.py``.
+The vendor-neutral ``VoiceTransport``/``UtteranceEvent``/``Reply`` contract remains (deprecated) in
+``percept.contracts`` for this release. Importing ``percept.realtime`` raises so the move is loud, not a
+silent missing module.
 """
-from percept.realtime.server import build_realtime_app, serve_realtime
-from percept.realtime.transport import PipecatRealtimeTransport
 
-__all__ = ["PipecatRealtimeTransport", "serve_realtime", "build_realtime_app"]
+raise ImportError(
+    "percept.realtime moved to templates/realtime_voice_watch_agent (v0.6 SDK voice diet) — copy the "
+    "template and wire a VoiceEngine via its PerceptBridge/Floor. The VoiceTransport contract lives "
+    "(deprecated) in percept.contracts."
+)

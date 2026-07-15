@@ -875,6 +875,12 @@ class TTS(Protocol):
 class UtteranceEvent:
     """A complete spoken user turn, endpointed by a :class:`VoiceTransport` (with AEC applied).
 
+    .. deprecated:: 0.6
+        Part of the :class:`VoiceTransport` seam, which moved app-side in the SDK voice diet — no SDK-core
+        behavior consumes it after the diet. It stays FUNCTIONAL this release as a migration aid; the
+        template owns its own ``SpeechRequest``/``VoiceEngine`` types (``engine_adapter.py``). Slated for
+        removal at v0.7/v1.0 unless an SDK-level consumer appears. See ``templates/realtime_voice_watch_agent``.
+
     ``text`` is the transcript when the transport did its own STT (Pipecat/LiveKit, or a speech-to-speech
     model); ``audio`` carries raw PCM when the transport ships audio for the brain to transcribe. At least
     one is set. ``t`` is the transport clock at the endpoint."""
@@ -888,7 +894,12 @@ class UtteranceEvent:
 class Reply:
     """The brain's answer handed back to a :class:`VoiceTransport`. ``text`` for a component transport to
     synthesize (TTS); ``audio`` when the brain already holds speech (e.g. from a live model). Both may be
-    ``None`` for a speech-to-speech transport that already spoke on its own."""
+    ``None`` for a speech-to-speech transport that already spoke on its own.
+
+    .. deprecated:: 0.6
+        Part of the :class:`VoiceTransport` seam, which moved app-side in the SDK voice diet. FUNCTIONAL
+        this release as a migration aid; the template uses its own ``SpeechRequest`` instead. Slated for
+        removal at v0.7/v1.0 unless an SDK-level consumer appears. See ``templates/realtime_voice_watch_agent``."""
 
     text: str | None = None
     audio: "AudioFrame | None" = None
@@ -901,9 +912,18 @@ class VoiceTransport(Protocol):
     model). Distinct from the chunk-level :class:`STT`/:class:`TTS` *component* seams — a transport owns
     the whole audio *pipe*.
 
-    Percept never hand-rolls this (no AEC in Python). A client implements this Protocol against a real
-    transport and hands it to :meth:`percept.runtime.RuntimeSession.attach_transport`, which wires it to
-    cognition (endpointed utterance -> frame-grounded turn -> streamed reply; barge-in -> interrupt).
+    .. deprecated:: 0.6
+        The voice embodiment moved app-side in the SDK voice diet: ``RuntimeSession.attach_transport`` is
+        now a raising stub, and no SDK-core behavior consumes this Protocol. It stays DEFINED (functional)
+        this release as a migration seam. The one shipped voice application,
+        ``templates/realtime_voice_watch_agent``, owns its own ``VoiceEngine(Protocol)``/``SpeechRequest``
+        (``engine_adapter.py``) — the component that actually needs engine portability. Slated for removal
+        from core contracts at v0.7/v1.0 unless an SDK-level consumer appears.
+
+    Percept never hand-rolls this (no AEC in Python). Historically a client implemented this Protocol and
+    handed it to ``RuntimeSession.attach_transport``, which wired it to cognition (endpointed utterance ->
+    frame-grounded turn -> streamed reply; barge-in -> interrupt). That wiring now lives in the template's
+    ``PerceptBridge`` against its own ``VoiceEngine`` seam, not here.
 
     Two archetypes, one interface:
       * component (Pipecat/LiveKit + STT/TTS): delivers ``text``; :meth:`say` synthesizes the reply.
@@ -978,7 +998,7 @@ class VoiceTransport(Protocol):
         "Without triggering a response" is a HARD requirement, not advisory: only :meth:`say` may cause
         unprompted audio. A backend that cannot append context silently (e.g. Gemini Live answers every
         appended turn out loud) must NOT push — stash the summary and expose it for PULL instead (a
-        state tool the model calls), which is how :class:`PipecatRealtimeTransport` implements it."""
+        state tool the model calls), which is how the template's ``PipecatVoiceEngine`` implements it."""
         ...
 
     async def interrupt(self) -> None:

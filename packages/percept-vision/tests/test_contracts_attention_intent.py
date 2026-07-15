@@ -104,7 +104,7 @@ class ParseRequestedDeliveryTests(unittest.TestCase):
         r = parse_requested_delivery({"preempt": "interrupt", "ttl_s": 5, "verbatim": True,
                                       "preferred_channel": "speech"})
         self.assertEqual(r.preempt, "interrupt")
-        self.assertEqual(r.ttl_s, 5.0)  # coerced to float, matching legacy _speak_fire
+        self.assertEqual(r.ttl_s, 5.0)  # coerced to float, matching the legacy delivery-dict semantics
         self.assertIsInstance(r.ttl_s, float)
         self.assertTrue(r.verbatim)
         self.assertEqual(r.preferred_channel, "speech")
@@ -418,10 +418,27 @@ class ListGoalsTests(unittest.TestCase):
             await sess.arm(_goal("g1"))
             rows = sess.list_goals()
             self.assertEqual(len(rows), 1)
-            self.assertEqual(set(rows[0].keys()), {"id", "condition", "status"})
+            self.assertEqual(set(rows[0].keys()), {"id", "condition", "status", "origin", "delivery"})
             self.assertEqual(rows[0]["id"], "g1")
             self.assertEqual(rows[0]["condition"], "a person is here")
             self.assertEqual(rows[0]["status"], "active")
+            # PCPT-029 enrichment: durable origin (wire string, structured via session.arm) + the parsed
+            # requested delivery (defaults when the goal declares none).
+            self.assertEqual(rows[0]["origin"], "structured_trusted")
+            self.assertEqual(rows[0]["delivery"], {"preempt": "queue", "ttl_s": None, "verbatim": False})
+        asyncio.run(go())
+
+    def test_goal_view_resolves_one_goal_with_authored_delivery(self):
+        async def go():
+            core = _core()
+            sess = RuntimeSession(core)
+            await sess.arm(_goal("g1", delivery={"preempt": "interrupt", "ttl_s": 12.0,
+                                                 "verbatim": True}))
+            view = sess.goal_view("g1")
+            self.assertEqual(view["id"], "g1")
+            self.assertEqual(view["origin"], "structured_trusted")
+            self.assertEqual(view["delivery"], {"preempt": "interrupt", "ttl_s": 12.0, "verbatim": True})
+            self.assertIsNone(sess.goal_view("nope"))   # unknown id → None, no Goal leak
         asyncio.run(go())
 
     def test_excludes_disarmed_goals(self):

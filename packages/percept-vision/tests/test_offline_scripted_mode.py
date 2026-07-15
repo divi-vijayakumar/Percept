@@ -104,25 +104,13 @@ def test_start_on_utterance_scripted_conductor_raises(monkeypatch):
         asyncio.run(start(core, source=_one_frame_source(), on_utterance=lambda a, t: None))
 
 
-def test_attach_transport_scripted_conductor_raises(monkeypatch):
-    from percept.runtime.session import RuntimeSession
-    from percept.backends.fake import FakeVoiceTransport
-
-    monkeypatch.delenv("PERCEPT_MODE", raising=False)
-    core = percept.Percept.create(
-        mode="live", vision=FakeVision(), conductor=FakeConductor(), discover_plugins=False
-    )
-    session = RuntimeSession(core)
-    with pytest.raises(ModeError):
-        asyncio.run(session.attach_transport(FakeVoiceTransport()))
-
-
 def test_language_seam_scripted_conductor_raises_the_fourth_door(monkeypatch):
     # session.ask() / on_speech_endpoint and arm_from_language route straight to the conductor, bypassing
-    # run()/start()/attach_transport. Guarding only those three wiring points left this FOURTH door open
-    # (a custom-STT integration: `start(core, source=…)` then `session.ask(text)` -> scripted brain ->
-    # route="ignore" -> silence). The guard now lives at the language<->conductor crossing, so every door
-    # is covered by one check, not each wiring point separately.
+    # run()/start(). Guarding only the wiring points left this FOURTH door open (a custom-STT integration:
+    # `start(core, source=…)` then `session.ask(text)` -> scripted brain -> route="ignore" -> silence).
+    # The guard now lives at the language<->conductor crossing, so every door is covered by one check, not
+    # each wiring point separately. (The old attach_transport wiring-point guard moved app-side with the
+    # voice diet: the template's PerceptBridge.attach calls guard_live_language_path — see its GuardTests.)
     monkeypatch.delenv("PERCEPT_MODE", raising=False)  # LIVE
     core = percept.Percept.create(
         mode="live", vision=FakeVision(), conductor=FakeConductor(), discover_plugins=False

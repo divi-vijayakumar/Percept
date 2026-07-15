@@ -33,10 +33,43 @@ Notable changes to Percept. This is a **research preview** — the SDK's public 
   `arm_from_language`/`apply_goal_ops` command path, restore, and same-id replacement — the paths a
   callback wired to `arm` would silently miss. Purpose: grounding-snapshot invalidation. Callbacks are
   additive + isolated (one raising subscriber can't break another).
-- **`RuntimeSession.list_goals()`** — a bounded public read of active goals (`{id, condition, status}`),
-  so an application never reaches into `core.goals`.
+- **`RuntimeSession.list_goals()`** — a bounded public read of active goals; each entry now carries
+  `{id, condition, status, origin, delivery}` where `origin` is the `GoalOrigin` wire string and
+  `delivery` is the goal's parsed **requested** delivery (`{preempt, ttl_s, verbatim}`). Additive: the
+  original `id`/`condition`/`status` keys are unchanged.
+- **`RuntimeSession.goal_view(goal_id) → dict | None`** — resolve a single goal by id to that same
+  bounded read-only view, so an application can map an `Incident` back to its goal's authored delivery
+  (for `attention_intent_for`) without reaching into `core.goals`. `None` for an unknown id; never leaks
+  the `Goal` object.
 - **`percept.agent.guard_live_language_path`** — public rename of `_guard_live_language_path` (the
   underscore name is kept as an alias for one release), so applications import no underscore symbol.
+
+### Runtime — SDK voice diet (the voice embodiment moves app-side) — BREAKING
+The application embodiment plane (voice transport, floor arbitration, fire delivery, A2V metrics) left the
+SDK. The perception package no longer owns the voice stack; the one working voice application now lives in
+`templates/realtime_voice_watch_agent` (`cd templates/realtime_voice_watch_agent && pip install -e .`),
+composed through the SDK's public seams only.
+- **`RuntimeSession.attach_transport(...)` and `RuntimeSession.deliver_fire(...)` are now raising stubs**
+  (`RuntimeError`) that point at the template — not delegating shims. **Migration:** copy the template;
+  wire a `VoiceEngine` to the Floor via its `PerceptBridge.attach`, and route fires with
+  `percept.start(..., on_incident=bridge.on_incident)` → `attention_intent_for` → the template's `Floor`.
+  Also removed from the session: `detach_transport`, the `arm_goal`/`watch`/`stop_watching`/`whats_armed`
+  tool schemas + handlers, the brain-state pulse, and the A2V-latency plumbing — all reproduced,
+  app-side, in the template's `percept_bridge.py`/`floor.py`/`telemetry.py`.
+- **`percept.realtime` is removed** — `percept/realtime/{transport,server}.py` are deleted and
+  `import percept.realtime` now raises `ImportError` (for one release) naming the template. The Pipecat +
+  serverless-WebRTC + Gemini-Live wire (`PipecatRealtimeTransport`, `serve_realtime`, `build_realtime_app`)
+  moved verbatim into the template's `engine_adapter.py`/`media.py`, re-expressed against the template's
+  own `VoiceEngine`/`SpeechRequest` seam.
+- **The `percept-vision[realtime]` extra is emptied and RESERVED.** Its voice dependencies (`pipecat-ai`,
+  `fastapi`, `uvicorn`, `google-genai`, …) now live in the template's own `pyproject.toml`; the SDK ships
+  none of them, and nothing pulls a voice vendor at `import percept`/`import percept.runtime` (pinned by
+  `tests/test_voice_diet_boundary.py`). The extra name is kept as a placeholder reserved for future
+  **SDK-side streaming judgment**, not voice.
+- **`VoiceTransport` / `UtteranceEvent` / `Reply` are deprecated** in `percept.contracts` (docstring
+  deprecation notes; shapes unchanged, still functional this release as a migration seam). No SDK-core
+  behavior consumes them after the diet; the template owns its own `VoiceEngine`/`SpeechRequest` types.
+  Removal from core contracts is targeted at v0.7/v1.0 unless an SDK-level consumer appears.
 
 ### Runtime — judge dispatch moves off the capture loop (default `judge_dispatch="async"`)
 - `percept.runtime.run` / `percept.runtime.start` no longer await the cloud judgment inline at the

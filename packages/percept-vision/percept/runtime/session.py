@@ -1,9 +1,9 @@
 """RuntimeSession — the input seam over a running ``run()`` (PR 2.1).
 
-``run()`` is a pure OUTPUT generator (incidents/asks/frames out); a voice/interactive agent also needs
-to push things IN: ask a question about what's on camera, arm/disarm goals at runtime, and interrupt a
-spoken turn (the barge-in boundary). ``RuntimeSession`` wraps a background ``run()``, stashes the
-latest frame it captured, and exposes exactly those inputs — while the watch keeps running.
+``run()`` is a pure OUTPUT generator (incidents/asks/frames out); an interactive agent also needs to push
+things IN: ask a question about what's on camera, arm/disarm goals at runtime, and interrupt a spoken turn
+(the barge-in boundary). ``RuntimeSession`` wraps a background ``run()``, stashes the latest frame it
+captured, and exposes exactly those inputs — while the watch keeps running.
 
 The key thing it fixes: a spoken vision question ("what do you see?") MUST carry the watch's current
 frame. The voice layer can't reach the camera — the persistent watch owns it — so ``ask`` routes the
@@ -12,47 +12,25 @@ piped audio straight to a voice model with no frame is exactly why it answered "
 
 STT / TTS / barge-in *detection* stay OUTSIDE the core (the voice layer's job); this only supplies the
 frame-scoped answer, the runtime goal ops, and a clean cancellation point.
+
+**Voice embodiment moved app-side (v0.6 diet).** Binding a speech-to-speech transport — command tools,
+grounding, fire delivery, A2V metrics, floor arbitration — is no longer the SDK's job. Copy
+``templates/realtime_voice_watch_agent`` and use its ``PerceptBridge``/``Floor`` to wire a ``VoiceEngine``
+to Percept through the public seams below. ``attach_transport``/``deliver_fire`` remain here only as
+raising stubs pointing at the template; the ``VoiceTransport`` contract stays (deprecated) in
+``percept.contracts`` for this release.
 """
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import inspect
 import os
 import time
 from collections import deque
 from typing import Any, Callable
 
-from percept.adapters import Reply
 from percept.goals import GoalOp
 from percept.runtime.worker import run
-
-#: JSON schema for the thin ``arm_goal`` tool (a transport structures the goal itself). Kept for
-#: back-compat; the realtime path prefers ``watch`` (raw language → the conductor authors the watchspec).
-ARM_GOAL_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "id": {"type": "string", "description": "short kebab-case id (optional)"},
-        "condition": {"type": "string", "description": "plain-language condition to watch the camera for"},
-        "say": {"type": "string", "description": "short message to speak once, when it fires"},
-    },
-    "required": ["condition"],
-}
-
-#: The RICH command verbs a realtime transport exposes to its model. Each passes RAW language down so
-#: Percept's **conductor** authors the full watchspec (the levers) — not a pre-structured goal.
-WATCH_SCHEMA = {
-    "type": "object",
-    "properties": {"command": {"type": "string",
-                               "description": "the user's watch request, verbatim, e.g. 'tell me the second my baby cries'"}},
-    "required": ["command"],
-}
-STOP_WATCHING_SCHEMA = {
-    "type": "object",
-    "properties": {"what": {"type": "string", "description": "which watch to stop (a word or phrase from it)"}},
-    "required": ["what"],
-}
-WHATS_ARMED_SCHEMA = {"type": "object", "properties": {}}
 
 
 def _env_int(name: str, default: int) -> int:
@@ -66,29 +44,12 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def _arm_slug(raw_id: Any, condition: str) -> str:
-    """Derive a STABLE, COLLISION-RESISTANT goal id for a voice-armed watch.
-
-    An explicit ``id`` (from the tool args) is honored verbatim (kebab-cased, bounded). Otherwise the
-    id is derived from the condition — but a plain ``condition[:40]`` slug silently COLLIDES for two
-    watches sharing a 40-char prefix ("the red car is parked in the driveway near the mailbox on
-    monday" vs "…tuesday"), and ``GoalRegistry.create`` is last-writer-wins, so one instruction is lost
-    with no signal. We suffix a short content hash of the FULL condition so distinct conditions get
-    distinct ids even when their prefixes match (D3b)."""
-    explicit = str(raw_id or "").strip()
-    if explicit:
-        return explicit.lower().replace(" ", "-")[:40] or "goal"
-    slug = condition.strip().lower().replace(" ", "-")
-    digest = hashlib.sha1(condition.encode("utf-8")).hexdigest()[:6]
-    return f"{slug[:32]}-{digest}" if slug else f"goal-{digest}"
-
-
 class RuntimeSession:
     """A live session wrapping a background ``run()``: `ask`/`arm`/`disarm`/`interrupt`/`latest_frame`."""
 
     #: Default cap on retained incidents — the steepest 24/7 leak (each incident pins an IncidentSnippet
     #: with up to ~48 DECODED frames, so an unbounded list is MB/day). ``label()`` needs recent history, not
-    #: unbounded history; the pulse reads only the last 3. Overridable per-session or via ``PERCEPT_MAX_INCIDENTS``.
+    #: unbounded history. Overridable per-session or via ``PERCEPT_MAX_INCIDENTS``.
     DEFAULT_MAX_INCIDENTS = 500
 
     def __init__(self, core: Any, *, store: Any = None, label_store: Any = None,
@@ -110,23 +71,10 @@ class RuntimeSession:
         self._muted = False
         self._deaf_until = 0.0            # wall-clock deadline through which utterance endpointing is suppressed
         self._wall_clock = time.monotonic  # timebase for deafen (matches run()'s default wall_clock)
-        self._transport: Any = None       # the attached VoiceTransport, if any
-        self._transport_stt: Any = None   # optional STT for audio-only utterances (a transport that
-        self._act_sink: Any = None        # the ACT channel for fires (webhook/callback/log)
-        self._user_speaking = False       # transport's turn-in-progress signal (fire timing)
-        # A2V latency: the wall time a response was TRIGGERED (a user turn ended, or a fire was enqueued to
-        # the transport) and its kind; on the transport's on_bot_speaking(True) edge (audio-out actually
-        # began) we record `now - since` into metrics. Measuring to say()/enqueue instead understates true
-        # latency by the model's TTS first-token time — the number the realtime demo/paid pitch rests on.
-        self._pending_response_since: float | None = None
-        self._pending_response_kind: str | None = None
-        self._queued_fires: list[tuple] = []  # (incident, delivery, queued_at) held behind a live turn
-        self._pulsed = ""                 # last brain-state summary sent (dedup the pulse)
-        self._arm_tasks: set[asyncio.Task] = set()  # in-flight async watch-arming (watch verb, §3 #1)
         # BOUNDED incident history (24/7 leak fix). A ``deque(maxlen=N)`` keeps the N most-recent incidents
         # and DROPS the oldest — bounding both the count and the decoded snippet frames they pin. Precedence:
         # explicit arg > PERCEPT_MAX_INCIDENTS > DEFAULT_MAX_INCIDENTS. deque supports append + reversed()
-        # (label lookup); the pulse takes list(...)[-3:] since a deque isn't sliceable.
+        # (label lookup).
         if max_incidents is None:
             max_incidents = _env_int("PERCEPT_MAX_INCIDENTS", self.DEFAULT_MAX_INCIDENTS)
         self.max_incidents = max(1, int(max_incidents))
@@ -246,14 +194,11 @@ class RuntimeSession:
     async def arm(self, goal: Any) -> Any:
         """Arm a new watch goal at runtime (e.g. from a voice command). Bumps the goal-registry
         revision, so a ``run()`` started with ``regate_on_goal_change=True`` re-arms the gate for it."""
-        result = self._core.add_goal(goal)
-        await self._pulse_state()   # goal changed → re-ground the wire (§4.1)
-        return result
+        return self._core.add_goal(goal)
 
     async def disarm(self, goal_id: str) -> None:
         """Cancel a goal at runtime (stops watching for it); also re-arms the gate under regate."""
         self._core.apply_goal_ops([GoalOp(op="cancel", goal_id=goal_id)])
-        await self._pulse_state()   # goal changed → re-ground the wire (§4.1)
 
     def on_goal_change(self, cb: Callable[[], Any]) -> Callable[[], None]:
         """Register ``cb()`` to fire on EVERY goal-set change; returns an ``unsubscribe()`` closure.
@@ -278,21 +223,55 @@ class RuntimeSession:
             return lambda: None
         return subscribe(_on_revision)
 
-    def list_goals(self) -> list[dict]:
-        """A bounded, public read of the ACTIVE goals — ``[{id, condition, status}, …]``.
+    def _goal_entry(self, g: Any) -> dict:
+        """Map a :class:`~percept.contracts.Goal` to its bounded, read-only public view (no Goal leakage).
 
-        So an application (e.g. a ``whats_armed`` voice tool) can answer "what am I watching?" without
-        reaching into ``core.goals``. Returns plain dicts (no goal objects, no core references), only the
-        three safe fields; inactive (completed/cancelled) goals are excluded."""
+        Carries the safe display fields (id/condition/status) PLUS the durable ``origin`` (as its wire
+        string) and the goal's authored **requested delivery** (parsed once through the single interpreter,
+        :func:`~percept.incidents.parse_requested_delivery`). The requested delivery is what an application
+        needs to resolve an incident back to its goal's authored ttl/verbatim/preempt HINTS while the
+        attention policy still clamps the effective ``preempt`` by origin (PCPT-029, Part B)."""
+        from percept.incidents import parse_requested_delivery
+
         registry = self._core.goals
-        out: list[dict] = []
-        for g in registry.active():
-            out.append({
-                "id": g.id,
-                "condition": getattr(g, "condition", ""),
-                "status": registry.status(g.id) or "active",
-            })
-        return out
+        origin = getattr(g, "origin", None)
+        origin_str = origin.value if hasattr(origin, "value") else (None if origin is None else str(origin))
+        requested = parse_requested_delivery((getattr(g, "state", None) or {}).get("delivery"))
+        return {
+            "id": g.id,
+            "condition": getattr(g, "condition", ""),
+            "status": registry.status(g.id) or "active",
+            "origin": origin_str,
+            "delivery": {
+                "preempt": requested.preempt,
+                "ttl_s": requested.ttl_s,
+                "verbatim": requested.verbatim,
+            },
+        }
+
+    def list_goals(self) -> list[dict]:
+        """A bounded, public read of the ACTIVE goals — one :meth:`_goal_entry` view each.
+
+        So an application (e.g. a ``whats_armed`` voice tool) can answer "what am I watching?" and resolve
+        a fire back to its goal's authored delivery WITHOUT reaching into ``core.goals``. Each entry is a
+        plain dict (``{id, condition, status, origin, delivery}``) — no goal objects, no core references;
+        inactive (completed/cancelled) goals are excluded."""
+        registry = self._core.goals
+        return [self._goal_entry(g) for g in registry.active()]
+
+    def goal_view(self, goal_id: str) -> dict | None:
+        """Resolve a single goal by id to its bounded read-only view (:meth:`_goal_entry`), or ``None``.
+
+        The seam an application uses to map an :class:`~percept.contracts.Incident` back to its goal so
+        ``attention_intent_for`` can honor the goal's authored ttl/verbatim — a language-authored goal has
+        no other public handle (it never passed through ``session.arm``). Returns the same shape as a
+        :meth:`list_goals` entry; ``None`` for an unknown id. Read-only: never leaks the Goal object."""
+        registry = self._core.goals
+        get = getattr(registry, "get", None)
+        g = get(goal_id) if get is not None else None
+        if g is None:
+            return None
+        return self._goal_entry(g)
 
     # -- flywheel intake: out-of-band triage of a past fire (L-1, §4.3) ----
     def label(self, incident_id: str, good: bool, note: str | None = None,
@@ -322,293 +301,37 @@ class RuntimeSession:
         )
         return self._label_store.append(rec)
 
-    # -- voice transport: bind an AEC'd mic+speaker pipe (Pipecat/LiveKit/browser/S2S) ----
-    async def attach_transport(self, transport: Any, *, arm_tool: bool = True, watch_tools: bool = True,
-                               stt: Any = None, act_sink: Any = None,
-                               allow_scripted_brain: bool = False) -> Any:
-        """Bind a :class:`~percept.contracts.VoiceTransport` and wire it to cognition — the ONE call an
-        app makes for voice. The transport owns mic + speaker + AEC + endpointing + barge-in.
+    # -- voice embodiment: MOVED app-side (v0.6 diet) — raising stubs ----------
+    def attach_transport(self, *args: Any, **kwargs: Any) -> Any:
+        """REMOVED — binding a voice transport is now the application's job (v0.6 SDK voice diet).
 
-        Two archetypes, one call:
-          * **component** (STT transport that emits discrete utterances) — each ``on_utterance`` runs a
-            frame-grounded conductor turn (:meth:`ask`) and the reply is streamed back via ``say``.
-          * **realtime speech-to-speech** (the model handles the conversation itself) — it does NOT emit
-            ``on_utterance``; instead the model calls the command tools (``watch``/``stop_watching``/
-            ``whats_armed``), the brain keeps the wire GROUNDED via ``sync_state``, mines ``on_transcript``
-            for evidence, and speaks proactive fires via :meth:`deliver_fire`.
+        Command tools, pull-grounding, fire delivery, and A2V metrics moved out of the SDK into
+        ``templates/realtime_voice_watch_agent``: copy it and use ``PerceptBridge.attach`` to wire a
+        ``VoiceEngine`` to the Floor. The ``VoiceTransport`` contract stays (deprecated) in
+        ``percept.contracts`` for this release. This stub raises so an old call fails loud, not silent."""
+        raise RuntimeError(
+            "RuntimeSession.attach_transport was removed in the v0.6 SDK voice diet. The voice "
+            "embodiment (transport wiring, pull-grounding, fire delivery, A2V metrics) moved app-side — "
+            "copy templates/realtime_voice_watch_agent and use PerceptBridge.attach to bind a VoiceEngine "
+            "to the Floor. The VoiceTransport contract remains (deprecated) in percept.contracts."
+        )
 
-        - ``watch_tools`` — expose the rich ``watch``/``stop_watching``/``whats_armed`` verbs (raw language
-          → the **conductor** authors the watchspec). ``arm_tool`` also exposes the thin ``arm_goal``.
-        - ``act_sink`` — the ACT channel for fires (webhook/callback/log). A ``speak`` fire with no
-          transport falls back to it (assistant-class: notify when no one's listening).
-        - ``stt`` — transcriber for a component transport that ships audio-only utterances.
+    def deliver_fire(self, *args: Any, **kwargs: Any) -> Any:
+        """REMOVED — fire delivery + floor arbitration are now the application's job (v0.6 voice diet).
 
-        On THIS path Percept never touches raw audio — the transport owns mic + speaker + AEC, so there is
-        no echo to hand-cancel. (This does NOT hold for the ``on_utterance`` path — see :func:`start` —
-        which opens the mic itself with no AEC.) Returns the started transport."""
-        # FATAL seam (RFC §5): an attached transport IS a live language path (it emits utterances and
-        # exposes watch/arm tools that route raw language to the conductor). Behind a scripted brain
-        # those tools silently author nothing — refuse it here, at the wiring call.
-        from percept.agent import _guard_live_language_path
-
-        _guard_live_language_path(self._core, allow_scripted_brain=allow_scripted_brain)
-        self._transport = transport
-        self._transport_stt = stt
-        self._act_sink = act_sink
-        transport.set_frame_provider(self.latest_frame)
-        if arm_tool:
-            transport.register_tool("arm_goal", dict(ARM_GOAL_SCHEMA), self._arm_goal_tool)
-        if watch_tools:
-            transport.register_tool("watch", dict(WATCH_SCHEMA), self._watch_tool)
-            transport.register_tool("stop_watching", dict(STOP_WATCHING_SCHEMA), self._stop_watching_tool)
-            transport.register_tool("whats_armed", dict(WHATS_ARMED_SCHEMA), self._whats_armed_tool)
-        transport.on_barge_in(self._on_transport_barge_in)
-        transport.on_utterance(self._on_transport_utterance)      # component archetype
-        transport.on_user_speaking(self._set_user_speaking)        # fire timing (§4.3)
-        if hasattr(transport, "on_bot_speaking"):                  # optional/additive: audio-out edge -> A2V
-            transport.on_bot_speaking(self._on_bot_speaking)
-        transport.on_transcript(self._on_transport_transcript)     # evidence tee (§4.6)
-        await transport.start()
-        await self._pulse_state(force=True)                        # ground the wire at connect (§4.1)
-        return transport
-
-    async def detach_transport(self) -> None:
-        """Unbind + stop the attached transport (idempotent). The watch keeps running."""
-        transport, self._transport = self._transport, None
-        if transport is not None:
-            try:
-                await transport.stop()
-            except Exception:  # noqa: BLE001 - teardown must not raise
-                pass
-
-    async def _on_transport_utterance(self, ev: Any) -> Any:
-        """A complete (AEC'd, endpointed) user turn from the transport -> frame-grounded reply."""
-        utterance = ev.text
-        if not utterance and getattr(ev, "audio", None) is not None:
-            utterance = await self._transcribe(ev.audio)
-        if not utterance:
-            return None
-        result = await self.ask(utterance, t=getattr(ev, "t", None))
-        reply = getattr(result, "reply", None)
-        if self._transport is not None and reply:
-            await self._transport.say(Reply(text=reply))  # no-op for a speech-to-speech transport
-        return result
-
-    async def _on_transport_barge_in(self) -> None:
-        """User cut in during playout: cancel the in-flight turn (cognition) + stop playout (transport)."""
-        self.interrupt()
-        if self._transport is not None:
-            try:
-                await self._transport.interrupt()
-            except Exception:  # noqa: BLE001 - a transport that can't interrupt is fine
-                pass
-
-    async def _arm_goal_tool(self, args: dict) -> dict:
-        """The ``arm_goal`` tool handler — a spoken watch-command becomes an armed goal."""
-        from percept.adapters import Goal
-
-        args = args or {}
-        condition = str(args.get("condition") or "").strip()
-        if not condition:
-            return {"error": "condition required"}
-        gid = _arm_slug(args.get("id"), condition)
-        say = str(args.get("say") or f"Heads up — {condition}.").strip()
-        await self.arm(Goal(id=gid, condition=condition, say=say))
-        return {"output": f"now watching for {condition}"}
-
-    # -- realtime command verbs: raw language → the CONDUCTOR authors the watchspec (§3 #1) ----
-    async def _watch_tool(self, args: dict) -> dict:
-        """``watch(command)`` — author the watchspec from raw language and arm it, ASYNC.
-
-        Returns instantly ("On it.") so the voice turn never blocks on the conductor, and — critically —
-        routes through :meth:`Percept.arm_from_language`, NOT :meth:`ask`, so the specialist's frame answer
-        is never streamed back into the held wire (that both poisoned the session and added ~8s, §4.2). The
-        armed state re-grounds the wire via ``sync_state`` when authoring completes; ``whats_armed`` then
-        reflects it."""
-        command = str((args or {}).get("command") or "").strip()
-        if not command:
-            return {"error": "command required"}
-
-        async def _arm() -> None:
-            try:
-                await self._core.arm_from_language(command)   # conductor authors + arms; no spoken reply
-                await self._pulse_state()                     # re-ground the wire once the goal is live (§4.1)
-            except Exception:  # noqa: BLE001 - background arming must never crash the wire
-                pass
-
-        task = asyncio.ensure_future(_arm())
-        self._arm_tasks.add(task)
-        task.add_done_callback(self._arm_tasks.discard)
-        return {"output": "On it."}
-
-    async def _stop_watching_tool(self, args: dict) -> dict:
-        what = str((args or {}).get("what") or "").strip().lower()
-        if not what:
-            return {"error": "what required"}
-        stopped = []
-        for g in list(self._core.goals.active()):
-            hay = f"{g.id} {getattr(g, 'condition', '')}".lower()
-            if what in hay or any(w in hay for w in what.split() if len(w) > 2):
-                await self.disarm(g.id)
-                stopped.append(g.id)
-        await self._pulse_state()
-        return {"output": f"stopped {', '.join(stopped)}" if stopped else f"nothing matching '{what}'"}
-
-    async def _whats_armed_tool(self, _args: dict) -> dict:
-        return {"armed": [{"id": g.id, "watching_for": getattr(g, "condition", "")}
-                          for g in self._core.goals.active()]}
-
-    # -- fire timing + evidence (§4.3, §4.6) -----------------------------
-    async def _set_user_speaking(self, speaking: bool) -> None:
-        self._user_speaking = bool(speaking)
-        if not speaking:
-            # Turn ended → the A2V clock starts: an S2S wire (Gemini Live) now renders its reply, and the
-            # honest latency is until on_bot_speaking(True) (audio-out), not until say()/enqueue.
-            self._mark_pending_response("reactive")
-            await self._flush_queued_fires()   # turn ended → deliver anything queued behind it
-
-    def _mark_pending_response(self, kind: str) -> None:
-        """Stamp the moment a spoken response was TRIGGERED (a user turn ended, or a fire was enqueued).
-        The transport's on_bot_speaking(True) edge closes the window and records the A2V latency."""
-        self._pending_response_since = self._wall_clock()
-        self._pending_response_kind = kind
-
-    async def _on_bot_speaking(self, speaking: bool) -> None:
-        """The agent's voice output actually began (``True``) / ended (``False``) — the HONEST A2V end.
-        Record ``now - trigger`` into ``core.metrics`` ONCE per turn (subsequent audio frames of the same
-        turn find no pending stamp and are ignored). Only the transport can see its own playout, so a wire
-        that never emits this simply yields no A2V metric — everything else is unaffected."""
-        if not speaking or self._pending_response_since is None:
-            return
-        dt = max(0.0, self._wall_clock() - self._pending_response_since)
-        kind = self._pending_response_kind or "reply"
-        metrics = getattr(self._core, "metrics", None)
-        if metrics is not None:
-            metrics.add("voice.a2v_latency_s.total", dt)
-            metrics.incr("voice.a2v_latency_s.count")
-            metrics.add(f"voice.a2v_latency_s.{kind}.total", dt)
-            metrics.incr(f"voice.a2v_latency_s.{kind}.count")
-        self._pending_response_since = None
-        self._pending_response_kind = None
-
-    async def _on_transport_transcript(self, text: str) -> None:
-        """A user-turn transcript (free from a realtime model) → low-priority evidence; nobody waits."""
-        text = (text or "").strip()
-        note = getattr(self._core, "note_mention", None)
-        if text and note is not None:
-            try:
-                note(text)   # records into the evidence/mention path; the conductor mines it later
-            except Exception:  # noqa: BLE001 - evidence is best-effort, never blocks the wire
-                pass
-
-    # -- fire delivery: modality + delivery policy (§3, §4.3) ------------
-    async def deliver_fire(self, incident: Any) -> None:
-        """Route a watch FIRE. Wire ``percept.run(on_incident=session.deliver_fire)``. Always records to
-        the act sink (nothing lost; verbatim); and — per goal ``modality`` + ``delivery`` lever — speaks
-        it through the transport (interrupt / queue-behind-turn / drop-if-stale). A ``speak`` fire with no
-        transport degrades to the act sink (assistant-class: notify when no one's listening)."""
-        goal = self._goal_for(getattr(incident, "concern_id", None))
-        modality = getattr(goal, "modality", None) or "speak"
-        delivery = dict((getattr(goal, "state", None) or {}).get("delivery", {})) if goal else {}
-        if self._act_sink is not None:
-            res = self._act_sink(incident)
-            if inspect.isawaitable(res):
-                await res
-        if "speak" in modality and self._transport is not None:
-            await self._speak_fire(incident, delivery)
-        await self._pulse_state()
-
-    async def _speak_fire(self, incident: Any, delivery: dict) -> None:
-        if self._user_speaking:
-            if delivery.get("preempt") == "interrupt":   # severe → cut into the turn
-                try:
-                    await self._transport.interrupt()
-                except Exception:  # noqa: BLE001
-                    pass
-            else:                                        # gentle → hold behind the turn
-                self._queued_fires.append((incident, delivery, time.monotonic()))
-                return
-        self._mark_pending_response("proactive")  # A2V clock for a spoken fire: enqueue -> audio-out
-        await self._transport.say(Reply(text=getattr(incident, "message", "")),
-                                  verbatim=bool(delivery.get("verbatim", False)))
-
-    async def _flush_queued_fires(self) -> None:
-        queued, self._queued_fires = self._queued_fires, []
-        now = time.monotonic()
-        for incident, delivery, queued_at in queued:
-            ttl = delivery.get("ttl_s")
-            if ttl is not None and (now - queued_at) > float(ttl):
-                continue   # went stale while the user talked → drop (a late nudge is worse than none)
-            if self._transport is not None:
-                self._mark_pending_response("proactive")  # A2V clock for the (now-flushed) spoken fire
-                await self._transport.say(Reply(text=getattr(incident, "message", "")),
-                                          verbatim=bool(delivery.get("verbatim", False)))
-
-    # -- brain-state pulse: keep the wire grounded (§4.1) ----------------
-    def _brain_state_summary(self) -> str:
-        watching = "; ".join(f"{g.id}: {getattr(g, 'condition', '')}"
-                             for g in self._core.goals.active()) or "nothing yet"
-        recent = list(self.incidents)[-3:]  # deque isn't sliceable; materialize the last 3
-        # Goal ids ONLY — never incident messages. Those are DELIVERY scripts (the goal's `say` text);
-        # a grounding channel that carries them invites an S2S wire to re-speak old alerts on later
-        # turns. Delivery text reaches the voice through deliver_fire and nothing else.
-        fired = ", ".join(str(getattr(i, "concern_id", "") or "?") for i in recent) if recent else "none"
-        return f"[percept state] watching for → {watching}. recent alerts (goal ids) → {fired}."
-
-    async def _pulse_state(self, *, force: bool = False) -> None:
-        """Push the brain's current state into the transport's context (no response triggered) so the
-        wire's reactive answers stay coherent with what the brain knows. Deduped unless forced."""
-        if self._transport is None:
-            return
-        summary = self._brain_state_summary()
-        if not force and summary == self._pulsed:
-            return
-        self._pulsed = summary
-        sync = getattr(self._transport, "sync_state", None)
-        if sync is not None:
-            try:
-                await sync(summary)
-            except Exception:  # noqa: BLE001 - grounding is best-effort
-                pass
-
-    def _goal_for(self, gid: Any) -> Any:
-        if gid is None:
-            return None
-        get = getattr(self._core.goals, "get", None)
-        if get is not None:
-            try:
-                g = get(gid)
-                if g is not None:
-                    return g
-            except Exception:  # noqa: BLE001
-                pass
-        for g in self._core.goals.active():
-            if getattr(g, "id", None) == gid:
-                return g
-        return None
-
-    async def _transcribe(self, audio: Any) -> str | None:
-        """Transcribe an audio-only utterance via the optional ``stt`` given to :meth:`attach_transport`.
-        Accepts a plain async/sync ``callable(audio) -> str`` OR an :class:`STT` seam (``.stream``)."""
-        stt = self._transport_stt
-        if stt is None:
-            return None
-        if hasattr(stt, "stream"):  # an STT seam: take the last final event's text
-            text = ""
-            async for e in stt.stream(audio):
-                if getattr(e, "is_final", False):
-                    text = e.text
-            return text or None
-        res = stt(audio)
-        res = await res if inspect.isawaitable(res) else res
-        return res or None
+        Routing a fire to speech/act (interrupt / queue / drop, TTL, verbatim) moved app-side: wire
+        ``percept.start(..., on_incident=bridge.on_incident)`` and let the template's Floor +
+        ``attention_intent_for`` policy decide. See ``templates/realtime_voice_watch_agent``. This stub
+        raises so an old call fails loud, not silent."""
+        raise RuntimeError(
+            "RuntimeSession.deliver_fire was removed in the v0.6 SDK voice diet. Fire delivery + floor "
+            "arbitration moved app-side — wire percept.start(..., on_incident=bridge.on_incident) and let "
+            "templates/realtime_voice_watch_agent's Floor + attention_intent_for policy decide."
+        )
 
     async def stop(self) -> None:
-        """Stop the background watch (and the attached transport, if any)."""
+        """Stop the background watch. Cancels an in-flight :meth:`ask` turn, then the run task."""
         self.interrupt()
-        for task in list(self._arm_tasks):   # cancel any in-flight async watch-arming
-            task.cancel()
-        await self.detach_transport()
         if self._run_task is not None and not self._run_task.done():
             self._run_task.cancel()
             try:
@@ -633,9 +356,10 @@ async def start(core: Any, *, source: Any, on_frame: Callable | None = None,
     ``on_utterance`` gives you an **un-AEC'd mic**. The handler runs off the pump, so a slow voice turn
     no longer blocks capture — but if the app plays audio into the same room it **must** call
     :meth:`RuntimeSession.deafen` around playback (with ``playback_duration + margin``), or Percept will
-    hear itself and loop. For a speakers-on, always-on deployment prefer :meth:`RuntimeSession.attach_transport`
-    — that path owns AEC. ``store`` is the injected shared store (deferred; see :class:`RuntimeSession`).
-    ``async for incident in run(...)`` remains the headless front door; this is the interactive layer on top."""
+    hear itself and loop. For a speakers-on, always-on deployment with AEC, wire a voice engine app-side
+    (see ``templates/realtime_voice_watch_agent``). ``store`` is the injected shared store (deferred; see
+    :class:`RuntimeSession`). ``async for incident in run(...)`` remains the headless front door; this is
+    the interactive layer on top."""
     # FATAL seam (RFC §5): guard SYNCHRONOUSLY at the start() call (not inside the drain task, where a
     # ModeError would surface late/awkwardly) when a live voice path (on_utterance) is wired behind a
     # scripted brain. Passing on_utterance later is caught by run()'s own guard.

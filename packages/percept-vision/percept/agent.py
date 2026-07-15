@@ -162,10 +162,11 @@ def guard_live_language_path(core: Any, *, allow_scripted_brain: bool = False) -
 
     The conductor is the language-authoring seam — it turns an utterance into ``goal_ops``. A scripted
     conductor's default ``Decision(route="ignore")`` silently discards every spoken "watch/tell me
-    when…", so the user wired a voice that can't author. That is the demo bug; refuse it at the wiring
-    call. Called from ``run(on_utterance=…)`` / ``session.start(on_utterance=…)`` /
-    ``attach_transport`` — the places a language path is ACTUALLY wired (NOT at ``create()``, which
-    cannot yet know a language path is coming).
+    when…", so the user wired a voice that can't author. That is the demo bug; refuse it at the
+    language↔conductor crossing (``on_speech_endpoint`` / ``arm_from_language``) and at the live-voice
+    wiring points ``run(on_utterance=…)`` / ``session.start(on_utterance=…)`` — NOT at ``create()``, which
+    cannot yet know a language path is coming. (An app that wires a voice ENGINE — see
+    ``templates/realtime_voice_watch_agent`` — calls this itself at ``PerceptBridge.attach``.)
 
     Skipped when the whole run is declared scripted (``mode="offline"`` — everything is announced
     scripted, including the voice) or when the ugly-on-purpose ``allow_scripted_brain`` hatch is set.
@@ -364,9 +365,10 @@ class Percept:
         if scripted:
             log = get_logger("percept.agent")
             conductor_scripted = _is_scripted_backend(obj.conductor)
-            # create() can only LOG — it CANNOT know whether a language path (on_utterance / a
-            # transport) will be wired later (those attach at run()/start()/attach_transport). So the
-            # FATAL "scripted brain behind a live voice" check lives at those seams; here we only warn.
+            # create() can only LOG — it CANNOT know whether a language path (on_utterance, or an
+            # app-side voice engine) will be wired later. So the FATAL "scripted brain behind a live
+            # voice" check lives at the language↔conductor crossing (+ the live-voice wiring points);
+            # here we only warn.
             if conductor_scripted:
                 # The common, LEGITIMATE code-armed pattern: goals via add_goal(), no voice. Non-fatal.
                 log.warning(
@@ -1350,8 +1352,8 @@ class Percept:
         # DEFER: the conductor routes + authors goals (the only tier that writes state).
         # FATAL seam (RFC §5): guard HERE, at the language↔conductor crossing, not at the wiring points.
         # A spoken turn that reaches a SCRIPTED brain is silently discarded (FakeConductor -> route="ignore").
-        # session.ask() -> on_speech_endpoint bypasses run()/start()/attach_transport, so guarding those
-        # three left a fourth door open; guarding the crossing covers every door with one check. (Router-
+        # session.ask() -> on_speech_endpoint bypasses run()/start(), so guarding only the wiring points
+        # left a door open; guarding the crossing covers every door with one check. (Router-
         # handled turns above never reach here, so a turn the conductor was never needed for isn't refused.)
         _guard_live_language_path(self)
         self.metrics.incr("route.defer")

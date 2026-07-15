@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Set
 
+from percept import Goal, GoalOrigin
 from percept.agent import guard_live_language_path
 from percept.incidents import DEFAULT_ATTENTION_POLICY, attention_intent_for
 
@@ -206,19 +207,44 @@ class PerceptBridge:
                 await self._engine.speak(SpeechRequest(text=reply))
 
     # -- fires: incident → effective intent → floor --------------------------------
+    def _reconstruct_goal(self, goal_id: str, incident: Any) -> Any:
+        """Rebuild a minimal :class:`Goal` from ``session.goal_view`` so a language-authored fire keeps
+        its authored delivery HINTS (ttl/verbatim/preempt) through ``attention_intent_for``.
+
+        Read-only: the view is a bounded dict (no Goal leakage); we re-stamp the durable ``origin`` and
+        re-nest the authored ``delivery`` so the policy sees exactly what it would from the live goal — and
+        clamps ``preempt`` by that origin all the same. Returns ``None`` for an unknown/already-gone goal
+        (→ ``attention_intent_for``'s least-privileged defaults)."""
+        view = self._session.goal_view(goal_id)
+        if view is None:
+            return None
+        origin_str = view.get("origin")
+        try:
+            origin = GoalOrigin(origin_str) if origin_str else GoalOrigin.LANGUAGE_AUTHORED
+        except ValueError:
+            origin = GoalOrigin.LANGUAGE_AUTHORED
+        return Goal(
+            id=view["id"],
+            condition=view.get("condition", ""),
+            say=getattr(incident, "message", "") or "",
+            state={"delivery": dict(view.get("delivery") or {})},
+            origin=origin,
+        )
+
     async def on_incident(self, incident: Any) -> None:
         """Wire as ``percept.start(..., on_incident=bridge.on_incident)``.
 
-        NOTE (reported seam gap): there is no public API resolving an incident back to its Goal
-        *object*, so authored delivery details (ttl/verbatim) are only available for goals THIS app
-        armed via :meth:`arm`. A language-authored goal maps to ``goal=None`` → the SDK's
-        least-privileged defaults (``LANGUAGE_AUTHORED``, ``preempt="queue"``) — the correct trust
-        posture, at the cost of its authored ttl/verbatim hints."""
+        Resolves the incident back to its goal so ``attention_intent_for`` honors the goal's AUTHORED
+        delivery (ttl/verbatim). A structured goal THIS app armed is the real object (full state); a
+        language-authored goal — which never passed through :meth:`arm` — is resolved through the SDK's
+        public ``session.goal_view`` seam and reconstructed into a minimal :class:`Goal`. Either way the
+        policy STILL clamps effective ``preempt`` by ``origin``: a ``LANGUAGE_AUTHORED`` interrupt request
+        is clamped to ``queue`` even though its ttl/verbatim now flow through (PCPT-029, Part B)."""
         goal_id = getattr(incident, "concern_id", "") or ""
         self._recent_alert_goal_ids.append(goal_id or "?")
         del self._recent_alert_goal_ids[:-_MAX_RECENT_ALERTS]
         self._invalidate_snapshot()
-        goal = self._armed_goals.get(goal_id)
+        goal = self._armed_goals.get(goal_id) or self._reconstruct_goal(goal_id, incident)
         intent = attention_intent_for(incident, goal, self._policy)   # requested→EFFECTIVE, in ONE place
         if self._telemetry is not None:
             self._telemetry.incident(intent)

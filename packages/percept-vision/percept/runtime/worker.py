@@ -555,7 +555,8 @@ async def run(
       owns concurrency (guard at capture time, e.g. a ``speaking`` flag). ``on_utterance`` opens an
       **un-AEC'd** mic and hands raw PCM; if the app plays audio into the same room it MUST call
       ``deaf_until``/``session.deafen(...)`` around playback or the mic will hear it. For a speakers-on,
-      always-on deployment prefer ``attach_transport`` (the transport owns AEC).
+      always-on deployment wire a voice engine app-side (see ``templates/realtime_voice_watch_agent``,
+      whose transport owns AEC) instead of this un-AEC'd mic path.
     - ``deaf_until`` — optional ``() -> deadline`` (in the ``wall_clock`` timebase). While
       ``wall_clock() < deaf_until()`` the endpointer is suppressed (the app is about to / is speaking):
       chunks still fill the AudioWindow (fused judging is unaffected) but are not fed to the VAD, and the

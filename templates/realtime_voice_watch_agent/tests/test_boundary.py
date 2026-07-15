@@ -39,7 +39,7 @@ ALLOWED_FROM_IMPORTS: dict[str, set[str]] = {
 ALLOWED_PERCEPT_ATTRS = ALLOWED_FROM_IMPORTS["percept"] | {"runtime", "incidents", "agent"}
 #: RuntimeSession surface the template may call (role: any name/attr containing "session").
 SESSION_ALLOWED = {"arm", "disarm", "ask", "interrupt", "label", "subscribe", "on_goal_change",
-                   "list_goals", "latest_frame", "stop"}
+                   "list_goals", "goal_view", "latest_frame", "stop"}
 #: Percept-core surface the template may call (role: any name/attr containing "core").
 CORE_ALLOWED = {"arm_from_language", "note_mention", "push_audio"}
 #: Deprecated contracts the template must NEVER import, from anywhere.

@@ -90,8 +90,8 @@ Confirmed signatures (from `packages/percept-vision/percept/agent.py` and `adapt
   `"fake"` still works) / `"gemini"` / `"claude"`) or an adapter instance. **The default is NOT
   scripted:** a bare `create()` in live mode raises `ModeError` rather than silently faking — pass
   `mode="offline"` for keyless scripted backends, or select a real backend + its API key. A scripted
-  conductor behind a live voice path (`on_utterance` / `attach_transport`) is a `ModeError` ("scripted
-  brain behind a live voice"); `allow_scripted_brain=True` is the ugly-on-purpose override.
+  conductor behind a live voice path (`on_utterance`, or an app-side voice engine) is a `ModeError`
+  ("scripted brain behind a live voice"); `allow_scripted_brain=True` is the ugly-on-purpose override.
 - `agent.add_goal(Goal(id, condition, say))` — `Goal` also has optional `source="camera"`,
   `modality="speak"`, `state`, `expiry`.
 - `await agent.perceive_judged(frame, source="camera", *, t=None) -> list[FireEvent]` — async.

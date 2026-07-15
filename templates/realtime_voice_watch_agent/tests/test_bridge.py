@@ -244,6 +244,33 @@ class FireDeliveryTests(unittest.TestCase):
 
         asyncio.run(go())
 
+    def test_language_authored_ttl_reaches_the_floor_while_interrupt_still_clamps(self):
+        # PCPT-029 Part B: the reported seam gap — a language-authored goal (never through session.arm)
+        # is now resolved via session.goal_view, so its AUTHORED ttl_s reaches the effective intent,
+        # while the policy STILL clamps its requested interrupt to queue by origin.
+        async def go():
+            goal = Goal(id="kettle", condition="the kettle is boiling", say="Kettle!",
+                        state={"delivery": {"preempt": "interrupt", "ttl_s": 30.0}})
+            core = _core({"kettle": goal})
+            engine, session, floor, _r, bridge = _wired(core)
+            await core.arm_from_language("watch the kettle")           # language path, not session.arm
+            captured = {}
+            orig_submit = floor.submit
+
+            async def spy(intent):
+                captured["intent"] = intent
+                return await orig_submit(intent)
+
+            floor.submit = spy
+            await floor.set_wire_speaking(True)                        # a turn is live
+            await bridge.on_incident(_inc("kettle", "Kettle!"))
+            intent = captured["intent"]
+            self.assertEqual(intent.ttl_s, 30.0)                       # authored TTL now flows through
+            self.assertEqual(intent.preempt, "queue")                 # interrupt clamped by origin
+            self.assertEqual(engine.cancels, 0)                       # no cut-in
+
+        asyncio.run(go())
+
     def test_ttl_from_the_structured_goal_reaches_the_floor(self):
         async def go():
             engine, _s, floor, _r, bridge = _wired(_core())

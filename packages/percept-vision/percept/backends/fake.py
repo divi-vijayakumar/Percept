@@ -191,9 +191,15 @@ class FakeTTS:
 
 class FakeVoiceTransport:
     """A deterministic, vendor-free :class:`~percept.contracts.VoiceTransport` — the reference impl and
-    the test double for the voice seam. It owns no real audio; a test **drives** it and it **records**
-    what the brain sent back, so :meth:`~percept.runtime.RuntimeSession.attach_transport` orchestration
-    is fully assertable offline (rule 2: proves wiring, not model intelligence).
+    the test double for the (deprecated) voice seam. It owns no real audio; a test **drives** it and it
+    **records** what the brain sent back (rule 2: proves wiring, not model intelligence).
+
+    .. deprecated:: 0.6
+        The voice embodiment moved app-side in the SDK diet — ``RuntimeSession.attach_transport`` is a
+        raising stub, so nothing in the SDK orchestrates this fake anymore. It stays as the reference impl
+        of the still-defined ``VoiceTransport`` contract and the registry ``make_transport("fake")`` seam.
+        A voice application uses the template's own ``VoiceEngine`` fake instead
+        (``templates/realtime_voice_watch_agent/tests/fakes.py``).
 
     Drive (transport -> brain):
       * ``await emit_utterance(text=...)`` — deliver a completed user turn to the on_utterance sink.
