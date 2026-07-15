@@ -31,6 +31,22 @@ One judge call per T0-opened event, over a `percept.sprite.make_sprite` montage 
 **Next: fold C1 into the runtime proper** (reuse the existing snippet/pre-roll window + coast +
 `judge(frames=…)`), not just the scratch probe.
 
+## Measured A→incident latency (2026-07-15, capsule + async, real percept.run, paced video)
+Six identical-config runs, sugar clip: **6.7, 6.7, 8.0, 8.0, 21.3, 23.5 s**. Median ~7s, P95 ~21–23s.
+- ~3–5s = isolated warm judge call (raw round-trip).
+- ~7s median = judge + scheduler/gate queuing in-pipeline (steady state).
+- ~21–23s spikes = TAIL LATENCY on an individual cloud judge call (API variance / rate-limit /
+  retry-backoff) → only 2 of 3 judges complete → the event capsule waits for a free slot → clears at
+  end-of-stream. Same code, unlucky cloud latency. This is rented cloud-VLM tail, not a Percept bug.
+- Delivery hop (incident→voice) STILL UNMEASURED — sits on top of all of the above.
+
+### Production posture with this variance
+- Match latency budget to `Consequence`: monitoring watches tolerate 7s/21s-tail; reflex watches don't.
+- Near-term tail mitigation (no new backend): **bounded judge concurrency (2–3 in flight)** — highest
+  leverage, one stalled call no longer blocks the event; **hedged judging** (2nd call at ~6s, first to
+  return wins); **per-goal timeout → UNKNOWN** instead of a silent hang.
+- Reflex latency needs the streaming/emit-on-change judge below (no per-call round trip → no r/r tail).
+
 ## The latency research (this card)
 Reduce time from *event-visible* → *valid verdict*. Approaches to visit, roughly increasing
 sophistication / decreasing generality:
