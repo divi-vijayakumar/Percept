@@ -90,6 +90,26 @@ class CommandToolTests(unittest.TestCase):
 
         asyncio.run(go())
 
+    def test_watch_that_authors_nothing_owns_up_through_the_floor(self):
+        # The live bug this pins: conversational phrasing ("if I'm drinking caffeine just gently
+        # nudge me not to") routes as scene chat — the conductor authors NO goal — while the tool
+        # already acked "On it.". The bridge must notice the unmoved registry and speak the truth,
+        # not leave the user waiting forever for a watch that never existed.
+        async def go():
+            core = _core({})   # empty script: ScriptedConductor matches nothing → respond_direct, no ops
+            engine, session, floor, _r, _b = _wired(core)
+            out = await engine.call_tool("watch", {"command": "if I'm drinking caffeine nudge me"})
+            self.assertEqual(out["output"], "On it.")     # ack is still instant by design
+            for _ in range(200):                          # background _arm() → correction via the floor
+                if engine.spoken:
+                    break
+                await asyncio.sleep(0.005)
+            self.assertTrue(engine.spoken, "authoring no-op was silent — the broken-promise bug")
+            self.assertIn("couldn't", engine.spoken[-1].text)
+            self.assertEqual(session.list_goals(), [])    # and indeed nothing armed
+
+        asyncio.run(go())
+
     def test_watch_requires_a_command(self):
         async def go():
             engine, *_ = _wired(_core())

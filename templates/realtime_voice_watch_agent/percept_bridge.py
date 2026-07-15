@@ -22,9 +22,10 @@ Wiring (all pull/callback, no SDK internals):
 from __future__ import annotations
 
 import asyncio
+import sys
 from typing import Any, Set
 
-from percept import Goal, GoalOrigin
+from percept import AttentionIntent, Goal, GoalOrigin
 from percept.agent import guard_live_language_path
 from percept.incidents import DEFAULT_ATTENTION_POLICY, attention_intent_for
 
@@ -134,15 +135,41 @@ class PerceptBridge:
             return {"error": "command required"}
 
         async def _arm() -> None:
+            # The ack already went out ("On it."), so a no-op here would be a SILENT broken promise —
+            # the user waits forever for a watch that never existed. Detect both failure shapes (the
+            # conductor raising, and the subtler one: routing the command as scene chat and authoring
+            # NOTHING) and own up through the floor. "Did anything arm?" is read through the public
+            # goal-change seam — the same registry-revision signal the grounding snapshot keys off.
+            changed = {"hit": False}
+            unsub = self._session.on_goal_change(lambda: changed.__setitem__("hit", True))
             try:
                 await self._core.arm_from_language(command)   # conductor authors + arms; no spoken reply
             except Exception:  # noqa: BLE001 - background arming must never crash the wire
-                pass
+                await self._authoring_failed(command)
+                return
+            finally:
+                unsub()
+            if not changed["hit"]:
+                await self._authoring_failed(command)
 
         task = asyncio.ensure_future(_arm())
         self._arm_tasks.add(task)
         task.add_done_callback(self._arm_tasks.discard)
         return {"output": "On it."}
+
+    async def _authoring_failed(self, command: str) -> None:
+        """Speak the truth when a watch didn't arm — a corrective nudge through the normal floor
+        path (queued, short TTL: a stale correction is worse than none)."""
+        if self._floor is None:
+            return
+        intent = AttentionIntent(
+            message=("I said \"on it\" but couldn't actually set that watch up — "
+                     "try phrasing it like 'tell me when …' or 'nudge me when I drink coffee'."),
+            goal_id="", incident_id="", ts=None,
+            preempt="queue", ttl_s=30.0, verbatim=False,
+        )
+        print(f"[bridge] watch authoring FAILED (no goal armed): {command!r}", file=sys.stderr)
+        await self._floor.submit(intent)
 
     async def _stop_watching_tool(self, args: dict) -> dict:
         what = str((args or {}).get("what") or "").strip().lower()
