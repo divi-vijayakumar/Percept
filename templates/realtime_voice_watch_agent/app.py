@@ -12,7 +12,9 @@ seams; the floor/renderer/telemetry are application policy and live beside this 
 Heavy voice deps (pipecat) are imported inside :func:`main`'s path so :func:`build_agent` — the real
 wiring — is importable keyless (the offline E2E test drives it with a fake engine).
 
-Run:  pip install -e .  &&  export GEMINI_API_KEY=...  &&  python app.py   (see README.md)
+Run:  pip install -e .  &&  python app.py   (see README.md)
+Keys: GEMINI_API_KEY / GOOGLE_API_KEY / GOOGLE_AISTUDIO_API_KEY — from the shell env, or from the
+nearest ``.env`` walking up from the working directory (a repo-root ``.env`` Just Works).
 """
 from __future__ import annotations
 
@@ -25,6 +27,21 @@ from pathlib import Path
 from typing import Any
 
 import percept
+
+
+def _load_dotenv() -> None:
+    """Nearest ``.env`` walking up from cwd; real environment always wins (never overridden)."""
+    for parent in [Path.cwd().resolve(), *Path.cwd().resolve().parents]:
+        cand = parent / ".env"
+        if cand.exists():
+            for line in cand.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, _, v = line.partition("=")
+                    k, v = k.strip(), v.strip().strip('"').strip("'")
+                    if k and v and k not in os.environ:
+                        os.environ[k] = v
+            return
 
 from engagement import Engagement, EngagementConfig
 from fire_renderer import FireRenderer
@@ -126,11 +143,18 @@ def main() -> None:
     from engine_adapter import PipecatVoiceEngine
     import media
 
+    _load_dotenv()
     cfg = load_config(os.environ.get("PERCEPT_TEMPLATE_CONFIG", "config.yaml"))
     key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
            or os.getenv("GOOGLE_AISTUDIO_API_KEY") or "")
     if not key:
-        print("[app] no GEMINI_API_KEY — set one (the wire and the watch both use Gemini)", file=sys.stderr)
+        print("[app] no GEMINI_API_KEY — set one in the shell or a .env up-tree "
+              "(the wire and the watch both use Gemini)", file=sys.stderr)
+    else:
+        # The Gemini SDKs read GOOGLE_API_KEY/GEMINI_API_KEY; normalize so an
+        # AISTUDIO-named key in .env reaches them without a rename.
+        os.environ.setdefault("GEMINI_API_KEY", key)
+        os.environ.setdefault("GOOGLE_API_KEY", key)
     engagement = Engagement(EngagementConfig(mode=cfg.get("engagement", "always_open")))
     webhook_url = cfg.get("webhook_url")
 
