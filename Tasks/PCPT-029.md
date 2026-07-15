@@ -1,7 +1,7 @@
 ---
 id: PCPT-029
 title: SDK diet — strip session voice logic, delete percept/realtime, deprecate VoiceTransport
-status: todo
+status: doing
 priority: P0
 owner: opus
 wave: boundary-cleanup-3

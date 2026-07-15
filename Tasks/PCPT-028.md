@@ -1,7 +1,7 @@
 ---
 id: PCPT-028
 title: templates/realtime_voice_watch_agent — voice embodiment template (Pipecat + Gemini Live)
-status: doing
+status: done
 priority: P0
 owner: fable-5
 wave: boundary-cleanup-2
