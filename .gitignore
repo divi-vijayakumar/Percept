@@ -149,3 +149,6 @@ docs/benchmark-scorecard-runbook.md
 
 # Dispatch board activity feed (Tasks/ board)
 Tasks/.board-events.jsonl
+
+# headless diagnostic harnesses (kept local, not shipped with the template)
+templates/realtime_voice_watch_agent/scratch_*.py
