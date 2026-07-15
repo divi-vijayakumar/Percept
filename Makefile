@@ -30,8 +30,11 @@ help:
 	@echo "check      lint + types (best-effort; skips missing tools)"
 	@echo "reproduce  reproduce a published scorecard row"
 
+# PERCEPT_MODE=offline: the suite is offline BY CONSTRUCTION (one declared property — RFC-offline-scripted-mode).
+# pytest declares it in tests/conftest.py; unittest discovery loads no conftest, so declare it here. Without it,
+# voice tests that unskip once pipecat is installed hit live-mode ModeError.
 test:
-	cd $(SDK) && PYTHONPATH=. $(PY) -m unittest discover -s tests
+	cd $(SDK) && PYTHONPATH=. PERCEPT_MODE=offline $(PY) -m unittest discover -s tests
 	$(MAKE) test-templates
 
 # templates/ = copyable reference applications; each ships its own tests. Keyless: pipecat-dependent
