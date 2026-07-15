@@ -87,7 +87,15 @@ class FireRenderer:
         if self._telemetry is not None:
             # A2V clock for a spoken fire: enqueue → audio-out (the engine's output-started edge).
             self._telemetry.mark_pending("proactive", incident_ids=ids)
-        await self._engine.speak(request)
+        print(f"[fire-renderer] enqueue speech incidents={ids} text={text!r}", file=sys.stderr)
+        try:
+            await self._engine.speak(request)
+        except Exception as exc:  # noqa: BLE001 - a failed delivery must not strand fire_playing
+            # If speak() raises, fire_playing would latch True forever (the output-stopped edge that
+            # clears it never comes) — the floor would then think a fire is always playing and defer
+            # everything after. Clear it and surface the failure loudly.
+            self.fire_playing = False
+            print(f"[fire-renderer] speak FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
 
     async def deliver(self, intent: Any, channel: str) -> None:
         """Deliver on a non-contending channel (no floor involvement)."""

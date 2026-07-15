@@ -149,7 +149,10 @@ class PerceptBridge:
                 return
             finally:
                 unsub()
-            if not changed["hit"]:
+            if changed["hit"]:
+                print(f"[bridge] watch armed from language: {command!r}; "
+                      f"goals={[g['id'] for g in self._session.list_goals()]}", file=sys.stderr)
+            else:
                 await self._authoring_failed(command)
 
         task = asyncio.ensure_future(_arm())
@@ -268,6 +271,8 @@ class PerceptBridge:
         policy STILL clamps effective ``preempt`` by ``origin``: a ``LANGUAGE_AUTHORED`` interrupt request
         is clamped to ``queue`` even though its ttl/verbatim now flow through (PCPT-029, Part B)."""
         goal_id = getattr(incident, "concern_id", "") or ""
+        print(f"[incident] goal={goal_id!r} message={getattr(incident, 'message', '')!r}",
+              file=sys.stderr)
         self._recent_alert_goal_ids.append(goal_id or "?")
         del self._recent_alert_goal_ids[:-_MAX_RECENT_ALERTS]
         self._invalidate_snapshot()

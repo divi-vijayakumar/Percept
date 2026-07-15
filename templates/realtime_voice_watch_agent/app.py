@@ -188,9 +188,12 @@ def main() -> None:
             while True:
                 await asyncio.sleep(3.0)
                 s = agent.stats
-                print(f"[watch] frames={s.frames} escalations={s.escalations} judge_calls={s.judge_calls} "
+                # stderr (unbuffered) so the funnel is always visible even when stdout is block-buffered.
+                print(f"[watch] frames={s.frames} goals={len(agent.session.list_goals())} "
+                      f"escalations={s.escalations} judge_calls={s.judge_calls} "
                       f"superseded={getattr(s, 'judge_superseded', 0)} fires={s.fires} "
-                      f"| voice={agent.telemetry.snapshot().get('fires.delivered.log', 0)} logs")
+                      f"| voice={agent.telemetry.snapshot().get('fires.delivered.log', 0)} logs",
+                      file=sys.stderr)
 
         hb = asyncio.ensure_future(heartbeat())
 
