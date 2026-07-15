@@ -6,7 +6,7 @@ priority: P0
 owner: fable-5
 wave: boundary-cleanup-2
 pr: ""
-human_test: pending
+human_test: ready
 updated: 2026-07-14
 ---
 
