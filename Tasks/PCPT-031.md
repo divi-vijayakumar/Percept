@@ -1,7 +1,7 @@
 ---
 id: PCPT-031
 title: async scheduler + slow deliberate judge supersedes the salient frame — live watches miss brief events
-status: todo
+status: done
 priority: P0
 owner: ""
 wave: post-live-test
@@ -29,8 +29,15 @@ supersedes the mid-window PEAK: while judge N runs (t≈24→28s), the pour at t
 the judge frees, latest-pending hands it the t≈28s "done" frame. 50 of 56 escalations dropped; the
 sugar frame among them. This is the SAME reason the live browser coffee/hand tests never fired.
 
-## Why it matters
-The `async` default silently misses brief events whenever `judge_latency > event_duration`. For
+## RESOLVED (2026-07-15) — C1 capsules wired into the live path
+Fixed by making the judge frame a montage of the recent window (capsule.py::CapsuleBuilder →
+media.VideoTee(capsule=True)), so the salient frame rides inside every judge frame and can't be
+superseded. Video test through the REAL percept.run in ASYNC dispatch: single-frame fires=0 →
+capsule fires=1 (incident at the pour, ts=26.3s), same 6 judged / 50 superseded, no inline blocking.
+Latency floor (~3-5s) is unchanged and tracked separately in [[PCPT-032]].
+
+## Why it mattered
+The `async` default silently missed brief events whenever `judge_latency > event_duration`. For
 request/response judges (~3-5s) that is MOST brief actions (a sip, a hand-raise, adding sugar).
 
 ## Options (pick with the template family in mind)
