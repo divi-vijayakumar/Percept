@@ -1,0 +1,37 @@
+# The template's OWN dependency declaration — deliberately NOT an extra on the SDK distribution.
+# The perception package does not own the voice stack; `percept-vision[realtime]` stays reserved for
+# SDK-side streaming judgment if that capability ever ships. Pins mirror the retired SDK [realtime]
+# extra (the verified pipecat/Gemini-Live combination), minus opencv: PIL does the frame conversion
+# here because opencv + pyav (pipecat) both bundle libavdevice and clash on macOS.
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "realtime-voice-watch-agent"
+version = "0.1.0"
+description = "Percept template: voice-native watch agent (Pipecat SmallWebRTC + Gemini Live) over public SDK seams"
+requires-python = ">=3.10"
+dependencies = [
+    "percept-vision>=0.6",             # dev checkout: pip install -e ../../packages/percept-vision first
+    "pipecat-ai[webrtc,google]>=1.5",
+    "pipecat-ai-small-webrtc-prebuilt>=0.0.1",
+    "google-genai>=1.0",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pillow>=10",
+    "numpy>=1.24",
+    "pyyaml>=6",
+]
+
+[tool.setuptools]
+py-modules = [
+    "app",
+    "engagement",
+    "engine_adapter",
+    "fire_renderer",
+    "floor",
+    "media",
+    "percept_bridge",
+    "telemetry",
+]
