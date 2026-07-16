@@ -26,7 +26,7 @@
  * `percept.contracts.CONTRACT_VERSION`. Same major == wire-compatible. This is DISTINCT from
  * `WatchSpec.version` (the wire integer, defaults to 1) which stays for payload compat.
  */
-export const CONTRACT_VERSION = "1.1.0";
+export const CONTRACT_VERSION = "1.0.0"; // initial public wire contract; JS twin of Python 1.0.0 (launch)
 
 /** Error thrown when an incoming wire payload violates the contract. */
 export class ContractError extends Error {
@@ -89,6 +89,7 @@ export function parseBox(obj, { path = "region_hint" } = {}) {
  * @returns {{goal_id:string,anchor_text:string,threshold:number,region_hint:object|null,detectors:string[]}}
  */
 export const GATE_ON = new Set(["motion", "structural", "semantic", "fixed"]);
+export const SALIENCE_STAT = new Set(["mean", "block_max", "p95"]);
 
 export function makeWatchCondition({
   goal_id,
@@ -98,6 +99,8 @@ export function makeWatchCondition({
   detectors = [],
   cadence_s = null,
   gate_on = "motion",
+  salience_stat = "mean",
+  ego_compensate = false,
 } = {}) {
   if (typeof goal_id !== "string") {
     throw new ContractError("makeWatchCondition: goal_id must be a string");
@@ -117,6 +120,14 @@ export function makeWatchCondition({
   if (!GATE_ON.has(gate_on)) {
     throw new ContractError(`makeWatchCondition: gate_on must be one of ${[...GATE_ON].join("|")}`);
   }
+  if (!SALIENCE_STAT.has(salience_stat)) {
+    throw new ContractError(
+      `makeWatchCondition: salience_stat must be one of ${[...SALIENCE_STAT].join("|")}`
+    );
+  }
+  if (typeof ego_compensate !== "boolean") {
+    throw new ContractError("makeWatchCondition: ego_compensate must be a boolean");
+  }
   return {
     goal_id,
     anchor_text,
@@ -125,6 +136,8 @@ export function makeWatchCondition({
     detectors: [...detectors],
     cadence_s: cadence_s == null ? null : cadence_s,
     gate_on,
+    salience_stat,
+    ego_compensate,
   };
 }
 
@@ -175,6 +188,22 @@ export function parseWatchCondition(obj, { path = "condition" } = {}) {
     }
     gate_on = obj.gate_on;
   }
+  // salience_stat / ego_compensate (the localized-recall + ego-motion modes). Missing tolerated ->
+  // "mean" / false (the legacy path) so a Python side that omits them still parses.
+  let salience_stat = "mean";
+  if (obj.salience_stat != null) {
+    if (!SALIENCE_STAT.has(obj.salience_stat)) {
+      throw new ContractError(`${path}.salience_stat: expected one of ${[...SALIENCE_STAT].join("|")}`);
+    }
+    salience_stat = obj.salience_stat;
+  }
+  let ego_compensate = false;
+  if (obj.ego_compensate != null) {
+    if (typeof obj.ego_compensate !== "boolean") {
+      throw new ContractError(`${path}.ego_compensate: expected a boolean`);
+    }
+    ego_compensate = obj.ego_compensate;
+  }
   // NOTE: `schedule` (Python C1) is not mirrored here yet — it is tolerantly dropped (a known parity
   // drift, tracked separately). The on-device gate executes neither schedule nor cadence today.
   return {
@@ -185,6 +214,8 @@ export function parseWatchCondition(obj, { path = "condition" } = {}) {
     detectors,
     cadence_s,
     gate_on,
+    salience_stat,
+    ego_compensate,
   };
 }
 
@@ -246,20 +277,24 @@ export function parseWatchSpec(json) {
 }
 
 // ---------------------------------------------------------------------------
-// Tier0Signal  { motion, structural, semantic, ts }
+// Tier0Signal  { motion, structural, semantic, ts, energy? }
 // ---------------------------------------------------------------------------
 
 /**
  * Build a Tier0Signal (the up-channel salience report). Unsupplied salience
  * channels default to 0; ts defaults to wall-clock seconds (to match the
- * Python `ts: float` seconds convention).
- * @returns {{motion:number,structural:number,semantic:number,ts:number}}
+ * Python `ts: float` seconds convention). `energy` (1.3) is the audio-energy
+ * channel from a frame-free audio ingest — null means "not an audio-carrying
+ * signal" (distinct from 0 = measured silence), so frame-path signals are
+ * byte-for-byte unchanged.
+ * @returns {{motion:number,structural:number,semantic:number,ts:number,energy:number|null}}
  */
 export function makeTier0Signal({
   motion = 0,
   structural = 0,
   semantic = 0,
   ts = Date.now() / 1000,
+  energy = null,
 } = {}) {
   for (const [k, v] of [
     ["motion", motion],
@@ -271,7 +306,10 @@ export function makeTier0Signal({
       throw new ContractError(`makeTier0Signal: ${k} must be a finite number`);
     }
   }
-  return { motion, structural, semantic, ts };
+  if (energy !== null && !isFiniteNumber(energy)) {
+    throw new ContractError("makeTier0Signal: energy must be a finite number or null");
+  }
+  return { motion, structural, semantic, ts, energy };
 }
 
 /**
@@ -297,11 +335,21 @@ export function parseTier0Signal(json) {
       throw new ContractError(`parseTier0Signal: ${k} must be a finite number`);
     }
   }
+  // energy (1.3) is optional on the wire: absent/undefined normalizes to null so a 1.2-era
+  // payload parses unchanged; when present it must be a finite number or null.
+  let energy = null;
+  if (obj.energy !== undefined && obj.energy !== null) {
+    if (!isFiniteNumber(obj.energy)) {
+      throw new ContractError("parseTier0Signal: energy must be a finite number or null");
+    }
+    energy = obj.energy;
+  }
   return {
     motion: obj.motion,
     structural: obj.structural,
     semantic: obj.semantic,
     ts: obj.ts,
+    energy,
   };
 }
 

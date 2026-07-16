@@ -1,6 +1,6 @@
 # `percept-edge`
 
-> **⚠️ Research preview (v0.6.0).** Published for real-life testing + feedback, **not production**. APIs
+> **⚠️ Research preview (v0.7.0).** Published for real-life testing + feedback, **not production**. APIs
 > may change between `0.x` releases — pin a version.
 
 The on-device **reactive edge** for the [Percept](https://pypi.org/project/percept-vision/) SDK — the
@@ -9,7 +9,11 @@ cheap, high-fps reflex that runs next to the camera. It does two jobs:
 1. **gates** — decides *when* a frame is worth an expensive cloud vision call (motion + VAD salience), so
    the cloud VLM runs only on the frames that matter (~83% fewer calls in practice);
 2. **runs the brain-selected edge skills** — cheap detectors that propose *timed events* the cognition
-   core counts (reps, sound onsets) **without** a cloud call.
+   core counts (reps, sound onsets) **without** a cloud call;
+3. **screens egress for sensitive content** (`0.7`) — a multi-modal, on-device privacy classifier on the
+   *outbound* boundary (`PrivacyScreen`), so a frame/message can be redacted or held before it reaches a
+   cloud judge. This layer can *never* be a cloud call — you can't ship sensitive data to a remote LLM to
+   ask whether it's safe to ship — so it is an owned on-device artifact.
 
 Pure ESM JavaScript, **zero runtime dependencies** (vitest is the only devDep). The DSP skills + the gate
 need no model and no native deps; the one model-backed skill (pose) takes a pluggable adapter you supply.
@@ -32,12 +36,12 @@ in `src/contract.js`, kept identical to the Python `percept.edge` contract datac
 cross-language parity harness (12/12 byte-for-byte; the JS and Python detectors + gate produce identical
 output on identical input).
 
-> **WatchSpec is a documented subset on-device.** The edge consumes a *subset* of the Python
-> `WatchCondition`: server-only fields — `schedule` and `cadence_s` — are **not** mirrored here (see the
-> `parseWatchCondition` note in `src/contract.js`). The edge only *proposes* (Tier0Signal + boundaries);
-> the cognition layer enforces schedule/cadence when it gates. So the "byte-for-byte" guarantee is on the
-> **detector + gate outputs** (verified 12/12), not full `WatchCondition` field parity — an edge never
-> fires on its own, so it cannot wake "outside" a window the server still gates.
+> **WatchSpec is a documented subset on-device.** The edge executes `cadence_s` (a per-condition
+> escalation throttle) and `gate_on` (`motion`/`structural`/`semantic`/`fixed`) locally in
+> `_shouldEscalate` (`src/edge.js`). The one server-only field is **`schedule`** — civil-time windows are
+> enforced by the cognition layer when it gates, not on-device. The edge only *proposes* (Tier0Signal +
+> boundaries), so the "byte-for-byte" guarantee is on the **detector + gate outputs** (verified 12/12),
+> not full `WatchCondition` field parity — an edge never fires on its own.
 
 ## The gate (the reflex)
 
@@ -89,6 +93,50 @@ import { registerPoseSkill } from "percept-edge/pose";
 registerPoseSkill(myLandmarker);   // opt-in: supply your pose model adapter (MediaPipe Tasks for Web, TF.js…)
 ```
 
+## PrivacyScreen — on-device egress screening (`0.7`)
+
+A multi-modal privacy classifier that sits on the **egress** boundary, sibling to `Edge`. Multi-modal in,
+one verdict out, in the same `allow` / `redact` / `drop` / `confirm` vocabulary your gates already speak —
+so it drops into existing egress paths without changing them. It fills the previously-inert `semantic`
+Tier-0 channel with an owned, on-device *safety* judgment.
+
+```js
+import { PrivacyScreen } from "percept-edge/privacy";
+
+const screen = new PrivacyScreen({ image: myPrivacyModel /* your ONNX adapter */ });
+await screen.load();
+
+// TEXT — synchronous, sub-millisecond, no model, no clock. The hot path on every message.
+screen.screen({ modality: "text", text: "my ssn is 123-45-6789" });
+//        → { sensitive: true, categories: ["pii-id"], score: 0.95, spans: [{start,end,category}], action: "redact" }
+
+// IMAGE / AUDIO — async (model inference); image runs under a fail-closed timeout.
+await screen.screenAsync({ modality: "image", frame /* egress-candidate JPEG, not the salience buffer */ });
+await screen.screenAsync({ modality: "audio", pcm });
+```
+
+Three tiers behind one interface:
+
+| tier | category coverage | how | ships in |
+|---|---|---|---|
+| **text** | `pii-id`, `payment`, `financial`, `credential` | deterministic regex + Luhn/ABA/SSN checksums — **no model, sub-ms** | `0.7` (full) |
+| **image** | `document-id`, `sexual`, `credential`, … | a small quantized multi-label CNN behind an **adapter slot you supply** (`{ load, infer }`) — see `src/privacy-image.js` | `0.7` (seam); real model app-side |
+| **audio** | *(none asserted)* | coarse acoustic-context signal (no on-device STT) — honestly bounded, only ever raises `confirm` | `0.7` (coarse, provisional) |
+
+**Invariants.** *On-device only* — nothing here (nor any tier) makes a network call; the image model is a
+product-supplied artifact behind an adapter, so `percept-edge` stays **zero-dependency**. *Deterministic* —
+same input → same verdict; `clock` feeds only the image timeout, never a decision. *Fail-closed* — on
+timeout/error/malformed model output for an egress candidate, the verdict is `sensitive: true` with a
+conservative action (`drop` by default, tunable via `failAction`). *Recall-biased* — a masked non-secret
+costs the judge a little context; a leaked secret is unrecoverable.
+
+Ships **with an eval harness** (`eval/`, mirroring `parity/`) — a labeled multimodal fixture set scored on
+per-category leak-rate (recall), over-mask rate (precision), and added-latency p50/p95, gated in CI:
+
+```bash
+npm run eval    # prints the scorecard + regression-checks it against eval/scorecard.baseline.json
+```
+
 ## Deployment topologies
 
 - **A — all server-side:** Python `percept.edge` runs the gate + skills in-process with the brain.
@@ -99,7 +147,8 @@ registerPoseSkill(myLandmarker);   // opt-in: supply your pose model adapter (Me
 
 ## Known tuning (it's a research preview)
 
-The motion-gate threshold (default `0.10`) is a **cost↔recall knob**: well-calibrated for salient motion,
+The motion-gate threshold (a `WatchCondition.threshold`, default `0.3`; the edge falls back to
+`Edge.defaultThreshold = 0.05` when a condition sets none) is a **cost↔recall knob**: well-calibrated for salient motion,
 but it skips very-low-motion onsets (measured edge event-recall ≈ 0 on subtle actions — the gate never
 escalates, so the VLM never sees them). Tune the threshold per motion regime for your use case. This is a
 deliberate post-publish tuning item, not a blocker.
@@ -108,7 +157,8 @@ deliberate post-publish tuning item, not a blocker.
 
 ```bash
 npm install
-npm test    # 70 vitest: contract, motion, vad, skills, pose, edge
+npm test    # 124 vitest: contract, motion, vad, skills, pose, edge, privacy, privacy-eval
+npm run eval  # the PrivacyScreen scorecard (leak-rate / over-mask / latency) + regression gate
 ```
 
 Apache-2.0.

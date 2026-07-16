@@ -61,3 +61,14 @@ export {
 } from "./skills.js";
 
 export { openness, PoseOpenness, registerPoseSkill } from "./pose.js";
+
+export {
+  PrivacyScreen,
+  makePrivacyVerdict,
+  PRIVACY_CATEGORIES,
+  PRIVACY_ACTIONS,
+  PRIVACY_SCREEN_VERSION,
+} from "./privacy.js";
+export { scanText } from "./privacy-text.js";
+export { PrivacyImageAdapter } from "./privacy-image.js";
+export { PrivacyAudioHead } from "./privacy-audio.js";

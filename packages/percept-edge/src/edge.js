@@ -14,7 +14,7 @@
 // not required to run and not exercised by the test suite.
 
 import { makeTier0Signal, makeEdgeCapabilities, parseWatchSpec } from "./contract.js";
-import { motionScore } from "./motion.js";
+import { motionScore, egoResidualScore } from "./motion.js";
 import { SkillBank, registered, wakeScore } from "./skills.js";
 
 export class Edge {
@@ -218,18 +218,18 @@ export class Edge {
     };
     const salience = wakeScore(cheapSignals, this._wakePolicy);
 
-    if (!this._shouldEscalate({ ts, motion, structural, semantic, salience })) {
+    if (!this._shouldEscalate({ ts, prevFrame, frame, motion, structural, semantic, salience })) {
       return null; // gated: still scene -> no Tier0Signal, no cloud call
     }
 
-    const signal = makeTier0Signal({ motion, structural, semantic, ts });
+    const signal = makeTier0Signal({ motion, structural, semantic, ts, energy });
 
     if (this._publisher) this._publisher(frame, signal);
     this._emit(signal);
     return signal;
   }
 
-  _shouldEscalate({ ts, motion, structural, semantic, salience }) {
+  _shouldEscalate({ ts, prevFrame, frame, motion, structural, semantic, salience }) {
     const conds = this._spec?.conditions ?? [];
     if (conds.length === 0) return salience >= this.defaultThreshold;
     for (const c of conds) {
@@ -246,7 +246,10 @@ export class Edge {
       } else if (c.gate_on === "semantic") {
         fired = semantic >= c.threshold;
       } else {
-        fired = salience >= c.threshold;
+        // "motion" (default) — honor this goal's salience MODE (localized stat / ego / region).
+        // Mirrors Python `_condition_motion`: default (mean, no region, no ego) uses the precomputed
+        // full-frame motion; ego compensation takes precedence, else the localized block statistic.
+        fired = conditionMotion(prevFrame, frame, c, motion) >= c.threshold;
       }
       if (fired) {
         this._lastEscalate.set(c.goal_id, ts);
@@ -270,4 +273,17 @@ function clamp01(v) {
   if (v < 0) return 0;
   if (v > 1) return 1;
   return v;
+}
+
+// The escalate-comparison motion for one condition, honoring its salience MODE. Twin of Python
+// `percept.harness.tier0._condition_motion`: default (mean, no region, no ego) returns the precomputed
+// full-frame `fullMotion`; ego compensation (whole-frame residual) takes precedence, else the localized
+// block statistic (optionally masked to region_hint). Ego + block compose is deferred.
+function conditionMotion(prevFrame, frame, c, fullMotion) {
+  if (c.ego_compensate) return egoResidualScore(prevFrame, frame);
+  const stat = c.salience_stat ?? "mean";
+  if (stat !== "mean" || c.region_hint != null) {
+    return motionScore(prevFrame, frame, { region: c.region_hint ?? null, stat });
+  }
+  return fullMotion;
 }

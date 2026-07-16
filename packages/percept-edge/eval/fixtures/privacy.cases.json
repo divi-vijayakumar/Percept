@@ -1,0 +1,153 @@
+{
+  "_comment": "Labeled multimodal PrivacyScreen eval set. `expect.sensitive` + `expect.categories` are ground-truth; `expect.action` (optional) pins the ladder. Image cases carry `imageMock` (a golden model output — no real asset). Audio cases carry `pcmSpec` (deterministic synth). Seed corpus to be extended with the app's real patterns.",
+  "cases": [
+    {
+      "id": "text-ssn-hyphen",
+      "input": { "modality": "text", "text": "my ssn is 123-45-6789 please keep it safe" },
+      "expect": { "sensitive": true, "categories": ["pii-id"], "action": "redact" }
+    },
+    {
+      "id": "text-ssn-invalid-area",
+      "input": { "modality": "text", "text": "code 000-45-6789 is not an ssn" },
+      "expect": { "sensitive": false, "categories": [] }
+    },
+    {
+      "id": "text-pan-visa-valid",
+      "input": { "modality": "text", "text": "card 4111 1111 1111 1111 exp 12/26" },
+      "expect": { "sensitive": true, "categories": ["payment"], "action": "redact" }
+    },
+    {
+      "id": "text-pan-luhn-invalid",
+      "input": { "modality": "text", "text": "reference 4111 1111 1111 1112 for the order" },
+      "expect": { "sensitive": false, "categories": [] }
+    },
+    {
+      "id": "text-cvv-in-context",
+      "input": { "modality": "text", "text": "the cvv is 123 on the back" },
+      "expect": { "sensitive": true, "categories": ["payment"], "action": "redact" }
+    },
+    {
+      "id": "text-ein",
+      "input": { "modality": "text", "text": "our EIN is 12-3456789 for tax filing" },
+      "expect": { "sensitive": true, "categories": ["financial"], "action": "redact" }
+    },
+    {
+      "id": "text-aba-routing",
+      "input": { "modality": "text", "text": "routing number 021000021 for the wire" },
+      "expect": { "sensitive": true, "categories": ["financial"], "action": "redact" }
+    },
+    {
+      "id": "text-account",
+      "input": { "modality": "text", "text": "account number 12345678 at the bank" },
+      "expect": { "sensitive": true, "categories": ["financial"], "action": "redact" }
+    },
+    {
+      "id": "text-openai-key",
+      "input": { "modality": "text", "text": "use sk-abcdefghijklmnopqrstuvwxyz012345 to auth" },
+      "expect": { "sensitive": true, "categories": ["credential"], "action": "redact" }
+    },
+    {
+      "id": "text-aws-key",
+      "input": { "modality": "text", "text": "AKIAIOSFODNN7EXAMPLE is the access key" },
+      "expect": { "sensitive": true, "categories": ["credential"], "action": "redact" }
+    },
+    {
+      "id": "text-github-token",
+      "input": { "modality": "text", "text": "token ghp_abcdefghijklmnopqrstuvwxyz0123456789 committed" },
+      "expect": { "sensitive": true, "categories": ["credential"], "action": "redact" }
+    },
+    {
+      "id": "text-pem-key",
+      "input": { "modality": "text", "text": "-----BEGIN RSA PRIVATE KEY-----\nMIIB...\n" },
+      "expect": { "sensitive": true, "categories": ["credential"], "action": "redact" }
+    },
+    {
+      "id": "text-generic-secret",
+      "input": { "modality": "text", "text": "api_key = a1b2c3d4e5f6g7h8i9j0" },
+      "expect": { "sensitive": true, "categories": ["credential"], "action": "redact" }
+    },
+    {
+      "id": "text-clean-meeting",
+      "input": { "modality": "text", "text": "let's meet at 3pm tomorrow to review the deck" },
+      "expect": { "sensitive": false, "categories": [] }
+    },
+    {
+      "id": "text-clean-phone",
+      "input": { "modality": "text", "text": "call me at 555-1234 when you land" },
+      "expect": { "sensitive": false, "categories": [] }
+    },
+    {
+      "id": "text-clean-short-number",
+      "input": { "modality": "text", "text": "order 1234567 shipped this morning" },
+      "expect": { "sensitive": false, "categories": [] }
+    },
+    {
+      "id": "image-doc-id-with-box",
+      "input": {
+        "modality": "image",
+        "frame": { "width": 320, "height": 240, "data": [] },
+        "imageMock": {
+          "categories": ["document-id"],
+          "scores": [0.92],
+          "boxes": [{ "start": { "x": 10, "y": 10 }, "end": { "x": 200, "y": 150 } }]
+        }
+      },
+      "expect": { "sensitive": true, "categories": ["document-id"], "action": "redact" }
+    },
+    {
+      "id": "image-credential-onscreen",
+      "input": {
+        "modality": "image",
+        "frame": { "width": 320, "height": 240, "data": [] },
+        "imageMock": { "categories": ["credential"], "scores": [0.81] }
+      },
+      "expect": { "sensitive": true, "categories": ["credential"], "action": "drop" }
+    },
+    {
+      "id": "image-sexual",
+      "input": {
+        "modality": "image",
+        "frame": { "width": 320, "height": 240, "data": [] },
+        "imageMock": { "categories": ["sexual"], "scores": [0.95] }
+      },
+      "expect": { "sensitive": true, "categories": ["sexual"], "action": "drop" }
+    },
+    {
+      "id": "image-doc-id-low-confidence",
+      "input": {
+        "modality": "image",
+        "frame": { "width": 320, "height": 240, "data": [] },
+        "imageMock": { "categories": ["document-id"], "scores": [0.42] }
+      },
+      "expect": { "sensitive": true, "categories": ["document-id"], "action": "confirm" }
+    },
+    {
+      "id": "image-clean",
+      "input": {
+        "modality": "image",
+        "frame": { "width": 320, "height": 240, "data": [] },
+        "imageMock": { "categories": [], "scores": [] }
+      },
+      "expect": { "sensitive": false, "categories": [] }
+    },
+    {
+      "id": "image-timeout-fail-closed",
+      "input": {
+        "modality": "image",
+        "frame": { "width": 320, "height": 240, "data": [] },
+        "imageMock": { "__hang": true }
+      },
+      "expect": { "sensitive": true, "categories": [], "action": "drop" }
+    },
+    {
+      "id": "audio-silence",
+      "input": { "modality": "audio", "pcmSpec": { "kind": "silence", "n": 1600 } },
+      "expect": { "sensitive": false, "categories": [] }
+    },
+    {
+      "id": "audio-voiced-articulation",
+      "input": { "modality": "audio", "pcmSpec": { "kind": "tone", "n": 1600, "amp": 0.5, "period": 13.5 } },
+      "expect": { "sensitive": true, "categories": [], "action": "confirm" }
+    }
+  ]
+}
