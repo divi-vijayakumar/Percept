@@ -56,9 +56,9 @@ class CompilerTests(unittest.TestCase):
         self.assertEqual(sensor_plan_for(goal("a cup", type="count")).event_model["kind"], "distinct")
         tr = sensor_plan_for(goal("x", type="transition", **{"from": "raw", "to": "cooked"}))
         self.assertEqual(tr.event_model["kind"], "transition")
-        ab = sensor_plan_for(goal("x", rearm="deadline", deadline_s=30.0))
+        ab = sensor_plan_for(goal("x", rearm="deadline", deadline_after_s=30.0))
         self.assertEqual(ab.event_model["kind"], "absence")
-        self.assertEqual(ab.event_model["deadline_s"], 30.0)
+        self.assertEqual(ab.event_model["deadline_after_s"], 30.0)
 
     def test_attach_stores_plan_dict_in_state(self):
         g = goal("rep", type="rhythm")

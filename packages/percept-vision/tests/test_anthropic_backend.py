@@ -15,7 +15,7 @@ import unittest
 
 from percept.adapters import Verdict
 from percept.backends._resilience import CircuitOpen
-from percept.backends.anthropic import AnthropicVision, production_judge
+from percept.backends.anthropic import AnthropicVision, _parse_verdict, production_judge
 
 
 class _Messages:
@@ -145,6 +145,47 @@ class TestBreakerTripsOpen(unittest.TestCase):
                 await v.judge("is the user drinking?", b"\x89PNG-bytes")
 
         asyncio.run(_drive())
+
+
+class VerdictParseSalvage(unittest.TestCase):
+    """A thinking model can spend its budget and truncate the STRICT-JSON verdict mid-``evidence``.
+    The decisive fields (``satisfied``/``confidence``) come first and survive — recover them instead
+    of discarding a real read as ``unparsed`` -> confidence 0.0 -> a spurious ASK. Shared by every
+    backend that parses via ``anthropic._parse_verdict`` (claude/gemini/openrouter)."""
+
+    def test_truncated_mid_evidence_recovers_the_verdict(self):
+        v = _parse_verdict('{"satisfied": false, "confidence": 0.4, "evidence": "While a')
+        self.assertFalse(v.satisfied)
+        self.assertEqual(v.confidence, 0.4)  # NOT 0.0 — the read is recovered, no false ASK
+        self.assertEqual(v.evidence, "While a")
+
+    def test_truncated_at_evidence_key_recovers_satisfied_and_confidence(self):
+        v = _parse_verdict('```json\n{"satisfied": false, "confidence": 0.8, "evidence":')
+        self.assertFalse(v.satisfied)
+        self.assertEqual(v.confidence, 0.8)
+
+    def test_wellformed_and_fenced_replies_are_unchanged(self):
+        v = _parse_verdict('{"satisfied": true, "confidence": 0.92, "evidence": "running"}')
+        self.assertTrue(v.satisfied)
+        self.assertEqual(v.confidence, 0.92)
+        self.assertEqual(v.evidence, "running")
+        fenced = _parse_verdict('```json\n{"satisfied": true, "confidence": 0.9, "evidence": "x"}\n```')
+        self.assertTrue(fenced.satisfied)
+        self.assertEqual(fenced.confidence, 0.9)
+
+    def test_out_of_range_confidence_is_clamped(self):
+        self.assertEqual(_parse_verdict('{"satisfied": true, "confidence": 1.4, "evidence": "z').confidence, 1.0)
+
+    def test_unrecoverable_reply_stays_conservative_ASK(self):
+        # No decisive fields -> the invariant-1 default (0.0 -> the gate ASKs, never a confident-wrong fire).
+        v = _parse_verdict("I cannot answer that from this image.")
+        self.assertFalse(v.satisfied)
+        self.assertEqual(v.confidence, 0.0)
+        self.assertTrue(v.evidence.startswith("unparsed:"))
+
+    def test_satisfied_without_confidence_stays_conservative(self):
+        # A verdict needs BOTH decisive fields; missing confidence -> conservative default, not a guess.
+        self.assertEqual(_parse_verdict('{"satisfied": true, "evidence": "...').confidence, 0.0)
 
 
 if __name__ == "__main__":

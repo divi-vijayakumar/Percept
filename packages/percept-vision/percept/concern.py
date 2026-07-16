@@ -1,24 +1,30 @@
 """Concern logic — the upstream adapters that feed the UNCHANGED gate (spec §3,§4,§5).
 
-Belief is **derived** from a concern's observation log against its expectations — computed on read,
-never stored (spec §3). The two adapters here (``derive_belief`` -> ``(Verdict, freshness)`` and
-``threshold_for`` -> ``float``) produce exactly the inputs ``percept.gate.classify`` / ``Gate.evaluate``
-already consume, which is how "the gate stays literally unchanged" goes from aspiration to invariant
-(plan R2a). The bounded log keeps a 24/7 agent from leaking memory (plan R14).
+LIVE surface (imported by agent.py / behavior.py, on the real firing path):
+  * ``consequence_of`` — read a goal's consequence (agent.py, behavior.py)
+  * ``attention_weight`` / ``is_hard_quadrant`` / ``requires_verification`` — Consequence's three
+    calibration-free jobs (agent.py, behavior.py)
+  * ``resolution_ready`` — the process-QA "is this running answer ready?" predicate (agent.py)
 
-A0 introduces these as pure, unit-tested functions; the agent does not route through them yet (A1/A2
-wire them, each guarded by the byte-for-byte invariant). Defaults are pinned to the measured gate
-numbers (plan R15): ``threshold_for(Consequence()) == 0.7`` == ``Gate().threshold``.
+INERT-but-LIVE: ``threshold_for`` is imported by no production module today (it is only exercised by
+tests). It is kept as the pinned per-concern threshold seam — its DEFAULT must equal the gate's 0.7
+(plan R15) so wiring it later is byte-for-byte safe. At today's non-discriminative confidence it would
+be a no-op (R3), which is why the runtime does not route through it yet. See the report note.
+
+REMOVED (2026-07-12 OSS hardening): the ``derive_belief`` / ``observe`` / ``OBS_CAP`` belief-log
+spike. It was an A0 pure-function pair the agent never routed through (docstring admitted "the agent
+does not route through them yet"); it wrote to / read from ``Concern.observations``, which nothing in
+the runtime populates. Deleted rather than left as architecture-shaped dead code. The gate-unchanged
+invariant it claimed to enforce is already held structurally: ``behavior.py`` is the only driver of
+the gate and never edits it (see ``test_program_equivalence``).
 """
 
 from __future__ import annotations
 
-from .adapters import Concern, Consequence, Evidence, Goal, Verdict
+from .adapters import Consequence, Goal
 
 # Pinned to the measured current gate defaults (S2 capture; plan R15).
 DEFAULT_THRESHOLD = 0.7
-# Bounded observation log — a baby monitor runs for days (plan R14).
-OBS_CAP = 256
 
 
 def threshold_for(consequence: Consequence) -> float:
@@ -31,41 +37,6 @@ def threshold_for(consequence: Consequence) -> float:
     The DEFAULT MUST equal the gate's threshold so existing goals are byte-for-byte unchanged.
     """
     return DEFAULT_THRESHOLD
-
-
-def observe(concern: Concern, ev: Evidence) -> None:
-    """Append evidence to the concern's log, bounded to the most-recent ``OBS_CAP`` (plan R14)."""
-    obs = concern.observations
-    obs.append(ev)
-    extra = len(obs) - OBS_CAP
-    if extra > 0:
-        del obs[:extra]
-
-
-def derive_belief(
-    concern: Concern, now: float, *, half_life_s: float = 30.0
-) -> tuple[Verdict, float]:
-    """Collapse the observation log into the ``(Verdict, freshness)`` the EXISTING gate eats.
-
-    Belief is derived on read, never stored (spec §3). ``freshness`` decays with the recency of the
-    most-recent supporting observation, so **observability falls out for free** (spec §3): a
-    confident-but-stale belief yields low freshness, which the unchanged ``classify`` already maps to
-    "unknown" -> ASK. With no observations, coverage is zero -> not-fresh.
-    """
-    obs = concern.observations
-    if not obs:
-        return Verdict(satisfied=False, confidence=0.0, evidence="no-observations"), 0.0
-    last = obs[-1]
-    age = max(0.0, now - last.t)
-    if half_life_s <= 0:
-        freshness = 1.0 if age == 0.0 else 0.0
-    else:
-        freshness = 0.5 ** (age / half_life_s)
-    freshness *= last.coverage
-    return (
-        Verdict(satisfied=last.satisfied, confidence=last.confidence, evidence=f"obs@{last.t:.3f}"),
-        freshness,
-    )
 
 
 # --- Consequence's three CALIBRATION-FREE jobs (A3, spec §5) -------------------------------------
@@ -158,13 +129,10 @@ def resolution_ready(
 
 __all__ = [
     "DEFAULT_THRESHOLD",
-    "OBS_CAP",
     "RESOLVE_MIN_EVIDENCE",
     "RESOLVE_MIN_CHARS",
     "RESOLVE_MIN_CONFIDENCE",
     "threshold_for",
-    "observe",
-    "derive_belief",
     "consequence_of",
     "attention_weight",
     "is_hard_quadrant",

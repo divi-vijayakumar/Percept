@@ -43,6 +43,13 @@ audio = ["numpy>=1.24"]
 harness = ["numpy>=1.24"]                                    # tier-0 salience gate + detectors fast path
 edge = ["numpy>=1.24"]                                       # Python tier-0 edge (parity with percept-edge JS)
 runtime = ["opencv-python-headless>=4.8", "numpy>=1.24"]     # camera/video/RTSP runtime worker
+mic = ["sounddevice>=0.4"]                                   # mic capture for run(audio_source="mic:0") — fused/acoustic perception
+# realtime: RESERVED (empty) for future SDK-side STREAMING JUDGMENT. The voice embodiment (Pipecat +
+# serverless P2P WebRTC driving Gemini Live) moved app-side in the v0.6 diet — those deps now live in
+# templates/realtime_voice_watch_agent/pyproject.toml, NOT here. Even an optional voice extra would
+# suggest the perception package owns the voice stack; it does not. Kept as a named placeholder so the
+# extra name stays stable for when SDK-side streaming judgment actually ships (CHANGELOG note).
+realtime = []
 screen = ["mss>=9"]
 bench = ["numpy>=1.24", "opencv-python-headless>=4.8"]
 pose = ["mmpose>=1.3", "mmdet>=3.0,<4", "mmcv>=2.0,<2.2", "mmengine>=0.10", "opencv-python-headless>=4.8", "numpy>=1.24"]

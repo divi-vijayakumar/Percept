@@ -62,7 +62,7 @@ BEHAVIOR (optional) — add a "behavior" block to a created goal ONLY when the r
 to track it; OMIT it when unsure (the safe default is a plain watch that fires on the rising edge):
 - fire ONCE then never again ("tell me once when ..."): {"rearm":"never"}
 - fire if something is NOT done by a deadline ("remind me to X in N minutes", "... before it boils"):
-  {"rearm":"deadline","deadline_s":<seconds>} — phrase the condition as the thing that SHOULD happen.
+  {"rearm":"deadline","deadline_after_s":<seconds>} — a DURATION from now; phrase the condition as the thing that SHOULD happen.
 - a recurring nudge WHILE a condition holds ("every N minutes while I'm at my desk", "every N min when X"):
   {"rearm":"interval","cadence_s":<seconds>} — fires at most once per interval while the condition is true.
 - a state CHANGE ("when the baby wakes up", "when it goes from A to B"):

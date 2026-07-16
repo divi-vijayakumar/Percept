@@ -22,11 +22,15 @@ import typing
 from pathlib import Path
 from typing import Any, Union, get_args, get_origin
 
+from enum import Enum
+
 from . import (
     CONTRACT_VERSION,
+    AttentionIntent,
     Attribute,
     AudioFrame,
     Box,
+    ClipEvent,
     Concern,
     Consequence,
     Decision,
@@ -34,6 +38,7 @@ from . import (
     Goal,
     Incident,
     IncidentSnippet,
+    LabelRecord,
     Observation,
     Priors,
     Schedule,
@@ -53,6 +58,7 @@ _NoneType = type(None)
 DTOS: tuple[type, ...] = (
     Box,
     Observation,
+    ClipEvent,
     Verdict,
     Attribute,
     Goal,
@@ -72,6 +78,8 @@ DTOS: tuple[type, ...] = (
     AudioFrame,
     IncidentSnippet,
     Incident,
+    AttentionIntent,
+    LabelRecord,
 )
 
 _PRIMITIVE: dict[Any, dict] = {
@@ -99,6 +107,10 @@ def _type_schema(tp: Any) -> dict:
     if origin is typing.Literal:
         values = list(get_args(tp))
         return {"enum": values}
+
+    # an ``enum.Enum`` subclass (e.g. GoalOrigin) -> enum of its member VALUES (the wire form)
+    if isinstance(tp, type) and issubclass(tp, Enum):
+        return {"enum": [e.value for e in tp]}
 
     # Optional[X] / Union[...] / PEP 604 `X | None` -> anyOf, with None as a {"type": "null"}
     if origin is Union or origin is types.UnionType:

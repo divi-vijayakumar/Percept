@@ -221,7 +221,8 @@ def judge_usage(verdict: Any) -> dict[str, float]:
     """
     out: dict[str, float] = {}
     usage = getattr(verdict, "usage", None)
-    src = usage if isinstance(usage, dict) else verdict
+    # an EMPTY usage dict is "not annotated" (the 1.3 Verdict default), so loose attributes still read
+    src = usage if isinstance(usage, dict) and usage else verdict
     for key, attr in (
         ("input_tokens", "input_tokens"),
         ("output_tokens", "output_tokens"),

@@ -27,7 +27,7 @@ class FakeClockTests(unittest.TestCase):
         a = Percept.create(vision=FakeVision(script={}), discover_plugins=False, clock=fake)
         g = Goal(id="salt", condition="salt has been added", say="don't forget the salt")
         g.state["rearm"] = "deadline"
-        g.state["deadline_s"] = 10.0
+        g.state["deadline_after_s"] = 10.0  # duration; add_goal resolves deadline_at = clock()+10 = 10
         a.add_goal(g)
 
         fake.advance(5_000)                          # t=5s — before the deadline

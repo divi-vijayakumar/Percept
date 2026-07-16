@@ -99,8 +99,15 @@ def _as_frame(obj: Any) -> Frame:
 # ---------------------------------------------------------------------------
 
 
-def motion_score(prev_frame: Any, frame: Any, *, region: Box | None = None) -> float:
-    """Mean absolute luma difference between two frames, normalized to ``0..1``.
+def motion_score(
+    prev_frame: Any,
+    frame: Any,
+    *,
+    region: Box | None = None,
+    stat: str = "mean",
+    block_grid: tuple[int, int] = (8, 6),
+) -> float:
+    """Absolute-luma-difference salience between two frames, normalized to ``0..1``.
 
     Still scene -> ``~0``; a large change -> high (toward ``1.0``). Deterministic and pure stdlib;
     ``numpy`` is used only as a speed path and yields the identical value.
@@ -111,8 +118,19 @@ def motion_score(prev_frame: Any, frame: Any, *, region: Box | None = None) -> f
 
     ``region`` (a normalized :class:`~percept.adapters.Box`, the C1 "watch-out zone") restricts the
     diff to that rectangle: motion outside the box is ignored, so only movement *inside* the zone
-    can escalate. ``region is None`` (the default) is the full-frame path and is **byte-for-byte
-    unchanged** — the masked branch is strictly opt-in and never touches the no-region computation.
+    can escalate.
+
+    ``stat`` selects the localizing statistic over a coarse ``block_grid`` (``Gx x Gy``) partition of
+    the active area (full frame, or ``region``):
+
+    - ``"mean"`` (default) — whole-area mean abs-diff. **Byte-for-byte unchanged** from the pre-block
+      path; the block branches are strictly opt-in and never touch this computation.
+    - ``"block_max"`` — the single most-active block. A localized event (a hand, a cup) lights one
+      block and clears threshold even when its whole-frame mean is ~0 (recall on a static camera).
+    - ``"p95"`` — the 95th-percentile block (nearest-rank), a noise-robust cousin of ``block_max``.
+
+    The block partition uses floor-of-product boundaries and integer per-block denominators so the
+    Python and JS (``percept-edge``) results are bit-identical (a release-gated parity invariant).
     """
     if prev_frame is None:
         return 0.0
@@ -120,6 +138,8 @@ def motion_score(prev_frame: Any, frame: Any, *, region: Box | None = None) -> f
     b = _as_frame(frame)
     if a.w != b.w or a.h != b.h:
         raise ValueError(f"frame size mismatch: {a.w}x{a.h} vs {b.w}x{b.h}")
+    if stat != "mean":
+        return _motion_score_blocks(a, b, region, block_grid, stat)
     if region is not None:
         return _motion_score_region(a, b, region)
     n = a.w * a.h
@@ -177,6 +197,139 @@ def _motion_score_region(a: Frame, b: Frame, region: Box) -> float:
     return total / (n * 255.0)
 
 
+def _motion_score_blocks(
+    a: Frame, b: Frame, region: Box | None, block_grid: tuple[int, int], stat: str
+) -> float:
+    """Localized salience: partition the active area into ``Gx x Gy`` blocks, aggregate per ``stat``.
+
+    The active area is the full frame, or the ``region`` (watch-out zone) bounds. Block boundaries
+    are floor-of-product (``bx(i) = x0 + (i * aw) // Gx``): blocks differ by <=1 px, tile the area
+    with no gaps/overlaps, and are bit-identical to the JS edge (``i * aw`` stays far under 2**53).
+    Each block's score is ``sum_abs_diff / (block_px * 255)`` — an integer sum over an integer
+    denominator, so numpy and stdlib return the same float. ``block_max`` = the top block; ``p95`` =
+    the nearest-rank 95th-percentile block (integer rank, no float percentile). A degenerate block
+    (0 px, only possible when the area is smaller than the grid) contributes ``0.0``.
+    """
+    w, h = a.w, a.h
+    if region is not None:
+        x0, y0, x1, y1 = _region_bounds(region, w, h)
+    else:
+        x0, y0, x1, y1 = 0, 0, w, h
+    aw, ah = x1 - x0, y1 - y0
+    if aw <= 0 or ah <= 0:
+        return 0.0
+    gx, gy = int(block_grid[0]), int(block_grid[1])
+    if gx <= 0 or gy <= 0:
+        return 0.0
+    diff = None
+    if _np is not None:
+        pa = _np.frombuffer(bytes(a.pixels), dtype=_np.uint8).astype(_np.int16).reshape(h, w)
+        pb = _np.frombuffer(bytes(b.pixels), dtype=_np.uint8).astype(_np.int16).reshape(h, w)
+        diff = _np.abs(pa - pb)
+    scores: list[float] = []
+    for j in range(gy):
+        by0 = y0 + (j * ah) // gy
+        by1 = y0 + ((j + 1) * ah) // gy
+        for i in range(gx):
+            bx0 = x0 + (i * aw) // gx
+            bx1 = x0 + ((i + 1) * aw) // gx
+            block_px = (bx1 - bx0) * (by1 - by0)
+            if block_px == 0:
+                scores.append(0.0)
+                continue
+            if diff is not None:
+                total = int(diff[by0:by1, bx0:bx1].sum())
+            else:
+                total = 0
+                for row in range(by0, by1):
+                    base = row * w
+                    for col in range(bx0, bx1):
+                        pav, pbv = a.pixels[base + col], b.pixels[base + col]
+                        total += pav - pbv if pav >= pbv else pbv - pav
+            scores.append(total / (block_px * 255.0))
+    if stat == "block_max":
+        return max(scores)
+    if stat == "p95":
+        return _nearest_rank_p95(scores)
+    raise ValueError(f"unknown salience stat {stat!r}; expected 'mean', 'block_max', or 'p95'")
+
+
+def _nearest_rank_p95(scores: list[float]) -> float:
+    """The 95th-percentile value by the nearest-rank method, with an integer-only rank.
+
+    ``idx = ceil(0.95 * n) - 1`` computed as ``(95 * n + 99) // 100 - 1`` so it is identical in
+    Python and JS (no float percentile / interpolation, which would drift across languages).
+    """
+    if not scores:
+        return 0.0
+    s = sorted(scores)
+    n = len(s)
+    idx = (95 * n + 99) // 100 - 1
+    if idx < 0:
+        idx = 0
+    elif idx >= n:
+        idx = n - 1
+    return s[idx]
+
+
+def ego_residual_score(prev_frame: Any, frame: Any, *, k: int = 4) -> float:
+    """Ego-motion-compensated salience: the minimum mean-abs-diff over an integer-pixel global shift.
+
+    Estimates and removes whole-frame translation (camera pan / head turn) by searching integer
+    shifts ``(dx, dy)`` in ``[-k, k]`` and taking the *residual* — the smallest MAD between ``prev``
+    shifted by ``(dx, dy)`` and ``frame`` over their overlap. A pure camera pan is explained by some
+    shift, so its residual is ``~0`` (no false escalate); a subject entering the frame cannot be
+    shifted away, so its residual stays high. Deterministic and O(k**2 * pixels); the ``(0, 0)`` shift
+    equals the uncompensated mean, so the residual is always ``<=`` the full-frame :func:`motion_score`.
+
+    ``prev_frame is None`` -> ``0.0`` (no predecessor). Mirrors the JS ``egoResidualScore`` bit-for-bit
+    (integer overlap sums, integer overlap denominator).
+    """
+    if prev_frame is None:
+        return 0.0
+    a = _as_frame(prev_frame)
+    b = _as_frame(frame)
+    if a.w != b.w or a.h != b.h:
+        raise ValueError(f"frame size mismatch: {a.w}x{a.h} vs {b.w}x{b.h}")
+    w, h = a.w, a.h
+    kk = int(k)
+    if kk < 0:
+        kk = 0
+    grid_a = grid_b = None
+    if _np is not None:
+        grid_a = _np.frombuffer(bytes(a.pixels), dtype=_np.uint8).astype(_np.int16).reshape(h, w)
+        grid_b = _np.frombuffer(bytes(b.pixels), dtype=_np.uint8).astype(_np.int16).reshape(h, w)
+    best: float | None = None
+    for dy in range(-kk, kk + 1):
+        oh = h - (dy if dy >= 0 else -dy)  # overlap height = h - |dy|
+        if oh <= 0:
+            continue
+        fy0 = dy if dy > 0 else 0
+        for dx in range(-kk, kk + 1):
+            ow = w - (dx if dx >= 0 else -dx)  # overlap width = w - |dx|
+            if ow <= 0:
+                continue
+            fx0 = dx if dx > 0 else 0
+            npx = ow * oh
+            if grid_a is not None:
+                fb = grid_b[fy0:fy0 + oh, fx0:fx0 + ow]
+                pa = grid_a[fy0 - dy:fy0 - dy + oh, fx0 - dx:fx0 - dx + ow]
+                total = int(_np.abs(pa - fb).sum())
+            else:
+                total = 0
+                for fy in range(fy0, fy0 + oh):
+                    fb_base = fy * w
+                    pa_base = (fy - dy) * w
+                    for fx in range(fx0, fx0 + ow):
+                        pav = a.pixels[pa_base + (fx - dx)]
+                        pbv = b.pixels[fb_base + fx]
+                        total += pav - pbv if pav >= pbv else pbv - pav
+            score = total / (npx * 255.0)
+            if best is None or score < best:
+                best = score
+    return 0.0 if best is None else best
+
+
 # ---------------------------------------------------------------------------
 # Civil time — the injected clock the schedule gate consults (C1)
 # ---------------------------------------------------------------------------
@@ -232,12 +385,19 @@ SCHEDULE_KEY = "schedule"
 # Optional per-goal temporal cadence (C2): {"min_judge_interval": float, "gate_on": motion|structural|
 # semantic|fixed} under this key. Controls how OFTEN to look (distinct from PerceptionSpec = how DEEP).
 CADENCE_KEY = "cadence"
+# Optional per-goal salience MODE overrides (tracks the camera mount). Fall back to the deployment
+# default passed to compile_watchspec (from settings.edge) when absent / malformed.
+SALIENCE_STAT_KEY = "salience_stat"
+EGO_COMPENSATE_KEY = "ego_compensate"
 _GATE_ON_VOCAB = {"motion", "structural", "semantic", "fixed"}
+_SALIENCE_STAT_VOCAB = {"mean", "block_max", "p95"}
 
 
 def compile_watchspec(
     goals: Iterable[Goal], *, threshold: float, version: int = 1,
     edge_capabilities: Iterable[str] | None = None,
+    salience_stat: str = "mean", ego_compensate: bool = False,
+    stat_thresholds: dict[str, float] | None = None,
 ) -> WatchSpec:
     """Compile active *watch* goals DOWN to a :class:`~percept.adapters.WatchSpec`.
 
@@ -245,8 +405,9 @@ def compile_watchspec(
 
     - ``goal_id`` <- ``goal.id``
     - ``anchor_text`` <- ``goal.condition`` (the plain-language anchor the edge salience-matches)
-    - ``threshold`` <- the gate default ``threshold`` + optional per-goal bias
-      (``goal.state['motion_bias']``), clamped to ``0..1``
+    - ``threshold`` <- a per-stat base cutoff (``stat_thresholds[salience_stat]``, else ``threshold``)
+      + optional per-goal bias (``goal.state['motion_bias']``), clamped to ``0..1``. block_max/p95 use
+      a higher base than the whole-frame mean (they sit on a higher value scale).
     - ``region_hint`` <- optional ``goal.state['region_hint']`` (a :class:`~percept.adapters.Box`)
     - ``schedule`` <- optional ``goal.state['schedule']`` (a :class:`~percept.adapters.Schedule`); absent
       -> ``None`` -> always armed (the gate skips the goal when the current time is out of schedule)
@@ -269,16 +430,25 @@ def compile_watchspec(
         bias = float(goal.state.get(MOTION_BIAS_KEY, 0.0))
         supported, _dropped = partition_by_capability(detectors_for(goal), edge_capabilities)
         cadence_s, gate_on = _coerce_cadence(goal.state.get(CADENCE_KEY))
+        # Salience MODE = deployment default (settings.edge) overlaid with a per-goal override. The
+        # resolved value rides the wire so the edge honors it without reading Python settings.
+        stat = _coerce_salience_stat(goal.state.get(SALIENCE_STAT_KEY), salience_stat)
+        ego = _coerce_ego(goal.state.get(EGO_COMPENSATE_KEY), ego_compensate)
+        # block_max/p95 live on a higher value scale than the mean, so they use their own base cutoff
+        # (from ``stat_thresholds``); ``mean`` and any un-mapped stat fall back to ``threshold``.
+        base = threshold if not stat_thresholds else stat_thresholds.get(stat, threshold)
         conditions.append(
             WatchCondition(
                 goal_id=goal.id,
                 anchor_text=goal.condition,
-                threshold=_clamp01(threshold + bias),
+                threshold=_clamp01(base + bias),
                 region_hint=_coerce_box(goal.state.get(REGION_HINT_KEY)),
                 detectors=supported,  # cheap edge skills the brain selected, filtered to what the edge can run
                 schedule=_coerce_schedule(goal.state.get(SCHEDULE_KEY)),
                 cadence_s=cadence_s,  # C2: how OFTEN to look (distinct from PerceptionSpec = how DEEP)
                 gate_on=gate_on,
+                salience_stat=stat,
+                ego_compensate=ego,
             )
         )
     return WatchSpec(conditions=conditions, version=version)
@@ -350,6 +520,41 @@ def _coerce_cadence(obj: Any) -> tuple[float | None, str]:
     return cadence_s, gate_on
 
 
+def _coerce_salience_stat(obj: Any, default: str) -> str:
+    """Per-goal ``salience_stat`` override -> a valid stat; unknown / out-of-vocab -> ``default``.
+
+    The firewall for the untrusted goal-state hint: only ``mean``/``block_max``/``p95`` pass; anything
+    else falls back to the deployment default so a malformed hint never picks an invalid mode.
+    """
+    if obj in _SALIENCE_STAT_VOCAB:
+        return obj  # type: ignore[return-value]
+    return default if default in _SALIENCE_STAT_VOCAB else "mean"
+
+
+def _coerce_ego(obj: Any, default: bool) -> bool:
+    """Per-goal ``ego_compensate`` override -> bool; a non-bool hint -> the deployment ``default``."""
+    if isinstance(obj, bool):
+        return obj
+    return bool(default)
+
+
+def _condition_motion(
+    prev: Frame | None, f: Frame, c: WatchCondition, full_motion: float
+) -> float:
+    """The escalate-comparison motion for one condition, honoring its salience MODE.
+
+    The default (``salience_stat == "mean"``, no ``region_hint``, no ``ego_compensate``) returns the
+    precomputed full-frame ``full_motion`` unchanged — byte-for-byte the pre-mode path. Otherwise ego
+    compensation (whole-frame residual) takes precedence; else the localized block statistic (optionally
+    masked to ``region_hint``). Ego + block compose is deferred: an ego goal uses the whole-frame residual.
+    """
+    if c.ego_compensate:
+        return ego_residual_score(prev, f)
+    if c.salience_stat != "mean" or c.region_hint is not None:
+        return motion_score(prev, f, region=c.region_hint, stat=c.salience_stat)
+    return full_motion
+
+
 # ---------------------------------------------------------------------------
 # MotionGate — consumes a WatchSpec + a frame, emits a Tier0Signal + a decision
 # ---------------------------------------------------------------------------
@@ -399,6 +604,8 @@ class MotionGate:
         settings: Settings | None = None,
         clock: Callable[[], CivilTime] | None = None,
         wake_policy: WakePolicy | dict[str, Any] | None = None,
+        structural_adapter: Callable[[Frame], float] | None = None,
+        semantic_adapter: Callable[[Frame], float] | None = None,
     ) -> None:
         self._spec = spec
         cfg = settings or load_settings()
@@ -411,6 +618,10 @@ class MotionGate:
         # path) unless a `now` is passed to evaluate(); we never read the wall clock in pure logic.
         self._clock = clock
         self._wake_policy = wake_policy
+        # Optional channels that fill the structural/semantic Tier0 slots (CLIP/pose/privacy on the real
+        # edge). None -> 0.0, so the reported signal and escalation are byte-for-byte the motion-only path.
+        self._structural_adapter = structural_adapter
+        self._semantic_adapter = semantic_adapter
 
     @property
     def spec(self) -> WatchSpec:
@@ -425,6 +636,23 @@ class MotionGate:
     def reset(self) -> None:
         """Forget the previous frame (e.g. a stream discontinuity / new source)."""
         self._prev = None
+
+    def adopt_state(self, prev: "MotionGate") -> None:
+        """Carry a PRIOR gate's per-goal throttle + prev frame into this freshly-recompiled gate (D2).
+
+        A regate (a goal armed/cancelled mid-run) rebuilds the gate from scratch; without this, the new
+        gate starts with an EMPTY ``_last_escalate`` — so arming ONE goal by voice released the per-goal
+        cadence brake on ALL the others (they could re-escalate before their ``cadence_s`` elapsed). We
+        copy the throttle ONLY for goal_ids still present in THIS gate's spec: a cancelled goal's brake is
+        correctly forgotten, and a re-armed id keeps its cadence. The ``prev`` frame is carried too, so
+        the first frame after a regate diffs against the real predecessor instead of a spurious 0-motion
+        cold start. Deliberately touches ONLY ``_last_escalate`` + ``_prev`` — NOT any gate-key/dwell
+        state (that is SPEC-C's territory)."""
+        live_ids = {c.goal_id for c in self._spec.conditions}
+        self._last_escalate = {
+            gid: t for gid, t in prev._last_escalate.items() if gid in live_ids
+        }
+        self._prev = prev._prev
 
     def evaluate(
         self,
@@ -447,11 +675,14 @@ class MotionGate:
         """
         f = _as_frame(frame)
         prev = self._prev
-        # Full-frame motion is always reported up (the Tier0Signal is region-agnostic salience).
+        # Full-frame mean motion is always the REPORTED gauge (the Tier0Signal is a region-agnostic,
+        # config-stable salience). Per-goal escalation may use a localized/ego-compensated statistic
+        # instead (below), but the up-channel gauge stays the plain mean so it's comparable across configs.
         motion = motion_score(prev, f)
-        # The reference gate is MOTION-only; structural/semantic are 0.0 here and filled by percept-edge
-        # (CLIP/pose). A goal that gates on them can't escalate in this reference (honest, not a bug).
-        structural, semantic = 0.0, 0.0
+        # structural/semantic default to 0.0 (motion-only reference); optional adapters fill them
+        # (CLIP/pose/privacy on the real edge). None -> 0.0 keeps the default path byte-for-byte.
+        structural = 0.0 if self._structural_adapter is None else float(self._structural_adapter(f))
+        semantic = 0.0 if self._semantic_adapter is None else float(self._semantic_adapter(f))
         cheap_signals = {
             "motion": motion,
             "change": motion,
@@ -482,8 +713,8 @@ class MotionGate:
                 fired = structural >= c.threshold
             elif c.gate_on == "semantic":
                 fired = semantic >= c.threshold
-            else:  # "motion" (default) — full-frame, or masked to the goal's region_hint
-                m = motion if c.region_hint is None else motion_score(prev, f, region=c.region_hint)
+            else:  # "motion" (default) — full-frame, or the goal's localized / ego-compensated statistic
+                m = _condition_motion(prev, f, c, motion)
                 fired = m >= c.threshold
             if fired:
                 escalate = True
@@ -491,7 +722,9 @@ class MotionGate:
         self._prev = f
         # Reported cutoff = the most-sensitive ARMED goal's threshold (default when none is armed).
         thr = min((c.threshold for c in armed), default=self._default)
-        signal = Tier0Signal(motion=motion, structural=structural, semantic=semantic, ts=ts)
+        signal = Tier0Signal(
+            motion=motion, structural=structural, semantic=semantic, ts=ts, energy=energy
+        )
         return GateDecision(signal=signal, escalate=escalate, threshold=thr)
 
 
@@ -803,6 +1036,7 @@ __all__ = [
     "Frame",
     "gray_frame",
     "motion_score",
+    "ego_residual_score",
     "CivilTime",
     "civil_from_epoch",
     "civil_now",
@@ -812,6 +1046,8 @@ __all__ = [
     "MOTION_BIAS_KEY",
     "REGION_HINT_KEY",
     "SCHEDULE_KEY",
+    "SALIENCE_STAT_KEY",
+    "EGO_COMPENSATE_KEY",
     "MotionGate",
     "GateDecision",
     "GatedWatchLoop",

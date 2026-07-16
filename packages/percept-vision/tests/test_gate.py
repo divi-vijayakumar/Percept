@@ -1,9 +1,11 @@
 """L1: the three-state gate matrix — deterministic, no backends."""
 
+import typing
 import unittest
 
+import percept.gate as gate_mod
 from percept.adapters import Verdict
-from percept.gate import ASK, FIRE, SILENT, Gate
+from percept.gate import ASK, FIRE, SILENT, Gate, GateAction
 
 
 def yes(conf=0.9):
@@ -57,6 +59,29 @@ class TestGate(unittest.TestCase):
         # exactly at threshold is confident (>=), just below asks
         self.assertEqual(self.gate.evaluate(("g", "a"), yes(conf=0.7)), FIRE)
         self.assertEqual(self.gate.evaluate(("g", "b"), yes(conf=0.69)), ASK)
+
+
+class TestGateActionMembers(unittest.TestCase):
+    """PIN reality (E2): the gate is a THREE-verdict system today, not the five-verdict design.
+
+    OBSERVE and LOG do NOT exist. This test fails the moment ``GateAction`` diverges from
+    {fire, ask, silent}, forcing any future five-verdict build (or any external doc claiming one) to
+    reconcile with the source. Do NOT relax this to "make it pass" — extend the gate first, then the
+    pin. Whether to build the five-verdict gate at all is an escalated human decision, not a code fix.
+    """
+
+    def test_gate_action_is_exactly_fire_ask_silent(self):
+        self.assertEqual(set(typing.get_args(GateAction)), {"fire", "ask", "silent"})
+
+    def test_constants_match_the_literal(self):
+        # the module constants and the Literal members are the same three strings, no more
+        self.assertEqual({FIRE, ASK, SILENT}, set(typing.get_args(GateAction)))
+        self.assertEqual((FIRE, ASK, SILENT), ("fire", "ask", "silent"))
+
+    def test_no_observe_or_log_verdicts(self):
+        # explicit guard against the design leaking into the system as bare module attributes
+        self.assertFalse(hasattr(gate_mod, "OBSERVE"))
+        self.assertFalse(hasattr(gate_mod, "LOG"))
 
 
 if __name__ == "__main__":

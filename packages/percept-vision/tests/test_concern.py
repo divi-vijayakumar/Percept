@@ -1,8 +1,9 @@
 """A0 — Concern DTOs + Goal compat shim + the upstream adapters (L1, no backends, no API keys).
 
-Guards the A0 invariants: the Goal->Concern shim reproduces today's defaults byte-for-byte
-(consequence mild, tracking watch/on_false), ``threshold_for`` is pinned to the gate's 0.7 (R15),
-the observation log is bounded (R14), and ``derive_belief`` yields observability-from-recency.
+Guards the surviving A0 invariants: the Goal->Concern shim reproduces today's defaults byte-for-byte
+(consequence mild, tracking watch/on_false) and ``threshold_for`` is pinned to the gate's 0.7 (R15).
+The ``derive_belief`` / ``observe`` belief-log spike was removed (never wired into the runtime); see
+percept/concern.py header.
 """
 
 import unittest
@@ -10,14 +11,12 @@ import unittest
 from percept.adapters import (
     Concern,
     Consequence,
-    Evidence,
     Goal,
     Priors,
     Subject,
     TrackingBehavior,
-    Verdict,
 )
-from percept.concern import OBS_CAP, derive_belief, observe, threshold_for
+from percept.concern import threshold_for
 from percept.gate import Gate
 
 
@@ -54,48 +53,6 @@ class TestThresholdPin(unittest.TestCase):
             Consequence(miss_cost="severe", false_fire_cost="severe", protected_floor=True),
         ):
             self.assertEqual(threshold_for(cons), 0.7)
-
-
-class TestBoundedLog(unittest.TestCase):
-    def test_observe_is_bounded_and_keeps_most_recent(self):
-        c = Concern.from_goal(Goal(id="g", condition="x", say="y"))
-        for i in range(OBS_CAP + 100):
-            observe(c, Evidence(t=float(i), source_id="cam", confidence=0.9, satisfied=True))
-        self.assertEqual(len(c.observations), OBS_CAP)  # R14: never unbounded
-        self.assertEqual(c.observations[-1].t, float(OBS_CAP + 99))  # most recent kept
-        self.assertEqual(c.observations[0].t, float(100))  # oldest trimmed, order preserved
-
-
-class TestDeriveBelief(unittest.TestCase):
-    def test_no_observations_is_zero_coverage(self):
-        c = Concern.from_goal(Goal(id="g", condition="x", say="y"))
-        v, freshness = derive_belief(c, now=10.0)
-        self.assertFalse(v.satisfied)
-        self.assertEqual(v.confidence, 0.0)
-        self.assertEqual(freshness, 0.0)  # absence of evidence != evidence of absence
-
-    def test_fresh_observation_full_freshness(self):
-        c = Concern.from_goal(Goal(id="g", condition="x", say="y"))
-        observe(c, Evidence(t=10.0, source_id="cam", confidence=0.92, satisfied=True))
-        v, freshness = derive_belief(c, now=10.0)
-        self.assertTrue(v.satisfied)
-        self.assertEqual(v.confidence, 0.92)
-        self.assertAlmostEqual(freshness, 1.0)
-
-    def test_stale_observation_decays_freshness(self):
-        # Observability: a confident belief whose last support is old reads as LOW coverage.
-        c = Concern.from_goal(Goal(id="g", condition="x", say="y"))
-        observe(c, Evidence(t=0.0, source_id="cam", confidence=0.95, satisfied=True))
-        v, freshness = derive_belief(c, now=30.0, half_life_s=30.0)
-        self.assertTrue(v.satisfied)
-        self.assertEqual(v.confidence, 0.95)
-        self.assertAlmostEqual(freshness, 0.5)  # one half-life elapsed
-
-    def test_coverage_scales_freshness(self):
-        c = Concern.from_goal(Goal(id="g", condition="x", say="y"))
-        observe(c, Evidence(t=5.0, source_id="cam", confidence=0.9, satisfied=True, coverage=0.5))
-        _v, freshness = derive_belief(c, now=5.0)
-        self.assertAlmostEqual(freshness, 0.5)
 
 
 class TestFrozenMembraneUnchanged(unittest.TestCase):

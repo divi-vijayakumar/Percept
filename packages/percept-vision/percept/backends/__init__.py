@@ -10,12 +10,14 @@ from .fake import (
     FakeSTT,
     FakeTTS,
     FakeVision,
+    ScriptedConductor,
 )
 
 __all__ = [
     "FakeVision",
     "FakeSpecialist",
     "FakeConductor",
+    "ScriptedConductor",
     "FakeSTT",
     "FakeTTS",
 ]

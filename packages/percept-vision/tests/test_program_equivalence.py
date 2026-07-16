@@ -111,7 +111,7 @@ class TestAbsenceEquivalence(unittest.TestCase):
     def test_overdue_fires_once(self):
         _, ex = _ex()
         g = Goal(id="salt", condition="salt has been added", say="...")
-        p = BehaviorProgram(sense="absence", deadline_s=10.0)
+        p = BehaviorProgram(sense="absence", deadline_at=10.0)
         self.assertIsNone(ex.fire_absence(g, p, now=5.0, satisfied=False))  # before deadline
         f = ex.fire_absence(g, p, now=11.0, satisfied=False)  # overdue
         self.assertEqual(f.action, FIRE)
@@ -121,7 +121,7 @@ class TestAbsenceEquivalence(unittest.TestCase):
     def test_satisfied_in_time_never_fires(self):
         _, ex = _ex()
         g = Goal(id="salt", condition="salt has been added", say="...")
-        p = BehaviorProgram(sense="absence", deadline_s=10.0)
+        p = BehaviorProgram(sense="absence", deadline_at=10.0)
         self.assertIsNone(ex.fire_absence(g, p, now=11.0, satisfied=True))
 
 
@@ -242,8 +242,9 @@ class TestPresetCompile(unittest.TestCase):
 
     def test_deadline_is_absence(self):
         g = Goal(id="g", condition="c", say="s")
-        g.state.update({"rearm": "deadline", "deadline_s": 30.0})
-        self.assertEqual((program_of(g).sense, program_of(g).deadline_s), ("absence", 30.0))
+        # program_of reads the ARMED absolute stamp (deadline_at), not the authored duration.
+        g.state.update({"rearm": "deadline", "deadline_at": 30.0})
+        self.assertEqual((program_of(g).sense, program_of(g).deadline_at), ("absence", 30.0))
 
     def test_transition_and_count(self):
         gt = Goal(id="t", condition="c", say="s")

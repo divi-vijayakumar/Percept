@@ -17,8 +17,10 @@ a thin re-export shim so every existing ``from percept.adapters import X`` keeps
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol, runtime_checkable
+from enum import Enum
+from typing import Any, Awaitable, Callable, ClassVar, Literal, Protocol, runtime_checkable
 
 # ---------------------------------------------------------------------------
 # Global contract version + negotiation
@@ -28,8 +30,11 @@ from typing import Any, Literal, Protocol, runtime_checkable
 #: Bump the MAJOR on any breaking change to a frozen shape; MINOR for additive (new optional
 #: field / new DTO); PATCH for docs/non-wire tweaks. This is distinct from ``WatchSpec.version``
 #: (a wire integer kept for byte-for-byte payload compat).
-CONTRACT_VERSION = "1.2.0"  # 1.2: + Verdict.running_answer (process-QA, optional, gate-irrelevant, back-compat)
-# 1.1: + WatchCondition.cadence_s/gate_on + Incident.message (optional, back-compat)
+CONTRACT_VERSION = "1.1.0"  # 1.1: + AttentionIntent DTO + GoalOrigin enum + Goal.origin (all additive,
+# defaulted, back-compat — the effective-attention membrane + durable goal provenance, PCPT-026).
+# 1.0.0: initial public wire contract (research-preview launch). Consolidates the
+#                             pre-release surface that iterated internally through 1.1–1.3 but never
+#                             shipped; nothing was published under those, so we launch clean at 1.0.0.
 
 
 class ContractVersionMismatch(Exception):
@@ -93,6 +98,21 @@ class Observation:
     attrs: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class ClipEvent:
+    """One timestamped event a clip judge saw inside the judged window (1.3).
+
+    Times are seconds RELATIVE to the start of the judged clip (not wall-clock), because that is
+    what a video-native model returns. ``t_end`` is ``None`` for an instantaneous event; ``label``
+    is the model's short description (e.g. ``"item concealed in bag"``). These are the incident-card
+    evidence for a clip verdict — carried on :attr:`Verdict.events`.
+    """
+
+    t_start: float
+    t_end: float | None = None
+    label: str = ""
+
+
 @dataclass
 class Verdict:
     """The firing-contract return: is the plain-language condition true right now?"""
@@ -110,6 +130,13 @@ class Verdict:
     # process-QA leaves this "" and reproduces today's firing byte-for-byte. NOT a string-join: it is the
     # model's rewritten summary, threaded per-concern via ConcernContext.running_answer.
     running_answer: str = ""
+    # Token/cost accounting for THIS judge call (1.3). GATE-IRRELEVANT and optional: a backend that
+    # reports nothing leaves ``{}`` and reproduces today's behaviour byte-for-byte. Suggested keys
+    # (read by ``observability.judge_usage``): ``input_tokens`` / ``output_tokens`` / ``cost_usd``.
+    usage: dict[str, Any] = field(default_factory=dict)
+    # Clip judging (1.3): the timestamped events the judge saw inside the judged window, clip-relative
+    # seconds (see :class:`ClipEvent`). Empty for single-frame/strip judges — additive and defaulted.
+    events: list[ClipEvent] = field(default_factory=list)
 
 
 # who said a fact, used for provenance + freshness reasoning in the core
@@ -130,6 +157,30 @@ class Attribute:
     last_confirmed: float  # monotonic seconds
 
 
+class GoalOrigin(Enum):
+    """Durable PROVENANCE of a goal — *who authored it*, which decides its attention TRUST.
+
+    Interrupt authority (may a fire cut into a live turn?) requires durable provenance, not inference
+    from which function happens to hold the goal. This enum is **stamped by the SDK entry point** that
+    admitted the goal, OVERWRITING whatever a caller supplied — a caller cannot claim trust by filling
+    the field. It is persisted with the goal so trust survives ``snapshot``/``restore``:
+
+    - ``STRUCTURED_TRUSTED`` — armed through the structured API (:meth:`Percept.add_goal` /
+      ``RuntimeSession.arm``). The developer wrote it in code; it MAY request ``preempt="interrupt"``.
+    - ``LANGUAGE_AUTHORED`` — authored by the conductor from raw language (``arm_from_language`` /
+      ``apply_goal_ops``). The conductor is an UNTRUSTED author; its interrupt requests are clamped.
+    - ``RESTORED`` — rehydrated from a snapshot that predates provenance (no persisted origin). Neutral.
+    - ``SYSTEM_TEMPLATE`` — authored by a trusted first-party template/policy; MAY interrupt.
+
+    Default on a freshly-constructed :class:`Goal` is the LEAST-privileged ``LANGUAGE_AUTHORED`` — trust
+    is granted only by the API path that stamps it, never by construction."""
+
+    STRUCTURED_TRUSTED = "structured_trusted"
+    LANGUAGE_AUTHORED = "language_authored"
+    RESTORED = "restored"
+    SYSTEM_TEMPLATE = "system_template"
+
+
 @dataclass
 class Goal:
     """A standing watch/count/remind goal, stated as a plain-language condition."""
@@ -141,6 +192,11 @@ class Goal:
     modality: Literal["speak", "act"] = "speak"
     state: dict = field(default_factory=lambda: {"type": "watch", "count": 0})
     expiry: str = "until_cancelled"
+    # Durable provenance (1.1) — additive + defaulted. STAMPED by the SDK entry point that admits the
+    # goal (structured arm -> STRUCTURED_TRUSTED; conductor GoalOps -> LANGUAGE_AUTHORED), overwriting
+    # whatever the caller supplied. Persisted with the goal so interrupt-trust survives restore. Default
+    # is the LEAST-privileged origin so an un-stamped/directly-constructed goal never carries trust.
+    origin: "GoalOrigin" = GoalOrigin.LANGUAGE_AUTHORED
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +295,16 @@ class Concern:
     # it to ``Vision.judge(..., frames=...)``. Both default off, so a single-frame concern is unchanged.
     clip: bool = False
     window_s: float | None = None
+    # 1.3 — native-clip judging knobs, both inert unless ``wants_clip``: ``fps`` is the sampling rate a
+    # video-native judge should read the clip at (None -> backend default; 1fps suits behaviour concerns,
+    # sub-second events need more). ``verify_only`` bounds cost: the clip runs ONLY to confirm a candidate
+    # FIRE/ASK from the cheaper rungs (single/strip), never as the first look.
+    fps: float | None = None
+    verify_only: bool = False
+    # 1.3 — the version of THIS authored concern (the "versioned detection asset"), so a condition
+    # library can roll a concern forward/back and slice metrics per version. Not the contract semver
+    # (``CONTRACT_VERSION``) and not the wire integer (``WatchSpec.version``).
+    version: int = 1
 
     @property
     def wants_clip(self) -> bool:
@@ -354,6 +420,13 @@ content/relational events. ``fixed`` = escalate on a fixed cadence regardless of
 motion content (a screenshare, a dashboard) the motion gate would silently under-sample."""
 
 
+SalienceStat = Literal["mean", "block_max", "p95"]
+"""How the motion channel summarizes a frame's abs-diff. ``mean`` (default) = whole-area mean — right
+for scene-filling events. ``block_max``/``p95`` = a coarse block grid's top / 95th-percentile block, so
+a *localized* event (a hand, a cup) on a static camera clears threshold even when its whole-frame mean
+is ~0. Tracks the camera MOUNT, not the goal: a static desk/security cam picks ``block_max``."""
+
+
 @dataclass
 class WatchCondition:
     goal_id: str
@@ -364,6 +437,8 @@ class WatchCondition:
     schedule: Schedule | None = None  # when armed (None -> always); the gate skips when out of schedule
     cadence_s: float | None = None  # min seconds between escalations for this goal (None -> no cadence cap)
     gate_on: GateOn = "motion"  # which signal arms this goal; "fixed" escalates every cadence_s regardless of motion
+    salience_stat: SalienceStat = "mean"  # localizing statistic for the motion channel (mean -> legacy path)
+    ego_compensate: bool = False  # remove whole-frame translation (camera pan / head turn) before diffing
 
 
 @dataclass
@@ -378,6 +453,10 @@ class Tier0Signal:
     structural: float
     semantic: float
     ts: float
+    # 1.3 — the audio-energy channel value (mean-of-squares of float PCM in [-1,1], so 0..1) when this
+    # signal came from an audio/frame-free ingest path (edge ``processAudio``). ``None`` means "not an
+    # audio-carrying signal" — distinct from 0.0 (measured silence) — so the frame path is unchanged.
+    energy: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -489,6 +568,207 @@ class Incident:
     label: str | None = None  # e.g. "real" / "false_alarm" / None (unlabelled)
     snippet: IncidentSnippet | None = None
     message: str = ""  # the human-facing alert line this fire emitted (the goal's `say`)
+    # L-1 (§4.3): a reserved link a webhook consumer follows to label this fire. Filled by the paid
+    # side (which serves the label endpoint); ``None`` on the keyless path. Reserved now so the wire
+    # shape is stable when paid wires it — OSS never populates it.
+    label_url: str | None = None
+
+    def bind_labeler(
+        self,
+        sink: "Callable[[LabelRecord], Any]",
+        *,
+        verdict_ref: str = "",
+        goal_id: str | None = None,
+        calibration_version: str | None = None,
+        frame_ref: str | None = None,
+    ) -> "Incident":
+        """Attach the LOCAL label sink + join context so :meth:`record_label` can write a
+        :class:`LabelRecord` (L-1). The producer (``percept.run(label_store=...)`` /
+        :class:`RuntimeSession`) calls this on each emitted incident. The bound state lives in a
+        private instance attribute — NOT a dataclass field — so it never serializes, egresses, or
+        appears in the JSON schema. Returns ``self`` for chaining."""
+        self._label_sink = sink  # type: ignore[attr-defined]
+        self._label_ctx = {  # type: ignore[attr-defined]
+            "verdict_ref": verdict_ref,
+            "goal_id": goal_id if goal_id is not None else self.concern_id,
+            "calibration_version": calibration_version,
+            "frame_ref": frame_ref,
+        }
+        return self
+
+    def record_label(
+        self,
+        good: bool,
+        note: str | None = None,
+        tags: "tuple[str, ...] | list[str]" = (),
+        *,
+        source: Literal["api", "voice", "ask_answer", "watch_calibration"] = "api",
+    ) -> "LabelRecord":
+        """Record a ground-truth label on THIS fire — the flywheel intake (L-1, §4.3).
+
+        Builds a :class:`LabelRecord` (``source="api"`` by default — a human via the SDK) and appends it
+        to the local label store bound by the producer (``percept.run(label_store=...)``). Named
+        ``record_label`` — NOT ``label`` — because :attr:`Incident.label` is already the ``str | None``
+        display field; a dataclass field and a method cannot share a name, and renaming the field would
+        break every existing reader (``feedback(incident_id, label)``, dashboards). Raises
+        :class:`RuntimeError` if no store is bound (there is nothing local to write to)."""
+        sink = getattr(self, "_label_sink", None)
+        if sink is None:
+            raise RuntimeError(
+                "no label store bound to this incident — pass label_store= to percept.run()/start() "
+                "(or append to a LabelStore directly). incident.record_label() is a LOCAL write."
+            )
+        ctx = getattr(self, "_label_ctx", {})
+        rec = LabelRecord(
+            incident_id=self.id,
+            verdict_ref=ctx.get("verdict_ref", ""),
+            goal_id=ctx.get("goal_id") or self.concern_id,
+            ts=time.time(),
+            good=bool(good),
+            note=note,
+            tags=list(tags),
+            frame_ref=ctx.get("frame_ref"),
+            calibration_version=ctx.get("calibration_version"),
+            source=source,
+        )
+        sink(rec)
+        return rec
+
+
+# ---------------------------------------------------------------------------
+# AttentionIntent — the channel-neutral EFFECTIVE-attention membrane (spec §2.2).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AttentionIntent:
+    """What a fired :class:`Incident` asks of the human's attention — the EFFECTIVE, not authored, request.
+
+    The application embodiment plane (floor, speech, delivery) consumes this instead of reaching into the
+    goal's raw ``delivery`` dict, so two hard invariants live in one place (see ``AttentionPolicy``):
+
+    1. **Priority is effective, never authored.** ``preempt`` here is the value AFTER deterministic
+       clamping — a conductor (an untrusted language author) cannot grant itself ``"interrupt"`` merely by
+       emitting a delivery dict; only a trusted :class:`GoalOrigin` (or an explicit policy allowlist) keeps
+       it. The gap between requested and effective is the spec's two-value pattern.
+    2. **No channel prescription.** ``preferred_channel`` is a free-form HINT, not a modality enum. The SDK
+       must not prescribe application channels: a robot ACT is not just another notification modality (it
+       may need separate authorization), so the app — not this contract — decides speech/UI/webhook/action.
+
+    Fields:
+
+    - ``message`` — the human-facing line to deliver (the goal's ``say`` / the incident message).
+    - ``goal_id`` / ``incident_id`` — provenance handles back to the firing goal + durable incident record.
+    - ``ts`` — the incident timestamp (source clock), or ``None`` when unstamped.
+    - ``preempt`` — the EFFECTIVE floor disposition: ``"interrupt"`` (cut into a live turn), ``"queue"``
+      (hold behind the current turn), or ``"drop"`` (discard if it cannot be delivered now).
+    - ``ttl_s`` — how many seconds a queued intent stays fresh; past it a late nudge is worse than none
+      and the floor drops it. ``None`` = no expiry.
+    - ``verbatim`` — deliver ``message`` exactly (no paraphrase) — for scripted/compliance alerts.
+    - ``preferred_channel`` — an OPTIONAL app-defined hint (e.g. ``"speech"`` / ``"webhook"``); ``None``
+      lets the app choose. NEVER an authorization: the app validates capability + permission per channel.
+    """
+
+    message: str
+    goal_id: str
+    incident_id: str
+    ts: float | None
+    preempt: Literal["interrupt", "queue", "drop"]
+    ttl_s: float | None
+    verbatim: bool
+    preferred_channel: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# LabelRecord (L-1) — the flywheel's raw material: one ground-truth label on a fire.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LabelRecord:
+    """A single ground-truth label on a fired verdict — the OSS flywheel's keystone (L-1, §4.1).
+
+    **One schema, three producers** (BUILD-BOTH rule 1 — do not fork it): manual
+    :meth:`Incident.record_label` (``source="api"``), ASK answers (``source="ask_answer"``, L-2), and
+    watch-calibration reviews (``source="watch_calibration"``, paid W-3). Designed once here so paid
+    never re-derives it.
+
+    **The egress invariant (media-free head / local-only tail).** The record splits in two: every field
+    ABOVE ``frame_ref`` is the *metadata head* and MAY cross the key line; ``frame_ref`` is a LOCAL
+    filesystem path (the pixels' whereabouts) that must NEVER egress. :meth:`to_egress` is built from an
+    explicit :attr:`EGRESS_FIELDS` whitelist that structurally excludes ``frame_ref`` — so the no-pixels
+    rule is a *type-level fact*, not a runtime filter you can forget to apply. The full record (incl.
+    ``frame_ref``) is written LOCALLY by the :class:`~percept.labelstore.LabelStore` via
+    :meth:`to_local_dict`; only :meth:`to_egress` ever feeds a network path.
+    """
+
+    incident_id: str
+    verdict_ref: str  # hash/id of the Verdict that fired — the join key to metering (see labelstore.verdict_ref)
+    goal_id: str
+    ts: float
+    good: bool  # was this fire correct? (False -> billing credit on the paid side)
+    note: str | None = None
+    tags: list[str] = field(default_factory=list)
+    frame_ref: str | None = None  # LOCAL filesystem path ONLY; the local-only tail — NEVER egressed
+    calibration_version: str | None = None  # which prior policy produced the fire
+    source: Literal["api", "voice", "ask_answer", "watch_calibration"] = "api"
+
+    #: The egress whitelist — the metadata head, in declaration order, EXCLUDING ``frame_ref`` (the
+    #: local tail). :meth:`to_egress` emits exactly these names, so ``frame_ref`` is structurally
+    #: un-emittable. A ``ClassVar`` (not a dataclass field): it never serializes and never reaches the
+    #: JSON schema.
+    EGRESS_FIELDS: ClassVar[tuple[str, ...]] = (
+        "incident_id",
+        "verdict_ref",
+        "goal_id",
+        "ts",
+        "good",
+        "note",
+        "tags",
+        "calibration_version",
+        "source",
+    )
+
+    def to_egress(self) -> dict[str, Any]:
+        """The metadata-head dict that MAY cross the key line — structurally cannot contain ``frame_ref``.
+
+        Built from the :attr:`EGRESS_FIELDS` whitelist (which omits ``frame_ref``), so there is no code
+        path — no ``**asdict``, no field iteration — by which the local media pointer leaks to egress."""
+        return {name: getattr(self, name) for name in self.EGRESS_FIELDS}
+
+    def to_local_dict(self) -> dict[str, Any]:
+        """The FULL record — including the local-only ``frame_ref`` — for the on-box
+        :class:`~percept.labelstore.LabelStore`. NEVER hand this to a network sink; use
+        :meth:`to_egress` for anything that crosses the key line."""
+        return {
+            "incident_id": self.incident_id,
+            "verdict_ref": self.verdict_ref,
+            "goal_id": self.goal_id,
+            "ts": self.ts,
+            "good": self.good,
+            "note": self.note,
+            "tags": list(self.tags),
+            "frame_ref": self.frame_ref,
+            "calibration_version": self.calibration_version,
+            "source": self.source,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "LabelRecord":
+        """Reconstruct a record from a JSONL row (the inverse of :meth:`to_local_dict`). Unknown keys
+        are ignored; missing optionals fall back to their defaults, so an older row still loads."""
+        return cls(
+            incident_id=d["incident_id"],
+            verdict_ref=d.get("verdict_ref", ""),
+            goal_id=d.get("goal_id", ""),
+            ts=d["ts"],
+            good=bool(d["good"]),
+            note=d.get("note"),
+            tags=list(d.get("tags") or []),
+            frame_ref=d.get("frame_ref"),
+            calibration_version=d.get("calibration_version"),
+            source=d.get("source", "api"),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -591,6 +871,152 @@ class TTS(Protocol):
     def flush(self) -> None: ...
 
 
+@dataclass(frozen=True)
+class UtteranceEvent:
+    """A complete spoken user turn, endpointed by a :class:`VoiceTransport` (with AEC applied).
+
+    .. deprecated:: 0.6
+        Part of the :class:`VoiceTransport` seam, which moved app-side in the SDK voice diet — no SDK-core
+        behavior consumes it after the diet. It stays FUNCTIONAL this release as a migration aid; the
+        template owns its own ``SpeechRequest``/``VoiceEngine`` types (``engine_adapter.py``). Slated for
+        removal at v0.7/v1.0 unless an SDK-level consumer appears. See ``templates/realtime_voice_watch_agent``.
+
+    ``text`` is the transcript when the transport did its own STT (Pipecat/LiveKit, or a speech-to-speech
+    model); ``audio`` carries raw PCM when the transport ships audio for the brain to transcribe. At least
+    one is set. ``t`` is the transport clock at the endpoint."""
+
+    text: str | None = None
+    audio: "AudioFrame | None" = None
+    t: float | None = None
+
+
+@dataclass(frozen=True)
+class Reply:
+    """The brain's answer handed back to a :class:`VoiceTransport`. ``text`` for a component transport to
+    synthesize (TTS); ``audio`` when the brain already holds speech (e.g. from a live model). Both may be
+    ``None`` for a speech-to-speech transport that already spoke on its own.
+
+    .. deprecated:: 0.6
+        Part of the :class:`VoiceTransport` seam, which moved app-side in the SDK voice diet. FUNCTIONAL
+        this release as a migration aid; the template uses its own ``SpeechRequest`` instead. Slated for
+        removal at v0.7/v1.0 unless an SDK-level consumer appears. See ``templates/realtime_voice_watch_agent``."""
+
+    text: str | None = None
+    audio: "AudioFrame | None" = None
+
+
+@runtime_checkable
+class VoiceTransport(Protocol):
+    """The bidirectional VOICE seam: whoever owns mic + speaker, acoustic echo cancellation (AEC),
+    voice-activity endpointing, and barge-in (Pipecat, LiveKit, browser WebRTC, a speech-to-speech
+    model). Distinct from the chunk-level :class:`STT`/:class:`TTS` *component* seams — a transport owns
+    the whole audio *pipe*.
+
+    .. deprecated:: 0.6
+        The voice embodiment moved app-side in the SDK voice diet: ``RuntimeSession.attach_transport`` is
+        now a raising stub, and no SDK-core behavior consumes this Protocol. It stays DEFINED (functional)
+        this release as a migration seam. The one shipped voice application,
+        ``templates/realtime_voice_watch_agent``, owns its own ``VoiceEngine(Protocol)``/``SpeechRequest``
+        (``engine_adapter.py``) — the component that actually needs engine portability. Slated for removal
+        from core contracts at v0.7/v1.0 unless an SDK-level consumer appears.
+
+    Percept never hand-rolls this (no AEC in Python). Historically a client implemented this Protocol and
+    handed it to ``RuntimeSession.attach_transport``, which wired it to cognition (endpointed utterance ->
+    frame-grounded turn -> streamed reply; barge-in -> interrupt). That wiring now lives in the template's
+    ``PerceptBridge`` against its own ``VoiceEngine`` seam, not here.
+
+    Two archetypes, one interface:
+      * component (Pipecat/LiveKit + STT/TTS): delivers ``text``; :meth:`say` synthesizes the reply.
+      * speech-to-speech (Gemini Live, OpenAI Realtime): its own model hears + speaks; the brain's role is
+        to expose command tools (:meth:`register_tool`), keep the wire GROUNDED (:meth:`sync_state`), and
+        speak proactive fires (:meth:`say`). The wire is not an independent oracle — it answers reactive
+        questions from what the brain has told it, not from raw frames alone.
+
+    **Resume is transparent.** A real transport's underlying session may end + reconnect (a realtime model
+    caps duration; context compacts). Across an internal resume the transport MUST silently re-establish
+    registered tools, the frame provider, and the last :meth:`sync_state` — the caller sees ONE continuous
+    session and never re-registers anything. All registration methods are therefore idempotent.
+    """
+
+    async def start(self) -> None:
+        """Open the transport (room / PeerConnection / mic). Idempotent."""
+        ...
+
+    async def stop(self) -> None:
+        """Tear the transport down. MUST NOT raise (teardown path)."""
+        ...
+
+    def on_utterance(self, cb: "Callable[[UtteranceEvent], Awaitable[None] | None]") -> None:
+        """Register the up-channel sink for a complete (AEC'd, endpointed) user turn. Sync or async cb."""
+        ...
+
+    def on_barge_in(self, cb: "Callable[[], Awaitable[None] | None]") -> None:
+        """Register a sink fired when the user starts speaking during playout (-> ``interrupt``)."""
+        ...
+
+    def on_event(self, cb: "Callable[[dict], Awaitable[None] | None]") -> None:
+        """Optional telemetry sink: ``{"kind": "agent_reply"|"partial"|"error"|..., ...}``. A
+        speech-to-speech transport surfaces what it SAID here so the brain can log + arm goals."""
+        ...
+
+    def on_user_speaking(self, cb: "Callable[[bool], Awaitable[None] | None]") -> None:
+        """Register an up-channel signal that the user's turn started (``True``) / ended (``False``). The
+        brain uses it to time proactive fires (interrupt vs. queue vs. drop) and to price ``SILENT``
+        correctly during a live conversation — a fire mid-sentence, or stale, is worse than silence."""
+        ...
+
+    def on_bot_speaking(self, cb: "Callable[[bool], Awaitable[None] | None]") -> None:
+        """Register an up-channel signal that the AGENT's voice output started (``True``) / stopped
+        (``False``) — the moment audio actually begins playing, NOT when a reply was enqueued. This is the
+        honest end of the audio-to-voice (A2V) latency window: measuring to ``say()``/enqueue understates
+        true latency by the model's TTS first-token time. **Optional/additive** — a transport that can't
+        observe its own playout simply never calls it (the brain then can't price A2V for that wire, but
+        everything else works). Consumers wire it defensively (``hasattr``) so older transports still bind."""
+        ...
+
+    def on_transcript(self, cb: "Callable[[str], Awaitable[None] | None]") -> None:
+        """Register an up-channel sink for the user's turn TRANSCRIPT (a realtime model emits these
+        natively — this reads a field you already pay for, it is NOT adding STT). LOW priority: the brain
+        mines it for evidence ("that's my daughter Maya") + latent intent; nobody is waiting on it."""
+        ...
+
+    async def say(self, reply: "Reply", *, verbatim: bool = False) -> None:
+        """Deliver the brain's line (a reply, or a proactive fire). ``verbatim=False`` (default) = CONVEY:
+        the transport may re-render the intent in its own voice (all a speech-to-speech wire can reliably
+        do). ``verbatim=True`` requests the EXACT wording — a **capability a transport may not honor**
+        (an S2S model best-efforts it; a TTS transport guarantees it). Policy-exact wording that MUST be
+        verbatim should also ride the act channel (``on_incident`` records the message verbatim)."""
+        ...
+
+    async def sync_state(self, summary: str) -> None:
+        """Make a compact BRAIN-STATE summary available to the wire WITHOUT triggering a response
+        (armed goals, recent evidence labels, last fires — goal ids, never delivery scripts). Keeps a
+        speech-to-speech wire's reactive answers coherent with the brain — so "do you see my coffee?"
+        agrees with a caffeine fire 90s ago — and makes any drift in the wire's own memory harmless.
+        Idempotent; re-synced transparently on resume.
+
+        "Without triggering a response" is a HARD requirement, not advisory: only :meth:`say` may cause
+        unprompted audio. A backend that cannot append context silently (e.g. Gemini Live answers every
+        appended turn out loud) must NOT push — stash the summary and expose it for PULL instead (a
+        state tool the model calls), which is how the template's ``PipecatVoiceEngine`` implements it."""
+        ...
+
+    async def interrupt(self) -> None:
+        """Stop the current playout (the downstream half of barge-in). Idempotent."""
+        ...
+
+    def set_frame_provider(self, provider: "Callable[[], Any]") -> None:
+        """Give the transport a pull for the current visual frame (``('image/jpeg', bytes)`` | None) so a
+        speech-to-speech model can attach it per turn (frame-grounded 'what do you see?')."""
+        ...
+
+    def register_tool(self, name: str, schema: dict,
+                      handler: "Callable[[dict], Awaitable[dict] | dict]") -> None:
+        """Expose a tool (e.g. ``arm_goal``) to a transport whose model can call tools. Best-effort: a
+        transport that can't host tools drops it and the brain routes tool intent via the conductor."""
+        ...
+
+
 @runtime_checkable
 class Identity(Protocol):  # Phase 4
     def match(self, obs: Observation, known: list) -> str | None:
@@ -612,10 +1038,12 @@ __all__ = [
     # DTOs
     "Box",
     "Observation",
+    "ClipEvent",
     "Verdict",
     "Provenance",
     "Attribute",
     "Goal",
+    "GoalOrigin",
     "Cost",
     "FalseFireCost",
     "Consequence",
@@ -630,12 +1058,15 @@ __all__ = [
     "Schedule",
     "minute_of_day",
     "GateOn",
+    "SalienceStat",
     "WatchCondition",
     "WatchSpec",
     "Tier0Signal",
     "AudioFrame",
     "IncidentSnippet",
     "Incident",
+    "AttentionIntent",
+    "LabelRecord",
     # Protocols
     "Vision",
     "Specialist",
@@ -643,6 +1074,9 @@ __all__ = [
     "Conductor",
     "STT",
     "TTS",
+    "UtteranceEvent",
+    "Reply",
+    "VoiceTransport",
     "Identity",
     "Persistence",
 ]

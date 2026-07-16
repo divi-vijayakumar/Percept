@@ -24,11 +24,14 @@ from percept.harness.detectors import WakePolicy
 
 from percept.harness.tier0 import (
     CivilTime,
+    EGO_COMPENSATE_KEY,
     Frame,
     GatedWatchLoop,
     MotionGate,
+    SALIENCE_STAT_KEY,
     civil_from_epoch,
     compile_watchspec,
+    ego_residual_score,
     gray_frame,
     motion_score,
     run_gated_watch,
@@ -603,6 +606,183 @@ class FunnelTests(unittest.TestCase):
         self.assertEqual(snap[funnel_key("fired", camera="camera")], 1)
         self.assertEqual(snap[funnel_key("refused", concern="g1")], 1)  # the still-frame judge abstained
         self.assertTrue(any(getattr(e, "action", None) == "fire" for e in report.fire_events))
+
+
+def _localized(val: int = 255, size: int = 2) -> Frame:
+    """A small ``size x size`` patch in the top-left corner on an otherwise still 8x8 frame."""
+    px = [0] * (W * H)
+    for r in range(size):
+        for c in range(size):
+            px[r * W + c] = val
+    return Frame(w=W, h=H, pixels=tuple(px))
+
+
+class SalienceModeTests(unittest.TestCase):
+    """Mode A (localized block statistic) + Mode B (ego compensation) — both parity-mirrored in JS."""
+
+    def test_block_max_recovers_localized_event_that_mean_misses(self):
+        prev, cur = still(), _localized()
+        mean = motion_score(prev, cur)
+        bmax = motion_score(prev, cur, stat="block_max")
+        # A corner patch averages away under the whole-frame mean but lights a single block.
+        self.assertLess(mean, 0.10)          # below the shipped 0.10 gate -> MISSED by mean
+        self.assertGreaterEqual(bmax, 0.10)  # cleared by block_max -> recall recovered
+        self.assertGreater(bmax, mean)
+
+    def test_mean_stat_is_byte_for_byte_the_default(self):
+        prev, cur = still(), motion(40)
+        self.assertEqual(motion_score(prev, cur), motion_score(prev, cur, stat="mean"))
+
+    def test_block_max_dominates_p95_dominates_zero(self):
+        prev, cur = still(), _localized(size=3)
+        p95 = motion_score(prev, cur, stat="p95")
+        bmax = motion_score(prev, cur, stat="block_max")
+        self.assertGreaterEqual(bmax, p95)
+        self.assertGreaterEqual(p95, 0.0)
+        self.assertGreaterEqual(bmax, motion_score(prev, cur) - 1e-12)  # max block >= whole-frame mean
+
+    def test_block_stat_composes_with_region(self):
+        # A patch OUTSIDE the region contributes nothing, even to block_max.
+        px = [0] * (W * H)
+        for r in range(6, 8):
+            for c in range(6, 8):
+                px[r * W + c] = 255
+        cur = Frame(w=W, h=H, pixels=tuple(px))
+        roi = Box(x=0.0, y=0.0, w=0.5, h=0.5)  # top-left quadrant; the patch is bottom-right
+        self.assertEqual(motion_score(still(), cur, stat="block_max", region=roi), 0.0)
+
+    def test_unknown_stat_raises(self):
+        with self.assertRaises(ValueError):
+            motion_score(still(), motion(10), stat="median")
+
+    def test_ego_residual_never_exceeds_the_full_frame_mean(self):
+        prev, cur = still(), motion(40)  # the (0,0) shift is in the search, so residual <= mean
+        self.assertLessEqual(ego_residual_score(prev, cur), motion_score(prev, cur) + 1e-12)
+
+    def test_ego_compensates_a_pure_pan(self):
+        w, h = 16, 16
+        base = tuple((x * 11 + y * 7) % 256 for y in range(h) for x in range(w))
+        panned = tuple(base[y * w + min(x + 2, w - 1)] for y in range(h) for x in range(w))
+        prev, cur = (w, h, base), (w, h, panned)
+        self.assertGreater(motion_score(prev, cur), 0.02)          # a pan looks like lots of motion
+        self.assertLess(ego_residual_score(prev, cur, k=4), 0.01)  # ...but the residual is ~0
+
+    def test_ego_first_frame_is_zero(self):
+        self.assertEqual(ego_residual_score(None, motion(10)), 0.0)
+
+
+class MotionGateModeTests(unittest.TestCase):
+    """The gate honors per-condition salience mode; reports energy; fills structural/semantic slots."""
+
+    def setUp(self):
+        self.cfg = load_settings()
+
+    def _spec(self, **overrides) -> WatchSpec:
+        return WatchSpec(conditions=[WatchCondition(goal_id="g", anchor_text="x", threshold=0.10, **overrides)])
+
+    def test_block_max_condition_escalates_a_localized_event_a_mean_condition_misses(self):
+        loc = _localized()
+        mean_gate = MotionGate(self._spec(salience_stat="mean"), settings=self.cfg)
+        bmax_gate = MotionGate(self._spec(salience_stat="block_max"), settings=self.cfg)
+        mean_gate.evaluate(still(), ts=0.0)
+        bmax_gate.evaluate(still(), ts=0.0)
+        self.assertFalse(mean_gate.evaluate(loc, ts=1.0).escalate)  # missed by the whole-frame mean
+        self.assertTrue(bmax_gate.evaluate(loc, ts=1.0).escalate)   # caught by block_max
+
+    def test_ego_condition_suppresses_a_pan_that_a_mean_condition_fires_on(self):
+        w = h = 16
+        # high column-to-column contrast so a 1px pan looks like heavy whole-frame motion (mean gate fires)
+        base = tuple((x * 60 + y * 30) % 256 for y in range(h) for x in range(w))
+        panned = tuple(base[y * w + min(x + 1, w - 1)] for y in range(h) for x in range(w))
+        prev, cur = (w, h, base), (w, h, panned)
+        # precondition: this pan is a false-positive for the mean gate but not the ego gate
+        self.assertGreaterEqual(motion_score(prev, cur), 0.10)
+        self.assertLess(ego_residual_score(prev, cur), 0.10)
+        mean_gate = MotionGate(self._spec(salience_stat="mean"), settings=self.cfg)
+        ego_gate = MotionGate(self._spec(ego_compensate=True), settings=self.cfg)
+        mean_gate.evaluate(prev, ts=0.0)
+        ego_gate.evaluate(prev, ts=0.0)
+        self.assertTrue(mean_gate.evaluate(cur, ts=1.0).escalate)   # mean false-escalates on the pan
+        self.assertFalse(ego_gate.evaluate(cur, ts=1.0).escalate)   # ego does not
+
+    def test_energy_is_reported_on_the_signal(self):
+        d = MotionGate(self._spec(), settings=self.cfg).evaluate(still(), ts=0.0, energy=0.42)
+        self.assertEqual(d.signal.energy, 0.42)
+
+    def test_energy_absent_is_none_byte_for_byte(self):
+        d = MotionGate(self._spec(), settings=self.cfg).evaluate(still(), ts=0.0)
+        self.assertIsNone(d.signal.energy)
+
+    def test_structural_adapter_populates_signal_and_arms_a_structural_goal(self):
+        gate = MotionGate(
+            self._spec(gate_on="structural"), settings=self.cfg, structural_adapter=lambda f: 0.9
+        )
+        d = gate.evaluate(still(), ts=0.0)
+        self.assertEqual(d.signal.structural, 0.9)
+        self.assertTrue(d.escalate)  # 0.9 >= 0.10
+
+    def test_no_adapter_leaves_structural_semantic_zero(self):
+        d = MotionGate(self._spec(), settings=self.cfg).evaluate(motion(40), ts=0.0)
+        self.assertEqual((d.signal.structural, d.signal.semantic), (0.0, 0.0))
+
+    def test_reported_motion_gauge_is_full_frame_mean_even_for_a_block_max_goal(self):
+        # the escalate comparison uses block_max, but the up-channel gauge stays the plain mean
+        loc = _localized()
+        gate = MotionGate(self._spec(salience_stat="block_max"), settings=self.cfg)
+        gate.evaluate(still(), ts=0.0)
+        d = gate.evaluate(loc, ts=1.0)
+        self.assertAlmostEqual(d.signal.motion, motion_score(still(), loc), places=12)
+
+
+class CompileWatchSpecModeTests(unittest.TestCase):
+    """Selection: deployment default (settings.edge) overlaid with a fail-safe per-goal override."""
+
+    def test_deployment_default_applies_to_all_goals(self):
+        spec = compile_watchspec(
+            [watch_goal("g", "coffee")], threshold=0.1, salience_stat="block_max", ego_compensate=True
+        )
+        c = spec.conditions[0]
+        self.assertEqual(c.salience_stat, "block_max")
+        self.assertTrue(c.ego_compensate)
+
+    def test_per_goal_override_beats_the_default(self):
+        g = watch_goal("g", "coffee", **{SALIENCE_STAT_KEY: "p95", EGO_COMPENSATE_KEY: False})
+        c = compile_watchspec([g], threshold=0.1, salience_stat="block_max", ego_compensate=True).conditions[0]
+        self.assertEqual(c.salience_stat, "p95")  # per-goal wins over the deployment default
+        self.assertFalse(c.ego_compensate)
+
+    def test_malformed_override_falls_back_to_the_default(self):
+        g = watch_goal("g", "coffee", **{SALIENCE_STAT_KEY: "bogus", EGO_COMPENSATE_KEY: "yes"})
+        c = compile_watchspec([g], threshold=0.1, salience_stat="block_max", ego_compensate=True).conditions[0]
+        self.assertEqual(c.salience_stat, "block_max")  # invalid vocab -> deployment default
+        self.assertTrue(c.ego_compensate)               # non-bool -> deployment default
+
+    def test_default_is_mean_no_ego(self):
+        c = compile_watchspec([watch_goal("g", "coffee")], threshold=0.1).conditions[0]
+        self.assertEqual(c.salience_stat, "mean")
+        self.assertFalse(c.ego_compensate)
+
+    def test_per_stat_threshold_applies_to_the_resolved_stat(self):
+        # block_max/p95 goals get their own (higher) base cutoff; mean goals keep the mean threshold.
+        st = {"block_max": 0.20, "p95": 0.15}
+        gm = watch_goal("m", "mean goal")
+        gb = watch_goal("b", "block goal", salience_stat="block_max")
+        gp = watch_goal("p", "p95 goal", salience_stat="p95")
+        spec = compile_watchspec([gm, gb, gp], threshold=0.10, stat_thresholds=st)
+        by = {c.goal_id: c for c in spec.conditions}
+        self.assertAlmostEqual(by["m"].threshold, 0.10)  # mean -> base threshold
+        self.assertAlmostEqual(by["b"].threshold, 0.20)  # block_max -> its own cutoff
+        self.assertAlmostEqual(by["p"].threshold, 0.15)  # p95 -> its own cutoff
+
+    def test_per_stat_threshold_still_adds_motion_bias(self):
+        g = watch_goal("b", "block goal", salience_stat="block_max", motion_bias=0.05)
+        c = compile_watchspec([g], threshold=0.10, stat_thresholds={"block_max": 0.20}).conditions[0]
+        self.assertAlmostEqual(c.threshold, 0.25)  # 0.20 base + 0.05 bias
+
+    def test_no_stat_thresholds_falls_back_to_base(self):
+        g = watch_goal("b", "block goal", salience_stat="block_max")
+        c = compile_watchspec([g], threshold=0.10).conditions[0]  # no stat_thresholds passed
+        self.assertAlmostEqual(c.threshold, 0.10)  # unchanged -> back-compat
 
 
 if __name__ == "__main__":  # pragma: no cover

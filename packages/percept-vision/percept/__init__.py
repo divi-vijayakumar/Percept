@@ -17,6 +17,7 @@ from .adapters import (
     Enricher,
     Evidence,
     Goal,
+    GoalOrigin,
     Observation,
     STTEvent,
     Tier0Signal,
@@ -25,9 +26,17 @@ from .adapters import (
     WatchCondition,
     WatchSpec,
 )
-from percept.contracts import AudioFrame, CONTRACT_VERSION, Incident, IncidentSnippet
+from percept.contracts import (
+    AttentionIntent,
+    AudioFrame,
+    CONTRACT_VERSION,
+    Incident,
+    IncidentSnippet,
+    LabelRecord,
+)
+from .labelstore import DispositionLog, LabelStore, verdict_ref
 from .cache import CacheCascade, CacheKey, CacheResult, FrameHashLayer
-from .config import Settings, load_settings
+from .config import ModeError, Settings, load_settings
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
 from .entity import Entity, EntityGraph
 from .episodes import Episode, EpisodeLog
@@ -86,17 +95,30 @@ del _resolve_version, _pkg_version, _PkgNotFound
 # Imported after __version__ so agent.health() can read it lazily without a cycle.
 from .agent import FireEvent, Percept  # noqa: E402
 
+# The runtime worker — the batteries-included "watch a source" front door. Surfaced at top level
+# (PR: Wave 0) so `percept.run` / `percept.RuntimeSession` are the FIRST thing a builder reaches,
+# instead of being two import-hops deep at `percept.runtime.worker.run`. Import is stdlib-pure
+# (cv2/numpy are lazy inside run()), so the zero-vendor-import invariant holds.
+from .runtime import RuntimeSession, RuntimeStats, run, start  # noqa: E402
+
 __all__ = [
     "__version__",
     "Percept",
     "FireEvent",
+    "ModeError",
     "registry",
+    # the runtime front door (start here)
+    "run",
+    "start",
+    "RuntimeSession",
+    "RuntimeStats",
     # DTOs
     "Box",
     "Observation",
     "Verdict",
     "Attribute",
     "Goal",
+    "GoalOrigin",
     "Concern",
     "Consequence",
     "Evidence",
@@ -110,6 +132,12 @@ __all__ = [
     "AudioFrame",
     "Incident",
     "IncidentSnippet",
+    "AttentionIntent",
+    # flywheel rail (L-1) — local label + disposition stores
+    "LabelRecord",
+    "LabelStore",
+    "DispositionLog",
+    "verdict_ref",
     # contract version
     "CONTRACT_VERSION",
     # cognition core

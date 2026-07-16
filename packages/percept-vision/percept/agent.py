@@ -10,15 +10,16 @@ from __future__ import annotations
 
 import inspect
 import time
+import warnings
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Callable
 
 from . import registry
-from .adapters import Box, Decision, Goal, TurnResult, Verdict
+from .adapters import Box, Decision, Goal, GoalOrigin, TurnResult, Verdict
 from .behavior import BehaviorExecutor, program_of
 from .cache import CacheCascade, CacheKey, FrameHashLayer
 from .concern import attention_weight, consequence_of, requires_verification, resolution_ready
-from .config import Settings, load_settings
+from .config import ModeError, Settings, load_settings, missing_credential, resolve_mode
 from .escalation import MAX_PERCEPTION_LEVEL, escalate_perception, should_escalate
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
 from .entity import EntityGraph
@@ -26,7 +27,7 @@ from .episodes import EpisodeJudge, EpisodeLog
 from .events import AudioWindow, EventLog, FrameWindow
 from .gate import FIRE, Gate, GateAction, classify
 from .goals import GoalOp, GoalRegistry
-from .observability import Funnel, Metrics, OTelExporter, TraceEvent, health, judge_usage
+from .observability import Funnel, Metrics, OTelExporter, TraceEvent, get_logger, health, judge_usage
 from .rhythm import RhythmTracker
 from .routing import RouteEngine
 from .scheduler import Scheduler
@@ -118,6 +119,80 @@ def _resolve(seam: str, value: Any, cfg: Settings):
     return value  # already an adapter (handy for tests / custom wiring)
 
 
+def _is_scripted_backend(obj: Any) -> bool:
+    """True iff ``obj`` is one of Percept's in-core scripted doubles (``percept.backends.fake``).
+
+    A real vendor adapter (``percept.backends.anthropic`` …) OR any custom/test double counts as
+    NOT scripted. The point is to catch a REAL pipeline silently paired with a scripted double — not
+    to classify third-party wiring — so identity is by the module (the class is the FACT), never a
+    heuristic on the requested name (a registry miss / plugin / stray ``PERCEPT_*_BACKEND`` can land
+    you on a scripted double after you asked for real; the string is the request, the class the fact).
+    """
+    return type(obj).__module__ == "percept.backends.fake"
+
+
+# One announced vocabulary: "offline" (the mode) selects "scripted" (the backends).
+_SCRIPTED_SEAMS = ("vision", "specialist", "conductor", "stt", "tts")
+_BANNER_EMITTED = False  # once-per-process guard for the loud stderr banner (§4 banner discipline)
+
+
+def _scripted_seams(core: Any) -> list[str]:
+    """The seams whose CONSTRUCTED backend is a scripted double, in a stable order (health/§4)."""
+    return [s for s in _SCRIPTED_SEAMS if _is_scripted_backend(getattr(core, s, None))]
+
+
+def _emit_banner(mode: str, scripted: list[str]) -> None:
+    """The loud stderr banner — once per process, suppressed under pytest (895 banners self-defeat)."""
+    global _BANNER_EMITTED
+    import os
+    import sys
+
+    if _BANNER_EMITTED or "pytest" in sys.modules or os.environ.get("PERCEPT_NO_BANNER"):
+        return
+    _BANNER_EMITTED = True
+    header = "OFFLINE" if mode == "offline" else "SCRIPTED BACKENDS"
+    sys.stderr.write(
+        f"[percept] ⚠ {header} — scripted backends: {', '.join(scripted)}.\n"
+        f"          This proves WIRING, not intelligence. A scripted conductor authors NO goals.\n"
+    )
+
+
+def guard_live_language_path(core: Any, *, allow_scripted_brain: bool = False) -> None:
+    """FATAL seam: refuse to wire a LIVE voice/language path behind a SCRIPTED brain (§5).
+
+    The conductor is the language-authoring seam — it turns an utterance into ``goal_ops``. A scripted
+    conductor's default ``Decision(route="ignore")`` silently discards every spoken "watch/tell me
+    when…", so the user wired a voice that can't author. That is the demo bug; refuse it at the
+    language↔conductor crossing (``on_speech_endpoint`` / ``arm_from_language``) and at the live-voice
+    wiring points ``run(on_utterance=…)`` / ``session.start(on_utterance=…)`` — NOT at ``create()``, which
+    cannot yet know a language path is coming. (An app that wires a voice ENGINE — see
+    ``templates/realtime_voice_watch_agent`` — calls this itself at ``PerceptBridge.attach``.)
+
+    Skipped when the whole run is declared scripted (``mode="offline"`` — everything is announced
+    scripted, including the voice) or when the ugly-on-purpose ``allow_scripted_brain`` hatch is set.
+    """
+    if allow_scripted_brain or getattr(core, "_allow_scripted_brain", False):
+        return
+    if getattr(core, "_mode", "live") == "offline":
+        return
+    conductor = getattr(core, "conductor", None)
+    if conductor is not None and _is_scripted_backend(conductor):
+        raise ModeError(
+            "scripted brain behind a live voice: a language path (on_utterance / an attached "
+            "transport) is wired, but the conductor is SCRIPTED — it authors NO goals, so every "
+            "spoken 'watch X' / 'tell me when…' is silently dropped. Fix: select a real conductor "
+            "(conductor='claude'/'gemini' or PERCEPT_CONDUCTOR_BACKEND=…) with its API key; or, to "
+            "test the voice plumbing only, run mode='offline' or pass allow_scripted_brain=True."
+        )
+
+
+# Backwards-compatible alias: this seam was named ``_guard_live_language_path`` before it was made a
+# public template import (PCPT-026). The underscore name is kept so existing internal callers and
+# ``from percept.agent import _guard_live_language_path`` sites keep working; new code imports the
+# public ``guard_live_language_path``.
+_guard_live_language_path = guard_live_language_path
+
+
 @dataclass
 class Percept:
     """The cognition core: backends behind the seams + the memory structures + the gate."""
@@ -155,6 +230,13 @@ class Percept:
     _executor: Any = None  # BehaviorExecutor — the unified firing path (lazily bound to self.gate)
     otel: OTelExporter | None = None  # optional OTel mirror for the funnel; None -> in-process only
     _funnel: Any = None  # Funnel — the standard telemetry funnel (lazily bound to self.metrics)
+    # The announced-scripted state (RFC §4). Set by create(): the resolved mode ("offline"/"live"),
+    # the seams whose CONSTRUCTED backend is a scripted double, and the ugly escape hatch. Read by
+    # health() (the single §4 payload) and by the language-path FATAL seam. NOT construction inputs the
+    # caller passes as dataclass fields — create() fills them.
+    _mode: str = "live"
+    _scripted: tuple = ()
+    _allow_scripted_brain: bool = False
 
     # -- construction --------------------------------------------------------
     @classmethod
@@ -173,15 +255,61 @@ class Percept:
         identity: Any = None,
         embedder: Callable[[Any, Box], Any] | None = None,
         on_trace: Callable[[Any], None] | None = None,
+        on_health: Callable[[str], None] | None = None,
+        mode: str | None = None,
+        allow_scripted_brain: bool = False,
     ) -> "Percept":
         cfg = settings or load_settings()
-        # A seam not explicitly passed falls back to the config/env selection (settings.models.*, i.e.
-        # the PERCEPT_*_BACKEND vars) so the .env controls which adapter each seam uses. Default: fake.
-        vision = cfg.models.vision if vision is None else vision
-        specialist = cfg.models.specialist if specialist is None else specialist
-        conductor = cfg.models.conductor if conductor is None else conductor
+        # The mode is the switch: explicit kwarg > PERCEPT_MODE env > live. It is never "offline" by
+        # NOT typing something — you fall onto scripted backends only by naming the mode or selecting a
+        # scripted seam, which is the whole point (faking must be a choice you make and see).
+        resolved_mode = resolve_mode(mode)
+        offline = resolved_mode == "offline"
+        # Per-seam resolution: explicit kwarg > settings.models.* (env/ModelSettings) > mode default.
+        # vision/conductor/specialist now default None (config.py); stt/tts still default "fake". An
+        # unset seam becomes "scripted" offline. In LIVE mode an unset VISION is the bare-create() trap
+        # (no real perception, no key) -> ModeError; conductor/specialist fall back to scripted and are
+        # announced LOUDLY below (the code-armed watch is a legitimate pattern — see §5, not a crash).
+        def _pick(name: str, kwarg: Any, cfg_value: Any, *, required: bool,
+                  scripted_default: str = "scripted") -> Any:
+            sel = kwarg if kwarg is not None else cfg_value
+            if sel is not None:
+                return sel
+            if offline:
+                return scripted_default
+            if required:
+                raise ModeError(
+                    f"no {name} backend selected and this is a LIVE run — Percept will not silently "
+                    f"fall back to a scripted double. Fix: pass mode='offline' for keyless scripted "
+                    f"backends (proves WIRING, not intelligence), or select a real backend "
+                    f"({name}='claude'/'gemini') and set its API key."
+                )
+            return scripted_default
+
+        vision = _pick("vision", vision, cfg.models.vision, required=True)
+        specialist = _pick("specialist", specialist, cfg.models.specialist, required=False)
+        # The conductor is the language-authoring seam: an UNSET one defaults to the HONEST scripted double
+        # (ScriptedConductor — no-match -> route="respond_direct"), NEVER FakeConductor whose default
+        # route="ignore" is the one value indistinguishable from a real conductor declining (RFC §8). So
+        # `mode="offline"` — the door people explore through — no longer hands back a brain that discards
+        # every utterance and looks like it worked.
+        conductor = _pick("conductor", conductor, cfg.models.conductor, required=False,
+                          scripted_default="scripted-conductor")
         stt = cfg.models.stt if stt is None else stt
         tts = cfg.models.tts if tts is None else tts
+        # LIVE credential check: a SELECTED real backend name whose key is absent raises ModeError
+        # naming the exact env var(s) — never construct-then-fail-silently at first call. Per-backend
+        # (not hardcoded to one vendor). Skipped offline (a declared real seam offline needs no key —
+        # it is not going to make a live call). Adapter instances the caller wired directly are skipped.
+        if not offline:
+            for seam_name, sel in (("vision", vision), ("specialist", specialist),
+                                   ("conductor", conductor), ("stt", stt), ("tts", tts)):
+                keys = missing_credential(sel)
+                if keys:
+                    raise ModeError(
+                        f"{seam_name} backend {sel!r} needs a credential and none is set. Fix: export "
+                        f"one of {list(keys)}, or run mode='offline' (keyless scripted backends)."
+                    )
         if discover_plugins:
             registry.discover_entrypoints()
         clk = clock or time.monotonic
@@ -192,7 +320,7 @@ class Percept:
             [FrameHashLayer(cfg.cache, clock=clk)] if cfg.cache.enabled else []
         )
         auditor = audit if audit is not None else DeterministicAuditor(cfg.cache.audit_rate)
-        return cls(
+        obj = cls(
             vision=_resolve("vision", vision, cfg),
             specialist=_resolve("specialist", specialist, cfg),
             conductor=_resolve("conductor", conductor, cfg),
@@ -221,11 +349,81 @@ class Percept:
                 allowed_actions=cfg.consent.allowed_actions,
             ),
             action_log=ActionLog(),
+            _mode=resolved_mode,
+            _allow_scripted_brain=allow_scripted_brain,
         )
+        # R3: when the entity graph evicts a track (it caps at max_entities), sweep that entity's derived
+        # state — its ``(goal_id, entity_id)`` gate keys AND any cached verdicts resting on it — so a 24/7
+        # churn of entities can't leave orphan edges accumulating in the gate. Wired here (not at graph
+        # construction) because the gate is built alongside the graph in the same call.
+        obj.graph.on_evict = obj._on_entity_evicted
+        # Announce scripted backends LOUDLY at construction, in the one consistent vocabulary (RFC §4/§5).
+        # This decides on the CONSTRUCTED CLASS (the fact), not the requested name — a registry miss /
+        # plugin / stray PERCEPT_*_BACKEND can land a scripted double after you asked for real.
+        scripted = _scripted_seams(obj)
+        obj._scripted = tuple(scripted)
+        if scripted:
+            log = get_logger("percept.agent")
+            conductor_scripted = _is_scripted_backend(obj.conductor)
+            # create() can only LOG — it CANNOT know whether a language path (on_utterance, or an
+            # app-side voice engine) will be wired later. So the FATAL "scripted brain behind a live
+            # voice" check lives at the language↔conductor crossing (+ the live-voice wiring points);
+            # here we only warn.
+            if conductor_scripted:
+                # The common, LEGITIMATE code-armed pattern: goals via add_goal(), no voice. Non-fatal.
+                log.warning(
+                    "scripted_conductor: the conductor is SCRIPTED — language goal-authoring is OFF; "
+                    "goals must be code-armed via add_goal(). A spoken 'tell me when…' will be ignored. "
+                    "(scripted seams: %s; mode=%s)", ", ".join(scripted), resolved_mode,
+                )
+                if on_health is not None:
+                    on_health("scripted_conductor")
+            else:
+                log.warning(
+                    "scripted_backends: %s are SCRIPTED — this proves WIRING, not intelligence. "
+                    "(mode=%s)", ", ".join(scripted), resolved_mode,
+                )
+            _emit_banner(resolved_mode, scripted)
+        return obj
 
     # -- goal authoring ------------------------------------------------------
     def add_goal(self, goal: Goal) -> Goal:
-        return self.goals.create(goal)
+        # PROVENANCE (PCPT-026): the STRUCTURED entry point stamps STRUCTURED_TRUSTED, OVERWRITING
+        # whatever the caller supplied — a caller cannot claim interrupt-trust by pre-filling ``origin``.
+        # ``replace`` (not in-place set) so this is correct even if Goal is later frozen.
+        goal = replace(goal, origin=GoalOrigin.STRUCTURED_TRUSTED)
+        self._arm_deadline(goal)  # R3: resolve an authored duration into an absolute stamp at ARM time
+        result = self.goals.create(goal)
+        # D3a: cache-invalidate on the direct arm() path too (only apply_goal_ops did before). A goal id
+        # re-armed with a new condition must not be served a verdict cached under its OLD meaning — the
+        # goal-change step of the invalidation order (§6.2). Runs AFTER _arm_deadline so a legacy
+        # deadline_s still raises loudly (never silently cached-then-armed).
+        self.invalidate_cache(goal.id)
+        return result
+
+    def _arm_deadline(self, goal: Goal) -> None:
+        """Resolve a ``deadline`` concern's authored DURATION into an absolute ``deadline_at`` on THIS
+        agent's clock, at the moment the goal is armed (R3: one field, one meaning, one clock).
+
+        ``deadline_after_s`` (a duration) -> ``deadline_at = clock() + deadline_after_s``. The executor
+        only ever compares against ``deadline_at``, on the same timeline the worker stamps frames on
+        (wall for live capture). A legacy absolute ``deadline_s`` in ``goal.state`` (an old author or a
+        v1 snapshot) has NO recoverable duration base, so it is refused LOUDLY — never silently reused
+        under a new meaning that would fire on the wrong frame or never fire at all."""
+        st = goal.state
+        if st.get("rearm") != "deadline":
+            return
+        if st.get("deadline_at") is not None:
+            return  # already absolute (e.g. a verification concern that stamped it directly)
+        if "deadline_after_s" in st:
+            st["deadline_at"] = self.clock() + float(st["deadline_after_s"])
+            return
+        if "deadline_s" in st:
+            raise ValueError(
+                f"goal {goal.id!r} carries a legacy 'deadline_s' (ambiguous absolute-vs-duration, the "
+                "A-2 clock bug). Re-author as 'deadline_after_s' (a duration from arm). Refusing to arm "
+                "a deadline concern whose stamp would fire on the wrong timeline or never fire."
+            )
 
     # -- episode counting (the cup problem) ---------------------------------
     def count_event(
@@ -334,11 +532,24 @@ class Percept:
         return out
 
     def apply_goal_ops(self, ops: list[GoalOp]) -> None:
+        # PROVENANCE (PCPT-026): goal ops arrive from the CONDUCTOR (the language-authoring seam —
+        # arm_from_language / _apply_decision), an UNTRUSTED author. Stamp every created goal
+        # LANGUAGE_AUTHORED, OVERWRITING whatever it supplied, so its interrupt requests are clamped
+        # (see AttentionPolicy). ``update`` ops can never touch ``origin`` (GoalRegistry drops that key).
+        for op in ops:
+            if op.op == "create" and op.goal is not None:
+                op.goal = replace(op.goal, origin=GoalOrigin.LANGUAGE_AUTHORED)
         self.goals.apply(ops)
-        # cache invalidation — goal-change (1st in the order): a goal whose condition/lifecycle
-        # changed must not be served from a verdict cached under its old meaning.
         for op in ops:
             gid = op.goal.id if op.op == "create" and op.goal is not None else op.goal_id
+            # R3: resolve an authored deadline duration to an absolute stamp at ARM time — a goal armed
+            # mid-run (voice) must get its deadline_at on the live clock, not silently stay a duration.
+            if op.op in ("create", "update") and gid is not None:
+                g = self.goals.get(gid)
+                if g is not None:
+                    self._arm_deadline(g)
+            # cache invalidation — goal-change (1st in the order): a goal whose condition/lifecycle
+            # changed must not be served from a verdict cached under its old meaning.
             if op.op in ("update", "complete", "cancel") and gid is not None:
                 self.invalidate_cache(gid)
 
@@ -489,7 +700,8 @@ class Percept:
             lost = last is not None and (now - last) > bound
             # observability is a derived FACT (we KNOW we haven't seen it), not a perceptual guess
             verdict = Verdict(satisfied=lost, confidence=1.0, evidence="coverage")
-            action = self.gate.evaluate((goal.id, "__coverage__"), verdict)
+            # per-goal singleton -> exempt from the R-1 TTL sweep (a dropped edge would re-fire coverage-loss)
+            action = self.gate.evaluate((goal.id, "__coverage__"), verdict, no_evict=True)
             self.metrics.incr(f"coverage.gate.{action}")
             if action == FIRE:
                 out.append(FireEvent(goal.id, FIRE, self._coverage_text(goal), None, verdict))
@@ -520,7 +732,7 @@ class Percept:
         by construction: it fires on the LACK of a confident-yes, never on a guess. Rides the existing
         tick/scheduler loop (S2) and feeds a synthetic verdict to the UNCHANGED gate on a dedicated
         ``__overdue__`` key -> fires ONCE per overdue episode, re-arms if the expected event arrives.
-        Only ``rearm == 'deadline'`` concerns (with a ``deadline_s``) participate -> byte-for-byte.
+        Only ``rearm == 'deadline'`` concerns (with a resolved ``deadline_at``) participate -> byte-for-byte.
         """
         now = self.clock() if t is None else t
         out: list[FireEvent] = []
@@ -562,7 +774,7 @@ class Percept:
             )
             if gtype == "process":
                 verdict = Verdict(satisfied=ended, confidence=1.0, evidence="episode")
-                action = self.gate.evaluate((goal.id, "__episode__"), verdict)
+                action = self.gate.evaluate((goal.id, "__episode__"), verdict, no_evict=True)  # singleton
                 self.metrics.incr(f"episode.gate.{action}")
                 if action == FIRE:
                     answer = await self.summarize_process(goal.id, wipe=True)  # consolidate + reset
@@ -603,14 +815,48 @@ class Percept:
             pass
 
     async def perceive_judged(
-        self, frame: Any, source: str = "camera", *, t: float | None = None
+        self, frame: Any, source: str = "camera", *, t: float | None = None,
+        expected_goals_revision: int | None = None,
     ) -> list[FireEvent]:
         """Judge every active *watch* goal against ``frame`` and emit gate actions on rising edges.
 
         Event / scheduler goals run through their own paths (:meth:`perceive_events`, :meth:`tick`)
         but feed the **same three-state gate** — one gate, two perception tracks (spec §5.6).
+
+        ``expected_goals_revision`` (the non-blocking-dispatch seam): the goal-registry revision this
+        frame was ADMITTED under. When set, the call aborts — returning without applying anything —
+        the moment ``self.goals.revision`` no longer matches, checked **after every network await and
+        before the mutation it feeds**. This is what makes an OFF-LOOP judgment safe: while the vision
+        call is in flight the conductor may disarm a goal or replace it under the same id, and a stale
+        verdict must not flip a rising-edge latch, write a disposition/action record, stamp
+        coverage/deadline satisfaction, or judge old evidence as-if under the newly authored plan.
+        Filtering the *returned* fires would be too late — the gate mutates inside this call
+        (:meth:`_fire_concern` / the executor), so the abort lives here, before the gate.
+
+        Abort semantics (what is protected vs what may proceed):
+
+        - **Aborted on staleness** — every goal-conditioned application: gate/latch evaluation,
+          executor context (running answer / process log / transition state), ``last_supported`` /
+          ``last_satisfied`` stamps, action-log records, and the confusion auto-refinement pass.
+        - **Allowed to proceed** — frame-level, goal-independent perception: the rolling FrameWindow
+          push and the entity-graph ingest of ``vision.detect`` observations. The graph records what
+          was IN the frame regardless of which goals asked; that world-state stays valid across a
+          goal-registry change (and the verdict cache is keyed by condition text, so a same-id replace
+          can't be served a stale write).
+        - **Mid-loop staleness** (multi-goal): goals already gated under the matching revision keep
+          their (already-applied) fires — swallowing them would strand a flipped latch with no emitted
+          incident — and all *subsequent* judgment/mutation is aborted. With a single active goal this
+          reduces to the plain contract: abort ⇒ ``[]`` and untouched state.
+
+        ``None`` (the default) never checks — byte-for-byte the inline path.
         """
         now = self.clock() if t is None else t
+
+        def _stale() -> bool:
+            return (
+                expected_goals_revision is not None
+                and self.goals.revision != expected_goals_revision
+            )
         # Per-frame decision trace (opt-in via on_trace; no-op otherwise). trace_id correlates this
         # frame's stages; derived from source+timestamp — deterministic WHEN t is supplied (as in
         # tests). With t=None it uses the wall clock, like any production run.
@@ -620,20 +866,27 @@ class Percept:
         if tracing:
             await self._emit_trace(trace_id, now, "source.frame")
         self._window(source).push(now, frame)  # feed the rolling window for temporal perception
+        if _stale():
+            return []  # admitted under an old revision; spend nothing, apply nothing
         observations = await self.vision.detect(frame, self.goals.active())
-        self.graph.ingest(observations, frame, source, t=now)
+        self.graph.ingest(observations, frame, source, t=now)  # goal-independent world-state: proceeds
         focus = self.graph.in_focus()
+        if _stale():
+            return []  # revision moved during the detect call — nothing goal-conditioned applied yet
 
         events: list[FireEvent] = []
         for goal in self.goals.active():
+            if _stale():
+                break  # revision moved during a prior goal's judge — stop before judging under it
             gtype = goal.state.get("type", "watch")
             if gtype == "transition":
-                ev = await self._perceive_transition(goal, frame, focus)
+                ev = await self._perceive_transition(goal, frame, focus, stale=_stale)
                 if ev is not None:
                     events.append(ev)
                 continue
             if gtype == "process":
-                await self._observe_and_log(goal, frame, source, now)  # Item 4: log a delta, never fire here
+                # Item 4: log a delta, never fire here
+                await self._observe_and_log(goal, frame, source, now, stale=_stale)
                 continue
             if gtype != "watch":
                 continue  # event/count/remind goals are handled by their dedicated paths
@@ -665,6 +918,9 @@ class Percept:
                 await self._emit_trace(trace_id, now, "judge.finished", goal_id=goal.id,
                                        satisfied=getattr(verdict, "satisfied", None),
                                        confidence=getattr(verdict, "confidence", None))
+            if _stale():
+                break  # THE choke point: the judge returned, but the plan changed while it was in
+                # flight — abort before ANY application (ctx, coverage stamps, gate, disposition).
             resolved: FireEvent | None = None
             if process_ctx is not None and getattr(verdict, "running_answer", ""):
                 ctx.running_answer = verdict.running_answer  # accumulate the model's rewritten summary
@@ -681,7 +937,7 @@ class Percept:
                 # confidence, never the question text). De-duped through the UNCHANGED gate on a
                 # dedicated __resolved__ key, exactly like the coverage/episode/overdue absence fires.
                 resolved = self._resolve_process_qa(goal, ctx, verdict.confidence)
-            freshness = self._freshness(focus, now)
+            freshness = self._freshness(focus, now, goal.id)
             truth = classify(verdict, freshness, self.gate.threshold, self.gate.fresh_min)
             if truth == "unknown":
                 self.funnel.refused(concern=goal.id, camera=source)  # abstained — refused to guess (ASK)
@@ -712,10 +968,14 @@ class Percept:
                 await self._emit_trace(trace_id, now, "gate.classified", goal_id=goal.id,
                                        truth=truth, action=action)
         self._log_fires(events, now)
+        if _stale():
+            return events  # aborted mid-loop: skip auto-refinement (it authors goal changes)
         await self._deliberate_confused(now)  # Posture B: auto-refine recurrently-ambiguous concerns
         return events
 
-    async def _perceive_transition(self, goal, frame, focus) -> FireEvent | None:
+    async def _perceive_transition(
+        self, goal, frame, focus, *, stale: Callable[[], bool] | None = None
+    ) -> FireEvent | None:
         """Fire on a state change A->B, but ONLY after the 'from' state A was witnessed.
 
         A transition goal carries ``state={"type":"transition","from":<cond A>,"to":<cond B>}``.
@@ -731,6 +991,8 @@ class Percept:
         corrections = focus.asserted() if focus else {}
         from_v = await self.vision.judge(from_cond, frame, roi=roi, corrections=corrections or None)
         to_v = await self.vision.judge(to_cond, frame, roi=roi, corrections=corrections or None)
+        if stale is not None and stale():
+            return None  # goals changed while the from/to judges were in flight — apply nothing
         # Perception (judging from/to) stays here; the seen_from/fired state machine + firing now live
         # in the executor, with that state ISOLATED in its per-concern context (never the gate).
         fired = self.executor.fire_transition(
@@ -742,7 +1004,10 @@ class Percept:
         self.metrics.incr("transition.fire")
         return FireEvent(fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict)
 
-    async def _observe_and_log(self, goal: Goal, frame: Any, source: str, now: float) -> None:
+    async def _observe_and_log(
+        self, goal: Goal, frame: Any, source: str, now: float,
+        *, stale: Callable[[], bool] | None = None,
+    ) -> None:
         """Item 4 (log→summarize→wipe): observe THIS clip's step delta and append it to the per-concern
         log. NEVER fires here — a process goal's answer is produced by :meth:`summarize_process` at the
         episode boundary / on demand. The gate is untouched (no verdict routed)."""
@@ -753,6 +1018,8 @@ class Percept:
         verdict = await self._judge(
             goal, frame, None, {}, frames=strip, context={"observe_step": True}
         )
+        if stale is not None and stale():
+            return  # goals changed while the observe call was in flight — don't log a step under it
         step = (getattr(verdict, "evidence", "") or "").strip()
         if step and step != "not enough evidence":
             ctx.process_log.append(step)  # the VLM never sees this back — cheap append only
@@ -797,10 +1064,17 @@ class Percept:
         ready = resolution_ready(
             answer, len(ctx.process_log), confidence, at_boundary=at_boundary
         )
-        # The de-dup key folds in the answer text so a *changed* answer (more evidence rewrote it) is a
-        # fresh edge that can resolve again, while a repeated identical answer fires only once.
+        # R2b: the answer TEXT used to be folded into the gate key (``(goal, __resolved__, answer)``) — a
+        # permanent key per distinct answer, unbounded over a long process. The discriminator now lives in
+        # ctx: a *changed* answer (more evidence rewrote it) rolls it over and re-arms the ONE singleton
+        # key, so a new answer resolves again while a repeated identical answer fires only once. Marked
+        # no_evict (a per-goal singleton, exempt from the TTL sweep).
+        key = (goal.id, "__resolved__")
+        if ctx.last_resolved_answer is not None and answer != ctx.last_resolved_answer:
+            self.gate.rearm(key)
+        ctx.last_resolved_answer = answer
         verdict = Verdict(satisfied=ready, confidence=confidence, evidence=answer, running_answer=answer)
-        action = self.gate.evaluate((goal.id, "__resolved__", answer), verdict)
+        action = self.gate.evaluate(key, verdict, no_evict=True)
         self.metrics.incr(f"process_qa.resolve.{action}")
         if action != FIRE:
             return None
@@ -907,6 +1181,10 @@ class Percept:
         context: dict | None = None,
     ) -> Verdict:
         process_mode = bool(context and (context.get("process_qa") or context.get("observe_step")))
+        # PR 1.5: a per-goal reference image ("is this THE mug <exemplar>?") — deictic/individuation
+        # grounding the backends already implement but the watch path never supplied. Stable per goal
+        # (set in goal.state), so it rides the goal's cache scope; None (the default) is byte-for-byte.
+        exemplar = goal.state.get("exemplar")
         if frames or audio or process_mode:
             # The strip/audio (escalation) path is rare-by-design and multi-frame; bypass the
             # single-frame cache (its key dHashes ONE frame) so a strip verdict never pollutes — nor is
@@ -915,20 +1193,20 @@ class Percept:
             # ``context`` is passed ONLY for process-QA so a non-process strip judge is byte-for-byte.
             extra = {"context": context} if process_mode else {}
             return await self._timed_judge(
-                goal.condition, frame, roi=roi, corrections=corrections or None,
+                goal.condition, frame, roi=roi, exemplar=exemplar, corrections=corrections or None,
                 frames=frames, audio=audio, **extra,
             )
         # A structured key so the FrameHashLayer can ROI-crop + dHash the frame and scope its
         # entry to (goal, entity); the legacy stub cascade ignores the extra fields harmlessly.
         cache_key = CacheKey(
-            goal_id=goal.id, frame=frame, roi=roi, entity_id=entity_id
+            goal_id=goal.id, frame=frame, roi=roi, entity_id=entity_id, condition=goal.condition
         )
         hit = self.cache.resolve(cache_key)
         if hit.status == "HIT" and hit.verdict is not None:
             self.metrics.incr("cache.hit")
             return await self._audit_or_use(goal, frame, roi, corrections, cache_key, hit.verdict)
         verdict = await self._timed_judge(
-            goal.condition, frame, roi=roi, corrections=corrections or None
+            goal.condition, frame, roi=roi, exemplar=exemplar, corrections=corrections or None
         )
         self.cache.store(cache_key, verdict, verdict.confidence)
         return verdict
@@ -953,7 +1231,7 @@ class Percept:
             return cached
         self.metrics.incr("cache.audit")
         fresh = await self._timed_judge(
-            goal.condition, frame, roi=roi, corrections=corrections or None
+            goal.condition, frame, roi=roi, exemplar=goal.state.get("exemplar"), corrections=corrections or None
         )
         if fresh.satisfied != cached.satisfied:
             self.metrics.incr("cache.false_serve")  # the cache's analog of false-fire
@@ -961,15 +1239,35 @@ class Percept:
             return fresh
         return cached
 
-    def _freshness(self, focus, now: float) -> float:
-        """1.0 if no asserted fact or it's still within the validity window, else 0.0 (stale)."""
-        if focus is None:
-            return 1.0
-        confirmed = [a.last_confirmed for a in focus.attributes.values() if a.source == "asserted"]
-        if not confirmed:
-            return 1.0
-        age = now - max(confirmed)
-        return 1.0 if age < self.settings.gate.validity_window_s else 0.0
+    def _freshness(self, focus, now: float, goal_id: str | None = None) -> float:
+        """Freshness in [0,1]: 1.0 = supported/current, 0.0 = stale (-> ASK, invariant 2).
+
+        Two independent staleness signals, combined as the STRICTER (min) — either going to 0.0 drives
+        freshness below ``fresh_min`` -> ASK, matching invariant 2's OR ("low confidence OR stale -> ASK"):
+
+        * ASSERTED-fact age (always on): a user-asserted attribute older than ``validity_window_s`` is stale.
+        * PERCEPTION recency (A-3b, opt-in via ``gate.stale_ask``): a goal not confidently read within
+          ``validity_window_s`` is stale. ``last_supported[goal_id]`` is stamped on every confident read;
+          because ``classify`` runs BEFORE that stamp, a goal with NO prior read (missing entry) is treated
+          as fresh — the current judgment IS the fresh perception, so a first-ever read must not ASK.
+
+        With ``stale_ask`` OFF (default) the perception term is never consulted and this is byte-for-byte
+        the asserted-only path.
+        """
+        asserted = 1.0
+        if focus is not None:
+            confirmed = [a.last_confirmed for a in focus.attributes.values() if a.source == "asserted"]
+            if confirmed:
+                age = now - max(confirmed)
+                asserted = 1.0 if age < self.settings.gate.validity_window_s else 0.0
+        if not self.settings.gate.stale_ask or goal_id is None:
+            return asserted  # OFF: byte-for-byte the asserted-fact freshness
+        perception = 1.0
+        last = self.last_supported.get(goal_id)
+        if last is not None:
+            age = now - last
+            perception = 1.0 if age < self.settings.gate.validity_window_s else 0.0
+        return min(asserted, perception)
 
     def _ask_text(self, goal: Goal) -> str:
         return f'About "{goal.condition}" — can you confirm?'
@@ -998,6 +1296,13 @@ class Percept:
         # fact is re-judged, never served stale. Empty/stub cascades are a harmless no-op.
         self.invalidate_cache_entity(target)
         return target
+
+    def _on_entity_evicted(self, entity_id: str) -> None:
+        """R3 eviction hook: an entity died (graph cap) -> drop its gate keys and its cached verdicts, so no
+        orphan state survives it. Ties ``FrameHashLayer.invalidate_entity`` to entity DEATH (it previously
+        fired only on assertion-override), closing the adjacent-audit gap."""
+        self.gate.reset_entity(entity_id)
+        self.invalidate_cache_entity(entity_id)
 
     def invalidate_cache(self, goal_id: str | None = None) -> None:
         """Goal-change invalidation: drop a goal's cached verdicts (``None`` clears all)."""
@@ -1045,11 +1350,35 @@ class Percept:
             return TurnResult(route=local.route, source="router", reply=reply)
 
         # DEFER: the conductor routes + authors goals (the only tier that writes state).
+        # FATAL seam (RFC §5): guard HERE, at the language↔conductor crossing, not at the wiring points.
+        # A spoken turn that reaches a SCRIPTED brain is silently discarded (FakeConductor -> route="ignore").
+        # session.ask() -> on_speech_endpoint bypasses run()/start(), so guarding only the wiring points
+        # left a door open; guarding the crossing covers every door with one check. (Router-
+        # handled turns above never reach here, so a turn the conductor was never needed for isn't refused.)
+        _guard_live_language_path(self)
         self.metrics.incr("route.defer")
         context = self._turn_context()
         decision = await self.conductor.run("speech", utterance, context)
         reply = await self._apply_decision(decision, utterance, frame=frame)
         return TurnResult(route=decision.route, source="conductor", reply=reply)
+
+    async def arm_from_language(self, command: str, *, t: float | None = None) -> Decision:
+        """Author + arm a standing watch from RAW LANGUAGE, WITHOUT executing a spoken reply.
+
+        The explicit ``watch``-verb path, distinct from :meth:`on_speech_endpoint` (which also *answers*
+        the turn by streaming the specialist). A realtime wire has already said "on it", so the conductor's
+        only job here is to author the watchspec; streaming the specialist's frame answer back would poison
+        the held voice session and add seconds of latency. Returns the conductor's :class:`Decision` — its
+        ``say`` is the confirmation, its ``goal_ops`` are what got armed.
+        """
+        now = self.clock() if t is None else t
+        self.note_mention(command, t=now)
+        _guard_live_language_path(self)  # FATAL seam (RFC §5): raw language -> a scripted brain authors nothing
+        decision = await self.conductor.run("speech", command, self._turn_context())
+        if decision.goal_ops:
+            self.apply_goal_ops(decision.goal_ops)
+            self.metrics.incr("goals.authored")
+        return decision
 
     async def on_scene_delta(
         self, event: str, context: dict | None = None, *, frame: Any = None
@@ -1254,7 +1583,10 @@ class Percept:
             source=goal.source,
         )
         v.state["rearm"] = "deadline"
-        v.state["deadline_s"] = t + verify_within
+        # ``t`` is this agent's clock reading (actuate's ``now``); the worker stamps frames on that SAME
+        # clock (wall for live capture), so this absolute deadline is comparable against ``check_deadlines``
+        # -> the verification concern can actually fire (A-1: previously a monotonic stamp vs a stream t).
+        v.state["deadline_at"] = t + verify_within
         v.state["miss_cost"] = "severe"
         v.state["verifies"] = goal.id
         self.add_goal(v)
@@ -1270,21 +1602,73 @@ class Percept:
 
     # -- persistence (endurance: survive a disconnect) ----------------------
     def snapshot(self) -> dict:
-        """A JSON-able snapshot of durable state: goals, entities, and the action log."""
+        """A JSON-able snapshot of durable state: goals, entities, the action log, and (v2) the gate's
+        armed edge state + deadlines rebased into EPOCH time.
+
+        Absolute deadlines live on the monotonic clock, which resets on restart — a raw monotonic value
+        is meaningless after a reboot. Each ``deadline_at`` is converted to a wall-clock (``time.time``)
+        instant here and rebased back into the fresh monotonic frame in :meth:`restore`. The
+        ``clock_anchor`` records the ``(epoch, monotonic)`` pair the conversion was taken against."""
+        now_mono = self.clock()
+        now_epoch = time.time()
+        goals = self.goals.snapshot()
+        for item in goals:
+            st = item.get("goal", {}).get("state", {})
+            da = st.get("deadline_at")
+            if da is not None:
+                st["deadline_at_epoch"] = now_epoch + (da - now_mono)  # monotonic -> epoch (rebasable)
+                del st["deadline_at"]
         return {
-            "version": 1,
-            "goals": self.goals.snapshot(),
+            "version": 2,
+            "clock_anchor": [now_epoch, now_mono],
+            "goals": goals,
+            "gate": self.gate.snapshot(),
             "entities": self.graph.snapshot(),
             "action_log": [asdict(r) for r in self.action_log.entries()],
         }
 
     def restore(self, snap: dict) -> "Percept":
-        """Rehydrate goals / entities / action-log from a :meth:`snapshot`."""
+        """Rehydrate goals / entities / action-log / gate from a :meth:`snapshot`, rebasing epoch
+        deadlines into THIS process's monotonic frame.
+
+        v1 back-compat is a TRAP: a v1 goal carries an old absolute ``deadline_s`` with no recoverable
+        duration base, so it cannot be rebased. Accepting it silently would leave the concern with no
+        ``deadline_at`` and it would never fire again — the exact silent-inertness this pass exists to
+        kill. So a legacy ``deadline_s`` is handled LOUDLY: a warning + metric, then re-resolved as a
+        duration-from-restore-now so the concern still fires."""
+        # v1 vs v2 is detected structurally (a v2 goal carries deadline_at_epoch; a v1 goal a legacy
+        # deadline_s), so a missing/renumbered version field can never silently mis-route a deadline.
         self.goals.restore(snap.get("goals", []))
         self.graph.restore(snap.get("entities", []))
         self.action_log = ActionLog()
         for rd in snap.get("action_log", []):
             self.action_log.record(ActionRecord(**rd))
+
+        now_mono = self.clock()
+        now_epoch = time.time()
+        for goal in self.goals.all():
+            st = goal.state
+            if st.get("rearm") != "deadline":
+                continue
+            if "deadline_at_epoch" in st:  # v2: rebase epoch -> the fresh monotonic frame
+                remaining = st.pop("deadline_at_epoch") - now_epoch
+                st["deadline_at"] = now_mono + remaining
+            elif "deadline_at" not in st and "deadline_after_s" not in st and "deadline_s" in st:
+                legacy = st.pop("deadline_s")  # v1 legacy absolute — LOUD, never silent
+                try:
+                    st["deadline_at"] = now_mono + float(legacy)
+                except (TypeError, ValueError):
+                    st["deadline_at"] = now_mono
+                self.metrics.incr("snapshot.deadline_unmigratable")
+                warnings.warn(
+                    f"restore(): goal {goal.id!r} carried a legacy absolute 'deadline_s' from a v1 "
+                    f"snapshot that cannot be rebased (no duration base). Re-resolved as a duration from "
+                    f"restore-time so it still fires — verify the new deadline. Re-author with "
+                    f"'deadline_after_s' to remove this warning.",
+                    stacklevel=2,
+                )
+
+        self.gate.restore(snap.get("gate"))
         return self
 
     def save_state(self, persistence: Any, key: str = "percept") -> None:
@@ -1310,7 +1694,13 @@ class Percept:
         }
         from . import __version__
 
-        return health(__version__, backends, self.metrics)
+        payload = health(__version__, backends, self.metrics)
+        # RFC §4: the single scripted-state payload — one vocabulary, asked not guessed. ``mode`` is the
+        # resolved switch ("offline"/"live"); ``scripted`` lists the seams whose CONSTRUCTED backend is a
+        # scripted double (computed at create() from the class, the fact — not the requested name).
+        payload["mode"] = self._mode
+        payload["scripted"] = list(self._scripted)
+        return payload
 
 
-__all__ = ["Percept", "FireEvent"]
+__all__ = ["Percept", "FireEvent", "guard_live_language_path"]

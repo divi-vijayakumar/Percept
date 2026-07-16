@@ -24,6 +24,7 @@ _REGISTRY: dict[str, dict[str, Callable[[Any], Any]]] = {
     "conductor": {},
     "stt": {},
     "tts": {},
+    "transport": {},
 }
 
 _SEAMS = tuple(_REGISTRY)
@@ -54,25 +55,42 @@ def _lazy(module: str, attr: str) -> Callable[[Any], Any]:
 
 
 # ---- built-in registrations -------------------------------------------------
+# "scripted" is the CANONICAL selector for the in-core doubles (RFC: offline mode selects scripted
+# backends). "fake" is kept as a deprecated alias so existing wiring keeps resolving; both land on the
+# same in-core double (the class name still reads Fake* — internal implementation, not user-facing text).
 register("vision", "fake", lambda s: _fake.FakeVision())
+register("vision", "scripted", lambda s: _fake.FakeVision())
 register("vision", "claude", _lazy("anthropic", "AnthropicVision"))
 register("vision", "gemini", _lazy("gemini", "GeminiVision"))
 register("vision", "gemini-live", _lazy("gemini_live", "GeminiLiveVision"))
 register("vision", "openrouter", _lazy("openrouter", "OpenRouterVision"))
 
 register("specialist", "fake", lambda s: _fake.FakeSpecialist())
+register("specialist", "scripted", lambda s: _fake.FakeSpecialist())
 register("specialist", "claude", _lazy("anthropic_text", "AnthropicSpecialist"))
 register("specialist", "gemini", _lazy("gemini", "GeminiSpecialist"))
 
 register("conductor", "fake", lambda s: _fake.FakeConductor())
+register("conductor", "scripted", lambda s: _fake.FakeConductor())
+# The HONEST scripted conductor double: maps an utterance -> a real create GoalOp, and its no-match
+# fallback is respond_direct (never "ignore"). Opt-in — pass a script or select this selector.
+register("conductor", "scripted-conductor", lambda s: _fake.ScriptedConductor())
 register("conductor", "claude", _lazy("anthropic_text", "AnthropicConductor"))
 register("conductor", "gemini", _lazy("gemini", "GeminiConductor"))
 
 register("stt", "fake", lambda s: _fake.FakeSTT())
+register("stt", "scripted", lambda s: _fake.FakeSTT())
 register("stt", "deepgram", _lazy("deepgram", "DeepgramSTT"))
 
 register("tts", "fake", lambda s: _fake.FakeTTS())
+register("tts", "scripted", lambda s: _fake.FakeTTS())
 register("tts", "deepgram", _lazy("deepgram", "DeepgramTTS"))
+
+# The VOICE TRANSPORT seam (mic+speaker+AEC+endpointing+barge-in). Only the fake ships in-core; a real
+# Pipecat/LiveKit transport is a vendor dep + a WebRTC room to test, so it's client-side — registered via
+# the `percept.backends` entry-point group (see discover_entrypoints), never imported here.
+register("transport", "fake", lambda s: _fake.FakeVoiceTransport())
+register("transport", "scripted", lambda s: _fake.FakeVoiceTransport())
 
 
 def discover_entrypoints() -> None:
@@ -124,6 +142,10 @@ def make_tts(name: str, settings: Any = None) -> Any:
     return make("tts", name, settings)
 
 
+def make_transport(name: str, settings: Any = None) -> Any:
+    return make("transport", name, settings)
+
+
 def available(seam: str) -> list[str]:
     return sorted(_REGISTRY.get(seam, {}))
 
@@ -137,5 +159,6 @@ __all__ = [
     "make_conductor",
     "make_stt",
     "make_tts",
+    "make_transport",
     "available",
 ]
