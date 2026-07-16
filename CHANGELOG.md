@@ -3,6 +3,119 @@
 Notable changes to Percept. This is a **research preview** — the SDK's public surface may change between
 0.x releases.
 
+## Unreleased
+
+### Contract — wire version 1.0.0 → 1.1.0 (additive; same MAJOR, wire-compatible)
+- **`AttentionIntent`** — a new frozen DTO carrying the **effective** (post-policy), channel-neutral
+  attention request a fired incident makes: `message`, `goal_id`, `incident_id`, `ts`, `preempt`
+  (`interrupt`/`queue`/`drop`), `ttl_s`, `verbatim`, and an optional `preferred_channel` **hint** (not a
+  modality enum — the SDK does not prescribe application channels; the app decides speech/UI/webhook/action).
+- **`GoalOrigin`** enum + **`Goal.origin`** field — durable goal PROVENANCE
+  (`structured_trusted`/`language_authored`/`restored`/`system_template`). Stamped by the SDK entry point
+  that admits the goal (`Percept.add_goal` → `structured_trusted`; conductor GoalOps / `arm_from_language`
+  → `language_authored`), **overwriting** any caller-supplied value — a caller cannot claim interrupt-trust
+  by filling a field. Persisted with the goal, so trust survives `snapshot`/`restore` +
+  `save_state`/`load_state`; a pre-provenance snapshot restores as neutral `restored`. Additive + defaulted
+  (`language_authored`, the least-privileged), so an existing goal round-trips unchanged.
+- **`AttentionPolicy`** (in `percept.incidents`, not the frozen membrane — it is behaviour, not a wire
+  shape) + `attention_intent_for(incident, goal, policy)` + `parse_requested_delivery(delivery)`: the
+  single, deterministic requested→effective clamp. A requested `preempt="interrupt"` is clamped to `queue`
+  unless the goal's origin is trusted (`structured_trusted`/`system_template`), its consequence class is
+  allowlisted, or an explicit per-goal allowlist entry matches. `parse_requested_delivery` is now the one
+  interpreter of the legacy `goal.state['delivery']` dict (`preempt`/`ttl_s`/`verbatim` semantics unchanged
+  from `RuntimeSession._speak_fire`, plus the additive `preferred_channel` hint).
+- JSON Schemas regenerated (`percept/contracts/schema/`), including the new `AttentionIntent.schema.json`
+  and `Goal.origin`; `CONTRACT_VERSION` bumped to `1.1.0`.
+
+### Runtime — session seams (public, additive)
+- **`RuntimeSession.on_goal_change(cb) → unsubscribe`** — fires on EVERY goal-set change, subscribed at
+  the authoritative `GoalRegistry` revision-change point (not `arm`/`disarm`), so it catches the
+  `arm_from_language`/`apply_goal_ops` command path, restore, and same-id replacement — the paths a
+  callback wired to `arm` would silently miss. Purpose: grounding-snapshot invalidation. Callbacks are
+  additive + isolated (one raising subscriber can't break another).
+- **`RuntimeSession.list_goals()`** — a bounded public read of active goals; each entry now carries
+  `{id, condition, status, origin, delivery}` where `origin` is the `GoalOrigin` wire string and
+  `delivery` is the goal's parsed **requested** delivery (`{preempt, ttl_s, verbatim}`). Additive: the
+  original `id`/`condition`/`status` keys are unchanged.
+- **`RuntimeSession.goal_view(goal_id) → dict | None`** — resolve a single goal by id to that same
+  bounded read-only view, so an application can map an `Incident` back to its goal's authored delivery
+  (for `attention_intent_for`) without reaching into `core.goals`. `None` for an unknown id; never leaks
+  the `Goal` object.
+- **`percept.agent.guard_live_language_path`** — public rename of `_guard_live_language_path` (the
+  underscore name is kept as an alias for one release), so applications import no underscore symbol.
+
+### Runtime — SDK voice diet (the voice embodiment moves app-side) — BREAKING
+The application embodiment plane (voice transport, floor arbitration, fire delivery, A2V metrics) left the
+SDK. The perception package no longer owns the voice stack; the one working voice application now lives in
+`templates/realtime_voice_watch_agent` (`cd templates/realtime_voice_watch_agent && pip install -e .`),
+composed through the SDK's public seams only.
+- **`RuntimeSession.attach_transport(...)` and `RuntimeSession.deliver_fire(...)` are now raising stubs**
+  (`RuntimeError`) that point at the template — not delegating shims. **Migration:** copy the template;
+  wire a `VoiceEngine` to the Floor via its `PerceptBridge.attach`, and route fires with
+  `percept.start(..., on_incident=bridge.on_incident)` → `attention_intent_for` → the template's `Floor`.
+  Also removed from the session: `detach_transport`, the `arm_goal`/`watch`/`stop_watching`/`whats_armed`
+  tool schemas + handlers, the brain-state pulse, and the A2V-latency plumbing — all reproduced,
+  app-side, in the template's `percept_bridge.py`/`floor.py`/`telemetry.py`.
+- **`percept.realtime` is removed** — `percept/realtime/{transport,server}.py` are deleted and
+  `import percept.realtime` now raises `ImportError` (for one release) naming the template. The Pipecat +
+  serverless-WebRTC + Gemini-Live wire (`PipecatRealtimeTransport`, `serve_realtime`, `build_realtime_app`)
+  moved verbatim into the template's `engine_adapter.py`/`media.py`, re-expressed against the template's
+  own `VoiceEngine`/`SpeechRequest` seam.
+- **The `percept-vision[realtime]` extra is emptied and RESERVED.** Its voice dependencies (`pipecat-ai`,
+  `fastapi`, `uvicorn`, `google-genai`, …) now live in the template's own `pyproject.toml`; the SDK ships
+  none of them, and nothing pulls a voice vendor at `import percept`/`import percept.runtime` (pinned by
+  `tests/test_voice_diet_boundary.py`). The extra name is kept as a placeholder reserved for future
+  **SDK-side streaming judgment**, not voice.
+- **`VoiceTransport` / `UtteranceEvent` / `Reply` are deprecated** in `percept.contracts` (docstring
+  deprecation notes; shapes unchanged, still functional this release as a migration seam). No SDK-core
+  behavior consumes them after the diet; the template owns its own `VoiceEngine`/`SpeechRequest` types.
+  Removal from core contracts is targeted at v0.7/v1.0 unless an SDK-level consumer appears.
+
+### Runtime — judge dispatch moves off the capture loop (default `judge_dispatch="async"`)
+- `percept.runtime.run` / `percept.runtime.start` no longer await the cloud judgment inline at the
+  admit site. A single-flight scheduler (one judgment in flight + one latest-pending per source)
+  drives `perceive_judged` off-loop, so a slow VLM turn no longer stalls capture, the tier-0 gate,
+  frame subscribers, or the absence/deadline checks. The admit condition itself is unchanged.
+- **Emission latency note:** fires can now trail their admitting frame by up to ~1 frame interval
+  plus the judge duration (`incident.ts` remains the admission timestamp, not completion time).
+  Because the pre-roll buffer keeps rolling while the judgment is in flight, incident snippets are
+  assembled slightly *newer* than before (the pre-roll window ends nearer the emission instant).
+- Under overload, newly admitted frames replace the queued candidate (latest wins —
+  `RuntimeStats.judge_superseded`); a candidate admitted before a goal change is discarded rather
+  than judged under the new watch plan (`RuntimeStats.judge_revision_dropped`). The budget
+  invariant is `judge_calls + judge_superseded + judge_revision_dropped == escalations`.
+  `perceive_judged(expected_goals_revision=…)` aborts a stale in-flight judgment before any
+  gate/disposition mutation. A `RuntimeHealthEvent("judge_dispatch")` announces the mode once;
+  escalation health events carry `judge_active`/`judge_pending` (each 0/1) for live observability.
+- **Escape hatch (one release):** pass `judge_dispatch="inline"` to `run(...)` for the byte-for-byte
+  historical loop (fires emitted before the next frame is read). The benchmark harness loop
+  (`percept.harness.tier0.GatedWatchLoop`) intentionally stays inline; the divergence is filed in
+  `tests/test_harden_e1_loop_parity.py`.
+
+### Contract — wire version 1.0.0 (initial public contract; consolidates pre-release surface that iterated internally through 1.1–1.3 but never shipped)
+- `Verdict.usage` — optional token/cost accounting for the judge call (`{input_tokens, output_tokens,
+  cost_usd}`); gate-irrelevant, defaults `{}`.
+- `Verdict.events` + new `ClipEvent` DTO — clip-relative event timestamps a video-native judge saw
+  inside the judged window; defaults `[]`.
+- `Concern.fps` / `Concern.verify_only` — native-clip judging knobs beside `clip`/`window_s`; inert
+  unless the concern declares a clip.
+- `Concern.version` — the authored concern's own version (a "versioned detection asset"), distinct
+  from `CONTRACT_VERSION` and the `WatchSpec.version` wire integer.
+- `Tier0Signal.energy` — the audio-energy channel for frame-free audio ingest; `null`/`None` means
+  "not an audio-carrying signal" (distinct from `0.0` = measured silence). Mirrored in
+  `@percept/edge` `makeTier0Signal`/`parseTier0Signal` (JS contract twin at 1.0.0); the field is
+  optional, so a payload omitting the key parses unchanged.
+- JSON Schemas regenerated (`percept/contracts/schema/`), including the new `ClipEvent.schema.json`.
+
+### `@percept/edge` (npm) — 0.6.0 → 0.7.0
+- **`PrivacyScreen`** — a new on-device, multi-modal privacy classifier on the *egress* boundary (sibling
+  to `Edge`), filling the previously-inert `semantic` Tier-0 channel with an owned safety verdict in the
+  existing `allow`/`redact`/`drop`/`confirm` vocabulary. Text tier (deterministic regex + Luhn/ABA/SSN
+  checksums) is full; image tier is an adapter **slot** (app supplies the ONNX model — zero-dep preserved);
+  audio tier is a coarse, bounded acoustic head (provisional). Ships with an eval harness + CI-gated
+  scorecard (`npm run eval`). No wire-contract change — `CONTRACT_VERSION` stays 1.0.0. See
+  `packages/percept-edge/CHANGELOG.md`.
+
 ## 0.6.0 — Research preview (2026-06)
 
 ### Packaging — one install

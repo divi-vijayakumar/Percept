@@ -6,7 +6,7 @@ A **physical** event — the template for "alert me when X happens in the room."
 > **not** a certified medical fall-detector and must not be the sole safety mechanism (a pendant /
 > medical device is). Set this expectation with anyone deploying it.
 
-Full runnable demo: [`examples/fall_notification.py`](../../examples/fall_notification.py).
+Here's how to set it up:
 
 ```python
 agent.add_goal(Goal(

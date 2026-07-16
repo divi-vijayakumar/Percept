@@ -17,7 +17,7 @@ repo and put the package on `PYTHONPATH` (the `[bench]` extra provides the deps 
 ```bash
 git clone https://github.com/divi-vijayakumar/Percept && cd Percept
 pip install -e "packages/percept-vision[bench]"
-PYTHONPATH=packages/percept-vision python3 -m percept.bench examples/benchmark/manifest.json
+PYTHONPATH=packages/percept-vision python3 -m percept.bench eval/benchmark_ci_gate/manifest.json
 # or, equivalently, the Makefile targets: `make eval-benchmark` / `make scorecard` / `make audit-benchmark`
 ```
 
@@ -120,7 +120,7 @@ condition became true. The SDK's own labelling/review provenance pattern is docu
 ### CLI
 
 ```bash
-percept-bench examples/benchmark/manifest.json \
+percept-bench eval/benchmark_ci_gate/manifest.json \
     --out benchmark.json \
     --max-false-fire 0 \
     --min-recall 0.9
@@ -134,7 +134,7 @@ Writes the JSON report to `--out` and prints a table. Exits non-zero if the gate
 *is* a usable CI gate on its own. There's also a Make target:
 
 ```bash
-make eval-benchmark MANIFEST=examples/benchmark/manifest.json
+make eval-benchmark MANIFEST=eval/benchmark_ci_gate/manifest.json
 ```
 
 ### From Python
@@ -142,7 +142,7 @@ make eval-benchmark MANIFEST=examples/benchmark/manifest.json
 ```python
 from percept.bench import Manifest, run_manifest, format_report
 
-report = run_manifest(Manifest.load("examples/benchmark/manifest.json"))
+report = run_manifest(Manifest.load("eval/benchmark_ci_gate/manifest.json"))
 print(format_report(report))
 print(report["overall"]["false_fire"])   # 0
 print(report["concerns"]["coffee"]["recall"])
@@ -179,7 +179,7 @@ report = per_concern_report(
 ## Wiring a regression gate into CI
 
 The harness mirrors the SDK's own posture: **never confidently-wrong fire** (`false_fire == 0`),
-plus any per-concern precision/recall floor your product needs. `examples/benchmark/ci_gate.py` is a
+plus any per-concern precision/recall floor your product needs. `eval/benchmark_ci_gate/ci_gate.py` is a
 copy-pasteable template:
 
 ```python
@@ -187,7 +187,7 @@ from percept.bench import BenchmarkGate, Manifest, check_benchmark_gate, run_man
 
 GATE = BenchmarkGate(max_false_fire=0, min_precision=1.0, min_recall=0.9)
 
-report = run_manifest(Manifest.load("examples/benchmark/manifest.json"))
+report = run_manifest(Manifest.load("eval/benchmark_ci_gate/manifest.json"))
 passed, reasons = check_benchmark_gate(report, GATE)
 raise SystemExit(0 if passed else 1)   # non-zero fails the build, with `reasons` printed
 ```
@@ -196,7 +196,7 @@ In GitHub Actions:
 
 ```yaml
 - name: Percept per-concern regression gate
-  run: PYTHONPATH=packages/percept-vision python3 examples/benchmark/ci_gate.py
+  run: PYTHONPATH=packages/percept-vision python3 eval/benchmark_ci_gate/ci_gate.py
 ```
 
 `false_fire` is checked on the **overall total** (the absolute trust gate). `min_precision` /

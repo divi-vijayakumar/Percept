@@ -45,8 +45,9 @@ import asyncio
 from percept import Percept, Goal
 
 async def main():
-    # Fake backends by default — offline, no keys. discover_plugins=False skips plugin lookup.
-    agent = Percept.create(discover_plugins=False)
+    # mode="offline" selects scripted backends — keyless, deterministic; proves WIRING, not
+    # intelligence. (You ask for scripted OUT LOUD; you never fall onto it by omission.)
+    agent = Percept.create(mode="offline", discover_plugins=False)
 
     agent.add_goal(Goal(
         id="caffeine",
@@ -73,10 +74,34 @@ where `action` is `"fire"` or `"ask"`. Swap the fake for real eyes — the cogni
 agent = Percept.create(vision="gemini")          # needs percept-vision[gemini] + GEMINI_API_KEY
 ```
 
-Backends are selected by name (`"fake"` · `"gemini"` · `"claude"`), by adapter instance, or by env
-(`PERCEPT_VISION_BACKEND`). Canonical examples are **key-free by default** (fake backend); the live ones
-print a one-line instruction when a key is missing — never a stack trace. See
-[`examples/`](examples/) (start with [`examples/watch_agent.py`](examples/watch_agent.py)).
+Backends are selected by name (`"scripted"` (canonical) · `"gemini"` · `"claude"`), by adapter instance,
+or by env (`PERCEPT_VISION_BACKEND`). Keyless runs are **`mode="offline"`** (scripted backends, announced
+out loud) — you never fall onto scripted doubles by omission; the live ones print a one-line instruction
+when a key is missing — never a stack trace. See
+[`templates/`](templates/) for copyable reference applications.
+
+## Watch a live source
+
+For a real watch agent you don't write a capture loop — **`percept.run` owns it**: it opens the source,
+runs the cheap tier-0 motion gate (a still scene spends no cloud calls), judges, and **yields an
+`Incident` on each rising-edge fire**. `pip install "percept-vision[gemini,runtime]"` + a `GEMINI_API_KEY`:
+
+```python
+import asyncio, percept
+
+async def main():
+    async for incident in percept.run(
+        source="webcam:0",                       # "rtsp://…" URL | a video file path, too
+        goals=["the milk is boiling over"],      # each string becomes a Goal
+        vision="gemini",
+    ):
+        print(f"[FIRE] {incident.message}")
+
+asyncio.run(main())
+```
+
+Full options — sinks (`on_incident`), refusals (`on_ask`), fused audio (`audio_source="mic:0"`), the
+decision trace (`on_trace`), and gate tuning: [`docs/how-to/runtime.md`](docs/how-to/runtime.md).
 
 ## Architecture
 
@@ -157,7 +182,7 @@ Full index: **[`docs/README.md`](docs/README.md)** (organized by Diátaxis). Hig
 - **Edge parity** — [`docs/reference/edge-parity.md`](docs/reference/edge-parity.md).
 - **Evaluate your own concerns** — [`docs/how-to/eval.md`](docs/how-to/eval.md): per-concern
   precision/recall from a labelled-clip manifest, offline (`make eval-benchmark`), with a CI
-  regression-gate template ([`examples/benchmark/`](examples/benchmark/)).
+  regression-gate template ([`eval/benchmark_ci_gate/`](eval/benchmark_ci_gate/)).
 - **AI-agent map** — [`llms.txt`](llms.txt) and [`AGENTS.md`](AGENTS.md).
 
 ## Layout
@@ -168,8 +193,8 @@ packages/percept-vision/    the SDK (pip install percept-vision; import percept)
                             └─ percept.contracts  bundled frozen wire-contract (DTOs + Protocols)
 packages/percept-edge/      percept-edge — on-device JS/WASM edge (npm)
 docs/                       Diátaxis docs + the generated architecture.svg
-eval/                       golden corpus (benchmark plan: packages/percept-vision/eval/)
-examples/                   runnable example agents (fake-backed by default)
+templates/                  copyable reference applications (e.g., realtime voice watch agent)
+eval/                       golden corpus + regression gate CI template
 tools/build_architecture.py the architecture-diagram generator
 Makefile                    test · parity · architecture · check · eval-live · e2e
 ```

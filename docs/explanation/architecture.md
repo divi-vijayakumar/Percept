@@ -65,11 +65,12 @@ Percept from a per-frame classifier that re-alerts on every positive frame.
 
 ## The concern primitive — count · escalate
 
-A **concern** is the brain's running stake in one watched thing. It accumulates evidence
-([`observe`](../../packages/percept-vision/percept/concern.py)), collapses it into a belief with freshness
-([`derive_belief`](../../packages/percept-vision/percept/concern.py)), and sets its own firing threshold
-from the goal's cost asymmetry ([`threshold_for`](../../packages/percept-vision/percept/concern.py),
-driven by `miss_cost` × `false_fire_cost`). When evidence is ambiguous it **escalates** perception —
+A **concern** is the brain's running stake in one watched thing. It carries a cost asymmetry
+(`miss_cost` × `false_fire_cost`) that drives its **calibration-free** jobs —
+[`attention_weight`, `is_hard_quadrant`, `requires_verification`](../../packages/percept-vision/percept/concern.py).
+Its per-concern firing threshold ([`threshold_for`](../../packages/percept-vision/percept/concern.py)) is
+today **pinned to the gate default (0.7)** and inert: it stays a no-op until the labeling pipeline shows
+confidence discriminates. When evidence is ambiguous the concern **escalates** perception —
 single frame → strip → +audio — via
 [`escalate_perception`](../../packages/percept-vision/percept/escalation.py).
 
@@ -114,7 +115,7 @@ System-2 intelligence is summoned through five named seams — `vision · specia
 layer is unchanged.
 
 ```python
-agent = Percept.create()                  # fakes, offline, no keys — System-1 only
+agent = Percept.create(mode="offline")    # scripted backends, no keys — proves WIRING, not intelligence
 agent = Percept.create(vision="gemini")   # pip install "percept-vision[gemini]" + GEMINI_API_KEY
 ```
 

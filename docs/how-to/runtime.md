@@ -7,7 +7,9 @@ thread, the live feed, and rising-edge **incident** emission — so your app sto
 from percept import Percept, Goal
 from percept.runtime import FileDeadLetterQueue, RuntimeStats, run, webhook
 
-agent = Percept.create(vision="gemini")            # pip install "percept-vision[gemini]" + GEMINI_API_KEY
+agent = Percept.create(vision="gemini")            # [gemini] extra + GEMINI_API_KEY; code-armed watch
+                                                   # (goals via add_goal) — the default conductor stays
+                                                   # SCRIPTED (loud log, no crash). Keyless? mode="offline".
 agent.add_goal(Goal(id="zone", condition="a person is in the restricted zone", say="Alert: person in zone"))
 
 notify = webhook("https://example.com/percept/incidents")
@@ -36,15 +38,92 @@ extra — handy for tests and offline replay.
 4. each `fire` → an **`Incident`** (with a pre-roll snippet) → `on_incident(...)` → yielded;
 5. each `ask` → `on_ask(...)` if provided, but not an Incident.
 
-`run(...)` parameters: `source` (a URI or iterable), `on_incident` (the notify sink), `on_ask` (the
-refusal sink), `on_frame(t, frame)` (the live-feed hook — wire an MJPEG streamer here), `fps`,
-`source_queue_size`, `source_reconnects`, `source_reconnect_backoff_s`, `source_rtsp_tcp`,
-`snippet_pre_s` (seconds of pre-roll per clip), `snippet_kind` (`"frame"` or `"clip"`), and `sink_errors`
-(`"raise"` or `"ignore"`). Pass `stats=RuntimeStats()` to collect frame, escalation, judge-call, fire,
-ask, incident, and sink-error counters.
+### Build the core in the call — the convenience form
 
-`on_health(event)` receives structured lifecycle events such as `runtime_started`, `escalation`, `ask`,
-`incident`, `incident_sink_error`, `runtime_error`, and `runtime_ended`.
+You can hand `run()` a pre-built `agent`/core (as above) **or** let it build one for you: pass `goals=`
+(plain-language conditions) and `vision=` and skip `Percept.create` entirely.
+
+```python
+async for incident in percept.run(
+    source="webcam:0",
+    goals=["the milk is boiling over"],   # each string becomes a Goal
+    vision="gemini",                      # backend by name (default: fake)
+):
+    print(incident.message)
+```
+
+### `run(...)` parameters
+
+**Source & core**
+- `source` — a URI (`"webcam:0"`, `"rtsp://…"`, a file path) or a pre-decoded `(t, gate_frame, judge_frame)` iterable.
+- `goals` — plain-language conditions (convenience form); each becomes a `Goal`. Omit when you pass a built core.
+- `vision` — the vision backend by name (`"gemini"` / `"claude"` / `"fake"`) for the convenience form.
+- `fps` — frame rate to pull the source at.
+- `source_queue_size`, `source_reconnects`, `source_reconnect_backoff_s`, `source_rtsp_tcp` — capture/reconnect tuning for live URIs.
+
+**Sinks & hooks**
+- `on_incident` — the notify sink (webhook/SMS/log) for each rising-edge fire.
+- `on_ask` — the low-confidence **refusal** sink (an `ask`, not an Incident).
+- `on_frame(t, frame)` — the live-feed hook; wire an MJPEG streamer here.
+- `on_health(event)` — structured lifecycle events: `runtime_started`, `escalation`, `ask`, `incident`, `incident_sink_error`, `runtime_error`, `runtime_ended`.
+- `on_trace(event)` — the per-frame **decision trace** (why a frame stayed silent — see below).
+- `sink_errors` — `"raise"` or `"ignore"` when a sink throws.
+- `stats` — pass `RuntimeStats()` to collect frame, escalation, judge-call, fire, ask, incident, and sink-error counters.
+
+**Snippet (the incident clip)**
+- `snippet_pre_s` — seconds of pre-roll per clip.
+- `snippet_size` — max frames/size of the buffer.
+- `snippet_kind` — `"frame"` or `"clip"`.
+
+**Gate & episode**
+- `gate_source` — an alternate cheap-gate frame source (decoupled from the judge frame).
+- `episode_inactivity_s` — idle gap that closes an episode.
+- `coverage_staleness_s` — how long without an observation before a coverage-loss ("I can't see the stove") fires.
+- `regate_on_goal_change` — re-run the tier-0 gate when goals are armed/disarmed at runtime (default off).
+
+**Audio (fused listen)**
+- `audio_source` — a mic/audio URI (`"mic:0"`) that fills the audio window for `modality="fused"` goals. Extra: `[mic]`.
+- `audio_gate` — arm the tier-0 audio channel (onset/energy) so a sound can escalate a frame the motion gate would skip.
+- `audio_wake` — treat a wake phrase on the audio channel as an escalation.
+- `on_utterance` — sink for finalized speech utterances.
+- `vad`, `utterance_threshold`, `utterance_hangover_frames`, `utterance_min_speech_frames` — voice-activity / endpointing tuning.
+- `wake_policy` — the weighted edge wake policy (fuse `audio_event`, `presence`, `change`, … into one cheap score). See [reference/edge-policy.md](../reference/edge-policy.md).
+
+**Runtime control & durability**
+- `paused` / `muted` — start paused (no judging) or muted (judge, but suppress alerts).
+- `clock` — inject a clock (tests / deterministic replay).
+- `persistence` / `restore` / `autosave_every_s` — persist cognition state to a store, restore it on start, and autosave every N seconds so a restart doesn't lose the gate/entity state.
+
+> **Which gate for your camera? (the decision that sinks realtime demos)**
+>
+> The default tier-0 gate is a **whole-frame motion** gate. On a **static or low-motion** subject it
+> will **never escalate** — the whole-frame mean stays ~0 and no judge call is ever spent, so the agent
+> looks broken. Pick one:
+> - **A still / content scene** (a screenshare, a dashboard, a stove that isn't moving) → `gate_on="fixed"`
+>   + `min_judge_interval` so it escalates on a **cadence** regardless of motion.
+> - **A localized event on an otherwise-still frame** (a coffee sip, a shelf grab, a terminal error on a
+>   4K screen) → `salience_stat="block_max"` — measure the frame-diff over a block grid, not the whole-frame
+>   mean, so the local event clears threshold.
+> - **A moving / wearable camera** (head-cam, drone, handheld) → `ego_compensate=True` so whole-frame
+>   pan/head-turn is subtracted and the gate fires on the **residual**, not on the camera's own motion.
+>
+> `salience_stat`, `ego_compensate`, and their per-stat thresholds live in
+> [reference/edge-policy.md](../reference/edge-policy.md).
+
+### `on_trace` — why a frame stayed silent
+
+`on_trace(event)` receives the **decision trace**: the per-frame stages the runtime walks, so you can
+answer "why didn't that fire?" without guessing. The stages:
+
+- `source.frame` — a frame arrived from the source.
+- `judge.started` — the tier-0 gate escalated; a `vision.judge` call is being spent.
+- `judge.finished` — the judge returned a `Verdict` (satisfied / confidence / evidence).
+- `gate.classified` — the cognition gate mapped the verdict to `fire` / `ask` / `silent`.
+- `incident.created` — a rising-edge `fire` became an `Incident`.
+
+A silent frame that has a `source.frame` but no `judge.started` was **gated out cheaply** (motion below
+threshold, or off-cadence) — the whole-frame-motion trap above. A `judge.finished` with no
+`incident.created` means the VLM looked and the gate held (not satisfied, still refractory, or an `ask`).
 
 ## The `Incident`
 ```
@@ -74,13 +153,30 @@ A goal's `state` carries three orthogonal levers (the conductor can author them 
 - **`structural` / `semantic`** — the richer Tier-0 channels (CLIP/pose); filled by `percept-edge`.
 
 ## Worked scenarios
-- [`examples/fall_notification.py`](../../examples/fall_notification.py) — a **physical** event: motion-gated,
-  `miss_cost="severe"`, `temporal="strip"`. See [docs/scenarios/fall.md](fall.md).
-- [`examples/screenshare_assistant.py`](../../examples/screenshare_assistant.py) — a **content** event:
-  `gate_on="fixed"` on a zero-motion screen. See [docs/scenarios/screenshare.md](screenshare.md).
+- **Physical event (fall detection)**: motion-gated, `miss_cost="severe"`, `temporal="strip"`. See [fall.md](fall.md).
+- **Content event (screenshare)**: `gate_on="fixed"` on a zero-motion screen. See [screenshare.md](screenshare.md).
 
 > **Assistant-class, not a guarantee.** The runtime *alerts a human who stays responsible*. It is not a
 > certified safety/detection system on a clock it can't promise. See the fall scenario for the disclaimer.
+
+## Beyond fires — what else `run()` surfaces
+
+`run()` isn't only rising-edge fires. These ride the same loop, opt-in per goal (default off → unchanged):
+
+- **Listen too (fused audio).** `run(agent, source="webcam:0", audio_source="mic:0")` fills the audio
+  window so a `modality="fused"` goal judges sound + vision together, and an off-camera sound onset can
+  escalate a frame the motion gate would skip. Extra: `[mic]`. See [audio-modality.md](../reference/audio-modality.md).
+- **Absence-native fires.** A goal with `state["miss_cost"]="severe"` fires a **coverage-loss** incident
+  when it stops being observed ("I can't see the stove") — perception-robust (fires on the *lack* of
+  evidence). A goal with `state["rearm"]="deadline", state["deadline_s"]=…` fires **overdue** when an
+  expected event doesn't happen in time. Both flow through `on_incident`.
+- **Cost / escalation metering.** Pass `stats=RuntimeStats()` for frame/escalation/judge/fire counters;
+  `agent.metrics` carries the `seen→gated→judged→refused→fired` funnel plus per-judge **token counts**
+  (each `Verdict.usage`, mirrored to OpenTelemetry via the `[otel]` extra).
+- **Deictic grounding (`exemplar`).** Give a goal a reference image via `state["exemplar"]=(mime, bytes)`
+  and the judge answers "is this **the** specific X?" against it — individuation, not just category.
+- **Drive it live.** Wrap the watch in a `RuntimeSession` to arm goals, ask frame-grounded questions,
+  and pause/mute at runtime — the command seam: [command-seam.md](../reference/command-seam.md).
 
 ## Webhook sink
 

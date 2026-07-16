@@ -70,12 +70,15 @@ asyncio.run(main())
 ## Frame formats (per backend)
 - **fake** — a `str` token you script in `FakeVision(script=...)`. Deterministic; ideal for tests.
 - **gemini / claude** — image bytes, or a `(media_type, bytes)` pair, e.g.
-  `("image/jpeg", cv2.imencode(".jpg", bgr_frame)[1].tobytes())`. You feed frames; there is no built-in
-  capture loop.
+  `("image/jpeg", cv2.imencode(".jpg", bgr_frame)[1].tobytes())`. This is the frame type `percept.run`
+  hands the judge automatically from a `source=`; you only construct it yourself on the manual
+  `perceive_judged` path.
 
 ## Gotchas / conventions
-- **You own the frame loop.** Percept does not capture video — pull frames (webcam via `cv2.VideoCapture`,
-  a video file, a screen grab) and call `perceive_judged` per frame. See `examples/webcam_agent.py`.
+- **`percept.run` owns the capture loop.** Point it at `source="webcam:0"` / an RTSP URL / a video file
+  and it drives capture → gate → judge → incident for you (`async for incident in percept.run(core,
+  source=…)`; add `audio_source="mic:0"` for sound). See `templates/` for copyable applications. The
+  manual `perceive_judged`-per-frame loop is the advanced "bring-your-own-capture" path, not the default.
 - **Rising-edge, not level.** A goal fires once when its condition goes false→true, then stays quiet
   (refractory) — so the agent never nags. Don't poll for "is it true now"; react to the `FireEvent`.
 - **`ask` is a feature.** Low confidence yields `ask`, not a guess. This is the "refuse to deliver a
@@ -87,7 +90,7 @@ asyncio.run(main())
 
 ## Where to look
 - `docs/README.md` (index) · `docs/tutorials/quickstart.md` · `docs/explanation/concepts.md` · `docs/reference/backends.md` — adopter docs.
-- `examples/` — `watch_agent.py` (runnable offline) and `webcam_agent.py` (real-backend template).
-- `.claude/skills/percept-agent/` — a Claude Code skill that scaffolds an agent from a plain-language goal.
+- `templates/` — copyable reference applications; `templates/realtime_voice_watch_agent/` is the flagship voice+vision agent.
+- `.claude/skills/percept-agent/` — a Claude Code skill that scaffolds an agent from a plain-language goal (kept in sync with `.agents/skills/percept-agent/`).
 - `percept.edge` / `percept.harness` — the server-side edge (tier-0 gate + detector registry)
   for Python deployments.

@@ -6,8 +6,10 @@ until you need it.
 
 | I want to… | Start here | Install | Ignore for now |
 |---|---|---|---|
-| Build a simple watcher (no keys) | [`examples/watch_agent.py`](../../examples/watch_agent.py) | `pip install percept-vision` | edge, harness, benchmarks |
-| Watch a webcam / video | [`examples/webcam_agent.py`](../../examples/webcam_agent.py) | `[runtime]` + a backend (`[gemini]`/`[claude]`) | JS edge, rhythm |
+| Build a simple watcher (no keys) | [quickstart](quickstart.md) (`mode="offline"`), or the `percept-agent` skill in Claude Code | `pip install percept-vision` | edge, harness, benchmarks |
+| Watch a webcam / video / RTSP | **`percept.run(source="webcam:0", goals=["..."])`** — [runtime how-to](../how-to/runtime.md) | `[runtime]` + a backend (`[gemini]`/`[claude]`) | JS edge, rhythm |
+| Watch **and listen** (fused audio) | `run(source="webcam:0", goals=["..."], audio_source="mic:0")` — [audio modality](../reference/audio-modality.md) | `[runtime,mic]` + a backend | JS edge, rhythm |
+| Drive a live watch (arm/ask/pause by voice or code) | [Command seam](../reference/command-seam.md) — `RuntimeSession` | `[runtime]` + a backend | — |
 | Watch my screen | [Screenshare how-to](../how-to/screenshare.md) | `[runtime]` (+ `[screen]`) | camera/benchmark internals |
 | Use a real VLM | [Backends reference](../reference/backends.md) | `[gemini]` or `[claude]` | harness internals |
 | Run on-device edge gating | [Edge parity reference](../reference/edge-parity.md) | `npm install percept-edge` | process-QA, benchmark methodology |
@@ -24,8 +26,12 @@ until you need it.
 ## The 10-minute path
 
 1. `pip install percept-vision` (zero deps, no keys).
-2. Run [`examples/watch_agent.py`](../../examples/watch_agent.py) — watch it go silent → **FIRE** on the
-   rising edge → stay quiet (refractory) → re-arm.
+2. Try the `percept-agent` skill in Claude Code, or build a minimal script:
+   ```python
+   agent = percept.Percept.create(mode="offline", discover_plugins=False)
+   agent.add_goal(Goal(id="kettle", condition="kettle boiled", say="Done!"))
+   for ev in await agent.perceive_judged("boiling"): print(ev)
+   ```
 3. Read [Concepts](../explanation/concepts.md) (the eyes/brain split) and
    [Architecture](../explanation/architecture.md) (the four tiers).
 4. When you want real eyes, add `[gemini]` or `[claude]` and a key — the cognition layer above is
