@@ -54,6 +54,12 @@ perception_test_prevalence.json
 scratch/
 handoff/
 
+# codewiki generated caches (regenerable — never commit)
+codewiki/
+.codewiki/
+**/codewiki/
+**/.codewiki/
+
 # model A/B artifact
 model_ab.json
 **/model_ab.json
