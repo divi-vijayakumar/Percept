@@ -7,10 +7,11 @@ EDGE      := packages/percept-edge
 PY        := python3
 # absolute path to the zero-dep contract pkg (vision runs from inside $(SDK), so it needs this)
 
-.PHONY: help test test-harness test-js test-all parity eval-live eval-benchmark e2e bench audit-benchmark scorecard benchmark-prepare benchmark-fetch benchmark-fetch-charades benchmark-fetch-proactiveqa benchmark-index-proactiveqa benchmark-manifest benchmark-run benchmark-collect check reproduce clean architecture architecture-check
+.PHONY: help test test-harness test-js test-all test-templates parity eval-live eval-benchmark e2e bench audit-benchmark scorecard benchmark-prepare benchmark-fetch benchmark-fetch-charades benchmark-fetch-proactiveqa benchmark-index-proactiveqa benchmark-manifest benchmark-run benchmark-collect check check-skills-sync reproduce clean architecture architecture-check
 
 help:
-	@echo "test       L1 unit — percept-vision (incl. percept.harness + percept.contracts; fakes, no keys, fast)"
+	@echo "test       L1 unit — percept-vision (incl. percept.harness + percept.contracts; fakes, no keys, fast) + template lane"
+	@echo "test-templates  L1 unit — templates/ reference apps (keyless; pipecat-dependent tests skip cleanly)"
 	@echo "test-js    L1 unit — percept-edge (vitest; needs npm install)"
 	@echo "test-all   test + test-js"
 	@echo "eval-live  L2 live eval (needs keys; skips without PERCEPT_LIVE=1)"
@@ -29,8 +30,17 @@ help:
 	@echo "check      lint + types (best-effort; skips missing tools)"
 	@echo "reproduce  reproduce a published scorecard row"
 
+# PERCEPT_MODE=offline: the suite is offline BY CONSTRUCTION (one declared property — RFC-offline-scripted-mode).
+# pytest declares it in tests/conftest.py; unittest discovery loads no conftest, so declare it here. Without it,
+# voice tests that unskip once pipecat is installed hit live-mode ModeError.
 test:
-	cd $(SDK) && PYTHONPATH=. $(PY) -m unittest discover -s tests
+	cd $(SDK) && PYTHONPATH=. PERCEPT_MODE=offline $(PY) -m unittest discover -s tests
+	$(MAKE) test-templates
+
+# templates/ = copyable reference applications; each ships its own tests. Keyless: pipecat-dependent
+# tests skipUnless the template's deps are installed; everything else runs on the bare SDK checkout.
+test-templates:
+	cd templates/realtime_voice_watch_agent && PYTHONPATH=.:$(abspath $(SDK)) PERCEPT_NO_BANNER=1 $(PY) -m unittest discover -s tests -t .
 
 test-js:
 	cd $(EDGE) && npm test
@@ -53,8 +63,8 @@ eval-live:
 	fi
 
 # Per-concern precision/recall on a labelled-clip manifest (offline; fake backend; no keys).
-#   make eval-benchmark MANIFEST=examples/benchmark/manifest.json
-MANIFEST ?= $(abspath examples/benchmark/manifest.json)
+#   make eval-benchmark MANIFEST=eval/benchmark_ci_gate/manifest.json
+MANIFEST ?= $(abspath eval/benchmark_ci_gate/manifest.json)
 eval-benchmark:
 	cd $(SDK) && PYTHONPATH=. $(PY) -m eval.benchmark $(abspath $(MANIFEST))
 
@@ -117,8 +127,12 @@ calibrate:
 exp-categorical:
 	cd $(SDK) && PYTHONPATH=. $(PY) -m eval.exp_categorical
 
-check: architecture-check
+check-skills-sync:  ## Verify skill directories are byte-identical
+	@diff -r .claude/skills/percept-agent .agents/skills/percept-agent --exclude="__pycache__" > /dev/null && echo "skills sync ok" || (echo "ERROR: skill directories out of sync (KEEP IN SYNC: edit BOTH)"; exit 1)
+
+check: architecture-check check-skills-sync
 	@cd $(SDK) && PYTHONPATH=. $(PY) -m compileall -q percept tests && echo "compileall ok"
+	@$(PY) -m compileall -q templates && echo "templates compileall ok"
 	@cd $(SDK) && (ruff check . || echo "ruff not installed — skipping lint")
 
 architecture:  ## (re)generate architecture.html + docs/architecture.svg from code + meta

@@ -7,12 +7,17 @@ Run it (offline, FAKE backend, deterministic):
     pip install percept-vision
     python template_watch_agent.py
 
-To make it real, swap the FAKE vision for a VLM and feed real frames:
+This is the OFFLINE / bring-your-own-frames path: you drive the cognition layer
+frame-by-frame with scripted string tokens (great for deterministic tests).
+
+To make it real, DON'T hand-roll a capture loop — hand a real `source=` to
+`percept.run`, which owns the capture loop for you. See the companion
+`template_watch_agent_live.py`:
     pip install "percept-vision[gemini]"   # + export GEMINI_API_KEY=...
-    # then replace `build_agent()` body with:
-    #     return percept.Percept.create(vision="gemini", discover_plugins=False)
-    # and replace `scripted_frames()` with a camera/video source that yields
-    # image bytes (e.g. cv2.imencode(".jpg", bgr)[1].tobytes()).
+    #     agent = percept.Percept.create(vision="gemini", discover_plugins=False)
+    #     agent.add_goal(GOAL)
+    #     async for incident in percept.run(agent, source="webcam:0"):  # or "rtsp://…" / a file
+    #         ...
 """
 
 import asyncio
@@ -45,7 +50,9 @@ def build_agent() -> "percept.Percept":
             "blurry": Verdict(satisfied=True, confidence=0.30, evidence="cannot tell — blurry"),
         }
     )
-    agent = percept.Percept.create(vision=vision, discover_plugins=False)
+    # mode="offline" declares the scripted backends OUT LOUD (proves WIRING, not intelligence) — you
+    # do not fall onto scripted doubles by accident; asking for them is a visible act.
+    agent = percept.Percept.create(mode="offline", vision=vision, discover_plugins=False)
     agent.add_goal(GOAL)
     return agent
 

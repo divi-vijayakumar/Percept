@@ -54,6 +54,12 @@ perception_test_prevalence.json
 scratch/
 handoff/
 
+# codewiki generated caches (regenerable — never commit)
+codewiki/
+.codewiki/
+**/codewiki/
+**/.codewiki/
+
 # model A/B artifact
 model_ab.json
 **/model_ab.json
@@ -146,3 +152,9 @@ docs/*publish-readiness*.md
 docs/updated-percept-sdk-architecture.md
 docs/perception-event-individuation-research.md
 docs/benchmark-scorecard-runbook.md
+
+# Dispatch board activity feed (Tasks/ board)
+Tasks/.board-events.jsonl
+
+# headless diagnostic harnesses (kept local, not shipped with the template)
+templates/realtime_voice_watch_agent/scratch_*.py
