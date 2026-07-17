@@ -1,0 +1,379 @@
+{
+  "phase": "B",
+  "provider": "gemini generateContent",
+  "model": "gemini-3.1-flash-lite",
+  "quality": {
+    "recall": 0.6445783132530121,
+    "precision": 0.6239067055393586,
+    "n_positive": 332,
+    "n_negative": 1097,
+    "tp": 214,
+    "fp": 129,
+    "fn": 118,
+    "tn": 968,
+    "recall_min": 0.9,
+    "precision_min": 0.9,
+    "pass": false,
+    "caveat": "frame-level labels from clip.json true-span `intervals` (per-condition); \u00a75a single-reviewer set"
+  },
+  "latency_g3a": {
+    "p50_s": 0.711,
+    "p95_s": 1.202,
+    "p99_s": 1.508,
+    "n_calls": 1429,
+    "band": "GREEN",
+    "note": "real judge latency under light concurrency (sem=6); full under-load G3-A/G3-B need the worker pipeline. Clean single-call floor was 0.728s at probe."
+  },
+  "econ": {
+    "avg_input_tokens": 1233.3,
+    "avg_output_tokens": 39.4,
+    "cost_per_call_usd": 0.000139,
+    "vid_judgments_per_stream_hour": 240.0,
+    "usd_per_stream_hour": 0.0334,
+    "cost_ceiling": 10.0,
+    "pass": true,
+    "price_assumption_per_m": {
+      "in": 0.1,
+      "out": 0.4
+    },
+    "note": "$ scales with the assumed flash-lite price; token counts are exact from usage_metadata"
+  },
+  "launch_profile_candidate": {
+    "deadline_class": "UNDETERMINED \u2014 G2 quality below the 0.90 bar (resolve before emitting a profile)",
+    "provider": "gemini",
+    "model": "gemini-3.1-flash-lite",
+    "g1": "PASS (Phase-A architecture)",
+    "g2_quality": "REVIEW",
+    "g3_latency": "GREEN",
+    "econ": "PASS"
+  },
+  "per_scene": [
+    {
+      "scene_id": "eval1_s01",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 5
+    },
+    {
+      "scene_id": "eval1_s02",
+      "tp": 2,
+      "fp": 1,
+      "fn": 3,
+      "tn": 0
+    },
+    {
+      "scene_id": "eval2_s01",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 16
+    },
+    {
+      "scene_id": "eval2_s02",
+      "tp": 6,
+      "fp": 1,
+      "fn": 0,
+      "tn": 9
+    },
+    {
+      "scene_id": "eval2_s03",
+      "tp": 0,
+      "fp": 0,
+      "fn": 1,
+      "tn": 3
+    },
+    {
+      "scene_id": "eval2_s04",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 9
+    },
+    {
+      "scene_id": "eval3_s01",
+      "tp": 4,
+      "fp": 3,
+      "fn": 6,
+      "tn": 17
+    },
+    {
+      "scene_id": "eval3_s02",
+      "tp": 2,
+      "fp": 2,
+      "fn": 2,
+      "tn": 10
+    },
+    {
+      "scene_id": "eval3_s03",
+      "tp": 3,
+      "fp": 2,
+      "fn": 1,
+      "tn": 10
+    },
+    {
+      "scene_id": "eval3_s04",
+      "tp": 5,
+      "fp": 3,
+      "fn": 0,
+      "tn": 8
+    },
+    {
+      "scene_id": "eval3_s05",
+      "tp": 2,
+      "fp": 3,
+      "fn": 1,
+      "tn": 6
+    },
+    {
+      "scene_id": "eval3_s06",
+      "tp": 2,
+      "fp": 2,
+      "fn": 1,
+      "tn": 7
+    },
+    {
+      "scene_id": "eval3_s07",
+      "tp": 2,
+      "fp": 1,
+      "fn": 2,
+      "tn": 7
+    },
+    {
+      "scene_id": "eval3_s08",
+      "tp": 1,
+      "fp": 2,
+      "fn": 3,
+      "tn": 6
+    },
+    {
+      "scene_id": "eval3_s09",
+      "tp": 2,
+      "fp": 0,
+      "fn": 3,
+      "tn": 11
+    },
+    {
+      "scene_id": "eval3_s10",
+      "tp": 1,
+      "fp": 0,
+      "fn": 2,
+      "tn": 9
+    },
+    {
+      "scene_id": "eval3_s11",
+      "tp": 1,
+      "fp": 0,
+      "fn": 3,
+      "tn": 8
+    },
+    {
+      "scene_id": "eval3_s12",
+      "tp": 39,
+      "fp": 26,
+      "fn": 6,
+      "tn": 41
+    },
+    {
+      "scene_id": "eval3_s13",
+      "tp": 3,
+      "fp": 2,
+      "fn": 1,
+      "tn": 9
+    },
+    {
+      "scene_id": "eval3_s14",
+      "tp": 0,
+      "fp": 0,
+      "fn": 1,
+      "tn": 2
+    },
+    {
+      "scene_id": "eval3_s15",
+      "tp": 0,
+      "fp": 3,
+      "fn": 0,
+      "tn": 33
+    },
+    {
+      "scene_id": "eval3_s16",
+      "tp": 1,
+      "fp": 1,
+      "fn": 4,
+      "tn": 24
+    },
+    {
+      "scene_id": "eval3_s17",
+      "tp": 1,
+      "fp": 3,
+      "fn": 1,
+      "tn": 49
+    },
+    {
+      "scene_id": "eval3_s18",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 120
+    },
+    {
+      "scene_id": "eval3_s19",
+      "tp": 4,
+      "fp": 0,
+      "fn": 4,
+      "tn": 2
+    },
+    {
+      "scene_id": "eval3_s20",
+      "tp": 8,
+      "fp": 4,
+      "fn": 1,
+      "tn": 29
+    },
+    {
+      "scene_id": "eval3_s21",
+      "tp": 4,
+      "fp": 0,
+      "fn": 2,
+      "tn": 30
+    },
+    {
+      "scene_id": "eval3_s22",
+      "tp": 4,
+      "fp": 3,
+      "fn": 1,
+      "tn": 13
+    },
+    {
+      "scene_id": "eval3_s23",
+      "tp": 10,
+      "fp": 5,
+      "fn": 18,
+      "tn": 15
+    },
+    {
+      "scene_id": "eval3_s24",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 30
+    },
+    {
+      "scene_id": "eval3_s25",
+      "tp": 0,
+      "fp": 1,
+      "fn": 5,
+      "tn": 12
+    },
+    {
+      "scene_id": "eval3_s26",
+      "tp": 4,
+      "fp": 0,
+      "fn": 15,
+      "tn": 23
+    },
+    {
+      "scene_id": "eval3_s27",
+      "tp": 0,
+      "fp": 4,
+      "fn": 1,
+      "tn": 40
+    },
+    {
+      "scene_id": "eval3_s28",
+      "tp": 8,
+      "fp": 1,
+      "fn": 0,
+      "tn": 19
+    },
+    {
+      "scene_id": "eval3_s29",
+      "tp": 5,
+      "fp": 4,
+      "fn": 4,
+      "tn": 17
+    },
+    {
+      "scene_id": "eval3_s36",
+      "tp": 6,
+      "fp": 0,
+      "fn": 4,
+      "tn": 20
+    },
+    {
+      "scene_id": "eval3_s37",
+      "tp": 68,
+      "fp": 31,
+      "fn": 11,
+      "tn": 80
+    },
+    {
+      "scene_id": "eval4_s01",
+      "tp": 0,
+      "fp": 0,
+      "fn": 9,
+      "tn": 0
+    },
+    {
+      "scene_id": "eval4_s02",
+      "tp": 0,
+      "fp": 13,
+      "fn": 0,
+      "tn": 3
+    },
+    {
+      "scene_id": "eval5_s01",
+      "tp": 0,
+      "fp": 6,
+      "fn": 0,
+      "tn": 57
+    },
+    {
+      "scene_id": "eval5_s02",
+      "tp": 5,
+      "fp": 1,
+      "fn": 1,
+      "tn": 7
+    },
+    {
+      "scene_id": "eval5_s03",
+      "tp": 0,
+      "fp": 1,
+      "fn": 0,
+      "tn": 15
+    },
+    {
+      "scene_id": "eval5_s04",
+      "tp": 11,
+      "fp": 0,
+      "fn": 1,
+      "tn": 0
+    },
+    {
+      "scene_id": "eval5_s05",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 20
+    },
+    {
+      "scene_id": "eval5_s06",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 27
+    },
+    {
+      "scene_id": "eval6_s01",
+      "tp": 0,
+      "fp": 0,
+      "fn": 0,
+      "tn": 90
+    }
+  ],
+  "errors": [],
+  "not_run": [
+    "real 24h soak against provider (architecture-validated in Phase-A; ops decision)",
+    "full under-load G3-A/G3-B through the worker pipeline (single-judge floor measured here)"
+  ]
+}

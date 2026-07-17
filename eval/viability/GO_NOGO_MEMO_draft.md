@@ -29,20 +29,42 @@
   0.54s floor only proves the queue+dispatch path adds little overhead — it is **not** the product
   latency and must not be quoted as one.
 
-## `launch_profile`: NOT YET EMITTABLE
-The profile (`reflex` | `bounded` | `deliberative`) is chosen by **Phase-B G3** latency against the 2s
-dual gate. Until Phase-B runs, no profile is emitted. Do not start the v0.1 PRD build.
+## Phase-B results — REAL `gemini-3.1-flash-lite` (run 20260717T100605Z, 1429 real calls)
+Quality on real golden-clip frames labeled by clip.json true-span `intervals`; latency + cost from the real calls.
 
-## Phase-B prerequisites (blocking a final memo)
-1. ~~Wire the Gemini API key~~ — **DONE** (`GOOGLE_AISTUDIO_API_KEY` present; `PERCEPT_VISION_MODEL=gemini-3.1-flash-lite`).
-2. ~~Validate `gemini-3.1-flash-lite`~~ — **DONE** (live probe 2026-07-17: structured-output vision OK, 0.728s single-call).
-3. Run Phase-B: real recall/precision (fixtures + §5a golden clips), real G3-A/G3-B latency under the
-   N/M/E/F load, real $/stream-hour vs the $10 ceiling, real-adapter P-JUDGE-SAFE-1. *(now unblocked — costs real Gemini calls)*
-4. Re-run this memo → emit the typed `launch_profile`.
+| Gate | Phase-B (real Gemini) | Verdict |
+|---|---|---|
+| **G3 — Latency** | admitted→decision **p95 1.20s** (p50 0.71s), n=1429, light concurrency | **GREEN** ✅ (well under 2s) |
+| **G2 — Economics** | avg 1233 in / 39 out tokens → **$0.033/stream-hour** at 240 judgments/hr (ceiling $10) | **PASS** ✅ (~300× margin) |
+| **G2 — Quality** | **recall 0.645 · precision 0.624** (min 0.90 each); TP 214 / FP 129 / FN 118 / TN 968; n_pos 332, n_neg 1097 | **REVIEW** ⚠️ (below bar) |
 
-**Early Phase-B signal:** real single-call vision latency **0.728s** (P-LAT-BASE floor) is well under the
-2s Reflex deadline — encouraging for a `reflex` profile, pending the full under-load G3-A/G3-B numbers.
+## `launch_profile`: **UNDETERMINED** — latency & economics pass, but **G2 quality gates it**
+```yaml
+launch_profile:
+  deadline_class: UNDETERMINED   # G2 quality (recall/precision) below the 0.90 bar
+  provider: gemini    model: gemini-3.1-flash-lite
+  g1_boundedness: PASS (architecture)   g3_latency: GREEN   economics: PASS   g2_quality: REVIEW
+  supported_camera: static
+```
+Per Viability §9, a `reflex`/`deliberative` GO requires G1 **and** G2 to pass; latency (GREEN) only
+picks *which* profile among passing workloads. It does not.
 
-## Bottom line
-**Phase-A: GO on architecture (G1).** Economics and latency are pending Phase-B, which is gated only
-on the Gemini key + a model-ID validation. No `launch_profile`, no v0.1 build, until then.
+## Honest interpretation of the quality miss
+0.645/0.624 is **frame-level** quality on the **single-reviewer §5a golden set**, and it is below the
+0.90 bar. Before reading this as "Percept fails," note the confounders — each is a real next step, not an excuse:
+- **Frame-level ≠ runtime.** The real runtime judges at the **episode** level with dwell/refractory/rearm —
+  materially more forgiving than scoring every isolated frame. Episode-level scoring (golden_eval §5a
+  matching over predicted vs ground-truth episodes) is the fairer measure and was **not** run here.
+- **Single-reviewer labels + coarse ~6-frame clips** (§5a gap) — some `intervals` span the whole clip;
+  some conditions are genuinely ambiguous ("clearly visible ahead").
+- **No prompt/threshold tuning** — this is the stock judge prompt at default confidence.
+- **The 0.90 bar** may be too strict for raw frame-level golden scoring; it was set for the runtime's
+  event-level recall/precision.
+
+## Where this leaves the go/no-go
+- **G1 GO (architecture)** — bounded, recovers; the kill-gate a faster model can't save. ✅
+- **G3 latency GREEN + economics excellent** — `gemini-3.1-flash-lite` at ~1.2s p95 and ~$0.03/stream-hour
+  is comfortably reflex-capable and ~300× under the cost ceiling. ✅
+- **G2 quality REVIEW** — the one open gate. **No `launch_profile` emitted, no v0.1 build**, until quality
+  is resolved: (a) run **episode-level** golden scoring, (b) tune prompt/threshold, (c) re-examine whether
+  0.90 frame-level is the right bar. This is a *scoped* quality-track task, not an architecture failure.
