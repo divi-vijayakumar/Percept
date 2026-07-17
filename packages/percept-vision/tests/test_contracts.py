@@ -5,6 +5,8 @@ import unittest
 
 import percept.contracts as pc
 from percept.contracts import (
+    ANNOTATION_RUBRIC,
+    ANNOTATION_RUBRIC_VERSION,
     CONTRACT_VERSION,
     AudioFrame,
     Box,
@@ -15,8 +17,12 @@ from percept.contracts import (
     Decision,
     Evidence,
     Goal,
+    GroundTruth,
     Incident,
     IncidentSnippet,
+    JudgmentEvent,
+    JudgmentTiming,
+    JudgmentTimingBuilder,
     Schedule,
     Subject,
     Tier0Signal,
@@ -394,6 +400,273 @@ class TestIncidentLabeling(unittest.TestCase):
         self.assertNotIn("_label_sink", field_names)
         self.assertNotIn("_label_ctx", field_names)
         self.assertIn("label_url", field_names)
+
+
+class TestJudgmentTiming(unittest.TestCase):
+    """A5 — the production timestamp contract: two time domains (ADR-001 §5).
+
+    Monotonic domain (ingest_observed_ts .. decision_emitted_ts) is what ALL latency math reads;
+    source_media_ts is optional/untrusted and is never touched by the latency helpers.
+    """
+
+    def _clock(self, times):
+        """A tiny fake clock: pops the next value off ``times`` on each call."""
+        it = iter(times)
+        return lambda: next(it)
+
+    def test_builder_freeze_stamps_decision_emitted_and_freezes(self):
+        clock = self._clock([10.0, 11.0, 12.0, 14.0, 15.0])
+        b = JudgmentTimingBuilder(clock=clock)
+        b.mark_ingest_observed()
+        b.mark_admitted()
+        b.mark_judge_started()
+        b.mark_judge_completed()
+        timing = b.freeze()
+
+        self.assertIsInstance(timing, JudgmentTiming)
+        self.assertEqual(timing.ingest_observed_ts, 10.0)
+        self.assertEqual(timing.admitted_ts, 11.0)
+        self.assertEqual(timing.judge_started_ts, 12.0)
+        self.assertEqual(timing.judge_completed_ts, 14.0)
+        self.assertEqual(timing.decision_emitted_ts, 15.0)  # freeze() itself calls the clock
+
+        # frozen — no mutation after decision_emitted_ts
+        with self.assertRaises(Exception):
+            timing.decision_emitted_ts = 99.0
+
+    def test_freeze_raises_when_a_stage_was_never_marked(self):
+        b = JudgmentTimingBuilder(clock=self._clock([1.0]))
+        b.mark_ingest_observed()
+        # admitted_ts / judge_started_ts / judge_completed_ts never marked
+        with self.assertRaises(ValueError):
+            b.freeze()
+
+    def test_monotonic_stamps_must_be_non_decreasing(self):
+        # A later funnel stage stamped BEFORE an earlier one must raise — this is the invariant
+        # that keeps every derived latency non-negative.
+        with self.assertRaises(ValueError):
+            JudgmentTiming(
+                ingest_observed_ts=10.0,
+                admitted_ts=9.0,  # decreasing vs ingest_observed_ts -> invalid
+                judge_started_ts=11.0,
+                judge_completed_ts=12.0,
+                decision_emitted_ts=13.0,
+            )
+        with self.assertRaises(ValueError):
+            JudgmentTiming(
+                ingest_observed_ts=10.0,
+                admitted_ts=11.0,
+                judge_started_ts=12.0,
+                judge_completed_ts=13.0,
+                decision_emitted_ts=12.5,  # decreasing vs judge_completed_ts -> invalid
+            )
+        # equal (non-decreasing, not strictly increasing) stamps are valid
+        flat = JudgmentTiming(
+            ingest_observed_ts=5.0,
+            admitted_ts=5.0,
+            judge_started_ts=5.0,
+            judge_completed_ts=5.0,
+            decision_emitted_ts=5.0,
+        )
+        self.assertEqual(flat.admitted_to_decision_s(), 0.0)
+
+    def test_source_media_ts_optional_and_excluded_from_ordering_check(self):
+        # source_media_ts may be None (the common/untrusted case)...
+        timing = JudgmentTiming(
+            ingest_observed_ts=1.0,
+            admitted_ts=2.0,
+            judge_started_ts=3.0,
+            judge_completed_ts=4.0,
+            decision_emitted_ts=5.0,
+        )
+        self.assertIsNone(timing.source_media_ts)
+
+        # ...and when present it can be on a totally different (even "earlier"/skewed) timeline
+        # without tripping the monotonic-domain invariant — it is excluded from that check.
+        skewed = JudgmentTiming(
+            ingest_observed_ts=100.0,
+            admitted_ts=101.0,
+            judge_started_ts=102.0,
+            judge_completed_ts=103.0,
+            decision_emitted_ts=104.0,
+            source_media_ts=0.5,  # e.g. a fixture/RTSP-PTS clock that starts near zero
+        )
+        self.assertEqual(skewed.source_media_ts, 0.5)
+
+    def test_latency_helpers_use_only_the_monotonic_domain(self):
+        timing = JudgmentTiming(
+            ingest_observed_ts=100.0,
+            admitted_ts=101.0,
+            judge_started_ts=103.0,
+            judge_completed_ts=106.0,
+            decision_emitted_ts=107.0,
+            source_media_ts=999999.0,  # wildly different value — must not leak into any helper
+        )
+        self.assertEqual(timing.ingest_to_decision_s(), 7.0)
+        self.assertEqual(timing.admitted_to_decision_s(), 6.0)
+        self.assertEqual(timing.judge_wait_s(), 2.0)
+        self.assertEqual(timing.judge_duration_s(), 3.0)
+        self.assertEqual(timing.decision_overhead_s(), 1.0)
+        # none of the helpers reference source_media_ts at all — sanity: changing it changes nothing
+        other = JudgmentTiming(
+            ingest_observed_ts=100.0,
+            admitted_ts=101.0,
+            judge_started_ts=103.0,
+            judge_completed_ts=106.0,
+            decision_emitted_ts=107.0,
+            source_media_ts=None,
+        )
+        self.assertEqual(timing.ingest_to_decision_s(), other.ingest_to_decision_s())
+        self.assertEqual(timing.admitted_to_decision_s(), other.admitted_to_decision_s())
+
+    def test_judgment_event_carries_timing_and_a8_fields_no_delivery_stamps(self):
+        clock = self._clock([1.0, 2.0, 3.0, 4.0, 5.0])
+        b = JudgmentTimingBuilder(clock=clock)
+        b.mark_ingest_observed()
+        b.mark_admitted()
+        b.mark_judge_started()
+        b.mark_judge_completed()
+        timing = b.freeze()
+
+        event = JudgmentEvent(key="goal-1:entity-7", evidence_seq=3, action="fire", timing=timing)
+
+        # A8's fields survive, additively, on the frozen event.
+        self.assertEqual(event.key, "goal-1:entity-7")
+        self.assertEqual(event.evidence_seq, 3)
+        self.assertEqual(event.action, "fire")
+        self.assertIs(event.timing, timing)
+
+        # The event itself is frozen — no post-construction mutation.
+        with self.assertRaises(Exception):
+            event.action = "ask"
+
+        # No delivery timestamp of any kind lives on the event or its timing — those belong to the
+        # DeliveryAttempt ledger (A21/B-SINK), never here.
+        import dataclasses
+
+        event_fields = {f.name for f in dataclasses.fields(event)}
+        timing_fields = {f.name for f in dataclasses.fields(timing)}
+        for forbidden in ("delivery_ts", "delivered_ts", "delivery_attempt", "sink_ts", "attempt_ts"):
+            self.assertNotIn(forbidden, event_fields)
+            self.assertNotIn(forbidden, timing_fields)
+
+
+class TestGroundTruth(unittest.TestCase):
+    """A6 — the evaluation-only ground-truth record (Viability §3b/§5a; ADR-001 §5).
+
+    ``GroundTruth`` is a DISTINCT type from ``JudgmentTiming``/``JudgmentEvent``: a live event built
+    from real production traffic must never carry ``event_start_ts``/``decision_eligible_ts`` —
+    structurally, not just by convention.
+    """
+
+    def test_is_a_separate_type_from_judgment_timing_and_event(self):
+        import dataclasses
+
+        self.assertIsNot(GroundTruth, JudgmentTiming)
+        self.assertIsNot(GroundTruth, JudgmentEvent)
+        self.assertNotIsInstance(GroundTruth(0.0, 0.0, "v1", "fixture-1"), JudgmentTiming)
+
+        gt_fields = {f.name for f in dataclasses.fields(GroundTruth)}
+        timing_fields = {f.name for f in dataclasses.fields(JudgmentTiming)}
+        self.assertTrue(gt_fields.isdisjoint(timing_fields))
+
+    def test_live_judgment_event_and_timing_carry_no_ground_truth_fields(self):
+        import dataclasses
+
+        timing = JudgmentTiming(
+            ingest_observed_ts=1.0,
+            admitted_ts=2.0,
+            judge_started_ts=3.0,
+            judge_completed_ts=4.0,
+            decision_emitted_ts=5.0,
+        )
+        event = JudgmentEvent(key="k", evidence_seq=1, action="fire", timing=timing)
+
+        event_fields = {f.name for f in dataclasses.fields(event)}
+        timing_fields = {f.name for f in dataclasses.fields(timing)}
+        for forbidden in (
+            "event_start_ts",
+            "decision_eligible_ts",
+            "annotation_version",
+            "annotator_or_fixture_id",
+            "ground_truth",
+        ):
+            self.assertNotIn(forbidden, event_fields)
+            self.assertNotIn(forbidden, timing_fields)
+
+    def test_by_construction_is_deterministic(self):
+        a = GroundTruth.by_construction(
+            event_start_ts=10.0, eligible_after_s=0.5, fixture_id="state-archetype-001"
+        )
+        b = GroundTruth.by_construction(
+            event_start_ts=10.0, eligible_after_s=0.5, fixture_id="state-archetype-001"
+        )
+        self.assertEqual(a, b)
+        self.assertEqual(a.decision_eligible_ts, 10.5)
+        self.assertEqual(a.annotation_version, ANNOTATION_RUBRIC_VERSION)
+
+    def test_by_construction_rejects_negative_offset(self):
+        with self.assertRaises(ValueError):
+            GroundTruth.by_construction(event_start_ts=0.0, eligible_after_s=-1.0, fixture_id="f")
+
+    def test_annotation_version_is_required(self):
+        with self.assertRaises(ValueError):
+            GroundTruth(
+                event_start_ts=0.0,
+                decision_eligible_ts=0.0,
+                annotation_version="",
+                annotator_or_fixture_id="fixture-1",
+            )
+
+    def test_annotator_or_fixture_id_is_required(self):
+        with self.assertRaises(ValueError):
+            GroundTruth(
+                event_start_ts=0.0,
+                decision_eligible_ts=0.0,
+                annotation_version=ANNOTATION_RUBRIC_VERSION,
+                annotator_or_fixture_id="",
+            )
+
+    def test_decision_eligible_ts_cannot_precede_event_start_ts(self):
+        with self.assertRaises(ValueError):
+            GroundTruth(
+                event_start_ts=10.0,
+                decision_eligible_ts=9.0,
+                annotation_version=ANNOTATION_RUBRIC_VERSION,
+                annotator_or_fixture_id="fixture-1",
+            )
+
+    def test_record_is_frozen(self):
+        gt = GroundTruth.by_construction(event_start_ts=0.0, eligible_after_s=1.0, fixture_id="f")
+        with self.assertRaises(Exception):
+            gt.decision_eligible_ts = 99.0
+
+    def test_from_two_annotator_reconciles_within_tolerance(self):
+        gt = GroundTruth.from_two_annotator(
+            event_start_ts=5.0,
+            annotator_a_id="alice",
+            annotator_a_eligible_ts=6.0,
+            annotator_b_id="bob",
+            annotator_b_eligible_ts=6.4,
+            max_disagreement_s=1.0,
+        )
+        self.assertAlmostEqual(gt.decision_eligible_ts, 6.2)
+        self.assertEqual(gt.annotator_or_fixture_id, "alice+bob")
+
+    def test_from_two_annotator_raises_on_disagreement(self):
+        with self.assertRaises(ValueError):
+            GroundTruth.from_two_annotator(
+                event_start_ts=5.0,
+                annotator_a_id="alice",
+                annotator_a_eligible_ts=6.0,
+                annotator_b_id="bob",
+                annotator_b_eligible_ts=9.0,
+                max_disagreement_s=1.0,
+            )
+
+    def test_annotation_rubric_carries_the_version(self):
+        self.assertIn(ANNOTATION_RUBRIC_VERSION, ANNOTATION_RUBRIC)
+        self.assertIn("decision_eligible_ts", ANNOTATION_RUBRIC)
 
 
 class TestAudioFrame(unittest.TestCase):

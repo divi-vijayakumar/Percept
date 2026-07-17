@@ -69,6 +69,21 @@ class RuntimeWorkerTests(unittest.TestCase):
         asyncio.run(_collect(_core(), SOURCE, on_incident=seen.append))
         self.assertEqual(len(seen), 2)
 
+    def test_wake_policy_none_explicit_still_fires_on_a_wakeup_worthy_source(self):
+        # A4 regression: run()'s `wake_policy` kwarg (default None) flows straight into the
+        # MotionGate `_build_gate()` constructs (percept/runtime/worker.py). Passed explicitly here
+        # to prove the real, wired path — not just MotionGate in isolation — never silently drops a
+        # wake-worthy escalation when no WakePolicy is configured.
+        incidents = asyncio.run(_collect(_core(), SOURCE, wake_policy=None))
+        self.assertEqual(len(incidents), 2)  # identical to the implicit-default path above
+
+    def test_wake_policy_none_a_motionless_source_fires_nothing(self):
+        # The negative half, driven through the same real worker.run() path: no wake-worthy
+        # evidence anywhere in the stream -> wake_policy=None must not spuriously escalate either.
+        still_only = [(0.0, STILL, "clear"), (1.0, STILL, "clear"), (2.0, STILL, "clear")]
+        incidents = asyncio.run(_collect(_core(), still_only, wake_policy=None))
+        self.assertEqual(incidents, [])
+
     def test_on_frame_feed_hook_gets_every_frame(self):
         seen = []
         asyncio.run(_collect(_core(), SOURCE, on_frame=lambda t, f: seen.append(t)))

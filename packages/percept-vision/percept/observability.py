@@ -122,17 +122,22 @@ _TOKENS_OUT = "judge.tokens.output"
 _COST = "judge.cost.usd"
 
 
-def funnel_key(stage: str, *, concern: str | None = None, camera: str | None = None) -> str:
+def funnel_key(
+    stage: str, *, concern: str | None = None, camera: str | None = None, reason: str | None = None
+) -> str:
     """The dotted counter name for one funnel stage, optionally scoped.
 
-    ``funnel.<stage>`` (the run total), ``funnel.<stage>.concern.<goal_id>`` (per concern), and
-    ``funnel.<stage>.camera.<source>`` (per camera) are all distinct keys, so a snapshot carries the
-    aggregate *and* both slices without extra storage.
+    ``funnel.<stage>`` (the run total), ``funnel.<stage>.concern.<goal_id>`` (per concern),
+    ``funnel.<stage>.camera.<source>`` (per camera), and ``funnel.<stage>.reason.<reason>`` (per
+    drop/refusal reason, used by :meth:`Funnel.dropped`) are all distinct keys, so a snapshot
+    carries the aggregate *and* every slice without extra storage.
     """
     if concern is not None:
         return f"{_FUNNEL}.{stage}.concern.{concern}"
     if camera is not None:
         return f"{_FUNNEL}.{stage}.camera.{camera}"
+    if reason is not None:
+        return f"{_FUNNEL}.{stage}.reason.{reason}"
     return f"{_FUNNEL}.{stage}"
 
 
@@ -177,6 +182,22 @@ class Funnel:
     def fired(self, *, concern: str | None = None, camera: str | None = None, n: int = 1) -> None:
         """A rising-edge fire was emitted for ``concern``."""
         self._stage("fired", concern=concern, camera=camera, n=n)
+
+    def dropped(self, *, reason: str, camera: str | None = None, n: int = 1) -> None:
+        """A tick was DROPPED before a verdict was ever reached — e.g. the off-loop judge scheduler
+        (:class:`~percept.runtime.worker._JudgeScheduler`) superseding a queued candidate under
+        overload, or discarding one pinned to a goals revision that moved mid-flight. Distinct from
+        :meth:`refused` (a completed judge call the gate abstained ASK on): a drop never reached the
+        judge at all. NOT one of the five :data:`FUNNEL_STAGES` (a dashboard iterating that tuple
+        won't double-count it) but rides the same ``funnel.*`` counter namespace + OTel mirror, and —
+        per ADR-001 §9 — always carries a ``reason`` (never a silent counter bump).
+        """
+        self._m.incr(funnel_key("dropped"), n)
+        if camera is not None:
+            self._m.incr(funnel_key("dropped", camera=camera), n)
+        self._m.incr(funnel_key("dropped", reason=reason), n)
+        if self._otel is not None:
+            self._otel.record_stage("dropped", concern=None, camera=camera, n=n, reason=reason)
 
     def record_judge(
         self,
@@ -247,6 +268,8 @@ class OTelExporter:
 
     - ``percept.funnel.<stage>`` — a Counter per funnel stage, with ``concern`` / ``camera``
       attributes when scoped.
+    - ``percept.funnel.dropped`` — a Counter for :meth:`Funnel.dropped` (NOT one of the five
+      :data:`FUNNEL_STAGES`, but mirrored alongside them), with a ``reason`` attribute.
     - ``percept.judge.latency`` — a Histogram (seconds).
     - ``percept.judge.tokens`` — a Counter with a ``direction`` (input/output) attribute.
     - ``percept.judge.cost_usd`` — a Counter.
@@ -264,6 +287,9 @@ class OTelExporter:
         if meter is not None:
             for stage in FUNNEL_STAGES:
                 self._stage_counters[stage] = meter.create_counter(f"percept.funnel.{stage}")
+            # dropped rides the same stage-counter map (looked up by name in record_stage) without
+            # being one of the five FUNNEL_STAGES a dashboard iterates.
+            self._stage_counters["dropped"] = meter.create_counter("percept.funnel.dropped")
             self._latency = meter.create_histogram(
                 "percept.judge.latency", unit="s", description="judge wall-time"
             )
@@ -271,7 +297,13 @@ class OTelExporter:
             self._cost = meter.create_counter("percept.judge.cost_usd")
 
     def record_stage(
-        self, stage: str, *, concern: str | None, camera: str | None, n: int
+        self,
+        stage: str,
+        *,
+        concern: str | None,
+        camera: str | None,
+        n: int,
+        reason: str | None = None,
     ) -> None:
         if not self.enabled:
             return
@@ -283,6 +315,8 @@ class OTelExporter:
             attrs["concern"] = concern
         if camera is not None:
             attrs["camera"] = camera
+        if reason is not None:
+            attrs["reason"] = reason
         counter.add(n, attrs)
 
     def record_judge(

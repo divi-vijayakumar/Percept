@@ -21,6 +21,27 @@ from __future__ import annotations
 from typing import Callable, Hashable, Literal
 
 from .adapters import Verdict
+from .observability import get_logger, log
+
+# M0/GATE_STATE_LEAK defaults — a bare ``Gate()`` must not be able to grow without bound (ADR-001
+# §9, "Gate keys": count + TTL, LRU/TTL eviction except explicitly pinned). Chosen so neither bound
+# interferes with any known caller's key volume, while still capping runaway 24/7 growth:
+#   * _DEFAULT_MAX_KEYS  — the LRU backstop. It is enforced unconditionally (no clock required), so
+#     it is the bound that actually protects a caller that never passes ``now``/a clock. 10,000 keys
+#     is orders of magnitude above realistic (goal x entity) cardinality (EntityGraph itself defaults
+#     to evicting at 64 entities, see percept/entity.py) yet trivial memory (a handful of small dict
+#     entries per key) — generous enough to never truncate legitimate traffic, small enough to cap a
+#     leak.
+#   * _DEFAULT_KEY_TTL_S — 3600.0s (1 hour), matching the production default already chosen for
+#     ``GateSettings.key_ttl_s`` in percept/config.py, so the raw primitive and the settings-driven
+#     default agree. Only takes effect when ``evaluate(..., now=...)`` or a ``clock`` is supplied (the
+#     main watch path, ``BehaviorExecutor.fire_judged``, always passes ``now``); a caller that
+#     supplies neither relies on ``_DEFAULT_MAX_KEYS`` alone, per the docstring below.
+# Either bound can still be disabled explicitly with ``max_keys=None`` / ``key_ttl_s=None`` (opt-out,
+# not the default) for callers that deliberately want the old unbounded gate (e.g. reconstructing
+# legacy behavior in a test).
+_DEFAULT_MAX_KEYS = 10_000
+_DEFAULT_KEY_TTL_S = 3600.0
 
 GateAction = Literal["fire", "ask", "silent"]
 FIRE: GateAction = "fire"
@@ -54,9 +75,10 @@ class Gate:
         threshold: float = 0.7,
         fresh_min: float = 0.5,
         *,
-        max_keys: int | None = None,
-        key_ttl_s: float | None = None,
+        max_keys: int | None = _DEFAULT_MAX_KEYS,
+        key_ttl_s: float | None = _DEFAULT_KEY_TTL_S,
         clock: Callable[[], float] | None = None,
+        on_evict: Callable[[Hashable, str], None] | None = None,
     ) -> None:
         self.threshold = threshold
         self.fresh_min = fresh_min
@@ -64,9 +86,10 @@ class Gate:
         # R-1 sustained-duration (dwell): key -> the time it first became continuously true. Only
         # populated when a goal sets ``hold_s``; empty otherwise, so the no-dwell path is byte-for-byte.
         self._dwell_since: dict[Hashable, float] = {}
-        # R-1 growth bound (24/7). `_armed`/`_dwell_since` are fed by unbounded key sources (per-entity,
-        # per-time-bucket, per-answer); on a 24/7 watch they grow without limit. Eviction is OPT-IN — both
-        # bounds default None => byte-for-byte the old unbounded gate, no `_touched` bookkeeping at all.
+        # R-1/M0 growth bound (24/7). `_armed`/`_dwell_since` are fed by unbounded key sources (per-entity,
+        # per-time-bucket, per-answer); on a 24/7 watch they grow without limit. Eviction is ON BY DEFAULT
+        # (see `_DEFAULT_MAX_KEYS`/`_DEFAULT_KEY_TTL_S` above) — pass ``max_keys=None``/``key_ttl_s=None``
+        # explicitly to opt back out to the old unbounded gate (no `_touched` bookkeeping at all).
         #   * key_ttl_s — a key untouched (unevaluated) this long is dropped (the primary bound; TTL sweep
         #     runs on the stream `now` the judge path already passes).
         #   * max_keys  — a hard LRU ceiling on the number of keys (the backstop when there is no clock).
@@ -77,10 +100,16 @@ class Gate:
         self._clock = clock
         self._touched: dict[Hashable, float] = {}  # key -> last time it was evaluated (eviction stamp)
         self._no_evict: set[Hashable] = set()       # keys exempt from TTL + LRU (never-once semantics)
+        # M0/GATE_STATE_LEAK: eviction must never be silent (ADR-001 §9). `on_evict(key, reason)` fires for
+        # every bound-driven drop (reason is "ttl" or "max_keys"); default logs a structured line so a drop
+        # is always observable even when the caller wires nothing.
+        self.on_evict = on_evict
 
     @property
     def _evicting(self) -> bool:
-        """Eviction bookkeeping is live only when a bound is set (so the default gate is byte-for-byte)."""
+        """Eviction bookkeeping is live whenever a bound is set — true by default (M0/GATE_STATE_LEAK);
+        only an explicit ``max_keys=None, key_ttl_s=None`` disables it and restores the old unbounded,
+        byte-for-byte gate."""
         return self.max_keys is not None or self.key_ttl_s is not None
 
     def _drop(self, key: Hashable) -> None:
@@ -88,6 +117,16 @@ class Gate:
         self._dwell_since.pop(key, None)
         self._touched.pop(key, None)
         self._no_evict.discard(key)
+
+    def _evict(self, key: Hashable, reason: str) -> None:
+        """Drop a key as a BOUND-DRIVEN eviction (TTL or max_keys) — as opposed to `_drop` used directly
+        by `reset_goal`/`reset_entity`, which are intentional, caller-requested resets, not capacity
+        pressure. M0/GATE_STATE_LEAK: this is the one path that must never be silent (ADR-001 §9)."""
+        self._drop(key)
+        if self.on_evict is not None:
+            self.on_evict(key, reason)
+        else:
+            log(get_logger("percept.gate"), "gate.evict", key=repr(key), reason=reason)
 
     def _bound(self, current: Hashable, ref: float | None) -> None:
         """Sweep expired keys (TTL, needs a time ref) and enforce the LRU ceiling (max_keys). Never touches
@@ -97,7 +136,7 @@ class Gate:
             cutoff = ref - self.key_ttl_s
             for key in [k for k, ts in self._touched.items()
                         if ts < cutoff and k not in self._no_evict and k != current]:
-                self._drop(key)
+                self._evict(key, "ttl")
         if self.max_keys is not None:
             pending = 0 if current in self._armed else 1  # the current key will be armed right after this
             overflow = len(self._armed) + pending - self.max_keys
@@ -106,7 +145,7 @@ class Gate:
                 # least-recently-touched first (unstamped keys sort oldest -> shed before live ones)
                 evictable.sort(key=lambda k: self._touched.get(k, float("-inf")))
                 for key in evictable[:overflow]:
-                    self._drop(key)
+                    self._evict(key, "max_keys")
 
     def evaluate(
         self,
@@ -129,7 +168,7 @@ class Gate:
         the per-goal absence/resolved singletons, whose edge must survive an idle gap (dropping it would
         re-arm a fire-once goal). Ignored entirely when no eviction bound is configured.
         """
-        # Eviction bookkeeping (only when a bound is set — otherwise byte-for-byte the old gate). Stamp the
+        # Eviction bookkeeping (only when a bound is set — bounded by default, see `_evicting`). Stamp the
         # key BEFORE sweeping so the key in play is the freshest and can never evict itself.
         if self._evicting:
             ref = now if now is not None else (self._clock() if self._clock is not None else None)

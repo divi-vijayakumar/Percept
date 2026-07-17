@@ -20,7 +20,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Awaitable, Callable, ClassVar, Literal, Protocol, runtime_checkable
+from typing import Any, Awaitable, Callable, ClassVar, Hashable, Literal, Protocol, runtime_checkable
 
 # ---------------------------------------------------------------------------
 # Global contract version + negotiation
@@ -346,6 +346,343 @@ class Decision:
     say: str | None = None
     goal_ops: list = field(default_factory=list)
     endpoint: Literal["complete", "incomplete", "barge_in", "n/a"] = "n/a"
+
+
+# ---- Production timing contract — two time domains (ADR-001 §5, card A5) ----
+
+# Mirrors the *values* of ``percept.gate.GateAction`` ("fire"/"ask"/"silent") without importing
+# from ``percept.gate`` — ``percept.contracts`` is the frozen membrane at the bottom of the layering
+# (stdlib-only, imported BY ``percept.gate``/``percept.sequencing``, never the other way), so the
+# literal is duplicated here rather than creating a reverse/circular import.
+JudgmentAction = Literal["fire", "ask", "silent"]
+
+
+@dataclass(frozen=True)
+class JudgmentTiming:
+    """The two-time-domain production timestamp contract for one judgment (ADR-001 §5).
+
+    Two domains, never conflated:
+
+    * **MONOTONIC (production, local clock)** — ``ingest_observed_ts``, ``admitted_ts``,
+      ``judge_started_ts``, ``judge_completed_ts``, ``decision_emitted_ts``. ALL latency math
+      (dwell/refractory windows, funnel latency, p50/p95/p99) reads ONLY these five stamps, and
+      they are sourced from the injectable monotonic clock seam (``percept/clock.py`` —
+      ``WallClock``/``FakeClock``, threaded since card A1), never a wall-clock/NTP-adjustable
+      source.
+    * **SOURCE (optional, untrusted)** — ``source_media_ts``: the source/fixture/RTSP-PTS
+      timeline, when the source exposes one. It may be absent (``None``) or arbitrarily skewed
+      from the monotonic domain; it exists for replay/ground-truth ALIGNMENT ONLY (see the
+      separate evaluation ground-truth record, card A6) and must never be substituted into a
+      latency calculation.
+
+    ``ingest_observed_ts`` is when the runtime locally RECEIVED the evidence — NOT camera capture
+    time (that would require trusting the untrusted source domain).
+
+    ``decision_emitted_ts`` is the FREEZE point: the :class:`JudgmentEvent` this timing is
+    attached to is immutable from that instant on. Delivery/sink timestamps are deliberately NOT
+    part of this struct — they live in the ``DeliveryAttempt`` ledger (card A21/B-SINK), because a
+    frozen JudgmentEvent must never be mutated to append a later delivery stamp.
+    """
+
+    ingest_observed_ts: float
+    admitted_ts: float
+    judge_started_ts: float
+    judge_completed_ts: float
+    decision_emitted_ts: float
+    source_media_ts: float | None = None  # OPTIONAL, untrusted — alignment only, never latency math
+
+    def __post_init__(self) -> None:
+        """Construction invariant: the monotonic-domain stamps are non-decreasing in funnel order.
+
+        ``source_media_ts`` is deliberately excluded — it is a separate, possibly unrelated
+        timeline and is never compared against the monotonic domain.
+        """
+        ordered = (
+            self.ingest_observed_ts,
+            self.admitted_ts,
+            self.judge_started_ts,
+            self.judge_completed_ts,
+            self.decision_emitted_ts,
+        )
+        for earlier, later in zip(ordered, ordered[1:]):
+            if later < earlier:
+                raise ValueError(
+                    "JudgmentTiming monotonic stamps must be non-decreasing "
+                    f"(ingest_observed_ts, admitted_ts, judge_started_ts, judge_completed_ts, "
+                    f"decision_emitted_ts): got {ordered!r}"
+                )
+
+    # ---- latency helpers — ALL read the monotonic domain only; source_media_ts never enters ----
+
+    def ingest_to_decision_s(self) -> float:
+        """Total funnel latency: local receipt of evidence -> frozen decision."""
+        return self.decision_emitted_ts - self.ingest_observed_ts
+
+    def admitted_to_decision_s(self) -> float:
+        """Judge-funnel latency: tier-0 admission -> frozen decision (G3-A, ADR-001 §5)."""
+        return self.decision_emitted_ts - self.admitted_ts
+
+    def judge_wait_s(self) -> float:
+        """Queueing delay between admission and the judge call actually starting."""
+        return self.judge_started_ts - self.admitted_ts
+
+    def judge_duration_s(self) -> float:
+        """Wall time the judge call itself took."""
+        return self.judge_completed_ts - self.judge_started_ts
+
+    def decision_overhead_s(self) -> float:
+        """Time from judge completion to the frozen decision (gate/reducer overhead)."""
+        return self.decision_emitted_ts - self.judge_completed_ts
+
+
+@dataclass
+class JudgmentTimingBuilder:
+    """Accumulates one judgment's monotonic stamps as it moves through the funnel, then freezes.
+
+    Wired through the same injectable clock seam as the rest of run-time cognition (``Clock =
+    Callable[[], float]`` in ``percept/clock.py``; ``WallClock`` in production, ``FakeClock`` in
+    tests/replay) — nothing here reads a wall clock directly. Each ``mark_*`` records "now" (or an
+    explicit ``at=`` override, e.g. for replaying a stream's own admission times) at the moment the
+    funnel stage happens; :meth:`freeze` stamps ``decision_emitted_ts`` and produces the immutable
+    :class:`JudgmentTiming`.
+    """
+
+    clock: Callable[[], float]
+    ingest_observed_ts: float | None = None
+    admitted_ts: float | None = None
+    judge_started_ts: float | None = None
+    judge_completed_ts: float | None = None
+    source_media_ts: float | None = None
+
+    def mark_ingest_observed(self, *, at: float | None = None) -> float:
+        """Stamp local receipt of the evidence — NOT camera capture time."""
+        self.ingest_observed_ts = self.clock() if at is None else at
+        return self.ingest_observed_ts
+
+    def mark_admitted(self, *, at: float | None = None) -> float:
+        """Stamp tier-0 admission to the judge funnel."""
+        self.admitted_ts = self.clock() if at is None else at
+        return self.admitted_ts
+
+    def mark_judge_started(self, *, at: float | None = None) -> float:
+        """Stamp the judge call actually starting."""
+        self.judge_started_ts = self.clock() if at is None else at
+        return self.judge_started_ts
+
+    def mark_judge_completed(self, *, at: float | None = None) -> float:
+        """Stamp the judge call returning."""
+        self.judge_completed_ts = self.clock() if at is None else at
+        return self.judge_completed_ts
+
+    def set_source_media_ts(self, value: float | None) -> None:
+        """Record the OPTIONAL source/fixture/RTSP-PTS timeline value, if the source exposes one."""
+        self.source_media_ts = value
+
+    def freeze(self, *, at: float | None = None) -> JudgmentTiming:
+        """Stamp ``decision_emitted_ts`` and produce the frozen :class:`JudgmentTiming`.
+
+        Raises ``ValueError`` if an earlier funnel stage was never marked — a judgment cannot
+        freeze with gaps in its own monotonic history.
+        """
+        missing = [
+            name
+            for name, value in (
+                ("ingest_observed_ts", self.ingest_observed_ts),
+                ("admitted_ts", self.admitted_ts),
+                ("judge_started_ts", self.judge_started_ts),
+                ("judge_completed_ts", self.judge_completed_ts),
+            )
+            if value is None
+        ]
+        if missing:
+            raise ValueError(f"cannot freeze JudgmentTiming, missing stamp(s): {missing!r}")
+        return JudgmentTiming(
+            ingest_observed_ts=self.ingest_observed_ts,  # type: ignore[arg-type]
+            admitted_ts=self.admitted_ts,  # type: ignore[arg-type]
+            judge_started_ts=self.judge_started_ts,  # type: ignore[arg-type]
+            judge_completed_ts=self.judge_completed_ts,  # type: ignore[arg-type]
+            decision_emitted_ts=self.clock() if at is None else at,
+            source_media_ts=self.source_media_ts,
+        )
+
+
+@dataclass(frozen=True)
+class JudgmentEvent:
+    """The frozen output of one pass through the judge funnel (``Verdict -> GateDecision ->
+    JudgmentEvent``, ADR-001 §1-5).
+
+    Immutable (frozen dataclass) and frozen in time at ``timing.decision_emitted_ts`` — nothing on
+    this event may be mutated after construction, and no delivery/sink timestamp is ever added
+    here; those live in the ``DeliveryAttempt`` ledger (card A21/B-SINK) precisely because that
+    ledger records attempts made *against* an already-frozen event.
+
+    ``key``/``evidence_seq`` mirror :class:`percept.sequencing.GateDecision` (card A8) so a
+    JudgmentEvent can be correlated back to the serialized-reducer decision that produced it —
+    added here additively; A8's fields are untouched.
+    """
+
+    key: Hashable
+    evidence_seq: int
+    action: JudgmentAction
+    timing: JudgmentTiming
+
+
+# ---------------------------------------------------------------------------
+# GroundTruth (A6) — EVALUATION-ONLY ground truth, DISTINCT from the live JudgmentEvent.
+# ---------------------------------------------------------------------------
+
+#: Version of the eligibility-annotation RUBRIC below (bump on any wording/criteria change so an
+#: existing :class:`GroundTruth` record self-documents which rubric revision produced it). Distinct
+#: from ``CONTRACT_VERSION`` (the wire contract) and ``Concern.version`` (a versioned detection asset).
+ANNOTATION_RUBRIC_VERSION = "eligibility-rubric-v1"
+
+ANNOTATION_RUBRIC = """\
+Eligibility annotation rubric ({version}) — Viability Spec §3b/§5a.
+
+decision_eligible_ts = the timestamp of the FIRST FRAME at which a competent human annotator,
+given only the evidence up to and including that frame (no future frames, no foreknowledge of the
+fixture's intended answer), could confidently judge whether the watched condition is satisfied.
+
+It is NOT the frame where the underlying physical event starts (``event_start_ts``) — those
+coincide only for an instantaneous/unambiguous event. For anything with onset/rise time (a door
+swinging open, a person sitting down) eligibility comes strictly AFTER the event start, once
+enough of the action has resolved to remove reasonable doubt.
+
+Two substrates produce this timestamp (Viability §5a):
+
+1. BY CONSTRUCTION (primary, core gating archetypes) — a synthetic fixture author places the event
+   at a known ``event_start_ts`` and DECLARES ``decision_eligible_ts`` deterministically (a fixed,
+   documented offset for the archetype). No human judgment is exercised at record-construction
+   time; the fixture generator IS the ground truth. Use :meth:`GroundTruth.by_construction`.
+2. ANNOTATED REAL CLIPS (secondary, two-annotator) — a real/captured clip has no generator to ask,
+   so a human annotator marks the frame. Two independent annotators reduce single-rater bias; a
+   disagreement beyond tolerance is adjudicated (a third annotator, or the clip is discarded)
+   rather than averaged away blindly. :meth:`GroundTruth.from_two_annotator` is the documented
+   INTAKE HOOK for this path — not a full annotation tool/UI, which is out of PRE-MVP VIABILITY
+   scope.
+
+``annotation_version`` on every record MUST equal (or explicitly reference) the rubric version that
+produced it, so a later rubric revision does not silently corrupt historical golden fixtures.
+""".format(version=ANNOTATION_RUBRIC_VERSION)
+
+
+@dataclass(frozen=True)
+class GroundTruth:
+    """EVALUATION-ONLY ground truth for one watched event — NEVER a field on a live JudgmentEvent.
+
+    Per ADR-001 §5 and Viability §3/§3b/§5a: the production runtime cannot (and must not pretend
+    to) know when an event "really" started or when a human could have confidently judged it —
+    those are labels a human annotator or a synthetic fixture generator supplies AFTER THE FACT,
+    for evaluation only (recall/precision scoring, the ``golden_eval`` timeline of card A14, the
+    actionable-latency metric of card A27). Keeping this a wholly separate, distinct type — never
+    merged into :class:`JudgmentEvent`/:class:`JudgmentTiming` — is a hard invariant of the frozen
+    contract: a live event built from real traffic never carries an ``event_start_ts``/
+    ``decision_eligible_ts`` field, STRUCTURALLY, not just by convention. It is nullable/absent on
+    the live path simply because a live pipeline never constructs one of these.
+
+    See :data:`ANNOTATION_RUBRIC` for the eligibility rubric that MUST have produced
+    ``decision_eligible_ts``.
+
+    Fields:
+
+    - ``event_start_ts`` — when the underlying physical/scripted event began, on the fixture's or
+      annotator's own timeline (evaluation-side; NOT the runtime's monotonic clock — analogous in
+      spirit to the untrusted ``source_media_ts`` on :class:`JudgmentTiming`, but a wholly separate
+      timeline belonging to a wholly separate, eval-only type).
+    - ``decision_eligible_ts`` — the rubric-defined first-eligible-judgment instant (see
+      :data:`ANNOTATION_RUBRIC`). Always ``>= event_start_ts``.
+    - ``annotation_version`` — REQUIRED (non-empty); the :data:`ANNOTATION_RUBRIC_VERSION` (or a
+      documented successor) that produced this record. A ``golden_eval`` run that silently mixes
+      rubric versions is a scoring bug this field exists to catch.
+    - ``annotator_or_fixture_id`` — REQUIRED (non-empty) provenance: which fixture generator
+      (by-construction path) or which human annotator/annotator-pair (real-clip path) produced
+      this record.
+    """
+
+    event_start_ts: float
+    decision_eligible_ts: float
+    annotation_version: str
+    annotator_or_fixture_id: str
+
+    def __post_init__(self) -> None:
+        if self.decision_eligible_ts < self.event_start_ts:
+            raise ValueError(
+                "GroundTruth.decision_eligible_ts must be >= event_start_ts (eligibility cannot "
+                f"precede the event it is judging): decision_eligible_ts={self.decision_eligible_ts!r} "
+                f"< event_start_ts={self.event_start_ts!r}"
+            )
+        if not self.annotation_version:
+            raise ValueError(
+                "GroundTruth.annotation_version is required (non-empty) — see ANNOTATION_RUBRIC "
+                "and ANNOTATION_RUBRIC_VERSION."
+            )
+        if not self.annotator_or_fixture_id:
+            raise ValueError("GroundTruth.annotator_or_fixture_id is required (non-empty).")
+
+    @classmethod
+    def by_construction(
+        cls,
+        *,
+        event_start_ts: float,
+        eligible_after_s: float,
+        fixture_id: str,
+        annotation_version: str = ANNOTATION_RUBRIC_VERSION,
+    ) -> "GroundTruth":
+        """PRIMARY path (Viability §5a) for the core gating archetypes: a synthetic fixture
+        DECLARES eligibility deterministically as a fixed offset from its own known event start —
+        no human judgment, no randomness, so two calls with identical inputs always produce a
+        byte-for-byte identical record (reproducible golden fixtures).
+
+        ``eligible_after_s`` is the fixture author's documented reaction-time/resolution offset for
+        THIS archetype (see ``eval/viability/ground_truth.py`` for the six core-archetype offsets
+        A16's neutral fixtures use) — MUST be ``>= 0``.
+        """
+        if eligible_after_s < 0:
+            raise ValueError(f"eligible_after_s must be >= 0, got {eligible_after_s!r}")
+        return cls(
+            event_start_ts=event_start_ts,
+            decision_eligible_ts=event_start_ts + eligible_after_s,
+            annotation_version=annotation_version,
+            annotator_or_fixture_id=fixture_id,
+        )
+
+    @classmethod
+    def from_two_annotator(
+        cls,
+        *,
+        event_start_ts: float,
+        annotator_a_id: str,
+        annotator_a_eligible_ts: float,
+        annotator_b_id: str,
+        annotator_b_eligible_ts: float,
+        annotation_version: str = ANNOTATION_RUBRIC_VERSION,
+        max_disagreement_s: float = 1.0,
+    ) -> "GroundTruth":
+        """SECONDARY path (Viability §5a) for annotated REAL clips — a documented INTAKE HOOK, not a
+        full annotation tool/UI. Two independent human annotators each mark their own eligibility
+        instant; this reconciles them into ONE record.
+
+        Raises :class:`ValueError` if the two annotators disagree by more than
+        ``max_disagreement_s`` — adjudicate with a third annotator, or discard the clip; this hook
+        deliberately will not average away a real disagreement. Within tolerance, records the mean
+        of the two timestamps and a combined ``annotator_or_fixture_id`` (both ids, so provenance is
+        never lost).
+        """
+        disagreement = abs(annotator_a_eligible_ts - annotator_b_eligible_ts)
+        if disagreement > max_disagreement_s:
+            raise ValueError(
+                f"annotators disagree by {disagreement!r}s (> max_disagreement_s={max_disagreement_s!r}s): "
+                f"{annotator_a_id}={annotator_a_eligible_ts!r} vs {annotator_b_id}={annotator_b_eligible_ts!r} "
+                "— adjudicate with a third annotator or discard this clip; this hook will not "
+                "silently average away a real disagreement."
+            )
+        reconciled = (annotator_a_eligible_ts + annotator_b_eligible_ts) / 2.0
+        return cls(
+            event_start_ts=event_start_ts,
+            decision_eligible_ts=reconciled,
+            annotation_version=annotation_version,
+            annotator_or_fixture_id=f"{annotator_a_id}+{annotator_b_id}",
+        )
 
 
 @dataclass
@@ -1053,6 +1390,13 @@ __all__ = [
     "Priors",
     "Concern",
     "Decision",
+    "JudgmentAction",
+    "JudgmentTiming",
+    "JudgmentTimingBuilder",
+    "JudgmentEvent",
+    "ANNOTATION_RUBRIC_VERSION",
+    "ANNOTATION_RUBRIC",
+    "GroundTruth",
     "STTEvent",
     "TurnResult",
     "Schedule",

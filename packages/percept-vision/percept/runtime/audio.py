@@ -68,6 +68,30 @@ def _rms_energy(pcm: bytes) -> float:
     return min(1.0, math.sqrt(mean_sq) / 32768.0)
 
 
+_POLL = object()  # sentinel: "queue was empty this poll, try again" (distinct from the None end-sentinel)
+
+
+def _get_polling(q: "queue.Queue", timeout: float = 0.5):
+    """Bounded ``q.get()`` — returns ``_POLL`` on a timeout instead of blocking forever.
+
+    AUDIO_PUMP_DEADLOCK (M0/A2): the consumer used a bare ``await asyncio.to_thread(q.get)`` with no
+    timeout. ``asyncio.to_thread`` runs the call on a real OS thread; once that thread has *started*
+    running, cancelling/closing the awaiting coroutine (task cancellation, ``aclose()`` on this async
+    generator, or the process shutting down) does NOT stop it — ``concurrent.futures.Future.cancel()``
+    is a no-op on a work item that already started. If the queue then never receives another item (the
+    capture thread stalled — e.g. a mic device wedged in a blocking read — or simply hasn't produced one
+    yet when the caller stops consuming), that worker thread is orphaned inside ``q.get()`` forever. At
+    interpreter exit, ``concurrent.futures.thread`` registers an ``atexit`` hook that joins every live
+    worker thread before letting the process die — so the ORPHANED thread hangs the entire process
+    indefinitely. Polling with a bounded timeout caps how long any single thread-pool call can block, so
+    a torn-down consumer stops re-issuing gets and the last one still in flight resolves within
+    ``timeout`` instead of never."""
+    try:
+        return q.get(timeout=timeout)
+    except queue.Empty:
+        return _POLL
+
+
 def _put_latest(q: "queue.Queue", item, dropped: "list[int] | None" = None) -> None:
     """Drop-oldest put so a slow consumer never blocks capture (mirrors source.py)."""
     try:
@@ -179,7 +203,12 @@ async def open_audio_source(
     thread.start()
     try:
         while True:
-            item = await asyncio.to_thread(q.get)
+            # AUDIO_PUMP_DEADLOCK (M0/A2): poll with a bounded timeout rather than a bare blocking
+            # ``q.get()`` — see ``_get_polling`` for why an unbounded get here can hang the whole
+            # process at exit once the consumer is torn down mid-wait.
+            item = await asyncio.to_thread(_get_polling, q)
+            if item is _POLL:
+                continue
             if item is None:
                 break
             if isinstance(item, Exception):

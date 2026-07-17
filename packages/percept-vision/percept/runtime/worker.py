@@ -86,18 +86,59 @@ class _JudgeScheduler:
     ``stats.judge_calls`` counts at LAUNCH time (a superseded/dropped candidate never spent a call).
     Results carry the ADMISSION ``t`` so ``incident.ts`` stays the admitting frame's timestamp.
     Lives in this module on purpose: the E1 parity test scans ``inspect.getsource(run)``'s module.
+
+    ADR-001 §9 / card A9: the in-flight slot (``_active``) and the pending slot (``_pending``) are
+    BOUNDED BY CONSTRUCTION — each is a single scalar field, not a collection, so J<=1 and P<=1 always
+    hold; overload cannot grow either past 1, it can only REPLACE what's there (reject/supersede).
+    Every such replacement is TRACED, never silent: ``submit()``/``_launch_pending()`` append a
+    ``(kind, data)`` pair to ``_trace`` (itself drained every frame tick alongside ``_results``, so it
+    never accumulates past one frame's worth) that ``run()`` turns into a ``RuntimeHealthEvent`` —
+    ``"judge_superseded"`` (latest-wins pending replacement) or ``"judge_revision_dropped"`` (stale
+    pending discarded on a goals-revision change) — each carrying an explicit ``reason``.
     """
 
-    def __init__(self, core: Any, source: str, stats: RuntimeStats | None) -> None:
+    def __init__(
+        self,
+        core: Any,
+        source: str,
+        stats: RuntimeStats | None,
+        *,
+        metrics_collector: Any = None,
+    ) -> None:
         self._core = core
         self._source = source
         self._stats = stats
+        # Card A7: optional percept.harness.metrics.MetricsCollector — when given, every admission
+        # into this scheduler's active/pending slot is tracked via record_admitted/
+        # record_admission_resolved (queue depth + oldest-pending age), keyed by the admission `t`
+        # (unique per frame within one run). Purely additive telemetry: the scheduler's own admit/
+        # launch/drop decisions are unchanged whether or not a collector is wired.
+        self._metrics = metrics_collector
         self._active: "asyncio.Task | None" = None
         self._active_t: float | None = None  # admission t of the in-flight judgment (rides the result)
         self._pending: tuple[float, Any, Any] | None = None  # (t, judge_frame, admission_revision)
         self._results: deque = deque()  # completed (t, [FireEvent]) awaiting drain()
+        # ADR-001 §9: TRACED bound-driven drops (superseded pending / revision-dropped pending) — a
+        # (kind, data) pair per drop, drained every frame tick by run() alongside drain(), so this list
+        # is bounded by construction (never holds more than the current tick's drops).
+        self._trace: list[tuple[str, dict]] = []
         self._fatal: BaseException | None = None
         self._closing = False
+
+    def _mc_now(self, fallback: float) -> float:
+        """"Now" for a MetricsCollector stamp: the core's own clock when available (real elapsed time
+        between admit and resolve), else the admission ``t`` itself (offline/replay streams without a
+        live clock) — never a bare wall-clock call (this module has no clock of its own)."""
+        clock = getattr(self._core, "clock", None)
+        return clock() if callable(clock) else fallback
+
+    def _mc_admit(self, t: float) -> None:
+        if self._metrics is not None:
+            self._metrics.record_admitted(t, at=self._mc_now(t))
+
+    def _mc_resolve(self, t: float) -> None:
+        if self._metrics is not None:
+            self._metrics.record_admission_resolved(t, at=self._mc_now(t))
 
     # 0/1 by construction — surfaced through the escalation health event for live observability.
     @property
@@ -114,11 +155,26 @@ class _JudgeScheduler:
             return  # drain() re-raises the failure on the next loop tick; a closing run spends nothing
         revision = getattr(self._core.goals, "revision", None)  # ADMISSION-time, never launch-time
         if self._active is None:
+            self._mc_admit(t)  # launching right away — admitted into the funnel from this instant
             self._launch(t, judge_frame, revision)
             return
-        if self._pending is not None and self._stats is not None:
-            self._stats.judge_superseded += 1  # latest wins: the older queued candidate is dropped
+        if self._pending is not None:
+            dropped_t = self._pending[0]
+            if self._stats is not None:
+                self._stats.judge_superseded += 1  # latest wins: the older queued candidate is dropped
+            self._trace.append((
+                "judge_superseded",
+                {
+                    "source": self._source, "reason": "superseded_by_newer_admission",
+                    "dropped_t": dropped_t, "admitted_t": t,
+                },
+            ))
+            self._mc_resolve(dropped_t)  # leaves the collector's pending map — it stopped waiting here
+            funnel = getattr(self._core, "funnel", None)
+            if funnel is not None:
+                funnel.dropped(reason="superseded_by_newer_admission", camera=self._source)
         self._pending = (t, judge_frame, revision)
+        self._mc_admit(t)  # queued behind the active judgment — pending in the funnel from this instant
 
     def _launch(self, t: float, frame: Any, revision: Any) -> None:
         if self._stats is not None:
@@ -130,7 +186,10 @@ class _JudgeScheduler:
         self._active.add_done_callback(self._on_done)
 
     def _launch_pending(self) -> None:
-        if self._pending is None or self._fatal is not None or self._closing:
+        if self._pending is None:
+            return
+        if self._fatal is not None or self._closing:
+            self._mc_resolve(self._pending[0])  # leaving the funnel un-launched, not a real judgment
             self._pending = None
             return
         t, frame, revision = self._pending
@@ -141,6 +200,17 @@ class _JudgeScheduler:
             # under the new plan. Drop it and wait for the next frame (which admits under N+1).
             if self._stats is not None:
                 self._stats.judge_revision_dropped += 1
+            self._trace.append((
+                "judge_revision_dropped",
+                {
+                    "source": self._source, "reason": "goals_revision_changed",
+                    "dropped_t": t, "admitted_revision": revision, "current_revision": current,
+                },
+            ))
+            self._mc_resolve(t)
+            funnel = getattr(self._core, "funnel", None)
+            if funnel is not None:
+                funnel.dropped(reason="goals_revision_changed", camera=self._source)
             return
         self._launch(t, frame, revision)
 
@@ -148,17 +218,24 @@ class _JudgeScheduler:
         # ORDERED checks — cancellation FIRST (close(drain=False) must not become a fatal error),
         # then failure (fatal: never launch pending after a failure), then result + pending launch.
         if task.cancelled():
+            self._mc_resolve(self._active_t)  # no longer pending, whether or not it truly judged
             self._active = None
             return
         exc = task.exception()
         if exc is not None:
             self._fatal = exc
+            self._mc_resolve(self._active_t)
+            if self._pending is not None:
+                self._mc_resolve(self._pending[0])
             self._pending = None
             self._active = None
             return
+        self._mc_resolve(self._active_t)
         self._results.append((self._active_t, task.result()))
         self._active = None
         if self._closing:  # shutdown in progress: don't start new work
+            if self._pending is not None:
+                self._mc_resolve(self._pending[0])
             self._pending = None
             return
         self._launch_pending()
@@ -171,6 +248,13 @@ class _JudgeScheduler:
         out = []
         while self._results:
             out.append(self._results.popleft())
+        return out
+
+    def drain_trace(self) -> list[tuple[str, dict]]:
+        """Pop TRACED bound-driven drop events (``(\"judge_superseded\"|\"judge_revision_dropped\",
+        data)``) — ADR-001 §9: every drop the scheduler makes is reported here, never silent."""
+        out = self._trace
+        self._trace = []
         return out
 
     async def flush(self) -> None:
@@ -208,6 +292,8 @@ class _JudgeScheduler:
         if drain:
             await self.flush()
             return
+        if self._pending is not None:
+            self._mc_resolve(self._pending[0])  # a live shutdown drops the pending candidate outright
         self._pending = None
         task = self._active
         if task is not None:
@@ -254,6 +340,28 @@ async def _assert_timebase(
             "timebase_skew", ts=t,
             data={"path": path, "frame_t": t, "clock": now, "skew_s": skew, "tolerance_s": tol},
         ))
+
+
+async def _drain_judge_health(core: Any, on_health: "Callable | None", t: float) -> None:
+    """Card A30: surface every judge-degradation event ``Percept.perceive_judged``/
+    ``_observe_and_log`` queued on ``core._judge_health_log`` (agent.py) -- a per-tick
+    ``"judge_degraded"`` for each fail-closed-boundary catch (timeout / provider error / malformed /
+    partial), plus a ONE-TIME ``"judge_persistent_failure"`` escalation the moment a watch key's
+    consecutive-degrade streak crosses ``percept.agent.CONSECUTIVE_DEGRADE_ESCALATE``. This is the
+    loud signal the old fail-loud path's ``runtime_error`` health event used to be for a judge
+    failure -- degrading no longer crashes the run (see agent.py), so it must stay observable through
+    ``on_health`` instead of only a log line. Drains UNCONDITIONALLY (even with ``on_health=None``)
+    so the queue never accumulates past one tick's worth, matching ``_JudgeScheduler.drain_trace()``'s
+    own drain-regardless pattern above. Percept itself never calls ``on_health`` -- that channel
+    belongs to this module; agent.py only queues."""
+    log = getattr(core, "_judge_health_log", None)
+    if not log:
+        return
+    entries, log[:] = list(log), []
+    if on_health is None:
+        return
+    for kind, key, cause in entries:
+        await _call_sink(on_health, RuntimeHealthEvent(kind, ts=t, data={"key": repr(key), "cause": repr(cause)}))
 
 
 def _log_disposition(log: Any, *, incident_id: str, fire: Any, disposition: str, ts: float) -> None:
@@ -509,10 +617,15 @@ async def run(
     label_store: Any = None,
     disposition_log: Any = None,
     judge_dispatch: str = "async",
+    metrics_collector: Any = None,
 ) -> AsyncIterator:
     """Drive a live ``source`` through the gate + brain, yielding an :class:`Incident` on each rising edge.
 
-    - ``on_incident(incident)`` — the notification sink (SMS / Slack / webhook lives here).
+    - ``on_incident(incident)`` — the notification sink (SMS / Slack / webhook lives here). Card A31:
+      wrapped in an :class:`~percept.runtime.sinks.IdempotentSink` bound to a bounded, restart-
+      surviving :class:`~percept.runtime.sinks.IdempotencyLedger` keyed by ``incident.id`` (the
+      event_id) — a redelivery of an event_id already delivered to terminal-OK is deduped (the sink is
+      not called again), while a retry of an in-flight/failed one still reaches it normally.
     - ``on_ask(event)`` — optional refusal sink for low-confidence reads; asks are not incidents.
     - ``on_frame(t, judge_frame)`` — the live-feed hook (wire an MJPEG streamer here).
     - ``on_health(event)`` — optional structured health/telemetry hook.
@@ -591,6 +704,15 @@ async def run(
       overload/goal-changes discarded. A ``RuntimeHealthEvent("judge_dispatch")`` announces the mode
       once at start; escalation health events carry live ``judge_active``/``judge_pending`` (each
       0/1) in async mode.
+    - ``metrics_collector`` — optional :class:`~percept.harness.metrics.MetricsCollector` (card A13).
+      When set (``judge_dispatch="async"`` only — the inline path has no queue to measure), every
+      admission into the :class:`_JudgeScheduler`'s active/pending slot is tracked via
+      ``record_admitted``/``record_admission_resolved``, so ``collector.queue_depth_series()`` /
+      ``max_oldest_pending_age_s()`` reflect this run's real off-loop judge queue (bounded J<=1, P<=1
+      by construction — see :class:`_JudgeScheduler`). Default ``None`` → no collector calls, byte-
+      for-byte. Independent of ``core.funnel``'s ``seen``/``gated``/``judged``/``refused``/``fired``
+      counters (:mod:`percept.observability`), which this run always emits when ``core`` exposes a
+      ``.funnel`` (a bare duck-typed core without one is untouched).
 
     Owns capture off the consumer thread; the per-goal cadence + the three-state gate decide *when* and
     *whether* to fire. Yields incidents lazily, so an ``async for incident in run(...)`` is the front door.
@@ -631,7 +753,20 @@ async def run(
     # Non-blocking judge dispatch: in "async" mode the admit site routes to this single-flight
     # scheduler instead of awaiting the network judgment inline. ONE scheduler per run() — run drives
     # one source (the slot is per-source; a future multi-source runner would key a dict of these).
-    _judge_sched = _JudgeScheduler(core, gate_source, stats) if judge_dispatch == "async" else None
+    # metrics_collector rides along so the scheduler can report queue depth / oldest-pending age
+    # (card A7); inline mode has no queue to measure, so the collector is simply unused there.
+    _judge_sched = (
+        _JudgeScheduler(core, gate_source, stats, metrics_collector=metrics_collector)
+        if judge_dispatch == "async" else None
+    )
+    # Card A7: the standard telemetry funnel (seen->gated->judged->refused->fired,
+    # percept.observability.Funnel), bound to THIS core's Metrics when it exposes one (the Percept
+    # agent always does; a bare duck-typed core without `.funnel` leaves this None and the two calls
+    # below become no-ops — byte-for-byte). judged/refused/fired are already emitted inside
+    # core.perceive_judged (agent.py) for both dispatch modes; this run() loop is the one place that
+    # can see every frame (seen) and every tier-0 admit (gated), mirroring the pattern already
+    # proven in the harness loop (percept.harness.tier0._Tier0Loop).
+    _funnel = getattr(core, "funnel", None)
 
     # R-1: batteries-included gate bound. A 24/7 watch must not carry an unbounded gate; install the
     # configured TTL/LRU as the DEFAULT the instant we drive it (a bare Percept stays unbounded — the
@@ -655,6 +790,24 @@ async def run(
         load = getattr(core, "load_state", None)
         if load is not None:
             load(persistence)
+
+    # Card A31 / ADR-001 §6: the delivery-path idempotency ledger — bounded, restart-surviving, keyed
+    # by event_id (= Incident.id, percept/incidents.py). Built unconditionally (mirrors _funnel/_gate
+    # above) so the dedupe-on-redelivery guarantee holds even when persistence isn't wired at all; when
+    # `persistence` IS given it is rehydrated here (a corrupt/missing snapshot is a no-op — never blocks
+    # a restart) and the autosave loop below persists it back out, so a crash/restart resumes with the
+    # same "already delivered" memory instead of starting blank. `on_incident` is wrapped AFTER any
+    # restore so a redelivered Incident from a resumed session is checked against the rehydrated state.
+    from percept.runtime.sinks import IdempotencyLedger, IdempotentSink
+
+    _idem_ledger = IdempotencyLedger()
+    if persistence is not None and restore:
+        try:
+            _idem_ledger.restore(persistence.load("percept_delivery_ledger"))
+        except Exception:  # noqa: BLE001 - a corrupt/missing ledger snapshot must never block restart
+            pass
+    if on_incident is not None:
+        on_incident = IdempotentSink(on_incident, _idem_ledger, clock=wall_clock)
 
     def _build_gate(prev_gate=None, prev_banks=None):
         """(Re)compile the WatchSpec → gate + detector banks + fovea coast from the core's CURRENT active
@@ -802,12 +955,19 @@ async def run(
         check_deadlines = getattr(core, "check_deadlines", None)
 
         # --- autosave (PR 2.2): periodically persist state so a crash/restart resumes, not restarts. ----
-        if persistence is not None and autosave_every_s and getattr(core, "save_state", None):
+        # Card A31: also persists the delivery idempotency ledger's snapshot() (event_id -> ts of a
+        # terminal-OK delivery only — no secrets/media) alongside goals/entities, so a restart that
+        # replays a redelivered Incident still dedupes it. Gated on `persistence` alone (not
+        # `core.save_state`) — a bare duck-typed core without `save_state` still gets its delivery
+        # ledger autosaved, it just skips the core-state half of the save.
+        if persistence is not None and autosave_every_s:
             async def _autosave():
                 while True:
                     await asyncio.sleep(autosave_every_s)
                     try:
-                        core.save_state(persistence)
+                        if getattr(core, "save_state", None):
+                            core.save_state(persistence)
+                        persistence.save("percept_delivery_ledger", _idem_ledger.snapshot())
                         if on_health is not None:
                             await _call_sink(on_health, RuntimeHealthEvent("state_saved"))
                     except Exception as exc:  # noqa: BLE001 - a save failure must not kill the watch
@@ -1033,9 +1193,19 @@ async def run(
             # held judge failure here, so the fail-loud runtime_error path below is preserved. Runs
             # FIRST (before the paused check): these judgments were spent before any pause.
             if _judge_sched is not None:
+                # ADR-001 §9: surface every TRACED bound-driven drop (superseded / revision-dropped
+                # pending) as its own health event BEFORE draining results, so a drop is observable
+                # even on a tick that also carries a fresh fire. drain_trace() always runs (even with
+                # on_health=None) so the trace list never accumulates past one tick's worth.
+                for _hk, _hd in _judge_sched.drain_trace():
+                    if on_health is not None:
+                        await _call_sink(on_health, RuntimeHealthEvent(_hk, ts=t, data=_hd))
                 for _jt, _jfires in _judge_sched.drain():
                     async for incident in _emit_fires(_jfires, at=_jt):
                         yield incident
+                # A30: surface any judge_degraded/judge_persistent_failure events queued by the
+                # perceive_judged calls that just drained above (core is shared across dispatch modes).
+                await _drain_judge_health(core, on_health, t)
             # R6: on a LIVE source, frame `t` IS the wall clock — if it has drifted from the core clock
             # past the video tolerance, the timelines the gate/deadlines share have come apart. Emit once.
             if live_video:
@@ -1101,6 +1271,8 @@ async def run(
                 while source_health:
                     _hk, _hd = source_health.pop(0)
                     await _call_sink(on_health, RuntimeHealthEvent(_hk, ts=t, data=_hd))
+            if _funnel is not None:
+                _funnel.seen(camera=gate_source)  # the ungated baseline: a frame was observed
             if stats is not None:
                 stats.frames += 1
                 stats.frames_dropped = dropped[0]
@@ -1171,6 +1343,8 @@ async def run(
             audio["wake"] = False
             if not (decision.escalate or coast_admit or audio_admit):
                 continue  # still / sub-cadence -> no cloud call, no incident
+            if _funnel is not None:
+                _funnel.gated(camera=gate_source)  # tier-0 escalated this frame — a cloud call will be spent
             if stats is not None:
                 stats.escalations += 1
                 if audio_admit and not (decision.escalate or coast_admit):
@@ -1202,6 +1376,9 @@ async def run(
         # the fail-loud runtime_error path below, exactly like an inline judge failure.
         if _judge_sched is not None:
             await _judge_sched.flush()
+            for _hk, _hd in _judge_sched.drain_trace():
+                if on_health is not None:
+                    await _call_sink(on_health, RuntimeHealthEvent(_hk, data=_hd))
             for _jt, _jfires in _judge_sched.drain():
                 async for incident in _emit_fires(_jfires, at=_jt):
                     yield incident

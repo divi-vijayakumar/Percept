@@ -14,6 +14,7 @@ import math
 import os
 import tempfile
 import unittest
+import unittest.mock
 import wave
 
 from percept import Goal, Percept
@@ -64,6 +65,43 @@ class OpenAudioSourceTests(unittest.TestCase):
         self.assertTrue(all(isinstance(f, AudioFrame) for _, f, _ in rows))
         self.assertGreater(max(e for _, _, e in rows[:4]), 0.2)  # tone is loud
         self.assertLess(max(e for _, _, e in rows[-4:]), 0.01)  # silence is ~0
+
+
+class AudioPumpDeadlockTests(unittest.TestCase):
+    """M0/A2 regression guard: cancelling the consumer while the capture thread is stalled (never
+    puts another item, never notices ``stop``) must NOT hang. Before the fix, the consumer awaited a
+    bare ``q.get()`` via ``asyncio.to_thread`` with no timeout — once that thread pool worker started
+    blocking, cancelling the awaiting task could not stop it, so a torn-down consumer against a
+    stalled producer left an orphaned thread blocked forever (and, at interpreter exit,
+    ``concurrent.futures.thread``'s atexit hook joining that thread hangs the whole process). This
+    test reproduces exactly that shape — a producer thread that ignores ``stop`` and never fills the
+    queue — and asserts the consumer unwinds within a small bounded time instead of hanging."""
+
+    def test_cancel_while_producer_stalled_does_not_hang(self):
+        import percept.runtime.audio as audio_mod
+
+        def _stalled_capture(path, config, q, stop, dropped, *, now=None):
+            # Mirrors a wedged mic device: blocks past any reasonable test timeout and ignores
+            # ``stop`` entirely — the queue never receives an item, sentinel or otherwise.
+            stop.wait(30.0)
+
+        async def _consume_until_cancelled():
+            got = []
+            async for item in audio_mod.open_audio_source("fake.wav", chunk_s=0.25):
+                got.append(item)  # pragma: no cover - the stalled producer never yields one
+            return got
+
+        async def _run():
+            with unittest.mock.patch.object(audio_mod, "_capture_wav", _stalled_capture):
+                task = asyncio.ensure_future(_consume_until_cancelled())
+                await asyncio.sleep(0.1)  # let the task get INTO the blocking q.get() poll
+                task.cancel()
+                # Bounded well under the 30s producer stall: proves cancellation isn't held hostage
+                # by the orphaned thread-pool worker.
+                await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+
+        with self.assertRaises(asyncio.CancelledError):
+            asyncio.run(_run())
 
 
 class NormalizeUriTests(unittest.TestCase):

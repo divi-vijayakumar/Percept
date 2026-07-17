@@ -313,6 +313,32 @@ class MotionGateTests(unittest.TestCase):
         )
         self.assertTrue(d.escalate)
 
+    # -----------------------------------------------------------------------
+    # A4 regression — wake_policy=None must not silently swallow a wake-worthy
+    # signal. `fused = wake_score(...) if self._wake_policy is not None else None`
+    # (tier0.py) means an explicit `wake_policy=None` degrades escalation to the
+    # LEGACY per-condition check (`gate_on`, default "motion") instead of the
+    # weighted-fusion path — this is exactly what `percept.runtime.worker.run`
+    # wires by default (its own `wake_policy` kwarg defaults to `None`). Proven
+    # here end-to-end rather than asserted by reading the branch.
+    # -----------------------------------------------------------------------
+
+    def test_wake_policy_none_still_escalates_on_wakeup_worthy_motion(self):
+        gate = MotionGate(one_condition_spec(threshold=0.2), settings=self.cfg, wake_policy=None)
+        gate.evaluate(still(), ts=0.0)  # prime the prev-frame cursor
+        d = gate.evaluate(motion(), ts=1.0)  # real, wake-worthy evidence (motion well above threshold)
+        self.assertTrue(d.escalate, "wake_policy=None must not silently drop a wake-worthy signal")
+        self.assertGreaterEqual(d.signal.motion, 0.2)
+
+    def test_wake_policy_none_stays_silent_on_a_non_waking_signal(self):
+        # The negative half — gives the positive assertion above teeth: wake_policy=None isn't
+        # just a gate stuck open; a still scene (no wake-worthy evidence) still stays silent.
+        gate = MotionGate(one_condition_spec(threshold=0.2), settings=self.cfg, wake_policy=None)
+        d0 = gate.evaluate(still(), ts=0.0)
+        d1 = gate.evaluate(still(), ts=1.0)
+        self.assertFalse(d0.escalate)
+        self.assertFalse(d1.escalate)
+
 
 # ---------------------------------------------------------------------------
 # C1 — schedule enforcement (out-of-schedule frames don't escalate)

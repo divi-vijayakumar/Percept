@@ -12,7 +12,7 @@ import inspect
 import time
 import warnings
 from dataclasses import asdict, dataclass, field, replace
-from typing import Any, Callable
+from typing import Any, Callable, Hashable
 
 from . import registry
 from .adapters import Box, Decision, Goal, GoalOrigin, TurnResult, Verdict
@@ -78,6 +78,41 @@ def _concat_audio(chunks: list) -> Any:
     if isinstance(first, (bytes, bytearray)):
         return b"".join(bytes(c) for c in chunks)
     return chunks[-1]  # opaque descriptor — pass the latest through
+
+
+def _is_valid_verdict(obj: Any) -> bool:
+    """Shape-validate a judge response BEFORE any caller dereferences ``.confidence``/``.satisfied``
+    (ADR-001 §10 invariant 4, card A30). The backend contract is :class:`Verdict`; anything else — a
+    plain/garbled object (malformed), or a ``Verdict``-shaped-but-incomplete response with the wrong
+    field types (partial/truncated JSON) — must be rejected here, never dereferenced blindly."""
+    return (
+        isinstance(obj, Verdict)
+        and isinstance(obj.satisfied, bool)
+        and isinstance(obj.confidence, (int, float))
+    )
+
+
+CONSECUTIVE_DEGRADE_ESCALATE = 5
+"""Tunable policy knob (card A30): the number of CONSECUTIVE degraded judge ticks (raised /
+malformed / partial -- anything :class:`_JudgeDegraded`) for the SAME watch key before the
+fail-closed boundary escalates from a per-tick ``"judge_degraded"`` health event to a louder,
+ONE-TIME ``"judge_persistent_failure"`` event. Escalating never halts the run (degrade+continue is
+the chosen fail-closed policy) -- it only makes an otherwise-silent, persistently-failing watch
+LOUD. The streak for a key resets to zero the instant that SAME key produces any well-formed
+verdict again (see :meth:`Percept._note_judge_ok`)."""
+
+
+class _JudgeDegraded(Exception):
+    """Internal-only fail-closed signal (card A30): the judge call raised (timeout / provider error)
+    or returned a malformed/partial response. Raised exclusively by
+    :meth:`Percept._safe_timed_judge` and caught by every caller of :meth:`Percept._judge`
+    (``perceive_judged``, ``_observe_and_log``) — it must never escape :class:`Percept` itself.
+    Carries the ORIGINAL failure (the raised exception, or the bad object returned) for logging only;
+    it never reaches ``percept.gate.classify`` or the gate."""
+
+    def __init__(self, cause: Any) -> None:
+        self.cause = cause
+        super().__init__(f"judge call failed closed: {cause!r}")
 
 
 class DeterministicAuditor:
@@ -237,6 +272,13 @@ class Percept:
     _mode: str = "live"
     _scripted: tuple = ()
     _allow_scripted_brain: bool = False
+    # -- A30 fail-closed boundary: consecutive-degradation breaker + the health-event queue
+    # worker.py's run() loop drains into its on_health(RuntimeHealthEvent) channel every tick (the
+    # SAME pattern as _JudgeScheduler.drain_trace() -- Percept queues, the runtime drains + emits;
+    # Percept itself never calls on_health directly, that channel belongs to worker.py). Keyed by
+    # the SAME ``(goal_id, entity_id)`` key the gate/executor already use ("the reducer key").
+    _judge_degrade_streak: dict = field(default_factory=dict)  # key -> consecutive degraded-tick count
+    _judge_health_log: list = field(default_factory=list)  # [(kind, key, cause), ...] queued for drain
 
     # -- construction --------------------------------------------------------
     @classmethod
@@ -335,7 +377,7 @@ class Percept:
                 identity=identity,
                 embedder=embedder,
             ),
-            gate=Gate(threshold=cfg.gate.threshold),
+            gate=Gate(threshold=cfg.gate.threshold, clock=clk),
             goals=GoalRegistry(),
             cache=CacheCascade(layers=layers, threshold=cfg.cache.threshold),
             clock=clk,
@@ -564,8 +606,10 @@ class Percept:
     @property
     def funnel(self) -> Funnel:
         """The standard telemetry funnel (seen→gated→judged→refused→fired), bound to THIS agent's
-        metrics. The harness loop emits seen/gated; the watch path here emits judged/refused/fired and
-        the judge latency + token/cost. Lazily built; OTel mirror attached when ``self.otel`` is set."""
+        metrics. The harness loop (percept.harness.tier0) AND the production runtime loop
+        (percept.runtime.worker.run, card A7) both emit seen/gated via ``core.funnel``; the watch path
+        here (perceive_judged) emits judged/refused/fired and the judge latency + token/cost, for
+        either driver. Lazily built; OTel mirror attached when ``self.otel`` is set."""
         if self._funnel is None:
             self._funnel = Funnel(self.metrics, otel=self.otel)
         return self._funnel
@@ -907,13 +951,41 @@ class Percept:
                 {"process_qa": True, "running_answer": ctx.running_answer}
                 if goal.state.get("process_qa") else None
             )
+            # Computed BEFORE the judge call (not just on success) so a degraded tick can be charged
+            # to the SAME key the gate/executor use ("the reducer key") — see _note_judge_degraded.
+            base_key = (goal.id, focus.id if focus else None)
             if tracing:
                 await self._emit_trace(trace_id, now, "judge.started", goal_id=goal.id,
                                        temporal=getattr(spec, "temporal", None), roi=roi is not None)
-            verdict = await self._judge(
-                goal, frame, roi, corrections, entity_id=focus.id if focus else None,
-                frames=strip, audio=audio, context=process_ctx,
-            )
+            try:
+                verdict = await self._judge(
+                    goal, frame, roi, corrections, entity_id=focus.id if focus else None,
+                    frames=strip, audio=audio, context=process_ctx,
+                )
+            except _JudgeDegraded as degraded:
+                # A30 fail-closed boundary (ADR-001 §10 invariant 4): the judge call raised (timeout /
+                # provider error) or returned a malformed/partial response. NEVER read .confidence/
+                # .satisfied off that — degrade THIS goal's tick to an explicit abstention (ASK-class:
+                # same telemetry a real low-confidence read gets), never a FIRE, and never let the gate
+                # see it at all (the gate's armed/dwell edge state must stay exactly as a failed judge
+                # call found it — belt-and-suspenders against a fault silently arming/disarming an
+                # edge). The exception is swallowed HERE — it must never escape to worker.py's run()
+                # loop and end the watch.
+                self.metrics.incr("judge.degraded")
+                self.funnel.refused(concern=goal.id, camera=source)
+                self._note_judge_degraded(base_key, degraded.cause)  # queues on_health for worker.py
+                get_logger("percept.agent").warning(
+                    "judge.degraded: goal=%r cause=%r — degrading this tick to ASK/SILENT "
+                    "(fail-closed, card A30)", goal.id, degraded.cause,
+                )
+                if tracing:
+                    await self._emit_trace(
+                        trace_id, now, "judge.degraded", goal_id=goal.id, cause=repr(degraded.cause),
+                    )
+                    await self._emit_trace(trace_id, now, "gate.classified", goal_id=goal.id,
+                                           truth="unknown", action="ask")
+                continue  # next goal this SAME frame; the watch loop (and run) continues either way
+            self._note_judge_ok(base_key)  # a well-formed verdict resets this key's degrade streak
             if tracing:
                 await self._emit_trace(trace_id, now, "judge.finished", goal_id=goal.id,
                                        satisfied=getattr(verdict, "satisfied", None),
@@ -946,7 +1018,7 @@ class Percept:
                 ctx.perception_level = 0  # decay: the (escalated) look resolved → back to the cheap default
             if truth == "yes":
                 self.last_satisfied[goal.id] = now  # A1 deadline: the expected event happened
-            base_key = (goal.id, focus.id if focus else None)
+            # base_key computed earlier (before the judge call) — reused here unchanged.
             ev_fire = self._fire_concern(goal, verdict, base_key, freshness=freshness, t=now)
             if ev_fire is not None:
                 if ev_fire.action == FIRE:
@@ -1015,9 +1087,25 @@ class Percept:
         spec = _escalated_perception(program_of(goal).perception, ctx.perception_level)
         strip = self._strip_frames(source, spec)
         self.funnel.judged(concern=goal.id, camera=source)  # an observe call is being spent
-        verdict = await self._judge(
-            goal, frame, None, {}, frames=strip, context={"observe_step": True}
-        )
+        # Process goals have no entity/focus concept here; a 1-tuple key never collides with a watch
+        # goal's (goal_id, entity_id) 2-tuple key (see perceive_judged's base_key).
+        process_key = (goal.id,)
+        try:
+            verdict = await self._judge(
+                goal, frame, None, {}, frames=strip, context={"observe_step": True}
+            )
+        except _JudgeDegraded as degraded:
+            # A30: a failed/malformed observe-step judge logs NOTHING this tick (never a phantom step
+            # off a garbled/timed-out response) and never crashes the run — this goal never touches
+            # the gate anyway (see the docstring above), so there is nothing further to degrade.
+            self.metrics.incr("judge.degraded")
+            self._note_judge_degraded(process_key, degraded.cause)  # queues on_health for worker.py
+            get_logger("percept.agent").warning(
+                "judge.degraded (observe_step): goal=%r cause=%r — logging nothing this tick "
+                "(fail-closed, card A30)", goal.id, degraded.cause,
+            )
+            return
+        self._note_judge_ok(process_key)  # a well-formed verdict resets this key's degrade streak
         if stale is not None and stale():
             return  # goals changed while the observe call was in flight — don't log a step under it
         step = (getattr(verdict, "evidence", "") or "").strip()
@@ -1141,6 +1229,50 @@ class Percept:
         self.funnel.record_judge(latency_s=self.clock() - t0, **judge_usage(verdict))
         return verdict
 
+    async def _safe_timed_judge(self, *args: Any, **kwargs: Any) -> Verdict:
+        """Fail-closed boundary around a live judge call (ADR-001 §10 invariant 4, card A30).
+
+        A judge call fails one of two ways: it RAISES (timeout / provider error — the designed,
+        typed failure signal a real backend's retry-then-raise contract already produces, see
+        ``percept.backends._resilience.with_retry``), or it RETURNS something that is not a
+        well-formed :class:`Verdict` (malformed / partial — e.g. a plain dict, or a dict-shaped
+        truncated-JSON payload missing required fields). Neither shape may reach
+        ``percept.gate.classify`` — which dereferences ``.confidence``/``.satisfied`` with no guard
+        of its own — un-validated. Both failure shapes are normalized to :class:`_JudgeDegraded` here
+        and caught by every caller of :meth:`_judge` (``perceive_judged``, ``_observe_and_log``),
+        which degrade THAT TICK to ASK/SILENT (never FIRE, never a crash) and let the watch continue
+        to the next frame. A well-formed ``Verdict`` is returned completely unchanged — this wrapper
+        is a byte-for-byte no-op on the happy path.
+        """
+        try:
+            verdict = await self._timed_judge(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - ANY judge-call failure fails closed, not just the
+            # two typed modes (timeout/provider_error) fake_judge injects — a real backend can raise
+            # its own transport exception too, and this boundary must catch all of them alike.
+            raise _JudgeDegraded(exc) from exc
+        if not _is_valid_verdict(verdict):
+            raise _JudgeDegraded(verdict)
+        return verdict
+
+    def _note_judge_degraded(self, key: Hashable, cause: Any) -> None:
+        """Card A30: record a degraded judge tick for ``key`` (the SAME ``(goal_id, entity_id)`` key
+        the gate/executor already use) and escalate ONCE if its consecutive-degrade streak crosses
+        :data:`CONSECUTIVE_DEGRADE_ESCALATE`. Only QUEUES the health-log entries --
+        ``percept/runtime/worker.py``'s ``run()`` loop drains :attr:`_judge_health_log` every tick
+        into its own ``on_health(RuntimeHealthEvent)`` channel (see that module); ``Percept`` never
+        calls ``on_health`` itself."""
+        streak = self._judge_degrade_streak.get(key, 0) + 1
+        self._judge_degrade_streak[key] = streak
+        self._judge_health_log.append(("judge_degraded", key, cause))
+        if streak == CONSECUTIVE_DEGRADE_ESCALATE:  # exactly-once at the crossing, never re-fired
+            self._judge_health_log.append(("judge_persistent_failure", key, cause))
+
+    def _note_judge_ok(self, key: Hashable) -> None:
+        """Card A30: a well-formed verdict for ``key`` resets its consecutive-degrade streak -- ANY
+        successful judge call (regardless of the verdict's confidence/truth) proves the judge is
+        reachable again."""
+        self._judge_degrade_streak.pop(key, None)
+
     async def judge_clip(
         self,
         condition: str,
@@ -1192,7 +1324,11 @@ class Percept:
             # ALSO bypasses (its running answer/step accumulates per-call — must never be cached/served).
             # ``context`` is passed ONLY for process-QA so a non-process strip judge is byte-for-byte.
             extra = {"context": context} if process_mode else {}
-            return await self._timed_judge(
+            # A30: the strip/audio/process-QA judge is on the live watch path (perceive_judged /
+            # _observe_and_log) — a malformed/timeout/partial response here must degrade the tick,
+            # never crash it, so this goes through the fail-closed boundary (may raise
+            # _JudgeDegraded, caught by every caller of _judge).
+            return await self._safe_timed_judge(
                 goal.condition, frame, roi=roi, exemplar=exemplar, corrections=corrections or None,
                 frames=frames, audio=audio, **extra,
             )
@@ -1205,7 +1341,10 @@ class Percept:
         if hit.status == "HIT" and hit.verdict is not None:
             self.metrics.incr("cache.hit")
             return await self._audit_or_use(goal, frame, roi, corrections, cache_key, hit.verdict)
-        verdict = await self._timed_judge(
+        # A30: same fail-closed boundary for the cache-miss (single-frame) judge — the other half of
+        # the live watch path. A well-formed Verdict is cached exactly as before; a degraded response
+        # raises _JudgeDegraded BEFORE `cache.store` is ever reached, so a failure is never cached.
+        verdict = await self._safe_timed_judge(
             goal.condition, frame, roi=roi, exemplar=exemplar, corrections=corrections or None
         )
         self.cache.store(cache_key, verdict, verdict.confidence)
@@ -1230,9 +1369,18 @@ class Percept:
         if self.audit is None or not self.audit(cache_key):
             return cached
         self.metrics.incr("cache.audit")
-        fresh = await self._timed_judge(
-            goal.condition, frame, roi=roi, exemplar=goal.state.get("exemplar"), corrections=corrections or None
-        )
+        # A30: the audit re-perceive is ALSO a live judge call on the watch path — guard it the same
+        # way. A degraded audit response must not crash the tick (which already has a perfectly good
+        # cached verdict in hand); fall back to serving `cached` unchanged, exactly as an un-audited
+        # HIT would. The false-serve upgrade only ever happens off a WELL-FORMED fresh verdict.
+        try:
+            fresh = await self._safe_timed_judge(
+                goal.condition, frame, roi=roi, exemplar=goal.state.get("exemplar"),
+                corrections=corrections or None,
+            )
+        except _JudgeDegraded:
+            self.metrics.incr("judge.degraded")
+            return cached
         if fresh.satisfied != cached.satisfied:
             self.metrics.incr("cache.false_serve")  # the cache's analog of false-fire
             self.cache.store(cache_key, fresh, fresh.confidence)  # fresh read wins

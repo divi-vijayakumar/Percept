@@ -5,15 +5,19 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import inspect
 import ipaddress
 import json
 import socket
 import time
 import urllib.parse
 import urllib.request
+from collections import deque
 from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+from percept.observability import get_logger, log
 
 
 class UrlPolicyError(ValueError):
@@ -199,6 +203,7 @@ class WebhookSink:
         include_media: bool = False,
         retries: int = 0,
         retry_backoff_s: float = 0.25,
+        max_attempt_age_s: float | None = None,
         signing_secret: str | bytes | None = None,
         dead_letter: list[dict[str, Any]] | None = None,
         url_policy: UrlPolicy | None = None,
@@ -214,6 +219,12 @@ class WebhookSink:
         self.include_media = include_media
         self.retries = retries
         self.retry_backoff_s = retry_backoff_s
+        # ADR-001 §9 / card A9: "delivery attempts" bound. `retries` already bounds the ATTEMPT COUNT
+        # (finite by construction — a plain int). `max_attempt_age_s` adds an orthogonal wall-clock
+        # bound so a long backoff schedule can't keep retrying indefinitely in elapsed time either;
+        # either bound reaching its limit is a TERMINAL failure (dead-lettered with a reason). None
+        # (default) disables the age bound — byte-for-byte the attempt-count-only behavior.
+        self.max_attempt_age_s = max_attempt_age_s
         self.signing_secret = signing_secret.encode("utf-8") if isinstance(signing_secret, str) else signing_secret
         self.dead_letter = dead_letter
 
@@ -227,7 +238,20 @@ class WebhookSink:
     def __call__(self, incident: Any) -> None:
         body = json.dumps(incident_payload(incident, include_media=self.include_media)).encode("utf-8")
         last_exc: Exception | None = None
+        start = time.monotonic()
+        attempts = 0
+        # ADR-001 §9: how delivery attempts terminate — either bound below is a TERMINAL failure,
+        # dead-lettered with an explicit reason (never a silent give-up).
+        reason = "retries_exhausted"
         for attempt in range(self.retries + 1):
+            if (
+                attempt > 0
+                and self.max_attempt_age_s is not None
+                and (time.monotonic() - start) > self.max_attempt_age_s
+            ):
+                reason = "max_attempt_age_exceeded"
+                break  # the wall-clock bound tripped before the attempt budget did
+            attempts += 1
             try:
                 # Re-resolve the host against the policy immediately before sending (narrows DNS-rebinding
                 # TOCTOU; a name public at construction but flipped to an internal IP is blocked here). A
@@ -252,7 +276,8 @@ class WebhookSink:
                     "url": redact_url(self.url),
                     "body_sha256": hashlib.sha256(body).hexdigest(),
                     "error": repr(last_exc)[:500],
-                    "attempts": self.retries + 1,
+                    "attempts": attempts,
+                    "reason": reason,
                 }
             )
         if last_exc is not None:
@@ -273,6 +298,7 @@ class FileDeadLetterQueue:
             "body_sha256": record.get("body_sha256"),
             "error": record.get("error"),
             "attempts": record.get("attempts"),
+            "reason": record.get("reason"),
         }
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(line, sort_keys=True) + "\n")
@@ -281,6 +307,203 @@ class FileDeadLetterQueue:
         if not self.path.exists():
             return []
         return [json.loads(line) for line in self.path.read_text().splitlines() if line.strip()]
+
+
+class BoundedDeadLetterQueue:
+    """A bounded, in-memory dead-letter sink (ADR-001 §9, card A9: "delivery queue" bound).
+
+    A bare ``list`` (the type ``WebhookSink(dead_letter=...)`` has always accepted) grows without
+    limit — a sustained outage turns a 24/7 watch's DLQ into an unbounded leak. This wraps the same
+    ``.append(record)`` seam with a hard ceiling on both COUNT (``max_records``) and estimated BYTES
+    (``max_bytes``, the JSON size of each record): when either would be exceeded, the OLDEST queued
+    record is evicted to make room. Every eviction is TRACED — never silent — through
+    ``on_drop(record, reason)`` (``reason`` is ``"max_records"`` or ``"max_bytes"``); the default logs
+    a structured line. Drop-in for the ``list`` a ``WebhookSink``/``FileDeadLetterQueue`` already write
+    to (``append`` + iteration + :meth:`read_all`).
+    """
+
+    def __init__(
+        self, *, max_records: int = 1000, max_bytes: int = 10_000_000,
+        on_drop: "Callable[[dict[str, Any], str], None] | None" = None,
+    ) -> None:
+        self.max_records = max_records
+        self.max_bytes = max_bytes
+        self.on_drop = on_drop
+        self._items: deque[tuple[dict[str, Any], int]] = deque()
+        self._bytes = 0
+
+    @staticmethod
+    def _size(record: dict[str, Any]) -> int:
+        try:
+            return len(json.dumps(record, default=str).encode("utf-8"))
+        except Exception:  # noqa: BLE001 - size estimation must never crash a DLQ write
+            return 0
+
+    def append(self, record: dict[str, Any]) -> None:
+        size = self._size(record)
+        self._items.append((record, size))
+        self._bytes += size
+        self._evict()
+
+    def _evict(self) -> None:
+        while self._items and (len(self._items) > self.max_records or self._bytes > self.max_bytes):
+            reason = "max_records" if len(self._items) > self.max_records else "max_bytes"
+            dropped, size = self._items.popleft()
+            self._bytes -= size
+            if self.on_drop is not None:
+                self.on_drop(dropped, reason)
+            else:
+                log(
+                    get_logger("percept.runtime.sinks"), "dlq.dropped",
+                    reason=reason, url=dropped.get("url"),
+                )
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __iter__(self):
+        return (rec for rec, _ in self._items)
+
+    def read_all(self) -> list[dict[str, Any]]:
+        return [rec for rec, _ in self._items]
+
+
+class IdempotencyLedger:
+    """Bounded, restart-surviving idempotency ledger keyed by ``event_id`` (= ``Incident.id`` — see
+    ``percept/incidents.py``: "the stable, durable handle the rest of the system references").
+
+    ADR-001 §6: delivery is at-least-once with a stable ``event_id`` that retries reuse; a duplicate
+    delivery ATTEMPT for the SAME event_id (e.g. a post-restart redelivery of a persisted/replayed
+    Incident) must not create a duplicate logical Incident downstream. This ledger is the Percept-side
+    memory that makes that dedupe real: it remembers only event_ids that reached a TERMINAL-OK
+    delivery. A retry of an in-flight/failed attempt (not yet terminal-OK) is deliberately NOT
+    remembered here — it reuses the same event_id and is left to retry/redeliver normally (the sink's
+    own ``retries``/``max_attempt_age_s`` + dead-letter queue already own that path; see
+    :class:`WebhookSink`).
+
+    BOUNDED (ADR-001 §9) with the same sizing philosophy as :class:`BoundedDeadLetterQueue` (card A9):
+    capped by COUNT (``max_records``) and AGE (``ttl_s``) — drop-oldest-with-trace via
+    ``on_evict(event_id, reason)`` (``reason`` is ``"max_records"`` or ``"ttl"``). A 24/7 watch must not
+    let this grow without limit; an event_id that ages out of the ledger simply becomes eligible for
+    (re)delivery again, same as one that was never delivered.
+
+    SURVIVES RESTART: :meth:`snapshot`/:meth:`restore` round-trip only ``(event_id, ts)`` pairs — no
+    secrets, no raw media, no incident payload (ADR-001 §1 lifecycle) — through the SAME
+    ``Persistence`` backend (``percept.persistence``) the runtime already uses for goals/entities. The
+    persistence boundary is deliberately narrow: this ledger is a durability BACKSTOP for the dedupe
+    decision, not a store of the incidents themselves.
+    """
+
+    def __init__(
+        self, *, max_records: int = 10_000, ttl_s: float | None = 3600.0,
+        on_evict: "Callable[[str, str], None] | None" = None,
+    ) -> None:
+        self.max_records = max_records
+        self.ttl_s = ttl_s
+        self.on_evict = on_evict
+        self._delivered: "dict[str, float]" = {}  # event_id -> ts of terminal-OK delivery, insertion-ordered
+
+    def is_delivered(self, event_id: str, *, now: float | None = None) -> bool:
+        """True iff ``event_id`` already reached a terminal-OK delivery and that record hasn't aged
+        out. A record older than ``ttl_s`` (when both ``ttl_s`` and ``now`` are given) reads as
+        NOT-delivered — a stale memory must never wedge a legitimately-retried event open forever."""
+        ts = self._delivered.get(event_id)
+        if ts is None:
+            return False
+        if self.ttl_s is not None and now is not None and (now - ts) > self.ttl_s:
+            return False
+        return True
+
+    def mark_delivered(self, event_id: str, *, ts: float) -> None:
+        """Record a TERMINAL-OK delivery for ``event_id``. Idempotent — marking an already-delivered
+        id just refreshes its recency (moves it to the back of the LRU eviction order)."""
+        self._delivered.pop(event_id, None)
+        self._delivered[event_id] = ts
+        self._evict(now=ts)
+
+    def _evict(self, *, now: float) -> None:
+        while self.ttl_s is not None and self._delivered:
+            oldest_id, oldest_ts = next(iter(self._delivered.items()))
+            if (now - oldest_ts) <= self.ttl_s:
+                break
+            self._delivered.pop(oldest_id)
+            self._trace(oldest_id, "ttl")
+        while len(self._delivered) > self.max_records:
+            oldest_id, _oldest_ts = next(iter(self._delivered.items()))
+            self._delivered.pop(oldest_id)
+            self._trace(oldest_id, "max_records")
+
+    def _trace(self, event_id: str, reason: str) -> None:
+        if self.on_evict is not None:
+            self.on_evict(event_id, reason)
+        else:
+            log(get_logger("percept.runtime.sinks"), "idempotency_ledger.evicted", reason=reason, event_id=event_id)
+
+    def __len__(self) -> int:
+        return len(self._delivered)
+
+    def __contains__(self, event_id: str) -> bool:
+        return event_id in self._delivered
+
+    def snapshot(self) -> list[list]:
+        """JSON-able snapshot: ``[[event_id, ts], ...]``, insertion-ordered. No secrets/media."""
+        return [[k, v] for k, v in self._delivered.items()]
+
+    def restore(self, snap: Any) -> None:
+        """Rehydrate from :meth:`snapshot`. Missing/malformed input is a no-op — a corrupt or absent
+        ledger snapshot must never block a restart, it just means the ledger starts blank."""
+        if not snap:
+            return
+        for item in snap:
+            try:
+                event_id, ts = item[0], float(item[1])
+            except (TypeError, ValueError, IndexError, KeyError):
+                continue
+            self._delivered[str(event_id)] = ts
+        if self._delivered:
+            self._evict(now=max(self._delivered.values()))
+
+
+class IdempotentSink:
+    """Wrap a notification sink (``on_incident``) with an :class:`IdempotencyLedger` — the production
+    dedupe-on-redelivery guard in the delivery path (ADR-001 §6, card A31).
+
+    Consults the ledger by ``incident.id`` (the event_id) BEFORE delivering: if this event_id already
+    reached a terminal-OK delivery, the call is a no-op — the wrapped sink is NOT invoked again, so a
+    post-restart redelivery of the same event never reaches a downstream consumer a second time. A
+    retry of an in-flight/failed attempt (event_id not yet marked delivered) passes straight through,
+    unchanged from today. The terminal-OK outcome is recorded ONLY after the wrapped sink returns
+    without raising — a failed/raising attempt leaves the ledger untouched, so it stays eligible for
+    retry (matching :class:`WebhookSink`'s own retry/dead-letter semantics).
+
+    Handles both sync and async sinks (``on_incident`` may be either — see ``worker._call_sink``):
+    a coroutine result is marked delivered only once it actually completes without raising.
+    """
+
+    def __init__(
+        self, sink: Callable, ledger: "IdempotencyLedger", *, clock: "Callable[[], float] | None" = None,
+    ) -> None:
+        self._sink = sink
+        self._ledger = ledger
+        self._clock = clock or time.monotonic
+
+    def __call__(self, incident: Any) -> Any:
+        event_id = getattr(incident, "id", None)
+        now = self._clock()
+        if event_id is not None and self._ledger.is_delivered(event_id, now=now):
+            return None  # already terminal-OK — dedupe: no re-delivery, no duplicate logical incident
+        result = self._sink(incident)
+        if inspect.isawaitable(result):
+            return self._await_and_mark(result, event_id)
+        if event_id is not None:
+            self._ledger.mark_delivered(event_id, ts=now)
+        return result
+
+    async def _await_and_mark(self, awaitable: Any, event_id: str | None) -> Any:
+        out = await awaitable
+        if event_id is not None:
+            self._ledger.mark_delivered(event_id, ts=self._clock())
+        return out
 
 
 def webhook(url: str, **kwargs) -> WebhookSink:

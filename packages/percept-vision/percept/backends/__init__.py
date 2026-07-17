@@ -12,6 +12,13 @@ from .fake import (
     FakeVision,
     ScriptedConductor,
 )
+from .fake_judge import (
+    ErrorInjectionConfig,
+    FakeJudge,
+    JudgeCallRecord,
+    LatencyProfile,
+    ProviderError,
+)
 
 __all__ = [
     "FakeVision",
@@ -20,4 +27,10 @@ __all__ = [
     "ScriptedConductor",
     "FakeSTT",
     "FakeTTS",
+    # probe-harness scaffolding (Viability A12) — wiring-only, not a production backend
+    "FakeJudge",
+    "LatencyProfile",
+    "ErrorInjectionConfig",
+    "ProviderError",
+    "JudgeCallRecord",
 ]

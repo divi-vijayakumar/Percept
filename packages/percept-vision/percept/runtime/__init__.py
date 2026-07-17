@@ -10,7 +10,7 @@ works with no extra (tests, offline replay).
 """
 from percept.runtime._vad import EnergyVad, endpoint_energy_sequence, frame_energy
 from percept.runtime.session import RuntimeSession, start
-from percept.runtime.sinks import FileDeadLetterQueue, WebhookSink, incident_payload, webhook
+from percept.runtime.sinks import BoundedDeadLetterQueue, FileDeadLetterQueue, WebhookSink, incident_payload, webhook
 from percept.runtime.worker import RuntimeHealthEvent, RuntimeStats, run
 
 __all__ = [
@@ -24,6 +24,7 @@ __all__ = [
     "endpoint_energy_sequence",
     "WebhookSink",
     "FileDeadLetterQueue",
+    "BoundedDeadLetterQueue",
     "incident_payload",
     "webhook",
 ]

@@ -162,6 +162,37 @@ class NonBlockingCaptureTests(unittest.TestCase):
         # latest-wins: the surviving pending was the LAST admitted frame, not the second
         self.assertEqual(vision.judged[-1], f"f{int(admitted_ts[-1])}")
 
+    def test_superseded_pending_drop_is_traced_with_reason(self):
+        # ADR-001 §9 / card A9: the pending slot (bound P=1) supersedes rather than growing — but that
+        # replacement must be TRACED (an explicit reason), never just a silent counter bump.
+        vision = GatedVision()
+        core = _core(vision, _watch_goal())
+        stats = RuntimeStats()
+        superseded_events: list = []
+        N = 8
+
+        def on_health(ev):
+            if ev.kind == "judge_superseded":
+                superseded_events.append(ev.data)
+
+        async def _source():
+            for i in range(N):
+                yield (float(i), _motion() if i % 2 else _still(), f"f{i}")
+                await asyncio.sleep(0)
+            vision.release.set()
+
+        async def _collect():
+            return [inc async for inc in worker_run(
+                core, source=_source(), stats=stats, on_health=on_health, judge_dispatch="async")]
+
+        asyncio.run(_collect())
+        self.assertEqual(len(superseded_events), stats.judge_superseded, "one traced event per drop")
+        self.assertGreater(len(superseded_events), 0, "sanity: the stream must actually overload")
+        for data in superseded_events:
+            self.assertEqual(data["reason"], "superseded_by_newer_admission")
+            self.assertIn("dropped_t", data)
+            self.assertIn("admitted_t", data)
+
 
 class RevisionAbortTests(unittest.TestCase):
     """The in-flight abort inside ``perceive_judged(expected_goals_revision=…)`` itself."""
@@ -255,6 +286,41 @@ class PendingRevisionDropTests(unittest.TestCase):
             stats.escalations,
         )
 
+    def test_revision_dropped_pending_is_traced_with_reason(self):
+        # ADR-001 §9 / card A9: the revision-drop path must also be TRACED, not just counted.
+        vision = GatedVision(script={"f2": _NO})
+        core = _core(vision, _watch_goal("g"))
+        stats = RuntimeStats()
+        dropped_events: list = []
+
+        def on_health(ev):
+            if ev.kind == "judge_revision_dropped":
+                dropped_events.append(ev.data)
+
+        async def _source():
+            yield (0.0, _still(), "f0")
+            await asyncio.sleep(0)
+            yield (1.0, _motion(), "f1")
+            await asyncio.sleep(0)
+            yield (2.0, _still(), "f2")
+            await asyncio.sleep(0)
+            core.add_goal(Goal(id="g2", condition="a dog appears", say="dog"))
+            vision.release.set()
+            for _ in range(6):
+                await asyncio.sleep(0)
+            yield (3.0, _motion(), "f3")
+            await asyncio.sleep(0)
+
+        async def _collect():
+            return [inc async for inc in worker_run(
+                core, source=_source(), stats=stats, on_health=on_health, judge_dispatch="async")]
+
+        asyncio.run(_collect())
+        self.assertEqual(len(dropped_events), 1)
+        self.assertEqual(dropped_events[0]["reason"], "goals_revision_changed")
+        self.assertIn("dropped_t", dropped_events[0])
+        self.assertNotEqual(dropped_events[0]["admitted_revision"], dropped_events[0]["current_revision"])
+
 
 class ExplodingVision(GatedVision):
     async def judge(self, condition, frame, **kwargs):
@@ -263,7 +329,11 @@ class ExplodingVision(GatedVision):
 
 
 class FatalJudgeTests(unittest.TestCase):
-    def test_fatal_exception_drops_pending_and_drain_reraises(self):
+    def test_judge_exception_degrades_and_continues(self):
+        """Card A30 (founder decision): a judge that THROWS no longer halts the watch. The exception is
+        caught at the ``_safe_timed_judge`` boundary inside ``perceive_judged`` (before it can reach the
+        scheduler's fatal/re-raise backstop), the tick degrades to ASK/SILENT, a ``judge_degraded``
+        health event is emitted, and the run CONTINUES to completion — never a crash, never a FIRE."""
         vision = ExplodingVision()
         core = _core(vision, _watch_goal("g"))
         stats = RuntimeStats()
@@ -272,14 +342,12 @@ class FatalJudgeTests(unittest.TestCase):
         async def _source():
             yield (0.0, _still(), "f0")
             await asyncio.sleep(0)
-            yield (1.0, _motion(), "f1")  # admit -> launch (blocked)
+            yield (1.0, _motion(), "f1")  # admit -> judge launches -> raises -> degrades
             await asyncio.sleep(0)
-            yield (2.0, _still(), "f2")   # admit -> pending
-            await asyncio.sleep(0)
-            vision.release.set()          # the in-flight judge now raises
+            vision.release.set()
             for _ in range(6):
-                await asyncio.sleep(0)    # let the failure land in the done-callback
-            yield (3.0, _still(), "f3")   # next iteration's drain() must re-raise
+                await asyncio.sleep(0)
+            yield (2.0, _still(), "f2")
             await asyncio.sleep(0)
 
         async def _collect():
@@ -287,11 +355,46 @@ class FatalJudgeTests(unittest.TestCase):
                 core, source=_source(), stats=stats,
                 on_health=lambda ev: health_kinds.append(ev.kind), judge_dispatch="async")]
 
-        with self.assertRaises(RuntimeError):
-            asyncio.run(_collect())
-        self.assertEqual(stats.judge_calls, 1, "pending must never launch after a failure")
-        self.assertEqual(vision.judged, ["f1"])
-        self.assertIn("runtime_error", health_kinds, "the existing fail-loud health path is preserved")
+        # The run completes WITHOUT raising — degrade+continue, not fail-loud-halt.
+        incidents = asyncio.run(_collect())
+        self.assertEqual(incidents, [], "a degraded judge tick must not FIRE")
+        self.assertIn("f1", vision.judged, "the judge was actually called")
+        self.assertIn("judge_degraded", health_kinds,
+                      "degradation must stay loud on the on_health channel, not be swallowed")
+        self.assertNotIn("runtime_error", health_kinds,
+                         "a single judge exception no longer fail-loud-halts the run")
+
+    def test_consecutive_degrade_breaker_escalates_once(self):
+        """Card A30: the consecutive-degradation breaker. K (=CONSECUTIVE_DEGRADE_ESCALATE) consecutive
+        degraded ticks on the SAME key emit a distinct one-time ``judge_persistent_failure`` escalation
+        so a dead-but-running watch surfaces instead of degrading silently forever."""
+        from percept.agent import CONSECUTIVE_DEGRADE_ESCALATE as K
+        core = _core(GatedVision(), _watch_goal("g"))
+        key = ("g", None)
+        for _ in range(K):
+            core._note_judge_degraded(key, RuntimeError("boom"))
+        kinds = [k for (k, _key, _c) in core._judge_health_log]
+        self.assertEqual(kinds.count("judge_degraded"), K)
+        self.assertEqual(kinds.count("judge_persistent_failure"), 1,
+                         "escalate exactly once, at the crossing")
+        core._note_judge_degraded(key, RuntimeError("boom"))  # K+1: must NOT re-fire the escalation
+        kinds = [k for (k, _key, _c) in core._judge_health_log]
+        self.assertEqual(kinds.count("judge_persistent_failure"), 1, "escalation is one-time")
+
+    def test_degrade_streak_resets_on_good_verdict(self):
+        """Card A30: any well-formed verdict proves the judge is reachable and resets the streak, so
+        intermittent failures below the threshold never escalate."""
+        from percept.agent import CONSECUTIVE_DEGRADE_ESCALATE as K
+        core = _core(GatedVision(), _watch_goal("g"))
+        key = ("g", None)
+        for _ in range(K - 1):
+            core._note_judge_degraded(key, RuntimeError("boom"))
+        core._note_judge_ok(key)  # a good verdict resets the streak
+        for _ in range(K - 1):
+            core._note_judge_degraded(key, RuntimeError("boom"))
+        kinds = [k for (k, _key, _c) in core._judge_health_log]
+        self.assertEqual(kinds.count("judge_persistent_failure"), 0,
+                         "a reset before the crossing must prevent escalation")
 
 
 class _StubCore:

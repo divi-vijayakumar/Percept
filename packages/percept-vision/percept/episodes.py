@@ -15,6 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from .observability import get_logger, log
+
 # judge(summaries, exemplar) -> the id of the episode this continues, or None for a NEW episode.
 EpisodeJudge = Callable[[list[dict], Any], "str | None"]
 
@@ -30,21 +32,48 @@ class Episode:
 
 
 class EpisodeLog:
-    """Bounded per-goal episode log. ``observe`` folds a candidate event into new/continuation."""
+    """Bounded per-goal episode log. ``observe`` folds a candidate event into new/continuation.
+
+    Boundedness (ADR-001 §9, card A9 subset): ``window_s`` bounds the log in TIME (episodes idle
+    longer than the counting window fall out — "today's cups", not "all-time cups") and
+    ``max_episodes`` bounds it in COUNT (a hard ceiling, drop-oldest, the backstop when no window is
+    set or the window alone isn't enough). Every bound-driven drop is TRACED — never silent —
+    through ``on_drop(episode, reason)`` (``reason`` is ``"window_expired"`` or ``"max_episodes"``);
+    the default logs a structured line so a drop is observable even when the caller wires nothing.
+    """
 
     def __init__(
-        self, goal_id: str, *, window_s: float | None = None, max_episodes: int = 64
+        self, goal_id: str, *, window_s: float | None = None, max_episodes: int = 64,
+        on_drop: "Callable[[Episode, str], None] | None" = None,
     ) -> None:
         self.goal_id = goal_id
         self.window_s = window_s
         self.max_episodes = max_episodes
+        self.on_drop = on_drop
         self._episodes: list[Episode] = []
         self._counter = 0
 
+    def _dropped(self, episode: "Episode", reason: str) -> None:
+        """ADR-001 §9: a bound-driven drop must never be silent."""
+        if self.on_drop is not None:
+            self.on_drop(episode, reason)
+        else:
+            log(
+                get_logger("percept.episodes"), "episode.dropped",
+                goal_id=self.goal_id, episode_id=episode.id, reason=reason,
+            )
+
     def _prune(self, now: float) -> None:
         """Drop episodes outside the counting window (keeps the set bounded — the endurance story)."""
-        if self.window_s is not None:
-            self._episodes = [e for e in self._episodes if now - e.last_seen <= self.window_s]
+        if self.window_s is None:
+            return
+        keep: list[Episode] = []
+        for e in self._episodes:
+            if now - e.last_seen <= self.window_s:
+                keep.append(e)
+            else:
+                self._dropped(e, "window_expired")
+        self._episodes = keep
 
     def summaries(self) -> list[dict]:
         """Compact episode descriptors handed to the judge (no pixels on the hot path)."""
@@ -73,7 +102,8 @@ class EpisodeLog:
         )
         self._episodes.append(episode)
         if len(self._episodes) > self.max_episodes:
-            self._episodes.pop(0)  # oldest falls out of the bounded log
+            oldest = self._episodes.pop(0)  # oldest falls out of the bounded log
+            self._dropped(oldest, "max_episodes")
         return episode, True
 
     def count(self, now: float | None = None) -> int:

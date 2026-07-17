@@ -46,6 +46,30 @@ class TestEpisodeLog(unittest.TestCase):
             log.observe(float(t), f"cup{t}", ALWAYS_NEW)
         self.assertEqual(log.count(), 2)
 
+    def test_max_episodes_drop_is_traced_with_reason(self):
+        # ADR-001 §9 / card A9: the episode buffer's count bound must never drop silently.
+        dropped = []
+        log = EpisodeLog("g1", max_episodes=2, on_drop=lambda ep, reason: dropped.append((ep.id, reason)))
+        for t in range(4):
+            log.observe(float(t), f"cup{t}", ALWAYS_NEW)
+        self.assertEqual(log.count(), 2)
+        self.assertEqual(dropped, [("g1:ep1", "max_episodes"), ("g1:ep2", "max_episodes")])
+
+    def test_window_bound_drop_is_traced_with_reason(self):
+        dropped = []
+        log = EpisodeLog("g1", window_s=10.0, on_drop=lambda ep, reason: dropped.append((ep.id, reason)))
+        log.observe(1.0, "cup", ALWAYS_NEW)
+        self.assertEqual(log.count(now=100.0), 0)
+        self.assertEqual(dropped, [("g1:ep1", "window_expired")])
+
+    def test_default_drop_is_traced_via_log_not_silent(self):
+        # No on_drop supplied: the default path must still observably log the drop.
+        log = EpisodeLog("g1", max_episodes=1)
+        with self.assertLogs("percept.episodes", level="INFO") as cm:
+            log.observe(1.0, "cupA", ALWAYS_NEW)
+            log.observe(2.0, "cupB", ALWAYS_NEW)
+        self.assertTrue(any("episode.dropped" in line for line in cm.output))
+
 
 class TestPerceptCountEvent(unittest.TestCase):
     def _agent(self):

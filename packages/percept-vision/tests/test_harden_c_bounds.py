@@ -224,5 +224,45 @@ class TestResolvedAnswerKeyBound(unittest.TestCase):
         self.assertEqual(_resolved_trace(seq, bounded=True), [FIRE, FIRE, FIRE])
 
 
+# ---- M0/GATE_STATE_LEAK: a BARE Gate() (no explicit bounds) must not grow without bound -----------
+class TestDefaultGateIsBounded(unittest.TestCase):
+    def test_default_max_keys_and_ttl_are_finite(self):
+        gate = Gate()
+        self.assertIsNotNone(gate.max_keys)
+        self.assertIsNotNone(gate.key_ttl_s)
+        self.assertGreater(gate.max_keys, 0)
+        self.assertGreater(gate.key_ttl_s, 0)
+
+    def test_many_distinct_keys_stay_bounded_with_no_explicit_config(self):
+        """The leak: 24/7 traffic that mints a brand-new key every evaluation (no clock, no max_keys
+        passed by the caller) used to grow `_armed` forever. A default `Gate()` must cap it."""
+        gate = Gate()  # no max_keys/key_ttl_s/clock/now passed anywhere below
+        for i in range(50_000):
+            gate.evaluate(("g", f"e{i}"), YES, freshness=1.0)
+        self.assertLessEqual(len(gate._armed), gate.max_keys)
+        self.assertLess(len(gate._armed), 50_000, "default Gate() leaked an unbounded number of keys")
+
+    def test_eviction_is_traced_not_silent(self):
+        """ADR-001 §9: eviction must be drop-with-reason, never silent. `on_evict` fires for every
+        bound-driven drop; a default (unwired) Gate still logs, but the callback is the observable
+        contract a caller can assert against."""
+        events: list[tuple] = []
+        gate = Gate(max_keys=10, on_evict=lambda key, reason: events.append((key, reason)))
+        for i in range(100):
+            gate.evaluate(("g", f"e{i}"), YES, freshness=1.0)
+        self.assertTrue(events, "keys were evicted past max_keys but no on_evict callback fired")
+        self.assertTrue(all(reason == "max_keys" for _, reason in events))
+        self.assertLessEqual(len(gate._armed), 10)
+
+    def test_pinned_no_evict_keys_survive_the_default_bound(self):
+        """Explicitly pinned (no_evict) keys must never be swept by the default bound, even once the
+        default max_keys ceiling is exceeded by ordinary keys."""
+        gate = Gate(max_keys=5)
+        gate.evaluate(("g", "pinned"), YES, freshness=1.0, no_evict=True)
+        for i in range(50):
+            gate.evaluate(("g", f"e{i}"), YES, freshness=1.0)
+        self.assertIn(("g", "pinned"), gate._armed)
+
+
 if __name__ == "__main__":
     unittest.main()

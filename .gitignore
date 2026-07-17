@@ -158,3 +158,6 @@ Tasks/.board-events.jsonl
 
 # headless diagnostic harnesses (kept local, not shipped with the template)
 templates/realtime_voice_watch_agent/scratch_*.py
+
+# dispatch-board local state (snapshotted to refs/dispatch-board/state)
+.dispatch-board/

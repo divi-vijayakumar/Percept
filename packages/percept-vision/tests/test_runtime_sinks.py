@@ -11,6 +11,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from percept.runtime.sinks import (
+    BoundedDeadLetterQueue,
     FileDeadLetterQueue,
     UrlPolicy,
     UrlPolicyError,
@@ -109,14 +110,75 @@ class WebhookSinkTests(unittest.TestCase):
                 sink(_incident())
         self.assertEqual(len(dead), 1)
         rec = dead[0]
-        self.assertEqual(set(rec), {"url", "body_sha256", "error", "attempts"})
+        self.assertEqual(set(rec), {"url", "body_sha256", "error", "attempts", "reason"})
         self.assertEqual(rec["url"], "https://hooks.example.com")  # userinfo + path + query stripped
         self.assertEqual(len(rec["body_sha256"]), 64)
         self.assertEqual(rec["attempts"], 2)
-        # no raw payload, no signing secret, no path/query/userinfo secret anywhere in the record
+        self.assertEqual(rec["reason"], "retries_exhausted")  # generic cause, never the URL/a secret
+        # no raw payload, no signing secret, no path/query/userinfo secret anywhere in the record —
+        # including the new `reason` field specifically (ADR-001 §9: a drop reason must be TRACED but
+        # must never itself become a secret-leak vector).
         blob = json.dumps(rec)
         for leaked in ("Door alert", "shh", "user:pass", "SECRETTOKEN", "QUERYSECRET"):
             self.assertNotIn(leaked, blob)
+            self.assertNotIn(leaked, rec["reason"])
+
+    def test_max_attempt_age_terminates_delivery_before_retries_exhausted(self):
+        # ADR-001 §9 / card A9: "delivery attempts" bound. A wall-clock cap independent of the retry
+        # COUNT — even with retries left in the budget, exceeding max_attempt_age_s is a TERMINAL
+        # failure (dead-lettered with an explicit, distinct reason), not silently swallowed.
+        dead = []
+        calls = []
+        clock = [0.0]
+
+        def fake_urlopen(req, timeout):
+            calls.append(req)
+            clock[0] += 10.0  # each attempt "takes" 10s of wall-clock time
+            raise TimeoutError("slow")
+
+        sink = WebhookSink(
+            "https://example.test/hook", retries=5, retry_backoff_s=0,
+            max_attempt_age_s=15.0, dead_letter=dead,
+        )
+        with patch("percept.runtime.sinks._send", fake_urlopen), \
+             patch("percept.runtime.sinks.time.monotonic", side_effect=lambda: clock[0]):
+            with self.assertRaises(TimeoutError):
+                sink(_incident())
+        self.assertLess(len(calls), 6, "the age bound must cut the run short of the full retry budget")
+        self.assertEqual(len(dead), 1)
+        self.assertEqual(dead[0]["reason"], "max_attempt_age_exceeded")
+
+    def test_bounded_dead_letter_queue_drops_oldest_with_traced_reason_on_count_overflow(self):
+        # ADR-001 §9 / card A9: "delivery queue (count + bytes) -> dead-letter/drop-with-reason". A
+        # plain list dead_letter grows without bound; BoundedDeadLetterQueue caps it and TRACES every
+        # eviction — never silent.
+        dropped = []
+        dlq = BoundedDeadLetterQueue(max_records=3, on_drop=lambda rec, reason: dropped.append((rec["i"], reason)))
+        for i in range(5):
+            dlq.append({"i": i})
+        self.assertEqual(len(dlq), 3, "the queue never exceeds max_records")
+        self.assertEqual([r["i"] for r in dlq.read_all()], [2, 3, 4], "oldest records fall out first")
+        self.assertEqual(dropped, [(0, "max_records"), (1, "max_records")])
+
+    def test_bounded_dead_letter_queue_drops_oldest_with_traced_reason_on_byte_overflow(self):
+        dropped = []
+        # Sized to hold exactly ONE ~120-byte record but not two — the byte bound must evict the
+        # oldest to make room for the second, well short of max_records (1000).
+        dlq = BoundedDeadLetterQueue(
+            max_records=1000, max_bytes=150, on_drop=lambda rec, reason: dropped.append(reason))
+        dlq.append({"i": 0, "payload": "x" * 100})
+        dlq.append({"i": 1, "payload": "y" * 100})
+        self.assertEqual(len(dlq), 1, "the byte bound evicts even though max_records is nowhere near hit")
+        self.assertEqual(dlq.read_all()[0]["i"], 1, "the newest record survives")
+        self.assertEqual(dropped, ["max_bytes"])
+
+    def test_bounded_dead_letter_queue_default_drop_is_traced_via_log_not_silent(self):
+        # No on_drop supplied: the default path must still observably log the drop (never a no-op).
+        dlq = BoundedDeadLetterQueue(max_records=1)
+        with self.assertLogs("percept.runtime.sinks", level="INFO") as cm:
+            dlq.append({"url": "https://a.example.com"})
+            dlq.append({"url": "https://b.example.com"})
+        self.assertTrue(any("dlq.dropped" in line for line in cm.output))
 
     def test_send_time_rebind_to_internal_is_blocked_and_dead_lettered(self):
         # A name public at construction (passes check_static) that RESOLVES to an internal IP at send is
