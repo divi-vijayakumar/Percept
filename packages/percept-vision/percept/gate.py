@@ -79,9 +79,11 @@ class Gate:
         key_ttl_s: float | None = _DEFAULT_KEY_TTL_S,
         clock: Callable[[], float] | None = None,
         on_evict: Callable[[Hashable, str], None] | None = None,
+        require_false_first: bool = False,
     ) -> None:
         self.threshold = threshold
         self.fresh_min = fresh_min
+        self.require_false_first = require_false_first  # gate-wide default for the baseline rule
         self._armed: dict[Hashable, bool] = {}  # key -> ready-to-fire
         # R-1 sustained-duration (dwell): key -> the time it first became continuously true. Only
         # populated when a goal sets ``hold_s``; empty otherwise, so the no-dwell path is byte-for-byte.
@@ -190,7 +192,7 @@ class Gate:
             self._dwell_since.pop(key, None)  # ...and breaks any in-progress dwell (blip resets the clock)
             return SILENT
         # truth == "yes"
-        if require_false_first and key not in self._armed:
+        if (require_false_first or self.require_false_first) and key not in self._armed:
             # Spec (v0.1 hero matrix: "already present when the runtime starts -> SILENT"): a condition
             # that is ALREADY true on the first observation of this key is not a rising edge we watched
             # become true. Record the key as seen-but-DISARMED (never fire on it); only a subsequent

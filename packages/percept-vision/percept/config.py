@@ -97,6 +97,10 @@ class GateSettings:
     # begin ASK-ing on stale perception where they stayed SILENT), so it lands INERT — enabling it is a
     # separate human decision with its own eval pass.
     stale_ask: bool = False  # PERCEPT_GATE_STALE_ASK — perception-recency freshness (opt-in)
+    # "already present when the runtime starts -> SILENT" (v0.1 hero matrix): require a confident-false
+    # baseline before a key can fire, so a condition already true at start is not a fire. Opt-in; off is
+    # byte-for-byte the historical rising-edge gate (fire on first true).
+    require_false_first: bool = False  # PERCEPT_GATE_REQUIRE_FALSE_FIRST
 
 
 @dataclass(frozen=True)
@@ -203,6 +207,7 @@ def load_settings() -> Settings:
             key_ttl_s=_env("PERCEPT_GATE_KEY_TTL_S", 3600.0, float),
             max_keys=_env("PERCEPT_GATE_MAX_KEYS", 0, int),
             stale_ask=_env("PERCEPT_GATE_STALE_ASK", False, _as_bool),
+            require_false_first=_env("PERCEPT_GATE_REQUIRE_FALSE_FIRST", False, _as_bool),
         ),
         entity=EntitySettings(
             iou_match=_env("PERCEPT_IOU_MATCH", 0.5, float),

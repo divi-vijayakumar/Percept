@@ -377,7 +377,7 @@ class Percept:
                 identity=identity,
                 embedder=embedder,
             ),
-            gate=Gate(threshold=cfg.gate.threshold, clock=clk),
+            gate=Gate(threshold=cfg.gate.threshold, clock=clk, require_false_first=cfg.gate.require_false_first),
             goals=GoalRegistry(),
             cache=CacheCascade(layers=layers, threshold=cfg.cache.threshold),
             clock=clk,
