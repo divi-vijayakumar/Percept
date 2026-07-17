@@ -7,7 +7,7 @@
 
 ## Locked reference (the config every number keys off)
 - **Machine:** Mac15,6 · Apple M3 Pro (11 cores) · 18 GB · macOS 26.5 · Python 3.12.8
-- **Provider (Phase-B):** Gemini `generateContent`, model **`gemini-3.1-flash-lite`** *(⚠ validate it resolves + returns structured output before a real run; adapter default/tested is `gemini-3.5-flash`)*
+- **Provider (Phase-B):** Gemini `generateContent`, model **`gemini-3.1-flash-lite`** — **VALIDATED 2026-07-17** by live probe (structured-output vision OK; single-call **0.728s**, vs 1.804s for `gemini-3.5-flash`; `gemini-3.1-flash-live-preview` = 404 on generateContent). Wired via `PERCEPT_VISION_MODEL`. Probe: `results/model_probe_20260717.json`.
 - **Founder bars:** cost ≤ **$10**/stream-hour · recall/precision **0.90** · naïve-VLM baseline **1.0 fps** · soak ≤ **24h**
 - **Load N/M/E/F (assistant-proposed, accepted):** 4 / 2 / 4 / 1
 - **Run:** `20260717T093226Z` · seed `20260717` · git `e0eb3df` · Phase-A commit `24d8aaf` (local)
@@ -34,12 +34,14 @@ The profile (`reflex` | `bounded` | `deliberative`) is chosen by **Phase-B G3** 
 dual gate. Until Phase-B runs, no profile is emitted. Do not start the v0.1 PRD build.
 
 ## Phase-B prerequisites (blocking a final memo)
-1. Wire the Gemini API key (`.env PERCEPT_VISION_MODEL` / `PERCEPT_GEMINI_MODEL` are unset).
-2. **Validate `gemini-3.1-flash-lite`** resolves on `generateContent` and returns structured output;
-   fall back to `gemini-3.5-flash` if not.
+1. ~~Wire the Gemini API key~~ — **DONE** (`GOOGLE_AISTUDIO_API_KEY` present; `PERCEPT_VISION_MODEL=gemini-3.1-flash-lite`).
+2. ~~Validate `gemini-3.1-flash-lite`~~ — **DONE** (live probe 2026-07-17: structured-output vision OK, 0.728s single-call).
 3. Run Phase-B: real recall/precision (fixtures + §5a golden clips), real G3-A/G3-B latency under the
-   N/M/E/F load, real $/stream-hour vs the $10 ceiling, real-adapter P-JUDGE-SAFE-1.
+   N/M/E/F load, real $/stream-hour vs the $10 ceiling, real-adapter P-JUDGE-SAFE-1. *(now unblocked — costs real Gemini calls)*
 4. Re-run this memo → emit the typed `launch_profile`.
+
+**Early Phase-B signal:** real single-call vision latency **0.728s** (P-LAT-BASE floor) is well under the
+2s Reflex deadline — encouraging for a `reflex` profile, pending the full under-load G3-A/G3-B numbers.
 
 ## Bottom line
 **Phase-A: GO on architecture (G1).** Economics and latency are pending Phase-B, which is gated only
