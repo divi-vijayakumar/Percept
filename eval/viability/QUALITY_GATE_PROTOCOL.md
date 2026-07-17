@@ -54,3 +54,18 @@ The golden set's labels were found **invalid** (off-timescale rising edges, sing
 - **N = 10**, **live** judge = `gemini-3.1-flash-lite` (as wired).
 - **Metric (as-is):** the harness headline `e2e:notification_recall` / `e2e:notification_precision` (plus edge recall/precision, call-reduction, median latency), reported against the locked 0.90 bar.
 - **ONE run.** Coverage (rows observed vs failed/skipped) is reported honestly — a low-coverage run is a data-readiness finding, not a hidden denominator. Same stopping rule as above: PASS → GO; FAIL → REVIEW/NO-GO, founder decision, **no tuning-to-green**.
+
+---
+
+## Addendum 2 (2026-07-17) — Charades persistent-state run at N=20 (pre-registered, before results)
+
+Founder-directed: measure G2 quality on Percept's **target case — persistent-state actions (Charades)**,
+not brief-action Perception Test (kept as a documented weak-spot bound, Addendum 1). Fixed BEFORE the run:
+
+- **Substrate/track (fixed):** `charades-e2e` (Charades daily-activity actions, 202 local 480p clips). Persistent activity segments — Percept's sweet spot.
+- **Label conversion + tolerance (committed):** each Charades action interval `[onset, end]` → an eligibility window `[onset, end + WINDOW_PAD_S]` with **WINDOW_PAD_S = 1.0s** (the track's existing pad, committed here as the lateness tolerance). A fire at `t` is a HIT iff `onset <= t <= end + 1.0`. Eligibility is from onset; late fires are tolerated up to +1.0s.
+- **Gate:** the landed fix **`require_false_first = True`** (via `PERCEPT_GATE_REQUIRE_FALSE_FIRST=1`) — "already present at start -> SILENT", killing the cold-start fire.
+- **Model:** `gemini-3.1-flash-lite` (live). **N = 20.**
+- **Metric (as-is):** the track's event-level `recall` / `precision` (tp/(tp+fn), tp/(tp+fp)) vs the locked **0.90** bar. Coverage reported honestly.
+- **ONE frozen run. This is the number that emits the `launch_profile`.** Stopping rule unchanged: PASS -> GO (reflex; G3 GREEN, econ PASS); FAIL -> REVIEW/NO-GO, founder decision, **never tune-to-green**.
+- **Kept as a bound:** the pt-action N=10 result (recall/precision 0.30) stands as the documented **brief-action weak-spot** — honest edge characterization, not the launch number.
