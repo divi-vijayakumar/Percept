@@ -93,3 +93,33 @@ Ran the founder-directed `pt-action-e2e` benchmark at N=10 live `gemini-3.1-flas
 - **Verdict: REVIEW/NO-GO** (as-is, no tuning, per the stopping rule).
 
 **Diagnosis (the actionable part):** the edge finds the action window **80%** of the time, but the E2E fires in-window only **30%** — the loss is **fire-timing, not perception**: no-fires in brief windows, early fires (incl. a t=0 cold-start), late fires, and multiple fires/row (no refractory) hurting precision. This is the **same root cause** as the golden episode-level test and the prior N=4 run: the **firing/gate policy is untuned** (cold-start suppression, refractory, brief-window cadence) — not model capability, and not architecture. Per the stopping rule, resolving it is a founder decision (accept NO-GO / ONE pre-registered held-out tuning attempt on the firing policy / committed bar change), never tune-to-green.
+
+## G2 quality — Charades persistent-state N=20 (pre-registered, gate-fixed) — THE launch_profile run
+Percept's target case (persistent activity), with the landed gate fix (`require_false_first`) and the
+committed `[onset, end+1.0s]` tolerance. Frozen, as-is:
+
+- **recall 0.67 · precision 0.375** (bar 0.90) · tp 122 / fp 203 / fn 60 · N=20 videos, 182 goals, 5521 real calls, 0 errors.
+- **Verdict: REVIEW/NO-GO.**
+
+## Emitted launch_profile
+```yaml
+launch_profile:
+  deadline_class: UNDETERMINED   # G2 quality below 0.90 on all substrates
+  provider: gemini    model: gemini-3.1-flash-lite
+  g1_boundedness: PASS (architecture)   g3_latency: GREEN   economics: PASS   g2_quality: REVIEW
+  supported_camera: static
+```
+
+## Honest read across substrates (the H0 quality picture)
+| Substrate | recall | precision | note |
+|---|---|---|---|
+| Charades (persistent, sweet spot, gate-fixed) | **0.67** | 0.375 | best number; recall ~2× vs brief-action |
+| pt-action (brief transient, weak-spot bound) | 0.30 | 0.30 | documented edge, not the launch number |
+| golden episode-level | 0.167 | — | invalid (broken labels) |
+
+- **Recall roughly doubled (0.30 → 0.67)** moving from brief actions to persistent states — confirms the design thesis: Percept is a persistent-state watcher, and that's where it performs.
+- **Precision 0.375 is the bottleneck** (fp 203). Two contributors, one fixable and one a benchmark artifact: (a) the gate still **re-fires on flicker** (require_false_first killed cold-start, but there's no *time-refractory* yet — a clear next gate fix), and (b) **Charades is sparsely labeled** (one annotator; many real activities unlabeled), so correct detections of unlabeled actions are scored as false fires — a known Charades precision under-estimate.
+- **Still below 0.90 on every substrate**, so `launch_profile` stays UNDETERMINED. No v0.1 build.
+
+## Bottom line (H0)
+G1 architecture **GO**, G3 latency **GREEN**, economics **PASS**. G2 quality **not cleared** even on the sweet-spot substrate with the gate fix — recall 0.67 shows the direction is right; precision (gate re-fires + Charades label sparsity) is the open work. The next single, pre-registerable gate move is a **time-refractory** (one fire per episode) to attack fp; per the stopping rule that's a founder decision, evaluated once on held-out data, never tuned-to-green.
