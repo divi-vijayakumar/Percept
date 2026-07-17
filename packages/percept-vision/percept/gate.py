@@ -156,6 +156,7 @@ class Gate:
         hold_s: float | None = None,
         now: float | None = None,
         no_evict: bool = False,
+        require_false_first: bool = False,
     ) -> GateAction:
         """Return FIRE / ASK / SILENT for ``key``, updating edge state.
 
@@ -167,6 +168,10 @@ class Gate:
         ``no_evict`` marks this key exempt from TTL/LRU eviction — set by the executor for never-goals and
         the per-goal absence/resolved singletons, whose edge must survive an idle gap (dropping it would
         re-arm a fire-once goal). Ignored entirely when no eviction bound is configured.
+
+        ``require_false_first`` (opt-in, default off) enforces the v0.1 "already present at start ->
+        SILENT" rule: a key whose FIRST observation is confidently-true does not fire — only a genuine
+        false->true edge does. Off = byte-for-byte the historical rising-edge gate (fire on first true).
         """
         # Eviction bookkeeping (only when a bound is set — bounded by default, see `_evicting`). Stamp the
         # key BEFORE sweeping so the key in play is the freshest and can never evict itself.
@@ -185,6 +190,15 @@ class Gate:
             self._dwell_since.pop(key, None)  # ...and breaks any in-progress dwell (blip resets the clock)
             return SILENT
         # truth == "yes"
+        if require_false_first and key not in self._armed:
+            # Spec (v0.1 hero matrix: "already present when the runtime starts -> SILENT"): a condition
+            # that is ALREADY true on the first observation of this key is not a rising edge we watched
+            # become true. Record the key as seen-but-DISARMED (never fire on it); only a subsequent
+            # confident-false (which arms it via the branch above) establishes the false->true baseline
+            # a genuine rising-edge fire requires. Opt-in: without this flag a new key defaults to armed
+            # (byte-for-byte the historical rising-edge gate) so existing callers are unchanged.
+            self._armed[key] = False
+            return SILENT
         if not self._armed.get(key, True):  # new keys default to armed -> fresh edge
             return SILENT  # already true / already fired this episode
         if hold_s is None or hold_s <= 0 or now is None:
