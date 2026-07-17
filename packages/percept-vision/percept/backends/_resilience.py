@@ -64,14 +64,21 @@ async def with_retry(
     attempts: int = 3,
     base_delay_s: float = 0.2,
     breaker: CircuitBreaker | None = None,
+    timeout_s: float | None = None,
 ) -> T:
-    """Call ``call`` with exponential backoff; honor an optional circuit breaker."""
+    """Call ``call`` with exponential backoff; honor an optional circuit breaker.
+
+    ``timeout_s`` (opt) is a HARD per-attempt wall-clock bound via :func:`asyncio.wait_for`. It exists
+    because a provider client's own request timeout does not always bound a WEDGED socket send/connect
+    (observed: a live judge call hung for hours inside ``sock_send``). With it set, a stuck attempt is
+    cancelled to ``TimeoutError`` and retried/failed like any other error — the run can never hang.
+    ``None`` = byte-for-byte the historical behavior (no extra bound)."""
     if breaker is not None and not breaker.allow():
         raise CircuitOpen("circuit breaker open")
     last_exc: Exception | None = None
     for i in range(attempts):
         try:
-            result = await call()
+            result = await (asyncio.wait_for(call(), timeout_s) if timeout_s else call())
             if breaker is not None:
                 breaker.record_success()
             return result

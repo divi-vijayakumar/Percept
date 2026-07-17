@@ -268,7 +268,7 @@ class GeminiVision(_GeminiBase):
                 config=types.GenerateContentConfig(system_instruction=_JUDGE_SYSTEM, max_output_tokens=1024),
             )
 
-        resp = await with_retry(_call, breaker=self._breaker)  # survive transient resets in batch captures
+        resp = await with_retry(_call, breaker=self._breaker, timeout_s=_REQUEST_TIMEOUT_MS / 1000)  # survive transient resets in batch captures
         verdict = _parse_verdict(resp.text or "")
         verdict.usage = _usage_of(resp)  # 1.3 metering: light up the token/cost funnel (was always {})
         return verdict
@@ -302,7 +302,7 @@ class GeminiVision(_GeminiBase):
                 ),
             )
 
-        resp = await with_retry(_call, breaker=self._breaker)
+        resp = await with_retry(_call, breaker=self._breaker, timeout_s=_REQUEST_TIMEOUT_MS / 1000)
         try:
             data = json.loads(_extract_json(resp.text or ""))
         except Exception:
@@ -340,7 +340,7 @@ class GeminiVision(_GeminiBase):
                 config=types.GenerateContentConfig(system_instruction=_OBSERVE_STEP_SYSTEM, max_output_tokens=1024),
             )
 
-        resp = await with_retry(_call, breaker=self._breaker)
+        resp = await with_retry(_call, breaker=self._breaker, timeout_s=_REQUEST_TIMEOUT_MS / 1000)
         try:
             data = json.loads(_extract_json(resp.text or ""))
         except Exception:
@@ -370,7 +370,7 @@ class GeminiVision(_GeminiBase):
                 config=types.GenerateContentConfig(system_instruction=_SUMMARIZE_LOG_SYSTEM, max_output_tokens=4096),
             )
 
-        resp = await with_retry(_call, breaker=self._breaker)
+        resp = await with_retry(_call, breaker=self._breaker, timeout_s=_REQUEST_TIMEOUT_MS / 1000)
         try:
             data = json.loads(_extract_json(resp.text or ""))
         except Exception:
@@ -394,7 +394,7 @@ class GeminiVision(_GeminiBase):
                 config=types.GenerateContentConfig(max_output_tokens=512),
             )
 
-        resp = await with_retry(_call, breaker=self._breaker)
+        resp = await with_retry(_call, breaker=self._breaker, timeout_s=_REQUEST_TIMEOUT_MS / 1000)
         return _parse_observations(resp.text or "")
 
     async def detect_events(self, frames: list, goals: list[Goal]) -> list:
@@ -428,7 +428,7 @@ class GeminiConductor(_GeminiBase):
                 return Decision(route="respond_with_vision", look="request_frame")
             return _coerce_decision(payload)
 
-        return await with_retry(_call, breaker=self._breaker)
+        return await with_retry(_call, breaker=self._breaker, timeout_s=_REQUEST_TIMEOUT_MS / 1000)
 
 
 class GeminiSpecialist(_GeminiBase):
