@@ -142,3 +142,20 @@ COMMITTED D_op goal-selection rule (LABEL-ONLY — uses no model output, so it c
 Fixes #2 (PLAN) and #4 (MAXG) are NEW track code; each is validated independently (a smoke assert that the
 flag actually changes behavior) BEFORE any for-record ladder run — same discipline that caught the block_max
 no-op. If a 429/credit exhaustion interrupts a cell, that cell is re-run whole; partial cells are void.
+
+### Addendum 5 (2026-07-17) — judge switched to qwen3-vl-32b (hosted) + block_max threshold calibrated
+Two config changes to the ladder, both pre-registered before results, both founder-directed:
+1. JUDGE = `qwen/qwen3-vl-32b-instruct` via OpenRouter (was gemini-3.1-flash-lite). Rationale: cheap, hosted,
+   genuinely parallel (measured: 6 concurrent calls in 2.1s, ~1.5s warm/call, no prepaid-credit 429 wall),
+   and the prior model-comparison scorecard shows qwen3-vl-32b ~= gemini on Charades quality (recall 0.29 vs
+   0.32, N=8) — so this is a COST/SPEED/PARALLELISM change, not a quality lever. The ENTIRE ladder (incl. R0)
+   re-runs on qwen for internal consistency; the gemini recall-0.30 baseline becomes a cross-model reference,
+   not the ladder baseline. Provider bar in reference_config is superseded for this ladder ONLY, documented.
+   Videos judged concurrently via PERCEPT_BENCH_VIDEO_CONCURRENCY=8 (independent per-video state; hosted model
+   parallelizes). This is speed only — identical results to serial, just faster wall-clock.
+2. block_max escalate cutoff CALIBRATED to 0.20 (env PERCEPT_BENCH_BLOCKMAX_THRESHOLD -> stat_thresholds).
+   Measured: block_max at the mean's 0.10 escalates ~70% of frames (call explosion — the observed 47-min
+   timeout, and it destroys the fovea's call-reduction). block_max lives on a higher value scale (median
+   ~0.13 vs mean ~0.01); 0.20 gives ~20% escalation, comparable to mean's ~17% operating point. Chosen on the
+   motion-distribution side to isolate the LOCALIZING STATISTIC from the escalation-budget confound — NOT for
+   accuracy. This makes the block_max recall gain attributable to localization per se, at bounded cost.

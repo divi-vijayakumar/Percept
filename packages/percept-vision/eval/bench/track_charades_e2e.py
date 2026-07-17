@@ -41,6 +41,11 @@ TRACK = "charades-e2e"
 MATCHED_PLAN = os.environ.get("PERCEPT_BENCH_MATCHED_PLAN") == "1"
 # PERCEPT_BENCH_MAX_GOALS=K -> keep at most K distinct-object goals per video (committed label-only rule).
 MAX_GOALS = int(os.environ.get("PERCEPT_BENCH_MAX_GOALS") or 0)
+# PERCEPT_BENCH_BLOCKMAX_THRESHOLD=X -> block_max/p95 escalate cutoff (they live on a higher value scale than
+# mean; without this block_max at the mean's 0.1 escalates ~everything). Calibrated 0.20 ~= mean's op-rate.
+_BLOCKMAX_TH = os.environ.get("PERCEPT_BENCH_BLOCKMAX_THRESHOLD")
+# PERCEPT_BENCH_VIDEO_CONCURRENCY=N -> judge N videos concurrently (hosted models parallelize; default 1).
+_VIDEO_CONCURRENCY = int(os.environ.get("PERCEPT_BENCH_VIDEO_CONCURRENCY") or 1)
 _SPRITE_FRAMES = 4  # fold the last N judged frames into one montage for temporal context
 _STATIVE = {"holding", "wearing", "sitting", "lying", "standing", "watching", "looking", "reading"}
 _STOP = {"someone", "is", "are", "a", "an", "the", "some", "something", "somewhere", "of", "on",
@@ -325,6 +330,7 @@ async def _score_one(row: dict[str, Any]) -> VideoRun:
         list(core.goals.active()),
         threshold=settings.edge.motion_gate,
         salience_stat=settings.edge.salience_stat,  # honor PERCEPT_SALIENCE_STAT (mean|block_max|p95)
+        stat_thresholds=({"block_max": float(_BLOCKMAX_TH), "p95": float(_BLOCKMAX_TH)} if _BLOCKMAX_TH else None),
     )
     gate = MotionGate(spec, settings=settings)
 
@@ -380,10 +386,20 @@ async def _score_one(row: dict[str, Any]) -> VideoRun:
 
 
 async def _score_all(rows: list[dict[str, Any]]) -> list[VideoRun]:
-    runs: list[VideoRun] = []
-    for row in rows:
-        runs.append(await _score_one(row))
-    return runs
+    # Videos are independent (each builds its own recorder/core/gate), so a hosted judge that parallelizes
+    # can score them concurrently. Bounded by PERCEPT_BENCH_VIDEO_CONCURRENCY; default 1 = the old serial path.
+    if _VIDEO_CONCURRENCY <= 1:
+        runs: list[VideoRun] = []
+        for row in rows:
+            runs.append(await _score_one(row))
+        return runs
+    sem = asyncio.Semaphore(_VIDEO_CONCURRENCY)
+
+    async def _guarded(row: dict[str, Any]) -> VideoRun:
+        async with sem:
+            return await _score_one(row)
+
+    return list(await asyncio.gather(*(_guarded(row) for row in rows)))
 
 
 def _unavailable(reason: str) -> TrackResult:
