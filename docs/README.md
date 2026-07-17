@@ -11,6 +11,7 @@ interactive [`architecture.html`](../architecture.html)) — it cannot drift fro
 - [Quickstart](tutorials/quickstart.md) — install, run offline on the fake backend, then a real backend.
 
 ## How-to — task-oriented
+- [Authoring goals and watch plans](how-to/authoring-goals-and-watch-plans.md) — phrase goals and match the plan to the action so quality isn't lost before the judge runs.
 - [Runtime](how-to/runtime.md) — drive a live source with `run(source) → incidents`.
 - [Eval](how-to/eval.md) — the offline eval harness, manifests, and the CI gate.
 - [Fall scenario](how-to/fall.md) — a high-consequence watch recipe.
