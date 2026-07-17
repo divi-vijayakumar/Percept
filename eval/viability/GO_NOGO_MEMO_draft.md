@@ -85,3 +85,11 @@ off-timescale rising-edge labels. Our best real quality signal is therefore ~0.6
 - **G2 quality REVIEW** — the one open gate. **No `launch_profile` emitted, no v0.1 build**, until quality
   is resolved: (a) run **episode-level** golden scoring, (b) tune prompt/threshold, (c) re-examine whether
   0.90 frame-level is the right bar. This is a *scoped* quality-track task, not an architecture failure.
+
+## G2 quality — N=10 benchmark (Perception Test action localization, pre-registered)
+Ran the founder-directed `pt-action-e2e` benchmark at N=10 live `gemini-3.1-flash-lite` (protocol addendum, committed before results). **Clean coverage: 10/10, 0 failed** — a trustworthy number, unlike the broken golden set.
+
+- **notification recall 0.30 · precision 0.30** (bar 0.90) · **edge/tier-0 recall 0.80** · median latency 0.49s · edge call-reduction 0.46.
+- **Verdict: REVIEW/NO-GO** (as-is, no tuning, per the stopping rule).
+
+**Diagnosis (the actionable part):** the edge finds the action window **80%** of the time, but the E2E fires in-window only **30%** — the loss is **fire-timing, not perception**: no-fires in brief windows, early fires (incl. a t=0 cold-start), late fires, and multiple fires/row (no refractory) hurting precision. This is the **same root cause** as the golden episode-level test and the prior N=4 run: the **firing/gate policy is untuned** (cold-start suppression, refractory, brief-window cadence) — not model capability, and not architecture. Per the stopping rule, resolving it is a founder decision (accept NO-GO / ONE pre-registered held-out tuning attempt on the firing policy / committed bar change), never tune-to-green.
