@@ -161,3 +161,6 @@ templates/realtime_voice_watch_agent/scratch_*.py
 
 # dispatch-board local state (snapshotted to refs/dispatch-board/state)
 .dispatch-board/
+
+# local-only diagnostic (per-video pt-action breakdown)
+eval/viability/PT_ACTION_N10_DIAGNOSTIC.md
