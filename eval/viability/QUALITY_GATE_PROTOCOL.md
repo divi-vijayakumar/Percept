@@ -106,3 +106,39 @@ localized implementation, so the path is genuinely reachable). Threshold stays a
 `settings.edge.motion_gate` (no `stat_thresholds`), so block_max escalates more aggressively on localized
 motion — the intended low-motion recovery. Re-running the SAME pre-registered config; still ONE run,
 reported as-is. No change to bars or tolerance.
+
+### Addendum 4 (2026-07-17) — the FIX→RERUN ablation ladder × goal-density (pre-registered before results)
+Rationale: the recall-0.30 baseline is depressed by four separable confounds (see JUDGE_LOSS_DEEPDIVE, local).
+We re-run as a CUMULATIVE ablation ladder so each fix's contribution is attributable — not a tune-to-green
+pile-up. Every cell is ONE frozen run, reported as-is, N=20, gemini-3.1-flash-lite, tolerance [onset,end+1.0s],
+bar 0.90. Configs are selected by ENV FLAGS the track reads (no code edits between rungs):
+
+  SAL  = PERCEPT_SALIENCE_STAT            {mean | block_max}
+  RFF  = PERCEPT_GATE_REQUIRE_FALSE_FIRST {1 | 0}
+  PLAN = PERCEPT_BENCH_MATCHED_PLAN       {0 | 1}   1 = dynamic-verb goals judged on a SPRITE (folded frames), stative on single frame
+  MAXG = PERCEPT_BENCH_MAX_GOALS          {0 | 3}   0 = all goals; 3 = committed label-only selection (below)
+
+Ladder (cumulative), run at EACH density:
+  R0 baseline : SAL=mean      RFF=1 PLAN=0     (== existing N=20 → recall 0.30 at D_stress)
+  R1 +eye     : SAL=block_max RFF=1 PLAN=0     (the corrected block_max run)
+  R2 +plan    : SAL=block_max RFF=1 PLAN=1     (matched sense: sprite for temporal actions)
+  R3 +gate    : SAL=block_max RFF=0 PLAN=1     (drop the require_false_first over-suppressor)
+
+Densities:
+  D_stress : MAXG=0  (all goals, ~9.1/video — the conservative worst-case FLOOR)
+  D_op     : MAXG=3  (realistic 1-3 concerns — the OPERATING-POINT claim)
+
+Matrix = 4 rungs × 2 densities = 8 cells. Already have (R0,D_stress). The two headline numbers:
+  (R3, D_op)     = operating-point launch_profile candidate
+  (R3, D_stress) = conservative floor
+Decision (founder, 2026-07-17): REPORT BOTH — cite the range, no cherry-picking.
+
+COMMITTED D_op goal-selection rule (LABEL-ONLY — uses no model output, so it cannot select for accuracy):
+  per video: (1) group actions by description (as today); (2) collapse goals sharing a head-noun (first
+  content noun), keeping the longer total-duration one — removes same-object competitors; (3) keep the 3
+  survivors with the longest total labeled duration; (4) deterministic tie-break: alphabetical by description.
+  Models a real user watching a few mutually-distinct concerns.
+
+Fixes #2 (PLAN) and #4 (MAXG) are NEW track code; each is validated independently (a smoke assert that the
+flag actually changes behavior) BEFORE any for-record ladder run — same discipline that caught the block_max
+no-op. If a 429/credit exhaustion interrupts a cell, that cell is re-run whole; partial cells are void.
