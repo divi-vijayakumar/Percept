@@ -166,6 +166,23 @@ async def run():
             if action == FIRE:
                 fires_by_goal.setdefault(gid, []).append(t)
 
+    # per-goal forensic trace: for each goal, segments (hit? + did the judge say yes IN-segment?),
+    # all fires, false fires (fires in no segment window), and the judge yes-fraction over the clip.
+    per_goal = []
+    for g in all_goals:
+        gid = g["goal_id"]; segs = g["segments"]
+        vs = sorted(verd.get(gid, [])); fires = sorted(fires_by_goal.get(gid, []))
+        seg_info = []
+        for (s, e) in segs:
+            hit = next((round(t, 1) for t in fires if s <= t <= e + WINDOW_PAD_S), None)
+            yes_in = [round(t, 1) for (t, sat, _c) in vs if sat and s <= t <= e + WINDOW_PAD_S]
+            seg_info.append({"seg": [round(s, 1), round(e, 1)], "hit_at": hit, "judge_yes_in_seg": yes_in})
+        fp_fires = [round(t, 1) for t in fires if not any(s <= t <= e + WINDOW_PAD_S for (s, e) in segs)]
+        yes_n = sum(1 for (_t, sat, _c) in vs if sat)
+        per_goal.append({"goal_id": gid, "video": gid.split("-")[1], "condition": g["condition"],
+                         "desc": g["desc"], "n_frames": len(vs), "judge_yes_frac": round(yes_n / len(vs), 2) if vs else 0.0,
+                         "segments": seg_info, "fires": [round(t, 1) for t in fires], "false_fires": fp_fires})
+
     tp, fp, fn, recall, precision, lat = _score(all_goals, fires_by_goal)
     rmin = float(list(cfg["numeric_bars"]["recall_min"].values())[0])
     pmin = float(list(cfg["numeric_bars"]["precision_min"].values())[0])
@@ -188,12 +205,15 @@ async def run():
                            "g1": "PASS (architecture)", "g3_latency": band, "econ": "PASS", "g2_quality": "PASS" if g2_pass else "REVIEW"},
         "note": "Direct-judge runner applying the pre-registered charades rule (harness hung on a live "
                 "socket send). Real percept.gate.Gate(require_false_first=True); tolerance [onset, end+1.0s].",
+        "per_goal": per_goal,
     }
 
 
 def _write(res):
     now = _dt.datetime.now(_dt.timezone.utc); rid = now.strftime("%Y%m%dT%H%M%SZ")
     out = RESULTS / rid; out.mkdir(parents=True, exist_ok=True)
+    per_goal = res.pop("per_goal", [])
+    (out / "per_goal.json").write_text(json.dumps(per_goal, indent=1))
     (out / "metrics.json").write_text(json.dumps(res, indent=2))
     lp = res["launch_profile"]
     md = f"""# Charades persistent-state G2 quality — pre-registered N={res['videos']} (frozen)
