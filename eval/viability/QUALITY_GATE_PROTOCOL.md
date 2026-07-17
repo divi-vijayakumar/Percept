@@ -69,3 +69,13 @@ not brief-action Perception Test (kept as a documented weak-spot bound, Addendum
 - **Metric (as-is):** the track's event-level `recall` / `precision` (tp/(tp+fn), tp/(tp+fp)) vs the locked **0.90** bar. Coverage reported honestly.
 - **ONE frozen run. This is the number that emits the `launch_profile`.** Stopping rule unchanged: PASS -> GO (reflex; G3 GREEN, econ PASS); FAIL -> REVIEW/NO-GO, founder decision, **never tune-to-green**.
 - **Kept as a bound:** the pt-action N=10 result (recall/precision 0.30) stands as the documented **brief-action weak-spot** — honest edge characterization, not the launch number.
+
+### Note (2026-07-17) — charades-e2e harness hung; ran the identical rule via a direct runner
+The pre-registered `charades-e2e` benchmark harness (full-core live path) HUNG for ~3h on a live
+socket send with no timeout (stack: main thread in `sock_send` -> zlib finish; zero videos processed).
+Killed it. To honor the pre-registration WITHOUT the broken tool, ran `eval/viability/run_charades_quality.py`:
+the SAME data (selection.json + Charades_v1_480), SAME condition ("someone is <action>"), SAME tolerance
+([onset, end+1.0s]), the REAL `percept.gate.Gate(require_false_first=True)` driven per goal in time order,
+N=20, live gemini-3.1-flash-lite, with a hard 25s per-call timeout so no hung request can stall it. This
+is a tooling workaround, not a rule change — the substrate, labels, tolerance, gate, N, and bar are
+byte-for-byte the pre-registered ones. Result reported as-is.
