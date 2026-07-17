@@ -1,0 +1,48 @@
+{
+  "phase": "A",
+  "substrate": "fake_judge (architecture isolation)",
+  "n_m_e_f": {
+    "N": 4,
+    "M": 2,
+    "E": 4.0,
+    "F": 1
+  },
+  "gates": {
+    "G3_latency_floor": {
+      "admitted_to_decision_p95_s": 0.5399,
+      "band": "GREEN",
+      "label": "ARCHITECTURE FLOOR on a FAKE uniform(0.10,0.50)s latency dist \u2014 NOT the product/provider number",
+      "note": "real p95 (G3-A) and actionable p95 (G3-B) require the provider \u2014 Phase B"
+    },
+    "G2_econ_structure": {
+      "vid_judgments_per_stream_hour": 240.0,
+      "naive_baseline_judgments_per_stream_hour": 3600.0,
+      "volume_reduction_factor": 15.0,
+      "observed_fan_out_F": 1.0,
+      "cost_ceiling_usd_per_stream_hour": 10,
+      "label": "judgment-VOLUME economics (real; VID cuts judge calls vs the 1.0fps baseline). $/stream-hour needs real per-call pricing \u2014 DEFERRED to Phase B."
+    },
+    "G1_boundedness": {
+      "simulated_hours": 6,
+      "max_queue_depth": 80,
+      "max_oldest_pending_age_s": 0.0,
+      "queue_age_slope_pct_per_hour": 0.0,
+      "memory_slope_mb_per_hour": 0.0,
+      "latency_p95_drift_ms": 0.0,
+      "tolerances": {
+        "queue_pct_per_hr": 2.5,
+        "mem_mb_per_hr": 50.0,
+        "drift_ms": 200.0
+      },
+      "stable_within_tolerance": true,
+      "clean_recovery_after_injected_failure_hour": true,
+      "verdict": "PASS"
+    }
+  },
+  "deferred_to_phase_b": [
+    "real recall/precision per archetype (needs a real judge over the fixtures + golden clips)",
+    "real provider latency p95 (G3-A/G3-B product numbers)",
+    "real $/stream-hour vs cost ceiling (needs real per-call pricing)",
+    "P-JUDGE-SAFE-1 / P-WRAP-1 against real adapters"
+  ]
+}
