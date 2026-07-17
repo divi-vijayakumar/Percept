@@ -93,3 +93,16 @@ tolerance [onset,end+1.0s], bar 0.90). This is the documented correct config for
 camera + localized actions), NOT tuning-to-green. ONE run, reported as-is; if it clears the bar this is
 the launch_profile number, else REVIEW/NO-GO stands. The `mean` run (recall 0.30/prec 0.47) is kept as
 the global-motion baseline for the comparison.
+
+### Addendum 3a (2026-07-17) — first block_max attempt was a NO-OP; track bug fixed, re-running
+INTEGRITY NOTE: the first Addendum-3 run (`runs/20260717T210334Z`) returned numbers byte-identical to the
+`mean` baseline (recall 0.29, edge recall 0.6978, calls 1731). Root cause: `track_charades_e2e.py:264`
+called `compile_watchspec(..., threshold=...)` WITHOUT `salience_stat`, so it defaulted to `mean` — the
+`PERCEPT_SALIENCE_STAT=block_max` env var was loaded into `settings.edge.salience_stat` but never plumbed
+into the spec. block_max was never exercised. That run is VOID (tested nothing), not a null result.
+FIX: pass `salience_stat=settings.edge.salience_stat` into `compile_watchspec` (one line, verified: the
+compiled condition now carries `salience_stat='block_max'`; `percept.edge.tier0` re-exports the harness
+localized implementation, so the path is genuinely reachable). Threshold stays at the base
+`settings.edge.motion_gate` (no `stat_thresholds`), so block_max escalates more aggressively on localized
+motion — the intended low-motion recovery. Re-running the SAME pre-registered config; still ONE run,
+reported as-is. No change to bars or tolerance.

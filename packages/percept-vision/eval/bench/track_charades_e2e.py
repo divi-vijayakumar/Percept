@@ -261,7 +261,11 @@ async def _score_one(row: dict[str, Any]) -> VideoRun:
     core = Percept.create(vision=recorder, settings=settings, discover_plugins=False)
     for goal in goals:
         core.add_goal(Goal(id=goal.goal_id, condition=goal.condition, say=f"Charades action detected: {goal.desc}"))
-    spec = compile_watchspec(list(core.goals.active()), threshold=settings.edge.motion_gate)
+    spec = compile_watchspec(
+        list(core.goals.active()),
+        threshold=settings.edge.motion_gate,
+        salience_stat=settings.edge.salience_stat,  # honor PERCEPT_SALIENCE_STAT (mean|block_max|p95)
+    )
     gate = MotionGate(spec, settings=settings)
 
     try:
