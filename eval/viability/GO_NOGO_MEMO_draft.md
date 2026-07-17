@@ -61,6 +61,23 @@ picks *which* profile among passing workloads. It does not.
 - **The 0.90 bar** may be too strict for raw frame-level golden scoring; it was set for the runtime's
   event-level recall/precision.
 
+## Episode-level pass (pre-registered) — and what it revealed
+Ran the frozen `QUALITY_GATE_PROTOCOL.md` (committed *before* the result): stock model, event-level
+`golden_eval` §5a scoring, one FIRE at first `satisfied=True`, bar 0.90/0.90. **As-is result (n=6):
+recall 0.167 · precision 0.333 → REVIEW/NO-GO.** Recorded, not tuned.
+
+**But this number is not diagnostic of model quality — the ground truth is broken.** 4 of 6 episodes
+have eligibility windows at **82–131s while their clips only span ~0–15s** — the `labels.jsonl`
+rising-edge times are on a different timescale than the clip frames (the loader already flags these
+`label_inconsistent`). So the episode-level gate is **un-measurable on the current §5a set**, exactly the
+insufficient-data outcome the pre-registered power caveat named. The stopping rule holds: **no tuning** —
+the resolution is *better labeled data*, not a better prompt.
+
+Note the contrast: the **frame-level** run (0.645/0.624) used clip.json `intervals`, which ARE on the clip
+timescale, so it is a **valid** (if below-bar) signal; the episode-level run is invalidated by the
+off-timescale rising-edge labels. Our best real quality signal is therefore ~0.63 frame-level — below
+0.90, but a genuine number, not the broken 0.167.
+
 ## Where this leaves the go/no-go
 - **G1 GO (architecture)** — bounded, recovers; the kill-gate a faster model can't save. ✅
 - **G3 latency GREEN + economics excellent** — `gemini-3.1-flash-lite` at ~1.2s p95 and ~$0.03/stream-hour
