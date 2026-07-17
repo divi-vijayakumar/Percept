@@ -79,3 +79,17 @@ the SAME data (selection.json + Charades_v1_480), SAME condition ("someone is <a
 N=20, live gemini-3.1-flash-lite, with a hard 25s per-call timeout so no hung request can stall it. This
 is a tooling workaround, not a rule change — the substrate, labels, tolerance, gate, N, and bar are
 byte-for-byte the pre-registered ones. Result reported as-is.
+
+### Addendum 3 (2026-07-17) — re-run with localized salience (block_max), pre-registered before results
+FINDING: the N=20 real run used `salience_stat="mean"` (global-frame motion, the default), which washes
+out low-motion/localized actions — so the fovea/edge recall was 0.70 (30% of action windows never
+escalated). Percept SHIPS the fix: `salience_stat="block_max"` (8×6 block-grid localized motion,
+docs/reference/edge-policy.md) — built for exactly "a localized event clears threshold even when the
+whole-frame mean is ~0." It was simply off by default.
+
+Re-run (fixed BEFORE results): the REAL `charades-e2e` full-core path, **`PERCEPT_SALIENCE_STAT=block_max`**,
+everything else identical to Addendum 2 (N=20, gemini-3.1-flash-lite, `require_false_first=True`,
+tolerance [onset,end+1.0s], bar 0.90). This is the documented correct config for the workload (static
+camera + localized actions), NOT tuning-to-green. ONE run, reported as-is; if it clears the bar this is
+the launch_profile number, else REVIEW/NO-GO stands. The `mean` run (recall 0.30/prec 0.47) is kept as
+the global-motion baseline for the comparison.
