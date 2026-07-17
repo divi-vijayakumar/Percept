@@ -1,0 +1,31 @@
+{
+  "phase": "B-charades-REAL-fovea-sense",
+  "substrate": "Charades full-core watch path (fovea saccade + sense temporal evidence)",
+  "run": "20260717T202048Z",
+  "model": "gemini-3.1-flash-lite",
+  "gate": "require_false_first=True",
+  "N": 20,
+  "coverage": "20/20, 0 failed",
+  "notification_recall": 0.297,
+  "notification_precision": 0.466,
+  "edge_fovea_candidate_recall": 0.698,
+  "call_reduction": 0.686,
+  "candidate_calls": 1731,
+  "bar": 0.9,
+  "verdict": "REVIEW/NO-GO",
+  "vs_single_frame_workaround": {
+    "single_frame_recall": 0.67,
+    "single_frame_precision": 0.375,
+    "note": "the single-frame workaround OVERSTATED recall (judged EVERY frame, no fovea). The real fovea COASTS + saccades -> 69% fewer calls but drops low-motion action windows (edge recall 0.70)."
+  },
+  "diagnosis": "Recall bottleneck is UPSTREAM at the FOVEA: edge/motion-gate candidate_recall 0.70 -> 30% of action windows never trigger a saccade (low-motion persistent actions: holding/watching/standing) so are never judged. Of the 70% admitted, judge+gate convert ~43% to in-window fires. Precision 0.47 (better than single-frame's 0.375: fewer, better-timed fires). This is the G2 recall-vs-cost trade-off (P-ECON): the fovea's 69% call cut costs recall on low-motion actions; lowering escalate_threshold/base_fps raises recall at higher cost.",
+  "launch_profile": {
+    "deadline_class": "UNDETERMINED \u2014 G2 quality below bar",
+    "provider": "gemini",
+    "model": "gemini-3.1-flash-lite",
+    "g1": "PASS",
+    "g3_latency": "GREEN (runtime p95 ~1.2s; note e2e latency-from-onset median 5.2s within 13.7s segments)",
+    "econ": "PASS (fovea 69% call cut)",
+    "g2_quality": "REVIEW"
+  }
+}

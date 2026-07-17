@@ -123,3 +123,13 @@ launch_profile:
 
 ## Bottom line (H0)
 G1 architecture **GO**, G3 latency **GREEN**, economics **PASS**. G2 quality **not cleared** even on the sweet-spot substrate with the gate fix — recall 0.67 shows the direction is right; precision (gate re-fires + Charades label sparsity) is the open work. The next single, pre-registerable gate move is a **time-refractory** (one fire per episode) to attack fp; per the stopping rule that's a founder decision, evaluated once on held-out data, never tuned-to-green.
+
+## G2 quality — REAL full-core fovea+sense run (N=20) — SUPERSEDES the single-frame workaround
+Ran the actual pre-registered `charades-e2e` path (fovea saccade sampling + `sense` temporal evidence + gate fix), unblocked by the with_retry timeout fix. 20/20 coverage, as-is:
+
+- **notification recall 0.30 · precision 0.47** (bar 0.90) · **fovea/edge recall 0.70** · calls 5521→1731 (**69% cut**).
+- **Verdict: REVIEW/NO-GO.** `launch_profile: UNDETERMINED`.
+
+**Correction to the record:** the earlier single-frame workaround (0.67/0.375) **OVERSTATED recall** — it judged *every* frame with no fovea. The real fovea **coasts and saccades** (69% fewer calls), which is Percept's actual economics — but it **drops low-motion action windows**: edge recall 0.70 means **30% of action windows never trigger a saccade** (low-motion persistent actions — holding, watching, standing — don't move enough to escalate), so they're never judged. Precision is *higher* on the real path (0.47 vs 0.375: fewer, better-timed fires).
+
+**The real recall bottleneck is UPSTREAM at the fovea, not the judge.** This is the G2 **recall-vs-cost trade-off** (P-ECON): the fovea's motion-gate threshold trades recall for a 69% call cut. Lowering `escalate_threshold`/`base_fps` would saccade more → recover low-motion recall → at higher cost. That's the real, pre-registerable lever — and it's an *economics/attention* tuning question, not a judge/prompt one.
