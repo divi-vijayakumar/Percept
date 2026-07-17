@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import re
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -26,10 +29,36 @@ from percept.config import load_settings
 from percept.edge.tier0 import MotionGate, compile_watchspec
 from percept.gate import FIRE
 from percept.runtime.source import open_source
+from percept.sprite import make_sprite
 
 from .types import TrackResult, bench_vision
 
 TRACK = "charades-e2e"
+
+# --- Ablation-ladder env flags (Addendum 4). Each rung is a pure config flip, no code edits. ---
+# PERCEPT_BENCH_MATCHED_PLAN=1 -> dynamic-verb goals are judged on a folded SPRITE (temporal context),
+#   stative goals stay single-frame. Matches the sense primitive to the action's temporality.
+MATCHED_PLAN = os.environ.get("PERCEPT_BENCH_MATCHED_PLAN") == "1"
+# PERCEPT_BENCH_MAX_GOALS=K -> keep at most K distinct-object goals per video (committed label-only rule).
+MAX_GOALS = int(os.environ.get("PERCEPT_BENCH_MAX_GOALS") or 0)
+_SPRITE_FRAMES = 4  # fold the last N judged frames into one montage for temporal context
+_STATIVE = {"holding", "wearing", "sitting", "lying", "standing", "watching", "looking", "reading"}
+_STOP = {"someone", "is", "are", "a", "an", "the", "some", "something", "somewhere", "of", "on",
+         "in", "from", "to", "with", "at", "person", "people"}
+
+
+def _is_dynamic(desc: str) -> bool:
+    """A goal is DYNAMIC (needs a temporal look) unless its leading verb is a stative/persistent one."""
+    words = desc.lower().replace("someone is ", "").strip().split()
+    return (words[0] if words else "") not in _STATIVE
+
+
+def _object_key(desc: str) -> str:
+    """The distinguishing OBJECT noun of a goal (skip the leading verb) — same-object goals collide here."""
+    toks = [w for w in re.findall(r"[a-z]+", desc.lower()) if w not in _STOP and len(w) > 2]
+    if len(toks) >= 2:
+        return toks[1]  # toks[0] is the gerund/verb; the object noun distinguishes the concern
+    return toks[0] if toks else desc.lower()
 ROOT = Path(__file__).resolve().parents[4]
 RAW = ROOT / "eval" / "bench-staging" / "charades" / "raw"
 VID_DIR = RAW / "Charades_v1_480"
@@ -75,6 +104,11 @@ class RecordingVision:
         self.calls = 0
         self.by_condition: dict[str, list[tuple[float, bool, float]]] = {}
         self.last_batch: list[dict[str, Any]] = []
+        # matched-plan state (PERCEPT_BENCH_MATCHED_PLAN): a rolling buffer of recent judge frames and a
+        # per-condition dynamic flag, so a dynamic-verb goal is judged on a folded sprite for temporal context.
+        self.frame_buf: deque = deque(maxlen=_SPRITE_FRAMES)
+        self.dynamic_by_condition: dict[str, bool] = {}
+        self.sprite_judgments = 0  # telemetry: how many judgments actually used a folded sprite
 
     async def detect(self, frame: Any, goals: list[ContractGoal]) -> list:
         return []
@@ -84,6 +118,13 @@ class RecordingVision:
 
     async def judge(self, condition: str, frame: Any, **kwargs: Any):
         self.calls += 1
+        # matched plan: for a dynamic-verb goal, fold the last N judged frames into one sprite so the judge
+        # sees motion, not a single still. Stative goals (and MATCHED_PLAN off) keep the single frame.
+        if MATCHED_PLAN and self.dynamic_by_condition.get(condition) and len(self.frame_buf) >= 2:
+            sprite = make_sprite(list(self.frame_buf))
+            if sprite is not None:
+                frame = sprite
+                self.sprite_judgments += 1
         verdict = await self.inner.judge(condition, frame, **kwargs)
         t = 0.0 if self.current_t is None else float(self.current_t)
         self.by_condition.setdefault(condition, []).append(
@@ -128,7 +169,7 @@ def _goals_for(row: dict[str, Any]) -> list[ActionGoal]:
     by_desc: dict[str, list[tuple[float, float]]] = {}
     for desc, start, end in row.get("actions", []):
         by_desc.setdefault(str(desc), []).append((float(start), float(end)))
-    return [
+    goals = [
         ActionGoal(
             goal_id=f"charades-{row['id']}-{idx}",
             condition=_condition(desc),
@@ -137,6 +178,24 @@ def _goals_for(row: dict[str, Any]) -> list[ActionGoal]:
         )
         for idx, (desc, segments) in enumerate(sorted(by_desc.items()))
     ]
+    if MAX_GOALS > 0:
+        goals = _select_goals(goals, MAX_GOALS)
+    return goals
+
+
+def _select_goals(goals: list[ActionGoal], k: int) -> list[ActionGoal]:
+    """Committed label-only D_op selection (Addendum 4): collapse same-object competitors, keep the k
+    longest-duration distinct concerns. Uses ONLY labels (never model output) so it cannot select for
+    accuracy. Deterministic: tie-break alphabetical by desc. Preserves the original goal_id/index."""
+    def total_dur(g: ActionGoal) -> float:
+        return sum(e - s for s, e in g.segments)
+    by_object: dict[str, ActionGoal] = {}
+    for g in goals:
+        key = _object_key(g.desc)
+        if key not in by_object or total_dur(g) > total_dur(by_object[key]):
+            by_object[key] = g
+    survivors = sorted(by_object.values(), key=lambda g: (-total_dur(g), g.desc))
+    return survivors[:k]
 
 
 def _inside_any(t: float, goals: list[ActionGoal], goal_id: str | None = None) -> bool:
@@ -261,6 +320,7 @@ async def _score_one(row: dict[str, Any]) -> VideoRun:
     core = Percept.create(vision=recorder, settings=settings, discover_plugins=False)
     for goal in goals:
         core.add_goal(Goal(id=goal.goal_id, condition=goal.condition, say=f"Charades action detected: {goal.desc}"))
+    recorder.dynamic_by_condition = {goal.condition: _is_dynamic(goal.desc) for goal in goals}
     spec = compile_watchspec(
         list(core.goals.active()),
         threshold=settings.edge.motion_gate,
@@ -271,6 +331,7 @@ async def _score_one(row: dict[str, Any]) -> VideoRun:
     try:
         async for t, gate_frame, judge_frame in open_source(str(run.path), fps=FPS):
             run.frames += 1
+            recorder.frame_buf.append(judge_frame)  # every frame -> temporal context for matched-plan sprites
             decision = gate.evaluate(gate_frame, ts=float(t))
             if not decision.escalate:
                 continue
