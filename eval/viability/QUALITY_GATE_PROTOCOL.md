@@ -43,3 +43,14 @@ recall/precision has **very wide confidence intervals** — one miss swings reca
 measurement **cannot be a rigorous gate on its own**; a real quality gate needs more labeled episodes
 (two-annotator, more scenes). If the honest conclusion is "insufficient labeled data to decide at 0.90,"
 **that is the finding** — the resolution is better labels, not tuning on n≈7.
+
+---
+
+## Addendum (2026-07-17) — benchmark substrate at N=10 (founder-directed, pre-registered before the run)
+
+The golden set's labels were found **invalid** (off-timescale rising edges, single-reviewer, n=6) — un-measurable, not merely below-bar. Founder direction: measure quality on the **properly-annotated benchmark** instead of hand-labeling. Fixed BEFORE the run, no track-shopping:
+
+- **Track (fixed):** `pt-action-e2e` = Perception Test action localization, E2E (repo benchmark harness `tools/percept_benchmark.py`). Chosen for principled reasons: clean temporal action annotations, license-clean (CC-BY-4.0), and it is already the repo's action-localization end-to-end track. **Not** selected by peeking at results.
+- **N = 10**, **live** judge = `gemini-3.1-flash-lite` (as wired).
+- **Metric (as-is):** the harness headline `e2e:notification_recall` / `e2e:notification_precision` (plus edge recall/precision, call-reduction, median latency), reported against the locked 0.90 bar.
+- **ONE run.** Coverage (rows observed vs failed/skipped) is reported honestly — a low-coverage run is a data-readiness finding, not a hidden denominator. Same stopping rule as above: PASS → GO; FAIL → REVIEW/NO-GO, founder decision, **no tuning-to-green**.
