@@ -174,3 +174,70 @@ Cells (all block_max·0.20, qwen3-vl-32b, N=20, one frozen run each, reported as
   W  D_stress : block_max, RFF=1, PLAN=window, MAXG=0   — vs R1 D_stress 0.59
 Watch BOTH recall and precision (precision ~0.40 is now the binding constraint). Episode/entity-memory is a
 separate, larger arm (process-QA running-answer) — deferred, noted as follow-up.
+
+### Addendum 7 (2026-07-18) — L3 precision track: time-refractory for RE-FIRES, pre-registered before results
+
+Rationale (JUDGE_LOSS_DEEPDIVE precision decomposition of 116 fires, local): in-window/correct 63%,
+out-of-segment 25% (judge over-detect + Charades sparse labels), **re-fire 12% (14/116)** — "no time-refractory
+— gate re-arms within one true episode." A spurious confident-false blip mid-episode re-arms the gate's edge
+(`percept.gate.Gate`'s armed/disarmed bit), so the very next confident-true tick fires again inside the SAME
+true segment — a duplicate notification, not a new detection.
+
+**The fix (landed, in this commit, BEFORE the run):** `Gate.refractory_s` — a time-based guard on top of the
+existing armed/disarmed bit. It suppresses a fire landing within `refractory_s` seconds of the SAME key's last
+REAL fire, even across a confident-false→confident-true blip in between. A genuine second episode (a real
+absence lasting longer than `refractory_s`, then a real return) still fires. This is a first-class **gate**
+feature, not a benchmark hack:
+- `percept/gate.py` — `Gate(..., refractory_s=...)` (gate-wide default) and `evaluate(..., refractory_s=...)`
+  (optional per-call override); persists across restarts via `snapshot`/`restore`; cleared by `rearm`/
+  `reset_goal`/`reset_entity` (a deliberate reset is a fresh episode boundary, not a suppression window).
+- `percept/config.py` — `GateSettings.refractory_s` (env `PERCEPT_GATE_REFRACTORY_S`, default `0.0` = off,
+  byte-for-byte the historical gate), wired into `Percept.create`'s `Gate(...)` construction in `percept/agent.py`.
+- This is exactly the `gate.refractory_s` knob named in `docs/percept-mvp-implementation-plan.md` §E2's
+  `WatchProfile` schema (`gate{require_false_first, refractory_s}`) — a WatchProfile can set it per
+  (environment, goal, state) context; nothing is hardcoded in firing logic.
+- Unit-tested: `packages/percept-vision/tests/test_gate_refractory.py` (11 cases — re-flicker suppression,
+  genuine-second-episode fire, off-by-default byte-for-byte, per-call override, `now`-required contract,
+  suppressed-fire edge consumption, `hold_s` composition, snapshot/restore round-trip, `rearm`/`reset_goal`
+  clearing). `python3 -m pytest tests/test_gate_refractory.py` — 11 passed.
+- No changes to `eval/bench/track_charades_e2e.py` or the harness: `_score_one` already calls
+  `load_settings()`, so `PERCEPT_GATE_REFRACTORY_S` flows through the same env-flag mechanism as `RFF`
+  (`PERCEPT_GATE_REQUIRE_FALSE_FIRST`) — a pure config flip, no code edit between rungs.
+
+**Base config (fixed BEFORE results):** the WG D_op cell from Addendum 6 — `block_max·0.20, RFF=0,
+PLAN=window, MAXG=3, qwen3-vl-32b, N=20` — the current best operating-point config (recall 0.898 / precision
+0.421, LADDER_LEDGER `20260718T011023Z`). Additive: ONE new knob, `PERCEPT_GATE_REFRACTORY_S`, everything else
+byte-identical to WG D_op.
+
+**Refractory window (committed, not tuned):** `refractory_s = 5.0`. Reasoning fixed before the run: the track
+samples at `FPS=1.0` (`track_charades_e2e.py`), so a "spurious confident-false blip" is realistically 1-2
+sampled frames wide (~1-2s); 5s comfortably bridges that while staying short relative to Charades segment
+lengths (typically tens of seconds), so it should not swallow a genuine second, distinct episode. One value,
+chosen on the sampling-rate/segment-duration structure of the track — not selected by peeking at results.
+
+**Cell (ONE frozen run, reported as-is):**
+  RF D_op : block_max, RFF=0, PLAN=window, MAXG=3, REFRACTORY_S=5.0
+
+Command (same runner pattern as `run_window_arm.sh`):
+```
+export OPENROUTER_API_KEY="$(grep '^OPENROUTER_API_KEY=' .env | cut -d= -f2-)"
+export PERCEPT_VISION_BACKEND=openrouter PERCEPT_VISION_MODEL="qwen/qwen3-vl-32b-instruct"
+export PERCEPT_BENCH_VIDEO_CONCURRENCY=8 PERCEPT_BENCH_BLOCKMAX_THRESHOLD=0.20
+export PERCEPT_SALIENCE_STAT=block_max PERCEPT_GATE_REQUIRE_FALSE_FIRST=0 \
+       PERCEPT_BENCH_MATCHED_PLAN=window PERCEPT_BENCH_MAX_GOALS=3 PERCEPT_GATE_REFRACTORY_S=5.0
+python3 tools/percept_benchmark.py run --live --n 20 --tracks charades-e2e --workers 1
+```
+
+**What is measured:** the harness headline `e2e:notification_recall` / `e2e:notification_precision` (plus
+`edge:candidate_recall`, `e2e:candidate_calls`), reported against WG D_op (recall 0.898 / precision 0.421) as
+the comparison baseline — precision lift (or lack thereof) is the finding, recall is watched for a refractory
+regression (a suppressed genuine second episode would cost recall).
+
+**Stopping rule (frozen, same discipline as the ladder):** ONE run, reported as-is — whatever the number,
+including a null or negative result. No re-running with a different `refractory_s` to chase a better number;
+no code changes between the pre-registration commit and the run. If the result motivates trying a different
+window, that is a NEW pre-registered addendum, not a silent re-run of this one.
+
+**Result:** recorded below once run. If OpenRouter credits/access are unavailable at commit time, this section
+stays a documented, ready-to-execute follow-up (the feature + unit tests land regardless; only the live
+number is pending).

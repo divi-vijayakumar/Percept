@@ -101,6 +101,12 @@ class GateSettings:
     # baseline before a key can fire, so a condition already true at start is not a fire. Opt-in; off is
     # byte-for-byte the historical rising-edge gate (fire on first true).
     require_false_first: bool = False  # PERCEPT_GATE_REQUIRE_FALSE_FIRST
+    # L3 (MVP plan E4, precision track): suppress a re-fire landing within this many seconds of the
+    # same key's last real fire, even across a spurious confident-false/confident-true blip mid-episode
+    # (the "RE-FIRES" false-positive source in the H0 precision forensic). A WatchProfile-settable knob
+    # (``gate.refractory_s`` in the MVP plan's WatchProfile schema); off by default (0/neg = byte-for-byte
+    # the historical gate, no refractory).
+    refractory_s: float = 0.0  # PERCEPT_GATE_REFRACTORY_S
 
 
 @dataclass(frozen=True)
@@ -208,6 +214,7 @@ def load_settings() -> Settings:
             max_keys=_env("PERCEPT_GATE_MAX_KEYS", 0, int),
             stale_ask=_env("PERCEPT_GATE_STALE_ASK", False, _as_bool),
             require_false_first=_env("PERCEPT_GATE_REQUIRE_FALSE_FIRST", False, _as_bool),
+            refractory_s=_env("PERCEPT_GATE_REFRACTORY_S", 0.0, float),
         ),
         entity=EntitySettings(
             iou_match=_env("PERCEPT_IOU_MATCH", 0.5, float),
