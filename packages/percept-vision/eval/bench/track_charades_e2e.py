@@ -30,6 +30,8 @@ from percept.edge.tier0 import MotionGate, compile_watchspec
 from percept.gate import FIRE
 from percept.runtime.source import open_source
 from percept.sprite import make_sprite
+from percept.episode_memory import EpisodeMemoryStore, judge_episode_memory
+from types import SimpleNamespace
 
 from .types import TrackResult, bench_vision
 
@@ -119,6 +121,11 @@ class RecordingVision:
         self.dynamic_by_condition: dict[str, bool] = {}
         self.sprite_judgments = 0  # telemetry: how many judgments actually used a folded sprite
         self.window_judgments = 0  # telemetry: how many judgments used an ordered frame window
+        # episode-memory state (PERCEPT_BENCH_MATCHED_PLAN=episode): per-goal running answer threaded across
+        # frames via J3's judge_episode_memory. Store is per-video (recorder is rebuilt per _score_one).
+        self.episode_store = EpisodeMemoryStore()
+        self.condition_to_goal_id: dict[str, str] = {}
+        self.episode_judgments = 0
 
     async def detect(self, frame: Any, goals: list[ContractGoal]) -> list:
         return []
@@ -131,16 +138,24 @@ class RecordingVision:
         # matched plan: give a dynamic-verb goal temporal context. `sprite` folds to one montage (regresses).
         # `window` sends the recent frames as SEPARATE time-ordered images (current last) — the model reads
         # time from image order, which benchmarks favor over a tile. Stative goals / off keep the single frame.
-        if MATCHED_PLAN and self.dynamic_by_condition.get(condition) and len(self.frame_buf) >= 2:
-            if _PLAN_MODE in ("1", "sprite"):
+        dynamic = MATCHED_PLAN and self.dynamic_by_condition.get(condition) and len(self.frame_buf) >= 2
+        if dynamic and _PLAN_MODE == "episode":
+            # thread a per-goal running answer across frames (J3). satisfied integrates accumulated
+            # evidence over time, not a single frame. Routes through the inner judge's process-QA seam.
+            gid = self.condition_to_goal_id.get(condition, condition)
+            goal = SimpleNamespace(id=gid, condition=condition, state={})
+            verdict = await judge_episode_memory(self.inner, goal, frame, store=self.episode_store)
+            self.episode_judgments += 1
+        else:
+            if dynamic and _PLAN_MODE in ("1", "sprite"):
                 sprite = make_sprite(list(self.frame_buf))
                 if sprite is not None:
                     frame = sprite
                     self.sprite_judgments += 1
-            elif _PLAN_MODE == "window":
+            elif dynamic and _PLAN_MODE == "window":
                 kwargs.setdefault("frames", list(self.frame_buf))  # oldest→newest; inner sends `frame` last
                 self.window_judgments += 1
-        verdict = await self.inner.judge(condition, frame, **kwargs)
+            verdict = await self.inner.judge(condition, frame, **kwargs)
         t = 0.0 if self.current_t is None else float(self.current_t)
         self.by_condition.setdefault(condition, []).append(
             (t, bool(verdict.satisfied), float(verdict.confidence))
@@ -336,6 +351,7 @@ async def _score_one(row: dict[str, Any]) -> VideoRun:
     for goal in goals:
         core.add_goal(Goal(id=goal.goal_id, condition=goal.condition, say=f"Charades action detected: {goal.desc}"))
     recorder.dynamic_by_condition = {goal.condition: _is_dynamic(goal.desc) for goal in goals}
+    recorder.condition_to_goal_id = {goal.condition: goal.goal_id for goal in goals}  # episode-memory store key
     spec = compile_watchspec(
         list(core.goals.active()),
         threshold=settings.edge.motion_gate,

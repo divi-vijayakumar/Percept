@@ -241,3 +241,15 @@ window, that is a NEW pre-registered addendum, not a silent re-run of this one.
 **Result:** recorded below once run. If OpenRouter credits/access are unavailable at commit time, this section
 stays a documented, ready-to-execute follow-up (the feature + unit tests land regardless; only the live
 number is pending).
+
+### Addendum 8 (2026-07-18) — episode/entity-memory arm (J3), pre-registered before results
+The window arm lifted the operating point to 0.73/0.45 (recall/precision) and the full stack to 0.90 recall.
+J3 shipped an episode-memory judge mode (per-goal running answer threaded across frames via the process-QA
+seam; `satisfied` integrates accumulated evidence, not a single frame). This arm measures its precision/recall
+impact — the founder-requested number. Wired into the benchmark as PLAN=episode (dynamic-verb goals routed
+through `judge_episode_memory` with a per-video `EpisodeMemoryStore`; validated: process-QA seam used, per-goal
+memory accumulates). Everything else identical to the window arm (block_max·0.20, qwen3-vl-32b, N=20, tolerance
+[onset,end+1.0s]). L3's time-refractory is NOT enabled here (isolate the memory lever). Cells, one frozen run each:
+  E  D_op : block_max, RFF=1, PLAN=episode, MAXG=3   — vs W D_op 0.73/0.45 and single 0.68/0.40
+  EG D_op : block_max, RFF=0, PLAN=episode, MAXG=3   — vs WG D_op 0.90/0.42 (window+gate-relax)
+Reported as-is (memory may help, hurt, or wash — the ablation discipline stands).
