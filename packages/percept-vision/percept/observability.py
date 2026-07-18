@@ -41,10 +41,17 @@ class TraceEvent:
 
     Counters answer *aggregate* questions ("are we firing?"); a trace answers the *specific* one:
     "why did THIS frame + goal fire / ask / stay silent?". ``trace_id`` correlates the steps of one
-    frame; ``stage`` is one of the emitted stages — ``source.frame``, ``judge.started``,
-    ``judge.finished``, ``gate.classified`` (from ``perceive_judged``) and ``incident.created`` (from
-    the runtime worker); ``data`` carries the decision inputs/outputs for that stage. Emitted only when
-    an ``on_trace`` callback is wired — default off, so the hot path is unchanged.
+    frame; ``stage`` is one of the emitted stages, in the order a firing frame produces them:
+    ``edge.decision`` (from the runtime worker's tier-0 :class:`~percept.edge.tier0.MotionGate` —
+    ``motion``/``structural``/``semantic``/``threshold``/``escalate``, emitted for EVERY frame so a
+    silent run because the edge never escalated is distinguishable from one that judged and stayed
+    quiet), ``source.frame``, ``judge.started``, ``judge.finished`` (``satisfied``/``confidence``),
+    ``gate.classified`` (from ``perceive_judged`` — ``truth``/``action``/``reason``, a human-readable
+    WHY such as ``"silent: already_fired_or_not_rising"``) and ``incident.created`` (from the runtime
+    worker). ``data`` carries the decision inputs/outputs for that stage. This is production telemetry
+    for the same edge/verdict/gate/reason shape H0's forensic bench trace used
+    (``eval/bench/track_charades_e2e.py``), now on the real runtime firing path. Emitted only when an
+    ``on_trace`` callback is wired — default off, so the hot path is unchanged.
     """
 
     trace_id: str
