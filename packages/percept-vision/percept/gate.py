@@ -10,10 +10,15 @@ value maps to exactly one action:
 | confident no                                | ``SILENT`` (re-arms the edge) |
 | low-confidence **or** stale                 | ``ASK``  (never a confident-wrong nag) |
 
-Rising-edge + refractory are implemented as a single armed/disarmed bit per key. A *key* is
+Rising-edge + the armed/disarmed re-fire guard are implemented as a single bit per key. A *key* is
 ``(goal_id, entity_or_episode_id)`` so a brand-new entity gets a fresh edge (a new cup fires even
 though the old cup already did), while the same entity never double-fires until it goes
 confident-false and re-arms.
+
+``refractory_s`` (L3, precision track) is a SEPARATE, time-based guard on top of that bit: it
+suppresses a fire landing within N seconds of the same key's last real fire, even when a spurious
+confident-false blip re-armed the edge in between (mid-episode judge jitter). Off by default
+(``None``/``0`` = byte-for-byte the historical gate); see :meth:`Gate.evaluate`.
 """
 
 from __future__ import annotations
@@ -80,14 +85,23 @@ class Gate:
         clock: Callable[[], float] | None = None,
         on_evict: Callable[[Hashable, str], None] | None = None,
         require_false_first: bool = False,
+        refractory_s: float | None = None,
     ) -> None:
         self.threshold = threshold
         self.fresh_min = fresh_min
         self.require_false_first = require_false_first  # gate-wide default for the baseline rule
+        # L3 precision track: gate-wide default time-refractory (WatchProfile ``gate.refractory_s``).
+        # ``None``/``0``/negative = off = byte-for-byte the historical gate (no per-call override needed).
+        self.refractory_s = refractory_s
         self._armed: dict[Hashable, bool] = {}  # key -> ready-to-fire
         # R-1 sustained-duration (dwell): key -> the time it first became continuously true. Only
         # populated when a goal sets ``hold_s``; empty otherwise, so the no-dwell path is byte-for-byte.
         self._dwell_since: dict[Hashable, float] = {}
+        # L3: key -> the ``now`` timestamp of that key's last REAL fire (only set when a fire is
+        # actually emitted, never on a refractory-suppressed one — the window is anchored to the last
+        # genuine notification, not re-triggered by the suppression itself). Empty unless refractory is
+        # used somewhere on this key, so the no-refractory path stays byte-for-byte.
+        self._last_fire: dict[Hashable, float] = {}
         # R-1/M0 growth bound (24/7). `_armed`/`_dwell_since` are fed by unbounded key sources (per-entity,
         # per-time-bucket, per-answer); on a 24/7 watch they grow without limit. Eviction is ON BY DEFAULT
         # (see `_DEFAULT_MAX_KEYS`/`_DEFAULT_KEY_TTL_S` above) — pass ``max_keys=None``/``key_ttl_s=None``
@@ -119,6 +133,7 @@ class Gate:
         self._dwell_since.pop(key, None)
         self._touched.pop(key, None)
         self._no_evict.discard(key)
+        self._last_fire.pop(key, None)
 
     def _evict(self, key: Hashable, reason: str) -> None:
         """Drop a key as a BOUND-DRIVEN eviction (TTL or max_keys) — as opposed to `_drop` used directly
@@ -159,6 +174,7 @@ class Gate:
         now: float | None = None,
         no_evict: bool = False,
         require_false_first: bool = False,
+        refractory_s: float | None = None,
     ) -> GateAction:
         """Return FIRE / ASK / SILENT for ``key``, updating edge state.
 
@@ -174,6 +190,17 @@ class Gate:
         ``require_false_first`` (opt-in, default off) enforces the v0.1 "already present at start ->
         SILENT" rule: a key whose FIRST observation is confidently-true does not fire — only a genuine
         false->true edge does. Off = byte-for-byte the historical rising-edge gate (fire on first true).
+
+        ``refractory_s`` (L3 precision track, opt-in) suppresses a fire that would otherwise land
+        within ``refractory_s`` seconds of THIS key's last real fire — even if a confident-false blip
+        re-armed the edge in between. Precision forensic finding: ~12% of false fires on the
+        charades-e2e track were RE-FIRES — the gate re-arming and firing again within one true episode
+        because the judge briefly flickered to "no" mid-episode. A time-refractory is the fix: a
+        genuine SECOND episode (a real absence, then a real return) still fires once refractory_s has
+        elapsed since the last fire; only fires closer together than that are suppressed. Falls back to
+        the gate-wide ``self.refractory_s`` (a WatchProfile ``gate.refractory_s`` knob) when not passed
+        per-call. Requires ``now``; ``None``/``0``/negative (the default either way) = byte-for-byte the
+        historical gate (no refractory).
         """
         # Eviction bookkeeping (only when a bound is set — bounded by default, see `_evicting`). Stamp the
         # key BEFORE sweeping so the key in play is the freshest and can never evict itself.
@@ -203,8 +230,20 @@ class Gate:
             return SILENT
         if not self._armed.get(key, True):  # new keys default to armed -> fresh edge
             return SILENT  # already true / already fired this episode
+        # L3: time-refractory, checked AFTER the edge/require-false-first logic (a fire must already be
+        # "due") and BEFORE it is actually emitted — so a suppressed fire still counts as this episode's
+        # fire (armed -> False) rather than leaving the edge live to fire again next tick.
+        effective_refractory = self.refractory_s if refractory_s is None else refractory_s
+        if effective_refractory is not None and effective_refractory > 0 and now is not None:
+            last_fire = self._last_fire.get(key)
+            if last_fire is not None and (now - last_fire) < effective_refractory:
+                self._armed[key] = False  # treat as already-fired; a later confident-false re-arms it
+                self._dwell_since.pop(key, None)
+                return SILENT
         if hold_s is None or hold_s <= 0 or now is None:
             self._armed[key] = False
+            if now is not None:
+                self._last_fire[key] = now
             return FIRE  # no dwell -> the rising-edge fire (byte-for-byte)
         # dwell: require the condition to have held continuously for hold_s before firing.
         t0 = self._dwell_since.get(key)
@@ -214,20 +253,25 @@ class Gate:
         if now - t0 >= hold_s:
             self._armed[key] = False
             self._dwell_since.pop(key, None)
+            self._last_fire[key] = now
             return FIRE
         return SILENT  # still accumulating dwell — true, but not long enough yet
 
     def rearm(self, key: Hashable) -> None:
-        """Force a key back to armed (e.g. after a correction clears the edge)."""
+        """Force a key back to armed (e.g. after a correction clears the edge). Also clears any L3
+        refractory memory — an explicit rearm is a fresh episode boundary, so a stale last-fire stamp
+        must not suppress the next legitimate fire."""
         self._armed[key] = True
         self._dwell_since.pop(key, None)
+        self._last_fire.pop(key, None)
 
     def reset_goal(self, goal_id: str) -> None:
         """Drop all edge state for a goal so its next evaluation starts fresh."""
         for key in [k for k in self._armed if isinstance(k, tuple) and k and k[0] == goal_id]:
             self._drop(key)
-        # `_drop` clears `_armed`/`_dwell_since`/`_touched`/`_no_evict` together; sweep any dwell/touched
-        # keys that never had an `_armed` entry too (e.g. an in-progress dwell), keeping the maps aligned.
+        # `_drop` clears `_armed`/`_dwell_since`/`_touched`/`_no_evict`/`_last_fire` together; sweep any
+        # dwell/touched keys that never had an `_armed` entry too (e.g. an in-progress dwell), keeping
+        # the maps aligned. (`_last_fire` is only ever set alongside `_armed`, so it needs no extra sweep.)
         for key in [k for k in self._dwell_since if isinstance(k, tuple) and k and k[0] == goal_id]:
             self._drop(key)
 
@@ -255,6 +299,9 @@ class Gate:
             # legacy snapshot lacking these keys is a no-op — see :meth:`restore`).
             "touched": [[list(k), float(t)] for k, t in self._touched.items()],
             "no_evict": [list(k) for k in self._no_evict],
+            # L3: last-real-fire stamps travel too, so a restarted 24/7 watch keeps its refractory memory
+            # (otherwise a restart mid-refractory-window would silently re-open it to fire early).
+            "last_fire": [[list(k), float(t)] for k, t in self._last_fire.items()],
         }
 
     def restore(self, snap: "dict | None") -> None:
@@ -271,6 +318,9 @@ class Gate:
         self._dwell_since = {}
         self._touched = {tuple(k): float(t) for k, t in snap.get("touched", [])}
         self._no_evict = {tuple(k) for k in snap.get("no_evict", [])}
+        # L3: restore last-fire stamps; missing key (legacy snapshot) -> empty, a no-op (no refractory
+        # memory to resume, byte-for-byte the pre-L3 restore).
+        self._last_fire = {tuple(k): float(t) for k, t in snap.get("last_fire", [])}
 
 
 __all__ = ["GateAction", "FIRE", "ASK", "SILENT", "classify", "Gate"]
