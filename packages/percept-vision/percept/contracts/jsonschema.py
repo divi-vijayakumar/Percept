@@ -44,6 +44,7 @@ from . import (
     TurnResult,
     Verdict,
     WatchCondition,
+    WatchEvent,
     WatchSpec,
 )
 
@@ -72,6 +73,7 @@ DTOS: tuple[type, ...] = (
     AudioFrame,
     IncidentSnippet,
     Incident,
+    WatchEvent,
 )
 
 _PRIMITIVE: dict[Any, dict] = {

@@ -21,6 +21,7 @@ from percept.contracts import (
     TrackingBehavior,
     Verdict,
     WatchCondition,
+    WatchEvent,
     WatchSpec,
     minute_of_day,
     negotiate,
@@ -220,6 +221,34 @@ class TestIncident(unittest.TestCase):
         self.assertEqual(inc.snippet.t_end, 4.0)
 
 
+class TestWatchEvent(unittest.TestCase):
+    """M1 — the event ``percept.watch()`` streams: defaults, all three actions, not frozen."""
+
+    def test_minimal_defaults(self):
+        ev = WatchEvent(goal_id="zone", action="fire", t=1.0)
+        self.assertEqual(ev.text, "")
+        self.assertIsNone(ev.entity_id)
+        self.assertIsNone(ev.verdict)
+
+    def test_carries_verdict_and_text(self):
+        v = Verdict(satisfied=True, confidence=0.9, evidence="in zone")
+        ev = WatchEvent(goal_id="zone", action="fire", t=2.0, text="Alert!", entity_id="e1", verdict=v)
+        self.assertIs(ev.verdict, v)
+        self.assertEqual(ev.entity_id, "e1")
+        self.assertEqual(ev.text, "Alert!")
+
+    def test_accepts_all_three_actions(self):
+        for action in ("fire", "ask", "silent"):
+            ev = WatchEvent(goal_id="g", action=action, t=0.0)
+            self.assertEqual(ev.action, action)
+
+    def test_not_frozen(self):
+        # mutable, like Verdict/Incident/FireEvent (the other firing-path DTOs) — not Box/Schedule.
+        ev = WatchEvent(goal_id="g", action="ask", t=0.0)
+        ev.text = "updated"
+        self.assertEqual(ev.text, "updated")
+
+
 class TestAudioFrame(unittest.TestCase):
     """B2 — the typed first-class audio signal: defaults, render-to-pair, duration, frozen."""
 
@@ -252,7 +281,7 @@ class TestAudioFrame(unittest.TestCase):
 
 class TestVersionNegotiation(unittest.TestCase):
     def test_contract_version_is_semver(self):
-        self.assertEqual(CONTRACT_VERSION, "1.2.0")
+        self.assertEqual(CONTRACT_VERSION, "1.3.0")
         parts = CONTRACT_VERSION.split(".")
         self.assertEqual(len(parts), 3)
         self.assertTrue(all(p.isdigit() for p in parts))
@@ -331,6 +360,19 @@ class TestJsonSchema(unittest.TestCase):
         self.assertEqual(s["properties"]["sample_format"], {"enum": ["s16le", "f32le", "u8"]})
         self.assertEqual(s["properties"]["sample_rate"], {"type": "integer"})
         self.assertNotIn("required", s)  # every field has a default
+
+    def test_watchevent_schema_refs_verdict_and_action_enum(self):
+        from percept.contracts import jsonschema as js
+
+        s = js.generate_all()["$defs"]["WatchEvent"]
+        self.assertEqual(s["properties"]["action"], {"enum": ["fire", "ask", "silent"]})
+        any_of = s["properties"]["verdict"]["anyOf"]
+        self.assertIn({"$ref": "#/$defs/Verdict"}, any_of)
+        self.assertIn({"type": "null"}, any_of)
+        self.assertIn("goal_id", s["required"])
+        self.assertIn("action", s["required"])
+        self.assertIn("t", s["required"])
+        self.assertNotIn("text", s["required"])
 
     def test_committed_schema_matches_generator(self):
         # the committed files under schema/ must be byte-identical to a fresh generation

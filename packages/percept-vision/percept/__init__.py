@@ -25,7 +25,7 @@ from .adapters import (
     WatchCondition,
     WatchSpec,
 )
-from percept.contracts import AudioFrame, CONTRACT_VERSION, Incident, IncidentSnippet
+from percept.contracts import AudioFrame, CONTRACT_VERSION, Incident, IncidentSnippet, WatchEvent
 from .cache import CacheCascade, CacheKey, CacheResult, FrameHashLayer
 from .config import Settings, load_settings
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
@@ -85,12 +85,17 @@ del _resolve_version, _pkg_version, _PkgNotFound
 
 # Imported after __version__ so agent.health() can read it lazily without a cycle.
 from .agent import FireEvent, Percept  # noqa: E402
+from .watch import WATCH_VERSION, watch  # noqa: E402
 
 __all__ = [
     "__version__",
     "Percept",
     "FireEvent",
     "registry",
+    # the public watch() entrypoint (M1 — the frozen seam every downstream card depends on)
+    "watch",
+    "WATCH_VERSION",
+    "WatchEvent",
     # DTOs
     "Box",
     "Observation",

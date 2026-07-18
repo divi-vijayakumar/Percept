@@ -28,7 +28,8 @@ from typing import Any, Literal, Protocol, runtime_checkable
 #: Bump the MAJOR on any breaking change to a frozen shape; MINOR for additive (new optional
 #: field / new DTO); PATCH for docs/non-wire tweaks. This is distinct from ``WatchSpec.version``
 #: (a wire integer kept for byte-for-byte payload compat).
-CONTRACT_VERSION = "1.2.0"  # 1.2: + Verdict.running_answer (process-QA, optional, gate-irrelevant, back-compat)
+CONTRACT_VERSION = "1.3.0"  # 1.3: + WatchAction/WatchEvent (M1 — the public watch() stream event)
+# 1.2: + Verdict.running_answer (process-QA, optional, gate-irrelevant, back-compat)
 # 1.1: + WatchCondition.cadence_s/gate_on + Incident.message (optional, back-compat)
 
 
@@ -492,6 +493,40 @@ class Incident:
 
 
 # ---------------------------------------------------------------------------
+# WatchEvent (M1) — the event the public ``watch()`` entrypoint streams.
+# ---------------------------------------------------------------------------
+
+WatchAction = Literal["fire", "ask", "silent"]
+"""The three-state gate's outward action. Mirrors ``percept.gate.GateAction`` value-for-value; kept as
+an independent ``Literal`` here (not imported) so the contracts package stays dependency-free of the
+cognition core, per this module's zero-dependency design."""
+
+
+@dataclass
+class WatchEvent:
+    """The stable, versioned event ``percept.watch()`` streams — the M1 frozen public contract.
+
+    One event per gate action taken on a goal this tick: ``"fire"`` (a rising-edge, user-facing
+    alert), ``"ask"`` (low-confidence or stale evidence — the gate refuses to guess), or
+    ``"silent"`` (no user-facing change). ``"silent"`` is part of the type for forward/observability
+    completeness; today's ``watch()`` wraps the existing internal gate wiring byte-for-byte, and that
+    wiring only ever surfaces FIRE/ASK to callers (a silent tick simply emits nothing) — see
+    ``percept.watch`` for the emission contract.
+
+    Deliberately named ``WatchEvent``, not ``Event``: ``percept.events.Event`` already names the
+    *temporal-perception* event (a pass, a rep, a discrete action over a frame window) — a distinct,
+    older concept this DTO does not replace or overlap with.
+    """
+
+    goal_id: str
+    action: WatchAction
+    t: float
+    text: str = ""
+    entity_id: str | None = None
+    verdict: Verdict | None = None
+
+
+# ---------------------------------------------------------------------------
 # Protocols (implement to swap a backend; resolved by name via the registry)
 # ---------------------------------------------------------------------------
 
@@ -636,6 +671,8 @@ __all__ = [
     "AudioFrame",
     "IncidentSnippet",
     "Incident",
+    "WatchAction",
+    "WatchEvent",
     # Protocols
     "Vision",
     "Specialist",

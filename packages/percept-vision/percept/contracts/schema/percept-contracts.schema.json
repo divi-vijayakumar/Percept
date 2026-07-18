@@ -3,7 +3,7 @@
   "$id": "https://percept.velvee.ai/contracts/percept-contracts.schema.json",
   "title": "percept-contracts",
   "description": "Vendor-neutral DTOs of the Percept frozen contract.",
-  "x-contract-version": "1.2.0",
+  "x-contract-version": "1.3.0",
   "$defs": {
     "Box": {
       "type": "object",
@@ -750,6 +750,54 @@
         "concern_id",
         "verdict",
         "ts"
+      ]
+    },
+    "WatchEvent": {
+      "type": "object",
+      "title": "WatchEvent",
+      "properties": {
+        "goal_id": {
+          "type": "string"
+        },
+        "action": {
+          "enum": [
+            "fire",
+            "ask",
+            "silent"
+          ]
+        },
+        "t": {
+          "type": "number"
+        },
+        "text": {
+          "type": "string"
+        },
+        "entity_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "verdict": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Verdict"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "description": "The stable, versioned event ``percept.watch()`` streams \u2014 the M1 frozen public contract.",
+      "required": [
+        "goal_id",
+        "action",
+        "t"
       ]
     }
   }
