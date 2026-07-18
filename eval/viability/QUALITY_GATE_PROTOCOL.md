@@ -159,3 +159,18 @@ Two config changes to the ladder, both pre-registered before results, both found
    ~0.13 vs mean ~0.01); 0.20 gives ~20% escalation, comparable to mean's ~17% operating point. Chosen on the
    motion-distribution side to isolate the LOCALIZING STATISTIC from the escalation-budget confound — NOT for
    accuracy. This makes the block_max recall gain attributable to localization per se, at bounded cost.
+
+### Addendum 6 (2026-07-18) — corrected temporal-plan arm: ordered window (not sprite), pre-registered
+Ladder result (8 cells): block_max is the win (recall 0.31→0.59 D_stress, 0.39→0.68 D_op; edge→0.99–1.00);
+the SPRITE plan REGRESSED at both densities (R2<R1). Best config so far = R1 D_op (block_max, single frame,
+≤3 goals): recall 0.68 / precision 0.40. Founder note (prior benchmarks): sprite montages have always been
+worse; ordered short windows + entity/episode memory are better — the montage can't be localized across tiles.
+Corrected arm swaps the montage for PLAN=window (dynamic-verb goals judged on the recent frames as SEPARATE
+time-ordered images via judge(frames=...), current frame last — a short clip, not a tile). Validated: the
+inner judge receives an ordered 4-frame window, stative goals stay single-frame, no sprite is built.
+Cells (all block_max·0.20, qwen3-vl-32b, N=20, one frozen run each, reported as-is):
+  W  D_op     : block_max, RFF=1, PLAN=window, MAXG=3   — vs R1 D_op 0.68 (does window beat single?)
+  WG D_op     : block_max, RFF=0, PLAN=window, MAXG=3   — corrected all-fixes launch candidate
+  W  D_stress : block_max, RFF=1, PLAN=window, MAXG=0   — vs R1 D_stress 0.59
+Watch BOTH recall and precision (precision ~0.40 is now the binding constraint). Episode/entity-memory is a
+separate, larger arm (process-QA running-answer) — deferred, noted as follow-up.

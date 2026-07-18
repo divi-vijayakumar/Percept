@@ -38,7 +38,11 @@ TRACK = "charades-e2e"
 # --- Ablation-ladder env flags (Addendum 4). Each rung is a pure config flip, no code edits. ---
 # PERCEPT_BENCH_MATCHED_PLAN=1 -> dynamic-verb goals are judged on a folded SPRITE (temporal context),
 #   stative goals stay single-frame. Matches the sense primitive to the action's temporality.
-MATCHED_PLAN = os.environ.get("PERCEPT_BENCH_MATCHED_PLAN") == "1"
+# PERCEPT_BENCH_MATCHED_PLAN mode for a dynamic-verb goal's temporal context:
+#   0|off  single frame · 1|sprite  fold to one montage (regresses — see JUDGE_LOSS)
+#   window ordered recent frames as SEPARATE time-ordered images (judge(frames=...)) · episode  running-answer memory
+_PLAN_MODE = (os.environ.get("PERCEPT_BENCH_MATCHED_PLAN") or "0").strip().lower()
+MATCHED_PLAN = _PLAN_MODE not in ("0", "off", "")
 # PERCEPT_BENCH_MAX_GOALS=K -> keep at most K distinct-object goals per video (committed label-only rule).
 MAX_GOALS = int(os.environ.get("PERCEPT_BENCH_MAX_GOALS") or 0)
 # PERCEPT_BENCH_BLOCKMAX_THRESHOLD=X -> block_max/p95 escalate cutoff (they live on a higher value scale than
@@ -114,6 +118,7 @@ class RecordingVision:
         self.frame_buf: deque = deque(maxlen=_SPRITE_FRAMES)
         self.dynamic_by_condition: dict[str, bool] = {}
         self.sprite_judgments = 0  # telemetry: how many judgments actually used a folded sprite
+        self.window_judgments = 0  # telemetry: how many judgments used an ordered frame window
 
     async def detect(self, frame: Any, goals: list[ContractGoal]) -> list:
         return []
@@ -123,13 +128,18 @@ class RecordingVision:
 
     async def judge(self, condition: str, frame: Any, **kwargs: Any):
         self.calls += 1
-        # matched plan: for a dynamic-verb goal, fold the last N judged frames into one sprite so the judge
-        # sees motion, not a single still. Stative goals (and MATCHED_PLAN off) keep the single frame.
+        # matched plan: give a dynamic-verb goal temporal context. `sprite` folds to one montage (regresses).
+        # `window` sends the recent frames as SEPARATE time-ordered images (current last) — the model reads
+        # time from image order, which benchmarks favor over a tile. Stative goals / off keep the single frame.
         if MATCHED_PLAN and self.dynamic_by_condition.get(condition) and len(self.frame_buf) >= 2:
-            sprite = make_sprite(list(self.frame_buf))
-            if sprite is not None:
-                frame = sprite
-                self.sprite_judgments += 1
+            if _PLAN_MODE in ("1", "sprite"):
+                sprite = make_sprite(list(self.frame_buf))
+                if sprite is not None:
+                    frame = sprite
+                    self.sprite_judgments += 1
+            elif _PLAN_MODE == "window":
+                kwargs.setdefault("frames", list(self.frame_buf))  # oldest→newest; inner sends `frame` last
+                self.window_judgments += 1
         verdict = await self.inner.judge(condition, frame, **kwargs)
         t = 0.0 if self.current_t is None else float(self.current_t)
         self.by_condition.setdefault(condition, []).append(
