@@ -14,11 +14,21 @@ your source ──▶ fovea (cheap motion/salience gate) ──▶ VLM judge ─
 
 ## 1. Install
 
+> ⚠️ **Not on PyPI yet.** The published `percept-vision==0.6.0` is an older research-preview and does **not**
+> include this runtime (`watch()`, the refractory, block_max defaults). Install from the repo:
+
 ```bash
-pip install 'percept-vision[runtime,openrouter]'
-#                         │        └ the judge (Qwen via OpenRouter — cheap, fast, hosted)
-#                         └ capture (OpenCV) for webcam / video / RTSP
+# clone, then editable-install the package with the runtime + judge extras
+git clone https://github.com/divi-vijayakumar/Percept.git
+cd Percept
+pip install -e 'packages/percept-vision[runtime,openrouter]'
+#                                │        └ the judge (Qwen via OpenRouter — cheap, fast, hosted)
+#                                └ capture (OpenCV) for webcam / video / RTSP
 ```
+
+<sub>Once the branch is pushed / a release is cut, a direct install will work:
+`pip install 'git+https://github.com/divi-vijayakumar/Percept.git@BRANCH#subdirectory=packages/percept-vision'`
+(or a fresh `pip install percept-vision` after the next PyPI release).</sub>
 
 A judge API key (pick one provider):
 
