@@ -2,10 +2,23 @@
 
 The open-source **cognition layer** for goal-driven, proactive vision agents.
 
-> **⚠️ Research preview — v0.6.0.** Published for real-life testing and feedback, **not** for
-> production. The cognition core (gate, entity graph, executor, events, scheduler, consent) runs and is
-> tested offline with fakes. APIs may change between `0.6.x` releases — pin a version. No benchmark
-> numbers are published yet (see [Benchmark status](#benchmark-status)). Issues and feedback welcome.
+> **⚠️ Research preview — v0.7.0.** Published for real-life testing and feedback, **not** for
+> production. The runtime (`watch`/`run` → notifications) and cognition core (gate, entity graph, executor,
+> events, scheduler, consent) run and are tested. APIs may change between `0.7.x` releases — pin a version.
+> No benchmark numbers are published yet (see [Benchmark status](#benchmark-status)). Issues and feedback welcome.
+
+## Watch something in 30 seconds (the live runtime)
+
+```bash
+pip install "percept-vision[runtime,openrouter]"     # capture (OpenCV) + a cheap, fast hosted judge (Qwen)
+export OPENROUTER_API_KEY=sk-or-...
+percept-watch --goal "someone raises their hand" --goal "a package is on the porch"
+#   --source webcam:0 | clip.mp4 | rtsp://…    --egomotion (glasses/body-cam)    --fps 1  --refractory 15
+```
+
+Point it at a webcam, a video, or an RTSP camera; give it goals in plain English; get a `🔔` once per event.
+Embedding it in your own app? → **[docs/integration.md](docs/integration.md)** (the `run()` API, the event
+shape, recipes). Moving camera (smart glasses)? add `--egomotion`.
 
 You state a goal in plain language — *"nudge me when I drink a coffee"*, *"tell me when the kettle
 boils"* — and percept turns a live audio-visual stream into an agent that **reasons over entities

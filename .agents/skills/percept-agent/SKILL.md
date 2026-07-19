@@ -17,20 +17,34 @@ verdicts into an agent that **fires once on the rising edge** and **refuses to g
 Use this skill when the user wants a "watch X / notify me when Y" perception agent. Scaffold from the
 template in this directory, then adapt.
 
+## 0. Fastest path — the `percept-watch` CLI (no code)
+
+```bash
+pip install "percept-vision[runtime,openrouter]"     # capture (OpenCV) + the Qwen judge
+export OPENROUTER_API_KEY=sk-or-...                   # cheap, fast, hosted
+percept-watch --goal "someone raises their hand" --goal "a package is on the porch"
+#   --source webcam:0 | clip.mp4 | rtsp://…   --egomotion (moving camera)   --fps 1  --refractory 15
+```
+Prints a `🔔` once per event. This is the whole demo — reach for the API below when embedding in an app.
+
 ## 1. Install
 
 ```bash
-pip install percept-vision        # core: PURE STDLIB, offline with the FAKE backend, no keys
+pip install "percept-vision[runtime,openrouter]"   # RECOMMENDED: capture + Qwen (cheap/fast). key: OPENROUTER_API_KEY
 ```
+Other judges (swap `vision=`): `pip install "percept-vision[gemini]"` (`GEMINI_API_KEY`) ·
+`"percept-vision[claude]"` (`ANTHROPIC_API_KEY`). Core install is pure-stdlib and runs offline on the FAKE
+backend (no keys) for tests. The package is `percept-vision`; the import is `import percept`. Python >= 3.10.
 
-For a real (perceiving) agent, add one extra + its key:
-
-```bash
-pip install "percept-vision[gemini]"   # then: export GEMINI_API_KEY=...   (or GOOGLE_API_KEY)
-pip install "percept-vision[claude]"   # then: export ANTHROPIC_API_KEY=...
-```
-
-The package is `percept-vision`; the import is `import percept`. Python >= 3.10.
+> **Winning defaults (H0-validated) — set these for a real watch:**
+> ```bash
+> export PERCEPT_SALIENCE_STAT=block_max     # localized motion — catches low-motion actions (holding, sitting)
+> export PERCEPT_GATE_REFRACTORY_S=15        # one notification per episode (suppress duplicate fires)
+> export PERCEPT_EGO_COMPENSATE=true         # MOVING camera only (glasses/body-cam): subtract head motion
+> ```
+> On a **fixed** camera use `block_max` + refractory. On **glasses/body-cam**, also set `ego_compensate`
+> (measured: without it a moving camera escalates ~98% of frames; with it, ~30%). Full guide:
+> `docs/integration.md`.
 
 ## 2. The real watch agent — `percept.run` owns the capture loop
 
