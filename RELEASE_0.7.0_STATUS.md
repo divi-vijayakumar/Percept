@@ -26,3 +26,18 @@ Explicitly OUT: the PRD Rev-B, wave-2 (M2/P2/L1), health/evidence/delivery, M3/J
 Working runtime (`watch`/`run` → notifications) + winning defaults (block_max, refractory, ego-motion via
 env/CLI) + the CLI + docs. NOT: wired WatchProfiles, window/episode in the live judge, health/evidence.
 A research-preview runtime for the hackathon.
+
+## 🔒 Production-readiness audit (done)
+- [x] **Secrets** — `.env` gitignored + never committed (0 commits); no real keys in tracked files (only `sk-or-...` placeholders in docs). Real-key regex: NONE.
+- [x] **Sdist leakage** — 276 files, clean: no `.env`, no datasets (Charades/Ego4D NOT in package), no `.mp4`, no keys. Top-level: LICENSE, README, percept, tests.
+- [x] **License** — Apache-2.0, present (root + package) + declared in pyproject.
+- [x] **Vuln scan (pip-audit)** — opencv-headless / numpy / openai: NO vulns. (6 findings are in `pip` itself = user tooling, not the package.)
+- [x] **Egress/SSRF** — webhook sinks block private/loopback + require https by DEFAULT (`UrlPolicy`); `.dev()` opt-in for local http. Frames go only to the chosen judge provider.
+- [x] **Safety framing** — `consent.py`; README "envelope" (assistant-class, not surveillance/safety); skill warns off surveillance demos.
+- [x] **SECURITY.md** — real private-disclosure policy (security@velvee.ai, 72h); bumped 0.6.x → 0.7.x.
+- [x] **CONTRIBUTING.md** present.
+
+### Honest remaining gaps (minor for a research-preview)
+- No CODE_OF_CONDUCT.md (nice-to-have).
+- No deep manual code-security review (RTSP/webcam URL handling; goal text → VLM prompt = low prompt-injection risk for a watch tool). SSRF on webhooks IS covered.
+- Docs are comprehensive but a final coherence pass would help.

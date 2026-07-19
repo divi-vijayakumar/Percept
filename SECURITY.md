@@ -7,7 +7,7 @@ acknowledge within 72 hours. Do not open a public issue for a vulnerability.
 
 ## Supported versions
 
-Research preview (0.6.x). Security fixes target the latest released version.
+Research preview (0.7.x). Security fixes target the latest released version.
 
 ## Security posture
 
