@@ -57,6 +57,9 @@ def _apply_good_defaults(refractory_s: float, vision: str, model: str | None) ->
     os.environ["PERCEPT_GATE_REFRACTORY_S"] = str(refractory_s)   # one notification per episode
     os.environ["PERCEPT_VISION_BACKEND"] = vision                 # force the chosen provider…
     os.environ["PERCEPT_VISION_MODEL"] = model or _DEFAULT_MODEL.get(vision, "")  # …and its model
+    # Quiet the "scripted backends" banner: it's about the (unused) voice/conductor seam — the vision
+    # judge here is REAL, and goals are code-armed, so the banner is just noise for this demo.
+    os.environ.setdefault("PERCEPT_NO_BANNER", "1")
 
 
 async def _run(args) -> int:

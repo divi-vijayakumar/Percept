@@ -29,8 +29,7 @@ default 15).
 
 ### Dependencies
 - **Judge:** an API key for your provider (`OPENROUTER_API_KEY`, or Gemini/Claude with `--vision`).
-- **Webcam / video:** the capture extra — `pip install 'percept-vision[cv]'` (OpenCV). A `.wav`/file path
-  needs nothing extra beyond that.
+- **Webcam / video / RTSP:** the capture extra — `pip install 'percept-vision[runtime]'` (OpenCV + numpy).
 
 ### At the hackathon
 - Test your webcam index first: if `webcam:0` is dark, try `webcam:1`.
