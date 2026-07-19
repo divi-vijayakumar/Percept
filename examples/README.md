@@ -37,3 +37,6 @@ default 15).
   **few, mutually-distinct** conditions — that's what keeps precision high (see
   `docs/how-to/authoring-goals-and-watch-plans.md`).
 - 1 fps is plenty for most watches and keeps cost/latency low; raise `--fps` only for fast events.
+
+---
+Full integration guide: [`docs/integration.md`](../docs/integration.md).
