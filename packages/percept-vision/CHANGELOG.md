@@ -24,7 +24,7 @@ notification once per event.
 
 ### Notes
 - Research preview. Not yet built: WatchProfile resolution wired into the runtime, window/episode judge
-  modes in the live path, the health/evidence/delivery surfaces. See `docs/percept-mvp-implementation-plan.md`.
+  modes in the live path, the health/evidence/delivery surfaces (see the project roadmap).
 - No published benchmark numbers; quality is workload-dependent (bring your own fixtures via the eval harness).
 
 ## 0.6.0 — OSS research preview

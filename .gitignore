@@ -169,3 +169,10 @@ eval/viability/PT_ACTION_N10_DIAGNOSTIC.md
 eval/viability/CHARADES_DEEPDIVE.md
 eval/viability/JUDGE_LOSS_DEEPDIVE.md
 eval/viability/LADDER_LEDGER.md
+
+# --- internal product-strategy / viability docs (never public) ---
+docs/percept-mvp-implementation-plan.md
+docs/percept-viability-implementation-plan.md
+eval/viability/
+RELEASE_0.7.0_STATUS.md
+packages/percept-vision/eval/LABELING_PIPELINE.md

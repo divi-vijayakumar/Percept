@@ -1,9 +1,0 @@
-{
-  "run_id": "20260717T102646Z",
-  "timestamp_utc": "2026-07-17T10:26:46.155893+00:00",
-  "phase": "B-episode",
-  "protocol_sha256": "63e2041519ae18a3fa2eea5bb56bb4a65353ea2ad71162c7b5774f4f429f9d69",
-  "config_sha256": "1fb7a4f81830b9257f2ff0687284f62004dae585428395a1d07e1bac0813e83f",
-  "model": "gemini-3.1-flash-lite",
-  "n_episodes": 6
-}

@@ -1,9 +1,0 @@
-{
-  "run_id": "20260717T100605Z",
-  "timestamp_utc": "2026-07-17T10:06:05.592889+00:00",
-  "phase": "B",
-  "git_sha": "e0eb3df57482b93fc78202b992a48c23ea829c31 (+ local Phase-A/B commits)",
-  "config_sha256": "1fb7a4f81830b9257f2ff0687284f62004dae585428395a1d07e1bac0813e83f",
-  "model": "gemini-3.1-flash-lite",
-  "substrate": "REAL gemini-3.1-flash-lite over real golden-clip frames"
-}
