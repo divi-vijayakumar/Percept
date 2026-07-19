@@ -1341,6 +1341,21 @@ async def run(
             # refractory already debounce the signal itself).
             audio_admit = audio["wake"]
             audio["wake"] = False
+            emit_trace = getattr(core, "_emit_trace", None)
+            if getattr(core, "on_trace", None) is not None and emit_trace is not None:
+                # The tier-0 edge decision (O1): same shape H0's forensic trace used (motion/structural/
+                # semantic/threshold/escalate) — emitted for EVERY frame, escalated or not, so "why didn't
+                # it fire" can be answered even when the gate never spent a cloud call. trace_id matches
+                # the one perceive_judged uses below (source+ts), so a dashboard can correlate the two.
+                await emit_trace(
+                    f"{gate_source}@{t}", t, "edge.decision",
+                    motion=round(float(decision.signal.motion), 4),
+                    structural=round(float(decision.signal.structural), 4),
+                    semantic=round(float(decision.signal.semantic), 4),
+                    threshold=round(float(decision.threshold), 4),
+                    escalate=bool(decision.escalate),
+                    coast_admit=coast_admit,
+                )
             if not (decision.escalate or coast_admit or audio_admit):
                 continue  # still / sub-cadence -> no cloud call, no incident
             if _funnel is not None:

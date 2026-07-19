@@ -57,6 +57,23 @@ def _escalated_perception(base, level: int):
     return spec
 
 
+def _trace_reason(truth: str, action: str) -> str:
+    """A human-readable WHY for the ``gate.classified`` trace stage — purely observational, derived
+    post-hoc from the already-computed ``truth`` (yes/no/unknown) + ``action`` (fire/ask/silent). Never
+    read by firing logic (invariant 1: one gate, one firing path); this only explains its output, the
+    same forensic shape H0's bench trace used (``eval/bench/track_charades_e2e.py::_silent_reason``)."""
+    if action == FIRE:
+        return "fire: rising_edge"
+    if action == "ask":
+        return "ask: low_confidence_or_stale"
+    # silent
+    if truth == "no":
+        return "silent: verdict_not_satisfied"
+    if truth == "yes":
+        return "silent: already_fired_or_not_rising"
+    return "silent: suppressed"
+
+
 def _try_make_sprite(frames):
     """Montage the context frames into ONE image (Build 6), or ``None`` if they aren't images (so the
     caller degrades to a plain strip — e.g. L1 mock frames)."""
@@ -1042,7 +1059,8 @@ class Percept:
                 else:
                     action = "silent"
                 await self._emit_trace(trace_id, now, "gate.classified", goal_id=goal.id,
-                                       truth=truth, action=action)
+                                       truth=truth, action=action,
+                                       reason=_trace_reason(truth, action))
         self._log_fires(events, now)
         if _stale():
             return events  # aborted mid-loop: skip auto-refinement (it authors goal changes)
