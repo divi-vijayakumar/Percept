@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://percept.velvee.ai/contracts/Incident.schema.json",
-  "x-contract-version": "1.1.0",
+  "x-contract-version": "1.2.0",
   "type": "object",
   "title": "Incident",
   "properties": {
@@ -974,6 +974,54 @@
         "goal_id",
         "ts",
         "good"
+      ]
+    },
+    "WatchEvent": {
+      "type": "object",
+      "title": "WatchEvent",
+      "properties": {
+        "goal_id": {
+          "type": "string"
+        },
+        "action": {
+          "enum": [
+            "fire",
+            "ask",
+            "silent"
+          ]
+        },
+        "t": {
+          "type": "number"
+        },
+        "text": {
+          "type": "string"
+        },
+        "entity_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "verdict": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Verdict"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "description": "The stable, versioned event ``percept.watch()`` streams \u2014 the M1 frozen public contract.",
+      "required": [
+        "goal_id",
+        "action",
+        "t"
       ]
     }
   }

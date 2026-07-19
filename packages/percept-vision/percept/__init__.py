@@ -33,6 +33,7 @@ from percept.contracts import (
     Incident,
     IncidentSnippet,
     LabelRecord,
+    WatchEvent,
 )
 from .labelstore import DispositionLog, LabelStore, verdict_ref
 from .cache import CacheCascade, CacheKey, CacheResult, FrameHashLayer
@@ -94,6 +95,7 @@ del _resolve_version, _pkg_version, _PkgNotFound
 
 # Imported after __version__ so agent.health() can read it lazily without a cycle.
 from .agent import FireEvent, Percept  # noqa: E402
+from .watch import WATCH_VERSION, watch  # noqa: E402
 
 # The runtime worker — the batteries-included "watch a source" front door. Surfaced at top level
 # (PR: Wave 0) so `percept.run` / `percept.RuntimeSession` are the FIRST thing a builder reaches,
@@ -112,6 +114,10 @@ __all__ = [
     "start",
     "RuntimeSession",
     "RuntimeStats",
+    # the public watch() entrypoint (M1 — the frozen seam every downstream card depends on)
+    "watch",
+    "WATCH_VERSION",
+    "WatchEvent",
     # DTOs
     "Box",
     "Observation",
