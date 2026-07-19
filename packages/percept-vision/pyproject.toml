@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "percept-vision"
-version = "0.6.0"
+version = "0.7.0"
 description = "Research preview — the open-source cognition layer for goal-driven, proactive vision agents."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -73,6 +73,7 @@ all = [
 dev = ["pytest>=8", "ruff>=0.6"]
 
 [project.scripts]
+percept-watch = "percept.watch_cli:main"
 percept-bench = "percept.bench:main"
 percept-schema = "percept.contracts.jsonschema:main"
 
