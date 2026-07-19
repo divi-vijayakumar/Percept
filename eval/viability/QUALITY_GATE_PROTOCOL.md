@@ -253,3 +253,15 @@ memory accumulates). Everything else identical to the window arm (block_max·0.2
   E  D_op : block_max, RFF=1, PLAN=episode, MAXG=3   — vs W D_op 0.73/0.45 and single 0.68/0.40
   EG D_op : block_max, RFF=0, PLAN=episode, MAXG=3   — vs WG D_op 0.90/0.42 (window+gate-relax)
 Reported as-is (memory may help, hurt, or wash — the ablation discipline stands).
+
+### Addendum 9 (2026-07-19) — WG D_op + time-refractory (the precision fix), pre-registered before results
+The precision forensic on WG D_op (0.90 recall / 0.42 precision) showed 71/73 false positives are RE-FIRES
+(52 in-window duplicates + 19 out-of-window; only 2 true out-of-segment, both correct-but-unlabeled). The gate
+fires ~2×/episode (max 6×). L3's time-refractory (`PERCEPT_GATE_REFRACTORY_S`, wired agent.py:400 ->
+Gate.refractory_s) suppresses same-goal re-fires within N s of a genuine notification. Predicted precision
+0.72 (in-window dedup) → 0.96 (full). RISK: a refractory started by a spurious EARLY fire could suppress the
+real in-window fire → recall drop; hence measure, don't assume. Cells (WG D_op base: block_max·0.20 + window +
+gate-relax + ≤3 goals, qwen3-vl-32b, N=20, one frozen run each), reported as-is:
+  WGR10 D_op : + PERCEPT_GATE_REFRACTORY_S=10  (moderate — allows a genuinely-new occurrence after 10s)
+  WGR30 D_op : + PERCEPT_GATE_REFRACTORY_S=30  (≈clip length — ~1 notification/goal, max precision, max recall risk)
+Goal: precision into the 0.7–0.9 band while recall stays ≈0.90 → the number that clears BOTH bars.
