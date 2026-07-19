@@ -64,7 +64,7 @@ def _apply_good_defaults(refractory_s: float, vision: str, model: str | None) ->
 
 async def _run(args) -> int:
     import logging
-    logging.getLogger("percept").setLevel(logging.ERROR)  # quiet info/warning logs for a clean demo
+    logging.disable(logging.WARNING)  # clean demo: gate out info/warning globally (only ERROR+ shows)
     import percept
     from percept import Goal
 
