@@ -51,10 +51,14 @@ def _load_dotenv() -> None:
 
 
 # --- the H0-winning defaults (set BEFORE importing percept so settings pick them up) ---
-def _apply_good_defaults(refractory_s: float, vision: str, model: str | None) -> None:
+def _apply_good_defaults(refractory_s: float, vision: str, model: str | None, egomotion: bool) -> None:
     os.environ["PERCEPT_SALIENCE_STAT"] = "block_max"        # localized recall (the eye)
     os.environ.setdefault("PERCEPT_BENCH_BLOCKMAX_THRESHOLD", "0.20")
     os.environ["PERCEPT_GATE_REFRACTORY_S"] = str(refractory_s)   # one notification per episode
+    # EGOMOTION (glasses / body-cam / any MOVING camera): subtract the global head/camera shift before
+    # measuring motion. Without this, a moving camera makes the whole frame "move" every tick and the gate
+    # escalates on ~every frame (measured 98% on real first-person footage; ego-comp drops it to ~30%).
+    os.environ["PERCEPT_EGO_COMPENSATE"] = "true" if egomotion else "false"
     os.environ["PERCEPT_VISION_BACKEND"] = vision                 # force the chosen provider…
     os.environ["PERCEPT_VISION_MODEL"] = model or _DEFAULT_MODEL.get(vision, "")  # …and its model
     # Quiet the "scripted backends" banner: it's about the (unused) voice/conductor seam — the vision
@@ -72,9 +76,11 @@ async def _run(args) -> int:
         Goal(id=f"g{i}", condition=c, say=(args.say[i] if i < len(args.say) else c.capitalize()))
         for i, c in enumerate(args.goal)
     ]
+    ego = os.environ.get("PERCEPT_EGO_COMPENSATE") == "true"
     print("─" * 68)
-    print(f"  PERCEPT · watching {args.source}")
-    print(f"  judge: {os.environ.get('PERCEPT_VISION_MODEL')}  ·  eye: block_max  ·  refractory: {args.refractory}s")
+    print(f"  PERCEPT · watching {args.source}" + ("   [EGOMOTION: head-motion compensated]" if ego else ""))
+    print(f"  judge: {os.environ.get('PERCEPT_VISION_MODEL')}  ·  eye: block_max"
+          f"{' + ego-comp' if ego else ''}  ·  refractory: {args.refractory}s")
     for g in goals:
         print(f"    • {g.condition}")
     print("─" * 68)
@@ -106,6 +112,8 @@ def main() -> int:
     p.add_argument("--model", default=None, help="override the judge model id (else a good per-provider default)")
     p.add_argument("--fps", type=float, default=1.0, help="frames per second to pull (default 1.0)")
     p.add_argument("--refractory", type=float, default=15.0, help="seconds to suppress repeat notifications (default 15)")
+    p.add_argument("--egomotion", action="store_true",
+                   help="MOVING camera (glasses / body-cam): subtract head motion so the gate doesn't escalate every frame")
     args = p.parse_args()
 
     if not args.goal:
@@ -113,7 +121,7 @@ def main() -> int:
         print("  (no --goal given; using demo goals)\n")
 
     _load_dotenv()
-    _apply_good_defaults(args.refractory, args.vision, args.model)
+    _apply_good_defaults(args.refractory, args.vision, args.model, args.egomotion)
 
     if args.vision == "openrouter" and not os.environ.get("OPENROUTER_API_KEY"):
         print("  ✗ set OPENROUTER_API_KEY (export OPENROUTER_API_KEY=sk-or-…) or pass --vision gemini/claude", file=sys.stderr)

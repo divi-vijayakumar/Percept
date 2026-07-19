@@ -152,6 +152,33 @@ At the call site: `fps` (1–2 default; raise for fast events), `vision` (provid
 
 ---
 
+## 6b. Moving cameras — glasses, body-cam, phone (egomotion) ⚠️
+
+If your camera **moves** (smart glasses, body-cam, handheld), a plain motion gate escalates on *every*
+frame — the whole scene shifts every time your head does. Measured on real first-person footage: `block_max`
+alone calls the VLM on **98%** of frames. The fix is **ego-motion compensation** — subtract the global
+camera shift before measuring motion:
+
+```bash
+export PERCEPT_EGO_COMPENSATE=true     # ← subtract head/camera motion
+export PERCEPT_SALIENCE_STAT=block_max
+```
+That drops escalation to **~30%** and object detection works (verified: containers/hands/people read
+correctly on head-mounted frames). The demo has a flag for it:
+
+```bash
+python examples/hackathon_watch.py --egomotion \
+    --goal "my keys are visible" --goal "a person is nearby"
+```
+
+**Honest limits on moving cameras:**
+- Ego-comp makes the *gate* economical, but detection is still frame-by-frame VLM — on very fast/blurry head
+  motion, frames can be too smeared to judge. Raising `--fps` helps catch a clean frame.
+- **Detecting** an object (keys visible) is solid. **Tracking a specific instance** across occlusion/glances
+  (that's *my* keys, still the same ones) is the entity layer — weaker, and not battle-tested on egomotion.
+- All of this was validated on the ProactiveQA EGO set, not tuned per your rig — treat the thresholds as a
+  starting point and adjust `--refractory` / `--fps` on your own footage.
+
 ## 7. Write good goals (this is what makes it accurate)
 
 - **Specific & falsifiable:** `"someone is holding a red mug"` ✓ — not `"something is happening"` ✗.
