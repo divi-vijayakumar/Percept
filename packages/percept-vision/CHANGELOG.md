@@ -50,6 +50,33 @@
     `speaker_attributed_claim` and `document_identity_change` are UNSUPPORTED — those relations do
     not exist in the contract yet, so eval reports them rather than scoring a richer interaction
     with the wrong yardstick. An unknown shape is unsupported, never optimistically supported.
+- **Portable trace bundle + deterministic cognition replay (card D8b).** A media *reference* is not
+  self-contained, so `percept.trace_bundle` ships two explicit, self-describing modes: `local`
+  (manifest + `events.jsonl` + `summary.json` + media **references**, uri + sha256 — the media stays
+  on the client's machine) and `portable` (the same plus selected media **bytes**, packed as a
+  `run-123.ptrace` directory or a single `run-123.ptrace.zip` a client attaches to a ticket).
+  **Media inclusion is opt-in and defaults OFF** — the first client workload is accounting screens,
+  and a default-on bundle is an exfiltration vector, not a convenience; evidence offered to a
+  local-mode bundle is dropped and the omission is *counted* into the bundle manifest rather than
+  being silent. Every file is content-hashed (`sha256` per file plus a `payload_sha256` over the
+  ordered file list), every bundle carries a retention stamp (`retention_days`, default 30 d, and an
+  `expires_wall_ts`), and `TraceBundle.verify_path()` catches a truncated or edited attachment
+  instead of replaying half a run. `export_bug_report(recorder, path)` is the one-call client path.
+- **`percept.replay` — COGNITION REPLAY, defined honestly (card D8b, ADR-004 §2).** Recorded
+  normalized verdicts + timestamps are re-fed through the `Gate` and the incident rule, offline, with
+  no model call and no wall clock: same trace in → **byte-identical** decisions out, asserted as a
+  content-hash `digest` in `tests/test_cognition_replay.py`. MEDIA REEVALUATION (recorded media sent
+  to a live model again) is *not* deterministic — sampling, model drift, provider changes — and is
+  explicitly out of scope here; it belongs to `percept eval`. Nothing in this module or in a bundle
+  manifest claims a trace "replays the run" on the strength of a media URI. What a trace cannot know
+  (hard-quadrant escalation, `fire_when`, `suppress_false`) is declared per goal via
+  `ReplayGoalConfig`, and any disagreement with the recorded run surfaces as a reported
+  `Divergence`, never as a smoothed-over match. The gate's knobs are replayed from the new additive
+  `RunTraceManifest.gate_config` (`gate_config_of(core.gate)`); when a trace lacks them the report
+  says `gate_config_recorded=False` instead of pretending today's defaults were the run's.
+  `gate.classified` trace records additionally carry the gate's INPUTS
+  (`satisfied`/`confidence`/`freshness`/`entity_id`/`hold_s`) — additive trace data, no behaviour
+  branches on it.
 - **Effective run configuration is RECORDED, never silently substituted (card D5b/c).**
   `percept.runtime.run()` now retains what it was ASKED for alongside what it actually opened with:
   `stats.effective_config` (an `EffectiveConfig` of `EffectiveFps` + `EffectiveTimebase`), the same

@@ -981,7 +981,7 @@
           ]
         }
       },
-      "description": "A single ground-truth label on a fired verdict \u2014 the OSS flywheel's keystone (L-1, \u00a74.1).",
+      "description": "A single ground-truth label on a fired verdict.",
       "required": [
         "incident_id",
         "verdict_ref",
