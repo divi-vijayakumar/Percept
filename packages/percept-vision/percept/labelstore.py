@@ -1,6 +1,7 @@
-"""LabelStore + DispositionLog — the local, keyless flywheel rail (L-1, §4.2/§4.3).
+"""LabelStore + DispositionLog — the local, keyless feedback rail.
 
-The OSS side accumulates the raw material of the moat from day one, entirely on-box:
+Both stores are on-box and opt-in. They let a deployment accumulate its own ground truth about what
+the gate did and whether it was right, without any account or network call:
 
 * :class:`LabelStore` — append-only JSONL of :class:`~percept.contracts.LabelRecord` at
   ``~/.percept/labels/{deployment_id}.jsonl``. Keyless, local, always; the file just grows. Written by
@@ -8,9 +9,8 @@ The OSS side accumulates the raw material of the moat from day one, entirely on-
   The stored row includes the local-only ``frame_ref`` — that is the whole point, the store is local.
 * :class:`DispositionLog` — append-only JSONL of every gate ``FIRE``/``ASK`` at
   ``~/.percept/dispositions/{deployment_id}.jsonl`` as ``{incident_id, verdict_ref, disposition, ts}``.
-  This is the *escalation meter's* raw feed — distinct from ``Verdict.usage`` (the *compute* meter) —
-  so the paid side can price escalations "from data, not a guess." Opt-in; when not wired the runtime
-  is byte-for-byte.
+  This is the *escalation* record — how often the system chose to interrupt someone — as distinct from
+  ``Verdict.usage``, which meters *compute*. Opt-in; when not wired the runtime is byte-for-byte.
 
 Mirrors the shape/spirit of :mod:`percept.persistence`: dumb, local, stdlib-only (``hashlib`` / ``json``
 / ``os`` / ``pathlib``). **No network code** — these sit on the keyless path.
@@ -37,7 +37,7 @@ def default_root() -> Path:
 
 def verdict_ref(verdict: Any) -> str:
     """A deterministic short join-key for a Verdict — the key tying a label/disposition back to the fire
-    (and, on the paid side, to the compute meter). A content hash of the verdict's decisive fields, so
+    it describes (and to that fire's usage record). A content hash of the verdict's decisive fields, so
     the same verdict always maps to the same ref. Duck-typed: any object with
     ``satisfied``/``confidence``/``evidence`` works (and a missing attr degrades to empty, never raises).
     """
@@ -104,10 +104,9 @@ class LabelStore:
 class DispositionLog:
     """Append-only JSONL of gate dispositions at ``~/.percept/dispositions/{deployment_id}.jsonl``.
 
-    One ``{incident_id, verdict_ref, disposition, ts}`` row per gate ``FIRE``/``ASK`` — the escalation
-    meter's raw feed (distinct from ``Verdict.usage``, the compute meter). Recording it from day one is
-    what lets the paid side price escalations from data. Opt-in: when the runtime is not given a
-    disposition log, nothing is written and the path is byte-for-byte.
+    One ``{incident_id, verdict_ref, disposition, ts}`` row per gate ``FIRE``/``ASK`` — a record of how
+    often the system chose to interrupt (distinct from ``Verdict.usage``, which meters compute). Opt-in:
+    when the runtime is not given a disposition log, nothing is written and the path is byte-for-byte.
     """
 
     def __init__(self, deployment_id: str = "default", *, root: str | Path | None = None) -> None:

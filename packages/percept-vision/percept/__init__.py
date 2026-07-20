@@ -207,7 +207,7 @@ __all__ = [
     "Incident",
     "IncidentSnippet",
     "AttentionIntent",
-    # flywheel rail (L-1) — local label + disposition stores
+    # feedback rail — local label + disposition stores
     "LabelRecord",
     "LabelStore",
     "DispositionLog",

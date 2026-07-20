@@ -916,9 +916,9 @@ class Incident:
     label: str | None = None  # e.g. "real" / "false_alarm" / None (unlabelled)
     snippet: IncidentSnippet | None = None
     message: str = ""  # the human-facing alert line this fire emitted (the goal's `say`)
-    # L-1 (§4.3): a reserved link a webhook consumer follows to label this fire. Filled by the paid
-    # side (which serves the label endpoint); ``None`` on the keyless path. Reserved now so the wire
-    # shape is stable when paid wires it — OSS never populates it.
+    # A reserved link a webhook consumer follows to label this fire. Populated only by a deployment
+    # that serves its own label endpoint; ``None`` on the keyless path. Reserved so the wire shape is
+    # stable for consumers that do wire one up.
     label_url: str | None = None
     # 1.3 (D4): the correlation handle of the gated subject. Appended LAST so every existing
     # positional construction of Incident(...) keeps its meaning.
@@ -955,7 +955,7 @@ class Incident:
         *,
         source: Literal["api", "voice", "ask_answer", "watch_calibration"] = "api",
     ) -> "LabelRecord":
-        """Record a ground-truth label on THIS fire — the flywheel intake (L-1, §4.3).
+        """Record a ground-truth label on THIS fire — the feedback intake.
 
         Builds a :class:`LabelRecord` (``source="api"`` by default — a human via the SDK) and appends it
         to the local label store bound by the producer (``percept.run(label_store=...)``). Named
@@ -1031,21 +1031,20 @@ class AttentionIntent:
 
 
 # ---------------------------------------------------------------------------
-# LabelRecord (L-1) — the flywheel's raw material: one ground-truth label on a fire.
+# LabelRecord — one ground-truth label on a fire.
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class LabelRecord:
-    """A single ground-truth label on a fired verdict — the OSS flywheel's keystone (L-1, §4.1).
+    """A single ground-truth label on a fired verdict.
 
-    **One schema, three producers** (BUILD-BOTH rule 1 — do not fork it): manual
-    :meth:`Incident.record_label` (``source="api"``), ASK answers (``source="ask_answer"``, L-2), and
-    watch-calibration reviews (``source="watch_calibration"``, paid W-3). Designed once here so paid
-    never re-derives it.
+    **One schema, three producers** (do not fork it): manual :meth:`Incident.record_label`
+    (``source="api"``), ASK answers (``source="ask_answer"``), and watch-calibration reviews
+    (``source="watch_calibration"``).
 
     **The egress invariant (media-free head / local-only tail).** The record splits in two: every field
-    ABOVE ``frame_ref`` is the *metadata head* and MAY cross the key line; ``frame_ref`` is a LOCAL
+    ABOVE ``frame_ref`` is the *metadata head* and MAY leave the machine; ``frame_ref`` is a LOCAL
     filesystem path (the pixels' whereabouts) that must NEVER egress. :meth:`to_egress` is built from an
     explicit :attr:`EGRESS_FIELDS` whitelist that structurally excludes ``frame_ref`` — so the no-pixels
     rule is a *type-level fact*, not a runtime filter you can forget to apply. The full record (incl.
@@ -1054,10 +1053,10 @@ class LabelRecord:
     """
 
     incident_id: str
-    verdict_ref: str  # hash/id of the Verdict that fired — the join key to metering (see labelstore.verdict_ref)
+    verdict_ref: str  # hash/id of the Verdict that fired — the join key to usage (see labelstore.verdict_ref)
     goal_id: str
     ts: float
-    good: bool  # was this fire correct? (False -> billing credit on the paid side)
+    good: bool  # was this fire correct? (False = a false alarm the user had to dismiss)
     note: str | None = None
     tags: list[str] = field(default_factory=list)
     frame_ref: str | None = None  # LOCAL filesystem path ONLY; the local-only tail — NEVER egressed
@@ -1081,7 +1080,7 @@ class LabelRecord:
     )
 
     def to_egress(self) -> dict[str, Any]:
-        """The metadata-head dict that MAY cross the key line — structurally cannot contain ``frame_ref``.
+        """The metadata-head dict that MAY leave the machine — structurally cannot contain ``frame_ref``.
 
         Built from the :attr:`EGRESS_FIELDS` whitelist (which omits ``frame_ref``), so there is no code
         path — no ``**asdict``, no field iteration — by which the local media pointer leaks to egress."""
@@ -1090,7 +1089,7 @@ class LabelRecord:
     def to_local_dict(self) -> dict[str, Any]:
         """The FULL record — including the local-only ``frame_ref`` — for the on-box
         :class:`~percept.labelstore.LabelStore`. NEVER hand this to a network sink; use
-        :meth:`to_egress` for anything that crosses the key line."""
+        :meth:`to_egress` for anything that leaves the machine."""
         return {
             "incident_id": self.incident_id,
             "verdict_ref": self.verdict_ref,

@@ -273,7 +273,7 @@ class RuntimeSession:
             return None
         return self._goal_entry(g)
 
-    # -- flywheel intake: out-of-band triage of a past fire (L-1, §4.3) ----
+    # -- feedback intake: out-of-band triage of a past fire ----
     def label(self, incident_id: str, good: bool, note: str | None = None,
               tags: tuple[str, ...] | list[str] = (), *,
               source: str = "api") -> Any:

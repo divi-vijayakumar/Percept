@@ -976,7 +976,7 @@ async def run(
 
     - ``label_store`` — optional :class:`~percept.labelstore.LabelStore` (L-1). When set, every yielded
       incident is bound to it, so ``incident.record_label(good, ...)`` writes a LOCAL
-      :class:`~percept.contracts.LabelRecord` (the flywheel intake). Default ``None`` → ``record_label``
+      :class:`~percept.contracts.LabelRecord` (the feedback intake). Default ``None`` → ``record_label``
       raises (nothing bound); the firing path is byte-for-byte either way.
     - ``disposition_log`` — optional :class:`~percept.labelstore.DispositionLog` (§4.3). When set, every
       gate ``FIRE``/``ASK`` appends a ``{incident_id, verdict_ref, disposition, ts}`` row (the escalation

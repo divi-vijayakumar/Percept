@@ -1,4 +1,4 @@
-"""``FrameHashLayer`` — the perception cache (cost/latency only, not the moat; spec §6.2).
+"""``FrameHashLayer`` — the perception cache (a cost/latency optimisation only).
 
 A ``CacheLayer`` that skips the VLM when a goal's ROI hasn't visibly changed. Per-goal it
 stores an **ROI-cropped dHash** of the last-perceived frame plus the verdict it produced. On

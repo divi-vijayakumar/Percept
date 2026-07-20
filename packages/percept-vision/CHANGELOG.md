@@ -24,6 +24,32 @@
   per-block score list is computed once (`_block_scores`) and `mean` / `block_max` / `p95` are pure
   selectors over it, each bit-identical to `motion_score(..., stat=…)` (test-enforced). This is what
   makes doctor's counterfactual table cheap and what guarantees it agrees with the live gate.
+- **`percept eval` — paired differential A/B on client fixtures (card D3).** New
+  `percept.eval.differential` (+ the `percept-eval` console script) answers the question a client
+  with a new model actually has — *does my OCR detector actually help?* — as a PAIRED comparison,
+  not two independent runs printed side by side:
+  `percept-eval --baseline baseline-plan.yaml --candidate ocr-plan.yaml --fixtures ./fixtures --bars bars.yaml`.
+  The report carries both **plan hashes** (`PlanIdentity.from_goals`, the same content hash the
+  runtime stamps on a trace manifest), adapter/model versions, per-fixture results, per-fixture
+  **paired deltas**, a **percentile-bootstrap confidence interval** on each delta (seeded from the
+  registration hash, so two runs give the same interval), **cost deltas**, the **exact held-out
+  split**, and the threshold/policy values selected before the run. Matching is NOT reimplemented —
+  every recall/precision number comes from `percept.harness.golden_eval.score` (the Viability §5a
+  one-to-one greedy matcher) and every cost/funnel number from card D8a's
+  `percept.tracing.TraceSummary`, so eval cannot disagree with `doctor` or the visualizer.
+  - **Bars are client-supplied.** With no `--bars`, eval reports the numbers and returns
+    `NOT_ASSESSED`; it never invents a pass/fail threshold on a client's behalf.
+  - **No tune-to-green.** Bars, split and thresholds are pre-registered into a
+    `registration_hash` covering both plan hashes, both arms' components/thresholds, the split and
+    the bars; `--expect-registration-hash` makes a configuration that moved after the bars were
+    declared raise `ConfigDriftError` and score nothing. Bars are also refused (not silently
+    applied) when the held-out split is undeclared.
+  - **Scope is scored honestly (ADR-006).** Every fixture declares a `goal_shape` and gets one of
+    `SUPPORTED` / `PARTIALLY_SUPPORTED` / `UNSUPPORTED_FOR_THIS_GOAL_SHAPE`. `point`/`episode` are
+    supported; `recurrence` is partial; `supersession`, `correction`, `settled_interval`,
+    `speaker_attributed_claim` and `document_identity_change` are UNSUPPORTED — those relations do
+    not exist in the contract yet, so eval reports them rather than scoring a richer interaction
+    with the wrong yardstick. An unknown shape is unsupported, never optimistically supported.
 - **Effective run configuration is RECORDED, never silently substituted (card D5b/c).**
   `percept.runtime.run()` now retains what it was ASKED for alongside what it actually opened with:
   `stats.effective_config` (an `EffectiveConfig` of `EffectiveFps` + `EffectiveTimebase`), the same
