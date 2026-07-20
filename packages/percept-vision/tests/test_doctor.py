@@ -213,8 +213,10 @@ def test_plan_panel_answers_what_was_compiled():
     assert report.plan.goal_ids == ("g0", "g1")
     assert report.plan.plan_hash and len(report.plan.plan_hash) == 64
     assert len(report.plan.conditions) == 2
-    assert report.plan.source_profile is None            # D7 has not landed…
-    assert "card D7" in report.plan.source_profile_note  # …and doctor says so explicitly
+    # Card D7 landed: doctor names the SOURCE profile, and says whether it was chosen or defaulted.
+    assert report.plan.source_profile == "physical_scene"
+    assert report.plan.source_profile_origin == "default"
+    assert report.plan.source_profile_detail["admission_tuned"] is True
 
 
 def test_admission_signal_availability_is_reported():

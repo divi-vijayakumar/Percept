@@ -3,6 +3,52 @@
 ## Unreleased
 
 ### Added
+- **`SourceProfile` — an OPEN registry of source classes, and the client-tunes-it admission loop
+  (card D7, ADR-005).** `percept.sourceprofile` adds the axis `WatchProfile` cannot express:
+  `WatchProfile`'s `environment` is a camera mount (`fixed_camera` / `handheld` / `wearable`), so
+  "this stream is a screen recording" was unsayable. A `SourceProfile` names the source class and
+  selects **admission strategy, sampling, evidence packaging, identity strategy, episode
+  segmentation and default timebase — and nothing else**. It is a name-keyed registry, never a closed
+  enum: a third party ships `industrial_line` / `medical_imaging` / `satellite_change` /
+  `code_editor` / `financial_dashboard` with `register_source_profile(...)` or the
+  `percept.source_profiles` entry-point group, without editing a percept literal (and
+  `percept-doctor --source-profile` takes open text for the same reason).
+  **A source profile cannot change gate semantics.** `FIRE`/`ASK`/`SILENT`, the rising edge,
+  refractory and dwell mean the same thing on every source — one `Gate`, one incident truth. Enforced
+  structurally: the dataclass has no gate field, `FORBIDDEN_FIELDS` are rejected inside `parameters`,
+  and the tests assert both.
+  Three profiles ship. `physical_scene` (the default, and the ONE class the stock tier-0 eye is
+  calibrated on); `screen_document`; and `conversation`, which ships `stability="experimental"` in a
+  typed field — speaker identity is off-contract (no diarization behind `speaker_label`) and goals
+  judge serially at ~24 s/turn measured.
+  **`screen_document` declares its admission signal UNTUNED, on purpose.** Measured with
+  `percept-doctor` on the real client fixture `probes/01-screen-walkthrough/data/clean.mp4` (36 s,
+  180 frames, 1920x1080, containing a hard cut between two documents): `mean` max 0.0163 / thr 0.100,
+  `block_max` max 0.0919 / thr 0.200, `p95` max 0.0743 / thr 0.150 — **zero admits on every
+  statistic**. `block_max` amplifies the localized signal 5.6x as designed and still lands under HALF
+  its own cutoff, because the tier-0 gate frame is 48x36 greyscale over an 8x6 grid: the eye is
+  under-resolved for screen content, not mis-selected. **No threshold was lowered** (that would wreck
+  physical-scene precision). Instead the profile fails safe: a fixed, non-optional low-rate coast
+  (2.0 s — a floor, not a tuned value; `coast_sense_prior()` arms it on the existing
+  `_capture_plan`/`SamplingController` seam), `media` timebase, evidence = full screenshot +
+  changed-region crop + optional previous screenshot, episode = page interval, and identity =
+  **content key, never geometry** (IoU+label cannot separate INV-2291 from INV-2294).
+- **`percept-doctor` now reports the active source profile** (`--source-profile`, defaulting to
+  `physical_scene` and labelling the choice `explicit`/`default`), with two new findings:
+  `ADMISSION_SIGNAL_UNTUNED` ("this profile is running on coast alone, supply a change signal") and
+  `SOURCE_PROFILE_EXPERIMENTAL`. Both are **warns** — an untuned admission signal never invents an
+  exit code. The `--json` report carries the full profile under `plan.source_profile.profile`.
+- **`docs/how-to/tune-admission.md` — the tuning loop as a deliverable.** A worked, runnable guide
+  from "nothing fires" to a tuned eye: how to read a doctor report correctly (using the `clean.mp4`
+  numbers above, including why the answer is NOT to lower the threshold), how to name your source
+  class, how to turn on the coast, how to register your own phash/OCR model as an **admission**
+  detector (it runs at native fps on the full-resolution judge frame with no cloud judge call), and
+  how to A/B it with `percept eval` on YOUR fixtures against YOUR bars. Stated plainly there and in
+  ADR-005: percept's stock eye does not admit on this class of content, percept ships no OCR model
+  and no calibrated screen threshold, and **the client supplies and tunes the admission signal**.
+- **`docs/adr/ADR-005-source-profiles.md`** — the decision, the measurement, the gate-invariance
+  argument, and an explicit constraint on card L1: the `WatchProfile` ontology is camera-shaped and
+  L1 must not be built on it.
 - **`percept-doctor` — a plan-aware tier-0 dry run that spends ZERO judge calls (card D1).** A new
   console entry point (alongside `percept-watch` / `percept-bench` / `percept-schema`) that answers,
   without an API key and at no cost: did the source open, did frames arrive, what timebase was
