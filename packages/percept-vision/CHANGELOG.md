@@ -3,6 +3,42 @@
 ## Unreleased
 
 ### Added
+- **The native visualizer — WHERE a decision died, not just that nothing happened (card D9).**
+  `percept.visualize` renders a **standalone, single-file HTML page** over the artifacts that
+  already exist: `percept.tracing` (`RunTraceManifest` / `TraceRecord` / `TraceSummary`), the
+  portable `.ptrace` bundle, and `percept.harness.golden_eval.score` for the drift lane. **Nothing
+  is recomputed**: the metrics panel *is* `TraceSummary`, the same object `percept doctor` and
+  `percept eval` print, so the three surfaces cannot disagree about the funnel; the §5a greedy
+  matcher is called, never reimplemented.
+  Lanes are **pipeline stages on one shared media-time (`source_ts`) axis** — source/media, health,
+  admission (admitted vs dropped, with the motion trace and the threshold rule that decided each
+  frame), judge calls (bar width = wall latency; tokens and cost in the detail), gate decisions
+  (`FIRE`/`ASK`/`SILENT` with the O2 reason code), incidents, ground-truth drift when supplied, a
+  context lane, and cost. **An empty lane is drawn, not omitted** — the gap IS the diagnosis.
+  Click a gate decision (or use ← / → / Home / End) for the **decision chain**: tier-0 → sense →
+  VLM (model, latency, tokens, cost, evidence, confidence) → gate, each with the **per-stat
+  counterfactual** — what `mean` / `block_max` / `p95` would each have decided **against its own
+  threshold**. On the real client screen fixture every statistic sat under half its own cutoff, and
+  the panel says so in one line ("never close — peak is 20% of its own cutoff"): that is what turns
+  "nothing fired" into "here is the knob". `percept-doctor` now stamps `stat_thresholds` and
+  `salience_stat` into the trace manifest so the counterfactual is READ, never invented; a trace
+  without them says "threshold not recorded" instead of guessing.
+  **Security posture, non-negotiable — a trace is untrusted input.** Verdict evidence is
+  provider-generated and a model can emit markup, so every trace-derived string is escaped, and
+  **no trace text ever reaches JavaScript**: each panel is pre-rendered server-side and the single
+  inline script is a fixed, data-free constant pinned in the CSP by `sha256`. **Media embedding is
+  opt-in and OFF by default** (the first client workload is accounting screens — "standalone" must
+  not mean "silently bundle the customer's video"); a source URI is printed as text and never
+  placed in an attribute, so nothing is auto-fetched. `default-src 'none'`, no external script,
+  style, font or asset, size limits on every axis, and the page opens from `file://` with **zero
+  network requests** (asserted in the tests).
+  Rich relations stay **deferred to ADR-006**: episode supersession, document semantic identity,
+  speaker attribution and finding settlement are deliberately not drawn — the context lane carries
+  only what the trace actually has (`entity_id` correlation from card D4, goal-revision drops).
+  Shipped as flags on the existing entry point, not a new console-script family:
+  `percept-doctor --visualize-out page.html`, `--visualize-from run.ptrace` (render an existing
+  trace or bundle, opening no source), `--visualize-media` (the explicit media opt-in) and
+  `--golden gt.json`.
 - **`SourceProfile` — an OPEN registry of source classes, and the client-tunes-it admission loop
   (card D7, ADR-005).** `percept.sourceprofile` adds the axis `WatchProfile` cannot express:
   `WatchProfile`'s `environment` is a camera mount (`fixed_camera` / `handheld` / `wearable`), so

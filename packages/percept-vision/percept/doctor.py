@@ -318,6 +318,8 @@ class DoctorReport:
     judge_calls: int = 0
     trace_path: str | None = None
     manifest: RunTraceManifest | None = None
+    #: Card D9 — where the standalone HTML visualizer was written, if one was asked for.
+    visualize_path: str | None = None
 
     @property
     def admitted(self) -> int:
@@ -338,6 +340,7 @@ class DoctorReport:
             "funnel": self.summary.to_dict(),
             "findings": [f.to_dict() for f in self.findings],
             "trace_path": self.trace_path,
+            "visualize_path": self.visualize_path,
         }
 
     def to_json(self, *, indent: int | None = 2) -> str:
@@ -555,6 +558,9 @@ def run_doctor(
     source_profile: Any = None,
     settings: Settings | None = None,
     trace_out: str | None = None,
+    visualize_out: str | None = None,
+    visualize_media: bool = False,
+    golden: Any = None,
 ) -> DoctorReport:
     """Run the tier-0 dry run and build the :class:`DoctorReport`. Spends no judge call, ever.
 
@@ -717,6 +723,11 @@ def run_doctor(
         ),
         policy=TracePolicy.diagnostic(),
         baseline=BaselineAssumption.every_observation(len(captured)),
+        # Card D9: the per-frame salience values below are meaningless without the cutoffs they
+        # were judged against, and a visualizer must never invent a threshold. Carrying them in the
+        # manifest makes the trace self-describing, so the counterfactual panel ("what would
+        # mean/block_max/p95 each have decided against ITS OWN threshold") is READ, not recomputed.
+        labels={"stat_thresholds": dict(thresholds), "salience_stat": cfg.edge.salience_stat},
     )
     recorder = TraceRecorder(manifest)
     for i, (t, _f) in enumerate(captured):
@@ -730,6 +741,25 @@ def run_doctor(
     recorder.close()
     summary = recorder.summary()
     trace_path = str(recorder.write_json(trace_out)) if trace_out else None
+
+    # Card D9: the visualizer renders THIS recorder's manifest/records/summary — the same objects
+    # this report prints — so the HTML and the terminal panel can never disagree.
+    viz_path: str | None = None
+    if visualize_out:
+        import pathlib as _pathlib  # noqa: PLC0415
+
+        from .visualize import VizOptions, render_html  # noqa: PLC0415
+
+        page = render_html(
+            manifest, list(recorder.records), summary,
+            options=VizOptions(include_media=bool(visualize_media),
+                               title=f"percept doctor — {source or 'stream'}"),
+            golden=golden,
+        )
+        out = _pathlib.Path(visualize_out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(page, encoding="utf-8")
+        viz_path = str(out)
 
     # -- 5. findings + exit code -----------------------------------------
     total_admitted = summary.admitted
@@ -832,7 +862,7 @@ def run_doctor(
     return DoctorReport(
         source=src, plan=plan, goals=tuple(goal_diags), summary=summary,
         findings=tuple(findings), exit_code=exit_code, judge_calls=0,
-        trace_path=trace_path, manifest=manifest,
+        trace_path=trace_path, manifest=manifest, visualize_path=viz_path,
     )
 
 
@@ -967,6 +997,8 @@ def render_report(report: DoctorReport) -> str:
             out.append(f"      {line}")
     if report.trace_path:
         out.append(f"  trace artifact written: {report.trace_path}")
+    if report.visualize_path:
+        out.append(f"  visualizer written:     {report.visualize_path}")
     out.append(f"  judge calls spent: {report.judge_calls}   exit code: {report.exit_code}")
     out.append(_rule())
     return "\n".join(out)
@@ -998,7 +1030,9 @@ def build_parser() -> argparse.ArgumentParser:
             "suppressed the rest. Pure CV — no API key, no judge call, no cost."
         ),
     )
-    p.add_argument("--source", required=True, help="a video path / rtsp:// URL / webcam:0")
+    # NOT required=True: --visualize-from renders an ALREADY-CAPTURED trace/bundle and opens no
+    # source at all. main() enforces "exactly one of --source / --visualize-from".
+    p.add_argument("--source", default=None, help="a video path / rtsp:// URL / webcam:0")
     p.add_argument("--goal", action="append", default=[], help="a plain-language condition (repeatable)")
     p.add_argument("--fps", type=float, default=2.0, help="capture rate to pull (default 2.0)")
     p.add_argument("--max-frames", type=int, default=None, help="stop after N frames (default: all)")
@@ -1016,6 +1050,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--trace-out", default=None, help="write the D8a trace artifact (JSON) here")
     p.add_argument("--json", action="store_true", help="emit the machine-readable report on stdout")
+    # -- card D9: the native visualizer (no second console-script family; these are flags here) --
+    p.add_argument(
+        "--visualize-out", default=None,
+        help="write the standalone HTML visualizer here (lanes over media time, click-through "
+             "decision chains, per-stat counterfactual). Opens from file:// with no network.",
+    )
+    p.add_argument(
+        "--visualize-from", default=None,
+        help="render an EXISTING trace JSON or .ptrace bundle instead of capturing a source "
+             "(requires --visualize-out; opens no camera and spends nothing)",
+    )
+    p.add_argument(
+        "--visualize-media", action="store_true",
+        help="OPT IN to embedding media bytes in the HTML. Default OFF — the page never carries "
+             "pixels and never fetches a source URI unless you ask for it.",
+    )
+    p.add_argument(
+        "--golden", default=None,
+        help="ground-truth episodes (JSON) for the drift lane; scored by the deterministic "
+             "percept.harness.golden_eval matcher",
+    )
     return p
 
 
@@ -1023,6 +1078,35 @@ def main(argv: Sequence[str] | None = None) -> int:
     """``percept-doctor`` entry point. Exit codes: 0 ok, 2 zero coverage, 3 source failure,
     4 plan unobservable, 5 invalid configuration."""
     args = build_parser().parse_args(list(argv) if argv is not None else None)
+
+    # -- card D9: render-only mode. No source is opened, no goal is compiled, nothing is spent. --
+    if args.visualize_from:
+        from .visualize import VisualizeError, VizOptions, visualize_trace  # noqa: PLC0415
+
+        if not args.visualize_out:
+            print("percept-doctor: --visualize-from requires --visualize-out", file=sys.stderr)
+            return EXIT_INVALID_CONFIG
+        if args.source:
+            print("percept-doctor: give either --source or --visualize-from, not both",
+                  file=sys.stderr)
+            return EXIT_INVALID_CONFIG
+        try:
+            written = visualize_trace(
+                args.visualize_from, args.visualize_out,
+                options=VizOptions(include_media=bool(args.visualize_media),
+                                   title=f"percept trace — {args.visualize_from}"),
+                golden=args.golden,
+            )
+        except VisualizeError as exc:
+            print(f"percept-doctor: {exc}", file=sys.stderr)
+            return EXIT_INVALID_CONFIG
+        print(f"visualizer written: {written}")
+        return EXIT_OK
+
+    if not args.source:
+        print("percept-doctor: --source is required (or --visualize-from to render an existing "
+              "trace)", file=sys.stderr)
+        return EXIT_INVALID_CONFIG
     if not args.goal:
         print("percept-doctor: at least one --goal is required (doctor is plan-aware)", file=sys.stderr)
         return EXIT_INVALID_CONFIG
@@ -1038,6 +1122,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             start_state=args.start_state,
             source_profile=args.source_profile,
             trace_out=args.trace_out,
+            visualize_out=args.visualize_out,
+            visualize_media=args.visualize_media,
+            golden=args.golden,
         )
     except DoctorConfigError as exc:
         print(f"percept-doctor: invalid configuration: {exc}", file=sys.stderr)
