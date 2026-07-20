@@ -109,8 +109,8 @@ These refusals are a feature. **Do not lead with surveillance demos.**
   (server-only fields like `schedule`/`cadence` are enforced in the cognition layer, not on-device).
 
 > **Versioning.** Package version `percept-vision 0.6.0` (research preview). The **wire-contract**
-> version is separate — `CONTRACT_VERSION = "1.2.0"` (additive-only). A `0.6.0` install exporting
-> contract `1.2.0` is expected, not a bug.
+> version is separate — `CONTRACT_VERSION = "1.3.0"` (additive-only). A `0.6.0` install exporting
+> contract `1.3.0` is expected, not a bug.
 
 ## Benchmark status
 

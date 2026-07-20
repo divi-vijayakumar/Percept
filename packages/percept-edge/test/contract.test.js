@@ -313,8 +313,8 @@ describe("topology-B wire messages — EdgeCapabilities + BoundaryReport", () =>
 });
 
 describe("CONTRACT_VERSION", () => {
-  it("is the 1.0.0 semver twin of the Python contract version", () => {
-    expect(CONTRACT_VERSION).toBe("1.0.0");
+  it("is the semver twin of the Python contract version (1.3.0: + Incident.entity_id)", () => {
+    expect(CONTRACT_VERSION).toBe("1.3.0");
   });
 });
 
@@ -333,6 +333,7 @@ describe("Incident / IncidentSnippet", () => {
       ts: 123.0,
       label: null,
       snippet: null,
+      entity_id: null,
     });
   });
 
@@ -362,7 +363,31 @@ describe("Incident / IncidentSnippet", () => {
       ts: 5.0,
       label: null,
       snippet: null,
+      entity_id: null, // absent on a pre-1.3 payload -> null, never a parse failure
     });
+  });
+
+  it("carries entity_id through build + round-trip (D4: identity survives the wire)", () => {
+    const inc = makeIncident({
+      id: "inc-3",
+      concern_id: "c-cup-empty",
+      verdict: { satisfied: true, confidence: 0.8 },
+      ts: 42.0,
+      entity_id: "cup2",
+    });
+    expect(inc.entity_id).toBe("cup2");
+    expect(parseIncident(JSON.stringify(inc))).toEqual(inc);
+    // two subjects on the SAME concern stay distinguishable downstream
+    const other = makeIncident({ ...inc, id: "inc-4", entity_id: "cup7" });
+    expect(other.entity_id).toBe("cup7");
+    expect(inc.entity_id).toBe("cup2");
+    // parses the exact JSON the Python side emits with entity_id populated
+    expect(
+      parseIncident(
+        '{"id":"i","concern_id":"c","verdict":{"satisfied":true,"confidence":0.9,"evidence":""},' +
+          '"ts":5.0,"label":null,"snippet":null,"entity_id":"person-7"}'
+      ).entity_id
+    ).toBe("person-7");
   });
 
   it("snippet tolerates omitted payload fields -> null (redacted record shape)", () => {
@@ -382,6 +407,12 @@ describe("Incident / IncidentSnippet", () => {
     expect(() => makeIncident({ id: 1, concern_id: "c", verdict: { satisfied: true, confidence: 1 }, ts: 0 })).toThrow(ContractError);
     expect(() => makeIncident({ id: "i", concern_id: "c", verdict: { confidence: 1 }, ts: 0 })).toThrow(ContractError); // no satisfied
     expect(() => makeIncidentSnippet({ kind: "nope" })).toThrow(ContractError);
+    expect(() =>
+      makeIncident({ id: "i", concern_id: "c", verdict: { satisfied: true, confidence: 1 }, ts: 0, entity_id: 7 })
+    ).toThrow(ContractError); // entity_id must be a string or null
+    expect(() =>
+      parseIncident('{"id":"i","concern_id":"c","verdict":{"satisfied":true,"confidence":0.5},"ts":1,"entity_id":7}')
+    ).toThrow(ContractError);
     expect(() => parseIncident('{"id":"i","concern_id":"c","verdict":{"satisfied":true,"confidence":0.5},"ts":"x"}')).toThrow(ContractError);
   });
 });

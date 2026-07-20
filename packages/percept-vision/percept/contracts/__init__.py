@@ -30,7 +30,9 @@ from typing import Any, Awaitable, Callable, ClassVar, Hashable, Literal, Protoc
 #: Bump the MAJOR on any breaking change to a frozen shape; MINOR for additive (new optional
 #: field / new DTO); PATCH for docs/non-wire tweaks. This is distinct from ``WatchSpec.version``
 #: (a wire integer kept for byte-for-byte payload compat).
-CONTRACT_VERSION = "1.2.0"  # 1.2: + WatchAction/WatchEvent (M1 — the public watch() stream event; additive).
+CONTRACT_VERSION = "1.3.0"  # 1.3: + Incident.entity_id (D4 — correlation identity survives the emission
+# boundary; optional, defaults None, additive).
+# 1.2: + WatchAction/WatchEvent (M1 — the public watch() stream event; additive).
 # 1.1: + AttentionIntent DTO + GoalOrigin enum + Goal.origin (all additive, defaulted, back-compat —
 # the effective-attention membrane + durable goal provenance, PCPT-026).
 # 1.0.0: initial public wire contract (research-preview launch). Consolidates the pre-release surface
@@ -897,6 +899,14 @@ class Incident:
     ``label`` is ``None`` until a human (or downstream auto-labeller) classifies the fire; the
     suggested vocabulary is ``"real"`` / ``"false_alarm"`` but the field is a free ``str`` so
     callers can use their own scheme without a contract bump.
+
+    ``entity_id`` (1.3, D4) is the GENERIC correlation handle of the subject this fire was gated on
+    — the same ``entity_id`` that already keys the rising-edge gate (``(goal_id, entity_id)``) and
+    rides on ``FireEvent``/``WatchEvent``. Without it two independent subjects tripping the same
+    concern are indistinguishable downstream, which reads as spurious out-of-order/duplicate
+    divergence. It is a correlation key ONLY: it carries no claim about *who* or *which document*
+    the subject is (richer subject/incident relations are ADR-006). ``None`` when the fire was not
+    entity-scoped (single-subject streams, boundary fires) — which is the back-compatible default.
     """
 
     id: str
@@ -910,6 +920,9 @@ class Incident:
     # side (which serves the label endpoint); ``None`` on the keyless path. Reserved now so the wire
     # shape is stable when paid wires it — OSS never populates it.
     label_url: str | None = None
+    # 1.3 (D4): the correlation handle of the gated subject. Appended LAST so every existing
+    # positional construction of Incident(...) keeps its meaning.
+    entity_id: str | None = None
 
     def bind_labeler(
         self,

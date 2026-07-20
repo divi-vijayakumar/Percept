@@ -10,7 +10,7 @@ This page is the contract. The *executable* version of this page is
 
 | artefact | version | what it versions |
 |---|---|---|
-| `percept.contracts.CONTRACT_VERSION` | `1.2.0` | the DTO wire shapes (`Verdict`, `Observation`, `Box`, …) |
+| `percept.contracts.CONTRACT_VERSION` | `1.3.0` | the DTO wire shapes (`Verdict`, `Observation`, `Box`, …) |
 | `percept.watch.WATCH_VERSION` | `1.0.0` | the `watch()` entrypoint signature + streaming semantics |
 | `percept.conformance.CONFORMANCE_VERSION` | `1.0.0` | the set of conformance checks and their severities |
 

@@ -93,6 +93,7 @@ Goal(id="unique_id", condition="a plain-English thing to watch for", say="the me
 | `incident.verdict.evidence` | one line of *why* (great for UI / debugging) |
 | `incident.ts` | timestamp (monotonic seconds) |
 | `incident.id` | stable event id (use it to dedupe on your side if you fan out) |
+| `incident.entity_id` | which SUBJECT fired (the gate key's entity), or `None` if the fire was not entity-scoped — use it to tell two subjects on the same goal apart instead of reading their interleaved fires as out-of-order |
 
 ---
 

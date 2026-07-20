@@ -26,7 +26,10 @@
  * `percept.contracts.CONTRACT_VERSION`. Same major == wire-compatible. This is DISTINCT from
  * `WatchSpec.version` (the wire integer, defaults to 1) which stays for payload compat.
  */
-export const CONTRACT_VERSION = "1.0.0"; // initial public wire contract; JS twin of Python 1.0.0 (launch)
+export const CONTRACT_VERSION = "1.3.0"; // JS twin of Python 1.3.0 — + Incident.entity_id (D4, additive).
+// This constant names the PYTHON contract version these shapes are a twin of. The JS side implements a
+// SUBSET of the Python DTOs (the shapes defined below); the version tracks the wire contract, not the
+// coverage. 1.0.0: initial public wire contract (launch).
 
 /** Error thrown when an incoming wire payload violates the contract. */
 export class ContractError extends Error {
@@ -473,7 +476,7 @@ export function parseBoundaryReport(json) {
 
 // ---------------------------------------------------------------------------
 // Incident  { id, concern_id, verdict: { satisfied, confidence, evidence },
-//             ts, label: string|null, snippet: IncidentSnippet|null }
+//             ts, label: string|null, snippet: IncidentSnippet|null, entity_id: string|null }
 // IncidentSnippet  { kind: "frame"|"clip"|"audio", media: string|null (base64),
 //                    mime: string|null, frames: array|null, t_start: number|null, t_end: number|null }
 //
@@ -481,6 +484,12 @@ export function parseBoundaryReport(json) {
 // one concern firing, carrying an optional captured relevant snippet (e.g. a baby-monitor "baby awake"
 // fires an Incident whose snippet is a short clip). `media` is Python `bytes` -> a base64 string on the
 // wire (or null); `verdict` is the firing Verdict { satisfied, confidence, evidence }.
+//
+// `entity_id` (contract 1.3, D4) is the GENERIC correlation handle of the gated subject — the same id
+// that keys the rising-edge gate `(goal_id, entity_id)` on the Python side. It lets a consumer tell two
+// subjects tripping the same concern apart instead of reading their interleaved fires as out-of-order
+// divergence. It is a correlation key only — no claim about who/which document the subject is. `null`
+// when the fire was not entity-scoped; a pre-1.3 payload omitting it parses to `null` unchanged.
 // ---------------------------------------------------------------------------
 
 const _SNIPPET_KINDS = new Set(["frame", "clip", "audio"]);
@@ -564,8 +573,9 @@ export function parseIncidentSnippet(obj, { path = "snippet" } = {}) {
 
 /**
  * Build an Incident. `verdict` is { satisfied, confidence, evidence? }; `label` defaults to null
- * (unlabelled — suggested vocab "real"/"false_alarm"); `snippet` defaults to null.
- * @returns {{id:string,concern_id:string,verdict:object,ts:number,label:string|null,snippet:object|null}}
+ * (unlabelled — suggested vocab "real"/"false_alarm"); `snippet` defaults to null; `entity_id`
+ * defaults to null (not entity-scoped) — the back-compatible default for pre-1.3 callers.
+ * @returns {{id:string,concern_id:string,verdict:object,ts:number,label:string|null,snippet:object|null,entity_id:string|null}}
  */
 export function makeIncident({
   id,
@@ -574,11 +584,13 @@ export function makeIncident({
   ts,
   label = null,
   snippet = null,
+  entity_id = null,
 } = {}) {
   if (typeof id !== "string") throw new ContractError("makeIncident: id must be a string");
   if (typeof concern_id !== "string") throw new ContractError("makeIncident: concern_id must be a string");
   if (!isFiniteNumber(ts)) throw new ContractError("makeIncident: ts must be a finite number");
   if (!_isStringOrNull(label)) throw new ContractError("makeIncident: label must be a string or null");
+  if (!_isStringOrNull(entity_id)) throw new ContractError("makeIncident: entity_id must be a string or null");
   return {
     id,
     concern_id,
@@ -586,6 +598,7 @@ export function makeIncident({
     ts,
     label,
     snippet: snippet == null ? null : makeIncidentSnippet(snippet),
+    entity_id,
   };
 }
 
@@ -611,6 +624,9 @@ export function parseIncident(json) {
   const label = obj.label == null ? null : obj.label;
   if (!_isStringOrNull(label)) throw new ContractError("parseIncident: label must be a string or null");
   const snippet = obj.snippet == null ? null : parseIncidentSnippet(obj.snippet, { path: "snippet" });
+  // Missing on a pre-1.3 payload -> null (the Python `None` default); never a parse failure.
+  const entity_id = obj.entity_id == null ? null : obj.entity_id;
+  if (!_isStringOrNull(entity_id)) throw new ContractError("parseIncident: entity_id must be a string or null");
   return {
     id: obj.id,
     concern_id: obj.concern_id,
@@ -618,5 +634,6 @@ export function parseIncident(json) {
     ts: obj.ts,
     label,
     snippet,
+    entity_id,
   };
 }

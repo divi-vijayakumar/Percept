@@ -27,7 +27,7 @@ watch(stream, goals, profile=None, *, percept=None, source="camera") -> AsyncIte
 ```
 
 `WATCH_VERSION = "1.0.0"` (`watch.py:30`) versions this function's signature and streaming
-semantics; `CONTRACT_VERSION` in `percept/contracts/__init__.py:33` (currently `"1.2.0"`, bumped
+semantics; `CONTRACT_VERSION` in `percept/contracts/__init__.py:33` (currently `"1.3.0"`, bumped
 for `WatchAction`/`WatchEvent`) separately versions the DTO wire shapes it returns. This ADR pins
 the delivery contract for what is actually implemented — `watch()` and `WatchEvent` — rather than
 inventing behavior for the `Incident`/`DeliveryAttempt` chain ADR-003 gestured at. Reconciling

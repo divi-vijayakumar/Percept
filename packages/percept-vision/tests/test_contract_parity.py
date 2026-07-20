@@ -16,6 +16,15 @@ from pathlib import Path
 from percept.contracts import CONTRACT_VERSION as PY_VERSION
 
 
+def _contract_js() -> Path:
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / "packages" / "percept-edge" / "src" / "contract.js"
+        if candidate.is_file():
+            return candidate
+    raise unittest.SkipTest("percept-edge/src/contract.js not found (Python-only checkout)")
+
+
 def _js_contract_version() -> str:
     here = Path(__file__).resolve()
     for parent in here.parents:
@@ -40,6 +49,29 @@ class ContractVersionParityTests(unittest.TestCase):
             "wire-compatible; a major bump is a breaking wire change and must be deliberate "
             "(mirror it on both edges).",
         )
+
+class IncidentTwinParityTests(unittest.TestCase):
+    """D4: ``contract.js`` is an explicit twin of ``percept.contracts.Incident``. A field added on the
+    Python side and not on the JS side is a silent parity break — this catches it at the source level."""
+
+    def test_js_incident_twin_declares_entity_id(self) -> None:
+        src = _contract_js().read_text()
+        make = src.split("export function makeIncident(", 1)[1].split("export function parseIncident", 1)[0]
+        parse = src.split("export function parseIncident(", 1)[1]
+        self.assertIn("entity_id = null", make, "makeIncident must default entity_id to null")
+        self.assertIn("entity_id", parse, "parseIncident must carry entity_id off the wire")
+
+    def test_python_incident_fields_are_all_named_in_the_js_twin(self) -> None:
+        import dataclasses
+
+        from percept.contracts import Incident
+
+        src = _contract_js().read_text()
+        twin = src.split("// Incident  {", 1)[1].split("export function parseIncidentSnippet", 1)[0]
+        for f in dataclasses.fields(Incident):
+            if f.name in {"message", "label_url"}:
+                continue  # known JS-side gaps predating D4; documented, not introduced here
+            self.assertIn(f.name, twin, f"Incident.{f.name} has no JS twin in contract.js")
 
 
 if __name__ == "__main__":
