@@ -97,6 +97,10 @@ del _resolve_version, _pkg_version, _PkgNotFound
 from .agent import FireEvent, Percept  # noqa: E402
 from .watch import WATCH_VERSION, watch  # noqa: E402
 
+# String sugar for watch(): `watch(stream, "the milk is boiling over")`. Exported so callers can
+# reproduce the desugared id (goal_id_for) without re-implementing the documented scheme.
+from .goalsugar import desugar_goal, desugar_goals, goal_id_for  # noqa: E402
+
 # The runtime worker — the batteries-included "watch a source" front door. Surfaced at top level
 # (PR: Wave 0) so `percept.run` / `percept.RuntimeSession` are the FIRST thing a builder reaches,
 # instead of being two import-hops deep at `percept.runtime.worker.run`. Import is stdlib-pure
@@ -118,6 +122,10 @@ __all__ = [
     "watch",
     "WATCH_VERSION",
     "WatchEvent",
+    # string sugar for watch() goals (pass-through, never compilation)
+    "desugar_goal",
+    "desugar_goals",
+    "goal_id_for",
     # DTOs
     "Box",
     "Observation",
