@@ -11,6 +11,13 @@ while a strip's per-frame fidelity (1.0) cost ~3.6x the tokens. So:
     trades temporal resolution for context.
   * **VLM-only.** Edge detectors read the original measurement stream, never a montage (see the brief).
 
+**DEPRECATED IN THE PLAN PATH (card J2).** ``percept/agent.py`` no longer builds a montage for any
+concern: an ordered frame window beat a sprite unconditionally on the H0 dynamic-goal set (recall
+0.68 -> 0.73; 0.90 with gate-relax), and ``percept/profile_resolution.py`` can never select
+``plan_mode="sprite"``. A spec/profile that still says ``"sprite"`` is normalized to ``"window"`` with a
+``DeprecationWarning`` (``percept.agent._normalize_plan_mode``). This module stays as a standalone,
+importable primitive — nothing in the firing path calls it.
+
 Pure numpy (imported lazily so the stdlib core stays import-clean — numpy is already an extra for the
 vision/bench paths that produce real frames). Returns ``None`` for non-image input so the caller can fall
 back to a plain strip.

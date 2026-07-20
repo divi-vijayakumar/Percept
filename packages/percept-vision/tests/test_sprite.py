@@ -1,14 +1,16 @@
-"""Sprite montage primitive (Build 6) — L1 tests.
+"""Sprite montage primitive (Build 6) — L1 tests, plus its J2 DEPRECATION in the plan path.
 
-make_sprite is exercised on synthetic numpy frames (the montage math); the agent's assembly is exercised
-with a recording vision stub to prove temporal="sprite" sends ONE montage image for the context (bounded
-token cost) while non-image frames degrade gracefully to a plain strip.
+make_sprite itself is still exercised on synthetic numpy frames (the montage math — the primitive is
+untouched and importable). The agent-side assembly tests now assert the opposite of Build 6: an ordered
+window beat the montage unconditionally (H0 0.68 -> 0.73), so ``temporal="sprite"`` is shimmed to
+``"window"`` with a DeprecationWarning and NO montage is built on the judging path.
 """
 
 from __future__ import annotations
 
 import asyncio
 import unittest
+import warnings
 
 from percept.adapters import Goal, Verdict
 from percept.agent import Percept
@@ -66,35 +68,53 @@ def _sprite_goal():
                 state={"type": "watch", "count": 0, "perception": {"temporal": "sprite", "n_frames": 4}})
 
 
-@unittest.skipUnless(_HAVE, "needs numpy for the sprite montage math")
-class SpriteAssemblyTests(unittest.TestCase):
-    def test_sprite_collapses_context_to_one_montage_image(self):
+class SpriteDeprecatedInThePlanPathTests(unittest.TestCase):
+    """Card J2: the plan path no longer builds a montage for ANY concern. An authored
+    ``temporal="sprite"`` is shimmed to an ordered window (strictly better: H0 0.68 -> 0.73)."""
+
+    def _last_call(self, frames):
         rec = _RecordingVision()
         a = Percept.create(vision=rec, discover_plugins=False)
         a.add_goal(_sprite_goal())
 
         async def go():
-            for i in range(4):  # push 4 numpy frames; the 4th is current, the first 3 are context
-                await a.perceive_judged(np.full((8, 8, 3), i * 10, dtype=np.uint8), t=float(i))
+            for i, f in enumerate(frames):
+                await a.perceive_judged(f, t=float(i))
 
-        asyncio.run(go())
-        last = rec.calls[-1]
-        self.assertEqual(len(last["frames"]), 1)  # the N context frames folded into ONE montage image
-        self.assertIsInstance(last["frames"][0], np.ndarray)
-        self.assertEqual(last["frames"][0].ndim, 3)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            asyncio.run(go())
+        return rec.calls[-1], caught
 
-    def test_sprite_degrades_to_strip_for_non_image_frames(self):
-        rec = _RecordingVision()
-        a = Percept.create(vision=rec, discover_plugins=False)
-        a.add_goal(_sprite_goal())
+    @unittest.skipUnless(_HAVE, "needs numpy for real image frames")
+    def test_sprite_no_longer_collapses_context_to_a_montage(self):
+        frames = [np.full((8, 8, 3), i * 10, dtype=np.uint8) for i in range(4)]
+        last, _ = self._last_call(frames)
+        # the 3 earlier frames reach the judge AS FRAMES, ordered oldest→newest — not one grid image
+        self.assertEqual(len(last["frames"]), 3)
+        for sent, original in zip(last["frames"], frames[:3]):
+            self.assertTrue(np.array_equal(sent, original))
 
-        async def go():
-            for tok in ("f0", "f1", "f2", "f3"):
-                await a.perceive_judged(tok, t=0.0)
+    def test_sprite_warns_and_behaves_as_window(self):
+        last, caught = self._last_call(["f0", "f1", "f2", "f3"])
+        self.assertEqual(last["frames"], ["f0", "f1", "f2"])  # window = ALL earlier frames, ordered
+        self.assertTrue(
+            any(issubclass(w.category, DeprecationWarning) and "sprite" in str(w.message)
+                for w in caught)
+        )
 
-        asyncio.run(go())
-        last = rec.calls[-1]
-        self.assertTrue(all(isinstance(f, str) for f in last["frames"]))  # graceful fallback, no crash
+    def test_make_sprite_is_never_called_from_the_plan_path(self):
+        import percept.sprite as sprite_mod
+
+        original = sprite_mod.make_sprite
+        sprite_mod.make_sprite = lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("the plan path must not montage frames (J2)")
+        )
+        try:
+            last, _ = self._last_call(["f0", "f1", "f2", "f3"])
+        finally:
+            sprite_mod.make_sprite = original
+        self.assertEqual(last["frames"], ["f0", "f1", "f2"])
 
 
 if __name__ == "__main__":

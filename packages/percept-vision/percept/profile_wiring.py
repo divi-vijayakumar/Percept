@@ -14,8 +14,10 @@ already reads:
 - ``cadence`` -> a real :class:`~percept.sampling.SensePolicy` (via
   :meth:`~percept.watchprofile.CadenceProfile.to_sense_policy`), applied at CORE CREATION time (an
   immutable field on the built :class:`~percept.agent.Percept`, never mutated mid-run).
-- ``plan_mode`` -> threaded through unchanged (a plain string) so the judge-input path can read it later
-  (a future card, J2, wires it into the perception spec; this card only carries it to the core).
+- ``plan_mode`` -> threaded through unchanged (a plain string) onto the core, where card J2 makes it LIVE:
+  :func:`percept.agent._planned_perception` floors every concern's ``PerceptionSpec.temporal`` with it on
+  the judging path, so ``plan_mode="window"`` assembles an ordered frame window and calls
+  ``judge(frames=[...])``. ``"sprite"`` is deprecated there and shimmed to ``"window"``.
 
 Every value this module produces is either an attribute READ off the ``WatchProfile`` or a field carried
 over from the base :class:`~percept.config.Settings` — there is no knob literal in this file. That is the

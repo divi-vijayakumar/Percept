@@ -44,6 +44,75 @@ class FireEvent:
     verdict: Verdict | None = None
 
 
+# -- J2: the resolved WatchProfile.plan_mode -> the concern's PerceptionSpec -----------------------
+# M2 carried ``plan_mode`` onto the core but nothing read it. J2 makes it LIVE: a resolved profile whose
+# plan_mode is "window" makes the judge see an ORDERED FRAME WINDOW (``judge(frames=[...])``, oldest→
+# newest, the anchor frame passed separately) instead of one still frame. That is the validated H0 win
+# (H0 dynamic-goal recall rose five points, and to ~nine-in-ten with gate-relax; see
+# percept/profiles_default.py::H0_PROVENANCE for the measured numbers): the eye hands the model TIME,
+# not a montage. No number lives here -- this is a plan SHAPE, not a threshold.
+
+#: Plan modes ranked by how much time the judge is given. The profile's plan_mode is a FLOOR, never a
+#: downgrade — a concern that AUTHORED a richer spec keeps it (the brain's explicit HOW outranks a
+#: context default), and a profile can only raise a cheaper spec up to its own rung.
+_PLAN_RANK: dict[str, int] = {"single": 0, "strip": 1, "window": 2}
+
+#: Deprecated plan modes -> their replacement (J2). ``sprite`` (Build 6) folded the context frames into
+#: ONE montage image to save VLM tokens; an ordered window beats it unconditionally (see
+#: ``percept/profile_resolution.py``: "sprite is strictly worse and must never be selected"), so the plan
+#: path no longer builds a montage. ``percept.sprite.make_sprite`` itself is untouched and still importable
+#: — only the PLAN path is deprecated, and it degrades to the strictly better mode rather than failing.
+_DEPRECATED_PLAN_MODES: dict[str, str] = {"sprite": "window"}
+
+#: Frames a profile-raised strip/window asks for when the authored spec never sized one (same floor the
+#: escalation ladder uses, so "the profile widened the plan" and "the ladder widened the plan" agree).
+_PLAN_MIN_FRAMES = 3
+
+
+def _normalize_plan_mode(mode: str) -> str:
+    """Map a DEPRECATED plan mode onto its replacement (J2's shim), warning once per call site. A live
+    mode is returned unchanged — this is a no-op on every supported plan."""
+    replacement = _DEPRECATED_PLAN_MODES.get(mode)
+    if replacement is None:
+        return mode
+    warnings.warn(
+        f"plan_mode/temporal {mode!r} is deprecated and now behaves as {replacement!r}: an ordered "
+        "frame window beats a sprite montage unconditionally on the H0 dynamic-goal set, so the plan "
+        "path no longer builds a montage. Set the plan mode to 'window' explicitly.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+    return replacement
+
+
+def _planned_perception(base, plan_mode: str | None):
+    """Overlay the RESOLVED ``WatchProfile.plan_mode`` onto a concern's base ``PerceptionSpec`` (J2).
+
+    Two things happen here, in one place:
+
+    1. the deprecation shim — a ``sprite`` plan (authored on the spec OR carried on the profile) is
+       normalized to ``window``;
+    2. the profile FLOOR — ``plan_mode`` raises a cheaper spec to its rung and never lowers a richer
+       authored one (``_PLAN_RANK``).
+
+    ``plan_mode=None`` (no profile, or a profile-less construction) returns the base spec unchanged, so
+    the pre-J2 path stays byte-for-byte. An unrecognized mode is ignored rather than trusted — the
+    vocabulary lives in :data:`percept.behavior._VALID_TEMPORAL`, not in a string a caller invented."""
+    spec = base
+    temporal = _normalize_plan_mode(spec.temporal)
+    if temporal != spec.temporal:  # authored sprite -> window (shim), before any ranking
+        spec = replace(spec, temporal=temporal)
+    if not plan_mode:
+        return spec
+    mode = _normalize_plan_mode(str(plan_mode))
+    if mode not in _PLAN_RANK:
+        return spec  # unknown/unsupported plan mode: never silently reinterpreted
+    if _PLAN_RANK[mode] <= _PLAN_RANK.get(spec.temporal, 0):
+        return spec  # the authored spec already sees at least this much time — never downgrade
+    n_frames = spec.n_frames if spec.n_frames >= _PLAN_MIN_FRAMES else _PLAN_MIN_FRAMES
+    return replace(spec, temporal=mode, n_frames=n_frames)
+
+
 def _escalated_perception(base, level: int):
     """Apply the escalation ladder to a base ``PerceptionSpec``: rung 1 adds a temporal strip, rung 2
     adds fused audio. Never downgrades an already-richer authored spec (only escalates the cheap parts)."""
@@ -72,17 +141,6 @@ def _trace_reason(truth: str, action: str) -> str:
     if truth == "yes":
         return "silent: already_fired_or_not_rising"
     return "silent: suppressed"
-
-
-def _try_make_sprite(frames):
-    """Montage the context frames into ONE image (Build 6), or ``None`` if they aren't images (so the
-    caller degrades to a plain strip — e.g. L1 mock frames)."""
-    try:
-        from .sprite import make_sprite
-
-        return make_sprite(frames)
-    except Exception:
-        return None
 
 
 def _concat_audio(chunks: list) -> Any:
@@ -302,9 +360,10 @@ class Percept:
     # override: byte-for-byte pre-M2 behavior. Set once, in create(); nothing in this class mutates it
     # afterward -- a live cadence change is a NEW core, not a field write on this one.
     sense_policy: Any = None  # SensePolicy | None -- see percept.sampling.SensePolicy
-    # The resolved WatchProfile.plan_mode ("single"/"strip"/"window"/"sprite"), threaded through so the
-    # judge-input path can read it later (a future card, J2, consumes it; this card only carries it to
-    # the core). ``None`` -- no profile override, byte-for-byte pre-M2 behavior.
+    # The resolved WatchProfile.plan_mode ("single"/"strip"/"window"; "sprite" is deprecated and shimmed
+    # to "window"). LIVE since J2: _planned_perception() floors every concern's PerceptionSpec with it on
+    # the judging path, so plan_mode="window" makes the judge see an ordered frame window
+    # (``judge(frames=[...])``). ``None`` -- no profile override, byte-for-byte pre-M2 behavior.
     plan_mode: str | None = None
 
     # -- construction --------------------------------------------------------
@@ -970,9 +1029,13 @@ class Percept:
             if gtype != "watch":
                 continue  # event/count/remind goals are handled by their dedicated paths
             ctx = self.executor.ctx(goal.id)
-            # HOW to look = the authored/preset spec, escalated by this concern's current ladder rung
-            # (single→strip→+audio) when it's been recurrently ambiguous (set in _deliberate_confused).
-            spec = _escalated_perception(program_of(goal).perception, ctx.perception_level)
+            # HOW to look = the authored/preset spec, floored by the resolved profile's plan_mode (J2 —
+            # "window" hands the judge an ordered clip, never a montage), then escalated by this
+            # concern's current ladder rung (single→strip→+audio) when it's been recurrently ambiguous
+            # (set in _deliberate_confused).
+            spec = _escalated_perception(
+                _planned_perception(program_of(goal).perception, self.plan_mode), ctx.perception_level
+            )
             roi = self._resolve_roi(goal, focus, spec)
             corrections = focus.asserted() if focus else {}
             strip = self._strip_frames(source, spec)  # temporal strip per the spec; None = single (today)
@@ -1120,7 +1183,9 @@ class Percept:
         log. NEVER fires here — a process goal's answer is produced by :meth:`summarize_process` at the
         episode boundary / on demand. The gate is untouched (no verdict routed)."""
         ctx = self.executor.ctx(goal.id)
-        spec = _escalated_perception(program_of(goal).perception, ctx.perception_level)
+        spec = _escalated_perception(
+            _planned_perception(program_of(goal).perception, self.plan_mode), ctx.perception_level
+        )
         strip = self._strip_frames(source, spec)
         self.funnel.judged(concern=goal.id, camera=source)  # an observe call is being spent
         # Process goals have no entity/focus concept here; a 1-tuple key never collides with a watch
@@ -1219,9 +1284,17 @@ class Percept:
         return focus.box if focus else None
 
     def _strip_frames(self, source: str, spec) -> list | None:
-        """Assemble the temporal strip per the ``PerceptionSpec`` from the rolling FrameWindow: the
-        earlier-context frames (oldest→newest, EXCLUDING the current frame, which the backend appends
-        last). Returns None for single-frame perception — byte-for-byte today."""
+        """Assemble the temporal strip/window per the ``PerceptionSpec`` from the rolling FrameWindow:
+        the earlier-context frames (oldest→newest, EXCLUDING the current frame, which the backend appends
+        last). Returns None for single-frame perception — byte-for-byte today.
+
+        LATEST-WINS (J2): the window is assembled HERE, inside the judging tick, against a FrameWindow
+        whose last entry is the frame being judged (``perceive_judged`` pushes before it judges). The
+        async scheduler (``percept/runtime/worker.py::_JudgeScheduler``) is single-flight and drops a
+        superseded candidate BEFORE it ever reaches this method, so a frame that lost the latest-wins
+        race contributes nothing to any window, and the window a launched judgment sees is always
+        anchored on its own admitted frame — never on a newer one that arrived mid-flight."""
+        spec = replace(spec, temporal=_normalize_plan_mode(spec.temporal))  # J2 shim: sprite -> window
         if spec.temporal == "single":
             return None
         earlier = self._window(source).frames()[:-1]  # drop the current frame (passed as `frame`)
@@ -1235,7 +1308,7 @@ class Percept:
             earlier = [(t, f) for t, f in earlier if t >= cutoff]
             if not earlier:
                 return None
-        want = (spec.n_frames - 1) if spec.temporal in ("strip", "sprite") else len(earlier)
+        want = (spec.n_frames - 1) if spec.temporal == "strip" else len(earlier)
         if want <= 0:
             return None
         if spec.sampling == "uniform" and len(earlier) > want:
@@ -1246,11 +1319,9 @@ class Percept:
                 picked = [earlier[round(i * step)] for i in range(want)]
         else:  # "recent": the last `want` earlier frames
             picked = earlier[-want:]
-        frames = [f for _, f in picked]
-        if spec.temporal == "sprite":  # fold the temporal CONTEXT into ONE montage image (VLM token budget);
-            sprite = _try_make_sprite(frames)  # the current frame is still sent separately for fidelity.
-            return [sprite] if sprite is not None else frames  # non-image frames degrade to a plain strip
-        return frames
+        # Ordered, oldest→newest. The sprite montage that used to collapse these into ONE image is gone
+        # from the plan path (J2): the judge sees the real ordered frames.
+        return [f for _, f in picked]
 
     async def _timed_judge(self, *args: Any, **kwargs: Any) -> Verdict:
         """Call the vision judge, timing wall-clock latency and capturing token/cost off the verdict.
