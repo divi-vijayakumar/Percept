@@ -63,6 +63,10 @@ class RuntimeWorkerTests(unittest.TestCase):
         self.assertTrue(all(i.message == "Alert: person in zone" for i in incidents))
         self.assertTrue(all(i.verdict.satisfied for i in incidents))
         self.assertTrue(all(i.snippet is not None and i.snippet.kind == "frame" for i in incidents))
+        # D4: a non-entity-scoped stream stays entity_id=None (the back-compatible default) and the
+        # field is present on the wire payload rather than missing.
+        self.assertTrue(all(i.entity_id is None for i in incidents))
+        self.assertIn("entity_id", incident_payload(incidents[0]))
 
     def test_on_incident_sink_is_called(self):
         seen = []

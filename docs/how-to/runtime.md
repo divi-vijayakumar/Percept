@@ -127,7 +127,7 @@ threshold, or off-cadence) — the whole-frame-motion trap above. A `judge.finis
 
 ## The `Incident`
 ```
-Incident { id, concern_id, verdict{satisfied, confidence, evidence}, ts, label, snippet, message }
+Incident { id, concern_id, verdict{satisfied, confidence, evidence}, ts, label, snippet, message, entity_id }
 ```
 `message` is the goal's `say` (the human alert line); `verdict.evidence` is the VLM's reasoning;
 `snippet` is the pre-roll (`kind="frame"` stores decoded frames; `kind="clip"` stores a portable encoded

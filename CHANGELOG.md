@@ -5,6 +5,30 @@ Notable changes to Percept. This is a **research preview** — the SDK's public 
 
 ## Unreleased
 
+### Contract — wire version 1.2.0 → 1.3.0 (additive; same MAJOR, wire-compatible)
+- **`Incident.entity_id`** (D4) — the gated subject's correlation handle now SURVIVES the emission
+  boundary. The rising-edge gate has always keyed on `(goal.id, focus.id)` and `FireEvent.entity_id`
+  has always carried it, but `make_incident()` never read it: identity was computed upstream and
+  dropped at emission. Downstream, two independent subjects tripping the same concern were
+  indistinguishable, which reads as spurious out-of-order / duplicate divergence (a client saw three
+  fabricated `out_of_order` divergences on a walkthrough with no defect).
+  - `Incident.entity_id: str | None = None` — appended LAST on the dataclass, so every existing
+    positional `Incident(...)` build keeps its meaning. `None` = not entity-scoped (single-subject
+    streams, boundary fires) — the back-compatible default.
+  - `make_incident(fire, ...)` reads `fire.entity_id` (duck-typed, like every other field it reads);
+    an explicit `entity_id=` kwarg overrides. A pre-D4 fire with no such attribute yields `None`.
+  - Flows through the existing generic serializers unchanged: `incident_payload()` / the webhook sink
+    emit `entity_id`. The `incident` health event and the `incident.created` trace now carry it too,
+    and `percept watch` prints `entity=<id>` when the fire was entity-scoped.
+  - **JS twin** (`packages/percept-edge/src/contract.js`): `makeIncident` defaults `entity_id` to
+    `null` and validates string-or-null; `parseIncident` carries it off the wire and tolerates its
+    absence on a pre-1.3 payload. The JS `CONTRACT_VERSION` now names the Python contract version it
+    twins (`1.3.0`); it implements a subset of the DTOs — the version tracks the wire, not coverage.
+  - JSON Schema regenerated (`percept/contracts/schema/*`): `entity_id` is optional + nullable, never
+    `required`.
+  - **Scope**: `entity_id` is a GENERIC correlation key. It makes no claim about *who* or *which
+    document* the subject is — richer subject/incident relations are ADR-006, not this change.
+
 ### Contract — wire version 1.0.0 → 1.1.0 (additive; same MAJOR, wire-compatible)
 - **`AttentionIntent`** — a new frozen DTO carrying the **effective** (post-policy), channel-neutral
   attention request a fired incident makes: `message`, `goal_id`, `incident_id`, `ts`, `preempt`
@@ -132,8 +156,8 @@ composed through the SDK's public seams only.
   from a bare wheel install prints a "run from a checkout" note instead of importing it.
 
 ### Versioning
-- Package version is `0.6.0`. The **wire-contract** version is separate: `CONTRACT_VERSION = "1.2.0"`
-  (additive-only). A `percept-vision 0.6.0` install exporting contract `1.2.0` is expected, not a bug.
+- Package version is `0.6.0`. The **wire-contract** version is separate: `CONTRACT_VERSION = "1.3.0"`
+  (additive-only). A `percept-vision 0.6.0` install exporting contract `1.3.0` is expected, not a bug.
 
 ### Security
 - **`WebhookSink` is SSRF-safe by default** (`UrlPolicy`): https-only, and any non-globally-routable

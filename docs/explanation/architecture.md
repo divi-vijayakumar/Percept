@@ -47,7 +47,7 @@ VLM-in-a-loop collapses these two; Percept keeps them apart so the common case c
 | **Measures** | high-rate encoders turn raw signal into channels + timed boundaries; the motion gate decides *whether to spend a VLM call* | [`percept/harness`](../../packages/percept-vision/percept/harness) | `make_detector` ([detectors.py](../../packages/percept-vision/percept/harness/detectors.py)) · `PoseChannels.measure` · `MotionGate.evaluate` ([tier0.py](../../packages/percept-vision/percept/harness/tier0.py)) |
 | **Cognition** (System 1) | senses, the three-state gate, the concern primitive, entity graph — reasons over `Verdict` + `Tier0Signal`, never pixels | [`percept`](../../packages/percept-vision/percept) | `Percept` ([agent.py](../../packages/percept-vision/percept/agent.py)) · `Gate.evaluate` ([gate.py](../../packages/percept-vision/percept/gate.py)) · `RhythmTracker` ([rhythm.py](../../packages/percept-vision/percept/rhythm.py)) |
 | **VLM** (System 2) | one stateless seam: `vision.judge(condition, frame) → Verdict`; the conductor compiles goals | [`percept/backends`](../../packages/percept-vision/percept/backends) | `AnthropicVision.judge` ([anthropic.py](../../packages/percept-vision/percept/backends/anthropic.py)) · `GeminiVision.judge` |
-| **Wire contract** | the frozen types crossing every seam | [`percept/contracts`](../../packages/percept-vision/percept/contracts) | `Verdict` · `CONTRACT_VERSION` (1.2.0) |
+| **Wire contract** | the frozen types crossing every seam | [`percept/contracts`](../../packages/percept-vision/percept/contracts) | `Verdict` · `CONTRACT_VERSION` (1.3.0) |
 
 ## The three-state gate — the rising-edge armed-bit
 

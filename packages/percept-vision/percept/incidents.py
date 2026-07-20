@@ -18,14 +18,30 @@ from percept.contracts import AttentionIntent, Consequence, GoalOrigin, Incident
 from .concern import consequence_of
 
 
-def make_incident(fire: Any, *, ts: float, snippet: IncidentSnippet | None = None, id: str | None = None) -> Incident:
+def make_incident(
+    fire: Any,
+    *,
+    ts: float,
+    snippet: IncidentSnippet | None = None,
+    id: str | None = None,
+    entity_id: str | None = None,
+) -> Incident:
     """Map a fire to an :class:`Incident`. ``id`` defaults to a deterministic, sortable handle.
 
     The fire's ``verdict`` carries the VLM's evidence; ``text`` (the goal's ``say``) becomes the
     human-facing ``message``. ``label`` stays ``None`` until a human / the calibration loop classifies it.
+
+    ``entity_id`` (D4, contract 1.3) carries the gated subject's correlation handle THROUGH the
+    emission boundary. The gate key is already ``(goal_id, entity_id)``, so identity was computed
+    upstream and then dropped here; a consumer that cannot tell two subjects apart reads their
+    interleaved fires as out-of-order divergence. Taken from the fire's own ``entity_id`` (duck-typed,
+    like every other field this module reads) unless the caller overrides it explicitly. ``None`` when
+    the fire was not entity-scoped — the back-compatible default.
     """
     verdict = getattr(fire, "verdict", None) or Verdict(satisfied=True, confidence=0.0, evidence="")
     goal_id = getattr(fire, "goal_id", "")
+    if entity_id is None:
+        entity_id = getattr(fire, "entity_id", None)
     return Incident(
         id=id or f"inc-{goal_id}-{ts:.3f}-{uuid.uuid4().hex[:8]}",
         concern_id=goal_id,
@@ -33,6 +49,7 @@ def make_incident(fire: Any, *, ts: float, snippet: IncidentSnippet | None = Non
         ts=float(ts),
         snippet=snippet,
         message=getattr(fire, "text", "") or "",
+        entity_id=str(entity_id) if entity_id is not None else None,
     )
 
 

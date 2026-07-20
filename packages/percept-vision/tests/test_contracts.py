@@ -728,8 +728,9 @@ class TestAudioFrame(unittest.TestCase):
 
 class TestVersionNegotiation(unittest.TestCase):
     def test_contract_version_is_semver(self):
-        # 1.2.0: additive WatchAction/WatchEvent (M1); 1.1.0 AttentionIntent/GoalOrigin (PCPT-026).
-        self.assertEqual(CONTRACT_VERSION, "1.2.0")
+        # 1.3.0: additive Incident.entity_id (D4); 1.2.0 WatchAction/WatchEvent (M1);
+        # 1.1.0 AttentionIntent/GoalOrigin (PCPT-026).
+        self.assertEqual(CONTRACT_VERSION, "1.3.0")
         parts = CONTRACT_VERSION.split(".")
         self.assertEqual(len(parts), 3)
         self.assertTrue(all(p.isdigit() for p in parts))
@@ -784,6 +785,16 @@ class TestJsonSchema(unittest.TestCase):
         any_of = s["properties"]["snippet"]["anyOf"]
         self.assertIn({"$ref": "#/$defs/IncidentSnippet"}, any_of)
         self.assertIn({"type": "null"}, any_of)
+
+    def test_incident_schema_carries_optional_entity_id(self):
+        # D4 / contract 1.3: additive, optional, nullable — never `required`.
+        from percept.contracts import jsonschema as js
+
+        s = js.generate_all()["$defs"]["Incident"]
+        any_of = s["properties"]["entity_id"]["anyOf"]
+        self.assertIn({"type": "string"}, any_of)
+        self.assertIn({"type": "null"}, any_of)
+        self.assertNotIn("entity_id", s.get("required", []))
 
     def test_literal_becomes_enum(self):
         from percept.contracts import jsonschema as js

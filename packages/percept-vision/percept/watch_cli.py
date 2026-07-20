@@ -96,7 +96,9 @@ async def _run(args) -> int:
             conf = getattr(getattr(inc, "verdict", None), "confidence", None)
             elapsed = time.monotonic() - t0
             tag = f" ({conf:.0%})" if isinstance(conf, (int, float)) else ""
-            print(f"  🔔  [{elapsed:6.1f}s]  {msg}{tag}   ·   goal={gid}")
+            eid = getattr(inc, "entity_id", None)  # D4: which subject fired (None = not entity-scoped)
+            ent = f"   ·   entity={eid}" if eid else ""
+            print(f"  🔔  [{elapsed:6.1f}s]  {msg}{tag}   ·   goal={gid}{ent}")
     except KeyboardInterrupt:
         print("\n  stopped.")
     print(f"\n  {fired} notification(s).")

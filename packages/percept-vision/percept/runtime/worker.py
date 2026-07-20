@@ -1322,11 +1322,20 @@ async def run(
                     await emit_trace(
                         f"{gate_source}@{at}", at, "incident.created",
                         goal_id=incident.concern_id, incident_id=incident.id, from_boundary=from_boundary,
+                        entity_id=incident.entity_id,
                     )
                 if on_health is not None:
                     await _call_sink(
                         on_health,
-                        RuntimeHealthEvent("incident", ts=at, data={"incident_id": incident.id, "goal_id": incident.concern_id}),
+                        RuntimeHealthEvent(
+                            "incident",
+                            ts=at,
+                            data={
+                                "incident_id": incident.id,
+                                "goal_id": incident.concern_id,
+                                "entity_id": incident.entity_id,  # D4: which subject fired, not just which goal
+                            },
+                        ),
                     )
                 if on_incident is not None:
                     await _call_sink_with_policy(
