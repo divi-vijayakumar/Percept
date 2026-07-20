@@ -138,6 +138,21 @@ from .provider import (  # noqa: E402
 # (cv2/numpy are lazy inside run()), so the zero-vendor-import invariant holds.
 from .runtime import RuntimeSession, RuntimeStats, run, start  # noqa: E402
 
+# The diagnostic data model (card D8a): percept doctor, percept eval and the visualizer all derive
+# their numbers from THIS module, so three surfaces cannot invent three definitions of the funnel.
+# Imported after __version__ (the manifest stamps it) and stdlib-pure.
+from .tracing import (  # noqa: E402
+    BaselineAssumption,
+    ComponentIdentity,
+    PlanIdentity,
+    RunTraceManifest,
+    TracePolicy,
+    TraceRecord,
+    TraceRecorder,
+    TraceSummary,
+    load_trace,
+)
+
 __all__ = [
     "__version__",
     "Percept",
@@ -261,4 +276,14 @@ __all__ = [
     "otel_exporter",
     "get_logger",
     "health",
+    # diagnostics — the ONE definition of observed/admitted/judged/saved (card D8a)
+    "RunTraceManifest",
+    "TraceRecord",
+    "TraceRecorder",
+    "TraceSummary",
+    "TracePolicy",
+    "BaselineAssumption",
+    "ComponentIdentity",
+    "PlanIdentity",
+    "load_trace",
 ]
