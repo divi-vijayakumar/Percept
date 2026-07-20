@@ -34,6 +34,13 @@ _PROCESS_QA_SYSTEM = (
     "what's new). Reply STRICT JSON only."
 )
 _DEFAULT_TIMEOUT_S = 120.0  # generous headroom for a slow open-weight model; a stall surfaces as retryable
+# The OpenRouter default model — used ONLY when ``settings.models.vision_model`` is not an explicit
+# ``vendor/model`` id (see ``_resolve_model``). Keeps a shared cross-backend setting from silently
+# leaking a Claude/Gemini model id (e.g. "claude-opus-4-8") into an OpenRouter call, which then fails.
+_DEFAULT_MODEL = "qwen/qwen3-vl-32b-instruct"
+# OpenRouter's opt-in usage-accounting extension: without it, ``usage`` (and the ``cost`` it carries) is
+# absent from the response and the token/cost funnel silently reads 0 forever (see ``_usage_of``).
+_USAGE_EXTRA_BODY = {"usage": {"include": True}}
 
 
 def _timeout_s() -> float:
@@ -63,6 +70,23 @@ def _settings_of(arg: Any):
     return arg
 
 
+def _resolve_model(settings: Any) -> str:
+    """Resolve the OpenRouter model id from ``settings.models.vision_model``.
+
+    ``vision_model`` is a SHARED setting across vision backends (rule 5: no literal in logic), so its
+    default/value may be a bare Claude/Gemini id like ``"claude-opus-4-8"`` meant for a different
+    backend — sending that straight to OpenRouter silently fails (it is not a ``vendor/model`` id
+    OpenRouter recognizes). An explicit ``vendor/model`` id (contains ``"/"``, e.g.
+    ``"qwen/qwen3-vl-32b-instruct"``, ``"anthropic/claude-3-opus"``) IS respected — OpenRouter can route
+    to any vendor. Anything else (absent, or a bare non-namespaced id) falls back to
+    :data:`_DEFAULT_MODEL`.
+    """
+    raw = getattr(getattr(settings, "models", settings), "vision_model", None)
+    if isinstance(raw, str) and "/" in raw:
+        return raw
+    return _DEFAULT_MODEL
+
+
 def _data_url(frame: Any) -> str:
     """Render an opaque frame to a base64 ``data:`` URL (the OpenAI/OpenRouter image format).
 
@@ -88,20 +112,29 @@ def _image_block(frame: Any) -> dict:
 
 
 def _usage_of(resp: Any) -> dict:
-    """Pull token usage off an OpenAI/OpenRouter chat completion for ``Verdict.usage`` (read by
-    ``observability.judge_usage`` → the cost/token funnel). Defensive: no ``usage`` → ``{}``."""
+    """Pull token usage (+ cost, when OpenRouter's usage-accounting extension is on) off an
+    OpenAI/OpenRouter chat completion for ``Verdict.usage`` (read by ``observability.judge_usage`` →
+    the cost/token funnel). Defensive: no ``usage`` → ``{}`` — the metering hook stays a no-op.
+
+    ``cost`` only appears when the request set ``extra_body={"usage": {"include": True}}``
+    (:data:`_USAGE_EXTRA_BODY`, sent on every judge call below); without it OpenRouter omits ``usage``
+    entirely and this always degrades to ``{}`` — the bug this reconciles.
+    """
     usage = getattr(resp, "usage", None)
     if usage is None and isinstance(resp, dict):
         usage = resp.get("usage")
     if usage is None:
         return {}
     get = usage.get if isinstance(usage, dict) else lambda k: getattr(usage, k, None)
-    out: dict[str, int] = {}
+    out: dict[str, float] = {}
     pt, ct = get("prompt_tokens"), get("completion_tokens")
     if isinstance(pt, int):
         out["input_tokens"] = pt
     if isinstance(ct, int):
         out["output_tokens"] = ct
+    cost = get("cost")
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+        out["cost_usd"] = float(cost)
     return out
 
 
@@ -131,9 +164,7 @@ class OpenRouterVision:
     def __init__(self, settings: Any = None, *, client: Any = None) -> None:
         self._settings = _settings_of(settings)
         self._client = client  # injectable for L2 fixtures; built lazily otherwise
-        self._model = getattr(
-            getattr(self._settings, "models", self._settings), "vision_model", "qwen/qwen2.5-vl-72b-instruct"
-        )
+        self._model = _resolve_model(self._settings)
         self._breaker = CircuitBreaker()
         self._timeout_s = _timeout_s()
 
@@ -188,6 +219,7 @@ class OpenRouterVision:
                 model=self._model,
                 messages=messages,
                 max_tokens=1024,  # headroom: a thinking/open model can spend tokens before the JSON verdict
+                extra_body=_USAGE_EXTRA_BODY,  # ask OpenRouter to include usage/cost on the response
             )
 
         resp = await with_retry(_call, breaker=self._breaker)
@@ -212,7 +244,9 @@ class OpenRouterVision:
         messages = [{"role": "system", "content": _PROCESS_QA_SYSTEM}, {"role": "user", "content": content}]
 
         async def _call():
-            return await client.chat.completions.create(model=self._model, messages=messages, max_tokens=1024)
+            return await client.chat.completions.create(
+                model=self._model, messages=messages, max_tokens=1024, extra_body=_USAGE_EXTRA_BODY,
+            )
 
         resp = await with_retry(_call, breaker=self._breaker)
         try:
@@ -222,7 +256,8 @@ class OpenRouterVision:
         summary = str(data.get("updated_summary", "") or "").strip() or prior
         return Verdict(satisfied=bool(data.get("satisfied")) and bool(summary),
                        confidence=float(data.get("confidence", 0.5) or 0.5),
-                       evidence=summary or "not enough evidence", running_answer=summary)
+                       evidence=summary or "not enough evidence", running_answer=summary,
+                       usage=_usage_of(resp))
 
     async def detect(self, frame: Any, goals: list[Goal]) -> list[Observation]:
         client = self._ensure_client()
