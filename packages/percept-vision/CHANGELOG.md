@@ -3,6 +3,27 @@
 ## Unreleased
 
 ### Added
+- **`percept-doctor` — a plan-aware tier-0 dry run that spends ZERO judge calls (card D1).** A new
+  console entry point (alongside `percept-watch` / `percept-bench` / `percept-schema`) that answers,
+  without an API key and at no cost: did the source open, did frames arrive, what timebase was
+  resolved (through the runtime's own resolver), what plan compiled, which profile was active, which
+  admission signals were even available, how many candidates each goal admitted, and **which named
+  rule suppressed every non-admit** (`no_predecessor_frame` / `out_of_schedule` /
+  `cadence_not_elapsed` / `signal_unavailable` / `below_threshold`). Admissions come from replaying
+  the REAL `MotionGate`, so a doctor number cannot drift from what the runtime would have done, and
+  the funnel panel is read straight off `percept.tracing.TraceSummary` (card D8a) so doctor, eval and
+  the visualizer cannot invent three definitions of it. `--json` emits the whole report; exit codes
+  are `0` completed / `2` zero semantic coverage / `3` source failure / `4` plan unobservable under
+  the selected profile / `5` invalid configuration.
+  **The three salience statistics are never compared to one threshold.** `mean`, `block_max` and
+  `p95` live on different value scales and the SDK already carries separate calibrated cutoffs, so
+  every row prints its own effective threshold and its own admitted count. **Zero admits is
+  diagnostic, not automatically failure**: it is reported loudly (`ZERO_ADMITS_ON_FIXTURE`) but adds
+  no runtime health alarm — a still scene that saves every model call is the product working.
+- **`percept.harness.tier0.salience_stats()` — all three salience statistics from ONE pass.** The
+  per-block score list is computed once (`_block_scores`) and `mean` / `block_max` / `p95` are pure
+  selectors over it, each bit-identical to `motion_score(..., stat=…)` (test-enforced). This is what
+  makes doctor's counterfactual table cheap and what guarantees it agrees with the live gate.
 - **Effective run configuration is RECORDED, never silently substituted (card D5b/c).**
   `percept.runtime.run()` now retains what it was ASKED for alongside what it actually opened with:
   `stats.effective_config` (an `EffectiveConfig` of `EffectiveFps` + `EffectiveTimebase`), the same

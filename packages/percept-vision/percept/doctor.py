@@ -1,0 +1,971 @@
+"""``percept doctor`` — a plan-aware tier-0 dry run that spends ZERO judge calls.
+
+Two paying client teams returned "not viable" on percept 0.7.0 — not because perception failed, but
+because when the SDK stayed silent there was no way to find out why. This module is the answer to
+that, and it is deliberately answerable at 2am with no API key and no access to us::
+
+    percept-doctor --source clip.mp4 --goal "the document being edited changes"
+
+It answers, in order:
+
+1. **Did the source open?** and did frames actually arrive (count, first/last ``t``, gate frame size).
+2. **What timebase was used?** — resolved through the runtime's OWN
+   :func:`percept.runtime.worker._resolve_timebase`, so doctor cannot report a clock the run would
+   not have used.
+3. **What plan was compiled?** — the real :func:`percept.harness.tier0.compile_watchspec` output:
+   one :class:`~percept.adapters.WatchCondition` per goal with its effective threshold, salience
+   stat, cadence, gate_on channel and schedule.
+4. **Which source profile was active?** — the :class:`~percept.watchprofile.WatchProfile` resolved
+   from the situation axes (card P2/M2). Card D7's per-SOURCE profiles are not in this build; the
+   report says so explicitly rather than leaving the field ambiguous.
+5. **Which admission signals were available?** — motion is computed here; structural/semantic are
+   ``0.0`` in the reference gate unless an edge adapter fills them, and audio needs an audio source.
+   A goal that gates on a channel nobody feeds is **plan unobservable** (exit 4), not "quiet".
+6. **How many candidates did each goal admit, and WHICH RULE suppressed each non-admit** — typed
+   reasons from :data:`SUPPRESSION_REASONS`, counted per goal.
+7. **Would alternative statistics have admitted different evidence?** — all three salience stats,
+   each against ITS OWN effective threshold.
+
+Two rules this module exists to enforce
+---------------------------------------
+
+**Never compare the three salience stats to one threshold.** ``mean``, ``block_max`` and ``p95``
+live on different value scales and the SDK already carries separately calibrated cutoffs
+(``EdgeSettings.motion_gate`` 0.10 / ``motion_gate_block_max`` 0.20 / ``motion_gate_p95`` 0.15,
+reachable through a profile's ``stat_thresholds``). Every row here prints its own effective
+threshold beside its own value, and the admitted counts come from running the REAL
+:class:`~percept.harness.tier0.MotionGate` once per (goal, stat) — never from a re-implemented
+comparison that could drift from the gate.
+
+**Zero admits is DIAGNOSTIC, not necessarily failure.** A quiet camera under a motion-gated watch
+correctly admits nothing, and that silence is exactly the economic claim percept makes. So doctor
+always reports :data:`ZERO_ADMITS_ON_FIXTURE` loudly and exits ``2`` — but this module adds no
+runtime health alarm and no runtime behaviour whatsoever. Runtime-side coverage degradation is only
+justified when a DECLARED coverage expectation is violated, which is not something a dry run knows.
+
+**No judge spend.** Tier-0 is pure CV: this module never constructs a
+:class:`~percept.agent.Percept`, never imports a vision backend and never calls ``perceive_judged``.
+The funnel it renders is derived from :class:`percept.tracing.TraceSummary` — the same one definition
+``percept eval`` and the visualizer use — so ``judge_started``/``judge_completed`` are structurally
+zero and the savings line reads ``—`` (no measured mean input-token cost to project).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import statistics
+import sys
+from dataclasses import dataclass
+from typing import Any, Iterable, Sequence
+
+from .adapters import Goal, WatchCondition, WatchSpec
+from .config import Settings, load_settings
+from .harness.tier0 import (
+    SALIENCE_STATS,
+    Frame,
+    MotionGate,
+    compile_watchspec,
+    salience_stats,
+    schedule_active,
+)
+from .tracing import (
+    ADMISSION_STAGE,
+    OBSERVATION_STAGE,
+    BaselineAssumption,
+    ComponentIdentity,
+    PlanIdentity,
+    RunTraceManifest,
+    TracePolicy,
+    TraceRecorder,
+    TraceSummary,
+)
+
+# ---------------------------------------------------------------------------
+# Exit codes — the machine-readable contract (`--json` carries the same in `exit_code`)
+# ---------------------------------------------------------------------------
+
+EXIT_OK = 0                  #: completed; no hard incompatibility found
+EXIT_ZERO_COVERAGE = 2       #: the run admitted nothing for any goal — zero semantic coverage
+EXIT_SOURCE_FAILURE = 3      #: the source did not open, or delivered no frames
+EXIT_PLAN_UNOBSERVABLE = 4   #: the compiled plan cannot be observed under the selected profile
+EXIT_INVALID_CONFIG = 5      #: the configuration itself is invalid (bad goal/profile/argument)
+
+#: Findings vocabulary. Closed on purpose: a client reading ``--json`` maps a code to a sentence.
+ZERO_ADMITS_ON_FIXTURE = "ZERO_ADMITS_ON_FIXTURE"
+SOURCE_FAILED = "SOURCE_FAILED"
+NO_FRAMES = "NO_FRAMES"
+PLAN_EMPTY = "PLAN_EMPTY"
+SIGNAL_UNAVAILABLE = "SIGNAL_UNAVAILABLE"
+INVALID_CONFIG = "INVALID_CONFIG"
+ALTERNATIVE_STAT_WOULD_ADMIT = "ALTERNATIVE_STAT_WOULD_ADMIT"
+SINGLE_FRAME_RUN = "SINGLE_FRAME_RUN"
+EGO_COMPENSATED_GATE = "EGO_COMPENSATED_GATE"
+UNEXPLAINED_SUPPRESSION = "UNEXPLAINED_SUPPRESSION"
+
+#: Why a frame did NOT become a candidate for a goal. Every non-admit lands in exactly one bucket —
+#: "it was quiet" is only ONE of these, and conflating it with the others is the bug this card fixes.
+SUPPRESSION_REASONS: tuple[str, ...] = (
+    "no_predecessor_frame",   # the first frame: nothing to diff against, by definition not motion
+    "out_of_schedule",        # the goal's Schedule was not armed at this civil time
+    "cadence_not_elapsed",    # C2 min_judge_interval since this goal's last escalation
+    "signal_unavailable",     # gate_on names a channel nothing in this topology feeds (always 0.0)
+    "below_threshold",        # the honest quiet case: the statistic did not clear ITS cutoff
+    "unexplained",            # doctor could not attribute it — always a bug, always reported loud
+)
+
+
+class DoctorConfigError(ValueError):
+    """An invalid doctor configuration (bad goal, bad stat, bad profile) -> exit 5."""
+
+
+# ---------------------------------------------------------------------------
+# Report structures
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Finding:
+    """One typed observation. ``severity`` is ``"info"``/``"warn"``/``"error"``; only the code and
+    the numbers are contractual, the ``detail`` sentence is for the human."""
+
+    code: str
+    severity: str
+    detail: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"code": self.code, "severity": self.severity, "detail": self.detail}
+
+
+@dataclass(frozen=True)
+class SourceDiagnosis:
+    """Did the source open, and did evidence actually arrive?"""
+
+    uri: str | None
+    opened: bool
+    frames: int
+    error: str | None = None
+    first_ts: float | None = None
+    last_ts: float | None = None
+    requested_fps: float | None = None
+    gate_frame: str | None = None
+    timebase_requested: str | None = None
+    timebase_resolved: str | None = None
+    timebase_reason: str | None = None
+
+    @property
+    def duration_s(self) -> float:
+        if self.first_ts is None or self.last_ts is None:
+            return 0.0
+        return max(0.0, self.last_ts - self.first_ts)
+
+    @property
+    def delivered_fps(self) -> float | None:
+        """Frames per SOURCE second actually delivered — the number that tells you whether the
+        capture rate you asked for is the rate the gate really saw."""
+        d = self.duration_s
+        if d <= 0 or self.frames < 2:
+            return None
+        return (self.frames - 1) / d
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "uri": self.uri, "opened": self.opened, "frames": self.frames, "error": self.error,
+            "first_ts": self.first_ts, "last_ts": self.last_ts, "duration_s": self.duration_s,
+            "requested_fps": self.requested_fps, "delivered_fps": self.delivered_fps,
+            "gate_frame": self.gate_frame,
+            "timebase": {
+                "requested": self.timebase_requested, "resolved": self.timebase_resolved,
+                "reason": self.timebase_reason,
+            },
+        }
+
+
+@dataclass(frozen=True)
+class StatDiagnosis:
+    """One salience statistic for one goal, against ITS OWN effective threshold.
+
+    ``max_value``/``median_value``/``mean_value`` describe the statistic's distribution over the run;
+    ``effective_threshold`` is what ``compile_watchspec`` actually produced for THIS goal under THIS
+    stat (base cutoff + the goal's ``motion_bias``); ``admitted`` is what the REAL
+    :class:`~percept.harness.tier0.MotionGate` escalated with that condition. Comparing ``max_value``
+    across rows is meaningful only against each row's own threshold — the scales differ.
+    """
+
+    stat: str
+    effective_threshold: float
+    admitted: int
+    max_value: float = 0.0
+    median_value: float = 0.0
+    mean_value: float = 0.0
+    first_admit_ts: float | None = None
+    active: bool = False
+
+    @property
+    def headroom(self) -> float:
+        """``max_value - effective_threshold``: how far the loudest frame was from clearing. Negative
+        means nothing in the whole run came close; a small negative means a near miss."""
+        return self.max_value - self.effective_threshold
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "stat": self.stat, "effective_threshold": self.effective_threshold,
+            "admitted": self.admitted, "max_value": self.max_value,
+            "median_value": self.median_value, "mean_value": self.mean_value,
+            "headroom": self.headroom, "first_admit_ts": self.first_admit_ts, "active": self.active,
+        }
+
+
+@dataclass(frozen=True)
+class GoalDiagnosis:
+    """Everything the dry run learned about ONE goal."""
+
+    goal_id: str
+    condition: str
+    active_stat: str
+    gate_on: str
+    ego_compensate: bool
+    cadence_s: float | None
+    scheduled: bool
+    region_hint: bool
+    detectors: tuple[str, ...]
+    admitted: int
+    suppressions: dict[str, int]
+    stats: tuple[StatDiagnosis, ...]
+    observable: bool = True
+    unobservable_reason: str | None = None
+
+    @property
+    def active(self) -> StatDiagnosis | None:
+        for s in self.stats:
+            if s.active:
+                return s
+        return None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "goal_id": self.goal_id, "condition": self.condition, "active_stat": self.active_stat,
+            "gate_on": self.gate_on, "ego_compensate": self.ego_compensate,
+            "cadence_s": self.cadence_s, "scheduled": self.scheduled,
+            "region_hint": self.region_hint, "detectors": list(self.detectors),
+            "admitted": self.admitted, "suppressions": dict(self.suppressions),
+            "stats": [s.to_dict() for s in self.stats],
+            "observable": self.observable, "unobservable_reason": self.unobservable_reason,
+        }
+
+
+@dataclass(frozen=True)
+class PlanDiagnosis:
+    """What was compiled, from which profile, and which admission signals could feed it."""
+
+    plan_hash: str | None
+    plan_mode: str
+    goal_ids: tuple[str, ...]
+    salience_stat: str
+    stat_thresholds: dict[str, float]
+    profile_name: str | None
+    profile_key: tuple[str, str, str] | None
+    profile_source: str
+    source_profile: str | None
+    source_profile_note: str
+    signals: dict[str, bool]
+    signal_notes: dict[str, str]
+    conditions: tuple[dict[str, Any], ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "plan_hash": self.plan_hash, "plan_mode": self.plan_mode,
+            "goal_ids": list(self.goal_ids), "salience_stat": self.salience_stat,
+            "stat_thresholds": dict(self.stat_thresholds),
+            "profile": {
+                "name": self.profile_name,
+                "key": list(self.profile_key) if self.profile_key else None,
+                "source": self.profile_source,
+            },
+            "source_profile": {"active": self.source_profile, "note": self.source_profile_note},
+            "signals": dict(self.signals), "signal_notes": dict(self.signal_notes),
+            "conditions": [dict(c) for c in self.conditions],
+        }
+
+
+@dataclass(frozen=True)
+class DoctorReport:
+    """The whole dry run: source, plan, per-goal admissions, the D8a funnel, findings, exit code."""
+
+    source: SourceDiagnosis
+    plan: PlanDiagnosis
+    goals: tuple[GoalDiagnosis, ...]
+    summary: TraceSummary
+    findings: tuple[Finding, ...] = ()
+    exit_code: int = EXIT_OK
+    judge_calls: int = 0
+    trace_path: str | None = None
+    manifest: RunTraceManifest | None = None
+
+    @property
+    def admitted(self) -> int:
+        """Frames admitted by AT LEAST ONE goal — the run-level candidate count."""
+        return self.summary.admitted
+
+    def has(self, code: str) -> bool:
+        return any(f.code == code for f in self.findings)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": "percept.doctor/1",
+            "exit_code": self.exit_code,
+            "judge_calls": self.judge_calls,
+            "source": self.source.to_dict(),
+            "plan": self.plan.to_dict(),
+            "goals": [g.to_dict() for g in self.goals],
+            "funnel": self.summary.to_dict(),
+            "findings": [f.to_dict() for f in self.findings],
+            "trace_path": self.trace_path,
+        }
+
+    def to_json(self, *, indent: int | None = 2) -> str:
+        return json.dumps(self.to_dict(), indent=indent, default=str)
+
+    def render(self) -> str:
+        return render_report(self)
+
+
+# ---------------------------------------------------------------------------
+# Capture
+# ---------------------------------------------------------------------------
+
+
+def _resolve_timebase_for(source: Any, requested: str):
+    """The runtime's OWN timebase resolution — imported, never re-implemented here."""
+    from .runtime.worker import _resolve_timebase  # noqa: PLC0415 - runtime extra, lazy
+
+    return _resolve_timebase(source, requested)
+
+
+def _capture(
+    uri: str, *, fps: float, max_frames: int | None, timebase: str
+) -> tuple[list[tuple[float, Frame]], str | None]:
+    """Pull ``(t, gate_frame)`` pairs through the runtime's real capture path.
+
+    Reuses :func:`percept.runtime.source.open_source` so doctor decodes exactly what a run decodes
+    (same downsample, same frame stepping, same ``t`` origin). The judged JPEG each frame carries is
+    dropped immediately — a dry run never retains media. Returns ``(frames, error)``; ``error`` is a
+    message when the source could not be opened or read, and is never raised at the caller.
+    """
+    import asyncio  # noqa: PLC0415
+
+    frames: list[tuple[float, Frame]] = []
+
+    async def _pull() -> None:
+        from .runtime.source import open_source  # noqa: PLC0415 - runtime extra, lazy
+
+        agen = open_source(uri, fps=fps, timebase=timebase)
+        try:
+            async for t, gate_frame, _judge_frame in agen:
+                frames.append((float(t), gate_frame))
+                if max_frames is not None and len(frames) >= max_frames:
+                    break
+        finally:
+            await agen.aclose()
+
+    try:
+        asyncio.run(_pull())
+    except Exception as exc:  # noqa: BLE001 — a source failure is a REPORT, not a traceback
+        return frames, f"{type(exc).__name__}: {exc}"
+    return frames, None
+
+
+# ---------------------------------------------------------------------------
+# The dry run
+# ---------------------------------------------------------------------------
+
+
+def _coerce_goals(goals: Iterable[Any] | None) -> list[Goal]:
+    """Accept ``Goal``s or plain condition strings; anything else is an invalid configuration."""
+    out: list[Goal] = []
+    for i, g in enumerate(goals or ()):
+        if isinstance(g, Goal):
+            out.append(g)
+        elif isinstance(g, str) and g.strip():
+            out.append(Goal(id=f"g{i}", condition=g.strip(), say=g.strip()))
+        else:
+            raise DoctorConfigError(f"goal #{i} must be a Goal or a non-empty condition string, got {g!r}")
+    return out
+
+
+def _profile_settings(
+    *,
+    goal_temporality: Any,
+    camera_mount: Any,
+    start_state: Any,
+    base: Settings | None,
+) -> tuple[Settings, str, str | None, tuple[str, str, str] | None, str]:
+    """Resolve the situation axes into REAL settings via the shipped profile seams.
+
+    Returns ``(settings, plan_mode, profile_name, profile_key, profile_source)``. When no axis is
+    given, the deployment's own :func:`~percept.config.load_settings` values are used unchanged and
+    ``profile_source`` is ``"settings"`` — doctor never invents a profile the run would not have had.
+    """
+    if goal_temporality is None and camera_mount is None and start_state is None:
+        settings = base if base is not None else load_settings()
+        return settings, "single", None, None, "settings"
+    from .profile_resolution import resolve_profile  # noqa: PLC0415
+    from .profile_wiring import resolve_watch_profile  # noqa: PLC0415
+    from .profiles_default import seed  # noqa: PLC0415
+    from .watchprofile import DEFAULT_REGISTRY, WatchProfileError  # noqa: PLC0415
+
+    seed(DEFAULT_REGISTRY)
+    try:
+        profile, _overrides = resolve_profile(goal_temporality, camera_mount, start_state)
+        resolved = resolve_watch_profile(profile, base=base)
+    except WatchProfileError as exc:
+        raise DoctorConfigError(f"profile resolution failed: {exc}") from exc
+    return resolved.settings, resolved.plan_mode, profile.name, profile.key, "profile_resolution"
+
+
+def _stat_thresholds(settings: Settings) -> dict[str, float]:
+    """The per-stat calibrated cutoffs, read off the SAME fields the worker compiles with.
+
+    THREE separate numbers, deliberately: ``block_max``/``p95`` sit on a higher value scale than the
+    whole-frame ``mean`` and are never compared to the mean's cutoff.
+    """
+    return {
+        "mean": float(settings.edge.motion_gate),
+        "block_max": float(settings.edge.motion_gate_block_max),
+        "p95": float(settings.edge.motion_gate_p95),
+    }
+
+
+def _compile(goals: Sequence[Goal], settings: Settings, *, stat: str | None = None) -> WatchSpec:
+    """The REAL :func:`compile_watchspec`, optionally forcing a deployment-wide salience stat."""
+    return compile_watchspec(
+        goals,
+        threshold=settings.edge.motion_gate,
+        salience_stat=stat or settings.edge.salience_stat,
+        ego_compensate=settings.edge.ego_compensate,
+        stat_thresholds=_stat_thresholds(settings),
+    )
+
+
+def _condition_for(spec: WatchSpec, goal_id: str) -> WatchCondition | None:
+    for c in spec.conditions:
+        if c.goal_id == goal_id:
+            return c
+    return None
+
+
+def _replay(
+    condition: WatchCondition, frames: Sequence[tuple[float, Frame]], settings: Settings
+) -> tuple[list[bool], list[str]]:
+    """Replay ONE condition through the REAL gate; return ``(escalated, reason)`` per frame.
+
+    The admissions come from :class:`~percept.harness.tier0.MotionGate` itself (a one-condition
+    spec), so a doctor number can never drift from what the runtime would have done. The REASON for
+    each non-admit is attributed here, in the gate's own precedence order (schedule, then cadence,
+    then the channel's value against the condition's threshold), and any frame the gate refused that
+    this attribution cannot explain is reported as ``"unexplained"`` rather than silently bucketed.
+    """
+    gate = MotionGate(WatchSpec(conditions=[condition]), settings=settings)
+    escalated: list[bool] = []
+    reasons: list[str] = []
+    last_escalate = -math.inf
+    prev: Frame | None = None
+    for i, (t, frame) in enumerate(frames):
+        decision = gate.evaluate(frame, ts=t)
+        escalated.append(decision.escalate)
+        if decision.escalate:
+            last_escalate = t
+            reasons.append("admitted")
+            prev = frame
+            continue
+        if not schedule_active(condition.schedule, None):
+            reasons.append("out_of_schedule")
+        elif condition.cadence_s is not None and t - last_escalate < condition.cadence_s:
+            reasons.append("cadence_not_elapsed")
+        elif condition.gate_on in ("structural", "semantic"):
+            reasons.append("signal_unavailable")
+        elif i == 0 or prev is None:
+            reasons.append("no_predecessor_frame")
+        elif condition.gate_on == "fixed":
+            reasons.append("cadence_not_elapsed")
+        else:
+            reasons.append("below_threshold")
+        prev = frame
+    return escalated, reasons
+
+
+def run_doctor(
+    *,
+    source: str | None = None,
+    frames: Sequence[tuple[float, Frame]] | None = None,
+    goals: Iterable[Any] | None = None,
+    fps: float = 2.0,
+    max_frames: int | None = None,
+    timebase: str = "auto",
+    goal_temporality: Any = None,
+    camera_mount: Any = None,
+    start_state: Any = None,
+    settings: Settings | None = None,
+    trace_out: str | None = None,
+) -> DoctorReport:
+    """Run the tier-0 dry run and build the :class:`DoctorReport`. Spends no judge call, ever.
+
+    Either ``source`` (a cv2-readable URI decoded through the runtime's own capture path) or
+    ``frames`` (an explicit ``[(t, Frame), ...]`` stream, which is how the tests drive it) must be
+    given. ``goals`` accepts :class:`~percept.adapters.Goal` objects or plain condition strings.
+
+    Raises :class:`DoctorConfigError` for an invalid configuration; every other failure — including
+    a source that will not open — is REPORTED (with an exit code), not raised.
+    """
+    if (source is None) == (frames is None):
+        raise DoctorConfigError("give exactly one of source= or frames=")
+    goal_list = _coerce_goals(goals)
+    if not goal_list:
+        raise DoctorConfigError("at least one goal is required — doctor is plan-AWARE by definition")
+    if timebase not in ("auto", "media", "wall"):
+        raise DoctorConfigError(f"timebase must be auto/media/wall, got {timebase!r}")
+
+    cfg, plan_mode, profile_name, profile_key, profile_source = _profile_settings(
+        goal_temporality=goal_temporality, camera_mount=camera_mount,
+        start_state=start_state, base=settings,
+    )
+
+    # -- 1. the source ----------------------------------------------------
+    findings: list[Finding] = []
+    error: str | None = None
+    tb_requested = tb_resolved = tb_reason = None
+    if source is not None:
+        tb = _resolve_timebase_for(source, timebase)
+        tb_requested, tb_resolved, tb_reason = tb.requested, tb.resolved, tb.reason
+        captured, error = _capture(source, fps=fps, max_frames=max_frames, timebase=tb.resolved)
+    else:
+        captured = [(float(t), f) for t, f in (frames or ())]
+        if max_frames is not None:
+            captured = captured[:max_frames]
+        tb_requested, tb_resolved, tb_reason = timebase, "media", "deterministic-stream"
+
+    src = SourceDiagnosis(
+        uri=source, opened=error is None, frames=len(captured), error=error,
+        first_ts=captured[0][0] if captured else None,
+        last_ts=captured[-1][0] if captured else None,
+        requested_fps=fps if source is not None else None,
+        gate_frame=f"{captured[0][1].w}x{captured[0][1].h}" if captured else None,
+        timebase_requested=tb_requested, timebase_resolved=tb_resolved, timebase_reason=tb_reason,
+    )
+    if error is not None:
+        findings.append(Finding(SOURCE_FAILED, "error", f"source did not open/read: {error}"))
+    elif not captured:
+        findings.append(Finding(NO_FRAMES, "error", "the source opened but delivered zero frames"))
+    elif len(captured) == 1:
+        findings.append(Finding(
+            SINGLE_FRAME_RUN, "warn",
+            "only one frame arrived; motion needs a predecessor, so nothing can admit on motion",
+        ))
+
+    # -- 2. the plan ------------------------------------------------------
+    spec = _compile(goal_list, cfg)
+    compiled_ids = tuple(c.goal_id for c in spec.conditions)
+    if not spec.conditions:
+        findings.append(Finding(
+            PLAN_EMPTY, "error",
+            "no goal compiled to a WatchCondition — every goal's state['type'] is outside "
+            "watch/process, so the tier-0 gate has nothing to look for",
+        ))
+
+    signals = {
+        "motion": True,
+        "structural": False,
+        "semantic": False,
+        "audio": False,
+    }
+    signal_notes = {
+        "motion": "computed here from the decoded gate frames (pure CV, no model call)",
+        "structural": "0.0 — no structural adapter is wired in the reference gate (percept-edge CLIP/pose)",
+        "semantic": "0.0 — no semantic adapter is wired in the reference gate (percept-edge CLIP)",
+        "audio": "no audio source was opened by this dry run; energy-gated goals cannot be observed",
+    }
+
+    # -- 3. per-goal replay, per stat ------------------------------------
+    thresholds = _stat_thresholds(cfg)
+    specs_by_stat = {stat: _compile(goal_list, cfg, stat=stat) for stat in SALIENCE_STATS}
+    # ONE pass over the pixels per frame pair produces all three statistics (they are pure selectors
+    # over the same per-block score list) — the distributions below cost what one gate pass costs.
+    per_frame_stats: list[dict[str, float]] = []
+    prev: Frame | None = None
+    for _t, f in captured:
+        per_frame_stats.append(salience_stats(prev, f))
+        prev = f
+
+    goal_diags: list[GoalDiagnosis] = []
+    admitted_idx: set[int] = set()   # frame INDEXES (not ts: two frames may share a timestamp)
+    for goal in goal_list:
+        active_condition = _condition_for(spec, goal.id)
+        if active_condition is None:
+            continue
+        stat_rows: list[StatDiagnosis] = []
+        active_reasons: dict[str, int] = {}
+        active_admitted = 0
+        for stat in SALIENCE_STATS:
+            cond = _condition_for(specs_by_stat[stat], goal.id)
+            if cond is None:  # pragma: no cover - defensive: same goals compiled with same rules
+                continue
+            escalated, reasons = _replay(cond, captured, cfg)
+            values = [s[stat] for s in per_frame_stats]
+            is_active = stat == active_condition.salience_stat
+            first_ts = next((t for (t, _f), e in zip(captured, escalated) if e), None)
+            stat_rows.append(StatDiagnosis(
+                stat=stat,
+                effective_threshold=float(cond.threshold),
+                admitted=sum(1 for e in escalated if e),
+                max_value=max(values) if values else 0.0,
+                median_value=statistics.median(values) if values else 0.0,
+                mean_value=statistics.fmean(values) if values else 0.0,
+                first_admit_ts=first_ts,
+                active=is_active,
+            ))
+            if is_active:
+                active_admitted = sum(1 for e in escalated if e)
+                for i, r in enumerate(reasons):
+                    if r == "admitted":
+                        admitted_idx.add(i)
+                    else:
+                        active_reasons[r] = active_reasons.get(r, 0) + 1
+
+        observable = True
+        unobservable_reason: str | None = None
+        if active_condition.gate_on in ("structural", "semantic") and not signals[active_condition.gate_on]:
+            observable = False
+            unobservable_reason = (
+                f"goal gates on '{active_condition.gate_on}', which no adapter feeds in this "
+                "topology — the signal is structurally 0.0, so the plan cannot be observed"
+            )
+        goal_diags.append(GoalDiagnosis(
+            goal_id=goal.id,
+            condition=goal.condition,
+            active_stat=active_condition.salience_stat,
+            gate_on=active_condition.gate_on,
+            ego_compensate=bool(active_condition.ego_compensate),
+            cadence_s=active_condition.cadence_s,
+            scheduled=active_condition.schedule is not None,
+            region_hint=active_condition.region_hint is not None,
+            detectors=tuple(active_condition.detectors or ()),
+            admitted=active_admitted,
+            suppressions=active_reasons,
+            stats=tuple(stat_rows),
+            observable=observable,
+            unobservable_reason=unobservable_reason,
+        ))
+
+    # -- 4. the funnel, derived from D8a (never recounted here) -----------
+    manifest = RunTraceManifest.create(
+        source=source or "stream",
+        driver="doctor",
+        plan=PlanIdentity.from_goals(goal_list, plan_mode=plan_mode),
+        components=(
+            ComponentIdentity(role="vision", name="tier0-motion-gate", model=None),
+            ComponentIdentity(role="profile", name=profile_name or "settings"),
+        ),
+        policy=TracePolicy.diagnostic(),
+        baseline=BaselineAssumption.every_observation(len(captured)),
+    )
+    recorder = TraceRecorder(manifest)
+    for i, (t, _f) in enumerate(captured):
+        values = per_frame_stats[i]
+        recorder.record(
+            OBSERVATION_STAGE, source_ts=t, trace_id=f"{manifest.source}@{i}",
+            escalate=i in admitted_idx, **values,
+        )
+        if i in admitted_idx:
+            recorder.record(ADMISSION_STAGE, source_ts=t, trace_id=f"{manifest.source}@{i}")
+    recorder.close()
+    summary = recorder.summary()
+    trace_path = str(recorder.write_json(trace_out)) if trace_out else None
+
+    # -- 5. findings + exit code -----------------------------------------
+    total_admitted = summary.admitted
+    if captured and total_admitted == 0:
+        findings.append(Finding(
+            ZERO_ADMITS_ON_FIXTURE, "warn",
+            f"no goal admitted a single candidate across {len(captured)} frames. This is DIAGNOSTIC, "
+            "not automatically a failure: a quiet scene under a motion-gated watch correctly admits "
+            "nothing and saves every model call. Check the per-stat table — if an alternative "
+            "statistic WOULD have admitted, the eye is mis-selected, not the scene",
+        ))
+    for g in goal_diags:
+        if not g.observable:
+            findings.append(Finding(SIGNAL_UNAVAILABLE, "error", f"{g.goal_id}: {g.unobservable_reason}"))
+        active = g.active
+        better = [s for s in g.stats if not s.active and s.admitted > (active.admitted if active else 0)]
+        if better:
+            names = ", ".join(f"{s.stat} would admit {s.admitted}" for s in better)
+            findings.append(Finding(
+                ALTERNATIVE_STAT_WOULD_ADMIT, "warn",
+                f"{g.goal_id}: active stat '{g.active_stat}' admitted {g.admitted}; {names} "
+                "(each against its OWN calibrated threshold)",
+            ))
+        if g.ego_compensate:
+            findings.append(Finding(
+                EGO_COMPENSATED_GATE, "info",
+                f"{g.goal_id}: ego-compensation is ON, so the gate escalates on the whole-frame "
+                "ego RESIDUAL, not on the block statistics printed above. The admitted counts are "
+                "still the real gate's; the value columns describe the uncompensated frames",
+            ))
+        if g.suppressions.get("unexplained"):
+            findings.append(Finding(
+                UNEXPLAINED_SUPPRESSION, "error",
+                f"{g.goal_id}: {g.suppressions['unexplained']} non-admits could not be attributed to "
+                "a rule — this is a doctor bug, please report it with this JSON",
+            ))
+
+    exit_code = EXIT_OK
+    if src.error is not None or not captured:
+        exit_code = EXIT_SOURCE_FAILURE
+    elif not spec.conditions or any(not g.observable for g in goal_diags):
+        exit_code = EXIT_PLAN_UNOBSERVABLE
+    elif total_admitted == 0:
+        exit_code = EXIT_ZERO_COVERAGE
+
+    plan = PlanDiagnosis(
+        plan_hash=manifest.plan.plan_hash,
+        plan_mode=plan_mode,
+        goal_ids=compiled_ids,
+        salience_stat=cfg.edge.salience_stat,
+        stat_thresholds=thresholds,
+        profile_name=profile_name,
+        profile_key=profile_key,
+        profile_source=profile_source,
+        source_profile=None,
+        source_profile_note=(
+            "per-source profiles (card D7) are not present in this build; the active tuning comes "
+            f"from {profile_source}"
+        ),
+        signals=signals,
+        signal_notes=signal_notes,
+        conditions=tuple(
+            {
+                "goal_id": c.goal_id, "threshold": c.threshold, "salience_stat": c.salience_stat,
+                "gate_on": c.gate_on, "cadence_s": c.cadence_s,
+                "ego_compensate": c.ego_compensate,
+                "scheduled": c.schedule is not None, "region_hint": c.region_hint is not None,
+                "detectors": list(c.detectors or ()),
+            }
+            for c in spec.conditions
+        ),
+    )
+
+    return DoctorReport(
+        source=src, plan=plan, goals=tuple(goal_diags), summary=summary,
+        findings=tuple(findings), exit_code=exit_code, judge_calls=0,
+        trace_path=trace_path, manifest=manifest,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Rendering
+# ---------------------------------------------------------------------------
+
+_W = 78
+
+
+def _rule(title: str = "") -> str:
+    if not title:
+        return "─" * _W
+    head = f"── {title} "
+    return head + "─" * max(0, _W - len(head))
+
+
+def _fmt(v: Any, spec: str = ".4f") -> str:
+    if v is None:
+        return "—"
+    if isinstance(v, float):
+        return format(v, spec)
+    return str(v)
+
+
+def render_funnel(summary: TraceSummary) -> str:
+    """The D8a primary-metrics funnel panel — every number READ off :class:`TraceSummary`."""
+    lines = [_rule("FUNNEL (primary metrics, percept.tracing.TraceSummary)")]
+    rows = [
+        ("observed", f"{summary.observed} {summary.observed_unit}"),
+        ("admitted", f"{summary.admitted}  (evidence union {summary.admitted_evidence_union_s:.2f}s)"),
+        ("judge started", str(summary.judge_started)),
+        ("judge completed", str(summary.judge_completed)),
+        ("judge degraded/dropped", f"{summary.judge_degraded} / {summary.judge_dropped}"),
+        ("gate outcomes", ", ".join(f"{k}={v}" for k, v in sorted(summary.gate_outcomes.items())) or "—"),
+        ("incidents", str(summary.incidents)),
+        ("watch duration", f"{summary.watch_duration_s:.2f}s (healthy {summary.source_healthy_s:.2f}s)"),
+        ("cost", f"${summary.cost_usd:.4f}  in={summary.input_tokens:.0f} out={summary.output_tokens:.0f}"),
+        ("savings", summary.savings_text()),
+        ("records", f"retained={summary.records_retained} dropped={summary.records_dropped}"),
+    ]
+    for label, value in rows:
+        lines.append(f"  {label:<24}{value}")
+    lines.append("  (a dry run judges nothing: judge counts are structurally 0 and savings is '—',")
+    lines.append("   because with no actual call there is no measured token cost to project.)")
+    return "\n".join(lines)
+
+
+def render_report(report: DoctorReport) -> str:
+    """The human panel set. Machine consumers should read :meth:`DoctorReport.to_dict` instead."""
+    s = report.source
+    out: list[str] = [_rule("PERCEPT DOCTOR — tier-0 dry run (zero judge spend)")]
+
+    out.append(_rule("SOURCE"))
+    out.append(f"  uri                     {s.uri or '<in-memory stream>'}")
+    out.append(f"  opened                  {'yes' if s.opened else 'NO'}"
+               + (f"   ({s.error})" if s.error else ""))
+    out.append(f"  frames received         {s.frames}")
+    if s.frames:
+        out.append(f"  source t range          {_fmt(s.first_ts, '.3f')} … {_fmt(s.last_ts, '.3f')}  "
+                   f"({s.duration_s:.2f}s)")
+        out.append(f"  gate frame              {s.gate_frame}")
+        out.append(f"  fps requested/delivered {_fmt(s.requested_fps, '.2f')} / {_fmt(s.delivered_fps, '.2f')}")
+    out.append(f"  timebase                {s.timebase_requested} -> {s.timebase_resolved}  "
+               f"({s.timebase_reason})")
+
+    p = report.plan
+    out.append(_rule("PLAN"))
+    out.append(f"  plan_hash               {p.plan_hash}")
+    out.append(f"  plan_mode               {p.plan_mode}")
+    out.append(f"  compiled goals          {len(p.conditions)}  {list(p.goal_ids)}")
+    out.append(f"  deployment salience     {p.salience_stat}")
+    out.append(f"  profile                 {p.profile_name or '(none — deployment settings)'}"
+               f"   [{p.profile_source}]")
+    if p.profile_key:
+        out.append(f"  profile key             {tuple(p.profile_key)}")
+    out.append(f"  source profile (D7)     {p.source_profile or 'not available'} — {p.source_profile_note}")
+
+    out.append(_rule("ADMISSION SIGNALS"))
+    for name, ok in p.signals.items():
+        out.append(f"  {name:<12}{'available' if ok else 'UNAVAILABLE':<14}{p.signal_notes[name]}")
+
+    for g in report.goals:
+        out.append(_rule(f"GOAL {g.goal_id}"))
+        out.append(f"  condition               {g.condition}")
+        out.append(f"  active stat / gate_on   {g.active_stat} / {g.gate_on}"
+                   + ("   [ego-compensated]" if g.ego_compensate else ""))
+        out.append(f"  cadence / schedule      {_fmt(g.cadence_s, '.2f')} / "
+                   f"{'armed by schedule' if g.scheduled else 'always armed'}")
+        out.append(f"  admitted                {g.admitted}")
+        out.append("  SALIENCE STATS — each against ITS OWN calibrated threshold (different scales,")
+        out.append("  never one cutoff): mean is whole-frame; block_max/p95 are localized blocks.")
+        out.append(f"    {'stat':<11}{'max':>9}{'median':>10}{'mean':>10}"
+                   f"{'threshold':>12}{'admitted':>10}   ")
+        for st in g.stats:
+            mark = " <- active" if st.active else ""
+            out.append(f"    {st.stat:<11}{st.max_value:>9.4f}{st.median_value:>10.4f}"
+                       f"{st.mean_value:>10.4f}{st.effective_threshold:>12.3f}{st.admitted:>10}{mark}")
+        if g.suppressions:
+            out.append("  WHICH RULE SUPPRESSED THE NON-ADMITS")
+            for reason in SUPPRESSION_REASONS:
+                n = g.suppressions.get(reason)
+                if n:
+                    out.append(f"    {reason:<24}{n}")
+        if not g.observable:
+            out.append(f"  ! UNOBSERVABLE           {g.unobservable_reason}")
+
+    out.append(render_funnel(report.summary))
+
+    out.append(_rule("FINDINGS"))
+    if not report.findings:
+        out.append("  none — the run completed with no hard incompatibility.")
+    for f in report.findings:
+        out.append(f"  [{f.severity.upper():<5}] {f.code}")
+        for line in _wrap(f.detail, _W - 4):
+            out.append(f"      {line}")
+    if report.trace_path:
+        out.append(f"  trace artifact written: {report.trace_path}")
+    out.append(f"  judge calls spent: {report.judge_calls}   exit code: {report.exit_code}")
+    out.append(_rule())
+    return "\n".join(out)
+
+
+def _wrap(text: str, width: int) -> list[str]:
+    words, lines, cur = text.split(), [], ""
+    for w in words:
+        if cur and len(cur) + 1 + len(w) > width:
+            lines.append(cur)
+            cur = w
+        else:
+            cur = f"{cur} {w}".strip()
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="percept-doctor",
+        description=(
+            "Tier-0 dry run: did the source open, what plan compiled, what admitted, and WHICH RULE "
+            "suppressed the rest. Pure CV — no API key, no judge call, no cost."
+        ),
+    )
+    p.add_argument("--source", required=True, help="a video path / rtsp:// URL / webcam:0")
+    p.add_argument("--goal", action="append", default=[], help="a plain-language condition (repeatable)")
+    p.add_argument("--fps", type=float, default=2.0, help="capture rate to pull (default 2.0)")
+    p.add_argument("--max-frames", type=int, default=None, help="stop after N frames (default: all)")
+    p.add_argument("--timebase", default="auto", choices=("auto", "media", "wall"))
+    p.add_argument("--goal-temporality", default=None, choices=("stative", "dynamic"))
+    p.add_argument("--camera-mount", default=None, choices=("fixed", "wearable", "glasses", "handheld"))
+    p.add_argument("--start-state", default=None, choices=("start_anchored", "transition"))
+    p.add_argument("--trace-out", default=None, help="write the D8a trace artifact (JSON) here")
+    p.add_argument("--json", action="store_true", help="emit the machine-readable report on stdout")
+    return p
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """``percept-doctor`` entry point. Exit codes: 0 ok, 2 zero coverage, 3 source failure,
+    4 plan unobservable, 5 invalid configuration."""
+    args = build_parser().parse_args(list(argv) if argv is not None else None)
+    if not args.goal:
+        print("percept-doctor: at least one --goal is required (doctor is plan-aware)", file=sys.stderr)
+        return EXIT_INVALID_CONFIG
+    try:
+        report = run_doctor(
+            source=args.source,
+            goals=args.goal,
+            fps=args.fps,
+            max_frames=args.max_frames,
+            timebase=args.timebase,
+            goal_temporality=args.goal_temporality,
+            camera_mount=args.camera_mount,
+            start_state=args.start_state,
+            trace_out=args.trace_out,
+        )
+    except DoctorConfigError as exc:
+        print(f"percept-doctor: invalid configuration: {exc}", file=sys.stderr)
+        return EXIT_INVALID_CONFIG
+    print(report.to_json() if args.json else report.render())
+    return report.exit_code
+
+
+__all__ = [
+    "EXIT_OK",
+    "EXIT_ZERO_COVERAGE",
+    "EXIT_SOURCE_FAILURE",
+    "EXIT_PLAN_UNOBSERVABLE",
+    "EXIT_INVALID_CONFIG",
+    "SUPPRESSION_REASONS",
+    "ZERO_ADMITS_ON_FIXTURE",
+    "ALTERNATIVE_STAT_WOULD_ADMIT",
+    "SIGNAL_UNAVAILABLE",
+    "DoctorConfigError",
+    "DoctorReport",
+    "Finding",
+    "GoalDiagnosis",
+    "PlanDiagnosis",
+    "SourceDiagnosis",
+    "StatDiagnosis",
+    "build_parser",
+    "main",
+    "render_funnel",
+    "render_report",
+    "run_doctor",
+]

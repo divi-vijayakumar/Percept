@@ -197,18 +197,22 @@ def _motion_score_region(a: Frame, b: Frame, region: Box) -> float:
     return total / (n * 255.0)
 
 
-def _motion_score_blocks(
-    a: Frame, b: Frame, region: Box | None, block_grid: tuple[int, int], stat: str
-) -> float:
-    """Localized salience: partition the active area into ``Gx x Gy`` blocks, aggregate per ``stat``.
+def _block_scores(
+    a: Frame, b: Frame, region: Box | None, block_grid: tuple[int, int]
+) -> tuple[list[float], int, int]:
+    """The per-block salience list for the active area, plus ``(total_abs_diff, area_px)``.
 
-    The active area is the full frame, or the ``region`` (watch-out zone) bounds. Block boundaries
-    are floor-of-product (``bx(i) = x0 + (i * aw) // Gx``): blocks differ by <=1 px, tile the area
-    with no gaps/overlaps, and are bit-identical to the JS edge (``i * aw`` stays far under 2**53).
-    Each block's score is ``sum_abs_diff / (block_px * 255)`` — an integer sum over an integer
-    denominator, so numpy and stdlib return the same float. ``block_max`` = the top block; ``p95`` =
-    the nearest-rank 95th-percentile block (integer rank, no float percentile). A degenerate block
-    (0 px, only possible when the area is smaller than the grid) contributes ``0.0``.
+    ONE pass over the pixels; every salience statistic in this module is a pure selector over what
+    this returns (``block_max`` = ``max``, ``p95`` = nearest-rank, ``mean`` =
+    ``total / (area_px * 255)``, because the blocks tile the area exactly with no gaps or overlaps).
+    That is what lets :func:`salience_stats` price all three statistics for the cost of one — and
+    what guarantees ``percept doctor``'s counterfactual table cannot disagree with the live gate.
+
+    Block boundaries are floor-of-product (``bx(i) = x0 + (i * aw) // Gx``): blocks differ by <=1 px
+    and are bit-identical to the JS edge (``i * aw`` stays far under 2**53). Each block's score is
+    ``sum_abs_diff / (block_px * 255)`` — an integer sum over an integer denominator, so numpy and
+    stdlib return the same float. A degenerate block (0 px, only possible when the area is smaller
+    than the grid) contributes ``0.0``.
     """
     w, h = a.w, a.h
     if region is not None:
@@ -217,16 +221,17 @@ def _motion_score_blocks(
         x0, y0, x1, y1 = 0, 0, w, h
     aw, ah = x1 - x0, y1 - y0
     if aw <= 0 or ah <= 0:
-        return 0.0
+        return [], 0, 0
     gx, gy = int(block_grid[0]), int(block_grid[1])
     if gx <= 0 or gy <= 0:
-        return 0.0
+        return [], 0, 0
     diff = None
     if _np is not None:
         pa = _np.frombuffer(bytes(a.pixels), dtype=_np.uint8).astype(_np.int16).reshape(h, w)
         pb = _np.frombuffer(bytes(b.pixels), dtype=_np.uint8).astype(_np.int16).reshape(h, w)
         diff = _np.abs(pa - pb)
     scores: list[float] = []
+    grand_total = 0
     for j in range(gy):
         by0 = y0 + (j * ah) // gy
         by1 = y0 + ((j + 1) * ah) // gy
@@ -246,12 +251,66 @@ def _motion_score_blocks(
                     for col in range(bx0, bx1):
                         pav, pbv = a.pixels[base + col], b.pixels[base + col]
                         total += pav - pbv if pav >= pbv else pbv - pav
+            grand_total += total
             scores.append(total / (block_px * 255.0))
+    return scores, grand_total, aw * ah
+
+
+def _motion_score_blocks(
+    a: Frame, b: Frame, region: Box | None, block_grid: tuple[int, int], stat: str
+) -> float:
+    """Localized salience: partition the active area into blocks (:func:`_block_scores`), select
+    per ``stat``. ``block_max`` = the top block; ``p95`` = the nearest-rank 95th-percentile block
+    (integer rank, no float percentile)."""
+    scores, _total, _px = _block_scores(a, b, region, block_grid)
+    if not scores:
+        return 0.0
     if stat == "block_max":
         return max(scores)
     if stat == "p95":
         return _nearest_rank_p95(scores)
     raise ValueError(f"unknown salience stat {stat!r}; expected 'mean', 'block_max', or 'p95'")
+
+
+#: The salience statistics :func:`salience_stats` reports, in the order a diagnostic renders them.
+#: They live on DIFFERENT VALUE SCALES and each carries its own calibrated cutoff
+#: (``EdgeSettings.motion_gate`` / ``motion_gate_block_max`` / ``motion_gate_p95``) — comparing them
+#: to one threshold is a category error, so nothing here ever returns a single "the" salience.
+SALIENCE_STATS: tuple[str, ...] = ("mean", "block_max", "p95")
+
+
+def salience_stats(
+    prev_frame: Any,
+    frame: Any,
+    *,
+    region: Box | None = None,
+    block_grid: tuple[int, int] = (8, 6),
+) -> dict[str, float]:
+    """ALL three salience statistics for one frame pair, from ONE pass over the pixels.
+
+    Returns ``{"mean": ..., "block_max": ..., "p95": ...}``. Each value is bit-identical to
+    :func:`motion_score` called with that ``stat`` (a release-gated parity invariant — see
+    ``tests/test_doctor.py``), so a diagnostic that prints all three and a gate that escalates on one
+    can never disagree about what the frame looked like.
+
+    ``prev_frame is None`` -> all zeros (no predecessor to diff against).
+    """
+    if prev_frame is None:
+        return {stat: 0.0 for stat in SALIENCE_STATS}
+    a = _as_frame(prev_frame)
+    b = _as_frame(frame)
+    if a.w != b.w or a.h != b.h:
+        raise ValueError(f"frame size mismatch: {a.w}x{a.h} vs {b.w}x{b.h}")
+    scores, total, area_px = _block_scores(a, b, region, block_grid)
+    if not scores or area_px == 0:
+        return {stat: 0.0 for stat in SALIENCE_STATS}
+    return {
+        # The blocks tile the active area exactly, so summing their integer numerators over the
+        # integer area denominator IS the whole-area mean motion_score computes on its own path.
+        "mean": total / (area_px * 255.0),
+        "block_max": max(scores),
+        "p95": _nearest_rank_p95(scores),
+    }
 
 
 def _nearest_rank_p95(scores: list[float]) -> float:
@@ -1036,6 +1095,8 @@ __all__ = [
     "Frame",
     "gray_frame",
     "motion_score",
+    "salience_stats",
+    "SALIENCE_STATS",
     "ego_residual_score",
     "CivilTime",
     "civil_from_epoch",
