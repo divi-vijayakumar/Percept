@@ -97,6 +97,14 @@ del _resolve_version, _pkg_version, _PkgNotFound
 from .agent import FireEvent, Percept  # noqa: E402
 from .watch import WATCH_VERSION, watch  # noqa: E402
 
+# Provider identity (card RB-PROVIDER): a NAME resolves to a factory; the model id is configuration
+# carried to it, never the adapter's identity. Stdlib-pure (registry + config), no vendor import.
+from .provider import (  # noqa: E402
+    ProviderError,
+    ProviderSpec,
+    resolve_vision,
+)
+
 # The runtime worker — the batteries-included "watch a source" front door. Surfaced at top level
 # (PR: Wave 0) so `percept.run` / `percept.RuntimeSession` are the FIRST thing a builder reaches,
 # instead of being two import-hops deep at `percept.runtime.worker.run`. Import is stdlib-pure
@@ -118,6 +126,10 @@ __all__ = [
     "watch",
     "WATCH_VERSION",
     "WatchEvent",
+    # provider identity (RB-PROVIDER): name -> factory; model id is configuration, not identity
+    "resolve_vision",
+    "ProviderSpec",
+    "ProviderError",
     # DTOs
     "Box",
     "Observation",
