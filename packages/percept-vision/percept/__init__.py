@@ -38,6 +38,17 @@ from percept.contracts import (
 from .labelstore import DispositionLog, LabelStore, verdict_ref
 from .cache import CacheCascade, CacheKey, CacheResult, FrameHashLayer
 from .config import ModeError, Settings, load_settings
+from .offline import (
+    DEFAULT_FIXTURE,
+    FixtureVision,
+    OfflineFixture,
+    OfflineFixtureError,
+    assert_live_or_offline,
+    load_fixture,
+    offline_core,
+    offline_frames,
+    offline_goals,
+)
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
 from .entity import Entity, EntityGraph
 from .episodes import Episode, EpisodeLog
@@ -109,6 +120,16 @@ __all__ = [
     "FireEvent",
     "ModeError",
     "registry",
+    # fixture-bound offline mode (RB-OFFLINE) — the keyless first run
+    "offline_core",
+    "offline_frames",
+    "offline_goals",
+    "load_fixture",
+    "OfflineFixture",
+    "OfflineFixtureError",
+    "FixtureVision",
+    "DEFAULT_FIXTURE",
+    "assert_live_or_offline",
     # the runtime front door (start here)
     "run",
     "start",

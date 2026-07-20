@@ -86,6 +86,9 @@ include = ["percept*"]
 
 [tool.setuptools.package-data]
 "percept.contracts" = ["schema/*.json"]
+# The bundled OFFLINE FIXTURES (card RB-OFFLINE) must ship in the wheel — they ARE the keyless first
+# run: `pip install percept-vision` then mode="offline" replays one end to end with no API key.
+"percept.fixtures" = ["*.json"]
 
 [tool.ruff]
 line-length = 100
