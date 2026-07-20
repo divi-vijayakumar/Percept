@@ -95,6 +95,34 @@ class _JudgeScheduler:
     never accumulates past one frame's worth) that ``run()`` turns into a ``RuntimeHealthEvent`` —
     ``"judge_superseded"`` (latest-wins pending replacement) or ``"judge_revision_dropped"`` (stale
     pending discarded on a goals-revision change) — each carrying an explicit ``reason``.
+
+    Card M3R — degrade-loud + backpressure, INSIDE this scheduler (not an inline guard: with
+    ``judge_dispatch="async"`` the admit site never awaits ``perceive_judged`` directly, so a guard
+    planted there is simply never on the path a slow/wedged judge actually takes). Two more
+    bound-driven, edge-triggered, TRACED conditions on top of the two above:
+
+    - **stalled active judgment** (a hang) — the in-flight task has been outstanding, from ITS OWN
+      launch instant, past ``stall_after_s`` (``_mc_now``-measured: the core's clock when live, the
+      admission ``t`` timeline otherwise — same convention as ``_mc_admit``/``_mc_resolve``, never a
+      bare wall-clock call). Checked on every ``submit()`` (the scheduler has no timer of its own —
+      the frame cadence IS its polling clock), latched so it fires exactly ONCE per stalled task
+      (``"judge_scheduler_stalled"``), not once per frame while stalled.
+    - **sustained backpressure** (slower than the frame rate) — ``submit()`` superseding the pending
+      slot ``backpressure_after`` times IN A ROW with no intervening successful completion means the
+      active judgment cannot keep up with admission — a single supersede is normal load-shedding, a
+      RUN of them is the judge falling behind. Latched the same way (``"judge_scheduler_backpressure"``),
+      carrying the streak length and how long the active judgment has been outstanding.
+
+    Neither condition changes what the scheduler DOES — it is already degrading gracefully (bounded
+    single-flight + latest-wins is the graceful degradation); this only makes that degradation LOUD
+    instead of a silently-climbing counter nobody is watching. Recovery is symmetric and explicit: the
+    next time ``_on_done`` sees the active task complete WITHOUT raising, any latched condition clears
+    and, only if something was actually latched, one ``"judge_scheduler_recovered"`` event reports it
+    — health never stays latched red after the transient is gone (a fresh launch starts unlatched).
+    A judge that RAISES is a separate, pre-existing path: caught inside ``Percept._safe_timed_judge``
+    (card A30, ``_JudgeDegraded`` -> ``"judge_degraded"``/``"judge_persistent_failure"``) before it can
+    ever reach this scheduler's task, or — for a failure outside that boundary — the scheduler's own
+    fail-loud ``_fatal``/``drain()`` re-raise (``"runtime_error"``). Both stay exactly as they were.
     """
 
     def __init__(
@@ -104,6 +132,8 @@ class _JudgeScheduler:
         stats: RuntimeStats | None,
         *,
         metrics_collector: Any = None,
+        stall_after_s: float = 20.0,
+        backpressure_after: int = 3,
     ) -> None:
         self._core = core
         self._source = source
@@ -124,6 +154,14 @@ class _JudgeScheduler:
         self._trace: list[tuple[str, dict]] = []
         self._fatal: BaseException | None = None
         self._closing = False
+        # Card M3R — degrade-loud + backpressure (see class docstring). Tunable knobs, defaulted
+        # generously so a normal (non-overloaded, non-hung) run never trips either latch.
+        self._stall_after_s = stall_after_s
+        self._backpressure_after = backpressure_after
+        self._active_launch_wall: float | None = None  # _mc_now() at the CURRENT active task's launch
+        self._stall_reported = False        # latched: "judge_scheduler_stalled" already fired for it
+        self._consec_supersede = 0          # supersessions in a row with no intervening completion
+        self._backpressure_reported = False  # latched: "judge_scheduler_backpressure" already fired
 
     def _mc_now(self, fallback: float) -> float:
         """"Now" for a MetricsCollector stamp: the core's own clock when available (real elapsed time
@@ -158,6 +196,11 @@ class _JudgeScheduler:
             self._mc_admit(t)  # launching right away — admitted into the funnel from this instant
             self._launch(t, judge_frame, revision)
             return
+        # M3R: the scheduler has no timer of its own — every submit() (the frame cadence) is the one
+        # chance to notice the CURRENT active judgment has been outstanding too long. Checked before
+        # the supersede below so a stalled-AND-overloaded tick reports both, in the order they became
+        # true.
+        self._check_stall(t)
         if self._pending is not None:
             dropped_t = self._pending[0]
             if self._stats is not None:
@@ -173,13 +216,70 @@ class _JudgeScheduler:
             funnel = getattr(self._core, "funnel", None)
             if funnel is not None:
                 funnel.dropped(reason="superseded_by_newer_admission", camera=self._source)
+            # M3R: a RUN of supersessions with no intervening completion is the judge falling behind
+            # the frame rate (sustained overwrite) — distinct from, and louder than, any one supersede.
+            self._consec_supersede += 1
+            self._check_backpressure(t)
         self._pending = (t, judge_frame, revision)
         self._mc_admit(t)  # queued behind the active judgment — pending in the funnel from this instant
+
+    def _check_stall(self, now_t: float) -> None:
+        if self._stall_reported or self._active is None or self._active_launch_wall is None:
+            return
+        elapsed = self._mc_now(now_t) - self._active_launch_wall
+        if elapsed < self._stall_after_s:
+            return
+        self._stall_reported = True
+        self._trace.append((
+            "judge_scheduler_stalled",
+            {
+                "source": self._source, "reason": "active_judgment_exceeded_stall_threshold",
+                "active_t": self._active_t, "elapsed_s": elapsed, "stall_after_s": self._stall_after_s,
+            },
+        ))
+
+    def _check_backpressure(self, now_t: float) -> None:
+        if self._backpressure_reported or self._consec_supersede < self._backpressure_after:
+            return
+        self._backpressure_reported = True
+        elapsed = (
+            self._mc_now(now_t) - self._active_launch_wall
+            if self._active_launch_wall is not None else None
+        )
+        self._trace.append((
+            "judge_scheduler_backpressure",
+            {
+                "source": self._source, "reason": "sustained_pending_overwrite",
+                "consecutive_supersessions": self._consec_supersede,
+                "active_t": self._active_t, "active_elapsed_s": elapsed,
+            },
+        ))
+
+    def _report_recovery_if_latched(self) -> None:
+        """M3R: the symmetric half of ``_check_stall``/``_check_backpressure`` — clear whichever
+        latch(es) are set and, only when at least one WAS set, trace a single
+        ``"judge_scheduler_recovered"`` event naming which condition(s) cleared. A clean run (nothing
+        ever latched) stays silent here — recovery is only news when a degradation was reported."""
+        recovered = []
+        if self._stall_reported:
+            recovered.append("stalled")
+        if self._backpressure_reported:
+            recovered.append("backpressure")
+        self._stall_reported = False
+        self._backpressure_reported = False
+        if not recovered:
+            return
+        self._trace.append((
+            "judge_scheduler_recovered",
+            {"source": self._source, "recovered_from": recovered, "resolved_t": self._active_t},
+        ))
 
     def _launch(self, t: float, frame: Any, revision: Any) -> None:
         if self._stats is not None:
             self._stats.judge_calls += 1  # counted at launch — a superseded candidate spent nothing
         self._active_t = t
+        self._active_launch_wall = self._mc_now(t)  # M3R: this task's own clock, for stall detection
+        self._stall_reported = False  # a fresh launch is unlatched — the stall window resets
         self._active = asyncio.create_task(
             self._core.perceive_judged(frame, self._source, t=t, expected_goals_revision=revision)
         )
@@ -233,6 +333,13 @@ class _JudgeScheduler:
         self._mc_resolve(self._active_t)
         self._results.append((self._active_t, task.result()))
         self._active = None
+        # M3R: a judgment completing WITHOUT raising is the same "reachable again" proof card A30
+        # uses at the agent level (_note_judge_ok) — clear both latches and, only if one was actually
+        # latched (never spam a clean run), report the recovery ONCE, loud, before anything new
+        # launches off this completion.
+        self._report_recovery_if_latched()
+        self._active_launch_wall = None
+        self._consec_supersede = 0
         if self._closing:  # shutdown in progress: don't start new work
             if self._pending is not None:
                 self._mc_resolve(self._pending[0])
@@ -618,6 +725,8 @@ async def run(
     disposition_log: Any = None,
     judge_dispatch: str = "async",
     metrics_collector: Any = None,
+    judge_stall_after_s: float = 20.0,
+    judge_backpressure_after: int = 3,
 ) -> AsyncIterator:
     """Drive a live ``source`` through the gate + brain, yielding an :class:`Incident` on each rising edge.
 
@@ -703,7 +812,15 @@ async def run(
       ``stats.judge_superseded`` / ``stats.judge_revision_dropped`` count the frames
       overload/goal-changes discarded. A ``RuntimeHealthEvent("judge_dispatch")`` announces the mode
       once at start; escalation health events carry live ``judge_active``/``judge_pending`` (each
-      0/1) in async mode.
+      0/1) in async mode. Card M3R: the scheduler also degrades LOUD — ``"judge_scheduler_stalled"``
+      (the active judgment has run past ``judge_stall_after_s``, a hang) and
+      ``"judge_scheduler_backpressure"`` (the pending slot has been superseded
+      ``judge_backpressure_after`` times in a row — the judge is slower than the frame rate), each
+      latched to fire once, paired with one ``"judge_scheduler_recovered"`` the next time a judgment
+      completes cleanly. Async-mode only; ``"inline"`` has no scheduler to degrade.
+    - ``judge_stall_after_s`` / ``judge_backpressure_after`` — thresholds for the two health events
+      just above (async mode only); the defaults are generous enough that a normal run never trips
+      either.
     - ``metrics_collector`` — optional :class:`~percept.harness.metrics.MetricsCollector` (card A13).
       When set (``judge_dispatch="async"`` only — the inline path has no queue to measure), every
       admission into the :class:`_JudgeScheduler`'s active/pending slot is tracked via
@@ -756,7 +873,10 @@ async def run(
     # metrics_collector rides along so the scheduler can report queue depth / oldest-pending age
     # (card A7); inline mode has no queue to measure, so the collector is simply unused there.
     _judge_sched = (
-        _JudgeScheduler(core, gate_source, stats, metrics_collector=metrics_collector)
+        _JudgeScheduler(
+            core, gate_source, stats, metrics_collector=metrics_collector,
+            stall_after_s=judge_stall_after_s, backpressure_after=judge_backpressure_after,
+        )
         if judge_dispatch == "async" else None
     )
     # Card A7: the standard telemetry funnel (seen->gated->judged->refused->fired,

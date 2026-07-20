@@ -56,6 +56,7 @@ from typing import Callable, Sequence
 
 from ..backends.fake_judge import ErrorInjectionConfig, FakeJudge, LatencyProfile
 from ..clock import FakeClock
+from ..runtime.worker import RuntimeHealthEvent
 from .load_driver import LoadDriver, LoadProfile, RampSchedule
 from .metrics import MetricsCollector, PercentileSummary
 from .stream_gen import Timeline
@@ -205,14 +206,28 @@ class SoakRunner:
     for the queue-age/memory/latency models.
     """
 
-    def __init__(self, config: SoakConfig, *, clock: FakeClock) -> None:
+    def __init__(
+        self, config: SoakConfig, *, clock: FakeClock, on_health: Callable[[RuntimeHealthEvent], None] | None = None
+    ) -> None:
         self.config = config
         self._clock = clock
         self.collector = MetricsCollector(clock)
         self._soak_start_t = clock()
+        # Card M3R: surface judge-call degradation through the SAME RuntimeHealthEvent shape
+        # runtime/worker.py uses — this harness bypasses the live capture loop (LoadDriver +
+        # FakeJudge, not run()/_JudgeScheduler), so it has no scheduler of its own to be loud from;
+        # what it CAN do is reuse the one already-loud channel rather than a parallel one. Best-
+        # effort and purely additive: default None keeps every existing caller byte-for-byte.
+        self._on_health = on_health
+        self._prev_hour_had_failure = False
 
     def _soak_t(self) -> float:
         return self._clock() - self._soak_start_t
+
+    def _emit_health(self, kind: str, *, ts: float, data: dict) -> None:
+        if self._on_health is None:
+            return
+        self._on_health(RuntimeHealthEvent(kind, ts=ts, data=data))
 
     async def run(self) -> list[HourSnapshot]:
         """Run all :attr:`SoakConfig.hours` simulated hours; returns one :class:`HourSnapshot`
@@ -272,6 +287,21 @@ class SoakRunner:
                 )
             )
 
+            # Card M3R: surface this hour's degradation loud, hourly-granular (this harness's own
+            # resolution — see __init__). Every call failed this hour -> the persistent-failure
+            # escalation (mirrors agent.py's judge_persistent_failure: a dead-but-running judge must
+            # be loud, not just a counter). A clean hour immediately after a failing one -> recovery,
+            # reported exactly once, never latched red past the transient.
+            hour_had_failure = driver.stats.judge_calls_failed > 0
+            if driver.stats.judge_calls_issued > 0 and driver.stats.judge_calls_failed == driver.stats.judge_calls_issued:
+                self._emit_health(
+                    "judge_persistent_failure", ts=hour_end_t,
+                    data={"hour": hour, "judge_calls_failed": driver.stats.judge_calls_failed},
+                )
+            elif self._prev_hour_had_failure and not hour_had_failure:
+                self._emit_health("judge_recovered", ts=hour_end_t, data={"hour": hour})
+            self._prev_hour_had_failure = hour_had_failure
+
         return snapshots
 
     def _admit_and_resolve_tick(self, hour: int, tick_no: int, new_calls: Sequence) -> None:
@@ -287,6 +317,11 @@ class SoakRunner:
         for i in order:
             resolve_t = admit_t + new_calls[i].latency_s
             self.collector.record_admission_resolved(keys[i], at=resolve_t)
+            if new_calls[i].injected is not None:  # card M3R: surface each injected failure, loud
+                self._emit_health(
+                    "judge_degraded", ts=resolve_t,
+                    data={"hour": hour, "tick": tick_no, "mode": new_calls[i].injected},
+                )
 
 
 __all__ = [
