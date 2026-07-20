@@ -170,6 +170,16 @@ from .replay import (  # noqa: E402
     replay_cognition,
 )
 
+# The native visualizer (card D9): lanes over media time, click-through decision chains, the
+# per-stat counterfactual. Reads the artifacts above; recomputes no metric. Media embedding is
+# opt-in and OFF by default, and the page makes ZERO network requests.
+from .visualize import (  # noqa: E402
+    VisualizeError,
+    VizOptions,
+    render_html,
+    visualize_trace,
+)
+
 __all__ = [
     "__version__",
     "Percept",
@@ -305,6 +315,10 @@ __all__ = [
     "load_trace",
     # portable trace bundle + deterministic cognition replay (card D8b)
     "TraceBundle",
+    "VisualizeError",
+    "VizOptions",
+    "render_html",
+    "visualize_trace",
     "BundlePolicy",
     "BundleError",
     "EvidenceItem",
