@@ -296,6 +296,16 @@ class Percept:
     # the SAME ``(goal_id, entity_id)`` key the gate/executor already use ("the reducer key").
     _judge_degrade_streak: dict = field(default_factory=dict)  # key -> consecutive degraded-tick count
     _judge_health_log: list = field(default_factory=list)  # [(kind, key, cause), ...] queued for drain
+    # -- M2: WatchProfile knobs applied at CORE CREATION time (never a mid-run mutation) ----------------
+    # The resolved fovea cadence a WatchProfile's ``cadence`` carries (see percept.profile_wiring).
+    # ``None`` (the default -- no profile, or a profile-less ``settings=`` construction) means no
+    # override: byte-for-byte pre-M2 behavior. Set once, in create(); nothing in this class mutates it
+    # afterward -- a live cadence change is a NEW core, not a field write on this one.
+    sense_policy: Any = None  # SensePolicy | None -- see percept.sampling.SensePolicy
+    # The resolved WatchProfile.plan_mode ("single"/"strip"/"window"/"sprite"), threaded through so the
+    # judge-input path can read it later (a future card, J2, consumes it; this card only carries it to
+    # the core). ``None`` -- no profile override, byte-for-byte pre-M2 behavior.
+    plan_mode: str | None = None
 
     # -- construction --------------------------------------------------------
     @classmethod
@@ -317,6 +327,8 @@ class Percept:
         on_health: Callable[[str], None] | None = None,
         mode: str | None = None,
         allow_scripted_brain: bool = False,
+        sense_policy: Any = None,
+        plan_mode: str | None = None,
     ) -> "Percept":
         cfg = settings or load_settings()
         # The mode is the switch: explicit kwarg > PERCEPT_MODE env > live. It is never "offline" by
@@ -414,6 +426,8 @@ class Percept:
             action_log=ActionLog(),
             _mode=resolved_mode,
             _allow_scripted_brain=allow_scripted_brain,
+            sense_policy=sense_policy,
+            plan_mode=plan_mode,
         )
         # R3: when the entity graph evicts a track (it caps at max_entities), sweep that entity's derived
         # state — its ``(goal_id, entity_id)`` gate keys AND any cached verdicts resting on it — so a 24/7
