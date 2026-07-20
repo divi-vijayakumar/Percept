@@ -37,7 +37,7 @@ class GoalRegistry:
         # tier-0 gate when a goal is armed/cancelled MID-RUN (e.g. by voice) — the gate's WatchSpec is
         # otherwise compiled once at run() start, so a voice-armed goal never reaches the gate. (PR 2.1.)
         self._revision = 0
-        # Revision-change subscribers — the AUTHORITATIVE mutation seam (PCPT-026). Every mutation path
+        # Revision-change subscribers — the AUTHORITATIVE mutation seam. Every mutation path
         # (structured arm, language-authored create/update, complete/cancel, restore, same-id replace)
         # routes through _bump(), so a subscriber fires on EVERY change — not just at RuntimeSession.arm,
         # which the rich `arm_from_language` path bypasses. Purpose: snapshot invalidation for consumers
@@ -136,7 +136,7 @@ class GoalRegistry:
     def all(self) -> list[Goal]:
         return list(self._goals.values())
 
-    # -- persistence (durable goals; spec §9 / impl plan §7) -----------------
+    # -- persistence (durable goals) -----------------
     def snapshot(self) -> list[dict]:
         out: list[dict] = []
         for gid, g in self._goals.items():

@@ -1,4 +1,4 @@
-"""Concern logic — the upstream adapters that feed the UNCHANGED gate (spec §3,§4,§5).
+"""Concern logic — the upstream adapters that feed the UNCHANGED gate.
 
 LIVE surface (imported by agent.py / behavior.py, on the real firing path):
   * ``consequence_of`` — read a goal's consequence (agent.py, behavior.py)
@@ -12,7 +12,7 @@ tests). It is kept as the pinned per-concern threshold seam — its DEFAULT must
 be a no-op (R3), which is why the runtime does not route through it yet. See the report note.
 
 REMOVED (2026-07-12 OSS hardening): the ``derive_belief`` / ``observe`` / ``OBS_CAP`` belief-log
-spike. It was an A0 pure-function pair the agent never routed through (docstring admitted "the agent
+spike. It was a pure-function pair the agent never routed through (docstring admitted "the agent
 does not route through them yet"); it wrote to / read from ``Concern.observations``, which nothing in
 the runtime populates. Deleted rather than left as architecture-shaped dead code. The gate-unchanged
 invariant it claimed to enforce is already held structurally: ``behavior.py`` is the only driver of
@@ -28,18 +28,18 @@ DEFAULT_THRESHOLD = 0.7
 
 
 def threshold_for(consequence: Consequence) -> float:
-    """Per-concern firing threshold from the cost asymmetry (spec §5).
+    """Per-concern firing threshold from the cost asymmetry.
 
     R3 (honest): at today's NON-discriminative confidence (~constant 0.95) this job is **inert** —
     "fire the child at a lower threshold" is a no-op, so v1 returns the gate default for everything
-    and consequence earns its keep via attention / escalation / verification (A3) instead. The
+    and consequence earns its keep via attention / escalation / verification instead. The
     asymmetry logic slots in here only once the labeling pipeline (B3) shows confidence discriminates.
     The DEFAULT MUST equal the gate's threshold so existing goals are byte-for-byte unchanged.
     """
     return DEFAULT_THRESHOLD
 
 
-# --- Consequence's three CALIBRATION-FREE jobs (A3, spec §5) -------------------------------------
+# --- Consequence's three CALIBRATION-FREE jobs -------------------------------------
 # These are how a coarse consequence earns its keep TODAY, while the threshold job (threshold_for)
 # stays inert (R3): none of them needs calibrated confidence — they read stakes, not a 0..1 number.
 
@@ -51,7 +51,7 @@ def consequence_of(goal: Goal) -> Consequence:
     """Read a goal's consequence from its state (the conductor authors these; default mild/mild).
 
     ``protected_floor`` PINS ``miss_cost`` at maximum — refinement may relax convenience but never
-    that (spec §5). So a protected-floor concern is always ``severe`` miss, regardless of the stored tag.
+    that. So a protected-floor concern is always ``severe`` miss, regardless of the stored tag.
     """
     floor = bool(goal.state.get("protected_floor", False))
     miss = "severe" if floor else goal.state.get("miss_cost", "mild")
@@ -63,20 +63,20 @@ def consequence_of(goal: Goal) -> Consequence:
 
 
 def attention_weight(c: Consequence) -> int:
-    """Job — attention allocation (spec §5): perception budget ∝ stakes. Pure miss-cost rank, no
+    """Job — attention allocation: perception budget ∝ stakes. Pure miss-cost rank, no
     confidence. High-consequence concerns are tracked attentively; low ones loosely."""
     return _MISS_RANK[c.miss_cost]
 
 
 def is_hard_quadrant(c: Consequence) -> bool:
-    """Job — hard-quadrant routing (spec §5): both costs high => no cheap threshold is safe =>
+    """Job — hard-quadrant routing: both costs high => no cheap threshold is safe =>
     escalate to the deliberative tier / ASK the human instead of auto-firing."""
     return _MISS_RANK[c.miss_cost] >= 2 and _FF_RANK[c.false_fire_cost] >= 2
 
 
 def requires_verification(c: Consequence) -> bool:
-    """Job — verification-required (spec §5,§7): a high false-fire cost must be verified before/after
-    acting (consumed by the action layer, A4). Irreversible always requires it."""
+    """Job — verification-required: a high false-fire cost must be verified before/after
+    acting (consumed by the action layer). Irreversible always requires it."""
     return _FF_RANK[c.false_fire_cost] >= 2
 
 

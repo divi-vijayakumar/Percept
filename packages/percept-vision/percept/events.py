@@ -1,4 +1,4 @@
-"""Events — temporal perception beside the object/attribute track (spec §5.6).
+"""Events — temporal perception beside the object/attribute track.
 
 A pass, a rep, a discrete action is **not** an entity-with-an-attribute — it's an event over a
 span. This is an *additive* parallel track: a rolling frame window (replacing keep-latest),

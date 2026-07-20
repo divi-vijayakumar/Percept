@@ -1,4 +1,4 @@
-"""Posture-B deliberative escalation — the consequence×novelty dial (direction doc; spec §5).
+"""Posture-B deliberative escalation — the consequence×novelty dial.
 
 "As close to an LLM as each concern's stakes × novelty justify, and no closer." Recurrent AMBIGUITY (a
 run of ``unknown`` reads — the novelty/confusion signal in :class:`~percept.behavior.ConfusionSignal`)

@@ -77,6 +77,19 @@
   `gate.classified` trace records additionally carry the gate's INPUTS
   (`satisfied`/`confidence`/`freshness`/`entity_id`/`hold_s`) — additive trace data, no behaviour
   branches on it.
+- **The tier-0 extension seam is reachable from `run()` (card D6a).** `percept.runtime.run()` now takes
+  `structural_adapter` / `semantic_adapter` — `(frame) -> 0..1` callables that fill the `structural` /
+  `semantic` channels of the reported `Tier0Signal`, exactly as `MotionGate` has always accepted them.
+  Previously the only way to supplement tier 0 with a cheap local model (a CLIP drift score, a pose or
+  privacy classifier, an OCR "the document changed" score) was to bypass `run()` and drive
+  `GatedWatchLoop` yourself. A goal gated on `structural`/`semantic` (or a `wake_policy`) turns that
+  score into admission. Both default `None` → the motion-only path is byte-for-byte unchanged.
+- **`examples/byo_admission_detector.py` + "Admission is not extraction" (card D6b).**
+  `register_detector` is now documented in the user-facing reference as what it actually is: the
+  bring-your-own **admission detector** path (OCR-driven admission included). It is **not** a complete
+  "bring your own OCR specialist" path — a boundary such as `document_changed at t=8.2` decides *when to
+  look closely*; it does not deliver `invoice_number = "INV-2291"` to the semantic judge. Facts reach the
+  judge only when the caller passes `Vision.judge(context={...})`. The example runs offline with no keys.
 - **Effective run configuration is RECORDED, never silently substituted (card D5b/c).**
   `percept.runtime.run()` now retains what it was ASKED for alongside what it actually opened with:
   `stats.effective_config` (an `EffectiveConfig` of `EffectiveFps` + `EffectiveTimebase`), the same
@@ -98,6 +111,17 @@
   frame regardless (`stats.last_media_t` / `stats.last_wall_t`).
 
 ### Removed / Breaking
+- **The enricher registry is REMOVED (card D6c).** `register_enricher` / `enrich_signal` /
+  `enricher_for` / `Enrichment` / `NullEnricher` / `FakeEnricher` and the modules
+  `percept.harness.enrichers` + `percept.edge.enrichers` are gone. They were documented as "add an OCR
+  specialist without editing core" and had **zero callers** anywhere outside their own module: nothing
+  in the runtime ever ran a registered enricher, so registering one changed nothing about any watch — a
+  client went looking for the OCR seam, found this one, and correctly concluded it was dead. The
+  screen/document workload needs OCR for **admission** (`register_detector` / the tier-0 adapters above
+  already cover that), not for semantics — the client's judge read 7 px document text correctly with no
+  OCR at all. The `percept.Enricher` protocol is retained as a DEPRECATED name for one contract MAJOR
+  (nothing consumes it) and will be removed in the next MAJOR. `Vision.judge(context=...)` — the live
+  way to hand the judge structured facts — is untouched.
 - **`run(core=…, goals=…)` / `run(core=…, vision=…)` now raises `ValueError` (card D5a).** Supplying
   `goals=`/`vision=` alongside an explicit `core` used to silently DISCARD them: the watch ran
   byte-identically and simply never armed the caller's goals — a silent failure that cost two client

@@ -55,7 +55,7 @@ def resolve_watch_profile(profile: WatchProfile, *, base: Settings | None = None
     ``base`` seeds every field a ``WatchProfile`` does NOT own (cache, models, routing, identity,
     episodes, events, consent, and the gate/edge fields the profile itself doesn't carry) — it defaults
     to :func:`~percept.config.load_settings` (today's env-driven defaults), so a profile only overrides
-    the specific knobs H0 found (impl plan §2); it never silently resets an operator's env-configured
+    the specific knobs H0 found; it never silently resets an operator's env-configured
     values it has no opinion on.
     """
     base_settings = base if base is not None else load_settings()

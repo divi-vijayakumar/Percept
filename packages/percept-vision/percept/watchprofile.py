@@ -1,4 +1,4 @@
-"""WatchProfile — ``Q(p | environment, goal, state)`` made concrete (impl plan §2, epic E2).
+"""WatchProfile — ``Q(p | environment, goal, state)`` made concrete.
 
 Precision and recall are not one fixed number; they are a function of the deployment context. H0 found the
 free variables: the tier-0 eye's localization (``salience_stat`` / ``stat_thresholds``), how the judge sees
@@ -135,16 +135,16 @@ class GoalDensityGuidance:
 @dataclass(frozen=True)
 class WatchProfile:
     """A named binding of the runtime's tuning knobs to an ``(environment, goal_type, state)`` context —
-    the concrete shape of ``Q(p | environment, goal, state)`` (impl plan §2). See the module docstring for
+    the concrete shape of ``Q(p | environment, goal, state)``. See the module docstring for
     which real setting each field is a typed handle onto.
 
     - ``environment`` — camera mount / scene motion, e.g. ``"fixed_camera"``, ``"handheld"``, ``"wearable"``.
     - ``goal_type`` — the goal's temporal character, e.g. ``"stative"``, ``"dynamic"``, ``"periodic"``.
     - ``state`` — already-true-at-start vs. transition-only, e.g. ``"start_anchored"``, ``"transition"``.
 
-    These three are free-text (not a closed enum) deliberately: card P3 seeds the first vocabulary from
-    H0; a new environment/goal-type is added by deriving a profile (impl plan §3, the continuous-learning
-    bridge), not by editing an enum here.
+    These three are free-text (not a closed enum) deliberately: H0 seeds the first vocabulary; a new
+    environment/goal-type is added by deriving a profile (the continuous-learning bridge), not by
+    editing an enum here.
     """
 
     name: str

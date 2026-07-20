@@ -1,4 +1,4 @@
-"""``percept eval`` — PAIRED differential A/B over client fixtures (board card D3).
+"""``percept eval`` — PAIRED differential A/B over client fixtures.
 
 The question a client with a new model actually has is not "how good is percept" — it is
 **"does my OCR detector actually help?"**. That is a paired question: the same fixture, scored
@@ -9,9 +9,9 @@ What this module is careful about, and why:
 
 * **It does not reimplement matching.** Every recall/precision number comes from
   :func:`percept.harness.golden_eval.score` — the deterministic one-to-one greedy matcher that
-  implements the Viability §5a rule. If eval and ``doctor`` ever disagree about whether a fire
-  matched, that is a bug in one caller, not two competing definitions.
-* **It does not reimplement the funnel.** Every cost/admission/judge number comes from card D8a's
+  implements the one-to-one event-level matching rule. If eval and ``doctor`` ever disagree about
+  whether a fire matched, that is a bug in one caller, not two competing definitions.
+* **It does not reimplement the funnel.** Every cost/admission/judge number comes from
   :class:`percept.tracing.TraceSummary`, loaded via :func:`percept.tracing.load_trace`.
 * **It does not invent pass/fail.** Bars are CLIENT-SUPPLIED. With no bars file the report says
   ``NOT_ASSESSED`` and prints the numbers. It will never manufacture a threshold so that something
@@ -20,7 +20,7 @@ What this module is careful about, and why:
   are pre-registered into a :class:`PreRegistration` whose ``registration_hash`` covers all of
   them plus both plan hashes. If the configuration that actually ran differs from the one that was
   declared, :func:`run_differential` raises :class:`ConfigDriftError` and scores nothing.
-* **It scores its own scope honestly.** The §5a matcher understands point/episode incidents. It
+* **It scores its own scope honestly.** The one-to-one event-level matcher understands point/episode incidents. It
   cannot validate supersession, corrections, settled intervals, speaker-attributed claims or
   document identity changes — those concepts do not exist in the contract yet (ADR-006). Rather
   than silently scoring a richer interaction with the wrong yardstick, every fixture declares a
@@ -107,12 +107,12 @@ class ConfigDriftError(EvalInputError):
 
 
 # ---------------------------------------------------------------------------
-# 1. Scope — what the §5a matcher can and cannot honestly validate (ADR-006)
+# 1. Scope — what the one-to-one event-level matcher can and cannot honestly validate (ADR-006)
 # ---------------------------------------------------------------------------
 
 
 class ScopeVerdict(str, Enum):
-    """Whether the existing §5a matcher can validate a given goal shape AT ALL."""
+    """Whether the existing one-to-one event-level matcher can validate a given goal shape AT ALL."""
 
     SUPPORTED = "SUPPORTED"
     PARTIALLY_SUPPORTED = "PARTIALLY_SUPPORTED"
@@ -124,7 +124,7 @@ class ScopeVerdict(str, Enum):
 GOAL_SHAPE_SUPPORT: dict[str, tuple[ScopeVerdict, str]] = {
     "point": (
         ScopeVerdict.SUPPORTED,
-        "A point incident is exactly what the Viability §5a one-to-one matcher scores: one fire, "
+        "A point incident is exactly what the one-to-one event-level matcher scores: one fire, "
         "one labeled instant, a closed match window.",
     ),
     "episode": (
@@ -202,8 +202,9 @@ def scope_for_goal_shape(goal_shape: str) -> ScopeAssessment:
             goal_shape=shape or "(undeclared)",
             verdict=ScopeVerdict.UNSUPPORTED_FOR_THIS_GOAL_SHAPE,
             reason=(
-                f"Unknown goal shape {shape or '(undeclared)'!r}. eval refuses to assume the §5a "
-                f"point/episode matcher is the right yardstick for a shape it has never been shown. "
+                f"Unknown goal shape {shape or '(undeclared)'!r}. eval refuses to assume the "
+                f"one-to-one event-level point/episode matcher is the right yardstick for a shape "
+                f"it has never been shown. "
                 f"Known shapes: {', '.join(sorted(GOAL_SHAPE_SUPPORT))}."
             ),
         )
@@ -359,7 +360,7 @@ class Fixture:
 
 @dataclass(frozen=True)
 class ArmOutcome:
-    """One arm's result on one fixture: §5a scoring plus (when traced) the D8a funnel."""
+    """One arm's result on one fixture: one-to-one event-level matching scoring plus (when traced) the funnel."""
 
     arm: str
     result: GoldenEvalResult

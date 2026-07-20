@@ -44,8 +44,8 @@ class FireEvent:
     verdict: Verdict | None = None
 
 
-# -- J2: the resolved WatchProfile.plan_mode -> the concern's PerceptionSpec -----------------------
-# M2 carried ``plan_mode`` onto the core but nothing read it. J2 makes it LIVE: a resolved profile whose
+# -- The resolved WatchProfile.plan_mode -> the concern's PerceptionSpec -----------------------
+# ``plan_mode`` was carried onto the core before anything read it. This module makes it LIVE: a resolved profile whose
 # plan_mode is "window" makes the judge see an ORDERED FRAME WINDOW (``judge(frames=[...])``, oldest→
 # newest, the anchor frame passed separately) instead of one still frame. That is the validated H0 win
 # (H0 dynamic-goal recall rose five points, and to ~nine-in-ten with gate-relax; see
@@ -57,7 +57,7 @@ class FireEvent:
 #: context default), and a profile can only raise a cheaper spec up to its own rung.
 _PLAN_RANK: dict[str, int] = {"single": 0, "strip": 1, "window": 2}
 
-#: Deprecated plan modes -> their replacement (J2). ``sprite`` (Build 6) folded the context frames into
+#: Deprecated plan modes -> their replacement. ``sprite`` folded the context frames into
 #: ONE montage image to save VLM tokens; an ordered window beats it unconditionally (see
 #: ``percept/profile_resolution.py``: "sprite is strictly worse and must never be selected"), so the plan
 #: path no longer builds a montage. ``percept.sprite.make_sprite`` itself is untouched and still importable
@@ -70,7 +70,7 @@ _PLAN_MIN_FRAMES = 3
 
 
 def _normalize_plan_mode(mode: str) -> str:
-    """Map a DEPRECATED plan mode onto its replacement (J2's shim), warning once per call site. A live
+    """Map a DEPRECATED plan mode onto its replacement, warning once per call site. A live
     mode is returned unchanged — this is a no-op on every supported plan."""
     replacement = _DEPRECATED_PLAN_MODES.get(mode)
     if replacement is None:
@@ -86,7 +86,7 @@ def _normalize_plan_mode(mode: str) -> str:
 
 
 def _planned_perception(base, plan_mode: str | None):
-    """Overlay the RESOLVED ``WatchProfile.plan_mode`` onto a concern's base ``PerceptionSpec`` (J2).
+    """Overlay the RESOLVED ``WatchProfile.plan_mode`` onto a concern's base ``PerceptionSpec``.
 
     Two things happen here, in one place:
 
@@ -96,7 +96,7 @@ def _planned_perception(base, plan_mode: str | None):
        authored one (``_PLAN_RANK``).
 
     ``plan_mode=None`` (no profile, or a profile-less construction) returns the base spec unchanged, so
-    the pre-J2 path stays byte-for-byte. An unrecognized mode is ignored rather than trusted — the
+    the legacy path stays byte-for-byte. An unrecognized mode is ignored rather than trusted — the
     vocabulary lives in :data:`percept.behavior._VALID_TEMPORAL`, not in a string a caller invented."""
     spec = base
     temporal = _normalize_plan_mode(spec.temporal)
@@ -157,7 +157,7 @@ def _concat_audio(chunks: list) -> Any:
 
 def _is_valid_verdict(obj: Any) -> bool:
     """Shape-validate a judge response BEFORE any caller dereferences ``.confidence``/``.satisfied``
-    (ADR-001 §10 invariant 4, card A30). The backend contract is :class:`Verdict`; anything else — a
+    (ADR-001 §10 invariant 4). The backend contract is :class:`Verdict`; anything else — a
     plain/garbled object (malformed), or a ``Verdict``-shaped-but-incomplete response with the wrong
     field types (partial/truncated JSON) — must be rejected here, never dereferenced blindly."""
     return (
@@ -168,7 +168,7 @@ def _is_valid_verdict(obj: Any) -> bool:
 
 
 _GATE_HEALTH_LOG_MAX = 256
-"""Card O2 growth bound: the most queued gate-suppression entries :attr:`Percept._gate_health_log`
+"""Growth bound: the most queued gate-suppression entries :attr:`Percept._gate_health_log`
 holds between drains. The runtime loop drains it EVERY tick, so this is never reached in a real
 watch; it exists so a core driven WITHOUT ``percept.runtime.worker.run`` (a bare ``perceive_judged``
 harness, which never drains) cannot grow the queue without bound over a 24/7 run. Oldest entries are
@@ -177,7 +177,7 @@ line by :meth:`percept.gate.Gate._note_suppressed`, so shedding never loses the 
 
 
 CONSECUTIVE_DEGRADE_ESCALATE = 5
-"""Tunable policy knob (card A30): the number of CONSECUTIVE degraded judge ticks (raised /
+"""Tunable policy knob: the number of CONSECUTIVE degraded judge ticks (raised /
 malformed / partial -- anything :class:`_JudgeDegraded`) for the SAME watch key before the
 fail-closed boundary escalates from a per-tick ``"judge_degraded"`` health event to a louder,
 ONE-TIME ``"judge_persistent_failure"`` event. Escalating never halts the run (degrade+continue is
@@ -187,7 +187,7 @@ verdict again (see :meth:`Percept._note_judge_ok`)."""
 
 
 class _JudgeDegraded(Exception):
-    """Internal-only fail-closed signal (card A30): the judge call raised (timeout / provider error)
+    """Internal-only fail-closed signal: the judge call raised (timeout / provider error)
     or returned a malformed/partial response. Raised exclusively by
     :meth:`Percept._safe_timed_judge` and caught by every caller of :meth:`Percept._judge`
     (``perceive_judged``, ``_observe_and_log``) — it must never escape :class:`Percept` itself.
@@ -202,7 +202,7 @@ class _JudgeDegraded(Exception):
 class DeterministicAuditor:
     """Decides which cache HITs to re-perceive (false-serve audit) — **no RNG** (rule 2).
 
-    False-serve is the cache's analog of false-fire (spec §6.2): re-perceive an
+    False-serve is the cache's analog of false-fire: re-perceive an
     ``audit_rate`` fraction of HITs through real vision and compare; a divergence is a
     **false-serve** and the fresh read wins. The decision is a deterministic *counter* so the L1
     lane is reproducible: with ``audit_rate = r`` we audit whenever the running HIT count crosses
@@ -252,11 +252,11 @@ def _is_scripted_backend(obj: Any) -> bool:
 
 # One announced vocabulary: "offline" (the mode) selects "scripted" (the backends).
 _SCRIPTED_SEAMS = ("vision", "specialist", "conductor", "stt", "tts")
-_BANNER_EMITTED = False  # once-per-process guard for the loud stderr banner (§4 banner discipline)
+_BANNER_EMITTED = False  # once-per-process guard for the loud stderr banner
 
 
 def _scripted_seams(core: Any) -> list[str]:
-    """The seams whose CONSTRUCTED backend is a scripted double, in a stable order (health/§4)."""
+    """The seams whose CONSTRUCTED backend is a scripted double, in a stable order."""
     return [s for s in _SCRIPTED_SEAMS if _is_scripted_backend(getattr(core, s, None))]
 
 
@@ -277,7 +277,7 @@ def _emit_banner(mode: str, scripted: list[str]) -> None:
 
 
 def guard_live_language_path(core: Any, *, allow_scripted_brain: bool = False) -> None:
-    """FATAL seam: refuse to wire a LIVE voice/language path behind a SCRIPTED brain (§5).
+    """FATAL seam: refuse to wire a LIVE voice/language path behind a SCRIPTED brain.
 
     The conductor is the language-authoring seam — it turns an utterance into ``goal_ops``. A scripted
     conductor's default ``Decision(route="ignore")`` silently discards every spoken "watch/tell me
@@ -306,7 +306,7 @@ def guard_live_language_path(core: Any, *, allow_scripted_brain: bool = False) -
 
 
 # Backwards-compatible alias: this seam was named ``_guard_live_language_path`` before it was made a
-# public template import (PCPT-026). The underscore name is kept so existing internal callers and
+# public template import. The underscore name is kept so existing internal callers and
 # ``from percept.agent import _guard_live_language_path`` sites keep working; new code imports the
 # public ``guard_live_language_path``.
 _guard_live_language_path = guard_live_language_path
@@ -342,28 +342,28 @@ class Percept:
     perception_cooldown_s: float = 5.0  # the perception-rung refractory (shorter than the LLM's 30s)
     event_log: Any = None  # EventLog — temporal dedup of detected events (built in create)
     scheduler: Any = None  # Scheduler — time-triggered proactive fires (built in create)
-    last_supported: dict = field(default_factory=dict)  # goal_id -> t of last CONFIDENT observation (A2)
-    last_satisfied: dict = field(default_factory=dict)  # goal_id -> t of last confident-YES (A1 deadline)
+    last_supported: dict = field(default_factory=dict)  # goal_id -> t of last CONFIDENT observation
+    last_satisfied: dict = field(default_factory=dict)  # goal_id -> t of last confident-YES (deadline)
     consent: ConsentProfile = field(default_factory=ConsentProfile)  # the act-modality gate
     action_log: ActionLog = field(default_factory=ActionLog)  # audit: every fire + act
     _executor: Any = None  # BehaviorExecutor — the unified firing path (lazily bound to self.gate)
     otel: OTelExporter | None = None  # optional OTel mirror for the funnel; None -> in-process only
     _funnel: Any = None  # Funnel — the standard telemetry funnel (lazily bound to self.metrics)
-    # The announced-scripted state (RFC §4). Set by create(): the resolved mode ("offline"/"live"),
+    # The announced-scripted state. Set by create(): the resolved mode ("offline"/"live"),
     # the seams whose CONSTRUCTED backend is a scripted double, and the ugly escape hatch. Read by
-    # health() (the single §4 payload) and by the language-path FATAL seam. NOT construction inputs the
+    # health() (the single scripted-state payload) and by the language-path FATAL seam. NOT construction inputs the
     # caller passes as dataclass fields — create() fills them.
     _mode: str = "live"
     _scripted: tuple = ()
     _allow_scripted_brain: bool = False
-    # -- A30 fail-closed boundary: consecutive-degradation breaker + the health-event queue
+    # -- fail-closed boundary: consecutive-degradation breaker + the health-event queue
     # worker.py's run() loop drains into its on_health(RuntimeHealthEvent) channel every tick (the
     # SAME pattern as _JudgeScheduler.drain_trace() -- Percept queues, the runtime drains + emits;
     # Percept itself never calls on_health directly, that channel belongs to worker.py). Keyed by
     # the SAME ``(goal_id, entity_id)`` key the gate/executor already use ("the reducer key").
     _judge_degrade_streak: dict = field(default_factory=dict)  # key -> consecutive degraded-tick count
     _judge_health_log: list = field(default_factory=list)  # [(kind, key, cause), ...] queued for drain
-    # -- O2 consequence-gate GA: the SAME queue-here / drain-in-worker pattern for GATE SUPPRESSION.
+    # -- consequence-gate GA: the SAME queue-here / drain-in-worker pattern for GATE SUPPRESSION.
     # ``Gate`` calls ``_note_gate_suppressed`` for every decision whose reason is in
     # ``percept.gate.SUPPRESSION_REASONS`` (start_anchored / refractory) -- i.e. a fire the baseline
     # rising-edge gate WOULD have emitted, withheld by an opt-in precision guard. Both guards are off
@@ -372,14 +372,14 @@ class Percept:
     # on_health itself. Bounded (see _GATE_HEALTH_LOG_MAX) so a core driven WITHOUT the runtime loop
     # (a bare perceive_judged harness, which never drains) cannot leak on a 24/7 watch.
     _gate_health_log: list = field(default_factory=list)  # [(key, reason, at), ...] queued for drain
-    # -- M2: WatchProfile knobs applied at CORE CREATION time (never a mid-run mutation) ----------------
+    # -- WatchProfile knobs applied at CORE CREATION time (never a mid-run mutation) ----------------
     # The resolved fovea cadence a WatchProfile's ``cadence`` carries (see percept.profile_wiring).
     # ``None`` (the default -- no profile, or a profile-less ``settings=`` construction) means no
     # override: byte-for-byte pre-M2 behavior. Set once, in create(); nothing in this class mutates it
     # afterward -- a live cadence change is a NEW core, not a field write on this one.
     sense_policy: Any = None  # SensePolicy | None -- see percept.sampling.SensePolicy
     # The resolved WatchProfile.plan_mode ("single"/"strip"/"window"; "sprite" is deprecated and shimmed
-    # to "window"). LIVE since J2: _planned_perception() floors every concern's PerceptionSpec with it on
+    # to "window"). LIVE: _planned_perception() floors every concern's PerceptionSpec with it on
     # the judging path, so plan_mode="window" makes the judge see an ordered frame window
     # (``judge(frames=[...])``). ``None`` -- no profile override, byte-for-byte pre-M2 behavior.
     plan_mode: str | None = None
@@ -417,7 +417,7 @@ class Percept:
         # vision/conductor/specialist now default None (config.py); stt/tts still default "fake". An
         # unset seam becomes "scripted" offline. In LIVE mode an unset VISION is the bare-create() trap
         # (no real perception, no key) -> ModeError; conductor/specialist fall back to scripted and are
-        # announced LOUDLY below (the code-armed watch is a legitimate pattern — see §5, not a crash).
+        # announced LOUDLY below (the code-armed watch is a legitimate pattern, not a crash).
         def _pick(name: str, kwarg: Any, cfg_value: Any, *, required: bool,
                   scripted_default: str = "scripted") -> Any:
             sel = kwarg if kwarg is not None else cfg_value
@@ -438,7 +438,7 @@ class Percept:
         specialist = _pick("specialist", specialist, cfg.models.specialist, required=False)
         # The conductor is the language-authoring seam: an UNSET one defaults to the HONEST scripted double
         # (ScriptedConductor — no-match -> route="respond_direct"), NEVER FakeConductor whose default
-        # route="ignore" is the one value indistinguishable from a real conductor declining (RFC §8). So
+        # route="ignore" is the one value indistinguishable from a real conductor declining. So
         # `mode="offline"` — the door people explore through — no longer hands back a brain that discards
         # every utterance and looks like it worked.
         conductor = _pick("conductor", conductor, cfg.models.conductor, required=False,
@@ -511,12 +511,12 @@ class Percept:
         # churn of entities can't leave orphan edges accumulating in the gate. Wired here (not at graph
         # construction) because the gate is built alongside the graph in the same call.
         obj.graph.on_evict = obj._on_entity_evicted
-        # O2: gate SUPPRESSION (a fire withheld by require_false_first / refractory_s) must be visible,
+        # Gate SUPPRESSION (a fire withheld by require_false_first / refractory_s) must be visible,
         # not a silent non-event. Wired here for the same reason as on_evict above — the gate is built
         # in this same call, and the hook needs the finished ``obj`` to queue onto. Queue only; the
         # runtime loop drains it into on_health (this class never calls on_health itself).
         obj.gate.on_suppress = obj._note_gate_suppressed
-        # Announce scripted backends LOUDLY at construction, in the one consistent vocabulary (RFC §4/§5).
+        # Announce scripted backends LOUDLY at construction, in the one consistent vocabulary.
         # This decides on the CONSTRUCTED CLASS (the fact), not the requested name — a registry miss /
         # plugin / stray PERCEPT_*_BACKEND can land a scripted double after you asked for real.
         scripted = _scripted_seams(obj)
@@ -547,7 +547,7 @@ class Percept:
 
     # -- goal authoring ------------------------------------------------------
     def add_goal(self, goal: Goal) -> Goal:
-        # PROVENANCE (PCPT-026): the STRUCTURED entry point stamps STRUCTURED_TRUSTED, OVERWRITING
+        # PROVENANCE: the STRUCTURED entry point stamps STRUCTURED_TRUSTED, OVERWRITING
         # whatever the caller supplied — a caller cannot claim interrupt-trust by pre-filling ``origin``.
         # ``replace`` (not in-place set) so this is correct even if Goal is later frozen.
         goal = replace(goal, origin=GoalOrigin.STRUCTURED_TRUSTED)
@@ -555,7 +555,7 @@ class Percept:
         result = self.goals.create(goal)
         # D3a: cache-invalidate on the direct arm() path too (only apply_goal_ops did before). A goal id
         # re-armed with a new condition must not be served a verdict cached under its OLD meaning — the
-        # goal-change step of the invalidation order (§6.2). Runs AFTER _arm_deadline so a legacy
+        # goal-change step of the invalidation order. Runs AFTER _arm_deadline so a legacy
         # deadline_s still raises loudly (never silently cached-then-armed).
         self.invalidate_cache(goal.id)
         return result
@@ -691,7 +691,7 @@ class Percept:
         return out
 
     def apply_goal_ops(self, ops: list[GoalOp]) -> None:
-        # PROVENANCE (PCPT-026): goal ops arrive from the CONDUCTOR (the language-authoring seam —
+        # PROVENANCE: goal ops arrive from the CONDUCTOR (the language-authoring seam —
         # arm_from_language / _apply_decision), an UNTRUSTED author. Stamp every created goal
         # LANGUAGE_AUTHORED, OVERWRITING whatever it supplied, so its interrupt requests are clamped
         # (see AttentionPolicy). ``update`` ops can never touch ``origin`` (GoalRegistry drops that key).
@@ -724,7 +724,7 @@ class Percept:
     def funnel(self) -> Funnel:
         """The standard telemetry funnel (seen→gated→judged→refused→fired), bound to THIS agent's
         metrics. The harness loop (percept.harness.tier0) AND the production runtime loop
-        (percept.runtime.worker.run, card A7) both emit seen/gated via ``core.funnel``; the watch path
+        (percept.runtime.worker.run) both emit seen/gated via ``core.funnel``; the watch path
         here (perceive_judged) emits judged/refused/fired and the judge latency + token/cost, for
         either driver. Lazily built; OTel mirror attached when ``self.otel`` is set."""
         if self._funnel is None:
@@ -835,7 +835,7 @@ class Percept:
             return None
         return self._fire_rep(goal, n, rep.stop_t)
 
-    # -- observability: coverage-loss fires with the concern's consequence (A2, spec §3) ----
+    # -- observability: coverage-loss fires with the concern's consequence ----
     def check_observability(
         self, *, t: float | None = None, staleness_s: float | None = None
     ) -> list[FireEvent]:
@@ -876,7 +876,7 @@ class Percept:
         return f"High stakes either way — confirm before I act: {goal.condition}?"
 
     def attention_order(self) -> list[Goal]:
-        """A3 attention allocation (spec §5): order active concerns by consequence stakes so a
+        """Attention allocation: order active concerns by consequence stakes so a
         budget-limited perception loop spends on the highest-consequence concerns first. Pure stakes,
         no confidence — a calibration-free job."""
         return sorted(
@@ -885,7 +885,7 @@ class Percept:
             reverse=True,
         )
 
-    # -- absence-native firing: an expected concern overdue (A1, spec §3,§4) -----------------
+    # -- absence-native firing: an expected concern overdue -----------------
     def check_deadlines(self, *, t: float | None = None) -> list[FireEvent]:
         """An EXPECTED concern not satisfied by its deadline fires "overdue".
 
@@ -982,7 +982,7 @@ class Percept:
         """Judge every active *watch* goal against ``frame`` and emit gate actions on rising edges.
 
         Event / scheduler goals run through their own paths (:meth:`perceive_events`, :meth:`tick`)
-        but feed the **same three-state gate** — one gate, two perception tracks (spec §5.6).
+        but feed the **same three-state gate** — one gate, two perception tracks.
 
         ``expected_goals_revision`` (the non-blocking-dispatch seam): the goal-registry revision this
         frame was ADMITTED under. When set, the call aborts — returning without applying anything —
@@ -1052,8 +1052,8 @@ class Percept:
             if gtype != "watch":
                 continue  # event/count/remind goals are handled by their dedicated paths
             ctx = self.executor.ctx(goal.id)
-            # HOW to look = the authored/preset spec, floored by the resolved profile's plan_mode (J2 —
-            # "window" hands the judge an ordered clip, never a montage), then escalated by this
+            # HOW to look = the authored/preset spec, floored by the resolved profile's plan_mode —
+            # "window" hands the judge an ordered clip, never a montage — then escalated by this
             # concern's current ladder rung (single→strip→+audio) when it's been recurrently ambiguous
             # (set in _deliberate_confused).
             spec = _escalated_perception(
@@ -1136,10 +1136,10 @@ class Percept:
             if truth == "unknown":
                 self.funnel.refused(concern=goal.id, camera=source)  # abstained — refused to guess (ASK)
             else:
-                self.last_supported[goal.id] = now  # A2: a confident read = perceptual coverage
+                self.last_supported[goal.id] = now  # a confident read = perceptual coverage
                 ctx.perception_level = 0  # decay: the (escalated) look resolved → back to the cheap default
             if truth == "yes":
-                self.last_satisfied[goal.id] = now  # A1 deadline: the expected event happened
+                self.last_satisfied[goal.id] = now  # deadline: the expected event happened
             # base_key computed earlier (before the judge call) — reused here unchanged.
             ev_fire = self._fire_concern(goal, verdict, base_key, freshness=freshness, t=now)
             if ev_fire is not None:
@@ -1228,7 +1228,7 @@ class Percept:
                 goal, frame, None, {}, frames=strip, context={"observe_step": True}
             )
         except _JudgeDegraded as degraded:
-            # A30: a failed/malformed observe-step judge logs NOTHING this tick (never a phantom step
+            # A failed/malformed observe-step judge logs NOTHING this tick (never a phantom step
             # off a garbled/timed-out response) and never crashes the run — this goal never touches
             # the gate anyway (see the docstring above), so there is nothing further to degrade.
             self.metrics.incr("judge.degraded")
@@ -1320,13 +1320,13 @@ class Percept:
         the earlier-context frames (oldest→newest, EXCLUDING the current frame, which the backend appends
         last). Returns None for single-frame perception — byte-for-byte today.
 
-        LATEST-WINS (J2): the window is assembled HERE, inside the judging tick, against a FrameWindow
+        LATEST-WINS: the window is assembled HERE, inside the judging tick, against a FrameWindow
         whose last entry is the frame being judged (``perceive_judged`` pushes before it judges). The
         async scheduler (``percept/runtime/worker.py::_JudgeScheduler``) is single-flight and drops a
         superseded candidate BEFORE it ever reaches this method, so a frame that lost the latest-wins
         race contributes nothing to any window, and the window a launched judgment sees is always
         anchored on its own admitted frame — never on a newer one that arrived mid-flight."""
-        spec = replace(spec, temporal=_normalize_plan_mode(spec.temporal))  # J2 shim: sprite -> window
+        spec = replace(spec, temporal=_normalize_plan_mode(spec.temporal))  # shim: sprite -> window
         if spec.temporal == "single":
             return None
         earlier = self._window(source).frames()[:-1]  # drop the current frame (passed as `frame`)
@@ -1352,7 +1352,7 @@ class Percept:
         else:  # "recent": the last `want` earlier frames
             picked = earlier[-want:]
         # Ordered, oldest→newest. The sprite montage that used to collapse these into ONE image is gone
-        # from the plan path (J2): the judge sees the real ordered frames.
+        # from the plan path: the judge sees the real ordered frames.
         return [f for _, f in picked]
 
     async def _timed_judge(self, *args: Any, **kwargs: Any) -> Verdict:
@@ -1369,7 +1369,7 @@ class Percept:
         return verdict
 
     async def _safe_timed_judge(self, *args: Any, **kwargs: Any) -> Verdict:
-        """Fail-closed boundary around a live judge call (ADR-001 §10 invariant 4, card A30).
+        """Fail-closed boundary around a live judge call (ADR-001 §10 invariant 4).
 
         A judge call fails one of two ways: it RAISES (timeout / provider error — the designed,
         typed failure signal a real backend's retry-then-raise contract already produces, see
@@ -1407,7 +1407,7 @@ class Percept:
             self._judge_health_log.append(("judge_persistent_failure", key, cause))
 
     def _note_gate_suppressed(self, decision: Any) -> None:
-        """Card O2: record one GATE SUPPRESSION (a :class:`~percept.gate.GateOutcome` whose reason is
+        """Record one GATE SUPPRESSION (a :class:`~percept.gate.GateOutcome` whose reason is
         in :data:`~percept.gate.SUPPRESSION_REASONS`) for the runtime to surface.
 
         Only QUEUES -- ``percept/runtime/worker.py``'s ``run()`` loop drains :attr:`_gate_health_log`
@@ -1513,7 +1513,7 @@ class Percept:
         cache_key: Any,
         cached: Verdict,
     ) -> Verdict:
-        """Trust-but-verify a cache HIT (spec §4.1, §6.2).
+        """Trust-but-verify a cache HIT.
 
         On the audited fraction (decided by ``self.audit`` — deterministic, no RNG on the L1
         path), re-perceive through real vision and compare to the cached verdict. A divergence in
@@ -1652,7 +1652,7 @@ class Percept:
             return TurnResult(route=local.route, source="router", reply=reply)
 
         # DEFER: the conductor routes + authors goals (the only tier that writes state).
-        # FATAL seam (RFC §5): guard HERE, at the language↔conductor crossing, not at the wiring points.
+        # FATAL seam: guard HERE, at the language↔conductor crossing, not at the wiring points.
         # A spoken turn that reaches a SCRIPTED brain is silently discarded (FakeConductor -> route="ignore").
         # session.ask() -> on_speech_endpoint bypasses run()/start(), so guarding only the wiring points
         # left a door open; guarding the crossing covers every door with one check. (Router-
@@ -1675,7 +1675,7 @@ class Percept:
         """
         now = self.clock() if t is None else t
         self.note_mention(command, t=now)
-        _guard_live_language_path(self)  # FATAL seam (RFC §5): raw language -> a scripted brain authors nothing
+        _guard_live_language_path(self)  # FATAL seam: raw language -> a scripted brain authors nothing
         decision = await self.conductor.run("speech", command, self._turn_context())
         if decision.goal_ops:
             self.apply_goal_ops(decision.goal_ops)
@@ -1811,7 +1811,7 @@ class Percept:
     def act(
         self, goal_id: str, action: str, detail: dict | None = None, *, t: float | None = None
     ) -> ActionRecord:
-        """Perform a computer-use action — **flag-gated, scoped, logged** (spec §8).
+        """Perform a computer-use action — **flag-gated, scoped, logged**.
 
         Allowed only when the goal's ``modality == "act"`` AND the consent profile permits the
         action. Every attempt is logged (allowed or blocked — nothing acts silently); a blocked
@@ -1853,13 +1853,13 @@ class Percept:
         detail: dict | None = None,
         t: float | None = None,
     ) -> ActionRecord:
-        """A world-changing action under the spec's full safety contract (§7, A4).
+        """A world-changing action under the full safety contract.
 
         Goes through :meth:`act` (consent + per-source + modality enforced; a blocked attempt still
         raises :class:`ConsentDenied`), and — for a concern whose false-fire cost is high enough to
-        REQUIRE VERIFICATION (A3) — instantiates a **verification concern** that confirms the action's
+        REQUIRE VERIFICATION — instantiates a **verification concern** that confirms the action's
         effect actually landed. "Every world-changing action instantiates a verification concern"
-        (spec §7) is enforced HERE, not left to the caller. OSS stays notify-first: actuate performs
+        is enforced HERE, not left to the caller. OSS stays notify-first: actuate performs
         no side effect beyond the audited ``act()`` and arming the verification concern.
         """
         now = self.clock() if t is None else t
@@ -1873,7 +1873,7 @@ class Percept:
     def _instantiate_verification(
         self, goal: Goal, action: str, expect: str | None, t: float, verify_within: float
     ) -> Goal:
-        """Acting creates a concern that checks the effect LANDED (spec §7) — reusing A1's absence
+        """Acting creates a concern that checks the effect LANDED — reusing the deadline/absence-firing
         machinery: a ``deadline`` concern that fires "couldn't confirm" if the expected post-condition
         isn't observed within ``verify_within``. High miss-cost: an unverified world-change is exactly
         what must not be silently dropped. Confirmation (a confident-yes on the effect) cancels it."""
@@ -1997,7 +1997,7 @@ class Percept:
         from . import __version__
 
         payload = health(__version__, backends, self.metrics)
-        # RFC §4: the single scripted-state payload — one vocabulary, asked not guessed. ``mode`` is the
+        # The single scripted-state payload — one vocabulary, asked not guessed. ``mode`` is the
         # resolved switch ("offline"/"live"); ``scripted`` lists the seams whose CONSTRUCTED backend is a
         # scripted double (computed at create() from the class, the fact — not the requested name).
         payload["mode"] = self._mode

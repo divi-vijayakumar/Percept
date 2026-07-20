@@ -16,6 +16,7 @@ interactive [`architecture.html`](../architecture.html)) — it cannot drift fro
 - [Eval](how-to/eval.md) — the offline eval harness, manifests, and the CI gate.
 - [Porch-package scenario](how-to/porch-package.md) — a discrete physical-event watch recipe.
 - [Screenshare scenario](how-to/screenshare.md) — a fixed-cadence content watch.
+- [Release readiness](how-to/release-readiness.md) — the pre-publish checklist, audited against the built artifact.
 
 ## Reference — information-oriented
 - [`watch()` contract](reference/watch-contract.md) — the frozen public entrypoint + `WatchEvent` schema.

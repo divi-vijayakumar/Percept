@@ -1,12 +1,12 @@
-"""PROBE-HARNESS SCAFFOLDING — ``golden_eval`` (Viability §5a/§6, board card A14).
+"""PROBE-HARNESS SCAFFOLDING — ``golden_eval``.
 
 **Standalone evaluation module — not runtime instrumentation.** This scores already-produced
 predicted :class:`~percept.contracts.JudgmentEvent` records against labeled ground-truth episodes
-(card A6's :class:`~percept.contracts.GroundTruth`, e.g. via
+(:class:`~percept.contracts.GroundTruth`, e.g. via
 ``eval/viability/ground_truth.py``'s ``ground_truth_for_archetype``). It does not touch the
 runtime pipeline (``worker.py``/``agent.py``/``gate.py``) at all.
 
-Implements the Viability §5a event-level matching rule EXACTLY:
+Implements the one-to-one event-level matching rule EXACTLY:
 
 * A predicted event matches AT MOST ONE ground-truth episode.
 * A match requires ``decision_emitted_ts in [decision_eligible_ts, episode_end_ts +
@@ -22,18 +22,18 @@ predictions inside one episode does not inflate recall.
 
 This module also emits the canonical, deterministic "golden" ``JudgmentEvent`` timeline for a set
 of episodes (:func:`build_golden_timeline`) — the ideal/expected fire sequence a hero-demo replay
-(card A22/A24) is diffed against via :func:`score`.
+is diffed against via :func:`score`.
 
 Two pieces this module deliberately does NOT own (imported, never edited here):
 
-* :class:`percept.contracts.GroundTruth` — card A6's frozen evaluation-only ground-truth record
+* :class:`percept.contracts.GroundTruth` — the frozen evaluation-only ground-truth record
   (``event_start_ts``/``decision_eligible_ts``/``annotation_version``/``annotator_or_fixture_id``).
-* :class:`percept.contracts.JudgmentEvent` / :class:`percept.contracts.JudgmentTiming` — card A5's
+* :class:`percept.contracts.JudgmentEvent` / :class:`percept.contracts.JudgmentTiming` — the
   frozen live-decision contract; ``timing.decision_emitted_ts`` is the sole timestamp this module
   reads off a prediction.
 
 :class:`GroundTruthEpisode` (defined here) is the eval-only join of a ``GroundTruth`` with the two
-extra fields the §5a window needs — ``episode_end_ts`` and ``allowed_lateness_s`` — that do not
+extra fields the matching window needs — ``episode_end_ts`` and ``allowed_lateness_s`` — that do not
 belong on the frozen ``GroundTruth`` contract itself.
 """
 
@@ -46,7 +46,7 @@ from typing import FrozenSet, Sequence
 from ..contracts import GroundTruth, JudgmentEvent, JudgmentTiming
 
 # ---------------------------------------------------------------------------
-# GroundTruthEpisode — GroundTruth (A6) + the episode-window fields §5a matching needs.
+# GroundTruthEpisode — GroundTruth + the episode-window fields the matching rule needs.
 # ---------------------------------------------------------------------------
 
 
@@ -54,9 +54,9 @@ from ..contracts import GroundTruth, JudgmentEvent, JudgmentTiming
 class GroundTruthEpisode:
     """One labeled ground-truth episode a predicted-event set is scored against.
 
-    Wraps card A6's :class:`~percept.contracts.GroundTruth` (``event_start_ts`` /
-    ``decision_eligible_ts`` / provenance) with the two additional fields the §5a event-level
-    matching rule needs:
+    Wraps :class:`~percept.contracts.GroundTruth` (``event_start_ts`` /
+    ``decision_eligible_ts`` / provenance) with the two additional fields the one-to-one
+    event-level matching rule needs:
 
     * ``episode_end_ts`` — when the labeled episode itself ends, on the same fixture/annotator
       timeline as ``ground_truth.event_start_ts``. Must be ``>= ground_truth.decision_eligible_ts``
@@ -65,7 +65,7 @@ class GroundTruthEpisode:
       ``episode_end_ts`` a still-correct fire may land in (judge/queue latency headroom). Defaults
       to ``0.0`` (no grace) so a caller that doesn't care about lateness gets the tightest window.
 
-    Neither field lives on ``GroundTruth`` itself (that contract is card A6's, untouched here) —
+    Neither field lives on ``GroundTruth`` itself (that contract is untouched here) —
     they are eval-only, per-episode metadata this module owns.
 
     ``episode_id`` is required, non-empty, and must be unique within one :func:`score` /
@@ -93,14 +93,14 @@ class GroundTruthEpisode:
 
     @property
     def window(self) -> tuple[float, float]:
-        """The closed §5a match window: ``[decision_eligible_ts, episode_end_ts + allowed_lateness_s]``."""
+        """The closed matching window: ``[decision_eligible_ts, episode_end_ts + allowed_lateness_s]``."""
         return (
             self.ground_truth.decision_eligible_ts,
             self.episode_end_ts + self.allowed_lateness_s,
         )
 
     def contains(self, decision_emitted_ts: float) -> bool:
-        """Does ``decision_emitted_ts`` fall inside this episode's closed §5a match window?"""
+        """Does ``decision_emitted_ts`` fall inside this episode's closed matching window?"""
         lo, hi = self.window
         return lo <= decision_emitted_ts <= hi
 
@@ -111,12 +111,12 @@ class GroundTruthEpisode:
 
 
 class MatchOutcome(str, Enum):
-    """The §5a disposition of ONE predicted event."""
+    """The one-to-one event-level matching disposition of ONE predicted event."""
 
     #: The predicted event is the (first, one-to-one) match for its episode.
     MATCH = "match"
     #: The predicted event landed inside an episode's window that ALREADY has a match — a
-    #: duplicate false fire (§5a: "additional predictions in the same episode").
+    #: duplicate false fire (the matching rule: "additional predictions in the same episode").
     DUPLICATE = "duplicate"
     #: The predicted event landed inside no episode's window at all — a plain false fire.
     FALSE_FIRE = "false_fire"
@@ -124,7 +124,7 @@ class MatchOutcome(str, Enum):
 
 @dataclass(frozen=True)
 class PredictionScore:
-    """The §5a outcome for one predicted event."""
+    """The one-to-one event-level matching outcome for one predicted event."""
 
     event: JudgmentEvent
     decision_emitted_ts: float
@@ -160,7 +160,7 @@ class GoldenEvalResult:
 
     @property
     def false_fires(self) -> int:
-        """Total false fires = duplicates + unmatched (§5a treats both as false fires)."""
+        """Total false fires = duplicates + unmatched (the matching rule treats both as false fires)."""
         return self.duplicate_false_fires + self.unmatched_false_fires
 
     @property
@@ -197,18 +197,18 @@ def score(
     *,
     predicted_actions: FrozenSet[str] = DEFAULT_PREDICTED_ACTIONS,
 ) -> GoldenEvalResult:
-    """Score ``predicted_events`` against ``episodes`` per the Viability §5a event-level matching rule.
+    """Score ``predicted_events`` against ``episodes`` per the one-to-one event-level matching rule.
 
     Deterministic one-to-one GREEDY matching, processing predictions in
     ``(decision_emitted_ts, key, evidence_seq)`` order (so two calls over the same inputs always
     produce byte-for-byte identical results, independent of input list order):
 
     1. If ``decision_emitted_ts`` falls inside the window of an episode that has NO match yet, it
-       becomes that episode's match (§5a: matches AT MOST ONE episode — the first, earliest-sorted
-       prediction to land in an episode's window claims it).
+       becomes that episode's match (the matching rule: matches AT MOST ONE episode — the first,
+       earliest-sorted prediction to land in an episode's window claims it).
     2. Else, if it falls inside the window of an episode that ALREADY has a match, it is a
-       DUPLICATE false fire against that episode (§5a: "additional predictions in the same
-       episode").
+       DUPLICATE false fire against that episode (the matching rule: "additional predictions in the
+       same episode").
     3. Else, it matches no episode window at all — a plain (unmatched) false fire.
 
     Ground-truth episodes with no matching prediction after all predictions are processed are
@@ -285,8 +285,9 @@ def build_golden_timeline(episodes: Sequence[GroundTruthEpisode]) -> tuple[Judgm
     timeline regardless of input list order.
 
     The golden event's ``decision_emitted_ts`` is deliberately pinned to the episode's own
-    ``decision_eligible_ts`` — the EARLIEST instant a correct fire could legally land per §5a — the
-    "ideal / zero funnel-latency" expected fire, not a claim about real production latency. All
+    ``decision_eligible_ts`` — the EARLIEST instant a correct fire could legally land per the
+    matching rule — the "ideal / zero funnel-latency" expected fire, not a claim about real
+    production latency. All
     five ``JudgmentTiming`` monotonic stamps are set to that same instant (trivially
     non-decreasing, satisfying ``JudgmentTiming``'s own construction invariant) since a synthetic
     golden record has no real ingest/admit/judge funnel to time.
@@ -294,7 +295,7 @@ def build_golden_timeline(episodes: Sequence[GroundTruthEpisode]) -> tuple[Judgm
     A replay's own predicted-event timeline is diffed against the golden expectation by calling
     :func:`score` with THESE episodes and the replay's actual predictions — never by comparing
     ``JudgmentEvent`` equality directly, since a real (correct) prediction legitimately lands later
-    than ``decision_eligible_ts``, anywhere inside the §5a window.
+    than ``decision_eligible_ts``, anywhere inside the matching window.
     """
     _assert_unique_episode_ids(episodes)
     ordered = sorted(episodes, key=_episode_sort_key)

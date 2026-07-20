@@ -9,7 +9,7 @@ concern through one of the four fire methods below:
   * absence coverage       -> :meth:`BehaviorExecutor.fire_absence`  (agent.py:532)
   * state transition       -> :meth:`BehaviorExecutor.fire_transition` (agent.py:736)
 
-It began as a Phase-0 spike (see the direction doc) but is now wired and load-bearing: ONE executor
+It began as a Phase-0 spike but is now wired and load-bearing: ONE executor
 + a general key-synthesis reproduces the legacy firing behaviors (judge / transition / episode /
 absence + the on_false / never / each_event / interval / deadline re-arms) byte-for-byte, while
 honoring the three review constraints:

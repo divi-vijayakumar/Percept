@@ -43,17 +43,6 @@ from .detectors import (
     registered,
     unregister,
 )
-from .enrichers import (
-    Enrichment,
-    FakeEnricher,
-    NullEnricher,
-    clear_enrichers,
-    enrich_signal,
-    enricher_for,
-    register_enricher,
-    registered_enrichers,
-    unregister_enricher,
-)
 from .pose import (
     POSE_CHANNEL_NAMES,
     BlazePoseProvider,
@@ -120,14 +109,4 @@ __all__ = [
     "detectors_for_concern",
     "concern_to_condition",
     "compile_registered_watchspec",
-    # enricher registry (the specialist-model handoff — signal -> specialist -> judge context)
-    "NullEnricher",
-    "FakeEnricher",
-    "Enrichment",
-    "register_enricher",
-    "enricher_for",
-    "registered_enrichers",
-    "unregister_enricher",
-    "clear_enrichers",
-    "enrich_signal",
 ]

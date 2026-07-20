@@ -165,7 +165,7 @@ class EpisodeSettings:
 
 @dataclass(frozen=True)
 class EdgeSettings:
-    # The on-device / server-side tier-0 salience gate (spec §6.3, impl plan §8). The coarse
+    # The on-device / server-side tier-0 salience gate. The coarse
     # motion gate decides *when* to spend a cloud vision call: escalate only when the frame-diff
     # motion score clears this threshold. A shipped default from an auditable sweep, with optional
     # per-goal bias. (PERCEPT_MOTION_GATE)
