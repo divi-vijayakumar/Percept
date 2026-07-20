@@ -235,6 +235,44 @@ neither carries an extracted fact; pass context={...} to judge yourself.
 The detector protocol it implements is the whole contract: a `signal` attribute
 (`"motion"` | `"energy"` | `"frame"`), `push(t, value) -> [Boundary]`, and `reset()`.
 
+### Check it before you ship it — `percept.conformance`
+
+Both seams above have a runnable conformance suite, the same one the Vision adapter has:
+
+```bash
+python -m percept.conformance mypkg.ocr:DocumentChanged --role detector
+python -m percept.conformance mypkg.ocr:ink_density     --role semantic
+```
+
+or in your own test suite:
+
+```python
+from percept.conformance import check_detector, check_tier0_adapter
+
+def test_my_detector_is_well_formed():
+    report = check_detector(DocumentChanged, manifest=MY_MANIFEST)
+    assert report.ok, report.format()
+
+def test_my_admission_adapter_is_well_formed():
+    report = check_tier0_adapter(ink_density, role="semantic", frames=load_my_frames())
+    assert report.ok, report.format()
+```
+
+`check_detector` verifies the manifest is well-formed, the call signature is the one `DetectorBank`
+uses, boundaries are real attributed `Boundary` objects, the detector is deterministic on a fixed
+input, `reset()` really restores initial state, and the name is selectable end-to-end into a
+`WatchSpec` through the real firewall. `check_tier0_adapter` verifies the score is a bounded `0..1`
+float, the adapter survives a degenerate frame (1×1, uniform black/white), and a real `MotionGate`
+carrying it runs a stream without crashing and reports the value on the matching `Tier0Signal`
+channel. A frame-backed detector's push checks **skip** (loudly, marked `PARTIALLY CHECKED`) unless
+you pass `samples=` from your own stream — there is no universal probe frame.
+
+> **This proves your plug-in is WELL-FORMED. It is NOT a measure of your model's quality.** No check
+> asserts a correct answer: a conformant detector is free to be *wrong*, it is not free to be *shaped*
+> wrong. **A green conformance report does not mean "my OCR model is good."** That question — does my
+> detector actually help? — is `percept eval`'s (`percept-eval`): a paired A/B on **your** fixtures
+> against **your** pre-registered bars.
+
 ### Removed: the enricher registry
 
 `register_enricher` / `enrich_signal` / `enricher_for` (`percept.edge.enrichers`) were **removed** in
@@ -252,6 +290,7 @@ for removal. Use the two seams above for admission, and `Vision.judge(context=..
 |---------|-----------|
 | `register`, `register_detector`, `make_detector`, `registered`, `list_manifests`, `manifest_of`, `unregister`, `clear_detectors` | semver-stable; additive-only within a contract MAJOR |
 | `DetectorManifest` (`name`, `senses`, `when_to_use`, `output`), `Boundary` (`detector`, `kind`, `t`, `value`) | frozen shapes; new fields are additive + optional |
+| `percept.conformance.check_detector`, `check_tier0_adapter`, `CONFORMANCE_VERSION` | semver-stable; a new REQUIRED check is a MAJOR bump of `CONFORMANCE_VERSION` (an adapter that passed may now fail), a new ADVISORY check is MINOR |
 | `register_concern`, `registered_concerns`, `registered_concern_ids`, `get_concern`, `unregister_concern`, `clear_concerns`, `detectors_for_concern`, `concern_to_condition`, `compile_registered_watchspec` | semver-stable; additive-only within a contract MAJOR |
 | `percept.run(..., structural_adapter=, semantic_adapter=)` (the tier-0 admission seam), `Vision.judge(context=...)` | semver-stable; additive-only within a contract MAJOR |
 | `register_enricher`, `enricher_for`, `enrich_signal`, `Enrichment`, `NullEnricher`, `FakeEnricher` | **REMOVED** in 0.7.x (zero callers — the seam did nothing); `Enricher` protocol deprecated, removed next MAJOR |
