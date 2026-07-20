@@ -1194,6 +1194,19 @@ def build_parser() -> argparse.ArgumentParser:
                    help="fail (refuse to score) unless the configuration hashes to this")
     p.add_argument("--json", dest="json_out", default=None, help="write the full report as JSON")
     p.add_argument("--declared-at", default="", help="when the bars/split were declared")
+    # --- operating frontier (§3.2) — the SAME entry point, not a second CLI -------------
+    p.add_argument("--frontier", action="store_true",
+                   help="also emit the operating-frontier report (§3.2): exact one-sided 95% "
+                        "bounds on FIRE recall and false FIREs per scheduled watch-hour, ASK rate, "
+                        "coverage, assisted recall, degraded time, duplicate FIREs per episode, "
+                        "per-archetype, both denominators")
+    p.add_argument("--frontier-arm", default="candidate",
+                   help="which arm the frontier is computed on (default: candidate)")
+    p.add_argument("--frontier-bars", default=None,
+                   help="operating bars file: false_fire_max (per scheduled watch-hour) and/or "
+                        "recall_min; omit to report bounds without a verdict")
+    p.add_argument("--frontier-json", default=None,
+                   help="write the operating-frontier report as JSON")
     return p
 
 
@@ -1216,7 +1229,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(render_text(report))
     if args.json_out:
         Path(args.json_out).write_text(report.to_json())
-    return 1 if report.verdict is OverallVerdict.FAIL else 0
+    failed = report.verdict is OverallVerdict.FAIL
+
+    if args.frontier:
+        from . import frontier as _frontier  # local import: frontier imports this module
+
+        try:
+            evidence = _frontier.load_frontier_evidence(
+                args.fixtures, arm=args.frontier_arm, split_name=args.split
+            )
+            frontier_report = _frontier.build_frontier(
+                evidence, bars=_frontier.load_bars(args.frontier_bars)
+            )
+        except (EvalInputError, SplitError, _frontier.FrontierInputError) as exc:
+            print(f"percept eval --frontier: REFUSED — {exc}", file=sys.stderr)
+            return 2
+        print()
+        print(_frontier.render_text(frontier_report))
+        if args.frontier_json:
+            Path(args.frontier_json).write_text(frontier_report.to_json())
+        failed = failed or frontier_report.verdict is _frontier.FrontierVerdict.FAIL
+
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":  # pragma: no cover
