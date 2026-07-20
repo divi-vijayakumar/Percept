@@ -893,6 +893,8 @@ async def run(
     stale_audio_s: float | None = None,
     wall_clock: Callable[[], float] = time.monotonic,
     wake_policy: Any = None,
+    structural_adapter: Callable | None = None,
+    semantic_adapter: Callable | None = None,
     energy_provider: Callable | None = None,
     regate_on_goal_change: bool = True,
     paused: Callable | None = None,
@@ -974,6 +976,19 @@ async def run(
     - ``wall_clock`` — monotonic time source for ``deaf_until`` + ``stale_audio_s`` (default
       :func:`time.monotonic`; injectable for tests). Distinct from ``clock`` (civil time for schedules).
 
+    - ``structural_adapter`` / ``semantic_adapter`` — the TIER-0 EXTENSION SEAM (card D6a): ``(frame) ->
+      float in 0..1`` callables that fill the ``structural`` / ``semantic`` channels of the
+      :class:`~percept.adapters.Tier0Signal` this run reports, instead of the motion-only ``0.0``.
+      This is how you supplement tier 0 with a cheap local model — a CLIP/embedding drift score, a pose
+      or privacy classifier, an OCR-diff "the document changed" score — WITHOUT bypassing ``run()`` and
+      driving :class:`~percept.edge.tier0.GatedWatchLoop` yourself, which was previously the only way.
+      They reach admission two ways: a goal whose condition compiles to ``gate_on="structural"`` /
+      ``"semantic"`` escalates on that channel against its own threshold, and a ``wake_policy`` fuses the
+      channels into one wake score. Both are ADMISSION signals — they decide *when to spend the cloud
+      judge*; they do NOT deliver facts to the judge (see ``docs/reference/registration.md``). Called
+      once per frame on the gate frame, so keep them cheap, and keep them total — an adapter that raises
+      propagates out of the gate and stops the watch (loudly, not silently). Both default ``None`` → the
+      reported signal and every escalation decision are byte-for-byte the motion-only path.
     - ``label_store`` — optional :class:`~percept.labelstore.LabelStore` (L-1). When set, every yielded
       incident is bound to it, so ``incident.record_label(good, ...)`` writes a LOCAL
       :class:`~percept.contracts.LabelRecord` (the feedback intake). Default ``None`` → ``record_label``
@@ -1160,7 +1175,16 @@ async def run(
             },
         )
         # clock (PR 2.2): a civil-time source arms per-goal Schedules (C1); None -> always-armed (default).
-        g = MotionGate(s, settings=settings, wake_policy=wake_policy, clock=clock)
+        # D6(a): the tier-0 extension seam, reachable from the supported entrypoint. None -> the gate's
+        # structural/semantic channels stay 0.0 and this is byte-for-byte the motion-only path.
+        g = MotionGate(
+            s,
+            settings=settings,
+            wake_policy=wake_policy,
+            clock=clock,
+            structural_adapter=structural_adapter,
+            semantic_adapter=semantic_adapter,
+        )
         if prev_gate is not None:
             g.adopt_state(prev_gate)  # D2: carry throttle + prev for surviving goal_ids
         # PR 1.3: one detector bank per goal that selected edge detectors (state['detectors']). The bank

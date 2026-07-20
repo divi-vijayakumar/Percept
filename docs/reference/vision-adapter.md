@@ -56,7 +56,7 @@ condition into `attr_key=value` and exact-match — one firing path, one gate. E
 | `corrections` | user-asserted facts that beat your observation | **required** — put them in the prompt |
 | `frames` | earlier context frames, oldest→newest, excluding `frame` | accept and ignore (judge the single frame) |
 | `audio` | `AudioFrame`, `bytes`, or `(mime, bytes)` | accept and ignore |
-| `context` | structured facts from an `Enricher` (e.g. `{"plate": "7XYZ123"}`) — authoritative | accept and ignore |
+| `context` | structured facts the CALLER supplies (e.g. `{"plate": "7XYZ123"}` from your own OCR/LPR) — authoritative | accept and ignore |
 | `exemplar` | a reference image for "this specific thing" goals | accept and ignore |
 
 Every escalation **must be accepted and must default to `None`**, so a bare single-frame call is the

@@ -39,6 +39,18 @@ python examples/vision_assistant.py --egomotion            # glasses/body-cam
 python examples/vision_assistant.py --source clip.mp4      # test on a recording
 ```
 
+## `byo_admission_detector.py` — bring your own model in front of the judge
+
+Offline, deterministic, **no keys and no model**. Shows the two supported ways to put your own cheap
+model (OCR, CLIP, a classifier) in front of Percept's expensive judge — `register_detector` for timed
+occurrences, `percept.run(..., semantic_adapter=...)` for admission — and states precisely what neither
+does: they decide *when to look closely*; they do not deliver extracted facts (`invoice_number = …`) to
+the judge. See [`docs/reference/registration.md`](../docs/reference/registration.md#admission-is-not-extraction--what-register_detector-does-and-does-not-do).
+
+```bash
+python examples/byo_admission_detector.py
+```
+
 ### Dependencies
 - **Judge:** an API key for your provider (`OPENROUTER_API_KEY`, or Gemini/Claude with `--vision`).
 - **Webcam / video / RTSP:** the capture extra — `pip install 'percept-vision[runtime]'` (OpenCV + numpy).
