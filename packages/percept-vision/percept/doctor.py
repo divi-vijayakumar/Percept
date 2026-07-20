@@ -16,8 +16,12 @@ It answers, in order:
    one :class:`~percept.adapters.WatchCondition` per goal with its effective threshold, salience
    stat, cadence, gate_on channel and schedule.
 4. **Which source profile was active?** — the :class:`~percept.watchprofile.WatchProfile` resolved
-   from the situation axes (card P2/M2). Card D7's per-SOURCE profiles are not in this build; the
-   report says so explicitly rather than leaving the field ambiguous.
+   from the situation axes (card P2/M2) AND the :class:`~percept.sourceprofile.SourceProfile`
+   (card D7 / ADR-005) naming what KIND of world is on the other end of the stream. When that
+   profile declares its admission signal :data:`~percept.sourceprofile.UNTUNED` — as
+   ``screen_document`` does, because percept ships no calibrated page-change signal — doctor says
+   so out loud (:data:`ADMISSION_SIGNAL_UNTUNED`): *this profile is running on coast alone, supply
+   a change signal*. It never invents a threshold to hide it.
 5. **Which admission signals were available?** — motion is computed here; structural/semantic are
    ``0.0`` in the reference gate unless an edge adapter fills them, and audio needs an audio source.
    A goal that gates on a channel nobody feeds is **plan unobservable** (exit 4), not "quiet".
@@ -103,6 +107,8 @@ ALTERNATIVE_STAT_WOULD_ADMIT = "ALTERNATIVE_STAT_WOULD_ADMIT"
 SINGLE_FRAME_RUN = "SINGLE_FRAME_RUN"
 EGO_COMPENSATED_GATE = "EGO_COMPENSATED_GATE"
 UNEXPLAINED_SUPPRESSION = "UNEXPLAINED_SUPPRESSION"
+ADMISSION_SIGNAL_UNTUNED = "ADMISSION_SIGNAL_UNTUNED"
+SOURCE_PROFILE_EXPERIMENTAL = "SOURCE_PROFILE_EXPERIMENTAL"
 
 #: Why a frame did NOT become a candidate for a goal. Every non-admit lands in exactly one bucket —
 #: "it was quiet" is only ONE of these, and conflating it with the others is the bug this card fixes.
@@ -272,6 +278,11 @@ class PlanDiagnosis:
     signals: dict[str, bool]
     signal_notes: dict[str, str]
     conditions: tuple[dict[str, Any], ...] = ()
+    #: The full ``SourceProfile.to_dict()`` (card D7) — strategies, parameters, stability. ``None``
+    #: only if the source-profile registry could not be imported at all.
+    source_profile_detail: dict[str, Any] | None = None
+    #: How the source profile was chosen: ``"explicit"`` (the caller named it) or ``"default"``.
+    source_profile_origin: str = "default"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -283,7 +294,12 @@ class PlanDiagnosis:
                 "key": list(self.profile_key) if self.profile_key else None,
                 "source": self.profile_source,
             },
-            "source_profile": {"active": self.source_profile, "note": self.source_profile_note},
+            "source_profile": {
+                "active": self.source_profile,
+                "note": self.source_profile_note,
+                "origin": self.source_profile_origin,
+                "profile": self.source_profile_detail,
+            },
             "signals": dict(self.signals), "signal_notes": dict(self.signal_notes),
             "conditions": [dict(c) for c in self.conditions],
         }
@@ -334,6 +350,36 @@ class DoctorReport:
 # ---------------------------------------------------------------------------
 # Capture
 # ---------------------------------------------------------------------------
+
+
+def _resolve_source_profile(spec: Any):
+    """Resolve the card-D7 :class:`~percept.sourceprofile.SourceProfile` doctor should report.
+
+    ``spec`` is a name, a ``SourceProfile``, or ``None`` (meaning: nobody said, so report the
+    honest default — ``physical_scene``, the ONE class the stock tier-0 eye is calibrated on — and
+    label it ``"default"`` so a client on screen content can see they never selected a profile).
+    Returns ``(profile, origin)``. An unknown name raises :class:`DoctorConfigError` (exit 5): a
+    typo must not silently fall back to the wrong source class.
+    """
+    from .sourceprofile import (  # noqa: PLC0415 - keeps doctor's import graph flat
+        SourceProfile,
+        SourceProfileNotFoundError,
+        get_source_profile,
+    )
+    from .source_profiles_default import DEFAULT_SOURCE_PROFILE_NAME  # noqa: PLC0415
+
+    if isinstance(spec, SourceProfile):
+        return spec, "explicit"
+    if spec is None:
+        return get_source_profile(DEFAULT_SOURCE_PROFILE_NAME), "default"
+    if not isinstance(spec, str):
+        raise DoctorConfigError(
+            f"source_profile must be a name or a SourceProfile, got {type(spec).__name__}"
+        )
+    try:
+        return get_source_profile(spec), "explicit"
+    except SourceProfileNotFoundError as exc:
+        raise DoctorConfigError(f"unknown source profile: {exc}") from exc
 
 
 def _resolve_timebase_for(source: Any, requested: str):
@@ -506,6 +552,7 @@ def run_doctor(
     goal_temporality: Any = None,
     camera_mount: Any = None,
     start_state: Any = None,
+    source_profile: Any = None,
     settings: Settings | None = None,
     trace_out: str | None = None,
 ) -> DoctorReport:
@@ -525,6 +572,8 @@ def run_doctor(
         raise DoctorConfigError("at least one goal is required — doctor is plan-AWARE by definition")
     if timebase not in ("auto", "media", "wall"):
         raise DoctorConfigError(f"timebase must be auto/media/wall, got {timebase!r}")
+
+    src_profile, src_profile_origin = _resolve_source_profile(source_profile)
 
     cfg, plan_mode, profile_name, profile_key, profile_source = _profile_settings(
         goal_temporality=goal_temporality, camera_mount=camera_mount,
@@ -718,6 +767,25 @@ def run_doctor(
                 "a rule — this is a doctor bug, please report it with this JSON",
             ))
 
+    # Card D7: the source profile is a REPORTED fact, and an untuned admission signal is a finding,
+    # not a footnote. It is deliberately a WARN, never an error and never an exit code of its own:
+    # coasting is a real (degraded) operating mode, and the client — not percept — owns the fix.
+    if not src_profile.admission_tuned:
+        findings.append(Finding(
+            ADMISSION_SIGNAL_UNTUNED, "warn",
+            f"source profile '{src_profile.name}' is running on COAST ALONE — supply a change "
+            f"signal. {src_profile.admission_note()} percept's stock tier-0 eye is calibrated on "
+            "physical_scene only; on this source class the salience table above is expected to "
+            "read near-zero, and lowering a threshold to force an admit would wreck physical-scene "
+            "precision without making this content observable.",
+        ))
+    if src_profile.stability == "experimental":
+        findings.append(Finding(
+            SOURCE_PROFILE_EXPERIMENTAL, "warn",
+            f"source profile '{src_profile.name}' is EXPERIMENTAL — evaluation only. "
+            + src_profile.notes,
+        ))
+
     exit_code = EXIT_OK
     if src.error is not None or not captured:
         exit_code = EXIT_SOURCE_FAILURE
@@ -735,11 +803,18 @@ def run_doctor(
         profile_name=profile_name,
         profile_key=profile_key,
         profile_source=profile_source,
-        source_profile=None,
+        source_profile=src_profile.name,
         source_profile_note=(
-            "per-source profiles (card D7) are not present in this build; the active tuning comes "
-            f"from {profile_source}"
+            f"{src_profile.stability}; modalities={sorted(src_profile.modalities)}, "
+            f"temporal_unit={src_profile.temporal_unit}, "
+            f"admission={src_profile.admission_strategy}, "
+            f"evidence={src_profile.evidence_strategy}, "
+            f"identity={src_profile.identity_strategy}, "
+            f"timebase={src_profile.default_timebase} "
+            f"[{src_profile_origin}]. {src_profile.admission_note()}"
         ),
+        source_profile_detail=src_profile.to_dict(),
+        source_profile_origin=src_profile_origin,
         signals=signals,
         signal_notes=signal_notes,
         conditions=tuple(
@@ -834,7 +909,23 @@ def render_report(report: DoctorReport) -> str:
                f"   [{p.profile_source}]")
     if p.profile_key:
         out.append(f"  profile key             {tuple(p.profile_key)}")
-    out.append(f"  source profile (D7)     {p.source_profile or 'not available'} — {p.source_profile_note}")
+    out.append(f"  source profile (D7)     {p.source_profile or 'not available'}   "
+               f"[{p.source_profile_origin}]")
+    d = p.source_profile_detail or {}
+    if d:
+        out.append(f"    stability             {d.get('stability')}")
+        out.append(f"    modalities/unit       {', '.join(d.get('modalities', ()))} / "
+                   f"{d.get('temporal_unit')}")
+        out.append(f"    admission strategy    {d.get('admission_strategy')}"
+                   f"{'' if d.get('admission_tuned') else '   ** UNTUNED **'}")
+        out.append(f"    evidence / identity   {d.get('evidence_strategy')} / "
+                   f"{d.get('identity_strategy')}")
+        coast = (d.get("parameters") or {}).get("coast_interval_s")
+        out.append(f"    coast / timebase      "
+                   f"{'none' if coast is None else f'every {coast:g}s'} / "
+                   f"{d.get('default_timebase')}")
+    for line in _wrap(p.source_profile_note, _W - 6):
+        out.append(f"      {line}")
 
     out.append(_rule("ADMISSION SIGNALS"))
     for name, ok in p.signals.items():
@@ -915,6 +1006,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--goal-temporality", default=None, choices=("stative", "dynamic"))
     p.add_argument("--camera-mount", default=None, choices=("fixed", "wearable", "glasses", "handheld"))
     p.add_argument("--start-state", default=None, choices=("start_anchored", "transition"))
+    # Deliberately NOT choices=(...): the source-profile registry is OPEN (ADR-005), so a
+    # third-party profile (industrial_line, medical_imaging, ...) must be selectable here the moment
+    # it is registered, without editing this parser. An unknown name is a clear exit-5 error.
+    p.add_argument(
+        "--source-profile", default=None,
+        help="source class (card D7): physical_scene | screen_document | conversation, or any "
+             "registered third-party profile name (default: physical_scene)",
+    )
     p.add_argument("--trace-out", default=None, help="write the D8a trace artifact (JSON) here")
     p.add_argument("--json", action="store_true", help="emit the machine-readable report on stdout")
     return p
@@ -937,6 +1036,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             goal_temporality=args.goal_temporality,
             camera_mount=args.camera_mount,
             start_state=args.start_state,
+            source_profile=args.source_profile,
             trace_out=args.trace_out,
         )
     except DoctorConfigError as exc:
@@ -955,6 +1055,8 @@ __all__ = [
     "SUPPRESSION_REASONS",
     "ZERO_ADMITS_ON_FIXTURE",
     "ALTERNATIVE_STAT_WOULD_ADMIT",
+    "ADMISSION_SIGNAL_UNTUNED",
+    "SOURCE_PROFILE_EXPERIMENTAL",
     "SIGNAL_UNAVAILABLE",
     "DoctorConfigError",
     "DoctorReport",
