@@ -14,7 +14,7 @@ interactive [`architecture.html`](../architecture.html)) — it cannot drift fro
 - [Authoring goals and watch plans](how-to/authoring-goals-and-watch-plans.md) — phrase goals and match the plan to the action so quality isn't lost before the judge runs.
 - [Runtime](how-to/runtime.md) — drive a live source with `run(source) → incidents`.
 - [Eval](how-to/eval.md) — the offline eval harness, manifests, and the CI gate.
-- [Fall scenario](how-to/fall.md) — a high-consequence watch recipe.
+- [Porch-package scenario](how-to/porch-package.md) — a discrete physical-event watch recipe.
 - [Screenshare scenario](how-to/screenshare.md) — a fixed-cadence content watch.
 
 ## Reference — information-oriented

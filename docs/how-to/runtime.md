@@ -139,25 +139,28 @@ A goal's `state` carries three orthogonal levers (the conductor can author them 
 
 | knob | `state` key | what it controls | example |
 |---|---|---|---|
-| **what fires** | (the `condition` + behavior) | the plain-language trigger + rising-edge logic | "a person has fallen" |
+| **what fires** | (the `condition` + behavior) | the plain-language trigger + rising-edge logic | "a package is on the porch" |
 | **how deep a look** | `perception` (PerceptionSpec) | single frame vs a **strip** of N (see the transition), ROI, fused audio | `{"temporal": "strip", "n_frames": 4}` |
 | **how often to look** | `cadence` | motion-gated (default) vs a **fixed** cadence for low-motion content | `{"min_judge_interval": 0.5, "gate_on": "fixed"}` |
 | **how much it matters** | `miss_cost` / `false_fire_cost` | biases the gate (a severe miss → asks instead of staying silent) | `"miss_cost": "severe"` |
 
 ### Cadence — `gate_on`
 `gate_on` picks the signal that arms a goal (`how-often`, distinct from `perception` = `how-deep`):
-- **`motion`** (default) — pixel-motion gate. Right for **physical** events (a person, a package, a fall).
+- **`motion`** (default) — pixel-motion gate. Right for **physical** events (a person raising a hand, a
+  package dropped off).
 - **`fixed`** — escalate every `min_judge_interval` seconds **regardless of motion**. Required for
   **content** events (a screenshare, a dashboard) where pixel motion is ~0 and the motion gate would
   silently under-sample. `cadence_s` also rate-limits a motion goal (escalate at most every N seconds).
 - **`structural` / `semantic`** — the richer Tier-0 channels (CLIP/pose); filled by `percept-edge`.
 
 ## Worked scenarios
-- **Physical event (fall detection)**: motion-gated, `miss_cost="severe"`, `temporal="strip"`. See [fall.md](fall.md).
+- **Physical event (porch package)**: motion-gated, `temporal="strip"`. See [porch-package.md](porch-package.md).
 - **Content event (screenshare)**: `gate_on="fixed"` on a zero-motion screen. See [screenshare.md](screenshare.md).
 
 > **Assistant-class, not a guarantee.** The runtime *alerts a human who stays responsible*. It is not a
-> certified safety/detection system on a clock it can't promise. See the fall scenario for the disclaimer.
+> certified safety/detection system standing between a person and harm — percept is never the sole
+> safety mechanism for a high-consequence, life-safety condition. See the porch-package scenario for
+> the disclaimer pattern.
 
 ## Beyond fires — what else `run()` surfaces
 

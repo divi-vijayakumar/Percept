@@ -89,7 +89,6 @@ channel lifts it to **0.70** — a 2.5× recovery on events the visual gate is s
 | Flooding | fixed cadence + change + water/object presence | water-like region appears/grows | flooding/leak and visible source | ask on reflections or shadows |
 | Breaking into car | person presence + change + audio event | person near car plus impact/open-door/glass | forced-entry indicators | ask unless clear; avoid identity claims |
 | Speeding car ticketing | vehicle presence + tracking/change | vehicle crosses zone quickly | "vehicle passed quickly" only | refuse ticketing/enforcement claims |
-| Elder fall | motion + pose + presence + audio event | rapid descent, horizontal/still person, thud/help | person appears fallen/on floor | ask on occlusion or slow slump; not sole safety system |
 | Somebody asking for help | audio event/STT + presence | distress phrase or scream | visible person/context | ask on ambiguous speech |
 | Camera covered | fixed cadence + dark/blur/low-texture change | persistent occlusion-like frame | lens covered vs lights off | ask on natural darkness |
 | Correct my posture | pose + fixed cadence + presence | poor posture sustained | posture relative to goal | ask when body is partly visible |
