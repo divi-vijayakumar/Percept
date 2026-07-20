@@ -159,6 +159,23 @@ The tier-0 edge harness and the frozen wire-contract are bundled inside `percept
 > version is separate — `CONTRACT_VERSION = "1.2.0"` (additive-only). A `0.6.0` install exporting
 > contract `1.2.0` is expected, not a bug.
 
+### What can you rely on?
+
+**Frozen** — the contract is locked; a breaking change means a new surface, not a change to this one.
+**Stable** — may grow (additive) but won't break existing callers within `0.7.x`.
+**Experimental** — usable today, but may change shape or be renamed within `0.7.x` without a deprecation cycle.
+**Internal** — an implementation detail; not part of the public surface, don't depend on it directly.
+
+| surface | status | notes |
+|---|---|---|
+| `watch()` + `WATCH_VERSION` (`percept/watch.py`) | **Frozen** | the one seam every downstream card is built to; `WATCH_VERSION = "1.0.0"`. |
+| wire contract `CONTRACT_VERSION` (`percept/contracts`) | **Stable** | `1.2.0`, additive-only — new fields, never breaking ones. |
+| `percept.run()` / `Incident` | **Stable-ish** | the batteries-included runtime front door; shape has settled but hasn't been through a full deprecation cycle yet. |
+| `percept-watch` CLI + flags (`--source`, `--goal`, `--say`, `--vision`, `--model`, `--fps`, `--refractory`, `--egomotion`) | **Stable-ish** | the pip-installable quickstart path above; flag names may still gain siblings. |
+| `WatchProfile` + registry, profile resolution, episode memory, trace telemetry | **Experimental** | newer cognition-layer surfaces; useful now, most likely to reshape within `0.7.x`. |
+
+When in doubt: pin a version, and treat anything not listed here as **Internal**.
+
 ## Benchmark status
 
 **No Percept accuracy numbers are published yet.** The benchmark is designed but the reproducible
