@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Consequence gate GA (card O2)** — the FIRE/ASK/SILENT decision model is now a documented, stable
+  surface: `docs/reference/consequence-gate.md`.
+  - `Gate.decide(...) -> GateOutcome` — the typed outcome (action **plus** a reason code) alongside the
+    unchanged `Gate.evaluate(...) -> GateAction`. `evaluate` is exactly `decide(...).action`.
+  - A closed reason vocabulary — `GATE_REASONS`, `REASON_ACTION`, `SUPPRESSION_REASONS`,
+    `GATE_ACTIONS`, `DELIVERED_ACTIONS` — exported from the top-level `percept` namespace.
+  - **Gate suppression is observable**: a fire withheld by `require_false_first` (`start_anchored`) or
+    `refractory_s` (`refractory`) now emits a `gate.suppressed` log line and, under
+    `percept.runtime.worker.run`, a `RuntimeHealthEvent("gate_suppressed")` carrying the key, the
+    reason code and the decision time. Previously a silent non-event.
+  - `SILENT` is documented and asserted as **internal-only** — never the action on a delivered event.
+
+### Notes
+- **No default behavior change.** Both precision guards remain off by default, so a default deployment
+  suppresses nothing and emits no new health event. `watch()`'s signature and `WATCH_VERSION` are
+  unchanged.
+
 ## 0.7.0 — research preview (hackathon runtime)
 
 The live **runtime** is now the front door: point Percept at a stream, give it plain-English goals, get a

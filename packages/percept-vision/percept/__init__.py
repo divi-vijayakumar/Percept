@@ -42,7 +42,20 @@ from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
 from .entity import Entity, EntityGraph
 from .episodes import Episode, EpisodeLog
 from .events import Event, EventLog, FrameWindow
-from .gate import ASK, FIRE, SILENT, Gate, GateAction
+from .gate import (
+    ASK,
+    DELIVERED_ACTIONS,
+    FIRE,
+    GATE_ACTIONS,
+    GATE_REASONS,
+    REASON_ACTION,
+    SILENT,
+    SUPPRESSION_REASONS,
+    Gate,
+    GateAction,
+    GateOutcome,
+    GateReason,
+)
 from .goals import GoalOp, GoalRegistry
 from .identity import AppearanceIdentity, ContinuityIdentity
 from .scheduler import Scheduler, Timer
@@ -152,6 +165,15 @@ __all__ = [
     "FIRE",
     "ASK",
     "SILENT",
+    # O2: the consequence gate's GA decision model — typed vocabulary + suppression codes.
+    # SILENT is exported as a value of the MODEL, not as a deliverable action (see DELIVERED_ACTIONS).
+    "GateOutcome",
+    "GateReason",
+    "GATE_ACTIONS",
+    "DELIVERED_ACTIONS",
+    "GATE_REASONS",
+    "REASON_ACTION",
+    "SUPPRESSION_REASONS",
     "EntityGraph",
     "Entity",
     "GoalRegistry",

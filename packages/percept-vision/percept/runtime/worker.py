@@ -471,6 +471,33 @@ async def _drain_judge_health(core: Any, on_health: "Callable | None", t: float)
         await _call_sink(on_health, RuntimeHealthEvent(kind, ts=t, data={"key": repr(key), "cause": repr(cause)}))
 
 
+async def _drain_gate_health(core: Any, on_health: "Callable | None", t: float) -> None:
+    """Card O2: surface every GATE SUPPRESSION ``percept.gate.Gate`` queued on ``core._gate_health_log``
+    (agent.py) as a ``RuntimeHealthEvent("gate_suppressed")`` carrying the gate key, the typed reason
+    code (one of ``percept.gate.SUPPRESSION_REASONS`` -- ``start_anchored`` / ``refractory``) and the
+    stream time the decision was made at.
+
+    A suppression is a fire the BASELINE rising-edge gate would have delivered, withheld by an opt-in
+    precision guard. That is exactly the class of decision an operator must be able to see: without
+    this, turning on ``require_false_first`` / ``refractory_s`` makes the runtime quieter with no
+    signal saying why. Both guards are off by default, so a default watch drains an empty queue every
+    tick and emits nothing (no default behavior change, no new per-frame noise).
+
+    Drains UNCONDITIONALLY (even with ``on_health=None``) so the queue never accumulates past one
+    tick's worth -- the same drain-regardless contract :func:`_drain_judge_health` and
+    ``_JudgeScheduler.drain_trace()`` follow."""
+    log = getattr(core, "_gate_health_log", None)
+    if not log:
+        return
+    entries, log[:] = list(log), []
+    if on_health is None:
+        return
+    for key, reason, at in entries:
+        await _call_sink(on_health, RuntimeHealthEvent(
+            "gate_suppressed", ts=t, data={"key": repr(key), "reason": reason, "at": at},
+        ))
+
+
 def _log_disposition(log: Any, *, incident_id: str, fire: Any, disposition: str, ts: float) -> None:
     """Append one gate disposition to the :class:`~percept.labelstore.DispositionLog` (§4.3).
 
@@ -1063,6 +1090,9 @@ async def run(
         # ~256 @4/s ~64s — a single global tolerance would false-fire on a legitimately-backlogged audio
         # chunk behind a blocked pump, the SPEC-B condition). Only armed on live paths (media is offline).
         _skew_emitted: set[str] = set()
+        # O2: the most recent frame timestamp, so the end-of-source gate-suppression drain can stamp its
+        # events on the stream timeline. 0.0 until the first frame (an empty source drains nothing).
+        _last_t: float = 0.0
         # Item 4 episode boundary: a process activity ends precisely on QUIET frames (no escalation), so the
         # boundary check rides the per-frame cadence — only spending a summarize call when it actually fires.
         check_boundary = getattr(core, "check_episode_boundary", None)
@@ -1326,6 +1356,14 @@ async def run(
                 # A30: surface any judge_degraded/judge_persistent_failure events queued by the
                 # perceive_judged calls that just drained above (core is shared across dispatch modes).
                 await _drain_judge_health(core, on_health, t)
+            # O2: surface any gate SUPPRESSION queued since the last tick (require_false_first /
+            # refractory withholding a fire the baseline gate would have delivered). Drained here —
+            # UNCONDITIONALLY, outside the dispatch-mode branch above and BEFORE the per-frame
+            # `continue` paths — because the absence/coverage/episode checks below evaluate the gate on
+            # every tick, not only on frames that escalate to a judge. Both guards are off by default,
+            # so this drains an empty queue and emits nothing unless a profile turned one on.
+            _last_t = t
+            await _drain_gate_health(core, on_health, t)
             # R6: on a LIVE source, frame `t` IS the wall clock — if it has drifted from the core clock
             # past the video tolerance, the timelines the gate/deadlines share have come apart. Emit once.
             if live_video:
@@ -1517,6 +1555,10 @@ async def run(
             for _jt, _jfires in _judge_sched.drain():
                 async for incident in _emit_fires(_jfires, at=_jt):
                     yield incident
+        # O2: the LAST tick's suppressions (and anything the end-of-source flush above produced) would
+        # otherwise die with the queue — drain once more so a finite stream reports every suppression
+        # it earned, not all-but-the-final-tick's.
+        await _drain_gate_health(core, on_health, _last_t)
     except Exception as exc:
         if on_health is not None:
             await _call_sink(on_health, RuntimeHealthEvent("runtime_error", data={"error": repr(exc)}))
