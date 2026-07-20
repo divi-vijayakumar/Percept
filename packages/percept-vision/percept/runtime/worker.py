@@ -26,6 +26,85 @@ from percept.observability import get_logger
 _log = get_logger("percept.runtime.worker")
 
 
+# Card D5(b) — the vocabulary of REASONS a run's effective fps can differ from the requested one.
+# Closed set on purpose: a client reading a manifest at 2am must be able to map the value to a
+# sentence, not guess. "profile-default" means nothing overrode the request.
+FPS_REASONS = ("brief-window-coverage", "source-limit", "profile-default")
+
+#: Card D5(c) — accepted ``run(timebase=…)`` values. ``"auto"`` (the default) resolves to MEDIA time
+#: for recorded sources (files) and WALL/monotonic time for live devices/streams.
+TIMEBASE_CHOICES = ("auto", "media", "wall")
+
+
+@dataclass(frozen=True)
+class EffectiveFps:
+    """What capture rate this run ACTUALLY opened with, versus what the caller asked for (card D5(b)).
+
+    Raising fps to cover a brief-event plan is not necessarily a bug; doing it INVISIBLY is. The run
+    therefore retains the request, the effective value, and which of :data:`FPS_REASONS` explains the
+    difference — surfaced on ``stats.effective_config`` and through the one-shot ``effective_config``
+    health event. No health WARNING is emitted just for an override (an override may be correct); the
+    loud channel stays reserved for a requirement that is actually unmet (``capture_plan_unmet``).
+    """
+
+    requested_fps: float
+    effective_fps: float
+    reason: str
+
+    @property
+    def overridden(self) -> bool:
+        return self.effective_fps != self.requested_fps
+
+    def as_dict(self) -> dict:
+        return {
+            "requested_fps": self.requested_fps,
+            "effective_fps": self.effective_fps,
+            "reason": self.reason,
+            "overridden": self.overridden,
+        }
+
+
+@dataclass(frozen=True)
+class EffectiveTimebase:
+    """Which clock this run stamps frame ``t`` (and therefore ``incident.ts``) on (card D5(c)).
+
+    ``requested`` is the caller's ``run(timebase=…)`` (default ``"auto"``); ``resolved`` is the
+    concrete ``"media"``/``"wall"`` handed to the capture source; ``reason`` records WHY —
+    ``"recorded-source"`` (a file: media time, so an incident timestamp is meaningful against the
+    media), ``"live-source"`` (a camera/mic/stream: wall time, so it shares the agent's deadline
+    clock), ``"explicit-override"`` (the caller chose), or ``"deterministic-stream"`` (a non-``str``
+    source feeds its own explicit ``t`` and is never re-stamped)."""
+
+    requested: str
+    resolved: str
+    reason: str
+
+    def as_dict(self) -> dict:
+        return {"requested": self.requested, "resolved": self.resolved, "reason": self.reason}
+
+
+@dataclass(frozen=True)
+class EffectiveConfig:
+    """The recorded effective configuration of one ``run()`` — the answer to "what did it ACTUALLY
+    do?" without re-deriving it from the source (card D5(b)+(c)).
+
+    Additive and runtime-local: it is exposed on :class:`RuntimeStats` (``stats.effective_config``),
+    best-effort on the core (``core.effective_config``, so a compiled watch/manifest writer can read
+    it off the same object it already holds) and emitted once through ``on_health`` as an
+    informational ``effective_config`` event. Card D8a's trace record can serialize :meth:`as_dict`
+    verbatim when it lands — no runtime change needed then."""
+
+    fps: EffectiveFps
+    video_timebase: EffectiveTimebase
+    audio_timebase: EffectiveTimebase | None = None
+
+    def as_dict(self) -> dict:
+        d = {"fps": self.fps.as_dict(), "video_timebase": self.video_timebase.as_dict()}
+        if self.audio_timebase is not None:
+            d["audio_timebase"] = self.audio_timebase.as_dict()
+        return d
+
+
 @dataclass
 class RuntimeStats:
     """Mutable runtime counters for health dashboards and tests."""
@@ -49,6 +128,14 @@ class RuntimeStats:
     # inline mode never touches either counter.
     judge_superseded: int = 0  # pending judge candidate replaced by a newer admitted frame
     judge_revision_dropped: int = 0  # pending candidate dropped: goals.revision moved after admission
+    # Card D5(b)/(c): the EFFECTIVE configuration this run actually opened with (never only the
+    # requested one), populated once at start. `None` until run() has resolved it.
+    effective_config: "EffectiveConfig | None" = None
+    # Card D5(c): the two clocks of the most recent frame, recorded REGARDLESS of which one `t`
+    # (and therefore `incident.ts`) is stamped on — so an incident timestamp can always be located
+    # on the other timeline after the fact. See :func:`_frame_clocks`.
+    last_media_t: float | None = None
+    last_wall_t: float | None = None
 
 
 @dataclass(frozen=True)
@@ -683,6 +770,72 @@ def _capture_plan(goals: list, base_fps: float) -> tuple[float, Any, float]:
     return capture, (SamplingController(policy) if policy is not None else None), required
 
 
+# Card D5(c) — recorded-media extensions. A `str` source carrying one of these is a RECORDED source:
+# it has a real media timeline, so `t` (and every `incident.ts`) must be stamped on it. Anything else
+# a str source can be (webcam:, mic:, rtsp://, an opaque live stream) has no media clock at all, so it
+# stays on wall/monotonic time. Unknown/exotic URIs therefore keep today's live behaviour.
+_RECORDED_SUFFIXES = (
+    ".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".mpg", ".mpeg", ".m2ts", ".ts", ".gif",
+    ".wav", ".mp3", ".flac", ".m4a", ".ogg", ".aac", ".opus",
+)
+_LIVE_PREFIXES = (
+    "webcam:", "webcam://", "mic:", "mic://", "screen://",
+    "rtsp://", "rtsps://", "rtp://", "udp://", "tcp://",
+)
+_LIVE_EXACT = ("webcam", "mic")
+
+
+def _is_recorded_source(uri: str) -> bool:
+    """True when a ``str`` source names RECORDED media (a file path / file URI with a media suffix).
+
+    Deliberately conservative: a device/stream prefix is live no matter what it ends with, and an
+    unrecognised URI is treated as LIVE (today's behaviour), so ``timebase="auto"`` can only move a
+    source onto media time when there demonstrably IS a media timeline to move it onto."""
+    s = uri.strip()
+    low = s.lower()
+    if low in _LIVE_EXACT or low.startswith(_LIVE_PREFIXES):
+        return False
+    if low.startswith("file://"):
+        low = low[len("file://"):]
+    base = low.split("?", 1)[0].split("#", 1)[0]
+    return base.endswith(_RECORDED_SUFFIXES)
+
+
+def _resolve_timebase(source: Any, requested: str) -> EffectiveTimebase:
+    """Resolve ``run(timebase=…)`` against ``source`` (card D5(c)).
+
+    ``"auto"`` (the default) is the fix for the bug this card exists for: a 36s clip decoded in 0.72s
+    of wall time used to stamp every ``incident.ts`` with the decode instant, making the timestamps
+    useless as audit evidence against the media. Recorded sources now run on MEDIA time; live
+    devices/streams stay on WALL time (they must share the agent's deadline clock — card A2/R3). An
+    explicit ``"media"``/``"wall"`` always wins."""
+    if requested not in TIMEBASE_CHOICES:
+        raise ValueError(
+            f"timebase must be one of {TIMEBASE_CHOICES}, got {requested!r}"
+        )
+    if not isinstance(source, str):
+        # A deterministic iterable (tests, replay, the eval harness) feeds its OWN explicit `t`; the
+        # worker never re-stamps it, so nothing is resolved for it — byte-for-byte unchanged.
+        return EffectiveTimebase(requested=requested, resolved="media", reason="deterministic-stream")
+    if requested != "auto":
+        return EffectiveTimebase(requested=requested, resolved=requested, reason="explicit-override")
+    if _is_recorded_source(source):
+        return EffectiveTimebase(requested=requested, resolved="media", reason="recorded-source")
+    return EffectiveTimebase(requested=requested, resolved="wall", reason="live-source")
+
+
+def _frame_clocks(t: float, *, timebase: str, t0: float | None, wall_now: float) -> tuple[float, float]:
+    """Both clocks for a frame stamped ``t``, recorded regardless of which one ``t`` IS (card D5(c)).
+
+    On ``"media"`` the frame's media offset IS ``t`` and the wall reading is the worker's receipt time.
+    On ``"wall"`` the frame's wall time IS ``t`` and the media-equivalent is the elapsed stream offset
+    (``t - t0``) — a live camera has no media clock, and elapsed-since-open is the honest analogue.
+    Nothing here is inferred from a rate; both values are measured."""
+    if timebase == "wall":
+        return ((t - t0) if t0 is not None else 0.0), t
+    return t, wall_now
+
+
 def _as_goal(g: Any, i: int) -> Any:
     """Coerce a convenience `goals=[...]` entry into a Goal: a plain condition string, a dict of Goal
     fields, or a Goal passthrough. A string `"the milk is boiling over"` -> Goal(id=f"g{i}", condition=,
@@ -754,6 +907,7 @@ async def run(
     metrics_collector: Any = None,
     judge_stall_after_s: float = 20.0,
     judge_backpressure_after: int = 3,
+    timebase: str = "auto",
 ) -> AsyncIterator:
     """Drive a live ``source`` through the gate + brain, yielding an :class:`Incident` on each rising edge.
 
@@ -858,6 +1012,25 @@ async def run(
       counters (:mod:`percept.observability`), which this run always emits when ``core`` exposes a
       ``.funnel`` (a bare duck-typed core without one is untouched).
 
+    - ``timebase`` — which clock frame ``t`` (and therefore ``incident.ts``) is stamped on, card D5(c).
+      ``"auto"`` (default) resolves per source: MEDIA time for a RECORDED source (a file — so an
+      incident timestamp is meaningful against the media; a 36s clip decoded in 0.72s used to stamp
+      every incident with the decode instant, which made the timestamps useless as audit evidence),
+      WALL/monotonic for a LIVE device/stream (``webcam:0``, ``rtsp://…`` — those must share the
+      agent's deadline clock, card A2/R3). ``"media"``/``"wall"`` force the choice. A non-``str``
+      source feeds its own explicit ``t`` and is never re-stamped, whatever this says. BOTH clocks are
+      recorded per frame regardless (``stats.last_media_t`` / ``stats.last_wall_t``), so an incident
+      timestamp can always be located on the other timeline afterwards.
+
+    Card D5(b): the capture rate this run actually opens with is RECORDED, never silently substituted —
+    ``stats.effective_config`` (an :class:`EffectiveConfig`) carries ``requested_fps``/``effective_fps``
+    and the ``reason`` (``brief-window-coverage`` — a brief-event plan needs the cadence;
+    ``source-limit`` — a str source's rate is fixed at open, so the headroom cap is taken up front;
+    ``profile-default`` — nothing overrode the request), the same record is mirrored onto
+    ``core.effective_config`` and emitted once as an informational ``effective_config`` health event.
+    An override is not by itself a warning; the loud channel stays reserved for a coverage requirement
+    that is actually UNMET (``capture_plan_unmet``, D1c).
+
     Owns capture off the consumer thread; the per-goal cadence + the three-state gate decide *when* and
     *whether* to fire. Yields incidents lazily, so an ``async for incident in run(...)`` is the front door.
     """
@@ -868,7 +1041,16 @@ async def run(
 
     # R-0 convenience: `percept.run(source=..., goals=[...])` with no pre-built core. Build a Percept
     # here and arm each goal, so the one-line quickstart is real. Passing an explicit `core` (the
-    # canonical form) is unchanged and takes precedence — `goals`/`vision` are ignored when core is given.
+    # canonical form) takes precedence — and card D5(a): supplying `goals`/`vision` ALONGSIDE a core is
+    # now a hard ValueError, not a silent discard. The old behaviour ("ignored when core is given") ran
+    # a byte-identical watch that simply never armed the caller's goals: the exact silent failure that
+    # cost two client teams a full debugging cycle. A warning would still permit that run, so this
+    # refuses to start instead. Nothing publishes before 1.0 — this is the moment to make it loud.
+    if core is not None and (goals or vision is not None):
+        raise ValueError(
+            "goals= and vision= cannot be supplied when core= is provided; "
+            "apply goals to the core or omit core."
+        )
     if core is None:
         if not goals:
             raise TypeError(
@@ -1009,8 +1191,31 @@ async def run(
     # could be armed MID-RUN (regate on) over a LIVE source we open at the headroom cap now, leaving the
     # capture headroom a voice-armed brief goal will need — gate/coast then ration the actual judging (D1b).
     capture_fps, _, _ = _capture_plan(list(core.goals.active()), fps)
+    # Card D5(b): the same two overrides as before — but RECORDED, not silent. `reason` names which one
+    # moved the rate (a plan cadence, or the fixed-at-open headroom cap a str source needs), so a client
+    # reading the effective config can tell a deliberate 5x from an accident.
+    _fps_reason = "brief-window-coverage" if capture_fps > fps else "profile-default"
     if regate_on_goal_change and isinstance(source, str):
+        if _BRIEF_CAPTURE_CAP_FPS > capture_fps:
+            _fps_reason = "source-limit"
         capture_fps = max(capture_fps, _BRIEF_CAPTURE_CAP_FPS)
+    effective_fps = EffectiveFps(
+        requested_fps=float(fps), effective_fps=float(capture_fps), reason=_fps_reason,
+    )
+    # Card D5(c): resolve the clock BEFORE the capture source is opened; both the video and the audio
+    # path get their own record (a "mic:0" live mic and a "session.wav" recording resolve differently
+    # even inside one run).
+    video_tb = _resolve_timebase(source, timebase)
+    audio_tb = _resolve_timebase(audio_source, timebase) if audio_source is not None else None
+    effective_config = EffectiveConfig(
+        fps=effective_fps, video_timebase=video_tb, audio_timebase=audio_tb,
+    )
+    if stats is not None:
+        stats.effective_config = effective_config
+    try:  # best-effort mirror onto the core, so a manifest writer reads it off the object it holds
+        core.effective_config = effective_config
+    except Exception:  # noqa: BLE001 - a duck-typed/slotted core must never break the run over telemetry
+        pass
     clips = FrameWindow(size=snippet_size)  # rolling pre-roll buffer for the incident snippet
     # D1c coverage-guarantee tripwire (emit-once). Tracks the observed capture cadence against the brief
     # goal's required Nyquist floor (required_fps); reset when a regate RAISES the requirement.
@@ -1065,6 +1270,11 @@ async def run(
             # observing (inline = judge latency shows up as capture stall; async = it shows up as
             # fire-emission lag instead).
             await _call_sink(on_health, RuntimeHealthEvent("judge_dispatch", data={"mode": judge_dispatch}))
+            # Card D5(b)/(c): announce the EFFECTIVE config once — informational, at the same tier as
+            # runtime_started/judge_dispatch. This is a RECORD, not a warning: an fps override may be
+            # correct, and the loud channel stays reserved for a requirement that is actually unmet.
+            await _call_sink(on_health, RuntimeHealthEvent(
+                "effective_config", data=effective_config.as_dict()))
         dropped: list[int] = [0]  # shared with the capture thread; surfaced as stats.frames_dropped
         source_health: list = []  # A-4: capture thread appends (kind, data); drained → on_health below
         source_kwargs = {
@@ -1075,21 +1285,25 @@ async def run(
             "dropped": dropped,
             "health": source_health,
         }
-        # R3/Step-1: a LIVE capture (a webcam/rtsp/file URI opened via open_source) stamps each frame on
-        # the WALL clock, so frame `t` shares the timeline the agent resolves deadlines / verification
-        # concerns on (self.clock). Deterministic sources (iterables, replay, the eval harness, every
-        # offline test) feed explicit `t` and MUST stay on "media" — the kwarg only reaches open_source
-        # for a str source (see _aiter), so a non-str source is byte-for-byte untouched. A live source is
-        # therefore also the only path _assert_timebase (R6) guards.
+        # R3/Step-1 + card D5(c): a capture opened via open_source stamps each frame on the timebase
+        # resolved above — WALL for a live device/stream (so frame `t` shares the timeline the agent
+        # resolves deadlines / verification concerns on, self.clock), MEDIA for a recorded file (so
+        # `incident.ts` means something against the media). Deterministic sources (iterables, replay,
+        # the eval harness, every offline test) feed explicit `t` and are never re-stamped — the kwarg
+        # only reaches open_source for a str source (see _aiter). A WALL path is the only one
+        # _assert_timebase (R6) can guard: on media, `t` is deliberately not the core clock.
         live_video = isinstance(source, str)
         if live_video:
-            source_kwargs["timebase"] = "wall"
+            source_kwargs["timebase"] = video_tb.resolved
         live_audio = isinstance(audio_source, str)
-        audio_kwargs = {"timebase": "wall"} if live_audio else {}
+        audio_kwargs = {"timebase": audio_tb.resolved} if live_audio and audio_tb else {}
         # R6: emit-once skew tripwires, one per capture path (frame queue ~64 @4fps ~16s; audio queue
         # ~256 @4/s ~64s — a single global tolerance would false-fire on a legitimately-backlogged audio
         # chunk behind a blocked pump, the SPEC-B condition). Only armed on live paths (media is offline).
         _skew_emitted: set[str] = set()
+        # Card D5(c): the first frame's `t`, so a WALL-timebase run can still report an honest
+        # media-equivalent (elapsed stream offset). One-element list = assignable from the loop below.
+        _clock_t0: list = [None]
         # O2: the most recent frame timestamp, so the end-of-source gate-suppression drain can stamp its
         # events on the stream timeline. 0.0 until the first frame (an empty source drains nothing).
         _last_t: float = 0.0
@@ -1178,7 +1392,7 @@ async def run(
                 async for at, chunk, energy in _audio_aiter(audio_source, **audio_kwargs):
                     # R6: a LIVE mic stamps chunks on the wall clock; a divergence past the AUDIO tolerance
                     # (wider than video — a backlogged chunk behind a blocked pump is legitimate) trips once.
-                    if live_audio:
+                    if live_audio and audio_tb is not None and audio_tb.resolved == "wall":
                         await _assert_timebase(
                             at, getattr(core, "clock", None),
                             tol=_AUDIO_SKEW_TOL_S, path="audio", emitted=_skew_emitted, on_health=on_health,
@@ -1364,9 +1578,19 @@ async def run(
             # so this drains an empty queue and emits nothing unless a profile turned one on.
             _last_t = t
             await _drain_gate_health(core, on_health, t)
-            # R6: on a LIVE source, frame `t` IS the wall clock — if it has drifted from the core clock
-            # past the video tolerance, the timelines the gate/deadlines share have come apart. Emit once.
-            if live_video:
+            # Card D5(c): record BOTH clocks for this frame, whichever one `t` is stamped on, so an
+            # incident timestamp can be located on the other timeline after the run.
+            if stats is not None:
+                stats.last_media_t, stats.last_wall_t = _frame_clocks(
+                    t, timebase=(video_tb.resolved if live_video else "media"),
+                    t0=_clock_t0[0], wall_now=wall_clock(),
+                )
+            if _clock_t0[0] is None:
+                _clock_t0[0] = t
+            # R6: on a WALL-timebase source, frame `t` IS the wall clock — if it has drifted from the core
+            # clock past the video tolerance, the timelines the gate/deadlines share have come apart. Emit
+            # once. A media-timebase source runs `t` on a synthetic timeline by design and is never checked.
+            if live_video and video_tb.resolved == "wall":
                 await _assert_timebase(
                     t, getattr(core, "clock", None),
                     tol=_VIDEO_SKEW_TOL_S, path="video", emitted=_skew_emitted, on_health=on_health,

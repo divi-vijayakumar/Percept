@@ -3,6 +3,36 @@
 ## Unreleased
 
 ### Added
+- **Effective run configuration is RECORDED, never silently substituted (card D5b/c).**
+  `percept.runtime.run()` now retains what it was ASKED for alongside what it actually opened with:
+  `stats.effective_config` (an `EffectiveConfig` of `EffectiveFps` + `EffectiveTimebase`), the same
+  record mirrored on `core.effective_config`, and one informational
+  `RuntimeHealthEvent("effective_config")` at start. `EffectiveFps` carries `requested_fps`,
+  `effective_fps` and a `reason` from the closed `FPS_REASONS` vocabulary —
+  `brief-window-coverage` (a brief-event plan needs the cadence), `source-limit` (a `str` source's
+  rate is fixed at open, so the 8 fps headroom cap is taken up front), `profile-default` (nothing
+  overrode the request). Capture behaviour is unchanged; an override is no longer *invisible*. An
+  override on its own is not a warning — the loud channel stays reserved for a coverage requirement
+  that is actually unmet (`capture_plan_unmet`).
+- **`run(timebase="auto")` — media time for recorded sources, wall time for live ones (card D5c).**
+  Every `str` source used to be stamped on the wall clock, so a 36 s clip decoded in 0.72 s gave every
+  `incident.ts` the decode instant and the timestamps were useless as audit evidence. `"auto"` (the new
+  default) resolves to `"media"` for recorded media (a file path/URI with a media suffix) and `"wall"`
+  for live devices/streams (`webcam:0`, `mic:0`, `rtsp://…`, anything unrecognised — those must keep
+  sharing the agent's deadline clock). `timebase="media"`/`"wall"` forces the choice; a non-`str`
+  source still feeds its own explicit `t` and is never re-stamped. **Both** clocks are recorded per
+  frame regardless (`stats.last_media_t` / `stats.last_wall_t`).
+
+### Removed / Breaking
+- **`run(core=…, goals=…)` / `run(core=…, vision=…)` now raises `ValueError` (card D5a).** Supplying
+  `goals=`/`vision=` alongside an explicit `core` used to silently DISCARD them: the watch ran
+  byte-identically and simply never armed the caller's goals — a silent failure that cost two client
+  teams a debugging cycle. A warning would still permit that run, so the call is refused before the
+  first frame is consumed: *"goals= and vision= cannot be supplied when core= is provided; apply goals
+  to the core or omit core."* Both single-argument forms (`run(core, source=…)` and
+  `run(source=…, goals=[…])`) are unchanged.
+
+
 - **Consequence gate GA (card O2)** — the FIRE/ASK/SILENT decision model is now a documented, stable
   surface: `docs/reference/consequence-gate.md`.
   - `Gate.decide(...) -> GateOutcome` — the typed outcome (action **plus** a reason code) alongside the

@@ -11,12 +11,22 @@ works with no extra (tests, offline replay).
 from percept.runtime._vad import EnergyVad, endpoint_energy_sequence, frame_energy
 from percept.runtime.session import RuntimeSession, start
 from percept.runtime.sinks import BoundedDeadLetterQueue, FileDeadLetterQueue, WebhookSink, incident_payload, webhook
-from percept.runtime.worker import RuntimeHealthEvent, RuntimeStats, run
+from percept.runtime.worker import (
+    EffectiveConfig,
+    EffectiveFps,
+    EffectiveTimebase,
+    RuntimeHealthEvent,
+    RuntimeStats,
+    run,
+)
 
 __all__ = [
     "run",
     "RuntimeStats",
     "RuntimeHealthEvent",
+    "EffectiveConfig",
+    "EffectiveFps",
+    "EffectiveTimebase",
     "RuntimeSession",
     "start",
     "EnergyVad",

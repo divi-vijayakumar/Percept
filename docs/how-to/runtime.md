@@ -56,9 +56,10 @@ async for incident in percept.run(
 
 **Source & core**
 - `source` — a URI (`"webcam:0"`, `"rtsp://…"`, a file path) or a pre-decoded `(t, gate_frame, judge_frame)` iterable.
-- `goals` — plain-language conditions (convenience form); each becomes a `Goal`. Omit when you pass a built core.
+- `goals` — plain-language conditions (convenience form); each becomes a `Goal`. **Only for the coreless form** — passing `goals=` (or `vision=`) *together with* a built core raises `ValueError` rather than silently discarding them.
 - `vision` — the vision backend by name (`"gemini"` / `"claude"` / `"fake"`) for the convenience form.
-- `fps` — frame rate to pull the source at.
+- `fps` — frame rate to pull the source at. The runtime may open at a **higher** rate (a brief-event plan's cadence, or the 8 fps headroom cap a URI source must take at open time). That is never silent: `stats.effective_config.fps` records `requested_fps`, `effective_fps` and a `reason` (`brief-window-coverage` / `source-limit` / `profile-default`), also emitted once as an `effective_config` health event and mirrored on `core.effective_config`.
+- `timebase` — which clock frame `t` (and so `incident.ts`) is stamped on. `"auto"` (default) = **media** time for recorded sources (a file — so a timestamp means something against the media) and **wall**/monotonic for live devices/streams (`webcam:0`, `rtsp://…` — those share the agent's deadline clock). `"media"`/`"wall"` force it. Both clocks are recorded either way: `stats.last_media_t` / `stats.last_wall_t`.
 - `source_queue_size`, `source_reconnects`, `source_reconnect_backoff_s`, `source_rtsp_tcp` — capture/reconnect tuning for live URIs.
 
 **Sinks & hooks**
