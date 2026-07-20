@@ -15,7 +15,7 @@ Run it:
     python examples/vision_assistant.py --source clip.mp4      # test on a recording
 
 This is a STARTING POINT — the memory + leave-logic below is plain Python you own; Percept supplies the
-detections. See docs/hackathon-vision-assistant.md.
+detections. See docs/integration.md.
 """
 from __future__ import annotations
 

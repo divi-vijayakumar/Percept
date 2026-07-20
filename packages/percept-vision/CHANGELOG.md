@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.0 — research preview (hackathon runtime)
+## 0.7.0 — research preview (live runtime)
 
 The live **runtime** is now the front door: point Percept at a stream, give it plain-English goals, get a
 notification once per event.
@@ -20,7 +20,7 @@ notification once per event.
   one fire per episode.
 - **Production trace telemetry** — opt-in per-frame trace (edge decision · verdict · gate action · reason).
 - **Docs:** `docs/integration.md` (embed the runtime), `docs/how-to/authoring-goals-and-watch-plans.md`,
-  `examples/hackathon_watch.py`, updated `percept-agent` Claude skill.
+  `examples/vision_assistant.py`, updated `percept-agent` Claude skill.
 
 ### Notes
 - Research preview. Not yet built: WatchProfile resolution wired into the runtime, window/episode judge

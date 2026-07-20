@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Percept — live watch demo (hackathon-ready).
+"""Percept — live watch demo.
 
 Point it at a webcam (or a video file / RTSP URL), give it goals in plain English,
 and it prints a notification the moment each one becomes true — once per episode.
 
     # webcam, two goals
-    python examples/hackathon_watch.py \
+    percept-watch \
         --goal "someone raises their hand" \
         --goal "someone is holding a phone"
 
     # a video file
-    python examples/hackathon_watch.py --source path/to/clip.mp4 \
+    percept-watch --source path/to/clip.mp4 \
         --goal "someone is drinking from a cup"
 
 Needs an OpenRouter key (cheap, fast Qwen judge):  export OPENROUTER_API_KEY=sk-or-...

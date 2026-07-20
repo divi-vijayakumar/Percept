@@ -41,7 +41,7 @@ export OPENROUTER_API_KEY=sk-or-...     # Qwen (recommended: cheap + fast).  ext
 ## 2. 30-second smoke test
 
 ```bash
-python examples/hackathon_watch.py --source webcam:0 --goal "someone raises their hand"
+percept-watch --source webcam:0 --goal "someone raises their hand"
 ```
 If you see a `🔔` when you raise your hand, you're good. Now wire it into your app.
 
@@ -164,10 +164,10 @@ export PERCEPT_EGO_COMPENSATE=true     # ← subtract head/camera motion
 export PERCEPT_SALIENCE_STAT=block_max
 ```
 That drops escalation to **~30%** and object detection works (verified: containers/hands/people read
-correctly on head-mounted frames). The demo has a flag for it:
+correctly on head-mounted frames). The CLI has a flag for it:
 
 ```bash
-python examples/hackathon_watch.py --egomotion \
+percept-watch --egomotion \
     --goal "my keys are visible" --goal "a person is nearby"
 ```
 
@@ -235,5 +235,5 @@ async for inc in percept.run(source="my_test.mp4", goals=goals, vision="openrout
 
 ---
 
-**Reference demo:** [`examples/hackathon_watch.py`](../examples/hackathon_watch.py) — a complete, runnable
+**Reference demo:** [`examples/vision_assistant.py`](../examples/vision_assistant.py) — a complete, runnable
 integration you can copy from.
