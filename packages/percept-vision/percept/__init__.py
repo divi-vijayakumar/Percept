@@ -153,6 +153,23 @@ from .tracing import (  # noqa: E402
     load_trace,
 )
 
+# The portable trace bundle + the deterministic cognition replay (card D8b). Media inclusion is
+# opt-in and OFF by default (see percept/trace_bundle.py); replay never calls a model.
+from .trace_bundle import (  # noqa: E402
+    BundleError,
+    BundlePolicy,
+    EvidenceItem,
+    MediaReference,
+    TraceBundle,
+    export_bug_report,
+)
+from .replay import (  # noqa: E402
+    ReplayGoalConfig,
+    ReplayReport,
+    gate_config_of,
+    replay_cognition,
+)
+
 __all__ = [
     "__version__",
     "Percept",
@@ -286,4 +303,15 @@ __all__ = [
     "ComponentIdentity",
     "PlanIdentity",
     "load_trace",
+    # portable trace bundle + deterministic cognition replay (card D8b)
+    "TraceBundle",
+    "BundlePolicy",
+    "BundleError",
+    "EvidenceItem",
+    "MediaReference",
+    "export_bug_report",
+    "replay_cognition",
+    "ReplayReport",
+    "ReplayGoalConfig",
+    "gate_config_of",
 ]

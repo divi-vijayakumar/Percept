@@ -429,6 +429,13 @@ class RunTraceManifest:
     #: ONLY as a fallback, and ``0.0`` means "an admission is an instant" — the union then measures
     #: exactly the declared windows and nothing is invented.
     evidence_window_s: float = 0.0
+    #: The Gate's decision knobs at run start (``threshold`` / ``fresh_min`` /
+    #: ``require_false_first`` / ``refractory_s``). Additive, and load-bearing for card D8b:
+    #: :mod:`percept.replay` re-runs recorded verdicts through a Gate rebuilt from EXACTLY these
+    #: numbers, so a cognition replay is not silently done against today's defaults. Empty = not
+    #: captured, and the replayer says so instead of guessing (see
+    #: :attr:`percept.replay.ReplayReport.gate_config_recorded`).
+    gate_config: dict[str, Any] = field(default_factory=dict)
     labels: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -447,6 +454,7 @@ class RunTraceManifest:
         started_source_ts: float | None = None,
         wall_clock: Callable[[], float] = time.time,
         run_id: str | None = None,
+        gate_config: Mapping[str, Any] | None = None,
         labels: Mapping[str, Any] | None = None,
     ) -> "RunTraceManifest":
         """Build a manifest, filling versions from the installed package (never hand-synced)."""
@@ -483,6 +491,7 @@ class RunTraceManifest:
             policy=policy if policy is not None else TracePolicy(),
             baseline=baseline if baseline is not None else BaselineAssumption(),
             evidence_window_s=float(evidence_window_s),
+            gate_config=dict(gate_config or {}),
             labels=dict(labels or {}),
         )
 
@@ -503,6 +512,7 @@ class RunTraceManifest:
             "policy": self.policy.to_dict(),
             "baseline": self.baseline.to_dict(),
             "evidence_window_s": self.evidence_window_s,
+            "gate_config": dict(self.gate_config),
             "labels": dict(self.labels),
         }
 
@@ -524,6 +534,7 @@ class RunTraceManifest:
             policy=TracePolicy.from_dict(payload.get("policy") or {}),
             baseline=BaselineAssumption.from_dict(payload.get("baseline") or {}),
             evidence_window_s=float(payload.get("evidence_window_s", 0.0)),
+            gate_config=dict(payload.get("gate_config") or {}),
             labels=dict(payload.get("labels") or {}),
         )
 

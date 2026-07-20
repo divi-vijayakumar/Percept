@@ -1104,7 +1104,8 @@ class Percept:
                         trace_id, now, "judge.degraded", goal_id=goal.id, cause=repr(degraded.cause),
                     )
                     await self._emit_trace(trace_id, now, "gate.classified", goal_id=goal.id,
-                                           truth="unknown", action="ask")
+                                           truth="unknown", action="ask",
+                                           entity_id=focus.id if focus else None, degraded=True)
                 continue  # next goal this SAME frame; the watch loop (and run) continues either way
             self._note_judge_ok(base_key)  # a well-formed verdict resets this key's degrade streak
             if tracing:
@@ -1158,9 +1159,17 @@ class Percept:
                     action = ev_fire.action
                 else:
                     action = "silent"
+                # D8b: the gate's own INPUTS ride along with its output, so a recorded trace is
+                # replayable through the (deterministic) gate without the original frame or any
+                # model call — see percept.replay. Purely additive trace data; nothing branches on it.
                 await self._emit_trace(trace_id, now, "gate.classified", goal_id=goal.id,
                                        truth=truth, action=action,
-                                       reason=_trace_reason(truth, action))
+                                       reason=_trace_reason(truth, action),
+                                       entity_id=focus.id if focus else None,
+                                       satisfied=getattr(verdict, "satisfied", None),
+                                       confidence=getattr(verdict, "confidence", None),
+                                       freshness=freshness,
+                                       hold_s=program_of(goal).hold_s)
         self._log_fires(events, now)
         if _stale():
             return events  # aborted mid-loop: skip auto-refinement (it authors goal changes)
