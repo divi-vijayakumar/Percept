@@ -1,10 +1,9 @@
 # Registration
 
-Percept has three registries you extend by **registering**, never by editing the gate or adding a
-per-task `if`: the **detector registry** (cheap, high-fps edge signal skills the brain composes by name),
-the **concern registry** (standing units of consequence-weighted attention the brain watches), and the
-**enricher registry** (specialist MODELS that turn a cheap signal into structured facts for the judge).
-All three are process-global singletons keyed by name/id, and all expose the same lifecycle shape:
+Percept has two registries you extend by **registering**, never by editing the gate or adding a
+per-task `if`: the **detector registry** (cheap, high-fps edge signal skills the brain composes by name)
+and the **concern registry** (standing units of consequence-weighted attention the brain watches).
+Both are process-global singletons keyed by name/id, and both expose the same lifecycle shape:
 
 ```
 register  →  introspect / select into a WatchSpec  →  teardown
@@ -14,8 +13,13 @@ These names are a **public, semver-stable API**. Within a contract MAJOR (`CONTR
 `percept.CONTRACT_VERSION`) the signatures and the `DetectorManifest` shape only change additively —
 new optional args, new functions beside the old ones. A breaking change to any name below is a MAJOR
 bump. Import them through `percept.edge` (or `percept.edge.detectors` / `percept.edge.concerns` /
-`percept.edge.enrichers`). The implementation currently delegates to the bundled `percept.harness`
+`percept.edge.concerns`). The implementation currently delegates to the bundled `percept.harness`
 package.
+
+> **`register_detector` is the supported bring-your-own path.** If you are here looking for "how do I
+> plug my own OCR / classifier / model into Percept", read [Admission is not
+> extraction](#admission-is-not-extraction-what-register_detector-does-and-does-not-do) first — it states
+> exactly what that buys you and what it does not.
 
 ---
 
@@ -182,64 +186,63 @@ captured.
 
 ---
 
-## Enricher registry — specialist models (signal → judge context)
+## Admission is not extraction — what `register_detector` does and does not do
 
-An **enricher** (`percept.Enricher`, beside `Specialist`) is a narrow specialist MODEL that
-turns a cheap Tier-0 signal into **structured facts** the general VLM judge can't cheaply produce — an
-LPR model for a `plate-presence` cue, a fire/smoke classifier for a hot-surface cue, a face-id model for
-a known-person cue. The registry routes a *signal/detector name* to the specialist it hands off to, runs
-it, and feeds the structured output into `Vision.judge(context=...)`:
+`register_detector` is **the** supported bring-your-own path, and it is a bring-your-own **admission**
+path. Say that precisely, because the loose version ("plug in your own OCR") walks you into a wall.
 
-```
-signal name  →  Enricher.enrich(signal, frame) -> {facts}  →  Vision.judge(context={facts})
-```
+Your model can be anything — pytesseract, PaddleOCR, a CLIP embedding, a small on-device VLM. It reaches
+Percept through one of two seams:
 
-> Detector vs enricher: a *detector* is a cheap stdlib/edge signal skill that emits boundaries (it
-> *finds* a cue); an *enricher* is a heavier specialist model that *reads out structured facts* about a
-> cue. The detector says "a plate-shaped thing is here"; the enricher (LPR) says `{"plate": "7XYZ123"}`.
+| you want | the seam | what it produces |
+|---|---|---|
+| "spend the cloud judge on THIS frame" | `percept.run(..., semantic_adapter=f)` / `structural_adapter=f`, with the goal gated on that channel | a `0..1` score in `Tier0Signal.semantic` / `.structural`; escalation when it clears the goal's threshold |
+| "count the occurrences, don't judge at all" | `register_detector(name, MyDetector)` selected by a goal | timed `Boundary` events fed to `perceive_boundary` — the goal fires per its `accumulate.fire_when` with **no vision call** |
 
-Adding a specialist is the WHOLE integration cost — **no change to Percept core, the judge, or the
-contract**:
+Both answer **WHEN to look closely.** Neither answers **WHAT it says.**
 
-```python
-from percept.edge import register_enricher
-
-register_enricher("plate-presence", LprEnricher())   # an LPR model for the plate cue
-register_enricher("smoke-cue", SmokeClassifier())     # a second specialist — one more call, nothing else
-```
-
-`register_enricher` keys on the signal name (last-writer-wins, so a product swaps a stub for a calibrated
-model in place) and returns the enricher for chaining. Any class with an `enrich(signal, frame) -> dict`
-method satisfies the protocol — no base class to inherit.
-
-### Run it (the driver)
+A detector boundary is `document_changed at t=8.2`. It is *not* `invoice_number = "INV-2291"`, and it is
+*not* `speaker = "buyer"`. There is no channel in the watch loop that carries your model's extracted
+facts into the semantic judge: `Percept.perceive_judged` takes a frame, not a fact bundle. If you need
+facts in front of the model, call the judge yourself — `Vision.judge` accepts `context=`:
 
 ```python
-from percept.edge import enrich_signal
-
-enr = enrich_signal("plate-presence", signal=cue, frame=frame)  # -> an Enrichment
-verdict = await vision.judge(condition, frame, context=enr.context)   # facts injected into the judge
+verdict = await vision.judge(
+    "the invoice total changed",
+    frame,
+    context={"invoice_number": "INV-2291", "total": "4,120.00"},   # read as authoritative
+)
 ```
 
-`enrich_signal` resolves the signal name, runs the specialist, and returns an `Enrichment(context,
-verdict)`:
+In practice most workloads do not need this. A modern VLM judge reads small on-screen text directly and
+scores it correctly; what the SDK was missing was not extraction but **admission** — a way to say "the
+page changed, look now" on a stream whose pixels barely move. That is exactly what the two seams above
+are for.
 
-- `context` — the structured facts to pass as `Vision.judge(context=...)` (`{}` when no specialist is
-  registered or it returned nothing — the byte-for-byte un-enriched path).
-- `verdict` — present iff the enricher SHORT-CIRCUITED (returned a `{"verdict": Verdict}` key): the brain
-  uses that verdict directly and skips the VLM judge call. `enr.is_noop` is the cheap "nothing fired" test.
+### Runnable example
 
-A specialist that raises (a flaky model, a bad payload) degrades to a no-op — an enrichment failure never
-breaks the judge path. F1 ships only the SEAM plus fakes (`NullEnricher` / `FakeEnricher`); no real model.
+[`examples/byo_admission_detector.py`](../../examples/byo_admission_detector.py) — offline, no keys, no
+model. It registers a `document-changed` detector over a cheap "ink density" read (stand in your real
+OCR), drives the same score through `semantic_adapter`, and prints what each seam produced:
 
-### Introspect / teardown
-
-```python
-enricher_for("plate-presence")   # -> the registered Enricher, or None
-registered_enrichers()           # -> the signal names (sorted)
-unregister_enricher("plate-presence")  # -> True if registered, False if absent (idempotent)
-clear_enrichers()                # -> empties the registry (no built-ins to restore)
 ```
+$ python examples/byo_admission_detector.py
+seam 1 — frames admitted to the judge by the semantic adapter: [2.0, 4.0]
+seam 2 — detector boundaries (no vision call spent):          [2.0, 4.0]
+neither carries an extracted fact; pass context={...} to judge yourself.
+```
+
+The detector protocol it implements is the whole contract: a `signal` attribute
+(`"motion"` | `"energy"` | `"frame"`), `push(t, value) -> [Boundary]`, and `reset()`.
+
+### Removed: the enricher registry
+
+`register_enricher` / `enrich_signal` / `enricher_for` (`percept.edge.enrichers`) were **removed** in
+0.7.x. They were documented here as "add an OCR specialist without editing core", but they had **zero
+callers**: nothing in the runtime ever ran a registered enricher, so registering one changed nothing
+about any watch. Rather than keep an architecture-shaped seam that silently does nothing, it is gone.
+`percept.Enricher` (the protocol) survives as a deprecated name for one contract MAJOR and is scheduled
+for removal. Use the two seams above for admission, and `Vision.judge(context=...)` for facts.
 
 ---
 
@@ -250,5 +253,6 @@ clear_enrichers()                # -> empties the registry (no built-ins to rest
 | `register`, `register_detector`, `make_detector`, `registered`, `list_manifests`, `manifest_of`, `unregister`, `clear_detectors` | semver-stable; additive-only within a contract MAJOR |
 | `DetectorManifest` (`name`, `senses`, `when_to_use`, `output`), `Boundary` (`detector`, `kind`, `t`, `value`) | frozen shapes; new fields are additive + optional |
 | `register_concern`, `registered_concerns`, `registered_concern_ids`, `get_concern`, `unregister_concern`, `clear_concerns`, `detectors_for_concern`, `concern_to_condition`, `compile_registered_watchspec` | semver-stable; additive-only within a contract MAJOR |
-| `register_enricher`, `enricher_for`, `registered_enrichers`, `unregister_enricher`, `clear_enrichers`, `enrich_signal`, `Enrichment` (`context`, `verdict`), `Enricher` protocol (`enrich(signal, frame) -> dict`) | semver-stable; additive-only within a contract MAJOR |
+| `percept.run(..., structural_adapter=, semantic_adapter=)` (the tier-0 admission seam), `Vision.judge(context=...)` | semver-stable; additive-only within a contract MAJOR |
+| `register_enricher`, `enricher_for`, `enrich_signal`, `Enrichment`, `NullEnricher`, `FakeEnricher` | **REMOVED** in 0.7.x (zero callers — the seam did nothing); `Enricher` protocol deprecated, removed next MAJOR |
 | `Concern` and the wire DTOs (`WatchSpec`, `WatchCondition`) | live behind the frozen `percept` / contract membrane (§0) — a breaking change is a MAJOR bump, flagged not silent |

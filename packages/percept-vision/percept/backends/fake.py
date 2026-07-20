@@ -65,8 +65,8 @@ class FakeVision:
         # Item 4 logsum: an observe-step call returns this clip's step delta (scripted via "<frame>|step").
         if context and context.get("observe_step"):
             return self._script.get(f"{token}|step", Verdict(satisfied=False, confidence=0.5, evidence=""))
-        # Enrichment wiring: structured specialist ``context`` can route to a distinct scripted verdict
-        # (a ``"<frame>|enriched"`` key), proving an Enricher's output actually *reaches* judge — the
+        # Caller-supplied ``context`` can route to a distinct scripted verdict
+        # (a ``"<frame>|enriched"`` key), proving specialist facts actually *reach* judge — the
         # signal→specialist→judge-context seam — without claiming the fake understands anything.
         if context and f"{token}|enriched" in self._script:
             return self._script[f"{token}|enriched"]

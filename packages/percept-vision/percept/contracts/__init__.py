@@ -1185,9 +1185,11 @@ class Vision(Protocol):
         degrades gracefully to what it can read; the returned ``Verdict`` shape is unchanged either way
         (the gate downstream is identical).
 
-        ``context`` is OPTIONAL structured facts from a specialist :class:`Enricher` (e.g. an LPR model's
-        ``{"plate": "7XYZ123"}`` for a ``plate-presence`` cue) — read as authoritative, distinct from the
-        user-asserted ``corrections``. It defaults ``None`` so an un-enriched call is byte-for-byte today;
+        ``context`` is OPTIONAL structured facts the CALLER supplies (e.g. an LPR model's
+        ``{"plate": "7XYZ123"}``, an OCR read's ``{"invoice_number": "INV-2291"}``) — read as
+        authoritative, distinct from the user-asserted ``corrections``. There is no registry that fills
+        it for you (card D6c removed the dead enricher registry): a caller that wants specialist facts in
+        the judge passes them here. It defaults ``None`` so an un-enriched call is byte-for-byte today;
         a backend that ignores it degrades gracefully (the seam is wired even when the model is not)."""
         ...
 
@@ -1209,21 +1211,26 @@ class Specialist(Protocol):
 
 @runtime_checkable
 class Enricher(Protocol):
-    """A specialist MODEL that turns a cheap Tier-0 signal into STRUCTURED context for the judge.
+    """DEPRECATED (card D6c) — the shape of a function that produces structured judge ``context``.
 
-    The complement of :class:`Specialist` (an orchestration/Q&A token-stream): an ``Enricher`` is a
-    narrow, signal-triggered model whose output is *facts*, not prose. A Tier-0 signal or detector
-    declares it needs a specialist (e.g. a ``plate-presence`` cue wants an LPR model); the registry
-    resolves the signal name to the ``Enricher``, runs it, and injects its structured output into the
-    judge's context — assertion-style facts the VLM trusts over its own read (e.g.
-    ``{"plate": "7XYZ123", "region": "US-CA"}``).
+    **The enricher REGISTRY is gone.** ``percept.harness.enrichers`` (``register_enricher`` /
+    ``enrich_signal`` / ``enricher_for``) shipped as "the way to add an OCR/LPR specialist without
+    editing core" and then acquired ZERO callers anywhere in the SDK — nothing in the runtime ever ran a
+    registered enricher, so registering one had no effect on any watch. It was removed rather than left
+    standing as an architecture-shaped seam a client could find, wire up, and get silence from. This
+    protocol is retained ONLY so the name does not disappear from a published contract MAJOR
+    (``CONTRACT_VERSION`` 1.x); it is scheduled for removal in the next MAJOR and nothing consumes it.
 
-    The handoff is one method so a NEW specialist (LPR, fire/smoke classifier, face-id, …) is added by
-    REGISTERING an enricher — never by editing Percept core. The structured ``dict`` it returns is the
-    contract: it reaches the judge as ``context=`` (read alongside, not instead of, the frame). An
-    enricher MAY short-circuit the judge by returning a ``{"verdict": Verdict(...)}`` key — the brain
-    uses that verdict directly and skips the VLM call. All keys are optional; an empty dict is a no-op
-    enrichment (the judge proceeds exactly as it would untriggered)."""
+    What replaced it, precisely:
+
+    - to decide **when to look closely** (admission) — register a detector
+      (:func:`percept.edge.detectors.register_detector`) or pass a tier-0 adapter
+      (``percept.run(..., semantic_adapter=...)``). Both are OCR-capable and both are *admission*.
+    - to get **facts into the judge** — call the judge yourself with ``context={...}``:
+      :meth:`Vision.judge` accepts it directly. That parameter is live and wired; it simply never had a
+      registry behind it.
+
+    See ``docs/reference/registration.md`` ("Admission is not extraction")."""
 
     def enrich(self, signal: Any, frame: Any = None) -> dict:
         """Run the specialist on a triggering ``signal`` (+ optional ``frame``); return structured facts.
