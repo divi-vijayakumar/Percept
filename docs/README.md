@@ -19,6 +19,7 @@ interactive [`architecture.html`](../architecture.html)) — it cannot drift fro
 
 ## Reference — information-oriented
 - [`watch()` contract](reference/watch-contract.md) — the frozen public entrypoint + `WatchEvent` schema.
+- [Consequence gate](reference/consequence-gate.md) — FIRE/ASK/SILENT, the rising edge, refractory, and the typed reason vocabulary.
 - [Backends](reference/backends.md) — the five seams, backend names, extras, custom backends.
 - [Registration](reference/registration.md) — detector / concern / enricher registries.
 - [Wake policy](reference/edge-policy.md) — the on-device "should we spend a VLM call?" layer.

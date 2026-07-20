@@ -167,6 +167,15 @@ def _is_valid_verdict(obj: Any) -> bool:
     )
 
 
+_GATE_HEALTH_LOG_MAX = 256
+"""Card O2 growth bound: the most queued gate-suppression entries :attr:`Percept._gate_health_log`
+holds between drains. The runtime loop drains it EVERY tick, so this is never reached in a real
+watch; it exists so a core driven WITHOUT ``percept.runtime.worker.run`` (a bare ``perceive_judged``
+harness, which never drains) cannot grow the queue without bound over a 24/7 run. Oldest entries are
+shed first, and every suppression is already emitted as its own structured ``gate.suppressed`` log
+line by :meth:`percept.gate.Gate._note_suppressed`, so shedding never loses the fact itself."""
+
+
 CONSECUTIVE_DEGRADE_ESCALATE = 5
 """Tunable policy knob (card A30): the number of CONSECUTIVE degraded judge ticks (raised /
 malformed / partial -- anything :class:`_JudgeDegraded`) for the SAME watch key before the
@@ -354,6 +363,15 @@ class Percept:
     # the SAME ``(goal_id, entity_id)`` key the gate/executor already use ("the reducer key").
     _judge_degrade_streak: dict = field(default_factory=dict)  # key -> consecutive degraded-tick count
     _judge_health_log: list = field(default_factory=list)  # [(kind, key, cause), ...] queued for drain
+    # -- O2 consequence-gate GA: the SAME queue-here / drain-in-worker pattern for GATE SUPPRESSION.
+    # ``Gate`` calls ``_note_gate_suppressed`` for every decision whose reason is in
+    # ``percept.gate.SUPPRESSION_REASONS`` (start_anchored / refractory) -- i.e. a fire the baseline
+    # rising-edge gate WOULD have emitted, withheld by an opt-in precision guard. Both guards are off
+    # by default, so a default-configured core never appends here at all. worker.py's run() loop drains
+    # this into ``on_health(RuntimeHealthEvent("gate_suppressed"))`` every tick; Percept never calls
+    # on_health itself. Bounded (see _GATE_HEALTH_LOG_MAX) so a core driven WITHOUT the runtime loop
+    # (a bare perceive_judged harness, which never drains) cannot leak on a 24/7 watch.
+    _gate_health_log: list = field(default_factory=list)  # [(key, reason, at), ...] queued for drain
     # -- M2: WatchProfile knobs applied at CORE CREATION time (never a mid-run mutation) ----------------
     # The resolved fovea cadence a WatchProfile's ``cadence`` carries (see percept.profile_wiring).
     # ``None`` (the default -- no profile, or a profile-less ``settings=`` construction) means no
@@ -493,6 +511,11 @@ class Percept:
         # churn of entities can't leave orphan edges accumulating in the gate. Wired here (not at graph
         # construction) because the gate is built alongside the graph in the same call.
         obj.graph.on_evict = obj._on_entity_evicted
+        # O2: gate SUPPRESSION (a fire withheld by require_false_first / refractory_s) must be visible,
+        # not a silent non-event. Wired here for the same reason as on_evict above — the gate is built
+        # in this same call, and the hook needs the finished ``obj`` to queue onto. Queue only; the
+        # runtime loop drains it into on_health (this class never calls on_health itself).
+        obj.gate.on_suppress = obj._note_gate_suppressed
         # Announce scripted backends LOUDLY at construction, in the one consistent vocabulary (RFC §4/§5).
         # This decides on the CONSTRUCTED CLASS (the fact), not the requested name — a registry miss /
         # plugin / stray PERCEPT_*_BACKEND can land a scripted double after you asked for real.
@@ -1373,6 +1396,21 @@ class Percept:
         self._judge_health_log.append(("judge_degraded", key, cause))
         if streak == CONSECUTIVE_DEGRADE_ESCALATE:  # exactly-once at the crossing, never re-fired
             self._judge_health_log.append(("judge_persistent_failure", key, cause))
+
+    def _note_gate_suppressed(self, decision: Any) -> None:
+        """Card O2: record one GATE SUPPRESSION (a :class:`~percept.gate.GateOutcome` whose reason is
+        in :data:`~percept.gate.SUPPRESSION_REASONS`) for the runtime to surface.
+
+        Only QUEUES -- ``percept/runtime/worker.py``'s ``run()`` loop drains :attr:`_gate_health_log`
+        every tick into its ``on_health(RuntimeHealthEvent("gate_suppressed"))`` channel, the same
+        contract :meth:`_note_judge_degraded` uses. Bounded: a core driven without that loop never
+        drains, so the oldest entries are shed rather than accumulating forever on a 24/7 watch (the
+        gate already logged each one structurally, so shedding loses no ground truth)."""
+        self._gate_health_log.append(
+            (decision.key, decision.reason, decision.at)
+        )
+        if len(self._gate_health_log) > _GATE_HEALTH_LOG_MAX:
+            del self._gate_health_log[: len(self._gate_health_log) - _GATE_HEALTH_LOG_MAX]
 
     def _note_judge_ok(self, key: Hashable) -> None:
         """Card A30: a well-formed verdict for ``key`` resets its consecutive-degrade streak -- ANY

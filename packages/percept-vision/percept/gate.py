@@ -19,10 +19,35 @@ confident-false and re-arms.
 suppresses a fire landing within N seconds of the same key's last real fire, even when a spurious
 confident-false blip re-armed the edge in between (mid-episode judge jitter). Off by default
 (``None``/``0`` = byte-for-byte the historical gate); see :meth:`Gate.evaluate`.
+
+Card O2 — GA of the decision model
+----------------------------------
+The three actions and the rising-edge/refractory rules above are the SDK's documented, stable
+decision surface. Two things make that surface usable by an integrator rather than merely true:
+
+1. **A typed reason vocabulary.** :data:`GATE_REASONS` is the closed set of WHY codes the gate can
+   produce, each mapping to exactly one action (:data:`REASON_ACTION`). :meth:`Gate.decide` returns
+   the typed :class:`GateOutcome` (action + reason); :meth:`Gate.evaluate` is unchanged and still
+   returns the bare :data:`GateAction`, so every existing caller is byte-for-byte.
+2. **Suppression is observable.** :data:`SUPPRESSION_REASONS` names the codes where a fire the
+   BASELINE rising-edge gate would have emitted was deliberately withheld by an opt-in precision
+   guard (``require_false_first`` -> ``start_anchored``; ``refractory_s`` -> ``refractory``). Those
+   — and only those — invoke the optional ``on_suppress`` hook, which
+   :meth:`percept.agent.Percept.create` wires into the runtime's health channel so the suppression
+   surfaces as a ``RuntimeHealthEvent("gate_suppressed")`` instead of a silent non-event (ADR-001
+   §9: a bound-driven drop is never silent). ``already_fired`` / ``dwell_pending`` /
+   ``not_satisfied`` are deliberately NOT suppressions — they are the base contract (every tick of a
+   continuing true state produces ``already_fired``), and reporting them would be per-frame noise.
+
+``SILENT`` remains INTERNAL-ONLY: it is a value of this module's decision model, never an action on
+a delivered event. Nothing on the public delivery path (``watch()``, ``on_incident``) ever carries
+it — the firing path drops a silent decision rather than surfacing it (see
+:meth:`percept.behavior.BehaviorExecutor.fire_judged`, which returns ``None``).
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Callable, Hashable, Literal
 
 from .adapters import Verdict
@@ -53,8 +78,109 @@ FIRE: GateAction = "fire"
 ASK: GateAction = "ask"
 SILENT: GateAction = "silent"
 
+#: Every action the gate can produce, in delivery-precedence order. ``SILENT`` is INTERNAL-ONLY (see
+#: the module docstring) — it is in the vocabulary because the decision model has three states, not
+#: because three states are delivered.
+GATE_ACTIONS: tuple[GateAction, ...] = (FIRE, ASK, SILENT)
+
+#: Actions that reach a subscriber. The public delivery contract: a gate decision is delivered iff
+#: its action is in this tuple.
+DELIVERED_ACTIONS: tuple[GateAction, ...] = (FIRE, ASK)
+
+GateReason = Literal[
+    # -- FIRE
+    "rising_edge",       # confident-true on an armed edge — the canonical proactive fire
+    "dwell_satisfied",   # ...and it stayed continuously true for the goal's hold_s first (R-1 dwell)
+    # -- ASK (refusal to guess; never changes the edge)
+    "low_confidence",    # verdict.confidence < threshold
+    "stale",             # the supporting perception/fact is older than fresh_min allows
+    # -- SILENT (internal-only)
+    "not_satisfied",     # confident-false — re-arms the edge
+    "already_fired",     # confident-true but the edge is spent (this episode already fired)
+    "start_anchored",    # SUPPRESSION: already true on the FIRST observation (require_false_first)
+    "refractory",        # SUPPRESSION: a fire was due but lands inside this key's refractory window
+    "dwell_pending",     # true, but hasn't held for hold_s yet — a deferral, not a suppression
+]
+
+#: The closed reason vocabulary. Stable, documented surface: a code is never renamed or repurposed;
+#: a new decision path adds a NEW code (and a new entry in :data:`REASON_ACTION`).
+GATE_REASONS: tuple[GateReason, ...] = (
+    "rising_edge",
+    "dwell_satisfied",
+    "low_confidence",
+    "stale",
+    "not_satisfied",
+    "already_fired",
+    "start_anchored",
+    "refractory",
+    "dwell_pending",
+)
+
+#: Each reason maps to exactly ONE action — the reason is strictly finer-grained than the action, so
+#: an integrator can key off either without them ever disagreeing.
+REASON_ACTION: dict[GateReason, GateAction] = {
+    "rising_edge": FIRE,
+    "dwell_satisfied": FIRE,
+    "low_confidence": ASK,
+    "stale": ASK,
+    "not_satisfied": SILENT,
+    "already_fired": SILENT,
+    "start_anchored": SILENT,
+    "refractory": SILENT,
+    "dwell_pending": SILENT,
+}
+
+#: The reasons that count as GATE SUPPRESSION: a fire the baseline rising-edge gate WOULD have
+#: emitted, withheld by an opt-in precision guard. Both are off by default, so a default-configured
+#: gate never suppresses and never emits a suppression health event. Deliberately excludes
+#: ``already_fired`` (the base re-fire contract, one per tick of any continuing true state),
+#: ``dwell_pending`` (a deferral — the same edge still fires once the dwell completes) and
+#: ``not_satisfied`` (no fire was ever due).
+SUPPRESSION_REASONS: tuple[GateReason, ...] = ("start_anchored", "refractory")
+
 # verdict -> coarse truth, before edge logic
 _Truth = Literal["yes", "no", "unknown"]
+
+
+@dataclass(frozen=True)
+class GateOutcome:
+    """One typed gate decision: WHAT (:attr:`action`) and WHY (:attr:`reason`), plus the key it was
+    made for and the stream time it was made at (``None`` when the caller passed no ``now``).
+
+    Returned by :meth:`Gate.decide`. :meth:`Gate.evaluate` returns ``decision.action`` alone, so the
+    typed form is purely additive — no existing caller changes.
+
+    Named ``GateOutcome``, not ``GateDecision``, on purpose: two OTHER, unrelated types in this
+    package already own that name — :class:`percept.sequencing.GateDecision` (a reducer submission
+    result: this action plus sequencing/drop metadata) and
+    :class:`percept.harness.tier0.GateDecision` (the tier-0 EDGE decision, escalate-or-not, which
+    happens strictly before any of this). This is the consequence gate's own outcome, and it is the
+    one of the three exported from the top-level ``percept`` namespace.
+    """
+
+    action: GateAction
+    reason: GateReason
+    key: Hashable = None
+    at: float | None = None
+
+    def __post_init__(self) -> None:
+        expected = REASON_ACTION.get(self.reason)
+        if expected is None:
+            raise ValueError(f"unknown gate reason {self.reason!r}; expected one of {GATE_REASONS}")
+        if expected != self.action:
+            raise ValueError(
+                f"gate reason {self.reason!r} implies action {expected!r}, got {self.action!r}"
+            )
+
+    @property
+    def suppressed(self) -> bool:
+        """True iff a fire the baseline rising-edge gate would have emitted was withheld here."""
+        return self.reason in SUPPRESSION_REASONS
+
+    @property
+    def delivered(self) -> bool:
+        """True iff this decision reaches a subscriber (FIRE/ASK). SILENT is internal-only."""
+        return self.action in DELIVERED_ACTIONS
 
 
 def classify(
@@ -86,7 +212,14 @@ class Gate:
         on_evict: Callable[[Hashable, str], None] | None = None,
         require_false_first: bool = False,
         refractory_s: float | None = None,
+        on_suppress: "Callable[[GateOutcome], None] | None" = None,
     ) -> None:
+        # O2: called with the :class:`GateOutcome` for every SUPPRESSED decision (reason in
+        # :data:`SUPPRESSION_REASONS`) — never for a plain already_fired/dwell_pending/not_satisfied
+        # SILENT. ``None`` (the default) = no hook = byte-for-byte the pre-O2 gate; ``Percept.create``
+        # wires it to the runtime health channel. Best-effort by contract: a raising hook must never
+        # break the firing path (see :meth:`_note_suppressed`).
+        self.on_suppress = on_suppress
         self.threshold = threshold
         self.fresh_min = fresh_min
         self.require_false_first = require_false_first  # gate-wide default for the baseline rule
@@ -164,6 +297,23 @@ class Gate:
                 for key in evictable[:overflow]:
                     self._evict(key, "max_keys")
 
+    def _note_suppressed(self, decision: "GateOutcome") -> None:
+        """O2: announce a SUPPRESSED decision through ``on_suppress`` (and always log it).
+
+        Best-effort by contract — telemetry must never break the trust surface, so a hook that raises
+        is swallowed and logged. The structured log line is emitted regardless of whether a hook is
+        wired, so suppression is observable even in a bare ``Gate()`` (ADR-001 §9: never silent)."""
+        log(
+            get_logger("percept.gate"), "gate.suppressed",
+            key=repr(decision.key), reason=decision.reason, at=decision.at,
+        )
+        if self.on_suppress is None:
+            return
+        try:
+            self.on_suppress(decision)
+        except Exception as exc:  # noqa: BLE001 - a telemetry hook never breaks the firing path
+            log(get_logger("percept.gate"), "gate.suppress_hook_error", error=repr(exc))
+
     def evaluate(
         self,
         key: Hashable,
@@ -176,7 +326,29 @@ class Gate:
         require_false_first: bool = False,
         refractory_s: float | None = None,
     ) -> GateAction:
-        """Return FIRE / ASK / SILENT for ``key``, updating edge state.
+        """Return FIRE / ASK / SILENT for ``key`` — :attr:`GateOutcome.action` of :meth:`decide`.
+
+        The historical entry point, unchanged: same signature, same return type, same edge effects.
+        Callers that want the typed WHY as well call :meth:`decide` instead."""
+        return self.decide(
+            key, verdict, freshness=freshness, hold_s=hold_s, now=now, no_evict=no_evict,
+            require_false_first=require_false_first, refractory_s=refractory_s,
+        ).action
+
+    def decide(
+        self,
+        key: Hashable,
+        verdict: Verdict,
+        *,
+        freshness: float = 1.0,
+        hold_s: float | None = None,
+        now: float | None = None,
+        no_evict: bool = False,
+        require_false_first: bool = False,
+        refractory_s: float | None = None,
+    ) -> "GateOutcome":
+        """Return the typed :class:`GateOutcome` (FIRE / ASK / SILENT **plus** the reason code) for
+        ``key``, updating edge state.
 
         ``hold_s`` (R-1) is an optional sustained-duration/dwell: with it set, an armed key does not fire
         the instant it becomes true — it must stay confidently true for ``hold_s`` seconds (measured on
@@ -201,7 +373,18 @@ class Gate:
         the gate-wide ``self.refractory_s`` (a WatchProfile ``gate.refractory_s`` knob) when not passed
         per-call. Requires ``now``; ``None``/``0``/negative (the default either way) = byte-for-byte the
         historical gate (no refractory).
+
+        O2: the reason codes are the closed :data:`GATE_REASONS` vocabulary; the two SUPPRESSION
+        codes (``start_anchored``, ``refractory``) additionally invoke ``on_suppress``. Neither the
+        actions nor the edge effects differ from :meth:`evaluate` — this method IS the implementation
+        and ``evaluate`` is its ``.action``.
         """
+        def _d(action: GateAction, reason: GateReason) -> GateOutcome:
+            decision = GateOutcome(action=action, reason=reason, key=key, at=now)
+            if decision.suppressed:
+                self._note_suppressed(decision)
+            return decision
+
         # Eviction bookkeeping (only when a bound is set — bounded by default, see `_evicting`). Stamp the
         # key BEFORE sweeping so the key in play is the freshest and can never evict itself.
         if self._evicting:
@@ -213,11 +396,15 @@ class Gate:
             self._bound(key, ref)
         truth = classify(verdict, freshness, self.threshold, self.fresh_min)
         if truth == "unknown":
-            return ASK  # asking never changes the edge — the fact is still pending
+            # asking never changes the edge — the fact is still pending. The two ASK codes split the
+            # single "unknown" truth back into WHICH arm of invariant 2 refused: a low-confidence read
+            # or a stale supporting fact (confidence is checked first, matching `classify`).
+            reason: GateReason = "low_confidence" if verdict.confidence < self.threshold else "stale"
+            return _d(ASK, reason)
         if truth == "no":
             self._armed[key] = True  # confident-false re-arms
             self._dwell_since.pop(key, None)  # ...and breaks any in-progress dwell (blip resets the clock)
-            return SILENT
+            return _d(SILENT, "not_satisfied")
         # truth == "yes"
         if (require_false_first or self.require_false_first) and key not in self._armed:
             # Spec (v0.1 hero matrix: "already present when the runtime starts -> SILENT"): a condition
@@ -227,9 +414,9 @@ class Gate:
             # a genuine rising-edge fire requires. Opt-in: without this flag a new key defaults to armed
             # (byte-for-byte the historical rising-edge gate) so existing callers are unchanged.
             self._armed[key] = False
-            return SILENT
+            return _d(SILENT, "start_anchored")
         if not self._armed.get(key, True):  # new keys default to armed -> fresh edge
-            return SILENT  # already true / already fired this episode
+            return _d(SILENT, "already_fired")  # already true / already fired this episode
         # L3: time-refractory, checked AFTER the edge/require-false-first logic (a fire must already be
         # "due") and BEFORE it is actually emitted — so a suppressed fire still counts as this episode's
         # fire (armed -> False) rather than leaving the edge live to fire again next tick.
@@ -239,23 +426,23 @@ class Gate:
             if last_fire is not None and (now - last_fire) < effective_refractory:
                 self._armed[key] = False  # treat as already-fired; a later confident-false re-arms it
                 self._dwell_since.pop(key, None)
-                return SILENT
+                return _d(SILENT, "refractory")
         if hold_s is None or hold_s <= 0 or now is None:
             self._armed[key] = False
             if now is not None:
                 self._last_fire[key] = now
-            return FIRE  # no dwell -> the rising-edge fire (byte-for-byte)
+            return _d(FIRE, "rising_edge")  # no dwell -> the rising-edge fire (byte-for-byte)
         # dwell: require the condition to have held continuously for hold_s before firing.
         t0 = self._dwell_since.get(key)
         if t0 is None:
             self._dwell_since[key] = now  # first sustained-true tick -> start the dwell timer
-            return SILENT
+            return _d(SILENT, "dwell_pending")
         if now - t0 >= hold_s:
             self._armed[key] = False
             self._dwell_since.pop(key, None)
             self._last_fire[key] = now
-            return FIRE
-        return SILENT  # still accumulating dwell — true, but not long enough yet
+            return _d(FIRE, "dwell_satisfied")
+        return _d(SILENT, "dwell_pending")  # still accumulating dwell — true, but not long enough yet
 
     def rearm(self, key: Hashable) -> None:
         """Force a key back to armed (e.g. after a correction clears the edge). Also clears any L3
@@ -323,4 +510,8 @@ class Gate:
         self._last_fire = {tuple(k): float(t) for k, t in snap.get("last_fire", [])}
 
 
-__all__ = ["GateAction", "FIRE", "ASK", "SILENT", "classify", "Gate"]
+__all__ = [
+    "GateAction", "FIRE", "ASK", "SILENT", "GATE_ACTIONS", "DELIVERED_ACTIONS",
+    "GateReason", "GATE_REASONS", "REASON_ACTION", "SUPPRESSION_REASONS", "GateOutcome",
+    "classify", "Gate",
+]
