@@ -15,6 +15,17 @@
     reason code and the decision time. Previously a silent non-event.
   - `SILENT` is documented and asserted as **internal-only** — never the action on a delivered event.
 
+- **Published Vision adapter interface + conformance suite** — `docs/reference/vision-adapter.md`
+  documents the frozen `Vision` seam as the public extension point (every escalation kwarg, the
+  `Verdict`/`Observation` invariants, and fail-closed injection: your instance reaches `core.vision`
+  unwrapped, and a live core with no vision raises `ModeError` rather than falling back to a scripted
+  double). `percept.conformance` ships the *runnable* version of that contract —
+  `check_vision_adapter(adapter)` in your own tests, or
+  `python -m percept.conformance mypkg.vision:MyVision` (`--static` for shape-only, no key needed).
+  Required vs advisory severities; it checks SHAPE, never model accuracy (that stays an L2/L3 eval
+  question). Versioned independently as `CONFORMANCE_VERSION`. Additive — no change to `watch()`,
+  `WATCH_VERSION`, or `CONTRACT_VERSION`.
+
 ### Changed
 - **Ordered window is the LIVE judge plan for dynamic goals (card J2).** A resolved `WatchProfile`'s
   `plan_mode` is no longer inert: `plan_mode="window"` now floors every concern's `PerceptionSpec` on the
