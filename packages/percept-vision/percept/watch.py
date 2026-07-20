@@ -13,6 +13,13 @@ config, ...) — the free variables of ``Q(p | environment, goal, state)`` — a
 core (never a mid-run mutation). The documented default is still ``profile=None`` -> today's
 :class:`~percept.config.Settings`-driven behavior (:func:`~percept.config.load_settings`), BYTE-FOR-BYTE
 unchanged from pre-M2. See :func:`_settings_from_profile` and :func:`_build_core`.
+
+``goals`` additionally accepts bare plain-language strings (card RB-L1SUGAR) —
+``watch(stream, "the milk is boiling over")``. That is SUGAR, not a second entrypoint and not a
+compilation step: :func:`percept.goalsugar.desugar_goals` wraps the string, verbatim, in a
+``Goal`` with a deterministic documented id, and the identical firing path runs. The signature,
+streaming semantics, and ``WATCH_VERSION`` are unchanged — only the accepted shape of an existing
+argument widens, which no existing caller can observe.
 """
 
 from __future__ import annotations
@@ -23,6 +30,7 @@ from .adapters import Goal
 from .agent import FireEvent, Percept
 from .config import Settings
 from .contracts import WatchEvent
+from .goalsugar import desugar_goals
 from .profile_wiring import resolve_watch_profile
 from .watchprofile import WatchProfile
 
@@ -91,7 +99,7 @@ async def _aiter(stream: "AsyncIterable[Any] | Iterable[Any]") -> AsyncIterator[
 
 async def watch(
     stream: "AsyncIterable[Any] | Iterable[Any]",
-    goals: list[Goal],
+    goals: "str | Goal | Iterable[str | Goal]",
     profile: Any = None,
     *,
     percept: Percept | None = None,
@@ -111,8 +119,14 @@ async def watch(
         stream: An (async or sync) iterable of frames, oldest to newest. A frame is whatever the
             configured ``vision`` backend accepts (an opaque per-backend type — e.g. a numpy array,
             a PIL image, or a backend-specific handle).
-        goals: The :class:`~percept.adapters.Goal`\\ s to watch; registered on the core before the
-            first frame is consumed.
+        goals: What to watch for; registered on the core before the first frame is consumed. Either
+            :class:`~percept.adapters.Goal`\\ s, or — the one-liner form — bare plain-language
+            condition strings: ``watch(stream, "the milk is boiling over")``. A bare string (or a
+            list mixing strings and Goals) is desugared by :func:`percept.goalsugar.desugar_goals`
+            into ``Goal(condition=<your exact string>, say=<your exact string>)`` with a
+            deterministic, documented id. That desugaring is **pass-through, not compilation**: the
+            string is never parsed, normalised, or mapped to a vocabulary — the judge sees the
+            caller's own words, exactly as typed. A ``Goal`` passed in is used unchanged.
         profile: OPTIONAL. ``None`` (the default) is today's ``Settings``-driven behavior — the
             documented default profile, BYTE-FOR-BYTE unchanged. A :class:`~percept.watchprofile.WatchProfile`
             is resolved for real (card M2); other shapes (a bare ``Settings``, an opaque
@@ -128,7 +142,7 @@ async def watch(
         callers — see :class:`WatchEvent`'s docstring for why the type still carries it).
     """
     core = percept if percept is not None else _build_core(profile)
-    for goal in goals:
+    for goal in desugar_goals(goals, source=source):
         core.add_goal(goal)
     async for frame in _aiter(stream):
         now = core.clock()
