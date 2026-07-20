@@ -124,6 +124,13 @@ from .watch import WATCH_VERSION, watch  # noqa: E402
 # String sugar for watch(): `watch(stream, "the milk is boiling over")`. Exported so callers can
 # reproduce the desugared id (goal_id_for) without re-implementing the documented scheme.
 from .goalsugar import desugar_goal, desugar_goals, goal_id_for  # noqa: E402
+# Provider identity (card RB-PROVIDER): a NAME resolves to a factory; the model id is configuration
+# carried to it, never the adapter's identity. Stdlib-pure (registry + config), no vendor import.
+from .provider import (  # noqa: E402
+    ProviderError,
+    ProviderSpec,
+    resolve_vision,
+)
 
 # The runtime worker — the batteries-included "watch a source" front door. Surfaced at top level
 # (PR: Wave 0) so `percept.run` / `percept.RuntimeSession` are the FIRST thing a builder reaches,
@@ -160,6 +167,10 @@ __all__ = [
     "desugar_goal",
     "desugar_goals",
     "goal_id_for",
+    # provider identity (RB-PROVIDER): name -> factory; model id is configuration, not identity
+    "resolve_vision",
+    "ProviderSpec",
+    "ProviderError",
     # DTOs
     "Box",
     "Observation",
