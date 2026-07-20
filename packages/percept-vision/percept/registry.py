@@ -54,12 +54,24 @@ def _lazy(module: str, attr: str) -> Callable[[Any], Any]:
     return _factory
 
 
+def _lazy_fixture_vision() -> Any:
+    """Construct the bundled-fixture vision replayer (imported on use, not at registry import)."""
+    from .offline import FixtureVision
+
+    return FixtureVision()
+
+
 # ---- built-in registrations -------------------------------------------------
 # "scripted" is the CANONICAL selector for the in-core doubles (RFC: offline mode selects scripted
 # backends). "fake" is kept as a deprecated alias so existing wiring keeps resolving; both land on the
 # same in-core double (the class name still reads Fake* — internal implementation, not user-facing text).
 register("vision", "fake", lambda s: _fake.FakeVision())
 register("vision", "scripted", lambda s: _fake.FakeVision())
+# The FIXTURE replayer (card RB-OFFLINE): the keyless first run's vision seam. Unlike "scripted", it
+# answers ONLY the frames its bundled fixture scripts and raises on anything else — a real stream
+# pointed at it fails loudly instead of producing plausible-looking judgements. Lazy (percept.offline
+# imports adapters/config only, but keep the registry import-graph flat either way).
+register("vision", "fixture", lambda s: _lazy_fixture_vision())
 register("vision", "claude", _lazy("anthropic", "AnthropicVision"))
 register("vision", "gemini", _lazy("gemini", "GeminiVision"))
 register("vision", "gemini-live", _lazy("gemini_live", "GeminiLiveVision"))

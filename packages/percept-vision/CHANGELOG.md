@@ -40,6 +40,14 @@ The live **runtime** is now the front door: point Percept at a stream, give it p
 notification once per event.
 
 ### Added
+- **Fixture-bound offline mode** — `percept.offline_core()` builds a core in explicit `mode="offline"`
+  bound to a **bundled deterministic fixture** that ships in the wheel (`percept/fixtures/*.json`), so a
+  keyless first run replays the real fovea → judge → gate path end to end: `watch(offline_frames(),
+  offline_goals(), percept=offline_core())`. The offline judge is a *replayer*, not a general fake — a
+  frame the fixture does not script raises `OfflineFixtureError` (a `ModeError`) instead of inventing a
+  plausible verdict, and every verdict's evidence says it is a replay, not perception. A LIVE run with no
+  vision backend / no credential still raises the typed `ModeError` and never falls back to a fake judge
+  (`assert_live_or_offline()` exposes that pre-flight to front doors).
 - **`watch(stream, goals) → AsyncIterator[WatchEvent]`** — the frozen public entrypoint (versioned,
   `WATCH_VERSION`). `WatchEvent` + `WatchAction` added to the contract (`CONTRACT_VERSION` 1.1 → 1.2, additive).
 - **`percept-watch` CLI** — `pip install "percept-vision[runtime,openrouter]"` then

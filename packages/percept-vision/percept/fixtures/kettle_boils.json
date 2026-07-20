@@ -1,0 +1,23 @@
+{
+  "fixture_id": "kettle-boils",
+  "fixture_version": 1,
+  "description": "Scripted replay: a kettle sits cold, then boils. Demonstrates the rising-edge gate (two confident-false frames, then confident-true) firing exactly once. Every verdict below was written by a human into this file — this proves the runtime is wired, never that anything was perceived.",
+  "goal": {
+    "id": "kettle",
+    "condition": "the kettle has boiled",
+    "say": "The kettle has boiled."
+  },
+  "frames": [
+    "kettle-cold",
+    "kettle-cold",
+    "kettle-boiling",
+    "kettle-boiling"
+  ],
+  "script": {
+    "kettle-cold": {"satisfied": false, "confidence": 0.95},
+    "kettle-boiling": {"satisfied": true, "confidence": 0.93}
+  },
+  "expect": [
+    {"frame_index": 2, "goal_id": "kettle", "action": "fire"}
+  ]
+}
