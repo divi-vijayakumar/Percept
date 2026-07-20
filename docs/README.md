@@ -20,6 +20,7 @@ interactive [`architecture.html`](../architecture.html)) — it cannot drift fro
 ## Reference — information-oriented
 - [`watch()` contract](reference/watch-contract.md) — the frozen public entrypoint + `WatchEvent` schema.
 - [Backends](reference/backends.md) — the five seams, backend names, extras, custom backends.
+- [Vision adapter interface](reference/vision-adapter.md) — the public extension point: bring your own model, fail-closed injection, and the runnable conformance suite.
 - [Registration](reference/registration.md) — detector / concern / enricher registries.
 - [Wake policy](reference/edge-policy.md) — the on-device "should we spend a VLM call?" layer.
 - [Edge parity](reference/edge-parity.md) — JS ↔ Python edge conformance.

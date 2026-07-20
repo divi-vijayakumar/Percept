@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Published Vision adapter interface + conformance suite** — `docs/reference/vision-adapter.md`
+  documents the frozen `Vision` seam as the public extension point (every escalation kwarg, the
+  `Verdict`/`Observation` invariants, and fail-closed injection: your instance reaches `core.vision`
+  unwrapped, and a live core with no vision raises `ModeError` rather than falling back to a scripted
+  double). `percept.conformance` ships the *runnable* version of that contract —
+  `check_vision_adapter(adapter)` in your own tests, or
+  `python -m percept.conformance mypkg.vision:MyVision` (`--static` for shape-only, no key needed).
+  Required vs advisory severities; it checks SHAPE, never model accuracy (that stays an L2/L3 eval
+  question). Versioned independently as `CONFORMANCE_VERSION`. Additive — no change to `watch()`,
+  `WATCH_VERSION`, or `CONTRACT_VERSION`.
+
 ## 0.7.0 — research preview (hackathon runtime)
 
 The live **runtime** is now the front door: point Percept at a stream, give it plain-English goals, get a

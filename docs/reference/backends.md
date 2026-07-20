@@ -164,8 +164,8 @@ A backend is any object implementing the relevant `Protocol` in `percept.adapter
 `Conductor`, `Specialist`, `STT`, `TTS`). The `Vision` contract is just:
 
 ```python
-async def judge(self, condition: str, frame, *, roi=None, corrections=None,
-                frames=None, audio=None) -> Verdict: ...
+async def judge(self, condition: str, frame, *, roi=None, exemplar=None, corrections=None,
+                frames=None, audio=None, context=None) -> Verdict: ...
 async def detect(self, frame, goals) -> list[Observation]: ...
 async def detect_events(self, frames, goals) -> list: ...
 ```
@@ -183,6 +183,14 @@ Third-party packages can auto-register by advertising a `percept.backends` entry
 discovers them when `discover_plugins=True` (the default). A backend that lacks a modality (e.g. a
 vision model with no audio) degrades gracefully — the returned `Verdict` shape is unchanged, so the
 gate downstream is identical.
+
+The **Vision** seam is documented in full — every escalation kwarg, the `Verdict`/`Observation`
+invariants, fail-closed injection, and a runnable conformance suite you can execute against your own
+adapter — in [The Vision adapter interface](vision-adapter.md):
+
+```bash
+python -m percept.conformance myvlm.vision:MyVision
+```
 
 ---
 
