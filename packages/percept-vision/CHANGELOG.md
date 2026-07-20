@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- **Ordered window is the LIVE judge plan for dynamic goals (card J2).** A resolved `WatchProfile`'s
+  `plan_mode` is no longer inert: `plan_mode="window"` now floors every concern's `PerceptionSpec` on the
+  judging path, so the judge receives an ordered frame window (`judge(frames=[...])`, oldest→newest, the
+  anchor frame passed separately) instead of one still frame. The seeded default profiles already carry
+  `plan_mode="window"` for dynamic goals (recall 0.68 → 0.73; 0.90 with gate-relax on the H0 set). The
+  profile's plan mode is a FLOOR — a concern that authored a richer `perception` block keeps it.
+
+### Deprecated
+- **`sprite` in the plan path.** `temporal="sprite"` / `plan_mode="sprite"` no longer builds a montage;
+  it is normalized to `"window"` with a `DeprecationWarning` (an ordered window beats a montage
+  unconditionally). `percept.sprite.make_sprite` remains as a standalone, importable primitive — nothing
+  in the firing path calls it.
+
 ## 0.7.0 — research preview (hackathon runtime)
 
 The live **runtime** is now the front door: point Percept at a stream, give it plain-English goals, get a
