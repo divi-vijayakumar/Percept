@@ -49,6 +49,32 @@
 - **`docs/adr/ADR-005-source-profiles.md`** — the decision, the measurement, the gate-invariance
   argument, and an explicit constraint on card L1: the `WatchProfile` ontology is camera-shaped and
   L1 must not be built on it.
+- **`percept check` widened past the Vision seam — conformance for the seams D6 kept (card D2).**
+  `percept.conformance` (suite `1.1.0`) now covers all three surviving extension points through ONE
+  reporting shape (`CheckResult` / `ConformanceReport`) and one severity vocabulary
+  (`REQUIRED`/`ADVISORY`), and one CLI (`python -m percept.conformance TARGET --role …`):
+  - **`check_detector(...)` — the bring-your-own ADMISSION detector** (`register_detector` +
+    `DetectorManifest`), the seam a client plugs an OCR/phash model into for screen content. It
+    checks manifest well-formedness, the `push(t, value) -> [Boundary]` / `reset()` call shape the
+    `DetectorBank` actually uses, boundary types + attribution, survival of a degenerate stream
+    (flat-zero, pinned-high, single-sample), **determinism on a fixed input**, that `reset()` really
+    restores initial state, and that the name is **selectable end-to-end into a `WatchSpec`** through
+    the real registry → firewall → `compile_watchspec` path (registry state is restored afterwards).
+    The failure mode this exists to prevent is the silent one: an unroutable `signal` string is
+    routed to the MOTION channel by `DetectorBank` without raising, so the only production symptom is
+    a watch that quietly under-admits. A FRAME-backed detector's push checks **SKIP loudly** (the
+    report reads `PARTIALLY CHECKED`) unless the caller supplies `samples=` — there is no universal
+    probe frame and a fabricated one would prove nothing.
+  - **`check_tier0_adapter(...)` — the `structural_adapter` / `semantic_adapter` callables `run()`
+    now accepts (card D6a).** Bounded normalized score (a non-number, NaN or out-of-`[0,1]` value
+    silently pins or mutes admission), survival of a degenerate frame (1×1, uniform black/white), and
+    a real `MotionGate` gated on that channel driven over a frame stream **without crashing the
+    gate**, with the adapter's value asserted to be the one reported on `Tier0Signal`.
+  - **The honest scope disclaimer is now PRINTED on every report, for every role** (vision included).
+    This suite proves a plug-in is WELL-FORMED — that percept can call it, route it and read what it
+    returns. It is **not** a measure of the model's intelligence or quality, and a green report does
+    **not** mean "my OCR model is good". That question is `percept eval`'s (card D3): a paired A/B on
+    the client's fixtures against the client's pre-registered bars.
 - **`percept-doctor` — a plan-aware tier-0 dry run that spends ZERO judge calls (card D1).** A new
   console entry point (alongside `percept-watch` / `percept-bench` / `percept-schema`) that answers,
   without an API key and at no cost: did the source open, did frames arrive, what timebase was
