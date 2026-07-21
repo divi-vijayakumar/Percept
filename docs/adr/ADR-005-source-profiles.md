@@ -7,7 +7,7 @@
 - **Related:** ADR-002 (Runtime health & coverage — an untuned admission signal is reported as a
   *doctor finding*, not as a runtime health alarm; a dry run knows nothing about a declared coverage
   expectation); ADR-003 (Evidence artifacts — `evidence_strategy` names *which* artifacts a source
-  class packages; ADR-003's retention/`frame_ref` rules are unchanged and apply to all of them);
+  class packages; ADR-003's retention/`evidence_ref` rules are proposed, not shipped, and would apply to all of them);
   ADR-006 (Incident relations — §5 shows percept's identity model is a *physical-object* model; this
   ADR is the mechanism by which a non-physical source class can say so, via `identity_strategy`).
 - **Constrains:** **card L1** — see §Consequences. The existing `WatchProfile` ontology is

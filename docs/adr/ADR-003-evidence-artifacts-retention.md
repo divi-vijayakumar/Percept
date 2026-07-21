@@ -1,19 +1,53 @@
 # ADR-003: Evidence artifacts, dereference & retention
 
 - **Status:** Proposed
-- **Depends on:** ADR-001 §4 (defines `evidence.frame_ref` as a field on the judgment contract and
-  explicitly leaves its resolution open — this ADR is that resolution, not a redefinition)
+- **Depends on:** ADR-001 §1 (the judgment lifecycle `Verdict -> GateDecision -> JudgmentEvent`, which
+  is the contract this ADR proposes to *extend*) and ADR-001 §5 (two time domains — fixes the clock
+  the evidence timestamps below are stamped in). ADR-001 does **not** define any evidence pointer;
+  see the correction note below.
 - **Related:** ADR-002 (Runtime health & coverage — separate control path, not addressed here);
   ADR-004 (Public delivery flow — what `Incident` durably carries forward from a `JudgmentEvent`,
   not addressed here)
 - **Source:** `PRD-RevisionB.md` §7, §14 gate 5 (internal; not part of the public tree)
 
+> **Correction (2026-07, before Accepted).** Earlier revisions of this ADR declared *"Depends on:
+> ADR-001 §4 (defines `evidence.frame_ref` as a field on the judgment contract)"* and built their
+> Context on that premise. **That premise is false and the citation does not resolve.** ADR-001 §4 is
+> *Dwell and refractory*; no section of ADR-001 mentions `frame_ref`, and there is no
+> `evidence.frame_ref` anywhere on the judgment contract in the shipped tree. This ADR therefore
+> proposes a **new** field rather than resolving an existing one. The verified starting position is
+> stated in Context below. Nothing else about the ADR's intent changes, and its status stays
+> **Proposed**.
+
 ## Context
 
-`ADR-001` froze a judgment contract with `evidence.frame_ref` as a field on the judgment a watch
-emits. It did not say what kind of thing `frame_ref` names, nor how a caller gets from that name to
-actual pixels. Two things are true about Percept today that make closing that gap urgent rather than
-cosmetic:
+### The true starting position (verified against the shipped tree)
+
+All line numbers below are in `packages/percept-vision/percept/contracts/__init__.py` at the time of
+writing.
+
+- **The judgment contract carries no evidence pointer at all.** `Verdict.evidence` is a plain
+  `str = ""` (`L-125`) — free-text rationale from the judge, not a handle to anything.
+  `JudgmentEvent` (`L-514`) carries `key`, `evidence_seq`, `action`, `timing` and **no evidence
+  payload or pointer whatsoever** — `evidence_seq` is a per-key *ordering* integer (ADR-001 §8), not
+  a reference to an artifact. `WatchEvent` (`L-1136`) carries `goal_id`, `action`, `t`, `text`,
+  `entity_id`, `verdict` — again **no evidence handle**. There is nothing today to redefine: this
+  ADR is a *proposal to add* an evidence pointer, and it is the first place that pointer is named.
+- **The only `frame_ref` in the tree belongs to a different type with the opposite semantics.**
+  `LabelRecord.frame_ref` (`L-1063`) is annotated *"LOCAL filesystem path ONLY; the local-only tail
+  — NEVER egressed"*. It is a ground-truth **label** record, not a judgment, and its `frame_ref` is
+  deliberately and explicitly a filesystem path — precisely what §1 below forbids for the new
+  handle. The two must not be conflated or merged, and this ADR does **not** change
+  `LabelRecord.frame_ref`.
+
+To keep those two apart, the field this ADR proposes is named **`evidence_ref`**, not `frame_ref`.
+Any cross-reference elsewhere in the ADR set to "ADR-003's `frame_ref`" means this new
+`evidence_ref`.
+
+### Why the gap is worth closing now
+
+Two things are true about Percept today that make adding an evidence pointer — and pinning its
+meaning *before* it exists — urgent rather than cosmetic:
 
 1. **Percept's strongest technical direction is capsule judging** — giving the judge more than one
    naked frame: a hi-res crop alongside the overview, a short ordered burst around a fast event, a
@@ -21,19 +55,36 @@ cosmetic:
    escalation (see `AudioFrame`, `Concern.clip`/`window_s`/`fps` in
    `packages/percept-vision/percept/contracts/__init__.py`). Multi-artifact evidence is not a future
    nice-to-have; it is already how the runtime is built to look.
-2. **The contract is frozen.** If `frame_ref` ships as (or is read by early adopters as) "the path to
-   the one JPEG that proved this," every capsule-judging capability built afterward either breaks that
-   assumption or has to invent a second, parallel evidence channel outside the frozen contract to avoid
-   breaking it. A frozen field with an implicit narrow meaning is worse than an unfrozen one, because it
-   cannot be fixed without a contract bump.
+2. **The contract is frozen, so the field gets exactly one chance.** `WatchEvent`/`JudgmentEvent` are
+   the frozen public contract, and `percept.watch()`'s signature plus `WATCH_VERSION` are frozen
+   outright. Adding `evidence_ref` is *additive* and therefore permissible — but once added, if it
+   ships as (or is read by early adopters as) "the path to the one JPEG that proved this," every
+   capsule-judging capability built afterward either breaks that assumption or has to invent a second,
+   parallel evidence channel outside the frozen contract to avoid breaking it. A frozen field with an
+   implicit narrow meaning is worse than no field at all, because it cannot be fixed without a
+   contract bump.
 
-This ADR pins `frame_ref`'s meaning before any capsule-judging code ships, so the contract and the
-capability grow together instead of the capability having to route around the contract.
+This ADR pins `evidence_ref`'s meaning *before the field exists* and before any capsule-judging code
+ships, so the contract and the capability grow together instead of the capability having to route
+around the contract.
 
-The existing codebase already has one working precedent for "a durable record with a media pointer
-that must not leak," worth reusing rather than re-deriving: `LabelRecord` (same file, `L-1`) splits
-into an egress-safe metadata head and a local-only tail (`frame_ref: str | None`, explicitly excluded
-from `EGRESS_FIELDS`), so `to_egress()` structurally cannot emit it. `WebhookSink` similarly defaults
+### The in-tree precedent this ADR generalizes
+
+The codebase already has one working precedent for "a durable record with a media pointer that must
+not leak," and this ADR is a generalization of it rather than a new invention: **`LabelRecord`'s
+egress-safe-head + local-only-tail split**
+(`packages/percept-vision/percept/contracts/__init__.py`, class at `L-1040`, invariant documented at
+`L-1046..L-1053`). Every field declared above `frame_ref` is the *metadata head* that MAY leave the
+machine; `frame_ref` (`L-1063`) is the *local-only tail*. `to_egress()` (`L-1084`) is built from the
+explicit `EGRESS_FIELDS` whitelist (`L-1071`), which simply does not list `frame_ref` — so the
+no-pixels rule is a **type-level fact, not a runtime filter someone can forget to apply**. That
+head/tail-by-whitelist construction is exactly the property §4 below carries over to `evidence_ref`.
+
+Note the deliberate divergence: `LabelRecord.frame_ref` *is* a filesystem path (that is why it can
+never egress), whereas the new `evidence_ref` is an opaque store key (§1) that also does not egress
+by default (§4). Same structural guarantee, different reason — do not merge the two fields.
+
+`WebhookSink` similarly defaults
 `include_media=False` and strips `snippet.media`/`snippet.frames` from the JSON body unless a caller
 opts in (`packages/percept-vision/percept/runtime/sinks.py`, `incident_payload`). Both are evidence
 this repo already treats "a media pointer/blob crossing the network by default" as a bug class to
@@ -41,21 +92,28 @@ design out, not a policy to remember. This ADR generalizes that pattern to the n
 
 ## Decision
 
-### 1. `frame_ref` is a name, not a description — and it may name a bundle
+### 1. Scope: a NEW field, `evidence_ref` — a name, not a description — and it may name a bundle
 
-`evidence.frame_ref` is an **opaque handle** into an evidence store. It carries no information about
+**Scope statement.** This section defines a **new, not-yet-existing** field, proposed for the
+judgment contract and named **`evidence_ref`**. It does **not** describe, constrain, or redefine any
+field in the shipped tree. In particular it says nothing about `LabelRecord.frame_ref`
+(`packages/percept-vision/percept/contracts/__init__.py` `L-1063`), which is a documented LOCAL
+filesystem path on a *label* record and stays exactly as it is; the "MUST NOT be treated as a path"
+rule below applies to `evidence_ref` alone.
+
+`evidence_ref` is an **opaque handle** into an evidence store. It carries no information about
 what the referenced artifact *is* — not its media type, not whether it is one image or several, not
 its size. A caller MUST NOT parse it, construct one, assume it is a filesystem path, or infer capture
 shape from its format. The only operation defined on it is resolution (§2).
 
-Concretely, this means: **the resolved artifact behind a `frame_ref` MAY be a bundle** — an overview
+Concretely, this means: **the resolved artifact behind an `evidence_ref` MAY be a bundle** — an overview
 frame, a hi-res crop, four ordered frames, a filmstrip, a short clip, or audio plus adjacent video —
 determined by what the concern's `PerceptionSpec` captured (single frame vs. `clip`/`window_s` vs.
-audio-fused), not by anything the name itself encodes. A judge or app that today reads `frame_ref` as
+audio-fused), not by anything the name itself encodes. A judge or app that reads `evidence_ref` as
 "the one image" and later receives a bundle-backed handle must not silently misbehave; `kind` (§2)
 exists precisely so a caller can branch on shape before treating the artifact as a single image.
 
-This is the entire point of the ADR: without it stated here, `frame_ref` pins the implementation to
+This is the entire point of the ADR: without it stated here, `evidence_ref` would pin the implementation to
 "one image forever," and every capsule-judging feature has to fight the contract instead of using it.
 
 ### 2. The `EvidenceArtifact` shape and the resolver
@@ -63,7 +121,7 @@ This is the entire point of the ADR: without it stated here, `frame_ref` pins th
 ```python
 @dataclass(frozen=True)
 class EvidenceArtifact:
-    ref: str                                    # the same opaque handle as evidence.frame_ref
+    ref: str                                    # the same opaque handle as the judgment's evidence_ref
     kind: Literal["frame", "crop", "clip", "bundle"]
     media_type: str                             # e.g. "image/jpeg", "video/mp4", "application/x-percept-bundle"
     capture_start_ts: float
@@ -71,7 +129,7 @@ class EvidenceArtifact:
     sha256: str                                  # integrity + dedup; also the tamper-evidence anchor for audit
     expires_at: float | None                     # None = does not expire under the active retention class
 
-artifact = w.resolve_evidence(event.evidence.frame_ref)
+artifact = w.resolve_evidence(event.evidence_ref)
 ```
 
 `kind` distinguishes a single still (`"frame"`), a region-of-interest still (`"crop"`), a temporal
@@ -108,11 +166,11 @@ in normal operation (retention did its job; store hiccuped); `EvidenceAccessDeni
 
 ### 4. Handles are not filesystem paths, and are excluded from egress by default
 
-A `frame_ref` string carries no filesystem, URL, or storage-backend semantics a caller may rely on —
+An `evidence_ref` string carries no filesystem, URL, or storage-backend semantics a caller may rely on —
 treating it as a path (opening it directly, constructing one by string concatenation) is a contract
 violation even if it happens to work against today's local-disk implementation.
 
-By default, `frame_ref` is **excluded from any egress payload** (webhook bodies, external sinks) —
+By default, `evidence_ref` is **excluded from any egress payload** (webhook bodies, external sinks) —
 the same posture `LabelRecord.to_egress()` already enforces structurally for its own `frame_ref`
 tail via an explicit whitelist, not a runtime filter. The handle is meaningless to a third-party
 receiver that cannot call `resolve_evidence()` against this runtime, and an opaque store key
@@ -162,7 +220,7 @@ numbers — rescale to the actual capsule size and fleet volume at build time.
   a human already spent attention confirming it — but to a fixed labelled-retention ceiling (not
   indefinitely), so an active labelling program cannot turn "labelled" into unbounded accumulation.
 - **May webhook delivery dereference media?** **No, by default** — a webhook sink resolves nothing;
-  it may carry the bare `frame_ref` handle only if explicitly configured to (§4), and even then MUST
+  it may carry the bare `evidence_ref` handle only if explicitly configured to (§4), and even then MUST
   NOT embed the resolved bytes in the payload without a second, explicit opt-in analogous to today's
   `WebhookSink(include_media=True)`. This mirrors the sink's existing default (`include_media=False`,
   `incident_payload()` strips `snippet.media`/`snippet.frames` unless asked) rather than introducing a
@@ -172,9 +230,9 @@ numbers — rescale to the actual capsule size and fleet volume at build time.
 ## Consequences
 
 - Capsule-judging work (multi-frame, crop+overview, clip, audio-fused evidence) can proceed without
-  a second, parallel "real evidence" channel outside the frozen contract — `frame_ref` already means
-  the right thing.
-- Every consumer of `event.evidence.frame_ref` must go through `resolve_evidence()` and handle four
+  a second, parallel "real evidence" channel outside the frozen contract — `evidence_ref` is specified
+  to mean the right thing from the day it is added.
+- Every consumer of `event.evidence_ref` must go through `resolve_evidence()` and handle four
   typed failures; no consumer may treat a resolution failure as "no evidence."
 - Sinks (webhook or otherwise) need no new redaction logic to stay safe by default — exclusion is the
   default, matching the existing `LabelRecord`/`WebhookSink` posture, so this ADR closes a gap rather

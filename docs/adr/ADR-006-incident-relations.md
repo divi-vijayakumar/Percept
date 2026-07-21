@@ -4,7 +4,7 @@
 - **Depends on:** ADR-001 (the Gate/judgment contract — `Verdict -> GateDecision -> JudgmentEvent`,
   unchanged by this ADR); the frozen wire contract in
   `packages/percept-vision/percept/contracts/__init__.py` (`CONTRACT_VERSION = "1.2.0"`, `:33`).
-- **Related:** ADR-003 (Evidence artifacts — `frame_ref` is an opaque handle that MAY name a
+- **Related:** ADR-003 (Evidence artifacts — the proposed `evidence_ref` is an opaque handle that MAY name a
   bundle; this ADR is the analogous "pin the meaning before the capability ships" move, applied to
   the *relation* between findings rather than the evidence behind one); ADR-004 (Public delivery
   flow & replay — §1 pins the at-most-once-per-episode rising-edge guarantee this ADR shows is
