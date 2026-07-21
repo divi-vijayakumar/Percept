@@ -131,6 +131,14 @@ class EvidenceSequencer:
         """The highest ``evidence_seq`` admitted for ``key`` WITHIN ``episode_id`` (0 if none yet)."""
         return self._episode_latest_admitted.get((key, episode_id), 0)
 
+    def tracked_keys(self) -> tuple[Hashable, ...]:
+        """Every key this sequencer still holds a counter for, in first-admission order.
+
+        The bound seam: a long-running caller (``percept.agent``'s X7 judgment stamping) reads this
+        to shed its oldest keys, the way :class:`percept.gate.Gate` bounds ``_armed``. Read-only.
+        """
+        return tuple(self._next)
+
     def forget(self, key: Hashable) -> None:
         """Drop all sequencing state for ``key`` (mirrors ``Gate.reset_goal``/``reset_entity``)."""
         self._next.pop(key, None)

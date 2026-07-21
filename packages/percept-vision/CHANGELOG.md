@@ -55,6 +55,7 @@
   and `RunTraceManifest.create` a `plan_policy=` pass-through. `percept.watch` is untouched.
 
 ### Added
+<<<<<<< HEAD
 - **A live run now says what it covered — and says it out loud when it admitted nothing (card X4).**
   `RuntimeHealthEvent("runtime_ended")` used to carry an EMPTY payload, so a session that admitted
   **zero** frames was byte-for-byte indistinguishable from a healthy quiet one on the live path —
@@ -68,6 +69,22 @@
   never latches an unhealthy interval, and records as `state="info"`. Read it the way doctor frames
   `ZERO_ADMITS_ON_FIXTURE`: diagnostic. If the scene was not quiet, the eye is mis-selected, and
   `percept doctor` will name the statistic that would have admitted. No public signature changed.
+=======
+- **The runtime now constructs `JudgmentEvent` — ADR-001's centre governs a live object (card X7).**
+  `contracts.JudgmentEvent` was the "frozen output of one pass through the judge funnel" that the hot
+  path never built: the live route was `Verdict -> GateOutcome -> Fired -> FireEvent`, and every
+  construction site was rendering/eval-side. `BehaviorExecutor.fire_judged` now freezes one alongside
+  the existing `Fired` and hangs it on `Fired.judgment` / **`FireEvent.judgment`**, so it reaches the
+  emission boundary (`runtime.worker`'s incident/ask fan-out) with the gate key, the per-key
+  `evidence_seq` reserved at judge dispatch (ADR-001 §8), the action, and a real `JudgmentTiming`.
+  **Additive only**: what fires, when it fires and every existing field are byte-for-byte unchanged;
+  `judgment` is `None` on paths that take no judge-funnel stamps (episode/rhythm/boundary/transition/
+  absence) and on any timing that cannot be honestly frozen (counted as `judgment.build_failed`) —
+  an absent record, never an invented one. Stamps come from the core's injected clock only;
+  `source_media_ts` carries the caller's stream timeline `t` when one was supplied and is left unset
+  otherwise. Capture-side times upstream of the core (camera capture, the worker's tier-0 admission)
+  are not threaded through this seam and are deliberately not approximated.
+>>>>>>> worktree-wf_cb205a5a-758-5
 - **The operating-frontier report — the honest form of a quality claim (card RB-FRONTIER).**
   `percept-eval --frontier` emits the full §3.2 report from the eval harness: **exact one-sided 95%
   bounds** on FIRE recall and on false FIREs **per scheduled watch-hour**, plus ASK rate, coverage,

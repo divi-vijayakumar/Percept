@@ -20,6 +20,7 @@ from .behavior import BehaviorExecutor, program_of
 from .cache import CacheCascade, CacheKey, FrameHashLayer
 from .concern import attention_weight, consequence_of, requires_verification, resolution_ready
 from .config import ModeError, Settings, load_settings, missing_credential, resolve_mode
+from .contracts import JudgmentEvent, JudgmentTimingBuilder
 from .escalation import MAX_PERCEPTION_LEVEL, escalate_perception, should_escalate
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
 from .entity import EntityGraph
@@ -33,6 +34,11 @@ from .routing import RouteEngine
 from .scheduler import Scheduler
 
 
+#: X7 — LRU ceiling on the judgment evidence-sequencer's per-key counters. Matches the gate's own
+#: default ``max_keys`` so the observability map can never outgrow the gate state it mirrors.
+_SEQ_MAX_KEYS = 10_000
+
+
 @dataclass
 class FireEvent:
     """What the watch loop emits when the gate acts."""
@@ -42,6 +48,13 @@ class FireEvent:
     text: str
     entity_id: str | None = None
     verdict: Verdict | None = None
+    # X7 — the frozen :class:`percept.contracts.JudgmentEvent` for this decision (ADR-001 §1): the
+    # gate key, the evidence sequence, the action, and the five-stamp two-domain timing the funnel
+    # actually took. Populated on the judged watch path (``perceive_judged`` → ``_fire_concern``);
+    # ``None`` on every other firing path (episode/rhythm/boundary/transition/absence/process-QA),
+    # which take no judge-funnel stamps — an absent event, never an invented one. Appended LAST with
+    # a ``None`` default: existing positional constructions and consumers are unchanged.
+    judgment: JudgmentEvent | None = None
 
 
 # -- The resolved WatchProfile.plan_mode -> the concern's PerceptionSpec -----------------------
@@ -347,6 +360,11 @@ class Percept:
     consent: ConsentProfile = field(default_factory=ConsentProfile)  # the act-modality gate
     action_log: ActionLog = field(default_factory=ActionLog)  # audit: every fire + act
     _executor: Any = None  # BehaviorExecutor — the unified firing path (lazily bound to self.gate)
+    # X7 — the per-key monotonic evidence counter (percept.sequencing.EvidenceSequencer), stamped at
+    # judge-DISPATCH time so every JudgmentEvent carries the same ``evidence_seq`` a GateDecision
+    # would. Lazily built and LRU-bounded (``_SEQ_MAX_KEYS``) exactly like the gate's own key maps, so
+    # a 24/7 multi-entity watch cannot leak through it. Observability only — nothing branches on it.
+    _sequencer: Any = None
     otel: OTelExporter | None = None  # optional OTel mirror for the funnel; None -> in-process only
     _funnel: Any = None  # Funnel — the standard telemetry funnel (lazily bound to self.metrics)
     # The announced-scripted state. Set by create(): the resolved mode ("offline"/"live"),
@@ -720,6 +738,24 @@ class Percept:
             self._executor = BehaviorExecutor(self.gate, self.metrics)
         return self._executor
 
+    def _admit_evidence(self, key: tuple) -> int:
+        """X7: reserve this judgment's ``evidence_seq`` at judge-DISPATCH time (ADR-001 §8).
+
+        The live watch path is strictly single-flight, so nothing depends on the sequence today — it
+        exists so a :class:`~percept.contracts.JudgmentEvent` emitted here correlates with the
+        ``GateDecision`` a future worker-pool reducer would produce for the same key, instead of
+        carrying a placeholder. LRU-bounded like the gate's own key maps.
+        """
+        if self._sequencer is None:
+            from .sequencing import EvidenceSequencer  # noqa: PLC0415 — avoid an import cycle at module load
+            self._sequencer = EvidenceSequencer()
+        seq = self._sequencer.admit(key)
+        tracked = self._sequencer.tracked_keys()  # first-admission order
+        if len(tracked) > _SEQ_MAX_KEYS:
+            for stale in tracked[: len(tracked) - _SEQ_MAX_KEYS]:
+                self._sequencer.forget(stale)
+        return seq
+
     @property
     def funnel(self) -> Funnel:
         """The standard telemetry funnel (seen→gated→judged→refused→fired), bound to THIS agent's
@@ -740,19 +776,28 @@ class Percept:
         freshness: float = 1.0,
         t: float = 0.0,
         metric: str = "gate",
+        timing: JudgmentTimingBuilder | None = None,
+        evidence_seq: int = 0,
     ) -> FireEvent | None:
         """One firing path — delegates to the :class:`~percept.behavior.BehaviorExecutor` (the general
         ``sense·key·accumulate`` executor that now owns the per-concern re-arm key-synthesis, the
         never-contract, the hard-quadrant escalation, and the confusion substrate). This method is a
         thin boundary that adapts the executor's ``Fired`` back to the legacy ``FireEvent`` shape; the
         watch + event paths route through here, so both now run on the unified executor (gate unchanged).
+
+        ``timing``/``evidence_seq`` (X7) are the OPTIONAL judgment-funnel stamps the caller collected
+        for this unit of evidence; when present the executor freezes them into a
+        :class:`~percept.contracts.JudgmentEvent` that rides out on ``FireEvent.judgment``. Callers
+        that take no stamps (the event path) pass nothing and get ``judgment=None`` — additive only.
         """
         fired = self.executor.fire_judged(
-            goal, verdict, base_key, program_of(goal), freshness=freshness, t=t, metric=metric
+            goal, verdict, base_key, program_of(goal), freshness=freshness, t=t, metric=metric,
+            timing=timing, evidence_seq=evidence_seq,
         )
         if fired is None:
             return None
-        return FireEvent(fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict)
+        return FireEvent(fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict,
+                         fired.judgment)
 
     def perceive_boundary(self, goal_id: str, *, t: float = 0.0) -> FireEvent | None:
         """Consume one EDGE boundary (a detector's timed event — a rep peak, an audio onset) as a
@@ -1023,11 +1068,22 @@ class Percept:
         # tests). With t=None it uses the wall clock, like any production run.
         trace_id = f"{source}@{now}"
         tracing = self.on_trace is not None  # guard so the default (untraced) path builds no trace kwargs
+<<<<<<< HEAD
         # The judge-usage record emitted deep inside _timed_judge belongs to THIS frame's trace, so
         # park the id where that wrapper can find it (it takes only the judge's own args). One frame
         # is in judgment at a time per core in both dispatch modes, so this is the current frame's id.
         self._usage_trace_id = trace_id
         self._usage_source_ts = now
+=======
+        # X7 — the judgment clock (ADR-001 §1/§5). Two domains, never mixed: every stamp below is read
+        # from THIS core's injected ``clock`` (monotonic in production, FakeClock in tests), while the
+        # caller's stream timeline ``t`` — when one was supplied — rides along ONLY as the untrusted
+        # ``source_media_ts``. ``ingest_observed_ts`` is stamped here, at local receipt of the frame:
+        # the honest thing this method knows. Capture-side stamps upstream of the core (a camera's own
+        # capture time, the runtime worker's tier-0 admission) are NOT threaded through this seam, so
+        # they are deliberately left out rather than approximated from a later read.
+        ingest_observed_at = self.clock()
+>>>>>>> worktree-wf_cb205a5a-758-5
 
         if tracing:
             await self._emit_trace(trace_id, now, "source.frame")
@@ -1080,14 +1136,26 @@ class Percept:
             # Computed BEFORE the judge call (not just on success) so a degraded tick can be charged
             # to the SAME key the gate/executor use ("the reducer key") — see _note_judge_degraded.
             base_key = (goal.id, focus.id if focus else None)
+            # X7 — open this judgment's timing record. ``admitted_ts`` is stamped HERE: tier-0
+            # detection and focus resolution are done and this concern is about to spend a judge
+            # call, which is exactly "admitted to the judge funnel" (ADR-001 §5). ``source_media_ts``
+            # is the caller's stream timeline when one was passed and stays None otherwise — it is
+            # never back-filled from the monotonic clock, and never enters latency math.
+            judgment_timing = JudgmentTimingBuilder(clock=self.clock)
+            judgment_timing.mark_ingest_observed(at=ingest_observed_at)
+            judgment_timing.mark_admitted()
+            judgment_timing.set_source_media_ts(t)
+            evidence_seq = self._admit_evidence(base_key)  # reserved at DISPATCH, per ADR-001 §8
             if tracing:
                 await self._emit_trace(trace_id, now, "judge.started", goal_id=goal.id,
                                        temporal=getattr(spec, "temporal", None), roi=roi is not None)
             try:
+                judgment_timing.mark_judge_started()
                 verdict = await self._judge(
                     goal, frame, roi, corrections, entity_id=focus.id if focus else None,
                     frames=strip, audio=audio, context=process_ctx,
                 )
+                judgment_timing.mark_judge_completed()
             except _JudgeDegraded as degraded:
                 # A30 fail-closed boundary (ADR-001 §10 invariant 4): the judge call raised (timeout /
                 # provider error) or returned a malformed/partial response. NEVER read .confidence/
@@ -1146,7 +1214,8 @@ class Percept:
             if truth == "yes":
                 self.last_satisfied[goal.id] = now  # deadline: the expected event happened
             # base_key computed earlier (before the judge call) — reused here unchanged.
-            ev_fire = self._fire_concern(goal, verdict, base_key, freshness=freshness, t=now)
+            ev_fire = self._fire_concern(goal, verdict, base_key, freshness=freshness, t=now,
+                                         timing=judgment_timing, evidence_seq=evidence_seq)
             if ev_fire is not None:
                 if ev_fire.action == FIRE:
                     self.funnel.fired(concern=goal.id, camera=source)  # a rising-edge fire emitted
