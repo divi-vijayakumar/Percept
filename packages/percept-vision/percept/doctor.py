@@ -486,6 +486,24 @@ def _stat_thresholds(settings: Settings) -> dict[str, float]:
     }
 
 
+def _resolved_policy(settings: Settings) -> dict[str, Any]:
+    """The resolved threshold/policy knobs that belong in the plan identity (card X3).
+
+    Read off the SAME :class:`~percept.config.Settings` fields the worker compiles with — see
+    :data:`percept.tracing.PLAN_POLICY_FIELDS`. Two dry runs that differ only in a cutoff are two
+    different configurations, and their ``plan_hash`` must say so.
+    """
+    return {
+        "motion_gate": float(settings.edge.motion_gate),
+        "motion_gate_block_max": float(settings.edge.motion_gate_block_max),
+        "motion_gate_p95": float(settings.edge.motion_gate_p95),
+        "salience_stat": str(settings.edge.salience_stat),
+        "ego_compensate": bool(settings.edge.ego_compensate),
+        "require_false_first": bool(settings.gate.require_false_first),
+        "refractory_s": float(settings.gate.refractory_s),
+    }
+
+
 def _compile(goals: Sequence[Goal], settings: Settings, *, stat: str | None = None) -> WatchSpec:
     """The REAL :func:`compile_watchspec`, optionally forcing a deployment-wide salience stat."""
     return compile_watchspec(
@@ -716,7 +734,10 @@ def run_doctor(
     manifest = RunTraceManifest.create(
         source=source or "stream",
         driver="doctor",
-        plan=PlanIdentity.from_goals(goal_list, plan_mode=plan_mode),
+        # Card X3: the plan identity carries the RESOLVED cutoffs it ran under, not just the goals.
+        # A doctor run at threshold 0.10 and one at 0.20 are two different configurations and must
+        # never quote the same plan_hash.
+        plan=PlanIdentity.from_goals(goal_list, plan_mode=plan_mode, policy=_resolved_policy(cfg)),
         components=(
             ComponentIdentity(role="vision", name="tier0-motion-gate", model=None),
             ComponentIdentity(role="profile", name=profile_name or "settings"),

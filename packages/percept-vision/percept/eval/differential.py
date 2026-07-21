@@ -725,13 +725,33 @@ def _load_structured(path: str | Path) -> dict[str, Any]:
 
 
 class _PlanGoal:
-    """Duck-typed goal for :meth:`PlanIdentity.from_goals` (id/condition/say/modality)."""
+    """Duck-typed goal for :meth:`PlanIdentity.from_goals` (id/condition/say/modality/state).
+
+    ``state`` is carried because the per-goal dwell (``state['hold_s']``) is a resolved policy value
+    the plan hash must cover — two arms whose only difference is a sustain window are two different
+    configurations (card X3).
+    """
 
     def __init__(self, payload: Mapping[str, Any]) -> None:
         self.id = str(payload.get("id", ""))
         self.condition = str(payload.get("condition", ""))
         self.say = str(payload.get("say", ""))
         self.modality = payload.get("modality")
+        raw_state = payload.get("state")
+        self.state: dict[str, Any] = dict(raw_state) if isinstance(raw_state, Mapping) else {}
+
+
+def _arm_policy(data: Mapping[str, Any]) -> dict[str, Any]:
+    """The arm's RESOLVED policy — everything under ``thresholds`` plus an optional ``policy`` block.
+
+    Both are merged into one flat mapping for :meth:`PlanIdentity.from_goals`; ``policy`` wins on a
+    collision because it is the more specific block. A key present in only one arm is still a
+    difference (the other arm simply lacks it), so the two hashes diverge — which is the point.
+    """
+    merged: dict[str, Any] = {}
+    merged.update(dict(data.get("thresholds") or {}))
+    merged.update(dict(data.get("policy") or {}))
+    return merged
 
 
 def load_plan(path: str | Path, *, name: str, fixture_dir: str = "") -> ArmSpec:
@@ -740,6 +760,13 @@ def load_plan(path: str | Path, *, name: str, fixture_dir: str = "") -> ArmSpec:
     The hash is computed by :meth:`percept.tracing.PlanIdentity.from_goals` — the SAME function the
     runtime uses to stamp a trace manifest, so an eval's quoted plan hash is comparable with a
     production run's.
+
+    Card X3: the arm's RESOLVED thresholds and policy go into the hash alongside the goals. The
+    commonest paired eval on this harness is a threshold A/B — both arms share a goals list by
+    construction — and until this, both arms printed the same ``plan_hash``, so the "quote these
+    identities" block could not tell a reader which configuration produced which numbers. Key order in
+    the plan file never matters (the hash is taken over sorted keys, exactly as
+    :func:`percept.profile_versioning.content_hash` does for profiles).
     """
     data = _load_structured(path)
     goals = [_PlanGoal(g) for g in data.get("goals") or ()]
@@ -749,6 +776,7 @@ def load_plan(path: str | Path, *, name: str, fixture_dir: str = "") -> ArmSpec:
         goals,
         revision=data.get("revision"),
         plan_mode=data.get("plan_mode"),
+        policy=_arm_policy(data),
     )
     components = tuple(
         {
@@ -1134,6 +1162,14 @@ def render_text(report: DifferentialReport) -> str:
             add(f"    {c['role']:<9}: {c['name']} version={c.get('version') or '—'} "
                 f"model={c.get('model') or '—'} config_hash={c.get('config_hash') or '—'}")
         add(f"    thresholds   : {json.dumps(dict(sorted(arm.thresholds.items())), sort_keys=True)}")
+        # Card X3: the resolved policy is IN the plan_hash, so print it right under the hash it moves.
+        # A reader who sees two different hashes must be able to see WHICH knob differs without
+        # opening the plan files.
+        add(f"    policy       : {json.dumps(arm.plan.policy_dict, sort_keys=True)}")
+    if reg.baseline.plan_hash == reg.candidate.plan_hash:
+        add("  NOTE: both arms have the SAME plan_hash — goals, thresholds and policy are identical.")
+        add("        Any difference between them is outside the plan identity; a delta here is noise,")
+        add("        not a configuration effect.")
     add("")
     add("PRE-REGISTERED BEFORE THE RUN")
     add(f"  registration_hash : {reg.registration_hash}")

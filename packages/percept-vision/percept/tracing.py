@@ -197,47 +197,140 @@ class ComponentIdentity:
         )
 
 
+#: The resolved policy knobs that a plan identity is expected to carry (card X3). A threshold A/B is
+#: the canonical eval shape — two arms whose GOALS are byte-identical and whose only difference is a
+#: cutoff — so a plan hash blind to these knobs cannot tell the two arms apart, which defeats the whole
+#: point of quoting it. These names are the RESOLVED runtime fields, not env-var spellings:
+#: ``motion_gate`` / ``motion_gate_block_max`` / ``motion_gate_p95`` / ``salience_stat`` come off
+#: :class:`percept.config.EdgeSettings`, ``require_false_first`` / ``refractory_s`` off
+#: :class:`percept.config.GateSettings`, ``dwell`` is the goal-level ``state['hold_s']`` sustain, and
+#: ``plan_mode`` is the resolved profile mode. The list is DOCUMENTATION, not a whitelist:
+#: :meth:`PlanIdentity.from_goals` hashes every key it is handed, so a knob nobody thought of here still
+#: moves the hash rather than hiding inside it.
+PLAN_POLICY_FIELDS: tuple[str, ...] = (
+    "motion_gate",
+    "motion_gate_block_max",
+    "motion_gate_p95",
+    "salience_stat",
+    "gate_threshold",
+    "require_false_first",
+    "refractory_s",
+    "dwell",
+    "plan_mode",
+)
+
+
+def canonical_policy(policy: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Normalize a resolved-policy mapping into the canonical form that enters the plan hash.
+
+    Order-independent (the hash is taken over :func:`canonical_json`, which sorts keys) and
+    ``None``-pruned: an explicitly-unset knob and an absent knob are the SAME configuration and must
+    not fork the identity. Numbers are coerced to ``float`` so an int ``1`` and a float ``1.0`` cutoff
+    agree; bools stay bools (they are flags, not thresholds). Nested mappings are FLATTENED to dotted
+    keys (``"gate.refractory_s"``) rather than nested, so the result is always a flat mapping of scalars
+    — that is what keeps :class:`PlanIdentity` hashable and its ``to_dict``/``from_dict`` round-trip
+    hash-stable.
+    """
+    if not policy:
+        return {}
+    out: dict[str, Any] = {}
+    for raw_key, value in policy.items():
+        key = str(raw_key)
+        if value is None:
+            continue
+        if isinstance(value, bool):
+            out[key] = value
+        elif isinstance(value, (int, float)):
+            out[key] = float(value)
+        elif isinstance(value, Mapping):
+            for sub_key, sub_value in canonical_policy(value).items():
+                out[f"{key}.{sub_key}"] = sub_value
+        else:
+            out[key] = str(value)
+    return dict(sorted(out.items()))
+
+
+def _goal_dwell(goal: Any) -> float | None:
+    """The goal's resolved sustain (``state['hold_s']``) as a positive float, or ``None``.
+
+    Mirrors :func:`percept.behavior._coerce_hold_s` exactly — a malformed or non-positive hint is no
+    dwell at all, so a garbage value can never mint a distinct identity for an identical plan.
+    """
+    state = getattr(goal, "state", None)
+    if not isinstance(state, Mapping):
+        return None
+    v = state.get("hold_s")
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return float(v) if v > 0 else None
+
+
 @dataclass(frozen=True)
 class PlanIdentity:
-    """WHAT was being watched: the goal set, content-addressed.
+    """WHAT was being watched: the goal set AND the resolved policy it was watched under, content-addressed.
 
-    ``goal_ids`` is the ordered active set; ``plan_hash`` addresses the full plan payload (conditions
-    included) so two runs that quote the same ``plan_hash`` provably watched for the same thing;
-    ``revision`` is the live :class:`~percept.goals.GoalRegistry` revision the run started at
-    (goal edits move it mid-run, and a judged frame is always pinned to the revision it was admitted
-    under).
+    ``goal_ids`` is the ordered active set; ``plan_hash`` addresses the full plan payload — conditions,
+    per-goal dwell, and the resolved thresholds/policy in ``policy`` — so two runs that quote the same
+    ``plan_hash`` provably watched for the same thing *under the same cutoffs*; ``revision`` is the live
+    :class:`~percept.goals.GoalRegistry` revision the run started at (goal edits move it mid-run, and a
+    judged frame is always pinned to the revision it was admitted under).
+
+    Card X3: the hash covers policy because the commonest eval is a threshold A/B, where the goals are
+    identical by construction. A hash that could not separate those two arms was worse than no hash —
+    it let a report claim two different configurations were the same one.
     """
 
     goal_ids: tuple[str, ...] = ()
     plan_hash: str | None = None
     revision: int | None = None
     plan_mode: str | None = None
+    #: Sorted ``(key, value)`` pairs of the resolved policy that entered ``plan_hash``. Stored as a
+    #: tuple, not a dict, so :class:`PlanIdentity` stays hashable and frozen; read it via
+    #: :attr:`policy_dict`.
+    policy: tuple[tuple[str, Any], ...] = ()
+
+    @property
+    def policy_dict(self) -> dict[str, Any]:
+        """The resolved policy as a mapping — what the hash was actually taken over."""
+        return dict(self.policy)
 
     @classmethod
     def from_goals(cls, goals: Iterable[Any], *, revision: int | None = None,
-                   plan_mode: str | None = None) -> "PlanIdentity":
-        """Build from anything with ``.id`` / ``.condition`` (a :class:`~percept.adapters.Goal`)."""
+                   plan_mode: str | None = None,
+                   policy: Mapping[str, Any] | None = None) -> "PlanIdentity":
+        """Build from anything with ``.id`` / ``.condition`` (a :class:`~percept.adapters.Goal`).
+
+        ``policy`` is the RESOLVED threshold/policy mapping this plan runs under (see
+        :data:`PLAN_POLICY_FIELDS`). ``plan_mode``, when given, is folded into it, so the mode is part
+        of the identity rather than a label beside it. Every key is hashed; key order never matters.
+        """
         items = list(goals)
-        payload = [
+        goal_payload = [
             {
                 "id": str(getattr(g, "id", "")),
                 "condition": str(getattr(g, "condition", "")),
                 "say": str(getattr(g, "say", "")),
                 "modality": getattr(g, "modality", None),
+                "dwell": _goal_dwell(g),
             }
             for g in items
         ]
+        resolved = canonical_policy(policy)
+        if plan_mode is not None:
+            resolved["plan_mode"] = str(plan_mode)
         return cls(
             goal_ids=tuple(str(getattr(g, "id", "")) for g in items),
-            plan_hash=content_hash(payload),
+            plan_hash=content_hash({"goals": goal_payload, "policy": resolved}),
             revision=revision,
             plan_mode=plan_mode,
+            policy=tuple(sorted(resolved.items())),
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "goal_ids": list(self.goal_ids), "plan_hash": self.plan_hash,
             "revision": self.revision, "plan_mode": self.plan_mode,
+            "policy": self.policy_dict,
         }
 
     @classmethod
@@ -247,6 +340,7 @@ class PlanIdentity:
             plan_hash=payload.get("plan_hash"),
             revision=payload.get("revision"),
             plan_mode=payload.get("plan_mode"),
+            policy=tuple(sorted(canonical_policy(payload.get("policy")).items())),
         )
 
 
@@ -456,6 +550,7 @@ class RunTraceManifest:
         run_id: str | None = None,
         gate_config: Mapping[str, Any] | None = None,
         labels: Mapping[str, Any] | None = None,
+        plan_policy: Mapping[str, Any] | None = None,
     ) -> "RunTraceManifest":
         """Build a manifest, filling versions from the installed package (never hand-synced)."""
         percept_version = watch_version = contract_version = None
@@ -483,8 +578,12 @@ class RunTraceManifest:
             started_wall_ts=float(wall_clock()),
             started_source_ts=started_source_ts,
             driver=driver,
+            # Card X3: when the caller hands us goals rather than a built PlanIdentity, the resolved
+            # cutoffs it ran under (``plan_policy``) still belong in the identity — otherwise two runs
+            # of the same goals at different thresholds quote the same plan_hash.
             plan=plan if plan is not None else (
-                PlanIdentity.from_goals(goals) if goals is not None else PlanIdentity()
+                PlanIdentity.from_goals(goals, policy=plan_policy) if goals is not None
+                else PlanIdentity()
             ),
             components=tuple(components),
             profile_hash=profile_hash,
@@ -1353,6 +1452,7 @@ __all__ = [
     "STAGE_TRACE_DROPPED",
     "STAGE_RUN_STARTED",
     "STAGE_RUN_ENDED",
+    "PLAN_POLICY_FIELDS",
     "BaselineAssumption",
     "ComponentIdentity",
     "PlanIdentity",
@@ -1362,6 +1462,7 @@ __all__ = [
     "TraceRecorder",
     "TraceSummary",
     "canonical_json",
+    "canonical_policy",
     "content_hash",
     "short_hash",
     "load_trace",

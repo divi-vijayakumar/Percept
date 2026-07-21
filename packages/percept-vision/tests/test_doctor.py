@@ -362,3 +362,48 @@ def test_console_entry_point_is_declared():
     if not pyproject.exists():  # pragma: no cover - installed wheel, not a source checkout
         pytest.skip("no pyproject.toml alongside the package (installed distribution)")
     assert 'percept-doctor = "percept.doctor:main"' in pyproject.read_text()
+
+
+# ---------------------------------------------------------------------------
+# Card X3 — the doctor's trace manifest quotes an identity that includes the cutoffs.
+#
+# A dry run at motion_gate=0.10 and one at 0.20 are two different configurations. If both stamped
+# the same plan_hash, a client comparing two doctor traces at 2am could not prove which one they
+# were looking at.
+# ---------------------------------------------------------------------------
+
+
+def _doctor_plan_hash(settings, tmp_path, tag: str) -> str:
+    from percept.tracing import load_trace
+
+    out = tmp_path / f"{tag}.json"
+    run_doctor(frames=_localized_stream(n=8), goals=["a cell changes"],
+               settings=settings, trace_out=str(out))
+    manifest, _records, _summary = load_trace(out.read_text())
+    return manifest.plan.plan_hash
+
+
+def test_doctor_plan_hash_moves_with_the_resolved_cutoff(tmp_path):
+    from dataclasses import replace
+
+    from percept.config import Settings
+
+    base = Settings()
+    tuned = replace(base, edge=replace(base.edge, motion_gate=0.42))
+    assert _doctor_plan_hash(base, tmp_path, "base") != _doctor_plan_hash(tuned, tmp_path, "tuned")
+    # ...and the same settings twice is the same identity (content addressing, not a nonce)
+    assert _doctor_plan_hash(base, tmp_path, "base2") == _doctor_plan_hash(base, tmp_path, "base3")
+
+
+def test_doctor_plan_identity_carries_the_policy_it_hashed(tmp_path):
+    from percept.tracing import load_trace
+
+    out = tmp_path / "trace.json"
+    run_doctor(frames=_localized_stream(n=8), goals=["a cell changes"], trace_out=str(out))
+    manifest, _records, _summary = load_trace(out.read_text())
+    policy = manifest.plan.policy_dict
+    assert policy["motion_gate"] == pytest.approx(0.10)
+    assert policy["motion_gate_block_max"] == pytest.approx(0.20)
+    assert policy["motion_gate_p95"] == pytest.approx(0.15)
+    assert policy["salience_stat"] == "mean"
+    assert "require_false_first" in policy and "refractory_s" in policy

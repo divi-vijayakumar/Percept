@@ -393,6 +393,63 @@ class TestManifestAndRoundTrip(unittest.TestCase):
         self.assertNotEqual(PlanIdentity.from_goals(g1).plan_hash, PlanIdentity.from_goals(g3).plan_hash)
         self.assertEqual(PlanIdentity.from_goals(g1).goal_ids, ("g1",))
 
+    # -- Card X3: the identity covers the RESOLVED policy, not only the goals ------------
+    def test_plan_hash_separates_arms_that_differ_only_in_a_threshold(self):
+        """A threshold A/B has identical goals by construction; the hash must still tell them apart."""
+        goals = [Goal(id="g1", condition="the milk is boiling over", say="boiling!")]
+        lo = PlanIdentity.from_goals(goals, policy={"motion_gate": 0.10, "salience_stat": "mean"})
+        hi = PlanIdentity.from_goals(goals, policy={"motion_gate": 0.20, "salience_stat": "mean"})
+        self.assertEqual(lo.goal_ids, hi.goal_ids)
+        self.assertNotEqual(lo.plan_hash, hi.plan_hash)
+
+    def test_plan_hash_is_order_independent(self):
+        """Sorted-key canonicalization, the same contract profile_versioning.content_hash holds."""
+        goals = [Goal(id="g1", condition="the milk is boiling over", say="boiling!")]
+        fwd = {"motion_gate": 0.10, "refractory_s": 0.5, "require_false_first": False}
+        bwd = {"require_false_first": False, "refractory_s": 0.5, "motion_gate": 0.10}
+        self.assertNotEqual(list(fwd), list(bwd))
+        self.assertEqual(
+            PlanIdentity.from_goals(goals, policy=fwd).plan_hash,
+            PlanIdentity.from_goals(goals, policy=bwd).plan_hash,
+        )
+
+    def test_absent_and_explicitly_none_policy_knobs_are_the_same_configuration(self):
+        goals = [Goal(id="g1", condition="c", say="s")]
+        a = PlanIdentity.from_goals(goals, policy={"motion_gate": 0.1})
+        b = PlanIdentity.from_goals(goals, policy={"motion_gate": 0.1, "dwell": None})
+        self.assertEqual(a.plan_hash, b.plan_hash)
+        # ...and an int cutoff equals the same float cutoff.
+        self.assertEqual(
+            PlanIdentity.from_goals(goals, policy={"refractory_s": 1}).plan_hash,
+            PlanIdentity.from_goals(goals, policy={"refractory_s": 1.0}).plan_hash,
+        )
+
+    def test_plan_mode_is_part_of_the_identity_not_a_label_beside_it(self):
+        goals = [Goal(id="g1", condition="c", say="s")]
+        self.assertNotEqual(
+            PlanIdentity.from_goals(goals, plan_mode="strict").plan_hash,
+            PlanIdentity.from_goals(goals, plan_mode="relaxed").plan_hash,
+        )
+
+    def test_policy_round_trips_through_to_dict_without_moving_the_hash(self):
+        goals = [Goal(id="g1", condition="c", say="s")]
+        p = PlanIdentity.from_goals(
+            goals, plan_mode="strict",
+            policy={"motion_gate": 0.1, "require_false_first": True, "salience_stat": "p95"},
+        )
+        back = PlanIdentity.from_dict(p.to_dict())
+        self.assertEqual(back, p)
+        self.assertEqual(back.policy_dict["motion_gate"], 0.1)
+        self.assertIsInstance(hash(p), int)   # frozen + hashable: policy is a tuple, not a dict
+
+    def test_nested_policy_blocks_flatten_to_dotted_keys(self):
+        from percept.tracing import canonical_policy
+
+        self.assertEqual(
+            canonical_policy({"gate": {"refractory_s": 0.5, "require_false_first": True}}),
+            {"gate.refractory_s": 0.5, "gate.require_false_first": True},
+        )
+
     def test_manifest_carries_versions_and_identities(self):
         import percept
         from percept.watch import WATCH_VERSION

@@ -572,3 +572,132 @@ def test_cli_exits_two_when_it_refuses(tree, arms, capsys):
     ])
     assert code == 2
     assert "REFUSED" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# Card X3 — plan_hash covers the RESOLVED thresholds and policy, not just goals.
+#
+# The commonest paired eval on this harness is a threshold A/B: both arms declare the same goals by
+# construction and differ only in a cutoff. A plan hash blind to the cutoffs printed the SAME identity
+# for both arms, so the "quote these identities" block could not tell a reader which configuration
+# produced which numbers — the one job the hash exists to do.
+# ---------------------------------------------------------------------------
+
+
+def test_threshold_only_ab_produces_different_plan_hashes(tmp_path):
+    """Two arms identical except for ONE threshold must NOT share a plan_hash."""
+    a = load_plan(write_plan(tmp_path / "a.json", condition="invoice total visible", model="sonnet",
+                             thresholds={"motion_gate": 0.10, "salience_stat": "block_max"}),
+                  name="baseline")
+    b = load_plan(write_plan(tmp_path / "b.json", condition="invoice total visible", model="sonnet",
+                             thresholds={"motion_gate": 0.20, "salience_stat": "block_max"}),
+                  name="candidate")
+    assert a.plan.goal_ids == b.plan.goal_ids          # the goals really are identical
+    assert a.plan_hash and b.plan_hash
+    assert a.plan_hash != b.plan_hash
+
+
+@pytest.mark.parametrize(
+    "knob,other",
+    [
+        ("motion_gate", 0.4),
+        ("motion_gate_block_max", 0.55),
+        ("motion_gate_p95", 0.33),
+        ("salience_stat", "p95"),
+        ("gate_threshold", 0.8),
+        ("require_false_first", True),
+        ("refractory_s", 9.0),
+    ],
+)
+def test_every_named_policy_knob_moves_the_plan_hash(tmp_path, knob, other):
+    base = {
+        "motion_gate": 0.10,
+        "motion_gate_block_max": 0.20,
+        "motion_gate_p95": 0.15,
+        "salience_stat": "mean",
+        "gate_threshold": 0.5,
+        "require_false_first": False,
+        "refractory_s": 0.5,
+    }
+    moved = dict(base, **{knob: other})
+    a = load_plan(write_plan(tmp_path / f"a_{knob}.json", condition="x", model="m", thresholds=base),
+                  name="baseline")
+    b = load_plan(write_plan(tmp_path / f"b_{knob}.json", condition="x", model="m", thresholds=moved),
+                  name="candidate")
+    assert a.plan_hash != b.plan_hash, f"{knob} does not participate in the plan hash"
+
+
+def test_key_insertion_order_does_not_change_the_plan_hash(tmp_path):
+    """Order-independence, exactly as profile_versioning.content_hash promises for profiles."""
+    forward = {"motion_gate": 0.10, "refractory_s": 0.5, "salience_stat": "mean"}
+    backward = {"salience_stat": "mean", "refractory_s": 0.5, "motion_gate": 0.10}
+    assert list(forward) != list(backward)
+    a = load_plan(write_plan(tmp_path / "fwd.json", condition="x", model="m", thresholds=forward),
+                  name="baseline")
+    b = load_plan(write_plan(tmp_path / "bwd.json", condition="x", model="m", thresholds=backward),
+                  name="candidate")
+    assert a.plan_hash == b.plan_hash
+
+
+def test_plan_mode_participates_in_the_plan_hash(tmp_path):
+    def _write(path: Path, plan_mode: str | None) -> Path:
+        doc = {"goals": [{"id": "g1", "condition": "x", "say": "s"}],
+               "thresholds": {"motion_gate": 0.1}}
+        if plan_mode is not None:
+            doc["plan_mode"] = plan_mode
+        path.write_text(json.dumps(doc))
+        return path
+
+    strict = load_plan(_write(tmp_path / "strict.json", "strict"), name="baseline")
+    relaxed = load_plan(_write(tmp_path / "relaxed.json", "relaxed"), name="candidate")
+    unset = load_plan(_write(tmp_path / "unset.json", None), name="candidate")
+    assert strict.plan_hash != relaxed.plan_hash
+    assert strict.plan_hash != unset.plan_hash
+
+
+def test_dwell_participates_in_the_plan_hash(tmp_path):
+    def _write(path: Path, hold_s):
+        state = {} if hold_s is None else {"hold_s": hold_s}
+        path.write_text(json.dumps(
+            {"goals": [{"id": "g1", "condition": "x", "say": "s", "state": state}],
+             "thresholds": {"motion_gate": 0.1}}
+        ))
+        return path
+
+    none = load_plan(_write(tmp_path / "none.json", None), name="baseline")
+    short = load_plan(_write(tmp_path / "short.json", 1.0), name="candidate")
+    long = load_plan(_write(tmp_path / "long.json", 4.0), name="candidate")
+    assert none.plan_hash != short.plan_hash != long.plan_hash
+    assert short.plan_hash != long.plan_hash
+
+    # A malformed / non-positive dwell is no dwell at all (behavior._coerce_hold_s) and must not
+    # mint a distinct identity for what the runtime treats as the same plan.
+    junk = load_plan(_write(tmp_path / "junk.json", "soon"), name="candidate")
+    zero = load_plan(_write(tmp_path / "zero.json", 0), name="candidate")
+    assert junk.plan_hash == none.plan_hash == zero.plan_hash
+
+
+def test_identities_block_prints_the_policy_that_the_hash_covers(tree, tmp_path):
+    baseline = load_plan(write_plan(tmp_path / "b.json", condition="invoice total visible",
+                                    model="sonnet", thresholds={"motion_gate": 0.10}),
+                         name="baseline")
+    candidate = load_plan(write_plan(tmp_path / "c.json", condition="invoice total visible",
+                                     model="sonnet", thresholds={"motion_gate": 0.20}),
+                          name="candidate")
+    text = render_text(run_differential(fixtures_root=tree, baseline=baseline, candidate=candidate,
+                                        bars=load_bars(None)))
+    assert baseline.plan_hash in text and candidate.plan_hash in text
+    assert '"motion_gate": 0.1' in text and '"motion_gate": 0.2' in text
+    assert "SAME plan_hash" not in text
+
+
+def test_identical_arms_are_called_out_as_sharing_one_identity(tree, tmp_path):
+    same = {"motion_gate": 0.10}
+    baseline = load_plan(write_plan(tmp_path / "b.json", condition="x", model="m", thresholds=same),
+                         name="baseline")
+    candidate = load_plan(write_plan(tmp_path / "c.json", condition="x", model="m", thresholds=same),
+                          name="candidate")
+    assert baseline.plan_hash == candidate.plan_hash
+    text = render_text(run_differential(fixtures_root=tree, baseline=baseline, candidate=candidate,
+                                        bars=load_bars(None)))
+    assert "SAME plan_hash" in text
