@@ -589,6 +589,28 @@ async def _drain_gate_health(core: Any, on_health: "Callable | None", t: float) 
         ))
 
 
+async def _drain_restore_health(core: Any, on_health: "Callable | None") -> None:
+    """Surface the ``episode_memory_reset`` event ``Percept.restore`` queued on
+    ``core._restore_health_log`` (agent.py, card Z2). Episode/counting memory is SESSION-ONLY for
+    v1.4 (ADR-006 / card Y9): a restart rehydrates goals but NOT the per-goal episode map, so a
+    counting goal resumes at zero and may under-count until re-observed. restore() queues one entry
+    when it restored active counting goals into an empty episode map; this drains it into a loud
+    ``on_health`` event so the amnesia is SEEN, not silently discovered as a wrong count at 2am.
+
+    Runs ONCE, right after ``load_state`` at startup (no frame timestamp yet -> ``ts`` is left
+    unset). Drains UNCONDITIONALLY (even with ``on_health=None``) so the queue never lingers, the
+    same drain-regardless contract :func:`_drain_judge_health` / :func:`_drain_gate_health` follow.
+    Percept itself never calls ``on_health`` -- that channel belongs to this module."""
+    log = getattr(core, "_restore_health_log", None)
+    if not log:
+        return
+    entries, log[:] = list(log), []
+    if on_health is None:
+        return
+    for kind, data in entries:
+        await _call_sink(on_health, RuntimeHealthEvent(kind, data=data))
+
+
 def _log_disposition(log: Any, *, incident_id: str, fire: Any, disposition: str, ts: float) -> None:
     """Append one gate disposition to the :class:`~percept.labelstore.DispositionLog`.
 
@@ -1164,6 +1186,10 @@ async def run(
         load = getattr(core, "load_state", None)
         if load is not None:
             load(persistence)
+        # Z2: episode/counting memory is session-only (ADR-006 / card Y9) — restore() rehydrated goals
+        # but NOT the episode map, so any counting goal just resumed at zero. Drain the one-shot
+        # ``episode_memory_reset`` restore() queued so that amnesia reaches on_health loudly, once.
+        await _drain_restore_health(core, on_health)
 
     # ADR-001 §6: the delivery-path idempotency ledger — bounded, restart-surviving, keyed
     # by event_id (= Incident.id, percept/incidents.py). Built unconditionally (mirrors _funnel/_gate

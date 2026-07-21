@@ -214,6 +214,49 @@ class Episode:
     # How many observations folded into this episode (1 = just the opening one). Pure observability.
     observations: int = 1
 
+    # -- Z2 forward seam: a persisted representation, present but NOT wired for v1.4 -------------------
+    # Persistence is SESSION-ONLY today (ADR-006 / card Y9): ``Percept.snapshot()`` does not carry the
+    # episode map and ``Percept.restore()`` emits an ``episode_memory_reset`` health event instead of
+    # rehydrating one. These two methods exist so a LATER phase can turn persistence ON without reshaping
+    # the type. The design point that makes that safe: every field here is either an identifier or a
+    # STREAM-TIME instant (``started_at`` / ``last_seen`` are frame timestamps on the same clock a
+    # snapshot's deadlines are), so they rebase cleanly the way ``deadline_at`` already does — UNLIKE a
+    # wall-vs-monotonic ``_dwell_since``-style base, which has no recoverable duration after a reboot and
+    # is exactly why the naive snapshot was refused. ``exemplar`` / ``representative`` are opaque payloads
+    # the caller owns; a persistence phase must supply their (de)serialization, so they are carried as-is
+    # here and a non-JSON-able payload is that phase's problem to solve, not silently dropped.
+    def to_dict(self) -> dict:
+        """JSON-able view of the episode (Z2 forward seam — see the class note). Not called in v1.4."""
+        return {
+            "id": self.id,
+            "goal_id": self.goal_id,
+            "started_at": self.started_at,
+            "last_seen": self.last_seen,
+            "exemplar": self.exemplar,
+            "representative": self.representative,
+            "status": self.status,
+            "subject_key": self.subject_key,
+            "observations": self.observations,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Episode":
+        """Rebuild an :class:`Episode` from :meth:`to_dict` (Z2 forward seam). Not called in v1.4.
+
+        Stream-time fields (``started_at`` / ``last_seen``) are stored as-taken; a persistence phase
+        rebases them into the fresh monotonic frame at restore, the same way deadlines are rebased."""
+        return cls(
+            id=d["id"],
+            goal_id=d["goal_id"],
+            started_at=d["started_at"],
+            last_seen=d["last_seen"],
+            exemplar=d.get("exemplar"),
+            representative=d.get("representative"),
+            status=d.get("status", OPEN),
+            subject_key=d.get("subject_key"),
+            observations=d.get("observations", 1),
+        )
+
 
 @dataclass(frozen=True)
 class ContinuationDecision:

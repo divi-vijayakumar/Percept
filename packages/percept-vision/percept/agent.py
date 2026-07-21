@@ -396,6 +396,15 @@ class Percept:
     # on_health itself. Bounded (see _GATE_HEALTH_LOG_MAX) so a core driven WITHOUT the runtime loop
     # (a bare perceive_judged harness, which never drains) cannot leak on a 24/7 watch.
     _gate_health_log: list = field(default_factory=list)  # [(key, reason, at), ...] queued for drain
+    # -- episode-memory reset: the SAME queue-here / drain-in-worker pattern (card Z2). snapshot() does
+    # NOT carry ``episodes`` (the per-goal EpisodeLog map — session-only for v1.4, ADR-006 / card Y9),
+    # so ``restore()`` cannot rehydrate grouping/counting memory: after a redeploy every counting goal
+    # restarts at zero episodes. That is a documented decision, but a SILENT one — the named Y9 failure
+    # mode is an operator under-counting after a restart with nothing telling them why. restore() queues
+    # ONE ``episode_memory_reset`` entry here when it rehydrates active counting goals with an empty
+    # episode map; worker.py's run() drains it into ``on_health(RuntimeHealthEvent("episode_memory_reset"))``
+    # right after load_state, so the amnesia is SEEN. Percept never calls on_health itself.
+    _restore_health_log: list = field(default_factory=list)  # [(kind, data), ...] queued for drain
     # -- WatchProfile knobs applied at CORE CREATION time (never a mid-run mutation) ----------------
     # The resolved fovea cadence a WatchProfile's ``cadence`` carries (see percept.profile_wiring).
     # ``None`` (the default -- no profile, or a profile-less ``settings=`` construction) means no
@@ -2061,7 +2070,15 @@ class Percept:
         Absolute deadlines live on the monotonic clock, which resets on restart — a raw monotonic value
         is meaningless after a reboot. Each ``deadline_at`` is converted to a wall-clock (``time.time``)
         instant here and rebased back into the fresh monotonic frame in :meth:`restore`. The
-        ``clock_anchor`` records the ``(epoch, monotonic)`` pair the conversion was taken against."""
+        ``clock_anchor`` records the ``(epoch, monotonic)`` pair the conversion was taken against.
+
+        DELIBERATELY ABSENT: ``episodes`` (the per-goal :class:`~percept.episodes.EpisodeLog` map). Its
+        omission is the ratified v1.4 policy (SESSION-ONLY, ADR-006 / card Y9), not an oversight — an
+        :class:`EpisodeLog` is process-lifetime state with no rebasable duration base (see card Z2 and
+        ``percept.episodes``). ``test_z2_episode_persistence`` asserts the key stays out of this dict, so
+        a future accidental add TRIPS a test and forces the policy to be revisited deliberately rather
+        than flipped by accident. The forward seam that will one day carry it is
+        :meth:`Episode.to_dict` / :meth:`Episode.from_dict` — present but intentionally NOT wired here."""
         now_mono = self.clock()
         now_epoch = time.time()
         goals = self.goals.snapshot()
@@ -2120,6 +2137,30 @@ class Percept:
                     f"'deadline_after_s' to remove this warning.",
                     stacklevel=2,
                 )
+
+        # Z2: episode memory is SESSION-ONLY (ADR-006 / card Y9) — snapshot() never carried the
+        # ``episodes`` map, so every counting goal we just rehydrated will restart at zero episodes and a
+        # subject last seen before the restart will open a NEW episode afterwards. That is a decision, not
+        # a bug, but it is the Y9 failure mode when it is SILENT: an operator watching a counting goal
+        # under-counts after a redeploy with nothing saying why. Queue a single loud ``episode_memory_reset``
+        # health event whenever we restored active counting goals into an empty episode map, so the amnesia
+        # is observable. Queue-only — worker.py drains it into on_health (Percept never calls on_health).
+        counting = [g for g in self.goals.all() if g.state.get("type") == "count"]
+        if counting and not self.episodes:
+            self._restore_health_log.append(
+                (
+                    "episode_memory_reset",
+                    {
+                        "reason": "session_only_v1.4",
+                        "counting_goals": len(counting),
+                        "goal_ids": [g.id for g in counting],
+                        "detail": (
+                            "episodes are session-only (ADR-006 / card Y9): counting/episode memory was "
+                            "NOT restored; these goals restart at zero and may under-count until re-observed."
+                        ),
+                    },
+                )
+            )
 
         self.gate.restore(snap.get("gate"))
         return self
