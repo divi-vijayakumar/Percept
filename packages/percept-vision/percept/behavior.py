@@ -38,7 +38,7 @@ from typing import Callable, Hashable, Literal
 from .adapters import Verdict
 from .concern import consequence_of, is_hard_quadrant
 from .contracts import JudgmentEvent, JudgmentTimingBuilder
-from .episodes import EPISODE_POLICIES
+from .episodes import EPISODE_POLICIES, ContinuationDecision
 from .gate import ASK, FIRE, Gate, classify
 from .observability import get_logger
 
@@ -266,6 +266,216 @@ class Fired:
     judgment: JudgmentEvent | None = None
 
 
+# --------------------------------------------------------------------------------------------------
+# Card Y3 — EPISODE-OWNED IDEMPOTENCY. The gate bit must stop being accidental per-episode memory.
+# --------------------------------------------------------------------------------------------------
+#
+# The A->B->A trace only worked because B happened to leave the single gate key in a fired state. That
+# is FRAGILE: if B is judged a new episode and re-arms the shared key, then FAILS its dwell (or becomes
+# ASK) and never fires, A's revisit is a continuation that never re-arms — but the gate key is no longer
+# in A's fired state, so A can FIRE AGAIN. One subject's evaluation state was silently governing another
+# subject's duplicate suppression. The gate is one bit PER KEY; "have I already reported THIS episode?"
+# is a property of the EPISODE, and the two are not the same question.
+#
+# Y3 makes the episode own idempotency. Before an observation is allowed to (re-)enter the gate, we fold
+# it against its episode's emission history and get an :class:`EpisodeFoldResult`:
+#
+#   * a NEW episode with no emitted incident may keep evaluating (and re-arms its own edge, so a shared
+#     key another subject left disarmed cannot suppress its first fire);
+#   * once a revision has EMITTED, an UNCHANGED confirmation does NOT re-enter the gate at all
+#     (``should_evaluate_gate=False``) — the episode remembers it already spoke, so the gate never has to;
+#   * a semantically-accepted UPDATE creates a new revision and MAY re-arm (``supersedes`` names the
+#     revision it replaces).
+#
+# The gate stays MECHANICALLY UNCHANGED (percept/gate.py): the fold only ever calls the existing
+# ``gate.rearm(key)`` / ``gate.evaluate(...)``. It remains one bit per key — it just stops being used as
+# per-episode memory it was never sized or scoped to be.
+#
+# INVARIANT (declared, and pinned by tests): if the gate key's TTL expires while the episode is still
+# OPEN, an unchanged episode MUST NOT refire merely because gate memory disappeared. Idempotency lives
+# on the episode, not on the evictable gate bit, so a memory bound can never leak into user-visible
+# behaviour (eval/synthetic/idempotency/ key_ttl_expiry_while_episode_open_does_not_refire).
+
+EpisodeMatch = Literal["new", "continuation", "unbound", "ambiguous"]
+#: How the observation binds to an episode. ``new`` — it opens a fresh episode; ``continuation`` — it
+#: extends an existing open one; ``unbound`` — no subject identity could be established (fall back to
+#: gate-only, the legacy behaviour); ``ambiguous`` — the subject resolved to more than one candidate,
+#: so idempotency cannot be safely attributed and we also fall back to gate-only.
+
+EpisodeMutation = Literal["confirmed", "updated", "retracted", "closed", "none"]
+#: How this finding modifies the episode (the Y2 mutation channel, consumed here). ``confirmed`` — the
+#: episode is re-stated unchanged; ``updated`` — an accepted semantic change → a new revision;
+#: ``retracted`` — the report is withdrawn; ``closed`` — the episode is terminated; ``none`` — no
+#: mutation semantics apply (a birth, or an unbound/ambiguous observation).
+
+EPISODE_MATCHES: tuple[EpisodeMatch, ...] = ("new", "continuation", "unbound", "ambiguous")
+EPISODE_MUTATIONS: tuple[EpisodeMutation, ...] = (
+    "confirmed", "updated", "retracted", "closed", "none",
+)
+
+
+def revision_id(episode_id: str, n: int) -> str:
+    """The stable id of the ``n``-th incident an episode emitted (``<episode_id>#r<n>``). ``supersedes``
+    on an update names the previously-emitted revision; the ledger mints the next one on emission."""
+    return f"{episode_id}#r{n}"
+
+
+@dataclass(frozen=True)
+class EpisodeFoldResult:
+    """The episode-owned idempotency decision for ONE observation (card Y3).
+
+    It answers, BEFORE the observation is allowed to touch the gate, three things the gate bit cannot
+    answer on its own because it is one bit per key, not per episode:
+
+    * :attr:`should_evaluate_gate` — may this observation (re-)enter the gate at all? ``False`` is the
+      episode saying "I already reported this and nothing changed" — the fire path returns without ever
+      consulting the gate, so neither a shared key nor an evicted key can manufacture a duplicate.
+    * :attr:`should_rearm` — should the gate edge be re-armed first? ``True`` for a genuinely new
+      episode (its first fire must not be suppressed by a key another subject left disarmed) and for an
+      accepted update (a new revision is allowed to fire again).
+    * :attr:`supersedes` — for an update, the :func:`revision_id` this new revision replaces.
+
+    :attr:`match` and :attr:`mutation` are the typed WHY, from the closed :data:`EPISODE_MATCHES` /
+    :data:`EPISODE_MUTATIONS` vocabularies. This is a pure record — :func:`episode_fold` computes it and
+    :meth:`BehaviorExecutor.fire_judged` honours it; card Y11 recomputes it in shadow from the same
+    function, so it must stay side-effect free.
+    """
+
+    episode_id: str | None
+    match: EpisodeMatch
+    mutation: EpisodeMutation
+    should_rearm: bool
+    should_evaluate_gate: bool
+    supersedes: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.match not in EPISODE_MATCHES:
+            raise ValueError(f"unknown episode match {self.match!r}; expected one of {EPISODE_MATCHES}")
+        if self.mutation not in EPISODE_MUTATIONS:
+            raise ValueError(
+                f"unknown episode mutation {self.mutation!r}; expected one of {EPISODE_MUTATIONS}"
+            )
+
+
+def episode_fold(
+    decision: "ContinuationDecision | None",
+    *,
+    emitted: int = 0,
+    mutation: EpisodeMutation = "confirmed",
+    ambiguous: bool = False,
+) -> EpisodeFoldResult:
+    """Fold one observation against its episode's emission history → an :class:`EpisodeFoldResult`.
+
+    Pure and side-effect free (card Y11 calls it in shadow). Inputs:
+
+    * ``decision`` — the typed :class:`~percept.episodes.ContinuationDecision` for this observation, or
+      ``None`` when no subject could be bound (→ ``unbound``, gate-only fallback).
+    * ``emitted`` — how many incidents THIS episode has already emitted (the episode-owned ledger;
+      :class:`EpisodeIncidentLedger`). ``0`` means the episode has opened but never fired.
+    * ``mutation`` — how this finding modifies the episode (the Y2 channel). Defaults to ``confirmed``
+      (a plain re-statement), which is the case idempotency is about.
+    * ``ambiguous`` — the subject resolved to more than one candidate → ``ambiguous``, gate-only.
+
+    Rules (the card, made executable):
+
+    * unbound / ambiguous → we cannot attribute idempotency to an episode, so degrade to the legacy
+      gate-only path: evaluate the gate, never re-arm from here.
+    * ``new`` → a fresh episode: evaluate AND re-arm (its own edge, immune to a shared/disarmed key).
+    * ``continuation`` + ``confirmed``/``none``:
+        - already emitted → do NOT re-enter the gate (idempotent; THE TTL-invariant case);
+        - not yet emitted → keep evaluating (a new episode mid-dwell/after an ASK may still fire).
+    * ``continuation`` + ``updated`` → a new revision MAY re-arm and fire; ``supersedes`` the prior one.
+    * ``continuation`` + ``retracted`` → withdraw and re-arm, so a genuine later re-satisfaction fires.
+    * ``continuation`` + ``closed`` → the episode is terminated; no further evaluation for it.
+    """
+    if decision is None:
+        return EpisodeFoldResult(
+            episode_id=None, match="unbound", mutation="none",
+            should_rearm=False, should_evaluate_gate=True, supersedes=None,
+        )
+    episode_id = decision.episode.id
+    if ambiguous:
+        return EpisodeFoldResult(
+            episode_id=episode_id, match="ambiguous", mutation="none",
+            should_rearm=False, should_evaluate_gate=True, supersedes=None,
+        )
+    if decision.is_new:
+        # A birth: nothing prior to mutate. Re-arm so its first fire is never suppressed by a key a
+        # different subject (mapping to the same gate key) happened to leave disarmed.
+        return EpisodeFoldResult(
+            episode_id=episode_id, match="new", mutation="none",
+            should_rearm=True, should_evaluate_gate=True, supersedes=None,
+        )
+    # continuation of an existing episode
+    if mutation == "closed":
+        return EpisodeFoldResult(
+            episode_id=episode_id, match="continuation", mutation="closed",
+            should_rearm=False, should_evaluate_gate=False, supersedes=None,
+        )
+    if mutation == "retracted":
+        supersedes = revision_id(episode_id, emitted) if emitted else None
+        return EpisodeFoldResult(
+            episode_id=episode_id, match="continuation", mutation="retracted",
+            should_rearm=True, should_evaluate_gate=True, supersedes=supersedes,
+        )
+    if mutation == "updated":
+        # An accepted update is a new revision. It may re-arm and fire again — but only if the episode
+        # had actually emitted something to supersede; before the first emission it is just more
+        # evidence for the pending fire (no re-arm, nothing to supersede).
+        if emitted:
+            return EpisodeFoldResult(
+                episode_id=episode_id, match="continuation", mutation="updated",
+                should_rearm=True, should_evaluate_gate=True,
+                supersedes=revision_id(episode_id, emitted),
+            )
+        return EpisodeFoldResult(
+            episode_id=episode_id, match="continuation", mutation="updated",
+            should_rearm=False, should_evaluate_gate=True, supersedes=None,
+        )
+    # confirmed / none — an unchanged re-statement
+    if emitted:
+        # THE idempotency case: the episode already reported and nothing changed. Do not re-enter the
+        # gate — this is what makes a TTL eviction of the gate key a non-event (invariant above).
+        return EpisodeFoldResult(
+            episode_id=episode_id, match="continuation", mutation="confirmed",
+            should_rearm=False, should_evaluate_gate=False, supersedes=None,
+        )
+    # Open but not yet emitted (e.g. still accumulating dwell, or the last read was an ASK): keep going.
+    return EpisodeFoldResult(
+        episode_id=episode_id, match="continuation", mutation="confirmed",
+        should_rearm=False, should_evaluate_gate=True, supersedes=None,
+    )
+
+
+class EpisodeIncidentLedger:
+    """The episode-owned record Y3 needs: how many incidents each episode has EMITTED.
+
+    This is the memory the gate bit was being abused as. It is keyed by episode id (globally unique —
+    ``<goal_id>:ep<n>``), so it never collides across subjects that share a gate key, and it is not
+    evictable, so a gate-key TTL sweep cannot erase it. :meth:`emitted` feeds :func:`episode_fold`;
+    :meth:`record` is called by the executor at the instant an incident is actually delivered and mints
+    the new revision id.
+    """
+
+    def __init__(self) -> None:
+        self._emitted: dict[str, int] = {}
+
+    def emitted(self, episode_id: str) -> int:
+        """How many incidents this episode has emitted (0 = opened but never fired)."""
+        return self._emitted.get(episode_id, 0)
+
+    def revision(self, episode_id: str) -> "str | None":
+        """The id of the episode's most-recent emitted revision, or ``None`` if it never fired."""
+        n = self._emitted.get(episode_id, 0)
+        return revision_id(episode_id, n) if n else None
+
+    def record(self, episode_id: str) -> str:
+        """Record one emitted incident for ``episode_id`` and return the new revision id."""
+        n = self._emitted.get(episode_id, 0) + 1
+        self._emitted[episode_id] = n
+        return revision_id(episode_id, n)
+
+
 def ask_text(goal) -> str:  # mirrors agent._ask_text
     return f'About "{goal.condition}" — can you confirm?'
 
@@ -298,9 +508,26 @@ class BehaviorExecutor:
         self.metrics = metrics if metrics is not None else _NoMetrics()
         self._ctx: dict[str, ConcernContext] = {}  # isolated per-concern state, keyed by concern id
         self._fire_when_cache: dict[str, Callable[[dict], bool]] = {}
+        # Y3: episode-owned idempotency memory (per episode id, NOT per gate key — see the module
+        # section above). This is the state the gate bit was being accidentally used as.
+        self._incidents = EpisodeIncidentLedger()
 
     def ctx(self, concern_id: str) -> ConcernContext:
         return self._ctx.setdefault(concern_id, ConcernContext())
+
+    def fold_episode(
+        self,
+        decision: "ContinuationDecision | None",
+        *,
+        mutation: EpisodeMutation = "confirmed",
+        ambiguous: bool = False,
+    ) -> EpisodeFoldResult:
+        """Y3: fold an observation's :class:`~percept.episodes.ContinuationDecision` against this
+        executor's episode-owned emission ledger → the :class:`EpisodeFoldResult` to thread into
+        :meth:`fire_judged` as ``fold=``. Reads the ledger but never mutates it (the emission is only
+        recorded when a fire is actually delivered), so card Y11 can call it in shadow safely."""
+        emitted = self._incidents.emitted(decision.episode.id) if decision is not None else 0
+        return episode_fold(decision, emitted=emitted, mutation=mutation, ambiguous=ambiguous)
 
     def _fire_when(self, expr: str) -> Callable[[dict], bool]:
         pred = self._fire_when_cache.get(expr)
@@ -336,8 +563,17 @@ class BehaviorExecutor:
         metric: str = "gate",
         timing: JudgmentTimingBuilder | None = None,
         evidence_seq: int = 0,
+        fold: "EpisodeFoldResult | None" = None,
     ) -> Fired | None:
         """Run one judged concern through the (unchanged) gate and return the firing, if any.
+
+        ``fold`` (Y3, OPTIONAL, additive) is the episode-owned idempotency decision for this
+        observation (see :func:`episode_fold` / :meth:`fold_episode`). When supplied it governs the gate
+        interaction WITHOUT changing gate mechanics: ``should_evaluate_gate=False`` returns before the
+        gate is ever consulted (an already-emitted episode re-stated unchanged — so a shared or an
+        evicted gate key can never manufacture a duplicate), and ``should_rearm=True`` re-arms the edge
+        first (a genuinely new episode, or an accepted update). When ``fold is None`` (the default) this
+        method is BYTE-FOR-BYTE the pre-Y3 path — the gate bit alone decides, exactly as before.
 
         ``timing`` (X7, ADR-001 §1) is the OPTIONAL, additive judgment-timing accumulator the caller
         filled as this evidence moved through the funnel (``mark_ingest_observed`` →
@@ -356,6 +592,18 @@ class BehaviorExecutor:
             return None  # never-contract: a confident-false must not reach the gate
         key = base_key  # the key is ONLY (goal, entity) now — the interval bucket moved to ctx
         self._interval_rearm(ctx, key, program.key, t)
+        # Y3: episode-owned idempotency, applied BEFORE the gate. Absent (fold=None) this whole block is
+        # skipped and the path is byte-for-byte the pre-Y3 gate-only behaviour.
+        if fold is not None:
+            if not fold.should_evaluate_gate:
+                # The episode already reported and nothing changed — do not consult the gate at all, so
+                # neither a shared key nor a TTL-evicted key can produce a duplicate incident.
+                self.metrics.incr(f"{metric}.idempotent_suppressed")
+                return None
+            if fold.should_rearm:
+                # A genuinely new episode (or an accepted update) — re-arm its own edge so a key another
+                # subject left disarmed cannot suppress this episode's fire.
+                self.gate.rearm(key)
         # Pass the goal's dwell (hold_s) + the frame time. hold_s=None -> the gate ignores `now`
         # and this is byte-for-byte the rising-edge path. A never-goal's key is marked no_evict so a TTL
         # drop can never re-arm it (the fire-once-ever contract; see Gate.evaluate).
@@ -372,6 +620,11 @@ class BehaviorExecutor:
                 ctx.count += 1
                 if not self._fire_when(program.accumulate.fire_when)({"n": ctx.count, "t": t}):
                     return None  # counted the occurrence, but it isn't the nth -> no alert
+            # Y3: an incident is about to be DELIVERED — record it on the episode so the next unchanged
+            # confirmation of the same episode is idempotently suppressed (an escalated ASK still counts:
+            # the episode spoke to the user). Only reached on a genuine emission, never on a withheld one.
+            if fold is not None and fold.episode_id is not None:
+                self._incidents.record(fold.episode_id)
             if is_hard_quadrant(consequence_of(goal)):  # A3 hard-quadrant escalates to ASK
                 self.metrics.incr("consequence.escalate")
                 return Fired(goal.id, ASK, escalate_text(goal), base_key[-1], verdict,
@@ -825,6 +1078,14 @@ __all__ = [
     "ConfusionSignal",
     "ConcernContext",
     "Fired",
+    "EpisodeMatch",
+    "EpisodeMutation",
+    "EPISODE_MATCHES",
+    "EPISODE_MUTATIONS",
+    "EpisodeFoldResult",
+    "EpisodeIncidentLedger",
+    "episode_fold",
+    "revision_id",
     "BehaviorExecutor",
     "program_of",
     "coerce_authored_behavior",
