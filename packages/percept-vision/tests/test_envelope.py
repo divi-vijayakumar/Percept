@@ -308,6 +308,35 @@ def test_the_policy_surface_really_only_clamps_interrupt_authority():
     assert intent.preferred_channel == "factory-horn"
 
 
+def test_adr007_citations_match_the_code():
+    """ADR-007 is a map of this code (the ADR-005 / card Z6 rule): its load-bearing line cites and
+    its actuation vocabulary must be checkable, not trusted."""
+    import inspect
+    from pathlib import Path
+
+    import percept.contracts as contracts_mod
+    import percept.sourceprofile as sp_mod
+
+    adr = Path(inspect.getfile(sp_mod)).resolve().parents[3] / "docs" / "adr" / (
+        "ADR-007-envelope-enforcement.md"
+    )
+    if not adr.exists():  # docs/ live outside the installed package
+        pytest.skip(f"{adr} not present in this checkout")
+    text = adr.read_text()
+
+    def line(mod, n: int) -> str:
+        return Path(inspect.getfile(mod)).read_text().splitlines()[n - 1]
+
+    assert "UNTUNED" in line(sp_mod, 61)
+    assert "FORBIDDEN_FIELDS" in line(sp_mod, 73)
+    assert "modality" in line(contracts_mod, 195)
+    assert "preempt" in line(contracts_mod, 1028)
+    for cls in ACTUATION_CLASSES:
+        assert f"`{cls}`" in text or f"actuation=\"{cls}\"" in text or cls in text
+    assert "EXIT_OUT_OF_ENVELOPE" in text
+    assert 'ATTENTION_CLASS_ENFORCEMENT = "docs"' in text
+
+
 def test_envelope_summary_is_one_dict_a_tool_can_print():
     s = envelope_summary()
     assert s["schema"] == "percept.envelope/1"
