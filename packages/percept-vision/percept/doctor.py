@@ -900,7 +900,8 @@ def render_funnel(summary: TraceSummary) -> str:
         ("gate outcomes", ", ".join(f"{k}={v}" for k, v in sorted(summary.gate_outcomes.items())) or "—"),
         ("incidents", str(summary.incidents)),
         ("watch duration", f"{summary.watch_duration_s:.2f}s (healthy {summary.source_healthy_s:.2f}s)"),
-        ("cost", f"${summary.cost_usd:.4f}  in={summary.input_tokens:.0f} out={summary.output_tokens:.0f}"),
+        # "—", never "$0.0000": an unpriced/unreported run must not read as a free one.
+        ("cost", f"{summary.cost_text()}  {summary.tokens_text()}"),
         ("savings", summary.savings_text()),
         ("records", f"retained={summary.records_retained} dropped={summary.records_dropped}"),
     ]
