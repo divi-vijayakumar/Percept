@@ -41,6 +41,7 @@ over.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -386,15 +387,136 @@ def replay_report_json(report: ReplayReport, *, indent: int | None = 2) -> str:
     return json.dumps(report.to_dict(), indent=indent, default=str)
 
 
+# ---------------------------------------------------------------------------
+# The front door: load an artifact a shipped command actually produces
+# ---------------------------------------------------------------------------
+
+
+class ReplayLoadError(Exception):
+    """``percept-replay`` was handed something that is not a percept trace artifact."""
+
+
+def load_replayable(path: Any) -> tuple[RunTraceManifest, list[TraceRecord]]:
+    """Load ``(manifest, records)`` from a trace JSON **or** a portable ``.ptrace`` bundle.
+
+    The two artifacts a client can actually hand over: the JSON written by
+    ``percept-watch --trace out.json`` (:meth:`~percept.tracing.TraceRecorder.write_json`) and the
+    ``run-123.ptrace`` directory/archive from :mod:`percept.trace_bundle`. Anything else raises
+    :class:`ReplayLoadError` rather than half-loading.
+    """
+    import pathlib  # noqa: PLC0415
+
+    p = pathlib.Path(path)
+    if not p.exists():
+        raise ReplayLoadError(f"no such trace: {p}")
+    if p.is_dir() or p.suffix in (".ptrace", ".zip") or p.name.endswith(".ptrace.zip"):
+        from .trace_bundle import BundleError, TraceBundle  # noqa: PLC0415
+
+        try:
+            bundle = TraceBundle.read(p)
+        except BundleError as exc:
+            raise ReplayLoadError(str(exc)) from exc
+        return bundle.manifest, list(bundle.records)
+    from .tracing import load_trace  # noqa: PLC0415
+
+    try:
+        manifest, records, _summary = load_trace(p.read_text(encoding="utf-8"))
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ReplayLoadError(f"not a percept trace artifact: {p} ({exc})") from exc
+    return manifest, records
+
+
+def format_report(report: ReplayReport, *, trace: str = "") -> str:
+    """The human-readable replay panel — the digest first, the divergences last and unhidden."""
+    lines: list[str] = []
+    lines.append("─" * 68)
+    lines.append(f"  PERCEPT · cognition replay   ·   run_id={report.run_id}")
+    if trace:
+        lines.append(f"  trace: {trace}")
+    lines.append("─" * 68)
+    lines.append(f"  digest          {report.digest}")
+    lines.append(f"  replay_version  {report.replay_version}   ·   deterministic={report.deterministic}")
+    lines.append(f"  inputs          {report.inputs} replayable"
+                 + (f"   ·   {report.unreplayable} unreplayable (no recorded verdict)"
+                    if report.unreplayable else ""))
+    outcomes = "  ".join(f"{k}={v}" for k, v in sorted(report.gate_outcomes.items()))
+    lines.append(f"  gate outcomes   {outcomes or '(none)'}")
+    lines.append(f"  incidents       {report.incidents}")
+    if report.gate_config_recorded:
+        cfg = "  ".join(f"{k}={report.gate_config.get(k)!r}" for k in GATE_CONFIG_KEYS)
+        lines.append(f"  gate config     {cfg}   (recorded)")
+    else:
+        lines.append("  gate config     NOT RECORDED — replayed against library defaults. Record it "
+                     "with RunTraceManifest.create(gate_config=gate_config_of(core.gate)).")
+    lines.append("─" * 68)
+    if not report.divergences:
+        lines.append("  ✓ 0 divergences — every replayed outward action matches the recorded run.")
+    else:
+        lines.append(f"  ✗ {len(report.divergences)} divergence(s):")
+        for d in report.divergences:
+            lines.append(
+                f"      seq={d.seq} goal={d.goal_id}"
+                + (f" entity={d.entity_id}" if d.entity_id else "")
+                + f" t={d.source_ts}  recorded={d.recorded_action}  replayed={d.replayed_action}"
+            )
+        lines.append("    " + report.divergences[0].note)
+    lines.append("─" * 68)
+    return "\n".join(lines)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """``percept-replay TRACE`` — re-run a recorded run's verdicts through a fresh Gate.
+
+    Exit code is the contract: ``0`` when every replayed outward action matches what the run
+    recorded, ``1`` when any diverges (so CI can assert it), ``2`` for a load failure.
+    """
+    import argparse  # noqa: PLC0415
+
+    p = argparse.ArgumentParser(
+        prog="percept-replay",
+        description="Replay a recorded percept trace through the Gate. Deterministic, offline, "
+                    "no model call. Produce the trace with `percept-watch --trace out.json`.",
+    )
+    p.add_argument("trace", help="a trace JSON, or a .ptrace bundle directory/archive")
+    p.add_argument("--json", action="store_true", help="emit the ReplayReport as JSON instead of a panel")
+    p.add_argument("--escalates", action="append", default=[], metavar="GOAL_ID",
+                   help="declare a goal whose FIRE is delivered outward as an ASK (repeatable)")
+    p.add_argument("--suppress-false", action="append", default=[], metavar="GOAL_ID",
+                   help="declare a never-goal: a confident-false never reaches the gate (repeatable)")
+    args = p.parse_args(list(argv) if argv is not None else None)
+
+    try:
+        manifest, records = load_replayable(args.trace)
+    except ReplayLoadError as exc:
+        print(f"  ✗ {exc}", file=sys.stderr)
+        return 2
+
+    goal_ids = set(args.escalates) | set(args.suppress_false)
+    goal_config = {
+        gid: ReplayGoalConfig(
+            escalates=gid in set(args.escalates),
+            suppress_false=gid in set(args.suppress_false),
+        )
+        for gid in goal_ids
+    }
+    report = replay_cognition(manifest, records, goal_config=goal_config or None)
+    print(replay_report_json(report) if args.json else format_report(report, trace=str(args.trace)))
+    return 1 if report.divergences else 0
+
+
 __all__ = [
     "GATE_CONFIG_KEYS",
     "REPLAY_VERSION",
     "Divergence",
     "ReplayGoalConfig",
     "ReplayInput",
+    "ReplayLoadError",
     "ReplayReport",
     "ReplayedDecision",
+    "format_report",
     "gate_config_of",
+    "load_replayable",
+    "main",
     "replay_cognition",
     "replay_inputs",
     "replay_report_json",

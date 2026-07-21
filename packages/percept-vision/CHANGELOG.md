@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### Added
+- **`percept-watch --trace PATH` + a `percept-replay` command — ADR-004's normative replay is now
+  REACHABLE (card Z5).** `percept.replay.replay_cognition` was good, tested code consuming an
+  artifact **no user of the SDK could produce**: `Percept.on_trace` defaults to `None`,
+  `percept.run(on_trace=None)`, `percept-watch` contained no trace reference at all, and
+  `percept-doctor` builds a `TraceRecorder` that records only the tier-0 observation/admission
+  stages — never `gate.classified`, the one stage `replay_inputs` consumes. So §2 of ADR-004
+  defined replay normatively and nothing shipped could exercise it.
+  - `percept-watch --trace out.json` builds a `TraceRecorder` whose `RunTraceManifest` carries the
+    live Gate's knobs (`percept.replay.gate_config_of` → `GATE_CONFIG_KEYS`) and wires
+    `core.on_trace = rec.tracer()` (plus `on_health=rec.health_sink()` on the live path). Recording
+    the gate_config is the load-bearing part: without it the replay honestly reports
+    `gate_config_recorded=False` and runs against library defaults instead of against *this* run.
+    The trace is written even on Ctrl-C — a killed run is exactly the run you want the trace of.
+  - `percept-watch --offline [--fixture NAME]` is the keyless acceptance path: no API key, no
+    camera, the bundled deterministic fixture (`percept.offline`) driven through the frozen
+    `watch()` seam. It proves WIRING, not intelligence.
+  - `percept-replay TRACE` (new console script → `percept.replay:main`) loads a trace JSON **or** a
+    portable `.ptrace` directory/archive (`load_replayable`) and prints the `ReplayReport` — digest,
+    gate outcomes, incidents, whether the gate config was recorded, and every divergence. The **exit
+    code is the contract**: `0` = every replayed outward action matched the recorded run, `1` = at
+    least one diverged, `2` = the artifact could not be loaded. `--json` emits the report;
+    `--escalates`/`--suppress-false` declare the per-goal behaviour a trace cannot know.
+  - `tests/test_replay_cli.py` pins the whole round trip: `percept-watch --offline --trace t.json`
+    then `percept-replay t.json` reports **zero divergences**, the trace actually contains
+    `gate.classified` records carrying their verdict inputs, the manifest carries all four gate
+    knobs, the digest is stable across the file round trip, a bundle replays to the same digest as
+    its JSON, and a tampered gate config makes the CLI exit non-zero.
+  `percept/watch.py`'s signature and `WATCH_VERSION` are untouched — all of this is additive wiring
+  behind the existing `percept=` / `on_trace` seams.
+
 ### Fixed
 - **The "~7 MB/s memory leak" is a BOUNDED plateau, and the bound is now in BYTES and loud (card
   Z1).** Two client teams measured RSS 92 → 342 MB (and 405 MB on a second clip, at HALF the judge
