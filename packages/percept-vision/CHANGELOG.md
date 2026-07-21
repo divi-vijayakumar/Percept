@@ -3,6 +3,32 @@
 ## Unreleased
 
 ### Added
+- **The operating-frontier report — the honest form of a quality claim (card RB-FRONTIER).**
+  `percept-eval --frontier` emits the full §3.2 report from the eval harness: **exact one-sided 95%
+  bounds** on FIRE recall and on false FIREs **per scheduled watch-hour**, plus ASK rate, coverage,
+  assisted recall, degraded time, duplicate FIREs per episode, and a **per-archetype breakdown over
+  all six core gating archetypes** — including the archetypes with no evidence, printed as
+  `NO EVIDENCE` rather than omitted, because a partial frontier report invites a cherry-picked read.
+  **The bound is the claim, never the point estimate.** A 29-for-29 held-out run is recall `1.00` as
+  a point estimate and `>= 0.9019` as a claim; a 3-for-3 run is also `1.00` and supports only
+  `>= 0.368`, so it FAILS a 0.90 bar and the report prints the 29 episodes it would take. Bounds
+  come from `percept.eval.exact_ci` — Garwood/Poisson (`factor(k)/T`) for rates, Clopper–Pearson
+  (`Beta⁻¹(0.05; x, n−x+1)`) for proportions — pure Python, no SciPy, and asserted cell-by-cell
+  against every table in `docs/reference/eval-hours-costing.md`. **No normal approximation**: at
+  these counts a Wald interval on a perfect run returns zero width at 1.0, which is not a bound.
+  **Both denominators, always.** Per scheduled watch-hour is the bar-eligible number (concurrency is
+  already inside it; degraded time stays inside it — a watch blind for 20 minutes still owes them);
+  per source-hour is published only **at a stated active-watch count**, and omitted otherwise rather
+  than printed with an implied concurrency of 1. Degraded time is subtracted from coverage, never
+  from a rate denominator. **Abstentions stay visible** — ASKs, SILENTs, typed suppressions, and
+  judge work that entered the funnel and never resolved are itemised in an abstention ledger and
+  netted out of nothing. Zero labeled episodes reports `NO_EVIDENCE`, never a vacuous recall of 1.0.
+  **Nothing is reinvented**: every match/miss/false-FIRE/duplicate count comes from
+  `percept.harness.golden_eval.score`, every funnel/degraded/unresolved figure from
+  `percept.tracing.TraceSummary` (card D8a), and the whole thing hangs off the **existing**
+  `percept eval` entry point (`--frontier`, `--frontier-bars`, `--frontier-arm`, `--frontier-json`)
+  — no second CLI, no second entry-point family. See `docs/reference/operating-frontier.md`.
+
 - **The native visualizer — WHERE a decision died, not just that nothing happened (card D9).**
   `percept.visualize` renders a **standalone, single-file HTML page** over the artifacts that
   already exist: `percept.tracing` (`RunTraceManifest` / `TraceRecord` / `TraceSummary`), the
