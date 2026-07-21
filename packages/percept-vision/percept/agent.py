@@ -517,6 +517,7 @@ class Percept:
             consent=ConsentProfile(
                 allow_computer_use=cfg.consent.allow_computer_use,
                 allowed_actions=cfg.consent.allowed_actions,
+                actuation=getattr(cfg.consent, "actuation", "none"),  # Z7: typed envelope declaration
             ),
             action_log=ActionLog(),
             _mode=resolved_mode,

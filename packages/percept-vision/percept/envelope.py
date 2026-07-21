@@ -313,10 +313,18 @@ class SubjectResolver:
 
     @property
     def identifies_persons(self) -> bool:
-        """``True`` when this resolver produces a person identity percept itself derived. Always
-        ``False`` for anything constructible here — it is the invariant, kept as a readable property
-        so doctor and the tests can ASSERT it rather than trust the constructor."""
-        return self.is_person_class and self.derives_from != "client_asserted"
+        """``True`` when this resolver produces a person IDENTITY percept itself derived — i.e. a
+        person key from pixels, or a percept-derived person key that outlives the run.
+
+        Deliberately ``False`` for the two things that are NOT identification: a transient
+        scene-local person handle ("the same person is still at the door", dead at end of run — the
+        narrowed survivor), and a client-asserted key (their system named the person, not percept).
+        Always ``False`` for anything constructible here; kept as a readable property so doctor and
+        the tests can ASSERT the invariant instead of trusting the constructor.
+        """
+        if not self.is_person_class or self.derives_from == "client_asserted":
+            return False
+        return self.derives_from == "pixels" or self.persists
 
     def to_dict(self) -> dict[str, Any]:
         return {
