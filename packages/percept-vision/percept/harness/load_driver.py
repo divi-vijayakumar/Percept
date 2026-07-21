@@ -1,7 +1,7 @@
-"""PROBE-HARNESS SCAFFOLDING — ``load_driver`` (Viability §2/§6, board card A11).
+"""PROBE-HARNESS SCAFFOLDING — ``load_driver``.
 
 **Wiring-only, not a production connector.** The probe harness's load driver: it ramps and then
-holds the **full** ``N/M/E/F`` load profile Viability §2 asks for —
+holds the **full** ``N/M/E/F`` load profile —
 
 * ``N`` — concurrent streams
 * ``M`` — watches per stream
@@ -12,14 +12,14 @@ not just the ``N x M`` concurrency shape a naive driver would stop at. It reuses
 reimplements, the two already-landed harness pieces:
 
 * :func:`percept.harness.stream_gen.fan_out` builds the ``N`` independent, clock-driven frame
-  streams (board card A10).
+  streams.
 * :class:`percept.backends.fake_judge.FakeJudge` is the queueing/backpressure/latency double every
-  admitted episode's ``F`` fan-out calls are routed into (board card A12).
+  admitted episode's ``F`` fan-out calls are routed into.
 
 Standing rule 2 (see :mod:`percept.backends.fake`) still applies: this proves wiring and load
 *shape*, never model intelligence — verdict content is FakeJudge's concern, not this module's.
 
-**Determinism.** Time enters through exactly one injected :data:`~percept.clock.Clock` (v3 §9's
+**Determinism.** Time enters through exactly one injected :data:`~percept.clock.Clock` (the
 run-time contract, reused here for the probe harness itself, same as :mod:`stream_gen`). The core
 loop (:meth:`LoadDriver.tick`) never sleeps and never reads a wall clock directly; episode
 admission uses a closed-form integral of the ramp/steady target rate over ``[last_tick, now]``, so
@@ -36,9 +36,9 @@ credit) so admissions spread across the cycle instead of bursting in lockstep. E
 episode immediately issues exactly ``F`` concurrent :meth:`FakeJudge.judge` calls (awaited via
 ``asyncio.gather``), so the ``F`` fan-out is exact and multiplicative, never approximated.
 
-Not wired into ``percept/registry.py``. Downstream: Phase-A probes ``P-BOUND-1`` (queueing/
-backpressure under load) and ``P-LAT-LOAD-1`` (latency distribution under the full N/M/E/F profile,
-board card A28) drive sessions through this module instead of hand-rolling load generation.
+Not wired into ``percept/registry.py``. Downstream: Phase-A probes covering queueing/backpressure
+under load and latency distribution under the full N/M/E/F profile drive sessions through this
+module instead of hand-rolling load generation.
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ from .stream_gen import Timeline, fan_out
 
 @dataclass(frozen=True)
 class LoadProfile:
-    """The full Viability §2 load shape: ``N`` concurrent streams x ``M`` watches per stream,
+    """The full load shape: ``N`` concurrent streams x ``M`` watches per stream,
     each watch admitting episodes at ``e_per_stream_min`` (aggregate per stream, i.e. divided
     evenly across that stream's ``M`` watches) with ``f`` fan-out judge calls per admission."""
 

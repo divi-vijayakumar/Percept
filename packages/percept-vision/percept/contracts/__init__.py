@@ -1,7 +1,7 @@
 """percept-contracts — the FROZEN membrane, as a standalone zero-dependency package.
 
 This package is the contract between the cognition core and everything vendor-specific.
-Per the implementation plan (§0, Phase 0) it is **immutable within a phase**: later phases
+It is **immutable within a phase**: later phases
 implement *behind* these interfaces and add *beside* them. If a phase needs to change a
 frozen shape here, stop and flag it — do not edit silently.
 
@@ -30,11 +30,11 @@ from typing import Any, Awaitable, Callable, ClassVar, Hashable, Literal, Protoc
 #: Bump the MAJOR on any breaking change to a frozen shape; MINOR for additive (new optional
 #: field / new DTO); PATCH for docs/non-wire tweaks. This is distinct from ``WatchSpec.version``
 #: (a wire integer kept for byte-for-byte payload compat).
-CONTRACT_VERSION = "1.3.0"  # 1.3: + Incident.entity_id (D4 — correlation identity survives the emission
+CONTRACT_VERSION = "1.3.0"  # 1.3: + Incident.entity_id (correlation identity survives the emission
 # boundary; optional, defaults None, additive).
-# 1.2: + WatchAction/WatchEvent (M1 — the public watch() stream event; additive).
+# 1.2: + WatchAction/WatchEvent (the public watch() stream event; additive).
 # 1.1: + AttentionIntent DTO + GoalOrigin enum + Goal.origin (all additive, defaulted, back-compat —
-# the effective-attention membrane + durable goal provenance, PCPT-026).
+# the effective-attention membrane + durable goal provenance).
 # 1.0.0: initial public wire contract (research-preview launch). Consolidates the pre-release surface
 # that iterated internally through 1.1–1.3 but never shipped; nothing was published under those, so we
 # launch clean at 1.0.0.
@@ -203,7 +203,7 @@ class Goal:
 
 
 # ---------------------------------------------------------------------------
-# Concern model (spec §1,§3,§5) — added BESIDE Goal. A0 introduces the DTOs + the
+# Concern model — added BESIDE Goal. This introduces the DTOs + the
 # Goal->Concern compat shim ONLY; the agent/gate are untouched (byte-for-byte). Belief is
 # DERIVED from observations (see percept.concern), never stored. Logic lives in concern.py.
 # ---------------------------------------------------------------------------
@@ -214,10 +214,10 @@ FalseFireCost = Literal["trivial", "mild", "severe", "irreversible"]
 
 @dataclass(frozen=True)
 class Consequence:
-    """The decision weight (spec §5): a coarse (miss, false-fire) cost pair.
+    """The decision weight: a coarse (miss, false-fire) cost pair.
 
-    NOTE (R3): at today's non-discriminative confidence the *threshold* job is inert, so v1
-    consequence earns its keep via attention / escalation / verification (A3), not the threshold.
+    NOTE: at today's non-discriminative confidence the *threshold* job is inert, so v1
+    consequence earns its keep via attention / escalation / verification, not the threshold.
     ``protected_floor`` pins ``miss_cost`` at maximum — refinement may never relax it.
     """
 
@@ -228,7 +228,7 @@ class Consequence:
 
 @dataclass(frozen=True)
 class Evidence:
-    """One timestamped, sourced observation feeding a Concern's log (spec §3).
+    """One timestamped, sourced observation feeding a Concern's log.
 
     Named ``Evidence`` (not ``Observation``) to avoid colliding with the entity-substrate
     ``Observation`` above. Belief is derived from these against expectations; never stored.
@@ -243,12 +243,13 @@ class Evidence:
 
 @dataclass(frozen=True)
 class TrackingBehavior:
-    """How a concern's state is maintained (spec §1,§4).
+    """How a concern's state is maintained.
 
-    ``rearm`` is the per-concern ``R``. S2 proved each value is expressible WITHOUT changing the
+    ``rearm`` is the per-concern ``R``. Each value is expressible WITHOUT changing the
     gate: ``on_false``/``each_event``/``interval`` via key-synthesis; ``never`` with the adapter
     contract (do not push a confident-false into the gate); ``deadline`` via the scheduler + an
-    absence adapter. The A1 firing collapse consumes this; A0 only carries it.
+    absence adapter. The firing-collapse logic downstream consumes this; this dataclass only
+    carries it.
     """
 
     pattern: Literal["watch", "transition", "event", "count"] = "watch"
@@ -260,7 +261,7 @@ class TrackingBehavior:
 
 @dataclass(frozen=True)
 class Subject:
-    """What a concern is about (spec §1): an entity ref | relation | expectation | event."""
+    """What a concern is about: an entity ref | relation | expectation | event."""
 
     kind: Literal["entity", "relation", "expectation", "event"] = "entity"
     ref: str = ""
@@ -268,7 +269,7 @@ class Subject:
 
 @dataclass(frozen=True)
 class Priors:
-    """What to expect, when, and what 'satisfied' looks like (spec §1). Minimal in A0."""
+    """What to expect, when, and what 'satisfied' looks like. Minimal today."""
 
     expected_state: str | None = None
     deadline_s: float | None = None
@@ -276,7 +277,7 @@ class Priors:
 
 @dataclass
 class Concern:
-    """The unit of consequence-weighted attention (spec §1) — sits above the entity.
+    """The unit of consequence-weighted attention — sits above the entity.
 
     Carries ``condition``/``say`` so today's Vision seam + fire path work unchanged through the
     shim. Belief is DERIVED from ``observations`` against ``expectations`` (percept.concern), never
@@ -292,7 +293,7 @@ class Concern:
     observations: list[Evidence] = field(default_factory=list)
     expectations: Priors = field(default_factory=Priors)
     source: str = "camera"
-    # B1 — temporal/clip declaration: a concern can say "judge me on a CLIP, not one frame".
+    # Temporal/clip declaration: a concern can say "judge me on a CLIP, not one frame".
     # ``clip`` requests multi-frame perception; ``window_s`` (>0 implies ``clip``) declares the clip's
     # length in seconds, so the brain assembles a time-bounded temporal strip (oldest→newest) and feeds
     # it to ``Vision.judge(..., frames=...)``. Both default off, so a single-frame concern is unchanged.
@@ -318,7 +319,7 @@ class Concern:
     def from_goal(cls, goal: "Goal") -> "Concern":
         """Compat shim: a ``Goal`` becomes a default ``Concern`` (watch / on_false / mild).
 
-        R15: the defaults are pinned to the measured current gate numbers (threshold 0.7 via
+        The defaults are pinned to the measured current gate numbers (threshold 0.7 via
         ``concern.threshold_for``, re-arm ``on_false``) so an existing goal's firing is unchanged.
         """
         return cls(
@@ -351,7 +352,7 @@ class Decision:
     endpoint: Literal["complete", "incomplete", "barge_in", "n/a"] = "n/a"
 
 
-# ---- Production timing contract — two time domains (ADR-001 §5, card A5) ----
+# ---- Production timing contract — two time domains (ADR-001 §5) ----
 
 # Mirrors the *values* of ``percept.gate.GateAction`` ("fire"/"ask"/"silent") without importing
 # from ``percept.gate`` — ``percept.contracts`` is the frozen membrane at the bottom of the layering
@@ -370,12 +371,12 @@ class JudgmentTiming:
       ``judge_started_ts``, ``judge_completed_ts``, ``decision_emitted_ts``. ALL latency math
       (dwell/refractory windows, funnel latency, p50/p95/p99) reads ONLY these five stamps, and
       they are sourced from the injectable monotonic clock seam (``percept/clock.py`` —
-      ``WallClock``/``FakeClock``, threaded since card A1), never a wall-clock/NTP-adjustable
+      ``WallClock``/``FakeClock``), never a wall-clock/NTP-adjustable
       source.
     * **SOURCE (optional, untrusted)** — ``source_media_ts``: the source/fixture/RTSP-PTS
       timeline, when the source exposes one. It may be absent (``None``) or arbitrarily skewed
       from the monotonic domain; it exists for replay/ground-truth ALIGNMENT ONLY (see the
-      separate evaluation ground-truth record, card A6) and must never be substituted into a
+      separate evaluation ground-truth record) and must never be substituted into a
       latency calculation.
 
     ``ingest_observed_ts`` is when the runtime locally RECEIVED the evidence — NOT camera capture
@@ -383,7 +384,7 @@ class JudgmentTiming:
 
     ``decision_emitted_ts`` is the FREEZE point: the :class:`JudgmentEvent` this timing is
     attached to is immutable from that instant on. Delivery/sink timestamps are deliberately NOT
-    part of this struct — they live in the ``DeliveryAttempt`` ledger (card A21/B-SINK), because a
+    part of this struct — they live in the ``DeliveryAttempt`` ledger, because a
     frozen JudgmentEvent must never be mutated to append a later delivery stamp.
     """
 
@@ -422,7 +423,7 @@ class JudgmentTiming:
         return self.decision_emitted_ts - self.ingest_observed_ts
 
     def admitted_to_decision_s(self) -> float:
-        """Judge-funnel latency: tier-0 admission -> frozen decision (G3-A, ADR-001 §5)."""
+        """Judge-funnel latency: tier-0 admission -> frozen decision (ADR-001 §5)."""
         return self.decision_emitted_ts - self.admitted_ts
 
     def judge_wait_s(self) -> float:
@@ -516,10 +517,10 @@ class JudgmentEvent:
 
     Immutable (frozen dataclass) and frozen in time at ``timing.decision_emitted_ts`` — nothing on
     this event may be mutated after construction, and no delivery/sink timestamp is ever added
-    here; those live in the ``DeliveryAttempt`` ledger (card A21/B-SINK) precisely because that
+    here; those live in the ``DeliveryAttempt`` ledger precisely because that
     ledger records attempts made *against* an already-frozen event.
 
-    ``key``/``evidence_seq`` mirror :class:`percept.sequencing.GateDecision` (card A8) so a
+    ``key``/``evidence_seq`` mirror :class:`percept.sequencing.GateDecision` so a
     JudgmentEvent can be correlated back to the serialized-reducer decision that produced it —
     added here additively; A8's fields are untouched.
     """
@@ -531,7 +532,7 @@ class JudgmentEvent:
 
 
 # ---------------------------------------------------------------------------
-# GroundTruth (A6) — EVALUATION-ONLY ground truth, DISTINCT from the live JudgmentEvent.
+# GroundTruth — EVALUATION-ONLY ground truth, DISTINCT from the live JudgmentEvent.
 # ---------------------------------------------------------------------------
 
 #: Version of the eligibility-annotation RUBRIC below (bump on any wording/criteria change so an
@@ -540,7 +541,7 @@ class JudgmentEvent:
 ANNOTATION_RUBRIC_VERSION = "eligibility-rubric-v1"
 
 ANNOTATION_RUBRIC = """\
-Eligibility annotation rubric ({version}) — Viability Spec §3b/§5a.
+Eligibility annotation rubric ({version}).
 
 decision_eligible_ts = the timestamp of the FIRST FRAME at which a competent human annotator,
 given only the evidence up to and including that frame (no future frames, no foreknowledge of the
@@ -551,7 +552,7 @@ coincide only for an instantaneous/unambiguous event. For anything with onset/ri
 swinging open, a person sitting down) eligibility comes strictly AFTER the event start, once
 enough of the action has resolved to remove reasonable doubt.
 
-Two substrates produce this timestamp (Viability §5a):
+Two substrates produce this timestamp:
 
 1. BY CONSTRUCTION (primary, core gating archetypes) — a synthetic fixture author places the event
    at a known ``event_start_ts`` and DECLARES ``decision_eligible_ts`` deterministically (a fixed,
@@ -573,11 +574,11 @@ produced it, so a later rubric revision does not silently corrupt historical gol
 class GroundTruth:
     """EVALUATION-ONLY ground truth for one watched event — NEVER a field on a live JudgmentEvent.
 
-    Per ADR-001 §5 and Viability §3/§3b/§5a: the production runtime cannot (and must not pretend
+    Per ADR-001 §5: the production runtime cannot (and must not pretend
     to) know when an event "really" started or when a human could have confidently judged it —
     those are labels a human annotator or a synthetic fixture generator supplies AFTER THE FACT,
-    for evaluation only (recall/precision scoring, the ``golden_eval`` timeline of card A14, the
-    actionable-latency metric of card A27). Keeping this a wholly separate, distinct type — never
+    for evaluation only (recall/precision scoring, the ``golden_eval`` timeline, the
+    actionable-latency metric). Keeping this a wholly separate, distinct type — never
     merged into :class:`JudgmentEvent`/:class:`JudgmentTiming` — is a hard invariant of the frozen
     contract: a live event built from real traffic never carries an ``event_start_ts``/
     ``decision_eligible_ts`` field, STRUCTURALLY, not just by convention. It is nullable/absent on
@@ -631,14 +632,14 @@ class GroundTruth:
         fixture_id: str,
         annotation_version: str = ANNOTATION_RUBRIC_VERSION,
     ) -> "GroundTruth":
-        """PRIMARY path (Viability §5a) for the core gating archetypes: a synthetic fixture
+        """PRIMARY path for the core gating archetypes: a synthetic fixture
         DECLARES eligibility deterministically as a fixed offset from its own known event start —
         no human judgment, no randomness, so two calls with identical inputs always produce a
         byte-for-byte identical record (reproducible golden fixtures).
 
         ``eligible_after_s`` is the fixture author's documented reaction-time/resolution offset for
         THIS archetype (see ``eval/viability/ground_truth.py`` for the six core-archetype offsets
-        A16's neutral fixtures use) — MUST be ``>= 0``.
+        the neutral fixtures use) — MUST be ``>= 0``.
         """
         if eligible_after_s < 0:
             raise ValueError(f"eligible_after_s must be >= 0, got {eligible_after_s!r}")
@@ -661,7 +662,7 @@ class GroundTruth:
         annotation_version: str = ANNOTATION_RUBRIC_VERSION,
         max_disagreement_s: float = 1.0,
     ) -> "GroundTruth":
-        """SECONDARY path (Viability §5a) for annotated REAL clips — a documented INTAKE HOOK, not a
+        """SECONDARY path for annotated REAL clips — a documented INTAKE HOOK, not a
         full annotation tool/UI. Two independent human annotators each mark their own eligibility
         instant; this reconciles them into ONE record.
 
@@ -707,7 +708,7 @@ class TurnResult:
 
 @dataclass(frozen=True)
 class Schedule:
-    """When a watch is *armed* — a coarse, vendor-neutral, timezone-naive time gate (C1).
+    """When a watch is *armed* — a coarse, vendor-neutral, timezone-naive time gate.
 
     The default constructed shape means **always armed** (empty ``windows`` + all seven days),
     so a condition with no schedule behaves byte-for-byte as before. The gate consults
@@ -800,7 +801,7 @@ class Tier0Signal:
 
 
 # ---------------------------------------------------------------------------
-# Incident (A1) — a fired-event record carrying a captured relevant snippet.
+# Incident — a fired-event record carrying a captured relevant snippet.
 # ---------------------------------------------------------------------------
 
 
@@ -833,7 +834,7 @@ class IncidentSnippet:
 
 @dataclass(frozen=True)
 class AudioFrame:
-    """A typed audio signal — the first-class AUDIO modality the eye can read (B2).
+    """A typed audio signal — the first-class AUDIO modality the eye can read.
 
     The vendor-neutral, stdlib-only container the brain assembles for an audio/fused
     :class:`Vision.judge` escalation (the acoustic-onset wake path: an onset boundary on the mic
@@ -900,7 +901,7 @@ class Incident:
     suggested vocabulary is ``"real"`` / ``"false_alarm"`` but the field is a free ``str`` so
     callers can use their own scheme without a contract bump.
 
-    ``entity_id`` (1.3, D4) is the GENERIC correlation handle of the subject this fire was gated on
+    ``entity_id`` (1.3) is the GENERIC correlation handle of the subject this fire was gated on
     — the same ``entity_id`` that already keys the rising-edge gate (``(goal_id, entity_id)``) and
     rides on ``FireEvent``/``WatchEvent``. Without it two independent subjects tripping the same
     concern are indistinguishable downstream, which reads as spurious out-of-order/duplicate
@@ -920,7 +921,7 @@ class Incident:
     # that serves its own label endpoint; ``None`` on the keyless path. Reserved so the wire shape is
     # stable for consumers that do wire one up.
     label_url: str | None = None
-    # 1.3 (D4): the correlation handle of the gated subject. Appended LAST so every existing
+    # 1.3: the correlation handle of the gated subject. Appended LAST so every existing
     # positional construction of Incident(...) keeps its meaning.
     entity_id: str | None = None
 
@@ -934,7 +935,7 @@ class Incident:
         frame_ref: str | None = None,
     ) -> "Incident":
         """Attach the LOCAL label sink + join context so :meth:`record_label` can write a
-        :class:`LabelRecord` (L-1). The producer (``percept.run(label_store=...)`` /
+        :class:`LabelRecord`. The producer (``percept.run(label_store=...)`` /
         :class:`RuntimeSession`) calls this on each emitted incident. The bound state lives in a
         private instance attribute — NOT a dataclass field — so it never serializes, egresses, or
         appears in the JSON schema. Returns ``self`` for chaining."""
@@ -987,7 +988,7 @@ class Incident:
 
 
 # ---------------------------------------------------------------------------
-# AttentionIntent — the channel-neutral EFFECTIVE-attention membrane (spec §2.2).
+# AttentionIntent — the channel-neutral EFFECTIVE-attention membrane.
 # ---------------------------------------------------------------------------
 
 
@@ -1122,7 +1123,7 @@ class LabelRecord:
 
 
 # ---------------------------------------------------------------------------
-# WatchEvent (M1) — the event the public ``watch()`` entrypoint streams.
+# WatchEvent — the event the public ``watch()`` entrypoint streams.
 # ---------------------------------------------------------------------------
 
 WatchAction = Literal["fire", "ask", "silent"]
@@ -1133,7 +1134,7 @@ cognition core, per this module's zero-dependency design."""
 
 @dataclass
 class WatchEvent:
-    """The stable, versioned event ``percept.watch()`` streams — the M1 frozen public contract.
+    """The stable, versioned event ``percept.watch()`` streams — the frozen public contract.
 
     One event per gate action taken on a goal this tick: ``"fire"`` (a rising-edge, user-facing
     alert), ``"ask"`` (low-confidence or stale evidence — the gate refuses to guess), or
@@ -1187,7 +1188,7 @@ class Vision(Protocol):
         ``context`` is OPTIONAL structured facts the CALLER supplies (e.g. an LPR model's
         ``{"plate": "7XYZ123"}``, an OCR read's ``{"invoice_number": "INV-2291"}``) — read as
         authoritative, distinct from the user-asserted ``corrections``. There is no registry that fills
-        it for you (card D6c removed the dead enricher registry): a caller that wants specialist facts in
+        it for you (the dead enricher registry was removed): a caller that wants specialist facts in
         the judge passes them here. It defaults ``None`` so an un-enriched call is byte-for-byte today;
         a backend that ignores it degrades gracefully (the seam is wired even when the model is not)."""
         ...
@@ -1210,7 +1211,7 @@ class Specialist(Protocol):
 
 @runtime_checkable
 class Enricher(Protocol):
-    """DEPRECATED (card D6c) — the shape of a function that produces structured judge ``context``.
+    """DEPRECATED — the shape of a function that produces structured judge ``context``.
 
     **The enricher REGISTRY is gone.** ``percept.harness.enrichers`` (``register_enricher`` /
     ``enrich_signal`` / ``enricher_for``) shipped as "the way to add an OCR/LPR specialist without

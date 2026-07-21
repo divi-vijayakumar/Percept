@@ -1,7 +1,7 @@
 """The FROZEN membrane — vendor-neutral DTOs + Protocols.
 
 This module is the contract between the cognition core and everything vendor-specific.
-Per the implementation plan (§0, Phase 0) it is **immutable within a phase**: later phases
+It is **immutable within a phase**: later phases
 implement *behind* these interfaces and add *beside* them. If a phase needs to change a
 frozen shape here, stop and flag it — do not edit silently.
 

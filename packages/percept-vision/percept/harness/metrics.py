@@ -1,9 +1,9 @@
-"""PROBE-HARNESS SCAFFOLDING — ``metrics_collector`` (Viability §6, board card A13).
+"""PROBE-HARNESS SCAFFOLDING — ``metrics_collector``.
 
 **Standalone aggregation module — not runtime instrumentation.** This ingests already-produced
-records/samples (from probes, fixtures, or later the real pipeline via card A7) and computes the
-Viability §6 metrics catalog. It does NOT touch the runtime pipeline itself (``worker.py``,
-``agent.py``, ``gate.py``, ``observability.py`` are untouched — that wiring is card A7's job).
+records/samples (from probes, fixtures, or later the real pipeline) and computes the
+metrics catalog. It does NOT touch the runtime pipeline itself (``worker.py``,
+``agent.py``, ``gate.py``, ``observability.py`` are untouched — that wiring is future work).
 
 Reuses, rather than reimplements, three already-landed pieces:
 
@@ -14,7 +14,7 @@ Reuses, rather than reimplements, three already-landed pieces:
 * :class:`percept.harness.load_driver.LoadDriverStats` — ``observed_f`` (judge fan-out per
   admission), read back into :meth:`MetricsCollector.fanout_summary`.
 * :class:`percept.sequencing.GateDecision` — ``dropped``/``drop_reason`` (stale-completion drops
-  from evidence_seq supersession, card A8), read back into :meth:`MetricsCollector.drop_counts`.
+  from evidence_seq supersession), read back into :meth:`MetricsCollector.drop_counts`.
 
 **Determinism.** Every "now" this module can produce comes from exactly one injected
 :data:`~percept.clock.Clock` (``percept/clock.py``) passed to :class:`MetricsCollector` at
@@ -27,11 +27,11 @@ replaying a fixed timeline never needs the collector's own clock to be ticked in
 definition (no numpy) so the same input always produces the same output bit-for-bit, and so the
 p50/p95/p99 asserted in tests are exact rather than approximate/interpolated.
 
-Downstream: card A7 emits into the shapes defined here (:class:`QueueDepthSample` /
+Downstream: the runtime pipeline emits into the shapes defined here (:class:`QueueDepthSample` /
 :class:`CostSample` / :class:`RSSSample` / :class:`ClockSkewSample`, plus feeding
 :class:`~percept.contracts.JudgmentTiming` / :class:`~percept.sequencing.GateDecision` /
-:class:`~percept.harness.load_driver.LoadDriverStats` instances straight through); cards
-A18/A21/A25/A26 consume :class:`MetricsCollector`'s aggregate reports.
+:class:`~percept.harness.load_driver.LoadDriverStats` instances straight through); downstream
+consumers use :class:`MetricsCollector`'s aggregate reports.
 """
 
 from __future__ import annotations
@@ -97,7 +97,7 @@ class PercentileSummary:
 
 @dataclass(frozen=True)
 class LatencyReport:
-    """p50/p95/p99 for the five §6 derived latencies, each read via a :class:`JudgmentTiming`
+    """p50/p95/p99 for the five derived latencies, each read via a :class:`JudgmentTiming`
     helper (never recomputed from raw timestamps here)."""
 
     ingest_to_decision: PercentileSummary
@@ -213,7 +213,7 @@ class FanoutSummary:
 
 
 class MetricsCollector:
-    """Ingests probe/pipeline records and aggregates the Viability §6 metrics catalog.
+    """Ingests probe/pipeline records and aggregates the metrics catalog.
 
     Every method that stamps a "now" accepts an explicit ``at=`` override; when omitted it reads
     the injected ``clock`` exactly once — never a wall clock. Pure aggregation: nothing here mutates
@@ -254,7 +254,7 @@ class MetricsCollector:
         self._latency_samples.append(timing)
 
     def latency_summary(self) -> LatencyReport:
-        """p50/p95/p99 for all five §6 derived latencies, over every ingested judgment.
+        """p50/p95/p99 for all five derived latencies, over every ingested judgment.
 
         Raises :class:`ValueError` if no judgments have been recorded — matches
         :meth:`PercentileSummary.of`'s "at least one value" contract rather than silently
@@ -317,7 +317,7 @@ class MetricsCollector:
         """Currently-pending admissions per this tracker's live view (not a historical sample)."""
         return len(self._pending_since)
 
-    # -- stale-completion drops (evidence_seq supersession, card A8) -------------------------------
+    # -- stale-completion drops (evidence_seq supersession) -------------------------------
 
     def record_gate_decision(self, decision: GateDecision) -> None:
         """Ingest one :class:`~percept.sequencing.GateDecision`; counts it iff ``dropped``."""

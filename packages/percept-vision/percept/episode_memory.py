@@ -1,4 +1,4 @@
-"""Episode / entity-memory judge mode (E3, card J3) — the deferred H0 arm.
+"""Episode / entity-memory judge mode — the deferred H0 arm.
 
 H0's ablation ladder proved the **eye** (localized salience) is the biggest recall lever and the
 **ordered window** (temporal input, oldest->newest) the next one. The remaining, still-unproven lever
@@ -20,14 +20,12 @@ PRODUCTIZES that mechanism as a standalone, named judge mode:
     ``satisfied`` reflects INTEGRATED evidence (accumulated coverage + substance + confidence, via the
     existing :func:`~percept.concern.resolution_ready` bar) rather than one frame's read alone.
   * ``episode_memory_enabled`` — reads an opt-in ``goal.state["judge_mode"]`` flag, the seam a future
-    ``WatchProfile`` (E2/P1) can set to select this mode per (environment, goal-type, state) — see
-    ``docs/percept-mvp-implementation-plan.md`` §2-3.
+    ``WatchProfile`` can set to select this mode per (environment, goal-type, state).
 
 Additive only: this module does not import or modify ``agent.py``, ``gate.py``, ``concern.py``, or any
 backend — the existing single-frame and window judge paths are byte-for-byte unchanged. Wiring this
 mode into the live ``perceive_judged`` loop (so a WatchProfile's choice actually takes effect on the
-hot path) and registering it with the swappable judge seam are follow-up cards (J1's registry, and an
-E2/E3 integration card) — out of scope here.
+hot path) and registering it with the swappable judge seam are follow-up work — out of scope here.
 """
 
 from __future__ import annotations
@@ -38,12 +36,12 @@ from typing import Any
 from .adapters import Goal, Verdict
 from .concern import resolution_ready
 
-# The plan_mode/config value a WatchProfile will set to select this judge mode (E2, future). A goal
+# The plan_mode/config value a WatchProfile will set to select this judge mode (future). A goal
 # that never sets ``judge_mode`` is untouched by this module — no behavior changes by default.
 JUDGE_MODE_EPISODE_MEMORY = "episode_memory"
 
 # Bounded per-goal history — mirrors the existing "a 24/7 concern must not leak memory" discipline
-# (agent.py's ``ctx.process_log`` cap; plan R14).
+# (agent.py's ``ctx.process_log`` cap).
 _HISTORY_CAP = 256
 # Bounded number of concurrently-tracked goals in a store (same discipline, applied per-store).
 _STORE_CAP = 256
@@ -53,7 +51,7 @@ def episode_memory_enabled(goal: Goal) -> bool:
     """Has this goal opted into the episode-memory judge mode?
 
     Reads ``goal.state["judge_mode"]`` — the flag a future ``WatchProfile`` resolves per
-    (environment, goal-type, state) (E2). Read-only: this does not change what ``agent.py`` does with
+    (environment, goal-type, state). Read-only: this does not change what ``agent.py`` does with
     the goal today, it only exposes the seam so a WatchProfile-driven caller can select this mode."""
     return goal.state.get("judge_mode") == JUDGE_MODE_EPISODE_MEMORY
 
@@ -128,7 +126,7 @@ async def judge_episode_memory(
     exemplar: Any = None,
     corrections: dict | None = None,
 ) -> Verdict:
-    """One episode-memory judge step (J3): the next precision/recall lever after the ordered window.
+    """One episode-memory judge step: the next precision/recall lever after the ordered window.
 
     Threads ``store``'s prior running answer for ``goal.id`` INTO the judge call (the same
     ``context={"process_qa": True, "running_answer": ...}`` seam ``agent.py`` already uses for opted-in

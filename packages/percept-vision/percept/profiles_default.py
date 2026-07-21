@@ -1,6 +1,6 @@
-"""Seeded, H0-derived default WatchProfiles (card P3, impl plan §2/§3 continuous-learning bridge).
+"""Seeded, H0-derived default WatchProfiles (continuous-learning bridge).
 
-``percept.watchprofile`` (card P1) is schema + registry only — it defines the SHAPE of
+``percept.watchprofile`` is schema + registry only — it defines the SHAPE of
 ``Q(p | environment, goal, state)`` but ships with an empty ``DEFAULT_REGISTRY``. This module is the DATA:
 three named profiles read directly off the H0 viability eval (the charades-e2e ablation ladder), plus a
 WILDCARD fallback so :meth:`percept.watchprofile.WatchProfileRegistry.resolve` never raises
@@ -31,7 +31,7 @@ from .watchprofile import (
 # Provenance — shared by every profile below; all four knob sets are readouts of the SAME eval run.
 # ---------------------------------------------------------------------------
 
-#: The H0 charades-e2e ablation ladder (impl plan epic E2 / docs/percept-mvp-implementation-plan.md §1):
+#: The H0 charades-e2e ablation ladder:
 #: starting from the legacy byte-for-byte defaults (``salience_stat="mean"``, ``plan_mode="single"``,
 #: gate closed), each step below is one knob flip, measured independently, on the same eval track.
 H0_PROVENANCE = (

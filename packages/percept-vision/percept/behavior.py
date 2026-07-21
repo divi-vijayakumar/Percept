@@ -56,7 +56,7 @@ Sampling = Literal["recent", "uniform"]
 
 @dataclass(frozen=True)
 class KeySpec:
-    """How the re-arm boundary folds into the gate key — the ONE general re-arm mechanism (S2)."""
+    """How the re-arm boundary folds into the gate key — the ONE general re-arm mechanism."""
 
     by: tuple[KeyBy, ...] = ("entity",)
     bucket_s: float | None = None  # time_bucket: fold floor(t/bucket_s) -> a new bucket is a fresh edge
@@ -85,7 +85,7 @@ class PerceptionSpec:
     roi: RoiMode = "focus"  # focus = in-focus entity box (today); hint = authored region; full = whole frame
     sampling: Sampling = "recent"  # which frames from the window: most-recent vs evenly-spaced
     audio_s: float | None = None  # audio clip seconds for the audio/fused modality
-    window_s: float | None = None  # B1: time length of the temporal clip (seconds); bounds strip assembly
+    window_s: float | None = None  # time length of the temporal clip (seconds); bounds strip assembly
 
 
 @dataclass(frozen=True)
@@ -100,7 +100,7 @@ class BehaviorProgram:
     accumulate: Accumulator = field(default_factory=Accumulator)
     # An ABSOLUTE deadline stamp on the SAME clock the executor compares against (``now``). Resolved at
     # ARM time from the authored ``deadline_after_s`` duration (agent._arm_deadline) — never a raw duration,
-    # never a cross-timeline value. (R3: one field, one meaning, one clock.)
+    # never a cross-timeline value. (One field, one meaning, one clock.)
     deadline_at: float | None = None
     cadence_s: float | None = None
     hold_s: float | None = None  # R-1 sustained-duration: fire only after the condition holds this long
@@ -295,7 +295,7 @@ class BehaviorExecutor:
         return pred
 
     def _interval_rearm(self, ctx: "ConcernContext", key: tuple, spec: KeySpec, t: float) -> None:
-        """R2: an ``interval`` re-arm without leaking a key per bucket. The bucket number USED to be folded
+        """An ``interval`` re-arm without leaking a key per bucket. The bucket number USED to be folded
         into the gate key (``(goal, entity, floor(t/cadence))``), so a 30-day watch minted 43,200 permanent
         keys. Instead the key is just ``(goal, entity)`` and the elapsed bucket is remembered in the
         per-concern ctx; when it rolls over we ``gate.rearm(key)`` — the SAME fresh edge a new bucket used
@@ -325,9 +325,9 @@ class BehaviorExecutor:
         ctx.confusion.record(verdict, truth)  # constraint 2: additive, pre-gate, no trace effect
         if program.key.suppress_false and truth == "no":
             return None  # never-contract: a confident-false must not reach the gate
-        key = base_key  # R2: the key is ONLY (goal, entity) now — the interval bucket moved to ctx
+        key = base_key  # the key is ONLY (goal, entity) now — the interval bucket moved to ctx
         self._interval_rearm(ctx, key, program.key, t)
-        # R-1: pass the goal's dwell (hold_s) + the frame time. hold_s=None -> the gate ignores `now`
+        # Pass the goal's dwell (hold_s) + the frame time. hold_s=None -> the gate ignores `now`
         # and this is byte-for-byte the rising-edge path. A never-goal's key is marked no_evict so a TTL
         # drop can never re-arm it (the fire-once-ever contract; see Gate.evaluate).
         action = self.gate.evaluate(
@@ -401,7 +401,7 @@ class BehaviorExecutor:
         fw = program.accumulate.fire_when
         if fw and not self._fire_when(fw)({"n": n, "t": t}):
             return None
-        # R2b: ONE key per goal (was ``__episode__{n}`` — a permanent key per rep, unbounded over a long
+        # ONE key per goal (was ``__episode__{n}`` — a permanent key per rep, unbounded over a long
         # count). A new distinct rep number rolls the discriminator in ctx and re-arms the singleton key —
         # the same fresh edge the per-n key used to give, so every new episode still fires exactly once.
         key = (goal.id, "__episode__")
@@ -692,7 +692,7 @@ def coerce_authored_perception(raw) -> dict:
         spec["audio_s"] = min(_MAX_AUDIO_S, float(a))
     w = _num(raw.get("window_s"))
     if w is not None and w > 0:
-        # B1: a clip window implies a temporal strip — author the time bound and (unless overridden)
+        # A clip window implies a temporal strip — author the time bound and (unless overridden)
         # default the temporal mode to "window" so strip assembly is time-bounded, not frame-counted.
         spec["window_s"] = min(_MAX_WINDOW_S, float(w))
         spec.setdefault("temporal", "window")

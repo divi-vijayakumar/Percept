@@ -1,4 +1,4 @@
-"""RuntimeSession — the input seam over a running ``run()`` (PR 2.1).
+"""RuntimeSession — the input seam over a running ``run()``.
 
 ``run()`` is a pure OUTPUT generator (incidents/asks/frames out); an interactive agent also needs to push
 things IN: ask a question about what's on camera, arm/disarm goals at runtime, and interrupt a spoken turn
@@ -55,7 +55,7 @@ class RuntimeSession:
     def __init__(self, core: Any, *, store: Any = None, label_store: Any = None,
                  max_incidents: int | None = None) -> None:
         self._core = core
-        # L-1: the local LabelStore for out-of-band triage (`session.label(...)`) and the sink bound to
+        # The local LabelStore for out-of-band triage (`session.label(...)`) and the sink bound to
         # each yielded incident (so `incident.record_label(...)` writes). Injected; None -> labeling off.
         self._label_store = label_store
         # STUB / DEFERRED (control-plane): a shared store (EvidenceMemory / WatchPlan) is INJECTED at
@@ -108,7 +108,7 @@ class RuntimeSession:
         return self._muted
 
     def mute(self) -> None:
-        """Alias for :meth:`detach_audio_source` — the spec's power-ladder verb. MUTED: drop the mic
+        """Alias for :meth:`detach_audio_source` — the power-ladder verb. MUTED: drop the mic
         from perception (video-only judging, frozen audio gate) without ending the session."""
         self.detach_audio_source()
 
@@ -230,7 +230,7 @@ class RuntimeSession:
         string) and the goal's authored **requested delivery** (parsed once through the single interpreter,
         :func:`~percept.incidents.parse_requested_delivery`). The requested delivery is what an application
         needs to resolve an incident back to its goal's authored ttl/verbatim/preempt HINTS while the
-        attention policy still clamps the effective ``preempt`` by origin (PCPT-029, Part B)."""
+        attention policy still clamps the effective ``preempt`` by origin."""
         from percept.incidents import parse_requested_delivery
 
         registry = self._core.goals
@@ -360,7 +360,7 @@ async def start(core: Any, *, source: Any, on_frame: Callable | None = None,
     (see ``templates/realtime_voice_watch_agent``). ``store`` is the injected shared store (deferred; see
     :class:`RuntimeSession`). ``async for incident in run(...)`` remains the headless front door; this is
     the interactive layer on top."""
-    # FATAL seam (RFC §5): guard SYNCHRONOUSLY at the start() call (not inside the drain task, where a
+    # FATAL seam: guard SYNCHRONOUSLY at the start() call (not inside the drain task, where a
     # ModeError would surface late/awkwardly) when a live voice path (on_utterance) is wired behind a
     # scripted brain. Passing on_utterance later is caught by run()'s own guard.
     if on_utterance is not None:

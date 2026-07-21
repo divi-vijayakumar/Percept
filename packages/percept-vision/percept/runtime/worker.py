@@ -26,19 +26,19 @@ from percept.observability import get_logger
 _log = get_logger("percept.runtime.worker")
 
 
-# Card D5(b) — the vocabulary of REASONS a run's effective fps can differ from the requested one.
+# The vocabulary of REASONS a run's effective fps can differ from the requested one.
 # Closed set on purpose: a client reading a manifest at 2am must be able to map the value to a
 # sentence, not guess. "profile-default" means nothing overrode the request.
 FPS_REASONS = ("brief-window-coverage", "source-limit", "profile-default")
 
-#: Card D5(c) — accepted ``run(timebase=…)`` values. ``"auto"`` (the default) resolves to MEDIA time
+#: Accepted ``run(timebase=…)`` values. ``"auto"`` (the default) resolves to MEDIA time
 #: for recorded sources (files) and WALL/monotonic time for live devices/streams.
 TIMEBASE_CHOICES = ("auto", "media", "wall")
 
 
 @dataclass(frozen=True)
 class EffectiveFps:
-    """What capture rate this run ACTUALLY opened with, versus what the caller asked for (card D5(b)).
+    """What capture rate this run ACTUALLY opened with, versus what the caller asked for.
 
     Raising fps to cover a brief-event plan is not necessarily a bug; doing it INVISIBLY is. The run
     therefore retains the request, the effective value, and which of :data:`FPS_REASONS` explains the
@@ -66,7 +66,7 @@ class EffectiveFps:
 
 @dataclass(frozen=True)
 class EffectiveTimebase:
-    """Which clock this run stamps frame ``t`` (and therefore ``incident.ts``) on (card D5(c)).
+    """Which clock this run stamps frame ``t`` (and therefore ``incident.ts``) on.
 
     ``requested`` is the caller's ``run(timebase=…)`` (default ``"auto"``); ``resolved`` is the
     concrete ``"media"``/``"wall"`` handed to the capture source; ``reason`` records WHY —
@@ -86,12 +86,12 @@ class EffectiveTimebase:
 @dataclass(frozen=True)
 class EffectiveConfig:
     """The recorded effective configuration of one ``run()`` — the answer to "what did it ACTUALLY
-    do?" without re-deriving it from the source (card D5(b)+(c)).
+    do?" without re-deriving it from the source.
 
     Additive and runtime-local: it is exposed on :class:`RuntimeStats` (``stats.effective_config``),
     best-effort on the core (``core.effective_config``, so a compiled watch/manifest writer can read
     it off the same object it already holds) and emitted once through ``on_health`` as an
-    informational ``effective_config`` event. Card D8a's trace record can serialize :meth:`as_dict`
+    informational ``effective_config`` event. The structured trace record can serialize :meth:`as_dict`
     verbatim when it lands — no runtime change needed then."""
 
     fps: EffectiveFps
@@ -128,10 +128,10 @@ class RuntimeStats:
     # inline mode never touches either counter.
     judge_superseded: int = 0  # pending judge candidate replaced by a newer admitted frame
     judge_revision_dropped: int = 0  # pending candidate dropped: goals.revision moved after admission
-    # Card D5(b)/(c): the EFFECTIVE configuration this run actually opened with (never only the
+    # The EFFECTIVE configuration this run actually opened with (never only the
     # requested one), populated once at start. `None` until run() has resolved it.
     effective_config: "EffectiveConfig | None" = None
-    # Card D5(c): the two clocks of the most recent frame, recorded REGARDLESS of which one `t`
+    # The two clocks of the most recent frame, recorded REGARDLESS of which one `t`
     # (and therefore `incident.ts`) is stamped on — so an incident timestamp can always be located
     # on the other timeline after the fact. See :func:`_frame_clocks`.
     last_media_t: float | None = None
@@ -172,9 +172,9 @@ class _JudgeScheduler:
 
     ``stats.judge_calls`` counts at LAUNCH time (a superseded/dropped candidate never spent a call).
     Results carry the ADMISSION ``t`` so ``incident.ts`` stays the admitting frame's timestamp.
-    Lives in this module on purpose: the E1 parity test scans ``inspect.getsource(run)``'s module.
+    Lives in this module on purpose: a parity test scans ``inspect.getsource(run)``'s module.
 
-    ADR-001 §9 / card A9: the in-flight slot (``_active``) and the pending slot (``_pending``) are
+    ADR-001 §9: the in-flight slot (``_active``) and the pending slot (``_pending``) are
     BOUNDED BY CONSTRUCTION — each is a single scalar field, not a collection, so J<=1 and P<=1 always
     hold; overload cannot grow either past 1, it can only REPLACE what's there (reject/supersede).
     Every such replacement is TRACED, never silent: ``submit()``/``_launch_pending()`` append a
@@ -183,7 +183,7 @@ class _JudgeScheduler:
     ``"judge_superseded"`` (latest-wins pending replacement) or ``"judge_revision_dropped"`` (stale
     pending discarded on a goals-revision change) — each carrying an explicit ``reason``.
 
-    Card M3R — degrade-loud + backpressure, INSIDE this scheduler (not an inline guard: with
+    Degrade-loud + backpressure, INSIDE this scheduler (not an inline guard: with
     ``judge_dispatch="async"`` the admit site never awaits ``perceive_judged`` directly, so a guard
     planted there is simply never on the path a slow/wedged judge actually takes). Two more
     bound-driven, edge-triggered, TRACED conditions on top of the two above:
@@ -207,7 +207,7 @@ class _JudgeScheduler:
     and, only if something was actually latched, one ``"judge_scheduler_recovered"`` event reports it
     — health never stays latched red after the transient is gone (a fresh launch starts unlatched).
     A judge that RAISES is a separate, pre-existing path: caught inside ``Percept._safe_timed_judge``
-    (card A30, ``_JudgeDegraded`` -> ``"judge_degraded"``/``"judge_persistent_failure"``) before it can
+    (``_JudgeDegraded`` -> ``"judge_degraded"``/``"judge_persistent_failure"``) before it can
     ever reach this scheduler's task, or — for a failure outside that boundary — the scheduler's own
     fail-loud ``_fatal``/``drain()`` re-raise (``"runtime_error"``). Both stay exactly as they were.
     """
@@ -225,7 +225,7 @@ class _JudgeScheduler:
         self._core = core
         self._source = source
         self._stats = stats
-        # Card A7: optional percept.harness.metrics.MetricsCollector — when given, every admission
+        # Optional percept.harness.metrics.MetricsCollector — when given, every admission
         # into this scheduler's active/pending slot is tracked via record_admitted/
         # record_admission_resolved (queue depth + oldest-pending age), keyed by the admission `t`
         # (unique per frame within one run). Purely additive telemetry: the scheduler's own admit/
@@ -241,7 +241,7 @@ class _JudgeScheduler:
         self._trace: list[tuple[str, dict]] = []
         self._fatal: BaseException | None = None
         self._closing = False
-        # Card M3R — degrade-loud + backpressure (see class docstring). Tunable knobs, defaulted
+        # Degrade-loud + backpressure (see class docstring). Tunable knobs, defaulted
         # generously so a normal (non-overloaded, non-hung) run never trips either latch.
         self._stall_after_s = stall_after_s
         self._backpressure_after = backpressure_after
@@ -283,7 +283,7 @@ class _JudgeScheduler:
             self._mc_admit(t)  # launching right away — admitted into the funnel from this instant
             self._launch(t, judge_frame, revision)
             return
-        # M3R: the scheduler has no timer of its own — every submit() (the frame cadence) is the one
+        # The scheduler has no timer of its own — every submit() (the frame cadence) is the one
         # chance to notice the CURRENT active judgment has been outstanding too long. Checked before
         # the supersede below so a stalled-AND-overloaded tick reports both, in the order they became
         # true.
@@ -303,7 +303,7 @@ class _JudgeScheduler:
             funnel = getattr(self._core, "funnel", None)
             if funnel is not None:
                 funnel.dropped(reason="superseded_by_newer_admission", camera=self._source)
-            # M3R: a RUN of supersessions with no intervening completion is the judge falling behind
+            # A RUN of supersessions with no intervening completion is the judge falling behind
             # the frame rate (sustained overwrite) — distinct from, and louder than, any one supersede.
             self._consec_supersede += 1
             self._check_backpressure(t)
@@ -343,7 +343,7 @@ class _JudgeScheduler:
         ))
 
     def _report_recovery_if_latched(self) -> None:
-        """M3R: the symmetric half of ``_check_stall``/``_check_backpressure`` — clear whichever
+        """The symmetric half of ``_check_stall``/``_check_backpressure`` — clear whichever
         latch(es) are set and, only when at least one WAS set, trace a single
         ``"judge_scheduler_recovered"`` event naming which condition(s) cleared. A clean run (nothing
         ever latched) stays silent here — recovery is only news when a degradation was reported."""
@@ -365,7 +365,7 @@ class _JudgeScheduler:
         if self._stats is not None:
             self._stats.judge_calls += 1  # counted at launch — a superseded candidate spent nothing
         self._active_t = t
-        self._active_launch_wall = self._mc_now(t)  # M3R: this task's own clock, for stall detection
+        self._active_launch_wall = self._mc_now(t)  # this task's own clock, for stall detection
         self._stall_reported = False  # a fresh launch is unlatched — the stall window resets
         self._active = asyncio.create_task(
             self._core.perceive_judged(frame, self._source, t=t, expected_goals_revision=revision)
@@ -420,8 +420,8 @@ class _JudgeScheduler:
         self._mc_resolve(self._active_t)
         self._results.append((self._active_t, task.result()))
         self._active = None
-        # M3R: a judgment completing WITHOUT raising is the same "reachable again" proof card A30
-        # uses at the agent level (_note_judge_ok) — clear both latches and, only if one was actually
+        # A judgment completing WITHOUT raising is the same "reachable again" proof the agent level
+        # (_note_judge_ok) uses — clear both latches and, only if one was actually
         # latched (never spam a clean run), report the recovery ONCE, loud, before anything new
         # launches off this completion.
         self._report_recovery_if_latched()
@@ -498,12 +498,12 @@ class _JudgeScheduler:
                 pass
 
 
-# R6 — per-path timebase-skew tolerances. The tripwire compares a frame/chunk `t` against the core
+# Per-path timebase-skew tolerances. The tripwire compares a frame/chunk `t` against the core
 # clock; a divergence past the path's tolerance means the two timelines have come apart (a live source
 # left on "media", or a wedged pump replaying stale timestamps). Per-path because the two capture queues
 # have very different legitimate backlogs: the video queue is ~64 deep @ ~4fps (~16s), while the audio
-# queue is ~256 deep @ ~4 chunks/s (~64s) and a chunk sitting behind a blocked pump is exactly the
-# SPEC-B backlog condition — one global tolerance would false-fire on normal audio lag. Both are far
+# queue is ~256 deep @ ~4 chunks/s (~64s) and a chunk sitting behind a blocked pump is exactly an
+# expected backlog condition — one global tolerance would false-fire on normal audio lag. Both are far
 # below a media/wall confusion (~1e6 s), so a real skew still trips; both are comfortably above the
 # queue's own worst-case lag, so a healthy backlog never does.
 _VIDEO_SKEW_TOL_S = 30.0   # video queue worst-case ~16s + margin
@@ -519,7 +519,7 @@ async def _assert_timebase(
     emitted: "set[str]",
     on_health: "Callable | None",
 ) -> None:
-    """R6 CI net: emit ``on_health("timebase_skew", …)`` ONCE per path when a frame/chunk ``t`` and the
+    """CI net: emit ``on_health("timebase_skew", …)`` ONCE per path when a frame/chunk ``t`` and the
     core clock diverge past ``tol``. Only meaningful on a LIVE path (where ``t`` is supposed to BE the
     wall clock); an offline/media source deliberately runs ``t`` on a synthetic timeline and is never
     checked. Idempotent: once a path has emitted, it stays quiet (no per-frame spam). Best-effort — a
@@ -537,7 +537,7 @@ async def _assert_timebase(
 
 
 async def _drain_judge_health(core: Any, on_health: "Callable | None", t: float) -> None:
-    """Card A30: surface every judge-degradation event ``Percept.perceive_judged``/
+    """Surface every judge-degradation event ``Percept.perceive_judged``/
     ``_observe_and_log`` queued on ``core._judge_health_log`` (agent.py) -- a per-tick
     ``"judge_degraded"`` for each fail-closed-boundary catch (timeout / provider error / malformed /
     partial), plus a ONE-TIME ``"judge_persistent_failure"`` escalation the moment a watch key's
@@ -559,7 +559,7 @@ async def _drain_judge_health(core: Any, on_health: "Callable | None", t: float)
 
 
 async def _drain_gate_health(core: Any, on_health: "Callable | None", t: float) -> None:
-    """Card O2: surface every GATE SUPPRESSION ``percept.gate.Gate`` queued on ``core._gate_health_log``
+    """Surface every GATE SUPPRESSION ``percept.gate.Gate`` queued on ``core._gate_health_log``
     (agent.py) as a ``RuntimeHealthEvent("gate_suppressed")`` carrying the gate key, the typed reason
     code (one of ``percept.gate.SUPPRESSION_REASONS`` -- ``start_anchored`` / ``refractory``) and the
     stream time the decision was made at.
@@ -586,7 +586,7 @@ async def _drain_gate_health(core: Any, on_health: "Callable | None", t: float) 
 
 
 def _log_disposition(log: Any, *, incident_id: str, fire: Any, disposition: str, ts: float) -> None:
-    """Append one gate disposition to the :class:`~percept.labelstore.DispositionLog` (§4.3).
+    """Append one gate disposition to the :class:`~percept.labelstore.DispositionLog`.
 
     Best-effort: a disposition-log IO error must never kill the watch (it is telemetry, not the trust
     surface). ``incident_id`` is ``""`` for an ASK (asks are not incidents)."""
@@ -668,7 +668,7 @@ async def _call_sink_with_policy(
 
 def _clip_from_chunks(chunks: list, *, t_start: float | None = None, t_end: float | None = None) -> Any:
     """Assemble ONE audio clip from a list of raw audio chunks — the endpointed utterance handed to
-    ``on_utterance``. B1: the chunks come from the endpointer's OWN accumulation buffer (started→endpoint),
+    ``on_utterance``. The chunks come from the endpointer's OWN accumulation buffer (started→endpoint),
     NOT from slicing the shared rolling AudioWindow (whose small fused-judge size silently truncated any
     utterance longer than it). Typed :class:`AudioFrame` chunks are concatenated PCM-wise; a raw-bytes/
     tuple test source falls back to :func:`percept.agent._concat_audio`. Returns ``None`` for an empty
@@ -693,7 +693,7 @@ def _clip_from_chunks(chunks: list, *, t_start: float | None = None, t_end: floa
     )
 
 
-# B2/R7 — energy-freshness. A dead/stalled mic leaves the pump's last energy pinned at a (possibly
+# Energy-freshness. A dead/stalled mic leaves the pump's last energy pinned at a (possibly
 # speech-level) value; a WakePolicy fusing that channel would then escalate on phantom audio forever.
 # The frame loop reads energy only while FRESH — within ~2 chunk periods of the last real reading — so a
 # stale reading reads None and the gate degrades to VIDEO-ONLY (a dead mic must never pin the gate open).
@@ -704,7 +704,7 @@ _ENERGY_STALE_FLOOR_S = 0.5  # floor so a fast mic (small dt) still tolerates no
 
 def _energy_fresh(energy_t: float | None, now: float | None, chunk_dt: float | None) -> bool:
     """True when the last real energy reading (at ``energy_t``) is recent enough to feed the gate at
-    frame time ``now``. Both must share a timebase (post-A2 live capture stamps wall on both). Unknown
+    frame time ``now``. Both must share a timebase (live capture stamps wall on both). Unknown
     ``energy_t`` (no reading yet) is never fresh; an unknown ``now`` can't judge staleness → fresh."""
     if energy_t is None:
         return False
@@ -718,7 +718,7 @@ def _energy_fresh(energy_t: float | None, now: float | None, chunk_dt: float | N
 # _CAPTURE_HEADROOM_FPS): the fovea coast still drives JUDGING, but DECODE never exceeds this.
 _BRIEF_CAPTURE_CAP_FPS = 8.0
 
-# D1c — coverage-guarantee tripwire tolerances. A brief goal promises >= its window Nyquist in CAPTURED
+# Coverage-guarantee tripwire tolerances. A brief goal promises >= its window Nyquist in CAPTURED
 # frames; if the OPEN source can't deliver that (a slow live source, or the cap clamping below Nyquist for
 # a very short window), the guarantee is silently downgraded. We measure the OBSERVED capture cadence over
 # a short window of real frame timestamps and report ONCE when it falls short — the durable rule (report an
@@ -728,8 +728,7 @@ _CAPTURE_UNMET_TOL = 0.85        # observed must reach 85% of the promised Nyqui
 
 
 def _capture_plan(goals: list, base_fps: float) -> tuple[float, Any, float]:
-    """Derive ``(capture_fps, coast_controller, required_fps)`` from active goals' sensor plans (TODO 1
-    / Build 5).
+    """Derive ``(capture_fps, coast_controller, required_fps)`` from active goals' sensor plans.
 
     A brief-action *judge* goal (one carrying a ``sense.brief_window_s`` prior) compiles a SENSITIVE
     above-Nyquist cadence via :func:`~percept.sensorplan.sensor_plan_for`; ordinary goals compile no
@@ -741,7 +740,7 @@ def _capture_plan(goals: list, base_fps: float) -> tuple[float, Any, float]:
 
     ``required_fps`` is the highest brief-goal Nyquist floor (``base_fps`` of its sensitive cadence) —
     the coverage GUARANTEE the open source must actually deliver. The worker compares the observed
-    capture cadence against it and emits ``capture_plan_unmet`` when it can't be met (D1c): a coverage
+    capture cadence against it and emits ``capture_plan_unmet`` when it can't be met: a coverage
     guarantee that can't be honored is REPORTED, never silently downgraded."""
     from percept.sampling import SamplingController, SensePolicy
     from percept.sensorplan import sensor_plan_for
@@ -770,7 +769,7 @@ def _capture_plan(goals: list, base_fps: float) -> tuple[float, Any, float]:
     return capture, (SamplingController(policy) if policy is not None else None), required
 
 
-# Card D5(c) — recorded-media extensions. A `str` source carrying one of these is a RECORDED source:
+# Recorded-media extensions. A `str` source carrying one of these is a RECORDED source:
 # it has a real media timeline, so `t` (and every `incident.ts`) must be stamped on it. Anything else
 # a str source can be (webcam:, mic:, rtsp://, an opaque live stream) has no media clock at all, so it
 # stays on wall/monotonic time. Unknown/exotic URIs therefore keep today's live behaviour.
@@ -802,12 +801,12 @@ def _is_recorded_source(uri: str) -> bool:
 
 
 def _resolve_timebase(source: Any, requested: str) -> EffectiveTimebase:
-    """Resolve ``run(timebase=…)`` against ``source`` (card D5(c)).
+    """Resolve ``run(timebase=…)`` against ``source``.
 
-    ``"auto"`` (the default) is the fix for the bug this card exists for: a 36s clip decoded in 0.72s
+    ``"auto"`` (the default) is the fix for a specific bug: a 36s clip decoded in 0.72s
     of wall time used to stamp every ``incident.ts`` with the decode instant, making the timestamps
     useless as audit evidence against the media. Recorded sources now run on MEDIA time; live
-    devices/streams stay on WALL time (they must share the agent's deadline clock — card A2/R3). An
+    devices/streams stay on WALL time (they must share the agent's deadline clock). An
     explicit ``"media"``/``"wall"`` always wins."""
     if requested not in TIMEBASE_CHOICES:
         raise ValueError(
@@ -825,7 +824,7 @@ def _resolve_timebase(source: Any, requested: str) -> EffectiveTimebase:
 
 
 def _frame_clocks(t: float, *, timebase: str, t0: float | None, wall_now: float) -> tuple[float, float]:
-    """Both clocks for a frame stamped ``t``, recorded regardless of which one ``t`` IS (card D5(c)).
+    """Both clocks for a frame stamped ``t``, recorded regardless of which one ``t`` IS.
 
     On ``"media"`` the frame's media offset IS ``t`` and the wall reading is the worker's receipt time.
     On ``"wall"`` the frame's wall time IS ``t`` and the media-equivalent is the elapsed stream offset
@@ -913,8 +912,8 @@ async def run(
 ) -> AsyncIterator:
     """Drive a live ``source`` through the gate + brain, yielding an :class:`Incident` on each rising edge.
 
-    - ``on_incident(incident)`` — the notification sink (SMS / Slack / webhook lives here). Card A31:
-      wrapped in an :class:`~percept.runtime.sinks.IdempotentSink` bound to a bounded, restart-
+    - ``on_incident(incident)`` — the notification sink (SMS / Slack / webhook lives here). Wrapped
+      in an :class:`~percept.runtime.sinks.IdempotentSink` bound to a bounded, restart-
       surviving :class:`~percept.runtime.sinks.IdempotencyLedger` keyed by ``incident.id`` (the
       event_id) — a redelivery of an event_id already delivered to terminal-OK is deduped (the sink is
       not called again), while a retry of an in-flight/failed one still reaches it normally.
@@ -945,7 +944,7 @@ async def run(
 
       **The utterance is reconstructed from the endpointer's OWN chunk buffer** (accumulated started→
       endpoint), NOT sliced from the shared rolling AudioWindow — so a turn longer than the fused window
-      is handed WHOLE, not truncated to the window's last N seconds (B1). ``utterance_max_s`` (default
+      is handed WHOLE, not truncated to the window's last N seconds. ``utterance_max_s`` (default
       ``60``) bounds that buffer so a stuck-open mic can't grow it without limit; a turn exceeding the cap
       is handed capped AND ``on_health("utterance_truncated")`` fires (never a silent drop).
     - ``audio_window_s`` — size (seconds) of the shared AudioWindow the FUSED/audio judge reads (distinct
@@ -976,7 +975,7 @@ async def run(
     - ``wall_clock`` — monotonic time source for ``deaf_until`` + ``stale_audio_s`` (default
       :func:`time.monotonic`; injectable for tests). Distinct from ``clock`` (civil time for schedules).
 
-    - ``structural_adapter`` / ``semantic_adapter`` — the TIER-0 EXTENSION SEAM (card D6a): ``(frame) ->
+    - ``structural_adapter`` / ``semantic_adapter`` — the TIER-0 EXTENSION SEAM: ``(frame) ->
       float in 0..1`` callables that fill the ``structural`` / ``semantic`` channels of the
       :class:`~percept.adapters.Tier0Signal` this run reports, instead of the motion-only ``0.0``.
       This is how you supplement tier 0 with a cheap local model — a CLIP/embedding drift score, a pose
@@ -989,11 +988,11 @@ async def run(
       once per frame on the gate frame, so keep them cheap, and keep them total — an adapter that raises
       propagates out of the gate and stops the watch (loudly, not silently). Both default ``None`` → the
       reported signal and every escalation decision are byte-for-byte the motion-only path.
-    - ``label_store`` — optional :class:`~percept.labelstore.LabelStore` (L-1). When set, every yielded
+    - ``label_store`` — optional :class:`~percept.labelstore.LabelStore`. When set, every yielded
       incident is bound to it, so ``incident.record_label(good, ...)`` writes a LOCAL
       :class:`~percept.contracts.LabelRecord` (the feedback intake). Default ``None`` → ``record_label``
       raises (nothing bound); the firing path is byte-for-byte either way.
-    - ``disposition_log`` — optional :class:`~percept.labelstore.DispositionLog` (§4.3). When set, every
+    - ``disposition_log`` — optional :class:`~percept.labelstore.DispositionLog`. When set, every
       gate ``FIRE``/``ASK`` appends a ``{incident_id, verdict_ref, disposition, ts}`` row (the escalation
       meter's raw feed, distinct from ``Verdict.usage``). Default ``None`` → nothing written, byte-for-byte.
     - ``judge_dispatch`` — how an admitted frame's cloud judgment is driven. ``"async"`` (default)
@@ -1008,7 +1007,7 @@ async def run(
       ``stats.judge_superseded`` / ``stats.judge_revision_dropped`` count the frames
       overload/goal-changes discarded. A ``RuntimeHealthEvent("judge_dispatch")`` announces the mode
       once at start; escalation health events carry live ``judge_active``/``judge_pending`` (each
-      0/1) in async mode. Card M3R: the scheduler also degrades LOUD — ``"judge_scheduler_stalled"``
+      0/1) in async mode. The scheduler also degrades LOUD — ``"judge_scheduler_stalled"``
       (the active judgment has run past ``judge_stall_after_s``, a hang) and
       ``"judge_scheduler_backpressure"`` (the pending slot has been superseded
       ``judge_backpressure_after`` times in a row — the judge is slower than the frame rate), each
@@ -1017,7 +1016,7 @@ async def run(
     - ``judge_stall_after_s`` / ``judge_backpressure_after`` — thresholds for the two health events
       just above (async mode only); the defaults are generous enough that a normal run never trips
       either.
-    - ``metrics_collector`` — optional :class:`~percept.harness.metrics.MetricsCollector` (card A13).
+    - ``metrics_collector`` — optional :class:`~percept.harness.metrics.MetricsCollector`.
       When set (``judge_dispatch="async"`` only — the inline path has no queue to measure), every
       admission into the :class:`_JudgeScheduler`'s active/pending slot is tracked via
       ``record_admitted``/``record_admission_resolved``, so ``collector.queue_depth_series()`` /
@@ -1027,24 +1026,24 @@ async def run(
       counters (:mod:`percept.observability`), which this run always emits when ``core`` exposes a
       ``.funnel`` (a bare duck-typed core without one is untouched).
 
-    - ``timebase`` — which clock frame ``t`` (and therefore ``incident.ts``) is stamped on, card D5(c).
+    - ``timebase`` — which clock frame ``t`` (and therefore ``incident.ts``) is stamped on.
       ``"auto"`` (default) resolves per source: MEDIA time for a RECORDED source (a file — so an
       incident timestamp is meaningful against the media; a 36s clip decoded in 0.72s used to stamp
       every incident with the decode instant, which made the timestamps useless as audit evidence),
       WALL/monotonic for a LIVE device/stream (``webcam:0``, ``rtsp://…`` — those must share the
-      agent's deadline clock, card A2/R3). ``"media"``/``"wall"`` force the choice. A non-``str``
+      agent's deadline clock). ``"media"``/``"wall"`` force the choice. A non-``str``
       source feeds its own explicit ``t`` and is never re-stamped, whatever this says. BOTH clocks are
       recorded per frame regardless (``stats.last_media_t`` / ``stats.last_wall_t``), so an incident
       timestamp can always be located on the other timeline afterwards.
 
-    Card D5(b): the capture rate this run actually opens with is RECORDED, never silently substituted —
+    The capture rate this run actually opens with is RECORDED, never silently substituted —
     ``stats.effective_config`` (an :class:`EffectiveConfig`) carries ``requested_fps``/``effective_fps``
     and the ``reason`` (``brief-window-coverage`` — a brief-event plan needs the cadence;
     ``source-limit`` — a str source's rate is fixed at open, so the headroom cap is taken up front;
     ``profile-default`` — nothing overrode the request), the same record is mirrored onto
     ``core.effective_config`` and emitted once as an informational ``effective_config`` health event.
     An override is not by itself a warning; the loud channel stays reserved for a coverage requirement
-    that is actually UNMET (``capture_plan_unmet``, D1c).
+    that is actually UNMET (``capture_plan_unmet``).
 
     Owns capture off the consumer thread; the per-goal cadence + the three-state gate decide *when* and
     *whether* to fire. Yields incidents lazily, so an ``async for incident in run(...)`` is the front door.
@@ -1054,9 +1053,9 @@ async def run(
     from percept.edge.detectors import DetectorBank
     from percept.edge.tier0 import MotionGate, compile_watchspec
 
-    # R-0 convenience: `percept.run(source=..., goals=[...])` with no pre-built core. Build a Percept
+    # Convenience: `percept.run(source=..., goals=[...])` with no pre-built core. Build a Percept
     # here and arm each goal, so the one-line quickstart is real. Passing an explicit `core` (the
-    # canonical form) takes precedence — and card D5(a): supplying `goals`/`vision` ALONGSIDE a core is
+    # canonical form) takes precedence — and supplying `goals`/`vision` ALONGSIDE a core is
     # now a hard ValueError, not a silent discard. The old behaviour ("ignored when core is given") ran
     # a byte-identical watch that simply never armed the caller's goals: the exact silent failure that
     # cost two client teams a full debugging cycle. A warning would still permit that run, so this
@@ -1077,9 +1076,9 @@ async def run(
         for i, g in enumerate(goals):
             core.add_goal(_as_goal(g, i))
 
-    # FATAL seam (RFC §5): a live voice-escalation path (on_utterance) behind a SCRIPTED brain is the
+    # FATAL seam: a live voice-escalation path (on_utterance) behind a SCRIPTED brain is the
     # demo bug — every spoken "watch X" is silently dropped. Refuse it here, where the language path is
-    # actually wired. A code-armed watch (no on_utterance) with a scripted conductor is fine (§5).
+    # actually wired. A code-armed watch (no on_utterance) with a scripted conductor is fine.
     if on_utterance is not None:
         from percept.agent import _guard_live_language_path
 
@@ -1094,8 +1093,8 @@ async def run(
     # Non-blocking judge dispatch: in "async" mode the admit site routes to this single-flight
     # scheduler instead of awaiting the network judgment inline. ONE scheduler per run() — run drives
     # one source (the slot is per-source; a future multi-source runner would key a dict of these).
-    # metrics_collector rides along so the scheduler can report queue depth / oldest-pending age
-    # (card A7); inline mode has no queue to measure, so the collector is simply unused there.
+    # metrics_collector rides along so the scheduler can report queue depth / oldest-pending age.
+    # Inline mode has no queue to measure, so the collector is simply unused there.
     _judge_sched = (
         _JudgeScheduler(
             core, gate_source, stats, metrics_collector=metrics_collector,
@@ -1103,7 +1102,7 @@ async def run(
         )
         if judge_dispatch == "async" else None
     )
-    # Card A7: the standard telemetry funnel (seen->gated->judged->refused->fired,
+    # The standard telemetry funnel (seen->gated->judged->refused->fired,
     # percept.observability.Funnel), bound to THIS core's Metrics when it exposes one (the Percept
     # agent always does; a bare duck-typed core without `.funnel` leaves this None and the two calls
     # below become no-ops — byte-for-byte). judged/refused/fired are already emitted inside
@@ -1112,7 +1111,7 @@ async def run(
     # proven in the harness loop (percept.harness.tier0._Tier0Loop).
     _funnel = getattr(core, "funnel", None)
 
-    # R-1: batteries-included gate bound. A 24/7 watch must not carry an unbounded gate; install the
+    # Batteries-included gate bound. A 24/7 watch must not carry an unbounded gate; install the
     # configured TTL/LRU as the DEFAULT the instant we drive it (a bare Percept stays unbounded — the
     # opt-out — but the runtime is the always-on entry point, so it opts IN). Explicit gate bounds win: we
     # only fill an UNSET (None) bound, never override one the caller already chose. The TTL sweep rides the
@@ -1127,7 +1126,7 @@ async def run(
         if getattr(_gate, "max_keys", None) is None and mk > 0:
             _gate.max_keys = int(mk)
 
-    # PR 2.2: restart durability. Rehydrate goals/entities/action-log from a persistence store BEFORE
+    # Restart durability. Rehydrate goals/entities/action-log from a persistence store BEFORE
     # compiling the gate, so a restarted 24/7 watch resumes its armed goals + refractory state instead
     # of re-arming edges (which would double-fire). Default (persistence=None) is byte-for-byte.
     if persistence is not None and restore:
@@ -1135,7 +1134,7 @@ async def run(
         if load is not None:
             load(persistence)
 
-    # Card A31 / ADR-001 §6: the delivery-path idempotency ledger — bounded, restart-surviving, keyed
+    # ADR-001 §6: the delivery-path idempotency ledger — bounded, restart-surviving, keyed
     # by event_id (= Incident.id, percept/incidents.py). Built unconditionally (mirrors _funnel/_gate
     # above) so the dedupe-on-redelivery guarantee holds even when persistence isn't wired at all; when
     # `persistence` IS given it is rehydrated here (a corrupt/missing snapshot is a no-op — never blocks
@@ -1157,8 +1156,8 @@ async def run(
         """(Re)compile the WatchSpec → gate + detector banks + fovea coast from the core's CURRENT active
         goals. Called once at start, and again on a goal-registry revision change when
         regate_on_goal_change is set (so a goal armed mid-run — e.g. by voice — actually reaches the
-        tier-0 gate). On a regate the new gate ADOPTS the prior gate's per-goal throttle + prev frame
-        (D2), and a surviving goal's detector bank is REUSED (its running rep-peak / refractory state must
+        tier-0 gate). On a regate the new gate ADOPTS the prior gate's per-goal throttle + prev frame,
+        and a surviving goal's detector bank is REUSED (its running rep-peak / refractory state must
         not reset mid-rep) — so arming one goal never disturbs the others."""
         active = list(core.goals.active())
         s = compile_watchspec(
@@ -1174,8 +1173,8 @@ async def run(
                 "p95": settings.edge.motion_gate_p95,
             },
         )
-        # clock (PR 2.2): a civil-time source arms per-goal Schedules (C1); None -> always-armed (default).
-        # D6(a): the tier-0 extension seam, reachable from the supported entrypoint. None -> the gate's
+        # clock: a civil-time source arms per-goal Schedules; None -> always-armed (default).
+        # The tier-0 extension seam, reachable from the supported entrypoint. None -> the gate's
         # structural/semantic channels stay 0.0 and this is byte-for-byte the motion-only path.
         g = MotionGate(
             s,
@@ -1186,11 +1185,11 @@ async def run(
             semantic_adapter=semantic_adapter,
         )
         if prev_gate is not None:
-            g.adopt_state(prev_gate)  # D2: carry throttle + prev for surviving goal_ids
-        # PR 1.3: one detector bank per goal that selected edge detectors (state['detectors']). The bank
+            g.adopt_state(prev_gate)  # carry throttle + prev for surviving goal_ids
+        # One detector bank per goal that selected edge detectors (state['detectors']). The bank
         # emits timed boundaries (rep peaks, acoustic onsets) from the CHEAP motion/energy signals at
         # native fps — never spends a cloud judge. No detectors -> no banks -> byte-for-byte pre-PR.
-        # D2: reuse a surviving goal's bank so a regate mid-rep doesn't drop/double-count a rep.
+        # Reuse a surviving goal's bank so a regate mid-rep doesn't drop/double-count a rep.
         b = {}
         for c in s.conditions:
             if not getattr(c, "detectors", None):
@@ -1199,23 +1198,23 @@ async def run(
                 b[c.goal_id] = prev_banks[c.goal_id]
             else:
                 b[c.goal_id] = DetectorBank(c.detectors)
-        # TODO 1 / Build 5 (D1a): rebuild the fovea coast alongside the spec/gate/banks so a brief-action
+        # Rebuild the fovea coast alongside the spec/gate/banks so a brief-action
         # goal armed MID-RUN gets its above-Nyquist coast too (it was previously computed once at t0 and a
-        # mid-run brief goal never received one). `_req` is the coverage floor (D1c) the open source must
+        # mid-run brief goal never received one). `_req` is the coverage floor the open source must
         # meet. No brief goal -> (None, 0.0) -> byte-for-byte the fixed-fps path.
         _cap, _coast, _req = _capture_plan(active, fps)
         return s, g, b, _coast, _req
 
     spec, gate, banks, coast, required_fps = _build_gate()
     perceive_boundary = getattr(core, "perceive_boundary", None)
-    goals_revision = getattr(core.goals, "revision", None)  # PR 2.1: watch for mid-run goal changes
-    # TODO 1 / Build 5: a brief-action goal raises the capture rate + arms a fovea coast so a sub-second
+    goals_revision = getattr(core.goals, "revision", None)  # watch for mid-run goal changes
+    # A brief-action goal raises the capture rate + arms a fovea coast so a sub-second
     # window is covered above its Nyquist; no brief goal -> (fps, None) -> byte-for-byte the fixed-fps path.
     # The source-open rate is FIXED once (a live source can't change fps mid-stream), so when a brief goal
     # could be armed MID-RUN (regate on) over a LIVE source we open at the headroom cap now, leaving the
-    # capture headroom a voice-armed brief goal will need — gate/coast then ration the actual judging (D1b).
+    # capture headroom a voice-armed brief goal will need — gate/coast then ration the actual judging.
     capture_fps, _, _ = _capture_plan(list(core.goals.active()), fps)
-    # Card D5(b): the same two overrides as before — but RECORDED, not silent. `reason` names which one
+    # The same two overrides as before — but RECORDED, not silent. `reason` names which one
     # moved the rate (a plan cadence, or the fixed-at-open headroom cap a str source needs), so a client
     # reading the effective config can tell a deliberate 5x from an accident.
     _fps_reason = "brief-window-coverage" if capture_fps > fps else "profile-default"
@@ -1226,7 +1225,7 @@ async def run(
     effective_fps = EffectiveFps(
         requested_fps=float(fps), effective_fps=float(capture_fps), reason=_fps_reason,
     )
-    # Card D5(c): resolve the clock BEFORE the capture source is opened; both the video and the audio
+    # Resolve the clock BEFORE the capture source is opened; both the video and the audio
     # path get their own record (a "mic:0" live mic and a "session.wav" recording resolve differently
     # even inside one run).
     video_tb = _resolve_timebase(source, timebase)
@@ -1241,7 +1240,7 @@ async def run(
     except Exception:  # noqa: BLE001 - a duck-typed/slotted core must never break the run over telemetry
         pass
     clips = FrameWindow(size=snippet_size)  # rolling pre-roll buffer for the incident snippet
-    # D1c coverage-guarantee tripwire (emit-once). Tracks the observed capture cadence against the brief
+    # Coverage-guarantee tripwire (emit-once). Tracks the observed capture cadence against the brief
     # goal's required Nyquist floor (required_fps); reset when a regate RAISES the requirement.
     _cap_req_seen = 0.0
     _cap_t0: float | None = None
@@ -1257,7 +1256,7 @@ async def run(
         core.on_trace = on_trace  # the per-frame decision trace flows out of perceive_judged
     audio_task = None  # bound before try so the finally can always cancel it, even on setup failure
     autosave_task = None
-    # R1: in-flight on_utterance handlers, spawned OFF the pump. Tracked so the finally can cancel them —
+    # In-flight on_utterance handlers, spawned OFF the pump. Tracked so the finally can cancel them —
     # a voice turn must not outlive the run (a dangling STT/Live turn after stop() is a leak).
     _utt_tasks: set = set()
 
@@ -1270,7 +1269,7 @@ async def run(
             task.exception()
 
     def _task_watchdog(kind: str) -> "Callable[[asyncio.Task], None]":
-        # B3-residual: a raise at the pump/autosave COROUTINE level (not in a handler) died silently —
+        # A raise at the pump/autosave COROUTINE level (not in a handler) died silently —
         # only the per-utterance task had a done-callback. Retrieve the exception (so asyncio doesn't log
         # "exception never retrieved") and surface it through on_health. We do NOT re-raise into the run —
         # the run decides; a dead pump must fail LOUD, not silently. A normal-exit/cancelled task is quiet.
@@ -1294,13 +1293,13 @@ async def run(
             # observing (inline = judge latency shows up as capture stall; async = it shows up as
             # fire-emission lag instead).
             await _call_sink(on_health, RuntimeHealthEvent("judge_dispatch", data={"mode": judge_dispatch}))
-            # Card D5(b)/(c): announce the EFFECTIVE config once — informational, at the same tier as
+            # Announce the EFFECTIVE config once — informational, at the same tier as
             # runtime_started/judge_dispatch. This is a RECORD, not a warning: an fps override may be
             # correct, and the loud channel stays reserved for a requirement that is actually unmet.
             await _call_sink(on_health, RuntimeHealthEvent(
                 "effective_config", data=effective_config.as_dict()))
         dropped: list[int] = [0]  # shared with the capture thread; surfaced as stats.frames_dropped
-        source_health: list = []  # A-4: capture thread appends (kind, data); drained → on_health below
+        source_health: list = []  # capture thread appends (kind, data); drained → on_health below
         source_kwargs = {
             "maxsize": source_queue_size,
             "reconnects": source_reconnects,
@@ -1309,32 +1308,32 @@ async def run(
             "dropped": dropped,
             "health": source_health,
         }
-        # R3/Step-1 + card D5(c): a capture opened via open_source stamps each frame on the timebase
+        # A capture opened via open_source stamps each frame on the timebase
         # resolved above — WALL for a live device/stream (so frame `t` shares the timeline the agent
         # resolves deadlines / verification concerns on, self.clock), MEDIA for a recorded file (so
         # `incident.ts` means something against the media). Deterministic sources (iterables, replay,
         # the eval harness, every offline test) feed explicit `t` and are never re-stamped — the kwarg
         # only reaches open_source for a str source (see _aiter). A WALL path is the only one
-        # _assert_timebase (R6) can guard: on media, `t` is deliberately not the core clock.
+        # _assert_timebase can guard: on media, `t` is deliberately not the core clock.
         live_video = isinstance(source, str)
         if live_video:
             source_kwargs["timebase"] = video_tb.resolved
         live_audio = isinstance(audio_source, str)
         audio_kwargs = {"timebase": audio_tb.resolved} if live_audio and audio_tb else {}
-        # R6: emit-once skew tripwires, one per capture path (frame queue ~64 @4fps ~16s; audio queue
+        # Emit-once skew tripwires, one per capture path (frame queue ~64 @4fps ~16s; audio queue
         # ~256 @4/s ~64s — a single global tolerance would false-fire on a legitimately-backlogged audio
-        # chunk behind a blocked pump, the SPEC-B condition). Only armed on live paths (media is offline).
+        # chunk behind a blocked pump, an expected condition). Only armed on live paths (media is offline).
         _skew_emitted: set[str] = set()
-        # Card D5(c): the first frame's `t`, so a WALL-timebase run can still report an honest
+        # The first frame's `t`, so a WALL-timebase run can still report an honest
         # media-equivalent (elapsed stream offset). One-element list = assignable from the loop below.
         _clock_t0: list = [None]
-        # O2: the most recent frame timestamp, so the end-of-source gate-suppression drain can stamp its
+        # The most recent frame timestamp, so the end-of-source gate-suppression drain can stamp its
         # events on the stream timeline. 0.0 until the first frame (an empty source drains nothing).
         _last_t: float = 0.0
-        # Item 4 episode boundary: a process activity ends precisely on QUIET frames (no escalation), so the
+        # Episode boundary: a process activity ends precisely on QUIET frames (no escalation), so the
         # boundary check rides the per-frame cadence — only spending a summarize call when it actually fires.
         check_boundary = getattr(core, "check_episode_boundary", None)
-        # PR 1.4: the absence-native differentiators, driven every frame (they fire on QUIET frames the
+        # The absence-native differentiators, driven every frame (they fire on QUIET frames the
         # gate skips). Both are perception-robust (fire on the LACK of evidence, never a guess) and opt-in
         # per concern — check_observability only for miss_cost=='severe' ("I can't see the baby"), and
         # check_deadlines only for rearm=='deadline' ("overdue"). Default concerns -> both silent,
@@ -1342,8 +1341,8 @@ async def run(
         check_coverage = getattr(core, "check_observability", None)
         check_deadlines = getattr(core, "check_deadlines", None)
 
-        # --- autosave (PR 2.2): periodically persist state so a crash/restart resumes, not restarts. ----
-        # Card A31: also persists the delivery idempotency ledger's snapshot() (event_id -> ts of a
+        # --- autosave: periodically persist state so a crash/restart resumes, not restarts. ----
+        # Also persists the delivery idempotency ledger's snapshot() (event_id -> ts of a
         # terminal-OK delivery only — no secrets/media) alongside goals/entities, so a restart that
         # replays a redelivered Incident still dedupes it. Gated on `persistence` alone (not
         # `core.save_state`) — a bare duck-typed core without `save_state` still gets its delivery
@@ -1364,16 +1363,16 @@ async def run(
             autosave_task = asyncio.ensure_future(_autosave())
             autosave_task.add_done_callback(_task_watchdog("autosave_died"))
 
-        # --- audio ingress (PR 1.2): fill the AudioWindow + feed the gate an energy/onset signal --------
+        # --- audio ingress: fill the AudioWindow + feed the gate an energy/onset signal --------
         # `audio` holds the latest energy (+ the time of that reading and the observed chunk cadence, for
-        # the R7 freshness guard) and a one-shot onset-wake flag, shared with the pump task below (same
+        # the freshness guard) and a one-shot onset-wake flag, shared with the pump task below (same
         # event loop, cooperative — no lock). Default (audio_source=None) leaves it inert: energy stays
         # None and wake stays False, so gate.evaluate and the admit test are byte-for-byte the video path.
         audio = {"energy": None, "energy_t": None, "chunk_dt": None, "wake": False}
         _prev_chunk_at: list = [None]  # last chunk's t — for the observed inter-chunk cadence (chunk_dt)
         audio_task = None
         if audio_source is not None:
-            # B1: size the SHARED fused-judge AudioWindow (distinct from the per-utterance buffer below).
+            # Size the SHARED fused-judge AudioWindow (distinct from the per-utterance buffer below).
             # A voice-enabled session wants richer acoustic context than the small fused default; the
             # utterance itself no longer slices this window, so growing it can't truncate a turn. Only set
             # a fresh window (a restored/pre-existing one keeps its history).
@@ -1393,12 +1392,12 @@ async def run(
                 else:
                     onset = audio_gate  # a caller-supplied detector instance
 
-            # Voice-escalation endpointer (PR 3.x): only built when on_utterance is wired — default None
+            # Voice-escalation endpointer: only built when on_utterance is wired — default None
             # leaves the audio path byte-for-byte. `vad` can be any object with push(energy)->ev.endpoint.
             _vad = None
             _utt = {"start": None}  # start time of the utterance currently being spoken
-            _utt_buf: list = []  # B1: (at, chunk) accumulated started→endpoint — the OWN utterance buffer
-            _wall_anchor: list = [None]  # (wall0, stream0) at the first VAD chunk — R4 lag reference
+            _utt_buf: list = []  # (at, chunk) accumulated started→endpoint — the OWN utterance buffer
+            _wall_anchor: list = [None]  # (wall0, stream0) at the first VAD chunk — lag reference
             if on_utterance is not None:
                 if vad is not None:
                     _vad = vad
@@ -1414,7 +1413,7 @@ async def run(
                 # Pump every chunk into the AudioWindow (un-strands modality="fused"/"audio") and track
                 # energy + onsets. Never lets a bad audio chunk kill the run — the watch survives a mic drop.
                 async for at, chunk, energy in _audio_aiter(audio_source, **audio_kwargs):
-                    # R6: a LIVE mic stamps chunks on the wall clock; a divergence past the AUDIO tolerance
+                    # A LIVE mic stamps chunks on the wall clock; a divergence past the AUDIO tolerance
                     # (wider than video — a backlogged chunk behind a blocked pump is legitimate) trips once.
                     if live_audio and audio_tb is not None and audio_tb.resolved == "wall":
                         await _assert_timebase(
@@ -1432,7 +1431,7 @@ async def run(
                         pass
                     if stats is not None:
                         stats.audio_chunks += 1
-                    # R7: track the cadence + the time of the last REAL reading (a None-energy chunk is not
+                    # Track the cadence + the time of the last REAL reading (a None-energy chunk is not
                     # a fresh reading). The frame loop reads energy only while fresh (dead mic → video-only).
                     if _prev_chunk_at[0] is not None:
                         _d = at - _prev_chunk_at[0]
@@ -1450,7 +1449,7 @@ async def run(
                     # Voice escalation: endpoint a complete utterance and hand its clip to on_utterance.
                     # Runs AFTER push_audio so the just-heard chunk is already in the window we clip from.
                     if _vad is not None and energy is not None:
-                        # R2/R4: suppress the endpointer while the app is about to speak (deafen) or while
+                        # Suppress the endpointer while the app is about to speak (deafen) or while
                         # the pump is replaying a stale capture backlog (staleness). The chunk still filled
                         # the AudioWindow above — this is turn-taking, not perception. Reset the VAD when
                         # suppressed so a half-built utterance cannot straddle (survive) the window.
@@ -1477,7 +1476,7 @@ async def run(
                             if getattr(ev, "started", False):
                                 _utt["start"] = at
                                 _utt_buf.clear()  # a fresh turn — drop any pre-start residue
-                            # B1: accumulate the turn into our OWN buffer (started→endpoint), bounded by
+                            # Accumulate the turn into our OWN buffer (started→endpoint), bounded by
                             # utterance_max_s so a stuck-open mic can't grow it without limit.
                             if _utt["start"] is not None:
                                 _utt_buf.append((at, chunk))
@@ -1490,7 +1489,7 @@ async def run(
                                 buf = list(_utt_buf)
                                 _utt_buf.clear()
                                 first_t = buf[0][0] if buf else start_t
-                                # B1: hand the WHOLE turn from the own buffer (never a window slice).
+                                # Hand the WHOLE turn from the own buffer (never a window slice).
                                 clip = _clip_from_chunks(
                                     [c for _, c in buf], t_start=first_t, t_end=at)
                                 if clip is not None:
@@ -1508,7 +1507,7 @@ async def run(
                                     if on_health is not None:
                                         await _call_sink(on_health, RuntimeHealthEvent(
                                             "utterance", ts=at, data={"dur_s": _expected}))
-                                    # R1: hand off OFF the pump — a real handler (STT + voice turn + playback)
+                                    # Hand off OFF the pump — a real handler (STT + voice turn + playback)
                                     # blocking here guarantees a capture backlog replayed as self-echo the
                                     # instant it returns. The app owns concurrency (overlaps are possible;
                                     # the runtime does not serialize). Errors still route through the policy.
@@ -1528,7 +1527,7 @@ async def run(
                 if getattr(fire, "action", None) == ASK:
                     if stats is not None:
                         stats.asks += 1
-                    if disposition_log is not None:  # §4.3: escalation-meter raw feed (asks are not incidents)
+                    if disposition_log is not None:  # escalation-meter raw feed (asks are not incidents)
                         _log_disposition(disposition_log, incident_id="", fire=fire, disposition="ask", ts=at)
                     if on_health is not None:
                         await _call_sink(on_health, RuntimeHealthEvent("ask", ts=at, data={"goal_id": fire.goal_id}))
@@ -1543,13 +1542,13 @@ async def run(
                     stats.fires += 1
                 snippet = snippet_from_window(clips, kind=snippet_kind, pre_s=snippet_pre_s)
                 incident = make_incident(fire, ts=at, snippet=snippet)
-                if label_store is not None:  # L-1: bind the local label sink so incident.record_label() writes
+                if label_store is not None:  # bind the local label sink so incident.record_label() writes
                     incident.bind_labeler(
                         label_store.append,
                         verdict_ref=_verdict_ref(getattr(fire, "verdict", None)),
                         goal_id=getattr(fire, "goal_id", None),
                     )
-                if disposition_log is not None:  # §4.3: escalation-meter raw feed
+                if disposition_log is not None:  # escalation-meter raw feed
                     _log_disposition(disposition_log, incident_id=incident.id, fire=fire, disposition="fire", ts=at)
                 emit_trace = getattr(core, "_emit_trace", None)
                 if getattr(core, "on_trace", None) is not None and emit_trace is not None:
@@ -1571,7 +1570,7 @@ async def run(
                             data={
                                 "incident_id": incident.id,
                                 "goal_id": incident.concern_id,
-                                "entity_id": incident.entity_id,  # D4: which subject fired, not just which goal
+                                "entity_id": incident.entity_id,  # which subject fired, not just which goal
                             },
                         ),
                     )
@@ -1600,10 +1599,10 @@ async def run(
                 for _jt, _jfires in _judge_sched.drain():
                     async for incident in _emit_fires(_jfires, at=_jt):
                         yield incident
-                # A30: surface any judge_degraded/judge_persistent_failure events queued by the
+                # Surface any judge_degraded/judge_persistent_failure events queued by the
                 # perceive_judged calls that just drained above (core is shared across dispatch modes).
                 await _drain_judge_health(core, on_health, t)
-            # O2: surface any gate SUPPRESSION queued since the last tick (require_false_first /
+            # Surface any gate SUPPRESSION queued since the last tick (require_false_first /
             # refractory withholding a fire the baseline gate would have delivered). Drained here —
             # UNCONDITIONALLY, outside the dispatch-mode branch above and BEFORE the per-frame
             # `continue` paths — because the absence/coverage/episode checks below evaluate the gate on
@@ -1611,7 +1610,7 @@ async def run(
             # so this drains an empty queue and emits nothing unless a profile turned one on.
             _last_t = t
             await _drain_gate_health(core, on_health, t)
-            # Card D5(c): record BOTH clocks for this frame, whichever one `t` is stamped on, so an
+            # Record BOTH clocks for this frame, whichever one `t` is stamped on, so an
             # incident timestamp can be located on the other timeline after the run.
             if stats is not None:
                 stats.last_media_t, stats.last_wall_t = _frame_clocks(
@@ -1620,7 +1619,7 @@ async def run(
                 )
             if _clock_t0[0] is None:
                 _clock_t0[0] = t
-            # R6: on a WALL-timebase source, frame `t` IS the wall clock — if it has drifted from the core
+            # On a WALL-timebase source, frame `t` IS the wall clock — if it has drifted from the core
             # clock past the video tolerance, the timelines the gate/deadlines share have come apart. Emit
             # once. A media-timebase source runs `t` on a synthetic timeline by design and is never checked.
             if live_video and video_tb.resolved == "wall":
@@ -1628,7 +1627,7 @@ async def run(
                     t, getattr(core, "clock", None),
                     tol=_VIDEO_SKEW_TOL_S, path="video", emitted=_skew_emitted, on_health=on_health,
                 )
-            # PR 2.1 / E5: pick up goals armed/cancelled mid-run (e.g. by voice via RuntimeSession.arm)
+            # Pick up goals armed/cancelled mid-run (e.g. by voice via RuntimeSession.arm)
             # by recompiling the gate+banks when the registry revision moved. Default ON (a goal armed
             # mid-run MUST reach the gate — the proactive premise). Capture fps is fixed for the open
             # source; only the escalation logic re-arms (the important part for arm-at-runtime). When
@@ -1639,9 +1638,9 @@ async def run(
                 rev = getattr(core.goals, "revision", goals_revision)
                 if rev != goals_revision:
                     if regate_on_goal_change:
-                        # D2: pass the live gate + banks so the rebuild ADOPTS per-goal throttle + prev
+                        # Pass the live gate + banks so the rebuild ADOPTS per-goal throttle + prev
                         # frame and REUSES surviving goals' detector banks (no throttle release / rep
-                        # drop). D1a: coast + required_fps are rebuilt too (a mid-run brief goal gets its
+                        # drop). Coast + required_fps are rebuilt too (a mid-run brief goal gets its
                         # coast).
                         spec, gate, banks, coast, required_fps = _build_gate(gate, banks)
                     else:
@@ -1657,7 +1656,7 @@ async def run(
                                 "goals_changed_without_regate", ts=t,
                                 data={"from_revision": goals_revision, "to_revision": rev}))
                     goals_revision = rev
-            # D1c: a brief goal promised >= required_fps CAPTURED frames (its window Nyquist). Measure the
+            # A brief goal promised >= required_fps CAPTURED frames (its window Nyquist). Measure the
             # OBSERVED capture cadence over a short window of real frame timestamps; if the open source
             # can't meet it, REPORT it once (never silently downgrade). Reset when a regate raises the
             # requirement. No brief goal -> required_fps == 0 -> this whole block is skipped.
@@ -1679,7 +1678,7 @@ async def run(
                                     "capture_plan_unmet", ts=t,
                                     data={"required_fps": required_fps, "observed_fps": _observed,
                                           "capture_fps": capture_fps}))
-            # A-4: surface any capture-thread health events (e.g. a source whose DELIVERED fps diverges
+            # Surface any capture-thread health events (e.g. a source whose DELIVERED fps diverges
             # from its reported CAP_PROP_FPS — the previously-silent half-rate decimation). Drained on the
             # frame cadence so it fails LOUD through on_health instead of sitting in an unread list.
             if source_health and on_health is not None:
@@ -1707,7 +1706,7 @@ async def run(
             if check_boundary is not None:
                 async for incident in _emit_fires(await check_boundary(t=t, inactivity_s=episode_inactivity_s), at=t, from_boundary=True):
                     yield incident
-            # PR 1.4: absence-native fires — coverage loss ("I can't see the baby") + overdue deadlines.
+            # Absence-native fires — coverage loss ("I can't see the baby") + overdue deadlines.
             # Sync; ride every frame so they fire on quiet frames the gate skips. from_boundary=True marks
             # that they did NOT pass through perceive_judged (no upstream judge stage in their trace).
             if check_coverage is not None:
@@ -1718,7 +1717,7 @@ async def run(
                     yield incident
 
             # Feed the latest audio energy so a goal with a WakePolicy can fuse it; None (no audio_source)
-            # leaves the gate byte-for-byte the visual-only path. R7: read it ONLY while fresh — a dead/
+            # leaves the gate byte-for-byte the visual-only path. Read it ONLY while fresh — a dead/
             # stalled mic leaves energy pinned at its last (speech-level) value, which would otherwise keep
             # escalating the gate forever. A stale reading reads None → the gate degrades to VIDEO-ONLY.
             energy_now = audio["energy"] if _energy_fresh(audio["energy_t"], t, audio["chunk_dt"]) else None
@@ -1734,7 +1733,7 @@ async def run(
                     energy_now = None
             decision = gate.evaluate(gate_frame, ts=t, energy=energy_now)
 
-            # PR 1.3: run edge detectors on the cheap motion/energy signals at native fps. Each emitted
+            # Run edge detectors on the cheap motion/energy signals at native fps. Each emitted
             # boundary (a rep peak, an acoustic onset) is a distinct occurrence fed to the brain via
             # perceive_boundary (edge proposes · brain counts) — firing per the goal's accumulate.fire_when
             # WITHOUT a cloud judge. No banks -> this whole block is skipped (byte-for-byte the pre-PR path).
@@ -1747,7 +1746,7 @@ async def run(
                         if fired is not None:
                             async for incident in _emit_fires([fired], at=b.t):
                                 yield incident
-            # TODO 1: a brief-action goal's fovea coast forces a judge on a quiet, in-window frame the
+            # A brief-action goal's fovea coast forces a judge on a quiet, in-window frame the
             # motion gate would skip (above-Nyquist coverage). No brief goal -> coast is None -> this is
             # byte-for-byte the gate-only path.
             coast_admit = bool(coast and coast.should_process("__coast__", t, float(decision.signal.motion)))
@@ -1758,7 +1757,7 @@ async def run(
             audio["wake"] = False
             emit_trace = getattr(core, "_emit_trace", None)
             if getattr(core, "on_trace", None) is not None and emit_trace is not None:
-                # The tier-0 edge decision (O1): same shape H0's forensic trace used (motion/structural/
+                # The tier-0 edge decision — the same shape used elsewhere for forensic tracing (motion/structural/
                 # semantic/threshold/escalate) — emitted for EVERY frame, escalated or not, so "why didn't
                 # it fire" can be answered even when the gate never spent a cloud call. trace_id matches
                 # the one perceive_judged uses below (source+ts), so a dashboard can correlate the two.
@@ -1812,7 +1811,7 @@ async def run(
             for _jt, _jfires in _judge_sched.drain():
                 async for incident in _emit_fires(_jfires, at=_jt):
                     yield incident
-        # O2: the LAST tick's suppressions (and anything the end-of-source flush above produced) would
+        # The LAST tick's suppressions (and anything the end-of-source flush above produced) would
         # otherwise die with the queue — drain once more so a finite stream reports every suppression
         # it earned, not all-but-the-final-tick's.
         await _drain_gate_health(core, on_health, _last_t)
@@ -1828,11 +1827,11 @@ async def run(
             await _judge_sched.close(drain=False)
         if audio_task is not None:  # stop the audio pump; a dangling capture thread outlives the run otherwise
             audio_task.cancel()
-        for _t in list(_utt_tasks):  # R1: an in-flight voice turn must not outlive the run
+        for _t in list(_utt_tasks):  # an in-flight voice turn must not outlive the run
             _t.cancel()
         if autosave_task is not None:
             autosave_task.cancel()
-        # PR 2.2: one last save on the way out so a clean shutdown loses nothing since the last autosave.
+        # One last save on the way out so a clean shutdown loses nothing since the last autosave.
         if persistence is not None and getattr(core, "save_state", None):
             try:
                 core.save_state(persistence)

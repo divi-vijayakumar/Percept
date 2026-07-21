@@ -1,7 +1,7 @@
-"""Card P4 — profile versioning + provenance: content-addressed, auditable, reversible.
+"""Profile versioning + provenance: content-addressed, auditable, reversible.
 
-:mod:`percept.watchprofile` (P1) gave ``Q(p | environment, goal, state)`` a typed SHAPE, and
-:mod:`percept.profiles_default` (P3) seeded the H0-derived DATA. Both are in-process Python objects: a
+:mod:`percept.watchprofile` gave ``Q(p | environment, goal, state)`` a typed SHAPE, and
+:mod:`percept.profiles_default` seeded the H0-derived DATA. Both are in-process Python objects: a
 profile that only exists as a module-level constant cannot be shipped, diffed, or audited, and "recall
 went 0.68 -> 0.90 when we flipped these three knobs" cannot be expressed as an artifact. This module adds
 the three things that turn a profile into config you can reason about over time:
@@ -22,7 +22,7 @@ the three things that turn a profile into config you can reason about over time:
   from a later eval run must not change the profile's identity, otherwise "did the config actually change?"
   becomes unanswerable.
 
-And the payoff the impl plan's continuous-learning bridge (§3) needs: :func:`diff_registries` turns two
+And the payoff the continuous-learning bridge needs: :func:`diff_registries` turns two
 registry versions into an explicit, field-level :class:`RegistryDiff` — added / removed / changed profiles,
 each change a dotted-path ``before -> after`` :class:`FieldDelta`. That is *learnings-as-config-deltas*: an
 eval run's output is a diff you can read, review and — via :meth:`RegistryDiff.inverse` — reverse.

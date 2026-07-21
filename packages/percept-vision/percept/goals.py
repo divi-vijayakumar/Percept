@@ -101,7 +101,7 @@ class GoalRegistry:
     def create(self, goal: Goal) -> Goal:
         # A bare dict write is last-writer-wins: re-using an id silently DROPS the prior goal (a lost
         # watch instruction — e.g. two voice conditions that slugged to the same id). Report it loudly;
-        # never overwrite in silence. (D3b: the slug is now hash-suffixed, so a genuine collision here is
+        # never overwrite in silence. (The slug is now hash-suffixed, so a genuine collision here is
         # a real re-arm/override — still worth surfacing so it's never invisible.)
         prior = self._goals.get(goal.id)
         if prior is not None and self._status.get(goal.id) == "active":

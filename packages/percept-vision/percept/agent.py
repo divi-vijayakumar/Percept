@@ -506,7 +506,7 @@ class Percept:
             sense_policy=sense_policy,
             plan_mode=plan_mode,
         )
-        # R3: when the entity graph evicts a track (it caps at max_entities), sweep that entity's derived
+        # When the entity graph evicts a track (it caps at max_entities), sweep that entity's derived
         # state — its ``(goal_id, entity_id)`` gate keys AND any cached verdicts resting on it — so a 24/7
         # churn of entities can't leave orphan edges accumulating in the gate. Wired here (not at graph
         # construction) because the gate is built alongside the graph in the same call.
@@ -701,7 +701,7 @@ class Percept:
         self.goals.apply(ops)
         for op in ops:
             gid = op.goal.id if op.op == "create" and op.goal is not None else op.goal_id
-            # R3: resolve an authored deadline duration to an absolute stamp at ARM time — a goal armed
+            # Resolve an authored deadline duration to an absolute stamp at ARM time — a goal armed
             # mid-run (voice) must get its deadline_at on the live clock, not silently stay a duration.
             if op.op in ("create", "update") and gid is not None:
                 g = self.goals.get(gid)
@@ -891,7 +891,7 @@ class Percept:
 
         Absence IS the firing — there is no positive event to perceive, so this is perception-robust
         by construction: it fires on the LACK of a confident-yes, never on a guess. Rides the existing
-        tick/scheduler loop (S2) and feeds a synthetic verdict to the UNCHANGED gate on a dedicated
+        tick/scheduler loop and feeds a synthetic verdict to the UNCHANGED gate on a dedicated
         ``__overdue__`` key -> fires ONCE per overdue episode, re-arms if the expected event arrives.
         Only ``rearm == 'deadline'`` concerns (with a resolved ``deadline_at``) participate -> byte-for-byte.
         """
@@ -1159,7 +1159,7 @@ class Percept:
                     action = ev_fire.action
                 else:
                     action = "silent"
-                # D8b: the gate's own INPUTS ride along with its output, so a recorded trace is
+                # The gate's own INPUTS ride along with its output, so a recorded trace is
                 # replayable through the (deterministic) gate without the original frame or any
                 # model call — see percept.replay. Purely additive trace data; nothing branches on it.
                 await self._emit_trace(trace_id, now, "gate.classified", goal_id=goal.id,
@@ -1285,7 +1285,7 @@ class Percept:
         ready = resolution_ready(
             answer, len(ctx.process_log), confidence, at_boundary=at_boundary
         )
-        # R2b: the answer TEXT used to be folded into the gate key (``(goal, __resolved__, answer)``) — a
+        # The answer TEXT used to be folded into the gate key (``(goal, __resolved__, answer)``) — a
         # permanent key per distinct answer, unbounded over a long process. The discriminator now lives in
         # ctx: a *changed* answer (more evidence rewrote it) rolls it over and re-arms the ONE singleton
         # key, so a new answer resolves again while a repeated identical answer fires only once. Marked
@@ -1394,7 +1394,7 @@ class Percept:
         return verdict
 
     def _note_judge_degraded(self, key: Hashable, cause: Any) -> None:
-        """Card A30: record a degraded judge tick for ``key`` (the SAME ``(goal_id, entity_id)`` key
+        """Record a degraded judge tick for ``key`` (the SAME ``(goal_id, entity_id)`` key
         the gate/executor already use) and escalate ONCE if its consecutive-degrade streak crosses
         :data:`CONSECUTIVE_DEGRADE_ESCALATE`. Only QUEUES the health-log entries --
         ``percept/runtime/worker.py``'s ``run()`` loop drains :attr:`_judge_health_log` every tick
@@ -1422,7 +1422,7 @@ class Percept:
             del self._gate_health_log[: len(self._gate_health_log) - _GATE_HEALTH_LOG_MAX]
 
     def _note_judge_ok(self, key: Hashable) -> None:
-        """Card A30: a well-formed verdict for ``key`` resets its consecutive-degrade streak -- ANY
+        """A well-formed verdict for ``key`` resets its consecutive-degrade streak -- ANY
         successful judge call (regardless of the verdict's confidence/truth) proves the judge is
         reachable again."""
         self._judge_degrade_streak.pop(key, None)
@@ -1438,7 +1438,7 @@ class Percept:
     ) -> Verdict:
         """Judge a plain-language ``condition`` over a CLIP (multiple frames), returning a ``Verdict``.
 
-        The public temporal-judging seam (B1): a thin, ergonomic wrapper over the existing
+        The public temporal-judging seam: a thin, ergonomic wrapper over the existing
         ``Vision.judge(..., frames=...)`` path for callers who already hold a clip (e.g. a concern that
         declared ``window_s``). ``frames`` is the clip oldest→newest; the LAST frame is the anchor passed
         as ``frame`` and the earlier ones are the temporal strip (matching the agent's per-tick
@@ -1478,7 +1478,7 @@ class Percept:
             # ALSO bypasses (its running answer/step accumulates per-call — must never be cached/served).
             # ``context`` is passed ONLY for process-QA so a non-process strip judge is byte-for-byte.
             extra = {"context": context} if process_mode else {}
-            # A30: the strip/audio/process-QA judge is on the live watch path (perceive_judged /
+            # The strip/audio/process-QA judge is on the live watch path (perceive_judged /
             # _observe_and_log) — a malformed/timeout/partial response here must degrade the tick,
             # never crash it, so this goes through the fail-closed boundary (may raise
             # _JudgeDegraded, caught by every caller of _judge).
@@ -1495,7 +1495,7 @@ class Percept:
         if hit.status == "HIT" and hit.verdict is not None:
             self.metrics.incr("cache.hit")
             return await self._audit_or_use(goal, frame, roi, corrections, cache_key, hit.verdict)
-        # A30: same fail-closed boundary for the cache-miss (single-frame) judge — the other half of
+        # Same fail-closed boundary for the cache-miss (single-frame) judge — the other half of
         # the live watch path. A well-formed Verdict is cached exactly as before; a degraded response
         # raises _JudgeDegraded BEFORE `cache.store` is ever reached, so a failure is never cached.
         verdict = await self._safe_timed_judge(

@@ -8,8 +8,8 @@ LIVE surface (imported by agent.py / behavior.py, on the real firing path):
 
 INERT-but-LIVE: ``threshold_for`` is imported by no production module today (it is only exercised by
 tests). It is kept as the pinned per-concern threshold seam — its DEFAULT must equal the gate's 0.7
-(plan R15) so wiring it later is byte-for-byte safe. At today's non-discriminative confidence it would
-be a no-op (R3), which is why the runtime does not route through it yet. See the report note.
+so wiring it later is byte-for-byte safe. At today's non-discriminative confidence it would
+be a no-op, which is why the runtime does not route through it yet.
 
 REMOVED (2026-07-12 OSS hardening): the ``derive_belief`` / ``observe`` / ``OBS_CAP`` belief-log
 spike. It was a pure-function pair the agent never routed through (docstring admitted "the agent
@@ -23,17 +23,17 @@ from __future__ import annotations
 
 from .adapters import Consequence, Goal
 
-# Pinned to the measured current gate defaults (S2 capture; plan R15).
+# Pinned to the measured current gate defaults.
 DEFAULT_THRESHOLD = 0.7
 
 
 def threshold_for(consequence: Consequence) -> float:
     """Per-concern firing threshold from the cost asymmetry.
 
-    R3 (honest): at today's NON-discriminative confidence (~constant 0.95) this job is **inert** —
+    Honest: at today's NON-discriminative confidence (~constant 0.95) this job is **inert** —
     "fire the child at a lower threshold" is a no-op, so v1 returns the gate default for everything
     and consequence earns its keep via attention / escalation / verification instead. The
-    asymmetry logic slots in here only once the labeling pipeline (B3) shows confidence discriminates.
+    asymmetry logic slots in here only once the labeling pipeline shows confidence discriminates.
     The DEFAULT MUST equal the gate's threshold so existing goals are byte-for-byte unchanged.
     """
     return DEFAULT_THRESHOLD
@@ -41,7 +41,7 @@ def threshold_for(consequence: Consequence) -> float:
 
 # --- Consequence's three CALIBRATION-FREE jobs -------------------------------------
 # These are how a coarse consequence earns its keep TODAY, while the threshold job (threshold_for)
-# stays inert (R3): none of them needs calibrated confidence — they read stakes, not a 0..1 number.
+# stays inert: none of them needs calibrated confidence — they read stakes, not a 0..1 number.
 
 _MISS_RANK = {"trivial": 0, "mild": 1, "severe": 2}
 _FF_RANK = {"trivial": 0, "mild": 1, "severe": 2, "irreversible": 3}

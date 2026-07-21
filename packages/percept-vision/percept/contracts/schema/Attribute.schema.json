@@ -220,7 +220,7 @@
           "type": "boolean"
         }
       },
-      "description": "The decision weight (spec \u00a75): a coarse (miss, false-fire) cost pair."
+      "description": "The decision weight: a coarse (miss, false-fire) cost pair."
     },
     "Evidence": {
       "type": "object",
@@ -242,7 +242,7 @@
           "type": "number"
         }
       },
-      "description": "One timestamped, sourced observation feeding a Concern's log (spec \u00a73).",
+      "description": "One timestamped, sourced observation feeding a Concern's log.",
       "required": [
         "t",
         "source_id",
@@ -295,7 +295,7 @@
           "type": "boolean"
         }
       },
-      "description": "How a concern's state is maintained (spec \u00a71,\u00a74)."
+      "description": "How a concern's state is maintained."
     },
     "Subject": {
       "type": "object",
@@ -313,7 +313,7 @@
           "type": "string"
         }
       },
-      "description": "What a concern is about (spec \u00a71): an entity ref | relation | expectation | event."
+      "description": "What a concern is about: an entity ref | relation | expectation | event."
     },
     "Priors": {
       "type": "object",
@@ -340,7 +340,7 @@
           ]
         }
       },
-      "description": "What to expect, when, and what 'satisfied' looks like (spec \u00a71). Minimal in A0."
+      "description": "What to expect, when, and what 'satisfied' looks like. Minimal today."
     },
     "Concern": {
       "type": "object",
@@ -406,7 +406,7 @@
           "type": "integer"
         }
       },
-      "description": "The unit of consequence-weighted attention (spec \u00a71) \u2014 sits above the entity.",
+      "description": "The unit of consequence-weighted attention \u2014 sits above the entity.",
       "required": [
         "id",
         "identity",
@@ -518,7 +518,7 @@
         "windows": {},
         "days": {}
       },
-      "description": "When a watch is *armed* \u2014 a coarse, vendor-neutral, timezone-naive time gate (C1)."
+      "description": "When a watch is *armed* \u2014 a coarse, vendor-neutral, timezone-naive time gate."
     },
     "WatchCondition": {
       "type": "object",
@@ -712,7 +712,7 @@
           ]
         }
       },
-      "description": "A typed audio signal \u2014 the first-class AUDIO modality the eye can read (B2)."
+      "description": "A typed audio signal \u2014 the first-class AUDIO modality the eye can read."
     },
     "IncidentSnippet": {
       "type": "object",
@@ -1027,7 +1027,7 @@
           ]
         }
       },
-      "description": "The stable, versioned event ``percept.watch()`` streams \u2014 the M1 frozen public contract.",
+      "description": "The stable, versioned event ``percept.watch()`` streams \u2014 the frozen public contract.",
       "required": [
         "goal_id",
         "action",

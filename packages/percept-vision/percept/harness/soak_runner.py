@@ -1,8 +1,8 @@
-"""PROBE-HARNESS SCAFFOLDING — ``soak_runner`` (Viability §6, P-STAB-1, board card A15).
+"""PROBE-HARNESS SCAFFOLDING — ``soak_runner``.
 
 **Wiring-only, not a production driver.** A long-run soak: steady load held for many simulated
 *hours*, with an hourly :class:`~percept.harness.metrics.MetricsCollector` snapshot and a
-hour-``N``-vs-hour-1 comparison of the three drift signals P-STAB-1 cares about — queue-age slope,
+hour-``N``-vs-hour-1 comparison of the three drift signals this soak tracks — queue-age slope,
 memory slope, latency drift — plus support for an injected provider-failure window with an
 assertable clean recovery. Standing rule 2 (see :mod:`percept.backends.fake`) still applies: this
 proves wiring/architecture, never model intelligence.
@@ -37,14 +37,14 @@ admitted simultaneously at that tick's elapsed time, then resolved in ascending 
 sampled latency (``admit_t + latency_s``, arithmetic, never a sleep) — a deterministic, analytic
 stand-in for "many calls admitted together, staggered completions" that is reproducible bit-for-bit
 given the same seed and config, and whose oldest-pending-age reading rises when the configured
-latency distribution rises (the leak/drift signal P-STAB-1 wants detected).
+latency distribution rises (the leak/drift signal this soak is designed to detect).
 
 **Memory model.** This harness never touches a real process's RSS (there is nothing "real" running
 under a soak driven purely by ``FakeClock``). :attr:`SoakConfig.rss_fn` is an INJECTED
 hour-indexed sampler (never estimated here) — mirrors :class:`~percept.harness.metrics.CostSample`'s
 "injected, never estimated" convention in :mod:`percept.harness.metrics`.
 
-Not wired into ``percept/registry.py``. Downstream: P-STAB-1 itself (a gated, bars-locked run) is
+Not wired into ``percept/registry.py``. Downstream: the full gated, bars-locked stability soak is
 follow-up work — this card only lands the deterministic driver + its own self-test.
 """
 
@@ -115,7 +115,7 @@ class SoakConfig:
 @dataclass(frozen=True)
 class HourSnapshot:
     """One hourly :class:`~percept.harness.metrics.MetricsCollector` reading — hour ``N``'s slice
-    of the P-STAB-1 drift signals: queue-age (``max_oldest_pending_age_s``), memory (``rss_bytes``),
+    of the drift signals: queue-age (``max_oldest_pending_age_s``), memory (``rss_bytes``),
     latency (``latency_p50_s`` / ``p95`` / ``p99``) — plus the load-driver telemetry for that hour."""
 
     hour: int  # 1-indexed
@@ -146,9 +146,9 @@ def _latency_percentiles(latencies: Sequence[float]) -> tuple[float, float, floa
 
 @dataclass(frozen=True)
 class SoakTrend:
-    """Hour-``N``-vs-hour-1 comparison (P-STAB-1) — a simple two-point slope/delta between the
-    first and last supplied snapshots, not a full regression: exactly the comparison P-STAB-1
-    names ("hour-N-vs-hour-1"), no more machinery than that requires."""
+    """Hour-``N``-vs-hour-1 comparison — a simple two-point slope/delta between the
+    first and last supplied snapshots, not a full regression: exactly the comparison the name
+    implies ("hour-N-vs-hour-1"), no more machinery than that requires."""
 
     hour_first: int
     hour_last: int

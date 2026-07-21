@@ -1,6 +1,6 @@
 """Golden-set loader + split discipline.
 
-The golden corpus is versioned + PR-reviewed (spec §10.1). This loader reads the label layer
+The golden corpus is versioned + PR-reviewed. This loader reads the label layer
 (``splits.json``, ``*.jsonl``) and enforces the one rule that protects the trust metric: the
 **train / dev / test splits must be disjoint**, and ``test`` is held out (never tuned on).
 

@@ -1,8 +1,8 @@
-"""PROBE-HARNESS SCAFFOLDING — ``fake_judge`` (Viability §4/§6, board card A12).
+"""PROBE-HARNESS SCAFFOLDING — ``fake_judge``.
 
 **Wiring-only, not a production backend.** This is the PRE-MVP viability spike's
 "architecture-isolation lever": a deterministic, key-free judge double that lets Phase-A probes
-(``P-BOUND-1``, latency, delivery) exercise the runtime's *architecture* — queueing, backpressure,
+(latency, delivery) exercise the runtime's *architecture* — queueing, backpressure,
 fail-closed handling — without a real vendor call ever in the loop. Standing rule 2 (see
 :mod:`percept.backends.fake`) still applies: it proves wiring and our logic, never model
 intelligence. Verdict *content* is delegated to :class:`~percept.backends.fake.FakeVision`'s
@@ -16,13 +16,13 @@ Two probe-harness needs :class:`~percept.backends.fake.FakeVision` intentionally
    and call sequence.
 2. **Injectable error/timeout/malformed-output behaviour.** :class:`ErrorInjectionConfig` sets a
    configurable *rate* and a set of failure *modes* (``timeout`` / ``provider_error`` /
-   ``malformed`` / ``partial``) so ``P-JUDGE-SAFE-1`` and ``P-QUAL-1`` can later exercise the
+   ``malformed`` / ``partial``) so later fail-closed and quality probes can exercise the
    fail-closed paths (malformed/partial output, timeout, provider error -> ASK/SILENT/
    provider-failure) against a judge that misbehaves *on cue* instead of waiting for a real vendor
    outage.
 
 Not wired into ``percept/registry.py`` or the ``load_driver``/``stream_gen`` probe entrypoints —
-that wiring is follow-up work (A10/A11) once those harness pieces exist.
+that wiring is follow-up work once those harness pieces exist.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ _LATENCY_KINDS = ("fixed", "uniform", "lognormal")
 class LatencyProfile:
     """A seedable latency distribution. Never ``time.sleep``/``random`` global state — sampling
     always draws from the :class:`random.Random` instance passed in, so the same seed + the same
-    call sequence reproduces the same latencies (Viability §4/§6 determinism requirement).
+    call sequence reproduces the same latencies (a determinism requirement).
 
     ``kind``:
       * ``"fixed"``     — always ``value_s``.
@@ -224,7 +224,7 @@ class FakeJudge:
             raise ProviderError("fake_judge: injected provider error (simulated 5xx/rate-limit)")
         if mode == "malformed":
             # Not a Verdict at all — a consumer that assumes the judge contract without validating
-            # must fail closed here (P-JUDGE-SAFE-1).
+            # must fail closed here.
             return {"unexpected_shape": True, "raw": "<garbled provider payload>"}
         if mode == "partial":
             # Verdict-shaped but missing required fields (simulated truncated JSON).

@@ -1,4 +1,4 @@
-"""PROBE-HARNESS SCAFFOLDING — ``stream_gen`` (Viability §6, board card A10).
+"""PROBE-HARNESS SCAFFOLDING — ``stream_gen``.
 
 **Wiring-only, not a production connector.** The probe harness's frame-stream generator: it
 replays a fixture clip (a recorded sequence of frames) OR synthesizes a parametric stream (motion
@@ -14,9 +14,9 @@ timing*, never claims model intelligence. Frame payload is the existing tier-0
 :class:`~percept.harness.tier0.Frame` (a coarse grayscale grid) so a generated stream drops
 straight into :class:`~percept.harness.tier0.MotionGate` / ``GatedWatchLoop`` without adapting.
 
-Not wired into ``percept/registry.py``. Downstream: board card A11 (``load_driver``) pulls frames
+Not wired into ``percept/registry.py``. Downstream: ``load_driver`` pulls frames
 from :class:`StreamGen` to feed concurrent sessions against ``percept.backends.fake_judge``
-(A12, already built) for the Phase-A probes (queueing, backpressure, latency, delivery).
+for the Phase-A probes (queueing, backpressure, latency, delivery).
 """
 
 from __future__ import annotations
@@ -210,7 +210,7 @@ def fan_out(
     clocks: Sequence[Clock] | None = None,
 ) -> list[StreamGen]:
     """Fan one source ``timeline`` out to ``n`` independent, concurrent :class:`StreamGen`
-    consumers (Viability §6 fan-out requirement).
+    consumers.
 
     Exactly one of ``clock`` / ``clocks`` must be given:
 

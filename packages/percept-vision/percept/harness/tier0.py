@@ -1,6 +1,6 @@
 """Tier-0 salience gate — the server-side reference for the edge wire contract.
 
-The perception analog of voice VAD (spec §6.3): a coarse pass that decides *when* to spend a
+The perception analog of voice VAD: a coarse pass that decides *when* to spend a
 cloud vision call.
 
 - **down:** the brain compiles active goals to a :class:`~percept.adapters.WatchSpec`
@@ -10,7 +10,7 @@ cloud vision call.
   ``percept-edge`` adds CLIP / pose.
 - the expensive ``Percept.perceive_judged`` runs **only when salience clears threshold**.
 
-Frame-diff is arithmetic — pure stdlib, deterministic, zero user data (spec §6.3). ``numpy`` is an
+Frame-diff is arithmetic — pure stdlib, deterministic, zero user data. ``numpy`` is an
 OPTIONAL fast path for :func:`motion_score`; it is **never required** for the L1 lane and the
 stdlib and numpy paths return the same number.
 

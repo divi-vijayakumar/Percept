@@ -25,10 +25,10 @@ is a typed handle onto a setting that already exists and is read elsewhere in th
   guidance (docs/how-to/authoring-goals-and-watch-plans.md Part 1.1); advisory, nothing enforces it.
 
 **This module is schema + registry ONLY.** No line in ``agent.py`` / ``runtime/worker.py`` reads a
-WatchProfile yet — that wiring is card M2, per the impl plan's architectural rule: "the runtime reads its
+WatchProfile yet — that wiring is separate, per the architectural rule: "the runtime reads its
 behavior from a profile; the eval harness writes profiles. No knob is hardcoded in firing logic." Seeded,
 H0-derived default profiles (``fixed-cam-localized``, ``dynamic-action``, ``handheld``) ship in a follow-up
-card (P3); this card only makes the shape expressive enough to hold them.
+module; this module only makes the shape expressive enough to hold them.
 """
 
 from __future__ import annotations
@@ -86,7 +86,7 @@ class CadenceProfile:
             raise WatchProfileError(f"cadence.hold_s must be >= 0, got {self.hold_s}")
 
     def to_sense_policy(self):
-        """Build the real :class:`percept.sampling.SensePolicy` this cadence describes (card M2's seam)."""
+        """Build the real :class:`percept.sampling.SensePolicy` this cadence describes."""
         from .sampling import SensePolicy
 
         return SensePolicy(
@@ -119,7 +119,7 @@ class GoalDensityGuidance:
     scene tolerates before cross-talk (docs/how-to/authoring-goals-and-watch-plans.md Part 1.1 — "keep the
     active goal set small and mutually distinct"). H0's operating point held this at <=3 distinct goals.
     This rides on the profile so a derived profile can carry the finding that produced it; nothing reads
-    it automatically (that authoring-time surface is card E6)."""
+    it automatically (that's a separate authoring-time surface)."""
 
     max_recommended_goals: int | None = 3
     note: str = ""
@@ -209,7 +209,7 @@ class WatchProfileRegistry:
     through :data:`WILDCARD` (``"*"``) keys — ``(env, goal_type, "*")`` -> ``(env, "*", "*")`` ->
     ``("*", "*", "*")`` — so a handful of broad defaults can cover many contexts without one profile per
     exact combination. This is deliberately just a fallback CHAIN, not goal-temporality inference (mapping
-    e.g. "dynamic" -> ``plan_mode="window"`` automatically is card P2's resolution-rules layer, which sits
+    e.g. "dynamic" -> ``plan_mode="window"`` automatically is a separate resolution-rules layer, which sits
     on top of this registry).
     """
 
@@ -269,8 +269,8 @@ class WatchProfileRegistry:
         return iter(self._profiles.values())
 
 
-# A process-wide default registry: card P3 seeds the H0-derived defaults into this instance, and card M2
-# (runtime wiring) reads from it by default. Nothing in this codebase writes to it yet. Tests and callers
+# A process-wide default registry: H0-derived defaults seed this instance, and the runtime wiring
+# reads from it by default. Nothing in this codebase writes to it yet. Tests and callers
 # that want isolation should construct their own ``WatchProfileRegistry()`` instead of touching this one.
 DEFAULT_REGISTRY = WatchProfileRegistry()
 
