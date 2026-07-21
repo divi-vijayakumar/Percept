@@ -70,6 +70,7 @@ from .episodes import (
     episode_policy_of,
 )
 from .events import Event, EventLog, FrameWindow
+from .identity_policy import identity_policy_of, select_identity_policy
 from .gate import (
     ASK,
     DELIVERED_ACTIONS,
@@ -286,6 +287,9 @@ __all__ = [
     "EPISODE_POLICIES",
     "ContinuationDecision",
     "episode_policy_of",
+    # concern-level identity-resolver selection (card Y6 — concern SELECTS, profile DECLARES)
+    "identity_policy_of",
+    "select_identity_policy",
     # events + scheduler (Phase 5 — temporal perception; time-triggered fires)
     "Event",
     "EventLog",
