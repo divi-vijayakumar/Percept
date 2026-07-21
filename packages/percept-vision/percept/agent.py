@@ -1938,12 +1938,22 @@ class Percept:
         )
         self.metrics.incr("act.allowed" if allowed else "act.blocked")
         if not allowed:
-            why = (
-                "goal modality is not 'act'"
-                if not modality_ok
-                else f"action {action!r} not permitted "
-                f"(allow_computer_use={self.consent.allow_computer_use})"
-            )
+            if not modality_ok:
+                why = "goal modality is not 'act'"
+            elif getattr(self.consent, "actuation", "none") == "physical":
+                # Card Z7 / ADR-007: an OUT-of-envelope declaration, not a permission miss. Say so,
+                # so a client debugging at 2am reads the refusal instead of hunting an allowlist.
+                from .envelope import OUT_OF_ENVELOPE  # noqa: PLC0415 — local, avoids import cycle
+
+                why = (
+                    "ConsentProfile.actuation='physical' — "
+                    + OUT_OF_ENVELOPE["robotics_control_loop"].sentence()
+                )
+            else:
+                why = (
+                    f"action {action!r} not permitted "
+                    f"(allow_computer_use={self.consent.allow_computer_use})"
+                )
             raise ConsentDenied(f"act blocked for goal {goal_id!r}: {why}")
         return record
 

@@ -14,6 +14,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .envelope import (
+    ACTUATION_CLASSES,
+    PHYSICAL_ACTUATION,
+    EnvelopeCheck,
+    actuation_check,
+    validate_actuation,
+)
+
 
 class ConsentDenied(PermissionError):
     """Raised when an ``act`` is attempted without the flag / outside the declared action set."""
@@ -32,13 +40,37 @@ class ConsentProfile:
     allow_computer_use: bool = False
     allowed_actions: frozenset = frozenset()
     allowed_sources: frozenset = frozenset()
+    #: Card Z7 / ADR-007 — the TYPED envelope declaration for acting, following the ADR-005
+    #: ``UNTUNED`` pattern (a field a tool reads and reports, never a paragraph in a README).
+    #: ``"none"`` (default, unchanged behaviour) / ``"screen"`` (advisory software acts — the
+    #: narrowed survivor) / ``"physical"`` (actuation with physical consequence). Declaring
+    #: ``"physical"`` declares this deployment OUTSIDE the envelope: :meth:`permits` then refuses
+    #: every action, because the gate's honest failure mode is ASK and a control loop cannot ask.
+    actuation: str = "none"
+
+    def __post_init__(self) -> None:
+        validate_actuation(self.actuation)
 
     def permits(self, action: str, source_id: str | None = None) -> bool:
+        if self.actuation == PHYSICAL_ACTUATION:
+            # Structural, not advisory: a deployment that DECLARES physical consequence gets no acts
+            # from percept at all. See percept.envelope.OUT_OF_ENVELOPE["robotics_control_loop"].
+            return False
         if not (self.allow_computer_use and action in self.allowed_actions):
             return False
         if self.allowed_sources and source_id not in self.allowed_sources:
             return False  # per-source consent: an un-consented source can't act (no cross-node bind)
         return True
+
+    def envelope(self, *, modality: str = "act") -> EnvelopeCheck:
+        """The typed envelope verdict for this profile — what ``percept doctor`` prints."""
+        return actuation_check(modality=modality, actuation=self.actuation)
+
+    @property
+    def actuation_classes(self) -> tuple[str, ...]:
+        """The declarable vocabulary, re-exported so a caller does not import two modules to
+        validate one field."""
+        return ACTUATION_CLASSES
 
 
 @dataclass
@@ -69,4 +101,11 @@ class ActionLog:
         return len(self._records)
 
 
-__all__ = ["ConsentDenied", "ConsentProfile", "ActionRecord", "ActionLog"]
+__all__ = [
+    "ConsentDenied",
+    "ConsentProfile",
+    "ActionRecord",
+    "ActionLog",
+    "ACTUATION_CLASSES",
+    "PHYSICAL_ACTUATION",
+]

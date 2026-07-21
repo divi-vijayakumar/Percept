@@ -50,6 +50,16 @@ from .offline import (
     offline_goals,
 )
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
+from .envelope import (
+    ACTUATION_CLASSES,
+    OUT_OF_ENVELOPE,
+    PHYSICAL_ACTUATION,
+    EnvelopeViolation,
+    SubjectResolver,
+    client_asserted_subject,
+    envelope_summary,
+    register_subject_resolver,
+)
 from .entity import Entity, EntityGraph
 from .episodes import Episode, EpisodeLog
 from .events import Event, EventLog, FrameWindow
@@ -278,6 +288,15 @@ __all__ = [
     "ConsentDenied",
     "ActionLog",
     "ActionRecord",
+    # envelope (card Z7 / ADR-007 — the three OUT verdicts, in config not prose)
+    "ACTUATION_CLASSES",
+    "PHYSICAL_ACTUATION",
+    "OUT_OF_ENVELOPE",
+    "EnvelopeViolation",
+    "SubjectResolver",
+    "client_asserted_subject",
+    "register_subject_resolver",
+    "envelope_summary",
     # routing (Phase 3 — local fast-path; learned tier slots behind RouteLayer in V0.1)
     "RouteEngine",
     "RouteLayer",
