@@ -83,6 +83,8 @@ __all__ = [
     "load_plan",
     "load_bars",
     "load_fixtures",
+    "load_held_out_split",
+    "evaluate_bars",
     "run_differential",
     "render_text",
     "main",
@@ -1007,6 +1009,50 @@ _BAR_SOURCES: dict[str, tuple[str, str]] = {
 }
 
 
+def evaluate_bars(
+    bars: Sequence[Bar],
+    deltas: Sequence[Delta],
+    scored: Sequence[PairedFixtureResult],
+) -> tuple[BarResult, ...]:
+    """Evaluate client-supplied ``bars`` against one comparison's deltas + scored pairs.
+
+    Split out of :func:`_apply_bars` so the profile-derivation job (:mod:`percept.eval.derivation`)
+    applies bars through the SAME code path rather than a second, drifting implementation. It
+    evaluates the bars it is handed and nothing else: it never invents a bar, and an unmeasurable
+    metric yields ``passed=None`` (unassessed), never an optimistic pass.
+    """
+    by_metric = {d.metric: d for d in deltas}
+    results: list[BarResult] = []
+    for bar in bars:
+        kind, metric = _BAR_SOURCES[bar.metric]
+        note = ""
+        if kind == "delta":
+            d = by_metric.get(metric)
+            observed = d.mean_delta if d else None
+        else:
+            vals = [v for v in (_fixture_metric(p.candidate, metric) for p in scored)
+                    if v is not None]
+            observed = _mean(vals)
+            d = None
+        if observed is None:
+            results.append(
+                BarResult(bar, None, None,
+                          f"{bar.metric} was not measurable on this run (no arm reported it); "
+                          f"reported as unassessed rather than assumed to pass.")
+            )
+            continue
+        passed = observed >= bar.value if bar.direction == "min" else observed <= bar.value
+        if bar.require_ci_excludes_zero:
+            if d is None or d.ci_excludes_zero is None:
+                passed = False
+                note = "no confidence interval available, and this bar requires one to exclude zero"
+            elif not d.ci_excludes_zero:
+                passed = False
+                note = f"CI [{d.ci_low:.4g}, {d.ci_high:.4g}] includes zero"
+        results.append(BarResult(bar, observed, passed, note))
+    return tuple(results)
+
+
 def _apply_bars(
     registration: PreRegistration,
     deltas: Sequence[Delta],
@@ -1036,35 +1082,7 @@ def _apply_bars(
             "(see the scope table). Nothing was scored, so nothing passed or failed.",
         )
 
-    by_metric = {d.metric: d for d in deltas}
-    results = []
-    for bar in registration.bars.bars:
-        kind, metric = _BAR_SOURCES[bar.metric]
-        note = ""
-        if kind == "delta":
-            d = by_metric.get(metric)
-            observed = d.mean_delta if d else None
-        else:
-            vals = [v for v in (_fixture_metric(p.candidate, metric) for p in scored)
-                    if v is not None]
-            observed = _mean(vals)
-            d = None
-        if observed is None:
-            results.append(
-                BarResult(bar, None, None,
-                          f"{bar.metric} was not measurable on this run (no arm reported it); "
-                          f"reported as unassessed rather than assumed to pass.")
-            )
-            continue
-        passed = observed >= bar.value if bar.direction == "min" else observed <= bar.value
-        if bar.require_ci_excludes_zero:
-            if d is None or d.ci_excludes_zero is None:
-                passed = False
-                note = "no confidence interval available, and this bar requires one to exclude zero"
-            elif not d.ci_excludes_zero:
-                passed = False
-                note = f"CI [{d.ci_low:.4g}, {d.ci_high:.4g}] includes zero"
-        results.append(BarResult(bar, observed, passed, note))
+    results = list(evaluate_bars(registration.bars.bars, deltas, scored))
 
     assessed = [r for r in results if r.passed is not None]
     failed = [r for r in results if r.passed is False]
