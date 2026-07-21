@@ -564,18 +564,30 @@ def _context_lane(records: Sequence[TraceRecord], opts: VizOptions) -> Lane:
 def _cost_lane(records: Sequence[TraceRecord], opts: VizOptions) -> Lane:
     items: list[LaneItem] = []
     running = 0.0
+    any_priced = False
     for r in records:
         if r.stage != STAGE_JUDGE_USAGE:
             continue
         if len(items) >= opts.max_lane_items:
             break
         v = r.data.get("cost_usd")
-        if isinstance(v, (int, float)) and not isinstance(v, bool):
+        priced = isinstance(v, (int, float)) and not isinstance(v, bool)
+        if priced:
             running += float(v)
+            any_priced = True
         ts = float(r.source_ts or 0.0)
-        items.append(LaneItem(ts, ts, "cost", f"${running:.4f} cumulative",
-                              _safe_data(r, include_media=False)))
-    note = f"cumulative ${running:.4f}" if items else "no judge usage was recorded — $0 spent"
+        # An UNPRICED usage record (tokens known, model not in the price table) shows "—", never a
+        # cumulative dollar figure that pretends the call was free.
+        label = f"${running:.4f} cumulative" if any_priced else "— (unpriced)"
+        items.append(LaneItem(ts, ts, "cost", label, _safe_data(r, include_media=False)))
+    if not items:
+        # NOT "$0 spent": no usage record means the backend reported nothing, which says nothing
+        # about what the run spent. Unknown is safe; a zero is a wrong number a cost bar can pass.
+        note = "no judge usage was reported — spend unknown (—)"
+    elif any_priced:
+        note = f"cumulative ${running:.4f}"
+    else:
+        note = "judge usage reported, but no model price — spend unknown (—)"
     return Lane("cost", "cost", note, tuple(items))
 
 
@@ -1082,8 +1094,8 @@ def _render_summary(summary: TraceSummary) -> str:
         ("judge completed", f"{summary.judge_completed}", "calls"),
         ("degraded / dropped", f"{summary.judge_degraded} / {summary.judge_dropped}", "calls"),
         ("incidents", f"{summary.incidents}", "delivered"),
-        ("cost", f"${summary.cost_usd:.4f}",
-         f"in {summary.input_tokens:.0f} / out {summary.output_tokens:.0f} tokens"),
+        # "—", never "$0.0000": an unpriced/unreported run must not read as a free one.
+        ("cost", summary.cost_text(), summary.tokens_text()),
         ("watch duration", f"{summary.watch_duration_s:.2f}s",
          f"healthy {summary.source_healthy_s:.2f}s"),
         ("latency p50 / p95", f"{_fmt(summary.latency_p50_s)} / {_fmt(summary.latency_p95_s)}", "wall s"),

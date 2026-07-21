@@ -73,6 +73,7 @@ __all__ = [
     "DOLLARS_PER_STREAM_HOUR_CEILING_USD",
     "JudgeCallSample",
     "price_usage",
+    "price_usage_or_none",
     "dollars_per_stream_hour",
     "FOVEA_CALL_REDUCTION_FLOOR",
     "fovea_call_reduction",
@@ -170,6 +171,37 @@ def price_usage(
     price = table.get(model, DEFAULT_PRICE)
     in_tok = usage.get("input_tokens", 0.0)
     out_tok = usage.get("output_tokens", 0.0)
+    return (in_tok / 1_000_000.0) * price.input_per_mtok + (out_tok / 1_000_000.0) * price.output_per_mtok
+
+
+def price_usage_or_none(
+    usage: dict[str, float],
+    *,
+    model: str | None,
+    table: dict[str, ModelPrice] = PRICE_TABLE,
+) -> float | None:
+    """The RUN-PATH pricing rule: tokens -> dollars, or ``None`` when we cannot say honestly.
+
+    :func:`price_usage` is the *offline harness* rule — it falls back to :data:`DEFAULT_PRICE` so a
+    CI budget assertion fails conservative on an un-catalogued model. That fallback is exactly wrong
+    on the reporting path: a DEFAULT_PRICE-derived figure printed as a run's ``cost_usd`` is a
+    fabricated price, indistinguishable from a real one, and a client with a ``cost_usd`` bar would
+    be judging their deployment against our guess (one such client computed ~$16/stream-hour this way
+    and correctly refused to report it).
+
+    So here:
+
+    * an explicit backend-reported ``cost_usd`` wins — it is the billed number, ground truth;
+    * a model PRESENT in ``table`` prices its tokens;
+    * anything else returns ``None`` — rendered ``—``. Unknown is safe; a number a bar can pass is not.
+    """
+    if "cost_usd" in usage:
+        return float(usage["cost_usd"])
+    price = table.get(model) if model else None
+    if price is None:
+        return None
+    in_tok = float(usage.get("input_tokens", 0.0) or 0.0)
+    out_tok = float(usage.get("output_tokens", 0.0) or 0.0)
     return (in_tok / 1_000_000.0) * price.input_per_mtok + (out_tok / 1_000_000.0) * price.output_per_mtok
 
 

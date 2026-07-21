@@ -19,6 +19,24 @@
   `goal_id` (a ground-truth `episode_id` must be the `goal_id` of the goal it labels) and says so
   in the lane note when no fired goal id intersects any episode id, instead of silently reading
   `recall 0.00`.
+- **Cost was a structural FALSE ZERO — a traced run now reports what it actually spent (card X2).**
+  `TraceSummary` reported `{"input_tokens": 0.0, "output_tokens": 0.0, "usd": 0.0,
+  "usage_reported_calls": 0}` for **every** run, including one that measurably spent 134,946 input +
+  5,231 output tokens across 108 judge calls: the token counts existed in the Funnel
+  (`observability.judge_usage` → `Funnel.record_judge`) but nothing carried them to the trace/cost
+  surface, and `TraceRecorder.record_usage` / `record_verdict_usage` / `slo.price_usage` had **zero
+  callers**. A client with a `cost_usd` bar got a green light on a run that spent real money.
+  `Percept._timed_judge` — the one site every judge call passes through, inline and async dispatch
+  alike — now emits a `judge.usage` trace event alongside the funnel record, and `TraceRecorder`
+  prices it via the new `slo.price_usage_or_none`. `TraceSummary.dollars_per_stream_hour` makes the
+  rate readable off a real run.
+  **Unknown is now typed as unknown.** `input_tokens` / `output_tokens` / `cost_usd` are
+  `float | None`: `None` (rendered `—` by `cost_text()` / `tokens_text()`, by `percept doctor` and by
+  the visualizer's cost lane) whenever no judge call reported usage, or when tokens cannot be priced
+  honestly. A model absent from `slo.PRICE_TABLE` yields **no dollar figure at all** rather than a
+  `DEFAULT_PRICE`-derived guess presented as a real price. The one licensed zero is a run that made
+  no judge call (`percept doctor`, a fully gated stream), where `$0` is measured. `— (unknown)` is
+  safe; `0.0` is a wrong number that a bar can pass. See `tests/test_trace_cost.py`.
 
 ### Added
 - **A live run now says what it covered — and says it out loud when it admitted nothing (card X4).**

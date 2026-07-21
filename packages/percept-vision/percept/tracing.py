@@ -640,6 +640,14 @@ class TraceSummary:
     - ``estimated_saved_tokens`` is ``None`` — rendered ``—`` — whenever there is no declared
       baseline or zero actual judge calls. There is no mean input-token figure to multiply by, so
       there is no number to print.
+    - **cost is never a FALSE ZERO.** ``input_tokens`` / ``output_tokens`` are ``None`` when no judge
+      call reported usage at all, and ``cost_usd`` is ``None`` unless at least one call could be
+      priced honestly (a backend-reported ``cost_usd``, or tokens against a model in
+      :data:`percept.slo.PRICE_TABLE`). ``0.0`` would be a WRONG NUMBER THAT A BAR CAN PASS — a run
+      that really spent money would show green against a ``cost_usd`` ceiling. ``—`` (unknown) is
+      safe; ``0.0`` is not, so the unknown case is typed ``None`` and rendered ``—``. The ONE
+      licensed zero is a run that made no judge call at all (``percept doctor``, a fully gated
+      stream) — there the zero is measured.
     """
 
     run_id: str
@@ -656,10 +664,11 @@ class TraceSummary:
     judge_superseded: int = 0
     gate_outcomes: dict[str, int] = field(default_factory=dict)
     incidents: int = 0
-    input_tokens: float = 0.0
-    output_tokens: float = 0.0
-    cost_usd: float = 0.0
+    input_tokens: float | None = None
+    output_tokens: float | None = None
+    cost_usd: float | None = None
     usage_reported_calls: int = 0
+    priced_calls: int = 0
     records_retained: int = 0
     records_dropped: int = 0
     baseline: BaselineAssumption = field(default_factory=BaselineAssumption)
@@ -711,8 +720,24 @@ class TraceSummary:
 
         actual_calls = judge_completed or int(c.get("judge_started", 0))
         usage_calls = int(usage.get("calls", 0))
-        input_tokens = float(usage.get("input_tokens", 0.0))
-        mean_in: float | None = (input_tokens / usage_calls) if usage_calls > 0 else None
+        priced_calls = int(usage.get("priced_calls", 0))
+        # NO FALSE ZEROS — but a PROVEN zero is still a number. Exactly one case licenses 0.0: the
+        # run made no judge call at all (a `percept doctor` dry run, a fully gated stream), where
+        # zero spend is measured, not assumed. Once calls were made, silence about their usage is
+        # UNKNOWN (None -> "—"), never free: the failure this rule exists to stop is a run that spent
+        # 134,946 input tokens across 108 calls and reported usd 0.0, green against a cost bar.
+        no_calls = actual_calls == 0 and usage_calls == 0
+        if no_calls:
+            input_tokens: float | None = 0.0
+            output_tokens: float | None = 0.0
+            cost_usd: float | None = 0.0
+        else:
+            input_tokens = float(usage.get("input_tokens", 0.0)) if usage_calls > 0 else None
+            output_tokens = float(usage.get("output_tokens", 0.0)) if usage_calls > 0 else None
+            cost_usd = float(usage.get("cost_usd", 0.0)) if priced_calls > 0 else None
+        mean_in: float | None = (
+            (input_tokens / usage_calls) if usage_calls > 0 and input_tokens is not None else None
+        )
 
         baseline = manifest.baseline
         baseline_calls: int | None = baseline.opportunities
@@ -743,9 +768,10 @@ class TraceSummary:
             gate_outcomes={k: int(c.get(f"gate.{k}", 0)) for k in GATE_OUTCOMES},
             incidents=int(c.get("incidents", 0)),
             input_tokens=input_tokens,
-            output_tokens=float(usage.get("output_tokens", 0.0)),
-            cost_usd=float(usage.get("cost_usd", 0.0)),
+            output_tokens=output_tokens,
+            cost_usd=cost_usd,
             usage_reported_calls=usage_calls,
+            priced_calls=priced_calls,
             records_retained=len(records),
             records_dropped=int(records_dropped or c.get("records_dropped", 0)),
             baseline=baseline,
@@ -766,6 +792,38 @@ class TraceSummary:
             f"({self.baseline.description})"
         )
 
+    @property
+    def dollars_per_stream_hour(self) -> float | None:
+        """$/stream-hour for THIS run — ``None`` (never ``0.0``) when cost or duration is unknown.
+
+        Divides the run's real ``cost_usd`` by the SOURCE time it covered, via the already-landed
+        :class:`~percept.harness.metrics.CostSummary` aggregator (one $/stream-hour definition in the
+        tree, not two). An unpriceable run has no rate — reporting ``0.0`` would let a $/stream-hour
+        bar pass a run that spent money.
+        """
+        if self.cost_usd is None or self.watch_duration_s <= 0:
+            return None
+        from .harness.metrics import CostSummary  # noqa: PLC0415 - keep tracing import-light
+
+        return CostSummary(
+            total_judgments=self.usage_reported_calls,
+            total_cost_usd=self.cost_usd,
+            total_elapsed_s=self.watch_duration_s,
+            total_stream_hours=self.watch_duration_s / 3600.0,
+        ).dollars_per_stream_hour
+
+    def cost_text(self) -> str:
+        """The renderer-safe cost line — ``"—"`` when no judge call could be priced honestly."""
+        if self.cost_usd is None:
+            return "—"
+        return f"${self.cost_usd:.4f}"
+
+    def tokens_text(self) -> str:
+        """The renderer-safe token line — ``"—"`` when no judge call reported usage."""
+        if self.input_tokens is None or self.output_tokens is None:
+            return "—"
+        return f"in {self.input_tokens:.0f} / out {self.output_tokens:.0f} tokens"
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "run_id": self.run_id,
@@ -785,6 +843,8 @@ class TraceSummary:
             "cost": {
                 "input_tokens": self.input_tokens, "output_tokens": self.output_tokens,
                 "usd": self.cost_usd, "usage_reported_calls": self.usage_reported_calls,
+                "priced_calls": self.priced_calls, "text": self.cost_text(),
+                "usd_per_stream_hour": self.dollars_per_stream_hour,
             },
             "records": {"retained": self.records_retained, "dropped": self.records_dropped},
             "savings": {
@@ -817,6 +877,32 @@ def _recount(
     return dict(fold.counters), dict(fold.usage), list(fold.windows), fold.unhealthy_s, fold.span_s
 
 
+def _opt_float(v: Any) -> float | None:
+    """``float(v)`` — but ``None``/unparseable stays ``None``, never becomes ``0.0``."""
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _verdict_model(verdict: Any) -> str | None:
+    """The model id a verdict was billed against, if the backend said so — else ``None``.
+
+    Reads ``Verdict.usage["model"]`` first (the free-form usage dict backends already fill), then a
+    loose ``.model`` attribute. Never guesses: an unknown model means an unpriced call, which is the
+    honest outcome (see :func:`percept.slo.price_usage_or_none`).
+    """
+    usage = getattr(verdict, "usage", None)
+    if isinstance(usage, dict):
+        m = usage.get("model")
+        if isinstance(m, str) and m:
+            return m
+    m = getattr(verdict, "model", None)
+    return m if isinstance(m, str) and m else None
+
+
 class _Aggregate:
     """The EXACT running funnel. Folded for every ingested record, retained or not — which is what
     makes ``level="summary"`` a storage decision rather than a measurement one."""
@@ -824,7 +910,13 @@ class _Aggregate:
     def __init__(self, manifest: RunTraceManifest) -> None:
         self._m = manifest
         self.counters: Counter[str] = Counter()
-        self.usage: dict[str, float] = {"calls": 0.0, "input_tokens": 0.0, "output_tokens": 0.0, "cost_usd": 0.0}
+        # ``calls`` = judge calls that reported ANY usage; ``priced_calls`` = the subset that carried
+        # a real dollar figure. They are counted apart so a run with tokens but no usable price
+        # reports cost ``None`` ("—") instead of a $0.00 that a cost bar would pass.
+        self.usage: dict[str, float] = {
+            "calls": 0.0, "priced_calls": 0.0,
+            "input_tokens": 0.0, "output_tokens": 0.0, "cost_usd": 0.0,
+        }
         self.windows: list[tuple[float, float]] = []
         self.unhealthy_s = 0.0
         self._degraded_at: float | None = None
@@ -872,6 +964,8 @@ class _Aggregate:
                 v = r.data.get(k)
                 if isinstance(v, (int, float)) and not isinstance(v, bool):
                     self.usage[k] += float(v)
+                    if k == "cost_usd":
+                        self.usage["priced_calls"] += 1
         elif stage == STAGE_SOURCE_HEALTH:
             self._fold_health(r)
         elif stage == STAGE_TRACE_DROPPED:
@@ -1135,15 +1229,34 @@ class TraceRecorder:
         Consumes the EXISTING :class:`~percept.observability.TraceEvent` stream unchanged — the
         per-frame ``edge.decision``, ``source.frame``, ``judge.*``, ``gate.classified`` and
         ``incident.created`` stages the runtime already emits. Never raises and never awaits.
+
+        ``judge.usage`` — emitted once per REAL judge call by ``Percept._timed_judge`` — is routed
+        through :meth:`record_usage` rather than :meth:`record` so the run path gets the SAME pricing
+        rule as a direct driver: tokens x :data:`percept.slo.PRICE_TABLE`, or no dollar figure at all.
+        This is the wire that makes ``TraceSummary.cost_usd`` a measured number on a real run instead
+        of a structural zero.
         """
         def _cb(ev: Any) -> None:
             try:
+                stage = str(getattr(ev, "stage", "unknown"))
+                data = dict(getattr(ev, "data", None) or {})
+                if stage == STAGE_JUDGE_USAGE:
+                    self.record_usage(
+                        trace_id=getattr(ev, "trace_id", None),
+                        source_ts=getattr(ev, "t", None),
+                        goal_id=getattr(ev, "goal_id", None),
+                        input_tokens=data.get("input_tokens"),
+                        output_tokens=data.get("output_tokens"),
+                        cost_usd=data.get("cost_usd"),
+                        model=data.get("model"),
+                    )
+                    return
                 self.record(
-                    str(getattr(ev, "stage", "unknown")),
+                    stage,
                     trace_id=getattr(ev, "trace_id", None),
                     source_ts=getattr(ev, "t", None),
                     goal_id=getattr(ev, "goal_id", None),
-                    **dict(getattr(ev, "data", None) or {}),
+                    **data,
                 )
             except Exception:  # noqa: BLE001 — observability must not crash perception
                 self._dropped += 1
@@ -1192,30 +1305,58 @@ class TraceRecorder:
         input_tokens: float | None = None,
         output_tokens: float | None = None,
         cost_usd: float | None = None,
+        model: str | None = None,
     ) -> TraceRecord | None:
         """Record one ACTUAL judge call's token/cost usage — the denominator of the savings formula.
 
         ``mean_input_tokens_per_actual_call`` is measured from exactly these records. With none, the
         summary reports ``estimated_saved_tokens=None`` rather than inventing a per-call cost.
+
+        PRICING (the one place tokens become dollars on the run path). When the caller supplies no
+        ``cost_usd``, this prices the tokens through :func:`percept.slo.price_usage_or_none` against
+        ``model``. That function returns ``None`` — and NO ``cost_usd`` is recorded — for a model
+        absent from :data:`percept.slo.PRICE_TABLE`, so an un-catalogued judge yields ``—`` rather
+        than a :data:`percept.slo.DEFAULT_PRICE` guess dressed up as a real price. Tokens are still
+        recorded in that case: the run reports what it knows and nothing it doesn't.
         """
-        payload = {k: v for k, v in (
+        if cost_usd is None and (input_tokens is not None or output_tokens is not None):
+            from .slo import price_usage_or_none  # noqa: PLC0415 - keep tracing import-light
+
+            tokens = {k: float(v) for k, v in (
+                ("input_tokens", input_tokens), ("output_tokens", output_tokens),
+            ) if v is not None}
+            try:
+                cost_usd = price_usage_or_none(tokens, model=model)
+            except Exception:  # noqa: BLE001 — pricing is observability; never crash a run over it
+                cost_usd = None
+        payload: dict[str, Any] = {k: v for k, v in (
             ("input_tokens", input_tokens), ("output_tokens", output_tokens), ("cost_usd", cost_usd),
         ) if v is not None}
         if not payload:
             return None
+        if model:
+            payload["model"] = str(model)  # non-numeric: carried for debugging, never summed
         return self.record(
             STAGE_JUDGE_USAGE, trace_id=trace_id, source_ts=source_ts, goal_id=goal_id, **payload
         )
 
     def record_verdict_usage(self, verdict: Any, **kw: Any) -> TraceRecord | None:
         """:meth:`record_usage` from a backend-annotated verdict, via
-        :func:`percept.observability.judge_usage` (the frozen ``Verdict`` contract is unchanged)."""
+        :func:`percept.observability.judge_usage` (the frozen ``Verdict`` contract is unchanged).
+
+        The direct-driver seam: a caller holding completed verdicts (a harness, an eval arm, a
+        ``perceive_judged`` loop without ``run()``) meters them with one call. The RUN path does not
+        come through here — it meters inside ``Percept._timed_judge``, which is the only site every
+        judge call passes through (a drained runtime result carries FIRES only, so metering there
+        would silently miss every judgment that didn't fire — the same false-number failure in a
+        different disguise)."""
         from .observability import judge_usage  # noqa: PLC0415 - avoid an import cycle at module load
 
         usage = judge_usage(verdict)
         if not usage:
             return None
-        return self.record_usage(**usage, **kw)
+        model = kw.pop("model", None) or _verdict_model(verdict)
+        return self.record_usage(**usage, model=model, **kw)
 
     # -- outputs ----------------------------------------------------------
     def close(self, *, source_ts: float | None = None) -> None:
@@ -1311,10 +1452,12 @@ def load_trace(payload: Mapping[str, Any] | str) -> tuple[RunTraceManifest, list
             judge_superseded=int(s.get("judge_superseded", 0)),
             gate_outcomes=dict(s.get("gate_outcomes") or {}),
             incidents=int(s.get("incidents", 0)),
-            input_tokens=float(cost.get("input_tokens", 0.0)),
-            output_tokens=float(cost.get("output_tokens", 0.0)),
-            cost_usd=float(cost.get("usd", 0.0)),
+            # None round-trips as None: a reloaded trace must not turn "unknown" into $0.00.
+            input_tokens=_opt_float(cost.get("input_tokens")),
+            output_tokens=_opt_float(cost.get("output_tokens")),
+            cost_usd=_opt_float(cost.get("usd")),
             usage_reported_calls=int(cost.get("usage_reported_calls", 0)),
+            priced_calls=int(cost.get("priced_calls", 0)),
             records_retained=int(recs.get("retained", len(records))),
             records_dropped=int(recs.get("dropped", 0)),
             baseline=BaselineAssumption.from_dict(sav.get("baseline") or {}),

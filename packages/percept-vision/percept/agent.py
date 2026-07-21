@@ -1023,6 +1023,11 @@ class Percept:
         # tests). With t=None it uses the wall clock, like any production run.
         trace_id = f"{source}@{now}"
         tracing = self.on_trace is not None  # guard so the default (untraced) path builds no trace kwargs
+        # The judge-usage record emitted deep inside _timed_judge belongs to THIS frame's trace, so
+        # park the id where that wrapper can find it (it takes only the judge's own args). One frame
+        # is in judgment at a time per core in both dispatch modes, so this is the current frame's id.
+        self._usage_trace_id = trace_id
+        self._usage_source_ts = now
 
         if tracing:
             await self._emit_trace(trace_id, now, "source.frame")
@@ -1362,11 +1367,44 @@ class Percept:
         records the same telemetry: ``judge.latency`` (always — we time it here) plus optional
         ``judge.tokens.*`` / ``judge.cost.usd`` when the backend annotated its verdict
         (:func:`~percept.observability.judge_usage`). Backends that don't report usage leave those
-        hooks unused; the timing is unconditional."""
+        hooks unused; the timing is unconditional.
+
+        THE COST WIRE (card X2). The same usage dict is also emitted as a ``judge.usage`` TRACE
+        event, which is what carries token/cost out to ``TraceSummary`` (the funnel's counters never
+        reached the trace surface, so every traced run reported ``usd: 0.0`` no matter what it spent).
+        It is emitted HERE, not at the runtime's judge-result drain, because this wrapper is the only
+        site EVERY judge call passes through — inline and async dispatch, cache-miss, strip/audio and
+        clip audit alike. A drained runtime result carries FIRES only; metering there would omit
+        every judgment that didn't fire and report a confident undercount.
+        """
         t0 = self.clock()
         verdict = await self.vision.judge(*args, **kwargs)
-        self.funnel.record_judge(latency_s=self.clock() - t0, **judge_usage(verdict))
+        usage = judge_usage(verdict)
+        self.funnel.record_judge(latency_s=self.clock() - t0, **usage)
+        if usage and self.on_trace is not None:
+            await self._emit_trace(
+                getattr(self, "_usage_trace_id", None) or f"judge@{t0}",
+                getattr(self, "_usage_source_ts", None) if getattr(self, "_usage_source_ts", None) is not None else t0,
+                "judge.usage",  # percept.tracing.STAGE_JUDGE_USAGE (string here to keep agent import-light)
+                model=self._judge_model(),
+                **usage,
+            )
         return verdict
+
+    def _judge_model(self) -> str | None:
+        """The model id the vision judge bills against, when the adapter exposes one.
+
+        Read off the adapter (public ``model`` first, then the backends' ``_model``); ``None`` for a
+        fake/duck-typed judge that names no model. ``None`` means the call is NOT priced — see
+        :func:`percept.slo.price_usage_or_none`. We never substitute a default price here: a guessed
+        dollar figure printed as a run's cost is worse than no figure at all.
+        """
+        v = self.vision
+        for attr in ("model", "_model"):
+            m = getattr(v, attr, None)
+            if isinstance(m, str) and m:
+                return m
+        return None
 
     async def _safe_timed_judge(self, *args: Any, **kwargs: Any) -> Verdict:
         """Fail-closed boundary around a live judge call (ADR-001 §10 invariant 4).
