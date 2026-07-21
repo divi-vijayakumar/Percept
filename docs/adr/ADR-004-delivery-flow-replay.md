@@ -4,8 +4,11 @@
 - **Depends on:** ADR-001 (the Gate/judgment contract — `Verdict -> GateDecision/GateAction ->
   JudgmentEvent`, unchanged by this ADR); `percept.watch` (the M1 frozen public entrypoint,
   `packages/percept-vision/percept/watch.py`).
-- **Related:** ADR-002 (Runtime health & coverage — `WatchHealth` is a separate, parallel channel;
-  this ADR does not fold health into `WatchEvent` delivery, consistent with ADR-002 §3); ADR-003
+- **Related:** ADR-002 (Runtime health & coverage — health is a separate, parallel channel; this
+  ADR does not fold health into `WatchEvent` delivery, consistent with ADR-002 §3. **Note ADR-002
+  is still `proposed`: its `WatchHealth` DTO is UNBUILT — zero occurrences under `percept/`. The
+  shipped channel is `run(..., on_health=...)` carrying
+  `percept.runtime.worker.RuntimeHealthEvent` (`worker.py:141-147`)**); ADR-003
   (Evidence artifacts — `evidence.frame_ref` resolution is referenced, not redefined, here).
 - **Source:** `percept/watch.py`, `percept/gate.py`, `percept/behavior.py`, `percept/agent.py`,
   `percept/contracts/__init__.py` (`WatchEvent`/`WatchAction`), `percept/runtime/worker.py`
@@ -51,11 +54,11 @@ notification, and this ADR must be honest that they are not the same:
 - `percept.runtime.worker.run()` (`worker.py:856`) — a separate, richer, sink-callback runtime
   (`on_incident`/`on_ask`/`on_frame`/`on_health`) with a bounded capture queue
   (`source_queue_size=64` default, `worker.py:868`), drop-oldest frame loss under load
-  (`stats.frames_dropped`, `worker.py:113,1692`), and an async single-flight judge scheduler
+  (`stats.frames_dropped`, `worker.py:113,1714`), and an async single-flight judge scheduler
   (`_JudgeScheduler`, `worker.py:150`) that keeps a slow VLM call from stalling capture. It also
   wraps `on_incident` in an `IdempotentSink` bound to a persistent `IdempotencyLedger` keyed by
   `incident.id`, so "a redelivery of an event_id already delivered to terminal-OK is deduped"
-  (`worker.py:913-917, 1144,1153`).
+  (`worker.py:1160-1171`).
 
 `watch()` has none of `run()`'s queueing, drop-on-overflow, or idempotency ledger. That is not an
 oversight to paper over — it is the actual, current shape of the frozen public contract, and this
@@ -65,13 +68,13 @@ ADR states plainly what that does and does not guarantee.
 
 ### 1. Public delivery flow: verdict → gate action → `WatchEvent` → consumer
 
-**The path.** `core.perceive_judged(frame, ...)` (`agent.py:978`) judges every active `watch` goal
-and, per goal, computes `base_key = (goal.id, focus.id if focus else None)` (`agent.py:1077`) then
-calls `self._fire_concern(...)`, which is `BehaviorExecutor.fire_judged` (`behavior.py:312`,
-aliased per `behavior.py:7`). `fire_judged` classifies the verdict
-(`classify(verdict, freshness, threshold, fresh_min)`, `gate.py:186-199`) and calls
+**The path.** `core.perceive_judged(frame, ...)` (`agent.py:1023-1248`) judges every active `watch` goal
+and, per goal, computes `base_key = (goal.id, focus.id if focus else None)` (`agent.py:1135`) then
+calls `self._fire_concern(...)`, which is `BehaviorExecutor.fire_judged` (`behavior.py:320-378`,
+aliased per `behavior.py:3-10`). `fire_judged` classifies the verdict
+(`classify(verdict, freshness, threshold, fresh_min)`, `gate.py:186-198`) and calls
 `self.gate.evaluate(key, verdict, freshness=freshness, hold_s=..., now=t, ...)` — "the only firing
-path" (`gate.py:202`; `evaluate` returns the `.action` of `Gate.decide`, `gate.py:317-338`) —
+path" (`gate.py:202`; `evaluate` returns the `.action` of `Gate.decide`, `gate.py:317-336`) —
 which returns exactly one of `FIRE` / `ASK` / `SILENT`
 (`GateAction = Literal["fire","ask","silent"]`, `gate.py:76`). `fire_judged` then maps that:
 
@@ -82,12 +85,12 @@ which returns exactly one of `FIRE` / `ASK` / `SILENT`
   was already consumed as a fire one line above; otherwise `Fired(goal.id, FIRE, goal.say, ...)`
   (`behavior.py:349`).
 - `ASK` → `Fired(goal.id, ASK, ask_text(goal), ...)` (`behavior.py:350-351`).
-- `SILENT` → `None` — no `Fired` object is produced (`behavior.py:352`).
+- `SILENT` → `None` — no `Fired` object is produced (`behavior.py:349,377`).
 
-Back in `perceive_judged`, a non-`None` `Fired` becomes a `FireEvent` (`agent.py:1144-1148`,
-`FireEvent` defined `agent.py:36-44`: `goal_id`, `action: GateAction` (`"fire"|"ask"`), `text`,
+Back in `perceive_judged`, a non-`None` `Fired` becomes a `FireEvent` (`agent.py:1214-1218`,
+`FireEvent` defined `agent.py:42-50`: `goal_id`, `action: GateAction` (`"fire"|"ask"`), `text`,
 `entity_id`, `verdict`) and is appended to that call's `events: list[FireEvent]`
-(`agent.py:1038,1148`). `watch()`'s loop then maps each returned `FireEvent` to a `WatchEvent`
+(`agent.py:1096,1219`). `watch()`'s loop then maps each returned `FireEvent` to a `WatchEvent`
 1:1 via `_as_watch_event` (`watch.py:79-87`), copying `goal_id`, `action`, `text`, `entity_id`,
 `verdict`, and stamping `t` from the **same** `now = core.clock()` value used to call
 `perceive_judged` (`watch.py:148-151`) — `WatchEvent.t` is frame-admission time, not a delivery
@@ -101,10 +104,33 @@ so the contracts package stays dependency-free of the cognition core (`contracts
 internal gate wiring byte-for-byte, and that wiring only ever surfaces FIRE/ASK to callers (a
 silent tick simply emits nothing)" (`contracts/__init__.py:1141-1144`). A caller cannot distinguish
 "condition false this tick," "condition true but not a rising edge," or "goal not yet evaluated"
-from `watch()`'s stream alone — none of those produce an event. A consumer that needs per-tick
-liveness must use the separate `WatchHealth`/`on_health` channel ADR-002 defines, not infer it here
-— this is the same non-folding boundary ADR-002 §3 already draws for health, restated from the
-delivery side.
+from `watch()`'s stream alone — none of those produce an event, and **`watch()` has no second
+channel at all**: its only output is the `WatchEvent` iterator.
+
+What actually exists for a consumer that needs more than the fire/ask stream is
+`percept.runtime.worker.run()`'s `on_health` sink, which receives a
+`RuntimeHealthEvent(kind, ts, data)` (`worker.py:141-147`). Be precise about what that does and
+does not give you:
+
+- It is **not per-tick liveness.** It is event-driven: `runtime_started` / `runtime_ended`,
+  `judge_dispatch`, `gate_suppressed` (`worker.py:563`), `judge_degraded` (`worker.py:539-558`),
+  `audio_stale`, `timebase_skew` (`worker.py:520-537`), `escalation`, `runtime_error`,
+  `state_saved`. A quiet-but-healthy run is silent between them. The per-frame hook is `on_frame`
+  (`worker.py:864, 1716-1718`), not `on_health`.
+- It **now closes every run with a coverage figure** (card X4): `RuntimeHealthEvent("runtime_ended")`
+  carries the run's admission coverage instead of the empty payload it used to carry, and a run
+  that saw frames but admitted none of them emits
+  `RuntimeHealthEvent("zero_admission_coverage")` immediately (`worker.py:1866-1885`, documented at
+  `worker.py:1020-1023`). Before X4 this channel emitted no coverage signal whatsoever, so an
+  integrator debugging "nothing ever fired" got nothing from it.
+- ADR-002's `WatchHealth` — the frozen staged vector with `state`/`reasons`, latest-state retention
+  and transition dedup (ADR-002 §1) — **does not exist in the tree.** It is a proposed design, not
+  a channel anything can subscribe to today. Do not route an integrator to it.
+
+The non-folding boundary ADR-002 §3 draws for health still holds, restated from the delivery side:
+health does not become a `WatchEvent`. The correction here is only about *which* health surface an
+integrator can actually reach — `run(on_health=...)`/`RuntimeHealthEvent`, not `WatchHealth` — and
+that reaching it means using `run()` rather than `watch()`.
 
 **At-most-once-per-episode.** The gate's rising edge is the mechanism, and it is keyed per
 `(goal_id, entity_or_episode_id)` (`gate.py:13-16`) — a new entity gets a fresh edge; the same
@@ -122,7 +148,7 @@ entity does not double-fire until it goes confident-`false` and re-arms. Mechani
   17-20, 365-375`) is an additional time-based guard: a fire landing within `refractory_s` seconds of
   that key's last **real** fire is suppressed even if a spurious confident-`false` blip re-armed
   the edge in between (`gate.py:423-429`). It is set gate-wide from
-  `cfg.gate.refractory_s or None` at construction (`agent.py:489`) — off unless a caller's
+  `cfg.gate.refractory_s or None` at construction (`agent.py:504-507`) — off unless a caller's
   `Settings`/profile turns it on.
 - `require_false_first` (opt-in, default off) and `hold_s` (dwell, opt-in via a goal's program)
   are two further, off-by-default authored variants on the same edge (`gate.py:361-375,408-417,
@@ -137,10 +163,10 @@ zero).
 (`_JudgeDegraded`), `perceive_judged` never reads `.confidence`/`.satisfied` off it, degrades that
 goal's tick to an ASK-class abstention, and explicitly leaves the gate's armed/dwell state
 untouched — "belt-and-suspenders against a fault silently arming/disarming an edge"
-(`agent.py:1086-1109`). A degraded judge call cannot produce a `FIRE`.
+(`agent.py:1156-1179`). A degraded judge call cannot produce a `FIRE`.
 
 **Backpressure on a slow consumer.** `watch()` has no internal queue (contrast `run()`'s bounded
-`source_queue_size`, `worker.py:868,1304`, and drop-oldest `frames_dropped`, `worker.py:113,1692`).
+`source_queue_size`, `worker.py:868,1328`, and drop-oldest `frames_dropped`, `worker.py:113,1714`).
 Because the loop `await`s `perceive_judged` inline and only then `yield`s, the async generator
 protocol itself provides backpressure: the next `stream` item is not pulled (`_aiter`'s
 `async for item in stream`, `watch.py:90-97`) until the consumer resumes the generator by
@@ -160,11 +186,11 @@ requesting the next `WatchEvent`. Concretely:
 **Other things this ADR states are NOT guaranteed — research preview, said plainly:**
 
 - No idempotency ledger for `watch()`. Unlike `run()`'s `IdempotentSink`/`IdempotencyLedger`
-  (`worker.py:913-917,1144,1153`), a `WatchEvent` carries no `id` and there is no persisted
+  (`worker.py:1160-1171`), a `WatchEvent` carries no `id` and there is no persisted
   delivery-attempt record. The only de-dup mechanism is the in-memory gate edge state, itself
   bounded by `Gate`'s TTL/LRU eviction (`_DEFAULT_MAX_KEYS=10_000`, `_DEFAULT_KEY_TTL_S=3600.0`,
   `gate.py:73-74`) and **not persisted** by `watch()` itself — `Percept.snapshot()`/`restore()`
-  exist and round-trip `self.gate.snapshot()` (`agent.py:1906,1932`, `Gate.snapshot`/`restore`,
+  exist and round-trip `self.gate.snapshot()` (`agent.py:2031,2077`, `Gate.snapshot`/`restore`,
   `gate.py:477-510`), but `watch()` never calls them. Across an unmanaged process restart with no
   persistence explicitly wired by the caller, a still-true condition can re-fire.
 - No wall-clock delivery-latency SLA — how quickly the consumer's `async for` loop resumes after a
@@ -189,7 +215,7 @@ argument's type:
   - `edge.salience_stat` and the `edge.motion_gate*` thresholds (which frames are looked at at all).
   - `sense_policy` (cadence) and `plan_mode`, threaded into `Percept.create` directly.
   Everything a `WatchProfile` has no opinion on — including `gate.threshold` — is left at the
-  `load_settings()` value; `Gate` itself is constructed from `cfg.gate` at `agent.py:486-490`, and
+  `load_settings()` value; `Gate` itself is constructed from `cfg.gate` at `agent.py:504-511`, and
   `fresh_min` is a `Gate` constructor default (`gate.py:207`), not a profile-settable knob.
 - A bare `Settings` is used directly, and any other object's `.settings` attribute is read if
   present (`_settings_from_profile`, `watch.py:44-60`). Neither of those shapes carries a
@@ -218,18 +244,18 @@ goals, and (c) the same sequence of `now` values, the entire path from a `Verdic
 `WatchEvent` is a pure function of its inputs:
 
 - `classify()` is pure arithmetic — `verdict.confidence < threshold`, `freshness < fresh_min`,
-  `verdict.satisfied` (`gate.py:186-199`). No randomness, no I/O.
+  `verdict.satisfied` (`gate.py:186-198`). No randomness, no I/O.
 - `Gate.evaluate`'s armed-bit rising edge, `require_false_first`, dwell, and refractory logic are
   all pure state transitions over `(key, truth, now)` (`gate.py:400-445`) — deterministic given the
   same key and the same `now` sequence.
 - `BehaviorExecutor.fire_judged`'s mapping from `GateAction` to `Fired`/`None`, including the
   hard-quadrant `FIRE`→`ASK` escalation, is a pure function of the goal's authored config and the
-  gate's return value (`behavior.py:312-352`).
+  gate's return value (`behavior.py:320-378`).
 - `watch()`'s own loop and `_as_watch_event` mapping add no branching on anything but the above
   (`watch.py:147-151,79-87`).
 
 **"The same `now` sequence" is load-bearing, not a footnote.** `core.clock` defaults to
-`time.monotonic` (`clk = clock or time.monotonic`, `agent.py:463`) — wall-clock, and therefore
+`time.monotonic` (`clk = clock or time.monotonic`, `agent.py:481`) — wall-clock, and therefore
 **not** reproducible run-to-run by default. `watch()` reads `now = core.clock()` fresh once per
 frame (`watch.py:148`) and that same value feeds both `perceive_judged`'s `t` and the resulting
 `WatchEvent.t`, and is what refractory/dwell timing compares against. Byte-identical replay of gate
@@ -238,8 +264,8 @@ driven from each recorded frame's own timestamp — not the default. `watch()` d
 this automatic today; that is a real limitation, stated here rather than assumed away.
 
 **What is NOT deterministic, and cannot be made so by this ADR.** The judge call itself —
-`self.vision.judge(...)`, reached via `self._judge(...)` inside `perceive_judged` (`agent.py:1082-1085`,
-`agent.py:1367`), dispatched to whichever
+`self.vision.judge(...)`, reached via `self._judge(...)` inside `perceive_judged` (`agent.py:1151-1154`,
+`agent.py:1561`), dispatched to whichever
 backend `Percept.create(vision=...)` resolved (e.g. `percept/backends/anthropic.py`,
 `percept/backends/gemini.py` — real network calls to a hosted model) — is not reproducible.
 Sampling/temperature, server-side model-version drift, provider-side safety/routing changes, and

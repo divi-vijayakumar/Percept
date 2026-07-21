@@ -3,7 +3,8 @@
 - **Status:** Proposed (design only — this ADR ships no code and changes no contract)
 - **Depends on:** ADR-001 (the Gate/judgment contract — `Verdict -> GateDecision -> JudgmentEvent`,
   unchanged by this ADR); the frozen wire contract in
-  `packages/percept-vision/percept/contracts/__init__.py` (`CONTRACT_VERSION = "1.2.0"`, `:33`).
+  `packages/percept-vision/percept/contracts/__init__.py` (`CONTRACT_VERSION = "1.3.0"`, `:33` —
+  1.3 is the bump that shipped `Incident.entity_id`, see §7).
 - **Related:** ADR-003 (Evidence artifacts — the proposed `evidence_ref` is an opaque handle that MAY name a
   bundle; this ADR is the analogous "pin the meaning before the capability ships" move, applied to
   the *relation* between findings rather than the evidence behind one); ADR-004 (Public delivery
@@ -12,16 +13,17 @@
   `Incident`/`DeliveryAttempt` chain unresolved; this ADR does not resolve it either).
 - **Feeds:** the still-open **"public object" founder decision**. This ADR deliberately stops at
   options and trade-offs. Anything that would pre-empt that decision is marked deferred.
-- **Source (read for this ADR):** `percept/contracts/__init__.py` (`Observation` `:92-99`,
-  `Subject` `:259-264`, `JudgmentEvent` `:510`, `IncidentSnippet` `:806`, `Incident` `:885`,
-  `WatchAction`/`WatchEvent` `:1116-1143`), `percept/gate.py` (key shape `:13-16`, `GATE_REASONS`
-  `:101-139`, `Gate.decide` `:338-453`, `reset_entity` `:465`), `percept/agent.py`
-  (`perceive_judged` `:978-1143`, `detect`+`ingest` `:1032-1033`, `base_key` `:1077`),
-  `percept/entity.py` (`EntityGraph.ingest` `:103-137`, `_predict_match` `:139-152`, `_mint`
+- **Source (read for this ADR):** `percept/contracts/__init__.py` (`Observation` `:94-101`,
+  `Subject` `:262-267`, `JudgmentEvent` `:514`, `IncidentSnippet` `:809`, `Incident` `:888`,
+  `WatchAction`/`WatchEvent` `:1129-1156`), `percept/gate.py` (key shape `:13-16`, `GATE_REASONS`
+  `:107-117`, `Gate.decide` `:338-445`, `reset_entity` `:465`), `percept/agent.py`
+  (`perceive_judged` `:1023-1248`, `detect`+`ingest` `:1090-1091`, `base_key` `:1135`),
+  `percept/entity.py` (`EntityGraph.ingest` `:104-138`, `_predict_match` `:140-153`, `_mint`
   `:179-191`), `percept/identity.py` (`ContinuityIdentity.match` `:47-55`),
-  `percept/incidents.py` (`make_incident` `:22-37`), `percept/episodes.py` (`Episode` `:24-32`),
+  `percept/incidents.py` (`make_incident` `:21-53`), `percept/episodes.py` (`Episode` `:24-31`),
   `percept/runtime/sinks.py` (`incident_payload` `:181-191`),
   `percept/contracts/schema/Incident.schema.json`.
+  (Every line cite in this ADR was re-derived against the tree at contract 1.3.0.)
 
 ## Context
 
@@ -36,23 +38,27 @@ Reading the code confirms it:
 The world side is real and well-built. `EntityGraph` (`entity.py:64`) is a genuine graph over
 observations: entities are minted (`_mint`, `entity.py:179`), matched across frames by a pluggable
 `Identity` strategy (`identity.py`), carry provenance-and-freshness-stamped `Attribute`s with the
-"assertion beats observation" rule enforced in one place (`entity.py:191-200`), get motion models
-for predictive continuity (`_predict_match`, `entity.py:139`), and die observably
-(`_on_entity_evicted` → `gate.reset_entity` + cache invalidation, `agent.py:1593-1597`). That is a
+"assertion beats observation" rule enforced in one place (`_record_observed`, `entity.py:193-200`),
+get motion models for predictive continuity (`_predict_match`, `entity.py:140`), and die observably
+(`_on_entity_evicted` → `gate.reset_entity` + cache invalidation, `agent.py:1706-1711`). That is a
 real model of things-in-the-world, with identity, lifetime, and correction semantics.
 
-The findings side has none of that. An `Incident` (`contracts/__init__.py:885`) is:
+The findings side has none of that. An `Incident` (`contracts/__init__.py:888`) is:
 
 ```python
 id: str; concern_id: str; verdict: Verdict; ts: float
 label: str | None = None; snippet: IncidentSnippet | None = None
 message: str = ""; label_url: str | None = None
+entity_id: str | None = None          # 1.3 (card D4) — a correlation handle, not a relation
 ```
 
-There is no field on `Incident` that references any other `Incident`. `make_incident`
-(`incidents.py:22-37`) mints a fresh `uuid4`-suffixed id per fire and reads nothing about prior
-fires. The gate's memory is per-`(goal_id, entity_or_episode_id)` key (`gate.py:13-16`,
-`agent.py:1077`) and holds one armed bit, one dwell stamp, one last-fire stamp
+There is no field on `Incident` that references any other `Incident`. `entity_id` shipped in
+contract 1.3 and points at the *subject* the fire was gated on, never at another finding — §7.
+`make_incident` (`incidents.py:21-53`) mints a fresh `uuid4`-suffixed id per fire (`:46`) and reads
+nothing about prior fires; the only cross-object thing it carries through is the gated subject's
+`entity_id`, taken off the fire (`fire.entity_id`, `incidents.py:43-44`). The gate's memory is
+per-`(goal_id, entity_or_episode_id)` key (`gate.py:13-16`,
+`agent.py:1135`) and holds one armed bit, one dwell stamp, one last-fire stamp
 (`gate.py:229-237`) — state *about whether to fire*, discarded into a boolean, never a durable edge
 *between* the things it fired. So percept emits an unordered bag of point records and asks the
 consumer to reconstruct the relations itself.
@@ -101,13 +107,14 @@ pure rising edge fired on the original claim; the correction either never fired,
 unrelated peer.
 
 **Mechanism, in code.** Suppose the correction *would* fire. `Gate.decide` reaches the refractory
-check only after the edge logic (`gate.py:420-429`):
+check only after the edge logic (`gate.py:423-429`):
 
 ```python
 if effective_refractory is not None and effective_refractory > 0 and now is not None:
     last_fire = self._last_fire.get(key)
     if last_fire is not None and (now - last_fire) < effective_refractory:
-        self._armed[key] = False
+        self._armed[key] = False  # treat as already-fired; a later confident-false re-arms it
+        self._dwell_since.pop(key, None)
         return _d(SILENT, "refractory")
 ```
 
@@ -122,7 +129,7 @@ fix; it is a well-logged wrong answer.
 **Fix A — settle window.** Delay committing a finding for a bounded window after the rising edge,
 so a retraction arriving inside the window cancels the finding before it is ever emitted. Note this
 is *not* `hold_s` (dwell): dwell requires the condition to stay continuously true before firing
-(`gate.py` dwell path, `_dwell_since` `:231`), which is a **state** predicate. A settle window is a
+(`gate.py` dwell path, `_dwell_since` `:232`), which is a **state** predicate. A settle window is a
 *claim-revision* predicate: the claim was made, and we wait to see whether the speaker takes it
 back. Their trigger conditions are different even where their timers look similar.
 
@@ -147,7 +154,8 @@ This is the sharpest of the four findings and deserves to be stated as a decisio
 observation.
 
 Corrections *do* fire today — as coequal, unlinked peers. Two `Incident`s come out with different
-`id`s (`incidents.py:31`), the same `concern_id`, different `ts`, and nothing connecting them.
+`id`s (`incidents.py:46`), the same `concern_id`, different `ts`, and nothing connecting them (a
+shared `entity_id` says they are about the same *subject*, never that one revises the other).
 `incident_payload` (`sinks.py:181-191`) serializes exactly that, so a webhook consumer receives two
 JSON objects that read as **two facts** rather than **one fact and its correction**.
 
@@ -163,7 +171,7 @@ a shape whose most natural reading is a fact the runtime did not establish.
 
 ### 4. `Incident` is a point; intervals are not derivable, and forward-filling is a consumer-invented assumption
 
-`Incident.ts: float` (`contracts/__init__.py:905`) is a single instant. There is no `t_start`/
+`Incident.ts: float` (`contracts/__init__.py:916`) is a single instant. There is no `t_start`/
 `t_end`, no duration, no "still true as of". Therefore a question of the form *"of these N minutes,
 X are attributed to documented steps"* is **underivable from percept's output**, and this ADR says
 so plainly rather than leaving integrators to discover it.
@@ -175,17 +183,17 @@ three ways the runtime can see and the consumer cannot:
 - the gate stays armed-`False` for the whole continuing-true episode (`already_fired` is the base
   contract, `gate.py:32-40` commentary), so "no further fire" means *nothing changed the edge* —
   which is indistinguishable from "the state ended and nothing new started";
-- a key can be evicted by TTL/LRU (`_DEFAULT_KEY_TTL_S`, `_DEFAULT_MAX_KEYS`, `gate.py:48-49`) or
+- a key can be evicted by TTL/LRU (`_DEFAULT_MAX_KEYS`, `_DEFAULT_KEY_TTL_S`, `gate.py:73-74`) or
   reset on entity death (`reset_entity`, `gate.py:465`), silently ending an interval the consumer
   believes is still open;
-- a degraded judge tick (`_note_judge_degraded`, `agent.py:1097`) leaves the gate state untouched
+- a degraded judge tick (`_note_judge_degraded`, `agent.py:1500`) leaves the gate state untouched
   by design (ADR-004 §1, "fail-closed judging never fires") — so a stretch of *no information* is
   forward-filled as *continued truth*.
 
 Two interval-shaped things already exist in the tree and are worth noting precisely because they
 show the shape is not alien to percept — and equally that neither is on `Incident`:
-`IncidentSnippet.t_start`/`t_end` (`contracts/__init__.py:828-829`) bound the **evidence media**,
-not the finding; `Episode.started_at`/`last_seen` (`episodes.py:27-28`) bound a **counting
+`IncidentSnippet.t_start`/`t_end` (`contracts/__init__.py:831-832`) bound the **evidence media**,
+not the finding; `Episode.started_at`/`last_seen` (`episodes.py:28-29`) bound a **counting
 episode** inside `EpisodeLog`, which is internal runtime state that never reaches a consumer.
 Whether an interval belongs on the finding, on a separate interval object, or nowhere is deferred
 (§Open Questions 2).
@@ -204,9 +212,9 @@ class Observation:
     attrs: dict[str, str] = field(default_factory=dict)
 ```
 
-(`contracts/__init__.py:92-99`.) Entities mint only from `Vision.detect()` output —
+(`contracts/__init__.py:94-101`.) Entities mint only from `Vision.detect()` output —
 `observations = await self.vision.detect(frame, self.goals.active())` then
-`self.graph.ingest(observations, frame, source, t=now)` (`agent.py:1032-1033`) — and matching is
+`self.graph.ingest(observations, frame, source, t=now)` (`agent.py:1090-1091`) — and matching is
 IoU + label:
 
 ```python
@@ -219,7 +227,7 @@ for e in known:
 ```
 
 (`ContinuityIdentity.match`, `identity.py:47-55`; the appearance and predicted-box paths,
-`AppearanceIdentity` `identity.py:58` and `_predict_match` `entity.py:139-152`, are *also* purely
+`AppearanceIdentity` `identity.py:58` and `_predict_match` `entity.py:140-153`, are *also* purely
 geometric/visual — they add a pixel signature and a motion model, not content.) `_mint`
 (`entity.py:179`) assigns `f"e{counter}"` and copies `obs.label`/`obs.box`; nothing else.
 
@@ -233,23 +241,23 @@ ballistically).
 **For documents, identity is in the CONTENT, not the geometry.** Percept's identity substrate has
 no channel for content-derived identity: `Observation.attrs: dict[str, str]` is the only
 content-ish field, and it is consumed as *attributes of an already-matched entity*
-(`_record_observed`, `entity.py:191-200`) — it is never an input to `Identity.match`, which the
+(`_record_observed`, `entity.py:193-200`) — it is never an input to `Identity.match`, which the
 module docstring calls a frozen protocol `match(obs, known) -> id | None` (`identity.py:4-14`).
 So a `ContentIdentity` cannot be written today purely as a pluggable strategy: the strategy seam
 exists (`EntityGraph(identity=...)`, `entity.py:73-74`, and `_match_id` tolerates both arities,
-`entity.py:169-177`), but the thing it would need to key on is not carried on the object it is
+`entity.py:170-177`), but the thing it would need to key on is not carried on the object it is
 handed. That is the precise, minimal statement of the blocker — the seam is right, the payload is
 missing.
 
 Note this is *not only* an incident-graph problem: it is an entity-graph problem that **causes** an
 incident-graph problem. If two invoices are one entity, then the gate key `(goal_id, entity_id)`
-(`agent.py:1077`) is shared, and the second invoice's finding is suppressed as `already_fired`
+(`agent.py:1135`) is shared, and the second invoice's finding is suppressed as `already_fired`
 before any incident-relation machinery could ever see it. **Ordering matters: no amount of relation
 modelling on the findings side recovers a distinction the identity side already collapsed.**
 
 ### 6. Frozen-contract implications — what is additive, what is not
 
-`CONTRACT_VERSION = "1.2.0"` (`contracts/__init__.py:33`); the cross-edge convention is documented
+`CONTRACT_VERSION = "1.3.0"` (`contracts/__init__.py:33`); the cross-edge convention is documented
 in `tests/test_contract_parity.py` — **same MAJOR == wire-compatible**, a minor bump is an additive
 back-compatible field. JSON Schemas are generated from the dataclasses
 (`percept/contracts/jsonschema.py`) and committed under `percept/contracts/schema/`, so any field
@@ -258,18 +266,22 @@ change is a regenerate-and-review step, not a silent one. `percept/watch.py`'s p
 
 **Additive (minor bump, safe):**
 
-- A new optional, defaulted field on `Incident` — e.g. `entity_id: str | None = None` (card D4),
-  or a `supersedes: str | None = None` / `relations: list[...] = field(default_factory=list)`.
+- A new optional, defaulted field on `Incident` — e.g. a `supersedes: str | None = None` /
+  `relations: list[...] = field(default_factory=list)`. **This route is already proven in-tree:**
+  card D4 shipped exactly this shape as `Incident.entity_id: str | None = None`
+  (`contracts/__init__.py:926`), which is what took `CONTRACT_VERSION` from `1.2.0` to `1.3.0`.
   `Incident` is a plain `@dataclass` (not frozen), all optional fields already carry defaults, and
-  `incident_payload` serializes generically via `_jsonable` (`sinks.py:187`) — a new field appears
-  in the payload without touching the sink. Existing readers that index known keys are unaffected.
+  `incident_payload` serializes generically via `_jsonable` (`sinks.py:167-178`, called at
+  `:187`) — a new field appears in the payload without touching the sink, which is why `entity_id`
+  reached webhook consumers with no sink change. Existing readers that index known keys are
+  unaffected.
 - A new optional, defaulted field on `Observation` (e.g. a content/identity hint), for the same
   reasons — `Observation` is a plain `@dataclass` with a defaulted `attrs`.
 - A **new DTO** (an incident-relation object, an interval object, a richer subject reference)
   exported alongside the existing ones and registered in `jsonschema.py`'s export list.
 - Widening `Identity.match` with a further **optional keyword**. There is precedent:
   `signature=` was added as an optional kwarg and `_match_id` catches `TypeError` to keep
-  two-arg custom implementations conforming (`entity.py:169-177`, `identity.py:11-14`).
+  two-arg custom implementations conforming (`entity.py:170-177`, `identity.py:11-14`).
 
 **NOT additive (breaking; requires a major bump and a deliberate decision):**
 
@@ -281,31 +293,41 @@ change is a regenerate-and-review step, not a silent one. `percept/watch.py`'s p
 - Changing the gate key tuple `(goal_id, entity_or_episode_id)` shape. This is not a wire contract
   but it is a *persistence* contract: `Gate.snapshot()`/`restore()` serialize keys as
   `[list(k), ...]` (`gate.py:477-510`) and `Percept.snapshot()`/`restore()` round-trip them
-  (`agent.py:1897,1923`). A widened key silently invalidates every stored snapshot, and a
-  restored-but-mismatched key re-opens a fire-once goal — the exact trap `_no_evict` exists to
-  prevent (`gate.py:255-266` commentary).
+  (`agent.py:2031,2077`). A widened key silently invalidates every stored snapshot, and a
+  restored-but-mismatched key re-opens a fire-once goal — the exact trap `_no_evict`
+  (`gate.py:251`) exists to prevent (`gate.py:245-246` commentary).
 - Adding a new value to `WatchAction` / `GateAction`. Both are closed `Literal`s
-  (`contracts/__init__.py:1116`, `gate.py:76`) mirrored value-for-value by the JS edge; a fourth
+  (`contracts/__init__.py:1129`, `gate.py:76`) mirrored value-for-value by the JS edge; a fourth
   action is a major wire change. **A supersede relation must therefore be modelled as data on the
   event, never as a new action value** — this ADR states that constraint now, because it is the
   most likely accidental breakage in this area.
 - Anything that changes `watch()`'s signature or `WATCH_VERSION`. If a future relation design
   appears to require it, that is a blocker to raise, not a change to make.
 
-### 7. `Incident.entity_id` (card D4) does not preclude a richer subject reference later
+### 7. `Incident.entity_id` (card D4, SHIPPED in 1.3.0) does not preclude a richer subject reference later
 
-Checked explicitly, as required. **It does not preclude it**, on three independent grounds:
+**Status: shipped, not prospective.** `Incident.entity_id: str | None = None` exists today
+(`contracts/__init__.py:926`), is populated by `make_incident` off the fire's own `entity_id`
+(`incidents.py:43-44, :52`), and is the reason `CONTRACT_VERSION` reads `1.3.0` rather than
+`1.2.0`. The rest of this section was written before it landed and is retained as the
+compatibility argument that authorized it; it now reads as a record of a decision taken, not a
+proposal.
+
+Checked explicitly, as required. **It does not preclude a richer reference**, on three independent
+grounds:
 
 1. **Additive-over-additive is still additive.** `entity_id: str | None = None` is one optional
-   defaulted field. Adding a second optional defaulted field later (`subject: Subject | None =
-   None`, or whatever the public-object decision names) is an independent minor bump; nothing about
-   the first field constrains the second's shape. Dataclass field order is the only mechanical
-   constraint, and appending after existing defaulted fields is always legal.
+   defaulted field, and it was in fact appended last so every existing positional construction of
+   `Incident(...)` kept its meaning (`contracts/__init__.py:924-926`). Adding a second optional
+   defaulted field later (`subject: Subject | None = None`, or whatever the public-object decision
+   names) is an independent minor bump; nothing about the first field constrains the second's
+   shape. Dataclass field order is the only mechanical constraint, and appending after existing
+   defaulted fields is always legal.
 2. **The precedent already exists in-tree, in both directions.** `WatchEvent` already carries
-   `entity_id: str | None = None` (`contracts/__init__.py:1142`) as a plain string, *and*
+   `entity_id: str | None = None` (`contracts/__init__.py:1155`) as a plain string, *and*
    `Subject` already exists in the same frozen module as the richer generic reference:
    `kind: Literal["entity","relation","expectation","event"]` + `ref: str`
-   (`contracts/__init__.py:259-264`), used as `Concern.identity` (`:285`) and already exported to
+   (`contracts/__init__.py:262-267`), used as `Concern.identity` (`:288`) and already exported to
    `schema/Subject.schema.json`. A plain string id and a typed subject reference coexist in this
    contract today without conflict.
 3. **A plain `entity_id` is a strict subset of any richer reference.** Any future generic subject
@@ -313,11 +335,13 @@ Checked explicitly, as required. **It does not preclude it**, on three independe
    field remains derivable and can be kept populated indefinitely for back-compat rather than
    removed. There is no lossy commitment being made.
 
-The one real caution, stated so it is not discovered later: `entity_id` inherits the identity
-semantics of §5. For a physical-object domain it means what it says; for a document/claim domain it
-currently means "the entity IoU+label happened to collapse this into". `entity_id` is therefore
-safe to ship and **must not be documented as a stable subject identifier for non-physical
-subjects** until §5 is resolved. That is a docs constraint on D4, not a blocker for it.
+The one real caution, now a live constraint rather than a forecast: `entity_id` inherits the
+identity semantics of §5. For a physical-object domain it means what it says; for a document/claim
+domain it currently means "the entity IoU+label happened to collapse this into". `entity_id` was
+therefore safe to ship and **must not be documented as a stable subject identifier for non-physical
+subjects** until §5 is resolved. The shipped docstring holds that line — it calls the field "a
+correlation key ONLY" carrying "no claim about *who* or *which document* the subject is"
+(`contracts/__init__.py:904-910`) — and that wording must not be relaxed while §5 stands open.
 
 ## Consequences
 
@@ -334,6 +358,8 @@ subjects** until §5 is resolved. That is a docs constraint on D4, not a blocker
   never a fourth `GateAction`/`WatchAction` value (§6).
 - This ADR authorizes **no implementation**. In particular it does not decide whether relations
   live on `Incident`, on a new object, or only in a store — that is the public-object decision.
+  (`Incident.entity_id` shipped under card D4, not under this ADR; §7 only established that it
+  does not foreclose the decision.)
 - Nothing here weakens ADR-004 §1's delivery guarantees; §2 argues that guarantee is *correct for
   state-bearing subjects and insufficient for claim-bearing ones*, which is a scope statement about
   ADR-004, not a contradiction of it.
@@ -411,10 +437,11 @@ setting, will fail the 21.6 s / 22.6 s / 34.0 s test in §2.
    creates a second place where an event can be withheld — and ADR-002/ADR-001 §9's "a
    bound-driven drop is never silent" rule would need extending to cover a settle-cancelled
    finding. Both need a new reason code; note `GATE_REASONS` is a closed vocabulary
-   (`gate.py:107-139`) and adding to it is a deliberate act.
+   (`gate.py:107-117`, with its `REASON_ACTION` map `:121-131` and `SUPPRESSION_REASONS` `:139`)
+   and adding to it is a deliberate act.
 6. **Does any of this reach `watch()`, or is it `run()`-only?** This is ADR-004 Open Question 4
    restated from the relations side and is explicitly *not* re-answered here. `watch()` yields
-   `WatchEvent`, which has no `id` at all (`contracts/__init__.py:1136-1143`) — a relation needs
+   `WatchEvent`, which has no `id` at all (`contracts/__init__.py:1135-1156`) — a relation needs
    something to point at, so any `watch()`-side answer implies giving `WatchEvent` an identity,
    which is additive but consequential.
 

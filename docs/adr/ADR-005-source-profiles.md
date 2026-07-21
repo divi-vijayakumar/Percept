@@ -18,9 +18,11 @@
   `percept/profile_wiring.py` (the one seam a profile resolves through), `percept/gate.py`
   (`GATE_REASONS`, `Gate.decide`, refractory/dwell), `percept/runtime/source.py`
   (`GATE_W, GATE_H = 48, 36`), `percept/harness/tier0.py` (the 8x6 `block_max` grid),
-  `percept/runtime/worker.py` (`_capture_plan` `:731`, the `coast_admit` branch `:1729`,
-  `bank.push(t, motion=..., frame=judge_frame, ...)` `:1719`), `percept/doctor.py` (card D1),
-  `percept/eval/differential.py` (card D3), `percept/harness/detectors.py` (`register_detector`).
+  `percept/runtime/worker.py` (`_capture_plan` `:730`, the `coast_admit` branch `:1774-1808`,
+  `bank.push(t, motion=..., frame=judge_frame, ...)` `:1764`), `percept/doctor.py` (card D1),
+  `percept/eval/differential.py` (card D3), `percept/edge/detectors.py` (`register_detector` —
+  the PUBLIC path, the one `percept/contracts/__init__.py:1227` documents; it is a re-export shim
+  over the implementation in `percept/harness/detectors.py:472`).
 
 ## Context
 
@@ -191,7 +193,7 @@ Its defaults were chosen against the measurement above, not against making a fix
 
 `docs/how-to/tune-admission.md` ships with this card: a worked, runnable guide from "nothing fires" to
 a tuned eye, using the tools that now exist — `percept-doctor` (the per-stat table, and which rule
-suppressed each non-admit, for zero judge spend), `register_detector` (the client's own phash/OCR model
+suppressed each non-admit, for zero judge spend), `percept.edge.detectors.register_detector` (the client's own phash/OCR model
 as an **admission** detector, running at native fps on the **full-resolution judge frame**, emitting
 boundaries with no cloud judge call), and `percept eval` (card D3 — a paired A/B of their detector
 against baseline on **their** fixtures with **their** bars, on a held-out split). The `clean.mp4`
