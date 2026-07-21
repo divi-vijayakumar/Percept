@@ -43,6 +43,12 @@ def generate_all(out_root: "Path | str | None" = None, *, write: bool = True) ->
     root = Path(out_root) if out_root else synthetic_root()
     built = {name: generate_corpus(name, root, write=write) for name in CORPUS_NAMES}
     if write:
+        # The README ships WITH the data, not with the tree: eval/synthetic/ is gitignored, so a
+        # committed README there would vanish on a fresh clone. Its text lives in readme.py.
+        from .readme import render
+
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "README.md").write_text(render(), encoding="utf-8")
         _write(
             root / "manifest.json",
             {
