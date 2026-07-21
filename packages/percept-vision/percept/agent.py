@@ -1068,13 +1068,11 @@ class Percept:
         # tests). With t=None it uses the wall clock, like any production run.
         trace_id = f"{source}@{now}"
         tracing = self.on_trace is not None  # guard so the default (untraced) path builds no trace kwargs
-<<<<<<< HEAD
         # The judge-usage record emitted deep inside _timed_judge belongs to THIS frame's trace, so
         # park the id where that wrapper can find it (it takes only the judge's own args). One frame
         # is in judgment at a time per core in both dispatch modes, so this is the current frame's id.
         self._usage_trace_id = trace_id
         self._usage_source_ts = now
-=======
         # X7 — the judgment clock (ADR-001 §1/§5). Two domains, never mixed: every stamp below is read
         # from THIS core's injected ``clock`` (monotonic in production, FakeClock in tests), while the
         # caller's stream timeline ``t`` — when one was supplied — rides along ONLY as the untrusted
@@ -1083,7 +1081,6 @@ class Percept:
         # capture time, the runtime worker's tier-0 admission) are NOT threaded through this seam, so
         # they are deliberately left out rather than approximated from a later read.
         ingest_observed_at = self.clock()
->>>>>>> worktree-wf_cb205a5a-758-5
 
         if tracing:
             await self._emit_trace(trace_id, now, "source.frame")
