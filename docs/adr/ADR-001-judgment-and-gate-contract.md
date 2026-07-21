@@ -1,6 +1,11 @@
 # ADR-001 — The judgment and gate contract
 
-- **Status:** accepted
+- **Status:** **accepted as a decision; partially implemented.** Accepted means the runtime is bound
+  by this contract as the direction of record — it does *not* mean every section below describes
+  shipped code. §8 (per-key evidence sequencing) is decided but **not wired into the production
+  path**, and §5's named clock seam is **harness-only** today. Each such gap is called out inline in
+  its own section under an *Implementation status* note. Read those notes before citing a section as
+  a description of what the runtime does.
 - **Referenced by:** ADR-002 (runtime health & coverage), ADR-003 (evidence artifacts & retention),
   ADR-004 (delivery flow & replay), and ~30 citation sites across `percept/`
 
@@ -34,7 +39,8 @@ This ADR fixes the contract that makes all three hold at once.
 One pass through the judge funnel is `Verdict → GateDecision → JudgmentEvent`.
 
 - **`Verdict`** — the backend's answer. The sole contract a vision adapter must satisfy.
-- **`GateDecision`** — what the gate decided to do about that verdict, and why.
+- **`GateDecision`** — what the gate decided to do about that verdict, and why. *Shipped as
+  `percept.gate.GateOutcome`; see the implementation-status note below.*
 - **`JudgmentEvent`** — the frozen, immutable record of the pass, frozen at
   `timing.decision_emitted_ts`.
 
@@ -44,6 +50,15 @@ records attempts made *against* an already-frozen event. Conflating the two woul
 meaning depend on how many times someone tried to deliver it.
 
 Diagnostic and dead-letter payloads carry no secrets, no raw media, and no incident payload.
+
+> **Implementation status — the shipped symbol is `GateOutcome`, not `GateDecision`.** The gate's
+> own return type is `percept.gate.GateOutcome` (`percept/gate.py`, `Gate.decide`); `Gate.evaluate`
+> returns `outcome.action` alone. The name in the lifecycle above was never updated. It differs on
+> purpose: two *other*, unrelated types in this package already own the name `GateDecision` —
+> `percept.sequencing.GateDecision` (a reducer submission result: an action plus sequencing/drop
+> metadata, see §8) and `percept.harness.tier0.GateDecision` (the tier-0 edge decision,
+> escalate-or-not, which happens strictly before any of this). Of the three, `GateOutcome` is the one
+> exported from the top-level `percept` namespace. Read `Verdict → GateOutcome → JudgmentEvent`.
 
 ## §2 — The three-state decision model
 
@@ -85,9 +100,8 @@ Every judgment carries timing in two strictly separated domains:
 
 - **MONOTONIC (production, local, trusted)** — `ingest_observed_ts`, `admitted_ts`,
   `judge_started_ts`, `judge_completed_ts`, `decision_emitted_ts`. **All** latency arithmetic —
-  dwell and refractory windows, funnel latency, p50/p95/p99 — reads only these five, sourced from the
-  injectable monotonic clock seam (`percept/clock.py`), never from a wall clock that NTP can adjust
-  backwards mid-window.
+  dwell and refractory windows, funnel latency, p50/p95/p99 — reads only these five, sourced from a
+  monotonic time source, never from a wall clock that NTP can adjust backwards mid-window.
 - **SOURCE (optional, untrusted)** — `source_media_ts`, the source/fixture/RTSP presentation
   timestamp. Carried for correlation, never used for latency math.
 
@@ -96,6 +110,18 @@ began, or when a human could first have judged it confidently. Those are labels 
 fixture generator supplies after the fact, for evaluation only. `GroundTruth` is therefore a wholly
 separate type that a live pipeline never constructs — the separation is structural, not a
 convention someone has to remember.
+
+> **Implementation status — the named clock seam is harness-only.** `percept/clock.py` (`Clock`,
+> `WallClock`, `FakeClock`) is imported *only* by harness modules: `percept/harness/stream_gen.py`,
+> `load_driver.py`, `metrics.py`, `soak_runner.py`. The production cognition path does **not** import
+> it: `percept/agent.py`, `percept/gate.py` and `percept/runtime/worker.py` each default their
+> injectable time callable to bare `time.monotonic`. This is *behaviourally* equivalent —
+> `clock.WallClock` **is** `time.monotonic`, and every one of those call sites is already an
+> injectable `Callable[[], float]` parameter, so tests can and do pass a `FakeClock` in — but the
+> claim that production latency math flows through the module `percept/clock.py` is not true today.
+> What holds is the weaker, real invariant: production latency math reads monotonic seconds through
+> an injectable callable. Adopting `clock.WallClock` as the default in those three modules would be
+> a no-op rename that makes the seam literal; it has not been done.
 
 ## §6 — Delivery is at-least-once, with idempotency
 
@@ -128,6 +154,28 @@ for that key — whether or not that newer job has itself completed. Results are
 time per key, and a result that lost the race is dropped as a traced stale completion (§9) with the
 underlying gate never touched.
 
+> **Implementation status — decided, NOT in the production path.** The rule above is implemented in
+> `percept/sequencing.py` (`EvidenceSequencer`, `SerializedDecisionReducer`, `ResultPolicy`), and
+> that code has **zero production importers**. Nothing under `percept/` constructs either class; the
+> only import of the module anywhere in the package is `percept/harness/metrics.py`, which pulls in
+> the `percept.sequencing.GateDecision` dataclass purely as a counter input for
+> `dropped`/`drop_reason` accounting. Its only exercisers are tests
+> (`tests/test_sequencing.py`, `tests/test_p_alloc.py`, `tests/test_p_bound.py`).
+>
+> The shipped runtime does not implement this rule — it **sidesteps the race** rather than resolving
+> it. `percept/runtime/worker.py` runs the judge scheduler **single-flight with one latest-pending**:
+> at most one judgment in flight per source, and a newly admitted frame *replaces* the queued
+> candidate (latest wins, traced as `judge_superseded`) instead of queueing behind it. With never
+> more than one judge job in flight for a key, two results can never complete out of order, so no
+> sequence number is needed. Staleness across a goals-revision change is handled by a different
+> mechanism entirely: `expected_goals_revision` travels with the admitted frame and aborts a stale
+> in-flight or pending judgment (`judge_revision_dropped`).
+>
+> §8 is therefore the contract a real **worker pool** must satisfy on the day one is introduced — a
+> decision held in advance, with the primitives pre-built and tested. It is not a description of
+> current behaviour. Any client reading §8 to explain what percept 0.7.x does at run time is reading
+> the wrong section; read the single-flight scheduler in `percept/runtime/worker.py`.
+
 ## §9 — Bounded, and never silent
 
 Every unbounded structure in a 24/7 process is a leak with a long fuse. Gate keys, episode logs,
@@ -158,12 +206,15 @@ a quiet, working system.
 ## Consequences
 
 **Accepted costs.** At-least-once delivery (§6) pushes deduplication onto consumers that care.
-Reserving sequences at dispatch (§8) means a newer job that later fails still marks an older
-in-flight result stale — that tick is lost rather than applied out of order, which is the trade we
-want. Degrading to `ASK` on judge failure (§4, §10.4) means provider flakiness surfaces to the user
-as questions rather than silence.
+Reserving sequences at dispatch (§8) would mean a newer job that later fails still marks an older
+in-flight result stale — that tick lost rather than applied out of order, which is the trade we
+want *if and when* a worker pool ships; today the shipped single-flight scheduler pays a different
+price for the same guarantee, dropping the superseded pending candidate (traced) so only the
+freshest frame is judged. Degrading to `ASK` on judge failure (§4, §10.4) means provider flakiness
+surfaces to the user as questions rather than silence.
 
-**What this buys.** The gate's per-key state is correct under a worker pool. Latency numbers are
+**What this buys.** The gate's per-key state is correct today because judging is single-flight, and
+§8 pre-commits the rule that keeps it correct under a future worker pool. Latency numbers are
 trustworthy because they cannot be perturbed by clock adjustment. A long-running watch has a
 bounded footprint, and every bound it hits is visible. And the worst-case output of a broken
 backend is a question, not a confident lie.
