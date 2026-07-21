@@ -9,11 +9,13 @@ runtime pipeline (``worker.py``/``agent.py``/``gate.py``) at all.
 Implements the one-to-one event-level matching rule EXACTLY:
 
 * A predicted event matches AT MOST ONE ground-truth episode.
-* A match requires ``decision_emitted_ts in [decision_eligible_ts, episode_end_ts +
-  allowed_lateness]``.
-* Additional predictions in the same episode (after it already has a match) = DUPLICATE false
-  fires.
-* Predictions that match no episode window at all = (plain) false fires.
+* A match requires BOTH ``str(JudgmentEvent.key) == GroundTruthEpisode.episode_id`` AND
+  ``decision_emitted_ts in [decision_eligible_ts, episode_end_ts + allowed_lateness]``. The key
+  term is load-bearing on multi-goal streams: a fire of the WRONG goal that happens to land inside
+  another goal's window is a false fire, never a match.
+* Additional predictions of the same key in the same episode (after it already has a match) =
+  DUPLICATE false fires.
+* Predictions that match no episode (by key AND window) at all = (plain) false fires.
 * Ground-truth episodes with no matching prediction = misses.
 
 Recall/precision are EVENT-level (one unit = one episode / one predicted event), never
@@ -203,13 +205,18 @@ def score(
     ``(decision_emitted_ts, key, evidence_seq)`` order (so two calls over the same inputs always
     produce byte-for-byte identical results, independent of input list order):
 
-    1. If ``decision_emitted_ts`` falls inside the window of an episode that has NO match yet, it
-       becomes that episode's match (the matching rule: matches AT MOST ONE episode — the first,
-       earliest-sorted prediction to land in an episode's window claims it).
-    2. Else, if it falls inside the window of an episode that ALREADY has a match, it is a
-       DUPLICATE false fire against that episode (the matching rule: "additional predictions in the
-       same episode").
-    3. Else, it matches no episode window at all — a plain (unmatched) false fire.
+    A prediction may only ever claim an episode whose ``episode_id`` equals ``str(event.key)`` —
+    scoring is KEY-AWARE, so on a multi-goal stream a fire of goal A inside goal B's window scores
+    as a false fire and leaves B a miss.
+
+    1. If ``str(pred.key)`` equals the ``episode_id`` of an episode that has NO match yet AND
+       ``decision_emitted_ts`` falls inside that episode's window, it becomes that episode's match
+       (the matching rule: matches AT MOST ONE episode — the first, earliest-sorted prediction to
+       land in an episode's window with that episode's key claims it).
+    2. Else, if it carries the key of, and falls inside the window of, an episode that ALREADY has
+       a match, it is a DUPLICATE false fire against that episode (the matching rule: "additional
+       predictions in the same episode").
+    3. Else, it matches no episode by key AND window at all — a plain (unmatched) false fire.
 
     Ground-truth episodes with no matching prediction after all predictions are processed are
     misses. Only predicted events whose ``.action`` is in ``predicted_actions`` (default: ``fire``
@@ -229,9 +236,18 @@ def score(
     for pred in ordered_predictions:
         ts = pred.timing.decision_emitted_ts
 
-        # 1) An unmatched episode whose window contains ts claims this prediction as its match.
+        key = str(pred.key)
+
+        # 1) An unmatched episode whose KEY this prediction carries and whose window contains ts
+        #    claims this prediction as its match.
         claimant = next(
-            (ep for ep in ordered_episodes if ep.episode_id not in matched and ep.contains(ts)),
+            (
+                ep
+                for ep in ordered_episodes
+                if ep.episode_id not in matched
+                and key == ep.episode_id
+                and ep.contains(ts)
+            ),
             None,
         )
         if claimant is not None:
@@ -239,9 +255,14 @@ def score(
             scores.append(PredictionScore(pred, ts, MatchOutcome.MATCH, claimant.episode_id))
             continue
 
-        # 2) Otherwise, an already-matched episode whose window contains ts -> duplicate.
+        # 2) Otherwise, an already-matched episode of the SAME key whose window contains ts ->
+        #    duplicate.
         duplicate_of = next(
-            (ep for ep in ordered_episodes if ep.episode_id in matched and ep.contains(ts)),
+            (
+                ep
+                for ep in ordered_episodes
+                if ep.episode_id in matched and key == ep.episode_id and ep.contains(ts)
+            ),
             None,
         )
         if duplicate_of is not None:

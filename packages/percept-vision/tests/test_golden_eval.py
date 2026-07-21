@@ -2,8 +2,11 @@
 
 Proves that :mod:`percept.harness.golden_eval`:
 
-  * matches a predicted event to AT MOST ONE ground-truth episode, requiring
+  * matches a predicted event to AT MOST ONE ground-truth episode, requiring BOTH
+    ``str(event.key) == episode_id`` AND
     ``decision_emitted_ts in [decision_eligible_ts, episode_end_ts + allowed_lateness]``.
+  * (card X1) is KEY-AWARE on multi-goal streams: a fire of goal A landing inside goal B's
+    overlapping window is a FALSE FIRE and leaves B a MISS — it is never credited as a match.
   * scores a fire that lands before ``decision_eligible_ts`` or after
     ``episode_end_ts + allowed_lateness`` as unmatched (a miss for the episode, a false fire for
     the prediction).
@@ -23,6 +26,7 @@ from percept.harness.golden_eval import (
     GoldenEvalResult,
     GroundTruthEpisode,
     MatchOutcome,
+    PredictionScore,
     build_golden_timeline,
     score,
 )
@@ -168,6 +172,130 @@ class TestUnmatchedGroundTruthIsMiss(unittest.TestCase):
         self.assertEqual(result.matched_episode_ids, ("e1",))
         self.assertEqual(result.missed_episode_ids, ("e2",))
         self.assertEqual(result.misses, 1)
+
+
+class TestMatchingIsKeyAware(unittest.TestCase):
+    """Card X1 regression — ``score`` used to be KEY-BLIND.
+
+    It selected a claimant episode purely by ``ep.contains(ts)`` and never compared
+    ``JudgmentEvent.key`` to ``GroundTruthEpisode.episode_id``, so on a MULTI-GOAL stream a fire of
+    the wrong goal that happened to land in another goal's window was credited as a MATCH. Every
+    multi-goal recall/precision number measured before this fix is over-credited.
+    """
+
+    def test_wrong_goal_inside_another_goals_window_is_a_false_fire_not_a_match(self):
+        # Two goals whose episodes OVERLAP in time. Only goal A ever fires.
+        ep_a = _episode("goal-a", decision_eligible_ts=1.0, episode_end_ts=10.0)
+        ep_b = _episode("goal-b", decision_eligible_ts=2.0, episode_end_ts=9.0)
+
+        # One fire of goal A, at an instant inside BOTH windows, after A is already matched.
+        preds = [
+            _fire("goal-a", 3.0, evidence_seq=0),  # matches goal-a
+            _fire("goal-a", 4.0, evidence_seq=1),  # inside goal-b's window too — but wrong key
+        ]
+        result = score([ep_a, ep_b], preds)
+
+        self.assertEqual(result.matched_episode_ids, ("goal-a",))
+        # THE bug: goal-b used to be credited as matched by a goal-a fire.
+        self.assertEqual(result.missed_episode_ids, ("goal-b",))
+        self.assertEqual(result.misses, 1)
+        # The second goal-a fire is a duplicate of goal-a, never a match for goal-b.
+        self.assertEqual(
+            [(p.outcome, p.matched_episode_id) for p in result.prediction_scores],
+            [
+                (MatchOutcome.MATCH, "goal-a"),
+                (MatchOutcome.DUPLICATE, "goal-a"),
+            ],
+        )
+        self.assertAlmostEqual(result.recall, 0.5)
+        self.assertAlmostEqual(result.precision, 0.5)
+
+    def test_a_lone_wrong_key_fire_in_an_unmatched_window_is_a_plain_false_fire(self):
+        # No fire of goal-a at all: goal-b's single fire lands inside goal-a's window.
+        ep_a = _episode("goal-a", decision_eligible_ts=1.0, episode_end_ts=10.0)
+        ep_b = _episode("goal-b", decision_eligible_ts=50.0, episode_end_ts=60.0)
+
+        result = score([ep_a, ep_b], [_fire("goal-b", 5.0)])
+
+        self.assertEqual(result.matched_episode_ids, ())
+        self.assertEqual(result.missed_episode_ids, ("goal-a", "goal-b"))
+        # FALSE_FIRE (unmatched), not DUPLICATE and not MATCH.
+        (only,) = result.prediction_scores
+        self.assertIs(only.outcome, MatchOutcome.FALSE_FIRE)
+        self.assertIsNone(only.matched_episode_id)
+        self.assertEqual(result.unmatched_false_fires, 1)
+        self.assertEqual(result.duplicate_false_fires, 0)
+        self.assertEqual(result.recall, 0.0)
+        self.assertEqual(result.precision, 0.0)
+
+    def test_each_goal_claims_only_its_own_episode_in_an_overlapping_pair(self):
+        # Both goals fire correctly inside the overlap: both match, nothing is stolen.
+        ep_a = _episode("goal-a", decision_eligible_ts=1.0, episode_end_ts=10.0)
+        ep_b = _episode("goal-b", decision_eligible_ts=2.0, episode_end_ts=9.0)
+        preds = [_fire("goal-b", 3.0, evidence_seq=0), _fire("goal-a", 4.0, evidence_seq=1)]
+
+        result = score([ep_a, ep_b], preds)
+
+        self.assertEqual(result.matched_episode_ids, ("goal-a", "goal-b"))
+        self.assertEqual(result.missed_episode_ids, ())
+        self.assertEqual(
+            [(p.event.key, p.outcome, p.matched_episode_id) for p in result.prediction_scores],
+            [
+                ("goal-b", MatchOutcome.MATCH, "goal-b"),
+                ("goal-a", MatchOutcome.MATCH, "goal-a"),
+            ],
+        )
+        self.assertEqual(result.recall, 1.0)
+        self.assertEqual(result.precision, 1.0)
+
+    def test_key_aware_matching_is_order_independent(self):
+        ep_a = _episode("goal-a", decision_eligible_ts=1.0, episode_end_ts=10.0)
+        ep_b = _episode("goal-b", decision_eligible_ts=2.0, episode_end_ts=9.0)
+        preds = [
+            _fire("goal-a", 3.0, evidence_seq=0),
+            _fire("goal-a", 4.0, evidence_seq=1),
+            _fire("goal-b", 100.0, evidence_seq=2),
+        ]
+        forward = score([ep_a, ep_b], preds)
+        reversed_ = score([ep_b, ep_a], list(reversed(preds)))
+        self.assertEqual(forward, reversed_)
+
+    def test_single_goal_behaviour_is_byte_for_byte_unchanged(self):
+        """The key term must be a no-op on a SINGLE-goal stream (key == episode_id everywhere).
+
+        Asserted against the FULL GoldenEvalResult value, not a subset of fields.
+        """
+        ep = _episode("e1", decision_eligible_ts=1.0, episode_end_ts=3.0)
+        preds = [
+            _fire("e1", 1.5, evidence_seq=0),   # match
+            _fire("e1", 2.0, evidence_seq=1),   # duplicate
+            _fire("e1", 99.0, evidence_seq=2),  # outside the window -> plain false fire
+        ]
+        result = score([ep], preds)
+
+        self.assertEqual(
+            result,
+            GoldenEvalResult(
+                prediction_scores=(
+                    PredictionScore(preds[0], 1.5, MatchOutcome.MATCH, "e1"),
+                    PredictionScore(preds[1], 2.0, MatchOutcome.DUPLICATE, "e1"),
+                    PredictionScore(preds[2], 99.0, MatchOutcome.FALSE_FIRE, None),
+                ),
+                matched_episode_ids=("e1",),
+                missed_episode_ids=(),
+                recall=1.0,
+                precision=1 / 3,
+            ),
+        )
+
+    def test_key_is_compared_as_a_string(self):
+        # JudgmentEvent.key need not be a str; episode_id always is. The comparison is str-based.
+        ep = _episode("7", decision_eligible_ts=1.0, episode_end_ts=3.0)
+        result = score([ep], [JudgmentEvent(
+            key=7, evidence_seq=0, action="fire",
+            timing=JudgmentTiming(2.0, 2.0, 2.0, 2.0, 2.0),
+        )])
+        self.assertEqual(result.matched_episode_ids, ("7",))
 
 
 class TestRecallPrecisionArithmetic(unittest.TestCase):
