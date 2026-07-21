@@ -233,6 +233,19 @@ class SourceProfile:
         )
 
     @property
+    def default_identity_policy(self) -> str:
+        """The identity resolver this source class DECLARES as its default — a capability, not a
+        mandate (card Y6, ADR-005 open-question 1). ``identity_strategy`` is the profile-level
+        declaration; :func:`percept.identity_policy.select_identity_policy` lets a CONCERN override
+        it per goal (``goal.state['identity_policy']``), so one screen source can carry a document
+        content-key for a PO goal and NO subject for a workflow-state goal without re-profiling.
+
+        A concern that declares nothing inherits this value, which for every shipped profile is its
+        existing ``identity_strategy`` — so unselected behaviour is byte-for-byte today's.
+        """
+        return self.identity_strategy
+
+    @property
     def coast_interval_s(self) -> float | None:
         """The fixed low-rate sampling floor, if this profile declares one. The coast is what keeps a
         static-but-important source observed when the change signal is absent or untuned."""
@@ -283,6 +296,7 @@ class SourceProfile:
             "admission_strategy": self.admission_strategy,
             "evidence_strategy": self.evidence_strategy,
             "identity_strategy": self.identity_strategy,
+            "default_identity_policy": self.default_identity_policy,
             "default_timebase": self.default_timebase,
             "parameters": {k: (dict(v) if isinstance(v, Mapping) else v)
                            for k, v in self.parameters.items()},
