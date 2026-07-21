@@ -66,6 +66,16 @@ from typing import Any, Iterable, Sequence
 
 from .adapters import Goal, WatchCondition, WatchSpec
 from .config import Settings, load_settings
+from .envelope import (
+    ACTUATION_CLASSES,
+    ATTENTION_CLASS_ENFORCEMENT,
+    ATTENTION_CLASS_GAP,
+    DEFAULT_SUBJECT_RESOLVERS,
+    OUT_OF_ENVELOPE,
+    EnvelopeCheck,
+    EnvelopeViolation,
+    actuation_check,
+)
 from .harness.tier0 import (
     SALIENCE_STATS,
     Frame,
@@ -95,6 +105,7 @@ EXIT_ZERO_COVERAGE = 2       #: the run admitted nothing for any goal — zero s
 EXIT_SOURCE_FAILURE = 3      #: the source did not open, or delivered no frames
 EXIT_PLAN_UNOBSERVABLE = 4   #: the compiled plan cannot be observed under the selected profile
 EXIT_INVALID_CONFIG = 5      #: the configuration itself is invalid (bad goal/profile/argument)
+EXIT_OUT_OF_ENVELOPE = 6     #: the deployment DECLARES itself outside percept's envelope (ADR-007)
 
 #: Findings vocabulary. Closed on purpose: a client reading ``--json`` maps a code to a sentence.
 ZERO_ADMITS_ON_FIXTURE = "ZERO_ADMITS_ON_FIXTURE"
@@ -109,6 +120,8 @@ EGO_COMPENSATED_GATE = "EGO_COMPENSATED_GATE"
 UNEXPLAINED_SUPPRESSION = "UNEXPLAINED_SUPPRESSION"
 ADMISSION_SIGNAL_UNTUNED = "ADMISSION_SIGNAL_UNTUNED"
 SOURCE_PROFILE_EXPERIMENTAL = "SOURCE_PROFILE_EXPERIMENTAL"
+OUT_OF_ENVELOPE_ACTUATION = "OUT_OF_ENVELOPE_ACTUATION"      #: card Z7 / ADR-007
+PERSON_IDENTIFYING_RESOLVER = "PERSON_IDENTIFYING_RESOLVER"  #: card Z7 / ADR-007
 
 #: Why a frame did NOT become a candidate for a goal. Every non-admit lands in exactly one bucket —
 #: "it was quiet" is only ONE of these, and conflating it with the others is the bug this card fixes.
@@ -306,6 +319,40 @@ class PlanDiagnosis:
 
 
 @dataclass(frozen=True)
+class EnvelopeDiagnosis:
+    """Card Z7 / ADR-007 — where this deployment sits relative to percept's declared envelope.
+
+    Three facts, all read from TYPED config rather than from prose:
+
+    - the declared ``actuation`` class and whether any compiled goal uses ``modality='act'`` — the
+      pair that is out of the envelope (``robotics_control_loop``);
+    - the shipped subject-resolver registry and how many of its resolvers identify persons (an
+      invariant zero — ``security_person_id`` / ``passive_analytics``);
+    - whether "assistant-class delivery only" is enforced in config or only in docs, plus what it
+      would take to change that (:data:`~percept.envelope.ATTENTION_CLASS_GAP`).
+    """
+
+    check: EnvelopeCheck
+    act_goal_ids: tuple[str, ...]
+    subject_resolvers: tuple[str, ...]
+    person_identifying_resolvers: tuple[str, ...]
+    attention_class_enforcement: str = ATTENTION_CLASS_ENFORCEMENT
+    attention_class_gap: str = ATTENTION_CLASS_GAP
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": "percept.envelope/1",
+            "check": self.check.to_dict(),
+            "act_goal_ids": list(self.act_goal_ids),
+            "subject_resolvers": list(self.subject_resolvers),
+            "person_identifying_resolvers": list(self.person_identifying_resolvers),
+            "attention_class_enforcement": self.attention_class_enforcement,
+            "attention_class_gap": self.attention_class_gap,
+            "out_of_envelope": {k: v.to_dict() for k, v in OUT_OF_ENVELOPE.items()},
+        }
+
+
+@dataclass(frozen=True)
 class DoctorReport:
     """The whole dry run: source, plan, per-goal admissions, the D8a funnel, findings, exit code."""
 
@@ -320,6 +367,8 @@ class DoctorReport:
     manifest: RunTraceManifest | None = None
     #: Card D9 — where the standalone HTML visualizer was written, if one was asked for.
     visualize_path: str | None = None
+    #: Card Z7 — the envelope panel. Always present; ``None`` only on a hand-built report.
+    envelope: EnvelopeDiagnosis | None = None
 
     @property
     def admitted(self) -> int:
@@ -341,6 +390,7 @@ class DoctorReport:
             "findings": [f.to_dict() for f in self.findings],
             "trace_path": self.trace_path,
             "visualize_path": self.visualize_path,
+            "envelope": self.envelope.to_dict() if self.envelope else None,
         }
 
     def to_json(self, *, indent: int | None = 2) -> str:
@@ -574,6 +624,7 @@ def run_doctor(
     camera_mount: Any = None,
     start_state: Any = None,
     source_profile: Any = None,
+    actuation: str = "none",
     settings: Settings | None = None,
     trace_out: str | None = None,
     visualize_out: str | None = None,
@@ -596,6 +647,18 @@ def run_doctor(
         raise DoctorConfigError("at least one goal is required — doctor is plan-AWARE by definition")
     if timebase not in ("auto", "media", "wall"):
         raise DoctorConfigError(f"timebase must be auto/media/wall, got {timebase!r}")
+
+    # Card Z7: the envelope declaration is CONFIG, so a bad value is an exit-5 config error, exactly
+    # like a bad timebase — never a silently-ignored string.
+    act_goal_ids = tuple(
+        g.id for g in goal_list if getattr(g, "modality", "speak") == "act"
+    )
+    try:
+        envelope_check = actuation_check(
+            modality="act" if act_goal_ids else "speak", actuation=actuation
+        )
+    except EnvelopeViolation as exc:
+        raise DoctorConfigError(str(exc)) from exc
 
     src_profile, src_profile_origin = _resolve_source_profile(source_profile)
 
@@ -837,8 +900,35 @@ def run_doctor(
             + src_profile.notes,
         ))
 
+    # Card Z7 / ADR-007: the envelope is read from TYPED config, and doctor is the tool that says it.
+    person_id_resolvers = tuple(
+        r.name for r in DEFAULT_SUBJECT_RESOLVERS.person_identifying()
+    )
+    envelope = EnvelopeDiagnosis(
+        check=envelope_check,
+        act_goal_ids=act_goal_ids,
+        subject_resolvers=tuple(DEFAULT_SUBJECT_RESOLVERS.names()),
+        person_identifying_resolvers=person_id_resolvers,
+    )
+    if not envelope_check.in_envelope:
+        findings.append(Finding(OUT_OF_ENVELOPE_ACTUATION, "error", envelope_check.note))
+    elif envelope_check.verdict is not None:
+        # actuation='physical' declared but nothing acts — a warn, not an error: the declaration is
+        # doing its job (ConsentProfile.permits() refuses every action while it stands).
+        findings.append(Finding(OUT_OF_ENVELOPE_ACTUATION, "warn", envelope_check.note))
+    if person_id_resolvers:
+        findings.append(Finding(
+            PERSON_IDENTIFYING_RESOLVER, "error",
+            "person-identifying subject resolvers are registered in this process: "
+            f"{sorted(person_id_resolvers)}. percept ships none and derives no person identity "
+            "from pixels; this came from a third-party registration. "
+            + OUT_OF_ENVELOPE["security_person_id"].sentence(),
+        ))
+
     exit_code = EXIT_OK
-    if src.error is not None or not captured:
+    if not envelope_check.in_envelope or person_id_resolvers:
+        exit_code = EXIT_OUT_OF_ENVELOPE
+    elif src.error is not None or not captured:
         exit_code = EXIT_SOURCE_FAILURE
     elif not spec.conditions or any(not g.observable for g in goal_diags):
         exit_code = EXIT_PLAN_UNOBSERVABLE
@@ -884,6 +974,7 @@ def run_doctor(
         source=src, plan=plan, goals=tuple(goal_diags), summary=summary,
         findings=tuple(findings), exit_code=exit_code, judge_calls=0,
         trace_path=trace_path, manifest=manifest, visualize_path=viz_path,
+        envelope=envelope,
     )
 
 
@@ -1010,6 +1101,20 @@ def render_report(report: DoctorReport) -> str:
 
     out.append(render_funnel(report.summary))
 
+    e = report.envelope
+    if e is not None:
+        out.append(_rule("ENVELOPE (card Z7 / ADR-007)"))
+        out.append(f"  actuation declared      {e.check.actuation}"
+                   + ("" if e.check.in_envelope else "   ** OUT OF ENVELOPE **"))
+        out.append(f"  goals with modality=act {len(e.act_goal_ids)}  {list(e.act_goal_ids)}")
+        out.append(f"  subject resolvers       {len(e.subject_resolvers)} shipped; "
+                   f"{len(e.person_identifying_resolvers)} identify persons "
+                   f"(percept derives NO person identity from pixels)")
+        out.append(f"  assistant-class only    enforced in {e.attention_class_enforcement.upper()} "
+                   f"— AttentionPolicy clamps interrupt AUTHORITY, not consumer CLASS")
+        for line in _wrap(e.check.note, _W - 6):
+            out.append(f"      {line}")
+
     out.append(_rule("FINDINGS"))
     if not report.findings:
         out.append("  none — the run completed with no hard incompatibility.")
@@ -1070,6 +1175,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="source class (card D7): physical_scene | screen_document | conversation, or any "
              "registered third-party profile name (default: physical_scene)",
     )
+    p.add_argument(
+        "--actuation", default="none", choices=ACTUATION_CLASSES,
+        help="card Z7 / ADR-007: what an act can physically do in this deployment. "
+             "none (default) | screen (advisory software acts — the narrowed survivor) | "
+             "physical (OUT of percept's envelope; ConsentProfile.permits() then refuses every "
+             "action and doctor exits 6)",
+    )
     p.add_argument("--trace-out", default=None, help="write the D8a trace artifact (JSON) here")
     p.add_argument("--json", action="store_true", help="emit the machine-readable report on stdout")
     # -- card D9: the native visualizer (no second console-script family; these are flags here) --
@@ -1098,7 +1210,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """``percept-doctor`` entry point. Exit codes: 0 ok, 2 zero coverage, 3 source failure,
-    4 plan unobservable, 5 invalid configuration."""
+    4 plan unobservable, 5 invalid configuration, 6 declared out of envelope (card Z7)."""
     args = build_parser().parse_args(list(argv) if argv is not None else None)
 
     # -- card D9: render-only mode. No source is opened, no goal is compiled, nothing is spent. --
@@ -1143,6 +1255,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             camera_mount=args.camera_mount,
             start_state=args.start_state,
             source_profile=args.source_profile,
+            actuation=args.actuation,
             trace_out=args.trace_out,
             visualize_out=args.visualize_out,
             visualize_media=args.visualize_media,
@@ -1161,6 +1274,10 @@ __all__ = [
     "EXIT_SOURCE_FAILURE",
     "EXIT_PLAN_UNOBSERVABLE",
     "EXIT_INVALID_CONFIG",
+    "EXIT_OUT_OF_ENVELOPE",
+    "OUT_OF_ENVELOPE_ACTUATION",
+    "PERSON_IDENTIFYING_RESOLVER",
+    "EnvelopeDiagnosis",
     "SUPPRESSION_REASONS",
     "ZERO_ADMITS_ON_FIXTURE",
     "ALTERNATIVE_STAT_WOULD_ADMIT",

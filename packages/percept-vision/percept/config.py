@@ -143,6 +143,11 @@ class ModelSettings:
 class ConsentSettings:
     allow_computer_use: bool = False  # PERCEPT_ALLOW_COMPUTER_USE — gates the `act` modality
     allowed_actions: frozenset = frozenset()  # PERCEPT_ACT_ALLOWED_ACTIONS — comma-separated scope
+    # PERCEPT_ACTUATION — card Z7 / ADR-007. "none" (default) | "screen" (advisory software acts)
+    # | "physical" (a DECLARATION that this deployment is outside percept's envelope: every act is
+    # then refused, because the gate's honest failure mode is ASK and a control loop cannot ask).
+    # Typed, so `percept doctor` reports it; see percept.envelope.ACTUATION_CLASSES.
+    actuation: str = "none"
 
 
 @dataclass(frozen=True)
@@ -262,6 +267,7 @@ def load_settings() -> Settings:
         consent=ConsentSettings(
             allow_computer_use=_env("PERCEPT_ALLOW_COMPUTER_USE", False, _as_bool),
             allowed_actions=_env("PERCEPT_ACT_ALLOWED_ACTIONS", frozenset(), _as_actions),
+            actuation=_env("PERCEPT_ACTUATION", "none", str),
         ),
         edge=EdgeSettings(
             motion_gate=_env("PERCEPT_MOTION_GATE", 0.10, float),
