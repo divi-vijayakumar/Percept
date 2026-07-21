@@ -34,7 +34,7 @@ writing.
   `entity_id`, `verdict` — again **no evidence handle**. There is nothing today to redefine: this
   ADR is a *proposal to add* an evidence pointer, and it is the first place that pointer is named.
 - **The only `frame_ref` in the tree belongs to a different type with the opposite semantics.**
-  `LabelRecord.frame_ref` (`L-1063`) is annotated *"LOCAL filesystem path ONLY; the local-only tail
+  `LabelRecord.frame_ref` (`L-1269`) is annotated *"LOCAL filesystem path ONLY; the local-only tail
   — NEVER egressed"*. It is a ground-truth **label** record, not a judgment, and its `frame_ref` is
   deliberately and explicitly a filesystem path — precisely what §1 below forbids for the new
   handle. The two must not be conflated or merged, and this ADR does **not** change
@@ -73,10 +73,10 @@ around the contract.
 The codebase already has one working precedent for "a durable record with a media pointer that must
 not leak," and this ADR is a generalization of it rather than a new invention: **`LabelRecord`'s
 egress-safe-head + local-only-tail split**
-(`packages/percept-vision/percept/contracts/__init__.py`, class at `L-1040`, invariant documented at
+(`packages/percept-vision/percept/contracts/__init__.py`, class at `L-1246`, invariant documented at
 `L-1046..L-1053`). Every field declared above `frame_ref` is the *metadata head* that MAY leave the
-machine; `frame_ref` (`L-1063`) is the *local-only tail*. `to_egress()` (`L-1084`) is built from the
-explicit `EGRESS_FIELDS` whitelist (`L-1071`), which simply does not list `frame_ref` — so the
+machine; `frame_ref` (`L-1269`) is the *local-only tail*. `to_egress()` (`L-1289`) is built from the
+explicit `EGRESS_FIELDS` whitelist (`L-1277`), which simply does not list `frame_ref` — so the
 no-pixels rule is a **type-level fact, not a runtime filter someone can forget to apply**. That
 head/tail-by-whitelist construction is exactly the property §4 below carries over to `evidence_ref`.
 
@@ -97,7 +97,7 @@ design out, not a policy to remember. This ADR generalizes that pattern to the n
 **Scope statement.** This section defines a **new, not-yet-existing** field, proposed for the
 judgment contract and named **`evidence_ref`**. It does **not** describe, constrain, or redefine any
 field in the shipped tree. In particular it says nothing about `LabelRecord.frame_ref`
-(`packages/percept-vision/percept/contracts/__init__.py` `L-1063`), which is a documented LOCAL
+(`packages/percept-vision/percept/contracts/__init__.py` `L-1269`), which is a documented LOCAL
 filesystem path on a *label* record and stays exactly as it is; the "MUST NOT be treated as a path"
 rule below applies to `evidence_ref` alone.
 

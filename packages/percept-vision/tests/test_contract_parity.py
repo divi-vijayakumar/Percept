@@ -74,5 +74,21 @@ class IncidentTwinParityTests(unittest.TestCase):
             self.assertIn(f.name, twin, f"Incident.{f.name} has no JS twin in contract.js")
 
 
+class SubjectRefTwinParityTests(unittest.TestCase):
+    """Y5: ``contract.js`` is an explicit twin of ``percept.contracts.SubjectRef``. A field added on
+    the Python side and not mirrored in the JS ``makeSubjectRef`` is a silent parity break."""
+
+    def test_js_subjectref_twin_declares_every_python_field(self) -> None:
+        import dataclasses
+
+        from percept.contracts import SubjectRef
+
+        src = _contract_js().read_text()
+        self.assertIn("export function makeSubjectRef(", src, "contract.js must declare makeSubjectRef")
+        make = src.split("export function makeSubjectRef(", 1)[1].split("export function parseSubjectRef", 1)[0]
+        for f in dataclasses.fields(SubjectRef):
+            self.assertIn(f.name, make, f"SubjectRef.{f.name} has no JS twin in makeSubjectRef")
+
+
 if __name__ == "__main__":
     unittest.main()

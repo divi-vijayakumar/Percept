@@ -1,0 +1,1105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://percept.velvee.ai/contracts/SubjectRef.schema.json",
+  "x-contract-version": "1.4.0",
+  "type": "object",
+  "title": "SubjectRef",
+  "properties": {
+    "scheme": {
+      "type": "string"
+    },
+    "namespace": {
+      "type": "string"
+    },
+    "key": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "resolution": {
+      "enum": [
+        "bound",
+        "unknown"
+      ]
+    },
+    "scope": {
+      "enum": [
+        "session",
+        "source",
+        "durable"
+      ]
+    },
+    "strategy": {
+      "type": "string"
+    },
+    "confidence": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "description": "A namespaced reference to WHAT a judgment is about \u2014 the subject identity, resolved or not.",
+  "required": [
+    "scheme",
+    "namespace",
+    "key",
+    "resolution",
+    "scope",
+    "strategy"
+  ],
+  "$defs": {
+    "Box": {
+      "type": "object",
+      "title": "Box",
+      "properties": {
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        },
+        "w": {
+          "type": "number"
+        },
+        "h": {
+          "type": "number"
+        }
+      },
+      "description": "Axis-aligned box in normalized 0..1 image coordinates.",
+      "required": [
+        "x",
+        "y",
+        "w",
+        "h"
+      ]
+    },
+    "Observation": {
+      "type": "object",
+      "title": "Observation",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "box": {
+          "$ref": "#/$defs/Box"
+        },
+        "confidence": {
+          "type": "number"
+        },
+        "attrs": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "description": "A single detected thing in one frame (the entity-attribute substrate).",
+      "required": [
+        "label",
+        "box",
+        "confidence"
+      ]
+    },
+    "ClipEvent": {
+      "type": "object",
+      "title": "ClipEvent",
+      "properties": {
+        "t_start": {
+          "type": "number"
+        },
+        "t_end": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "description": "One timestamped event a clip judge saw inside the judged window (1.3).",
+      "required": [
+        "t_start"
+      ]
+    },
+    "Verdict": {
+      "type": "object",
+      "title": "Verdict",
+      "properties": {
+        "satisfied": {
+          "type": "boolean"
+        },
+        "confidence": {
+          "type": "number"
+        },
+        "evidence": {
+          "type": "string"
+        },
+        "phase": {
+          "type": "string"
+        },
+        "action_present": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "running_answer": {
+          "type": "string"
+        },
+        "usage": {
+          "type": "object",
+          "additionalProperties": {}
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ClipEvent"
+          }
+        },
+        "subject": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SubjectRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "description": "The firing-contract return: is the plain-language condition true right now?",
+      "required": [
+        "satisfied",
+        "confidence"
+      ]
+    },
+    "Attribute": {
+      "type": "object",
+      "title": "Attribute",
+      "properties": {
+        "value": {
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "observed",
+            "asserted",
+            "cached",
+            "llm"
+          ]
+        },
+        "confidence": {
+          "type": "number"
+        },
+        "last_confirmed": {
+          "type": "number"
+        }
+      },
+      "description": "One fact bound to an entity, carrying provenance and freshness.",
+      "required": [
+        "value",
+        "source",
+        "confidence",
+        "last_confirmed"
+      ]
+    },
+    "Goal": {
+      "type": "object",
+      "title": "Goal",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "condition": {
+          "type": "string"
+        },
+        "say": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "modality": {
+          "enum": [
+            "speak",
+            "act"
+          ]
+        },
+        "state": {},
+        "expiry": {
+          "type": "string"
+        },
+        "origin": {
+          "enum": [
+            "structured_trusted",
+            "language_authored",
+            "restored",
+            "system_template"
+          ]
+        }
+      },
+      "description": "A standing watch/count/remind goal, stated as a plain-language condition.",
+      "required": [
+        "id",
+        "condition",
+        "say"
+      ]
+    },
+    "Consequence": {
+      "type": "object",
+      "title": "Consequence",
+      "properties": {
+        "miss_cost": {
+          "enum": [
+            "trivial",
+            "mild",
+            "severe"
+          ]
+        },
+        "false_fire_cost": {
+          "enum": [
+            "trivial",
+            "mild",
+            "severe",
+            "irreversible"
+          ]
+        },
+        "protected_floor": {
+          "type": "boolean"
+        }
+      },
+      "description": "The decision weight: a coarse (miss, false-fire) cost pair."
+    },
+    "Evidence": {
+      "type": "object",
+      "title": "Evidence",
+      "properties": {
+        "t": {
+          "type": "number"
+        },
+        "source_id": {
+          "type": "string"
+        },
+        "confidence": {
+          "type": "number"
+        },
+        "satisfied": {
+          "type": "boolean"
+        },
+        "coverage": {
+          "type": "number"
+        }
+      },
+      "description": "One timestamped, sourced observation feeding a Concern's log.",
+      "required": [
+        "t",
+        "source_id",
+        "confidence",
+        "satisfied"
+      ]
+    },
+    "TrackingBehavior": {
+      "type": "object",
+      "title": "TrackingBehavior",
+      "properties": {
+        "pattern": {
+          "enum": [
+            "watch",
+            "transition",
+            "event",
+            "count"
+          ]
+        },
+        "rearm": {
+          "enum": [
+            "on_false",
+            "never",
+            "each_event",
+            "interval",
+            "deadline"
+          ]
+        },
+        "cadence_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deadline_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "exhaustive": {
+          "type": "boolean"
+        }
+      },
+      "description": "How a concern's state is maintained."
+    },
+    "Subject": {
+      "type": "object",
+      "title": "Subject",
+      "properties": {
+        "kind": {
+          "enum": [
+            "entity",
+            "relation",
+            "expectation",
+            "event"
+          ]
+        },
+        "ref": {
+          "type": "string"
+        }
+      },
+      "description": "What a concern is about: an entity ref | relation | expectation | event."
+    },
+    "Priors": {
+      "type": "object",
+      "title": "Priors",
+      "properties": {
+        "expected_state": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deadline_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "description": "What to expect, when, and what 'satisfied' looks like. Minimal today."
+    },
+    "Concern": {
+      "type": "object",
+      "title": "Concern",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "identity": {
+          "$ref": "#/$defs/Subject"
+        },
+        "condition": {
+          "type": "string"
+        },
+        "say": {
+          "type": "string"
+        },
+        "consequence": {
+          "$ref": "#/$defs/Consequence"
+        },
+        "tracking": {
+          "$ref": "#/$defs/TrackingBehavior"
+        },
+        "observations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          }
+        },
+        "expectations": {
+          "$ref": "#/$defs/Priors"
+        },
+        "source": {
+          "type": "string"
+        },
+        "clip": {
+          "type": "boolean"
+        },
+        "window_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fps": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "verify_only": {
+          "type": "boolean"
+        },
+        "version": {
+          "type": "integer"
+        }
+      },
+      "description": "The unit of consequence-weighted attention \u2014 sits above the entity.",
+      "required": [
+        "id",
+        "identity",
+        "condition",
+        "say"
+      ]
+    },
+    "Decision": {
+      "type": "object",
+      "title": "Decision",
+      "properties": {
+        "route": {
+          "enum": [
+            "respond_direct",
+            "respond_with_vision",
+            "task_with_tools",
+            "act",
+            "proactive_speak",
+            "ignore"
+          ]
+        },
+        "look": {
+          "enum": [
+            "none",
+            "request_frame"
+          ]
+        },
+        "filler": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "say": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "goal_ops": {},
+        "endpoint": {
+          "enum": [
+            "complete",
+            "incomplete",
+            "barge_in",
+            "n/a"
+          ]
+        }
+      },
+      "description": "Conductor / router output \u2014 what to do with a turn or scene delta.",
+      "required": [
+        "route"
+      ]
+    },
+    "STTEvent": {
+      "type": "object",
+      "title": "STTEvent",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "is_final": {
+          "type": "boolean"
+        },
+        "ts": {
+          "type": "number"
+        }
+      },
+      "description": "STTEvent(text: 'str', is_final: 'bool', ts: 'float')",
+      "required": [
+        "text",
+        "is_final",
+        "ts"
+      ]
+    },
+    "TurnResult": {
+      "type": "object",
+      "title": "TurnResult",
+      "properties": {
+        "route": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "reply": {
+          "type": "string"
+        }
+      },
+      "description": "TurnResult(route: 'str', source: 'str', reply: 'str')",
+      "required": [
+        "route",
+        "source",
+        "reply"
+      ]
+    },
+    "Schedule": {
+      "type": "object",
+      "title": "Schedule",
+      "properties": {
+        "windows": {},
+        "days": {}
+      },
+      "description": "When a watch is *armed* \u2014 a coarse, vendor-neutral, timezone-naive time gate."
+    },
+    "WatchCondition": {
+      "type": "object",
+      "title": "WatchCondition",
+      "properties": {
+        "goal_id": {
+          "type": "string"
+        },
+        "anchor_text": {
+          "type": "string"
+        },
+        "threshold": {
+          "type": "number"
+        },
+        "region_hint": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Box"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "detectors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "schedule": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Schedule"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cadence_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "gate_on": {
+          "enum": [
+            "motion",
+            "structural",
+            "semantic",
+            "fixed"
+          ]
+        },
+        "salience_stat": {
+          "enum": [
+            "mean",
+            "block_max",
+            "p95"
+          ]
+        },
+        "ego_compensate": {
+          "type": "boolean"
+        }
+      },
+      "description": "WatchCondition(goal_id: 'str', anchor_text: 'str', threshold: 'float', region_hint: 'Box | None' = None, detectors: 'list[str]' = <factory>, schedule: 'Schedule | None' = None, cadence_s: 'float | None' = None, gate_on: 'GateOn' = 'motion', salience_stat: 'SalienceStat' = 'mean', ego_compensate: 'bool' = False)",
+      "required": [
+        "goal_id",
+        "anchor_text",
+        "threshold"
+      ]
+    },
+    "WatchSpec": {
+      "type": "object",
+      "title": "WatchSpec",
+      "properties": {
+        "conditions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WatchCondition"
+          }
+        },
+        "version": {
+          "type": "integer"
+        }
+      },
+      "description": "WatchSpec(conditions: 'list[WatchCondition]', version: 'int' = 1)",
+      "required": [
+        "conditions"
+      ]
+    },
+    "Tier0Signal": {
+      "type": "object",
+      "title": "Tier0Signal",
+      "properties": {
+        "motion": {
+          "type": "number"
+        },
+        "structural": {
+          "type": "number"
+        },
+        "semantic": {
+          "type": "number"
+        },
+        "ts": {
+          "type": "number"
+        },
+        "energy": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "description": "Tier0Signal(motion: 'float', structural: 'float', semantic: 'float', ts: 'float', energy: 'float | None' = None)",
+      "required": [
+        "motion",
+        "structural",
+        "semantic",
+        "ts"
+      ]
+    },
+    "AudioFrame": {
+      "type": "object",
+      "title": "AudioFrame",
+      "properties": {
+        "pcm": {
+          "type": "string",
+          "contentEncoding": "base64"
+        },
+        "sample_rate": {
+          "type": "integer"
+        },
+        "channels": {
+          "type": "integer"
+        },
+        "sample_format": {
+          "enum": [
+            "s16le",
+            "f32le",
+            "u8"
+          ]
+        },
+        "encoded": {
+          "anyOf": [
+            {
+              "type": "string",
+              "contentEncoding": "base64"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mime": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "t_start": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "t_end": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "description": "A typed audio signal \u2014 the first-class AUDIO modality the eye can read."
+    },
+    "IncidentSnippet": {
+      "type": "object",
+      "title": "IncidentSnippet",
+      "properties": {
+        "kind": {
+          "enum": [
+            "frame",
+            "clip",
+            "audio"
+          ]
+        },
+        "media": {
+          "anyOf": [
+            {
+              "type": "string",
+              "contentEncoding": "base64"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mime": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "frames": {
+          "anyOf": [
+            {},
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "t_start": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "t_end": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "description": "The captured *relevant snippet* of media attached to a fired :class:`Incident`.",
+      "required": [
+        "kind"
+      ]
+    },
+    "Incident": {
+      "type": "object",
+      "title": "Incident",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "concern_id": {
+          "type": "string"
+        },
+        "verdict": {
+          "$ref": "#/$defs/Verdict"
+        },
+        "ts": {
+          "type": "number"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "snippet": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/IncidentSnippet"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "label_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "entity_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "description": "A fired-event record \u2014 the durable trace of one concern firing, with evidence.",
+      "required": [
+        "id",
+        "concern_id",
+        "verdict",
+        "ts"
+      ]
+    },
+    "AttentionIntent": {
+      "type": "object",
+      "title": "AttentionIntent",
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "goal_id": {
+          "type": "string"
+        },
+        "incident_id": {
+          "type": "string"
+        },
+        "ts": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "preempt": {
+          "enum": [
+            "interrupt",
+            "queue",
+            "drop"
+          ]
+        },
+        "ttl_s": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "verbatim": {
+          "type": "boolean"
+        },
+        "preferred_channel": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "description": "What a fired :class:`Incident` asks of the human's attention \u2014 the EFFECTIVE, not authored, request.",
+      "required": [
+        "message",
+        "goal_id",
+        "incident_id",
+        "ts",
+        "preempt",
+        "ttl_s",
+        "verbatim"
+      ]
+    },
+    "LabelRecord": {
+      "type": "object",
+      "title": "LabelRecord",
+      "properties": {
+        "incident_id": {
+          "type": "string"
+        },
+        "verdict_ref": {
+          "type": "string"
+        },
+        "goal_id": {
+          "type": "string"
+        },
+        "ts": {
+          "type": "number"
+        },
+        "good": {
+          "type": "boolean"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "frame_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "calibration_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "enum": [
+            "api",
+            "voice",
+            "ask_answer",
+            "watch_calibration"
+          ]
+        }
+      },
+      "description": "A single ground-truth label on a fired verdict.",
+      "required": [
+        "incident_id",
+        "verdict_ref",
+        "goal_id",
+        "ts",
+        "good"
+      ]
+    },
+    "WatchEvent": {
+      "type": "object",
+      "title": "WatchEvent",
+      "properties": {
+        "goal_id": {
+          "type": "string"
+        },
+        "action": {
+          "enum": [
+            "fire",
+            "ask",
+            "silent"
+          ]
+        },
+        "t": {
+          "type": "number"
+        },
+        "text": {
+          "type": "string"
+        },
+        "entity_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "verdict": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Verdict"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "description": "The stable, versioned event ``percept.watch()`` streams \u2014 the frozen public contract.",
+      "required": [
+        "goal_id",
+        "action",
+        "t"
+      ]
+    }
+  }
+}

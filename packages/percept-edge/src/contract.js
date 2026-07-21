@@ -26,7 +26,7 @@
  * `percept.contracts.CONTRACT_VERSION`. Same major == wire-compatible. This is DISTINCT from
  * `WatchSpec.version` (the wire integer, defaults to 1) which stays for payload compat.
  */
-export const CONTRACT_VERSION = "1.3.0"; // JS twin of Python 1.3.0 — + Incident.entity_id (D4, additive).
+export const CONTRACT_VERSION = "1.4.0"; // JS twin of Python 1.4.0 — + SubjectRef (Y5, additive).
 // This constant names the PYTHON contract version these shapes are a twin of. The JS side implements a
 // SUBSET of the Python DTOs (the shapes defined below); the version tracks the wire contract, not the
 // coverage. 1.0.0: initial public wire contract (launch).
@@ -635,5 +635,109 @@ export function parseIncident(json) {
     label,
     snippet,
     entity_id,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// SubjectRef  { scheme, namespace, key: string|null, resolution: "bound"|"unknown",
+//               scope: "session"|"source"|"durable", strategy, confidence: number|null }
+// ---------------------------------------------------------------------------
+//
+// The JS twin of the Python `percept.contracts.SubjectRef` (contract 1.4, card Y5): a namespaced,
+// tri-state reference to WHICH subject a judgment is about. `PO-4471` is not globally unique across
+// systems, so `namespace` disambiguates the `key`. Two `resolution` states ONLY: "bound" (identified)
+// or "unknown" (seen but unidentified). The ABSENCE of a subject is `null` on the carrier (e.g.
+// `verdict.subject`), NOT a third resolution value.
+//
+// Invariants mirrored byte-for-byte with the Python `__post_init__`:
+//   - "bound"   REQUIRES a non-empty namespace AND a non-empty key.
+//   - "unknown" REQUIRES key === null (an unresolved subject must not carry a key).
+//   - `scope: "durable"` documents IDENTIFIER stability ONLY — NOT a claim that episode state is
+//     persisted (percept episode state is session-only).
+//   - `confidence` is NOT defaulted to 1.0 (a judge-emitted key is not certain by construction); it
+//     is a number in [0,1] or null ("unstated").
+// ---------------------------------------------------------------------------
+
+const _SUBJECT_RESOLUTIONS = new Set(["bound", "unknown"]);
+const _SUBJECT_SCOPES = new Set(["session", "source", "durable"]);
+
+function _validateSubjectRef(scheme, namespace, key, resolution, scope, strategy, confidence, ctx) {
+  if (typeof scheme !== "string") throw new ContractError(`${ctx}: scheme must be a string`);
+  if (typeof namespace !== "string") throw new ContractError(`${ctx}: namespace must be a string`);
+  if (typeof strategy !== "string") throw new ContractError(`${ctx}: strategy must be a string`);
+  if (!_SUBJECT_RESOLUTIONS.has(resolution)) {
+    throw new ContractError(`${ctx}: resolution must be one of ${[..._SUBJECT_RESOLUTIONS].join("|")}`);
+  }
+  if (!_SUBJECT_SCOPES.has(scope)) {
+    throw new ContractError(`${ctx}: scope must be one of ${[..._SUBJECT_SCOPES].join("|")}`);
+  }
+  if (resolution === "bound") {
+    if (!namespace) throw new ContractError(`${ctx}: 'bound' requires a non-empty namespace`);
+    if (typeof key !== "string" || !key) throw new ContractError(`${ctx}: 'bound' requires a non-empty key`);
+  } else {
+    // "unknown"
+    if (key !== null && key !== undefined) {
+      throw new ContractError(`${ctx}: 'unknown' requires key === null (absence of a subject is null)`);
+    }
+  }
+  if (confidence !== null && confidence !== undefined) {
+    if (!isFiniteNumber(confidence) || confidence < 0 || confidence > 1) {
+      throw new ContractError(`${ctx}: confidence must be a number in [0,1] or null`);
+    }
+  }
+}
+
+/**
+ * Build a SubjectRef. `confidence` defaults to null (NOT 1.0 — a judge-emitted key is not certain).
+ * @returns {{scheme:string,namespace:string,key:string|null,resolution:string,scope:string,strategy:string,confidence:number|null}}
+ * @throws {ContractError}
+ */
+export function makeSubjectRef({
+  scheme,
+  namespace,
+  key = null,
+  resolution,
+  scope,
+  strategy,
+  confidence = null,
+} = {}) {
+  _validateSubjectRef(scheme, namespace, key, resolution, scope, strategy, confidence, "makeSubjectRef");
+  return {
+    scheme,
+    namespace,
+    key: resolution === "bound" ? key : null,
+    resolution,
+    scope,
+    strategy,
+    confidence: confidence == null ? null : confidence,
+  };
+}
+
+/**
+ * Parse + validate a SubjectRef off the wire (string or object). Returns a fresh, normalized object.
+ * @param {string|object} json
+ * @throws {ContractError}
+ */
+export function parseSubjectRef(json, { path = "subject" } = {}) {
+  let obj = json;
+  if (typeof json === "string") {
+    try {
+      obj = JSON.parse(json);
+    } catch (e) {
+      throw new ContractError(`parseSubjectRef: invalid JSON (${e.message})`);
+    }
+  }
+  if (!isPlainObject(obj)) throw new ContractError(`${path}: expected an object`);
+  const key = obj.key == null ? null : obj.key;
+  const confidence = obj.confidence == null ? null : obj.confidence;
+  _validateSubjectRef(obj.scheme, obj.namespace, key, obj.resolution, obj.scope, obj.strategy, confidence, path);
+  return {
+    scheme: obj.scheme,
+    namespace: obj.namespace,
+    key: obj.resolution === "bound" ? key : null,
+    resolution: obj.resolution,
+    scope: obj.scope,
+    strategy: obj.strategy,
+    confidence,
   };
 }

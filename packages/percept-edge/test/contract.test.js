@@ -22,6 +22,8 @@ import {
   parseIncident,
   makeIncidentSnippet,
   parseIncidentSnippet,
+  makeSubjectRef,
+  parseSubjectRef,
 } from "../src/contract.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -313,8 +315,8 @@ describe("topology-B wire messages — EdgeCapabilities + BoundaryReport", () =>
 });
 
 describe("CONTRACT_VERSION", () => {
-  it("is the semver twin of the Python contract version (1.3.0: + Incident.entity_id)", () => {
-    expect(CONTRACT_VERSION).toBe("1.3.0");
+  it("is the semver twin of the Python contract version (1.4.0: + SubjectRef)", () => {
+    expect(CONTRACT_VERSION).toBe("1.4.0");
   });
 });
 
@@ -414,5 +416,80 @@ describe("Incident / IncidentSnippet", () => {
       parseIncident('{"id":"i","concern_id":"c","verdict":{"satisfied":true,"confidence":0.5},"ts":1,"entity_id":7}')
     ).toThrow(ContractError);
     expect(() => parseIncident('{"id":"i","concern_id":"c","verdict":{"satisfied":true,"confidence":0.5},"ts":"x"}')).toThrow(ContractError);
+  });
+});
+
+describe("SubjectRef (contract 1.4, card Y5)", () => {
+  it("builds a bound ref; confidence defaults to null (NOT 1.0)", () => {
+    const s = makeSubjectRef({
+      scheme: "content",
+      namespace: "acme-erp",
+      key: "PO-4471",
+      resolution: "bound",
+      scope: "durable",
+      strategy: "judge",
+    });
+    expect(s).toEqual({
+      scheme: "content",
+      namespace: "acme-erp",
+      key: "PO-4471",
+      resolution: "bound",
+      scope: "durable",
+      strategy: "judge",
+      confidence: null,
+    });
+    // round-trips through JSON byte-for-byte
+    expect(parseSubjectRef(JSON.stringify(s))).toEqual(s);
+  });
+
+  it("parses the exact JSON the Python side emits for a bound ref", () => {
+    const PY =
+      '{"scheme":"content","namespace":"acme-erp","key":"PO-4471","resolution":"bound","scope":"durable","strategy":"client","confidence":0.8}';
+    expect(parseSubjectRef(PY)).toEqual({
+      scheme: "content",
+      namespace: "acme-erp",
+      key: "PO-4471",
+      resolution: "bound",
+      scope: "durable",
+      strategy: "client",
+      confidence: 0.8,
+    });
+  });
+
+  it("an unknown ref forces key to null (absence of a key, not a fabricated one)", () => {
+    const s = makeSubjectRef({
+      scheme: "content",
+      namespace: "acme-erp",
+      resolution: "unknown",
+      scope: "session",
+      strategy: "judge",
+    });
+    expect(s.key).toBe(null);
+    expect(s.resolution).toBe("unknown");
+  });
+
+  it("rejects the invariant violations the Python __post_init__ rejects", () => {
+    // 'bound' requires a non-empty namespace + key
+    expect(() =>
+      makeSubjectRef({ scheme: "content", namespace: "", key: "PO-1", resolution: "bound", scope: "durable", strategy: "j" })
+    ).toThrow(ContractError);
+    expect(() =>
+      makeSubjectRef({ scheme: "content", namespace: "acme", key: null, resolution: "bound", scope: "durable", strategy: "j" })
+    ).toThrow(ContractError);
+    // 'unknown' REJECTS a present key
+    expect(() =>
+      parseSubjectRef('{"scheme":"content","namespace":"acme","key":"PO-1","resolution":"unknown","scope":"session","strategy":"j"}')
+    ).toThrow(ContractError);
+    // bad enums
+    expect(() =>
+      makeSubjectRef({ scheme: "c", namespace: "n", key: "k", resolution: "resolved", scope: "durable", strategy: "j" })
+    ).toThrow(ContractError);
+    expect(() =>
+      makeSubjectRef({ scheme: "c", namespace: "n", key: "k", resolution: "bound", scope: "forever", strategy: "j" })
+    ).toThrow(ContractError);
+    // confidence out of [0,1]
+    expect(() =>
+      makeSubjectRef({ scheme: "c", namespace: "n", key: "k", resolution: "bound", scope: "durable", strategy: "j", confidence: 1.5 })
+    ).toThrow(ContractError);
   });
 });
