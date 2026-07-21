@@ -38,6 +38,7 @@ from typing import Callable, Hashable, Literal
 from .adapters import Verdict
 from .concern import consequence_of, is_hard_quadrant
 from .contracts import JudgmentEvent, JudgmentTimingBuilder
+from .episodes import EPISODE_POLICIES
 from .gate import ASK, FIRE, Gate, classify
 from .observability import get_logger
 
@@ -239,6 +240,12 @@ class ConcernContext:
     # the exact firing edge with ONE key per (goal, entity) instead of one per bucket/rep/answer.
     last_bucket: int | None = None       # interval: the elapsed time bucket last seen (int(t // cadence_s))
     last_episode_n: int | None = None    # episode: the last distinct rep number fired
+    # Y1: the IDENTITY of the last episode fired. The count ``n`` is a weak discriminator — a
+    # windowed prune or a max_episodes drop can leave n unchanged across a genuinely different
+    # episode, and two different episodes then share one spent edge. When the caller threads the
+    # episode id through ``fire_episode(..., episode_id=...)`` the re-arm keys off identity instead;
+    # absent it, the ``n`` discriminator is used exactly as before (byte-for-byte).
+    last_episode_id: str | None = None
     last_resolved_answer: str | None = None  # process-QA: the last resolved running-answer text
 
 
@@ -444,10 +451,19 @@ class BehaviorExecutor:
 
     # -- episode sense + accumulate: the novel-task composition (zero new code) ------------------
     def fire_episode(
-        self, goal, program: BehaviorProgram, *, n: int, is_new: bool, t: float = 0.0
+        self, goal, program: BehaviorProgram, *, n: int, is_new: bool, t: float = 0.0,
+        episode_id: str | None = None,
     ) -> Fired | None:
         """Fire on a NEW distinct episode, gated by the accumulator. ``fire_when`` over ``{n, t}`` is
-        what makes "alert me the 3rd distinct time" pure data; default (None) fires each new episode."""
+        what makes "alert me the 3rd distinct time" pure data; default (None) fires each new episode.
+
+        Card Y1 — the episode/continuation decision reaches the gate ONLY as a ``rearm()`` call from
+        here (gate.py stays mechanically unchanged). ``is_new`` is now the output of the separated
+        continuation conjunction in :meth:`percept.episodes.EpisodeLog.observe_decision`, so a
+        same-SUBJECT observation that merely continues an open episode never rolls the discriminator
+        and never re-arms — which is exactly what stops an A-B-A revisit from minting a spurious
+        third fire. ``episode_id`` (optional) is the stronger identity discriminator; see
+        :attr:`ConcernContext.last_episode_id`."""
         ctx = self.ctx(goal.id)
         ctx.count = n
         if not is_new:
@@ -459,9 +475,14 @@ class BehaviorExecutor:
         # count). A new distinct rep number rolls the discriminator in ctx and re-arms the singleton key —
         # the same fresh edge the per-n key used to give, so every new episode still fires exactly once.
         key = (goal.id, "__episode__")
-        if ctx.last_episode_n is not None and n != ctx.last_episode_n:
+        if episode_id is None:
+            rolled = ctx.last_episode_n is not None and n != ctx.last_episode_n
+        else:
+            rolled = ctx.last_episode_id is not None and episode_id != ctx.last_episode_id
+        if rolled:
             self.gate.rearm(key)
         ctx.last_episode_n = n
+        ctx.last_episode_id = episode_id if episode_id is not None else ctx.last_episode_id
         verdict = Verdict(satisfied=True, confidence=1.0, evidence=f"episode {n}")
         action = self.gate.evaluate(key, verdict, no_evict=True)  # per-goal singleton -> exempt from TTL
         if action == FIRE:
@@ -679,6 +700,42 @@ def coerce_authored_rhythm(raw) -> dict:
     return {"rhythm": spec} if spec else {}
 
 
+_MAX_CONTINUITY_GAP_S = 86_400.0  # a day; an authored continuity window beyond that is not a "gap"
+_MAX_TERMINAL_STATUSES = 16
+_MAX_STATUS_LEN = 40
+
+
+def coerce_authored_episode(raw) -> dict:
+    """Validate a conductor ``episode`` block into a safe ``goal.state['episode']`` sub-dict — the
+    CONCERN-LEVEL continuation policy (card Y1, consumed by
+    :func:`~percept.episodes.episode_policy_of`). Sibling of :func:`coerce_authored_rhythm`: closed
+    vocabulary (``policy`` must name a shipped :data:`~percept.episodes.EPISODE_POLICIES` preset),
+    clamped numerics (a positive ``continuity_gap_s`` under a day), bounded string sets.
+
+    Why this is authored per concern and not a global constant: a document-presence episode, a
+    door-open interval and a conversational claim do not share continuation semantics. Anything
+    malformed is DROPPED, so the concern falls back to the unbounded legacy policy — a bad hint can
+    never silently SPLIT a client's episodes, only fail to tighten them."""
+    if not isinstance(raw, dict):
+        return {}
+    spec: dict = {}
+    if raw.get("policy") in EPISODE_POLICIES:
+        spec["policy"] = raw["policy"]
+    gap = _num(raw.get("continuity_gap_s"))
+    if gap is not None and gap > 0:
+        spec["continuity_gap_s"] = min(_MAX_CONTINUITY_GAP_S, gap)
+    if isinstance(raw.get("allow_reopen"), bool):
+        spec["allow_reopen"] = raw["allow_reopen"]
+    terminal = raw.get("terminal_statuses")
+    if isinstance(terminal, (list, tuple, set, frozenset)):
+        statuses = sorted({
+            s for s in terminal if isinstance(s, str) and 0 < len(s) <= _MAX_STATUS_LEN
+        })[:_MAX_TERMINAL_STATUSES]
+        if statuses:
+            spec["terminal_statuses"] = statuses
+    return {"episode": spec} if spec else {}
+
+
 _MAX_SENSE_FPS = 60.0  # a per-concern processing rate can't exceed the capture ceiling / busy-loop the eye
 
 
@@ -771,6 +828,7 @@ __all__ = [
     "BehaviorExecutor",
     "program_of",
     "coerce_authored_behavior",
+    "coerce_authored_episode",
     "coerce_authored_perception",
     "coerce_authored_rhythm",
     "coerce_authored_sense",

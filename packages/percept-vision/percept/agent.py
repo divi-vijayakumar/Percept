@@ -24,7 +24,13 @@ from .contracts import JudgmentEvent, JudgmentTimingBuilder
 from .escalation import MAX_PERCEPTION_LEVEL, escalate_perception, should_escalate
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
 from .entity import EntityGraph
-from .episodes import EpisodeJudge, EpisodeLog
+from .episodes import (
+    ContinuationDecision,
+    EpisodeJudge,
+    EpisodeLog,
+    MutationCheck,
+    episode_policy_of,
+)
 from .events import AudioWindow, EventLog, FrameWindow
 from .gate import FIRE, Gate, GateAction, classify
 from .goals import GoalOp, GoalRegistry
@@ -604,29 +610,59 @@ class Percept:
 
     # -- episode counting (the cup problem) ---------------------------------
     def count_event(
-        self, goal_id: str, exemplar: Any, judge: EpisodeJudge, *, t: float | None = None
+        self, goal_id: str, exemplar: Any, judge: "EpisodeJudge | None" = None, *,
+        t: float | None = None,
+        subject_key: str | None = None,
+        mutation: "MutationCheck | None" = None,
     ) -> tuple[Any, bool]:
         """Fold a candidate counting-event into the goal's episode log; sync ``goal.state['count']``.
 
-        ``judge`` decides new-episode-vs-continuation against the bounded log (an LLM in real use; a
-        stub in L1 — never assert backend intelligence with a fake). Returns ``(episode, is_new)``.
+        ``judge`` answers the SUBJECT question only — which existing episode is this observation
+        about (an LLM in real use; a stub in L1 — never assert backend intelligence with a fake).
+        Whether that subject's episode is CONTINUED is a separate decision, evaluated against the
+        concern's :class:`~percept.episodes.EpisodePolicy` (card Y1). Returns ``(episode, is_new)``;
+        :meth:`count_event_decision` returns the typed reason as well.
         For goals whose ``state['type'] == 'count'`` (e.g. "how many cups today").
+        """
+        return self.count_event_decision(
+            goal_id, exemplar, judge, t=t, subject_key=subject_key, mutation=mutation
+        )[:2]
+
+    def count_event_decision(
+        self, goal_id: str, exemplar: Any, judge: "EpisodeJudge | None" = None, *,
+        t: float | None = None,
+        subject_key: str | None = None,
+        mutation: "MutationCheck | None" = None,
+    ) -> tuple[Any, bool, ContinuationDecision]:
+        """:meth:`count_event` plus the typed :class:`~percept.episodes.ContinuationDecision`.
+
+        The decision separates the three collapsed questions (card Y1): ``subject_matched`` (was
+        this the same subject at all), ``is_new`` + ``reason`` (did it continue, and if not WHY),
+        and the mutation seam. ``subject_matched and is_new`` — a same-subject observation that
+        opened a SECOND episode — is counted as ``episode.denied.<reason>`` so a client can see the
+        split in metrics, not only in logs.
         """
         now = self.clock() if t is None else t
         log = self.episodes.get(goal_id)
         if log is None:
+            goal = self.goals.get(goal_id)
             log = EpisodeLog(
                 goal_id,
                 window_s=self.settings.episodes.window_s,
                 max_episodes=self.settings.episodes.max_episodes,
+                policy=episode_policy_of(goal) if goal is not None else None,
             )
             self.episodes[goal_id] = log
-        episode, is_new = log.observe(now, exemplar, judge)
+        decision = log.observe_decision(
+            now, exemplar, judge, subject_key=subject_key, mutation=mutation
+        )
         goal = self.goals.get(goal_id)
         if goal is not None:
             goal.state["count"] = log.count(now)
-        self.metrics.incr("episode.new" if is_new else "episode.continuation")
-        return episode, is_new
+        self.metrics.incr("episode.new" if decision.is_new else "episode.continuation")
+        if decision.denied:
+            self.metrics.incr(f"episode.denied.{decision.reason}")
+        return decision.episode, decision.is_new, decision
 
     # -- the event track (temporal perception) ------------------------------
     def _window(self, source: str) -> FrameWindow:

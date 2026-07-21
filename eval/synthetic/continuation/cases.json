@@ -1,0 +1,59 @@
+{
+  "about": "Card Y1 acceptance fixtures — subject / continuation / mutation are three decisions. Each case is a stream of observations carrying an explicit SUBJECT key (the Y5/Z3 judge-emitted key, stubbed here) against a per-concern EpisodePolicy. `expect.episodes` is the distinct-episode count; `expect.reasons` is the typed percept.episodes.CONTINUATION_REASONS trace, one per observation, in order.",
+  "cases": [
+    {
+      "name": "inside_gap_continues",
+      "why": "Same subject, still open, inside the concern's continuity gap -> ONE episode.",
+      "policy": {"continuity_gap_s": 10.0},
+      "observations": [
+        {"t": 0.0, "subject": "PO-4471"},
+        {"t": 4.0, "subject": "PO-4471"},
+        {"t": 9.5, "subject": "PO-4471"}
+      ],
+      "expect": {"episodes": 1, "reasons": ["new_subject", "continued", "continued"]}
+    },
+    {
+      "name": "after_gap_opens_new",
+      "why": "Same SUBJECT is not the same EPISODE: the invoice returns after the continuity window as a new workflow occurrence.",
+      "policy": {"continuity_gap_s": 10.0},
+      "observations": [
+        {"t": 0.0, "subject": "PO-4471"},
+        {"t": 25.0, "subject": "PO-4471"}
+      ],
+      "expect": {"episodes": 2, "reasons": ["new_subject", "gap_exceeded"]}
+    },
+    {
+      "name": "aba_no_spurious_third",
+      "why": "A, then B, then A again inside A's gap. The revisit continues A — it must not mint a third episode.",
+      "policy": {"continuity_gap_s": 10.0},
+      "observations": [
+        {"t": 0.0, "subject": "A"},
+        {"t": 1.0, "subject": "B"},
+        {"t": 2.0, "subject": "A"}
+      ],
+      "expect": {"episodes": 2, "reasons": ["new_subject", "new_subject", "continued"]}
+    },
+    {
+      "name": "terminal_reopen_disallowed",
+      "why": "A PO opened, closed and seen again. With allow_reopen=false that is a second occurrence, not a mutated first one.",
+      "policy": {"continuity_gap_s": 600.0, "allow_reopen": false},
+      "close_after": 0,
+      "observations": [
+        {"t": 0.0, "subject": "PO-4471"},
+        {"t": 30.0, "subject": "PO-4471"}
+      ],
+      "expect": {"episodes": 2, "reasons": ["new_subject", "episode_terminal"]}
+    },
+    {
+      "name": "terminal_reopen_allowed",
+      "why": "A conversational claim slot revisited within the same call: the concern's policy says a reopen is the SAME episode.",
+      "policy": {"continuity_gap_s": 1800.0, "allow_reopen": true},
+      "close_after": 0,
+      "observations": [
+        {"t": 0.0, "subject": "claim-1"},
+        {"t": 30.0, "subject": "claim-1"}
+      ],
+      "expect": {"episodes": 1, "reasons": ["new_subject", "reopened"]}
+    }
+  ]
+}
