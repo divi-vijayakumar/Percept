@@ -88,6 +88,10 @@ MutationCheck = Callable[["Episode", Any], bool]
 OPEN = "open"
 CLOSED = "closed"
 
+#: "argument not supplied" sentinel for :meth:`EpisodeLog.annotate` — distinct from ``None``, which is
+#: itself a meaningful value there (None = clear/absent). Not part of the public surface.
+_UNSET: Any = object()
+
 ContinuationReason = Literal[
     # -- continued (is_new=False)
     "continued",              # same subject, open, inside the gap, mutation compatible
@@ -213,6 +217,23 @@ class Episode:
     subject_key: str | None = None
     # How many observations folded into this episode (1 = just the opening one). Pure observability.
     observations: int = 1
+    # Y7 decision (1): STATE CONSISTENCY. status/t_end are kept consistent BY CONSTRUCTION through
+    # ``EpisodeLog.transition`` — the single authoritative writer. No other code path may assign
+    # them; a test asserts it. ``value``/``incident_id`` use None as the one and only ABSENCE
+    # sentinel: '' is never an absence marker here, so "no value yet" and "the empty string" can
+    # never be silently confused.
+    #
+    # ``t_end`` is the TERMINAL close time — distinct from ``last_seen`` (the last observation). It is
+    # ``None`` while the episode is live, and is DERIVABLE: ``t_end is not None`` iff ``status`` is
+    # terminal. ``last_seen`` says "we last SAW this at t"; ``t_end`` says "this episode ENDED at t".
+    # A duration is NEVER ``last_seen - started_at`` (that forward-fills the unobserved tail — see
+    # :func:`interval_coverage`); an ended episode's extent is ``[started_at, t_end]``, and its truly
+    # observed coverage comes from spans, not from the endpoints.
+    t_end: float | None = None
+    # The current value/finding this episode carries. None == genuinely absent (NEVER '').
+    value: Any = None
+    # The incident this episode raised, if any. None == no incident (NEVER '').
+    incident_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -268,6 +289,48 @@ class EpisodeLog:
         self.on_continuation = on_continuation
         self._episodes: list[Episode] = []
         self._counter = 0
+
+    # -- decision (1): STATE CONSISTENCY (card Y7) -----------------------------------------------
+    @staticmethod
+    def _absent_if_empty(v: Any) -> Any:
+        """Normalize the absence sentinel: ``''`` collapses to ``None`` so absence has ONE spelling.
+
+        The bug this closes: two code paths, one writing ``''`` and one writing ``None`` for "no
+        value / no incident", then a third comparing them and silently disagreeing. Here there is
+        exactly one absent value — ``None`` — and an empty string can never masquerade as presence.
+        """
+        return None if isinstance(v, str) and v == "" else v
+
+    def transition(self, episode: "Episode", status: str, *, t: float) -> "Episode":
+        """The SINGLE authoritative writer of ``status`` and ``t_end`` (card Y7 §1).
+
+        No other code path may assign ``episode.status`` or ``episode.t_end`` — a test asserts it.
+        Routing every lifecycle change through here keeps the pair consistent BY CONSTRUCTION:
+
+        * entering a terminal status stamps ``t_end = t`` (the close time);
+        * leaving a terminal status (a reopen) clears ``t_end = None``.
+
+        So ``t_end`` is never stored independently of ``status`` and the two cannot drift: ``t_end is
+        not None`` iff ``status`` is terminal under this log's policy.
+        """
+        episode.status = status
+        episode.t_end = t if self.policy.is_terminal(status) else None
+        return episode
+
+    def annotate(
+        self, episode: "Episode", *, value: Any = _UNSET, incident_id: Any = _UNSET
+    ) -> "Episode":
+        """Attach the current ``value`` and/or ``incident_id`` to an episode.
+
+        Enforces the absence invariant: ``''`` is normalized to ``None`` on the way in, so an empty
+        string can never be mistaken for a present value or a real incident. Does NOT touch
+        ``status``/``t_end`` — those change only through :meth:`transition`.
+        """
+        if value is not _UNSET:
+            episode.value = self._absent_if_empty(value)
+        if incident_id is not _UNSET:
+            episode.incident_id = self._absent_if_empty(incident_id)
+        return episode
 
     def _dropped(self, episode: "Episode", reason: str) -> None:
         """ADR-001 §9: a bound-driven drop must never be silent."""
@@ -426,7 +489,7 @@ class EpisodeLog:
             prior.representative = exemplar  # ...and the representative is now LIVE (was dead)
             prior.observations += 1
             if reason == "reopened":
-                prior.status = OPEN
+                self.transition(prior, OPEN, t=t)  # single writer: clears t_end too
             decision = ContinuationDecision(
                 episode=prior, is_new=False, reason=reason, subject_matched=True,
                 prior_episode_id=prior.id, gap_s=gap_s,
@@ -458,13 +521,19 @@ class EpisodeLog:
         )
         return decision.episode, decision.is_new
 
-    def close(self, episode_id: str, status: str = CLOSED) -> "Episode | None":
+    def close(
+        self, episode_id: str, status: str = CLOSED, *, t: "float | None" = None
+    ) -> "Episode | None":
         """Mark an episode TERMINAL (decision (2)'s lifecycle input). A later same-subject
         observation then opens a new occurrence — or reopens this one, if the concern's policy says
-        a reopen is the same episode. Returns the episode, or ``None`` if it is not in the log."""
+        a reopen is the same episode. Returns the episode, or ``None`` if it is not in the log.
+
+        Goes through :meth:`transition` (the single status/t_end writer), which stamps ``t_end`` with
+        the close time — ``t`` when given, else the episode's ``last_seen`` (the last moment it was
+        actually observed; the end is never invented later than the last observation)."""
         for e in self._episodes:
             if e.id == episode_id:
-                e.status = status
+                self.transition(e, status, t=e.last_seen if t is None else t)
                 return e
         return None
 
@@ -481,8 +550,153 @@ class EpisodeLog:
         return len(self._episodes)
 
 
+# ================================================================================================
+# INTERVAL COVERAGE (card Y7 §2) — "time accounted for" comes from OBSERVATION, never interpolation.
+# ================================================================================================
+#
+# The decisive review catch: ``started_at -> last_seen`` does NOT prove continuous coverage. An
+# observation at t=1 and another at t=20 with NOTHING between them is TWO point observations and one
+# UNOBSERVED gap — it is emphatically NOT a 19-second interval. That 19s answer is manufactured by
+# forward-filling a gap nobody looked at, which this design rejects outright.
+#
+# Coverage therefore comes from OBSERVED SPANS or a VALIDITY HORIZON, never from joining the dots:
+# an observation at ``t`` is valid through ``min(next_observation, t + observation_valid_for_s)``,
+# where ``observation_valid_for_s`` is a CONCERN-LEVEL knob (a door interval, a document presence and
+# a conversational claim do not agree on it). Two positive observations merge into one continuous
+# span only when the later one falls inside the earlier one's validity horizon; otherwise the stretch
+# between them is a GAP, reported WITH ITS REASON. A judge-degraded tick (backpressure, a failed
+# call) observed NOTHING — it marks a ``judge_degraded`` gap and is never carried forward as continued
+# truth and never recorded as a confident negative. Silence is not evidence.
+#
+# The default horizon is ``None`` — no forward extension at all, so an un-configured concern gets the
+# conservative answer (point observations, everything between them a gap) rather than a fabricated
+# duration. The trailing observation is NEVER extended past itself even when a horizon is set: with
+# no successor to bound it, extending into the open future would itself be forward-filling.
+
+CoverageKind = Literal["observed", "validity_horizon"]
+GapReason = Literal["unobserved", "judge_degraded"]
+
+
+@dataclass(frozen=True)
+class Observation:
+    """One tick's worth of interval evidence.
+
+    ``observed`` is False when the judge produced NO verdict this tick (degraded/backpressure) —
+    silence, which is never confirmation and never a negative. ``satisfied`` is only meaningful when
+    ``observed`` is True; a positive is ``observed and satisfied``. ``degraded`` distinguishes "the
+    judge failed here" (a ``judge_degraded`` gap) from "nothing was sampled here" (an ``unobserved``
+    gap) — the two are reported differently because they mean different things to someone debugging.
+    """
+
+    t: float
+    observed: bool
+    satisfied: bool = False
+    degraded: bool = False
+
+    @property
+    def positive(self) -> bool:
+        return self.observed and self.satisfied
+
+
+@dataclass(frozen=True)
+class CoverageSpan:
+    """A stretch of time actually accounted for by observation."""
+
+    start: float
+    end: float
+    kind: CoverageKind = "observed"
+
+    @property
+    def duration(self) -> float:
+        return self.end - self.start
+
+
+@dataclass(frozen=True)
+class CoverageGap:
+    """A stretch of time NOT accounted for, with the reason it is a gap and not truth."""
+
+    start: float
+    end: float
+    reason: GapReason
+
+    @property
+    def duration(self) -> float:
+        return self.end - self.start
+
+
+@dataclass(frozen=True)
+class Coverage:
+    """The answer to "how long, and how much of it did we actually observe?".
+
+    ``observed_total_s`` is the sum of span durations ONLY — a gap contributes zero, because an
+    unobserved second is not a second of coverage. This is the number a client should quote for
+    "time accounted for"; the gaps are what they must NOT quote as either presence or absence.
+    """
+
+    spans: tuple[CoverageSpan, ...]
+    gaps: tuple[CoverageGap, ...]
+    observed_total_s: float
+
+
+def _gap_reason(observations: "list[Observation]", start: float, end: float) -> GapReason:
+    """A gap is ``judge_degraded`` if the judge tried and failed anywhere inside it; else nobody
+    looked and it is ``unobserved``. A degraded tick can never upgrade a gap into truth."""
+    for o in observations:
+        if start < o.t < end and o.degraded:
+            return "judge_degraded"
+    return "unobserved"
+
+
+def interval_coverage(
+    observations: "list[Observation]",
+    *,
+    observation_valid_for_s: "float | None" = None,
+) -> Coverage:
+    """Build observed spans + declared gaps from ticks — WITHOUT forward-filling (card Y7 §2).
+
+    Two consecutive positive observations merge into one span only when the gap between them is
+    within ``observation_valid_for_s`` (``None`` = never merge; each positive stands alone). Any
+    stretch that is not merged is a GAP carrying its reason (``judge_degraded`` if a degraded tick
+    falls inside it, else ``unobserved``). Coverage is defined over ``[first positive, last
+    positive]`` only — nothing is claimed before the first or after the last thing observed.
+
+    Returns a :class:`Coverage`; ``observed_total_s`` counts span time only.
+    """
+    ordered = sorted(observations, key=lambda o: o.t)
+    positives = [o for o in ordered if o.positive]
+    if not positives:
+        return Coverage(spans=(), gaps=(), observed_total_s=0.0)
+
+    spans: list[CoverageSpan] = []
+    gaps: list[CoverageGap] = []
+    span_start = positives[0].t
+    prev_t = positives[0].t
+    for cur in positives[1:]:
+        dt = cur.t - prev_t
+        mergeable = observation_valid_for_s is not None and dt <= observation_valid_for_s
+        if mergeable:
+            prev_t = cur.t
+            continue
+        # The current span ends at the last merged positive; the stretch to ``cur`` is a gap.
+        spans.append(CoverageSpan(start=span_start, end=prev_t, kind="observed"))
+        gaps.append(CoverageGap(start=prev_t, end=cur.t, reason=_gap_reason(ordered, prev_t, cur.t)))
+        span_start = cur.t
+        prev_t = cur.t
+    spans.append(CoverageSpan(start=span_start, end=prev_t, kind="observed"))
+
+    total = sum(s.duration for s in spans)
+    return Coverage(spans=tuple(spans), gaps=tuple(gaps), observed_total_s=total)
+
+
 __all__ = [
     "Episode",
+    "Observation",
+    "CoverageSpan",
+    "CoverageGap",
+    "Coverage",
+    "CoverageKind",
+    "GapReason",
+    "interval_coverage",
     "EpisodeJudge",
     "EpisodeLog",
     "EpisodePolicy",
