@@ -37,6 +37,38 @@ party ships ``industrial_line`` / ``medical_imaging`` / ``satellite_change`` / `
 :meth:`SourceProfileRegistry.register` (or via the ``percept.source_profiles`` entry-point group) —
 never by editing a ``Literal`` in this file. The same rule ``WatchProfile``'s free-text axes follow.
 
+Scope of contract v1.4 — narrow on purpose (ADR-006 §Consequences, card Y9)
+--------------------------------------------------------------------------
+
+The open registry above is a SEAM, not a promise of coverage. For contract v1.4 percept's subject
+handling is scoped to exactly two kinds, and that scope is a decision, not a gap waiting to close:
+
+1. **Screen documents with stable content keys** — the subject is keyed off CONTENT the integrator
+   supplies (invoice number, ticket id, file path), never off pixel continuity.
+2. **Conversational claim slots with explicit mutation semantics** — a named dialogue slot whose
+   value is asserted / revised / retracted, with the mutation DECLARED rather than inferred from
+   timestamp order.
+
+**Explicitly EXCLUDED from v1.4** — scope, not backlog: biometric re-identification (deciding two
+observations are the same *person*), growth or trajectory prediction (inferring a subject's future
+value), and robotics control (closing a loop from a finding back onto an actuator). Percept does not
+ship these and does not partially ship them; ``identity_strategy`` being free text must not be read
+as a step toward them.
+
+The resolver interface stays open so a future scheme can be REGISTERED rather than merged into this
+file — but v1.4 deliberately does not generalise ahead of evidence. Two client probes are the
+evidence we have, and the two kinds above are exactly what they established.
+
+Identifier stability is not restart-safety
+------------------------------------------
+
+Where a subject reference carries a ``scope='durable'``-style marker, that describes **IDENTIFIER
+STABILITY** — the string ``PO-4471`` denotes the same real-world subject next week as it does today —
+and NOTHING ELSE. It is not a claim that any runtime state about that subject survives a process
+restart: episode logs are session-only and are not carried by ``Percept.snapshot()`` (see
+:mod:`percept.episodes`). Conflating the two reads as continuous 24/7 operation and shows up as
+silent under-counting after a redeploy.
+
 Honesty about admission
 -----------------------
 
