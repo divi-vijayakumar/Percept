@@ -51,7 +51,14 @@ from .offline import (
 )
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
 from .entity import Entity, EntityGraph
-from .episodes import Episode, EpisodeLog
+from .episodes import (
+    EPISODE_POLICIES,
+    ContinuationDecision,
+    Episode,
+    EpisodeLog,
+    EpisodePolicy,
+    episode_policy_of,
+)
 from .events import Event, EventLog, FrameWindow
 from .gate import (
     ASK,
@@ -265,6 +272,10 @@ __all__ = [
     "AppearanceIdentity",
     "Episode",
     "EpisodeLog",
+    "EpisodePolicy",
+    "EPISODE_POLICIES",
+    "ContinuationDecision",
+    "episode_policy_of",
     # events + scheduler (Phase 5 — temporal perception; time-triggered fires)
     "Event",
     "EventLog",
