@@ -44,6 +44,25 @@ conversational claim (a whole call) do not agree on any of ``continuity_gap_s``,
 
 The judge is injected (an LLM in real use; a deterministic stub in L1) so the dedup *logic* is
 testable without a model — and so we never assert backend intelligence with a fake.
+
+PERSISTENCE IS SESSION-ONLY — episodes do NOT survive a restart (ADR-006, card Y9)
+---------------------------------------------------------------------------------
+
+An :class:`EpisodeLog` is **process-lifetime state**. ``Percept.snapshot()`` carries ``goals``,
+``gate``, ``entities`` and ``action_log``; it does **not** carry ``Percept.episodes`` (the per-goal
+log map built in ``Percept.count_event``), so ``Percept.restore()`` cannot rehydrate it. After a
+restart every counting goal starts again at zero episodes, and a subject last seen before the restart
+is a NEW episode afterwards.
+
+This **blocks any 24/7 viability claim** until a later phase gives episodes a persisted
+representation. The bounds below (``window_s`` / ``max_episodes``) are a MEMORY story — they keep a
+long-running process from growing without limit. They are not a DURABILITY story and must not be
+cited as one.
+
+Do not read a durable IDENTIFIER as durable STATE. A subject reference marked ``scope='durable'``
+says the identifier is stable — ``PO-4471`` means the same thing next week — and says nothing at all
+about restart-safety of the episode state keyed by it. The failure mode of conflating them is silent
+under-counting after a redeploy, which nothing in this module can detect for you.
 """
 
 from __future__ import annotations

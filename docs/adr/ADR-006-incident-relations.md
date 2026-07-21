@@ -364,6 +364,66 @@ correlation key ONLY" carrying "no claim about *who* or *which document* the sub
   state-bearing subjects and insufficient for claim-bearing ones*, which is a scope statement about
   ADR-004, not a contradiction of it.
 
+### Founder scope decisions taken for contract v1.4 (card Y9)
+
+These three decisions are **taken**. They are recorded here — and mirrored in the module docstrings a
+reader actually opens (`percept/sourceprofile.py`, `percept/episodes.py`) and in
+`docs/reference/v1-4-scope-and-persistence.md` — so that nobody reading the code can infer a stronger
+promise than the one being made. They **change no behaviour**; they bound what the shipped behaviour
+is allowed to be read as.
+
+**(a) Scope is narrow. v1.4 covers two subject kinds and no others.**
+
+1. **Screen documents with stable content keys** — the subject is identified by a key derived from
+   the *content* (an invoice number, a ticket id, a file path), supplied by the integrator, not by
+   pixel continuity.
+2. **Conversational claim slots with explicit mutation semantics** — the subject is a named slot in a
+   dialogue whose value can be *asserted*, *revised* and *retracted*, and the mutation is declared
+   rather than inferred from timestamp order (§3).
+
+**Explicitly EXCLUDED from v1.4, as scope and not as backlog:** biometric re-identification (deciding
+that two observations are the same *person*), growth/trajectory prediction (inferring a future value
+of a subject), and robotics control (closing a loop from a finding back onto an actuator). Percept
+does not ship these, does not partially ship them, and a client must not build on the assumption that
+the identity or relation machinery is a step toward them.
+
+The **resolver interface stays open** — `SourceProfile.identity_strategy` is free text over an open
+registry (`percept/sourceprofile.py`, §"An OPEN registry, never a closed enum"), so a future scheme is
+added by *registering* one, never by editing this list. Openness of the seam is deliberate; it is
+**not** a promise that v1.4 generalises. v1.4 does not generalise ahead of evidence: we have two
+probes' worth of it, and the scope above is exactly what those two probes established.
+
+**(b) Persistence is session-only. Episodes do not survive a restart.**
+
+`Percept.snapshot()` (`agent.py:2010`) carries `goals`, `gate`, `entities` and `action_log`. It does
+**not** carry `Percept.episodes` (the per-goal `EpisodeLog` map, `agent.py:616-623`), and
+`Percept.restore()` therefore cannot rehydrate it. An episode log is **process-lifetime state**: on
+restart, every counting goal restarts from zero episodes, and a subject last seen before the restart
+is a *new* subject afterwards.
+
+This **blocks any 24/7 viability claim** until a later phase gives episodes a persisted
+representation. Nobody may market, document, or design against continuous multi-day operation on the
+strength of the bounded-window machinery in `EpisodeLog` — boundedness is a memory story, not a
+durability story.
+
+**Critically, and stated wherever the field is:** if a `SubjectRef` carries `scope='durable'`, that
+value describes **IDENTIFIER STABILITY** — the string `PO-4471` denotes the same real-world subject
+next week as it does today — and **nothing else**. It is *not* a statement that episode state,
+gate edges, or counts survive a process restart. The two readings are easy to conflate and the
+consequences of conflating them are silent under-counting after a redeploy, so the caveat travels
+with the field rather than living in a distant document.
+
+**(c) Delivery is provisional incident + superseding revision, not a wide settle window.**
+
+Of §2's two fixes, the shipped posture is: **emit the finding immediately** (the rising edge is
+preserved — that is percept's reason to exist) as a *provisional* incident, and **supersede it when a
+correction lands**. Any delay is **concern-specific** and **bounded by a declared latency SLO**
+(`percept/slo.py`), never a global settle window applied to every finding. This resolves the
+cross-cutting trade-off below in favour of Fix B as the default and Fix A as an opt-in, per-concern,
+SLO-bounded knob — and it means Open Questions 1 and 5 are answered *for the delivery axis*: a settle
+window, where used at all, is a delivery concept with a declared bound, not a gate concept and not a
+default.
+
 ## Options and trade-offs — input to the "public object" founder decision
 
 Presented as options with trade-offs. **This ADR does not choose.**
@@ -416,6 +476,11 @@ be exposed and defaulted independently. A design that offers only one, or couple
 setting, will fail the 21.6 s / 22.6 s / 34.0 s test in §2.
 
 ## Open questions — deferred to the "public object" founder decision
+
+> **Partially closed by card Y9** (see §Consequences → "Founder scope decisions taken for contract
+> v1.4"): decision (c) settles the *delivery* half of Q1 and Q5 — provisional incident plus
+> superseding revision, with any delay concern-specific and SLO-bounded, in delivery rather than in
+> the gate. The *shape of the public object* (Q1's other half), Q2, Q3, Q4 and Q6 remain open.
 
 1. **Which option above (or which hybrid) is the public object?** Not decided here.
 2. **Does the finding carry an interval, or does an interval live on a separate object, or is

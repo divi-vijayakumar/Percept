@@ -10,6 +10,14 @@ your source ──▶ fovea (cheap motion/salience gate) ──▶ VLM judge ─
                  something worth judging happens
 ```
 
+> **Before you design around it**, read
+> [Scope and persistence (v1.4)](reference/v1-4-scope-and-persistence.md). Three things clients have
+> read too generously: v1.4 covers **screen documents with stable content keys** and **conversational
+> claim slots** only — biometric re-identification, growth prediction and robotics control are
+> explicitly excluded; **episodes are session-only** and do not survive a restart, which blocks any
+> 24/7 claim; and delivery is **provisional incident + superseding revision**, not a wide settle
+> window.
+
 ---
 
 ## 1. Install

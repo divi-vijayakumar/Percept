@@ -20,6 +20,7 @@ interactive [`architecture.html`](../architecture.html)) — it cannot drift fro
 - [Release readiness](how-to/release-readiness.md) — the pre-publish checklist, audited against the built artifact.
 
 ## Reference — information-oriented
+- [Scope and persistence (v1.4)](reference/v1-4-scope-and-persistence.md) — **read first if you are designing around percept**: the two subject kinds v1.4 covers, what is explicitly excluded, why episodes do not survive a restart, and what `scope='durable'` does and does not mean.
 - [`watch()` contract](reference/watch-contract.md) — the frozen public entrypoint + `WatchEvent` schema.
 - [Consequence gate](reference/consequence-gate.md) — FIRE/ASK/SILENT, the rising edge, refractory, and the typed reason vocabulary.
 - [Backends](reference/backends.md) — the five seams, backend names, extras, custom backends.
