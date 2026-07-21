@@ -19,9 +19,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
-from .schema import CORPUS_NAMES, ValidationError, validate_corpus
+from .schema import CORPUS_NAMES, validate_corpus
 
-__all__ = ["Corpus", "Case", "synthetic_root", "corpus_dir", "load_corpus", "load_all", "available"]
+__all__ = [
+    "Corpus",
+    "Case",
+    "CorpusMissing",
+    "synthetic_root",
+    "corpus_dir",
+    "load_corpus",
+    "load_all",
+    "available",
+]
 
 _ENV = "PERCEPT_SYNTHETIC_DIR"
 
@@ -131,7 +140,3 @@ def load_corpus(name: str, root: "Path | str | None" = None, *, validate: bool =
 def load_all(root: "Path | str | None" = None, *, validate: bool = True) -> dict[str, Corpus]:
     """Load every corpus. Raises if any is missing — the whole set is generated together."""
     return {n: load_corpus(n, root, validate=validate) for n in CORPUS_NAMES}
-
-
-__all__.append("CorpusMissing")
-__all__.append("ValidationError")
