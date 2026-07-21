@@ -37,7 +37,9 @@ from typing import Callable, Hashable, Literal
 
 from .adapters import Verdict
 from .concern import consequence_of, is_hard_quadrant
+from .contracts import JudgmentEvent, JudgmentTimingBuilder
 from .gate import ASK, FIRE, Gate, classify
+from .observability import get_logger
 
 # --------------------------------------------------------------------------------------------------
 # The behavior program — authored data (the LLM fills these; presets compile legacy goal.state).
@@ -249,6 +251,12 @@ class Fired:
     text: str
     entity_id: object
     verdict: object
+    # X7 — the frozen ADR-001 §1 record of THIS decision, when the caller threaded the funnel's
+    # stamps in (``fire_judged(..., timing=...)``). Appended LAST with a ``None`` default so every
+    # existing positional ``Fired(...)`` construction, and every consumer that ignores it, is
+    # byte-for-byte unchanged. ``None`` means "this firing path did not carry judgment timing"
+    # (episode/transition/absence fires, a bare executor test) — NEVER a fabricated timing.
+    judgment: JudgmentEvent | None = None
 
 
 def ask_text(goal) -> str:  # mirrors agent._ask_text
@@ -319,7 +327,21 @@ class BehaviorExecutor:
         freshness: float = 1.0,
         t: float = 0.0,
         metric: str = "gate",
+        timing: JudgmentTimingBuilder | None = None,
+        evidence_seq: int = 0,
     ) -> Fired | None:
+        """Run one judged concern through the (unchanged) gate and return the firing, if any.
+
+        ``timing`` (X7, ADR-001 §1) is the OPTIONAL, additive judgment-timing accumulator the caller
+        filled as this evidence moved through the funnel (``mark_ingest_observed`` →
+        ``mark_admitted`` → ``mark_judge_started`` → ``mark_judge_completed``). When supplied, the
+        decision produced here is ALSO frozen into a :class:`~percept.contracts.JudgmentEvent` and
+        hung on the returned :class:`Fired` — this method is the runtime's ONE construction site for
+        the contract's centre, so the lifecycle/immutability invariants govern the object the live
+        path actually makes. It never influences whether or what fires: gate semantics, the
+        never-contract, the accumulator and the hard-quadrant escalation are untouched, and a
+        failure to build the event degrades to ``judgment=None`` rather than to a changed decision.
+        """
         ctx = self.ctx(goal.id)
         truth = classify(verdict, freshness, self.gate.threshold, self.gate.fresh_min)
         ctx.confusion.record(verdict, truth)  # constraint 2: additive, pre-gate, no trace effect
@@ -345,11 +367,43 @@ class BehaviorExecutor:
                     return None  # counted the occurrence, but it isn't the nth -> no alert
             if is_hard_quadrant(consequence_of(goal)):  # A3 hard-quadrant escalates to ASK
                 self.metrics.incr("consequence.escalate")
-                return Fired(goal.id, ASK, escalate_text(goal), base_key[-1], verdict)
-            return Fired(goal.id, FIRE, goal.say, base_key[-1], verdict)
+                return Fired(goal.id, ASK, escalate_text(goal), base_key[-1], verdict,
+                             self._judgment(key, evidence_seq, ASK, timing))
+            return Fired(goal.id, FIRE, goal.say, base_key[-1], verdict,
+                         self._judgment(key, evidence_seq, FIRE, timing))
         if action == ASK:
-            return Fired(goal.id, ASK, ask_text(goal), base_key[-1], verdict)
+            return Fired(goal.id, ASK, ask_text(goal), base_key[-1], verdict,
+                         self._judgment(key, evidence_seq, ASK, timing))
         return None
+
+    # -- X7: the ONE production construction site of the contract's centre ----------------------
+    def _judgment(
+        self, key: tuple, evidence_seq: int, action: str, timing: JudgmentTimingBuilder | None
+    ) -> JudgmentEvent | None:
+        """Freeze this decision into a :class:`~percept.contracts.JudgmentEvent`, or ``None``.
+
+        ``None`` (not a fabricated event) whenever the caller threaded no timing accumulator, or the
+        accumulator is missing a stamp the funnel never took — an event whose clock discipline the
+        runtime cannot honestly attest is worse than no event. Any failure is swallowed and counted
+        (``judgment.build_failed``): X7 is ADDITIVE, so a broken stamp must never change what fires.
+
+        ``key``/``evidence_seq`` mirror :class:`percept.sequencing.GateDecision`; the freeze stamp
+        (``decision_emitted_ts``) is taken HERE, at the instant the decision becomes final, which is
+        what makes ``decision_overhead_s()`` (judge-return → decision) a real measurement.
+        """
+        if timing is None:
+            return None
+        try:
+            return JudgmentEvent(
+                key=key, evidence_seq=int(evidence_seq), action=action, timing=timing.freeze(),
+            )
+        except Exception as exc:  # never let an observability record perturb the firing path
+            self.metrics.incr("judgment.build_failed")
+            get_logger("percept.behavior").warning(
+                "judgment.build_failed: key=%r action=%r — emitting the fire WITHOUT a "
+                "JudgmentEvent (additive-only invariant): %r", key, action, exc,
+            )
+            return None
 
     # -- transition sense: replicates agent._perceive_transition; state in ISOLATED ctx ---------
     def fire_transition(
