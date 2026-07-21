@@ -148,6 +148,12 @@ class ConsentSettings:
 @dataclass(frozen=True)
 class EventSettings:
     window: int = 12  # PERCEPT_FRAME_WINDOW — rolling frames per source for temporal perception
+    # PERCEPT_PREROLL_MAX_BYTES — byte budget for the incident snippet's pre-roll ring
+    # (percept/runtime/worker.py). The count bound (`snippet_size`, 48) does NOT bound memory: at
+    # 1080p RGB those 48 frames are ~300 MB resident, which is exactly the "runaway memory" two client
+    # teams measured. 128 MB still covers the default 5 s pre-roll at 4 fps / 1080p; beyond it the
+    # OLDEST frames are evicted and every eviction is reported (ADR-001 §9), never silent.
+    preroll_max_bytes: int = 134_217_728
     merge_gap_s: float = 1.5  # PERCEPT_EVENT_MERGE_GAP_S — same-type detections within this = 1 event
     audio_window_s: float = 4.0  # PERCEPT_AUDIO_WINDOW_S — rolling seconds of audio per source for fused/acoustic perception
 
@@ -249,6 +255,7 @@ def load_settings() -> Settings:
         ),
         events=EventSettings(
             window=_env("PERCEPT_FRAME_WINDOW", 12, int),
+            preroll_max_bytes=_env("PERCEPT_PREROLL_MAX_BYTES", 134_217_728, int),
             merge_gap_s=_env("PERCEPT_EVENT_MERGE_GAP_S", 1.5, float),
             audio_window_s=_env("PERCEPT_AUDIO_WINDOW_S", 4.0, float),
         ),

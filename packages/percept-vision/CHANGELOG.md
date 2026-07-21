@@ -3,6 +3,32 @@
 ## Unreleased
 
 ### Fixed
+- **The "~7 MB/s memory leak" is a BOUNDED plateau, and the bound is now in BYTES and loud (card
+  Z1).** Two client teams measured RSS 92 → 342 MB (and 405 MB on a second clip, at HALF the judge
+  calls) on 36-second clips and concluded percept could not run for an hour. Profiled, not reasoned
+  about: `percept.runtime.worker.run` driven offline with a scripted judge over 8,000 frames, RSS +
+  `tracemalloc` + a weakref census of live decoded frames. Result: the Python heap is **flat** at
+  46.3 MB from frame ~200 to frame 8,000 and RSS **plateaus** (282.8 MB, unchanged over the last
+  5,600 frames) — 0.00 KB/frame of heap growth. There is no leak. The retaining references are
+  exactly two, and they are rings:
+  `percept/runtime/worker.py` `clips = FrameWindow(size=snippet_size)` (48 decoded frames, the
+  incident snippet's pre-roll) and `percept/agent.py:635` `FrameWindow(settings.events.window)`
+  (12 frames). They hold the SAME objects, so steady state is `max(48, 12) + ~2 in flight` ≈ 50
+  decoded frames — at 1080p RGB, ~300 MB. That is the clients' number, and it explains why the
+  second clip cost MORE at half the judge calls: the plateau scales with frame SIZE, not with spend.
+  The measurement error was reading a fixed high-water mark on a clip that ended before the plateau.
+  The real defect it exposed: **a count bound is not a memory bound.** `FrameWindow` now takes an
+  optional `max_bytes` budget (`percept/events.py`, with `frame_nbytes` measuring numpy/bytes/
+  harness-`Frame`/PIL shapes), and the pre-roll ring is bounded by
+  `settings.events.preroll_max_bytes` (`PERCEPT_PREROLL_MAX_BYTES`, default **128 MB** — still the
+  full 5 s pre-roll at 4 fps / 1080p) or `run(snippet_max_bytes=…)`; `0` restores the count-only
+  ring. Per ADR-001 §9 the drop is never silent: each byte-bound eviction emits
+  `RuntimeHealthEvent("preroll_capped")` with `reason` / `frame_bytes` / `held_bytes` /
+  `max_bytes` and bumps `stats.preroll_frames_dropped`. The newest frame is never evicted, and a
+  frame whose size cannot be measured (`frame_nbytes → 0`) never causes a drop — no eviction on a
+  guess. `tests/test_soak_memory.py` is the fence: it fails if per-frame retention grows across a
+  run, if the budget stops bounding, or if an eviction goes unreported (verified to bite by
+  injecting a real per-frame leak).
 - **`golden_eval.score` was KEY-BLIND — every multi-goal recall/precision number is over-credited
   (card X1).** The one-to-one greedy §5a matcher selected a claimant episode purely by
   `ep.contains(decision_emitted_ts)` and never compared the prediction's `JudgmentEvent.key` to

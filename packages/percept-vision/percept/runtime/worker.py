@@ -18,7 +18,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable
 
-from percept.events import FrameWindow
+from percept.events import FrameWindow, frame_nbytes
 from percept.gate import FIRE, ASK
 from percept.incidents import make_incident, snippet_from_window
 from percept.observability import get_logger
@@ -121,6 +121,10 @@ class RuntimeStats:
     audio_wakes: int = 0  # audio onsets that admitted a frame the visual gate would have skipped
     boundaries: int = 0  # edge-detector boundaries (rep peaks / onsets) fed to perceive_boundary
     utterances: int = 0  # complete spoken utterances endpointed and handed to on_utterance
+    # Frames evicted from the incident snippet's pre-roll ring by its BYTE budget (not by the count
+    # bound, which is the ring's normal cadence). Each one also emits a `preroll_capped` health event
+    # carrying the reason — ADR-001 §9: a bound-driven drop is never a silent counter bump.
+    preroll_frames_dropped: int = 0
     # judge_dispatch="async" accounting. The scheduler is single-flight + one latest-pending, so under
     # overload an admitted frame may be replaced before its judge launches (superseded) or discarded
     # because goals changed after admission (revision_dropped). The honest budget invariant is
@@ -871,6 +875,7 @@ async def run(
     source_rtsp_tcp: bool = True,
     snippet_pre_s: float = 5.0,
     snippet_size: int = 48,
+    snippet_max_bytes: int | None = None,
     snippet_kind: str = "frame",
     sink_errors: str = "raise",
     stats: RuntimeStats | None = None,
@@ -922,6 +927,14 @@ async def run(
     - ``on_health(event)`` — optional structured health/telemetry hook.
     - ``source_*`` — capture queue/reconnect/RTSP options for URI sources.
     - ``snippet_pre_s`` — seconds of pre-roll captured into each incident's snippet.
+    - ``snippet_max_bytes`` — BYTE budget for that pre-roll ring (default ``None`` →
+      ``settings.events.preroll_max_bytes``, 128 MB; ``0`` disables the byte bound). ``snippet_size``
+      bounds the ring by COUNT, which does not bound memory: the same 48-frame ring holds ~0.4 MB of
+      8x8 test frames and ~300 MB of 1080p RGB, and profiling (card Z1) named this ring as the whole
+      of the resident-memory plateau clients read as a leak. When the budget is exceeded the OLDEST
+      frames are evicted (the newest is never dropped) and each eviction emits a ``preroll_capped``
+      health event carrying ``reason``/``frame_bytes``/``held_bytes`` and bumps
+      ``stats.preroll_frames_dropped`` — a shorter snippet, announced, never silently shorter.
     - ``snippet_kind`` — ``"frame"`` keeps decoded frames; ``"clip"`` emits a portable encoded bundle.
     - ``sink_errors`` — ``"raise"`` (default) or ``"ignore"`` for notification/feed hook failures.
     - ``stats`` — optional mutable :class:`RuntimeStats` counters for health dashboards.
@@ -1257,7 +1270,36 @@ async def run(
         core.effective_config = effective_config
     except Exception:  # noqa: BLE001 - a duck-typed/slotted core must never break the run over telemetry
         pass
-    clips = FrameWindow(size=snippet_size)  # rolling pre-roll buffer for the incident snippet
+    # The incident snippet's rolling pre-roll buffer — the SDK's largest resident structure, and the
+    # one profiling named as the whole of the "runaway memory" two client teams measured (Z1). It is
+    # bounded by COUNT (`snippet_size`, 48) and by BYTES: the count alone does not bound memory, since
+    # the same 48 frames cost ~0.4 MB of 8x8 test frames and ~300 MB of 1080p RGB. A byte-bound
+    # eviction is REPORTED (`preroll_capped` health event + `stats.preroll_frames_dropped`), never a
+    # silent counter bump — ADR-001 §9. `snippet_max_bytes=0` disables the byte bound (count only,
+    # the pre-0.7.1 behaviour).
+    _preroll_cap = (
+        int(getattr(getattr(settings, "events", None), "preroll_max_bytes", 0) or 0)
+        if snippet_max_bytes is None else int(snippet_max_bytes)
+    )
+    _preroll_dropped = [0]
+    preroll_health: list[tuple[str, dict]] = []
+
+    def _on_preroll_drop(dt: float, frame: Any, reason: str) -> None:
+        _preroll_dropped[0] += 1
+        _cov.preroll_frames_dropped += 1
+        if stats is not None and stats is not _cov:
+            stats.preroll_frames_dropped += 1
+        preroll_health.append(("preroll_capped", {
+            "reason": reason, "dropped_t": dt, "frame_bytes": frame_nbytes(frame),
+            "max_bytes": _preroll_cap, "held_frames": len(clips), "held_bytes": clips.nbytes,
+            "dropped_total": _preroll_dropped[0],
+        }))
+
+    clips = FrameWindow(
+        size=snippet_size,
+        max_bytes=_preroll_cap or None,
+        on_drop=_on_preroll_drop if _preroll_cap else None,
+    )
     # Coverage-guarantee tripwire (emit-once). Tracks the observed capture cadence against the brief
     # goal's required Nyquist floor (required_fps); reset when a regate RAISES the requirement.
     _cap_req_seen = 0.0
@@ -1713,6 +1755,14 @@ async def run(
             _cov.frames += 1
             _cov.frames_dropped = dropped[0]
             clips.push(t, judge_frame)
+            # A pre-roll frame dropped by the BYTE budget is announced on the frame cadence, with its
+            # reason and the live held bytes/frames — the operator sees the snippet getting shorter
+            # instead of silently receiving less evidence than the configured pre_s (ADR-001 §9).
+            if preroll_health:
+                while preroll_health:
+                    _pk, _pd = preroll_health.pop(0)
+                    if on_health is not None:
+                        await _call_sink(on_health, RuntimeHealthEvent(_pk, ts=t, data=_pd))
             if on_frame is not None:
                 await _call_sink_with_policy(
                     on_frame, t, judge_frame, errors=sink_errors, stats=stats, on_health=on_health, health_kind="frame_sink_error"
