@@ -748,6 +748,11 @@ def _predictions_from_trace(records: Sequence[TraceRecord]) -> list[Any]:
     Ground truth is annotated on the MEDIA timeline, and ``source_ts`` is that same timeline (rule 1
     of :mod:`percept.tracing`: an incident is only ever reported at ``source_ts``), so it is the
     stamp handed to the matcher. Predictions are the gate's FIREs.
+
+    The event ``key`` is the record's ``goal_id`` — the matcher is KEY-AWARE (a fire of goal A
+    inside goal B's window is a false fire, not a match), so a ground-truth ``episode_id`` must be
+    the ``goal_id`` of the goal it labels. A record with no ``goal_id`` falls back to a synthetic
+    per-record key, which by construction matches no episode.
     """
     from .contracts import JudgmentEvent, JudgmentTiming  # noqa: PLC0415
 
@@ -760,7 +765,7 @@ def _predictions_from_trace(records: Sequence[TraceRecord]) -> list[Any]:
             continue
         ts = float(r.source_ts or 0.0)
         events.append(JudgmentEvent(
-            key=f"{r.trace_id}#{r.seq}", evidence_seq=seq, action="fire",
+            key=r.goal_id or f"{r.trace_id}#{r.seq}", evidence_seq=seq, action="fire",
             timing=JudgmentTiming(ts, ts, ts, ts, ts),
         ))
         seq += 1
@@ -775,6 +780,9 @@ def load_golden_episodes(payload: Any) -> list[Any]:
     ``allowed_lateness_s`` — exactly the fields
     :class:`~percept.harness.golden_eval.GroundTruthEpisode` requires. Nothing is defaulted that the
     contract makes required.
+
+    ``episode_id`` is the JOIN KEY: it must be the ``goal_id`` of the goal the episode labels,
+    because the §5a matcher only lets a fire claim an episode whose key it carries.
     """
     from .contracts import GroundTruth  # noqa: PLC0415
     from .harness.golden_eval import GroundTruthEpisode  # noqa: PLC0415
@@ -810,7 +818,8 @@ def _drift(records: Sequence[TraceRecord], golden: Any, opts: VizOptions) -> tup
     from .harness.golden_eval import MatchOutcome, score  # noqa: PLC0415
 
     episodes = golden if _is_episode_seq(golden) else load_golden_episodes(golden)
-    result = score(episodes, _predictions_from_trace(records))
+    predictions = _predictions_from_trace(records)
+    result = score(episodes, predictions)
     by_id = {e.episode_id: e for e in episodes}
     items: list[LaneItem] = []
     for ep_id in result.matched_episode_ids:
@@ -836,6 +845,15 @@ def _drift(records: Sequence[TraceRecord], golden: Any, opts: VizOptions) -> tup
         f"{result.true_positives} matched, {result.misses} missed, {result.false_fires} false "
         "(percept.harness.golden_eval.score — the deterministic §5a greedy matcher)"
     )
+    # 2am-debuggability: the matcher is key-aware, so mislabeled ground truth reads as a total
+    # miss. Say so out loud instead of showing a silent recall 0.00.
+    fired_keys = {str(p.key) for p in predictions}
+    if predictions and episodes and not (fired_keys & set(by_id)):
+        note += (
+            " · NOTE: no fired goal_id matches any episode_id "
+            f"(fired {sorted(fired_keys)!r} vs episodes {sorted(by_id)!r}) — the matcher is "
+            "key-aware, so label each episode with the goal_id it belongs to"
+        )
     return result, Lane("drift", "ground-truth drift", note, tuple(items[: opts.max_lane_items]))
 
 

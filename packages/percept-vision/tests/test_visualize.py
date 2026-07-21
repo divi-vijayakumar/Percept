@@ -416,9 +416,9 @@ def _episode(eid, start, eligible, end, lateness=0.0):
 
 def test_drift_lane_uses_golden_eval_score():
     rec = _firing_run()  # a single FIRE at source_ts == 2.0
-    episodes = [_episode("ep-hit", 1.0, 1.5, 3.0), _episode("ep-missed", 4.5, 5.0, 5.5)]
+    episodes = [_episode("g1", 1.0, 1.5, 3.0), _episode("ep-missed", 4.5, 5.0, 5.5)]
     model = build_model(rec.manifest, list(rec.records), rec.summary(), golden=episodes)
-    assert model.drift.matched_episode_ids == ("ep-hit",)
+    assert model.drift.matched_episode_ids == ("g1",)
     assert model.drift.missed_episode_ids == ("ep-missed",)
     assert model.drift.recall == pytest.approx(0.5)
     drift = next(lane for lane in model.lanes if lane.key == "drift")
@@ -430,13 +430,13 @@ def test_drift_lane_uses_golden_eval_score():
 def test_drift_episodes_load_from_json(tmp_path):
     path = tmp_path / "gt.json"
     path.write_text(json.dumps([{
-        "episode_id": "ep-hit", "event_start_ts": 1.0, "decision_eligible_ts": 1.5,
+        "episode_id": "g1", "event_start_ts": 1.0, "decision_eligible_ts": 1.5,
         "episode_end_ts": 3.0, "annotation_version": "eligibility-rubric-v1",
         "annotator_or_fixture_id": "fixture",
     }]), encoding="utf-8")
     rec = _firing_run()
     model = build_model(rec.manifest, list(rec.records), rec.summary(), golden=str(path))
-    assert model.drift.matched_episode_ids == ("ep-hit",)
+    assert model.drift.matched_episode_ids == ("g1",)
 
 
 def test_malformed_ground_truth_is_a_typed_error_not_a_silent_empty_lane():

@@ -124,12 +124,12 @@ def _ladder() -> Ladder:
 def _corpus(root: Path, *, declare_split: bool = True) -> None:
     """Four fixtures. baseline misses two episodes, blockmax misses one, window misses none."""
     plans = {
-        "f1": ({"baseline": [], "blockmax": [_event("k", 1.5)], "window": [_event("k", 1.5)]}),
-        "f2": ({"baseline": [], "blockmax": [], "window": [_event("k", 1.5)]}),
-        "f3": ({"baseline": [_event("k", 1.5)], "blockmax": [_event("k", 1.5)],
-                "window": [_event("k", 1.5)]}),
-        "f4": ({"baseline": [_event("k", 1.5)], "blockmax": [_event("k", 1.5)],
-                "window": [_event("k", 1.5)]}),
+        "f1": ({"baseline": [], "blockmax": [_event("e1", 1.5)], "window": [_event("e1", 1.5)]}),
+        "f2": ({"baseline": [], "blockmax": [], "window": [_event("e1", 1.5)]}),
+        "f3": ({"baseline": [_event("e1", 1.5)], "blockmax": [_event("e1", 1.5)],
+                "window": [_event("e1", 1.5)]}),
+        "f4": ({"baseline": [_event("e1", 1.5)], "blockmax": [_event("e1", 1.5)],
+                "window": [_event("e1", 1.5)]}),
     }
     for fid, arms in plans.items():
         write_fixture(root, fid, goal_shape="episode", episodes=[_episode("e1", 1.0, 2.0)],
@@ -271,8 +271,8 @@ def test_a_partially_measurable_bar_set_is_never_a_pass(tmp_path: Path) -> None:
     """cost_usd is unmeasurable when no arm wrote a trace: unassessed, never optimistic."""
     for fid in ("f1", "f2"):
         write_fixture(tmp_path, fid, goal_shape="episode", episodes=[_episode("e1", 1.0, 2.0)],
-                      arms={"baseline": [_event("k", 1.5)], "blockmax": [_event("k", 1.5)],
-                            "window": [_event("k", 1.5)]})
+                      arms={"baseline": [_event("e1", 1.5)], "blockmax": [_event("e1", 1.5)],
+                            "window": [_event("e1", 1.5)]})
     (tmp_path / "splits.json").write_text(json.dumps({"train": [], "dev": [], "test": ["f1", "f2"]}))
     report = derive_profile(
         fixtures_root=tmp_path, ladder=_ladder(),

@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Fixed
+- **`golden_eval.score` was KEY-BLIND — every multi-goal recall/precision number is over-credited
+  (card X1).** The one-to-one greedy §5a matcher selected a claimant episode purely by
+  `ep.contains(decision_emitted_ts)` and never compared the prediction's `JudgmentEvent.key` to
+  `GroundTruthEpisode.episode_id` — the correspondence its own docstring asserted. On a MULTI-GOAL
+  stream a fire of the WRONG goal landing inside another goal's window was therefore scored as a
+  MATCH: recall inflated, false fires hidden, misses erased. Both claimant predicates now carry a
+  key-equality term (`str(pred.key) == ep.episode_id`); determinism, the sort order, and the
+  duplicate / false-fire branches are otherwise untouched, and single-goal scoring is byte-for-byte
+  unchanged. This instrument sits under `percept eval`, the L1 derivation ladder, RB-FRONTIER and
+  the visualizer's drift lane, so **every previously reported multi-goal recall/precision figure
+  must be re-measured** — including the internal H0 ablation numbers, which were measured on
+  multi-goal streams with goal density as an ablation axis.
+  Consequences of the fix: the visualizer's drift lane now keys predictions by the trace record's
+  `goal_id` (a ground-truth `episode_id` must be the `goal_id` of the goal it labels) and says so
+  in the lane note when no fired goal id intersects any episode id, instead of silently reading
+  `recall 0.00`.
+
 ### Added
 - **The operating-frontier report — the honest form of a quality claim (card RB-FRONTIER).**
   `percept-eval --frontier` emits the full §3.2 report from the eval harness: **exact one-sided 95%
