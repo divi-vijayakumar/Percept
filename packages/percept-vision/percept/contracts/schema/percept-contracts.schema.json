@@ -3,7 +3,7 @@
   "$id": "https://percept.velvee.ai/contracts/percept-contracts.schema.json",
   "title": "percept-contracts",
   "description": "Vendor-neutral DTOs of the Percept frozen contract.",
-  "x-contract-version": "1.3.0",
+  "x-contract-version": "1.4.0",
   "$defs": {
     "Box": {
       "type": "object",
@@ -83,6 +83,63 @@
         "t_start"
       ]
     },
+    "SubjectRef": {
+      "type": "object",
+      "title": "SubjectRef",
+      "properties": {
+        "scheme": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": "string"
+        },
+        "key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resolution": {
+          "enum": [
+            "bound",
+            "unknown"
+          ]
+        },
+        "scope": {
+          "enum": [
+            "session",
+            "source",
+            "durable"
+          ]
+        },
+        "strategy": {
+          "type": "string"
+        },
+        "confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "description": "A namespaced reference to WHAT a judgment is about \u2014 the subject identity, resolved or not.",
+      "required": [
+        "scheme",
+        "namespace",
+        "key",
+        "resolution",
+        "scope",
+        "strategy"
+      ]
+    },
     "Verdict": {
       "type": "object",
       "title": "Verdict",
@@ -121,6 +178,16 @@
           "items": {
             "$ref": "#/$defs/ClipEvent"
           }
+        },
+        "subject": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SubjectRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "description": "The firing-contract return: is the plain-language condition true right now?",

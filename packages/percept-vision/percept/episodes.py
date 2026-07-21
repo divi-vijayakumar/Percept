@@ -88,6 +88,24 @@ MutationCheck = Callable[["Episode", Any], bool]
 OPEN = "open"
 CLOSED = "closed"
 
+
+def _subject_key_of(exemplar: Any) -> "str | None":
+    """The judge-emitted subject key an exemplar carries, or ``None`` (card Y5).
+
+    Reads a ``SubjectRef`` off ``exemplar.subject`` (e.g. a :class:`~percept.contracts.Verdict`) and
+    returns its ``key`` ONLY when the ref is ``resolution='bound'`` with a non-empty key. An
+    ``'unknown'`` ref — a subject that was seen but not identified — is deliberately NOT a match key:
+    two unidentified subjects must never collapse into one episode. Absence of a subject
+    (``exemplar.subject is None``, or no ``subject`` attribute at all) also yields ``None``, so an
+    exemplar that predates subject identity is byte-for-byte unchanged."""
+    subject = getattr(exemplar, "subject", None)
+    if subject is None:
+        return None
+    if getattr(subject, "resolution", None) != "bound":
+        return None
+    key = getattr(subject, "key", None)
+    return key if key else None
+
 ContinuationReason = Literal[
     # -- continued (is_new=False)
     "continued",              # same subject, open, inside the gap, mutation compatible
@@ -308,11 +326,15 @@ class EpisodeLog:
         """Which existing episode shares this observation's SUBJECT? Evidence only — the caller
         still has to run the continuation conjunction on whatever comes back.
 
-        ``subject_key`` (the Y5/Z3 seam) wins when supplied: exact subject-key equality, most recent
-        first, and NO judge call is made. Otherwise the injected judge answers, as it always did.
+        Precedence (card Y5): an explicit ``subject_key`` wins; else a BOUND ``verdict.subject.key``
+        carried by the exemplar wins (the judge-emitted identity seam Y1 left); else the injected
+        judge answers, as it always did. A key match is exact-equality, most recent first, and makes
+        NO judge call.
         """
         if not self._episodes:
             return None
+        if subject_key is None:
+            subject_key = _subject_key_of(exemplar)
         if subject_key is not None:
             for e in reversed(self._episodes):
                 if e.subject_key == subject_key:
@@ -413,6 +435,11 @@ class EpisodeLog:
         """
         pol = policy if policy is not None else self.policy
         self._prune(t)
+        # Card Y5: an explicit subject_key wins; else a bound verdict.subject.key carried by the
+        # exemplar. Resolve it ONCE here so the matched/opened episode STORES the same key the next
+        # sighting will match against (a locally-derived-but-unstored key would never continue).
+        if subject_key is None:
+            subject_key = _subject_key_of(exemplar)
         prior = self._subject_match(exemplar, judge, subject_key)
         if prior is None:
             decision = self._open(t, exemplar, subject_key, "new_subject", None, None)

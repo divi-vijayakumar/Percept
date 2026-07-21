@@ -728,9 +728,9 @@ class TestAudioFrame(unittest.TestCase):
 
 class TestVersionNegotiation(unittest.TestCase):
     def test_contract_version_is_semver(self):
-        # 1.3.0: additive Incident.entity_id (D4); 1.2.0 WatchAction/WatchEvent (M1);
-        # 1.1.0 AttentionIntent/GoalOrigin (PCPT-026).
-        self.assertEqual(CONTRACT_VERSION, "1.3.0")
+        # 1.4.0: additive SubjectRef + Verdict.subject (Y5); 1.3.0 Incident.entity_id (D4);
+        # 1.2.0 WatchAction/WatchEvent (M1); 1.1.0 AttentionIntent/GoalOrigin (PCPT-026).
+        self.assertEqual(CONTRACT_VERSION, "1.4.0")
         parts = CONTRACT_VERSION.split(".")
         self.assertEqual(len(parts), 3)
         self.assertTrue(all(p.isdigit() for p in parts))

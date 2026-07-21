@@ -30,7 +30,10 @@ from typing import Any, Awaitable, Callable, ClassVar, Hashable, Literal, Protoc
 #: Bump the MAJOR on any breaking change to a frozen shape; MINOR for additive (new optional
 #: field / new DTO); PATCH for docs/non-wire tweaks. This is distinct from ``WatchSpec.version``
 #: (a wire integer kept for byte-for-byte payload compat).
-CONTRACT_VERSION = "1.3.0"  # 1.3: + Incident.entity_id (correlation identity survives the emission
+CONTRACT_VERSION = "1.4.0"  # 1.4: + SubjectRef DTO (namespaced, tri-state subject identity) +
+# SubjectConflict/SubjectResolution + resolve_subject() + Verdict.subject (all additive, defaulted,
+# GATE-IRRELEVANT — watch.py + WATCH_VERSION FROZEN; card Y5).
+# 1.3: + Incident.entity_id (correlation identity survives the emission
 # boundary; optional, defaults None, additive).
 # 1.2: + WatchAction/WatchEvent (the public watch() stream event; additive).
 # 1.1: + AttentionIntent DTO + GoalOrigin enum + Goal.origin (all additive, defaulted, back-compat —
@@ -116,6 +119,201 @@ class ClipEvent:
     label: str = ""
 
 
+# ---------------------------------------------------------------------------
+# SubjectRef — the namespaced, tri-state subject identity (card Y5).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, eq=False)
+class SubjectRef:
+    """A namespaced reference to WHAT a judgment is about — the subject identity, resolved or not.
+
+    Y5 lands the identity contract Y1 left a seam for. The collapse it fixes: two paying client teams
+    could perceive a document/entity correctly but the SDK could not *say which one* — a ``PO-4471``
+    on one ERP is not the same subject as ``PO-4471`` on another, and an unreadable key is neither a
+    fabricated identity nor a missing subject. This DTO makes all three expressible, distinctly.
+
+    Fields:
+
+    - ``scheme`` — an OPEN vocabulary naming HOW the subject is identified: ``'track'`` (a live
+      tracker id), ``'content'`` (a content-derived key, e.g. an invoice number), ``'slot'`` (a
+      positional/UI slot), or any client-defined string. Deliberately not an enum: a client's domain
+      scheme must not require a contract bump.
+    - ``namespace`` — the tenant / source / system / doc-type the ``key`` is meaningful WITHIN.
+      ``'PO-4471'`` is NOT globally unique across ERPs; the namespace is what disambiguates it, so a
+      ``bound`` ref REQUIRES a non-empty namespace.
+    - ``key`` — the stable identifier within the namespace, or ``None`` when unresolved. A ``bound``
+      ref REQUIRES a non-empty key; an ``unknown`` ref REQUIRES ``key is None``.
+    - ``resolution`` — TWO states only: ``'bound'`` (we know which subject this is) or ``'unknown'``
+      (we saw a subject but could not identify it). The ABSENCE of a subject is NOT a third
+      resolution value — it is ``SubjectRef | None`` == ``None`` on the carrier (e.g.
+      :attr:`Verdict.subject`). Do not encode "no subject" as an ``unknown`` ref with no key; encode
+      it as ``None``.
+    - ``scope`` — how far the IDENTIFIER is stable: ``'session'`` (only within this run), ``'source'``
+      (stable for this camera/source/document feed), or ``'durable'`` (a content-derived identifier
+      stable across runs/restarts). ``scope='durable'`` documents IDENTIFIER stability ONLY. It is
+      **NOT** a claim that episode STATE is persisted — percept's episode/continuity state is
+      SESSION-ONLY and does not survive a restart. A durable key means only that the same subject
+      would RESOLVE to the same key again, never that anything about it was saved.
+    - ``strategy`` — free-form provenance of HOW this ref was resolved (e.g. ``'client'``, ``'judge'``,
+      ``'track-iou'``), for debugging a resolution at 2am.
+    - ``confidence`` — OPTIONAL resolver confidence in ``[0, 1]``. Deliberately NOT defaulted to
+      ``1.0``: a judge-emitted key is not certain by construction, and a 1.0 default would launder an
+      uncertain binding into a certain-looking one. ``None`` means "unstated".
+
+    Equality: two ``'unknown'`` refs NEVER compare equal (an unidentified subject is not "the same"
+    as another unidentified subject — nor, like a NaN, as itself). Two ``'bound'`` refs are equal iff
+    their ``(scheme, namespace, key)`` triple matches; ``scope``/``strategy``/``confidence`` are
+    provenance, not identity, and never affect equality.
+    """
+
+    scheme: str
+    namespace: str
+    key: str | None
+    resolution: Literal["bound", "unknown"]
+    scope: Literal["session", "source", "durable"]
+    strategy: str
+    confidence: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.resolution == "bound":
+            if not self.namespace:
+                raise ValueError(
+                    "SubjectRef 'bound' requires a non-empty namespace ('PO-4471' is not globally "
+                    "unique across systems — the namespace is what disambiguates the key)."
+                )
+            if not self.key:
+                raise ValueError(
+                    "SubjectRef 'bound' requires a non-empty key (a bound ref names WHICH subject)."
+                )
+        elif self.resolution == "unknown":
+            if self.key is not None:
+                raise ValueError(
+                    "SubjectRef 'unknown' requires key is None — an unresolved subject must not carry "
+                    f"a key (got {self.key!r}). The absence of a subject is `SubjectRef | None` == "
+                    "None, not an 'unknown' ref bearing a key."
+                )
+        else:
+            raise ValueError(
+                "SubjectRef.resolution must be 'bound' or 'unknown' (two states only), got "
+                f"{self.resolution!r}"
+            )
+        if self.confidence is not None and not (0.0 <= self.confidence <= 1.0):
+            raise ValueError(
+                f"SubjectRef.confidence must be in [0, 1] or None, got {self.confidence!r}"
+            )
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, SubjectRef):
+            return NotImplemented
+        # Any ref that is not bound (this one or the other) never compares equal — an unidentified
+        # subject is never "the same" as anything, itself included (NaN-like).
+        if self.resolution != "bound" or other.resolution != "bound":
+            return False
+        return (self.scheme, self.namespace, self.key) == (
+            other.scheme,
+            other.namespace,
+            other.key,
+        )
+
+    def __hash__(self) -> int:
+        # Bound refs hash on the identity triple, so equal bound refs share a bucket and dedupe in a
+        # set/dict. Unknown refs hash on OBJECT IDENTITY: no two unknown refs are equal, so any hash
+        # is consistent, and identity hashing keeps the same object findable in a container even
+        # though it does not compare equal to itself by value.
+        if self.resolution == "bound":
+            return hash((self.scheme, self.namespace, self.key))
+        return object.__hash__(self)
+
+
+@dataclass(frozen=True)
+class SubjectConflict:
+    """A resolution CONFLICT — two BOUND resolvers disagreed on the subject key (card Y5).
+
+    A first-class OUTCOME, not a silently-dropped tie. Precedence still deterministically picks the
+    ``winner`` (never a coin-flip), but the ``loser`` — the disagreeing lower-precedence bound ref —
+    is surfaced so a client debugging identity at 2am can see that two resolvers fought and which
+    lost, instead of one binding vanishing without a trace.
+    """
+
+    winner: SubjectRef
+    loser: SubjectRef
+
+
+@dataclass(frozen=True)
+class SubjectResolution:
+    """Typed result of resolving a subject across precedence-ordered resolvers (card Y5).
+
+    ``subject`` is the winning ref — the highest-precedence BOUND ref when any resolver bound one,
+    else the ``unknown`` fallback. ``conflicts`` lists every lower-precedence bound ref that
+    disagreed with the winner (empty on the common no-conflict path). A conflict never changes the
+    winner — precedence is deterministic — it only makes the disagreement observable.
+    """
+
+    subject: SubjectRef
+    conflicts: tuple[SubjectConflict, ...] = ()
+
+    @property
+    def has_conflict(self) -> bool:
+        """True iff at least one lower-precedence bound resolver disagreed with the winner."""
+        return bool(self.conflicts)
+
+
+#: Resolver precedence, highest first (card Y5): a client-supplied binding beats a judge-emitted one,
+#: which beats track identity. ``unknown`` is the floor when nothing bound.
+SUBJECT_RESOLVER_PRECEDENCE: tuple[str, ...] = ("client", "judge", "track")
+
+
+def resolve_subject(
+    *,
+    client: "SubjectRef | None" = None,
+    judge: "SubjectRef | None" = None,
+    track: "SubjectRef | None" = None,
+    unknown: "SubjectRef | None" = None,
+) -> SubjectResolution:
+    """Resolve one subject across precedence-ordered resolvers — CONFLICT as a first-class result.
+
+    Precedence (highest first, see :data:`SUBJECT_RESOLVER_PRECEDENCE`): ``client`` (a client-supplied
+    bound ref) > ``judge`` (a judge-emitted bound ref) > ``track`` (track identity). The winner is the
+    highest-precedence ref whose ``resolution`` is ``'bound'``. When NO resolver bound a subject the
+    result is the ``unknown`` fallback — or, if none was supplied, an ``unknown`` ref synthesized from
+    the first available candidate's scheme/namespace/scope so provenance is not lost.
+
+    If two BOUND resolvers disagree on identity, this NEVER silently picks one and hides the other: it
+    returns the higher-precedence winner AND records each disagreeing lower-precedence ref as a
+    :class:`SubjectConflict` in ``conflicts`` (surfaced via :attr:`SubjectResolution.has_conflict`).
+    """
+    ordered = [ref for ref in (client, judge, track) if ref is not None]
+    bound = [ref for ref in ordered if ref.resolution == "bound"]
+    if bound:
+        winner = bound[0]
+        conflicts = tuple(
+            SubjectConflict(winner=winner, loser=other) for other in bound[1:] if other != winner
+        )
+        return SubjectResolution(subject=winner, conflicts=conflicts)
+    if unknown is not None:
+        if unknown.resolution != "unknown":
+            raise ValueError(
+                "resolve_subject: the `unknown` fallback must have resolution='unknown', got "
+                f"{unknown.resolution!r}"
+            )
+        return SubjectResolution(subject=unknown, conflicts=())
+    if ordered:
+        seed = ordered[0]  # carry scheme/namespace/scope provenance into the honest unknown
+        return SubjectResolution(
+            subject=SubjectRef(
+                scheme=seed.scheme,
+                namespace=seed.namespace,
+                key=None,
+                resolution="unknown",
+                scope=seed.scope,
+                strategy=seed.strategy,
+            ),
+            conflicts=(),
+        )
+    raise ValueError("resolve_subject: no resolvers supplied and no `unknown` fallback")
+
+
 @dataclass
 class Verdict:
     """The firing-contract return: is the plain-language condition true right now?"""
@@ -140,6 +338,14 @@ class Verdict:
     # Clip judging (1.3): the timestamped events the judge saw inside the judged window, clip-relative
     # seconds (see :class:`ClipEvent`). Empty for single-frame/strip judges — additive and defaulted.
     events: list[ClipEvent] = field(default_factory=list)
+    # Subject identity (1.4, card Y5): WHICH subject this verdict is about — a namespaced, tri-state
+    # :class:`SubjectRef`, or ``None`` when the judge emitted no subject. GATE-IRRELEVANT and appended
+    # LAST: the gate reads only ``satisfied``/``confidence``, so a judge that sets nothing reproduces
+    # today's firing byte-for-byte, and every existing positional ``Verdict(...)`` keeps its meaning.
+    # ``None`` is the ABSENCE of a subject — never confuse it with a ``resolution='unknown'`` ref,
+    # which is a subject that was SEEN but not identified. ``episodes._subject_match`` prefers
+    # ``verdict.subject.key`` (when bound) over the judge-match fallback.
+    subject: "SubjectRef | None" = None
 
 
 # who said a fact, used for provenance + freshness reasoning in the core
@@ -1431,6 +1637,11 @@ __all__ = [
     "Box",
     "Observation",
     "ClipEvent",
+    "SubjectRef",
+    "SubjectConflict",
+    "SubjectResolution",
+    "SUBJECT_RESOLVER_PRECEDENCE",
+    "resolve_subject",
     "Verdict",
     "Provenance",
     "Attribute",

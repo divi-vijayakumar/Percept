@@ -110,11 +110,11 @@ def test_adr_003_scopes_section_1_to_a_new_field() -> None:
 @_needs_docs
 def test_adr_003_cites_the_label_record_precedent_by_line() -> None:
     text = _ADR_003.read_text()
-    assert "L-1063" in text, "LabelRecord.frame_ref must be cited by line"
-    assert "L-1071" in text or "EGRESS_FIELDS" in text
+    assert "L-1269" in text, "LabelRecord.frame_ref must be cited by line"
+    assert "L-1277" in text or "EGRESS_FIELDS" in text
     src = (Path(__file__).resolve().parents[1] / "percept" / "contracts" / "__init__.py").read_text()
     lines = src.splitlines()
-    for cited, needle in ((1040, "class LabelRecord"), (1063, "frame_ref"), (1071, "EGRESS_FIELDS")):
+    for cited, needle in ((1246, "class LabelRecord"), (1269, "frame_ref"), (1277, "EGRESS_FIELDS")):
         # Tolerate small drift: the cited symbol must be within a few lines of the citation.
         window = "\n".join(lines[cited - 4 : cited + 3])
         assert needle in window, f"ADR-003 cites L-{cited} for {needle!r}; source has drifted"
