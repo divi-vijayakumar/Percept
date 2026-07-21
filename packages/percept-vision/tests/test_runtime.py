@@ -137,6 +137,64 @@ class RuntimeWorkerTests(unittest.TestCase):
         self.assertEqual(kinds[-1], "runtime_ended")
         self.assertTrue(all(isinstance(e, RuntimeHealthEvent) for e in events))
 
+    def test_runtime_ended_carries_this_run_s_coverage_counters(self):
+        # X4: `runtime_ended` used to carry an EMPTY payload, so a consumer that had not kept its own
+        # counters could not tell what the run actually did. It now states the run's coverage.
+        events = []
+        stats = RuntimeStats()
+        asyncio.run(_collect(_core(), SOURCE, on_health=events.append, stats=stats))
+        ended = [e for e in events if e.kind == "runtime_ended"]
+        self.assertEqual(len(ended), 1)
+        self.assertEqual(ended[0].data, {
+            "frames_seen": 4, "admitted": 3, "judge_calls": 3, "incidents": 2,
+        })
+        # the payload is exactly what the caller's own stats object saw — one set of counters
+        self.assertEqual(ended[0].data["frames_seen"], stats.frames)
+        self.assertEqual(ended[0].data["admitted"], stats.escalations)
+        self.assertEqual(ended[0].data["judge_calls"], stats.judge_calls)
+        self.assertEqual(ended[0].data["incidents"], stats.incidents)
+
+    def test_zero_admission_run_emits_zero_admission_coverage(self):
+        # The client's original complaint: a whole session admitted nothing and the runtime was
+        # SILENT about it. A motionless source never clears the gate -> the fact is now stated.
+        still_only = [(float(i), STILL, "clear") for i in range(5)]
+        events = []
+        incidents = asyncio.run(_collect(_core(), still_only, on_health=events.append))
+        self.assertEqual(incidents, [])
+        zero = [e for e in events if e.kind == "zero_admission_coverage"]
+        self.assertEqual(len(zero), 1)
+        self.assertEqual(zero[0].data["frames_seen"], 5)
+        self.assertEqual(zero[0].data["admitted"], 0)
+        self.assertEqual(zero[0].data["judge_calls"], 0)
+        self.assertEqual(zero[0].data["incidents"], 0)
+        # it names the bar the frames never cleared, so the reader can tune the eye
+        self.assertIsInstance(zero[0].data["threshold"], float)
+        self.assertIn("stat", zero[0].data)
+        kinds = [e.kind for e in events]
+        # emitted PRECEDING runtime_ended, which still closes the stream
+        self.assertEqual(kinds[-2:], ["zero_admission_coverage", "runtime_ended"])
+
+    def test_a_run_that_admits_anything_does_not_report_zero_admission(self):
+        events = []
+        asyncio.run(_collect(_core(), SOURCE[:2], on_health=events.append))
+        self.assertNotIn("zero_admission_coverage", [e.kind for e in events])
+
+    def test_an_empty_source_does_not_report_zero_admission(self):
+        # Zero frames is not zero-admission-over-N-frames: nothing was observed to admit FROM.
+        events = []
+        asyncio.run(_collect(_core(), [], on_health=events.append))
+        self.assertNotIn("zero_admission_coverage", [e.kind for e in events])
+        ended = [e for e in events if e.kind == "runtime_ended"]
+        self.assertEqual(ended[0].data["frames_seen"], 0)
+
+    def test_zero_admission_coverage_is_not_a_degradation_verdict(self):
+        # CRITICAL: a still camera under a motion-gated watch CORRECTLY admits nothing and saves
+        # every model call. This event states a FACT for a consumer to interpret — it must never
+        # latch an unhealthy interval, or percept would be alarming on its own economic claim.
+        from percept.tracing import DEGRADED_HEALTH_KINDS
+
+        self.assertNotIn("zero_admission_coverage", DEGRADED_HEALTH_KINDS)
+
     def test_runtime_health_reports_sink_errors(self):
         events = []
 

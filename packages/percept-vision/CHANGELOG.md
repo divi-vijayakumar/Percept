@@ -21,6 +21,19 @@
   `recall 0.00`.
 
 ### Added
+- **A live run now says what it covered — and says it out loud when it admitted nothing (card X4).**
+  `RuntimeHealthEvent("runtime_ended")` used to carry an EMPTY payload, so a session that admitted
+  **zero** frames was byte-for-byte indistinguishable from a healthy quiet one on the live path —
+  `percept doctor` could report `ZERO_ADMITS_ON_FIXTURE`, but doctor is a DRY RUN. `runtime_ended`
+  now carries this run's `frames_seen` / `admitted` / `judge_calls` / `incidents`, and a run that
+  observed frames while admitting none of them emits a preceding
+  `RuntimeHealthEvent("zero_admission_coverage")` with the same counts plus the `threshold` and
+  salience `stat` those frames were judged against. **It is a fact, not an alarm.** A still camera
+  under a motion-gated watch correctly admits nothing and saves every model call — that is the whole
+  tier-0 economic claim — so the event is deliberately **not** in `tracing.DEGRADED_HEALTH_KINDS`,
+  never latches an unhealthy interval, and records as `state="info"`. Read it the way doctor frames
+  `ZERO_ADMITS_ON_FIXTURE`: diagnostic. If the scene was not quiet, the eye is mis-selected, and
+  `percept doctor` will name the statistic that would have admitted. No public signature changed.
 - **The operating-frontier report — the honest form of a quality claim (card RB-FRONTIER).**
   `percept-eval --frontier` emits the full §3.2 report from the eval harness: **exact one-sided 95%
   bounds** on FIRE recall and on false FIREs **per scheduled watch-hour**, plus ASK rate, coverage,

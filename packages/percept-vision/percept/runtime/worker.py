@@ -1016,6 +1016,18 @@ async def run(
     - ``judge_stall_after_s`` / ``judge_backpressure_after`` — thresholds for the two health events
       just above (async mode only); the defaults are generous enough that a normal run never trips
       either.
+
+    ADMISSION COVERAGE. Every run closes with ``RuntimeHealthEvent("runtime_ended")`` carrying this
+    run's counters — ``frames_seen`` / ``admitted`` / ``judge_calls`` / ``incidents`` — so a consumer
+    that kept no state of its own can still say what the session did. When a run observed frames but
+    admitted NONE of them, a ``RuntimeHealthEvent("zero_admission_coverage")`` is emitted immediately
+    BEFORE it, carrying the same counts plus the ``threshold`` and salience ``stat`` the frames were
+    judged against. That event states a FACT, not a degradation verdict: a still camera under a
+    motion-gated watch correctly admits nothing and saves every model call, which is the point of
+    tier-0 — so it is deliberately NOT in :data:`percept.tracing.DEGRADED_HEALTH_KINDS` and never
+    latches an unhealthy interval. Read it the way ``percept doctor`` reports
+    ``ZERO_ADMITS_ON_FIXTURE``: diagnostic. If the scene was NOT quiet, the eye is mis-selected —
+    ``percept doctor`` will show which statistic would have admitted.
     - ``metrics_collector`` — optional :class:`~percept.harness.metrics.MetricsCollector`.
       When set (``judge_dispatch="async"`` only — the inline path has no queue to measure), every
       admission into the :class:`_JudgeScheduler`'s active/pending slot is tracked via
@@ -1095,9 +1107,15 @@ async def run(
     # one source (the slot is per-source; a future multi-source runner would key a dict of these).
     # metrics_collector rides along so the scheduler can report queue depth / oldest-pending age.
     # Inline mode has no queue to measure, so the collector is simply unused there.
+    # ADMISSION COVERAGE (X4). A run that admitted NOTHING was previously indistinguishable from a
+    # healthy quiet one: `runtime_ended` carried an empty payload. These are the SAME counters the
+    # caller's `stats` already holds when it passed one — `_cov` IS `stats` in that case, so nothing
+    # is double-counted; when the caller passed none we keep a throwaway so the end-of-run coverage
+    # payload is still honest (and so the async scheduler's judge_calls land somewhere countable).
+    _cov = stats if stats is not None else RuntimeStats()
     _judge_sched = (
         _JudgeScheduler(
-            core, gate_source, stats, metrics_collector=metrics_collector,
+            core, gate_source, _cov, metrics_collector=metrics_collector,
             stall_after_s=judge_stall_after_s, backpressure_after=judge_backpressure_after,
         )
         if judge_dispatch == "async" else None
@@ -1254,6 +1272,12 @@ async def run(
     _prev_on_trace = getattr(core, "on_trace", None)
     if on_trace is not None:
         core.on_trace = on_trace  # the per-frame decision trace flows out of perceive_judged
+    # The gate threshold / salience statistic the admissions were judged against, so a zero-admission
+    # report says WHAT the frames failed to clear (not just that they did). Bound before the try so
+    # the finally can always read them, even on a setup failure. Threshold is the last one the gate
+    # actually applied (it can move on a regate); None until a first frame reaches the gate.
+    _cov_threshold: float | None = None
+    _cov_stat = getattr(getattr(settings, "edge", None), "salience_stat", None)
     audio_task = None  # bound before try so the finally can always cancel it, even on setup failure
     autosave_task = None
     # In-flight on_utterance handlers, spawned OFF the pump. Tracked so the finally can cancel them —
@@ -1578,8 +1602,7 @@ async def run(
                     await _call_sink_with_policy(
                         on_incident, incident, errors=sink_errors, stats=stats, on_health=on_health, health_kind="incident_sink_error",
                     )
-                if stats is not None:
-                    stats.incidents += 1
+                _cov.incidents += 1
                 yield incident
 
         async for t, gate_frame, judge_frame in _aiter(source, capture_fps, **source_kwargs):
@@ -1687,9 +1710,8 @@ async def run(
                     await _call_sink(on_health, RuntimeHealthEvent(_hk, ts=t, data=_hd))
             if _funnel is not None:
                 _funnel.seen(camera=gate_source)  # the ungated baseline: a frame was observed
-            if stats is not None:
-                stats.frames += 1
-                stats.frames_dropped = dropped[0]
+            _cov.frames += 1
+            _cov.frames_dropped = dropped[0]
             clips.push(t, judge_frame)
             if on_frame is not None:
                 await _call_sink_with_policy(
@@ -1770,14 +1792,17 @@ async def run(
                     escalate=bool(decision.escalate),
                     coast_admit=coast_admit,
                 )
+            # Remember WHAT this frame had to clear, so an end-of-run zero-admission report can name
+            # the bar the scene never crossed (a regate can move it; the last one applied is the one
+            # a reader should tune).
+            _cov_threshold = float(decision.threshold)
             if not (decision.escalate or coast_admit or audio_admit):
                 continue  # still / sub-cadence -> no cloud call, no incident
             if _funnel is not None:
                 _funnel.gated(camera=gate_source)  # tier-0 escalated this frame — a cloud call will be spent
-            if stats is not None:
-                stats.escalations += 1
-                if audio_admit and not (decision.escalate or coast_admit):
-                    stats.audio_wakes += 1
+            _cov.escalations += 1
+            if audio_admit and not (decision.escalate or coast_admit):
+                _cov.audio_wakes += 1
             if on_health is not None:
                 cause = "audio" if (audio_admit and not (decision.escalate or coast_admit)) else \
                     ("both" if (audio_admit and decision.escalate) else ("coast" if coast_admit and not decision.escalate else "motion"))
@@ -1794,8 +1819,7 @@ async def run(
             if _judge_sched is not None:
                 _judge_sched.submit(t, judge_frame)
             else:
-                if stats is not None:
-                    stats.judge_calls += 1
+                _cov.judge_calls += 1
                 async for incident in _emit_fires(await core.perceive_judged(judge_frame, gate_source, t=t), at=t):
                     yield incident
         # Source exhausted (finite file / test stream): a judgment may still be IN FLIGHT and one more
@@ -1839,4 +1863,23 @@ async def run(
                 pass
         core.on_trace = _prev_on_trace  # restore — don't leak this run's tracer into the next run(core)
         if on_health is not None:
-            await _call_sink(on_health, RuntimeHealthEvent("runtime_ended"))
+            # X4 — a run's COVERAGE, stamped on the way out. `runtime_ended` used to carry an empty
+            # payload, which made a run that admitted zero frames byte-for-byte indistinguishable
+            # from a healthy one; a consumer had to have kept its own counters to know.
+            _cov_data = {
+                "frames_seen": _cov.frames,
+                "admitted": _cov.escalations,
+                "judge_calls": _cov.judge_calls,
+                "incidents": _cov.incidents,
+            }
+            if _cov.frames > 0 and _cov.escalations == 0:
+                # A FACT, not a verdict — and deliberately NOT in tracing.DEGRADED_HEALTH_KINDS. A
+                # still camera under a motion-gated watch correctly admits nothing and saves every
+                # model call; alarming on that would contradict percept's whole economic claim. This
+                # states "N frames, zero admissions, against this bar" and leaves the reading to the
+                # consumer — the same framing percept-doctor's ZERO_ADMITS_ON_FIXTURE uses.
+                _zero = dict(_cov_data)
+                _zero["threshold"] = round(_cov_threshold, 4) if _cov_threshold is not None else None
+                _zero["stat"] = _cov_stat
+                await _call_sink(on_health, RuntimeHealthEvent("zero_admission_coverage", data=_zero))
+            await _call_sink(on_health, RuntimeHealthEvent("runtime_ended", data=_cov_data))
