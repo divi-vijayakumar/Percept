@@ -19,6 +19,18 @@ Needs an OpenRouter key (cheap, fast Qwen judge):  export OPENROUTER_API_KEY=sk-
 This bakes in the H0-winning defaults so it just works:
   * block_max localized salience  — catches low-motion actions the global gate misses
   * a per-episode time-refractory  — one notification per event, not a stream of duplicates
+
+TRACING (card Z5). ``--trace out.json`` records the run's per-frame decision trace — the artifact
+``percept-replay`` consumes and ``percept-doctor --visualize-from`` renders. The manifest carries the
+Gate's knobs (``percept.replay.gate_config_of``), which is what makes the replay a replay of THIS run
+rather than of today's library defaults::
+
+    percept-watch --offline --trace t.json     # keyless: replays the bundled fixture
+    percept-replay t.json                      # -> 0 divergences, exit 0
+
+``--offline`` is the keyless path: no API key, no camera, a bundled deterministic fixture
+(``percept.offline``). It proves the WIRING end to end — it is a replay of a human-authored file,
+never a perception result.
 """
 from __future__ import annotations
 
@@ -66,6 +78,72 @@ def _apply_good_defaults(refractory_s: float, vision: str, model: str | None, eg
     os.environ.setdefault("PERCEPT_NO_BANNER", "1")
 
 
+def _recorder(core, goals, *, source: str, driver: str):
+    """Build the TraceRecorder for ``--trace``: full retention + the Gate's knobs in the manifest.
+
+    The gate_config is the load-bearing part. ``percept.replay`` rebuilds a Gate from EXACTLY these
+    numbers; a trace without them replays against library defaults and says so
+    (``ReplayReport.gate_config_recorded is False``) — honest, but not a replay of this run.
+    """
+    from percept.replay import gate_config_of
+    from percept.tracing import RunTraceManifest, TracePolicy, TraceRecorder
+
+    manifest = RunTraceManifest.create(
+        source=source,
+        driver=driver,
+        goals=goals,
+        policy=TracePolicy(level="full", max_duration_s=None),
+        gate_config=gate_config_of(core.gate),
+    )
+    return TraceRecorder(manifest)
+
+
+def _write_trace(rec, path: str) -> None:
+    rec.close()
+    written = rec.write_json(path)
+    lost = rec.lost_records
+    print(f"\n  trace: {written}"
+          + (f"   ({lost} record(s) LOST to a retention bound)" if lost else "")
+          + f"\n  replay it:  percept-replay {written}")
+
+
+async def _run_offline(args) -> int:
+    """The keyless path: replay the bundled fixture through the frozen watch() seam.
+
+    No API key, no camera, no network — and no pretence that it is perception. It exists so the
+    ``--trace`` -> ``percept-replay`` round trip is reachable by anyone who ran ``pip install``.
+    """
+    # NB: deliberately no `logging.disable()` here. The live demo path quiets the whole root logger
+    # for cosmetics; doing that offline would be a global, process-wide side effect from a function
+    # that is also the acceptance harness for the trace round trip.
+    from percept.offline import load_fixture, offline_core, offline_frames, offline_goals
+    from percept.watch import watch
+
+    fixture = load_fixture(args.fixture)
+    core = offline_core(fixture)
+    goals = offline_goals(fixture)
+    rec = _recorder(core, goals, source="fixture", driver="watch") if args.trace else None
+    if rec is not None:
+        core.on_trace = rec.tracer()
+
+    print("─" * 68)
+    print(f"  PERCEPT · OFFLINE — replaying bundled fixture {fixture.fixture_id!r}")
+    print("  (scripted verdicts from a human-authored file — proves WIRING, not intelligence)")
+    for g in goals:
+        print(f"    • {g.condition}")
+    print("─" * 68)
+
+    fired = 0
+    async for ev in watch(offline_frames(fixture), goals, percept=core, source="fixture"):
+        fired += 1
+        print(f"  🔔  [{ev.t:6.1f}]  {ev.text or ev.goal_id}"
+              f"   ·   goal={ev.goal_id}   ·   {ev.action}")
+    print(f"\n  {fired} notification(s).")
+    if rec is not None:
+        _write_trace(rec, args.trace)
+    return 0
+
+
 async def _run(args) -> int:
     import logging
     logging.disable(logging.WARNING)  # clean demo: gate out info/warning globally (only ERROR+ shows)
@@ -86,10 +164,25 @@ async def _run(args) -> int:
     print("─" * 68)
     print("  (waiting for the first rising edge — Ctrl-C to stop)\n")
 
+    # --trace: build the core HERE (run() would build the identical one internally) so the manifest
+    # can carry the live Gate's knobs. Without a core in hand there is nothing to read them off.
+    rec = None
+    if args.trace:
+        from percept import Percept
+
+        core = Percept.create(vision=args.vision)
+        for g in goals:
+            core.add_goal(g)
+        rec = _recorder(core, goals, source="camera", driver="run")
+        stream = percept.run(core, source=args.source, fps=args.fps,
+                             on_trace=rec.tracer(), on_health=rec.health_sink())
+    else:
+        stream = percept.run(source=args.source, goals=goals, vision=args.vision, fps=args.fps)
+
     fired = 0
     t0 = time.monotonic()
     try:
-        async for inc in percept.run(source=args.source, goals=goals, vision=args.vision, fps=args.fps):
+        async for inc in stream:
             fired += 1
             gid = getattr(inc, "concern_id", getattr(inc, "goal_id", "?"))
             msg = getattr(inc, "message", None) or getattr(inc, "say", "") or gid
@@ -101,11 +194,15 @@ async def _run(args) -> int:
             print(f"  🔔  [{elapsed:6.1f}s]  {msg}{tag}   ·   goal={gid}{ent}")
     except KeyboardInterrupt:
         print("\n  stopped.")
+    finally:
+        # A Ctrl-C'd run is exactly the run you want the trace of. Write it either way.
+        if rec is not None:
+            _write_trace(rec, args.trace)
     print(f"\n  {fired} notification(s).")
     return 0
 
 
-def main() -> int:
+def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Percept live watch demo")
     p.add_argument("--source", default="webcam:0", help="webcam:0 | a video path | rtsp://…  (default webcam:0)")
     p.add_argument("--goal", action="append", default=[], help="a plain-English condition (repeatable)")
@@ -116,7 +213,22 @@ def main() -> int:
     p.add_argument("--refractory", type=float, default=15.0, help="seconds to suppress repeat notifications (default 15)")
     p.add_argument("--egomotion", action="store_true",
                    help="MOVING camera (glasses / body-cam): subtract head motion so the gate doesn't escalate every frame")
-    args = p.parse_args()
+    p.add_argument("--trace", default=None, metavar="PATH",
+                   help="record this run's decision trace to PATH (JSON). Replay it with "
+                        "`percept-replay PATH`; render it with `percept-doctor --visualize-from PATH`.")
+    p.add_argument("--offline", action="store_true",
+                   help="keyless: replay the bundled deterministic fixture instead of a live source "
+                        "(no API key, no camera). Proves WIRING, not intelligence.")
+    p.add_argument("--fixture", default=None,
+                   help="which bundled fixture --offline replays (default: kettle-boils)")
+    args = p.parse_args(argv)
+
+    if args.offline:
+        # Offline owns its own wiring: no provider env forcing, no credential check, no camera.
+        try:
+            return asyncio.run(_run_offline(args))
+        except KeyboardInterrupt:
+            return 0
 
     if not args.goal:
         args.goal = ["someone raises their hand", "someone is holding a phone"]

@@ -75,6 +75,7 @@ dev = ["pytest>=8", "ruff>=0.6"]
 [project.scripts]
 percept-watch = "percept.watch_cli:main"
 percept-doctor = "percept.doctor:main"
+percept-replay = "percept.replay:main"
 percept-bench = "percept.bench:main"
 percept-eval = "percept.eval.differential:main"
 percept-derive-profile = "percept.eval.derivation:main"
