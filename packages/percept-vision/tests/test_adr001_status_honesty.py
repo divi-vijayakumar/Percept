@@ -89,7 +89,14 @@ def test_adr_section_1_names_the_shipped_symbol(adr_text: str) -> None:
 
 
 def test_sequencing_primitives_have_zero_production_call_sites() -> None:
-    """EvidenceSequencer / SerializedDecisionReducer are constructed nowhere under percept/."""
+    """§8's HALVES have diverged, and the ADR says so.
+
+    Card X7 wired ``EvidenceSequencer`` into ``agent._admit_evidence`` so a JudgmentEvent carries a
+    real dispatch-reserved ``evidence_seq`` rather than a placeholder. ``SerializedDecisionReducer``
+    — the half that would actually enforce the stale-completion RULE — is still unused, because the
+    live path is single-flight and never races. This test pins that split so the ADR cannot silently
+    drift back to claiming either "fully implemented" or "entirely severed".
+    """
     offenders = []
     for path in sorted(PACKAGE_ROOT.rglob("*.py")):
         if path.name == "sequencing.py":
@@ -98,16 +105,18 @@ def test_sequencing_primitives_have_zero_production_call_sites() -> None:
         code = "\n".join(
             line for line in text.splitlines() if not line.lstrip().startswith(("#", "*", ":"))
         )
-        if "EvidenceSequencer" in code or "SerializedDecisionReducer" in code:
+        if "SerializedDecisionReducer" in code:
             offenders.append(str(path.relative_to(PACKAGE_ROOT)))
     assert offenders == [], (
-        "percept/sequencing.py gained a production call site: "
-        f"{offenders}. ADR-001 §8's implementation-status note is now stale — update the ADR."
+        "SerializedDecisionReducer gained a production call site: "
+        f"{offenders}. ADR-001 §8 now describes an ENFORCED rule, not a reserved sequence — "
+        "update the ADR."
     )
 
 
 def test_only_harness_metrics_imports_the_sequencing_module() -> None:
-    assert _importers_of("sequencing") == {Path("harness/metrics.py")}
+    """agent.py joined harness/metrics.py as an importer when X7 landed (see the test above)."""
+    assert _importers_of("sequencing") == {Path("harness/metrics.py"), Path("agent.py")}
 
 
 def test_worker_scheduler_is_single_flight_with_one_latest_pending() -> None:
@@ -122,8 +131,12 @@ def test_worker_scheduler_is_single_flight_with_one_latest_pending() -> None:
 
 
 def test_adr_section_8_declares_itself_unimplemented(adr_text: str) -> None:
+    """§8 must state the HALF-wired truth: sequence reserved, rule not enforced."""
     section = adr_text.split("## §8")[1].split("## §9")[0]
-    assert "zero production importers" in section
+    assert "zero production importers" in section       # of the reducer half
+    assert "SerializedDecisionReducer" in section
+    assert "EvidenceSequencer" in section               # the half that IS live
+    assert "_admit_evidence" in section
     assert "sidestep" in section.lower()
     assert "single-flight" in section
 

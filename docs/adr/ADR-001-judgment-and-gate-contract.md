@@ -154,13 +154,24 @@ for that key — whether or not that newer job has itself completed. Results are
 time per key, and a result that lost the race is dropped as a traced stale completion (§9) with the
 underlying gate never touched.
 
-> **Implementation status — decided, NOT in the production path.** The rule above is implemented in
-> `percept/sequencing.py` (`EvidenceSequencer`, `SerializedDecisionReducer`, `ResultPolicy`), and
-> that code has **zero production importers**. Nothing under `percept/` constructs either class; the
-> only import of the module anywhere in the package is `percept/harness/metrics.py`, which pulls in
-> the `percept.sequencing.GateDecision` dataclass purely as a counter input for
-> `dropped`/`drop_reason` accounting. Its only exercisers are tests
-> (`tests/test_sequencing.py`, `tests/test_p_alloc.py`, `tests/test_p_bound.py`).
+> **Implementation status — HALF wired; the sequence is reserved, the rule is not enforced.** The
+> two halves of `percept/sequencing.py` have diverged and this note pins the split.
+>
+> **Reserved (live).** `EvidenceSequencer` IS in the production path as of card X7:
+> `Percept._admit_evidence` (`percept/agent.py`) calls `sequencer.admit(key)` at judge-DISPATCH time
+> so the `JudgmentEvent` this core emits carries a real, dispatch-ordered `evidence_seq` instead of a
+> placeholder — which is what lets it correlate with the `GateDecision` a future worker-pool reducer
+> would produce for the same key. The map is LRU-bounded like the gate's own key maps.
+>
+> **Not enforced.** `SerializedDecisionReducer` / `ResultPolicy` still have
+> **zero production importers** — nothing under `percept/` constructs them, and the only other import of the module is
+> `percept/harness/metrics.py`, which pulls in the `percept.sequencing.GateDecision` dataclass purely
+> as a counter input for `dropped`/`drop_reason` accounting. So the stale-completion RULE
+> (`sequence < latest_admitted_sequence` ⇒ drop) is decided but unexecuted; today nothing depends on
+> it, because the live path never races (see below).
+>
+> `tests/test_adr001_status_honesty.py` pins this exact split, so the ADR cannot drift back to
+> claiming either "fully implemented" or "entirely severed" without a test failing.
 >
 > The shipped runtime does not implement this rule — it **sidesteps the race** rather than resolving
 > it. `percept/runtime/worker.py` runs the judge scheduler **single-flight with one latest-pending**:
