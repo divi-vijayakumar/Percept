@@ -175,3 +175,7 @@ docs/percept-mvp-implementation-plan.md
 docs/percept-viability-implementation-plan.md
 eval/viability/
 packages/percept-vision/eval/LABELING_PIPELINE.md
+
+# Synthetic UNIT-layer capability fixtures — GENERATED, never committed, never shipped.
+# Regenerate: cd packages/percept-vision && python3 -m percept.harness.synthetic.generate
+eval/synthetic/

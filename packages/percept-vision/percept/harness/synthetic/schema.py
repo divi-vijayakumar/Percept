@@ -244,11 +244,19 @@ def _validate_expect(name: str, cid: str, steps: list, expect: Mapping[str, Any]
         for a in acts:
             _req(a in SPEECH_ACTS, f"{name}/{cid}: unknown speech act {a!r}")
         prev = expect.get("value_before")
+        blocked = expect.get("blocked_by_authority") or [False] * n
+        _req(len(blocked) == n, f"{name}/{cid}: blocked_by_authority must align 1:1 with {n} turn(s)")
         for i, (a, v) in enumerate(zip(acts, values)):
             if a not in MUTATING_ACTS:
                 _req(v == prev,
                      f"{name}/{cid}: turn {i} is a {a!r} but the value changed {prev!r} -> {v!r}; "
                      "a non-mutating act MUST leave the value untouched")
+            elif v == prev:
+                # A mutating act that changed nothing is only legal when something BLOCKED it —
+                # otherwise the label is silently claiming a no-op mutation.
+                _req(bool(blocked[i]),
+                     f"{name}/{cid}: turn {i} is a mutating {a!r} that left the value at {v!r} but is not "
+                     "marked blocked_by_authority — an unexplained no-op mutation")
             prev = v
         _req(expect["final_value"] == (values[-1] if values else None),
              f"{name}/{cid}: final_value disagrees with the last value_after")
