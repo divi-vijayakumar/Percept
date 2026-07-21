@@ -37,6 +37,22 @@
   `DEFAULT_PRICE`-derived guess presented as a real price. The one licensed zero is a run that made
   no judge call (`percept doctor`, a fully gated stream), where `$0` is measured. `— (unknown)` is
   safe; `0.0` is a wrong number that a bar can pass. See `tests/test_trace_cost.py`.
+- **`plan_hash` now covers the RESOLVED thresholds and policy, not just the goals (card X3).**
+  A threshold A/B — the commonest paired eval on this harness — declares the *same goals* in both
+  arms by construction, so both arms printed the **same** `plan_hash` in the "quote these identities"
+  block. That defeated the hash's only job: letting a reader prove which configuration produced which
+  numbers. `PlanIdentity.from_goals` takes a `policy=` mapping of the resolved knobs
+  (`motion_gate` / `motion_gate_block_max` / `motion_gate_p95` / `salience_stat` / gate threshold /
+  `require_false_first` / `refractory_s`, plus per-goal `dwell` from `state["hold_s"]` and the
+  resolved `plan_mode`) and folds it into the hashed payload. `percept eval` fills it from each arm's
+  `thresholds`/`policy` blocks and `percept doctor` from the same `Settings` fields the worker
+  compiles with, so an eval's hash stays comparable with a production run's. The hash stays canonical
+  and **order-independent** — sorted keys, `None`-pruned, ints and floats unified, nested blocks
+  flattened to dotted keys — exactly the content-addressing contract
+  `percept.profile_versioning.content_hash` already holds for profiles. The report prints the hashed
+  policy under each arm's hash, and says so explicitly when two arms *do* share one identity.
+  Additive: `PlanIdentity` gains a `policy` field (a sorted tuple, so it stays frozen and hashable)
+  and `RunTraceManifest.create` a `plan_policy=` pass-through. `percept.watch` is untouched.
 
 ### Added
 - **A live run now says what it covered — and says it out loud when it admitted nothing (card X4).**
