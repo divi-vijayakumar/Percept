@@ -59,7 +59,13 @@ KeyBy = Literal["entity", "episode", "time_bucket", "const"]
 # The perception axis — HOW the eye looks (the VLM-side half of the concern program). Every default
 # reproduces today's behavior byte-for-byte: one vision-only, focus-cropped frame.
 Modality = Literal["vision", "audio", "fused"]
-Temporal = Literal["single", "strip", "window", "sprite"]
+#: ``event_capsule`` (ADDITIVE, C4b) is a COMPOSITE evidence shape distinct from a plain strip/window:
+#: it assembles (a) pre-roll frames from the existing rolling ring, (b) the episode's own boundary
+#: frames (open + most-recent), and (c) an early snapshot a timer captures a fixed N seconds after the
+#: episode opened — so a long-running episode still carries early evidence even after the ring has
+#: aged past it. Assembly lives in :mod:`percept.capsule` (:func:`~percept.capsule.assemble_event_capsule`);
+#: this token is additive-only — no profile defaults to it, no existing value's behavior changes.
+Temporal = Literal["single", "strip", "window", "sprite", "event_capsule"]
 RoiMode = Literal["focus", "hint", "full"]
 Sampling = Literal["recent", "uniform"]
 
@@ -1070,7 +1076,10 @@ _VALID_MISS = {"trivial", "mild", "severe"}
 _VALID_FF = {"trivial", "mild", "severe", "irreversible"}
 _MIN_CADENCE_S = 1.0  # floor so an authored cadence_s can't busy-loop the scheduler
 _VALID_MODALITY = {"vision", "audio", "fused"}
-_VALID_TEMPORAL = {"single", "strip", "window", "sprite"}  # sprite = N frames -> 1 montage image (VLM-only)
+_VALID_TEMPORAL = {  # sprite = N frames -> 1 montage image (VLM-only, deprecated -> window)
+    "single", "strip", "window", "sprite",
+    "event_capsule",  # C4b: composite pre-roll + episode-boundary + early-snapshot evidence shape
+}
 _VALID_ROI = {"focus", "hint", "full"}
 _VALID_SAMPLING = {"recent", "uniform"}
 _MAX_STRIP = 6  # ceiling on authored n_frames so an LLM can't author a token-bomb strip
