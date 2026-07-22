@@ -36,12 +36,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterator
 
-from .behavior import _VALID_TEMPORAL  # {"single", "strip", "window", "sprite"} — the plan_mode vocabulary
+from .behavior import _VALID_TEMPORAL  # concern-authored PerceptionSpec.temporal vocabulary (superset of PLAN_MODES below)
 from .contracts import SalienceStat  # Literal["mean", "block_max", "p95"]
 
 # ``plan_mode`` / ``salience_stat`` vocabularies, exposed as plain tuples for validation + introspection
 # (error messages, tests) without re-exporting behavior's private Literal alias.
-PLAN_MODES: tuple[str, ...] = tuple(sorted(_VALID_TEMPORAL))
+#
+# PLAN_MODES is the SUBSET of behavior._VALID_TEMPORAL a WatchProfile may floor a concern's
+# PerceptionSpec.temporal to (agent._planned_perception / _PLAN_RANK) -- deployment-wide DEFAULTS.
+# "event_capsule" is deliberately excluded here: it is a concern-AUTHORED evidence shape
+# (goal.state["perception"]["temporal"], validated by behavior.coerce_authored_perception) that must
+# prove itself on fixtures before any profile can default a deployment to it -- so PLAN_MODES stays
+# exactly the four pre-existing values until that follow-up wiring lands.
+PLAN_MODES: tuple[str, ...] = tuple(sorted(_VALID_TEMPORAL - {"event_capsule"}))
 SALIENCE_STATS: tuple[str, ...] = ("mean", "block_max", "p95")
 
 WILDCARD = "*"  # a registry key segment that matches anything — see WatchProfileRegistry.resolve

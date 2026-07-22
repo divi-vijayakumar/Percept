@@ -97,6 +97,19 @@ export function parseBox(obj, { path = "region_hint" } = {}) {
 export const GATE_ON = new Set(["motion", "structural", "semantic", "fixed"]);
 export const SALIENCE_STAT = new Set(["mean", "block_max", "p95"]);
 
+// ---------------------------------------------------------------------------
+// TEMPORAL — the JS twin of Python `percept.behavior.Temporal` (the perception
+// evidence-gathering shape a concern's PerceptionSpec.temporal selects). VALUE TOKEN ONLY: this repo
+// runs no JS code path that branches on it or assembles evidence from it (that lives Python-side in
+// `percept.capsule` for "event_capsule") — it is exported purely so a JS-side author/validator of
+// `goal.state.perception.temporal` can check against the SAME closed vocabulary as the Python side,
+// without re-deriving it. Not part of any frozen wire shape above (WatchSpec/Tier0Signal/Boundary/
+// Incident carry no `temporal` field), so this is additive and does not move CONTRACT_VERSION.
+// `event_capsule` composes pre-roll + episode-boundary + an early-snapshot-timer frame, assembled
+// Python-side; `sprite` is deprecated (normalized to `window` — see percept/agent.py).
+// ---------------------------------------------------------------------------
+export const TEMPORAL = new Set(["single", "strip", "window", "sprite", "event_capsule"]);
+
 export function makeWatchCondition({
   goal_id,
   anchor_text,
