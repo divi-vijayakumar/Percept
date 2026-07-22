@@ -1,4 +1,4 @@
-"""Card L1 — the profile-derivation job: ``(labeled fixtures, pre-registered bars) -> profile``.
+"""The profile-derivation job: ``(labeled fixtures, pre-registered bars) -> profile``.
 
 THE BRIDGE the MVP thesis rests on. A new environment is supposed to yield a **profile**, not a code
 change. This module is that claim made executable: point it at a labeled fixture directory and an
@@ -19,18 +19,18 @@ failure this job exists to prevent, so the job owns none of the thresholds.
 **It does not reimplement anything.** Matching is
 :func:`percept.harness.golden_eval.score` (the deterministic §5a matcher). The funnel/cost numbers are
 :class:`percept.tracing.TraceSummary`. Paired deltas, their bootstrap CIs, the scope table (ADR-006),
-the held-out split loader, the bars document and the bar evaluator are all card D3's
-(:mod:`percept.eval.differential`) — a ladder is that same paired discipline applied over N rungs
+the held-out split loader, the bars document and the bar evaluator all belong to
+:mod:`percept.eval.differential` — a ladder is that same paired discipline applied over N rungs
 instead of an A/B pair, so every rung r is scored as the *candidate* arm of a paired comparison
-against rung 0. Serialization, content hashing, provenance and the registry diff are card P4's
-(:mod:`percept.profile_versioning`).
+against rung 0. Serialization, content hashing, provenance and the registry diff all belong to
+:mod:`percept.profile_versioning`.
 
 Two axes, because ADR-005 says one is not enough
 ------------------------------------------------
 
 :class:`~percept.watchprofile.WatchProfile` is CAMERA-SHAPED — its ``environment`` axis is a camera
 mount and its resolution chain is goal-temporality / camera-mount / start-state. Two of the client
-probes that motivated this card were not cameras at all (a screen recording; a conversation). So a
+probes that motivated this design were not cameras at all (a screen recording; a conversation). So a
 rung here is a PAIR: a :class:`~percept.sourceprofile.SourceProfile` (what KIND of world is on the
 other end of the stream) times a :class:`~percept.watchprofile.WatchProfile` (how to tune the eye
 *within* that world). The derived artifact names both. Per ADR-005's Consequences section, overloading
@@ -199,7 +199,7 @@ class LadderRung:
 
     @property
     def profile_hash(self) -> str:
-        """The rung's WatchProfile content address (card P4) — its identity, order-independent."""
+        """The rung's WatchProfile content address — its identity, order-independent."""
         return profile_content_hash(self.watch_profile)
 
     def identity_payload(self) -> dict[str, Any]:
@@ -449,7 +449,7 @@ class RungResult:
     """One rung, fully scored — including the losers. A scored loser is data; a void is not.
 
     ``pairs`` holds this rung as the *candidate* arm of a paired comparison against the ladder's
-    baseline rung, so ``deltas`` are card D3's paired deltas with their bootstrap CIs, computed by
+    baseline rung, so ``deltas`` are the same paired deltas with their bootstrap CIs, computed by
     the same function ``percept eval`` uses.
     """
 
@@ -514,7 +514,7 @@ class DerivationVerdict(str, Enum):
 class DerivedProfile:
     """The output of a successful derivation: BOTH axes, provenance-stamped and content-addressed.
 
-    ``watch_profile`` is a card-P4 :class:`~percept.profile_versioning.VersionedProfile` — so it
+    ``watch_profile`` is a :class:`~percept.profile_versioning.VersionedProfile` — so it
     round-trips, verifies its own content hash on load, and can be diffed against the shipped
     registry with :func:`percept.profile_versioning.diff_registries` (and reversed with
     :meth:`~percept.profile_versioning.RegistryDiff.inverse`). ``source_profile`` names the KIND of
@@ -627,7 +627,7 @@ def derive_profile(
     registration.assert_no_drift()
 
     held = set(split.held_out)
-    # One scoring pass per (fixture, rung), through card D3's `_score_arm` — which is
+    # One scoring pass per (fixture, rung), through `_score_arm` — which is
     # golden_eval.score() plus tracing.load_trace(), i.e. the same code doctor and eval run.
     outcomes = {
         rung.name: {f.fixture_id: _score_arm(f, rung) for f in fixtures} for rung in ladder.rungs
@@ -759,7 +759,7 @@ def _stamp_winner(
     created_at: str | None,
     fixtures_root: str,
 ) -> DerivedProfile:
-    """Wrap the winning rung's WatchProfile in a card-P4 provenance stamp."""
+    """Wrap the winning rung's WatchProfile in a provenance stamp."""
     recall = winner.mean("recall")
     precision = winner.mean("precision")
     notes = (
@@ -880,7 +880,7 @@ def render_scorecard(report: DerivationReport) -> str:
             "refusal, not a failure of the job.")
     else:
         vp = report.derived.watch_profile
-        add("DERIVED PROFILE (provenance-stamped, content-addressed — card P4 format)")
+        add("DERIVED PROFILE (provenance-stamped, content-addressed)")
         add(f"  name           : {vp.profile.name}")
         add(f"  content_hash   : {vp.content_hash}")
         add(f"  source_profile : {report.derived.source_profile.name}")

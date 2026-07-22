@@ -16,8 +16,8 @@ It answers, in order:
    one :class:`~percept.adapters.WatchCondition` per goal with its effective threshold, salience
    stat, cadence, gate_on channel and schedule.
 4. **Which source profile was active?** — the :class:`~percept.watchprofile.WatchProfile` resolved
-   from the situation axes (card P2/M2) AND the :class:`~percept.sourceprofile.SourceProfile`
-   (card D7 / ADR-005) naming what KIND of world is on the other end of the stream. When that
+   from the situation axes AND the :class:`~percept.sourceprofile.SourceProfile`
+   (ADR-005) naming what KIND of world is on the other end of the stream. When that
    profile declares its admission signal :data:`~percept.sourceprofile.UNTUNED` — as
    ``screen_document`` does, because percept ships no calibrated page-change signal — doctor says
    so out loud (:data:`ADMISSION_SIGNAL_UNTUNED`): *this profile is running on coast alone, supply
@@ -120,15 +120,15 @@ EGO_COMPENSATED_GATE = "EGO_COMPENSATED_GATE"
 UNEXPLAINED_SUPPRESSION = "UNEXPLAINED_SUPPRESSION"
 ADMISSION_SIGNAL_UNTUNED = "ADMISSION_SIGNAL_UNTUNED"
 SOURCE_PROFILE_EXPERIMENTAL = "SOURCE_PROFILE_EXPERIMENTAL"
-OUT_OF_ENVELOPE_ACTUATION = "OUT_OF_ENVELOPE_ACTUATION"      #: card Z7 / ADR-007
-PERSON_IDENTIFYING_RESOLVER = "PERSON_IDENTIFYING_RESOLVER"  #: card Z7 / ADR-007
+OUT_OF_ENVELOPE_ACTUATION = "OUT_OF_ENVELOPE_ACTUATION"      #: ADR-007
+PERSON_IDENTIFYING_RESOLVER = "PERSON_IDENTIFYING_RESOLVER"  #: ADR-007
 
 #: Why a frame did NOT become a candidate for a goal. Every non-admit lands in exactly one bucket —
-#: "it was quiet" is only ONE of these, and conflating it with the others is the bug this card fixes.
+#: "it was quiet" is only ONE of these, and conflating it with the others is the bug this module fixes.
 SUPPRESSION_REASONS: tuple[str, ...] = (
     "no_predecessor_frame",   # the first frame: nothing to diff against, by definition not motion
     "out_of_schedule",        # the goal's Schedule was not armed at this civil time
-    "cadence_not_elapsed",    # C2 min_judge_interval since this goal's last escalation
+    "cadence_not_elapsed",    # min_judge_interval since this goal's last escalation
     "signal_unavailable",     # gate_on names a channel nothing in this topology feeds (always 0.0)
     "below_threshold",        # the honest quiet case: the statistic did not clear ITS cutoff
     "unexplained",            # doctor could not attribute it — always a bug, always reported loud
@@ -291,7 +291,7 @@ class PlanDiagnosis:
     signals: dict[str, bool]
     signal_notes: dict[str, str]
     conditions: tuple[dict[str, Any], ...] = ()
-    #: The full ``SourceProfile.to_dict()`` (card D7) — strategies, parameters, stability. ``None``
+    #: The full ``SourceProfile.to_dict()`` — strategies, parameters, stability. ``None``
     #: only if the source-profile registry could not be imported at all.
     source_profile_detail: dict[str, Any] | None = None
     #: How the source profile was chosen: ``"explicit"`` (the caller named it) or ``"default"``.
@@ -320,7 +320,7 @@ class PlanDiagnosis:
 
 @dataclass(frozen=True)
 class EnvelopeDiagnosis:
-    """Card Z7 / ADR-007 — where this deployment sits relative to percept's declared envelope.
+    """ADR-007 — where this deployment sits relative to percept's declared envelope.
 
     Three facts, all read from TYPED config rather than from prose:
 
@@ -354,7 +354,7 @@ class EnvelopeDiagnosis:
 
 @dataclass(frozen=True)
 class DoctorReport:
-    """The whole dry run: source, plan, per-goal admissions, the D8a funnel, findings, exit code."""
+    """The whole dry run: source, plan, per-goal admissions, the admission funnel, findings, exit code."""
 
     source: SourceDiagnosis
     plan: PlanDiagnosis
@@ -365,9 +365,9 @@ class DoctorReport:
     judge_calls: int = 0
     trace_path: str | None = None
     manifest: RunTraceManifest | None = None
-    #: Card D9 — where the standalone HTML visualizer was written, if one was asked for.
+    #: Where the standalone HTML visualizer was written, if one was asked for.
     visualize_path: str | None = None
-    #: Card Z7 — the envelope panel. Always present; ``None`` only on a hand-built report.
+    #: The envelope panel. Always present; ``None`` only on a hand-built report.
     envelope: EnvelopeDiagnosis | None = None
 
     @property
@@ -406,7 +406,7 @@ class DoctorReport:
 
 
 def _resolve_source_profile(spec: Any):
-    """Resolve the card-D7 :class:`~percept.sourceprofile.SourceProfile` doctor should report.
+    """Resolve the :class:`~percept.sourceprofile.SourceProfile` doctor should report.
 
     ``spec`` is a name, a ``SourceProfile``, or ``None`` (meaning: nobody said, so report the
     honest default — ``physical_scene``, the ONE class the stock tier-0 eye is calibrated on — and
@@ -537,7 +537,7 @@ def _stat_thresholds(settings: Settings) -> dict[str, float]:
 
 
 def _resolved_policy(settings: Settings) -> dict[str, Any]:
-    """The resolved threshold/policy knobs that belong in the plan identity (card X3).
+    """The resolved threshold/policy knobs that belong in the plan identity.
 
     Read off the SAME :class:`~percept.config.Settings` fields the worker compiles with — see
     :data:`percept.tracing.PLAN_POLICY_FIELDS`. Two dry runs that differ only in a cutoff are two
@@ -648,7 +648,7 @@ def run_doctor(
     if timebase not in ("auto", "media", "wall"):
         raise DoctorConfigError(f"timebase must be auto/media/wall, got {timebase!r}")
 
-    # Card Z7: the envelope declaration is CONFIG, so a bad value is an exit-5 config error, exactly
+    # The envelope declaration is CONFIG, so a bad value is an exit-5 config error, exactly
     # like a bad timebase — never a silently-ignored string.
     act_goal_ids = tuple(
         g.id for g in goal_list if getattr(g, "modality", "speak") == "act"
@@ -793,11 +793,11 @@ def run_doctor(
             unobservable_reason=unobservable_reason,
         ))
 
-    # -- 4. the funnel, derived from D8a (never recounted here) -----------
+    # -- 4. the funnel, derived from the trace summary (never recounted here) -----------
     manifest = RunTraceManifest.create(
         source=source or "stream",
         driver="doctor",
-        # Card X3: the plan identity carries the RESOLVED cutoffs it ran under, not just the goals.
+        # The plan identity carries the RESOLVED cutoffs it ran under, not just the goals.
         # A doctor run at threshold 0.10 and one at 0.20 are two different configurations and must
         # never quote the same plan_hash.
         plan=PlanIdentity.from_goals(goal_list, plan_mode=plan_mode, policy=_resolved_policy(cfg)),
@@ -807,7 +807,7 @@ def run_doctor(
         ),
         policy=TracePolicy.diagnostic(),
         baseline=BaselineAssumption.every_observation(len(captured)),
-        # Card D9: the per-frame salience values below are meaningless without the cutoffs they
+        # The per-frame salience values below are meaningless without the cutoffs they
         # were judged against, and a visualizer must never invent a threshold. Carrying them in the
         # manifest makes the trace self-describing, so the counterfactual panel ("what would
         # mean/block_max/p95 each have decided against ITS OWN threshold") is READ, not recomputed.
@@ -826,7 +826,7 @@ def run_doctor(
     summary = recorder.summary()
     trace_path = str(recorder.write_json(trace_out)) if trace_out else None
 
-    # Card D9: the visualizer renders THIS recorder's manifest/records/summary — the same objects
+    # The visualizer renders THIS recorder's manifest/records/summary — the same objects
     # this report prints — so the HTML and the terminal panel can never disagree.
     viz_path: str | None = None
     if visualize_out:
@@ -881,7 +881,7 @@ def run_doctor(
                 "a rule — this is a doctor bug, please report it with this JSON",
             ))
 
-    # Card D7: the source profile is a REPORTED fact, and an untuned admission signal is a finding,
+    # The source profile is a REPORTED fact, and an untuned admission signal is a finding,
     # not a footnote. It is deliberately a WARN, never an error and never an exit code of its own:
     # coasting is a real (degraded) operating mode, and the client — not percept — owns the fix.
     if not src_profile.admission_tuned:
@@ -900,7 +900,7 @@ def run_doctor(
             + src_profile.notes,
         ))
 
-    # Card Z7 / ADR-007: the envelope is read from TYPED config, and doctor is the tool that says it.
+    # ADR-007: the envelope is read from TYPED config, and doctor is the tool that says it.
     person_id_resolvers = tuple(
         r.name for r in DEFAULT_SUBJECT_RESOLVERS.person_identifying()
     )
@@ -1001,7 +1001,7 @@ def _fmt(v: Any, spec: str = ".4f") -> str:
 
 
 def render_funnel(summary: TraceSummary) -> str:
-    """The D8a primary-metrics funnel panel — every number READ off :class:`TraceSummary`."""
+    """The primary-metrics funnel panel — every number READ off :class:`TraceSummary`."""
     lines = [_rule("FUNNEL (primary metrics, percept.tracing.TraceSummary)")]
     rows = [
         ("observed", f"{summary.observed} {summary.observed_unit}"),
@@ -1052,7 +1052,7 @@ def render_report(report: DoctorReport) -> str:
                f"   [{p.profile_source}]")
     if p.profile_key:
         out.append(f"  profile key             {tuple(p.profile_key)}")
-    out.append(f"  source profile (D7)     {p.source_profile or 'not available'}   "
+    out.append(f"  source profile          {p.source_profile or 'not available'}   "
                f"[{p.source_profile_origin}]")
     d = p.source_profile_detail or {}
     if d:
@@ -1103,7 +1103,7 @@ def render_report(report: DoctorReport) -> str:
 
     e = report.envelope
     if e is not None:
-        out.append(_rule("ENVELOPE (card Z7 / ADR-007)"))
+        out.append(_rule("ENVELOPE (ADR-007)"))
         out.append(f"  actuation declared      {e.check.actuation}"
                    + ("" if e.check.in_envelope else "   ** OUT OF ENVELOPE **"))
         out.append(f"  goals with modality=act {len(e.act_goal_ids)}  {list(e.act_goal_ids)}")
@@ -1172,19 +1172,19 @@ def build_parser() -> argparse.ArgumentParser:
     # it is registered, without editing this parser. An unknown name is a clear exit-5 error.
     p.add_argument(
         "--source-profile", default=None,
-        help="source class (card D7): physical_scene | screen_document | conversation, or any "
+        help="source class: physical_scene | screen_document | conversation, or any "
              "registered third-party profile name (default: physical_scene)",
     )
     p.add_argument(
         "--actuation", default="none", choices=ACTUATION_CLASSES,
-        help="card Z7 / ADR-007: what an act can physically do in this deployment. "
+        help="ADR-007: what an act can physically do in this deployment. "
              "none (default) | screen (advisory software acts — the narrowed survivor) | "
              "physical (OUT of percept's envelope; ConsentProfile.permits() then refuses every "
              "action and doctor exits 6)",
     )
-    p.add_argument("--trace-out", default=None, help="write the D8a trace artifact (JSON) here")
+    p.add_argument("--trace-out", default=None, help="write the trace artifact (JSON) here")
     p.add_argument("--json", action="store_true", help="emit the machine-readable report on stdout")
-    # -- card D9: the native visualizer (no second console-script family; these are flags here) --
+    # -- the native visualizer (no second console-script family; these are flags here) --
     p.add_argument(
         "--visualize-out", default=None,
         help="write the standalone HTML visualizer here (lanes over media time, click-through "
@@ -1210,10 +1210,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """``percept-doctor`` entry point. Exit codes: 0 ok, 2 zero coverage, 3 source failure,
-    4 plan unobservable, 5 invalid configuration, 6 declared out of envelope (card Z7)."""
+    4 plan unobservable, 5 invalid configuration, 6 declared out of envelope."""
     args = build_parser().parse_args(list(argv) if argv is not None else None)
 
-    # -- card D9: render-only mode. No source is opened, no goal is compiled, nothing is spent. --
+    # -- render-only mode. No source is opened, no goal is compiled, nothing is spent. --
     if args.visualize_from:
         from .visualize import VisualizeError, VizOptions, visualize_trace  # noqa: PLC0415
 

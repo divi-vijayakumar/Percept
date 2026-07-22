@@ -185,7 +185,7 @@ class LoadDriver:
         self._start_t = clock()
         self._last_t = 0.0
 
-        # A10 dependency: the N concurrent, clock-driven frame streams. Built once, up front — all
+        # The N concurrent, clock-driven frame streams. Built once, up front — all
         # N streams (and thus all N*M watches) are live for the entire run; what ramps is the
         # admission RATE (see module docstring), not stream/watch existence.
         self._streams = fan_out(timeline, profile.n, clock=clock)

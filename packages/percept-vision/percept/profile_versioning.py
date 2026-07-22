@@ -1,7 +1,7 @@
 """Profile versioning + provenance: content-addressed, auditable, reversible.
 
 :mod:`percept.watchprofile` gave ``Q(p | environment, goal, state)`` a typed SHAPE, and
-:mod:`percept.profiles_default` seeded the H0-derived DATA. Both are in-process Python objects: a
+:mod:`percept.profiles_default` seeded the empirically-derived DATA. Both are in-process Python objects: a
 profile that only exists as a module-level constant cannot be shipped, diffed, or audited, and "recall
 went 0.68 -> 0.90 when we flipped these three knobs" cannot be expressed as an artifact. This module adds
 the three things that turn a profile into config you can reason about over time:

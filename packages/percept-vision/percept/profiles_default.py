@@ -1,18 +1,18 @@
-"""Seeded, H0-derived default WatchProfiles (continuous-learning bridge).
+"""Seeded, empirically-derived default WatchProfiles (continuous-learning bridge).
 
 ``percept.watchprofile`` is schema + registry only — it defines the SHAPE of
 ``Q(p | environment, goal, state)`` but ships with an empty ``DEFAULT_REGISTRY``. This module is the DATA:
-three named profiles read directly off the H0 viability eval (the charades-e2e ablation ladder), plus a
+three named profiles read directly off a viability eval (the charades-e2e ablation ladder), plus a
 WILDCARD fallback so :meth:`percept.watchprofile.WatchProfileRegistry.resolve` never raises
 :class:`percept.watchprofile.ProfileNotFoundError` for a context nobody has named yet.
 
 These are NOT guesses. Every profile's ``notes`` field stamps it to the eval run that produced it
 (:data:`H0_PROVENANCE`) — that provenance is what makes a profile auditable config instead of a magic
 number: a reader can trace ``block_max @ 0.20`` back to the ablation step that measured it, and a future
-card that re-runs the eval and gets a different number knows exactly which profile to update and why.
+change that re-runs the eval and gets a different number knows exactly which profile to update and why.
 
 Importing this module has the side effect of seeding :data:`percept.watchprofile.DEFAULT_REGISTRY` (see
-:func:`seed`, called at the bottom of this file) — the same "seeded at import" contract the card asks for.
+:func:`seed`, called at the bottom of this file) — the same "seeded at import" contract this module implements.
 Tests that want an isolated registry should call ``seed(WatchProfileRegistry())`` instead of touching the
 process-wide default.
 """
@@ -31,12 +31,12 @@ from .watchprofile import (
 # Provenance — shared by every profile below; all four knob sets are readouts of the SAME eval run.
 # ---------------------------------------------------------------------------
 
-#: The H0 charades-e2e ablation ladder:
+#: The charades-e2e ablation ladder:
 #: starting from the legacy byte-for-byte defaults (``salience_stat="mean"``, ``plan_mode="single"``,
 #: gate closed), each step below is one knob flip, measured independently, on the same eval track.
 H0_PROVENANCE = (
-    "Provenance: H0 viability eval, charades-e2e ablation ladder (eval/bench/track_charades_e2e.py; "
-    "docs/percept-mvp-implementation-plan.md epic E2). Recall climbed 0.39 (mean-stat baseline) -> 0.68 "
+    "Provenance: viability eval, charades-e2e ablation ladder (eval/bench/track_charades_e2e.py; "
+    "docs/percept-mvp-implementation-plan.md). Recall climbed 0.39 (mean-stat baseline) -> 0.68 "
     "(+ salience_stat=\"block_max\" @ stat_thresholds[\"block_max\"]=0.20 -- localized salience beats a "
     "whole-frame mean) -> 0.73 (+ plan_mode=\"window\" -- the judge sees a short clip, not one frame) -> "
     "0.90 (+ gate-relax: gate.require_false_first=False, gate.refractory_s=15 -- an already-true state "
@@ -44,20 +44,20 @@ H0_PROVENANCE = (
     "point. This profile's knobs are a typed readout of a rung on that ladder, not a hand-picked guess."
 )
 
-#: Additional provenance specific to a MOVING camera (handheld / wearable / body-cam), from the same H0
-#: run's ego-motion arm.
+#: Additional provenance specific to a MOVING camera (handheld / wearable / body-cam), from the same
+#: eval run's ego-motion arm.
 EGO_COMPENSATION_NOTE = (
     "environment=\"handheld\" additionally implies percept.config.EdgeSettings.ego_compensate=True "
-    "(PERCEPT_EGO_COMPENSATE=1): H0 measured that a moving camera WITHOUT ego-compensation escalates the "
+    "(PERCEPT_EGO_COMPENSATE=1): measured that a moving camera WITHOUT ego-compensation escalates the "
     "tier-0 sampler on ~98% of frames (global camera motion never lets cheap-motion settle below the "
-    "escalate threshold), vs. ~30% with it. WatchProfile (card P1) has no typed ego_compensate field yet -- "
-    "that binding lives here as a note until a follow-up card promotes it to a schema field the runtime "
-    "(card M2) reads directly."
+    "escalate threshold), vs. ~30% with it. WatchProfile has no typed ego_compensate field yet -- "
+    "that binding lives here as a note until a follow-up change promotes it to a schema field the runtime "
+    "reads directly."
 )
 
 
 def _h0_gate(**overrides: float | bool) -> GateProfile:
-    """A :class:`GateProfile` at the H0 gate-relax + refractory operating point (``refractory_s=15``),
+    """A :class:`GateProfile` at the empirically-tuned gate-relax + refractory operating point (``refractory_s=15``),
     with ``require_false_first`` left at the schema default (``False``) unless overridden."""
     kwargs: dict[str, float | bool] = {"refractory_s": 15.0}
     kwargs.update(overrides)
@@ -65,7 +65,7 @@ def _h0_gate(**overrides: float | bool) -> GateProfile:
 
 
 # ---------------------------------------------------------------------------
-# The three named H0-derived profiles.
+# The three named empirically-derived profiles.
 # ---------------------------------------------------------------------------
 
 #: FIXED camera watching a localized / low-motion action (e.g. "is the stove on", "is the door open") whose
@@ -87,7 +87,7 @@ FIXED_CAM_LOCALIZED = WatchProfile(
 )
 
 #: Dynamic goals (the action's truth changes mid-clip, not just present-at-start) on a FIXED camera. Same
-#: tier-0 eye and window-mode judge as fixed-cam-localized; the H0 run did not additionally credit this
+#: tier-0 eye and window-mode judge as fixed-cam-localized; the eval run did not additionally credit this
 #: exact (goal_type, state) combination with the 0.90 figure, so require_false_first rides the schema
 #: default rather than restating the gate-relax claim verbatim.
 DYNAMIC_ACTION = WatchProfile(

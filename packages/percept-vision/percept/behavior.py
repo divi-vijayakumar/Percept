@@ -241,13 +241,13 @@ class ConcernContext:
     # is NEVER shown this log; a single summarize pass consolidates it on boundary/on-demand, then wipes.
     process_log: list[str] = field(default_factory=list)
     last_step_at: float = float("-inf")
-    # R2/R2b — the re-arm DISCRIMINATORS that used to be folded into the gate key (making every time
+    # The re-arm discriminators that used to be folded into the gate key (making every time
     # bucket / episode number / resolved-answer a permanent key). They live HERE now (constraint 1: the
     # gate stays one bit per key); the executor calls ``gate.rearm(key)`` when one rolls over, restoring
     # the exact firing edge with ONE key per (goal, entity) instead of one per bucket/rep/answer.
     last_bucket: int | None = None       # interval: the elapsed time bucket last seen (int(t // cadence_s))
     last_episode_n: int | None = None    # episode: the last distinct rep number fired
-    # Y1: the IDENTITY of the last episode fired. The count ``n`` is a weak discriminator — a
+    # The IDENTITY of the last episode fired. The count ``n`` is a weak discriminator — a
     # windowed prune or a max_episodes drop can leave n unchanged across a genuinely different
     # episode, and two different episodes then share one spent edge. When the caller threads the
     # episode id through ``fire_episode(..., episode_id=...)`` the re-arm keys off identity instead;
@@ -265,13 +265,13 @@ class Fired:
     text: str
     entity_id: object
     verdict: object
-    # X7 — the frozen ADR-001 §1 record of THIS decision, when the caller threaded the funnel's
+    # The frozen ADR-001 §1 record of THIS decision, when the caller threaded the funnel's
     # stamps in (``fire_judged(..., timing=...)``). Appended LAST with a ``None`` default so every
     # existing positional ``Fired(...)`` construction, and every consumer that ignores it, is
     # byte-for-byte unchanged. ``None`` means "this firing path did not carry judgment timing"
     # (episode/transition/absence fires, a bare executor test) — NEVER a fabricated timing.
     judgment: JudgmentEvent | None = None
-    # Z3 — enriched judgment envelope (reason/modality/roi/provenance) + Y10 — provisional/superseding
+    # Enriched judgment envelope (reason/modality/roi/provenance) + the provisional/superseding
     # link (revision_id/supersedes). All OPTIONAL, defaulted None, appended last: every existing
     # positional Fired(...) and every consumer that ignores them is byte-for-byte unchanged.
     reason: str | None = None
@@ -283,7 +283,7 @@ class Fired:
 
 
 # --------------------------------------------------------------------------------------------------
-# Card Y3 — EPISODE-OWNED IDEMPOTENCY. The gate bit must stop being accidental per-episode memory.
+# EPISODE-OWNED IDEMPOTENCY. The gate bit must stop being accidental per-episode memory.
 # --------------------------------------------------------------------------------------------------
 #
 # The A->B->A trace only worked because B happened to leave the single gate key in a fired state. That
@@ -293,7 +293,7 @@ class Fired:
 # subject's duplicate suppression. The gate is one bit PER KEY; "have I already reported THIS episode?"
 # is a property of the EPISODE, and the two are not the same question.
 #
-# Y3 makes the episode own idempotency. Before an observation is allowed to (re-)enter the gate, we fold
+# The episode owns idempotency. Before an observation is allowed to (re-)enter the gate, we fold
 # it against its episode's emission history and get an :class:`EpisodeFoldResult`:
 #
 #   * a NEW episode with no emitted incident may keep evaluating (and re-arms its own edge, so a shared
@@ -316,14 +316,14 @@ EpisodeMatch = Literal["new", "continuation", "unbound", "ambiguous", "unknown"]
 #: How the observation binds to an episode. ``new`` — it opens a fresh episode; ``continuation`` — it
 #: extends an existing open one; ``unbound`` — no subject identity could be established (fall back to
 #: gate-only, the legacy behaviour); ``ambiguous`` — the subject resolved to more than one candidate,
-#: so idempotency cannot be safely attributed and we also fall back to gate-only; ``unknown`` (card
-#: Y4) — a subject was SEEN BUT NOT IDENTIFIED (a visible abstention). Like ``unbound`` it degrades to
+#: so idempotency cannot be safely attributed and we also fall back to gate-only; ``unknown``
+#: — a subject was SEEN BUT NOT IDENTIFIED (a visible abstention). Like ``unbound`` it degrades to
 #: gate-only and NEVER rearms, but it is a DISTINCT observable state so a client can tell
 #: "seen-but-unidentified" from "no subject at all". The absence of a subject is ``unbound``, not
 #: ``unknown`` — the two are different debugging facts.
 
 EpisodeMutation = Literal["confirmed", "updated", "retracted", "closed", "none"]
-#: How this finding modifies the episode (the Y2 mutation channel, consumed here). ``confirmed`` — the
+#: How this finding modifies the episode (the mutation channel, consumed here). ``confirmed`` — the
 #: episode is re-stated unchanged; ``updated`` — an accepted semantic change → a new revision;
 #: ``retracted`` — the report is withdrawn; ``closed`` — the episode is terminated; ``none`` — no
 #: mutation semantics apply (a birth, or an unbound/ambiguous observation).
@@ -335,7 +335,7 @@ EPISODE_MUTATIONS: tuple[EpisodeMutation, ...] = (
     "confirmed", "updated", "retracted", "closed", "none",
 )
 
-#: The Y2 wiring (card Y2): a Verdict's LOCAL speech-act :data:`~percept.contracts.Operation` → the
+#: The wiring: a Verdict's LOCAL speech-act :data:`~percept.contracts.Operation` → the
 #: episode-fold's :data:`EpisodeMutation`. This is the ONE place the two vocabularies meet, so the fold
 #: never has to know about speech acts and the claim channel never has to know about episodes.
 #:
@@ -344,8 +344,9 @@ EPISODE_MUTATIONS: tuple[EpisodeMutation, ...] = (
 #:   * ``retract`` → ``retracted`` — the report is withdrawn (re-arm so a genuine later fire counts).
 #:   * ``close``   → ``closed``    — the episode is terminated (no further evaluation).
 #: The non-mutating acts (``assert``/``confirm``/``mention``) all fold to ``confirmed`` — an unchanged
-#: re-statement, which is exactly the idempotency case Y3 protects. So a plain positive verdict
-#: (default ``operation='assert'``) yields ``confirmed``, byte-for-byte the pre-Y2 fold default.
+#: re-statement, which is exactly the idempotency case this protects. So a plain positive verdict
+#: (default ``operation='assert'``) yields ``confirmed``, byte-for-byte the fold default from
+#: before this mapping existed.
 _OPERATION_TO_MUTATION: dict[str, EpisodeMutation] = {
     "assert": "confirmed",
     "confirm": "confirmed",
@@ -360,7 +361,8 @@ def episode_mutation_of(operation: str) -> EpisodeMutation:
     """Map a Verdict :data:`~percept.contracts.Operation` to the episode fold's :data:`EpisodeMutation`.
 
     An unknown/absent operation is treated as the safe non-mutating default ``confirmed`` (a
-    re-statement) so a verdict that predates the claim channel folds exactly as it did pre-Y2."""
+    re-statement) so a verdict that predates the claim channel folds exactly as it did before this
+    mapping existed."""
     return _OPERATION_TO_MUTATION.get(operation, "confirmed")
 
 
@@ -372,7 +374,7 @@ def revision_id(episode_id: str, n: int) -> str:
 
 @dataclass(frozen=True)
 class EpisodeFoldResult:
-    """The episode-owned idempotency decision for ONE observation (card Y3).
+    """The episode-owned idempotency decision for ONE observation.
 
     It answers, BEFORE the observation is allowed to touch the gate, three things the gate bit cannot
     answer on its own because it is one bit per key, not per episode:
@@ -387,7 +389,7 @@ class EpisodeFoldResult:
 
     :attr:`match` and :attr:`mutation` are the typed WHY, from the closed :data:`EPISODE_MATCHES` /
     :data:`EPISODE_MUTATIONS` vocabularies. This is a pure record — :func:`episode_fold` computes it and
-    :meth:`BehaviorExecutor.fire_judged` honours it; card Y11 recomputes it in shadow from the same
+    :meth:`BehaviorExecutor.fire_judged` honours it; the shadow path recomputes it from the same
     function, so it must stay side-effect free.
     """
 
@@ -417,26 +419,26 @@ def episode_fold(
 ) -> EpisodeFoldResult:
     """Fold one observation against its episode's emission history → an :class:`EpisodeFoldResult`.
 
-    Pure and side-effect free (card Y11 calls it in shadow). Inputs:
+    Pure and side-effect free (the shadow path calls it). Inputs:
 
     * ``decision`` — the typed :class:`~percept.episodes.ContinuationDecision` for this observation, or
       ``None`` when no subject could be bound (→ ``unbound``, gate-only fallback).
     * ``emitted`` — how many incidents THIS episode has already emitted (the episode-owned ledger;
       :class:`EpisodeIncidentLedger`). ``0`` means the episode has opened but never fired.
-    * ``mutation`` — how this finding modifies the episode (the Y2 channel). Defaults to ``confirmed``
+    * ``mutation`` — how this finding modifies the episode (the mutation channel). Defaults to ``confirmed``
       (a plain re-statement), which is the case idempotency is about.
     * ``ambiguous`` — the subject resolved to more than one candidate → ``ambiguous``, gate-only.
-    * ``unknown`` (card Y4) — the subject was SEEN BUT NOT IDENTIFIED (``resolution='unknown'``,
+    * ``unknown`` — the subject was SEEN BUT NOT IDENTIFIED (``resolution='unknown'``,
       derived by :func:`percept.episodes.subject_is_unknown`). A visible abstention.
 
-    Rules (the card, made executable):
+    Rules (made executable):
 
     * unbound / ambiguous → we cannot attribute idempotency to an episode, so degrade to the legacy
       gate-only path: evaluate the gate, never re-arm from here.
-    * ``unknown`` (card Y4) → a visible abstention. Even though the episode log MINTED a fresh episode
-      for it (Y5: two unknowns never collapse), the fold must NOT let that mint REARM the gate — an
+    * ``unknown`` → a visible abstention. Even though the episode log MINTED a fresh episode
+      for it (two unknowns never collapse), the fold must NOT let that mint REARM the gate — an
       unknown re-arming an edge a bound subject already spoke on is exactly the wrong-suppression this
-      card forbids — and must NOT grant it episode-owned idempotency (two unknowns are never the same
+      rule forbids — and must NOT grant it episode-owned idempotency (two unknowns are never the same
       episode). So it degrades to gate-only like ``unbound``, but keeps its own observable ``unknown``
       match. The SOLE exception is a provisional single-focus continuation of an active BOUND episode
       (``decision.reason == 'unknown_provisional_continuation'``): that is a genuine continuation and
@@ -449,8 +451,8 @@ def episode_fold(
     * ``continuation`` + ``retracted`` → withdraw and re-arm, so a genuine later re-satisfaction fires.
     * ``continuation`` + ``closed`` → the episode is terminated; no further evaluation for it.
     """
-    # Card Y4: a visible abstention degrades to gate-only and NEVER rearms — before every other rule,
-    # because an unknown that minted a fresh episode (Y5) would otherwise be read as ``new`` and
+    # A visible abstention degrades to gate-only and NEVER rearms — before every other rule,
+    # because an unknown that minted a fresh episode would otherwise be read as ``new`` and
     # re-arm. The provisional single-focus continuation is the one unknown that is a real continuation;
     # it falls through to the continuation handling and folds idempotently like any other.
     if unknown and (
@@ -521,7 +523,7 @@ def episode_fold(
 
 
 class EpisodeIncidentLedger:
-    """The episode-owned record Y3 needs: how many incidents each episode has EMITTED.
+    """The episode-owned record needed: how many incidents each episode has EMITTED.
 
     This is the memory the gate bit was being abused as. It is keyed by episode id (globally unique —
     ``<goal_id>:ep<n>``), so it never collides across subjects that share a gate key, and it is not
@@ -561,7 +563,7 @@ def _subject_advisory(subject: "SubjectRef | None") -> "dict | None":
     """Serialize a resolved :class:`~percept.contracts.SubjectRef` to a JSON-safe advisory dict.
 
     ``None`` (the absence of a subject — NOT an ``unknown`` ref) round-trips as ``None``. Every field
-    is a scalar so it survives a ``.ptrace`` round-trip (card D8b) with media OFF."""
+    is a scalar so it survives a ``.ptrace`` round-trip with media OFF."""
     if subject is None:
         return None
     return {
@@ -616,7 +618,7 @@ def _fold_from_advisory(payload: "dict") -> "EpisodeFoldResult":
 
 @dataclass(frozen=True)
 class ShadowObservation:
-    """What card Y11 OBSERVES for one observation: the resolved subject + the proposed fold.
+    """What the shadow path OBSERVES for one observation: the resolved subject + the proposed fold.
 
     ADVISORY ONLY. It is computed from the same pure :func:`episode_fold` the executor would honour,
     but nothing here re-arms, suppresses, or alters what fires — a consumer that ignores it sees
@@ -675,7 +677,7 @@ class BehaviorExecutor:
         self.metrics = metrics if metrics is not None else _NoMetrics()
         self._ctx: dict[str, ConcernContext] = {}  # isolated per-concern state, keyed by concern id
         self._fire_when_cache: dict[str, Callable[[dict], bool]] = {}
-        # Y3: episode-owned idempotency memory (per episode id, NOT per gate key — see the module
+        # Episode-owned idempotency memory (per episode id, NOT per gate key — see the module
         # section above). This is the state the gate bit was being accidentally used as.
         self._incidents = EpisodeIncidentLedger()
 
@@ -691,22 +693,22 @@ class BehaviorExecutor:
         ambiguous: bool = False,
         unknown: bool = False,
     ) -> EpisodeFoldResult:
-        """Y3: fold an observation's :class:`~percept.episodes.ContinuationDecision` against this
+        """Fold an observation's :class:`~percept.episodes.ContinuationDecision` against this
         executor's episode-owned emission ledger → the :class:`EpisodeFoldResult` to thread into
         :meth:`fire_judged` as ``fold=``. Reads the ledger but never mutates it (the emission is only
-        recorded when a fire is actually delivered), so card Y11 can call it in shadow safely.
+        recorded when a fire is actually delivered), so the shadow path can call it safely.
 
-        ``operation`` (card Y2, OPTIONAL) is the Verdict's LOCAL speech-act. When supplied it DERIVES
+        ``operation`` (OPTIONAL) is the Verdict's LOCAL speech-act. When supplied it DERIVES
         the episode ``mutation`` via :func:`episode_mutation_of` (overriding the ``mutation`` kwarg), so
         a caller threads ``verdict.operation`` straight through and the fold consumes the mutation
         channel without ever parsing a value. When ``None`` (default) the explicit ``mutation`` kwarg
         is used, so an existing caller is byte-for-byte unchanged.
 
-        ``unknown`` (card Y4, OPTIONAL) marks a subject SEEN BUT NOT IDENTIFIED — the caller derives it
+        ``unknown`` (OPTIONAL) marks a subject SEEN BUT NOT IDENTIFIED — the caller derives it
         with :func:`percept.episodes.subject_is_unknown` on the verdict. When ``True`` the fold degrades
         to gate-only and NEVER rearms (a visible abstention must not manufacture wrong suppression); it
-        does not consult the emission ledger, so it is safe on the transient episode Y5 mints for an
-        unknown. Default ``False`` is byte-for-byte the pre-Y4 path."""
+        does not consult the emission ledger, so it is safe on the transient episode minted for an
+        unknown. Default ``False`` is byte-for-byte the path from before this flag existed."""
         if operation is not None:
             mutation = episode_mutation_of(operation)
         emitted = self._incidents.emitted(decision.episode.id) if decision is not None else 0
@@ -724,12 +726,12 @@ class BehaviorExecutor:
         ambiguous: bool = False,
         unknown: bool = False,
     ) -> ShadowObservation:
-        """Card Y11: OBSERVE what the fold WOULD propose for this observation — change nothing.
+        """OBSERVE what the fold WOULD propose for this observation — change nothing.
 
         Resolves to a :class:`ShadowObservation` (the ``subject`` + the proposed
         :class:`EpisodeFoldResult`) by calling the SAME pure :meth:`fold_episode`. It reads the
         emission ledger but never records into it and never touches the gate, so it is safe to run in
-        pure shadow beside the live path. The resulting advisory is what card Y11 writes into the
+        pure shadow beside the live path. The resulting advisory is what the shadow path writes into the
         ``shadow.fold`` trace stage and attaches to an incident — governing nothing."""
         fold = self.fold_episode(
             decision, mutation=mutation, operation=operation, ambiguous=ambiguous, unknown=unknown
@@ -774,15 +776,15 @@ class BehaviorExecutor:
     ) -> Fired | None:
         """Run one judged concern through the (unchanged) gate and return the firing, if any.
 
-        ``fold`` (Y3, OPTIONAL, additive) is the episode-owned idempotency decision for this
+        ``fold`` (OPTIONAL, additive) is the episode-owned idempotency decision for this
         observation (see :func:`episode_fold` / :meth:`fold_episode`). When supplied it governs the gate
         interaction WITHOUT changing gate mechanics: ``should_evaluate_gate=False`` returns before the
         gate is ever consulted (an already-emitted episode re-stated unchanged — so a shared or an
         evicted gate key can never manufacture a duplicate), and ``should_rearm=True`` re-arms the edge
         first (a genuinely new episode, or an accepted update). When ``fold is None`` (the default) this
-        method is BYTE-FOR-BYTE the pre-Y3 path — the gate bit alone decides, exactly as before.
+        method is BYTE-FOR-BYTE the path from before this fold existed — the gate bit alone decides, exactly as before.
 
-        ``timing`` (X7, ADR-001 §1) is the OPTIONAL, additive judgment-timing accumulator the caller
+        ``timing`` (ADR-001 §1) is the OPTIONAL, additive judgment-timing accumulator the caller
         filled as this evidence moved through the funnel (``mark_ingest_observed`` →
         ``mark_admitted`` → ``mark_judge_started`` → ``mark_judge_completed``). When supplied, the
         decision produced here is ALSO frozen into a :class:`~percept.contracts.JudgmentEvent` and
@@ -799,8 +801,8 @@ class BehaviorExecutor:
             return None  # never-contract: a confident-false must not reach the gate
         key = base_key  # the key is ONLY (goal, entity) now — the interval bucket moved to ctx
         self._interval_rearm(ctx, key, program.key, t)
-        # Y3: episode-owned idempotency, applied BEFORE the gate. Absent (fold=None) this whole block is
-        # skipped and the path is byte-for-byte the pre-Y3 gate-only behaviour.
+        # Episode-owned idempotency, applied BEFORE the gate. Absent (fold=None) this whole block is
+        # skipped and the path is byte-for-byte the gate-only behaviour from before this existed.
         if fold is not None:
             if not fold.should_evaluate_gate:
                 # The episode already reported and nothing changed — do not consult the gate at all, so
@@ -814,7 +816,7 @@ class BehaviorExecutor:
         # Pass the goal's dwell (hold_s) + the frame time. hold_s=None -> the gate ignores `now`
         # and this is byte-for-byte the rising-edge path. A never-goal's key is marked no_evict so a TTL
         # drop can never re-arm it (the fire-once-ever contract; see Gate.evaluate).
-        # Z3: take the TYPED outcome (action + O2 reason) rather than the bare action. ``decide`` IS the
+        # Take the TYPED outcome (action + typed reason code) rather than the bare action. ``decide`` IS the
         # implementation of ``evaluate`` (``evaluate`` returns ``decide(...).action``), so the edge
         # effects and the action are byte-for-byte identical — we simply also read the ``reason`` the
         # gate already computed, which until now reached only the health/trace channel, never the wire.
@@ -823,7 +825,7 @@ class BehaviorExecutor:
             no_evict=program.key.suppress_false,
         )
         action = outcome.action
-        # The envelope the executor knows at fire time (card Z3): the gate reason, how the eye looked, and
+        # The envelope the executor knows at fire time: the gate reason, how the eye looked, and
         # that a judged read is a DIRECT observation. ``roi`` stays None — the judge does not report the
         # region it fired on, and echoing the ``region_hint`` INPUT would misreport an input as an output.
         env = dict(
@@ -841,11 +843,11 @@ class BehaviorExecutor:
                 ctx.count += 1
                 if not self._fire_when(program.accumulate.fire_when)({"n": ctx.count, "t": t}):
                     return None  # counted the occurrence, but it isn't the nth -> no alert
-            # Y3: an incident is about to be DELIVERED — record it on the episode so the next unchanged
+            # An incident is about to be DELIVERED — record it on the episode so the next unchanged
             # confirmation of the same episode is idempotently suppressed (an escalated ASK still counts:
             # the episode spoke to the user). Only reached on a genuine emission, never on a withheld one.
             #
-            # Y10: minting the revision here ALSO gives this emission its stable id, and the fold's
+            # Minting the revision here ALSO gives this emission its stable id, and the fold's
             # ``supersedes`` (set only when a later turn was replace/retract on the same episode) names
             # the prior revision this one corrects. Surfacing BOTH on the fire is what lets a superseding
             # revision reach the consumer as a LINKED correction — not a coequal, unlinked peer. On an
@@ -858,7 +860,7 @@ class BehaviorExecutor:
                 supersedes = fold.supersedes
             if supersedes is not None:
                 self.metrics.incr(f"{metric}.superseding_revision")
-            if is_hard_quadrant(consequence_of(goal)):  # A3 hard-quadrant escalates to ASK
+            if is_hard_quadrant(consequence_of(goal)):  # a hard-quadrant consequence escalates to ASK
                 self.metrics.incr("consequence.escalate")
                 return Fired(goal.id, ASK, escalate_text(goal), base_key[-1], verdict,
                              self._judgment(key, evidence_seq, ASK, timing, env),
@@ -871,7 +873,7 @@ class BehaviorExecutor:
                          self._judgment(key, evidence_seq, ASK, timing, env), **env)
         return None
 
-    # -- X7: the ONE production construction site of the contract's centre ----------------------
+    # -- The ONE production construction site of the contract's centre ----------------------
     def _judgment(
         self, key: tuple, evidence_seq: int, action: str,
         timing: JudgmentTimingBuilder | None, env: dict | None = None,
@@ -881,7 +883,7 @@ class BehaviorExecutor:
         ``None`` (not a fabricated event) whenever the caller threaded no timing accumulator, or the
         accumulator is missing a stamp the funnel never took — an event whose clock discipline the
         runtime cannot honestly attest is worse than no event. Any failure is swallowed and counted
-        (``judgment.build_failed``): X7 is ADDITIVE, so a broken stamp must never change what fires.
+        (``judgment.build_failed``): this stamp is ADDITIVE, so a broken stamp must never change what fires.
 
         ``key``/``evidence_seq`` mirror :class:`percept.sequencing.GateDecision`; the freeze stamp
         (``decision_emitted_ts``) is taken HERE, at the instant the decision becomes final, which is
@@ -949,7 +951,7 @@ class BehaviorExecutor:
         """Fire on a NEW distinct episode, gated by the accumulator. ``fire_when`` over ``{n, t}`` is
         what makes "alert me the 3rd distinct time" pure data; default (None) fires each new episode.
 
-        Card Y1 — the episode/continuation decision reaches the gate ONLY as a ``rearm()`` call from
+        The episode/continuation decision reaches the gate ONLY as a ``rearm()`` call from
         here (gate.py stays mechanically unchanged). ``is_new`` is now the output of the separated
         continuation conjunction in :meth:`percept.episodes.EpisodeLog.observe_decision`, so a
         same-SUBJECT observation that merely continues an open episode never rolls the discriminator
@@ -991,7 +993,7 @@ _PERCEPTION_FIELDS = {"modality", "temporal", "n_frames", "roi", "sampling", "au
 
 # sense -> default PerceptionSpec. Empty for now (every sense -> single vision-only frame, byte-for-byte
 # with today). A non-single preset (e.g. transition -> strip) is switched on ONLY when the Phase-7
-# ablation proves its lift (the S1 discipline) AND its consumer (strip assembly) exists. Authored
+# ablation proves its lift AND its consumer (strip assembly) exists. Authored
 # perception always overrides the preset.
 _SENSE_PERCEPTION_PRESET: dict[str, PerceptionSpec] = {}
 
@@ -1199,7 +1201,7 @@ _MAX_STATUS_LEN = 40
 
 def coerce_authored_episode(raw) -> dict:
     """Validate a conductor ``episode`` block into a safe ``goal.state['episode']`` sub-dict — the
-    CONCERN-LEVEL continuation policy (card Y1, consumed by
+    CONCERN-LEVEL continuation policy (consumed by
     :func:`~percept.episodes.episode_policy_of`). Sibling of :func:`coerce_authored_rhythm`: closed
     vocabulary (``policy`` must name a shipped :data:`~percept.episodes.EPISODE_POLICIES` preset),
     clamped numerics (a positive ``continuity_gap_s`` under a day), bounded string sets.
@@ -1257,7 +1259,7 @@ def coerce_authored_sense(raw) -> dict:
 
 
 def perception_for_concern(concern) -> dict:
-    """Map a :class:`~percept.contracts.Concern`'s B1 clip declaration to a ``goal.state['perception']``
+    """Map a :class:`~percept.contracts.Concern`'s clip declaration to a ``goal.state['perception']``
     sub-dict (the same shape :func:`coerce_authored_perception` emits). A concern declaring a positive
     ``window_s`` asks for a time-bounded temporal clip; a bare ``clip=True`` (no window) asks for a
     strip. A concern that declared neither yields ``{}`` -> the single-frame default is untouched. This

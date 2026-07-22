@@ -1,4 +1,4 @@
-"""The tunables inventory (card C0, ADR-008) — every behavior-affecting knob, typed and owned.
+"""The tunables inventory (ADR-008) — every behavior-affecting knob, typed and owned.
 
 ADR-008 (``docs/adr/ADR-008-configuration-ownership-resolution-provenance.md``) names six places a
 behavior-affecting value can be set today (the ``Settings`` tree, ``watch()``/``Percept.create()``
@@ -187,7 +187,7 @@ _SETTINGS: tuple[TunableSpec, ...] = (
         path="Settings.gate.refractory_s", owner="Gate", visibility="public", safe_to_optimize=False,
         default=0.0, value_type="float", env_var="PERCEPT_GATE_REFRACTORY_S",
         requires_recompile=True, risk="high",
-        note="L3 re-fire suppression window (H0 precision forensic's RE-FIRES source).",
+        note="Refractory re-fire suppression window (precision-tuning finding's RE-FIRES source).",
     ),
     # -- EntitySettings — split: iou_match is identity-strategy calibration (SourceProfile); max_entities
     # is a resource/eviction ceiling (ExecutionPolicy).
@@ -355,7 +355,7 @@ _SETTINGS: tuple[TunableSpec, ...] = (
         path="Settings.edge.salience_stat", owner="SourceProfile", visibility="public",
         safe_to_optimize=False, default="mean", value_type="enum", choices=("mean", "block_max", "p95"),
         env_var="PERCEPT_SALIENCE_STAT", requires_recompile=True, risk="medium",
-        note="deployment-wide default localizing statistic (H0: block_max ~doubled recall).",
+        note="deployment-wide default localizing statistic (empirical tuning: block_max ~doubled recall).",
     ),
     TunableSpec(
         path="Settings.edge.ego_compensate", owner="SourceProfile", visibility="public",
@@ -801,7 +801,7 @@ _WATCH_PROFILE: tuple[TunableSpec, ...] = (
         path="WatchProfile.goal_density_guidance.max_recommended_goals", owner="unclassified",
         visibility="advisory", safe_to_optimize=False, default=3, value_type="int",
         bounds=(1.0, float("inf")), risk="low",
-        note="advisory only, NOTHING enforces it (module docstring); H0 held <=3.",
+        note="advisory only, NOTHING enforces it (module docstring); empirical tuning held <=3.",
     ),
     TunableSpec(
         path="WatchProfile.goal_density_guidance.note", owner="unclassified", visibility="advisory",
@@ -875,7 +875,7 @@ _SOURCE_PROFILE: tuple[TunableSpec, ...] = (
     TunableSpec(
         path="SourceProfile.parameters.unknown_attaches_to_active_bound", owner="SourceProfile",
         visibility="public", safe_to_optimize=False, default=False, value_type="bool", risk="low",
-        note="default_episode_policy input: card-Y4 single-focus attach; off by default.",
+        note="default_episode_policy input: single-focus attach; off by default.",
     ),
     TunableSpec(
         path="SourceProfile.parameters.coverage_floor", owner="unclassified", visibility="advisory",
@@ -883,7 +883,7 @@ _SOURCE_PROFILE: tuple[TunableSpec, ...] = (
         note="ADR-008 §Corrections(b)/§Open questions #1: owner undecided between SourceProfile "
         "(per-source-class default) and ExecutionPolicy (per-deployment posture); must be explicit, "
         "opt-in and declared before a zero-admit run is ever reported 'degraded' rather than quiet "
-        "(percept.doctor's own rule). THIS is the C0 tunable the ADR names as unresolved.",
+        "(percept.doctor's own rule). THIS is the tunable the ADR names as unresolved.",
     ),
     TunableSpec(
         path="SourceProfile.stability", owner="SourceProfile", visibility="public", safe_to_optimize=False,
@@ -1072,7 +1072,7 @@ REGISTRY: tuple[TunableSpec, ...] = _build_registry()
 
 
 def owners_summary(registry: tuple[TunableSpec, ...] = REGISTRY) -> dict[str, int]:
-    """Tunable count by owner — the shape of the report card C0 hands back."""
+    """Tunable count by owner — the shape of the summary report this module hands back."""
     out: dict[str, int] = {}
     for spec in registry:
         out[spec.owner] = out.get(spec.owner, 0) + 1

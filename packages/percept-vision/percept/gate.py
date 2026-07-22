@@ -15,13 +15,13 @@ Rising-edge + the armed/disarmed re-fire guard are implemented as a single bit p
 though the old cup already did), while the same entity never double-fires until it goes
 confident-false and re-arms.
 
-``refractory_s`` (L3, precision track) is a SEPARATE, time-based guard on top of that bit: it
+``refractory_s`` (precision track) is a SEPARATE, time-based guard on top of that bit: it
 suppresses a fire landing within N seconds of the same key's last real fire, even when a spurious
 confident-false blip re-armed the edge in between (mid-episode judge jitter). Off by default
 (``None``/``0`` = byte-for-byte the historical gate); see :meth:`Gate.evaluate`.
 
-Card O2 — GA of the decision model
-----------------------------------
+GA of the decision model
+-------------------------
 The three actions and the rising-edge/refractory rules above are the SDK's documented, stable
 decision surface. Two things make that surface usable by an integrator rather than merely true:
 
@@ -53,7 +53,7 @@ from typing import Callable, Hashable, Literal
 from .adapters import Verdict
 from .observability import get_logger, log
 
-# M0/GATE_STATE_LEAK defaults — a bare ``Gate()`` must not be able to grow without bound (ADR-001
+# GATE_STATE_LEAK defaults — a bare ``Gate()`` must not be able to grow without bound (ADR-001
 # §9, "Gate keys": count + TTL, LRU/TTL eviction except explicitly pinned). Chosen so neither bound
 # interferes with any known caller's key volume, while still capping runaway 24/7 growth:
 #   * _DEFAULT_MAX_KEYS  — the LRU backstop. It is enforced unconditionally (no clock required), so
@@ -214,28 +214,28 @@ class Gate:
         refractory_s: float | None = None,
         on_suppress: "Callable[[GateOutcome], None] | None" = None,
     ) -> None:
-        # O2: called with the :class:`GateOutcome` for every SUPPRESSED decision (reason in
+        # Called with the :class:`GateOutcome` for every SUPPRESSED decision (reason in
         # :data:`SUPPRESSION_REASONS`) — never for a plain already_fired/dwell_pending/not_satisfied
-        # SILENT. ``None`` (the default) = no hook = byte-for-byte the pre-O2 gate; ``Percept.create``
+        # SILENT. ``None`` (the default) = no hook = byte-for-byte the earlier gate; ``Percept.create``
         # wires it to the runtime health channel. Best-effort by contract: a raising hook must never
         # break the firing path (see :meth:`_note_suppressed`).
         self.on_suppress = on_suppress
         self.threshold = threshold
         self.fresh_min = fresh_min
         self.require_false_first = require_false_first  # gate-wide default for the baseline rule
-        # L3 precision track: gate-wide default time-refractory (WatchProfile ``gate.refractory_s``).
+        # Precision track: gate-wide default time-refractory (WatchProfile ``gate.refractory_s``).
         # ``None``/``0``/negative = off = byte-for-byte the historical gate (no per-call override needed).
         self.refractory_s = refractory_s
         self._armed: dict[Hashable, bool] = {}  # key -> ready-to-fire
         # R-1 sustained-duration (dwell): key -> the time it first became continuously true. Only
         # populated when a goal sets ``hold_s``; empty otherwise, so the no-dwell path is byte-for-byte.
         self._dwell_since: dict[Hashable, float] = {}
-        # L3: key -> the ``now`` timestamp of that key's last REAL fire (only set when a fire is
+        # Precision track: key -> the ``now`` timestamp of that key's last REAL fire (only set when a fire is
         # actually emitted, never on a refractory-suppressed one — the window is anchored to the last
         # genuine notification, not re-triggered by the suppression itself). Empty unless refractory is
         # used somewhere on this key, so the no-refractory path stays byte-for-byte.
         self._last_fire: dict[Hashable, float] = {}
-        # R-1/M0 growth bound (24/7). `_armed`/`_dwell_since` are fed by unbounded key sources (per-entity,
+        # R-1 growth bound (24/7). `_armed`/`_dwell_since` are fed by unbounded key sources (per-entity,
         # per-time-bucket, per-answer); on a 24/7 watch they grow without limit. Eviction is ON BY DEFAULT
         # (see `_DEFAULT_MAX_KEYS`/`_DEFAULT_KEY_TTL_S` above) — pass ``max_keys=None``/``key_ttl_s=None``
         # explicitly to opt back out to the old unbounded gate (no `_touched` bookkeeping at all).
@@ -249,14 +249,14 @@ class Gate:
         self._clock = clock
         self._touched: dict[Hashable, float] = {}  # key -> last time it was evaluated (eviction stamp)
         self._no_evict: set[Hashable] = set()       # keys exempt from TTL + LRU (never-once semantics)
-        # M0/GATE_STATE_LEAK: eviction must never be silent (ADR-001 §9). `on_evict(key, reason)` fires for
+        # GATE_STATE_LEAK: eviction must never be silent (ADR-001 §9). `on_evict(key, reason)` fires for
         # every bound-driven drop (reason is "ttl" or "max_keys"); default logs a structured line so a drop
         # is always observable even when the caller wires nothing.
         self.on_evict = on_evict
 
     @property
     def _evicting(self) -> bool:
-        """Eviction bookkeeping is live whenever a bound is set — true by default (M0/GATE_STATE_LEAK);
+        """Eviction bookkeeping is live whenever a bound is set — true by default (GATE_STATE_LEAK guard);
         only an explicit ``max_keys=None, key_ttl_s=None`` disables it and restores the old unbounded,
         byte-for-byte gate."""
         return self.max_keys is not None or self.key_ttl_s is not None
@@ -271,7 +271,7 @@ class Gate:
     def _evict(self, key: Hashable, reason: str) -> None:
         """Drop a key as a BOUND-DRIVEN eviction (TTL or max_keys) — as opposed to `_drop` used directly
         by `reset_goal`/`reset_entity`, which are intentional, caller-requested resets, not capacity
-        pressure. M0/GATE_STATE_LEAK: this is the one path that must never be silent (ADR-001 §9)."""
+        pressure. GATE_STATE_LEAK: this is the one path that must never be silent (ADR-001 §9)."""
         self._drop(key)
         if self.on_evict is not None:
             self.on_evict(key, reason)
@@ -298,7 +298,7 @@ class Gate:
                     self._evict(key, "max_keys")
 
     def _note_suppressed(self, decision: "GateOutcome") -> None:
-        """O2: announce a SUPPRESSED decision through ``on_suppress`` (and always log it).
+        """Announce a SUPPRESSED decision through ``on_suppress`` (and always log it).
 
         Best-effort by contract — telemetry must never break the trust surface, so a hook that raises
         is swallowed and logged. The structured log line is emitted regardless of whether a hook is
@@ -363,7 +363,7 @@ class Gate:
         SILENT" rule: a key whose FIRST observation is confidently-true does not fire — only a genuine
         false->true edge does. Off = byte-for-byte the historical rising-edge gate (fire on first true).
 
-        ``refractory_s`` (L3 precision track, opt-in) suppresses a fire that would otherwise land
+        ``refractory_s`` (precision track, opt-in) suppresses a fire that would otherwise land
         within ``refractory_s`` seconds of THIS key's last real fire — even if a confident-false blip
         re-armed the edge in between. Precision forensic finding: ~12% of false fires on the
         charades-e2e track were RE-FIRES — the gate re-arming and firing again within one true episode
@@ -374,7 +374,7 @@ class Gate:
         per-call. Requires ``now``; ``None``/``0``/negative (the default either way) = byte-for-byte the
         historical gate (no refractory).
 
-        O2: the reason codes are the closed :data:`GATE_REASONS` vocabulary; the two SUPPRESSION
+        The reason codes are the closed :data:`GATE_REASONS` vocabulary; the two SUPPRESSION
         codes (``start_anchored``, ``refractory``) additionally invoke ``on_suppress``. Neither the
         actions nor the edge effects differ from :meth:`evaluate` — this method IS the implementation
         and ``evaluate`` is its ``.action``.
@@ -417,7 +417,7 @@ class Gate:
             return _d(SILENT, "start_anchored")
         if not self._armed.get(key, True):  # new keys default to armed -> fresh edge
             return _d(SILENT, "already_fired")  # already true / already fired this episode
-        # L3: time-refractory, checked AFTER the edge/require-false-first logic (a fire must already be
+        # Precision track: time-refractory, checked AFTER the edge/require-false-first logic (a fire must already be
         # "due") and BEFORE it is actually emitted — so a suppressed fire still counts as this episode's
         # fire (armed -> False) rather than leaving the edge live to fire again next tick.
         effective_refractory = self.refractory_s if refractory_s is None else refractory_s
@@ -445,7 +445,7 @@ class Gate:
         return _d(SILENT, "dwell_pending")  # still accumulating dwell — true, but not long enough yet
 
     def rearm(self, key: Hashable) -> None:
-        """Force a key back to armed (e.g. after a correction clears the edge). Also clears any L3
+        """Force a key back to armed (e.g. after a correction clears the edge). Also clears any
         refractory memory — an explicit rearm is a fresh episode boundary, so a stale last-fire stamp
         must not suppress the next legitimate fire."""
         self._armed[key] = True
@@ -463,7 +463,7 @@ class Gate:
             self._drop(key)
 
     def reset_entity(self, entity_id: Hashable) -> None:
-        """R3: drop every gate key belonging to a dead entity (``(goal_id, entity_id)``), so an evicted
+        """Drop every gate key belonging to a dead entity (``(goal_id, entity_id)``), so an evicted
         entity leaves no orphan edge behind. Wired to :meth:`EntityGraph` eviction by :class:`Percept`.
         The per-goal singletons (``(goal_id, "__resolved__")`` etc.) never match — their second element is
         a sentinel string, not an entity id — so they are untouched."""
@@ -473,7 +473,7 @@ class Gate:
         ]:
             self._drop(key)
 
-    # -- persistence (R4: the armed edge must survive a restart, or a 24/7 watch re-fires) ---------
+    # -- persistence (the armed edge must survive a restart, or a 24/7 watch re-fires) ---------
     def snapshot(self) -> dict:
         """Durable edge state. Keys are tuples ``(goal_id, entity[, answer])`` -> serialized as lists so
         the whole snapshot stays JSON-able through the persistence backend. The in-progress dwell timer
@@ -486,7 +486,7 @@ class Gate:
             # legacy snapshot lacking these keys is a no-op — see :meth:`restore`).
             "touched": [[list(k), float(t)] for k, t in self._touched.items()],
             "no_evict": [list(k) for k in self._no_evict],
-            # L3: last-real-fire stamps travel too, so a restarted 24/7 watch keeps its refractory memory
+            # Precision track: last-real-fire stamps travel too, so a restarted 24/7 watch keeps its refractory memory
             # (otherwise a restart mid-refractory-window would silently re-open it to fire early).
             "last_fire": [[list(k), float(t)] for k, t in self._last_fire.items()],
         }
@@ -505,8 +505,8 @@ class Gate:
         self._dwell_since = {}
         self._touched = {tuple(k): float(t) for k, t in snap.get("touched", [])}
         self._no_evict = {tuple(k) for k in snap.get("no_evict", [])}
-        # L3: restore last-fire stamps; missing key (legacy snapshot) -> empty, a no-op (no refractory
-        # memory to resume, byte-for-byte the pre-L3 restore).
+        # Precision track: restore last-fire stamps; missing key (legacy snapshot) -> empty, a no-op (no refractory
+        # memory to resume, byte-for-byte the earlier restore).
         self._last_fire = {tuple(k): float(t) for k, t in snap.get("last_fire", [])}
 
 

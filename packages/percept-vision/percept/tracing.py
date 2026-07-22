@@ -89,7 +89,7 @@ STAGE_JUDGE_DROPPED = "judge.dropped"      # superseded / revision-dropped BEFOR
 STAGE_GATE_SUPPRESSED = "gate.suppressed"  # a fire the baseline gate would have delivered, withheld
 STAGE_SOURCE_HEALTH = "source.health"      # a capture/scheduler health TRANSITION (degraded/recovered)
 STAGE_TRACE_DROPPED = "trace_dropped"      # THIS recorder dropped records (rule 2 — never silent)
-STAGE_SHADOW_FOLD = "shadow.fold"          # card Y11: ADVISORY — the subject + EpisodeFoldResult the
+STAGE_SHADOW_FOLD = "shadow.fold"          # ADVISORY — the subject + EpisodeFoldResult the
 #: model WOULD have proposed for this observation. Emitted alongside a decision, it governs NOTHING:
 #: it changes no firing, re-arms no edge, suppresses nothing. It exists so a client running the wheel
 #: on THEIR data can hand back a ``.ptrace`` (media OFF) that carries what the fold proposed, gradeable
@@ -155,7 +155,7 @@ JUDGE_DROP_HEALTH_KINDS: frozenset[str] = frozenset({
 })
 
 #: Gate actions counted in :attr:`TraceSummary.gate_outcomes`. ``fire``/``ask``/``silent`` come from
-#: ``gate.classified``; ``suppressed`` is the O2 typed suppression (start_anchored / refractory) and
+#: ``gate.classified``; ``suppressed`` is the typed suppression (start_anchored / refractory) and
 #: is NOT one of the three gate actions — a suppressed decision is a silent that the baseline gate
 #: WOULD have delivered, which is a different fact and gets its own bucket.
 GATE_OUTCOMES: tuple[str, ...] = ("fire", "ask", "silent", "suppressed")
@@ -186,7 +186,7 @@ class ComponentIdentity:
     """WHICH implementation produced these numbers.
 
     ``role`` is the seam (``"vision"``, ``"judge"``, ``"gate"``, ``"profile"``); ``name`` is the
-    provider/adapter identity (card RB-PROVIDER: the NAME is the identity); ``model`` is
+    provider/adapter identity (the NAME is the identity); ``model`` is
     configuration carried to it (``"claude-sonnet-4-5"``), never the adapter's identity; ``version``
     is the adapter's own version string; ``config_hash`` content-addresses whatever knobs were bound.
     """
@@ -212,7 +212,7 @@ class ComponentIdentity:
         )
 
 
-#: The resolved policy knobs that a plan identity is expected to carry (card X3). A threshold A/B is
+#: The resolved policy knobs that a plan identity is expected to carry. A threshold A/B is
 #: the canonical eval shape — two arms whose GOALS are byte-identical and whose only difference is a
 #: cutoff — so a plan hash blind to these knobs cannot tell the two arms apart, which defeats the whole
 #: point of quoting it. These names are the RESOLVED runtime fields, not env-var spellings:
@@ -290,7 +290,7 @@ class PlanIdentity:
     :class:`~percept.goals.GoalRegistry` revision the run started at (goal edits move it mid-run, and a
     judged frame is always pinned to the revision it was admitted under).
 
-    Card X3: the hash covers policy because the commonest eval is a threshold A/B, where the goals are
+    The hash covers policy because the commonest eval is a threshold A/B, where the goals are
     identical by construction. A hash that could not separate those two arms was worse than no hash —
     it let a report claim two different configurations were the same one.
     """
@@ -420,7 +420,7 @@ TraceLevel = Literal["summary", "decisions", "full"]
 _SUMMARY_STAGES: frozenset[str] = frozenset({
     STAGE_RUN_STARTED, STAGE_RUN_ENDED, STAGE_SOURCE_HEALTH,
     STAGE_INCIDENT_CREATED, STAGE_TRACE_DROPPED,
-    # Card Y11: the shadow advisory is retained at EVERY level (it is low-volume — one record per
+    # The shadow advisory is retained at EVERY level (it is low-volume — one record per
     # subject/fold decision, not per frame). It must survive a client's media-OFF ``.ptrace``, which
     # may be captured at production (summary) level; a fold that only lived at ``full`` would be absent
     # from exactly the trace a client can send back for offline grading.
@@ -446,7 +446,7 @@ class TracePolicy:
     - ``level="full"`` — everything, including a record per frame. Correct for a 36s probe,
       **dangerous for 24/7**: always pair it with ``max_duration_s`` / ``max_bytes``.
 
-    ``incident_window_s`` gives production the third posture the card asks for: full detail is
+    ``incident_window_s`` gives production the third posture that's needed: full detail is
     retained for records whose ``source_ts`` falls within this many seconds of an incident or a
     health transition, even at ``summary``/``decisions`` level (see
     :meth:`TraceRecorder.mark_incident`). ``max_duration_s`` caps retention by SOURCE time from the
@@ -545,13 +545,20 @@ class RunTraceManifest:
     #: exactly the declared windows and nothing is invented.
     evidence_window_s: float = 0.0
     #: The Gate's decision knobs at run start (``threshold`` / ``fresh_min`` /
-    #: ``require_false_first`` / ``refractory_s``). Additive, and load-bearing for card D8b:
+    #: ``require_false_first`` / ``refractory_s``). Additive, and load-bearing:
     #: :mod:`percept.replay` re-runs recorded verdicts through a Gate rebuilt from EXACTLY these
     #: numbers, so a cognition replay is not silently done against today's defaults. Empty = not
     #: captured, and the replayer says so instead of guessing (see
     #: :attr:`percept.replay.ReplayReport.gate_config_recorded`).
     gate_config: dict[str, Any] = field(default_factory=dict)
     labels: dict[str, Any] = field(default_factory=dict)
+    #: Wheel/sdist provenance of the package that produced this trace — the git commit it was
+    #: built from and the UTC build timestamp (see :func:`percept.build_info`). ``"unreleased"``
+    #: in a bare source checkout that never went through the packaging build step. Additive: ties
+    #: a returned ``.ptrace`` back to the exact build, on top of the already-recorded
+    #: ``percept_version``/``contract_version``.
+    build_commit: str | None = None
+    build_timestamp: str | None = None
 
     @classmethod
     def create(
@@ -590,16 +597,26 @@ class RunTraceManifest:
             contract_version = _cv
         except Exception:  # pragma: no cover - defensive
             pass
+        build_commit = build_timestamp = None
+        try:
+            from ._build import build_info as _bi  # noqa: PLC0415
+            _build = _bi()
+            build_commit = _build.git_commit
+            build_timestamp = _build.build_timestamp
+        except Exception:  # pragma: no cover - defensive
+            pass
         return cls(
             run_id=run_id or uuid.uuid4().hex[:16],
             source=source,
             percept_version=percept_version,
             watch_version=watch_version,
             contract_version=contract_version,
+            build_commit=build_commit,
+            build_timestamp=build_timestamp,
             started_wall_ts=float(wall_clock()),
             started_source_ts=started_source_ts,
             driver=driver,
-            # Card X3: when the caller hands us goals rather than a built PlanIdentity, the resolved
+            # When the caller hands us goals rather than a built PlanIdentity, the resolved
             # cutoffs it ran under (``plan_policy``) still belong in the identity — otherwise two runs
             # of the same goals at different thresholds quote the same plan_hash.
             plan=plan if plan is not None else (
@@ -623,6 +640,8 @@ class RunTraceManifest:
             "percept_version": self.percept_version,
             "watch_version": self.watch_version,
             "contract_version": self.contract_version,
+            "build_commit": self.build_commit,
+            "build_timestamp": self.build_timestamp,
             "started_wall_ts": self.started_wall_ts,
             "started_source_ts": self.started_source_ts,
             "driver": self.driver,
@@ -645,6 +664,8 @@ class RunTraceManifest:
             percept_version=payload.get("percept_version"),
             watch_version=payload.get("watch_version"),
             contract_version=payload.get("contract_version"),
+            build_commit=payload.get("build_commit"),
+            build_timestamp=payload.get("build_timestamp"),
             started_wall_ts=float(payload.get("started_wall_ts", 0.0)),
             started_source_ts=payload.get("started_source_ts"),
             driver=str(payload.get("driver", "run")),
@@ -1188,7 +1209,7 @@ class TraceRecorder:
         self._drop_reasons: Counter[str] = Counter()
         self._bytes = 0
         self._observed_wall: dict[str, float] = {}   # trace_id -> when the runtime FIRST saw it
-        self._frame_seq: dict[str, int] = {}          # trace_id -> this trace's source.frame seq (D11)
+        self._frame_seq: dict[str, int] = {}          # trace_id -> this trace's source.frame seq
         self._first_source_ts: float | None = None
         self._last_source_ts: float | None = None
         self._incident_ts: list[float] = []          # incident/health anchors for the retention window
@@ -1250,7 +1271,7 @@ class TraceRecorder:
         if not self.policy.include_media:
             data = {k: v for k, v in data.items() if k not in _MEDIA_KEYS}
         if stage == STAGE_JUDGMENT_EVENT and "evidence_seq" not in data:
-            # D11 — the RECORDER, not the caller, stamps the correlation handle: the seq of THIS
+            # The RECORDER, not the caller, stamps the correlation handle: the seq of THIS
             # trace_id's own source.frame record (the literal evidence that fed this judgment),
             # resolvable within the same .ptrace without needing the frame itself. A caller that
             # already supplied one (e.g. a replay driver reconstructing a record) is left alone.
@@ -1265,7 +1286,7 @@ class TraceRecorder:
         )
         self._seq += 1
         if stage == STAGE_SOURCE_FRAME:
-            # D11 — remember THIS trace_id's admitted-frame seq so a same-trace judgment.event
+            # Remember THIS trace_id's admitted-frame seq so a same-trace judgment.event
             # (emitted later, same tick) can resolve back to it. Bounded exactly like
             # ``_observed_wall`` — a correlation map must not leak on a 24/7 run.
             if len(self._frame_seq) >= 4 * self._max_records:
@@ -1405,7 +1426,7 @@ class TraceRecorder:
 
         Maps ``RuntimeHealthEvent`` kinds onto this module's vocabulary — scheduler drops become
         ``judge.dropped``, gate suppression becomes ``gate.suppressed``, and the degrade/recover
-        latch (M3R) becomes ``source.health`` transitions that drive ``source_healthy_s``. Kinds
+        latch becomes ``source.health`` transitions that drive ``source_healthy_s``. Kinds
         outside those sets are recorded verbatim under ``source.health`` with ``state="info"`` so a
         new runtime event can never be silently lost.
         """

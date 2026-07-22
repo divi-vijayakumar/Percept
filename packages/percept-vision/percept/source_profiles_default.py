@@ -1,20 +1,20 @@
-"""The shipped :class:`~percept.sourceprofile.SourceProfile` set (card D7, ADR-005).
+"""The shipped :class:`~percept.sourceprofile.SourceProfile` set (ADR-005).
 
 Three profiles ship. Two are stable; one is explicitly EXPERIMENTAL and says so in its own
 ``stability`` field, not only in prose:
 
 - :data:`PHYSICAL_SCENE` — the source class percept's stock tier-0 eye was calibrated on. Cameras.
-  Admission is the measured H0 stack (localized ``block_max`` salience over the 48x36 gate frame).
+  Admission is the measured admission stack (localized ``block_max`` salience over the 48x36 gate frame).
 - :data:`SCREEN_DOCUMENT` — screen recordings, document/page content. Percept ships NO calibrated
   admission signal for this class and this profile DECLARES that
   (``parameters["change_signal"] == UNTUNED``). Its honest floor is a fixed low-rate coast.
 - :data:`CONVERSATION` — EXPERIMENTAL. Speaker identity is off-contract and goals judge serially
   (~24s/turn measured), so this profile is for evaluation, not production.
 
-Why SCREEN_DOCUMENT is untuned, in numbers (the reason this card exists)
------------------------------------------------------------------------
+Why SCREEN_DOCUMENT is untuned, in numbers
+-------------------------------------------
 
-``percept-doctor`` (card D1) on the real client fixture ``probes/01-screen-walkthrough/data/clean.mp4``
+``percept-doctor`` on the real client fixture ``probes/01-screen-walkthrough/data/clean.mp4``
 — a 36s accounting screen recording, 180 frames, 1920x1080, containing a HARD CUT between two
 different documents:
 
@@ -55,7 +55,7 @@ from .sourceprofile import (
 #: The measured doctor readout that justifies :data:`SCREEN_DOCUMENT` being untuned. Quoted verbatim
 #: by ADR-005 and docs/how-to/tune-admission.md so the three cannot drift apart.
 SCREEN_EVIDENCE = (
-    "Measured with percept-doctor (card D1) on probes/01-screen-walkthrough/data/clean.mp4 "
+    "Measured with percept-doctor on probes/01-screen-walkthrough/data/clean.mp4 "
     "(36s accounting screen recording, 180 frames, 1920x1080, containing a hard cut between two "
     "different documents): mean max 0.0163 vs threshold 0.100 -> 0 admitted; block_max max 0.0919 "
     "vs threshold 0.200 -> 0 admitted; p95 max 0.0743 vs threshold 0.150 -> 0 admitted. block_max "
@@ -67,9 +67,9 @@ SCREEN_EVIDENCE = (
     "precision)."
 )
 
-#: H0 provenance for the physical-scene admission stack (the same eval WatchProfile's defaults cite).
+#: Provenance for the physical-scene admission stack (the same eval WatchProfile's defaults cite).
 PHYSICAL_PROVENANCE = (
-    "Provenance: H0 viability eval, charades-e2e ablation ladder — localized block_max salience @ "
+    "Provenance: viability eval, charades-e2e ablation ladder — localized block_max salience @ "
     "0.20 nearly doubled recall over the whole-frame mean baseline. This is the ONE source class "
     "percept's stock tier-0 eye is calibrated on; see percept/profiles_default.py for the matching "
     "WatchProfile knobs."

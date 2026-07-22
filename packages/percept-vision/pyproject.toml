@@ -1,6 +1,10 @@
 [build-system]
 requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+build-backend = "_build_backend"
+backend-path = ["."]
+# `_build_backend.py` (at this package root) wraps setuptools.build_meta to stamp
+# `percept/_build_info.py` (version + git commit + CONTRACT_VERSION + build timestamp) into every
+# built wheel/sdist — see `percept.build_info()`.
 
 [project]
 name = "percept-vision"

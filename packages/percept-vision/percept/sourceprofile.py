@@ -1,4 +1,4 @@
-"""SourceProfile (card D7, ADR-005) — what KIND of world is on the other end of the stream.
+"""SourceProfile (ADR-005) — what KIND of world is on the other end of the stream.
 
 :class:`~percept.watchprofile.WatchProfile` answers ``Q(p | environment, goal, state)`` for a CAMERA:
 its ``environment`` axis is literally a camera mount (``fixed_camera`` / ``handheld`` / ``wearable``),
@@ -37,8 +37,8 @@ party ships ``industrial_line`` / ``medical_imaging`` / ``satellite_change`` / `
 :meth:`SourceProfileRegistry.register` (or via the ``percept.source_profiles`` entry-point group) —
 never by editing a ``Literal`` in this file. The same rule ``WatchProfile``'s free-text axes follow.
 
-Scope of contract v1.4 — narrow on purpose (ADR-006 §Consequences, card Y9)
---------------------------------------------------------------------------
+Scope of contract v1.4 — narrow on purpose (ADR-006 §Consequences)
+------------------------------------------------------------------
 
 The open registry above is a SEAM, not a promise of coverage. For contract v1.4 percept's subject
 handling is scoped to exactly two kinds, and that scope is a decision, not a gap waiting to close:
@@ -235,7 +235,7 @@ class SourceProfile:
     @property
     def default_identity_policy(self) -> str:
         """The identity resolver this source class DECLARES as its default — a capability, not a
-        mandate (card Y6, ADR-005 open-question 1). ``identity_strategy`` is the profile-level
+        mandate (ADR-005 open-question 1). ``identity_strategy`` is the profile-level
         declaration; :func:`percept.identity_policy.select_identity_policy` lets a CONCERN override
         it per goal (``goal.state['identity_policy']``), so one screen source can carry a document
         content-key for a PO goal and NO subject for a workflow-state goal without re-profiling.
@@ -258,14 +258,14 @@ class SourceProfile:
           thing seen again). A source with slow-changing content (a document, a page) can defensibly
           declare this; a source with many distinct fast-moving unidentified things generally should
           not.
-        - ``parameters['unknown_attaches_to_active_bound']`` — the card-Y4 single-focus attach.
+        - ``parameters['unknown_attaches_to_active_bound']`` — the single-focus attach.
 
         A concern that authors nothing on ``goal.state['episode']`` gets THIS value via
         ``percept.episodes.episode_policy_of(goal, default=profile.default_episode_policy)`` — a seam
         a caller opts into explicitly, mirroring how :func:`percept.identity_policy.select_identity_policy`
         is an unwired-but-available utility rather than something forced into every call site. Every
         shipped profile that declares neither parameter gets ``EpisodePolicy()`` — byte-for-byte the
-        Y5 default (mint a fresh episode per unidentified sighting, never collapse).
+        documented default (mint a fresh episode per unidentified sighting, never collapse).
         """
         from .episodes import EpisodePolicy  # local import: episodes.py stays contracts/sourceprofile-free
 

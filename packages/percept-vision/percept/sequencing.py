@@ -1,4 +1,4 @@
-"""Per-key evidence sequencing + a serialized decision reducer (ADR-001 §8, card A8).
+"""Per-key evidence sequencing + a serialized decision reducer (ADR-001 §8).
 
 Single-flight judging already gives sequencing safety "for free" today: ``Percept.perceive_judged``
 awaits one judge call before starting the next, and ``expected_goals_revision`` aborts a stale
@@ -134,7 +134,7 @@ class EvidenceSequencer:
     def tracked_keys(self) -> tuple[Hashable, ...]:
         """Every key this sequencer still holds a counter for, in first-admission order.
 
-        The bound seam: a long-running caller (``percept.agent``'s X7 judgment stamping) reads this
+        The bound seam: a long-running caller (``percept.agent``'s judgment stamping) reads this
         to shed its oldest keys, the way :class:`percept.gate.Gate` bounds ``_armed``. Read-only.
         """
         return tuple(self._next)
@@ -152,7 +152,7 @@ class SerializedDecisionReducer:
 
     Wraps a :class:`~percept.gate.Gate`; :meth:`submit` is the only path that should call
     ``Gate.evaluate`` for a sequenced result. Concurrent ``submit`` calls for the SAME key are
-    serialized through a per-key ``asyncio.Lock`` (requirement 2 of card A8) so a worker pool's
+    serialized through a per-key ``asyncio.Lock`` so a worker pool's
     overlapping completions can never interleave their gate mutations — the second submit to reach
     the lock always sees the first one's up-to-date ``latest_admitted``/applied state.
     """

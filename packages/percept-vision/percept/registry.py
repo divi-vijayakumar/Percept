@@ -67,7 +67,7 @@ def _lazy_fixture_vision() -> Any:
 # same in-core double (the class name still reads Fake* — internal implementation, not user-facing text).
 register("vision", "fake", lambda s: _fake.FakeVision())
 register("vision", "scripted", lambda s: _fake.FakeVision())
-# The FIXTURE replayer (card RB-OFFLINE): the keyless first run's vision seam. Unlike "scripted", it
+# The FIXTURE replayer: the keyless first run's vision seam. Unlike "scripted", it
 # answers ONLY the frames its bundled fixture scripts and raises on anything else — a real stream
 # pointed at it fails loudly instead of producing plausible-looking judgements. Lazy (percept.offline
 # imports adapters/config only, but keep the registry import-graph flat either way).

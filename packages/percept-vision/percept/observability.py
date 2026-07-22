@@ -49,7 +49,7 @@ class TraceEvent:
     ``gate.classified`` (from ``perceive_judged`` — ``truth``/``action``/``reason``, a human-readable
     WHY such as ``"silent: already_fired_or_not_rising"``) and ``incident.created`` (from the runtime
     worker). ``data`` carries the decision inputs/outputs for that stage. This is production telemetry
-    for the same edge/verdict/gate/reason shape H0's forensic bench trace used
+    for the same edge/verdict/gate/reason shape the forensic bench trace used
     (``eval/bench/track_charades_e2e.py``), now on the real runtime firing path. Emitted only when an
     ``on_trace`` callback is wired — default off, so the hot path is unchanged.
     """

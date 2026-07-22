@@ -74,7 +74,7 @@ _POLL = object()  # sentinel: "queue was empty this poll, try again" (distinct f
 def _get_polling(q: "queue.Queue", timeout: float = 0.5):
     """Bounded ``q.get()`` — returns ``_POLL`` on a timeout instead of blocking forever.
 
-    AUDIO_PUMP_DEADLOCK (M0/A2): the consumer used a bare ``await asyncio.to_thread(q.get)`` with no
+    AUDIO_PUMP_DEADLOCK: the consumer used a bare ``await asyncio.to_thread(q.get)`` with no
     timeout. ``asyncio.to_thread`` runs the call on a real OS thread; once that thread has *started*
     running, cancelling/closing the awaiting coroutine (task cancellation, ``aclose()`` on this async
     generator, or the process shutting down) does NOT stop it — ``concurrent.futures.Future.cancel()``
@@ -203,7 +203,7 @@ async def open_audio_source(
     thread.start()
     try:
         while True:
-            # AUDIO_PUMP_DEADLOCK (M0/A2): poll with a bounded timeout rather than a bare blocking
+            # AUDIO_PUMP_DEADLOCK: poll with a bounded timeout rather than a bare blocking
             # ``q.get()`` — see ``_get_polling`` for why an unbounded get here can hang the whole
             # process at exit once the consumer is torn down mid-wait.
             item = await asyncio.to_thread(_get_polling, q)

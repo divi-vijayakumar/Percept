@@ -46,7 +46,7 @@ Each corpus directory holds two files:
   observations, verdict}}`, a turns step carries `{{t, speaker, text}}`. The `verdict` block is what
   a scripted judge returns for that step, and may carry fields that do not exist on `Verdict` yet
   (`subject_key`, `binding`, `operation`) — `ScriptedJudge` attaches them additively today and will
-  pass them to the constructor the day P0 promotes them.
+  pass them to the constructor the day those fields are promoted.
 - `labels.json` — the GROUND TRUTH: per case an `expect` block (the expected ANSWER, machine
   readable), plus `proves` and `does_not_prove` strings. Most cases also carry a `wrong_answer`
   block naming the specific failure mode the case exists to catch.

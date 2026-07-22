@@ -116,7 +116,7 @@ def motion_score(
     so the gate treats the very first frame as "no motion yet". Mismatched dimensions are a
     contract error and raise.
 
-    ``region`` (a normalized :class:`~percept.adapters.Box`, the C1 "watch-out zone") restricts the
+    ``region`` (a normalized :class:`~percept.adapters.Box`, the "watch-out zone") restricts the
     diff to that rectangle: motion outside the box is ignored, so only movement *inside* the zone
     can escalate.
 
@@ -390,13 +390,13 @@ def ego_residual_score(prev_frame: Any, frame: Any, *, k: int = 4) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Civil time — the injected clock the schedule gate consults (C1)
+# Civil time — the injected clock the schedule gate consults
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class CivilTime:
-    """The civil moment a :class:`~percept.adapters.Schedule` is checked against (C1).
+    """The civil moment a :class:`~percept.adapters.Schedule` is checked against.
 
     Deliberately just ``(weekday, minute_of_day)`` so the gate's schedule decision is *pure*: no
     timezone, no wall-clock read inside the gate. The wall-clock -> civil conversion lives at the
@@ -423,7 +423,7 @@ def schedule_active(schedule: Schedule | None, now: CivilTime | None) -> bool:
     """Is a condition armed at ``now``? Opt-in: a ``None`` schedule OR a ``None`` clock -> always armed.
 
     The two ``None`` short-circuits keep the default path (no schedule, or no injected clock) byte-for-byte
-    identical to pre-C1 — schedule enforcement engages **only** when both a schedule and a clock are present.
+    identical to the schedule-less gate — schedule enforcement engages **only** when both a schedule and a clock are present.
     """
     if schedule is None or now is None:
         return True
@@ -441,7 +441,7 @@ MOTION_BIAS_KEY = "motion_bias"
 REGION_HINT_KEY = "region_hint"
 # Optional per-goal arming Schedule (a Schedule, or its windows/days dict) under this key.
 SCHEDULE_KEY = "schedule"
-# Optional per-goal temporal cadence (C2): {"min_judge_interval": float, "gate_on": motion|structural|
+# Optional per-goal temporal cadence: {"min_judge_interval": float, "gate_on": motion|structural|
 # semantic|fixed} under this key. Controls how OFTEN to look (distinct from PerceptionSpec = how DEEP).
 CADENCE_KEY = "cadence"
 # Optional per-goal salience MODE overrides (tracks the camera mount). Fall back to the deployment
@@ -504,7 +504,7 @@ def compile_watchspec(
                 region_hint=_coerce_box(goal.state.get(REGION_HINT_KEY)),
                 detectors=supported,  # cheap edge skills the brain selected, filtered to what the edge can run
                 schedule=_coerce_schedule(goal.state.get(SCHEDULE_KEY)),
-                cadence_s=cadence_s,  # C2: how OFTEN to look (distinct from PerceptionSpec = how DEEP)
+                cadence_s=cadence_s,  # how OFTEN to look (distinct from PerceptionSpec = how DEEP)
                 gate_on=gate_on,
                 salience_stat=stat,
                 ego_compensate=ego,
@@ -560,7 +560,7 @@ def _coerce_schedule(obj: Any) -> Schedule | None:
 
 
 def _coerce_cadence(obj: Any) -> tuple[float | None, str]:
-    """Goal-state cadence hint -> ``(cadence_s, gate_on)``; the firewall for the C2 temporal cadence.
+    """Goal-state cadence hint -> ``(cadence_s, gate_on)``; the firewall for the temporal cadence.
 
     Accepts ``{"min_judge_interval": float, "gate_on": "motion"|"structural"|"semantic"|"fixed"}``.
     Unknown shape / out-of-vocab -> ``(None, "motion")`` (the default, no cadence cap). A non-positive
@@ -645,8 +645,8 @@ class MotionGate:
     goal wins), falling back to the gate default (``PERCEPT_MOTION_GATE``) when the spec is empty.
     An empty spec means no active watch goals -> nothing to look for -> never escalate.
 
-    **C1 opt-ins (both strictly off by default — the no-region/no-schedule path is byte-for-byte
-    the pre-C1 gate):**
+    **Opt-ins (both strictly off by default — the no-region/no-schedule path is byte-for-byte
+    the original gate):**
 
     - *watch-out zone* — a condition's ``region_hint`` masks the motion diff to that rectangle, so
       only movement *inside* the zone can escalate that goal (movement elsewhere is ignored).
@@ -670,7 +670,7 @@ class MotionGate:
         cfg = settings or load_settings()
         self._default = cfg.edge.motion_gate
         self._prev: Frame | None = None
-        # Per-goal last-escalation time, for the cadence cap / fixed-cadence floor (C2). Empty when no
+        # Per-goal last-escalation time, for the cadence cap / fixed-cadence floor. Empty when no
         # condition sets cadence_s -> the default motion path is byte-for-byte unchanged.
         self._last_escalate: dict[str, float] = {}
         # Injected civil clock for the schedule gate. None -> schedules are not enforced (default
@@ -697,7 +697,7 @@ class MotionGate:
         self._prev = None
 
     def adopt_state(self, prev: "MotionGate") -> None:
-        """Carry a PRIOR gate's per-goal throttle + prev frame into this freshly-recompiled gate (D2).
+        """Carry a PRIOR gate's per-goal throttle + prev frame into this freshly-recompiled gate.
 
         A regate (a goal armed/cancelled mid-run) rebuilds the gate from scratch; without this, the new
         gate starts with an EMPTY ``_last_escalate`` — so arming ONE goal by voice released the per-goal
@@ -729,7 +729,7 @@ class MotionGate:
         ``region_hint``) clears that condition's threshold. ``now`` (or the gate's injected ``clock``)
         is the civil time the per-condition :class:`~percept.adapters.Schedule` is checked against; a
         condition whose schedule is out of window at ``now`` is skipped. With no schedules and no
-        ``region_hint`` this reduces to the pre-C1 ``full_motion >= min(threshold)``. Advances the
+        ``region_hint`` this reduces to the original ``full_motion >= min(threshold)``. Advances the
         prev-frame cursor.
         """
         f = _as_frame(frame)
@@ -759,7 +759,7 @@ class MotionGate:
         armed = [c for c in self._spec.conditions if schedule_active(c.schedule, when)]
         escalate = False
         for c in armed:
-            # Cadence (C2): a goal can't escalate more than once per cadence_s. For gate_on="fixed" this
+            # Cadence: a goal can't escalate more than once per cadence_s. For gate_on="fixed" this
             # cadence IS the escalation trigger (a floor — look every cadence_s even with no pixel motion,
             # so content events like a screenshare aren't silently under-sampled by the motion gate).
             if c.cadence_s is not None and ts - self._last_escalate.get(c.goal_id, float("-inf")) < c.cadence_s:
@@ -887,7 +887,7 @@ class GatedWatchLoop:
         # edge_capabilities=None -> in-process edge runs the whole registry; a remote edge advertises a
         # subset and the brain selects within it (the capability handshake).
         self._spec = compile_watchspec(active, threshold=thr, edge_capabilities=edge_capabilities)
-        # clock=None -> schedules are not enforced (default path, byte-for-byte pre-C1). A caller that
+        # clock=None -> schedules are not enforced (default path, byte-for-byte unchanged). A caller that
         # arms scheduled goals injects a civil clock (e.g. civil_now) here; pure logic never reads wall-clock.
         self._gate = MotionGate(self._spec, settings=cfg, clock=clock, wake_policy=wake_policy)
         # The standard telemetry funnel — this loop owns the seen/gated stages (frame seen; gate

@@ -23,7 +23,7 @@
 // `category` is the coarse sense CLASS a detector belongs to ("motion" | "audio" | "frame" plus
 // additive channels like "presence", "pose", "audio_event", "change", "semantic_relevance"), so a whole
 // modality is discoverable at once (`detectorsInCategory("audio")` lists every audio skill) — this is
-// what marks `acoustic-onset` as the first-class AUDIO sense (B2). It mirrors the Python
+// what marks `acoustic-onset` as the first-class AUDIO sense. It mirrors the Python
 // `DetectorManifest.category` byte-for-byte so the manifest rides the capability handshake unchanged.
 
 // Boundary is a wire shape — defined (with validation) in the frozen contract; skills emit it.
@@ -127,7 +127,7 @@ export class AcousticOnset {
 }
 
 // ---------------------------------------------------------------------------
-// Sense categories — the CLASS of physical signal a detector reads (B2)
+// Sense categories — the CLASS of physical signal a detector reads
 // ---------------------------------------------------------------------------
 
 /** The coarse modality of a detector's signal, mirrored from Python `CATEGORY_*`. */
@@ -257,7 +257,7 @@ export function registered() {
 
 /**
  * Registered skill names (sorted) whose manifest `category` matches — modality-as-a-class discovery:
- * `detectorsInCategory("audio")` lists every audio Tier-0 sense (B2), mirroring Python
+ * `detectorsInCategory("audio")` lists every audio Tier-0 sense, mirroring Python
  * `detectors_in_category`. Empty when nothing in that category is registered.
  * @param {string} category
  * @returns {string[]}
@@ -301,7 +301,7 @@ registerSkill({
     senses: "audio energy over time (the mic stream already flowing for STT)",
     when_to_use: "audio-cued events — a kettle/boil hiss rising, a timer beep, a rep grunt, a knock",
     output: "an 'onset' boundary each time energy spikes up (a sound starting)",
-    category: CATEGORY_AUDIO, // the first-class AUDIO sense (B2) — discoverable as a class
+    category: CATEGORY_AUDIO, // the first-class AUDIO sense — discoverable as a class
   },
 });
 

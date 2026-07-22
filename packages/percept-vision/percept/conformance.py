@@ -36,7 +36,7 @@ Check severity:
     A recommendation (cost accounting, graceful degradation of a modality the backend lacks). It is
     reported and never fails the run.
 
-THE OTHER SEAMS (card D2). Card D6 settled which extension points survive, so this module covers all
+THE OTHER SEAMS. An earlier decision settled which extension points survive, so this module covers all
 three of them with ONE reporting shape (:class:`CheckResult` / :class:`ConformanceReport`) and ONE
 severity vocabulary:
 
@@ -49,7 +49,7 @@ severity vocabulary:
     under-admitting in production, where the symptom is "percept never fired" with no error at all.
 ``structural`` / ``semantic``
     :func:`check_tier0_adapter` — the ``structural_adapter`` / ``semantic_adapter`` callables
-    :func:`percept.runtime.run` now accepts (card D6a), which fill the matching channels of
+    :func:`percept.runtime.run` now accepts, which fill the matching channels of
     :class:`~percept.contracts.Tier0Signal`.
 
 THE SAME SCOPE DISCLAIMER APPLIES TO EVERY ROLE, and every report prints it: this suite proves a
@@ -103,7 +103,7 @@ ROLE_TITLES: dict[str, str] = {
     ROLE_SEMANTIC: "tier-0 semantic_adapter",
 }
 
-#: The tier-0 adapter roles — the two channels ``percept.runtime.run()`` exposes (card D6a).
+#: The tier-0 adapter roles — the two channels ``percept.runtime.run()`` exposes.
 TIER0_ROLES = (ROLE_STRUCTURAL, ROLE_SEMANTIC)
 
 #: Printed on EVERY report, for EVERY role. Conformance is a well-formedness proof, never a quality
@@ -694,7 +694,7 @@ def check_vision_adapter(adapter: Any, **kwargs: Any) -> ConformanceReport:
     return asyncio.run(acheck_vision_adapter(adapter, **kwargs))
 
 
-# --- the admission-detector seam (card D2) --------------------------------------------------------
+# --- the admission-detector seam --------------------------------------------------------
 #
 # What a client actually plugs in here: an OCR / phash / embedding model that answers "the document
 # changed at t=8.2" — WHEN to look closely. It never answers WHAT the frame says (see
@@ -756,7 +756,7 @@ def check_detector(
     samples: Iterable[tuple[float, Any]] | None = None,
     live_calls: bool = True,
 ) -> ConformanceReport:
-    """Run the ADMISSION-DETECTOR conformance suite (card D2's half of the D6 seam settlement).
+    """Run the ADMISSION-DETECTOR conformance suite (the detector half of the extension-seam settlement).
 
     This is the seam a client plugs an OCR / phash / CLIP model into for screen content:
     :func:`percept.harness.detectors.register_detector` + a
@@ -1153,7 +1153,7 @@ def check_detector(
     return _report()
 
 
-# --- the tier-0 adapter seam (structural / semantic), card D6a ------------------------------------
+# --- the tier-0 adapter seam (structural / semantic) ------------------------------------
 
 
 def _probe_frames() -> list[Any]:
@@ -1184,7 +1184,7 @@ def check_tier0_adapter(
 ) -> ConformanceReport:
     """Run the TIER-0 ADAPTER conformance suite for ``structural_adapter`` / ``semantic_adapter``.
 
-    Card D6a exposed both on :func:`percept.runtime.run`, so a client can now supplement tier 0 with
+    Both are exposed on :func:`percept.runtime.run`, so a client can now supplement tier 0 with
     a cheap local model (a CLIP drift score, a pose/privacy classifier, an OCR "the page changed"
     score) without bypassing the supported entrypoint. The adapter is a plain
     ``(frame) -> float in [0, 1]`` callable, invoked ONCE PER FRAME, SYNCHRONOUSLY, INSIDE the gate —
@@ -1254,7 +1254,7 @@ def check_tier0_adapter(
         if param not in inspect.signature(runtime_run).parameters:
             raise AssertionError(
                 f"percept.runtime.run() has no {param!r} parameter in this install — the tier-0 "
-                "extension seam is not reachable from the supported entrypoint here (card D6a)"
+                "extension seam is not reachable from the supported entrypoint here"
             )
 
     rec.check_sync("adapter.role_is_exposed_on_run", _exposed, on_pass=f"run({role}_adapter=...)")
