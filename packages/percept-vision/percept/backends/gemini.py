@@ -122,10 +122,29 @@ def _image_part(types: Any, frame: Any):
     return types.Part.from_bytes(data=raw, mime_type=media)
 
 
+def _wrap_wav(pcm: bytes, sample_rate: int, channels: int) -> bytes:
+    """Wrap raw s16le PCM in a real WAV container. The API rejects headerless PCM labeled
+    ``audio/wav`` (400 INVALID_ARGUMENT), so a header is mandatory, not cosmetic."""
+    import io
+    import wave
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(max(1, int(channels or 1)))
+        w.setsampwidth(2)
+        w.setframerate(int(sample_rate or 16000))
+        w.writeframes(pcm)
+    return buf.getvalue()
+
+
 def _audio_part(types: Any, clip: Any):
     """Render an audio clip to a Gemini audio ``Part``: typed :class:`AudioFrame` | ``(mime, bytes)`` | wav bytes."""
-    if isinstance(clip, AudioFrame):  # typed audio modality: render via its legacy-pair view
-        clip = clip.as_pair()
+    if isinstance(clip, AudioFrame):
+        if clip.encoded is not None and clip.mime:  # pre-encoded container: send as-is
+            return types.Part.from_bytes(data=bytes(clip.encoded), mime_type=str(clip.mime))
+        # raw-PCM AudioFrame: build a genuine WAV from its own rate/layout
+        raw = _wrap_wav(bytes(clip.pcm), clip.sample_rate, clip.channels)
+        return types.Part.from_bytes(data=raw, mime_type="audio/wav")
     if isinstance(clip, tuple) and len(clip) == 2 and isinstance(clip[1], (bytes, bytearray)):
         media, raw = str(clip[0]), bytes(clip[1])
     elif isinstance(clip, (bytes, bytearray)):
@@ -135,6 +154,8 @@ def _audio_part(types: Any, clip: Any):
             "GeminiVision audio needs raw bytes or a (mime_type, bytes) pair; "
             f"got {type(clip).__name__}. Pre-encode the audio clip before judging."
         )
+    if media == "audio/wav" and not raw.startswith(b"RIFF"):
+        raw = _wrap_wav(raw, 16000, 1)  # headerless PCM claiming wav: wrap with the runtime default layout
     return types.Part.from_bytes(data=raw, mime_type=media)
 
 
@@ -233,10 +254,19 @@ class GeminiVision(_GeminiBase):
                     f'"{condition}"? '
                 )
         else:
-            question = f'Looking only at the image: is this true right now — "{condition}"? '
+            question = (
+                f'Looking only at the image: is this true right now — "{condition}"? '
+                if audio is None
+                else f'Looking at the image AND listening to the attached audio: is this true right now — "{condition}"? '
+            )
         if audio is not None:
             parts.append(_audio_part(types, audio))
-            question += "You may also use the attached audio clip as evidence. "
+            question += (
+                "An audio clip recorded from this same scene over the last few seconds is attached. "
+                "LISTEN to it: for a condition about sound (a device running or switched on, an alarm, "
+                "speech), the soundtrack is often the decisive evidence — a device can be ON while "
+                "sitting stationary, and the image alone cannot settle it. "
+            )
         if corrections:
             facts = "; ".join(f"{k}={v}" for k, v in corrections.items())
             question += (

@@ -924,6 +924,7 @@ async def run(
     audio_source: Any = None,
     audio_gate: Any = "acoustic-onset",
     audio_wake: dict | None = None,
+    audio_settle_s: float = 1.5,
     on_utterance: Callable | None = None,
     allow_scripted_brain: bool = False,
     vad: Any = None,
@@ -993,6 +994,10 @@ async def run(
     - ``audio_gate`` — the tier-0 audio detector: a name (``"acoustic-onset"``), an instance with
       ``push(t, v) -> [Boundary]``, or ``None`` to only fill the window + feed energy (no onset wake).
     - ``audio_wake`` — kwargs for the onset detector, e.g. ``{"high": 0.3, "low": 0.15, "refractory_s": 5.0}``.
+    - ``audio_settle_s`` — seconds to WAIT after an acoustic onset before the woken judge runs. An
+      onset marks the START of a sound, and the audio clip is sliced backward from the judge moment —
+      judging at the onset itself would hand the model the silence BEFORE the sound. The settle keeps
+      the wake but delays the admission so the clip actually contains the sound. ``0.0`` = old behavior.
     - ``on_utterance(audio, t)`` — the **voice-escalation seam**. When the audio pump endpoints a complete
       spoken utterance (energy rose, then fell for ``utterance_hangover_frames``), the utterance's PCM clip
       (an :class:`~percept.contracts.AudioFrame`) is handed here — the hook the voice layer turns into an
@@ -1524,7 +1529,7 @@ async def run(
         # the freshness guard) and a one-shot onset-wake flag, shared with the pump task below (same
         # event loop, cooperative — no lock). Default (audio_source=None) leaves it inert: energy stays
         # None and wake stays False, so gate.evaluate and the admit test are byte-for-byte the video path.
-        audio = {"energy": None, "energy_t": None, "chunk_dt": None, "wake": False}
+        audio = {"energy": None, "energy_t": None, "chunk_dt": None, "wake": False, "wake_at": None}
         _prev_chunk_at: list = [None]  # last chunk's t — for the observed inter-chunk cadence (chunk_dt)
         audio_task = None
         if audio_source is not None:
@@ -1599,8 +1604,9 @@ async def run(
                         audio["energy_t"] = at
                     if onset is not None and energy is not None:
                         for b in onset.push(at, float(energy)):
-                            if getattr(b, "kind", None) == "onset":
-                                audio["wake"] = True
+                            if getattr(b, "kind", None) == "onset" and audio["wake_at"] is None:
+                                # settle: judge AFTER the sound has filled the window, not at its first instant
+                                audio["wake_at"] = at + max(0.0, float(audio_settle_s))
 
                     # Voice escalation: endpoint a complete utterance and hand its clip to on_utterance.
                     # Runs AFTER push_audio so the just-heard chunk is already in the window we clip from.
@@ -1916,8 +1922,10 @@ async def run(
             # An audio onset admits a frame the visual gate would skip (off-camera cry / glass break). One-shot:
             # consumed here so a single onset causes one judge, not a run of them (AcousticOnset hysteresis +
             # refractory already debounce the signal itself).
-            audio_admit = audio["wake"]
+            audio_admit = bool(audio["wake"]) or (audio["wake_at"] is not None and t >= audio["wake_at"])
             audio["wake"] = False
+            if audio_admit:
+                audio["wake_at"] = None
             emit_trace = getattr(core, "_emit_trace", None)
             if getattr(core, "on_trace", None) is not None and emit_trace is not None:
                 # The tier-0 edge decision — the same shape used elsewhere for forensic tracing (motion/structural/
