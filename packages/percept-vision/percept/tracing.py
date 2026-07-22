@@ -552,6 +552,13 @@ class RunTraceManifest:
     #: :attr:`percept.replay.ReplayReport.gate_config_recorded`).
     gate_config: dict[str, Any] = field(default_factory=dict)
     labels: dict[str, Any] = field(default_factory=dict)
+    #: Wheel/sdist provenance of the package that produced this trace — the git commit it was
+    #: built from and the UTC build timestamp (see :func:`percept.build_info`). ``"unreleased"``
+    #: in a bare source checkout that never went through the packaging build step. Additive: ties
+    #: a returned ``.ptrace`` back to the exact build, on top of the already-recorded
+    #: ``percept_version``/``contract_version``.
+    build_commit: str | None = None
+    build_timestamp: str | None = None
 
     @classmethod
     def create(
@@ -590,12 +597,22 @@ class RunTraceManifest:
             contract_version = _cv
         except Exception:  # pragma: no cover - defensive
             pass
+        build_commit = build_timestamp = None
+        try:
+            from ._build import build_info as _bi  # noqa: PLC0415
+            _build = _bi()
+            build_commit = _build.git_commit
+            build_timestamp = _build.build_timestamp
+        except Exception:  # pragma: no cover - defensive
+            pass
         return cls(
             run_id=run_id or uuid.uuid4().hex[:16],
             source=source,
             percept_version=percept_version,
             watch_version=watch_version,
             contract_version=contract_version,
+            build_commit=build_commit,
+            build_timestamp=build_timestamp,
             started_wall_ts=float(wall_clock()),
             started_source_ts=started_source_ts,
             driver=driver,
@@ -623,6 +640,8 @@ class RunTraceManifest:
             "percept_version": self.percept_version,
             "watch_version": self.watch_version,
             "contract_version": self.contract_version,
+            "build_commit": self.build_commit,
+            "build_timestamp": self.build_timestamp,
             "started_wall_ts": self.started_wall_ts,
             "started_source_ts": self.started_source_ts,
             "driver": self.driver,
@@ -645,6 +664,8 @@ class RunTraceManifest:
             percept_version=payload.get("percept_version"),
             watch_version=payload.get("watch_version"),
             contract_version=payload.get("contract_version"),
+            build_commit=payload.get("build_commit"),
+            build_timestamp=payload.get("build_timestamp"),
             started_wall_ts=float(payload.get("started_wall_ts", 0.0)),
             started_source_ts=payload.get("started_source_ts"),
             driver=str(payload.get("driver", "run")),
