@@ -1,4 +1,4 @@
-"""RuntimeCompiler — the ADR-008 resolution boundary, step 2 of the two-step binder (card C1b).
+"""RuntimeCompiler — the ADR-008 resolution boundary, step 2 of the two-step binder.
 
 ``docs/adr/ADR-008-configuration-ownership-resolution-provenance.md`` draws the boundary as two
 functions::
@@ -6,7 +6,7 @@ functions::
     (SourceProfile, DomainPack, ExecutionPolicy, DeploymentConfig, OptimizationLock, WatchPlan)
             |
             v
-       ConfigResolver.resolve(...)   <- percept.resolver (card C1a)
+       ConfigResolver.resolve(...)   <- percept.resolver
             |
             v
        ResolvedWatch
@@ -27,7 +27,7 @@ read directly off ``resolved.effective`` (itself produced by :class:`percept.res
 or re-shaped from one existing dict form into another existing dict form.
 
 Two things this module deliberately does NOT do (both stay with the callers of this module, per the
-ADR's own boundary and card C1b's binding scope):
+ADR's own boundary):
 
 - **No adapter construction.** ``Percept.create`` (unchanged) still resolves provider NAMES to
   constructed backends via ``percept.provider``/``percept.registry`` — this module only carries the
@@ -38,7 +38,7 @@ ADR's own boundary and card C1b's binding scope):
   validated ``state`` (its ``"behavior"``/``"rhythm"``/``"episode"``/``"sense"``/``"perception"``
   sub-blocks are in the RAW shape :mod:`percept.behavior`'s ``coerce_authored_*`` firewall already
   expects as input). Running that firewall is :func:`percept.watchplan_apply.apply_watch_plan`'s job
-  (card C1b resolution 3: "coercion happens at APPLY time"), not this module's — a bare
+  (coercion happens at APPLY time, per ADR-008), not this module's — a bare
   :func:`runtime_compile` call performs no validation and raises nothing.
 """
 
@@ -96,8 +96,8 @@ class CompiledWatch:
       exactly :func:`percept.harness.tier0.compile_watchspec`'s deployment-default kwargs.
     - ``components`` — provider NAME identities the compiler carried forward (``vision``,
       ``conductor``, ``specialist``, ``stt``, ``tts``), never a model id (ADR-008 Invariants). This is
-      the fuller snapshot ``ResolvedWatch.components`` deliberately stays minimal for (ADR-008 binding
-      resolution 1) — observability only, nothing downstream branches on it.
+      the fuller snapshot ``ResolvedWatch.components`` deliberately stays minimal for — observability
+      only, nothing downstream branches on it.
     """
 
     settings: Settings

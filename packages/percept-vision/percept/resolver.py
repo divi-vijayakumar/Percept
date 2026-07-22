@@ -68,10 +68,11 @@ from .contracts.watchplan import (
     WatchPlan,
     WatchReceipt,
 )
-from .profile_resolution import resolve_situation
+from .profile_resolution import resolve_profile, resolve_situation
 from .sourceprofile import SourceProfile
 from .tracing import content_hash
 from .tunables import REGISTRY, TunableSpec
+from .watchprofile import CadenceProfile, WatchProfileRegistry
 
 # ---------------------------------------------------------------------------
 # Precedence tiers (ADR-008 §Precedence). Strings, not an Enum, so they are the SAME vocabulary
@@ -275,6 +276,20 @@ def _situation_paths(overrides: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _cadence_paths(cadence: CadenceProfile) -> dict[str, Any]:
+    """A registry-resolved :class:`~percept.watchprofile.WatchProfile`'s ``cadence`` fields, keyed by
+    their :data:`percept.tunables.REGISTRY` paths (``"WatchProfile.cadence.*"``, owner
+    ``"ExecutionPolicy"``) — the ONLY situation-tier contribution that needs a real
+    :class:`~percept.watchprofile.WatchProfileRegistry` lookup rather than pure axis derivation
+    (:func:`percept.profile_resolution.resolve_situation` has no cadence opinion on its own)."""
+    return {
+        "WatchProfile.cadence.base_fps": cadence.base_fps,
+        "WatchProfile.cadence.max_fps": cadence.max_fps,
+        "WatchProfile.cadence.escalate_threshold": cadence.escalate_threshold,
+        "WatchProfile.cadence.hold_s": cadence.hold_s,
+    }
+
+
 def _owner_layer_for_situation_path(path: str) -> str:
     spec = _BY_PATH.get(path)
     return spec.owner if spec is not None else LAYER_SOURCE_PROFILE
@@ -389,6 +404,7 @@ class ConfigResolver:
         execution_policy: ExecutionPolicy | None = None,
         optimization_lock: OptimizationLock | None = None,
         situation: tuple[Any, Any, Any] | None = None,
+        registry: "WatchProfileRegistry | None" = None,
         settings: Settings | None = None,
     ) -> ResolvedWatch:
         """Resolve ``watch_plan`` (plus whichever of the other five inputs are given — any may be
@@ -404,6 +420,17 @@ class ConfigResolver:
           same wildcard fallback, unchanged) — passing it is itself an explicit choice, so its
           SourceProfile-tier contribution (``ego_compensate``) is treated the same as an explicit
           ``source_profile`` for the loud-diagnostic rule.
+        - ``registry`` — OPTIONAL, a :class:`~percept.watchprofile.WatchProfileRegistry`. Only
+          consulted when ``situation`` is ALSO given (ADR-008 open question 2: "a caller with
+          (environment, goal_type, state) gets the registry profile through the same precedence
+          chain"). When both are present, the REGISTERED profile for the resolved situation key is
+          looked up (:func:`percept.profile_resolution.resolve_profile`, exact match then
+          :data:`~percept.watchprofile.WILDCARD` fallback) and its ``cadence`` fields additionally
+          contribute at the situation precedence slot (owner ``"ExecutionPolicy"`` per
+          :data:`percept.tunables.REGISTRY`'s own ``WatchProfile.cadence.*`` entries), provenance-
+          stamped with the winning profile's name. ``situation`` without ``registry`` (the default)
+          is UNCHANGED from the earlier resolver: pure axis-derived overrides only, no profile
+          lookup, no cadence contribution — byte-for-byte identical to omitting this parameter.
         - ``settings`` — a test-injection seam standing in for what :func:`percept.config.load_settings`
           would return (the Deployment/env layer). ``None`` (the default) calls
           :func:`~percept.config.load_settings` for real, reading ``PERCEPT_*`` env vars.
@@ -426,8 +453,19 @@ class ConfigResolver:
 
         source_profile_values = _source_profile_paths(source_profile) if source_profile else {}
 
-        situation_overrides = resolve_situation(*situation).overrides if situation is not None else None
+        situation_profile_name: str | None = None
+        situation_source_id = "profile_resolution.resolve_situation"
+        if situation is not None and registry is not None:
+            registered_profile, situation_overrides = resolve_profile(*situation, registry=registry)
+            situation_profile_name = registered_profile.name
+            situation_source_id = f"profile_resolution.resolve_profile({registered_profile.name!r})"
+        elif situation is not None:
+            situation_overrides = resolve_situation(*situation).overrides
+        else:
+            situation_overrides = None
         situation_raw = _situation_paths(situation_overrides) if situation_overrides else {}
+        if situation_profile_name is not None:
+            situation_raw.update(_cadence_paths(registered_profile.cadence))
         # Expand each situation-contributed path to the runtime field it actually resolves (the
         # same translation a WatchPlan's explicit fields go through below), while remembering the
         # ORIGINAL path's registry owner for provenance — see _expand_explicit_path.
@@ -492,7 +530,7 @@ class ConfigResolver:
             ),
             _LayerContribution(
                 LAYER_SOURCE_PROFILE, situation_values,
-                "profile_resolution.resolve_situation",
+                situation_source_id,
                 "derived from goal-temporality/camera-mount/start-state situation axes",
             ),
             _LayerContribution(
