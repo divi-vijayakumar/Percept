@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Iterable
+from typing import Callable, Iterable
 
 __all__ = [
     "normalize_key",
@@ -148,19 +148,54 @@ class IdentityLedger:
 
     ``default_ttl`` is the validity horizon (seconds) after which an unrefreshed open subject lapses
     and its next sighting counts as a re-open (a new episode). ``None`` disables TTL expiry entirely.
+
+    ``unknown_continuity_gap_s`` mirrors ``percept.episodes.EpisodePolicy.unknown_continuity_gap_s``:
+    ``None`` (the default) means every unknown sighting is its OWN provisional subject — honest,
+    NaN-like, never collapsed with another unknown. Set it to fold a run of unknown sightings closer
+    together than the gap into ONE provisional subject instead, the same temporal-proximity read a
+    source profile like ``screen_document`` can declare at the episode-log layer.
+
+    ``max_subjects`` is the KEEP-ALL default's opt-out: ``None`` (the default) never evicts anything —
+    this ledger is a bounded-memory oracle only when a caller asks it to be. When set, adding a
+    subject beyond the cap evicts the LEAST-RECENTLY-SEEN one. Eviction is never silent: every one is
+    appended to :attr:`evictions` and, when ``on_evict`` is wired, handed to it — mirroring the
+    ``on_drop``/``on_evict`` discipline ``percept.episodes.EpisodeLog`` and ``percept.runtime.sinks``
+    already use elsewhere in the SDK (ADR-001 §9: a bound-driven drop must be observable, never a
+    silent disappearance of a subject that WAS resolved).
     """
 
     default_ttl: float | None = None
+    unknown_continuity_gap_s: float | None = None
+    max_subjects: int | None = None
+    on_evict: "Callable[[str, str], None] | None" = None
     _subjects: dict[str, _Subject] = field(default_factory=dict)
     _fires: list[FireEvent] = field(default_factory=list)
     _observed: list[Observed] = field(default_factory=list)
     _unknown_count: int = 0
+    _unknown_episodes: int = 0
+    _last_unknown_t: float | None = None
+    _evictions: list[tuple[str, str]] = field(default_factory=list)
 
     # -- introspection --------------------------------------------------------------------------
     @property
     def distinct_subject_count(self) -> int:
-        """Distinct durable subjects resolved so far. ``unknown`` sightings never inflate this."""
-        return len(self._subjects)
+        """Distinct subjects resolved so far: BOUND identities plus UNKNOWN episodes.
+
+        An honestly unresolved sighting never fabricates a durable identity, but it is still
+        something that was SEEN — it does not disappear from the total either. Each unknown sighting
+        is its own provisional subject unless ``unknown_continuity_gap_s`` folds a close-in-time run
+        of them into one (:attr:`unknown_episode_count`). This is the SAME accounting
+        ``percept.episodes.EpisodeLog`` uses (an unknown-originated episode is stamped
+        ``UN_<episode_id>`` and counted like any other episode) — there is exactly one definition of
+        "distinct subject", used by both the runtime and this oracle.
+        """
+        return len(self._subjects) + self._unknown_episodes
+
+    @property
+    def unknown_episode_count(self) -> int:
+        """Distinct UNKNOWN episodes — collapsed runs, not raw sighting count. Equal to
+        :attr:`unknown_count` unless ``unknown_continuity_gap_s`` is set and folded some together."""
+        return self._unknown_episodes
 
     @property
     def fires(self) -> list[FireEvent]:
@@ -176,7 +211,20 @@ class IdentityLedger:
 
     @property
     def unknown_count(self) -> int:
+        """Raw count of unknown SIGHTINGS (never collapsed) — distinct from
+        :attr:`unknown_episode_count`, which is what :attr:`distinct_subject_count` actually uses."""
         return self._unknown_count
+
+    @property
+    def evictions(self) -> list[tuple[str, str]]:
+        """Every eviction so far, as ``(normalized_key, reason)`` — empty unless ``max_subjects`` is
+        set. The audit trail that makes a cap-driven eviction NEVER silent, whether or not a caller
+        also wired ``on_evict``."""
+        return list(self._evictions)
+
+    @property
+    def eviction_count(self) -> int:
+        return len(self._evictions)
 
     def subject_keys(self) -> set[str]:
         return set(self._subjects)
@@ -192,6 +240,20 @@ class IdentityLedger:
             if s.open and s.ttl is not None and s.last_seen_t + s.ttl < now:
                 s.open = False
 
+    def _evict_oldest(self) -> None:
+        """Cap-and-count-loud eviction (opt-in via ``max_subjects``; never called when it is
+        ``None``). Evicts the LEAST-RECENTLY-SEEN subject — the one least likely to return next — and
+        records it in :attr:`evictions` before, optionally, handing it to ``on_evict``. The evicted
+        identity is genuinely forgotten: if it is seen again later it re-opens as a NEW subject, the
+        honest consequence of a bounded ledger rather than a claim of unbounded memory."""
+        if not self._subjects:
+            return
+        oldest_key = min(self._subjects, key=lambda k: self._subjects[k].last_seen_t)
+        del self._subjects[oldest_key]
+        self._evictions.append((oldest_key, "max_subjects"))
+        if self.on_evict is not None:
+            self.on_evict(oldest_key, "max_subjects")
+
     def observe(self, sighting: Sighting) -> Observed:
         """Apply one sighting and return the oracle's classification of it."""
         self._expire(sighting.t)
@@ -202,9 +264,21 @@ class IdentityLedger:
             self._observed.append(out)
             return out
 
-        # An unknown binding is the honest third answer: no key, no fire, no fabrication.
+        # An unknown binding is the honest third answer: no key, no fire, no fabrication. It still
+        # counts as a distinct PROVISIONAL subject (distinct_subject_count) unless it arrives within
+        # unknown_continuity_gap_s of the previous unknown sighting, in which case it continues that
+        # same provisional episode instead of minting a rival — the oracle twin of
+        # percept.episodes.EpisodePolicy.unknown_continuity_gap_s.
         if sighting.binding is Binding.UNKNOWN or not sighting.subject_key:
             self._unknown_count += 1
+            continues_prior = (
+                self.unknown_continuity_gap_s is not None
+                and self._last_unknown_t is not None
+                and sighting.t - self._last_unknown_t <= self.unknown_continuity_gap_s
+            )
+            if not continues_prior:
+                self._unknown_episodes += 1
+            self._last_unknown_t = sighting.t
             out = Observed(sighting.t, None, Binding.UNKNOWN, False, None)
             self._observed.append(out)
             return out
@@ -220,6 +294,8 @@ class IdentityLedger:
             )
             self._fires.append(FireEvent(sighting.t, norm, FireKind.OPEN))
             out = Observed(sighting.t, norm, Binding.RESOLVED, True, FireKind.OPEN)
+            if self.max_subjects is not None and len(self._subjects) > self.max_subjects:
+                self._evict_oldest()
         elif subj.open:
             # Same subject, still ongoing — refresh the horizon, do NOT re-fire (rising edge only).
             subj.last_seen_t = sighting.t
