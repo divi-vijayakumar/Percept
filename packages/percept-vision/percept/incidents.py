@@ -44,6 +44,12 @@ def make_incident(
     goal_id = getattr(fire, "goal_id", "")
     if entity_id is None:
         entity_id = getattr(fire, "entity_id", None)
+    # X7's JudgmentEvent (when the fire carried one) is the source of truth for evidence_seq — the
+    # per-key ADR-001 §8 dispatch sequence. A fire from a path that takes no judge-funnel stamps
+    # (episode/rhythm/boundary/transition/absence) carries no ``.judgment``, so this stays None rather
+    # than a fabricated number.
+    judgment = getattr(fire, "judgment", None)
+    evidence_seq = getattr(judgment, "evidence_seq", None) if judgment is not None else None
     # Z3 — carry the enriched judgment envelope THROUGH the emission boundary; Y10 attaches the
     # provisional/superseding link as runtime-local attrs AFTER construction, so bind to a variable.
     incident = Incident(
@@ -59,6 +65,7 @@ def make_incident(
         roi=getattr(fire, "roi", None),
         modality=getattr(fire, "modality", None),
         provenance=getattr(fire, "provenance", None),
+        evidence_seq=evidence_seq,
     )
     # Y10 — carry the provisional/superseding link ACROSS the emission boundary as RUNTIME-LOCAL
     # annotations (private instance attrs, exactly like Incident's bound label state): the delivery

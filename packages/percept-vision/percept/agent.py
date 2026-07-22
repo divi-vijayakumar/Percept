@@ -41,7 +41,7 @@ from .observability import Funnel, Metrics, OTelExporter, TraceEvent, get_logger
 from .rhythm import RhythmTracker
 from .routing import RouteEngine
 from .scheduler import Scheduler
-from .tracing import STAGE_SHADOW_FOLD
+from .tracing import STAGE_JUDGMENT_EVENT, STAGE_SHADOW_FOLD
 
 
 #: X7 — LRU ceiling on the judgment evidence-sequencer's per-key counters. Matches the gate's own
@@ -1394,6 +1394,21 @@ class Percept:
                                        confidence=getattr(verdict, "confidence", None),
                                        freshness=freshness,
                                        hold_s=program_of(goal).hold_s)
+                # D11 — project the frozen JudgmentEvent (X7's ONE production construction site,
+                # behavior.py:_judgment) into the trace stream so the SAME evidence this decision
+                # judged is resolvable from the .ptrace. Only when THIS tick's fire actually carried
+                # one (the judged watch path only — a degraded tick never reaches here, and
+                # episode/rhythm/boundary/transition/absence fires take no judge-funnel stamps and
+                # build no JudgmentEvent at all). The RECORDER (not this caller) stamps
+                # ``data["evidence_seq"]`` as the seq of this SAME trace_id's ``source.frame``
+                # record; ``dispatch_seq`` carries the JudgmentEvent's OWN ADR-001 §8 per-key dispatch
+                # sequence, a distinct number, so neither meaning is lost (see
+                # tracing.STAGE_JUDGMENT_EVENT). Purely additive observability — governs nothing.
+                if ev_fire is not None and ev_fire.judgment is not None:
+                    await self._emit_trace(trace_id, now, STAGE_JUDGMENT_EVENT, goal_id=goal.id,
+                                           action=ev_fire.judgment.action,
+                                           dispatch_seq=ev_fire.judgment.evidence_seq,
+                                           entity_id=focus.id if focus else None)
                 # Y11 SHADOW — emit the subject + the fold the model WOULD have proposed, as ADVISORY
                 # trace data. It changes NOTHING (computed after the gate already classified, governs
                 # no firing) and lands in the ``shadow.fold`` stage so a client's media-OFF .ptrace
