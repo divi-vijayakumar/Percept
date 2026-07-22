@@ -313,6 +313,34 @@ EPISODE_MUTATIONS: tuple[EpisodeMutation, ...] = (
     "confirmed", "updated", "retracted", "closed", "none",
 )
 
+#: The Y2 wiring (card Y2): a Verdict's LOCAL speech-act :data:`~percept.contracts.Operation` → the
+#: episode-fold's :data:`EpisodeMutation`. This is the ONE place the two vocabularies meet, so the fold
+#: never has to know about speech acts and the claim channel never has to know about episodes.
+#:
+#: Only the mutating acts (``replace``/``retract``/``close``) mutate the episode:
+#:   * ``replace`` → ``updated``   — an accepted semantic change → a new revision (may re-arm + fire).
+#:   * ``retract`` → ``retracted`` — the report is withdrawn (re-arm so a genuine later fire counts).
+#:   * ``close``   → ``closed``    — the episode is terminated (no further evaluation).
+#: The non-mutating acts (``assert``/``confirm``/``mention``) all fold to ``confirmed`` — an unchanged
+#: re-statement, which is exactly the idempotency case Y3 protects. So a plain positive verdict
+#: (default ``operation='assert'``) yields ``confirmed``, byte-for-byte the pre-Y2 fold default.
+_OPERATION_TO_MUTATION: dict[str, EpisodeMutation] = {
+    "assert": "confirmed",
+    "confirm": "confirmed",
+    "mention": "confirmed",
+    "replace": "updated",
+    "retract": "retracted",
+    "close": "closed",
+}
+
+
+def episode_mutation_of(operation: str) -> EpisodeMutation:
+    """Map a Verdict :data:`~percept.contracts.Operation` to the episode fold's :data:`EpisodeMutation`.
+
+    An unknown/absent operation is treated as the safe non-mutating default ``confirmed`` (a
+    re-statement) so a verdict that predates the claim channel folds exactly as it did pre-Y2."""
+    return _OPERATION_TO_MUTATION.get(operation, "confirmed")
+
 
 def revision_id(episode_id: str, n: int) -> str:
     """The stable id of the ``n``-th incident an episode emitted (``<episode_id>#r<n>``). ``supersedes``
@@ -520,12 +548,21 @@ class BehaviorExecutor:
         decision: "ContinuationDecision | None",
         *,
         mutation: EpisodeMutation = "confirmed",
+        operation: "str | None" = None,
         ambiguous: bool = False,
     ) -> EpisodeFoldResult:
         """Y3: fold an observation's :class:`~percept.episodes.ContinuationDecision` against this
         executor's episode-owned emission ledger → the :class:`EpisodeFoldResult` to thread into
         :meth:`fire_judged` as ``fold=``. Reads the ledger but never mutates it (the emission is only
-        recorded when a fire is actually delivered), so card Y11 can call it in shadow safely."""
+        recorded when a fire is actually delivered), so card Y11 can call it in shadow safely.
+
+        ``operation`` (card Y2, OPTIONAL) is the Verdict's LOCAL speech-act. When supplied it DERIVES
+        the episode ``mutation`` via :func:`episode_mutation_of` (overriding the ``mutation`` kwarg), so
+        a caller threads ``verdict.operation`` straight through and the fold consumes the mutation
+        channel without ever parsing a value. When ``None`` (default) the explicit ``mutation`` kwarg
+        is used, so an existing caller is byte-for-byte unchanged."""
+        if operation is not None:
+            mutation = episode_mutation_of(operation)
         emitted = self._incidents.emitted(decision.episode.id) if decision is not None else 0
         return episode_fold(decision, emitted=emitted, mutation=mutation, ambiguous=ambiguous)
 
@@ -1085,6 +1122,7 @@ __all__ = [
     "EpisodeFoldResult",
     "EpisodeIncidentLedger",
     "episode_fold",
+    "episode_mutation_of",
     "revision_id",
     "BehaviorExecutor",
     "program_of",

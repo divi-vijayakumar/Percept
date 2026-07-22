@@ -3,8 +3,9 @@
 - **Status:** Proposed (design only — this ADR ships no code and changes no contract)
 - **Depends on:** ADR-001 (the Gate/judgment contract — `Verdict -> GateDecision -> JudgmentEvent`,
   unchanged by this ADR); the frozen wire contract in
-  `packages/percept-vision/percept/contracts/__init__.py` (`CONTRACT_VERSION = "1.4.0"`, `:33` —
-  1.3 was the bump that shipped `Incident.entity_id`, see §7; 1.4 additively added `SubjectRef`).
+  `packages/percept-vision/percept/contracts/__init__.py` (`CONTRACT_VERSION = "1.5.0"`, `:33` —
+  1.3 was the bump that shipped `Incident.entity_id`, see §7; 1.4 additively added `SubjectRef`; 1.5
+  additively added the `Verdict` claim-mode channel + `ConcernAuthority`).
 - **Related:** ADR-003 (Evidence artifacts — the proposed `evidence_ref` is an opaque handle that MAY name a
   bundle; this ADR is the analogous "pin the meaning before the capability ships" move, applied to
   the *relation* between findings rather than the evidence behind one); ADR-004 (Public delivery
@@ -257,7 +258,7 @@ modelling on the findings side recovers a distinction the identity side already 
 
 ### 6. Frozen-contract implications — what is additive, what is not
 
-`CONTRACT_VERSION = "1.4.0"` (`contracts/__init__.py:33`); the cross-edge convention is documented
+`CONTRACT_VERSION = "1.5.0"` (`contracts/__init__.py:33`); the cross-edge convention is documented
 in `tests/test_contract_parity.py` — **same MAJOR == wire-compatible**, a minor bump is an additive
 back-compatible field. JSON Schemas are generated from the dataclasses
 (`percept/contracts/jsonschema.py`) and committed under `percept/contracts/schema/`, so any field

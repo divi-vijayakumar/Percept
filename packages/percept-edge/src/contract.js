@@ -502,14 +502,46 @@ function _isNumberOrNull(v) {
   return v == null || isFiniteNumber(v);
 }
 
-/** Build a Verdict { satisfied, confidence, evidence }. evidence defaults to "" (Python default). */
+// The claim-mode / speech-act channel (contract 1.5, card Y2). A value DIFFERENCE is not a
+// REPLACEMENT: the verdict names the LOCAL speech act so the executor never parses values out of
+// free-text evidence. All five fields are ADDITIVE and OPTIONAL — a pre-1.5 verdict omits them and
+// keeps its exact { satisfied, confidence, evidence } shape (see _makeVerdict).
+const _OPERATIONS = new Set(["assert", "confirm", "replace", "retract", "close", "mention"]);
+
+/**
+ * Build a Verdict { satisfied, confidence, evidence } plus the OPTIONAL card-Y2 claim-mode fields
+ * when the payload carries them. evidence defaults to "" (Python default). The mutation fields are
+ * only attached when PRESENT, so a plain positive verdict round-trips as the pre-1.5 three-field shape.
+ */
 function _makeVerdict(v, path) {
   if (!isPlainObject(v)) throw new ContractError(`${path}: expected an object`);
   if (typeof v.satisfied !== "boolean") throw new ContractError(`${path}.satisfied: expected a boolean`);
   if (!isFiniteNumber(v.confidence)) throw new ContractError(`${path}.confidence: expected a finite number`);
   const evidence = v.evidence == null ? "" : v.evidence;
   if (typeof evidence !== "string") throw new ContractError(`${path}.evidence: expected a string`);
-  return { satisfied: v.satisfied, confidence: v.confidence, evidence };
+  const out = { satisfied: v.satisfied, confidence: v.confidence, evidence };
+  // -- additive card-Y2 claim-mode channel (only when present) --
+  if (v.operation != null) {
+    if (!_OPERATIONS.has(v.operation)) {
+      throw new ContractError(`${path}.operation: expected one of ${[..._OPERATIONS].join("|")}`);
+    }
+    out.operation = v.operation;
+  }
+  if (v.value != null) out.value = v.value;
+  if (v.normalized_value != null) out.normalized_value = v.normalized_value;
+  if (v.target_revision_id != null) {
+    if (typeof v.target_revision_id !== "string") {
+      throw new ContractError(`${path}.target_revision_id: expected a string or null`);
+    }
+    out.target_revision_id = v.target_revision_id;
+  }
+  if (v.asserted_by != null) {
+    if (typeof v.asserted_by !== "string") {
+      throw new ContractError(`${path}.asserted_by: expected a string or null`);
+    }
+    out.asserted_by = v.asserted_by;
+  }
+  return out;
 }
 
 /**

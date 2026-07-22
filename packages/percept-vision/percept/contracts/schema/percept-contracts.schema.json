@@ -3,7 +3,7 @@
   "$id": "https://percept.velvee.ai/contracts/percept-contracts.schema.json",
   "title": "percept-contracts",
   "description": "Vendor-neutral DTOs of the Percept frozen contract.",
-  "x-contract-version": "1.4.0",
+  "x-contract-version": "1.5.0",
   "$defs": {
     "Box": {
       "type": "object",
@@ -183,6 +183,38 @@
           "anyOf": [
             {
               "$ref": "#/$defs/SubjectRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operation": {
+          "enum": [
+            "assert",
+            "confirm",
+            "replace",
+            "retract",
+            "close",
+            "mention"
+          ]
+        },
+        "value": {},
+        "normalized_value": {},
+        "target_revision_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "asserted_by": {
+          "anyOf": [
+            {
+              "type": "string"
             },
             {
               "type": "null"
@@ -475,6 +507,16 @@
         },
         "version": {
           "type": "integer"
+        },
+        "authority": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConcernAuthority"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "description": "The unit of consequence-weighted attention \u2014 sits above the entity.",
@@ -484,6 +526,14 @@
         "condition",
         "say"
       ]
+    },
+    "ConcernAuthority": {
+      "type": "object",
+      "title": "ConcernAuthority",
+      "properties": {
+        "asserters": {}
+      },
+      "description": "CONCERN-LEVEL authority: WHO may issue a MUTATING claim operation against this concern's value."
     },
     "Decision": {
       "type": "object",
