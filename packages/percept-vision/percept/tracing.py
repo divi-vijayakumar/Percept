@@ -89,6 +89,11 @@ STAGE_JUDGE_DROPPED = "judge.dropped"      # superseded / revision-dropped BEFOR
 STAGE_GATE_SUPPRESSED = "gate.suppressed"  # a fire the baseline gate would have delivered, withheld
 STAGE_SOURCE_HEALTH = "source.health"      # a capture/scheduler health TRANSITION (degraded/recovered)
 STAGE_TRACE_DROPPED = "trace_dropped"      # THIS recorder dropped records (rule 2 — never silent)
+STAGE_SHADOW_FOLD = "shadow.fold"          # card Y11: ADVISORY — the subject + EpisodeFoldResult the
+#: model WOULD have proposed for this observation. Emitted alongside a decision, it governs NOTHING:
+#: it changes no firing, re-arms no edge, suppresses nothing. It exists so a client running the wheel
+#: on THEIR data can hand back a ``.ptrace`` (media OFF) that carries what the fold proposed, gradeable
+#: against their ground truth. A consumer that ignores it sees byte-for-byte today's behaviour.
 
 #: The closed stage vocabulary. A stage outside this tuple is still recorded (forward-compatible)
 #: but is not counted into any funnel field — an unknown stage must never silently move a number.
@@ -104,6 +109,7 @@ TRACE_STAGES: tuple[str, ...] = (
     STAGE_GATE_CLASSIFIED,
     STAGE_GATE_SUPPRESSED,
     STAGE_INCIDENT_CREATED,
+    STAGE_SHADOW_FOLD,
     STAGE_SOURCE_HEALTH,
     STAGE_TRACE_DROPPED,
     STAGE_RUN_ENDED,
@@ -405,6 +411,11 @@ TraceLevel = Literal["summary", "decisions", "full"]
 _SUMMARY_STAGES: frozenset[str] = frozenset({
     STAGE_RUN_STARTED, STAGE_RUN_ENDED, STAGE_SOURCE_HEALTH,
     STAGE_INCIDENT_CREATED, STAGE_TRACE_DROPPED,
+    # Card Y11: the shadow advisory is retained at EVERY level (it is low-volume — one record per
+    # subject/fold decision, not per frame). The founder handoff depends on it surviving a client's
+    # media-OFF ``.ptrace``, which may be captured at production (summary) level; a fold that only
+    # lived at ``full`` would be absent from exactly the trace a client can send back.
+    STAGE_SHADOW_FOLD,
 })
 
 #: Additional stages retained at ``level="decisions"``: the judge/gate decision detail. The per-frame
@@ -1591,6 +1602,7 @@ __all__ = [
     "STAGE_GATE_CLASSIFIED",
     "STAGE_GATE_SUPPRESSED",
     "STAGE_INCIDENT_CREATED",
+    "STAGE_SHADOW_FOLD",
     "STAGE_SOURCE_HEALTH",
     "STAGE_TRACE_DROPPED",
     "STAGE_RUN_STARTED",
