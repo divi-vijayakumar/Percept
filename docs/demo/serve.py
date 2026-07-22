@@ -526,6 +526,11 @@ def _advanced_from_params(params: dict) -> dict:
     out = {k: (params.get(k, [""])[0] or "").strip() for k in _ADVANCED_PARAM_KEYS}
     for k in _ADVANCED_BOOL_KEYS:
         out[k] = out[k] in ("1", "true", "on", "yes")
+    # audio (fused) defaults ON for an upload run when the parameter is ABSENT entirely — a page
+    # loaded before this panel existed sends no audio_fused key at all, and treating that as "off"
+    # silently starves the fused judge of the upload's own soundtrack. An explicit "0" still wins.
+    if "audio_fused" not in params:
+        out["audio_fused"] = True
     return out
 
 
