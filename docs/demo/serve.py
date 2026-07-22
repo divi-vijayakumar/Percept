@@ -72,24 +72,102 @@ _DEFAULT_MODEL = {  # same per-provider defaults percept.watch_cli forces
     "claude": "claude-sonnet-5",
 }
 
+# [DEMO3] ADR-008 configuration contract: demo-01 (physical video) and demo-02 (screen watch) each
+# name their SourceProfile EXPLICITLY through Percept.configure()/ConfigResolver — see
+# _resolve_watch() below. This replaces the old PERCEPT_SALIENCE_STAT / PERCEPT_BENCH_BLOCKMAX_THRESHOLD
+# / PERCEPT_GATE_REFRACTORY_S / PERCEPT_EGO_COMPENSATE env-var plumbing that used to live here: ZERO
+# of those env vars are exported by this harness now. The client HTML pages pass ?profile=physical_scene
+# or ?profile=screen_document on every /run call so the server always knows which explicit profile to
+# resolve — see the "Resolved configuration" panel on both pages for the per-field provenance this
+# produces.
+_PROFILE_NAMES = ("physical_scene", "screen_document")
+
+
+def _profile_for(name: str):
+    """The real, shipped SourceProfile object for ``name`` (never a string re-interpreted downstream)
+    — falls back to physical_scene, the SDK's calibrated default, for an unknown/missing name."""
+    from percept.source_profiles_default import PHYSICAL_SCENE, SCREEN_DOCUMENT
+
+    return {"physical_scene": PHYSICAL_SCENE, "screen_document": SCREEN_DOCUMENT}.get(name, PHYSICAL_SCENE)
+
+
+def _resolve_watch(profile_name: str, goal_text: str, *, source_key: str):
+    """Resolve the explicit SourceProfile through the REAL percept.resolver.ConfigResolver — the exact
+    seam ``Percept.configure()``/``apply_watch_plan()`` use, so the founder sees the SAME provenance the
+    runtime armed with, not a hand-summarized approximation.
+
+    Returns ``(resolved: ResolvedWatch, profile: SourceProfile, settings: Settings)``. ``settings`` is
+    an EXPLICIT ``percept.config.Settings`` object carrying the one H0-winning knob that is not itself
+    a SourceProfile parameter (the 15s re-fire refractory) — passed as a plain Python object at the
+    Deployment precedence tier, never written to the environment. block_max@0.20 + the coast floor +
+    content_key identity all come from the profile itself (see percept/source_profiles_default.py).
+    """
+    from percept.config import GateSettings, Settings
+    from percept.contracts.watchplan import WatchPlan
+    from percept.resolver import ConfigResolver
+
+    profile = _profile_for(profile_name)
+    settings = Settings(gate=GateSettings(refractory_s=15.0))
+    plan = WatchPlan(condition=goal_text or "percept demo — deployment/profile resolution only", source=source_key)
+    resolved = ConfigResolver().resolve(
+        plan, source_profile=profile, source_profile_explicit=True, settings=settings,
+    )
+    return resolved, profile, settings
+
+
+def _resolved_explain_json(resolved) -> "dict | None":
+    """Structured per-field provenance ({path, value, owner_layer, source_id, reason, validated_by})
+    PLUS the human ``.explain()`` text — the founder sees both the table and the "for a human at 2am"
+    rendering ResolvedWatch itself ships."""
+    if resolved is None:
+        return None
+    fields = [dict(path=p, **resolved.provenance[p].to_dict()) for p in sorted(resolved.provenance)]
+    return {
+        "text": resolved.explain(),
+        "fields": fields,
+        "plan_hash": resolved.plan_hash,
+        "source_profile": dict(resolved.source_profile) if resolved.source_profile is not None else None,
+    }
+
+
+def _receipt_json(receipt) -> dict:
+    """The WatchReceipt summary — or, for the fixture path (goals come pre-armed from the bundled
+    fixture script, never through apply_watch_plan — rearming them would risk changing what the
+    fixture replays, which this card forbids), an honest 'legacy' stand-in that says so."""
+    if receipt is None:
+        return {
+            "status": "legacy", "watch_ids": [], "plan_revision": None,
+            "accepted_fields": [], "dropped_fields": [], "coerced_fields": [], "warnings": [],
+            "summary": "legacy fixture path — goals came pre-armed from the bundled fixture, never "
+                       "through apply_watch_plan (rearming them could change what the fixture replays).",
+        }
+    d = receipt.to_dict()
+    d["summary"] = (f"{d['status']} · {len(d['watch_ids'])} goal(s) armed · "
+                     f"{len(d['warnings'])} warning(s) · {len(d['dropped_fields'])} dropped · "
+                     f"{len(d['coerced_fields'])} coerced")
+    return d
+
 
 def _apply_good_defaults() -> None:
-    """The H0-winning tier-0 defaults percept.watch_cli sets BEFORE importing percept. Without
-    block_max (the localized 'eye') the gate admits almost nothing on real content — the exact silent
-    failure a client hit. Set at import, before any percept import in the handlers."""
-    os.environ["PERCEPT_SALIENCE_STAT"] = "block_max"
-    os.environ.setdefault("PERCEPT_BENCH_BLOCKMAX_THRESHOLD", "0.20")
-    os.environ.setdefault("PERCEPT_GATE_REFRACTORY_S", "15")
-    os.environ.setdefault("PERCEPT_EGO_COMPENSATE", "false")
+    """[DEMO3]: the salience/motion-gate/refractory/ego-compensate knobs this used to export as
+    PERCEPT_* env vars now ride the explicit SourceProfile + Settings objects _resolve_watch() builds
+    per-run — ZERO of those env vars are set here anymore. Only PERCEPT_NO_BANNER remains (output
+    formatting, unrelated to admission tuning)."""
     os.environ.setdefault("PERCEPT_NO_BANNER", "1")
 
 
 _load_dotenv()          # load keys from .env before anything reads them
-_apply_good_defaults()  # block_max eye + thresholds before the first `import percept`
+_apply_good_defaults()  # PERCEPT_NO_BANNER only — see docstring
 
 
-def _recorder(core, goals, *, source: str, driver: str):
-    """Same recorder the real CLI builds for --trace: full retention + the live Gate's knobs."""
+def _recorder(core, goals, *, source: str, driver: str, resolved=None):
+    """Same recorder the real CLI builds for --trace: full retention + the live Gate's knobs.
+
+    ``resolved`` — the run's ``ResolvedWatch`` (or ``None``), forwarded straight to
+    ``RunTraceManifest.create`` so the manifest's own ``source_profile_id``/``profiles``/
+    ``component_snapshot_hash``/``optimization_lock_hash`` fields are filled from the SAME resolution
+    the founder sees in the "Resolved configuration" panel — one source of truth, not a second copy.
+    """
     from percept.replay import gate_config_of
     from percept.tracing import RunTraceManifest, TracePolicy, TraceRecorder
 
@@ -97,44 +175,79 @@ def _recorder(core, goals, *, source: str, driver: str):
         source=source, driver=driver, goals=goals,
         policy=TracePolicy(level="full", max_duration_s=None),
         gate_config=gate_config_of(core.gate),
+        resolved=resolved,
     )
     return TraceRecorder(manifest)
 
 
-async def _run_fixture(goal_text: str, trace_path: Path) -> dict:
-    """Keyless: replay the bundled fixture through the REAL watch() seam. No spend, no pretence."""
+async def _run_fixture(goal_text: str, profile_name: str, trace_path: Path) -> dict:
+    """Keyless: replay the bundled fixture through the REAL watch() seam. No spend, no pretence.
+
+    [DEMO3]: goals still come straight off the bundled fixture (``offline_goals`` — unchanged, legacy)
+    because the fixture's scripted verdicts are keyed to those EXACT goal/frame tokens; routing them
+    through ``apply_watch_plan`` first would risk re-minting a different goal id or state and silently
+    changing what gets replayed, which this card forbids. The ``_resolve_watch`` call below is
+    side-effect-free reporting only — it never touches ``core``/``goals`` — so the founder still sees
+    which profile a LIVE run of this same page would resolve to, without altering the fixture at all
+    (the raw ``watch()`` seam the fixture runs over never consults tier-0 salience/gate config anyway).
+    """
     from percept.offline import load_fixture, offline_core, offline_frames, offline_goals
     from percept.watch import watch
 
     fixture = load_fixture(None)
     core = offline_core(fixture)
     goals = offline_goals(fixture)
-    rec = _recorder(core, goals, source="fixture", driver="watch")
+    condition = goals[0].condition if goals else goal_text
+    resolved, _profile, _settings = _resolve_watch(profile_name, condition, source_key="fixture")
+    rec = _recorder(core, goals, source="fixture", driver="watch", resolved=resolved)
     core.on_trace = rec.tracer()
     events = []
     async for ev in watch(offline_frames(fixture), goals, percept=core, source="fixture"):
         events.append({"t": getattr(ev, "t", None), "goal_id": getattr(ev, "goal_id", None),
-                       "action": getattr(ev, "action", None), "text": getattr(ev, "text", None)})
+                       "action": getattr(ev, "action", None), "text": getattr(ev, "text", None),
+                       # WatchEvent (the raw watch() contract) carries no revision_id/supersedes —
+                       # those are Incident-only fields the live percept.run() path fills below. Explicit
+                       # None here (not an absent key) so the client can tell "no correction" from
+                       # "field unsupported on this path".
+                       "revision_id": None, "supersedes": None})
     rec.close()
     rec.write_json(str(trace_path))
-    return {"mode": "fixture", "events": events, "note":
-            "Bundled fixture through the real runtime — scripted verdicts, proves WIRING not intelligence."}
+    return {"mode": "fixture", "events": events, "resolved": resolved, "receipt": None, "note":
+            "Bundled fixture through the real runtime — scripted verdicts, proves WIRING not "
+            "intelligence. (the fixture replay never consults tier-0 salience/gate config, so the "
+            "resolved configuration below shows what a LIVE run of this page would use, not what "
+            "shaped this replay.)"}
 
 
-async def _run_real(video_path: Path, goal_text: str, backend: str, fps: float, trace_path: Path) -> dict:
-    """Real judge over the uploaded video — the exact path percept.watch_cli --trace runs."""
+async def _run_real(video_path: Path, goal_text: str, backend: str, fps: float,
+                    profile_name: str, trace_path: Path) -> dict:
+    """Real judge over the uploaded video — the exact path percept.watch_cli --trace runs.
+
+    [DEMO3]: the core is built via ``Percept.configure()`` — the ADR-008 configuration boundary — with
+    an EXPLICIT ``SourceProfile`` (physical_scene / screen_document, see ``_resolve_watch``), and the
+    goal is armed via ``apply_watch_plan`` (the WatchPlan drop-in for ``core.add_goal``), not
+    hand-built. Zero PERCEPT_SALIENCE_STAT / PERCEPT_MOTION_GATE_* / PERCEPT_GATE_REFRACTORY_S /
+    PERCEPT_EGO_COMPENSATE env vars anywhere in this path.
+    """
     import logging
     logging.disable(logging.WARNING)
     import percept
-    from percept import Goal, Percept
+    from percept import Percept
+    from percept.contracts.watchplan import WatchPlan
+    from percept.watchplan_apply import apply_watch_plan
 
-    goals = [Goal(id="g0", condition=goal_text, say=goal_text)]
-    os.environ["PERCEPT_VISION_BACKEND"] = backend
+    resolved, profile, settings = _resolve_watch(profile_name, goal_text, source_key="camera")
     os.environ["PERCEPT_VISION_MODEL"] = _DEFAULT_MODEL.get(backend, "")
-    core = Percept.create(vision=backend)
-    for g in goals:
-        core.add_goal(g)
-    rec = _recorder(core, goals, source="upload", driver="run")
+    core = Percept.configure(
+        vision=backend, mode="live", discover_plugins=False,
+        source_profile=profile, source_profile_explicit=True, settings=settings,
+    )
+    plan = WatchPlan(condition=goal_text, source="camera")
+    receipt = apply_watch_plan(
+        core, plan, source_profile=profile, source_profile_explicit=True, settings=settings,
+    )
+    goals = [g for g in (core.goals.get(gid) for gid in receipt.watch_ids) if g is not None]
+    rec = _recorder(core, goals, source="upload", driver="run", resolved=resolved)
     events = []
     stream = percept.run(core, source=str(video_path), fps=fps,
                          on_trace=rec.tracer(), on_health=rec.health_sink())
@@ -151,10 +264,15 @@ async def _run_real(video_path: Path, goal_text: str, backend: str, fps: float, 
             # number): lets the client resolve this delivered Incident back to the trace record for
             # the evidence that produced it. None on a fire from a path that built no JudgmentEvent.
             "evidence_seq": getattr(inc, "evidence_seq", None),
+            # Episode-owned provisional/superseding link (Incident 1.8 wire fields, Y-epic): a fire that
+            # CORRECTS an earlier provisional fire on the same episode names it in ``supersedes``; an
+            # original/provisional fire carries ``supersedes=None``. See percept/incidents.py.
+            "revision_id": getattr(inc, "revision_id", None),
+            "supersedes": getattr(inc, "supersedes", None),
         })
     rec.close()
     rec.write_json(str(trace_path))
-    return {"mode": "real", "backend": backend, "events": events}
+    return {"mode": "real", "backend": backend, "events": events, "resolved": resolved, "receipt": receipt}
 
 
 def _do_run(params: dict, body: bytes) -> dict:
@@ -163,9 +281,10 @@ def _do_run(params: dict, body: bytes) -> dict:
     trace_path = Path(tempfile.gettempdir()) / f"percept-demo-{run_id}.ptrace"
     goal = (params.get("goal", ["the target condition is met"])[0]).strip() or "the target condition is met"
     mode = params.get("mode", [""])[0]
+    profile_name = (params.get("profile", ["physical_scene"])[0]).strip() or "physical_scene"
 
     if mode == "fixture" or not body:
-        result = asyncio.run(_run_fixture(goal, trace_path))
+        result = asyncio.run(_run_fixture(goal, profile_name, trace_path))
     else:
         key = _have_key()
         if not key:
@@ -179,17 +298,22 @@ def _do_run(params: dict, body: bytes) -> dict:
         vid = Path(tempfile.gettempdir()) / f"percept-demo-{run_id}{suffix}"
         vid.write_bytes(body)
         try:
-            result = asyncio.run(_run_real(vid, goal, backend, fps, trace_path))
+            result = asyncio.run(_run_real(vid, goal, backend, fps, profile_name, trace_path))
         finally:
             try: vid.unlink()
             except OSError: pass
 
     trace_json = json.loads(trace_path.read_text())
     RUNS[run_id] = {"trace": str(trace_path)}
-    return {"run_id": run_id, "goal": goal,
+    return {"run_id": run_id, "goal": goal, "profile": profile_name,
+            # manifest already carries build/provenance (build_commit/build_timestamp) PLUS — now that
+            # _recorder is handed the run's ResolvedWatch — source_profile_id/profiles/
+            # component_snapshot_hash/optimization_lock_hash: surfaced as-is, one source of truth.
             "manifest": trace_json.get("manifest"), "summary": trace_json.get("summary"),
             "records": trace_json.get("records", []), "events": result.get("events", []),
-            "mode": result.get("mode"), "note": result.get("note"), "backend": result.get("backend")}
+            "mode": result.get("mode"), "note": result.get("note"), "backend": result.get("backend"),
+            "resolved_explain": _resolved_explain_json(result.get("resolved")),
+            "receipt": _receipt_json(result.get("receipt"))}
 
 
 class Handler(BaseHTTPRequestHandler):
