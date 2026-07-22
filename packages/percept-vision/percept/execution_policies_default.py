@@ -1,4 +1,4 @@
-"""The shipped :class:`~percept.execution_policy.ExecutionPolicy` set (ADR-008, card C4a).
+"""The shipped :class:`~percept.execution_policy.ExecutionPolicy` set (ADR-008).
 
 Four policies, each named ``{id}@1`` and built ONLY from the 13 tunables-registry paths
 :data:`percept.tunables.REGISTRY` assigns owner ``"ExecutionPolicy"`` (see

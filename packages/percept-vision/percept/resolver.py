@@ -45,7 +45,7 @@ dataclasses — an ``id``/``version``/``values`` mapping, nothing more — so th
 real and testable now; their full contracts (pack loading, optimizer logic) are later cards'
 scope, deliberately not built here.
 
-``ExecutionPolicy`` graduated out of that placeholder set (card C4a): it is now a real, typed
+``ExecutionPolicy`` has since graduated out of that placeholder set: it is now a real, typed
 dataclass with four shipped named bundles — see :mod:`percept.execution_policy` /
 :mod:`percept.execution_policies_default`. This module still imports it (re-exported below for
 backward compatibility) and still owns the ownership GATE that validates its ``values`` at resolve
