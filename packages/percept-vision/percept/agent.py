@@ -461,6 +461,17 @@ class Percept:
     # classifies it); UNCERTAIN merges its facts into context["extractor"] and the judge is still
     # called; DEGRADED (or no rule matched) falls through to today's judge call, untouched.
     direct_judge: Any = None
+    # The RESOLVED SourceProfile object (percept.sourceprofile.SourceProfile), when construction went
+    # through the ADR-008 configuration boundary and a profile was actually named — ``None`` (the
+    # default; a bare create() / a profile-less configure()) is byte-for-byte the behavior before this
+    # field existed: nothing reads it. Populated by :meth:`configure` (the ``source_profile=`` kwarg it
+    # resolves) and by :func:`percept.watchplan_apply.apply_watch_plan` (the same kwarg, applied to an
+    # EXISTING core). Never mutated elsewhere. Threaded into ``count_event_decision`` /
+    # ``_document_episode_fold`` / ``_claim_episode_fold`` as the FALLBACK underneath the existing
+    # ``EPISODE_POLICIES[...]`` defaults — an authored ``goal.state`` (explicit episode policy /
+    # ``identity_policy``) always wins; see ``percept.identity_policy.select_identity_policy`` and
+    # ``percept.sourceprofile.SourceProfile.default_episode_policy``.
+    source_profile: Any = None
 
     # -- construction --------------------------------------------------------
     @classmethod
@@ -486,6 +497,7 @@ class Percept:
         allow_scripted_brain: bool = False,
         sense_policy: Any = None,
         plan_mode: str | None = None,
+        source_profile: Any = None,
     ) -> "Percept":
         cfg = settings or load_settings()
         # The mode is the switch: explicit kwarg > PERCEPT_MODE env > live. It is never "offline" by
@@ -588,6 +600,7 @@ class Percept:
             _allow_scripted_brain=allow_scripted_brain,
             sense_policy=sense_policy,
             plan_mode=plan_mode,
+            source_profile=source_profile,
         )
         # When the entity graph evicts a track (it caps at max_entities), sweep that entity's derived
         # state — its ``(goal_id, entity_id)`` gate keys AND any cached verdicts resting on it — so a 24/7
@@ -682,6 +695,12 @@ class Percept:
         create_kwargs.setdefault("settings", compiled.settings)
         create_kwargs.setdefault("sense_policy", compiled.sense_policy)
         create_kwargs.setdefault("plan_mode", compiled.plan_mode)
+        # The RESOLVED SourceProfile OBJECT (not ``resolved.source_profile``, which is a plain JSON-
+        # shaped snapshot dict per ``ResolvedWatch`` — see its docstring) — the actual object this
+        # method was called with, so ``Percept.source_profile`` carries something with
+        # ``.default_identity_policy`` / ``.default_episode_policy`` on it, not a dict. ``None`` when
+        # this ``configure()`` call named no profile, byte-for-byte no field at all.
+        create_kwargs.setdefault("source_profile", source_profile)
         return cls.create(**create_kwargs)
 
     @classmethod

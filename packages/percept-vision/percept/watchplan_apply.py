@@ -162,6 +162,15 @@ def _apply_one(
     state, coerced = _coerce_goal_state(compiled.goal.state, goal_id=compiled.goal.id)
     goal = replace(compiled.goal, state=state)
     percept.add_goal(goal)
+    # Thread the RESOLVED SourceProfile OBJECT (the actual ``resolve_kwargs["source_profile"]`` this
+    # batch was called with — never ``resolved.source_profile``, which is a plain JSON-shaped snapshot
+    # dict, see ``ResolvedWatch``'s docstring) onto the core, the same additive field
+    # ``Percept.configure`` populates. Only set when THIS call actually named one — a plan applied with
+    # no ``source_profile=`` leaves whatever the core already carried untouched (e.g. one set by an
+    # earlier ``configure()``/``apply_watch_plan`` call), so a profile once resolved for a core is never
+    # silently cleared by a later profile-less arm.
+    if resolve_kwargs.get("source_profile") is not None:
+        percept.source_profile = resolve_kwargs["source_profile"]
 
     base = resolver.last_receipt  # the resolution-time WatchReceipt (accepted_fields + warnings)
     warnings = base.warnings if base is not None else ()
