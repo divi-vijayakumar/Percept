@@ -39,17 +39,18 @@ that field's class is a :class:`ConfigError`, raised before any value is produce
 last-writer-wins. Ownership is read from :data:`percept.tunables.REGISTRY` (the tunables inventory),
 the single source of truth this module does not duplicate.
 
-``DomainPack`` / ``OptimizationLock`` do not exist as real objects yet (ADR-008 §Six declared
-objects: "new — not yet in code"). This module defines them here as MINIMAL placeholder
-dataclasses — an ``id``/``version``/``values`` mapping, nothing more — so the precedence chain is
-real and testable now; their full contracts (pack loading, optimizer logic) are later cards'
-scope, deliberately not built here.
+``OptimizationLock`` does not exist as a real object yet (ADR-008 §Six declared objects: "new —
+not yet in code"). This module defines it here as a MINIMAL placeholder dataclass — an
+``id``/``version``/``values`` mapping, nothing more — so the precedence chain is real and testable
+now; its full contract (optimizer validation logic) is a later card's scope, deliberately not
+built here.
 
-``ExecutionPolicy`` has since graduated out of that placeholder set: it is now a real, typed
-dataclass with four shipped named bundles — see :mod:`percept.execution_policy` /
-:mod:`percept.execution_policies_default`. This module still imports it (re-exported below for
-backward compatibility) and still owns the ownership GATE that validates its ``values`` at resolve
-time; it no longer DEFINES the class.
+``ExecutionPolicy`` and ``DomainPack`` have since graduated out of that placeholder set: they are
+now real, typed dataclasses — see :mod:`percept.execution_policy` / :mod:`percept.execution_policies_default`
+and :mod:`percept.domain_pack` / :mod:`percept.packs_default`. This module still imports both
+(re-exported below for backward compatibility) and still owns the ownership GATE that validates
+their ``values`` at resolve time, plus (for ``DomainPack``) a POLICY-CLAMP gate distinct from
+ownership (see :func:`_check_policy_clamps`) — it no longer DEFINES either class.
 
 ``DeploymentConfig`` also does not exist as a real object yet; ``percept.config.Settings`` /
 ``load_settings()`` continue to play its role informally (ADR-008 §Consequences), which is what
@@ -84,6 +85,7 @@ from .contracts.watchplan import (
     WatchPlan,
     WatchReceipt,
 )
+from .domain_pack import DomainPack
 from .execution_policy import ExecutionPolicy
 from .profile_resolution import resolve_profile, resolve_situation
 from .runtime_compiler import runtime_compile
@@ -134,9 +136,9 @@ _BY_PATH: dict[str, TunableSpec] = {spec.path: spec for spec in REGISTRY}
 
 
 # ---------------------------------------------------------------------------
-# Minimal placeholder resolver inputs (ADR-008: "new — not yet in code" for all three). Only the
-# shape a precedence chain needs: id/version/values. Real pack loading / scheduling posture /
-# optimizer validation are later cards.
+# Minimal placeholder resolver input — OptimizationLock (ADR-008: "new — not yet in code"). Only
+# the shape a precedence chain needs: id/version/values. Real optimizer validation is a later
+# card's scope.
 # ---------------------------------------------------------------------------
 
 
@@ -149,25 +151,6 @@ def _freeze_values(values: Mapping[str, Any] | None) -> Mapping[str, Any]:
         if not isinstance(key, str) or not key.strip():
             raise ConfigError(f"values keys must be non-empty strings, got {key!r}")
     return MappingProxyType(dict(values))
-
-
-@dataclass(frozen=True)
-class DomainPack:
-    """Placeholder resolver input — ADR-008: "domain vocabulary, phrase templates, per-domain
-    recommended WatchProfile/SourceProfile pairings... new, not yet in code". ``values`` is keyed
-    by the same dotted tunables-registry path vocabulary as :attr:`WatchPlan.explicit`. No tunable
-    in :data:`percept.tunables.REGISTRY` is owned by ``"DomainPack"`` today — any non-empty
-    ``values`` therefore raises :class:`ConfigError` until a card assigns it real ownership; this
-    is intentional, not a bug (see the ADR's own "open registry" framing)."""
-
-    id: str
-    version: str = "v1"
-    values: Mapping[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.id, str) or not self.id.strip():
-            raise ConfigError(f"DomainPack.id must be a non-empty string, got {self.id!r}")
-        object.__setattr__(self, "values", _freeze_values(self.values))
 
 
 @dataclass(frozen=True)
@@ -405,6 +388,83 @@ def _check_optimization_lock_ownership(values: Mapping[str, Any]) -> None:
                 f"OptimizationLock may not cover {path!r}: safe_to_optimize=False in the registry "
                 "(Invariants: 'the optimizer tunes only declared-safe paths')"
             )
+
+
+#: Cost severity order — mirrors ``percept.domain_pack._MISS_COST_ORDER`` / ``percept.behavior``'s
+#: own closed vocab (``trivial < mild < severe``). Duplicated here (not imported) so this module's
+#: enforcement never depends on which order ``percept.domain_pack`` happens to pick — both read the
+#: same three-value vocabulary, checked to agree by ``tests/test_domain_pack.py``.
+_MISS_COST_ORDER: dict[str, int] = {"trivial": 0, "mild": 1, "severe": 2}
+
+_SECONDS_PER_DAY = 86_400.0
+
+
+def _effective_miss_cost(plan: WatchPlan, effective: Mapping[str, Any]) -> str | None:
+    """The miss_cost this resolution actually settled on, preferring the MORE SPECIFIC
+    ``Goal.state.miss_cost`` explicit path (same precedent as
+    ``runtime_compiler._goal_state_from_resolved``'s own "explicit path only fills a gap" rule)
+    over ``WatchPlan.consequence`` — the channel a :class:`~percept.domain_pack.GoalTemplate`
+    actually uses (see its ``render()``)."""
+    explicit = effective.get("Goal.state.miss_cost")
+    if explicit is not None:
+        return explicit
+    if plan.consequence:
+        return plan.consequence.get("miss_cost")
+    return None
+
+
+def _check_policy_clamps(
+    domain_pack: "DomainPack | None", plan: WatchPlan, effective: Mapping[str, Any]
+) -> None:
+    """Enforce a :class:`~percept.domain_pack.DomainPack`'s ``policy_clamps`` — a RESOLVE-TIME
+    :class:`ConfigError`, raised before :class:`~percept.contracts.ResolvedWatch` is constructed,
+    never a silent clamp/merge (ADR-008's own "enforced like the envelope" posture: a violation is
+    refused outright, the same way :class:`percept.envelope.EnvelopeViolation` refuses at
+    construction). No-op when ``domain_pack`` is ``None`` or declares no clamps."""
+    if domain_pack is None:
+        return
+    clamps = domain_pack.policy_clamps
+
+    floor = clamps.get("false_negative_cost_min")
+    if floor is not None:
+        miss_cost = _effective_miss_cost(plan, effective)
+        if miss_cost is not None and _MISS_COST_ORDER.get(miss_cost, -1) < _MISS_COST_ORDER[floor]:
+            raise ConfigError(
+                f"DomainPack {domain_pack.qualified_name!r} clamp violation: "
+                f"path='consequence.miss_cost' value={miss_cost!r} is below the pack's "
+                f"false_negative_cost_min={floor!r} — a domain-declared policy floor is a "
+                "resolve-time error, never silently merged/raised for you (ADR-008)."
+            )
+
+    max_days = clamps.get("retention_max_days")
+    if max_days is not None:
+        window_s = effective.get("Settings.episodes.window_s")
+        if isinstance(window_s, (int, float)) and not isinstance(window_s, bool):
+            window_days = window_s / _SECONDS_PER_DAY
+            if window_days > max_days:
+                raise ConfigError(
+                    f"DomainPack {domain_pack.qualified_name!r} clamp violation: "
+                    f"path='Settings.episodes.window_s' value={window_s!r}s ({window_days:.2f} "
+                    f"days) exceeds the pack's retention_max_days={max_days!r} — a domain-declared "
+                    "retention ceiling is a resolve-time error, never silently merged/raised for "
+                    "you (ADR-008)."
+                )
+
+
+def _domain_pack_snapshot(domain_pack: "DomainPack") -> dict[str, Any]:
+    """The plain, JSON-shaped snapshot :attr:`~percept.contracts.ResolvedWatch.domain_pack` carries —
+    NOT just ``.values`` (unlike the earlier placeholder): a resolved watch is meant to answer "what
+    did the pack recommend/enforce for this goal", so the advisory ``components`` (recommendations)
+    and the ``policy_clamps`` this resolution was checked against ride along too, even though
+    neither is a per-FIELD ``effective``/``provenance`` entry (recommendations never write a field;
+    clamps only ever raise or pass)."""
+    return {
+        "id": domain_pack.id,
+        "version": domain_pack.version,
+        "values": dict(domain_pack.values),
+        "components": [c.to_dict() for c in domain_pack.components],
+        "policy_clamps": dict(domain_pack.policy_clamps),
+    }
 
 
 def _expand_explicit_path(path: str, value: Any) -> dict[str, Any]:
@@ -688,6 +748,11 @@ class ConfigResolver:
                     ),
                 )
 
+        # DomainPack policy clamps: a distinct enforcement dimension from ownership above — a
+        # domain-declared floor/ceiling on the FINAL resolved value, checked once `effective` is
+        # complete, raised BEFORE anything downstream (ResolvedWatch, RuntimeCompiler) is built.
+        _check_policy_clamps(domain_pack, watch_plan, effective)
+
         plan_hash = content_hash(watch_plan.to_dict())
 
         # A provisional ResolvedWatch (components/component_snapshot_hash not yet final) so
@@ -698,7 +763,7 @@ class ConfigResolver:
         provisional = ResolvedWatch(
             plan=watch_plan,
             source_profile=(source_profile_values if source_profile else None),
-            domain_pack=(dict(domain_pack.values) if domain_pack else None),
+            domain_pack=(_domain_pack_snapshot(domain_pack) if domain_pack else None),
             execution_policy=(dict(execution_policy.values) if execution_policy else None),
             components={},
             effective=effective,
