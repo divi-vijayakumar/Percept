@@ -23,10 +23,20 @@ best-match profile for ``key`` and layers the axis-derived overrides on top of i
 
 Design rationale (grounded in this repo's measured tuning results — cited, not re-derived here):
 
-- **block_max always.** Localized (block-max) salience nearly doubled recall vs. a whole-frame mean
-  (0.31 -> 0.59; see the project's viability-ladder findings). This dominates regardless of mount or goal
-  shape, so ``overrides["salience_stat"]`` is unconditionally ``"block_max"`` — there is no known situation
-  where the whole-frame mean is the better choice.
+- **salience_stat is NOT a situation axis (ADR-008 ownership transfer, card C2).** Localized
+  (block-max) salience nearly doubled recall vs. a whole-frame mean (0.31 -> 0.59; see the project's
+  viability-ladder findings), which is why every shipped :class:`~percept.watchprofile.WatchProfile`
+  (``percept.profiles_default``) and both stable :class:`~percept.sourceprofile.SourceProfile`
+  entries (``percept.source_profiles_default``) declare ``salience_stat="block_max"`` as THEIR OWN
+  default. This module used to re-assert that choice unconditionally as a situation-axis override,
+  which silently overrode a differently-tuned registered/source profile — ownership of "which
+  statistic" belongs to the profile/source layer (:data:`percept.tunables.REGISTRY`:
+  ``Settings.edge.salience_stat`` -> owner ``"SourceProfile"``), not to this axis-derived layer, so
+  :func:`resolve_situation` no longer emits ``"salience_stat"``/``"stat_thresholds"`` and
+  :func:`resolve_profile` passes the resolved profile's own value through untouched. A profile that
+  declares nothing still gets the SDK default (``"mean"``, byte-for-byte legacy); every SHIPPED
+  profile still resolves to ``block_max``/0.20 because that is what it declares, not because this
+  module forces it.
 - **ego-compensation follows camera motion.** A moving, uncompensated camera drove tier-0 sampler
   escalation to ~98% of frames (global motion never lets cheap-motion settle below the escalate threshold)
   vs. ~30% with ego-compensation on (see ``percept.profiles_default.EGO_COMPENSATION_NOTE``). Enabling it
@@ -75,12 +85,6 @@ START_STATES: tuple[str, ...] = ("start_anchored", "transition")
 # default (see module docstring), and NEVER "sprite" (see docstring: sprite is strictly worse and must
 # never be selected by this module, for any input).
 _WILDCARD_PLAN_MODE = "window"
-
-# The block_max threshold this module pins as an override, matching the threshold already shipped by every
-# empirically-derived profile in percept.profiles_default (FIXED_CAM_LOCALIZED, DYNAMIC_ACTION, HANDHELD,
-# WILDCARD_DEFAULT all use stat_thresholds={"block_max": 0.20}) -- reused here, not re-derived.
-_BLOCK_MAX_THRESHOLD = 0.20
-
 
 def _normalize(value: Any) -> str:
     """Lowercase/strip a raw axis value for comparison; non-strings and falsy values normalize to ``""``
@@ -150,12 +154,16 @@ class SituationResolution:
       :meth:`percept.watchprofile.WatchProfileRegistry.get` or ``.resolve``.
     - ``overrides`` — a plain, JSON-serializable dict:
         - ``"plan_mode"``: ``"single"`` or ``"window"`` (never ``"sprite"``).
-        - ``"salience_stat"``: always ``"block_max"``.
-        - ``"stat_thresholds"``: always ``{"block_max": 0.20}``.
         - ``"gate"``: ``{"require_false_first": bool}``.
         - ``"ego_compensate"``: bool. Not yet a typed :class:`~percept.watchprofile.WatchProfile` field
           (see ``percept.profiles_default.EGO_COMPENSATION_NOTE``), so it rides here as a plain override
           rather than being merged into a returned ``WatchProfile`` by :func:`resolve_profile`.
+
+      ``"salience_stat"``/``"stat_thresholds"`` are deliberately NOT situation-axis overrides
+      (ADR-008 ownership transfer, card C2): which statistic to use is owned by the profile/source
+      layer, not by goal-temporality/camera-mount/start-state. :func:`resolve_profile` passes
+      whatever the resolved registry profile (or resolved :class:`~percept.sourceprofile.SourceProfile`)
+      already declares straight through, unmodified.
     """
 
     key: tuple[str, str, str]
@@ -182,8 +190,6 @@ def resolve_situation(goal_temporality: Any, camera_mount: Any, start_state: Any
         key=(environment, goal_type, state),
         overrides={
             "plan_mode": plan_mode,
-            "salience_stat": "block_max",
-            "stat_thresholds": {"block_max": _BLOCK_MAX_THRESHOLD},
             "gate": {"require_false_first": require_false_first},
             "ego_compensate": ego_compensate,
         },
@@ -200,10 +206,12 @@ def resolve_profile(
     """Convenience wrapper: resolve the situation, look up the best-match profile in ``registry`` for the
     resulting key (exact match, then :data:`~percept.watchprofile.WILDCARD` fallback, per
     :meth:`~percept.watchprofile.WatchProfileRegistry.resolve`), and layer the situation's overrides
-    (``plan_mode``, ``salience_stat``, ``stat_thresholds``, ``gate.require_false_first``) on top of it via
-    :func:`dataclasses.replace`. Returns ``(profile, overrides)`` -- ``overrides`` is the same dict
-    :func:`resolve_situation` produced, included because ``"ego_compensate"`` has no home on
-    :class:`~percept.watchprofile.WatchProfile` yet (see :class:`SituationResolution`) and callers need it.
+    (``plan_mode``, ``gate.require_false_first``) on top of it via :func:`dataclasses.replace`.
+    ``salience_stat``/``stat_thresholds`` are NOT overridden here (ADR-008 ownership transfer, card
+    C2) — the resolved profile's own declared value passes through untouched, whatever it is. Returns
+    ``(profile, overrides)`` -- ``overrides`` is the same dict :func:`resolve_situation` produced,
+    included because ``"ego_compensate"`` has no home on :class:`~percept.watchprofile.WatchProfile`
+    yet (see :class:`SituationResolution`) and callers need it.
 
     ``registry`` defaults to :data:`percept.watchprofile.DEFAULT_REGISTRY`; this module does not import
     :mod:`percept.profiles_default` and so does not implicitly seed it. Raises
@@ -222,8 +230,6 @@ def resolve_profile(
     merged_gate = replace(base.gate, require_false_first=overrides["gate"]["require_false_first"])
     merged = replace(
         base,
-        salience_stat=overrides["salience_stat"],
-        stat_thresholds=dict(overrides["stat_thresholds"]),
         plan_mode=overrides["plan_mode"],
         gate=merged_gate,
     )

@@ -122,7 +122,8 @@ def test_unknown_start_state_falls_back_to_wildcard_and_conservative_gate() -> N
 
 
 # ---------------------------------------------------------------------------
-# salience_stat: unconditionally block_max, per the H0 finding cited in the module docstring.
+# salience_stat: NOT a situation axis (ADR-008 ownership transfer, card C2) — it belongs to the
+# profile/source layer, so resolve_situation() never emits it, for any input.
 # ---------------------------------------------------------------------------
 
 
@@ -130,10 +131,10 @@ def test_unknown_start_state_falls_back_to_wildcard_and_conservative_gate() -> N
     "goal_temporality,camera_mount,start_state",
     list(itertools.product(GOAL_TEMPORALITIES + (None, "bogus"), CAMERA_MOUNTS + (None, "bogus"), START_STATES + (None, "bogus"))),
 )
-def test_salience_stat_is_always_block_max(goal_temporality, camera_mount, start_state) -> None:
+def test_salience_stat_is_not_a_situation_override(goal_temporality, camera_mount, start_state) -> None:
     res = resolve_situation(goal_temporality, camera_mount, start_state)
-    assert res.overrides["salience_stat"] == "block_max"
-    assert res.overrides["stat_thresholds"] == {"block_max": 0.20}
+    assert "salience_stat" not in res.overrides
+    assert "stat_thresholds" not in res.overrides
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +157,7 @@ def test_full_recognized_combination_matrix(goal_temporality, camera_mount, star
     assert res.overrides["plan_mode"] == ("single" if goal_temporality == "stative" else "window")
     assert res.overrides["ego_compensate"] == (camera_mount != "fixed")
     assert res.overrides["gate"]["require_false_first"] == (start_state == "transition")
-    assert res.overrides["salience_stat"] == "block_max"
+    assert "salience_stat" not in res.overrides
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +169,7 @@ def test_fully_unknown_situation_falls_back_safely_on_every_axis() -> None:
     res = resolve_situation(None, None, None)
     assert res.key == (WILDCARD, WILDCARD, WILDCARD)
     assert res.overrides["plan_mode"] == "window"
-    assert res.overrides["salience_stat"] == "block_max"
+    assert "salience_stat" not in res.overrides
     assert res.overrides["gate"]["require_false_first"] is True
     assert res.overrides["ego_compensate"] is True
 
@@ -217,10 +218,10 @@ def test_resolve_situation_is_deterministic() -> None:
 def test_resolve_situation_result_mutation_does_not_leak_between_calls() -> None:
     first = resolve_situation("dynamic", "wearable", "transition")
     first.overrides["plan_mode"] = "sprite"  # mutate the caller's copy
-    first.overrides["stat_thresholds"]["block_max"] = 0.99
+    first.overrides["gate"]["require_false_first"] = False
     second = resolve_situation("dynamic", "wearable", "transition")
     assert second.overrides["plan_mode"] == "window"
-    assert second.overrides["stat_thresholds"] == {"block_max": 0.20}
+    assert second.overrides["gate"]["require_false_first"] is True
 
 
 def test_resolve_situation_ignores_environment_variables(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -255,8 +256,9 @@ def test_resolve_profile_overrides_a_custom_registered_profile() -> None:
     profile, overrides = resolve_profile("stative", "fixed", "start_anchored", registry=registry)
 
     assert profile.plan_mode == "single"  # overridden from the registered "window"
-    assert profile.salience_stat == "block_max"  # overridden from the registered "mean"
-    assert profile.stat_thresholds == {"block_max": 0.20}
+    # salience_stat/stat_thresholds are NOT a situation override (ADR-008 ownership transfer, card
+    # C2) -- the registered profile's own declared "mean" passes through untouched.
+    assert profile.salience_stat == "mean"
     assert profile.gate.require_false_first is False  # overridden from the registered True
     assert profile.gate.refractory_s == 3.0  # NOT overridden -- P2's axes don't touch refractory_s
     assert overrides["ego_compensate"] is False
@@ -280,7 +282,7 @@ def test_resolve_profile_falls_back_through_registry_wildcards() -> None:
     profile, _overrides = resolve_profile("dynamic", "wearable", "transition", registry=registry)
     assert profile.name == "broad-default"
     assert profile.plan_mode == "window"  # overridden per the dynamic-goal rule
-    assert profile.salience_stat == "block_max"
+    assert profile.salience_stat == "mean"  # NOT overridden -- passes the registered value through
 
 
 def test_resolve_profile_raises_when_registry_has_no_match_at_all() -> None:
@@ -331,8 +333,6 @@ def test_situation_resolution_shape() -> None:
     assert isinstance(res.key, tuple) and len(res.key) == 3
     assert set(res.overrides) == {
         "plan_mode",
-        "salience_stat",
-        "stat_thresholds",
         "gate",
         "ego_compensate",
     }

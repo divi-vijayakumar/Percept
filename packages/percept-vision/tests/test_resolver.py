@@ -275,11 +275,21 @@ class TestSituationResolverProvenanceStamped(unittest.TestCase):
     """The situation resolver's contributed values arrive with real provenance, per the tunables
     registry's own ownership for each underlying field — not a single blanket label."""
 
-    def test_salience_and_plan_mode_stamped_watch_plan(self) -> None:
+    def test_plan_mode_stamped_watch_plan(self) -> None:
         resolver = ConfigResolver()
         resolved = resolver.resolve(_plan(), situation=("dynamic", "fixed", "start_anchored"))
-        self.assertEqual(resolved.provenance["Settings.edge.salience_stat"].owner_layer, LAYER_WATCH_PLAN)
-        self.assertEqual(resolved.effective["Settings.edge.salience_stat"], "block_max")
+        self.assertEqual(resolved.provenance["WatchProfile.plan_mode"].owner_layer, LAYER_WATCH_PLAN)
+        self.assertEqual(resolved.effective["WatchProfile.plan_mode"], "window")
+
+    def test_situation_alone_does_not_touch_salience_stat(self) -> None:
+        """ADR-008 ownership transfer (card C2): situation axes no longer carry salience_stat — a
+        caller must ALSO resolve a SourceProfile (or set it explicitly) to get a tuned statistic.
+        The SDK-default layer still contributes the field (every Settings.* path always does), but
+        its owner stays SDK and its value stays the legacy default."""
+        resolver = ConfigResolver()
+        resolved = resolver.resolve(_plan(), situation=("dynamic", "fixed", "start_anchored"))
+        self.assertEqual(resolved.effective["Settings.edge.salience_stat"], "mean")
+        self.assertEqual(resolved.provenance["Settings.edge.salience_stat"].owner_layer, "SDK")
 
     def test_gate_field_stamped_gate_layer(self) -> None:
         resolver = ConfigResolver()

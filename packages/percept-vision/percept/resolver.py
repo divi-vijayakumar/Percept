@@ -312,12 +312,13 @@ def _source_profile_runtime_bindings(profile: SourceProfile) -> dict[str, Any]:
 
 #: The situation-resolver override keys (percept.profile_resolution.SituationResolution.overrides)
 #: mapped onto the tunables-registry path + owner tier they correspond to. Built from the REAL
-#: registry ownership (WatchProfile.salience_stat/stat_thresholds/plan_mode -> "WatchPlan";
-#: Settings.edge.ego_compensate -> "SourceProfile"; Settings.gate.require_false_first -> "Gate"),
-#: not re-decided here.
+#: registry ownership (WatchProfile.plan_mode -> "WatchPlan"; Settings.edge.ego_compensate ->
+#: "SourceProfile"; Settings.gate.require_false_first -> "Gate"), not re-decided here.
+#:
+#: ``salience_stat``/``stat_thresholds`` are deliberately ABSENT: ADR-008's ownership transfer (card
+#: C2) moved them out of the situation axes entirely — resolve_situation() no longer emits them (see
+#: percept.profile_resolution), so this mapping only needs to name the keys it still does.
 _SITUATION_PATHS: tuple[tuple[str, str], ...] = (
-    ("salience_stat", "WatchProfile.salience_stat"),
-    ("stat_thresholds", "WatchProfile.stat_thresholds"),
     ("plan_mode", "WatchProfile.plan_mode"),
     ("ego_compensate", "Settings.edge.ego_compensate"),
 )
