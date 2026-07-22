@@ -61,6 +61,13 @@ class FireEvent:
     # which take no judge-funnel stamps — an absent event, never an invented one. Appended LAST with
     # a ``None`` default: existing positional constructions and consumers are unchanged.
     judgment: JudgmentEvent | None = None
+    # Z3 — the enriched judgment envelope carried from the executor's ``Fired`` so it survives to the
+    # delivered Incident (``make_incident`` reads these off the fire). All OPTIONAL/defaulted: an
+    # episode/rhythm/boundary/transition/absence fire that sets none of them is byte-for-byte unchanged.
+    reason: str | None = None
+    modality: str | None = None
+    roi: object | None = None
+    provenance: str | None = None
 
 
 # -- The resolved WatchProfile.plan_mode -> the concern's PerceptionSpec -----------------------
@@ -843,7 +850,8 @@ class Percept:
         if fired is None:
             return None
         return FireEvent(fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict,
-                         fired.judgment)
+                         fired.judgment, reason=fired.reason, modality=fired.modality,
+                         roi=fired.roi, provenance=fired.provenance)
 
     def perceive_boundary(self, goal_id: str, *, t: float = 0.0) -> FireEvent | None:
         """Consume one EDGE boundary (a detector's timed event — a rep peak, an audio onset) as a

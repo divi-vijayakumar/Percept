@@ -336,6 +336,12 @@ describe("Incident / IncidentSnippet", () => {
       label: null,
       snippet: null,
       entity_id: null,
+      // Z3 (contract 1.6) enriched envelope — all default null on a minimal build.
+      reason: null,
+      watchplan_id: null,
+      roi: null,
+      modality: null,
+      provenance: null,
     });
   });
 
@@ -366,6 +372,12 @@ describe("Incident / IncidentSnippet", () => {
       label: null,
       snippet: null,
       entity_id: null, // absent on a pre-1.3 payload -> null, never a parse failure
+      // Z3 (contract 1.6) envelope absent on a pre-1.6 payload -> null, never a parse failure.
+      reason: null,
+      watchplan_id: null,
+      roi: null,
+      modality: null,
+      provenance: null,
     });
   });
 
@@ -390,6 +402,30 @@ describe("Incident / IncidentSnippet", () => {
           '"ts":5.0,"label":null,"snippet":null,"entity_id":"person-7"}'
       ).entity_id
     ).toBe("person-7");
+  });
+
+  it("carries the Z3 judgment envelope through build + round-trip (contract 1.6)", () => {
+    const inc = makeIncident({
+      id: "inc-z3",
+      concern_id: "c-door-open",
+      verdict: { satisfied: true, confidence: 0.95 },
+      ts: 7.0,
+      reason: "rising_edge",
+      watchplan_id: "plan-abc123",
+      roi: { x: 0.1, y: 0.2, w: 0.3, h: 0.4 },
+      modality: "vision",
+      provenance: "observed",
+    });
+    expect(inc.reason).toBe("rising_edge");
+    expect(inc.watchplan_id).toBe("plan-abc123");
+    expect(inc.roi).toEqual({ x: 0.1, y: 0.2, w: 0.3, h: 0.4 });
+    expect(inc.modality).toBe("vision");
+    expect(inc.provenance).toBe("observed");
+    // round-trips through JSON byte-for-byte
+    expect(parseIncident(JSON.stringify(inc))).toEqual(inc);
+    // closed-vocab fields reject an out-of-vocabulary value
+    expect(() => makeIncident({ id: "x", concern_id: "c", verdict: { satisfied: true, confidence: 1 }, ts: 0, modality: "smell" })).toThrow();
+    expect(() => makeIncident({ id: "x", concern_id: "c", verdict: { satisfied: true, confidence: 1 }, ts: 0, provenance: "guessed" })).toThrow();
   });
 
   it("snippet tolerates omitted payload fields -> null (redacted record shape)", () => {

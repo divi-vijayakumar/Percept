@@ -1265,6 +1265,26 @@ async def run(
     spec, gate, banks, coast, required_fps = _build_gate()
     perceive_boundary = getattr(core, "perceive_boundary", None)
     goals_revision = getattr(core.goals, "revision", None)  # watch for mid-run goal changes
+
+    # Z3 — the stable id of the PLAN this run is watching under, stamped on every emitted Incident so a
+    # client can join a fire back to the exact goal set + policy it was judged against (the plan_hash that
+    # X3 already computes for doctor/eval but that never reached the wire). The per-goal executor cannot
+    # know the whole plan; the runtime that owns the goal set does. Computed from the CURRENT active goals
+    # and cached by goal-revision, so a mid-run goal edit re-derives it and an idle run never recomputes.
+    _watchplan_cache: dict = {}
+
+    def _current_watchplan_id():
+        rev = getattr(core.goals, "revision", None)
+        hit = _watchplan_cache.get("v")
+        if hit is not None and hit[0] == rev:
+            return hit[1]
+        try:  # best-effort: an observability id must never break the firing path
+            from percept.tracing import PlanIdentity  # noqa: PLC0415 - lazy, avoids an import cycle
+            pid = PlanIdentity.from_goals(core.goals.active(), revision=rev).plan_hash
+        except Exception:  # noqa: BLE001
+            pid = None
+        _watchplan_cache["v"] = (rev, pid)
+        return pid
     # A brief-action goal raises the capture rate + arms a fovea coast so a sub-second
     # window is covered above its Nyquist; no brief goal -> (fps, None) -> byte-for-byte the fixed-fps path.
     # The source-open rate is FIXED once (a live source can't change fps mid-stream), so when a brief goal
@@ -1633,7 +1653,8 @@ async def run(
                 if stats is not None:
                     stats.fires += 1
                 snippet = snippet_from_window(clips, kind=snippet_kind, pre_s=snippet_pre_s)
-                incident = make_incident(fire, ts=at, snippet=snippet)
+                incident = make_incident(
+                    fire, ts=at, snippet=snippet, watchplan_id=_current_watchplan_id())
                 if label_store is not None:  # bind the local label sink so incident.record_label() writes
                     incident.bind_labeler(
                         label_store.append,

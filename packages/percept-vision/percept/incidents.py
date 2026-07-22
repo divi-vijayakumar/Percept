@@ -25,6 +25,7 @@ def make_incident(
     snippet: IncidentSnippet | None = None,
     id: str | None = None,
     entity_id: str | None = None,
+    watchplan_id: str | None = None,
 ) -> Incident:
     """Map a fire to an :class:`Incident`. ``id`` defaults to a deterministic, sortable handle.
 
@@ -42,6 +43,12 @@ def make_incident(
     goal_id = getattr(fire, "goal_id", "")
     if entity_id is None:
         entity_id = getattr(fire, "entity_id", None)
+    # Z3 — carry the enriched judgment envelope THROUGH the emission boundary. The runtime knows the
+    # reason a fire was taken, how the eye looked, and where the judgment came from; until now none of it
+    # reached the durable record a client reads at 2am. Read duck-typed off the fire (like every other
+    # field here) with ``None`` fallbacks, so a fire that carries no envelope (episode/boundary/absence,
+    # a bare FireEvent) yields byte-for-byte today's Incident. ``watchplan_id`` is a PLAN-level fact the
+    # per-goal fire does not know; the runtime supplies it explicitly (default ``None`` off the fire).
     return Incident(
         id=id or f"inc-{goal_id}-{ts:.3f}-{uuid.uuid4().hex[:8]}",
         concern_id=goal_id,
@@ -50,6 +57,11 @@ def make_incident(
         snippet=snippet,
         message=getattr(fire, "text", "") or "",
         entity_id=str(entity_id) if entity_id is not None else None,
+        reason=getattr(fire, "reason", None),
+        watchplan_id=watchplan_id if watchplan_id is not None else getattr(fire, "watchplan_id", None),
+        roi=getattr(fire, "roi", None),
+        modality=getattr(fire, "modality", None),
+        provenance=getattr(fire, "provenance", None),
     )
 
 

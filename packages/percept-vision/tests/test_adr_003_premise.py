@@ -49,8 +49,16 @@ def test_verdict_evidence_is_plain_text_not_a_handle() -> None:
 def test_judgment_event_carries_no_evidence_pointer() -> None:
     """``JudgmentEvent`` has no evidence payload; ``evidence_seq`` is an ordering int, not a ref."""
     names = _fields(JudgmentEvent)
-    assert names == {"key", "evidence_seq", "action", "timing"}
+    # Card Z3 enriched the envelope with scalar OBSERVABILITY metadata (reason/watchplan_id/roi/
+    # modality/provenance). None of it is a handle to the raw evidence BYTES — which is the premise this
+    # test guards: evidence_seq stays an ordering int, no field is a ``*_ref`` pointer, and there is no
+    # media/frame handle. A Box ``roi`` is coordinates, not a pixel pointer.
+    assert names == {
+        "key", "evidence_seq", "action", "timing",
+        "reason", "watchplan_id", "roi", "modality", "provenance",
+    }
     assert not any(n.endswith("_ref") for n in names)
+    assert not ({"frame_ref", "evidence_ref", "media", "frames"} & names)
 
 
 def test_watch_event_carries_no_evidence_handle() -> None:
