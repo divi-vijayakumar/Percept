@@ -608,6 +608,69 @@ class Percept:
             _emit_banner(resolved_mode, scripted)
         return obj
 
+    # -- ADR-008 configuration boundary: thin entry points onto create() ----
+    @classmethod
+    def configure(
+        cls,
+        *,
+        source_profile: Any = None,
+        source_profile_explicit: bool = True,
+        domain_pack: Any = None,
+        execution_policy: Any = None,
+        optimization_lock: Any = None,
+        situation: "tuple[Any, Any, Any] | None" = None,
+        registry: Any = None,
+        settings: Settings | None = None,
+        resolver: Any = None,
+        **create_kwargs: Any,
+    ) -> "Percept":
+        """Build a core through the ADR-008 configuration boundary — resolve the six-object
+        precedence chain (:class:`percept.resolver.ConfigResolver`), compile it to real runtime
+        primitives (:func:`percept.runtime_compiler.runtime_compile`), and hand the result to
+        :meth:`create` (unchanged). No goal is armed here — arm one afterward via
+        :meth:`add_goal` or :func:`percept.watchplan_apply.apply_watch_plan`.
+
+        This is an ADDITIVE door onto :meth:`create`, not a replacement: a bare ``Percept.create()``
+        remains byte-for-byte the pre-ADR-008 path. Every keyword this method does not itself
+        consume (``vision=``, ``mode=``, ...) passes straight through to :meth:`create` in
+        ``create_kwargs``; an explicit ``create_kwargs['settings']``/``['sense_policy']``/
+        ``['plan_mode']`` wins over what resolution produced (the caller building the core is always
+        the most specific author).
+        """
+        from .contracts.watchplan import WatchPlan
+        from .resolver import ConfigResolver
+        from .runtime_compiler import runtime_compile
+
+        # ConfigResolver.resolve requires a WatchPlan (its condition is never armed — configure()
+        # resolves DEPLOYMENT/profile knobs only, no goal). The condition text is discarded; this
+        # placeholder is not read by anything downstream of runtime_compile's Settings/sense_policy/
+        # plan_mode fields.
+        placeholder = WatchPlan(condition="percept.configure — deployment/profile resolution only")
+        active_resolver = resolver if resolver is not None else ConfigResolver()
+        resolved = active_resolver.resolve(
+            placeholder,
+            source_profile=source_profile,
+            source_profile_explicit=source_profile_explicit,
+            domain_pack=domain_pack,
+            execution_policy=execution_policy,
+            optimization_lock=optimization_lock,
+            situation=situation,
+            registry=registry,
+            settings=settings,
+        )
+        compiled = runtime_compile(resolved)
+        create_kwargs.setdefault("settings", compiled.settings)
+        create_kwargs.setdefault("sense_policy", compiled.sense_policy)
+        create_kwargs.setdefault("plan_mode", compiled.plan_mode)
+        return cls.create(**create_kwargs)
+
+    @classmethod
+    def from_bundle(cls, bundle: "dict[str, Any]") -> "Percept":
+        """Build a core from a plain mapping of the SAME keywords :meth:`configure` accepts — e.g. a
+        deployment bundle loaded from JSON/YAML. Thin: ``Percept.from_bundle(b)`` is exactly
+        ``Percept.configure(**b)``, nothing more."""
+        return cls.configure(**dict(bundle))
+
     # -- goal authoring ------------------------------------------------------
     def add_goal(self, goal: Goal) -> Goal:
         # PROVENANCE: the STRUCTURED entry point stamps STRUCTURED_TRUSTED, OVERWRITING
