@@ -65,6 +65,9 @@ Modality = Literal["vision", "audio", "fused"]
 #: episode opened — so a long-running episode still carries early evidence even after the ring has
 #: aged past it. Assembly lives in :mod:`percept.capsule` (:func:`~percept.capsule.assemble_event_capsule`);
 #: this token is additive-only — no profile defaults to it, no existing value's behavior changes.
+#: NOT (yet) IN :data:`percept.watchprofile.PLAN_MODES` — a ``WatchProfile.plan_mode`` cannot select
+#: it, and ``agent._PLAN_RANK`` (the plan-mode FLOOR every concern's spec is raised to) has no rung for
+#: it either; validate on fixtures first, wire profile/floor interaction as a follow-up.
 Temporal = Literal["single", "strip", "window", "sprite", "event_capsule"]
 RoiMode = Literal["focus", "hint", "full"]
 Sampling = Literal["recent", "uniform"]
