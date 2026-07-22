@@ -219,5 +219,50 @@ class SchemaExposesTheEnvelope(unittest.TestCase):
         self.assertIn({"enum": ["observed", "inferred"]}, s["properties"]["provenance"]["anyOf"])
 
 
+# --------------------------------------------------------------------------------------------------
+# (5) The real worker.run() path stamps the whole envelope — including a computed watchplan_id.
+# --------------------------------------------------------------------------------------------------
+
+
+class WorkerRunStampsTheEnvelope(unittest.TestCase):
+    def _run(self):
+        from percept import Goal as _Goal, Percept as _Percept
+        from percept.backends.fake import FakeVision
+        from percept.edge.tier0 import gray_frame
+        from percept.runtime import run
+
+        still, moved = gray_frame(8, 8, 0), gray_frame(8, 8, 255)
+        source = [
+            (0.0, still, "clear"),
+            (1.0, moved, "intruder"),   # rising edge -> FIRE -> incident
+        ]
+        vision = FakeVision(script={
+            "intruder": Verdict(satisfied=True, confidence=0.95, evidence="a person is in the zone"),
+            "clear": Verdict(satisfied=False, confidence=0.95, evidence="the zone is empty"),
+        })
+        core = _Percept.create(vision=vision, discover_plugins=False)
+        core.add_goal(_Goal(id="zone", condition="a person is in the restricted zone", say="Alert"))
+
+        async def go():
+            return [inc async for inc in run(core, source=source)]
+
+        return core, asyncio.run(go())
+
+    def test_delivered_incident_carries_reason_modality_provenance_and_a_watchplan_id(self):
+        core, incidents = self._run()
+        self.assertEqual(len(incidents), 1)
+        inc = incidents[0]
+        self.assertEqual(inc.reason, "rising_edge")
+        self.assertEqual(inc.modality, "vision")
+        self.assertEqual(inc.provenance, "observed")
+        self.assertIsNone(inc.roi)
+        # the watchplan_id is a real, stable plan_hash — and it MATCHES the plan the run watched under
+        from percept.tracing import PlanIdentity
+        expected = PlanIdentity.from_goals(
+            core.goals.active(), revision=getattr(core.goals, "revision", None)).plan_hash
+        self.assertIsNotNone(inc.watchplan_id)
+        self.assertEqual(inc.watchplan_id, expected)
+
+
 if __name__ == "__main__":
     unittest.main()
