@@ -39,11 +39,17 @@ that field's class is a :class:`ConfigError`, raised before any value is produce
 last-writer-wins. Ownership is read from :data:`percept.tunables.REGISTRY` (the tunables inventory),
 the single source of truth this module does not duplicate.
 
-``DomainPack`` / ``ExecutionPolicy`` / ``OptimizationLock`` do not exist as real objects yet (ADR-008
-§Six declared objects: "new — not yet in code"). This module defines them here as MINIMAL
-placeholder dataclasses — an ``id``/``version``/``values`` mapping, nothing more — so the
-precedence chain is real and testable now; their full contracts (pack loading, template YAML,
-optimizer logic) are later cards' scope, deliberately not built here.
+``DomainPack`` / ``OptimizationLock`` do not exist as real objects yet (ADR-008 §Six declared
+objects: "new — not yet in code"). This module defines them here as MINIMAL placeholder
+dataclasses — an ``id``/``version``/``values`` mapping, nothing more — so the precedence chain is
+real and testable now; their full contracts (pack loading, optimizer logic) are later cards'
+scope, deliberately not built here.
+
+``ExecutionPolicy`` has since graduated out of that placeholder set: it is now a real, typed
+dataclass with four shipped named bundles — see :mod:`percept.execution_policy` /
+:mod:`percept.execution_policies_default`. This module still imports it (re-exported below for
+backward compatibility) and still owns the ownership GATE that validates its ``values`` at resolve
+time; it no longer DEFINES the class.
 
 ``DeploymentConfig`` also does not exist as a real object yet; ``percept.config.Settings`` /
 ``load_settings()`` continue to play its role informally (ADR-008 §Consequences), which is what
@@ -78,6 +84,7 @@ from .contracts.watchplan import (
     WatchPlan,
     WatchReceipt,
 )
+from .execution_policy import ExecutionPolicy
 from .profile_resolution import resolve_profile, resolve_situation
 from .runtime_compiler import runtime_compile
 from .sourceprofile import SourceProfile, coast_sense_prior
@@ -160,21 +167,6 @@ class DomainPack:
     def __post_init__(self) -> None:
         if not isinstance(self.id, str) or not self.id.strip():
             raise ConfigError(f"DomainPack.id must be a non-empty string, got {self.id!r}")
-        object.__setattr__(self, "values", _freeze_values(self.values))
-
-
-@dataclass(frozen=True)
-class ExecutionPolicy:
-    """Placeholder resolver input — ADR-008: "resource/scheduling posture: judge-call budget,
-    cadence ceilings, concurrency, degrade-under-load behavior... new, not yet in code"."""
-
-    id: str
-    version: str = "v1"
-    values: Mapping[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.id, str) or not self.id.strip():
-            raise ConfigError(f"ExecutionPolicy.id must be a non-empty string, got {self.id!r}")
         object.__setattr__(self, "values", _freeze_values(self.values))
 
 
