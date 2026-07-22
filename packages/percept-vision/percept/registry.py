@@ -162,6 +162,14 @@ def available(seam: str) -> list[str]:
     return sorted(_REGISTRY.get(seam, {}))
 
 
+def seams() -> tuple[str, ...]:
+    """Every seam name this registry knows (``"vision"``, ``"specialist"``, ...), declaration order.
+
+    The public, read-only way to enumerate seams — ``percept.catalog`` uses this instead of
+    reaching into the private ``_SEAMS``/``_REGISTRY`` module state."""
+    return _SEAMS
+
+
 __all__ = [
     "register",
     "discover_entrypoints",
@@ -173,4 +181,5 @@ __all__ = [
     "make_tts",
     "make_transport",
     "available",
+    "seams",
 ]
