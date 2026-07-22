@@ -289,8 +289,14 @@ async def open_audio_source(
     target = _normalize_uri(uri)
     q: "queue.Queue" = queue.Queue(maxsize=config.queue_size)
     stop = threading.Event()
-    # None (default input device) OR an int index -> mic; a str -> a .wav path.
-    fn = _capture_wav if isinstance(target, str) else _capture_mic
+    # None (default input device) OR an int index -> mic; a str -> a .wav path OR a video-container
+    # path (mp4/mov/mkv/webm) -> ffmpeg demux.
+    if not isinstance(target, str):
+        fn = _capture_mic
+    elif _is_container(target):
+        fn = _capture_container
+    else:
+        fn = _capture_wav
     thread = threading.Thread(target=fn, args=(target, config, q, stop, dropped), daemon=True)
     thread.start()
     try:
@@ -310,4 +316,4 @@ async def open_audio_source(
         stop.set()
 
 
-__all__ = ["AudioSourceConfig", "open_audio_source"]
+__all__ = ["AudioSourceConfig", "open_audio_source", "FFmpegNotFoundError", "CONTAINER_SUFFIXES"]
