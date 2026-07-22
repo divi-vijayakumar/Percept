@@ -71,6 +71,14 @@ from percept.contracts import (
     Vision,
     WatchCondition,
     WatchSpec,
+    # Configuration ownership / resolution / provenance DTOs (ADR-008)
+    ReceiptStatus,
+    RECEIPT_STATUSES,
+    FieldDiagnostic,
+    SettingOrigin,
+    WatchPlan,
+    ResolvedWatch,
+    WatchReceipt,
 )
 
 __all__ = [
@@ -127,4 +135,11 @@ __all__ = [
     "Persistence",
     "LabelRecord",
     "AttentionIntent",
+    "ReceiptStatus",
+    "RECEIPT_STATUSES",
+    "FieldDiagnostic",
+    "SettingOrigin",
+    "WatchPlan",
+    "ResolvedWatch",
+    "WatchReceipt",
 ]

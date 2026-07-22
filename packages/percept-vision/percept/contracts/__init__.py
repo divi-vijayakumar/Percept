@@ -30,7 +30,13 @@ from typing import Any, Awaitable, Callable, ClassVar, Hashable, Literal, Protoc
 #: Bump the MAJOR on any breaking change to a frozen shape; MINOR for additive (new optional
 #: field / new DTO); PATCH for docs/non-wire tweaks. This is distinct from ``WatchSpec.version``
 #: (a wire integer kept for byte-for-byte payload compat).
-CONTRACT_VERSION = "1.7.0"  # 1.7: + SubjectRef 'provisional' resolution state (a THIRD state beside
+CONTRACT_VERSION = "1.8.0"  # 1.8: + WatchPlan/SettingOrigin/ResolvedWatch/WatchReceipt/FieldDiagnostic
+# DTOs (percept.contracts.watchplan, ADR-008 — configuration ownership/resolution/provenance): portable
+# typed intent + per-field resolution provenance. A NEW additive module, re-exported from this package's
+# top level and from percept.adapters; no existing DTO shape changes. GATE-IRRELEVANT (the gate reads
+# only satisfied/confidence; nothing here touches Verdict/Gate) — a consumer that never constructs one of
+# these five new types sees byte-for-byte today's contract.
+# 1.7: + SubjectRef 'provisional' resolution state (a THIRD state beside
 # bound/unknown — a session-local UN_<episode_id> handle for a sighting an episode log tracked but
 # never identified) + provisional_subject()/PROVISIONAL_KEY_PREFIX (additive, GATE-IRRELEVANT — the
 # gate reads only satisfied/confidence; a producer that never emits 'provisional' is byte-for-byte
@@ -1575,6 +1581,22 @@ class WatchEvent:
 
 
 # ---------------------------------------------------------------------------
+# Configuration ownership / resolution / provenance DTOs (ADR-008). Defined in the sibling
+# .watchplan module (kept separate so its own docstring can stay focused) and re-exported here so
+# ``from percept.contracts import WatchPlan`` keeps working the same way every other DTO does.
+# ---------------------------------------------------------------------------
+
+from .watchplan import (  # noqa: E402 — re-export after the DTOs those bump comments describe
+    RECEIPT_STATUSES,
+    FieldDiagnostic,
+    ReceiptStatus,
+    ResolvedWatch,
+    SettingOrigin,
+    WatchPlan,
+    WatchReceipt,
+)
+
+# ---------------------------------------------------------------------------
 # Protocols (implement to swap a backend; resolved by name via the registry)
 # ---------------------------------------------------------------------------
 
@@ -1897,6 +1919,14 @@ __all__ = [
     "LabelRecord",
     "WatchAction",
     "WatchEvent",
+    # Configuration ownership / resolution / provenance DTOs (ADR-008)
+    "ReceiptStatus",
+    "RECEIPT_STATUSES",
+    "FieldDiagnostic",
+    "SettingOrigin",
+    "WatchPlan",
+    "ResolvedWatch",
+    "WatchReceipt",
     # Protocols
     "Vision",
     "Specialist",
