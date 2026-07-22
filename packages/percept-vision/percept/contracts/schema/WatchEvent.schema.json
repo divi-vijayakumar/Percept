@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://percept.velvee.ai/contracts/WatchEvent.schema.json",
-  "x-contract-version": "1.6.0",
+  "x-contract-version": "1.7.0",
   "type": "object",
   "title": "WatchEvent",
   "properties": {
@@ -1055,6 +1055,16 @@
                 "observed",
                 "inferred"
               ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_seq": {
+          "anyOf": [
+            {
+              "type": "integer"
             },
             {
               "type": "null"

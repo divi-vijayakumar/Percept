@@ -728,11 +728,12 @@ class TestAudioFrame(unittest.TestCase):
 
 class TestVersionNegotiation(unittest.TestCase):
     def test_contract_version_is_semver(self):
-        # 1.6.0: additive judgment-envelope enrichment — JudgmentEvent + Incident gain
+        # 1.7.0: additive Incident.evidence_seq (the JudgmentEvent evidence_seq copied through to the
+        # delivered record). 1.6.0: additive judgment-envelope enrichment — JudgmentEvent + Incident gain
         # reason/watchplan_id/roi/modality/provenance (Z3). 1.5.0: Verdict claim-mode channel +
         # ConcernAuthority (Y2); 1.4.0 SubjectRef + Verdict.subject (Y5); 1.3.0 Incident.entity_id (D4);
         # 1.2.0 WatchAction/WatchEvent (M1); 1.1.0 AttentionIntent/GoalOrigin (PCPT-026).
-        self.assertEqual(CONTRACT_VERSION, "1.6.0")
+        self.assertEqual(CONTRACT_VERSION, "1.7.0")
         parts = CONTRACT_VERSION.split(".")
         self.assertEqual(len(parts), 3)
         self.assertTrue(all(p.isdigit() for p in parts))

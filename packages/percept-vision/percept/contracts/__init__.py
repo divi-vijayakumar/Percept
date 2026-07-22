@@ -30,7 +30,11 @@ from typing import Any, Awaitable, Callable, ClassVar, Hashable, Literal, Protoc
 #: Bump the MAJOR on any breaking change to a frozen shape; MINOR for additive (new optional
 #: field / new DTO); PATCH for docs/non-wire tweaks. This is distinct from ``WatchSpec.version``
 #: (a wire integer kept for byte-for-byte payload compat).
-CONTRACT_VERSION = "1.6.0"  # 1.6: + judgment-envelope enrichment (card Z3): JudgmentEvent + Incident
+CONTRACT_VERSION = "1.7.0"  # 1.7: + Incident.evidence_seq (additive, defaulted None) — the
+# JudgmentEvent.evidence_seq (the per-key ADR-001 §8 dispatch sequence) a fire's judgment already
+# carried now rides through to the delivered Incident, so a client can correlate a fire back to the
+# judgment record that produced it. GATE-IRRELEVANT; watch.py + WATCH_VERSION FROZEN.
+# 1.6: + judgment-envelope enrichment (card Z3): JudgmentEvent + Incident
 # gain reason/watchplan_id/roi/modality/provenance (all additive, defaulted, GATE-IRRELEVANT — the gate
 # reads only satisfied/confidence, and a consumer that ignores them sees byte-for-byte today's Incident;
 # watch.py + WATCH_VERSION FROZEN).
@@ -1276,6 +1280,13 @@ class Incident:
     roi: "Box | None" = None
     modality: "EvidenceModality | None" = None
     provenance: "JudgmentProvenance | None" = None
+    # 1.7 — the per-key ADR-001 §8 dispatch sequence this fire's :class:`JudgmentEvent` carried
+    # (``JudgmentEvent.evidence_seq``), copied off the fire so a delivered Incident carries the SAME
+    # correlation handle a ``.ptrace`` judgment record does. ``None`` when the fire carried no
+    # JudgmentEvent (episode/rhythm/boundary/transition/absence fires take no judge-funnel stamps) or
+    # for a pre-1.7 Incident — an absent link, never a fabricated one. Appended LAST: every existing
+    # positional ``Incident(...)`` construction keeps its meaning.
+    evidence_seq: int | None = None
 
     def bind_labeler(
         self,

@@ -3,7 +3,7 @@
   "$id": "https://percept.velvee.ai/contracts/percept-contracts.schema.json",
   "title": "percept-contracts",
   "description": "Vendor-neutral DTOs of the Percept frozen contract.",
-  "x-contract-version": "1.6.0",
+  "x-contract-version": "1.7.0",
   "$defs": {
     "Box": {
       "type": "object",
@@ -1011,6 +1011,16 @@
                 "observed",
                 "inferred"
               ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_seq": {
+          "anyOf": [
+            {
+              "type": "integer"
             },
             {
               "type": "null"
