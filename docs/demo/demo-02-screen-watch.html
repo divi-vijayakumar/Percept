@@ -89,9 +89,10 @@ main{padding:20px 24px 28px;display:grid;gap:16px}
 .stack{min-height:302px;display:grid;grid-template-rows:auto 1fr}
 .code{margin:0;padding:15px;background:#0b0b0b;color:#e9e9e9;font:10.5px/1.65 var(--mono);white-space:pre-wrap;overflow:auto;max-height:340px}
 .code .dim{color:#777}
-.metricsBody{padding:13px;display:grid;gap:6px;font:10.5px/1.5 var(--mono)}
-.metricRow{display:flex;justify-content:space-between;gap:12px;border-bottom:1px dotted var(--hairline);padding-bottom:4px}
-.metricRow b{font-weight:600}
+.metricsStrip{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.metricsStrip .m{border:1px solid var(--hairline);background:var(--panel);padding:5px 9px;font:9px var(--mono);color:var(--steel);white-space:nowrap}
+.metricsStrip .m b{color:var(--ink);font-weight:600;margin-left:5px}
+.metricsStrip .m.fire b{color:#0a0a0a}
 .contextBody{padding:12px;display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
 .ledger{border:1px solid var(--hairline);padding:11px;min-width:0;background:var(--panel)}
 .ledgerHead{display:flex;align-items:center;justify-content:space-between;gap:8px;border-bottom:1px solid var(--hairline);padding-bottom:8px;margin-bottom:8px}
@@ -248,12 +249,12 @@ main{padding:20px 24px 28px;display:grid;gap:16px}
 
   <section class="runtimeGrid">
     <article class="panel stack">
-      <div class="panelHead"><b>03 · Run manifest</b><span>real · from the .ptrace</span></div>
-      <pre id="manifestOut" class="code"><span class="dim"># Record a screen and run the watch to populate this.</span></pre>
+      <div class="panelHead"><b>03 · WatchPlan</b><span>authored · verbatim goal</span></div>
+      <pre id="planOut" class="code"><span class="dim"># Arm a watch to author the plan.</span></pre>
     </article>
     <article class="panel stack">
-      <div class="panelHead"><b>04 · Primary metrics</b><span>real · trace summary</span></div>
-      <div id="metricsOut" class="metricsBody"><span class="dim" style="color:#8a8a8a"># The observed → admitted → judged → gate funnel appears here.</span></div>
+      <div class="panelHead"><b>04 · Compiled WatchSpec</b><span>real · runtime knobs</span></div>
+      <pre id="specOut" class="code"><span class="dim"># Percept's compiled gate/policy config appears here.</span></pre>
     </article>
     <article class="panel stack">
       <div class="panelHead"><b>05 · Context ledger</b><span id="ledgerVersion">revision · 0</span></div>
@@ -286,6 +287,7 @@ confidence: —</pre>
       <div class="recordingWrap"><video id="recordedVideo" controls playsinline></video></div>
       <div class="timelineBody">
         <div class="timelineTop"><span id="frameCount">0 frames observed</span><span id="traceState">trace idle</span></div>
+        <div id="metricsStrip" class="metricsStrip"></div>
         <div class="frameBar">
           <div id="frames" class="frames"></div>
           <div id="playhead" class="playhead"></div>
@@ -420,19 +422,32 @@ confidence: —</pre>
   // --- render REAL trace (shared with demo 01) ------------------------------
   function render(d){
     const recs=d.records||[], summ=d.summary||{}, man=d.manifest||{};
-    $('#manifestOut').textContent=JSON.stringify({run_id:man.run_id,source:man.source,percept_version:man.percept_version,
-      watch_version:man.watch_version,contract_version:man.contract_version,driver:man.driver,plan:man.plan},null,2);
-    renderMetrics(summ); renderTimeline(recs); renderLedger(recs); renderEvents(d.events||[]);
+    renderPlan(d.goal, man.plan||{}); renderSpec(man);
+    renderMetrics(summ); renderTimeline(recs); renderLedger(recs); renderJudgments(recs, d.events||[]);
     $('#viewTraceBtn').disabled=false;
+  }
+  function renderPlan(goal, plan){
+    $('#planOut').textContent=JSON.stringify({
+      goal: goal||'(none)', goal_ids: plan.goal_ids||[], plan_hash: plan.plan_hash||null,
+      plan_mode: plan.plan_mode||null, revision: plan.revision||null,
+      note: 'the judge sees the goal string verbatim — no parsing, no vocabulary mapping'},null,2);
+  }
+  function renderSpec(man){
+    const g=man.gate_config||{}, p=man.policy||{};
+    $('#specOut').textContent=JSON.stringify({
+      percept_version: man.percept_version, watch_version: man.watch_version, contract_version: man.contract_version,
+      gate: {threshold:g.threshold, fresh_min:g.fresh_min, require_false_first:g.require_false_first, refractory_s:g.refractory_s},
+      tier0: {salience_stat:'block_max', threshold:0.20},
+      trace_policy: {level:p.level, incident_window_s:p.incident_window_s, include_media:p.include_media},
+      evidence_window_s: man.evidence_window_s, plan_hash: (man.plan||{}).plan_hash},null,2);
   }
   function renderMetrics(s){
     const g=s.gate_outcomes||{}, c=s.cost||{};
-    const rows=[['watch duration',(s.watch_duration_s??0).toFixed(3)+'s'],['source healthy',(s.source_healthy_s??0).toFixed(3)+'s'],
-      ['observed',`${s.observed??0} ${s.observed_unit||''}`],['admitted',`${s.admitted??0} · union ${(s.admitted_evidence_union_s??0).toFixed(2)}s`],
-      ['judge started / completed',`${s.judge_started??0} / ${s.judge_completed??0}`],['judge degraded / dropped',`${s.judge_degraded??0} / ${s.judge_dropped??0}`],
-      ['gate · FIRE',g.fire??0],['gate · ASK',g.ask??0],['gate · SILENT',g.silent??0],['gate · SUPPRESSED',g.suppressed??0],
-      ['incidents',s.incidents??0],['cost',c.text||'—'],['est. savings',(s.savings&&s.savings.text)||'—']];
-    $('#metricsOut').innerHTML=rows.map(([k,v])=>`<div class="metricRow"><span>${k}</span><b>${esc(v)}</b></div>`).join('');
+    const chips=[['observed',`${s.observed??0} ${s.observed_unit||''}`],['admitted',`${s.admitted??0}`],
+      ['judged',`${s.judge_started??0}/${s.judge_completed??0}`],['FIRE',g.fire??0,true],['ASK',g.ask??0],
+      ['SILENT',g.silent??0],['SUPPRESSED',g.suppressed??0],['incidents',s.incidents??0],
+      ['cost',c.text||'—'],['saved',(s.savings&&s.savings.text)||'—']];
+    $('#metricsStrip').innerHTML=chips.map(([k,v,fire])=>`<span class="m${fire?' fire':''}">${k}<b>${esc(v)}</b></span>`).join('');
   }
   const isFrame=r=>r.stage==='edge.decision'||r.stage==='source.frame';
   const admitted=r=>r.stage==='source.frame'||(r.data&&(r.data.escalate||r.data.coast_admit));
@@ -462,20 +477,28 @@ confidence: —</pre>
     const gates=recs.filter(r=>r.stage==='gate.classified'), lastGate=gates[gates.length-1];
     $('#ledgerVersion').textContent=`revision · ${folds.length}`;
     if(lastFold&&lastFold.data){ const su=lastFold.data.subject, fo=lastFold.data.fold||{};
-      $('#entityLedger').textContent=su?`subject: ${su.key||'—'}\nresolution: ${su.resolution||'—'}\nstrategy: ${su.strategy||'—'}`:`subject: null\nresolution: unbound\nstrategy: —`;
+      const unwired=!su&&(!fo.episode_id);
+      $('#entityLedger').textContent=su?`subject: ${su.key||'—'}\nresolution: ${su.resolution||'—'}\nstrategy: ${su.strategy||'—'}`:`subject: null\nresolution: unbound\n(no resolver wired — Y5/Y12)`;
       $('#episodeLedger').textContent=`episode: ${fo.episode_id||'null'}\nmatch: ${fo.match||'—'}\nmutation: ${fo.mutation||'—'}`;
-      $('#entityRev').textContent=$('#episodeRev').textContent='shadow · advisory'; }
+      $('#entityRev').textContent=$('#episodeRev').textContent=unwired?'shadow · not wired':'shadow · advisory'; }
     if(lastGate&&lastGate.data){ const gd=lastGate.data;
       $('#contextLedger').textContent=`action: ${gd.action||'—'}\nreason: ${(gd.reason||'—').slice(0,42)}\nconfidence: ${gd.confidence??'—'}`;
       $('#contextRev').textContent=gd.action||'—'; }
   }
-  function renderEvents(events){
+  // Every judgment (fire AND silent/ask) with its judgment reference — the "show the work" view.
+  function renderJudgments(recs, events){
+    const gates=recs.filter(r=>r.stage==='gate.classified');
+    const usages=recs.filter(r=>r.stage==='judge.usage');
     const box=$('#events'); box.innerHTML='';
-    if(!events.length){box.innerHTML='<div class="eventEmpty">No events fired. Every SILENT decision is still in the .ptrace.</div>';return;}
-    events.forEach((ev,i)=>{ const el=document.createElement('article');el.className='event fire';
-      const conf=(ev.confidence!=null)?` · confidence ${Number(ev.confidence).toFixed(2)}`:'';
-      const ent=ev.entity_id?` · entity ${esc(ev.entity_id)}`:'';
-      el.innerHTML=`<div class="eventHead"><b>${esc((ev.action||'fire').toUpperCase())} · ${esc(ev.goal_id||('evt_'+i))}</b><span>${ev.t!=null?fmt(ev.t):'t=—'}</span></div><h3>${esc(ev.text||ev.goal_id||'WatchEvent')}</h3><p>real WatchEvent from percept.watch()${conf}${ent}</p>`;
+    if(!gates.length){ box.innerHTML='<div class="eventEmpty">No judgments — tier-0 admitted nothing, so the judge was never called. Every per-frame edge.decision is still in the .ptrace.</div>'; return; }
+    gates.forEach((r,i)=>{ const d=r.data||{}, u=(usages[i]&&usages[i].data)||{};
+      const fired=d.action==='fire';
+      const el=document.createElement('article'); el.className='event'+(fired?' fire':'');
+      const tok=(u.input_tokens!=null)?` · ${u.input_tokens|0}+${u.output_tokens|0} tok`:'';
+      const model=u.model?` · ${esc(u.model)}`:''; const ent=d.entity_id?` · entity ${esc(d.entity_id)}`:'';
+      el.innerHTML=`<div class="eventHead"><b>${esc((d.action||'?').toUpperCase())} · ${esc(d.reason||'')}</b><span>${r.source_ts!=null?'t='+Number(r.source_ts).toFixed(1):''}</span></div>
+        <h3>${fired?'Incident emitted':'Judgment · no incident'}</h3>
+        <p>satisfied ${d.satisfied} · confidence ${d.confidence} · truth ${esc(d.truth||'—')}${ent}${model}${tok}</p>`;
       box.prepend(el); });
   }
 
