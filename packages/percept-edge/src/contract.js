@@ -476,7 +476,9 @@ export function parseBoundaryReport(json) {
 
 // ---------------------------------------------------------------------------
 // Incident  { id, concern_id, verdict: { satisfied, confidence, evidence },
-//             ts, label: string|null, snippet: IncidentSnippet|null, entity_id: string|null }
+//             ts, label: string|null, snippet: IncidentSnippet|null, entity_id: string|null,
+//             reason: string|null, watchplan_id: string|null, roi: Box|null,
+//             modality: "vision"|"audio"|"fused"|null, provenance: "observed"|"inferred"|null }
 // IncidentSnippet  { kind: "frame"|"clip"|"audio", media: string|null (base64),
 //                    mime: string|null, frames: array|null, t_start: number|null, t_end: number|null }
 //
@@ -490,9 +492,17 @@ export function parseBoundaryReport(json) {
 // subjects tripping the same concern apart instead of reading their interleaved fires as out-of-order
 // divergence. It is a correlation key only — no claim about who/which document the subject is. `null`
 // when the fire was not entity-scoped; a pre-1.3 payload omitting it parses to `null` unchanged.
+//
+// The enriched judgment envelope (contract 1.6, card Z3) rides through the emission boundary onto the
+// durable record a client reads at 2am: `reason` is the gate's O2 reason code (why the action was
+// taken), `watchplan_id` a stable id of the plan it ran under, `roi` the region it fired on (or null,
+// left honest rather than echoing an input hint), `modality` how the eye looked, `provenance` observed
+// vs inferred. All ADDITIVE and OPTIONAL — a pre-1.6 payload omitting them parses to `null` unchanged.
 // ---------------------------------------------------------------------------
 
 const _SNIPPET_KINDS = new Set(["frame", "clip", "audio"]);
+const _EVIDENCE_MODALITIES = new Set(["vision", "audio", "fused"]);
+const _JUDGMENT_PROVENANCES = new Set(["observed", "inferred"]);
 
 function _isStringOrNull(v) {
   return v == null || typeof v === "string";
@@ -604,10 +614,33 @@ export function parseIncidentSnippet(obj, { path = "snippet" } = {}) {
 }
 
 /**
+ * Normalize the ADDITIVE card-Z3 judgment envelope (contract 1.6) shared by makeIncident /
+ * parseIncident. Every field is optional and defaults null, so a pre-1.6 payload round-trips its exact
+ * shape. `roi` is a Box (validated via makeBox/parseBox), the rest are closed-vocab strings or null.
+ */
+function _incidentEnvelope(src, ctx) {
+  const reason = src.reason == null ? null : src.reason;
+  if (!_isStringOrNull(reason)) throw new ContractError(`${ctx}: reason must be a string or null`);
+  const watchplan_id = src.watchplan_id == null ? null : src.watchplan_id;
+  if (!_isStringOrNull(watchplan_id)) throw new ContractError(`${ctx}: watchplan_id must be a string or null`);
+  const roi = src.roi == null ? null : (ctx.startsWith("parse") ? parseBox(src.roi, { path: `${ctx}.roi` }) : makeBox(src.roi));
+  const modality = src.modality == null ? null : src.modality;
+  if (modality != null && !_EVIDENCE_MODALITIES.has(modality)) {
+    throw new ContractError(`${ctx}: modality must be one of ${[..._EVIDENCE_MODALITIES].join("|")} or null`);
+  }
+  const provenance = src.provenance == null ? null : src.provenance;
+  if (provenance != null && !_JUDGMENT_PROVENANCES.has(provenance)) {
+    throw new ContractError(`${ctx}: provenance must be one of ${[..._JUDGMENT_PROVENANCES].join("|")} or null`);
+  }
+  return { reason, watchplan_id, roi, modality, provenance };
+}
+
+/**
  * Build an Incident. `verdict` is { satisfied, confidence, evidence? }; `label` defaults to null
  * (unlabelled — suggested vocab "real"/"false_alarm"); `snippet` defaults to null; `entity_id`
- * defaults to null (not entity-scoped) — the back-compatible default for pre-1.3 callers.
- * @returns {{id:string,concern_id:string,verdict:object,ts:number,label:string|null,snippet:object|null,entity_id:string|null}}
+ * defaults to null (not entity-scoped) — the back-compatible default for pre-1.3 callers. The card-Z3
+ * envelope (`reason`/`watchplan_id`/`roi`/`modality`/`provenance`, contract 1.6) all default null.
+ * @returns {{id:string,concern_id:string,verdict:object,ts:number,label:string|null,snippet:object|null,entity_id:string|null,reason:string|null,watchplan_id:string|null,roi:object|null,modality:string|null,provenance:string|null}}
  */
 export function makeIncident({
   id,
@@ -617,6 +650,11 @@ export function makeIncident({
   label = null,
   snippet = null,
   entity_id = null,
+  reason = null,
+  watchplan_id = null,
+  roi = null,
+  modality = null,
+  provenance = null,
 } = {}) {
   if (typeof id !== "string") throw new ContractError("makeIncident: id must be a string");
   if (typeof concern_id !== "string") throw new ContractError("makeIncident: concern_id must be a string");
@@ -631,6 +669,7 @@ export function makeIncident({
     label,
     snippet: snippet == null ? null : makeIncidentSnippet(snippet),
     entity_id,
+    ..._incidentEnvelope({ reason, watchplan_id, roi, modality, provenance }, "makeIncident"),
   };
 }
 
@@ -667,6 +706,8 @@ export function parseIncident(json) {
     label,
     snippet,
     entity_id,
+    // Missing on a pre-1.6 payload -> null (the Python `None` defaults); never a parse failure.
+    ..._incidentEnvelope(obj, "parseIncident"),
   };
 }
 

@@ -37,7 +37,7 @@ from typing import Callable, Hashable, Literal
 
 from .adapters import Verdict
 from .concern import consequence_of, is_hard_quadrant
-from .contracts import JudgmentEvent, JudgmentTimingBuilder
+from .contracts import Box, EvidenceModality, JudgmentEvent, JudgmentProvenance, JudgmentTimingBuilder
 from .episodes import EPISODE_POLICIES, ContinuationDecision
 from .gate import ASK, FIRE, Gate, classify
 from .observability import get_logger
@@ -264,6 +264,17 @@ class Fired:
     # byte-for-byte unchanged. ``None`` means "this firing path did not carry judgment timing"
     # (episode/transition/absence fires, a bare executor test) — NEVER a fabricated timing.
     judgment: JudgmentEvent | None = None
+    # Z3 — the enriched judgment envelope the executor KNOWS at fire time, so it survives the adaptation
+    # to FireEvent -> the delivered Incident (make_incident reads these off the fire, duck-typed). All
+    # OPTIONAL with a ``None`` default so every existing positional ``Fired(...)`` and every consumer
+    # that ignores them is byte-for-byte unchanged. ``reason`` is the gate's own O2 :class:`GateReason`
+    # (why this action was taken); ``modality`` is how the eye looked (the concern's ``PerceptionSpec``);
+    # ``provenance`` is ``observed`` (a judged read is a direct observation); ``roi`` stays ``None`` —
+    # the judge does not report the region it fired on today, and echoing the INPUT hint would be a lie.
+    reason: str | None = None
+    modality: "EvidenceModality | None" = None
+    roi: "Box | None" = None
+    provenance: "JudgmentProvenance | None" = None
 
 
 # --------------------------------------------------------------------------------------------------
@@ -644,9 +655,23 @@ class BehaviorExecutor:
         # Pass the goal's dwell (hold_s) + the frame time. hold_s=None -> the gate ignores `now`
         # and this is byte-for-byte the rising-edge path. A never-goal's key is marked no_evict so a TTL
         # drop can never re-arm it (the fire-once-ever contract; see Gate.evaluate).
-        action = self.gate.evaluate(
+        # Z3: take the TYPED outcome (action + O2 reason) rather than the bare action. ``decide`` IS the
+        # implementation of ``evaluate`` (``evaluate`` returns ``decide(...).action``), so the edge
+        # effects and the action are byte-for-byte identical — we simply also read the ``reason`` the
+        # gate already computed, which until now reached only the health/trace channel, never the wire.
+        outcome = self.gate.decide(
             key, verdict, freshness=freshness, hold_s=program.hold_s, now=t,
             no_evict=program.key.suppress_false,
+        )
+        action = outcome.action
+        # The envelope the executor knows at fire time (card Z3): the gate reason, how the eye looked, and
+        # that a judged read is a DIRECT observation. ``roi`` stays None — the judge does not report the
+        # region it fired on, and echoing the ``region_hint`` INPUT would misreport an input as an output.
+        env = dict(
+            reason=outcome.reason,
+            modality=program.perception.modality,
+            roi=None,
+            provenance="observed",
         )
         self.metrics.incr(f"{metric}.{action}")
         if action == FIRE:
@@ -665,17 +690,18 @@ class BehaviorExecutor:
             if is_hard_quadrant(consequence_of(goal)):  # A3 hard-quadrant escalates to ASK
                 self.metrics.incr("consequence.escalate")
                 return Fired(goal.id, ASK, escalate_text(goal), base_key[-1], verdict,
-                             self._judgment(key, evidence_seq, ASK, timing))
+                             self._judgment(key, evidence_seq, ASK, timing, env), **env)
             return Fired(goal.id, FIRE, goal.say, base_key[-1], verdict,
-                         self._judgment(key, evidence_seq, FIRE, timing))
+                         self._judgment(key, evidence_seq, FIRE, timing, env), **env)
         if action == ASK:
             return Fired(goal.id, ASK, ask_text(goal), base_key[-1], verdict,
-                         self._judgment(key, evidence_seq, ASK, timing))
+                         self._judgment(key, evidence_seq, ASK, timing, env), **env)
         return None
 
     # -- X7: the ONE production construction site of the contract's centre ----------------------
     def _judgment(
-        self, key: tuple, evidence_seq: int, action: str, timing: JudgmentTimingBuilder | None
+        self, key: tuple, evidence_seq: int, action: str,
+        timing: JudgmentTimingBuilder | None, env: dict | None = None,
     ) -> JudgmentEvent | None:
         """Freeze this decision into a :class:`~percept.contracts.JudgmentEvent`, or ``None``.
 
@@ -690,9 +716,12 @@ class BehaviorExecutor:
         """
         if timing is None:
             return None
+        env = env or {}
         try:
             return JudgmentEvent(
                 key=key, evidence_seq=int(evidence_seq), action=action, timing=timing.freeze(),
+                reason=env.get("reason"), roi=env.get("roi"),
+                modality=env.get("modality"), provenance=env.get("provenance"),
             )
         except Exception as exc:  # never let an observability record perturb the firing path
             self.metrics.incr("judgment.build_failed")

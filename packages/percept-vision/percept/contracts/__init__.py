@@ -30,7 +30,11 @@ from typing import Any, Awaitable, Callable, ClassVar, Hashable, Literal, Protoc
 #: Bump the MAJOR on any breaking change to a frozen shape; MINOR for additive (new optional
 #: field / new DTO); PATCH for docs/non-wire tweaks. This is distinct from ``WatchSpec.version``
 #: (a wire integer kept for byte-for-byte payload compat).
-CONTRACT_VERSION = "1.5.0"  # 1.5: + Verdict claim-mode channel (operation/value/normalized_value/
+CONTRACT_VERSION = "1.6.0"  # 1.6: + judgment-envelope enrichment (card Z3): JudgmentEvent + Incident
+# gain reason/watchplan_id/roi/modality/provenance (all additive, defaulted, GATE-IRRELEVANT — the gate
+# reads only satisfied/confidence, and a consumer that ignores them sees byte-for-byte today's Incident;
+# watch.py + WATCH_VERSION FROZEN).
+# 1.5: + Verdict claim-mode channel (operation/value/normalized_value/
 # target_revision_id/asserted_by) + ConcernAuthority DTO + Concern.authority (all additive, defaulted,
 # GATE-IRRELEVANT — watch.py + WATCH_VERSION FROZEN; card Y2).
 # 1.4: + SubjectRef DTO (namespaced, tri-state subject identity) +
@@ -662,6 +666,20 @@ class Decision:
 # literal is duplicated here rather than creating a reverse/circular import.
 JudgmentAction = Literal["fire", "ask", "silent"]
 
+# --- Judgment-envelope enrichment vocabularies (card Z3) -----------------------------------------
+# HOW the judgment was perceived + WHERE it came from — the typed, closed vocabularies that ride on
+# both the frozen :class:`JudgmentEvent` and the delivered :class:`Incident`. Both are additive and
+# always OPTIONAL (``... | None``): a producer that names neither reproduces today's envelope exactly.
+
+#: The perception modality a judgment was made under — mirrors ``percept.behavior.Modality`` (vision /
+#: audio / fused) WITHOUT importing it (contracts is the bottom membrane). ``None`` == unstated.
+EvidenceModality = Literal["vision", "audio", "fused"]
+
+#: WHERE a judgment came from: ``observed`` — a sensor/VLM read the evidence directly (the judged watch
+#: path); ``inferred`` — the finding was derived without a fresh direct observation (e.g. a deadline/
+#: absence conclusion: the thing did NOT happen in time). ``None`` == unstated.
+JudgmentProvenance = Literal["observed", "inferred"]
+
 
 @dataclass(frozen=True)
 class JudgmentTiming:
@@ -831,6 +849,26 @@ class JudgmentEvent:
     evidence_seq: int
     action: JudgmentAction
     timing: JudgmentTiming
+    # --- Judgment-envelope enrichment (card Z3) — additive, defaulted, non-latency observability ----
+    # The typed WHY/WHERE/HOW of this decision, so the frozen event a client reads at 2am is not silent
+    # about the things it already knew. All OPTIONAL: an event built with none of them is byte-for-byte
+    # the pre-Z3 envelope (and every existing keyword construction keeps its meaning — these append LAST).
+    #
+    # - ``reason``       — the closed ``percept.gate.GateReason`` code the gate decided by (``rising_edge``/
+    #   ``dwell_satisfied``/``low_confidence``/``stale``/...). It EXISTED on ``GateOutcome`` (O2) but only
+    #   ever reached the health/trace channel; here it rides on the judgment itself.
+    # - ``watchplan_id`` — a stable id of the PLAN this judgment ran under (a ``PlanIdentity.plan_hash``,
+    #   card X3). The executor does not know the whole plan, so it leaves this ``None``; the runtime that
+    #   owns the goal set stamps it on the delivered :class:`Incident`.
+    # - ``roi``          — the region the judgment actually fired on, WHEN the judge/gate knows it. Left
+    #   ``None`` honestly rather than echoing a ``WatchCondition.region_hint`` INPUT as if it were an output.
+    # - ``modality``     — the :data:`EvidenceModality` the judgment was perceived under (vision/audio/fused).
+    # - ``provenance``   — :data:`JudgmentProvenance`: ``observed`` (a direct read) vs ``inferred``.
+    reason: str | None = None
+    watchplan_id: str | None = None
+    roi: "Box | None" = None
+    modality: "EvidenceModality | None" = None
+    provenance: "JudgmentProvenance | None" = None
 
 
 # ---------------------------------------------------------------------------
@@ -1226,6 +1264,18 @@ class Incident:
     # 1.3: the correlation handle of the gated subject. Appended LAST so every existing
     # positional construction of Incident(...) keeps its meaning.
     entity_id: str | None = None
+    # 1.6 (card Z3) — the enriched judgment envelope, carried THROUGH the emission boundary onto the
+    # durable record a client actually receives. Two paying client teams found percept perceived
+    # correctly but was UNOBSERVABLE: the reason a fire was withheld, the plan it ran under, the region/
+    # modality/provenance of the evidence — all existed internally yet none reached a delivered Incident.
+    # These do. All additive, defaulted, appended LAST (positional constructions unchanged), and a
+    # consumer that ignores them sees byte-for-byte today's Incident. See :class:`JudgmentEvent` for the
+    # per-field meaning; ``make_incident`` copies them off the fire's ``JudgmentEvent``/``FireEvent``.
+    reason: str | None = None
+    watchplan_id: str | None = None
+    roi: "Box | None" = None
+    modality: "EvidenceModality | None" = None
+    provenance: "JudgmentProvenance | None" = None
 
     def bind_labeler(
         self,
