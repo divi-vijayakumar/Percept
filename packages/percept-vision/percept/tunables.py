@@ -30,8 +30,7 @@ percept.tunables``) writes ``tunables.json``.
 from __future__ import annotations
 
 import json
-import sys
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -683,6 +682,45 @@ _GOAL_STATE: tuple[TunableSpec, ...] = (
         safe_to_optimize=False, default=None, value_type="float", bounds=(0.0, 30.0), risk="low",
         note="clip window seconds, clamped to _MAX_WINDOW_S=30.0; implies temporal='window'.",
     ),
+    # -- goal.state["identity_policy"] (percept/identity_policy.py, STATE_KEY) — a concern-level
+    # override of SourceProfile.identity_strategy; explicit per-goal author intent (WatchPlan row's
+    # own "explicit per-field overrides").
+    TunableSpec(
+        path="Goal.state.identity_policy", owner="WatchPlan", visibility="public",
+        safe_to_optimize=False, default=None, value_type="str", risk="medium",
+        note="percept.identity_policy.identity_policy_of; overrides SourceProfile.identity_strategy "
+        "for this concern only (percept.identity_policy.select_identity_policy).",
+    ),
+    # -- goal.state["judge_mode"] (percept/episode_memory.py, episode_memory_enabled) — opt-in flag
+    # selecting the episode-memory judge mode; a future WatchProfile-driven seam, author-set today.
+    TunableSpec(
+        path="Goal.state.judge_mode", owner="WatchPlan", visibility="public", safe_to_optimize=False,
+        default=None, value_type="enum", choices=("episode_memory",), risk="medium",
+        note="percept.episode_memory.episode_memory_enabled; additive opt-in, no default-path change.",
+    ),
+    # -- goal.state["delivery"] (percept/incidents.py: RequestedDelivery/parse_requested_delivery) —
+    # the legacy AUTHORED delivery-intent dict, clamped by AttentionPolicy before it becomes effective.
+    TunableSpec(
+        path="Goal.state.delivery.preempt", owner="WatchPlan", visibility="public",
+        safe_to_optimize=False, default="queue", value_type="enum",
+        choices=("interrupt", "queue", "drop"), risk="medium",
+        note="requested attention priority; AttentionPolicy CLAMPS 'interrupt' absent earned authority "
+        "(percept.incidents.AttentionPolicy.clamp) — the request alone never grants it.",
+    ),
+    TunableSpec(
+        path="Goal.state.delivery.ttl_s", owner="WatchPlan", visibility="public", safe_to_optimize=False,
+        default=None, value_type="float", risk="low", note="drop-if-stale bound on a queued delivery.",
+    ),
+    TunableSpec(
+        path="Goal.state.delivery.verbatim", owner="WatchPlan", visibility="public",
+        safe_to_optimize=False, default=False, value_type="bool", risk="low",
+        note="speak the authored text verbatim vs. paraphrase.",
+    ),
+    TunableSpec(
+        path="Goal.state.delivery.preferred_channel", owner="WatchPlan", visibility="public",
+        safe_to_optimize=False, default=None, value_type="str", risk="low",
+        note="additive app hint, absent in the legacy dict -> None.",
+    ),
 )
 
 # ======================================================================================================
@@ -826,6 +864,18 @@ _SOURCE_PROFILE: tuple[TunableSpec, ...] = (
         path="SourceProfile.parameters.coast_interval_s", owner="SourceProfile", visibility="public",
         safe_to_optimize=True, default=None, value_type="float", bounds=(0.0, float("inf")), risk="low",
         note="fixed low-rate sampling floor when the change signal is absent/untuned.",
+    ),
+    TunableSpec(
+        path="SourceProfile.parameters.unknown_continuity_gap_s", owner="SourceProfile",
+        visibility="public", safe_to_optimize=True, default=None, value_type="float",
+        bounds=(0.0, float("inf")), risk="low",
+        note="default_episode_policy input: unknown-to-unknown temporal-proximity continuity window "
+        "(percept.sourceprofile.SourceProfile.default_episode_policy); off by default.",
+    ),
+    TunableSpec(
+        path="SourceProfile.parameters.unknown_attaches_to_active_bound", owner="SourceProfile",
+        visibility="public", safe_to_optimize=False, default=False, value_type="bool", risk="low",
+        note="default_episode_policy input: card-Y4 single-focus attach; off by default.",
     ),
     TunableSpec(
         path="SourceProfile.parameters.coverage_floor", owner="unclassified", visibility="advisory",
@@ -1050,7 +1100,7 @@ def write_tunables_json(path: Path = ARTIFACT_PATH, registry: tuple[TunableSpec,
     return path
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None) -> int:  # noqa: ARG001 — CLI entry-point signature convention
     """``python -m percept.tunables`` — (re)generate ``tunables.json`` at the package root."""
     out = write_tunables_json()
     counts = owners_summary()
