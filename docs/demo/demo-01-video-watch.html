@@ -76,6 +76,14 @@ main{padding:20px 24px 28px;display:grid;gap:16px}
 .row{display:flex;gap:8px;margin-bottom:6px}
 .row label{flex:1;font:9px var(--mono);color:var(--steel)}
 .row select{width:100%;margin-top:4px;padding:7px;border:1px solid var(--construction);font:11px var(--mono)}
+.row input[type=text]{width:100%;margin-top:4px;padding:7px;border:1px solid var(--construction);font:11px var(--mono);color:var(--ink);background:#fff}
+.advanced{border:1px solid var(--hairline);margin-bottom:14px}
+.advanced summary{cursor:pointer;padding:9px 10px;font:9px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--steel);background:var(--panel)}
+.advanced[open] summary{border-bottom:1px solid var(--hairline);color:var(--ink)}
+.advBody{padding:10px}
+.advCheck{display:flex;align-items:center;gap:7px;font:10px var(--mono);color:var(--graphite);flex:1}
+.advCheck input{width:auto;margin:0}
+.advHint{font:8.5px var(--mono);color:var(--steel);margin-top:2px;line-height:1.5}
 .agentBox{border-top:1px solid var(--ink);padding-top:15px;margin-top:auto}
 .agentRow{display:flex;justify-content:space-between;align-items:flex-start;gap:14px}
 .agentName{font-family:var(--display);font-size:18px;letter-spacing:.03em}
@@ -250,6 +258,46 @@ main{padding:20px 24px 28px;display:grid;gap:16px}
             <select id="fps"><option>1</option><option>2</option><option>4</option></select>
           </label>
         </div>
+        <details class="advanced">
+          <summary>Advanced settings</summary>
+          <div class="advBody">
+            <div class="row">
+              <label>source profile
+                <select id="advProfile">
+                  <option value="physical_scene" selected>physical_scene</option>
+                  <option value="screen_document">screen_document</option>
+                </select>
+              </label>
+              <label>execution policy
+                <select id="advExec">
+                  <option value="balanced" selected>balanced</option>
+                  <option value="burst">burst</option>
+                  <option value="low_cost">low_cost</option>
+                  <option value="privacy_edge">privacy_edge</option>
+                </select>
+              </label>
+            </div>
+            <div class="row">
+              <label>identity policy
+                <select id="advIdentity">
+                  <option value="none" selected>none</option>
+                  <option value="content_key">content_key</option>
+                  <option value="claim_slot">claim_slot</option>
+                </select>
+              </label>
+              <label class="advCheck"><input id="advEpisode" type="checkbox"> episode tracking</label>
+            </div>
+            <div class="row">
+              <label class="advCheck"><input id="advAudio" type="checkbox" checked> audio (fused) · judge the upload's own soundtrack too</label>
+            </div>
+            <div class="row">
+              <label>vision model <input id="advVisionModel" type="text" placeholder="auto"></label>
+              <label>conductor model <input id="advConductorModel" type="text" placeholder="auto"></label>
+              <label>specialist model <input id="advSpecialistModel" type="text" placeholder="auto"></label>
+            </div>
+            <div class="advHint">Selections flow through Percept.configure()/apply_watch_plan() — see "08 · Resolved configuration" for proof they took effect.</div>
+          </div>
+        </details>
         <div class="agentBox">
           <div class="agentRow">
             <div><div class="agentName">Watch runtime</div><div class="agentMeta">percept.watch() · local harness</div></div>

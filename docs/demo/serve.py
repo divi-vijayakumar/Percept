@@ -403,6 +403,14 @@ async def _run_real(video_path: Path, goal_text: str, backend: str, fps: float,
     explicit: dict = {}
     if episode_tracking and identity_policy != "none":
         explicit["Goal.state.identity_policy"] = identity_policy
+    # [DEMO4 audio addendum] "Audio (fused)" toggle: authors Goal.state.perception.modality="fused"
+    # so the goal judges over BOTH vision and the AudioWindow (percept/behavior.py Modality). With a
+    # video-container upload and no explicit audio_source, percept.runtime.worker.run auto-derives
+    # audio_source from the SAME upload (ffmpeg demux, [AUD1]) — no extra wiring needed here. Off by
+    # default (an untouched panel stays byte-for-byte vision-only).
+    audio_fused = bool(advanced.get("audio_fused"))
+    if audio_fused:
+        explicit["Goal.state.perception.modality"] = "fused"
 
     resolved, profile, settings, plan = _resolve_watch(
         profile_name, goal_text, source_key="camera",
@@ -423,8 +431,11 @@ async def _run_real(video_path: Path, goal_text: str, backend: str, fps: float,
     goals = [g for g in (core.goals.get(gid) for gid in receipt.watch_ids) if g is not None]
     rec = _recorder(core, goals, source="upload", driver="run", resolved=resolved)
     events = []
+    from percept.runtime.worker import RuntimeStats
+
+    run_stats = RuntimeStats()
     stream = percept.run(core, source=str(video_path), fps=fps,
-                         on_trace=rec.tracer(), on_health=rec.health_sink())
+                         on_trace=rec.tracer(), on_health=rec.health_sink(), stats=run_stats)
     async for inc in stream:
         events.append({
             "t": None,
@@ -447,7 +458,8 @@ async def _run_real(video_path: Path, goal_text: str, backend: str, fps: float,
     rec.close()
     rec.write_json(str(trace_path))
     return {"mode": "real", "backend": backend, "events": events, "resolved": resolved, "receipt": receipt,
-            "seams": seams, "video_path": str(video_path)}
+            "seams": seams, "video_path": str(video_path),
+            "audio": {"enabled": audio_fused, "chunks": run_stats.audio_chunks, "wakes": run_stats.audio_wakes}}
 
 
 def _frame_cache_dir(run_id: str) -> Path:
@@ -504,14 +516,16 @@ def _extract_frame_thumbnails(video_path: Path, records: list, run_id: str) -> N
 #: [DEMO4 Finding 3c] the advanced-panel query params a caller may set on /run — every one is
 #: individually optional so an empty panel is byte-for-byte today's behavior.
 _ADVANCED_PARAM_KEYS = (
-    "execution_policy", "identity_policy", "episode_tracking",
+    "execution_policy", "identity_policy", "episode_tracking", "audio_fused",
     "vision_model", "conductor_model", "specialist_model",
 )
+_ADVANCED_BOOL_KEYS = ("episode_tracking", "audio_fused")
 
 
 def _advanced_from_params(params: dict) -> dict:
     out = {k: (params.get(k, [""])[0] or "").strip() for k in _ADVANCED_PARAM_KEYS}
-    out["episode_tracking"] = out["episode_tracking"] in ("1", "true", "on", "yes")
+    for k in _ADVANCED_BOOL_KEYS:
+        out[k] = out[k] in ("1", "true", "on", "yes")
     return out
 
 
@@ -563,7 +577,14 @@ def _do_run(params: dict, body: bytes) -> dict:
             "receipt": _receipt_json(result.get("receipt")),
             # [DEMO4 Finding 2] per-seam routing plan (vision/conductor/specialist -> {backend, model,
             # fallback_from, reason}) — None on the fixture path (no live backend is ever chosen there).
-            "seams": result.get("seams")}
+            "seams": result.get("seams"),
+            # [DEMO4] the advanced panel's own selections, echoed back verbatim — the UI reads THIS
+            # (not its own form state) to prove the Resolved configuration panel reflects what the
+            # server actually armed, not merely what the client asked for.
+            "advanced": advanced,
+            # [DEMO4 audio addendum] RuntimeStats.audio_chunks/audio_wakes when the Audio (fused)
+            # toggle was on; None on the fixture path (no percept.run() stats object there).
+            "audio": result.get("audio")}
 
 
 class Handler(BaseHTTPRequestHandler):
