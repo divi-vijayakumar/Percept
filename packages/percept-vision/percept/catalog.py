@@ -1,12 +1,12 @@
-"""ComponentCatalog — a READ-ONLY facade over percept's five selectable-component registries.
+"""ComponentCatalog — a READ-ONLY facade over percept's six selectable-component registries.
 
 A client asking "what can I plug in here?" today has to know five different modules exist and
 read each one's own registry shape. This module is a single, uniform listing surface over all
-five, and it WRITES to none of them — every function here reads a live registry and returns
+six, and it WRITES to none of them — every function here reads a live registry and returns
 plain, JSON-shaped :class:`ComponentDescriptor` values; nothing registers, overrides, or tears
 down through this module.
 
-The five registries (name -> where it lives -> what it selects):
+The six registries (name -> where it lives -> what it selects):
 
 1. **detectors** (:mod:`percept.harness.detectors`) — cheap, high-fps edge skills a concern
    composes by name (``register_detector`` / ``registered`` / ``list_manifests``).
@@ -22,6 +22,10 @@ The five registries (name -> where it lives -> what it selects):
 5. **profiles** (:mod:`percept.watchprofile`) — :class:`~percept.watchprofile.WatchProfile`
    entries in :data:`~percept.watchprofile.DEFAULT_REGISTRY`: the empirically-derived
    ``Q(p | environment, goal_type, state)`` viability tuning.
+6. **execution policies** (:mod:`percept.execution_policy`) — :class:`~percept.execution_policy.ExecutionPolicy`
+   entries in :data:`~percept.execution_policy.DEFAULT_EXECUTION_POLICY_REGISTRY`: named,
+   versioned resource/scheduling posture bundles (cadence ceilings, judge-dispatch cache/routing,
+   resource budgets) a caller passes to :meth:`percept.resolver.ConfigResolver.resolve`.
 
 **Measured performance is never a descriptor field.** A :class:`ComponentDescriptor` names and
 describes a component; it carries no recall/precision/latency numbers. Anything MEASURED belongs
@@ -46,7 +50,7 @@ from .envelope import DEFAULT_SUBJECT_RESOLVERS
 from .harness import detectors as _detectors
 from .tracing import content_hash
 
-#: The five roles a :class:`ComponentDescriptor` may carry. Closed here (unlike the registries
+#: The six roles a :class:`ComponentDescriptor` may carry. Closed here (unlike the registries
 #: themselves, which stay open/name-keyed) because this tuple describes THIS module's own survey,
 #: not the extensibility of what it surveys.
 ROLE_DETECTOR = "detector"
@@ -54,6 +58,7 @@ ROLE_BACKEND = "backend"
 ROLE_IDENTITY_RESOLVER = "identity_resolver"
 ROLE_SENSE = "sense"
 ROLE_PROFILE = "profile"
+ROLE_EXECUTION_POLICY = "execution_policy"
 
 ROLES: tuple[str, ...] = (
     ROLE_DETECTOR,
@@ -61,6 +66,7 @@ ROLES: tuple[str, ...] = (
     ROLE_IDENTITY_RESOLVER,
     ROLE_SENSE,
     ROLE_PROFILE,
+    ROLE_EXECUTION_POLICY,
 )
 
 
@@ -71,7 +77,8 @@ class ComponentDescriptor:
     - ``role`` — one of :data:`ROLES`.
     - ``name`` — the registry key this component is selected by.
     - ``seam`` — for a backend, which seam it registers under (``"vision"``, ``"stt"``, ...);
-      ``""`` for every other role (a detector/resolver/sense/profile has no seam axis).
+      ``""`` for every other role (a detector/resolver/sense/profile/execution_policy has no seam
+      axis).
     - ``category`` — a coarse class within the role when the source registry has one (a
       detector's sense category, a resolver's ``subject_class``); ``""`` when none applies.
     - ``summary`` — one plain-language line pulled from the source registry's own docs field
@@ -256,12 +263,32 @@ def _profile_descriptors() -> list[ComponentDescriptor]:
     ]
 
 
+def _execution_policy_descriptors() -> list[ComponentDescriptor]:
+    # Same seed-then-resolve pattern as _sense_descriptors/_profile_descriptors:
+    # percept.execution_policies_default seeds DEFAULT_EXECUTION_POLICY_REGISTRY as an import
+    # side effect.
+    from . import execution_policies_default  # noqa: F401
+    from .execution_policy import DEFAULT_EXECUTION_POLICY_REGISTRY
+
+    return [
+        ComponentDescriptor(
+            role=ROLE_EXECUTION_POLICY,
+            name=policy.qualified_name,
+            category=policy.version,
+            summary=policy.notes,
+            metadata={"id": policy.id, "version": policy.version, "values": dict(policy.values)},
+        )
+        for policy in DEFAULT_EXECUTION_POLICY_REGISTRY.all()
+    ]
+
+
 _BUILDERS = (
     _detector_descriptors,
     _backend_descriptors,
     _identity_resolver_descriptors,
     _sense_descriptors,
     _profile_descriptors,
+    _execution_policy_descriptors,
 )
 
 
@@ -296,6 +323,7 @@ __all__ = [
     "ROLE_IDENTITY_RESOLVER",
     "ROLE_SENSE",
     "ROLE_PROFILE",
+    "ROLE_EXECUTION_POLICY",
     "ComponentDescriptor",
     "QualificationRecord",
     "CatalogSnapshot",
