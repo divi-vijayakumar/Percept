@@ -181,14 +181,23 @@ class ScriptedJudgeTests(unittest.TestCase):
             asyncio.run(go())
 
     def test_tolerates_verdict_fields_that_do_not_exist_yet(self):
-        """P0 will add ``subject_key``/``operation``; fixtures label them TODAY."""
+        """Forward-compat: a fixture may label a field before it becomes a real ``Verdict`` field.
+
+        ``operation`` has now landed (card Y2) — so it flows through the constructor to ``v.operation``
+        and is NO LONGER a scripted extra — while ``subject_key``/``binding`` are still labelled ahead
+        of any real field and remain extras. This proves both halves of the seam."""
         v = verdict_from_spec(
             {"satisfied": True, "confidence": 0.9, "subject_key": "document:INV-2291",
              "binding": "resolved", "operation": "replace"}
         )
         self.assertIsInstance(v, Verdict)
+        # subject_key/binding are not real Verdict fields -> still carried as extras.
         self.assertEqual(v.subject_key, "document:INV-2291")
-        self.assertEqual(v.scripted_extras["operation"], "replace")
+        self.assertEqual(v.scripted_extras["subject_key"], "document:INV-2291")
+        self.assertEqual(v.scripted_extras["binding"], "resolved")
+        # operation is a REAL field now -> promoted out of the extras and onto the dataclass.
+        self.assertEqual(v.operation, "replace")
+        self.assertNotIn("operation", v.scripted_extras)
         # ...and the real fields still behave like a plain Verdict.
         self.assertTrue(v.satisfied)
         self.assertEqual(v.evidence, "")

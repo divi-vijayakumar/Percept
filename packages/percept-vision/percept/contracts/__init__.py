@@ -30,7 +30,10 @@ from typing import Any, Awaitable, Callable, ClassVar, Hashable, Literal, Protoc
 #: Bump the MAJOR on any breaking change to a frozen shape; MINOR for additive (new optional
 #: field / new DTO); PATCH for docs/non-wire tweaks. This is distinct from ``WatchSpec.version``
 #: (a wire integer kept for byte-for-byte payload compat).
-CONTRACT_VERSION = "1.4.0"  # 1.4: + SubjectRef DTO (namespaced, tri-state subject identity) +
+CONTRACT_VERSION = "1.5.0"  # 1.5: + Verdict claim-mode channel (operation/value/normalized_value/
+# target_revision_id/asserted_by) + ConcernAuthority DTO + Concern.authority (all additive, defaulted,
+# GATE-IRRELEVANT — watch.py + WATCH_VERSION FROZEN; card Y2).
+# 1.4: + SubjectRef DTO (namespaced, tri-state subject identity) +
 # SubjectConflict/SubjectResolution + resolve_subject() + Verdict.subject (all additive, defaulted,
 # GATE-IRRELEVANT — watch.py + WATCH_VERSION FROZEN; card Y5).
 # 1.3: + Incident.entity_id (correlation identity survives the emission
@@ -314,6 +317,39 @@ def resolve_subject(
     raise ValueError("resolve_subject: no resolvers supplied and no `unknown` fallback")
 
 
+# ---------------------------------------------------------------------------
+# Claim-mode / speech-act channel (card Y2) — a value DIFFERENCE is not a REPLACEMENT.
+# ---------------------------------------------------------------------------
+
+Operation = Literal["assert", "confirm", "replace", "retract", "close", "mention"]
+"""The LOCAL speech act a judge classifies for a value-bearing utterance/finding — classifiable from
+the CURRENT turn alone (no prior state), which is what preserves the anchoring mitigation: the prior
+value never enters the satisfaction prompt. The six acts, and what each does to a slot's value:
+
+- ``assert``  — states the value as fact. ESTABLISHES the slot when it is empty; does NOT overwrite an
+  established value (that requires ``replace``). "The budget is $40K".
+- ``confirm``  — re-states the SAME value without change. Value UNCHANGED.
+- ``mention``  — the value appears but is not asserted: a question ("Could we do $25K?"), an
+  attribution ("Another customer paid $25K") or a negation ("The budget is not $25K"). UNCHANGED.
+- ``replace``  — explicitly supersedes the established value. "Actually, the approved budget is $25K".
+- ``retract``  — withdraws the value (VALUELESS — carries no replacement). "Scratch what I said." → None.
+- ``close``    — terminates the claim/episode. Value withdrawn.
+
+The mutating acts are ``replace``/``retract``/``close`` (they act on an EXISTING value and are the ones
+an authority policy gates); ``assert``/``confirm``/``mention`` are non-mutating. Note: containing a
+value (four of the five decisive utterances contain ``$25K``) is NOT asserting it — exactly one act
+replaces it. The default ``assert`` reproduces today's behaviour byte-for-byte (a plain positive
+verdict with no value asserts the condition; with ``value=None`` it establishes nothing)."""
+
+OPERATIONS: tuple[Operation, ...] = ("assert", "confirm", "replace", "retract", "close", "mention")
+"""The closed :data:`Operation` vocabulary, ordered. A judge that emits nothing outside this set."""
+
+MUTATING_OPERATIONS: frozenset[str] = frozenset({"replace", "retract", "close"})
+"""The acts that MUTATE an existing claim — the ones a :class:`ConcernAuthority` gates. ``assert`` is
+absent deliberately: it can only ESTABLISH an empty slot, never overwrite, so it is safe unauthorized;
+overwriting an established value is exactly what ``replace`` is, and ``replace`` is gated here."""
+
+
 @dataclass
 class Verdict:
     """The firing-contract return: is the plain-language condition true right now?"""
@@ -346,6 +382,27 @@ class Verdict:
     # which is a subject that was SEEN but not identified. ``episodes._subject_match`` prefers
     # ``verdict.subject.key`` (when bound) over the judge-match fallback.
     subject: "SubjectRef | None" = None
+    # Structured value + mutation channel (1.5, card Y2) — the CLAIM-MODE contract, so the executor
+    # never has to parse values out of free-text ``evidence`` (unstable, vendor-dependent) and so a
+    # value DIFFERENCE is never mistaken for a REPLACEMENT. All additive, defaulted, GATE-IRRELEVANT
+    # (the gate reads only satisfied/confidence), appended LAST so every positional ``Verdict(...)``
+    # keeps its meaning and a verdict that sets none of these reproduces today's behaviour:
+    #
+    # - ``operation`` — the LOCAL speech act (see :data:`Operation`). Default ``assert``: a plain
+    #   positive verdict asserts its condition, and ``value=None`` makes that a no-op on any slot.
+    # - ``value`` — the slot value this finding carries, as the judge emitted it (e.g. ``"$40K"``).
+    #   ``None`` == the finding carries no value (a bare ``retract``, or a non-value condition).
+    # - ``normalized_value`` — an OPTIONAL canonical form of ``value`` (e.g. ``40000``) for comparison
+    #   across surface spellings; folded in parallel with ``value`` when the judge supplies it.
+    # - ``target_revision_id`` — for a ``replace``/``retract``, the revision the judge BELIEVES it acts
+    #   on (a hint; the claim ledger computes the authoritative ``supersedes`` itself).
+    # - ``asserted_by`` — WHO asserted this (a role/identity, e.g. ``"buyer"``). A :class:`ConcernAuthority`
+    #   reads it to decide whether a mutating operation is applied or downgraded. ``None`` == unstated.
+    operation: "Operation" = "assert"
+    value: Any = None
+    normalized_value: Any = None
+    target_revision_id: str | None = None
+    asserted_by: str | None = None
 
 
 # who said a fact, used for provenance + freshness reasoning in the core
@@ -433,6 +490,40 @@ class Consequence:
 
 
 @dataclass(frozen=True)
+class ConcernAuthority:
+    """CONCERN-LEVEL authority: WHO may issue a MUTATING claim operation against this concern's value.
+
+    The policy the mutation channel (card Y2) needs so that "a seller mentioning $25K must NOT replace
+    a BUYER-side stated budget". Authority is evaluated SEPARATELY from the speech act: a well-formed
+    ``replace`` from an unauthorized asserter is still a ``replace`` — it is DOWNGRADED (not applied),
+    and the downgrade is TRACED (``percept.claims`` logs ``claim.authority_downgrade``), never silent.
+
+    - ``asserters`` — the identities/roles permitted to MUTATE (``replace``/``retract``/``close``) the
+      value. Matched against :attr:`Verdict.asserted_by`. An EMPTY set means "no restriction" — the
+      idiomatic way to say that is ``Concern.authority = None`` (unrestricted, byte-for-byte today);
+      an empty ``ConcernAuthority`` is treated the same rather than locking everyone out by surprise.
+
+    Non-mutating acts (``assert``/``confirm``/``mention``) are ALWAYS permitted: they cannot overwrite
+    an established value (``assert`` only establishes an empty slot), so they need no authority. Only
+    the acts in :data:`MUTATING_OPERATIONS` are gated.
+    """
+
+    asserters: frozenset[str] = frozenset()
+
+    def permits(self, asserted_by: "str | None", operation: str) -> bool:
+        """May ``asserted_by`` apply ``operation`` under this policy?
+
+        A non-mutating operation is always permitted. A mutating one requires ``asserted_by`` to be a
+        member of :attr:`asserters` — unless ``asserters`` is empty, which is the unrestricted policy.
+        """
+        if operation not in MUTATING_OPERATIONS:
+            return True
+        if not self.asserters:
+            return True
+        return asserted_by is not None and asserted_by in self.asserters
+
+
+@dataclass(frozen=True)
 class Evidence:
     """One timestamped, sourced observation feeding a Concern's log.
 
@@ -515,6 +606,11 @@ class Concern:
     # library can roll a concern forward/back and slice metrics per version. Not the contract semver
     # (``CONTRACT_VERSION``) and not the wire integer (``WatchSpec.version``).
     version: int = 1
+    # 1.5 (card Y2) — WHO may MUTATE this concern's claimed value. ``None`` (default) == no restriction,
+    # byte-for-byte today; a :class:`ConcernAuthority` naming authorized asserters downgrades a mutating
+    # operation from anyone else (traced, never silent). Authority is a property of the concern, not the
+    # utterance: a seller's textbook ``replace`` against a buyer-authoritative budget is refused here.
+    authority: "ConcernAuthority | None" = None
 
     @property
     def wants_clip(self) -> bool:
@@ -1643,6 +1739,9 @@ __all__ = [
     "SUBJECT_RESOLVER_PRECEDENCE",
     "resolve_subject",
     "Verdict",
+    "Operation",
+    "OPERATIONS",
+    "MUTATING_OPERATIONS",
     "Provenance",
     "Attribute",
     "Goal",
@@ -1650,6 +1749,7 @@ __all__ = [
     "Cost",
     "FalseFireCost",
     "Consequence",
+    "ConcernAuthority",
     "Evidence",
     "TrackingBehavior",
     "Subject",

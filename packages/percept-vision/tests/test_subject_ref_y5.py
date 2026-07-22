@@ -38,8 +38,12 @@ def _unknown(*, scheme: str = "content", ns: str = "acme-erp",
 
 
 class ContractVersionTests(unittest.TestCase):
-    def test_contract_bumped_to_1_4_0(self) -> None:
-        self.assertEqual(CONTRACT_VERSION, "1.4.0")
+    def test_contract_at_least_1_4_0(self) -> None:
+        # Y5 bumped to 1.4.0; later additive cards (e.g. Y2 → 1.5.0) move it forward. The Y5 floor
+        # is what matters here: SubjectRef + Verdict.subject must be present at or above 1.4.0.
+        major, minor, _patch = (int(p) for p in CONTRACT_VERSION.split("."))
+        self.assertEqual(major, 1)
+        self.assertGreaterEqual(minor, 4)
 
 
 class SubjectRefInvariantTests(unittest.TestCase):

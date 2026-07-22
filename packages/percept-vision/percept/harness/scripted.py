@@ -11,10 +11,11 @@ The unit-layer capability fixtures (``percept.harness.synthetic``) need both:
   in order, so a temporal capability (continuation vs new episode, episode counting, intervals) can
   be exercised deterministically;
 * **forward-compatible additive fields** — the fixtures label things the judge does not yet return
-  (a durable ``subject_key``, a speech-act ``operation``). P0 will add those to ``Verdict``. Until
-  then :func:`verdict_from_spec` sets them as plain attributes on the verdict instance and records
-  them in ``verdict.scripted_extras``, so a fixture written today keeps working *unchanged* the day
-  the field becomes a real dataclass field.
+  as real ``Verdict`` fields (a durable ``subject_key``, a ``binding`` state). :func:`verdict_from_spec`
+  sets them as plain attributes on the verdict instance and records them in ``verdict.scripted_extras``,
+  so a fixture written today keeps working *unchanged* the day the field becomes a real dataclass field
+  — which is exactly what happened to the speech-act ``operation`` (a real field since card Y2): it now
+  flows through the constructor to ``verdict.operation`` with no fixture edit.
 
 Standing rule 2 still holds: this is scripted WIRING, not intelligence. It proves our logic reads
 what a judge returns. It never proves a model would return it.
