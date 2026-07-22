@@ -11,8 +11,8 @@ What these tests pin:
   the hard ceiling, rejected;
 * the FALSE-BIND > miss asymmetry (Y8) is what drives acceptance — swapping a miss for a false bind
   strictly WORSENS the harm score;
-* the ``distinct_subject_count`` open question (Y4) is FLAGGED, using one definition, not silently
-  reconciled;
+* ``distinct_subject_count`` is computed by ONE formula (the E-1 IdentityLedger oracle itself, fed
+  the same proposed verdicts) rather than a fixture-side count kept in sync with the oracle by hand;
 * the honesty disclaimer is stated in the rendered report.
 
 HONESTY: this proves the mechanism WOULD have been right on synthetic ground truth. It does NOT prove
@@ -62,7 +62,7 @@ class TestProbesRunAndAreRight(unittest.TestCase):
         self.assertEqual([d for d in r.disagreements if d.kind == "false_bind"], [])
         self.assertTrue(r.acceptance.accepted)
 
-    def test_report_touches_and_flags_the_distinct_subject_count_open_question(self):
+    def test_report_notes_the_reconciled_distinct_subject_count_definition(self):
         r = run_probe_01_identity_continuation()
         self.assertIn(DISTINCT_SUBJECT_COUNT_NOTE, r.notes)
         self.assertIn("oracle", DISTINCT_SUBJECT_COUNT_NOTE.lower())

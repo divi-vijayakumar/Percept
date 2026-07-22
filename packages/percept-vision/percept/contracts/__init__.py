@@ -30,7 +30,12 @@ from typing import Any, Awaitable, Callable, ClassVar, Hashable, Literal, Protoc
 #: Bump the MAJOR on any breaking change to a frozen shape; MINOR for additive (new optional
 #: field / new DTO); PATCH for docs/non-wire tweaks. This is distinct from ``WatchSpec.version``
 #: (a wire integer kept for byte-for-byte payload compat).
-CONTRACT_VERSION = "1.6.0"  # 1.6: + judgment-envelope enrichment (card Z3): JudgmentEvent + Incident
+CONTRACT_VERSION = "1.7.0"  # 1.7: + SubjectRef 'provisional' resolution state (a THIRD state beside
+# bound/unknown — a session-local UN_<episode_id> handle for a sighting an episode log tracked but
+# never identified) + provisional_subject()/PROVISIONAL_KEY_PREFIX (additive, GATE-IRRELEVANT — the
+# gate reads only satisfied/confidence; a producer that never emits 'provisional' is byte-for-byte
+# unchanged, and 'bound'/'unknown' construction and equality are untouched).
+# 1.6: + judgment-envelope enrichment (card Z3): JudgmentEvent + Incident
 # gain reason/watchplan_id/roi/modality/provenance (all additive, defaulted, GATE-IRRELEVANT — the gate
 # reads only satisfied/confidence, and a consumer that ignores them sees byte-for-byte today's Incident;
 # watch.py + WATCH_VERSION FROZEN).
@@ -131,6 +136,12 @@ class ClipEvent:
 # ---------------------------------------------------------------------------
 
 
+#: The prefix a `'provisional'` :class:`SubjectRef` key always carries — ``UN_<episode_id>``. Named
+#: so nothing constructs the shape by hand: the key is always "this run's episode id, prefixed", never
+#: a value that could be mistaken for a durable/biometric identifier.
+PROVISIONAL_KEY_PREFIX = "UN_"
+
+
 @dataclass(frozen=True, eq=False)
 class SubjectRef:
     """A namespaced reference to WHAT a judgment is about — the subject identity, resolved or not.
@@ -150,18 +161,26 @@ class SubjectRef:
       ``'PO-4471'`` is NOT globally unique across ERPs; the namespace is what disambiguates it, so a
       ``bound`` ref REQUIRES a non-empty namespace.
     - ``key`` — the stable identifier within the namespace, or ``None`` when unresolved. A ``bound``
-      ref REQUIRES a non-empty key; an ``unknown`` ref REQUIRES ``key is None``.
-    - ``resolution`` — TWO states only: ``'bound'`` (we know which subject this is) or ``'unknown'``
-      (we saw a subject but could not identify it). The ABSENCE of a subject is NOT a third
-      resolution value — it is ``SubjectRef | None`` == ``None`` on the carrier (e.g.
-      :attr:`Verdict.subject`). Do not encode "no subject" as an ``unknown`` ref with no key; encode
-      it as ``None``.
+      or ``provisional`` ref REQUIRES a non-empty key; an ``unknown`` ref REQUIRES ``key is None``.
+    - ``resolution`` — THREE states: ``'bound'`` (we know which subject this is), ``'unknown'`` (we
+      saw a subject but could not identify it and have nothing to key it by), or ``'provisional'`` (we
+      saw a subject we could not identify, but it stayed in view long enough to earn a SESSION-LOCAL
+      handle — the key is always ``UN_<episode_id>`` (:data:`PROVISIONAL_KEY_PREFIX`), minted by the
+      episode log itself from the episode that observed it, never by a judge and never from pixels.
+      A ``provisional`` ref is NOT an identity claim: it dies with the run (``scope`` is always
+      ``'session'``, enforced below) and it names a SIGHTING, not a re-identified person or object —
+      the same discipline :mod:`percept.envelope` enforces for every subject resolver percept ships.
+      The ABSENCE of a subject is NOT a fourth resolution value — it is ``SubjectRef | None`` ==
+      ``None`` on the carrier (e.g. :attr:`Verdict.subject`). Do not encode "no subject" as an
+      ``unknown``/``provisional`` ref with no key; encode it as ``None``.
     - ``scope`` — how far the IDENTIFIER is stable: ``'session'`` (only within this run), ``'source'``
       (stable for this camera/source/document feed), or ``'durable'`` (a content-derived identifier
       stable across runs/restarts). ``scope='durable'`` documents IDENTIFIER stability ONLY. It is
       **NOT** a claim that episode STATE is persisted — percept's episode/continuity state is
       SESSION-ONLY and does not survive a restart. A durable key means only that the same subject
-      would RESOLVE to the same key again, never that anything about it was saved.
+      would RESOLVE to the same key again, never that anything about it was saved. A ``provisional``
+      ref may only ever be ``scope='session'`` — a session-local handle claiming durability would be
+      exactly the re-identification record percept refuses to produce.
     - ``strategy`` — free-form provenance of HOW this ref was resolved (e.g. ``'client'``, ``'judge'``,
       ``'track-iou'``), for debugging a resolution at 2am.
     - ``confidence`` — OPTIONAL resolver confidence in ``[0, 1]``. Deliberately NOT defaulted to
@@ -170,14 +189,18 @@ class SubjectRef:
 
     Equality: two ``'unknown'`` refs NEVER compare equal (an unidentified subject is not "the same"
     as another unidentified subject — nor, like a NaN, as itself). Two ``'bound'`` refs are equal iff
-    their ``(scheme, namespace, key)`` triple matches; ``scope``/``strategy``/``confidence`` are
-    provenance, not identity, and never affect equality.
+    their ``(scheme, namespace, key)`` triple matches; likewise two ``'provisional'`` refs are equal
+    iff that triple matches — which happens exactly when they name the SAME episode, so a provisional
+    ref IS stable within the episode that minted it and never collides with a different episode's. A
+    ``'bound'`` ref and a ``'provisional'`` ref are never equal to each other even sharing a key
+    string, because a provisional handle is never promoted into a real identity by comparison alone.
+    ``scope``/``strategy``/``confidence`` are provenance, not identity, and never affect equality.
     """
 
     scheme: str
     namespace: str
     key: str | None
-    resolution: Literal["bound", "unknown"]
+    resolution: Literal["bound", "unknown", "provisional"]
     scope: Literal["session", "source", "durable"]
     strategy: str
     confidence: float | None = None
@@ -200,9 +223,23 @@ class SubjectRef:
                     f"a key (got {self.key!r}). The absence of a subject is `SubjectRef | None` == "
                     "None, not an 'unknown' ref bearing a key."
                 )
+        elif self.resolution == "provisional":
+            if not self.key or not self.key.startswith(PROVISIONAL_KEY_PREFIX):
+                raise ValueError(
+                    "SubjectRef 'provisional' requires a key of the form "
+                    f"{PROVISIONAL_KEY_PREFIX!r} + episode id (got {self.key!r}). A provisional "
+                    "handle is minted by the episode that observed the sighting, never invented ad "
+                    "hoc — use percept.contracts.provisional_subject(episode_id)."
+                )
+            if self.scope != "session":
+                raise ValueError(
+                    f"SubjectRef 'provisional' requires scope='session' (got {self.scope!r}). A "
+                    "session-local handle claiming source/durable stability would be exactly the "
+                    "re-identification record percept refuses to produce — see percept.envelope."
+                )
         else:
             raise ValueError(
-                "SubjectRef.resolution must be 'bound' or 'unknown' (two states only), got "
+                "SubjectRef.resolution must be 'bound', 'unknown' or 'provisional', got "
                 f"{self.resolution!r}"
             )
         if self.confidence is not None and not (0.0 <= self.confidence <= 1.0):
@@ -213,9 +250,13 @@ class SubjectRef:
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, SubjectRef):
             return NotImplemented
-        # Any ref that is not bound (this one or the other) never compares equal — an unidentified
-        # subject is never "the same" as anything, itself included (NaN-like).
-        if self.resolution != "bound" or other.resolution != "bound":
+        # 'unknown' never compares equal to anything, itself included (NaN-like) — an unidentified
+        # subject with no key has no basis for sameness. 'bound' and 'provisional' each compare on
+        # the identity triple, but only WITHIN their own resolution: a provisional handle is never
+        # laundered into a bound identity by an equality check, even if a key string collided.
+        if self.resolution == "unknown" or other.resolution == "unknown":
+            return False
+        if self.resolution != other.resolution:
             return False
         return (self.scheme, self.namespace, self.key) == (
             other.scheme,
@@ -224,13 +265,38 @@ class SubjectRef:
         )
 
     def __hash__(self) -> int:
-        # Bound refs hash on the identity triple, so equal bound refs share a bucket and dedupe in a
-        # set/dict. Unknown refs hash on OBJECT IDENTITY: no two unknown refs are equal, so any hash
-        # is consistent, and identity hashing keeps the same object findable in a container even
-        # though it does not compare equal to itself by value.
-        if self.resolution == "bound":
-            return hash((self.scheme, self.namespace, self.key))
+        # 'bound'/'provisional' refs hash on (resolution, scheme, namespace, key), so equal refs
+        # share a bucket and dedupe in a set/dict, and a bound/provisional pair sharing a key string
+        # still hash differently (resolution is part of the tuple). 'unknown' refs hash on OBJECT
+        # IDENTITY: no two unknown refs are equal, so any hash is consistent, and identity hashing
+        # keeps the same object findable in a container even though it never compares equal to
+        # itself by value.
+        if self.resolution in ("bound", "provisional"):
+            return hash((self.resolution, self.scheme, self.namespace, self.key))
         return object.__hash__(self)
+
+
+def provisional_subject(
+    episode_id: str, *, scheme: str = "episode", namespace: str = "", strategy: str = "episode_scoped"
+) -> SubjectRef:
+    """Build the ``'provisional'`` :class:`SubjectRef` for a session-local, unidentified sighting.
+
+    The ONLY door a provisional identity comes through: an episode log observed a subject it could
+    not identify and gave it a handle keyed to the episode itself (``UN_<episode_id>``), never to
+    pixels or any cross-session signal. Two sightings only ever share this ref when they are the SAME
+    episode — a different episode id is a different (unequal) ref, so a provisional handle can never
+    accidentally collapse two distinct unidentified subjects, and it can never outlive the run.
+    """
+    if not isinstance(episode_id, str) or not episode_id.strip():
+        raise ValueError("provisional_subject(episode_id=...) must be a non-empty episode id")
+    return SubjectRef(
+        scheme=scheme,
+        namespace=namespace,
+        key=f"{PROVISIONAL_KEY_PREFIX}{episode_id}",
+        resolution="provisional",
+        scope="session",
+        strategy=strategy,
+    )
 
 
 @dataclass(frozen=True)
@@ -1784,6 +1850,8 @@ __all__ = [
     "Observation",
     "ClipEvent",
     "SubjectRef",
+    "PROVISIONAL_KEY_PREFIX",
+    "provisional_subject",
     "SubjectConflict",
     "SubjectResolution",
     "SUBJECT_RESOLVER_PRECEDENCE",

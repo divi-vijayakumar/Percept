@@ -138,8 +138,10 @@ class Capability02UnknownBindingNeverFabricates(unittest.TestCase):
         real = Verdict(scripted[0].satisfied, scripted[0].confidence, subject=_subject_ref(scripted[0]))
         decision = log.observe_decision(steps[0]["t"], real)
 
-        # Not fabricated: no key was invented for the episode.
-        self.assertIsNone(decision.episode.subject_key)
+        # Not fabricated: the episode carries a PROVISIONAL key derived from its own id
+        # (UN_<episode_id>), never an invented content key.
+        self.assertEqual(decision.episode.subject_key, f"UN_{decision.episode.id}")
+        self.assertTrue(decision.episode.subject_key.startswith("UN_"))
         # Not dropped: the sighting still opened an episode (a visible abstention, not a disappearance).
         self.assertEqual(log.count(), 1)
         self.assertEqual(log.count(), expect["distinct_subject_count"])
@@ -349,17 +351,11 @@ class Capability07CupProblem(unittest.TestCase):
 
 
 class Capability07BoundaryOffByOne(unittest.TestCase):
-    """DISCOVERED DEFECT (not one of the card's 9 required capabilities — found while proving cap. 7
-    against the same corpus's boundary cases). The fixture's documented rule is inclusive: "separation
-    >= boundary_gap_s starts a NEW episode". ``EpisodeLog.continuation_reason`` compares with a STRICT
-    '>' (``percept/episodes.py``, the ``gap_exceeded`` branch): ``(t - episode.last_seen) >
-    policy.continuity_gap_s``. At a separation of EXACTLY the gap, the real code CONTINUES the episode
-    (undercounting by one) instead of opening a new one. Filed as its own xfail with the fix pointed at
-    precisely: change ``>`` to ``>=`` in ``EpisodeLog.continuation_reason`` — or, if '>' is the
-    intended contract, the corpus's ``boundary_rule`` docstring needs to change from '>=' to '>'
-    instead. Either fixes it; only one side should move."""
+    """Card Y19 — fixed. The fixture's documented rule is inclusive: "separation >= boundary_gap_s
+    starts a NEW episode". ``EpisodeLog.continuation_reason`` now compares with ``>=`` (formerly a
+    strict ``>``) in the ``gap_exceeded`` branch: ``(t - episode.last_seen) >= policy.continuity_gap_s``.
+    At a separation of EXACTLY the gap, a new episode opens (matching the corpus), not a continuation."""
 
-    @unittest.expectedFailure
     def test_exact_boundary_separation_opens_a_new_episode(self):
         steps, expect = _case(episode_counting_corpus.build(), "boundary_separation_exactly_gap")
         scripted = _run(_scripted_verdicts(steps))
