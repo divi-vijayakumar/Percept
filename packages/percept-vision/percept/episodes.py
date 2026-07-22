@@ -70,6 +70,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Literal
 
+from .events import frame_nbytes
 from .observability import get_logger, log
 
 # judge(summaries, exemplar) -> the id of the episode this observation shares a SUBJECT with, or
@@ -83,6 +84,85 @@ EpisodeJudge = Callable[[list[dict], Any], "str | None"]
 # silently mutated old one. Default (no check supplied) is "compatible", which is byte-for-byte the
 # pre-Y1 behavior.
 MutationCheck = Callable[["Episode", Any], bool]
+
+# ================================================================================================
+# EVIDENCE HANDLES (card Y14) — an episode retains a HANDLE, never the decoded frame.
+# ================================================================================================
+#
+# The defect: ``Episode.exemplar`` / ``Episode.representative`` are opaque ``Any`` and the counting
+# path folded DECODED FRAMES into them. Z1 already proved retention is a fixed plateau of
+# ~50 x frame_bytes for the FrameWindow (46 MB at 640x480, ~300 MB at 1080p); an episode log that
+# ALSO pins a frame per episode multiplies that, and ``max_episodes`` bounds the COUNT of episodes,
+# never their BYTES — so a per-episode frame makes the log's memory scale with source resolution,
+# exactly the class of leak Z1's byte budget closed for the window.
+#
+# The fix is the ADR-003 opaque-handle shape (docs/adr/ADR-003): store a small descriptor — an
+# opaque ``ref`` and a cheap ``fingerprint`` — NEVER the pixels. A handle carries no ``nbytes`` /
+# ``w`` / ``h`` / ``size`` attribute, so the SAME measuring function Z1 shipped
+# (:func:`percept.events.frame_nbytes`) reports it as 0 (unmeasurably small) — retained evidence
+# bytes then stop scaling with resolution and with N observations. ``source_nbytes`` records how big
+# the frame this handle STANDS IN FOR was, for observability (how much was NOT retained); it is a
+# deliberately-named plain int, not ``nbytes``, precisely so ``frame_nbytes`` never mistakes the tiny
+# handle for the big frame it replaced.
+
+
+@dataclass(frozen=True)
+class EvidenceHandle:
+    """An opaque HANDLE to evidence — a small descriptor, NEVER a decoded frame (card Y14, ADR-003).
+
+    ``ref`` is an opaque store key in the ADR-003 sense: a caller MUST NOT parse it, construct one, or
+    assume it is a filesystem path. ``fingerprint`` is a cheap dHash-style signature (see
+    :func:`percept.cache.framehash.dhash`) the :class:`EpisodeJudge` can compare on WITHOUT the
+    pixels. ``source_nbytes`` is the measured size of the frame this handle replaced (0 = unknown) —
+    observability only, and deliberately NOT called ``nbytes`` so :func:`percept.events.frame_nbytes`
+    reads the handle as ~0 bytes retained, the property the whole card exists to guarantee."""
+
+    ref: str | None = None
+    fingerprint: int | None = None
+    source_nbytes: int = 0
+
+
+#: An exemplar measured (via :func:`percept.events.frame_nbytes`) at or below this many bytes is a
+#: CHEAP descriptor — a subject token, a small dict, a pixel-free :class:`~percept.contracts.Verdict`
+#: — and is retained AS-IS (byte-for-byte unchanged, so subject/mutation reads on it keep working).
+#: Anything larger is a decoded frame and is replaced by an :class:`EvidenceHandle` before storage.
+#: This is a memory backstop, not a tunable of cognition; it is intentionally small.
+_MAX_INLINE_EVIDENCE_BYTES = 512
+
+
+def _cheap_fingerprint(frame: Any) -> "int | None":
+    """A cheap, pixel-free signature of a frame (best-effort dHash), or ``None`` if not derivable.
+
+    Reuses the perception cache's stdlib dHash so no new hashing path is introduced. Any failure —
+    an un-griddable frame, an import problem — yields ``None``: a fingerprint is a bonus for judge
+    comparison, never load-bearing for the byte bound, which holds whether or not one is computed."""
+    try:
+        from .cache.framehash import dhash
+    except Exception:  # noqa: BLE001 — a missing cache never blocks handle creation
+        return None
+    try:
+        return dhash(frame)
+    except Exception:  # noqa: BLE001 — un-hashable frame: still get a byte-bounded handle
+        return None
+
+
+def evidence_handle(exemplar: Any, *, max_inline_bytes: int = _MAX_INLINE_EVIDENCE_BYTES) -> Any:
+    """Return what an episode should RETAIN for ``exemplar`` — a HANDLE if it is a decoded frame.
+
+    An :class:`EvidenceHandle` passes through unchanged (idempotent). A cheap descriptor (measured at
+    or below ``max_inline_bytes`` by :func:`percept.events.frame_nbytes`) is returned AS-IS, so string
+    tokens, dicts and pixel-free verdicts — everything the counting path used before this card — are
+    byte-for-byte unchanged. Anything larger is a decoded frame: it is replaced by a small handle
+    (fingerprint + measured ``source_nbytes``) and the pixels are NOT retained. This is the single
+    choke point; :class:`EpisodeLog` routes every stored exemplar/representative through it so the
+    'store decoded frames' defect cannot reappear by a caller forgetting to convert."""
+    if isinstance(exemplar, EvidenceHandle):
+        return exemplar
+    n = frame_nbytes(exemplar)
+    if n <= max_inline_bytes:
+        return exemplar
+    return EvidenceHandle(fingerprint=_cheap_fingerprint(exemplar), source_nbytes=n)
+
 
 #: Default status an episode is opened in. Anything in a policy's ``terminal_statuses`` is CLOSED.
 OPEN = "open"
@@ -341,6 +421,7 @@ class EpisodeLog:
         on_drop: "Callable[[Episode, str], None] | None" = None,
         policy: "EpisodePolicy | None" = None,
         on_continuation: "Callable[[ContinuationDecision], None] | None" = None,
+        retain_inline_max_bytes: int = _MAX_INLINE_EVIDENCE_BYTES,
     ) -> None:
         self.goal_id = goal_id
         self.window_s = window_s
@@ -348,8 +429,28 @@ class EpisodeLog:
         self.on_drop = on_drop
         self.policy = policy if policy is not None else EpisodePolicy()
         self.on_continuation = on_continuation
+        # Card Y14: an exemplar larger than this (measured by frame_nbytes) is a decoded frame and is
+        # replaced by an EvidenceHandle before storage, so retained bytes stay bounded by episode
+        # COUNT, never by frame resolution. Cheap descriptors (tokens/dicts/verdicts) pass through.
+        self.retain_inline_max_bytes = retain_inline_max_bytes
         self._episodes: list[Episode] = []
         self._counter = 0
+
+    def _retain(self, exemplar: Any) -> Any:
+        """What to STORE for ``exemplar`` — a handle if it is a decoded frame (card Y14)."""
+        return evidence_handle(exemplar, max_inline_bytes=self.retain_inline_max_bytes)
+
+    def retained_evidence_nbytes(self) -> int:
+        """Measured bytes of decoded evidence currently pinned by this log (card Y14 soak metric).
+
+        Sums :func:`percept.events.frame_nbytes` over every stored ``exemplar`` and ``representative``
+        — the SAME function Z1's FrameWindow byte budget uses. With the Y14 handle wiring this stays
+        ~0 no matter how many observations flow through (handles carry no pixels), which is exactly
+        the property the soak test asserts: retained bytes are bounded by episode COUNT, not by N."""
+        total = 0
+        for e in self._episodes:
+            total += frame_nbytes(e.exemplar) + frame_nbytes(e.representative)
+        return total
 
     # -- decision (1): STATE CONSISTENCY (card Y7) -----------------------------------------------
     @staticmethod
@@ -487,13 +588,14 @@ class EpisodeLog:
         reason: ContinuationReason, prior: "Episode | None", gap_s: "float | None",
     ) -> ContinuationDecision:
         self._counter += 1
+        retained = self._retain(exemplar)  # Y14: store a HANDLE, never the decoded frame
         episode = Episode(
             id=f"{self.goal_id}:ep{self._counter}",
             goal_id=self.goal_id,
             started_at=t,
             last_seen=t,
-            exemplar=exemplar,
-            representative=exemplar,
+            exemplar=retained,
+            representative=retained,
             status=OPEN,
             subject_key=subject_key,
         )
@@ -556,7 +658,7 @@ class EpisodeLog:
         reason = self.continuation_reason(prior, t, pol, mutation_compatible=compatible)
         if reason in ("continued", "reopened"):
             prior.last_seen = t              # continuation — extend, don't count again
-            prior.representative = exemplar  # ...and the representative is now LIVE (was dead)
+            prior.representative = self._retain(exemplar)  # LIVE (was dead) — a HANDLE (Y14), not pixels
             prior.observations += 1
             if reason == "reopened":
                 self.transition(prior, OPEN, t=t)  # single writer: clears t_end too
@@ -773,6 +875,8 @@ __all__ = [
     "EPISODE_POLICIES",
     "episode_policy_of",
     "MutationCheck",
+    "EvidenceHandle",
+    "evidence_handle",
     "ContinuationDecision",
     "ContinuationReason",
     "CONTINUATION_REASONS",
