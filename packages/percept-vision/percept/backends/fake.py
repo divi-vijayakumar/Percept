@@ -312,6 +312,30 @@ class FakeVoiceTransport:
             await res
 
 
+class ScriptedExtractor:
+    """Deterministic, offline :class:`~percept.extraction.EvidenceExtractor` double.
+
+    Reads a frame TOKEN (same convention as :class:`FakeVision`) and returns a pre-scripted
+    :class:`~percept.extraction.Enrichment` — no OCR, no model, no randomness. Proves the
+    extraction seam's WIRING (facts reach ``context=`` and the trace), never extraction
+    intelligence (rule 2)."""
+
+    def __init__(self, script: "dict[str, Any] | None" = None) -> None:
+        from ..extraction import Enrichment
+
+        self._Enrichment = Enrichment
+        self._script = script or {}
+
+    def extract(self, condition: str, frame: Any, roi: Any = None) -> Any:
+        token = frame if isinstance(frame, str) else str(frame)
+        hit = self._script.get(token)
+        if hit is None:
+            return self._Enrichment()
+        if isinstance(hit, self._Enrichment):
+            return hit
+        return self._Enrichment(**hit)
+
+
 __all__ = [
     "FakeVision",
     "FakeSpecialist",
@@ -320,4 +344,5 @@ __all__ = [
     "FakeSTT",
     "FakeTTS",
     "FakeVoiceTransport",
+    "ScriptedExtractor",
 ]

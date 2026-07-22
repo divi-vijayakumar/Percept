@@ -25,6 +25,7 @@ _REGISTRY: dict[str, dict[str, Callable[[Any], Any]]] = {
     "stt": {},
     "tts": {},
     "transport": {},
+    "extractor": {},
 }
 
 _SEAMS = tuple(_REGISTRY)
@@ -104,6 +105,13 @@ register("tts", "deepgram", _lazy("deepgram", "DeepgramTTS"))
 register("transport", "fake", lambda s: _fake.FakeVoiceTransport())
 register("transport", "scripted", lambda s: _fake.FakeVoiceTransport())
 
+# The EXTRACTOR seam (percept.extraction.EvidenceExtractor) — structured facts OUT of a frame/roi,
+# distinct from a detector's admission boundary (WHEN to look). Only the scripted double ships
+# in-core; a real OCR/LPR/ASR specialist is client-side, registered the same way a vendor vision
+# backend is (a plugin entry point, or a direct `register("extractor", name, factory)` call).
+register("extractor", "fake", lambda s: _fake.ScriptedExtractor())
+register("extractor", "scripted", lambda s: _fake.ScriptedExtractor())
+
 
 def discover_entrypoints() -> None:
     """Load third-party backends advertised under the ``percept.backends`` entry-point group.
@@ -158,8 +166,20 @@ def make_transport(name: str, settings: Any = None) -> Any:
     return make("transport", name, settings)
 
 
+def make_extractor(name: str, settings: Any = None) -> Any:
+    return make("extractor", name, settings)
+
+
 def available(seam: str) -> list[str]:
     return sorted(_REGISTRY.get(seam, {}))
+
+
+def seams() -> tuple[str, ...]:
+    """Every seam name this registry knows (``"vision"``, ``"specialist"``, ...), declaration order.
+
+    The public, read-only way to enumerate seams — ``percept.catalog`` uses this instead of
+    reaching into the private ``_SEAMS``/``_REGISTRY`` module state."""
+    return _SEAMS
 
 
 __all__ = [
@@ -172,5 +192,7 @@ __all__ = [
     "make_stt",
     "make_tts",
     "make_transport",
+    "make_extractor",
     "available",
+    "seams",
 ]

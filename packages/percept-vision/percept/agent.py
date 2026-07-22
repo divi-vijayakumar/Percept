@@ -24,6 +24,7 @@ from .contracts import JudgmentEvent, JudgmentTimingBuilder, SubjectRef
 from .escalation import MAX_PERCEPTION_LEVEL, escalate_perception, should_escalate
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
 from .entity import EntityGraph
+from .extraction import CONTEXT_KEY as EXTRACTOR_CONTEXT_KEY
 from .claims import ClaimState, concern_authority_of
 from .episodes import (
     EPISODE_POLICIES,
@@ -445,6 +446,21 @@ class Percept:
     # the judging path, so plan_mode="window" makes the judge see an ordered frame window
     # (``judge(frames=[...])``). ``None`` -- no profile override, byte-for-byte the behavior before profile resolution existed.
     plan_mode: str | None = None
+    # The optional EvidenceExtractor seam (percept.extraction.EvidenceExtractor). ``None`` (the
+    # default) -- perceive_judged calls it for nothing and every judge call is byte-for-byte
+    # unchanged. When set, perceive_judged calls .extract(condition, frame, roi) for each active
+    # watch goal right before judging, merges the resulting Enrichment.facts into
+    # context["extractor"] (a reserved sub-dict -- see percept.extraction.CONTEXT_KEY), and emits
+    # an "extractor.enriched" trace stage. GATE-IRRELEVANT: the gate still reads only the judge's
+    # own satisfied/confidence.
+    extractor: Any = None
+    # The optional DirectJudge routing layer (percept.direct_judge.DirectJudge). ``None`` (the
+    # default) -- perceive_judged routes nothing and every judge call is byte-for-byte unchanged.
+    # When set, it is consulted right before the judge call: CONFIDENT skips the judge entirely
+    # (zero vision calls -- its normalized Verdict is used as-is, and the UNCHANGED Gate still
+    # classifies it); UNCERTAIN merges its facts into context["extractor"] and the judge is still
+    # called; DEGRADED (or no rule matched) falls through to today's judge call, untouched.
+    direct_judge: Any = None
 
     # -- construction --------------------------------------------------------
     @classmethod
@@ -456,6 +472,8 @@ class Percept:
         conductor: Any = None,
         stt: Any = None,
         tts: Any = None,
+        extractor: Any = None,
+        direct_judge: Any = None,
         settings: Settings | None = None,
         clock: Callable[[], float] | None = None,
         discover_plugins: bool = True,
@@ -536,6 +554,8 @@ class Percept:
             conductor=_resolve("conductor", conductor, cfg),
             stt=_resolve("stt", stt, cfg),
             tts=_resolve("tts", tts, cfg),
+            extractor=extractor,  # optional; None -> perceive_judged calls nothing, byte-for-byte
+            direct_judge=direct_judge,  # optional; None -> every judge call is byte-for-byte
             settings=cfg,
             metrics=Metrics(),
             graph=EntityGraph(
@@ -1456,6 +1476,42 @@ class Percept:
                 {"process_qa": True, "running_answer": ctx.running_answer}
                 if goal.state.get("process_qa") else None
             )
+            # The EvidenceExtractor seam (percept.extraction): ``None`` by default -- every call
+            # below is skipped and every judge call stays byte-for-byte. When set, it runs at the
+            # SAME point the judge is about to be called (frame + roi already resolved), and its
+            # facts are merged into context under the RESERVED "extractor" sub-dict — visible to
+            # the judge and, independently, to the trace (so "did the facts reach the judge" is
+            # answerable from the .ptrace alone, not just from reading this call site).
+            extractor_ctx = None
+            if self.extractor is not None:
+                enrichment = self.extractor.extract(goal.condition, frame, roi)
+                if tracing:
+                    await self._emit_trace(trace_id, now, "extractor.enriched", goal_id=goal.id,
+                                           facts=dict(enrichment.facts))
+                if not enrichment.is_empty:
+                    extractor_ctx = {EXTRACTOR_CONTEXT_KEY: enrichment.to_dict()}
+            judge_context = (
+                process_ctx if extractor_ctx is None else
+                {**(process_ctx or {}), **extractor_ctx}
+            )
+            # DirectJudge routing (percept.direct_judge): ``None`` by default -- direct_result stays
+            # None, the block below is skipped, and every judge call is byte-for-byte unchanged.
+            # CONFIDENT is handled inside the try/except below (it substitutes the judge call
+            # itself, spending zero vision calls); UNCERTAIN's facts are merged into the SAME
+            # reserved "extractor" context key the EvidenceExtractor seam uses, here, BEFORE the
+            # judge call, so a direct rule's partial signal reaches the judge exactly like an
+            # extractor's would.
+            direct_result = None
+            if self.direct_judge is not None:
+                direct_result = self.direct_judge.route(
+                    goal.condition, frame, roi,
+                    facts=(extractor_ctx or {}).get(EXTRACTOR_CONTEXT_KEY, {}).get("facts", {}),
+                    stakes=goal.state.get("stakes", "medium"),
+                )
+                if direct_result.outcome == "uncertain" and direct_result.facts:
+                    prior = dict((judge_context or {}).get(EXTRACTOR_CONTEXT_KEY) or {})
+                    prior["facts"] = {**prior.get("facts", {}), **direct_result.facts}
+                    judge_context = {**(judge_context or {}), EXTRACTOR_CONTEXT_KEY: prior}
             # Computed BEFORE the judge call (not just on success) so a degraded tick can be charged
             # to the SAME key the gate/executor use ("the reducer key") — see _note_judge_degraded.
             base_key = (goal.id, focus.id if focus else None)
@@ -1474,10 +1530,17 @@ class Percept:
                                        temporal=getattr(spec, "temporal", None), roi=roi is not None)
             try:
                 judgment_timing.mark_judge_started()
-                verdict = await self._judge(
-                    goal, frame, roi, corrections, entity_id=focus.id if focus else None,
-                    frames=strip, audio=audio, context=process_ctx,
-                )
+                if direct_result is not None and direct_result.outcome == "confident":
+                    # The confident DirectJudge path: use its normalized Verdict AS the judge's
+                    # verdict — self._judge / self.vision are never called (zero vision calls).
+                    # The Gate stays sole authority: `verdict` flows into the exact same
+                    # freshness/classify/gate path below as a real judge call would.
+                    verdict = direct_result.verdict
+                else:
+                    verdict = await self._judge(
+                        goal, frame, roi, corrections, entity_id=focus.id if focus else None,
+                        frames=strip, audio=audio, context=judge_context,
+                    )
                 judgment_timing.mark_judge_completed()
             except _JudgeDegraded as degraded:
                 # Fail-closed boundary (ADR-001 §10 invariant 4): the judge call raised (timeout /
@@ -1924,7 +1987,10 @@ class Percept:
         audio: Any = None,
         context: dict | None = None,
     ) -> Verdict:
-        process_mode = bool(context and (context.get("process_qa") or context.get("observe_step")))
+        process_mode = bool(
+            context
+            and (context.get("process_qa") or context.get("observe_step") or context.get(EXTRACTOR_CONTEXT_KEY))
+        )
         # PR 1.5: a per-goal reference image ("is this THE mug <exemplar>?") — deictic/individuation
         # grounding the backends already implement but the watch path never supplied. Stable per goal
         # (set in goal.state), so it rides the goal's cache scope; None (the default) is byte-for-byte.
@@ -1933,8 +1999,10 @@ class Percept:
             # The strip/audio (escalation) path is rare-by-design and multi-frame; bypass the
             # single-frame cache (its key dHashes ONE frame) so a strip verdict never pollutes — nor is
             # served from — a single-frame slot. The cache stays single-frame-pure. A process-QA judge
-            # ALSO bypasses (its running answer/step accumulates per-call — must never be cached/served).
-            # ``context`` is passed ONLY for process-QA so a non-process strip judge is byte-for-byte.
+            # ALSO bypasses (its running answer/step accumulates per-call), and so does an
+            # extractor-enriched judge (context["extractor"] is per-call, computed off THIS frame —
+            # must never be cached/served under a different frame's slot). ``context`` is passed ONLY
+            # in process_mode so a plain strip judge with neither is byte-for-byte.
             extra = {"context": context} if process_mode else {}
             # The strip/audio/process-QA judge is on the live watch path (perceive_judged /
             # _observe_and_log) — a malformed/timeout/partial response here must degrade the tick,

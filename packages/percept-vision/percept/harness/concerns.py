@@ -1,31 +1,37 @@
-"""Concern registry — the standing-concern twin of the detector registry.
+"""Concern registry — DEPRECATED, registration-only, dead at runtime.
 
-FUTURE (public API, exercised only by tests): this registry + :func:`compile_registered_watchspec`
-are a complete, semver-stable surface, but NOTHING in ``percept/runtime/`` calls them today — the
-live path is still the per-call ``tier0.compile_watchspec``. Kept as the forward seam for standing
-(registered) concerns; wire a runtime consumer before treating registration as load-bearing. Verified
-2026-07-12: ``grep -rn 'compile_registered_watchspec\\|register_concern' percept/runtime/`` is empty.
+**This registry is DEPRECATED**, per the same playbook already applied to
+``percept.harness.enrichers`` (see ``percept.contracts.Enricher`` and its removal): a module that
+offers a complete, semver-stable REGISTRATION surface but that NOTHING in the runtime ever reads
+from is worse than no seam at all — a client can find it, wire a standing concern into it, and get
+silence. That is this module's exact shape. Unlike the enricher registry, this one is NOT removed
+outright yet (a MAJOR-boundary courtesy, not a claim that it does anything):
+:class:`~percept.adapters.Concern` and its ``from_goal``/:class:`~percept.adapters.ConcernContext`
+construction are untouched and remain the live, non-deprecated types — only THIS module's
+registration lifecycle (``register_concern`` / ``registered_concerns`` /
+``compile_registered_watchspec`` / teardown) is deprecated. Scheduled for removal at the next
+CONTRACT MAJOR (``CONTRACT_VERSION`` is ``1.x`` today); registering a concern here between now and
+then keeps working exactly as documented below, it just changes nothing about any watch.
 
-Concerns were previously composed per-call only (the conductor authors goals, ``tier0.compile_watchspec``
-turns each watch goal into a :class:`~percept.adapters.WatchCondition` on the fly). This module adds the
-missing *registration lifecycle* for concerns, mirroring ``detectors.py``:
+Verified 2026-07-22 (re-verified from the original 2026-07-12 check):
+``grep -rn 'compile_registered_watchspec\\|register_concern' percept/runtime/`` is still empty —
+the live path is, and always was, the per-call ``tier0.compile_watchspec``, authored by the
+conductor turning goals into :class:`~percept.adapters.WatchCondition` on the fly.
+
+What this module documented as its design, for the historical record (still accurate, still inert):
 
     register_concern(concern)  ->  registered_concerns() / get_concern(id)  ->  WatchSpec selection
                                                                             ->  unregister_concern() / clear_concerns()
 
-A registered :class:`~percept.adapters.Concern` is a standing unit of consequence-weighted attention that
-the brain can compile DOWN to a :class:`~percept.adapters.WatchSpec` (:func:`compile_registered_watchspec`)
-**alongside** the existing per-call path — registering concerns does not touch ``compile_watchspec`` or its
-byte-for-byte behavior. The registry is a process-global singleton keyed by ``Concern.id``; this is a
-PUBLIC, semver-stable surface (see ``docs/registration.md``).
-
-Why a separate registry from detectors: a *detector* is a cheap reusable signal skill (one impl, many
-goals); a *concern* is a specific standing thing-to-watch (one per id, carrying its own condition +
-consequence). They share the register/teardown shape but not the keyspace.
+A registered :class:`~percept.adapters.Concern` was meant to be a standing unit of
+consequence-weighted attention the brain could compile DOWN to a
+:class:`~percept.adapters.WatchSpec` (:func:`compile_registered_watchspec`) **alongside** the
+existing per-call path. No runtime consumer ever materialized to make that true.
 """
 
 from __future__ import annotations
 
+import warnings
 from typing import Iterable
 
 from percept.adapters import Concern, Goal, WatchCondition, WatchSpec
@@ -41,17 +47,30 @@ _CONCERNS: dict[str, Concern] = {}
 
 
 def register_concern(concern: Concern) -> Concern:
-    """Register a standing :class:`~percept.adapters.Concern` under its ``id`` (last-writer-wins).
+    """DEPRECATED — register a standing :class:`~percept.adapters.Concern` under its ``id``.
 
-    The deliberate-registration lifecycle for concerns: after this, the concern is returned by
-    :func:`registered_concerns`, fetchable via :func:`get_concern`, and selectable into a
-    :class:`~percept.adapters.WatchSpec` by :func:`compile_registered_watchspec`. Re-registering the same
-    ``id`` replaces the prior concern (how a refinement updates a standing concern in place). Returns the
-    concern for convenient chaining.
+    Warns :class:`DeprecationWarning` on every call: this registry (see the module docstring) has
+    no runtime consumer, so registering here changes NOTHING about any watch — the concern is
+    stored and later retrievable from THIS module only. Kept functional (not removed) as a
+    MAJOR-boundary courtesy; scheduled for removal at the next CONTRACT MAJOR.
 
-    Accepts a :class:`~percept.adapters.Goal` too (via :meth:`Concern.from_goal`) so a goal-shaped caller
-    can register without first building a full Concern — the compat shim keeps today's firing unchanged.
+    Still does what it always did, for a caller that keeps using it: after this, the concern is
+    returned by :func:`registered_concerns`, fetchable via :func:`get_concern`, and selectable into
+    a :class:`~percept.adapters.WatchSpec` by :func:`compile_registered_watchspec`. Re-registering
+    the same ``id`` replaces the prior concern (last-writer-wins). Returns the concern for chaining.
+
+    Accepts a :class:`~percept.adapters.Goal` too (via :meth:`Concern.from_goal`) so a goal-shaped
+    caller can register without first building a full Concern.
     """
+    warnings.warn(
+        "percept.harness.concerns.register_concern is deprecated: this registry has no runtime "
+        "consumer (nothing in percept/runtime/ reads it) — registering a concern here changes "
+        "NOTHING about any watch. The live, non-deprecated path is Concern.from_goal / "
+        "ConcernContext plus tier0.compile_watchspec's per-call goal compilation. Scheduled for "
+        "removal at the next CONTRACT MAJOR.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     if isinstance(concern, Goal):
         concern = Concern.from_goal(concern)
     _CONCERNS[concern.id] = concern
@@ -144,7 +163,10 @@ def compile_registered_watchspec(
     edge_capabilities: Iterable[str] | None = None,
     concerns: Iterable[Concern] | None = None,
 ) -> WatchSpec:
-    """Compile the REGISTERED concerns DOWN to a :class:`~percept.adapters.WatchSpec`.
+    """DEPRECATED (see the module docstring) — compile the REGISTERED concerns DOWN to a
+    :class:`~percept.adapters.WatchSpec`. Does not itself warn (call :func:`register_concern` to
+    populate the registry this reads, which does) — kept functional, scheduled for removal at the
+    next CONTRACT MAJOR alongside the rest of this module.
 
     The concern-registry counterpart of :func:`~percept.harness.tier0.compile_watchspec` (which compiles
     a per-call list of goals). One :class:`~percept.adapters.WatchCondition` per concern, in id order.

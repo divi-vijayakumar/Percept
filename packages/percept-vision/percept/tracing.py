@@ -102,6 +102,12 @@ STAGE_JUDGMENT_EVENT = "judgment.event"    # the frozen percept.contracts.Judgme
 #: literal evidence that fed this judgment, resolvable within the same ``.ptrace``. ``data["dispatch_seq"]``
 #: carries the JudgmentEvent's OWN ``evidence_seq`` (the per-key ADR-001 §8 dispatch sequence, a distinct
 #: number) so neither meaning is lost. Purely additive observability — governs nothing.
+STAGE_EXTRACTOR_ENRICHED = "extractor.enriched"  # a percept.extraction.EvidenceExtractor ran for this
+#: goal and produced an Enrichment (possibly empty) BEFORE the judge call it feeds. Emitted right
+#: before ``judge.started`` when an extractor is configured; absent entirely when none is.
+#: ``data["facts"]`` is the SAME dict merged into ``context["extractor"]`` for the judge — this
+#: stage is what makes "did the extractor's facts actually reach the judge" answerable from the trace
+#: alone, not just from reading the call site. Purely additive observability — governs nothing.
 
 #: The closed stage vocabulary. A stage outside this tuple is still recorded (forward-compatible)
 #: but is not counted into any funnel field — an unknown stage must never silently move a number.
@@ -119,6 +125,7 @@ TRACE_STAGES: tuple[str, ...] = (
     STAGE_INCIDENT_CREATED,
     STAGE_SHADOW_FOLD,
     STAGE_JUDGMENT_EVENT,
+    STAGE_EXTRACTOR_ENRICHED,
     STAGE_SOURCE_HEALTH,
     STAGE_TRACE_DROPPED,
     STAGE_RUN_ENDED,
@@ -432,7 +439,7 @@ _SUMMARY_STAGES: frozenset[str] = frozenset({
 _DECISION_STAGES: frozenset[str] = _SUMMARY_STAGES | frozenset({
     STAGE_SOURCE_FRAME, STAGE_JUDGE_STARTED, STAGE_JUDGE_FINISHED, STAGE_JUDGE_DEGRADED,
     STAGE_JUDGE_USAGE, STAGE_JUDGE_DROPPED, STAGE_GATE_CLASSIFIED, STAGE_GATE_SUPPRESSED,
-    STAGE_JUDGMENT_EVENT,
+    STAGE_JUDGMENT_EVENT, STAGE_EXTRACTOR_ENRICHED,
 })
 
 
@@ -1660,6 +1667,7 @@ __all__ = [
     "STAGE_GATE_SUPPRESSED",
     "STAGE_INCIDENT_CREATED",
     "STAGE_SHADOW_FOLD",
+    "STAGE_EXTRACTOR_ENRICHED",
     "STAGE_SOURCE_HEALTH",
     "STAGE_TRACE_DROPPED",
     "STAGE_RUN_STARTED",
