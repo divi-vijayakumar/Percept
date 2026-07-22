@@ -513,6 +513,14 @@ class _JudgeScheduler:
 _VIDEO_SKEW_TOL_S = 30.0   # video queue worst-case ~16s + margin
 _AUDIO_SKEW_TOL_S = 120.0  # audio queue worst-case ~64s + margin (a blocked pump is legitimate)
 
+# Media-clock pacing lookahead for a FILE/CONTAINER audio_source. A recorded audio pump (ffmpeg
+# demux / wave read) is throttled to the video frame loop's own judged media time so it never streams
+# ahead into frames that haven't been judged yet — the fix for a fused judge hearing the file's TAIL no
+# matter which frame it was judging (see `_pump_audio`'s `_audio_paced` gate below). The lookahead lets
+# the AudioWindow stay filled slightly AHEAD of the current frame (matching `audio_settle_s`-style
+# onset-then-settle usage) without letting it race arbitrarily far ahead.
+_AUDIO_PACE_LOOKAHEAD_S = 0.5
+
 
 async def _assert_timebase(
     t: float,
@@ -1532,6 +1540,28 @@ async def run(
         audio = {"energy": None, "energy_t": None, "chunk_dt": None, "wake": False, "wake_at": None}
         _prev_chunk_at: list = [None]  # last chunk's t — for the observed inter-chunk cadence (chunk_dt)
         audio_task = None
+        # Media-clock pacing for a FILE/CONTAINER audio_source (see `_AUDIO_PACE_LOOKAHEAD_S`).
+        # An ffmpeg/wave capture thread streams a whole recorded file's chunks in well under a
+        # wall-second — far faster than the video frame loop, which judges at its own (often much
+        # slower) pace. Left unchecked, the ENTIRE file lands in the AudioWindow before the first judge
+        # call, so the rolling window prunes to the file's final seconds and every fused judge hears the
+        # TAIL no matter which frame it is judging. Paced ONLY when `audio_source` is itself a STRING URI
+        # that resolved to MEDIA time (`live_audio` — real `open_audio_source` capture — AND
+        # `_resolve_timebase`'s "recorded-source" branch, i.e. a wav/mp4/container path, never "mic:").
+        # A live mic resolves to WALL time and this stays False for it, so the live path is
+        # byte-for-byte unchanged. Just as important: a DETERMINISTIC test/replay `audio_source` (a
+        # plain async generator/iterable feeding pre-baked chunks, not a URI) is NOT `live_audio` either
+        # — `_resolve_timebase` would otherwise call it "media" too (its non-str "deterministic-stream"
+        # branch), which would wrongly pace synthetic fixtures whose `at` values have no real
+        # relationship to the video timeline they're paired with. `_video_media_t` is the media time of
+        # the most recently processed VIDEO frame; `_video_progress` is the Event the pump awaits (never
+        # a busy-wait) until the video has caught up to within the lookahead of a chunk's own media
+        # time. `_video_exhausted` unconditionally releases the pump once the video source ends, so a
+        # video shorter than its audio track still drains the remainder instead of hanging forever.
+        _audio_paced = live_audio and audio_tb is not None and audio_tb.resolved == "media"
+        _video_media_t: list = [0.0]
+        _video_progress = asyncio.Event()
+        _video_exhausted = [False]
         if audio_source is not None:
             # Size the SHARED fused-judge AudioWindow (distinct from the per-utterance buffer below).
             # A voice-enabled session wants richer acoustic context than the small fused default; the
@@ -1574,6 +1604,18 @@ async def run(
                 # Pump every chunk into the AudioWindow (un-strands modality="fused"/"audio") and track
                 # energy + onsets. Never lets a bad audio chunk kill the run — the watch survives a mic drop.
                 async for at, chunk, energy in _audio_aiter(audio_source, **audio_kwargs):
+                    # Hold a FILE/CONTAINER chunk back until the video loop's judged media time has
+                    # (almost) reached it — never busy-wait, park on the Event the frame loop sets every
+                    # tick. `_audio_paced` is False for a live mic (byte-for-byte unchanged: this loop
+                    # body is reached exactly as fast as `_audio_aiter` yields, same as before this gate
+                    # existed).
+                    while (
+                        _audio_paced
+                        and not _video_exhausted[0]
+                        and at > _video_media_t[0] + _AUDIO_PACE_LOOKAHEAD_S
+                    ):
+                        _video_progress.clear()
+                        await _video_progress.wait()
                     # A LIVE mic stamps chunks on the wall clock; a divergence past the AUDIO tolerance
                     # (wider than video — a backlogged chunk behind a blocked pump is legitimate) trips once.
                     if live_audio and audio_tb is not None and audio_tb.resolved == "wall":
@@ -1779,6 +1821,17 @@ async def run(
                     t, timebase=(video_tb.resolved if live_video else "media"),
                     t0=_clock_t0[0], wall_now=wall_clock(),
                 )
+            if _audio_paced:
+                # Advance the marker the paced audio pump awaits, to THIS frame's media time —
+                # same `_frame_clocks` semantics as the stats mirror above (media `t` IS the media time;
+                # a wall-timebase video's media-equivalent is the elapsed stream offset). Setting the
+                # Event wakes the pump task (parked in `_video_progress.wait()`), which then re-checks
+                # whether it has caught up enough to push its held chunk.
+                _video_media_t[0] = (
+                    t if (video_tb.resolved if live_video else "media") == "media"
+                    else ((t - _clock_t0[0]) if _clock_t0[0] is not None else 0.0)
+                )
+                _video_progress.set()
             if _clock_t0[0] is None:
                 _clock_t0[0] = t
             # On a WALL-timebase source, frame `t` IS the wall clock — if it has drifted from the core
@@ -1976,6 +2029,12 @@ async def run(
         # await is not enough) and emit everything, so a collect-all consumer sees every incident the
         # stream earned. Still inside the try: a held judge failure re-raised by drain() routes through
         # the fail-loud runtime_error path below, exactly like an inline judge failure.
+        # The video source is done producing frames — release the paced audio pump
+        # unconditionally so a video track shorter than its audio (or one that simply finished) drains
+        # whatever it's still holding instead of parking on `_video_progress.wait()` forever.
+        if _audio_paced:
+            _video_exhausted[0] = True
+            _video_progress.set()
         if _judge_sched is not None:
             await _judge_sched.flush()
             for _hk, _hd in _judge_sched.drain_trace():
