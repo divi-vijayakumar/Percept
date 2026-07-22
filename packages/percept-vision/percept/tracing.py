@@ -103,9 +103,9 @@ STAGE_JUDGMENT_EVENT = "judgment.event"    # the frozen percept.contracts.Judgme
 #: carries the JudgmentEvent's OWN ``evidence_seq`` (the per-key ADR-001 §8 dispatch sequence, a distinct
 #: number) so neither meaning is lost. Purely additive observability — governs nothing.
 STAGE_EXTRACTOR_ENRICHED = "extractor.enriched"  # a percept.extraction.EvidenceExtractor ran for this
-#: goal and produced an Enrichment (possibly empty) BEFORE the judge call it feeds. Emitted between
-#: ``judge.started`` and ``judge.finished`` when an extractor is configured; absent entirely when none
-#: is. ``data["facts"]`` is the SAME dict merged into ``context["extractor"]`` for the judge — this
+#: goal and produced an Enrichment (possibly empty) BEFORE the judge call it feeds. Emitted right
+#: before ``judge.started`` when an extractor is configured; absent entirely when none is.
+#: ``data["facts"]`` is the SAME dict merged into ``context["extractor"]`` for the judge — this
 #: stage is what makes "did the extractor's facts actually reach the judge" answerable from the trace
 #: alone, not just from reading the call site. Purely additive observability — governs nothing.
 
@@ -1658,6 +1658,7 @@ __all__ = [
     "STAGE_GATE_SUPPRESSED",
     "STAGE_INCIDENT_CREATED",
     "STAGE_SHADOW_FOLD",
+    "STAGE_EXTRACTOR_ENRICHED",
     "STAGE_SOURCE_HEALTH",
     "STAGE_TRACE_DROPPED",
     "STAGE_RUN_STARTED",
