@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Callable, Hashable
 
 from . import registry
-from .adapters import Box, Decision, Goal, GoalOrigin, TurnResult, Verdict
+from .adapters import AudioFrame, Box, Decision, Goal, GoalOrigin, TurnResult, Verdict
 from .behavior import BehaviorExecutor, EpisodeFoldResult, ShadowObservation, program_of
 from .cache import CacheCascade, CacheKey, FrameHashLayer
 from .concern import attention_weight, consequence_of, requires_verification, resolution_ready
@@ -205,10 +205,41 @@ def _trace_reason(truth: str, action: str) -> str:
 
 
 def _concat_audio(chunks: list) -> Any:
-    """Concatenate audio chunks into one clip: ``(mime, bytes)`` pairs or raw bytes; else pass through."""
+    """Concatenate audio chunks into one clip for ``judge(audio=...)``.
+
+    AUD3: the AudioWindow the runtime pump fills (``runtime/audio.py``'s ``open_audio_source`` — mic,
+    wav, AND video-container/ffmpeg demux) holds TYPED :class:`~percept.contracts.AudioFrame` chunks,
+    not raw bytes. This function used to only recognize ``(mime, bytes)`` pairs and raw ``bytes`` —
+    an ``AudioFrame`` chunk matched NEITHER case and fell through to the ``chunks[-1]`` opaque-descriptor
+    branch, silently handing the judge just the LAST chunk (often a short partial final read) instead of
+    the concatenated window. Handled here as its own case: concatenate every frame's raw ``.pcm`` bytes
+    into one buffer and return ONE typed ``AudioFrame`` carrying the TRUE ``sample_rate``/``channels``/
+    ``sample_format`` the frames themselves were captured with (read off the frames, never hardcoded —
+    they already carry the real demux/mic rate from ``runtime/audio.py``'s capture config).
+
+    An already-ENCODED frame (``.encoded`` set, ``.pcm`` empty — a pre-recorded clip carried as a
+    WAV/Opus blob rather than raw PCM) has nothing to concatenate; it is passed straight through
+    unmodified, preserving prior behaviour for that shape.
+
+    Non-``AudioFrame`` chunks keep the original two cases byte-for-byte: ``(mime, bytes)`` pairs or raw
+    ``bytes``/``bytearray`` concatenate; any other opaque descriptor passes the latest chunk through.
+    """
     if not chunks:
         return None
     first = chunks[0]
+    if isinstance(first, AudioFrame):
+        pcm_frames = [c for c in chunks if isinstance(c, AudioFrame) and c.pcm]
+        if not pcm_frames:
+            return chunks[-1]  # encoded-only (or empty) frames — nothing to concat, pass the latest through
+        head, tail = pcm_frames[0], pcm_frames[-1]
+        return AudioFrame(
+            pcm=b"".join(bytes(c.pcm) for c in pcm_frames),
+            sample_rate=head.sample_rate,
+            channels=head.channels,
+            sample_format=head.sample_format,
+            t_start=head.t_start,
+            t_end=tail.t_end,
+        )
     if isinstance(first, tuple) and len(first) == 2 and isinstance(first[1], (bytes, bytearray)):
         return (str(first[0]), b"".join(bytes(c[1]) for c in chunks))
     if isinstance(first, (bytes, bytearray)):
