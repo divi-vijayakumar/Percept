@@ -729,7 +729,9 @@ class TestAudioFrame(unittest.TestCase):
 class TestVersionNegotiation(unittest.TestCase):
     def test_contract_version_is_semver(self):
         # 1.8.0: additive WatchPlan/SettingOrigin/ResolvedWatch/WatchReceipt/FieldDiagnostic DTOs
-        # (percept.contracts.watchplan, ADR-008 configuration ownership/resolution/provenance).
+        # (percept.contracts.watchplan, ADR-008 configuration ownership/resolution/provenance), plus
+        # additive Incident.revision_id/Incident.supersedes (the episode-owned provisional/superseding
+        # link put on the wire), same batch.
         # 1.7.0: additive Incident.evidence_seq (the JudgmentEvent evidence_seq copied through to the
         # delivered record) + additive SubjectRef 'provisional' resolution state (UN_<episode_id>),
         # same batch. 1.6.0: additive judgment-envelope enrichment — JudgmentEvent + Incident gain

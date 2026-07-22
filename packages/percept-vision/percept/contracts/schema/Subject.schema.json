@@ -1023,6 +1023,26 @@
               "type": "null"
             }
           ]
+        },
+        "revision_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "supersedes": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "description": "A fired-event record \u2014 the durable trace of one concern firing, with evidence.",
