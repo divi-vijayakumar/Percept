@@ -1,18 +1,22 @@
-"""The shipped :class:`~percept.sourceprofile.SourceProfile` set (ADR-005).
+"""The shipped :class:`~percept.sourceprofile.SourceProfile` set (ADR-005, promoted by card C2).
 
 Three profiles ship. Two are stable; one is explicitly EXPERIMENTAL and says so in its own
 ``stability`` field, not only in prose:
 
 - :data:`PHYSICAL_SCENE` — the source class percept's stock tier-0 eye was calibrated on. Cameras.
   Admission is the measured admission stack (localized ``block_max`` salience over the 48x36 gate frame).
-- :data:`SCREEN_DOCUMENT` — screen recordings, document/page content. Percept ships NO calibrated
-  admission signal for this class and this profile DECLARES that
-  (``parameters["change_signal"] == UNTUNED``). Its honest floor is a fixed low-rate coast.
+- :data:`SCREEN_DOCUMENT` — screen recordings, document/page content. Card C2 promotes this profile
+  to TUNED @1: the SAME localized ``block_max``/0.20 signal :data:`PHYSICAL_SCENE` carries — never a
+  lowered cutoff — is the declared default admission for screen content large enough to register on
+  the 48x36 gate frame (a highlighted cell, a popup, a UI element). A fixed low-rate coast
+  (1.0-2.0s) remains the floor UNDERNEATH it: the measured evidence below shows a full-PAGE,
+  text-scale edit still dilutes below every calibrated cutoff, so the coast is what keeps that
+  harder residual case observed, not the tuned default admitting it.
 - :data:`CONVERSATION` — EXPERIMENTAL. Speaker identity is off-contract and goals judge serially
   (~24s/turn measured), so this profile is for evaluation, not production.
 
-Why SCREEN_DOCUMENT is untuned, in numbers
--------------------------------------------
+Why SCREEN_DOCUMENT still carries a coast floor, in numbers
+-------------------------------------------------------------
 
 ``percept-doctor`` on the real client fixture ``probes/01-screen-walkthrough/data/clean.mp4``
 — a 36s accounting screen recording, 180 frames, 1920x1080, containing a HARD CUT between two
@@ -26,18 +30,22 @@ block_max     0.0919    0.0001    0.200               0
 p95          0.0743    0.0000    0.150               0
 ===========  ========  ========  ==================  ========
 
-No statistic admits a single frame, including across the document cut. ``block_max`` amplifies the
-localized signal 5.6x over the ``mean`` exactly as designed — and still lands at under HALF its own
-calibrated cutoff. The cause is resolution, not statistic selection: the gate frame is 48x36
-greyscale (``percept/runtime/source.py``, ``GATE_W, GATE_H = 48, 36``) and ``block_max`` reads an 8x6
-grid over it, so one block is ~6x6 px of a downsampled 1080p screen and a document-sized edit is
-diluted away.
+No statistic admits a single frame of THIS fixture, including across the document cut. ``block_max``
+amplifies the localized signal 5.6x over the ``mean`` exactly as designed — and still lands at under
+HALF its own calibrated cutoff for a full-page, text-scale edit. The cause is resolution, not
+statistic selection: the gate frame is 48x36 greyscale (``percept/runtime/source.py``,
+``GATE_W, GATE_H = 48, 36``) and ``block_max`` reads an 8x6 grid over it, so one block is ~6x6 px of
+a downsampled 1080p screen and a document-sized edit is diluted away.
 
-Lowering a threshold to make this fixture admit would wreck physical-scene precision, which is
-calibrated on the SAME cutoffs. So this profile does not lower one. It declares itself untuned, coasts
-at a fixed low rate so a static-but-important page is still sampled, and points at
-``docs/how-to/tune-admission.md`` — where the CLIENT registers their own page-change / phash / OCR
-signal and A/Bs it with ``percept eval`` on THEIR fixtures against THEIR bars.
+This is why the coast is not optional even once ``block_max`` is the declared default: a
+LOCALIZED change (a cell, a highlighted region, a modal — enough of the 8x6 grid lights up) clears
+0.20 the same way a physical-scene event does, but a page-scale text edit does not, and percept does
+not know in advance which one a client's content will produce. Lowering the cutoff to force the
+harder case to admit would wreck physical-scene precision, which is calibrated on the SAME cutoffs —
+so this profile does not lower one; it keeps ``block_max``/0.20 as the tuned default and leans on the
+coast for what that eye cannot resolve. A client whose content is dominated by full-page edits should
+still register their own page-change / phash / OCR signal — see ``docs/how-to/tune-admission.md`` —
+and A/B it with ``percept eval`` on THEIR fixtures against THEIR bars.
 
 Importing this module seeds :data:`percept.sourceprofile.DEFAULT_SOURCE_REGISTRY` (see :func:`seed`,
 called at the bottom). Tests wanting isolation should ``seed(SourceProfileRegistry())`` instead.
@@ -47,7 +55,6 @@ from __future__ import annotations
 
 from .sourceprofile import (
     DEFAULT_SOURCE_REGISTRY,
-    UNTUNED,
     SourceProfile,
     SourceProfileRegistry,
 )
@@ -132,9 +139,14 @@ SCREEN_DOCUMENT = SourceProfile(
     name="screen_document",
     modalities=frozenset({"video", "text"}),
     temporal_unit="page",
-    # The strategy NAMES what should decide admission; parameters["change_signal"] == UNTUNED says
-    # percept ships no calibrated implementation of it. Doctor reads exactly that.
-    admission_strategy="page_change_signal_or_coast",
+    # TUNED @1 (card C2): the same localized tier-0 salience stack physical_scene ships, applied to
+    # screen content. parameters["change_signal"] names a REAL signal (never UNTUNED) at the SAME
+    # cutoff physical_scene carries — see the module docstring for the scope this does and does not
+    # cover, and why the coast below stays mandatory alongside it.
+    admission_strategy="tier0_localized_salience_or_coast",
+    # Ordered frame WINDOW, never a sprite montage (ADR-008 Corrections(a): window beat sprite
+    # unconditionally on the H0 dynamic-goal set). parameters["plan_mode"] states this explicitly so
+    # a caller reading this profile's parameters sees the same rule the resolver enforces globally.
     evidence_strategy="screenshot_plus_changed_region",
     # NEVER geometry alone. IoU+label cannot separate INV-2291 from INV-2294: two invoices rendered
     # in the same screen region carrying the same label are the SAME entity by construction under a
@@ -142,12 +154,20 @@ SCREEN_DOCUMENT = SourceProfile(
     identity_strategy="content_key",
     default_timebase="media",
     parameters={
-        "change_signal": UNTUNED,
+        # The tuned default: the SAME statistic + cutoff physical_scene carries (never lowered to
+        # force an admit — see the module docstring's "still carries a coast floor" section).
+        "change_signal": "tier0_block_max_salience",
+        "salience_stat": "block_max",
+        "salience_threshold": 0.20,
+        # A localized change large enough to clear 0.20 escalates on its own; the coast below is the
+        # floor UNDERNEATH that tuned default, not a replacement for it (SCREEN_COAST_INTERVAL_S is
+        # in [1.0, 2.0]s — a fail-safe FLOOR pick, not a tuned value, see its own docstring above).
         "coast_interval_s": SCREEN_COAST_INTERVAL_S,
         "coast_required": True,
         "episode_unit": "page_interval",
         "evidence_parts": ("full_screenshot", "changed_region_crop", "previous_screenshot"),
         "evidence_optional_parts": ("previous_screenshot",),
+        "plan_mode": "window",
         "identity_key_hint": "document_or_page_key",
         "measured_evidence": SCREEN_EVIDENCE,
         # An unreadable content key on this source defaults to TEMPORAL-PROXIMITY continuity rather
@@ -158,14 +178,17 @@ SCREEN_DOCUMENT = SourceProfile(
     },
     stability="stable",
     notes=(
-        "Screen recordings, document and page content. percept's STOCK EYE DOES NOT ADMIT ON THIS "
-        "CLASS OF CONTENT and this profile does not pretend otherwise: the change signal is declared "
-        "UNTUNED and the honest floor is a fixed low-rate coast, so a static-but-important page is "
-        "still sampled. The client supplies and tunes the admission signal (their phash / "
-        "page-change detector / OCR model, registered with register_detector) — see "
-        "docs/how-to/tune-admission.md. An unreadable content key defaults to temporal-proximity "
-        "unknown-continuity (SCREEN_UNKNOWN_CONTINUITY_GAP_S) rather than a fresh provisional "
-        "subject per tick. " + SCREEN_EVIDENCE
+        "Screen recordings, document and page content. TUNED @1 (card C2): the declared default "
+        "admission is localized block_max salience at 0.20 — the SAME cutoff physical_scene carries, "
+        "never lowered — which clears on a screen change large enough to register on the 48x36 gate "
+        "frame (a highlighted cell, a popup, a UI element). A fixed low-rate coast remains mandatory "
+        "underneath it: a full-PAGE, text-scale edit still dilutes below every calibrated cutoff (see "
+        "the measured evidence below), so the coast — not the tuned admission — is what keeps that "
+        "harder residual case observed. A client whose content is dominated by page-scale edits "
+        "should still register their own page-change / phash / OCR signal (register_detector) and "
+        "A/B it with `percept eval` — see docs/how-to/tune-admission.md. An unreadable content key "
+        "defaults to temporal-proximity unknown-continuity (SCREEN_UNKNOWN_CONTINUITY_GAP_S) rather "
+        "than a fresh provisional subject per tick. " + SCREEN_EVIDENCE
     ),
 )
 

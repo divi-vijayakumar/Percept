@@ -5,8 +5,10 @@ The three things these tests exist to protect:
 1. The registry is OPEN — a third party adds ``industrial_line`` without editing a percept literal.
 2. A source profile CANNOT change FIRE/ASK/SILENT, the rising edge, refractory or dwell. There is
    one Gate and one incident truth on every source.
-3. ``screen_document`` DECLARES its admission signal untuned instead of shipping a guessed
-   threshold, and doctor reports that declaration.
+3. ``screen_document`` ships a TUNED @1 localized admission default (card C2) — the SAME
+   ``block_max``/0.20 cutoff ``physical_scene`` carries, never lowered — with a mandatory coast
+   floor underneath it for the page-scale content that eye still cannot resolve, and doctor
+   reports which regime is active.
 """
 
 from __future__ import annotations
@@ -195,22 +197,28 @@ def test_timebase_and_stability_are_closed_but_the_strategies_are_not():
 
 
 # ---------------------------------------------------------------------------
-# 4. screen_document — the honest, untuned profile
+# 4. screen_document — tuned @1, coast underneath
 # ---------------------------------------------------------------------------
 
 
-def test_screen_document_declares_itself_untuned():
-    assert SCREEN_DOCUMENT.parameters["change_signal"] == UNTUNED
-    assert SCREEN_DOCUMENT.admission_tuned is False
+def test_screen_document_is_tuned_at_the_same_cutoff_as_physical_scene():
+    """Card C2 promotion: a real, named admission signal — never UNTUNED — and never a lowered cutoff."""
+    assert SCREEN_DOCUMENT.parameters["change_signal"] != UNTUNED
+    assert SCREEN_DOCUMENT.admission_strategy != UNTUNED
+    assert SCREEN_DOCUMENT.admission_tuned is True
+    assert SCREEN_DOCUMENT.parameters["salience_stat"] == "block_max"
+    assert SCREEN_DOCUMENT.parameters["salience_threshold"] == 0.20
     note = SCREEN_DOCUMENT.admission_note()
-    assert "UNTUNED" in note and "register_detector" in note
+    assert "UNTUNED" not in note
+    assert "admission via" in note
 
 
 def test_screen_document_coast_is_mandatory_and_fixed():
+    # The coast floor stays MANDATORY alongside the tuned default — it covers page-scale content the
+    # localized statistic still cannot resolve (see the module's measured evidence).
     assert SCREEN_DOCUMENT.coast_interval_s == SCREEN_COAST_INTERVAL_S
     assert SCREEN_DOCUMENT.parameters["coast_required"] is True
-    # A static-but-important page must still be sampled when no change signal fires.
-    assert SCREEN_DOCUMENT.coast_interval_s > 0
+    assert 1.0 <= SCREEN_DOCUMENT.coast_interval_s <= 2.0
 
 
 def test_screen_document_identity_is_content_never_geometry():
@@ -224,6 +232,7 @@ def test_screen_document_shape():
     assert SCREEN_DOCUMENT.default_timebase == "media"        # files
     assert SCREEN_DOCUMENT.temporal_unit == "page"
     assert SCREEN_DOCUMENT.parameters["episode_unit"] == "page_interval"
+    assert SCREEN_DOCUMENT.parameters["plan_mode"] == "window"    # never sprite (ADR-008 Corrections(a))
     parts = SCREEN_DOCUMENT.parameters["evidence_parts"]
     assert parts[:2] == ("full_screenshot", "changed_region_crop")
     assert "previous_screenshot" in SCREEN_DOCUMENT.parameters["evidence_optional_parts"]
@@ -235,16 +244,21 @@ def test_screen_document_notes_carry_the_measured_evidence_not_a_guess():
 
 
 def test_the_measured_thresholds_were_not_lowered_to_make_screen_admit():
-    # The one thing this card must never do. physical_scene still carries the calibrated cutoff.
+    # The one thing this card must never do. screen_document's tuned default is the SAME calibrated
+    # cutoff physical_scene carries, never a lowered one invented to force this fixture to admit.
     assert PHYSICAL_SCENE.parameters["salience_threshold"] == 0.20
-    assert "salience_threshold" not in SCREEN_DOCUMENT.parameters
+    assert SCREEN_DOCUMENT.parameters["salience_threshold"] == 0.20
+    assert SCREEN_DOCUMENT.parameters["salience_stat"] == PHYSICAL_SCENE.parameters["salience_stat"]
 
 
 def test_client_tunes_the_shipped_profile_without_editing_percept():
     tuned = SCREEN_DOCUMENT.with_parameters(change_signal="acme-phash", coast_interval_s=1.0)
     assert tuned.admission_tuned is True
     assert tuned.coast_interval_s == 1.0
-    assert SCREEN_DOCUMENT.admission_tuned is False   # the shipped profile is untouched
+    assert tuned.parameters["change_signal"] == "acme-phash"
+    # the shipped profile is untouched by a client's copy-on-write tune
+    assert SCREEN_DOCUMENT.parameters["change_signal"] == "tier0_block_max_salience"
+    assert SCREEN_DOCUMENT.coast_interval_s == SCREEN_COAST_INTERVAL_S
 
 
 def test_the_coast_arms_a_real_sampling_controller_on_the_existing_seam():
@@ -289,21 +303,18 @@ def test_doctor_defaults_to_physical_scene_and_labels_it_defaulted():
     assert not report.has(ADMISSION_SIGNAL_UNTUNED)
 
 
-def test_doctor_says_the_screen_profile_is_running_on_coast_alone():
+def test_doctor_says_the_screen_profile_carries_a_tuned_localized_default():
+    """Card C2: screen_document no longer reports ADMISSION_SIGNAL_UNTUNED — it ships a tuned
+    localized default (block_max@0.20) with a coast floor underneath it, not coast alone."""
     report = run_doctor(
         frames=_quiet_frames(), goals=["the document being edited changes"],
         source_profile="screen_document",
     )
     assert report.plan.source_profile == "screen_document"
     assert report.plan.source_profile_origin == "explicit"
-    assert report.has(ADMISSION_SIGNAL_UNTUNED)
-    finding = next(f for f in report.findings if f.code == ADMISSION_SIGNAL_UNTUNED)
-    assert "COAST ALONE" in finding.detail
-    assert "supply a change signal" in finding.detail
-    # …and it is a WARN: coasting is a degraded mode, not a crash.
-    assert finding.severity == "warn"
+    assert not report.has(ADMISSION_SIGNAL_UNTUNED)
     assert "screen_document" in report.render()
-    assert report.to_dict()["plan"]["source_profile"]["profile"]["admission_tuned"] is False
+    assert report.to_dict()["plan"]["source_profile"]["profile"]["admission_tuned"] is True
 
 
 def test_doctor_flags_an_experimental_source_profile():
