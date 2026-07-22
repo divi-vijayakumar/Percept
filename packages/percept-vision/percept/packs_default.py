@@ -188,7 +188,7 @@ FACILITY_OBSERVATION_V1 = DomainPack(
 register_domain_pack(FACILITY_OBSERVATION_V1)
 
 
-def register_entrypoint_pack(register: "callable") -> None:  # noqa: A002 - mirrors register_fn signature
+def register_entrypoint_pack(register: "callable") -> None:
     """The ``percept.packs`` entry-point TARGET this package's own ``pyproject.toml`` advertises
     (mirrors ``percept.sourceprofile``'s ``discover_source_profile_entrypoints`` contract: an entry
     point's value is a callable taking the register function). Lets a fresh install exercise the

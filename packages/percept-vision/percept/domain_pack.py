@@ -141,17 +141,22 @@ def _substitute(value: Any, params: Mapping[str, Any]) -> Any:
 
 
 def _substitute_behavior(behavior: Mapping[str, Any], params: Mapping[str, Any]) -> dict[str, Any]:
+    """Substitute ``{param}`` tokens into a RAW ``behavior`` dict's known leaf values. An
+    UNRECOGNIZED top-level key is passed through UNCHANGED (never silently dropped here) so
+    :func:`_behavior_authoring_diff`'s own "unrecognized key" check — run on this function's
+    output — still sees it and raises; dropping it at substitution time would hide the authoring
+    bug instead of catching it."""
     out: dict[str, Any] = {}
-    for key in _BEHAVIOR_TOP_KEYS:
-        if key in behavior:
-            out[key] = _substitute(behavior[key], params)
-    accumulate = behavior.get("accumulate")
-    if isinstance(accumulate, Mapping):
-        out["accumulate"] = {k: _substitute(v, params) for k, v in accumulate.items()}
-    consequence = behavior.get("consequence")
-    if isinstance(consequence, Mapping):
-        # cost labels are closed-vocabulary tokens, never parameterized text — passed through as-is.
-        out["consequence"] = dict(consequence)
+    for key, value in behavior.items():
+        if key in _BEHAVIOR_TOP_KEYS:
+            out[key] = _substitute(value, params)
+        elif key == "accumulate" and isinstance(value, Mapping):
+            out["accumulate"] = {k: _substitute(v, params) for k, v in value.items()}
+        elif key == "consequence" and isinstance(value, Mapping):
+            # cost labels are closed-vocabulary tokens, never parameterized text — passed through.
+            out["consequence"] = dict(value)
+        else:
+            out[key] = value  # unrecognized key: passed through so the diff check below catches it
     return out
 
 
