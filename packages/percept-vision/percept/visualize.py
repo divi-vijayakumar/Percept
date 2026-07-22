@@ -1,6 +1,6 @@
 """The native trace visualizer — WHERE a decision died, on one shared media-time axis.
 
-This is the trust-to-adoption surface (card D9). A client who ran percept and got nothing must be
+This is the trust-to-adoption surface. A client who ran percept and got nothing must be
 able to see, at a glance and offline, which STAGE of the pipeline the decision died in — not merely
 that nothing happened. So every lane here is a stage of the funnel, all drawn against the same
 ``source_ts`` (media time) axis, and a GAP in a lane is the answer::
@@ -38,7 +38,7 @@ Deliberately NOT rendered (deferred to ADR-006)
 Episode supersession, document semantic identity, speaker attribution and finding settlement are
 **not** drawn. None of those relations exist in the contract yet and drawing them would promise
 semantics the runtime cannot deliver. The context lane is limited to what the trace ACTUALLY
-carries: ``entity_id`` correlation (card D4) and goal-revision drops. See
+carries: ``entity_id`` correlation and goal-revision drops. See
 :data:`DEFERRED_TO_ADR_006`.
 
 Security posture (non-negotiable)
@@ -507,7 +507,7 @@ def _judge_lane(records: Sequence[TraceRecord], opts: VizOptions) -> Lane:
 
 
 def _gate_lane(records: Sequence[TraceRecord], opts: VizOptions) -> Lane:
-    """FIRE / ASK / SILENT with the O2 reason code, plus typed suppressions."""
+    """FIRE / ASK / SILENT with the reason code, plus typed suppressions."""
     items: list[LaneItem] = []
     truncated = 0
     n = 0
@@ -555,7 +555,7 @@ def _context_lane(records: Sequence[TraceRecord], opts: VizOptions) -> Lane:
         items.append(LaneItem(a, b, "entity", f"entity {ent}", (("entity_id", ent),)))
     items.sort(key=lambda i: (i.t0, i.kind))
     note = (
-        "entity_id correlation (card D4) + goal-revision drops only. Relations "
+        "entity_id correlation + goal-revision drops only. Relations "
         "(" + ", ".join(DEFERRED_TO_ADR_006) + ") are DEFERRED to ADR-006 and are not drawn."
     )
     return Lane("context", "context", note, tuple(items))

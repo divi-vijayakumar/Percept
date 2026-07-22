@@ -618,7 +618,7 @@ def resolve_evidence(handle: Any, *, store: EvidenceStore) -> EvidenceArtifact:
 
     This is the function form of the runtime's ``w.resolve_evidence(event.evidence_ref)`` seam: a
     runtime holds one :class:`EvidenceStore` and exposes this as a bound method. It accepts a bare ref
-    string or any ``.ref``-bearing handle (a Y14 :class:`~percept.episodes.EvidenceHandle`, an
+    string or any ``.ref``-bearing handle (an :class:`~percept.episodes.EvidenceHandle`, an
     :class:`EvidenceArtifact`), and raises exactly one of the four typed failures on failure — never a
     silent ``None``. The store may be local disk, an embedded DB, or a future remote blob store; that
     is an implementation detail behind the resolver, not a caller concern."""

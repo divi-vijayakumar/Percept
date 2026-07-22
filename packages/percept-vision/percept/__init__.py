@@ -158,7 +158,7 @@ from .watch import WATCH_VERSION, watch  # noqa: E402
 # String sugar for watch(): `watch(stream, "the milk is boiling over")`. Exported so callers can
 # reproduce the desugared id (goal_id_for) without re-implementing the documented scheme.
 from .goalsugar import desugar_goal, desugar_goals, goal_id_for  # noqa: E402
-# Provider identity (card RB-PROVIDER): a NAME resolves to a factory; the model id is configuration
+# Provider identity: a NAME resolves to a factory; the model id is configuration
 # carried to it, never the adapter's identity. Stdlib-pure (registry + config), no vendor import.
 from .provider import (  # noqa: E402
     ProviderError,
@@ -245,7 +245,7 @@ __all__ = [
     "desugar_goal",
     "desugar_goals",
     "goal_id_for",
-    # provider identity (RB-PROVIDER): name -> factory; model id is configuration, not identity
+    # provider identity: name -> factory; model id is configuration, not identity
     "resolve_vision",
     "ProviderSpec",
     "ProviderError",
@@ -341,7 +341,7 @@ __all__ = [
     "client_asserted_subject",
     "register_subject_resolver",
     "envelope_summary",
-    # routing (Phase 3 — local fast-path; learned tier slots behind RouteLayer in V0.1)
+    # routing (Phase 3 — local fast-path; a future learned tier slots behind RouteLayer)
     "RouteEngine",
     "RouteLayer",
     "RouteMatch",

@@ -11,7 +11,7 @@ whether to spend the expensive perception on it:
     fully resolved, not just its first frame;
   * **bound** by ``max_fps`` — the cost ceiling; processing is never denser than this.
 
-It is the same allocation logic as the C2 VLM cadence (``percept.harness.tier0`` / ``gate_on``), one tier
+It is the same allocation logic as the VLM cadence (``percept.harness.tier0`` / ``gate_on``), one tier
 down: there the rationed resource is the cloud VLM call; here it is pose inference. Pure and deterministic
 (timestamps + a cheap motion scalar in, boolean decisions out), so it unit-tests with no model. The runtime
 captures at native fps and asks ``should_process`` before running the eye's expensive ``measure()``; a

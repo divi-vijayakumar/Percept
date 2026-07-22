@@ -2,9 +2,9 @@
 
 The router fast-paths only confident, non-authoring turns; everything goal-authoring,
 conditional, ambiguous, or fragmentary DEFERS (``route(...) -> None``) to the conductor, which
-is the only tier that writes standing state. The V0.0 tier is a regex lexicon
+is the only tier that writes standing state. The current tier is a regex lexicon
 (:class:`RegexRouteLayer` over :data:`DEFAULT_RULES`); a learned classifier slots in behind the
-same :class:`RouteLayer` seam in V0.1 without touching the engine or the agent.
+same :class:`RouteLayer` seam in a future tier without touching the engine or the agent.
 """
 
 from __future__ import annotations

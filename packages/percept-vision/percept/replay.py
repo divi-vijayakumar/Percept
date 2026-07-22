@@ -15,14 +15,14 @@ over the whole decision sequence, and ``test_cognition_replay.py`` asserts it.
 
 **MEDIA REEVALUATION (NOT this module).** Sending recorded media at a live model again is not
 deterministic — sampling, model drift, provider routing and timeouts all move the verdict, one layer
-BELOW the gate, where no amount of gate-side purity can help. That belongs to ``percept eval``
-(card D3). Nothing here calls a model, and a bundle that carries only a media URI does not "replay
+BELOW the gate, where no amount of gate-side purity can help. That belongs to ``percept eval``.
+Nothing here calls a model, and a bundle that carries only a media URI does not "replay
 the run" — it lets you re-run perception and get a possibly different answer.
 
 What replay needs from the trace
 --------------------------------
-A ``gate.classified`` record carries the gate's OUTPUT (``truth``/``action``/``reason``) and — since
-card D8b — also its INPUTS (``satisfied``/``confidence``/``freshness``/``entity_id``/``hold_s``).
+A ``gate.classified`` record carries the gate's OUTPUT (``truth``/``action``/``reason``) and now
+also its INPUTS (``satisfied``/``confidence``/``freshness``/``entity_id``/``hold_s``).
 Those inputs are what get re-fed. The gate's own knobs come from
 :attr:`~percept.tracing.RunTraceManifest.gate_config` (``threshold`` / ``fresh_min`` /
 ``require_false_first`` / ``refractory_s``); if the trace never recorded them,
@@ -101,7 +101,7 @@ class ReplayInput:
     freshness: float = 1.0
     hold_s: float | None = None
     #: The judge failed on this tick (fail-closed): the gate must NOT see it at all — it degrades to
-    #: an ASK-class abstention with the edge state left exactly as it was (``agent.py``, card A30).
+    #: an ASK-class abstention with the edge state left exactly as it was (``agent.py``).
     degraded: bool = False
     #: What the ORIGINAL run recorded as its outward action, when the trace has it. Used only to
     #: report divergence; never fed into the replayed decision.
@@ -286,7 +286,7 @@ def replay_cognition(
     for item in inputs:
         gcfg = goals.get(item.goal_id, ReplayGoalConfig())
         if item.degraded:
-            # Fail-closed (card A30): the gate never sees a degraded tick, so its edge state is
+            # Fail-closed: the gate never sees a degraded tick, so its edge state is
             # untouched; the tick degrades to an ASK-class abstention.
             action: GateAction = ASK
             reason: str = "judge_degraded"
