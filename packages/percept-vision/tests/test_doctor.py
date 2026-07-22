@@ -26,9 +26,11 @@ from percept.doctor import (
     EXIT_SOURCE_FAILURE,
     EXIT_ZERO_COVERAGE,
     SIGNAL_UNAVAILABLE,
+    SOURCE_PROFILE_SELECTION_AMBIGUOUS,
     ZERO_ADMITS_ON_FIXTURE,
     DoctorConfigError,
     main,
+    render_report,
     run_doctor,
 )
 from percept.harness.tier0 import SALIENCE_STATS, Frame, motion_score, salience_stats
@@ -225,6 +227,29 @@ def test_admission_signal_availability_is_reported():
     assert report.plan.signals["structural"] is False
     assert report.plan.signals["semantic"] is False
     assert report.plan.signals["audio"] is False
+
+
+def test_source_profile_recommendation_surfaces_in_panel_and_json(monkeypatch):
+    """select_source_profile's ambiguous-source recommendation is surfaced three ways: a
+    structured PlanDiagnosis field, the FINDINGS list (unchanged, pre-existing behavior), and now
+    a dedicated line right under 'source profile' in the rendered PLAN panel."""
+    import percept.sourceprofile as sourceprofile_mod
+
+    def fake_select(**kwargs):
+        return sourceprofile_mod.SourceProfileSelection(
+            name="physical_scene", reason="default", recommend=True
+        )
+
+    monkeypatch.setattr(sourceprofile_mod, "select_source_profile", fake_select)
+    report = run_doctor(frames=_quiet_stream(3), goals=["someone walks in"])
+
+    assert report.plan.source_profile_recommended is True
+    assert report.plan.to_dict()["source_profile"]["recommended_review"] is True
+    assert report.has(SOURCE_PROFILE_SELECTION_AMBIGUOUS)
+
+    rendered = render_report(report)
+    assert "RECOMMENDATION" in rendered
+    assert SOURCE_PROFILE_SELECTION_AMBIGUOUS in rendered
 
 
 def test_goal_gated_on_an_unfed_channel_is_plan_unobservable():

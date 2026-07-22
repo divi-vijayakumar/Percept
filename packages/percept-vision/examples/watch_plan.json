@@ -1,0 +1,5 @@
+{
+  "condition": "a person is at the front door",
+  "source": "camera",
+  "source_profile": "physical_scene"
+}

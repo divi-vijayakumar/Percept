@@ -148,10 +148,10 @@ class QualificationRecord:
 class CatalogSnapshot:
     """Every :class:`ComponentDescriptor` the catalog can currently see, plus one stable hash.
 
-    ``component_hash`` feeds :attr:`percept.contracts.ResolvedWatch.component_snapshot_hash` in
-    spirit (that field is computed by :mod:`percept.resolver` today; wiring the resolver to READ
-    this snapshot is a follow-up, not this module's job — see the module docstring). Two snapshots
-    hash equal iff their component sets are byte-identical.
+    ``component_hash`` feeds :attr:`percept.contracts.ResolvedWatch.component_snapshot_hash`:
+    :func:`percept.resolver.ConfigResolver.resolve` reads this module's :func:`snapshot` and folds
+    ``component_hash`` into that field alongside the resolution's own provider-name identities. Two
+    snapshots hash equal iff their component sets are byte-identical.
     """
 
     components: tuple[ComponentDescriptor, ...]

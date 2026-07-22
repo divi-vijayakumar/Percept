@@ -12,13 +12,22 @@ constructible configuration objects and draws the boundary as two functions:
        ResolvedWatch
             |
             v
-       RuntimeCompiler.compile(...)  <- A LATER CARD, NOT THIS ONE
+       RuntimeCompiler.compile(...)  <- percept.runtime_compiler
 
 This module ships ONLY :class:`ConfigResolver` (step 1). It performs **no runtime execution**:
 ``resolve()`` reads configuration inputs and returns an in-memory :class:`~percept.contracts.ResolvedWatch`.
 It never touches ``percept.runtime.worker``, ``percept.agent``'s runtime paths, ``percept.gate``,
 or ``percept.contracts.WatchSpec`` — turning a ``ResolvedWatch`` into those runtime primitives is
 ``RuntimeCompiler``'s job, out of scope here.
+
+One exception, narrowly scoped: ``resolve()`` DOES call :func:`percept.runtime_compiler.runtime_compile`
+internally, but only to read back the provider-NAME identities (vision/conductor/specialist/stt/tts)
+it already assembles for :attr:`~percept.contracts.ResolvedWatch.components` — never to execute
+anything or construct an adapter. It also reads :func:`percept.catalog.snapshot` for the registered
+component SET's own content hash, folded into :attr:`~percept.contracts.ResolvedWatch.component_snapshot_hash`
+alongside those provider names. This keeps ``component_snapshot_hash`` a real content address over
+"which components this resolution names, in a catalog of this shape" rather than (as before this
+wiring landed) a hash over the unrelated ``effective`` value snapshot.
 
 Precedence, low to high (ADR-008 §Precedence)::
 
@@ -56,10 +65,11 @@ semantics).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, Mapping
 
+from . import catalog
 from .config import Settings, load_settings
 from .contracts.watchplan import (
     FieldDiagnostic,
@@ -69,6 +79,7 @@ from .contracts.watchplan import (
     WatchReceipt,
 )
 from .profile_resolution import resolve_profile, resolve_situation
+from .runtime_compiler import runtime_compile
 from .sourceprofile import SourceProfile, coast_sense_prior
 from .tracing import content_hash
 from .tunables import REGISTRY, TunableSpec
@@ -686,9 +697,13 @@ class ConfigResolver:
                 )
 
         plan_hash = content_hash(watch_plan.to_dict())
-        component_snapshot_hash = content_hash(dict(sorted(effective.items(), key=lambda kv: kv[0])))
 
-        resolved = ResolvedWatch(
+        # A provisional ResolvedWatch (components/component_snapshot_hash not yet final) so
+        # RuntimeCompiler.compile's thin adaptor can read back the provider-NAME identities this
+        # resolution names — the same ``effective``-derived hash the previous resolver used stands
+        # in as a placeholder here; it is replaced below once the real components are known.
+        provisional_hash = content_hash(dict(sorted(effective.items(), key=lambda kv: kv[0])))
+        provisional = ResolvedWatch(
             plan=watch_plan,
             source_profile=(source_profile_values if source_profile else None),
             domain_pack=(dict(domain_pack.values) if domain_pack else None),
@@ -697,8 +712,21 @@ class ConfigResolver:
             effective=effective,
             provenance=provenance,
             plan_hash=plan_hash,
-            component_snapshot_hash=component_snapshot_hash,
+            component_snapshot_hash=provisional_hash,
             optimization_lock_hash=optimization_lock_hash,
+        )
+        provider_components = dict(runtime_compile(provisional).components)
+        catalog_component_hash = catalog.snapshot().component_hash
+        components = {
+            "providers": provider_components,
+            "catalog_component_hash": catalog_component_hash,
+        }
+        component_snapshot_hash = content_hash(components)
+
+        resolved = replace(
+            provisional,
+            components=components,
+            component_snapshot_hash=component_snapshot_hash,
         )
 
         status = "applied_with_warnings" if warnings else "applied"

@@ -235,18 +235,20 @@ class ResolvedWatch:
       layer contributed nothing. Snapshots, not live objects, so this package stays
       zero-dependency (see module docstring).
     - ``components`` — a snapshot of whichever runtime-component identity information the
-      resolver has at resolution time (provider/adapter names, versions); may be empty — the full
-      shape is a later card's concern (``RuntimeCompiler``), this field only carries whatever is
-      known at THIS boundary.
+      resolver has at resolution time: ``{"providers": {...}, "catalog_component_hash": "..."}``,
+      where ``providers`` is the provider-NAME identities (``vision``/``conductor``/``specialist``/
+      ``stt``/``tts``) read back from :func:`percept.runtime_compiler.runtime_compile`, and
+      ``catalog_component_hash`` is :attr:`percept.catalog.CatalogSnapshot.component_hash` — the
+      registered component SET's own content address at resolution time.
     - ``effective`` — the plain resolved value per field, keyed by the same dotted-path
       vocabulary as :class:`percept.tunables.TunableSpec.path`. This is the "what" view.
     - ``provenance`` — the same keys, each mapped to its full :class:`SettingOrigin`. This is the
       "why" view; ``effective[k] == provenance[k].value`` always holds.
     - ``plan_hash`` / ``component_snapshot_hash`` / ``optimization_lock_hash`` — content
       addresses (``percept.tracing.content_hash``-shaped hex digests) over the plan, the
-      component snapshot, and whichever ``OptimizationLock`` was applied (``None`` when no lock
-      applied). Hashing is NOT reimplemented here — :mod:`percept.resolver` computes these via
-      the existing :func:`percept.tracing.content_hash` / :class:`percept.tracing.PlanIdentity`
+      ``components`` snapshot above, and whichever ``OptimizationLock`` was applied (``None`` when
+      no lock applied). Hashing is NOT reimplemented here — :mod:`percept.resolver` computes these
+      via the existing :func:`percept.tracing.content_hash` / :class:`percept.tracing.PlanIdentity`
       seams and hands the digests to this constructor.
     """
 

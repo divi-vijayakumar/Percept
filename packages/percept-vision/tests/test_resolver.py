@@ -259,15 +259,32 @@ class TestHashesStable(unittest.TestCase):
         r2 = resolver.resolve(_plan(condition="a dog is at the door"))
         self.assertNotEqual(r1.plan_hash, r2.plan_hash)
 
-    def test_component_snapshot_hash_changes_with_effective_fields(self) -> None:
+    def test_component_snapshot_hash_unaffected_by_non_component_fields(self) -> None:
+        """component_snapshot_hash is a content address over ResolvedWatch.components (the
+        provider-name identities plus the catalog's own component-set hash) — NOT over every
+        resolved Settings.* value. A gate/edge tuning knob like salience_stat moves `effective`
+        but names no different provider, so the component snapshot is unaffected."""
         resolver = ConfigResolver()
         plan = _plan()
         with mock.patch.dict("os.environ", {}, clear=True):
             r1 = resolver.resolve(plan)
         with mock.patch.dict("os.environ", {"PERCEPT_SALIENCE_STAT": "block_max"}, clear=False):
             r2 = resolver.resolve(plan)
-        self.assertNotEqual(r1.component_snapshot_hash, r2.component_snapshot_hash)
+        self.assertNotEqual(r1.effective["Settings.edge.salience_stat"], r2.effective["Settings.edge.salience_stat"])
+        self.assertEqual(r1.component_snapshot_hash, r2.component_snapshot_hash)
         # plan_hash is over the WatchPlan alone, so it is unaffected by the env change.
+        self.assertEqual(r1.plan_hash, r2.plan_hash)
+
+    def test_component_snapshot_hash_changes_with_provider_name(self) -> None:
+        """A real provider-identity change (a different backend NAME for a seam) DOES move
+        component_snapshot_hash — this is exactly the kind of change the field exists to catch."""
+        resolver = ConfigResolver()
+        plan = _plan()
+        with mock.patch.dict("os.environ", {}, clear=True):
+            r1 = resolver.resolve(plan)
+        with mock.patch.dict("os.environ", {"PERCEPT_VISION_BACKEND": "fake"}, clear=False):
+            r2 = resolver.resolve(plan)
+        self.assertNotEqual(r1.component_snapshot_hash, r2.component_snapshot_hash)
         self.assertEqual(r1.plan_hash, r2.plan_hash)
 
     def test_hashes_are_hex_digests(self) -> None:

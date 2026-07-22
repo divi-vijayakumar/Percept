@@ -297,6 +297,12 @@ class PlanDiagnosis:
     source_profile_detail: dict[str, Any] | None = None
     #: How the source profile was chosen: ``"explicit"`` (the caller named it) or ``"default"``.
     source_profile_origin: str = "default"
+    #: ``True`` iff :func:`percept.sourceprofile.select_source_profile` flagged this source's URI
+    #: as ambiguous enough to name a RECOMMENDATION (screen://-style scheme, source_kind, or
+    #: capture_type were all absent) — doctor stayed on the honest default rather than guessing,
+    #: and says so both here (structured) and via a :data:`SOURCE_PROFILE_SELECTION_AMBIGUOUS`
+    #: finding (prose). Mirrors :class:`~percept.sourceprofile.SourceProfileSelection.recommend`.
+    source_profile_recommended: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -313,6 +319,7 @@ class PlanDiagnosis:
                 "note": self.source_profile_note,
                 "origin": self.source_profile_origin,
                 "profile": self.source_profile_detail,
+                "recommended_review": self.source_profile_recommended,
             },
             "signals": dict(self.signals), "signal_notes": dict(self.signal_notes),
             "conditions": [dict(c) for c in self.conditions],
@@ -975,6 +982,7 @@ def run_doctor(
         ),
         source_profile_detail=src_profile.to_dict(),
         source_profile_origin=src_profile_origin,
+        source_profile_recommended=src_profile_recommend,
         signals=signals,
         signal_notes=signal_notes,
         conditions=tuple(
@@ -1073,6 +1081,11 @@ def render_report(report: DoctorReport) -> str:
         out.append(f"  profile key             {tuple(p.profile_key)}")
     out.append(f"  source profile          {p.source_profile or 'not available'}   "
                f"[{p.source_profile_origin}]")
+    if p.source_profile_recommended:
+        out.append(
+            "    ** RECOMMENDATION: source metadata was ambiguous — see FINDINGS "
+            f"[{SOURCE_PROFILE_SELECTION_AMBIGUOUS}] below before trusting this profile **"
+        )
     d = p.source_profile_detail or {}
     if d:
         out.append(f"    stability             {d.get('stability')}")
