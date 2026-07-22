@@ -21,7 +21,7 @@ def _doc_step(t: float, token: str, key: str | None, *, label: str = "document")
         "satisfied": True,
         "confidence": 0.90 if key else 0.35,
         "evidence": f"scripted: {label} in region, key={key or 'UNREADABLE'}",
-        # ADDITIVE fields P0 will introduce; ScriptedJudge attaches them today (see scripted.py).
+        # ADDITIVE fields not yet on Verdict; ScriptedJudge attaches them today (see scripted.py).
         "subject_key": f"{label}:{key}" if key else None,
         "binding": "resolved" if key else "unknown",
     }

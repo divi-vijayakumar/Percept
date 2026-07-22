@@ -556,14 +556,14 @@ class EpisodeLog:
         self.window_s = window_s
         self.max_episodes = max_episodes
         self.on_drop = on_drop
-        # Card Y15: a per-episode timeline is bounded in COUNT (max_revisions) with a TRACED
+        # A per-episode timeline is bounded in COUNT (max_revisions) with a TRACED
         # drop-oldest on overflow, the same ADR-001 §9 discipline max_episodes uses. `confirmed`
         # heartbeats coalesce and never reach this cap; only state changes count against it.
         self.max_revisions = max_revisions
         self.on_revision_drop = on_revision_drop
         self.policy = policy if policy is not None else EpisodePolicy()
         self.on_continuation = on_continuation
-        # Card Y14: an exemplar larger than this (measured by frame_nbytes) is a decoded frame and is
+        # An exemplar larger than this (measured by frame_nbytes) is a decoded frame and is
         # replaced by an EvidenceHandle before storage, so retained bytes stay bounded by episode
         # COUNT, never by frame resolution. Cheap descriptors (tokens/dicts/verdicts) pass through.
         self.retain_inline_max_bytes = retain_inline_max_bytes
@@ -571,14 +571,14 @@ class EpisodeLog:
         self._counter = 0
 
     def _retain(self, exemplar: Any) -> Any:
-        """What to STORE for ``exemplar`` — a handle if it is a decoded frame (card Y14)."""
+        """What to STORE for ``exemplar`` — a handle if it is a decoded frame."""
         return evidence_handle(exemplar, max_inline_bytes=self.retain_inline_max_bytes)
 
     def retained_evidence_nbytes(self) -> int:
-        """Measured bytes of decoded evidence currently pinned by this log (card Y14 soak metric).
+        """Measured bytes of decoded evidence currently pinned by this log (soak metric).
 
         Sums :func:`percept.events.frame_nbytes` over every stored ``exemplar`` and ``representative``
-        — the SAME function Z1's FrameWindow byte budget uses. With the Y14 handle wiring this stays
+        — the SAME function the FrameWindow byte budget uses. With the handle wiring this stays
         ~0 no matter how many observations flow through (handles carry no pixels), which is exactly
         the property the soak test asserts: retained bytes are bounded by episode COUNT, not by N."""
         total = 0
@@ -586,7 +586,7 @@ class EpisodeLog:
             total += frame_nbytes(e.exemplar) + frame_nbytes(e.representative)
         return total
 
-    # -- decision (1): STATE CONSISTENCY (card Y7) -----------------------------------------------
+    # -- decision (1): STATE CONSISTENCY ----------------------------------------------------------
     @staticmethod
     def _absent_if_empty(v: Any) -> Any:
         """Normalize the absence sentinel: ``''`` collapses to ``None`` so absence has ONE spelling.
@@ -598,7 +598,7 @@ class EpisodeLog:
         return None if isinstance(v, str) and v == "" else v
 
     def transition(self, episode: "Episode", status: str, *, t: float) -> "Episode":
-        """The SINGLE authoritative writer of ``status`` and ``t_end`` (card Y7 §1).
+        """The SINGLE authoritative writer of ``status`` and ``t_end``.
 
         No other code path may assign ``episode.status`` or ``episode.t_end`` — a test asserts it.
         Routing every lifecycle change through here keeps the pair consistent BY CONSTRUCTION:
@@ -632,13 +632,13 @@ class EpisodeLog:
         self, episode: "Episode", kind: "RevisionKind", *, t: float,
         value: Any = None, incident_id: "str | None" = None,
     ) -> "Revision | None":
-        """Fold a state change into an episode's BOUNDED timeline — the single coalescing choke point
-        (card Y15). Returns the appended :class:`Revision`, or ``None`` when a confirmation coalesced.
+        """Fold a state change into an episode's BOUNDED timeline — the single coalescing choke point.
+        Returns the appended :class:`Revision`, or ``None`` when a confirmation coalesced.
 
         A ``confirmed`` heartbeat COALESCES IN PLACE: it advances ``last_confirmed`` (and
         ``last_seen``, never backwards) and appends NOTHING. A run of N unchanged confirmations
         therefore produces exactly ONE row — the ``opened`` that began the episode — not N. This is
-        the whole card: a 24/7 confirm stream must not turn the timeline into an unbounded log.
+        the whole point: a 24/7 confirm stream must not turn the timeline into an unbounded log.
 
         Every OTHER (state-changing) kind appends a row. ``kind`` must be in :data:`REVISION_KINDS`;
         an unknown kind is a programming error, raised loudly rather than silently mis-recorded.
@@ -712,10 +712,10 @@ class EpisodeLog:
         """Which existing episode shares this observation's SUBJECT? Evidence only — the caller
         still has to run the continuation conjunction on whatever comes back.
 
-        Precedence (card Y5): an explicit ``subject_key`` wins; else a BOUND ``verdict.subject.key``
-        carried by the exemplar wins (the judge-emitted identity seam Y1 left); else the injected
-        judge answers, as it always did. A key match is exact-equality, most recent first, and makes
-        NO judge call.
+        Precedence: an explicit ``subject_key`` wins; else a BOUND ``verdict.subject.key``
+        carried by the exemplar wins (the judge-emitted identity seam left in place); else the
+        injected judge answers, as it always did. A key match is exact-equality, most recent first,
+        and makes NO judge call.
         """
         if not self._episodes:
             return None
@@ -743,7 +743,7 @@ class EpisodeLog:
     ) -> ContinuationReason:
         """Evaluate the continuation conjunction against a SAME-SUBJECT episode.
 
-        This is the card-Y1 shape, in order::
+        This is the shape, in order::
 
             continues = (same_subject                                   # the caller established this
                          and episode.status == "open"                   # or allow_reopen
@@ -752,7 +752,7 @@ class EpisodeLog:
 
         Returns ``"continued"``/``"reopened"`` when it holds, else the FIRST conjunct that failed.
         The gap is checked before the mutation so the cheap, always-available evidence decides first
-        and the (future, Y2) mutation channel is only consulted about a still-live episode. The gap
+        and the (future) mutation channel is only consulted about a still-live episode. The gap
         comparison is the INCLUSIVE boundary rule: a separation EXACTLY equal to ``continuity_gap_s``
         does NOT continue the episode — it opens a new one (``t - episode.last_seen >= continuity_gap_s``
         counts as exceeded, not just strictly greater).
@@ -770,7 +770,7 @@ class EpisodeLog:
         reason: ContinuationReason, prior: "Episode | None", gap_s: "float | None",
     ) -> ContinuationDecision:
         self._counter += 1
-        retained = self._retain(exemplar)  # Y14: store a HANDLE, never the decoded frame
+        retained = self._retain(exemplar)  # store a HANDLE, never the decoded frame
         episode = Episode(
             id=f"{self.goal_id}:ep{self._counter}",
             goal_id=self.goal_id,
@@ -781,7 +781,7 @@ class EpisodeLog:
             status=OPEN,
             subject_key=subject_key,
         )
-        self.record_revision(episode, "opened", t=t)  # Y15: the one row a pure heartbeat produces
+        self.record_revision(episode, "opened", t=t)  # the one row a pure heartbeat produces
         self._episodes.append(episode)
         if len(self._episodes) > self.max_episodes:
             oldest = self._episodes.pop(0)  # oldest falls out of the bounded log
@@ -794,7 +794,7 @@ class EpisodeLog:
         )
 
     def _note(self, decision: ContinuationDecision) -> None:
-        """Y1: a refused continuation must never be silent — it is the one event that distinguishes
+        """A refused continuation must never be silent — it is the one event that distinguishes
         "two real occurrences" from "the SDK lost the thread". Logged unconditionally (so a bare
         ``EpisodeLog`` is still debuggable) and handed to ``on_continuation`` when wired."""
         if decision.denied:
@@ -807,11 +807,11 @@ class EpisodeLog:
         if self.on_continuation is not None:
             self.on_continuation(decision)
 
-    # -- decision (1): the UNKNOWN subject — a visible abstention (card Y4) ----------------------
+    # -- decision (1): the UNKNOWN subject — a visible abstention ---------------------------------
     def _single_open_bound(self, pol: EpisodePolicy) -> "Episode | None":
         """The SOLE open, subject-BOUND episode, or ``None`` if there are zero or MORE than one.
 
-        The gate for the provisional single-focus attach (card Y4): attaching an unidentified
+        The gate for the provisional single-focus attach: attaching an unidentified
         sighting is only defensible when the source holds exactly one thing in focus. With two open
         bound episodes an ``'unknown'`` could belong to either, so a guess is refused and the sighting
         stays unbound. A PROVISIONAL episode (``subject_key`` prefixed :data:`UNKNOWN_KEY_PREFIX`) is
@@ -848,14 +848,14 @@ class EpisodeLog:
     def _observe_unknown(
         self, t: float, exemplar: Any, pol: EpisodePolicy
     ) -> ContinuationDecision:
-        """Fold an UNKNOWN (seen-but-unidentified) observation — the card-Y4 operational semantics,
+        """Fold an UNKNOWN (seen-but-unidentified) observation — this module's operational semantics,
         widened with a session-local PROVISIONAL identity for whatever episode results.
 
-        Two independent, opt-in continuity mechanisms are tried in order, each OFF by default (the Y5
-        behaviour: mint a fresh episode, never collapse):
+        Two independent, opt-in continuity mechanisms are tried in order, each OFF by default (the
+        default behaviour: mint a fresh episode, never collapse):
 
         1. ``unknown_attaches_to_active_bound`` — single-focus attach to the sole open BOUND episode
-           (unchanged from card Y4).
+           (unchanged from the original design).
         2. ``unknown_continuity_gap_s`` — unknown-to-unknown temporal-proximity continuity: if the
            sighting arrives within the gap of the most recently seen open PROVISIONAL episode, it
            continues that episode (same ``UN_`` key) instead of minting a rival.
@@ -866,7 +866,7 @@ class EpisodeLog:
         (:data:`UNKNOWN_KEY_PREFIX`; the matching typed ref is
         :func:`percept.contracts.provisional_subject`). That key can never collide with another
         episode's (ids are unique) and is never fabricated ahead of the episode existing, so two
-        UNRELATED unknowns still never collapse — the Y5 guarantee holds; only a sighting close enough
+        UNRELATED unknowns still never collapse — the guarantee holds; only a sighting close enough
         in time to a STILL-OPEN provisional episode ever shares its key."""
         if pol.unknown_attaches_to_active_bound:
             prior = self._single_open_bound(pol)
@@ -875,7 +875,7 @@ class EpisodeLog:
             ) == "continued":
                 gap_s = t - prior.last_seen
                 prior.last_seen = t
-                prior.representative = self._retain(exemplar)  # Y14: a HANDLE, never pixels
+                prior.representative = self._retain(exemplar)  # a HANDLE, never pixels
                 prior.observations += 1
                 self.record_revision(prior, "confirmed", t=t)  # provisional attach, recorded
                 decision = ContinuationDecision(
@@ -889,7 +889,7 @@ class EpisodeLog:
             if prior is not None and (t - prior.last_seen) < pol.unknown_continuity_gap_s:
                 gap_s = t - prior.last_seen
                 prior.last_seen = t
-                prior.representative = self._retain(exemplar)  # Y14: a HANDLE, never pixels
+                prior.representative = self._retain(exemplar)  # a HANDLE, never pixels
                 prior.observations += 1
                 self.record_revision(prior, "confirmed", t=t)  # temporal attach, recorded
                 decision = ContinuationDecision(
@@ -899,8 +899,8 @@ class EpisodeLog:
                 self._note(decision)
                 return decision
         # Neither continuity mechanism applied: mint a NEW episode and give it a PROVISIONAL identity
-        # keyed to itself, so it can never match anything opened before it (no silent merge; card Y4
-        # question 4) yet is still a real, countable subject rather than a vanished sighting.
+        # keyed to itself, so it can never match anything opened before it (no silent merge)
+        # yet is still a real, countable subject rather than a vanished sighting.
         decision = self._open(t, exemplar, None, "new_subject", None, None)
         decision.episode.subject_key = f"{UNKNOWN_KEY_PREFIX}{decision.episode.id}"
         self._note(decision)
@@ -916,7 +916,7 @@ class EpisodeLog:
         mutation: "MutationCheck | None" = None,
         policy: "EpisodePolicy | None" = None,
     ) -> ContinuationDecision:
-        """Fold a candidate event at ``t`` into the log and return the TYPED decision (card Y1).
+        """Fold a candidate event at ``t`` into the log and return the TYPED decision.
 
         The three decisions run in order and are individually visible on the result: subject
         (:attr:`ContinuationDecision.subject_matched`), continuation
@@ -925,14 +925,14 @@ class EpisodeLog:
         """
         pol = policy if policy is not None else self.policy
         self._prune(t)
-        # Card Y4: a subject SEEN BUT NOT IDENTIFIED ('unknown'). An explicit ``subject_key`` still
+        # A subject SEEN BUT NOT IDENTIFIED ('unknown'). An explicit ``subject_key`` still
         # wins (the resolver precedence) — only a genuinely unresolved sighting takes the unknown
-        # path. Y5 already fixed the TYPE and the default fold (mint a fresh episode; two unknowns
-        # never collapse); Y4 adds only the opt-in provisional single-focus attach here. The gate
+        # path. The default fold (mint a fresh episode; two unknowns never collapse) covers the
+        # TYPE; this only adds the opt-in provisional single-focus attach here. The gate
         # governance (a visible abstention must never REARM) lives in the FOLD, not in this log.
         if subject_key is None and subject_is_unknown(exemplar):
             return self._observe_unknown(t, exemplar, pol)
-        # Card Y5: an explicit subject_key wins; else a bound verdict.subject.key carried by the
+        # An explicit subject_key wins; else a bound verdict.subject.key carried by the
         # exemplar. Resolve it ONCE here so the matched/opened episode STORES the same key the next
         # sighting will match against (a locally-derived-but-unstored key would never continue).
         if subject_key is None:

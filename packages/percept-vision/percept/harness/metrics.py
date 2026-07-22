@@ -101,7 +101,7 @@ class LatencyReport:
     helper (never recomputed from raw timestamps here)."""
 
     ingest_to_decision: PercentileSummary
-    admitted_to_decision: PercentileSummary  # the primary G3-A number
+    admitted_to_decision: PercentileSummary  # the primary runtime-latency number (admitted -> decision)
     judge_wait: PercentileSummary  # admitted -> judge_started (queue wait)
     judge_duration: PercentileSummary  # judge_started -> judge_completed (provider latency)
     decision_overhead: PercentileSummary  # judge_completed -> decision_emitted

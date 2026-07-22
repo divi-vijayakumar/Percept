@@ -14,7 +14,7 @@ The unit-layer capability fixtures (``percept.harness.synthetic``) need both:
   as real ``Verdict`` fields (a durable ``subject_key``, a ``binding`` state). :func:`verdict_from_spec`
   sets them as plain attributes on the verdict instance and records them in ``verdict.scripted_extras``,
   so a fixture written today keeps working *unchanged* the day the field becomes a real dataclass field
-  — which is exactly what happened to the speech-act ``operation`` (a real field since card Y2): it now
+  — which is exactly what happened to the speech-act ``operation`` (a real field since it was promoted): it now
   flows through the constructor to ``verdict.operation`` with no fixture edit.
 
 Standing rule 2 still holds: this is scripted WIRING, not intelligence. It proves our logic reads
@@ -70,10 +70,10 @@ def verdict_from_spec(spec: "Mapping[str, Any] | Verdict") -> Verdict:
     """Build a :class:`Verdict` from a JSON-ish dict, tolerating fields that do not exist yet.
 
     Known dataclass fields go through the constructor. UNKNOWN keys (e.g. ``subject_key``,
-    ``operation``, ``binding`` — the P0 additions the fixtures already label) are ``setattr``-ed onto
-    the instance and mirrored in ``verdict.scripted_extras``. When P0 promotes one of those keys to a
-    real field, this function starts passing it to the constructor instead and every existing fixture
-    keeps working with no edit.
+    ``operation``, ``binding`` — additions the fixtures already label ahead of the implementation) are
+    ``setattr``-ed onto the instance and mirrored in ``verdict.scripted_extras``. When one of those keys
+    is promoted to a real field, this function starts passing it to the constructor instead and every
+    existing fixture keeps working with no edit.
     """
     if isinstance(spec, Verdict):
         return spec

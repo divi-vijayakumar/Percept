@@ -213,7 +213,7 @@ class SoakRunner:
         self._clock = clock
         self.collector = MetricsCollector(clock)
         self._soak_start_t = clock()
-        # Card M3R: surface judge-call degradation through the SAME RuntimeHealthEvent shape
+        # Surface judge-call degradation through the SAME RuntimeHealthEvent shape
         # runtime/worker.py uses — this harness bypasses the live capture loop (LoadDriver +
         # FakeJudge, not run()/_JudgeScheduler), so it has no scheduler of its own to be loud from;
         # what it CAN do is reuse the one already-loud channel rather than a parallel one. Best-
@@ -287,7 +287,7 @@ class SoakRunner:
                 )
             )
 
-            # Card M3R: surface this hour's degradation loud, hourly-granular (this harness's own
+            # Surface this hour's degradation loud, hourly-granular (this harness's own
             # resolution — see __init__). Every call failed this hour -> the persistent-failure
             # escalation (mirrors agent.py's judge_persistent_failure: a dead-but-running judge must
             # be loud, not just a counter). A clean hour immediately after a failing one -> recovery,
@@ -317,7 +317,7 @@ class SoakRunner:
         for i in order:
             resolve_t = admit_t + new_calls[i].latency_s
             self.collector.record_admission_resolved(keys[i], at=resolve_t)
-            if new_calls[i].injected is not None:  # card M3R: surface each injected failure, loud
+            if new_calls[i].injected is not None:  # surface each injected failure, loud
                 self._emit_health(
                     "judge_degraded", ts=resolve_t,
                     data={"hour": hour, "tick": tick_no, "mode": new_calls[i].injected},

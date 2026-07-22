@@ -1,4 +1,4 @@
-"""Fixture-bound OFFLINE mode — the keyless first run (card RB-OFFLINE).
+"""Fixture-bound OFFLINE mode — the keyless first run.
 
 Two halves of one rule: **you may run Percept with no API key, and you may never mistake that run
 for perception.**
