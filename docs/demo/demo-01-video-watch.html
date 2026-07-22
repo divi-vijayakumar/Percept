@@ -409,6 +409,38 @@ confidence: —</pre>
   const video=$('#video'), taskInput=$('#taskInput'), armBtn=$('#armBtn'), frames=$('#frames');
   let sourceFile=null, sourceUrl=null, lastRun=null;
 
+  // [DEMO4] mirrors serve.py's _SEAM_MODEL_MAP — informational placeholder text only (an empty
+  // per-seam model input still means "use the server's own routing"; typing a value is what
+  // actually overrides it — see _seam_plan()/renderSeams()).
+  const SEAM_MODEL_MAP={
+    claude:{vision:'claude-sonnet-5',conductor:'claude-haiku-4-5',specialist:'claude-haiku-4-5'},
+    gemini:{vision:'gemini-3.1-flash-lite',conductor:'gemini-3.5-flash',specialist:'gemini-3.5-flash'},
+    openrouter:{vision:'qwen/qwen3-vl-32b-instruct',conductor:'(fallback: claude/haiku)',specialist:'(fallback: claude/haiku)'},
+  };
+  function refreshAdvPlaceholders(){
+    const m=SEAM_MODEL_MAP[$('#backend').value]||{};
+    $('#advVisionModel').placeholder=m.vision||'auto';
+    $('#advConductorModel').placeholder=m.conductor||'auto';
+    $('#advSpecialistModel').placeholder=m.specialist||'auto';
+  }
+  $('#backend').addEventListener('change',refreshAdvPlaceholders);
+  refreshAdvPlaceholders();
+  // The advanced panel's own selections, as /run query params — every key is individually
+  // optional server-side (serve.py's _advanced_from_params), so leaving the panel untouched sends
+  // the same "no override" values it always would.
+  function advancedParams(){
+    return {
+      profile: $('#advProfile').value || 'physical_scene',
+      execution_policy: $('#advExec').value,
+      identity_policy: $('#advIdentity').value,
+      episode_tracking: $('#advEpisode').checked ? '1' : '0',
+      audio_fused: $('#advAudio').checked ? '1' : '0',
+      vision_model: $('#advVisionModel').value.trim(),
+      conductor_model: $('#advConductorModel').value.trim(),
+      specialist_model: $('#advSpecialistModel').value.trim(),
+    };
+  }
+
   // --- runtime health -------------------------------------------------------
   fetch('/').then(r=>r.text()).then(t=>{
     const m=t.match(/judge key: ([^<]+)/); const key=m?m[1].trim():'unknown';
@@ -450,7 +482,7 @@ confidence: —</pre>
     // Percept.configure()/ConfigResolver, never a PERCEPT_* env var. See "08 · Resolved configuration".
     if(mode==='fixture'){ url='/run?mode=fixture&profile=physical_scene'; }
     else{
-      const q=new URLSearchParams({goal:taskInput.value.trim(),backend:$('#backend').value,fps:$('#fps').value,source_name:sourceFile.name,profile:'physical_scene'});
+      const q=new URLSearchParams({goal:taskInput.value.trim(),backend:$('#backend').value,fps:$('#fps').value,source_name:sourceFile.name,...advancedParams()});
       url='/run?'+q.toString(); opts.body=sourceFile;
     }
     let data;
@@ -632,10 +664,10 @@ confidence: —</pre>
   // [DEMO4 Finding 2] per-seam (vision/conductor/specialist) backend+model routing — a fallback
   // (e.g. openrouter has no conductor/specialist adapter) is rendered in red with the reason as a
   // hover tooltip, never silently hidden. seams is null on the fixture path (no live backend).
-  function renderSeams(seams){
+  function renderSeams(seams, audio){
     const box=$('#seamsLine');
     if(!seams){ box.innerHTML='<span class="muted">model seams — fixture run, no live backend routed</span>'; return; }
-    box.innerHTML=['vision','conductor','specialist'].map(name=>{
+    const parts=['vision','conductor','specialist'].map(name=>{
       const s=seams[name]||{};
       const fb=s.fallback_from;
       const cls=fb?' class="seamFallback"':'';
@@ -643,7 +675,11 @@ confidence: —</pre>
       const modelTxt=s.model?' · '+esc(s.model):' · —';
       const fbTxt=fb?` (fallback from ${esc(fb)})`:'';
       return `<span${cls}${title}>${name} <b>${esc(s.backend||'—')}</b>${modelTxt}${fbTxt}</span>`;
-    }).join('');
+    });
+    if(audio&&audio.enabled){
+      parts.push(`<span>audio (fused) <b>${audio.chunks??0} chunks</b> · ${audio.wakes??0} wakes</span>`);
+    }
+    box.innerHTML=parts.join('');
   }
   function renderResolved(d){
     const re=d.resolved_explain, rc=d.receipt;
@@ -651,7 +687,7 @@ confidence: —</pre>
     if(!re){
       body.innerHTML='<tr><td colspan="5" class="muted">No resolution on this run.</td></tr>';
       meta.innerHTML='<span class="muted">—</span>';
-      renderSeams(d.seams);
+      renderSeams(d.seams, d.audio);
       return;
     }
     const sp=re.source_profile||{};
@@ -667,7 +703,7 @@ confidence: —</pre>
         <td>${esc(f.source_id)}</td>
         <td>${esc(f.reason||'')}</td>
       </tr>`).join(''):'<tr><td colspan="5" class="muted">No fields resolved.</td></tr>';
-    renderSeams(d.seams);
+    renderSeams(d.seams, d.audio);
   }
 
   // --- trace drawer ---------------------------------------------------------
