@@ -166,6 +166,18 @@ main{padding:20px 24px 28px;display:grid;gap:16px}
 .resolvedTable td.muted{color:var(--steel)}
 .revLine{margin-top:5px!important;color:var(--steel)!important;font:9.5px var(--mono)!important}
 .revLine b{color:var(--ink);font-weight:600}
+.filmstrip{display:flex;gap:8px;overflow-x:auto;padding:12px;align-items:flex-start}
+.filmThumb{flex:none;width:112px;cursor:pointer}
+.filmThumb img{width:112px;height:63px;object-fit:cover;background:#111;display:block;border:1px solid var(--hairline)}
+.filmThumb .cap{font:8px var(--mono);color:var(--steel);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.filmThumb.fired img{border:3px solid #000}
+.filmThumb.fired .cap{color:#000;font-weight:700}
+.filmThumb.highlight img{box-shadow:0 0 0 3px #000,0 0 0 6px #fff}
+.filmPlaceholder{width:112px;height:63px;background:#f0f0ed;border:1px dashed var(--construction);display:flex;align-items:center;justify-content:center;font:8px var(--mono);color:var(--steel);text-align:center;padding:4px}
+.frameDrawerBody{overflow:auto;display:grid;grid-template-rows:auto 1fr}
+.frameDrawerImgWrap{background:#111;display:flex;align-items:center;justify-content:center;min-height:200px}
+.frameDrawerImgWrap img{max-width:100%;max-height:360px;display:block}
+.frameDrawerBody .traceContent{max-height:none}
 @media(max-width:1050px){.heroGrid,.runtimeGrid,.streamGrid{grid-template-columns:1fr}.contextBody{grid-template-columns:1fr 1fr 1fr}}
 @media(max-width:680px){.topbar{padding:0 14px}.topmeta span:not(.status){display:none}.realbar{padding:7px 14px;flex-direction:column;align-items:flex-start;gap:3px}main{padding:12px 12px 20px}.contextBody{grid-template-columns:1fr}.heroGrid{min-height:auto}.stage{min-height:290px}.emptyState h1{font-size:24px}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
@@ -391,7 +403,22 @@ confidence: —</pre>
       </div>
     </article>
   </section>
+
+  <section class="panel">
+    <div class="panelHead"><b>09 · Admitted frames</b><span id="filmstripMeta">—</span></div>
+    <div id="filmstrip" class="filmstrip"><div class="eventEmpty">Arm a watch to populate the filmstrip.</div></div>
+  </section>
 </main>
+</div>
+
+<div id="frameDrawer" class="traceDrawer">
+  <aside class="tracePanel">
+    <div class="traceHead"><b>FRAME <span id="frameDrawerSeq"></span></b><button id="closeFrameBtn" aria-label="Close">×</button></div>
+    <div class="frameDrawerBody">
+      <div id="frameDrawerImgWrap" class="frameDrawerImgWrap"><img id="frameDrawerImg" alt="frame"></div>
+      <pre id="frameDrawerJson" class="traceContent"></pre>
+    </div>
+  </aside>
 </div>
 
 <div id="traceDrawer" class="traceDrawer">
@@ -513,10 +540,70 @@ confidence: —</pre>
     renderLedger(recs);
     renderJudgments(recs, d.events||[]);
     renderResolved(d);
+    renderFilmstrip(recs, d.run_id);
     $('#viewTraceBtn').disabled=false;
     const fired=(summ.gate_outcomes&&summ.gate_outcomes.fire)||0;
     $('#frameTag').textContent=`${summ.observed||0} observed · ${summ.admitted||0} admitted · ${fired} fire`;
     if(fired){$('#fireBox').style.display='block';$('#runtimeStatus').className='status fire';$('#runtimeStatus').querySelector('b').textContent='FIRE';}
+  }
+  // [DEMO4 Finding 4] which frame fired vs stayed silent-but-admitted, in one chronological strip.
+  // A fired frame is the one a judgment.event's evidence_seq points at on a gate.classified fire
+  // (the SAME D11 correlation renderJudgments already resolves for the evidence-frame anchor).
+  function firedSeqSet(recs){
+    const gates=recs.filter(r=>r.stage==='gate.classified');
+    const judgments=recs.filter(r=>r.stage==='judgment.event');
+    const out=new Set();
+    judgments.forEach(j=>{
+      const g=gates.find(g=>g.trace_id===j.trace_id&&g.goal_id===j.goal_id);
+      if(g&&g.data&&g.data.action==='fire'&&j.data&&j.data.evidence_seq!=null)out.add(j.data.evidence_seq);
+    });
+    return out;
+  }
+  function renderFilmstrip(recs, runId){
+    const box=$('#filmstrip'), meta=$('#filmstripMeta');
+    const frameRecs=recs.filter(r=>r.stage==='source.frame');
+    if(!frameRecs.length){
+      box.innerHTML='<div class="eventEmpty">No admitted frames in this trace.</div>';
+      meta.textContent='—';
+      return;
+    }
+    const fired=firedSeqSet(recs);
+    box.innerHTML='';
+    frameRecs.forEach(f=>{
+      const isFired=fired.has(f.seq);
+      const cell=document.createElement('div'); cell.className='filmThumb'+(isFired?' fired':''); cell.id='film-'+f.seq;
+      const img=document.createElement('img'); img.loading='lazy'; img.alt='frame #'+f.seq;
+      img.src=`/frame/${runId}/${f.seq}.jpg`;
+      img.onerror=()=>{ if(img.parentNode){ const ph=document.createElement('div'); ph.className='filmPlaceholder'; ph.textContent='no thumbnail'; img.replaceWith(ph); } };
+      const cap=document.createElement('div'); cap.className='cap';
+      cap.textContent=(isFired?'FIRE · ':'')+'#'+f.seq+(f.source_ts!=null?' · t='+Number(f.source_ts).toFixed(1):'');
+      cell.append(img,cap);
+      cell.onclick=()=>openFrameModal(f, recs, runId, isFired);
+      box.appendChild(cell);
+    });
+    meta.textContent=`${frameRecs.length} admitted · ${fired.size} fired`;
+  }
+  function openFrameModal(f, recs, runId, isFired){
+    const judgments=recs.filter(r=>r.stage==='judgment.event');
+    const gates=recs.filter(r=>r.stage==='gate.classified');
+    const jm=judgments.find(j=>j.data&&j.data.evidence_seq===f.seq);
+    const gate=jm?gates.find(g=>g.trace_id===jm.trace_id&&g.goal_id===jm.goal_id):null;
+    $('#frameDrawerSeq').textContent='#'+f.seq+(f.source_ts!=null?' · t='+Number(f.source_ts).toFixed(1):'');
+    $('#frameDrawerImg').src=`/frame/${runId}/${f.seq}.jpg`;
+    $('#frameDrawerJson').textContent=JSON.stringify({
+      source_frame: f, fired: !!isFired,
+      gate_classified: (gate&&gate.data)||null, judgment_event: (jm&&jm.data)||null,
+    },null,2);
+    $('#frameDrawer').classList.add('open');
+  }
+  $('#closeFrameBtn').onclick=()=>$('#frameDrawer').classList.remove('open');
+  $('#frameDrawer').addEventListener('click',e=>{if(e.target===$('#frameDrawer'))$('#frameDrawer').classList.remove('open')});
+  function highlightFilmThumb(seq){
+    const el=document.getElementById('film-'+seq);
+    if(!el)return;
+    el.scrollIntoView({behavior:'smooth',block:'nearest',inline:'center'});
+    el.classList.add('highlight');
+    setTimeout(()=>el.classList.remove('highlight'),1600);
   }
   function renderPlan(goal, plan){
     $('#planOut').textContent=JSON.stringify({
@@ -652,7 +739,7 @@ confidence: —</pre>
         <p>satisfied ${d.satisfied} · confidence ${d.confidence} · truth ${esc(d.truth||'—')}${ent}${model}${tok}</p>
         ${revLine}
         ${evLink}`;
-      if(evFrame){ el.querySelector('.evidenceLink').onclick=()=>el.querySelector('#'+evId).classList.toggle('open'); }
+      if(evFrame){ el.querySelector('.evidenceLink').onclick=()=>{ el.querySelector('#'+evId).classList.toggle('open'); highlightFilmThumb(evFrame.seq); }; }
       box.prepend(el);
     });
   }
