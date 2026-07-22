@@ -411,6 +411,7 @@ async def _run_real(video_path: Path, goal_text: str, backend: str, fps: float,
     audio_fused = bool(advanced.get("audio_fused"))
     if audio_fused:
         explicit["Goal.state.perception.modality"] = "fused"
+        explicit["Goal.state.perception.audio_s"] = 4.0
 
     resolved, profile, settings, plan = _resolve_watch(
         profile_name, goal_text, source_key="camera",
@@ -434,7 +435,13 @@ async def _run_real(video_path: Path, goal_text: str, backend: str, fps: float,
     from percept.runtime.worker import RuntimeStats
 
     run_stats = RuntimeStats()
-    stream = percept.run(core, source=str(video_path), fps=fps,
+    # File uploads: inline judge dispatch (a faster-than-realtime file run would supersede the
+    # interesting middle under async latest-wins), real-world onset thresholds (a phone recording of
+    # a loud appliance peaks near RMS 0.08 — the 0.3 default never fires), and the onset settle so
+    # the judged clip contains the sound rather than the silence before it.
+    stream = percept.run(core, source=str(video_path), fps=fps, judge_dispatch="inline",
+                         audio_wake={"high": 0.02, "low": 0.01, "refractory_s": 5.0},
+                         audio_settle_s=2.0,
                          on_trace=rec.tracer(), on_health=rec.health_sink(), stats=run_stats)
     async for inc in stream:
         events.append({
