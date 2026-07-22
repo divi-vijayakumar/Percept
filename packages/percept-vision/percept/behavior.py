@@ -305,11 +305,15 @@ class Fired:
 # on the episode, not on the evictable gate bit, so a memory bound can never leak into user-visible
 # behaviour (eval/synthetic/idempotency/ key_ttl_expiry_while_episode_open_does_not_refire).
 
-EpisodeMatch = Literal["new", "continuation", "unbound", "ambiguous"]
+EpisodeMatch = Literal["new", "continuation", "unbound", "ambiguous", "unknown"]
 #: How the observation binds to an episode. ``new`` — it opens a fresh episode; ``continuation`` — it
 #: extends an existing open one; ``unbound`` — no subject identity could be established (fall back to
 #: gate-only, the legacy behaviour); ``ambiguous`` — the subject resolved to more than one candidate,
-#: so idempotency cannot be safely attributed and we also fall back to gate-only.
+#: so idempotency cannot be safely attributed and we also fall back to gate-only; ``unknown`` (card
+#: Y4) — a subject was SEEN BUT NOT IDENTIFIED (a visible abstention). Like ``unbound`` it degrades to
+#: gate-only and NEVER rearms, but it is a DISTINCT observable state so a client can tell
+#: "seen-but-unidentified" from "no subject at all". The absence of a subject is ``unbound``, not
+#: ``unknown`` — the two are different debugging facts.
 
 EpisodeMutation = Literal["confirmed", "updated", "retracted", "closed", "none"]
 #: How this finding modifies the episode (the Y2 mutation channel, consumed here). ``confirmed`` — the
@@ -317,7 +321,9 @@ EpisodeMutation = Literal["confirmed", "updated", "retracted", "closed", "none"]
 #: ``retracted`` — the report is withdrawn; ``closed`` — the episode is terminated; ``none`` — no
 #: mutation semantics apply (a birth, or an unbound/ambiguous observation).
 
-EPISODE_MATCHES: tuple[EpisodeMatch, ...] = ("new", "continuation", "unbound", "ambiguous")
+EPISODE_MATCHES: tuple[EpisodeMatch, ...] = (
+    "new", "continuation", "unbound", "ambiguous", "unknown",
+)
 EPISODE_MUTATIONS: tuple[EpisodeMutation, ...] = (
     "confirmed", "updated", "retracted", "closed", "none",
 )
@@ -400,6 +406,7 @@ def episode_fold(
     emitted: int = 0,
     mutation: EpisodeMutation = "confirmed",
     ambiguous: bool = False,
+    unknown: bool = False,
 ) -> EpisodeFoldResult:
     """Fold one observation against its episode's emission history → an :class:`EpisodeFoldResult`.
 
@@ -412,11 +419,21 @@ def episode_fold(
     * ``mutation`` — how this finding modifies the episode (the Y2 channel). Defaults to ``confirmed``
       (a plain re-statement), which is the case idempotency is about.
     * ``ambiguous`` — the subject resolved to more than one candidate → ``ambiguous``, gate-only.
+    * ``unknown`` (card Y4) — the subject was SEEN BUT NOT IDENTIFIED (``resolution='unknown'``,
+      derived by :func:`percept.episodes.subject_is_unknown`). A visible abstention.
 
     Rules (the card, made executable):
 
     * unbound / ambiguous → we cannot attribute idempotency to an episode, so degrade to the legacy
       gate-only path: evaluate the gate, never re-arm from here.
+    * ``unknown`` (card Y4) → a visible abstention. Even though the episode log MINTED a fresh episode
+      for it (Y5: two unknowns never collapse), the fold must NOT let that mint REARM the gate — an
+      unknown re-arming an edge a bound subject already spoke on is exactly the wrong-suppression this
+      card forbids — and must NOT grant it episode-owned idempotency (two unknowns are never the same
+      episode). So it degrades to gate-only like ``unbound``, but keeps its own observable ``unknown``
+      match. The SOLE exception is a provisional single-focus continuation of an active BOUND episode
+      (``decision.reason == 'unknown_provisional_continuation'``): that is a genuine continuation and
+      folds as one below.
     * ``new`` → a fresh episode: evaluate AND re-arm (its own edge, immune to a shared/disarmed key).
     * ``continuation`` + ``confirmed``/``none``:
         - already emitted → do NOT re-enter the gate (idempotent; THE TTL-invariant case);
@@ -425,6 +442,18 @@ def episode_fold(
     * ``continuation`` + ``retracted`` → withdraw and re-arm, so a genuine later re-satisfaction fires.
     * ``continuation`` + ``closed`` → the episode is terminated; no further evaluation for it.
     """
+    # Card Y4: a visible abstention degrades to gate-only and NEVER rearms — before every other rule,
+    # because an unknown that minted a fresh episode (Y5) would otherwise be read as ``new`` and
+    # re-arm. The provisional single-focus continuation is the one unknown that is a real continuation;
+    # it falls through to the continuation handling and folds idempotently like any other.
+    if unknown and (
+        decision is None or decision.reason != "unknown_provisional_continuation"
+    ):
+        return EpisodeFoldResult(
+            episode_id=decision.episode.id if decision is not None else None,
+            match="unknown", mutation="none",
+            should_rearm=False, should_evaluate_gate=True, supersedes=None,
+        )
     if decision is None:
         return EpisodeFoldResult(
             episode_id=None, match="unbound", mutation="none",
@@ -559,6 +588,7 @@ class BehaviorExecutor:
         mutation: EpisodeMutation = "confirmed",
         operation: "str | None" = None,
         ambiguous: bool = False,
+        unknown: bool = False,
     ) -> EpisodeFoldResult:
         """Y3: fold an observation's :class:`~percept.episodes.ContinuationDecision` against this
         executor's episode-owned emission ledger → the :class:`EpisodeFoldResult` to thread into
@@ -569,11 +599,19 @@ class BehaviorExecutor:
         the episode ``mutation`` via :func:`episode_mutation_of` (overriding the ``mutation`` kwarg), so
         a caller threads ``verdict.operation`` straight through and the fold consumes the mutation
         channel without ever parsing a value. When ``None`` (default) the explicit ``mutation`` kwarg
-        is used, so an existing caller is byte-for-byte unchanged."""
+        is used, so an existing caller is byte-for-byte unchanged.
+
+        ``unknown`` (card Y4, OPTIONAL) marks a subject SEEN BUT NOT IDENTIFIED — the caller derives it
+        with :func:`percept.episodes.subject_is_unknown` on the verdict. When ``True`` the fold degrades
+        to gate-only and NEVER rearms (a visible abstention must not manufacture wrong suppression); it
+        does not consult the emission ledger, so it is safe on the transient episode Y5 mints for an
+        unknown. Default ``False`` is byte-for-byte the pre-Y4 path."""
         if operation is not None:
             mutation = episode_mutation_of(operation)
         emitted = self._incidents.emitted(decision.episode.id) if decision is not None else 0
-        return episode_fold(decision, emitted=emitted, mutation=mutation, ambiguous=ambiguous)
+        return episode_fold(
+            decision, emitted=emitted, mutation=mutation, ambiguous=ambiguous, unknown=unknown
+        )
 
     def _fire_when(self, expr: str) -> Callable[[dict], bool]:
         pred = self._fire_when_cache.get(expr)

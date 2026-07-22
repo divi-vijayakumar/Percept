@@ -130,7 +130,10 @@ class TestEpisodeFoldPure(unittest.TestCase):
             EpisodeFoldResult("e", "made_up", "none", False, True)  # type: ignore[arg-type]
         with self.assertRaises(ValueError):
             EpisodeFoldResult("e", "new", "bogus", False, True)  # type: ignore[arg-type]
-        self.assertEqual(set(EPISODE_MATCHES), {"new", "continuation", "unbound", "ambiguous"})
+        self.assertEqual(
+            set(EPISODE_MATCHES),
+            {"new", "continuation", "unbound", "ambiguous", "unknown"},  # Y4 added "unknown"
+        )
         self.assertEqual(
             set(EPISODE_MUTATIONS), {"confirmed", "updated", "retracted", "closed", "none"}
         )
