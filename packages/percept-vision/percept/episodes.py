@@ -24,7 +24,7 @@ So the three decisions are named and evaluated separately here:
 
        continues = (same_subject
                     and episode.status == "open"          # or reopen is allowed
-                    and observation.ts - episode.last_seen <= continuity_gap_s
+                    and observation.ts - episode.last_seen < continuity_gap_s
                     and mutation_is_compatible)
 
 3. **MUTATION** — *how does this finding modify the episode?* Card Y2 owns the mutation CHANNEL;
@@ -746,16 +746,19 @@ class EpisodeLog:
 
             continues = (same_subject                                   # the caller established this
                          and episode.status == "open"                   # or allow_reopen
-                         and observation.ts - episode.last_seen <= continuity_gap_s
+                         and observation.ts - episode.last_seen < continuity_gap_s
                          and mutation_is_compatible)
 
         Returns ``"continued"``/``"reopened"`` when it holds, else the FIRST conjunct that failed.
         The gap is checked before the mutation so the cheap, always-available evidence decides first
-        and the (future, Y2) mutation channel is only consulted about a still-live episode.
+        and the (future, Y2) mutation channel is only consulted about a still-live episode. The gap
+        comparison is the INCLUSIVE boundary rule: a separation EXACTLY equal to ``continuity_gap_s``
+        does NOT continue the episode — it opens a new one (``t - episode.last_seen >= continuity_gap_s``
+        counts as exceeded, not just strictly greater).
         """
         if policy.is_terminal(episode.status) and not policy.allow_reopen:
             return "episode_terminal"
-        if policy.continuity_gap_s is not None and (t - episode.last_seen) > policy.continuity_gap_s:
+        if policy.continuity_gap_s is not None and (t - episode.last_seen) >= policy.continuity_gap_s:
             return "gap_exceeded"
         if not mutation_compatible:
             return "mutation_incompatible"
@@ -882,7 +885,7 @@ class EpisodeLog:
                 return decision
         if pol.unknown_continuity_gap_s is not None:
             prior = self._open_unknown_episode(pol)
-            if prior is not None and (t - prior.last_seen) <= pol.unknown_continuity_gap_s:
+            if prior is not None and (t - prior.last_seen) < pol.unknown_continuity_gap_s:
                 gap_s = t - prior.last_seen
                 prior.last_seen = t
                 prior.representative = self._retain(exemplar)  # Y14: a HANDLE, never pixels

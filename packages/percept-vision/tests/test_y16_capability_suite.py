@@ -351,17 +351,11 @@ class Capability07CupProblem(unittest.TestCase):
 
 
 class Capability07BoundaryOffByOne(unittest.TestCase):
-    """DISCOVERED DEFECT (not one of the card's 9 required capabilities — found while proving cap. 7
-    against the same corpus's boundary cases). The fixture's documented rule is inclusive: "separation
-    >= boundary_gap_s starts a NEW episode". ``EpisodeLog.continuation_reason`` compares with a STRICT
-    '>' (``percept/episodes.py``, the ``gap_exceeded`` branch): ``(t - episode.last_seen) >
-    policy.continuity_gap_s``. At a separation of EXACTLY the gap, the real code CONTINUES the episode
-    (undercounting by one) instead of opening a new one. Filed as its own xfail with the fix pointed at
-    precisely: change ``>`` to ``>=`` in ``EpisodeLog.continuation_reason`` — or, if '>' is the
-    intended contract, the corpus's ``boundary_rule`` docstring needs to change from '>=' to '>'
-    instead. Either fixes it; only one side should move."""
+    """Card Y19 — fixed. The fixture's documented rule is inclusive: "separation >= boundary_gap_s
+    starts a NEW episode". ``EpisodeLog.continuation_reason`` now compares with ``>=`` (formerly a
+    strict ``>``) in the ``gap_exceeded`` branch: ``(t - episode.last_seen) >= policy.continuity_gap_s``.
+    At a separation of EXACTLY the gap, a new episode opens (matching the corpus), not a continuation."""
 
-    @unittest.expectedFailure
     def test_exact_boundary_separation_opens_a_new_episode(self):
         steps, expect = _case(episode_counting_corpus.build(), "boundary_separation_exactly_gap")
         scripted = _run(_scripted_verdicts(steps))
