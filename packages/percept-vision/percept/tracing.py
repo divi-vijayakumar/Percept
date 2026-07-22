@@ -1188,6 +1188,7 @@ class TraceRecorder:
         self._drop_reasons: Counter[str] = Counter()
         self._bytes = 0
         self._observed_wall: dict[str, float] = {}   # trace_id -> when the runtime FIRST saw it
+        self._frame_seq: dict[str, int] = {}          # trace_id -> this trace's source.frame seq (D11)
         self._first_source_ts: float | None = None
         self._last_source_ts: float | None = None
         self._incident_ts: list[float] = []          # incident/health anchors for the retention window
@@ -1248,12 +1249,28 @@ class TraceRecorder:
             emitted_wall_ts = now
         if not self.policy.include_media:
             data = {k: v for k, v in data.items() if k not in _MEDIA_KEYS}
+        if stage == STAGE_JUDGMENT_EVENT and "evidence_seq" not in data:
+            # D11 — the RECORDER, not the caller, stamps the correlation handle: the seq of THIS
+            # trace_id's own source.frame record (the literal evidence that fed this judgment),
+            # resolvable within the same .ptrace without needing the frame itself. A caller that
+            # already supplied one (e.g. a replay driver reconstructing a record) is left alone.
+            frame_seq = self._frame_seq.get(tid)
+            if frame_seq is not None:
+                data = dict(data)
+                data["evidence_seq"] = frame_seq
         rec = TraceRecord(
             seq=self._seq, trace_id=tid, stage=stage, source_ts=source_ts,
             observed_wall_ts=observed_wall_ts, emitted_wall_ts=emitted_wall_ts,
             goal_id=goal_id, source=source or self.manifest.source, data=dict(data),
         )
         self._seq += 1
+        if stage == STAGE_SOURCE_FRAME:
+            # D11 — remember THIS trace_id's admitted-frame seq so a same-trace judgment.event
+            # (emitted later, same tick) can resolve back to it. Bounded exactly like
+            # ``_observed_wall`` — a correlation map must not leak on a 24/7 run.
+            if len(self._frame_seq) >= 4 * self._max_records:
+                self._frame_seq.clear()
+            self._frame_seq[tid] = rec.seq
         self._agg.fold(rec)                       # EXACT counters, whatever retention decides
         if source_ts is not None:
             self._first_source_ts = source_ts if self._first_source_ts is None else min(self._first_source_ts, source_ts)
