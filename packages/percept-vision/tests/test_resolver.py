@@ -405,6 +405,62 @@ class TestOptimizationLock(unittest.TestCase):
         codes = [w.code for w in resolver.last_receipt.warnings]
         self.assertNotIn("optimization_lock_hash_mismatch", codes)
 
+    def test_deployment_override_of_locked_field_emits_loud_diagnostic(self) -> None:
+        """C5 / ADR-008 Corrections(d), second half: a Deployment/env change touching a field the
+        lock VALIDATED must surface loudly, never silently outrank the lock."""
+        resolver = ConfigResolver()
+        lock = OptimizationLock(id="lock1", values={"Settings.entity.iou_match": 0.7})
+        with mock.patch.dict("os.environ", {"PERCEPT_IOU_MATCH": "0.42"}, clear=False):
+            resolved = resolver.resolve(_plan(), optimization_lock=lock)
+        self.assertEqual(resolved.effective["Settings.entity.iou_match"], 0.42)
+        codes = [w.code for w in resolver.last_receipt.warnings]
+        self.assertIn("deployment_overrides_locked_field", codes)
+        warning = next(
+            w for w in resolver.last_receipt.warnings if w.code == "deployment_overrides_locked_field"
+        )
+        self.assertEqual(warning.path, "Settings.entity.iou_match")
+        self.assertIn("lock1", warning.message)
+
+    def test_deployment_agreeing_with_lock_no_diagnostic(self) -> None:
+        """No conflict, no diagnostic — deployment merely confirms the locked value."""
+        resolver = ConfigResolver()
+        lock = OptimizationLock(id="lock1", values={"Settings.entity.iou_match": 0.7})
+        with mock.patch.dict("os.environ", {"PERCEPT_IOU_MATCH": "0.7"}, clear=False):
+            resolver.resolve(_plan(), optimization_lock=lock)
+        codes = [w.code for w in resolver.last_receipt.warnings]
+        self.assertNotIn("deployment_overrides_locked_field", codes)
+
+    def test_no_lock_no_deployment_invalidation_diagnostic(self) -> None:
+        resolver = ConfigResolver()
+        with mock.patch.dict("os.environ", {"PERCEPT_IOU_MATCH": "0.42"}, clear=False):
+            resolver.resolve(_plan())
+        codes = [w.code for w in resolver.last_receipt.warnings]
+        self.assertNotIn("deployment_overrides_locked_field", codes)
+
+    def test_lock_graduated_provenance_fields_round_trip(self) -> None:
+        """Card C5: base_plan_hash / catalog_component_hash / fixture_hash / held_out_metrics /
+        created_at graduate the placeholder's id/version/values/locked_hash shape — round-trips
+        through to_dict/from_dict, schema_version stamped."""
+        lock = OptimizationLock(
+            id="lock1",
+            values={"Settings.entity.iou_match": 0.7},
+            base_plan_hash="planhash123",
+            catalog_component_hash="cataloghash456",
+            fixture_hash="fixturehash789",
+            held_out_metrics={"recall": 0.85, "precision": 0.9},
+            created_at="2026-07-22T00:00:00+00:00",
+        )
+        payload = lock.to_dict()
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["base_plan_hash"], "planhash123")
+        self.assertEqual(payload["catalog_component_hash"], "cataloghash456")
+        self.assertEqual(payload["fixture_hash"], "fixturehash789")
+        self.assertEqual(payload["held_out_metrics"], {"recall": 0.85, "precision": 0.9})
+        round_tripped = OptimizationLock.from_dict(payload)
+        self.assertEqual(round_tripped.base_plan_hash, lock.base_plan_hash)
+        self.assertEqual(round_tripped.held_out_metrics, lock.held_out_metrics)
+        self.assertEqual(round_tripped.content_hash, lock.content_hash)
+
 
 class TestSourceProfileComposition(unittest.TestCase):
     def test_real_source_profile_fields_land_at_source_profile_layer(self) -> None:

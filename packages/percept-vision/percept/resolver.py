@@ -39,18 +39,15 @@ that field's class is a :class:`ConfigError`, raised before any value is produce
 last-writer-wins. Ownership is read from :data:`percept.tunables.REGISTRY` (the tunables inventory),
 the single source of truth this module does not duplicate.
 
-``OptimizationLock`` does not exist as a real object yet (ADR-008 §Six declared objects: "new —
-not yet in code"). This module defines it here as a MINIMAL placeholder dataclass — an
-``id``/``version``/``values`` mapping, nothing more — so the precedence chain is real and testable
-now; its full contract (optimizer validation logic) is a later card's scope, deliberately not
-built here.
-
-``ExecutionPolicy`` and ``DomainPack`` have since graduated out of that placeholder set: they are
-now real, typed dataclasses — see :mod:`percept.execution_policy` / :mod:`percept.execution_policies_default`
-and :mod:`percept.domain_pack` / :mod:`percept.packs_default`. This module still imports both
-(re-exported below for backward compatibility) and still owns the ownership GATE that validates
-their ``values`` at resolve time, plus (for ``DomainPack``) a POLICY-CLAMP gate distinct from
-ownership (see :func:`_check_policy_clamps`) — it no longer DEFINES either class.
+``ExecutionPolicy``, ``DomainPack`` and ``OptimizationLock`` have all graduated out
+of the placeholder set this module used to define directly: they are now real, typed dataclasses —
+see :mod:`percept.execution_policy` / :mod:`percept.execution_policies_default`,
+:mod:`percept.domain_pack` / :mod:`percept.packs_default`, and :mod:`percept.optimization_lock`. This
+module still imports all three (re-exported below for backward compatibility) and still owns the
+ownership GATE that validates their ``values`` at resolve time, plus (for ``DomainPack``) a
+POLICY-CLAMP gate distinct from ownership (see :func:`_check_policy_clamps`) and (for
+``OptimizationLock``) the INVALIDATION gate (see :func:`_check_lock_invalidation`) — it no longer
+DEFINES any of the three classes.
 
 ``DeploymentConfig`` also does not exist as a real object yet; ``percept.config.Settings`` /
 ``load_settings()`` continue to play its role informally (ADR-008 §Consequences), which is what
@@ -72,8 +69,7 @@ semantics).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
-from types import MappingProxyType
+from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
 from . import catalog
@@ -87,6 +83,7 @@ from .contracts.watchplan import (
 )
 from .domain_pack import DomainPack
 from .execution_policy import ExecutionPolicy
+from .optimization_lock import OptimizationLock
 from .profile_resolution import resolve_profile, resolve_situation
 from .runtime_compiler import runtime_compile
 from .sourceprofile import SourceProfile, coast_sense_prior
@@ -133,55 +130,6 @@ class ConfigError(ValueError):
 #: path -> TunableSpec, built once from the tunables registry (the single source of truth for
 #: ownership this module reads and never duplicates).
 _BY_PATH: dict[str, TunableSpec] = {spec.path: spec for spec in REGISTRY}
-
-
-# ---------------------------------------------------------------------------
-# Minimal placeholder resolver input — OptimizationLock (ADR-008: "new — not yet in code"). Only
-# the shape a precedence chain needs: id/version/values. Real optimizer validation is a later
-# card's scope.
-# ---------------------------------------------------------------------------
-
-
-def _freeze_values(values: Mapping[str, Any] | None) -> Mapping[str, Any]:
-    if values is None:
-        return MappingProxyType({})
-    if not isinstance(values, Mapping):
-        raise ConfigError(f"values must be a mapping, got {type(values).__name__}")
-    for key in values:
-        if not isinstance(key, str) or not key.strip():
-            raise ConfigError(f"values keys must be non-empty strings, got {key!r}")
-    return MappingProxyType(dict(values))
-
-
-@dataclass(frozen=True)
-class OptimizationLock:
-    """Placeholder resolver input — ADR-008: "a validated, hashed selection of tunables an
-    optimizer previously proved safe — never authored by hand... new, not yet in code".
-
-    Every path in ``values`` must be ``safe_to_optimize: true`` in :data:`percept.tunables.REGISTRY`
-    (Invariants: "The optimizer tunes only declared-safe paths... a lock covering any other field is
-    invalid to construct") — this is checked at RESOLUTION time (:meth:`ConfigResolver.resolve`),
-    not at construction, because it depends on the registry, the single source of truth this object
-    does not duplicate. ``locked_hash``, if given, is the hash this lock claims to have validated
-    its ``values`` under; :meth:`ConfigResolver.resolve` compares it against a freshly computed
-    :func:`percept.tracing.content_hash` and reports a mismatch as a loud diagnostic rather than
-    silently trusting a stale claim (ADR-008 §Corrections(d))."""
-
-    id: str
-    version: str = "v1"
-    values: Mapping[str, Any] = field(default_factory=dict)
-    locked_hash: str | None = None
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.id, str) or not self.id.strip():
-            raise ConfigError(f"OptimizationLock.id must be a non-empty string, got {self.id!r}")
-        object.__setattr__(self, "values", _freeze_values(self.values))
-
-    @property
-    def content_hash(self) -> str:
-        """The hash this lock's OWN ``values`` hash to right now — compared against
-        :attr:`locked_hash` by the resolver (ADR-008 §Corrections(d))."""
-        return content_hash(dict(sorted(self.values.items())))
 
 
 # ---------------------------------------------------------------------------
@@ -693,6 +641,13 @@ class ConfigResolver:
         effective: dict[str, Any] = {}
         provenance: dict[str, SettingOrigin] = {}
         explicit_profile_owned: set[str] = set()  # paths an EXPLICIT profile-like source touched
+        # ADR-008 Corrections(d): "a deployment change touching a locked field invalidates the
+        # OptimizationLock — loud, never silent". This is the SECOND half of that rule (the first —
+        # a stale locked_hash claim on the lock's OWN values — is the mismatch check above): a field
+        # the lock VALIDATED gets silently outranked by a real Deployment/env value for the same
+        # path. Tracked here (paths the lock claims) so the merge loop below can catch the moment a
+        # higher-precedence layer actually changes one, not merely note that the lock exists.
+        locked_paths: set[str] = set(optimization_lock_values)
 
         for contribution in contributions:
             for path, value in contribution.values.items():
@@ -724,6 +679,25 @@ class ConfigResolver:
                             f"deployment/env value {value!r} for {path!r} overrides an "
                             f"explicitly-selected profile's value {effective[path]!r} "
                             f"({provenance[path].source_id})"
+                        ),
+                    ))
+
+                if (
+                    contribution.layer == LAYER_DEPLOYMENT
+                    and path in locked_paths
+                    and path in effective
+                    and effective[path] != value
+                    and optimization_lock is not None
+                ):
+                    warnings.append(FieldDiagnostic(
+                        path=path,
+                        code="deployment_overrides_locked_field",
+                        message=(
+                            f"deployment/env value {value!r} for {path!r} overrides "
+                            f"OptimizationLock {optimization_lock.id!r}'s validated selection "
+                            f"{effective[path]!r} — the lock's validity claim for this field is now "
+                            "VOID (ADR-008 Corrections(d)): deployment still wins the value per "
+                            "precedence, but it is no longer the selection the lock proved safe."
                         ),
                     ))
 
