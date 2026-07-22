@@ -257,8 +257,10 @@ async def _run_real(video_path: Path, goal_text: str, backend: str, fps: float,
 
     resolved, profile, settings = _resolve_watch(profile_name, goal_text, source_key="camera")
     os.environ["PERCEPT_VISION_MODEL"] = _DEFAULT_MODEL.get(backend, "")
+    # discover_plugins left at its default (True) — byte-for-byte the old Percept.create(vision=backend)
+    # call's behavior; a live run must still see installed backend plugins the same way it always did.
     core = Percept.configure(
-        vision=backend, mode="live", discover_plugins=False,
+        vision=backend, mode="live",
         source_profile=profile, source_profile_explicit=True, settings=settings,
     )
     plan = WatchPlan(condition=goal_text, source="camera")
