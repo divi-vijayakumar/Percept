@@ -90,7 +90,7 @@ PHYSICAL_PROVENANCE = (
 
 #: PHYSICAL_SCENE's conservative default_episode_policy capability — the SAME
 #: "profile declares, concern selects" mechanism SCREEN_DOCUMENT uses
-#: (``SourceProfile.default_episode_policy``, Y17's pattern), but a DIFFERENT one of its two
+#: (``SourceProfile.default_episode_policy``), but a DIFFERENT one of its two
 #: independent knobs: single-focus ATTACH, never unknown-to-unknown temporal continuity.
 #:
 #: ``unknown_continuity_gap_s`` stays UNSET (``None``) here on purpose — that capability is
