@@ -1295,7 +1295,7 @@ class Percept:
           path (``None``) — the same safe answer an undeclared concern always gets — and is counted
           (``episode.document.out_of_order_skipped``), never silently swallowed.
         """
-        if identity_policy_of(goal) != "content_key":
+        if self._resolved_identity_policy(goal) != "content_key":
             return None
         subject = getattr(verdict, "subject", None)
         if subject is None:
@@ -1365,7 +1365,7 @@ class Percept:
         degrades the tick to gate-only (counted, ``episode.claim.out_of_order_skipped``, never silently
         swallowed) rather than risk rewinding the log's high-water mark.
         """
-        if identity_policy_of(goal) != "claim_slot":
+        if self._resolved_identity_policy(goal) != "claim_slot":
             return None
         hwm = self._claim_hwm.get(goal.id)
         if hwm is not None and t < hwm:
