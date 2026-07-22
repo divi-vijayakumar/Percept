@@ -146,6 +146,11 @@ async def _run_real(video_path: Path, goal_text: str, backend: str, fps: float, 
             "text": getattr(inc, "message", None) or getattr(inc, "say", None),
             "confidence": getattr(getattr(inc, "verdict", None), "confidence", None),
             "entity_id": getattr(inc, "entity_id", None),
+            # D11 — the same correlation handle the .ptrace's judgment.event record carries
+            # (dispatch_seq there, evidence_seq here — one JudgmentEvent, two labels on the SAME
+            # number): lets the client resolve this delivered Incident back to the trace record for
+            # the evidence that produced it. None on a fire from a path that built no JudgmentEvent.
+            "evidence_seq": getattr(inc, "evidence_seq", None),
         })
     rec.close()
     rec.write_json(str(trace_path))

@@ -127,6 +127,9 @@ main{padding:20px 24px 28px;display:grid;gap:16px}
 .eventHead span{color:var(--steel)}
 .event h3{font-family:var(--display);font-size:16px;font-weight:400;margin:9px 0 6px}
 .event p{font-size:11px;color:var(--graphite);margin:0}
+.evidenceLink{display:inline-block;margin-top:7px;font:9px var(--mono);letter-spacing:.06em;color:#000;text-decoration:underline;cursor:pointer}
+.evidenceFrame{margin-top:7px;padding:8px;background:#f0f0ed;border:1px solid var(--hairline);font:9px var(--mono);white-space:pre-wrap;word-break:break-all;display:none}
+.evidenceFrame.open{display:block}
 .eventFooter{padding:11px;border-top:1px solid var(--hairline);display:flex;gap:7px}
 .eventFooter button{flex:1}
 .traceDrawer{position:fixed;inset:0;background:rgba(0,0,0,.38);z-index:60;display:none;align-items:stretch;justify-content:flex-end}
@@ -486,19 +489,32 @@ confidence: —</pre>
       $('#contextRev').textContent=gd.action||'—'; }
   }
   // Every judgment (fire AND silent/ask) with its judgment reference — the "show the work" view.
+  // D11: a fire's judgment.event record (same trace_id + goal_id as its gate.classified) carries
+  // data.evidence_seq — the RECORDER-stamped seq of the SAME trace's source.frame record, i.e. the
+  // literal evidence that fed this judgment. When resolvable, render it as a clickable anchor.
   function renderJudgments(recs, events){
     const gates=recs.filter(r=>r.stage==='gate.classified');
     const usages=recs.filter(r=>r.stage==='judge.usage');
+    const judgments=recs.filter(r=>r.stage==='judgment.event');
+    const frames=recs.filter(r=>r.stage==='source.frame');
     const box=$('#events'); box.innerHTML='';
     if(!gates.length){ box.innerHTML='<div class="eventEmpty">No judgments — tier-0 admitted nothing, so the judge was never called. Every per-frame edge.decision is still in the .ptrace.</div>'; return; }
     gates.forEach((r,i)=>{ const d=r.data||{}, u=(usages[i]&&usages[i].data)||{};
       const fired=d.action==='fire';
+      const jm=judgments.find(j=>j.trace_id===r.trace_id&&j.goal_id===r.goal_id);
+      const jd=(jm&&jm.data)||{};
+      const evFrame=jd.evidence_seq!=null?frames.find(f=>f.seq===jd.evidence_seq):null;
       const el=document.createElement('article'); el.className='event'+(fired?' fire':'');
       const tok=(u.input_tokens!=null)?` · ${u.input_tokens|0}+${u.output_tokens|0} tok`:'';
       const model=u.model?` · ${esc(u.model)}`:''; const ent=d.entity_id?` · entity ${esc(d.entity_id)}`:'';
+      const evId=`ev-${r.seq}`;
+      const evLink=evFrame?`<a class="evidenceLink" data-target="${evId}">→ evidence frame #${evFrame.seq}${evFrame.source_ts!=null?' · t='+Number(evFrame.source_ts).toFixed(1):''}</a>
+        <pre class="evidenceFrame" id="${evId}">${esc(JSON.stringify(evFrame,null,2))}</pre>`:'';
       el.innerHTML=`<div class="eventHead"><b>${esc((d.action||'?').toUpperCase())} · ${esc(d.reason||'')}</b><span>${r.source_ts!=null?'t='+Number(r.source_ts).toFixed(1):''}</span></div>
         <h3>${fired?'Incident emitted':'Judgment · no incident'}</h3>
-        <p>satisfied ${d.satisfied} · confidence ${d.confidence} · truth ${esc(d.truth||'—')}${ent}${model}${tok}</p>`;
+        <p>satisfied ${d.satisfied} · confidence ${d.confidence} · truth ${esc(d.truth||'—')}${ent}${model}${tok}</p>
+        ${evLink}`;
+      if(evFrame){ el.querySelector('.evidenceLink').onclick=()=>el.querySelector('#'+evId).classList.toggle('open'); }
       box.prepend(el); });
   }
 

@@ -1061,6 +1061,16 @@
               "type": "null"
             }
           ]
+        },
+        "evidence_seq": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "description": "A fired-event record \u2014 the durable trace of one concern firing, with evidence.",
