@@ -364,11 +364,11 @@ class Percept:
     router: RouteEngine | None = None  # local fast-path; None -> always defer (built in create)
     on_trace: "Callable[[Any], None] | None" = None  # opt-in per-frame decision tracer; None -> no-op
     episodes: dict = field(default_factory=dict)  # goal_id -> EpisodeLog (counting goals; also
-    # reused by _document_episode_fold for a content-key watch goal, card Y12 — a goal is never
-    # both types, so the map is shared safely)
-    # Y12 — the per-goal high-water mark of the last ``t`` GOVERNED into a content-key concern's
-    # episode log (see ``_document_episode_fold``). Session-only, deliberately absent from
-    # snapshot()/restore() like ``episodes`` itself (same ADR-006/Y9 policy).
+    # reused by _document_episode_fold for a content-key watch goal — a goal is never both types,
+    # so the map is shared safely)
+    # The per-goal high-water mark of the last ``t`` GOVERNED into a content-key concern's episode
+    # log (see ``_document_episode_fold``). Session-only, deliberately absent from
+    # snapshot()/restore() like ``episodes`` itself.
     _doc_episode_hwm: dict = field(default_factory=dict)  # goal_id -> highest t governed so far
     edge_counts: dict = field(default_factory=dict)  # goal_id -> running tally of edge detector boundaries
     rhythm: dict = field(default_factory=dict)  # goal_id -> RhythmTracker (the SELECTED subject's; brain count)
@@ -854,9 +854,9 @@ class Percept:
         :class:`~percept.contracts.JudgmentEvent` that rides out on ``FireEvent.judgment``. Callers
         that take no stamps (the event path) pass nothing and get ``judgment=None`` — additive only.
 
-        ``fold`` (card Y12, OPTIONAL) is the episode-owned idempotency decision to GOVERN this fire
-        with (see ``_document_episode_fold``); ``None`` (every caller that doesn't build one) is
-        byte-for-byte the pre-Y12 gate-only path.
+        ``fold`` (OPTIONAL) is the episode-owned idempotency decision to GOVERN this fire with (see
+        ``_document_episode_fold``); ``None`` (every caller that doesn't build one) is byte-for-byte
+        the gate-only path this method has always run.
         """
         fired = self.executor.fire_judged(
             goal, verdict, base_key, program_of(goal), freshness=freshness, t=t, metric=metric,
@@ -1111,32 +1111,31 @@ class Percept:
     def _document_episode_fold(
         self, goal: Goal, verdict: Verdict, t: float
     ) -> "EpisodeFoldResult | None":
-        """Card Y12 — episode grouping + :class:`~percept.behavior.EpisodeFoldResult`-owned
-        idempotency go GOVERNING, scoped to content-key concerns ONLY.
+        """Episode grouping + :class:`~percept.behavior.EpisodeFoldResult`-owned idempotency, GOVERNING,
+        scoped to content-key concerns ONLY.
 
-        Y11 left this ADVISORY for every concern (``_shadow_observe`` always folds ``decision=None``
-        — an ``unbound`` shadow that changes nothing). This method is the narrow exception: when a
+        The shadow-mode advisory (``_shadow_observe``) always folds ``decision=None`` — an ``unbound``
+        shadow that changes nothing, for every concern. This method is the narrow exception: when a
         concern SELECTS the content-key resolver (``goal.state['identity_policy'] == 'content_key'``,
-        card Y6's per-concern selector — screen/document scope, never inferred from the source), it
-        maintains a REAL per-goal :class:`~percept.episodes.EpisodeLog` and folds the resulting
-        :class:`~percept.episodes.ContinuationDecision` through the SAME pure
-        :meth:`~percept.behavior.BehaviorExecutor.fold_episode` Y11 already proved in shadow — and the
-        caller (:meth:`perceive_judged`) now THREADS the answer into ``_fire_concern(fold=...)`` so it
-        actually governs the gate interaction (idempotent suppression + re-arm; see
+        the per-concern selector in ``identity_policy.py`` — screen/document scope, never inferred from
+        the source), it maintains a REAL per-goal :class:`~percept.episodes.EpisodeLog` and folds the
+        resulting :class:`~percept.episodes.ContinuationDecision` through the SAME pure
+        :meth:`~percept.behavior.BehaviorExecutor.fold_episode` the shadow path already exercises — and
+        the caller (:meth:`perceive_judged`) now THREADS the answer into ``_fire_concern(fold=...)`` so
+        it actually governs the gate interaction (idempotent suppression + re-arm; see
         :func:`percept.behavior.episode_fold`).
 
         Every other concern — including a claim-slot / conversational (mutation) goal — returns
-        ``None`` here, so ``_fire_concern`` runs its byte-for-byte pre-Y3 gate-only path and stays
-        shadow-only via the UNTOUCHED ``_shadow_observe``/``STAGE_SHADOW_FOLD`` trace (card Y13 widens
-        that scope later). This method never changes gate mechanics itself — it only decides whether a
-        fold is built at all.
+        ``None`` here, so ``_fire_concern`` runs its byte-for-byte gate-only path and stays shadow-only
+        via the UNTOUCHED ``_shadow_observe``/``STAGE_SHADOW_FOLD`` trace. This method never changes
+        gate mechanics itself — it only decides whether a fold is built at all.
 
         Two things this method refuses to do:
 
         * **fabricate a content key** — a verdict carrying no subject at all is not grouped (returns
           ``None``, the same "nothing to fold" answer an undeclared concern gets); an ``unknown``
           subject folds through :func:`percept.behavior.episode_fold`'s own visible-abstention rule
-          (never rearms, never a manufactured key) exactly as Y4/Y5 already specify.
+          (never rearms, never a manufactured key).
         * **let an out-of-order observation corrupt the live log** — this per-goal log only ever
           advances in time (a high-water mark on ``t``). Async/off-loop judge dispatch can resolve
           completions out of chronological order; feeding a stale ``t`` into the log would rewind an
@@ -1361,8 +1360,8 @@ class Percept:
             if truth == "yes":
                 self.last_satisfied[goal.id] = now  # deadline: the expected event happened
             # base_key computed earlier (before the judge call) — reused here unchanged.
-            # Y12 — GOVERNING for content-key concerns only; every other concern gets fold=None
-            # (byte-for-byte pre-Y12) — see _document_episode_fold.
+            # GOVERNING for content-key concerns only; every other concern gets fold=None
+            # (byte-for-byte, unchanged) — see _document_episode_fold.
             doc_fold = self._document_episode_fold(goal, verdict, now)
             ev_fire = self._fire_concern(goal, verdict, base_key, freshness=freshness, t=now,
                                          timing=judgment_timing, evidence_seq=evidence_seq,
