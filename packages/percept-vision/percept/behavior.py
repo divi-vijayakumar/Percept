@@ -264,6 +264,17 @@ class Fired:
     # byte-for-byte unchanged. ``None`` means "this firing path did not carry judgment timing"
     # (episode/transition/absence fires, a bare executor test) — NEVER a fabricated timing.
     judgment: JudgmentEvent | None = None
+    # Y10 — provisional/superseding delivery. ``revision_id`` is THIS emission's stable
+    # episode-revision handle (``<episode_id>#r<n>``, minted by :class:`EpisodeIncidentLedger` at the
+    # instant of delivery); ``supersedes`` names the PRIOR revision this one replaces (the Y3
+    # :attr:`EpisodeFoldResult.supersedes`) when the Y2 mutation channel classified a later turn as
+    # replace/retract on the SAME episode. On an original ("provisional") fire ``supersedes`` is
+    # ``None`` — the finding was emitted on the rising edge and nothing has corrected it yet. Both
+    # default ``None`` and are appended LAST, so every existing positional ``Fired(...)`` construction,
+    # and every consumer that ignores them, is byte-for-byte unchanged; a fire carrying no episode fold
+    # (``fold=None``) leaves both ``None`` — the pre-Y10 shape.
+    revision_id: str | None = None
+    supersedes: str | None = None
 
 
 # --------------------------------------------------------------------------------------------------
@@ -660,14 +671,28 @@ class BehaviorExecutor:
             # Y3: an incident is about to be DELIVERED — record it on the episode so the next unchanged
             # confirmation of the same episode is idempotently suppressed (an escalated ASK still counts:
             # the episode spoke to the user). Only reached on a genuine emission, never on a withheld one.
+            #
+            # Y10: minting the revision here ALSO gives this emission its stable id, and the fold's
+            # ``supersedes`` (set only when a later turn was replace/retract on the same episode) names
+            # the prior revision this one corrects. Surfacing BOTH on the fire is what lets a superseding
+            # revision reach the consumer as a LINKED correction — not a coequal, unlinked peer. On an
+            # original ("provisional") fire ``supersedes`` stays ``None``. A superseding emission is
+            # metered (``<metric>.superseding_revision``) so the correction is never silent even when a
+            # downstream sink drops the link.
+            revision = supersedes = None
             if fold is not None and fold.episode_id is not None:
-                self._incidents.record(fold.episode_id)
+                revision = self._incidents.record(fold.episode_id)
+                supersedes = fold.supersedes
+            if supersedes is not None:
+                self.metrics.incr(f"{metric}.superseding_revision")
             if is_hard_quadrant(consequence_of(goal)):  # A3 hard-quadrant escalates to ASK
                 self.metrics.incr("consequence.escalate")
                 return Fired(goal.id, ASK, escalate_text(goal), base_key[-1], verdict,
-                             self._judgment(key, evidence_seq, ASK, timing))
+                             self._judgment(key, evidence_seq, ASK, timing),
+                             revision_id=revision, supersedes=supersedes)
             return Fired(goal.id, FIRE, goal.say, base_key[-1], verdict,
-                         self._judgment(key, evidence_seq, FIRE, timing))
+                         self._judgment(key, evidence_seq, FIRE, timing),
+                         revision_id=revision, supersedes=supersedes)
         if action == ASK:
             return Fired(goal.id, ASK, ask_text(goal), base_key[-1], verdict,
                          self._judgment(key, evidence_seq, ASK, timing))

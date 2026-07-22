@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from percept.incidents import incident_revision, incident_supersedes
 from percept.observability import get_logger, log
 
 
@@ -504,6 +505,124 @@ class IdempotentSink:
         if event_id is not None:
             self._ledger.mark_delivered(event_id, ts=self._clock())
         return out
+
+
+class SupersessionLedger:
+    """Bounded ``revision_id -> delivered incident.id`` map for the provisional/superseding delivery
+    path (card Y10).
+
+    The episode fold names the revision a correction supersedes as a stable revision handle
+    (``<episode_id>#r<n>``, :func:`percept.behavior.revision_id`), NOT the prior INCIDENT's id — the
+    incident id is minted only here, at the delivery boundary. This ledger is the small memory that
+    lets a superseding revision be resolved back to the actual prior incident id, so a consumer sees
+    ``supersedes=<prior incident id>`` and not just an opaque revision string.
+
+    BOUNDED with the same sizing philosophy as :class:`IdempotencyLedger` / :class:`BoundedDeadLetterQueue`
+    (ADR-001 §9, card A9): capped by COUNT (``max_records``), drop-oldest-with-trace via
+    ``on_evict(revision_id, reason)`` (``reason`` is always ``"max_records"``). A 24/7 watch must not
+    let this grow without limit; a revision that ages out simply resolves to ``None`` (an
+    unresolved-but-still-TRACED supersession — never a silent drop, see :class:`SupersessionSink`).
+    """
+
+    def __init__(
+        self, *, max_records: int = 10_000, on_evict: "Callable[[str, str], None] | None" = None,
+    ) -> None:
+        self.max_records = max_records
+        self.on_evict = on_evict
+        self._by_revision: "dict[str, str]" = {}  # revision_id -> incident.id, insertion-ordered (LRU)
+
+    def record(self, revision_id: str, incident_id: str) -> None:
+        """Remember that ``revision_id`` was delivered as incident ``incident_id``."""
+        self._by_revision.pop(revision_id, None)
+        self._by_revision[revision_id] = incident_id
+        while len(self._by_revision) > self.max_records:
+            oldest = next(iter(self._by_revision))
+            self._by_revision.pop(oldest)
+            if self.on_evict is not None:
+                self.on_evict(oldest, "max_records")
+            else:
+                log(get_logger("percept.runtime.sinks"), "supersession_ledger.evicted",
+                    reason="max_records", revision_id=oldest)
+
+    def resolve(self, revision_id: str) -> "str | None":
+        """The incident id a prior ``revision_id`` was delivered as, or ``None`` if unknown/aged out."""
+        return self._by_revision.get(revision_id)
+
+    def __len__(self) -> int:
+        return len(self._by_revision)
+
+    def __contains__(self, revision_id: str) -> bool:
+        return revision_id in self._by_revision
+
+
+class SupersessionSink:
+    """Wrap a notification sink (``on_incident``) to relate a SUPERSEDING revision to the incident it
+    corrects, and TRACE that relation — never silent (card Y10).
+
+    Y10's delivery model: a finding is emitted PROVISIONALLY on the rising edge; when the Y2 mutation
+    channel later classifies a turn as replace/retract on the same episode, the fold fires a superseding
+    revision carrying ``supersedes=<prior revision>`` (surfaced on the fire, then copied onto the
+    incident as a runtime-local annotation by :func:`percept.incidents.make_incident`). This wrapper is
+    the delivery-boundary piece that:
+
+    * resolves the fold's revision-level ``supersedes`` to the PRIOR INCIDENT's id via a bounded
+      :class:`SupersessionLedger`, and stamps it onto the outgoing incident as
+      ``incident._supersedes_incident_id`` (read via :func:`superseded_incident_id`) — so an in-process
+      ``async for incident in run(...)`` consumer sees ``supersedes=<prior incident id>`` exactly as the
+      card asks, WITHOUT a wire-contract change;
+    * TRACES every supersession (a structured log line by default, or ``on_supersede(record)`` if
+      supplied) so a client debugging the stream can SEE the original→correction link even when the
+      downstream sink itself carries no supersession field — "trace the supersession, never silent".
+
+    It then delegates to the wrapped sink UNCHANGED (sync or async — the coroutine is returned as-is for
+    the caller to await, exactly like ``worker._call_sink`` already does). An incident with no
+    supersession annotation (the common provisional case) passes straight through, its revision recorded
+    for a possible future correction; a sink with nothing to relate is byte-for-byte the bare sink.
+    """
+
+    def __init__(
+        self,
+        sink: Callable,
+        *,
+        ledger: "SupersessionLedger | None" = None,
+        on_supersede: "Callable[[dict[str, Any]], None] | None" = None,
+    ) -> None:
+        self._sink = sink
+        self._ledger = ledger if ledger is not None else SupersessionLedger()
+        self._on_supersede = on_supersede
+
+    def __call__(self, incident: Any) -> Any:
+        revision = incident_revision(incident)
+        supersedes = incident_supersedes(incident)
+        if supersedes is not None:
+            prior_incident_id = self._ledger.resolve(supersedes)
+            # Stamp the resolved prior INCIDENT id (the consumer-facing "supersedes=<prior incident
+            # id>"); None when the prior revision aged out of the bounded ledger — still traced below.
+            incident._supersedes_incident_id = prior_incident_id  # type: ignore[attr-defined]
+            self._trace(incident, prior_revision=supersedes, prior_incident_id=prior_incident_id)
+        if revision is not None:
+            self._ledger.record(revision, getattr(incident, "id", None) or "")
+        return self._sink(incident)
+
+    def _trace(self, incident: Any, *, prior_revision: str, prior_incident_id: "str | None") -> None:
+        record = {
+            "incident_id": getattr(incident, "id", None),
+            "concern_id": getattr(incident, "concern_id", None),
+            "revision_id": incident_revision(incident),
+            "supersedes_revision": prior_revision,
+            "supersedes_incident_id": prior_incident_id,
+        }
+        if self._on_supersede is not None:
+            self._on_supersede(record)
+        else:
+            log(get_logger("percept.runtime.sinks"), "incident.superseded", **record)
+
+
+def superseded_incident_id(incident: Any) -> "str | None":
+    """The PRIOR incident id a superseding revision replaces, once :class:`SupersessionSink` has
+    resolved it (card Y10). ``None`` for an original incident, or when the prior revision aged out of
+    the bounded ledger before this correction arrived."""
+    return getattr(incident, "_supersedes_incident_id", None)
 
 
 def webhook(url: str, **kwargs) -> WebhookSink:

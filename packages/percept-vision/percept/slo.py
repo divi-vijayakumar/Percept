@@ -77,6 +77,9 @@ __all__ = [
     "dollars_per_stream_hour",
     "FOVEA_CALL_REDUCTION_FLOOR",
     "fovea_call_reduction",
+    "SETTLE_WINDOW_DEFAULT_S",
+    "SETTLE_WINDOW_MAX_S",
+    "SettleWindow",
 ]
 
 # ---------------------------------------------------------------------------
@@ -249,3 +252,93 @@ def fovea_call_reduction(report: LoopReport) -> float:
     doesn't reach into the harness report's field name directly.
     """
     return report.reduction
+
+
+# ---------------------------------------------------------------------------
+# 4. Settle-window bound — the SLO on a concern's provisional-delivery DELAY (card Y10)
+# ---------------------------------------------------------------------------
+#
+# Y10's delivery choice: a finding is emitted PROVISIONALLY on the rising edge, and a later
+# replace/retract on the same episode arrives as a SUPERSEDING revision (linked, never a silent
+# swallow) — NOT withheld behind a "settle window" wide enough to catch a late retraction. A real
+# correction can land 21-34s after the original claim; withholding EVERY incident for a window that
+# wide would destroy latency for every claim to salvage the relation for a few. So the default is
+# provisional-immediate, and any settle window a concern DOES declare is bounded here by an explicit
+# SLO rather than left to grow to 34s.
+#
+# THRESHOLD RATIONALE (pre-registered, no tune-to-green — same discipline as §§1-3): a settle window
+# is pure ADDED delivery latency on every fire of that concern. The tree already committed to a
+# latency ceiling past which a judged decision stops "feeling instantaneous" to a user:
+# ``tests/test_p_lat_base.py``'s ``REFLEX_INFEASIBLE_THRESHOLD_S = 2.0`` (the judge round-trip
+# "reflex" budget). A settle window may spend UP TO that already-accepted budget waiting for a
+# same-turn correction to consolidate, but no more — beyond it the delay is no longer "settling", it
+# is the wide-window withholding this card exists to reject. The ceiling is that same 2.0s (reused,
+# not reinvented), and 34s — a real late-retraction gap — sits far outside it, so declaring one is a
+# loud ``ValueError`` at construction, never a silently honoured latency regression.
+
+#: The DEFAULT settle window: provisional-immediate. A concern that declares nothing emits on the
+#: rising edge exactly as today (the card's "a concern that declares nothing gets today's behaviour").
+SETTLE_WINDOW_DEFAULT_S = 0.0
+
+#: The hard ceiling on a DECLARED settle window — the judge round-trip reflex budget
+#: (``REFLEX_INFEASIBLE_THRESHOLD_S = 2.0``, ``tests/test_p_lat_base.py``), reused not reinvented.
+#: A window beyond this is the wide-window withholding Y10 rejects; declaring one raises.
+SETTLE_WINDOW_MAX_S = 2.0
+
+
+@dataclass(frozen=True)
+class SettleWindow:
+    """A concern's declared provisional-delivery settle window (card Y10) — CONCERN-SPECIFIC and
+    SLO-bounded.
+
+    A settle window is the small delay a concern may spend after the rising edge, letting a same-turn
+    correction consolidate BEFORE the incident is emitted, so a very-fast replace/retract collapses
+    into a single settled incident instead of an incident-plus-immediate-revision. It is a deliberate,
+    bounded latency trade — NOT the wide window that would withhold every fire to catch a 34s
+    retraction (that is what the provisional-incident + superseding-revision path exists to avoid).
+
+    :attr:`seconds` defaults to :data:`SETTLE_WINDOW_DEFAULT_S` (``0.0`` — provisional-immediate, the
+    default a concern that declares nothing gets). Construction enforces the SLO: a negative window is
+    nonsensical and a window past :data:`SETTLE_WINDOW_MAX_S` is the latency regression the card
+    rejects — both raise :class:`ValueError` LOUDLY rather than silently degrade latency.
+    """
+
+    seconds: float = SETTLE_WINDOW_DEFAULT_S
+
+    def __post_init__(self) -> None:
+        if self.seconds < 0.0:
+            raise ValueError(f"settle window must be non-negative, got {self.seconds!r}s")
+        if self.seconds > SETTLE_WINDOW_MAX_S:
+            raise ValueError(
+                f"settle window {self.seconds!r}s exceeds the SLO ceiling {SETTLE_WINDOW_MAX_S}s — "
+                "a window this wide withholds every incident to catch a late retraction, which "
+                "destroys latency for every claim; emit provisionally and supersede on the correction "
+                "instead"
+            )
+
+    @property
+    def is_immediate(self) -> bool:
+        """True for the default provisional-immediate window (no delay — fire on the rising edge)."""
+        return self.seconds <= 0.0
+
+    def holds(self, elapsed_s: float) -> bool:
+        """Whether a fire ``elapsed_s`` past the rising edge is still WITHIN the settle window.
+
+        ``True`` means "keep waiting for the window to close"; ``False`` means "emit now". An immediate
+        window never holds, so the default path emits on the rising edge with zero added latency."""
+        if self.is_immediate:
+            return False
+        return elapsed_s < self.seconds
+
+    @classmethod
+    def resolve(cls, declared: "float | SettleWindow | None") -> "SettleWindow":
+        """Normalise a concern's declared setting into a bounded :class:`SettleWindow`.
+
+        ``None`` (the common case — a concern declared nothing) resolves to the provisional-immediate
+        default; a bare ``float`` is wrapped (and SLO-checked); an existing :class:`SettleWindow` passes
+        through. The SLO bound is enforced in every path via ``__post_init__``."""
+        if declared is None:
+            return cls()
+        if isinstance(declared, SettleWindow):
+            return declared
+        return cls(seconds=float(declared))

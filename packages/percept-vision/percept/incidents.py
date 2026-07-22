@@ -42,7 +42,7 @@ def make_incident(
     goal_id = getattr(fire, "goal_id", "")
     if entity_id is None:
         entity_id = getattr(fire, "entity_id", None)
-    return Incident(
+    incident = Incident(
         id=id or f"inc-{goal_id}-{ts:.3f}-{uuid.uuid4().hex[:8]}",
         concern_id=goal_id,
         verdict=verdict,
@@ -51,6 +51,30 @@ def make_incident(
         message=getattr(fire, "text", "") or "",
         entity_id=str(entity_id) if entity_id is not None else None,
     )
+    # Y10 — carry the provisional/superseding link ACROSS the emission boundary as RUNTIME-LOCAL
+    # annotations (private instance attrs, exactly like Incident's bound label state): the delivery
+    # path (``SupersessionSink``) and an in-process ``async for incident in run(...)`` consumer read
+    # them to relate a correction to the incident it supersedes, while the WIRE Incident shape stays
+    # frozen — ``asdict`` / the JSON schema / a webhook payload never see them (no contract bump). A
+    # fire that carries no episode revision (the common case) leaves both ``None``. Read via
+    # :func:`incident_revision` / :func:`incident_supersedes`.
+    incident._revision_id = getattr(fire, "revision_id", None)  # type: ignore[attr-defined]
+    incident._supersedes = getattr(fire, "supersedes", None)  # type: ignore[attr-defined]
+    return incident
+
+
+def incident_revision(incident: Any) -> str | None:
+    """This incident's stable episode-revision id (``<episode_id>#r<n>``), or ``None``.
+
+    The runtime-local annotation :func:`make_incident` copies off the fire (card Y10). ``None`` for an
+    incident that carried no episode revision (an unbound/ambiguous or pre-Y10 fire)."""
+    return getattr(incident, "_revision_id", None)
+
+
+def incident_supersedes(incident: Any) -> str | None:
+    """The PRIOR revision id this incident supersedes (a replace/retract correction), or ``None`` for
+    an original ("provisional") incident. Runtime-local annotation (card Y10)."""
+    return getattr(incident, "_supersedes", None)
 
 
 def _encode_frame_bundle(frames: list, *, t_start: float, t_end: float) -> tuple[str, bytes]:
