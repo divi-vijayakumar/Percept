@@ -566,6 +566,21 @@ class RunTraceManifest:
     #: ``percept_version``/``contract_version``.
     build_commit: str | None = None
     build_timestamp: str | None = None
+    #: The resolved OBJECT identities behind this run, when it started from a
+    #: :class:`~percept.contracts.watchplan.ResolvedWatch` (:meth:`create`'s ``resolved=`` kwarg) —
+    #: composes with ``build_commit``/``build_timestamp`` above as the same kind of fact: not what
+    #: ran, but exactly WHICH configuration objects it ran with. ``source_profile_id`` is
+    #: ``"<name>@<content_hash[:8]>"`` (the profile has no separate version field today, so its own
+    #: content hash plays that role — two profiles with the same name and knobs share an id).
+    #: ``profiles`` names every registered ``WatchProfile`` the resolution consulted (empty when
+    #: none did). ``component_snapshot_hash`` / ``optimization_lock_hash`` mirror the same-named
+    #: :class:`~percept.contracts.watchplan.ResolvedWatch` fields. All four are ``None``/empty —
+    #: byte-for-byte the previous manifest shape — when the run did not go through
+    #: :class:`~percept.resolver.ConfigResolver` first.
+    source_profile_id: str | None = None
+    profiles: tuple[str, ...] = ()
+    component_snapshot_hash: str | None = None
+    optimization_lock_hash: str | None = None
 
     @classmethod
     def create(
@@ -586,8 +601,23 @@ class RunTraceManifest:
         gate_config: Mapping[str, Any] | None = None,
         labels: Mapping[str, Any] | None = None,
         plan_policy: Mapping[str, Any] | None = None,
+        resolved: "Any | None" = None,
+        source_profile_id: str | None = None,
+        profiles: Sequence[str] = (),
+        component_snapshot_hash: str | None = None,
+        optimization_lock_hash: str | None = None,
     ) -> "RunTraceManifest":
-        """Build a manifest, filling versions from the installed package (never hand-synced)."""
+        """Build a manifest, filling versions from the installed package (never hand-synced).
+
+        ``resolved`` — an optional :class:`~percept.contracts.watchplan.ResolvedWatch` (the output
+        of :meth:`percept.resolver.ConfigResolver.resolve`). When given, its object identities are
+        read into ``source_profile_id``/``profiles``/``component_snapshot_hash``/
+        ``optimization_lock_hash`` UNLESS the caller also passed the matching kwarg explicitly (an
+        explicit value always wins). Typed loosely (``Any``) so this module never imports
+        ``percept.resolver``/``percept.contracts.watchplan`` at module scope — the same
+        local-import discipline the version lookups just above already use, to keep
+        ``percept.tracing`` importable early in the package's own import graph.
+        """
         percept_version = watch_version = contract_version = None
         try:  # local imports: tracing must stay importable from inside percept/__init__'s graph
             from . import __version__ as _pv  # noqa: PLC0415
@@ -612,6 +642,35 @@ class RunTraceManifest:
             build_timestamp = _build.build_timestamp
         except Exception:  # pragma: no cover - defensive
             pass
+
+        # Resolved object identities (additive; see the field docstrings above) — an explicit
+        # kwarg always wins over what ``resolved`` would derive.
+        resolved_source_profile_id = source_profile_id
+        resolved_profiles = tuple(profiles)
+        resolved_component_snapshot_hash = component_snapshot_hash
+        resolved_optimization_lock_hash = optimization_lock_hash
+        if resolved is not None:
+            if resolved_source_profile_id is None:
+                sp = getattr(resolved, "source_profile", None)
+                name = sp.get("name") if sp else None
+                if name:
+                    resolved_source_profile_id = f"{name}@{content_hash(dict(sp))[:8]}"
+            if not resolved_profiles:
+                # Registered WatchProfile names the resolution consulted, per-field provenance
+                # names them as "profile_resolution.resolve_profile('<name>')" source ids — see
+                # percept.resolver.ConfigResolver.resolve's situation-tier contribution.
+                names: set[str] = set()
+                for origin in getattr(resolved, "provenance", {}).values():
+                    source_id = getattr(origin, "source_id", "")
+                    prefix = "profile_resolution.resolve_profile("
+                    if source_id.startswith(prefix):
+                        names.add(source_id[len(prefix):].rstrip(")").strip("'\""))
+                resolved_profiles = tuple(sorted(names))
+            if resolved_component_snapshot_hash is None:
+                resolved_component_snapshot_hash = getattr(resolved, "component_snapshot_hash", None)
+            if resolved_optimization_lock_hash is None:
+                resolved_optimization_lock_hash = getattr(resolved, "optimization_lock_hash", None)
+
         return cls(
             run_id=run_id or uuid.uuid4().hex[:16],
             source=source,
@@ -620,6 +679,10 @@ class RunTraceManifest:
             contract_version=contract_version,
             build_commit=build_commit,
             build_timestamp=build_timestamp,
+            source_profile_id=resolved_source_profile_id,
+            profiles=resolved_profiles,
+            component_snapshot_hash=resolved_component_snapshot_hash,
+            optimization_lock_hash=resolved_optimization_lock_hash,
             started_wall_ts=float(wall_clock()),
             started_source_ts=started_source_ts,
             driver=driver,
@@ -649,6 +712,10 @@ class RunTraceManifest:
             "contract_version": self.contract_version,
             "build_commit": self.build_commit,
             "build_timestamp": self.build_timestamp,
+            "source_profile_id": self.source_profile_id,
+            "profiles": list(self.profiles),
+            "component_snapshot_hash": self.component_snapshot_hash,
+            "optimization_lock_hash": self.optimization_lock_hash,
             "started_wall_ts": self.started_wall_ts,
             "started_source_ts": self.started_source_ts,
             "driver": self.driver,
@@ -673,6 +740,10 @@ class RunTraceManifest:
             contract_version=payload.get("contract_version"),
             build_commit=payload.get("build_commit"),
             build_timestamp=payload.get("build_timestamp"),
+            source_profile_id=payload.get("source_profile_id"),
+            profiles=tuple(payload.get("profiles") or ()),
+            component_snapshot_hash=payload.get("component_snapshot_hash"),
+            optimization_lock_hash=payload.get("optimization_lock_hash"),
             started_wall_ts=float(payload.get("started_wall_ts", 0.0)),
             started_source_ts=payload.get("started_source_ts"),
             driver=str(payload.get("driver", "run")),
