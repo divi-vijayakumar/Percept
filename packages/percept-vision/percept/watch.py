@@ -20,6 +20,18 @@ compilation step: :func:`percept.goalsugar.desugar_goals` wraps the string, verb
 ``Goal`` with a deterministic documented id, and the identical firing path runs. The signature,
 streaming semantics, and ``WATCH_VERSION`` are unchanged — only the accepted shape of an existing
 argument widens, which no existing caller can observe.
+
+``goals`` additionally accepts a :class:`~percept.contracts.watchplan.WatchPlan` (ADR-008) — a
+typed, portable statement of intent that may carry ``explicit`` per-field overrides. A ``WatchPlan``
+entry is resolved (:class:`percept.resolver.ConfigResolver`) and armed
+(:func:`percept.watchplan_apply.apply_watch_plan`, which also runs the existing ``coerce_authored_*``
+firewall over its compiled state) exactly as if the caller had done that themselves before calling
+``watch()``; the bare-string/``Goal`` path (above) is DELIBERATELY left untouched by this widening —
+it keeps calling :func:`~percept.goalsugar.desugar_goals` directly, with no resolver in between, so
+that a caller who never constructs a ``WatchPlan`` gets byte-for-byte pre-ADR-008 behavior with no
+new env read and no new provenance bookkeeping. Wiring the string-sugar path through the resolver
+too (so its filled SDK defaults carry provenance) needs a receipt-return channel this frozen
+signature does not have; left for a later card.
 """
 
 from __future__ import annotations
@@ -30,8 +42,10 @@ from .adapters import Goal
 from .agent import FireEvent, Percept
 from .config import Settings
 from .contracts import WatchEvent
+from .contracts.watchplan import WatchPlan
 from .goalsugar import desugar_goals
 from .profile_wiring import resolve_watch_profile
+from .watchplan_apply import apply_watch_plan
 from .watchprofile import WatchProfile
 
 #: Semver of the ``watch()`` entrypoint contract itself — the function signature + streaming
@@ -97,9 +111,39 @@ async def _aiter(stream: "AsyncIterable[Any] | Iterable[Any]") -> AsyncIterator[
         yield item
 
 
+def _arm_goals(core: Percept, goals: Any, *, source: str) -> None:
+    """Arm every entry in ``goals`` on ``core``, in order.
+
+    A bare string / :class:`Goal` runs through the EXISTING, untouched
+    :func:`~percept.goalsugar.desugar_goals` -> :meth:`Percept.add_goal` path — no resolver, no new
+    env read, byte-for-byte pre-ADR-008. A :class:`~percept.contracts.watchplan.WatchPlan` runs
+    through :func:`percept.watchplan_apply.apply_watch_plan` instead (resolve + compile + coerce +
+    arm). The two kinds may be freely mixed in one ``goals`` iterable; legacy entries are batched
+    through ``desugar_goals`` between ``WatchPlan`` entries so relative order is preserved without
+    calling ``desugar_goals`` once per item.
+    """
+    items = [goals] if isinstance(goals, (str, Goal, WatchPlan)) else list(goals)
+    legacy_batch: list[Any] = []
+
+    def _flush_legacy() -> None:
+        if not legacy_batch:
+            return
+        for goal in desugar_goals(list(legacy_batch), source=source):
+            core.add_goal(goal)
+        legacy_batch.clear()
+
+    for item in items:
+        if isinstance(item, WatchPlan):
+            _flush_legacy()
+            apply_watch_plan(core, item)
+        else:
+            legacy_batch.append(item)
+    _flush_legacy()
+
+
 async def watch(
     stream: "AsyncIterable[Any] | Iterable[Any]",
-    goals: "str | Goal | Iterable[str | Goal]",
+    goals: "str | Goal | WatchPlan | Iterable[str | Goal | WatchPlan]",
     profile: Any = None,
     *,
     percept: Percept | None = None,
@@ -126,7 +170,10 @@ async def watch(
             into ``Goal(condition=<your exact string>, say=<your exact string>)`` with a
             deterministic, documented id. That desugaring is **pass-through, not compilation**: the
             string is never parsed, normalised, or mapped to a vocabulary — the judge sees the
-            caller's own words, exactly as typed. A ``Goal`` passed in is used unchanged.
+            caller's own words, exactly as typed. A ``Goal`` passed in is used unchanged. A
+            :class:`~percept.contracts.watchplan.WatchPlan` (ADR-008) is resolved and armed via
+            :func:`percept.watchplan_apply.apply_watch_plan` (see the module docstring); strings,
+            ``Goal``\\ s, and ``WatchPlan``\\ s may be freely mixed in one iterable.
         profile: OPTIONAL. ``None`` (the default) is today's ``Settings``-driven behavior — the
             documented default profile, BYTE-FOR-BYTE unchanged. A :class:`~percept.watchprofile.WatchProfile`
             is resolved for real (card M2); other shapes (a bare ``Settings``, an opaque
@@ -142,8 +189,7 @@ async def watch(
         callers — see :class:`WatchEvent`'s docstring for why the type still carries it).
     """
     core = percept if percept is not None else _build_core(profile)
-    for goal in desugar_goals(goals, source=source):
-        core.add_goal(goal)
+    _arm_goals(core, goals, source=source)
     async for frame in _aiter(stream):
         now = core.clock()
         fired = await core.perceive_judged(frame, source=source, t=now)
