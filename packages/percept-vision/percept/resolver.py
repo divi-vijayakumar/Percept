@@ -325,7 +325,7 @@ def _check_optimization_lock_ownership(values: Mapping[str, Any]) -> None:
             )
 
 
-def _expand_watch_plan_override(path: str, value: Any) -> dict[str, Any]:
+def _expand_explicit_path(path: str, value: Any) -> dict[str, Any]:
     """Some ``owner="WatchPlan"`` registry paths are the EXPLICIT-OVERRIDE registration for an
     underlying ``Settings.*`` runtime field, not the runtime field itself — tunables.py Section D's
     own distinction between a DEFAULT-tier registration (owned by whichever object sets the
@@ -333,13 +333,15 @@ def _expand_watch_plan_override(path: str, value: Any) -> dict[str, Any]:
     an EXPLICIT per-context override (``WatchProfile.salience_stat`` -> ``"WatchPlan"``, the ADR's
     own worked example: "an explicit ``salience_stat='block_max'`` override").
 
-    A :class:`WatchPlan` legitimately asserts the EXPLICIT-tier path (passes ownership); this
-    translates it, AFTER the ownership check, to the runtime field it actually resolves —
-    otherwise a WatchPlan's explicit salience_stat would land on ``effective["WatchProfile.salience_stat"]``,
-    a key nothing else ever contests, instead of actually outranking env on
-    ``Settings.edge.salience_stat``. One registry path may expand to several runtime paths (a
-    ``stat_thresholds`` mapping fans out to up to three ``motion_gate*`` fields, mirroring
-    :func:`percept.profile_wiring.resolve_watch_profile`'s own field-by-field translation)."""
+    Both a :class:`WatchPlan`'s explicit fields AND :func:`percept.profile_resolution.resolve_situation`'s
+    contributed overrides are asserted against the EXPLICIT-tier path (passes ownership / is the
+    path the situation resolver's own vocabulary names); this translates it, AFTER the ownership
+    check, to the runtime field it actually resolves — otherwise the value would land on
+    ``effective["WatchProfile.salience_stat"]``, a key nothing else ever contests, instead of
+    actually outranking a lower-precedence layer on ``Settings.edge.salience_stat``. One registry
+    path may expand to several runtime paths (``stat_thresholds`` fans out to up to three
+    ``motion_gate*`` fields, mirroring :func:`percept.profile_wiring.resolve_watch_profile`'s own
+    field-by-field translation). A path with no special-cased expansion passes through unchanged."""
     if path == "WatchProfile.salience_stat":
         return {"Settings.edge.salience_stat": value}
     if path == "WatchProfile.stat_thresholds" and isinstance(value, Mapping):
@@ -425,7 +427,17 @@ class ConfigResolver:
         source_profile_values = _source_profile_paths(source_profile) if source_profile else {}
 
         situation_overrides = resolve_situation(*situation).overrides if situation is not None else None
-        situation_values = _situation_paths(situation_overrides) if situation_overrides else {}
+        situation_raw = _situation_paths(situation_overrides) if situation_overrides else {}
+        # Expand each situation-contributed path to the runtime field it actually resolves (the
+        # same translation a WatchPlan's explicit fields go through below), while remembering the
+        # ORIGINAL path's registry owner for provenance — see _expand_explicit_path.
+        situation_values: dict[str, Any] = {}
+        situation_owner_by_path: dict[str, str] = {}
+        for raw_path, raw_value in situation_raw.items():
+            owner = _owner_layer_for_situation_path(raw_path)
+            for epath, evalue in _expand_explicit_path(raw_path, raw_value).items():
+                situation_values[epath] = evalue
+                situation_owner_by_path[epath] = owner
         # An explicitly-requested situation resolution is, like an explicit source_profile, an
         # EXPLICIT selection for the loud-diagnostic rule (module docstring).
         situation_is_explicit = situation is not None
@@ -445,6 +457,13 @@ class ConfigResolver:
         # source_profile_values / situation_values are produced by this module from trusted,
         # already-validated objects (a real SourceProfile, or resolve_situation's own pure
         # mapping) — not caller-authored path dicts — so they are not re-gated here.
+
+        # AFTER ownership passes (against the ASSERTED path, e.g. "WatchProfile.salience_stat"),
+        # expand to the runtime path it actually resolves (e.g. "Settings.edge.salience_stat") for
+        # the merge below — see _expand_explicit_path.
+        watch_plan_effective: dict[str, Any] = {}
+        for path, value in watch_plan_values.items():
+            watch_plan_effective.update(_expand_explicit_path(path, value))
 
         optimization_lock_hash: str | None = None
         warnings: list[FieldDiagnostic] = []
@@ -494,7 +513,7 @@ class ConfigResolver:
                 LAYER_DEPLOYMENT, deployment_contribution, "env", "deployment/env override",
             ),
             _LayerContribution(
-                LAYER_WATCH_PLAN, watch_plan_values, "watch_plan.explicit", "explicit plan override",
+                LAYER_WATCH_PLAN, watch_plan_effective, "watch_plan.explicit", "explicit plan override",
             ),
         )
 
@@ -508,7 +527,7 @@ class ConfigResolver:
                 # Gate, not literally "SourceProfile") even though they are layered in at the
                 # SourceProfile precedence slot above — see module docstring.
                 owner_layer = (
-                    _owner_layer_for_situation_path(path)
+                    situation_owner_by_path.get(path, LAYER_SOURCE_PROFILE)
                     if contribution.values is situation_values
                     else contribution.layer
                 )
@@ -560,7 +579,7 @@ class ConfigResolver:
 
         resolved = ResolvedWatch(
             plan=watch_plan,
-            source_profile=(_source_profile_paths(source_profile) if source_profile else None),
+            source_profile=(source_profile_values if source_profile else None),
             domain_pack=(dict(domain_pack.values) if domain_pack else None),
             execution_policy=(dict(execution_policy.values) if execution_policy else None),
             components={},
