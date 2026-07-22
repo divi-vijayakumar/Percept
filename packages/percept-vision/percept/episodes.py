@@ -481,6 +481,11 @@ class EpisodeLog:
     through ``on_drop(episode, reason)`` (``reason`` is ``"window_expired"`` or ``"max_episodes"``);
     the default logs a structured line so a drop is observable even when the caller wires nothing.
 
+    Card Y15: each episode also owns a BOUNDED revision timeline. ``record_revision`` folds a
+    ``confirmed`` heartbeat in place (no row) so a 24/7 confirm stream never grows the log; only
+    state-changing kinds append, and the per-episode timeline is capped at ``max_revisions`` with a
+    TRACED drop (``on_revision_drop`` / ``episode.revision_dropped``) on overflow.
+
     Card Y1: ``policy`` carries the CONCERN-LEVEL continuation semantics (see :class:`EpisodePolicy`)
     and ``on_continuation(decision)`` observes every typed :class:`ContinuationDecision`. A denied
     continuation is additionally logged, so "why did this subject open a second episode?" is
@@ -493,11 +498,18 @@ class EpisodeLog:
         policy: "EpisodePolicy | None" = None,
         on_continuation: "Callable[[ContinuationDecision], None] | None" = None,
         retain_inline_max_bytes: int = _MAX_INLINE_EVIDENCE_BYTES,
+        max_revisions: int = 256,
+        on_revision_drop: "Callable[[Episode, Revision], None] | None" = None,
     ) -> None:
         self.goal_id = goal_id
         self.window_s = window_s
         self.max_episodes = max_episodes
         self.on_drop = on_drop
+        # Card Y15: a per-episode timeline is bounded in COUNT (max_revisions) with a TRACED
+        # drop-oldest on overflow, the same ADR-001 §9 discipline max_episodes uses. `confirmed`
+        # heartbeats coalesce and never reach this cap; only state changes count against it.
+        self.max_revisions = max_revisions
+        self.on_revision_drop = on_revision_drop
         self.policy = policy if policy is not None else EpisodePolicy()
         self.on_continuation = on_continuation
         # Card Y14: an exemplar larger than this (measured by frame_nbytes) is a decoded frame and is
@@ -591,7 +603,24 @@ class EpisodeLog:
             return None
         revision = Revision(kind=kind, t=t, value=value, incident_id=incident_id)
         episode.revisions.append(revision)
+        if len(episode.revisions) > self.max_revisions:
+            dropped = episode.revisions.pop(0)  # drop-oldest, the same discipline as max_episodes
+            self._revision_dropped(episode, dropped)
         return revision
+
+    def _revision_dropped(self, episode: "Episode", revision: "Revision") -> None:
+        """ADR-001 §9: a bound-driven revision drop must never be silent.
+
+        Mirrors :meth:`_dropped` for episodes — an ``on_revision_drop`` hook when wired, else a
+        structured log line, so a client sees the timeline was capped even with nothing wired."""
+        if self.on_revision_drop is not None:
+            self.on_revision_drop(episode, revision)
+        else:
+            log(
+                get_logger("percept.episodes"), "episode.revision_dropped",
+                goal_id=self.goal_id, episode_id=episode.id,
+                kind=revision.kind, t=revision.t, reason="max_revisions",
+            )
 
     def _dropped(self, episode: "Episode", reason: str) -> None:
         """ADR-001 §9: a bound-driven drop must never be silent."""
