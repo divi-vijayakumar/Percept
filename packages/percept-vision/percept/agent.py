@@ -372,7 +372,7 @@ class Percept:
     # log (see ``_document_episode_fold``). Session-only, deliberately absent from
     # snapshot()/restore() like ``episodes`` itself.
     _doc_episode_hwm: dict = field(default_factory=dict)  # goal_id -> highest t governed so far
-    # Card Y13 — CLAIM MODE: the per-goal claim-slot twins of the document-mode fields above.
+    # CLAIM MODE: the per-goal claim-slot twins of the document-mode fields above.
     # ``_claim_states`` holds the authoritative :class:`~percept.claims.ClaimState` (value + its own
     # revision ledger) per claim-slot goal; ``_claim_hwm`` is the same out-of-order high-water mark as
     # ``_doc_episode_hwm``; ``_claim_episode_id`` remembers the ONE persistent episode a claim-slot
@@ -1184,26 +1184,26 @@ class Percept:
     def _claim_episode_fold(
         self, goal: Goal, verdict: Verdict, t: float
     ) -> "EpisodeFoldResult | None":
-        """CLAIM MODE rollout (card Y13) — the claim-slot twin of :meth:`_document_episode_fold`.
+        """CLAIM MODE — the claim-slot twin of :meth:`_document_episode_fold`.
 
-        Y12 flipped episode grouping + idempotency to GOVERNING for concerns that SELECT the
+        Document mode flipped episode grouping + idempotency to GOVERNING for concerns that SELECT the
         content-key resolver; this method flips the SAME seam for concerns that SELECT the claim-slot
         one (``goal.state['identity_policy'] == 'claim_slot'``) — a goal is never both, so the two
         methods are mutually exclusive by construction and either may be called unconditionally by the
         caller. Every other concern (including an undeclared one) still gets ``fold=None`` here, exactly
         as it always has.
 
-        The three landed pieces this wires together, unchanged, for claim-slot concerns:
+        The three pieces this wires together for claim-slot concerns:
 
-        1. **The mutation channel is authority-gated FIRST** (card Y2, ``percept.claims``): the
-           verdict's speech act only reaches the episode fold as its EFFECTIVE operation —
+        1. **The mutation channel is authority-gated FIRST** (``percept.claims``): the verdict's speech
+           act only reaches the episode fold as its EFFECTIVE operation —
            :meth:`~percept.claims.ClaimState.apply` downgrades a ``replace``/``retract``/``close`` from
            an asserter this concern's :class:`~percept.contracts.ConcernAuthority`
            (:func:`~percept.claims.concern_authority_of`, ``goal.state['authority']``) does not permit
            to a non-mutating ``mention`` — TRACED (``claim.authority_downgrade``), never silent — so a
            seller's textbook replace can never move a buyer-authoritative value. A concern that
            authored no authority gets the unrestricted default, byte-for-byte.
-        2. **The SAME episode fold Y12 governs with** (card Y3/Y10): the effective operation feeds
+        2. **The SAME episode fold document mode governs with**: the effective operation feeds
            :meth:`~percept.behavior.BehaviorExecutor.fold_episode` exactly like a content-key concern's
            verdict does, via the SAME ``episode_mutation_of`` map — so an applied ``replace``/``retract``
            re-arms and fires a superseding revision (``fold.supersedes``), and the gate/incident-delivery
@@ -1269,13 +1269,13 @@ class Percept:
         return fold
 
     def episode_current(self, goal_id: str) -> "Episode | None":
-        """Card Y13 — the current authoritative episode for a claim-slot concern.
+        """The current authoritative episode for a claim-slot concern.
 
         ``.value`` is the corrected value (the last APPLIED assert/replace/retract, never a downgraded
-        or merely-mentioned one) and ``.revisions`` is the bounded Y15 state-change chain, so a
-        correction is never a silent overwrite: the revision it superseded stays on the timeline and
-        the new row names what the slot became. Returns ``None`` when this goal has no claim-slot
-        episode yet — nothing observed, or the goal never selected ``identity_policy='claim_slot'``.
+        or merely-mentioned one) and ``.revisions`` is the bounded state-change chain, so a correction
+        is never a silent overwrite: the revision it superseded stays on the timeline and the new row
+        names what the slot became. Returns ``None`` when this goal has no claim-slot episode yet —
+        nothing observed, or the goal never selected ``identity_policy='claim_slot'``.
         """
         log = self.episodes.get(goal_id)
         episode_id = self._claim_episode_id.get(goal_id)
@@ -1474,9 +1474,9 @@ class Percept:
             if truth == "yes":
                 self.last_satisfied[goal.id] = now  # deadline: the expected event happened
             # base_key computed earlier (before the judge call) — reused here unchanged.
-            # GOVERNING for content-key AND claim-slot concerns only (Y12 / Y13 respectively); every
-            # other concern gets fold=None (byte-for-byte, unchanged). A goal is never both types
-            # (identity_policy selects exactly one), so at most one of these returns non-None.
+            # GOVERNING for content-key AND claim-slot concerns only; every other concern gets
+            # fold=None (byte-for-byte, unchanged). A goal is never both types (identity_policy
+            # selects exactly one), so at most one of these returns non-None.
             doc_fold = self._document_episode_fold(goal, verdict, now)
             claim_fold = self._claim_episode_fold(goal, verdict, now)
             ev_fire = self._fire_concern(goal, verdict, base_key, freshness=freshness, t=now,

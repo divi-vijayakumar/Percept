@@ -225,18 +225,18 @@ def fold_verdicts(
 
 
 #: The ``goal.state`` key a concern authors to DECLARE its :class:`~percept.contracts.ConcernAuthority`
-#: (card Y13 — CLAIM MODE rollout) — the same validated ``goal.state`` channel
-#: ``percept.identity_policy.identity_policy_of`` / ``percept.episodes.episode_policy_of`` already use.
-#: A list/tuple/set of asserter identities ("who may MUTATE this concern's claimed value"); absent (or
-#: blank/malformed) means "declared nothing", so :func:`concern_authority_of` returns ``None`` —
-#: unrestricted, byte-for-byte the pre-Y13 default (:meth:`~percept.contracts.ConcernAuthority.permits`
-#: already treats ``None``/an empty ``asserters`` set identically).
+#: — the same validated ``goal.state`` channel ``percept.identity_policy.identity_policy_of`` /
+#: ``percept.episodes.episode_policy_of`` already use. A list/tuple/set of asserter identities ("who
+#: may MUTATE this concern's claimed value"); absent (or blank/malformed) means "declared nothing", so
+#: :func:`concern_authority_of` returns ``None`` — unrestricted, byte-for-byte the default
+#: (:meth:`~percept.contracts.ConcernAuthority.permits` already treats ``None``/an empty ``asserters``
+#: set identically).
 AUTHORITY_STATE_KEY = "authority"
 
 
 def concern_authority_of(goal: Any) -> "ConcernAuthority | None":
     """The :class:`~percept.contracts.ConcernAuthority` a CONCERN declared via
-    ``goal.state['authority']``, or ``None`` when it declared none (card Y13).
+    ``goal.state['authority']``, or ``None`` when it declared none.
 
     Mirrors :func:`percept.identity_policy.identity_policy_of`: the concern SELECTS its own authority
     policy through the authored state channel, never inferred from the source. Accepts either a
