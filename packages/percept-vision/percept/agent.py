@@ -24,9 +24,11 @@ from .contracts import JudgmentEvent, JudgmentTimingBuilder, SubjectRef
 from .escalation import MAX_PERCEPTION_LEVEL, escalate_perception, should_escalate
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
 from .entity import EntityGraph
+from .claims import ClaimState, concern_authority_of
 from .episodes import (
     EPISODE_POLICIES,
     ContinuationDecision,
+    Episode,
     EpisodeJudge,
     EpisodeLog,
     MutationCheck,
@@ -370,6 +372,16 @@ class Percept:
     # log (see ``_document_episode_fold``). Session-only, deliberately absent from
     # snapshot()/restore() like ``episodes`` itself.
     _doc_episode_hwm: dict = field(default_factory=dict)  # goal_id -> highest t governed so far
+    # CLAIM MODE: the per-goal claim-slot twins of the document-mode fields above.
+    # ``_claim_states`` holds the authoritative :class:`~percept.claims.ClaimState` (value + its own
+    # revision ledger) per claim-slot goal; ``_claim_hwm`` is the same out-of-order high-water mark as
+    # ``_doc_episode_hwm``; ``_claim_episode_id`` remembers the ONE persistent episode a claim-slot
+    # concern keeps in the shared ``episodes`` map (a fixed subject_key == goal.id, unlike a
+    # content-key concern's many per-document episodes), so :meth:`episode_current` can look it up
+    # without reaching into ``EpisodeLog`` internals.
+    _claim_states: dict = field(default_factory=dict)  # goal_id -> ClaimState
+    _claim_hwm: dict = field(default_factory=dict)  # goal_id -> highest t governed so far
+    _claim_episode_id: dict = field(default_factory=dict)  # goal_id -> episode id
     edge_counts: dict = field(default_factory=dict)  # goal_id -> running tally of edge detector boundaries
     rhythm: dict = field(default_factory=dict)  # goal_id -> RhythmTracker (the SELECTED subject's; brain count)
     _rhythm_multi: dict = field(default_factory=dict)  # (goal_id, entity_id) -> RhythmTracker (per-person streams)
@@ -1169,6 +1181,108 @@ class Percept:
             decision, operation=getattr(verdict, "operation", None), unknown=unknown
         )
 
+    def _claim_episode_fold(
+        self, goal: Goal, verdict: Verdict, t: float
+    ) -> "EpisodeFoldResult | None":
+        """CLAIM MODE — the claim-slot twin of :meth:`_document_episode_fold`.
+
+        Document mode flipped episode grouping + idempotency to GOVERNING for concerns that SELECT the
+        content-key resolver; this method flips the SAME seam for concerns that SELECT the claim-slot
+        one (``goal.state['identity_policy'] == 'claim_slot'``) — a goal is never both, so the two
+        methods are mutually exclusive by construction and either may be called unconditionally by the
+        caller. Every other concern (including an undeclared one) still gets ``fold=None`` here, exactly
+        as it always has.
+
+        The three pieces this wires together for claim-slot concerns:
+
+        1. **The mutation channel is authority-gated FIRST** (``percept.claims``): the verdict's speech
+           act only reaches the episode fold as its EFFECTIVE operation —
+           :meth:`~percept.claims.ClaimState.apply` downgrades a ``replace``/``retract``/``close`` from
+           an asserter this concern's :class:`~percept.contracts.ConcernAuthority`
+           (:func:`~percept.claims.concern_authority_of`, ``goal.state['authority']``) does not permit
+           to a non-mutating ``mention`` — TRACED (``claim.authority_downgrade``), never silent — so a
+           seller's textbook replace can never move a buyer-authoritative value. A concern that
+           authored no authority gets the unrestricted default, byte-for-byte.
+        2. **The SAME episode fold document mode governs with**: the effective operation feeds
+           :meth:`~percept.behavior.BehaviorExecutor.fold_episode` exactly like a content-key concern's
+           verdict does, via the SAME ``episode_mutation_of`` map — so an applied ``replace``/``retract``
+           re-arms and fires a superseding revision (``fold.supersedes``), and the gate/incident-delivery
+           machinery (``_fire_concern(fold=...)`` → ``BehaviorExecutor.fire_judged`` →
+           ``SupersessionSink``) is UNCHANGED. A downgraded (unauthorized) mutation folds as a plain
+           ``confirmed`` re-statement — it never re-arms, never supersedes, never moves the value.
+        3. **The corrected value + its own revision chain, on the episode** — unlike a content-key
+           concern (which never carries a "value"), a claim slot's whole point is a corrected VALUE.
+           Whenever the claim state machine actually APPLIES a write (``outcome.applied``), the episode's
+           ``value`` is updated (:meth:`~percept.episodes.EpisodeLog.annotate`) and, for a genuine state
+           change (``updated``/``retracted``/``closed`` — never the initial ``opened`` row, already
+           recorded by ``observe_decision``), a :class:`~percept.episodes.Revision` is appended
+           (:meth:`~percept.episodes.EpisodeLog.record_revision`) naming the value the slot became. A
+           downgraded or non-mutating act writes nothing — the value and the chain stay exactly as they
+           were. :meth:`episode_current` reads both back off the episode.
+
+        Like :meth:`_document_episode_fold`, this method refuses to fabricate: a stale/out-of-order ``t``
+        degrades the tick to gate-only (counted, ``episode.claim.out_of_order_skipped``, never silently
+        swallowed) rather than risk rewinding the log's high-water mark.
+        """
+        if identity_policy_of(goal) != "claim_slot":
+            return None
+        hwm = self._claim_hwm.get(goal.id)
+        if hwm is not None and t < hwm:
+            self.metrics.incr("episode.claim.out_of_order_skipped")
+            return None
+        self._claim_hwm[goal.id] = t
+        log = self.episodes.get(goal.id)
+        if log is None:
+            log = EpisodeLog(
+                goal.id,
+                window_s=self.settings.episodes.window_s,
+                max_episodes=self.settings.episodes.max_episodes,
+                policy=episode_policy_of(goal, default=EPISODE_POLICIES["conversational_claim"]),
+            )
+            self.episodes[goal.id] = log
+        state = self._claim_states.get(goal.id)
+        if state is None:
+            state = ClaimState(claim_id=goal.id)
+            self._claim_states[goal.id] = state
+        authority = concern_authority_of(goal)
+        outcome = state.apply(
+            getattr(verdict, "operation", "assert"),
+            value=getattr(verdict, "value", None),
+            normalized_value=getattr(verdict, "normalized_value", None),
+            asserted_by=getattr(verdict, "asserted_by", None),
+            authority=authority,
+        )
+        # A fixed subject_key (== goal.id): a claim slot is ONE persistent thing, not many distinct
+        # documents, so there is no identity to resolve here — unlike content-key grouping, this never
+        # takes the "unknown subject" branch (an explicit subject_key always wins in observe_decision).
+        decision = log.observe_decision(t, verdict, subject_key=goal.id)
+        self._claim_episode_id[goal.id] = decision.episode.id
+        fold = self.executor.fold_episode(decision, operation=outcome.effective)
+        if outcome.applied:
+            log.annotate(decision.episode, value=outcome.value_after)
+            if not decision.is_new and fold.mutation in ("updated", "retracted", "closed"):
+                # The initial write's "opened" row was already recorded by observe_decision; only a
+                # genuine SUBSEQUENT state change (an accepted replace/retract/close) appends a new one.
+                log.record_revision(
+                    decision.episode, fold.mutation, t=t, value=outcome.value_after
+                )
+        return fold
+
+    def episode_current(self, goal_id: str) -> "Episode | None":
+        """The current authoritative episode for a claim-slot concern.
+
+        ``.value`` is the corrected value (the last APPLIED assert/replace/retract, never a downgraded
+        or merely-mentioned one) and ``.revisions`` is the bounded state-change chain, so a correction
+        is never a silent overwrite: the revision it superseded stays on the timeline and the new row
+        names what the slot became. Returns ``None`` when this goal has no claim-slot episode yet —
+        nothing observed, or the goal never selected ``identity_policy='claim_slot'``.
+        """
+        log = self.episodes.get(goal_id)
+        episode_id = self._claim_episode_id.get(goal_id)
+        if log is None or episode_id is None:
+            return None
+        return log.get(episode_id)
+
     async def perceive_judged(
         self, frame: Any, source: str = "camera", *, t: float | None = None,
         expected_goals_revision: int | None = None,
@@ -1360,12 +1474,14 @@ class Percept:
             if truth == "yes":
                 self.last_satisfied[goal.id] = now  # deadline: the expected event happened
             # base_key computed earlier (before the judge call) — reused here unchanged.
-            # GOVERNING for content-key concerns only; every other concern gets fold=None
-            # (byte-for-byte, unchanged) — see _document_episode_fold.
+            # GOVERNING for content-key AND claim-slot concerns only; every other concern gets
+            # fold=None (byte-for-byte, unchanged). A goal is never both types (identity_policy
+            # selects exactly one), so at most one of these returns non-None.
             doc_fold = self._document_episode_fold(goal, verdict, now)
+            claim_fold = self._claim_episode_fold(goal, verdict, now)
             ev_fire = self._fire_concern(goal, verdict, base_key, freshness=freshness, t=now,
                                          timing=judgment_timing, evidence_seq=evidence_seq,
-                                         fold=doc_fold)
+                                         fold=doc_fold if doc_fold is not None else claim_fold)
             if ev_fire is not None:
                 if ev_fire.action == FIRE:
                     self.funnel.fired(concern=goal.id, camera=source)  # a rising-edge fire emitted

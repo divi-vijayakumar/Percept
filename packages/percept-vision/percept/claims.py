@@ -44,6 +44,8 @@ __all__ = [
     "fold_verdicts",
     "VALUE_SETTING",
     "VALUE_CLEARING",
+    "AUTHORITY_STATE_KEY",
+    "concern_authority_of",
 ]
 
 #: Acts that WRITE the slot value (a subset of :data:`~percept.contracts.OPERATIONS`). ``assert``
@@ -220,3 +222,37 @@ def fold_verdicts(
         for v in verdicts
     ]
     return state, outcomes
+
+
+#: The ``goal.state`` key a concern authors to DECLARE its :class:`~percept.contracts.ConcernAuthority`
+#: — the same validated ``goal.state`` channel ``percept.identity_policy.identity_policy_of`` /
+#: ``percept.episodes.episode_policy_of`` already use. A list/tuple/set of asserter identities ("who
+#: may MUTATE this concern's claimed value"); absent (or blank/malformed) means "declared nothing", so
+#: :func:`concern_authority_of` returns ``None`` — unrestricted, byte-for-byte the default
+#: (:meth:`~percept.contracts.ConcernAuthority.permits` already treats ``None``/an empty ``asserters``
+#: set identically).
+AUTHORITY_STATE_KEY = "authority"
+
+
+def concern_authority_of(goal: Any) -> "ConcernAuthority | None":
+    """The :class:`~percept.contracts.ConcernAuthority` a CONCERN declared via
+    ``goal.state['authority']``, or ``None`` when it declared none.
+
+    Mirrors :func:`percept.identity_policy.identity_policy_of`: the concern SELECTS its own authority
+    policy through the authored state channel, never inferred from the source. Accepts either a
+    pre-built :class:`~percept.contracts.ConcernAuthority` (passed straight through) or a
+    list/tuple/set/frozenset of asserter-identity strings (wrapped into one). Anything else — missing
+    key, an empty collection, a non-string element, no ``state`` at all — is "declared nothing": the
+    caller falls back to the unrestricted policy, so an undeclared concern's authority-at-fold-time
+    check is a no-op and existing behaviour is unchanged.
+    """
+    state = getattr(goal, "state", None)
+    if not isinstance(state, dict):
+        return None
+    raw = state.get(AUTHORITY_STATE_KEY)
+    if isinstance(raw, ConcernAuthority):
+        return raw
+    if isinstance(raw, (list, tuple, set, frozenset)):
+        asserters = frozenset(a.strip() for a in raw if isinstance(a, str) and a.strip())
+        return ConcernAuthority(asserters=asserters) if asserters else None
+    return None
