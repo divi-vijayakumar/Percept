@@ -421,6 +421,7 @@ class EpisodeLog:
         on_drop: "Callable[[Episode, str], None] | None" = None,
         policy: "EpisodePolicy | None" = None,
         on_continuation: "Callable[[ContinuationDecision], None] | None" = None,
+        retain_inline_max_bytes: int = _MAX_INLINE_EVIDENCE_BYTES,
     ) -> None:
         self.goal_id = goal_id
         self.window_s = window_s
@@ -428,8 +429,28 @@ class EpisodeLog:
         self.on_drop = on_drop
         self.policy = policy if policy is not None else EpisodePolicy()
         self.on_continuation = on_continuation
+        # Card Y14: an exemplar larger than this (measured by frame_nbytes) is a decoded frame and is
+        # replaced by an EvidenceHandle before storage, so retained bytes stay bounded by episode
+        # COUNT, never by frame resolution. Cheap descriptors (tokens/dicts/verdicts) pass through.
+        self.retain_inline_max_bytes = retain_inline_max_bytes
         self._episodes: list[Episode] = []
         self._counter = 0
+
+    def _retain(self, exemplar: Any) -> Any:
+        """What to STORE for ``exemplar`` — a handle if it is a decoded frame (card Y14)."""
+        return evidence_handle(exemplar, max_inline_bytes=self.retain_inline_max_bytes)
+
+    def retained_evidence_nbytes(self) -> int:
+        """Measured bytes of decoded evidence currently pinned by this log (card Y14 soak metric).
+
+        Sums :func:`percept.events.frame_nbytes` over every stored ``exemplar`` and ``representative``
+        — the SAME function Z1's FrameWindow byte budget uses. With the Y14 handle wiring this stays
+        ~0 no matter how many observations flow through (handles carry no pixels), which is exactly
+        the property the soak test asserts: retained bytes are bounded by episode COUNT, not by N."""
+        total = 0
+        for e in self._episodes:
+            total += frame_nbytes(e.exemplar) + frame_nbytes(e.representative)
+        return total
 
     # -- decision (1): STATE CONSISTENCY (card Y7) -----------------------------------------------
     @staticmethod
@@ -567,13 +588,14 @@ class EpisodeLog:
         reason: ContinuationReason, prior: "Episode | None", gap_s: "float | None",
     ) -> ContinuationDecision:
         self._counter += 1
+        retained = self._retain(exemplar)  # Y14: store a HANDLE, never the decoded frame
         episode = Episode(
             id=f"{self.goal_id}:ep{self._counter}",
             goal_id=self.goal_id,
             started_at=t,
             last_seen=t,
-            exemplar=exemplar,
-            representative=exemplar,
+            exemplar=retained,
+            representative=retained,
             status=OPEN,
             subject_key=subject_key,
         )
@@ -636,7 +658,7 @@ class EpisodeLog:
         reason = self.continuation_reason(prior, t, pol, mutation_compatible=compatible)
         if reason in ("continued", "reopened"):
             prior.last_seen = t              # continuation — extend, don't count again
-            prior.representative = exemplar  # ...and the representative is now LIVE (was dead)
+            prior.representative = self._retain(exemplar)  # LIVE (was dead) — a HANDLE (Y14), not pixels
             prior.observations += 1
             if reason == "reopened":
                 self.transition(prior, OPEN, t=t)  # single writer: clears t_end too
