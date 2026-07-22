@@ -1250,7 +1250,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--declared-at", default="", help="when the bars/split were declared")
     # --- operating frontier (§3.2) — the SAME entry point, not a second CLI -------------
     p.add_argument("--frontier", action="store_true",
-                   help="also emit the operating-frontier report (§3.2): exact one-sided 95% "
+                   help="also emit the operating-frontier report (§3.2): exact one-sided 95%% "
                         "bounds on FIRE recall and false FIREs per scheduled watch-hour, ASK rate, "
                         "coverage, assisted recall, degraded time, duplicate FIREs per episode, "
                         "per-archetype, both denominators")
