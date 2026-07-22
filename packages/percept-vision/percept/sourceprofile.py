@@ -435,6 +435,110 @@ def coast_sense_prior(profile: SourceProfile) -> dict[str, float] | None:
     return {"base_fps": fps, "max_fps": fps}
 
 
+#: The scheme prefixes / adapter-metadata values STRONG enough to infer a source class without a
+#: caller naming one explicitly (see select_source_profile). Weak/ambiguous evidence (a plain file path, or
+#: no metadata at all) never infers — see :func:`select_source_profile`.
+_SCREEN_URI_SCHEMES: tuple[str, ...] = ("screen://",)
+_SCREEN_SOURCE_KINDS: frozenset[str] = frozenset({"screen"})
+_SCREEN_CAPTURE_TYPES: frozenset[str] = frozenset({"screen", "screen_recording", "screenshot"})
+
+#: URI prefixes that are UNAMBIGUOUSLY camera/device-shaped — mirrors
+#: ``percept.runtime.worker._LIVE_PREFIXES`` (not imported, to keep this leaf module's dependency
+#: graph flat) minus ``"screen://"``, which is its own STRONG signal above. A source named with one
+#: of these is not "ambiguous" in the sense this module cares about: nobody mistakes ``webcam:0`` for
+#: a screen recording, so it earns no recommendation — physical_scene is already the obviously right
+#: read, not a guess this function is hedging on.
+_UNAMBIGUOUS_CAMERA_PREFIXES: tuple[str, ...] = (
+    "webcam:", "webcam://", "mic:", "mic://",
+    "rtsp://", "rtsps://", "rtp://", "udp://", "tcp://",
+)
+
+
+@dataclass(frozen=True)
+class SourceProfileSelection:
+    """What :func:`select_source_profile` decided, and why — the same ``(value, reason)`` shape
+    :class:`~percept.contracts.watchplan.SettingOrigin` uses elsewhere in the ADR-008 resolution
+    boundary, scoped to this one decision so a caller (``percept doctor``, ``Percept.configure``)
+    can log/report it without re-deriving the reasoning.
+
+    - ``name`` — the selected profile name.
+    - ``reason`` — ``"explicit"`` (a caller named one outright — always wins, whatever the metadata
+      says), ``"inferred"`` (STRONG source-adapter metadata pointed at a specific source class with
+      no caller input), or ``"default"`` (ambiguous/absent metadata — never silently switched, the
+      honest ``physical_scene`` default with a recommendation for the caller to confirm it).
+    - ``recommend`` — ``True`` only for the ``"default"`` case where the URI at least LOOKS like it
+      could plausibly be something other than a camera (a plain file path, or any URI that is not
+      one of the unambiguous camera/device prefixes — "a file can be surveillance, handheld, or a
+      recorded meeting"), so a caller/doctor has something concrete to surface as a recommendation
+      rather than staying silent. ``False`` when there was no signal at all to have an opinion about
+      (no URI/metadata given) OR the URI is itself unambiguously camera-shaped (``webcam:0``,
+      ``rtsp://...``) — physical_scene is already the obviously right read there, not a guess.
+    """
+
+    name: str
+    reason: str
+    recommend: bool = False
+
+
+def select_source_profile(
+    *,
+    explicit: "str | SourceProfile | None" = None,
+    uri: str | None = None,
+    source_kind: str | None = None,
+    capture_type: str | None = None,
+    default: str = "physical_scene",
+) -> SourceProfileSelection:
+    """Select a source profile NAME from an explicit caller choice, strong adapter metadata, or
+    (ambiguously) the honest default — never a silent auto-switch.
+
+    Precedence, in order:
+
+    1. **Explicit wins outright.** ``explicit`` — a profile name string or a live
+       :class:`SourceProfile` — is returned verbatim with ``reason="explicit"``, whatever the
+       metadata says. A caller who said "screen_document" gets screen_document even pointed at a
+       ``webcam:0`` URI; percept does not second-guess an explicit selection.
+    2. **STRONG metadata infers.** Only a scheme (``uri`` starting with ``"screen://"``), an
+       adapter-reported ``source_kind`` (``"screen"``), or ``capture_type`` (``"screen"``/
+       ``"screen_recording"``/``"screenshot"``) is strong enough to infer — never a filename
+       extension or a heuristic guess. ``reason="inferred"``.
+    3. **Everything else is ambiguous, never silently switched.** A plain file path (``"clip.mp4"``
+       — "a file can be surveillance, handheld, or a recorded meeting"), a ``webcam:``/``rtsp://``/
+       ``mic:`` URI, or no metadata at all resolves to ``default`` (``"physical_scene"``,
+       ``reason="default"``) — the ONE class the stock tier-0 eye is calibrated on. ``recommend`` is
+       set when there was at least a URI to have looked at (so a caller/doctor can surface "you might
+       mean a different profile — say so explicitly"), and left ``False`` when there was truly
+       nothing to go on.
+
+    Pure: no I/O, no registry lookup (callers resolve the returned name via
+    :func:`get_source_profile` themselves) — this function only decides WHICH name.
+    """
+    if explicit is not None:
+        name = explicit.name if isinstance(explicit, SourceProfile) else str(explicit)
+        return SourceProfileSelection(name=name, reason="explicit")
+
+    normalized_uri = uri.strip().lower() if isinstance(uri, str) else None
+    normalized_kind = source_kind.strip().lower() if isinstance(source_kind, str) else None
+    normalized_capture = capture_type.strip().lower() if isinstance(capture_type, str) else None
+
+    if (
+        (normalized_uri is not None and normalized_uri.startswith(_SCREEN_URI_SCHEMES))
+        or normalized_kind in _SCREEN_SOURCE_KINDS
+        or normalized_capture in _SCREEN_CAPTURE_TYPES
+    ):
+        return SourceProfileSelection(name="screen_document", reason="inferred")
+
+    # Ambiguous: a plain file path, or any URI that is not one of the unambiguous camera/device
+    # prefixes. Never a silent auto-switch — the honest default, with a recommendation to confirm it
+    # whenever there was a URI this function chose NOT to act on (a plain path really could be
+    # anything); no recommendation for a URI that is already unambiguously camera-shaped, and none
+    # at all when there was no metadata to have an opinion about in the first place.
+    is_unambiguous_camera = (
+        normalized_uri is not None and normalized_uri.startswith(_UNAMBIGUOUS_CAMERA_PREFIXES)
+    )
+    recommend = normalized_uri is not None and not is_unambiguous_camera
+    return SourceProfileSelection(name=default, reason="default", recommend=recommend)
+
+
 def discover_source_profile_entrypoints() -> None:
     """Load third-party source profiles advertised under the ``percept.source_profiles`` entry-point
     group. Each entry point is called with :func:`register_source_profile`. One bad plugin never
@@ -461,9 +565,11 @@ __all__ = [
     "SourceProfileError",
     "SourceProfileNotFoundError",
     "SourceProfileRegistry",
+    "SourceProfileSelection",
     "DEFAULT_SOURCE_REGISTRY",
     "register_source_profile",
     "get_source_profile",
+    "select_source_profile",
     "coast_sense_prior",
     "discover_source_profile_entrypoints",
 ]

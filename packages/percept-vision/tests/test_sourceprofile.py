@@ -346,3 +346,95 @@ def test_untuned_admission_does_not_change_the_exit_code_contract():
     quiet = run_doctor(frames=_quiet_frames(), goals=["the page changes"],
                        source_profile="screen_document")
     assert quiet.exit_code == 2
+
+
+# ---------------------------------------------------------------------------
+# 6. select_source_profile — explicit wins, strong metadata infers, ambiguous never auto-switches
+# ---------------------------------------------------------------------------
+
+
+def test_select_source_profile_explicit_wins_over_any_metadata():
+    from percept.sourceprofile import select_source_profile
+
+    sel = select_source_profile(explicit="physical_scene", uri="screen://display0")
+    assert sel.name == "physical_scene"
+    assert sel.reason == "explicit"
+    assert sel.recommend is False
+
+    sel2 = select_source_profile(explicit=SCREEN_DOCUMENT, uri="webcam:0")
+    assert sel2.name == "screen_document"
+    assert sel2.reason == "explicit"
+
+
+def test_select_source_profile_strong_metadata_infers():
+    from percept.sourceprofile import select_source_profile
+
+    for kwargs in (
+        {"uri": "screen://display0"},
+        {"source_kind": "screen"},
+        {"capture_type": "screen_recording"},
+        {"capture_type": "screenshot"},
+    ):
+        sel = select_source_profile(**kwargs)
+        assert sel.name == "screen_document"
+        assert sel.reason == "inferred"
+        assert sel.recommend is False
+
+
+def test_select_source_profile_ambiguous_never_auto_switches():
+    from percept.sourceprofile import select_source_profile
+
+    # A plain file path -- could be surveillance, handheld, or a recorded meeting.
+    sel = select_source_profile(uri="clip.mp4")
+    assert sel.name == "physical_scene"
+    assert sel.reason == "default"
+    assert sel.recommend is True   # something to flag, but never silently switched
+
+
+def test_select_source_profile_unambiguous_camera_uris_get_no_recommendation():
+    from percept.sourceprofile import select_source_profile
+
+    for uri in ("webcam:0", "rtsp://camera.local/stream"):
+        sel = select_source_profile(uri=uri)
+        assert sel.name == "physical_scene"
+        assert sel.reason == "default"
+        assert sel.recommend is False   # unambiguously camera-shaped -- nothing to flag
+
+
+def test_select_source_profile_no_metadata_at_all_gets_no_recommendation():
+    from percept.sourceprofile import select_source_profile
+
+    sel = select_source_profile()
+    assert sel.name == "physical_scene"
+    assert sel.reason == "default"
+    assert sel.recommend is False
+
+
+def test_doctor_resolve_source_profile_wires_the_selection_rule():
+    """percept.doctor._resolve_source_profile is the doctor-facing wrapper around
+    select_source_profile — proves the three-tier rule reaches doctor's own resolution."""
+    from percept.doctor import _resolve_source_profile
+
+    # explicit
+    profile, origin, recommend = _resolve_source_profile("screen_document", uri="clip.mp4")
+    assert profile.name == "screen_document"
+    assert origin == "explicit"
+    assert recommend is False
+
+    # strong metadata -> inferred
+    profile2, origin2, recommend2 = _resolve_source_profile(None, uri="screen://display0")
+    assert profile2.name == "screen_document"
+    assert origin2 == "inferred"
+    assert recommend2 is False
+
+    # ambiguous plain file path -> default, with a recommendation
+    profile3, origin3, recommend3 = _resolve_source_profile(None, uri="meeting.mp4")
+    assert profile3.name == "physical_scene"
+    assert origin3 == "default"
+    assert recommend3 is True
+
+    # no uri at all (the frames= path) -> default, no recommendation
+    profile4, origin4, recommend4 = _resolve_source_profile(None, uri=None)
+    assert profile4.name == "physical_scene"
+    assert origin4 == "default"
+    assert recommend4 is False

@@ -120,6 +120,7 @@ EGO_COMPENSATED_GATE = "EGO_COMPENSATED_GATE"
 UNEXPLAINED_SUPPRESSION = "UNEXPLAINED_SUPPRESSION"
 ADMISSION_SIGNAL_UNTUNED = "ADMISSION_SIGNAL_UNTUNED"
 SOURCE_PROFILE_EXPERIMENTAL = "SOURCE_PROFILE_EXPERIMENTAL"
+SOURCE_PROFILE_SELECTION_AMBIGUOUS = "SOURCE_PROFILE_SELECTION_AMBIGUOUS"
 OUT_OF_ENVELOPE_ACTUATION = "OUT_OF_ENVELOPE_ACTUATION"      #: ADR-007
 PERSON_IDENTIFYING_RESOLVER = "PERSON_IDENTIFYING_RESOLVER"  #: ADR-007
 
@@ -405,32 +406,36 @@ class DoctorReport:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_source_profile(spec: Any):
+def _resolve_source_profile(spec: Any, *, uri: str | None = None) -> tuple[Any, str, bool]:
     """Resolve the :class:`~percept.sourceprofile.SourceProfile` doctor should report.
 
-    ``spec`` is a name, a ``SourceProfile``, or ``None`` (meaning: nobody said, so report the
-    honest default — ``physical_scene``, the ONE class the stock tier-0 eye is calibrated on — and
-    label it ``"default"`` so a client on screen content can see they never selected a profile).
-    Returns ``(profile, origin)``. An unknown name raises :class:`DoctorConfigError` (exit 5): a
-    typo must not silently fall back to the wrong source class.
+    ``spec`` is a name, a ``SourceProfile``, or ``None`` (meaning: nobody said, so fall through to
+    :func:`percept.sourceprofile.select_source_profile`'s selection rule: STRONG source-adapter
+    metadata — here, only the ``uri``'s scheme, since doctor's own surface carries no
+    ``source_kind``/``capture_type`` beyond that — infers a profile; anything ambiguous (including a
+    plain file path) stays the honest ``physical_scene`` default, never a silent auto-switch).
+    Returns ``(profile, origin, recommend)`` — ``recommend`` is ``True`` only for an ambiguous URI
+    doctor chose not to act on, so the caller can surface a RECOMMENDATION finding. An unknown
+    EXPLICIT name raises :class:`DoctorConfigError` (exit 5): a typo must not silently fall back to
+    the wrong source class.
     """
     from .sourceprofile import (  # noqa: PLC0415 - keeps doctor's import graph flat
         SourceProfile,
         SourceProfileNotFoundError,
         get_source_profile,
+        select_source_profile,
     )
     from .source_profiles_default import DEFAULT_SOURCE_PROFILE_NAME  # noqa: PLC0415
 
     if isinstance(spec, SourceProfile):
-        return spec, "explicit"
-    if spec is None:
-        return get_source_profile(DEFAULT_SOURCE_PROFILE_NAME), "default"
-    if not isinstance(spec, str):
+        return spec, "explicit", False
+    if spec is not None and not isinstance(spec, str):
         raise DoctorConfigError(
             f"source_profile must be a name or a SourceProfile, got {type(spec).__name__}"
         )
+    selection = select_source_profile(explicit=spec, uri=uri, default=DEFAULT_SOURCE_PROFILE_NAME)
     try:
-        return get_source_profile(spec), "explicit"
+        return get_source_profile(selection.name), selection.reason, selection.recommend
     except SourceProfileNotFoundError as exc:
         raise DoctorConfigError(f"unknown source profile: {exc}") from exc
 
@@ -660,7 +665,9 @@ def run_doctor(
     except EnvelopeViolation as exc:
         raise DoctorConfigError(str(exc)) from exc
 
-    src_profile, src_profile_origin = _resolve_source_profile(source_profile)
+    src_profile, src_profile_origin, src_profile_recommend = _resolve_source_profile(
+        source_profile, uri=source
+    )
 
     cfg, plan_mode, profile_name, profile_key, profile_source = _profile_settings(
         goal_temporality=goal_temporality, camera_mount=camera_mount,
@@ -898,6 +905,18 @@ def run_doctor(
             SOURCE_PROFILE_EXPERIMENTAL, "warn",
             f"source profile '{src_profile.name}' is EXPERIMENTAL — evaluation only. "
             + src_profile.notes,
+        ))
+    if src_profile_recommend:
+        # Selection rule: the URI was ambiguous (a plain file path can be surveillance, handheld,
+        # or a recorded meeting) so doctor never silently switched profiles — it stayed on the honest
+        # default and says so, loudly, as a RECOMMENDATION rather than an error.
+        findings.append(Finding(
+            SOURCE_PROFILE_SELECTION_AMBIGUOUS, "info",
+            f"source '{source}' did not carry strong-enough metadata (a screen:// scheme, "
+            "source_kind='screen', or a capture_type) to infer a source profile, so this run used "
+            f"the default '{src_profile.name}'. If this source is actually screen/document content, "
+            "pass source_profile='screen_document' explicitly — percept never auto-switches on a "
+            "plain file path.",
         ))
 
     # ADR-007: the envelope is read from TYPED config, and doctor is the tool that says it.
@@ -1283,6 +1302,7 @@ __all__ = [
     "ALTERNATIVE_STAT_WOULD_ADMIT",
     "ADMISSION_SIGNAL_UNTUNED",
     "SOURCE_PROFILE_EXPERIMENTAL",
+    "SOURCE_PROFILE_SELECTION_AMBIGUOUS",
     "SIGNAL_UNAVAILABLE",
     "DoctorConfigError",
     "DoctorReport",
