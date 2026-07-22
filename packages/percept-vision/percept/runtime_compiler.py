@@ -99,6 +99,12 @@ class CompiledWatch:
       ("default_timebase -> run(timebase=)").
     - ``watchspec_kwargs`` — ``threshold``/``salience_stat``/``ego_compensate``/``stat_thresholds``,
       exactly :func:`percept.harness.tier0.compile_watchspec`'s deployment-default kwargs.
+    - ``coverage_floor`` — the resolved ``SourceProfile.parameters['coverage_floor']`` (ADR-008
+      §Corrections(b)), or ``None`` when no profile declared one — a caller threads this into
+      :func:`percept.runtime.worker.run`'s own ``coverage_floor=`` kwarg
+      (``run(core, source, coverage_floor=compiled.coverage_floor)``) so a declared-and-unmet floor
+      classifies that run's ``zero_admission_coverage`` health event as degraded; an undeclared floor
+      (the default) leaves it exactly the diagnostic-only reading it always was.
     - ``components`` — provider NAME identities the compiler carried forward (``vision``,
       ``conductor``, ``specialist``, ``stt``, ``tts``), never a model id (ADR-008 Invariants). This is
       the fuller snapshot ``ResolvedWatch.components`` deliberately stays minimal for — observability
@@ -110,6 +116,7 @@ class CompiledWatch:
     sense_policy: SensePolicy | None
     plan_mode: str | None
     timebase: str | None
+    coverage_floor: float | None
     watchspec_kwargs: Mapping[str, Any]
     components: Mapping[str, Any]
 
@@ -324,6 +331,10 @@ def runtime_compile(resolved: ResolvedWatch) -> CompiledWatch:
     if timebase is None:
         timebase = resolved.effective.get("SourceProfile.default_timebase")
 
+    # coverage_floor: the resolved SourceProfile's declared minimum admission count, if any (ADR-008
+    # Corrections(b)) -- None when nothing declared one, byte-for-byte diagnostic-only.
+    coverage_floor = resolved.effective.get("SourceProfile.parameters.coverage_floor")
+
     watchspec_kwargs: dict[str, Any] = {
         "threshold": settings.gate.threshold,
         "salience_stat": settings.edge.salience_stat,
@@ -349,6 +360,7 @@ def runtime_compile(resolved: ResolvedWatch) -> CompiledWatch:
         sense_policy=sense_policy,
         plan_mode=plan_mode,
         timebase=timebase,
+        coverage_floor=coverage_floor,
         watchspec_kwargs=watchspec_kwargs,
         components=components,
     )

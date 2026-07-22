@@ -936,6 +936,7 @@ async def run(
     judge_stall_after_s: float = 20.0,
     judge_backpressure_after: int = 3,
     timebase: str = "auto",
+    coverage_floor: float | None = None,
 ) -> AsyncIterator:
     """Drive a live ``source`` through the gate + brain, yielding an :class:`Incident` on each rising edge.
 
@@ -1057,12 +1058,22 @@ async def run(
     that kept no state of its own can still say what the session did. When a run observed frames but
     admitted NONE of them, a ``RuntimeHealthEvent("zero_admission_coverage")`` is emitted immediately
     BEFORE it, carrying the same counts plus the ``threshold`` and salience ``stat`` the frames were
-    judged against. That event states a FACT, not a degradation verdict: a still camera under a
-    motion-gated watch correctly admits nothing and saves every model call, which is the point of
-    tier-0 — so it is deliberately NOT in :data:`percept.tracing.DEGRADED_HEALTH_KINDS` and never
-    latches an unhealthy interval. Read it the way ``percept doctor`` reports
-    ``ZERO_ADMITS_ON_FIXTURE``: diagnostic. If the scene was NOT quiet, the eye is mis-selected —
-    ``percept doctor`` will show which statistic would have admitted.
+    judged against, PLUS ``coverage_floor`` and ``floor_unmet`` (below). By default that event states
+    a FACT, not a degradation verdict: a still camera under a motion-gated watch correctly admits
+    nothing and saves every model call, which is the point of tier-0 — so with no declared floor it
+    stays diagnostic, exactly the way ``percept doctor`` reports ``ZERO_ADMITS_ON_FIXTURE``. If the
+    scene was NOT quiet, the eye is mis-selected — ``percept doctor`` will show which statistic would
+    have admitted.
+    - ``coverage_floor`` — an explicit, OPT-IN minimum admission count this run declares it must
+      clear (e.g. sourced from a :class:`~percept.sourceprofile.SourceProfile`'s
+      ``parameters['coverage_floor']` via :mod:`percept.runtime_compiler`). ``None`` (default)
+      declares nothing — ``zero_admission_coverage`` is then BYTE-FOR-BYTE the undeclared-floor
+      behavior above: not in :data:`percept.tracing.DEGRADED_HEALTH_KINDS`'s reach, never latches an
+      unhealthy interval. When a floor IS declared and this run's admissions fall short of it, the
+      SAME event kind carries ``floor_unmet=True`` and :meth:`percept.tracing.TraceRecorder.health_sink`
+      classifies that occurrence as ``state="degraded"`` — a declared expectation that was not met,
+      not an inferred one (ADR-008 §Corrections(b): "must be explicit, opt-in and declared... never
+      inferred from an observed zero").
     - ``metrics_collector`` — optional :class:`~percept.harness.metrics.MetricsCollector`.
       When set (``judge_dispatch="async"`` only — the inline path has no queue to measure), every
       admission into the :class:`_JudgeScheduler`'s active/pending slot is tracked via
@@ -1970,13 +1981,22 @@ async def run(
                 "incidents": _cov.incidents,
             }
             if _cov.frames > 0 and _cov.escalations == 0:
-                # A FACT, not a verdict — and deliberately NOT in tracing.DEGRADED_HEALTH_KINDS. A
-                # still camera under a motion-gated watch correctly admits nothing and saves every
-                # model call; alarming on that would contradict percept's whole economic claim. This
-                # states "N frames, zero admissions, against this bar" and leaves the reading to the
-                # consumer — the same framing percept-doctor's ZERO_ADMITS_ON_FIXTURE uses.
+                # A FACT, not automatically a verdict. A still camera under a motion-gated watch
+                # correctly admits nothing and saves every model call; alarming on that would
+                # contradict percept's whole economic claim. This states "N frames, zero admissions,
+                # against this bar" and leaves the reading to the consumer — the same framing
+                # percept-doctor's ZERO_ADMITS_ON_FIXTURE uses.
+                #
+                # `coverage_floor` (None by default) is the ONE thing that changes the reading: an
+                # explicit, opt-in declaration this run must clear (never inferred from the zero
+                # itself, per ADR-008 Corrections(b)). Undeclared -> floor_unmet is always False, the
+                # SAME diagnostic-only event byte-for-byte pre-C2. Declared and unmet -> floor_unmet
+                # is True, and percept.tracing.TraceRecorder.health_sink classifies THIS occurrence
+                # (this kind string, this payload) as degraded — the kind itself is unchanged.
                 _zero = dict(_cov_data)
                 _zero["threshold"] = round(_cov_threshold, 4) if _cov_threshold is not None else None
                 _zero["stat"] = _cov_stat
+                _zero["coverage_floor"] = coverage_floor
+                _zero["floor_unmet"] = coverage_floor is not None and _cov.escalations < coverage_floor
                 await _call_sink(on_health, RuntimeHealthEvent("zero_admission_coverage", data=_zero))
             await _call_sink(on_health, RuntimeHealthEvent("runtime_ended", data=_cov_data))

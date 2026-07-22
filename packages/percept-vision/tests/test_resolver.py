@@ -188,12 +188,18 @@ class TestOwnershipConfigError(unittest.TestCase):
         self.assertEqual(resolved.provenance["Settings.cache.enabled"].owner_layer, LAYER_EXECUTION_POLICY)
 
     def test_unclassified_field_is_permissive(self) -> None:
-        """SourceProfile.parameters.coverage_floor is owner='unclassified' — ADR-008's own
-        unresolved-ownership example; nothing should be gated against it yet."""
+        """A field genuinely still unclassified in the tunables registry — nothing gates against it.
+        (SourceProfile.parameters.coverage_floor, ADR-008's own worked unresolved-ownership example,
+        is resolved to owner='SourceProfile' by card C2 -- see TestCoverageFloorOwnership below --
+        so this test now exercises a DIFFERENT still-open field.)"""
         resolver = ConfigResolver()
-        pack = DomainPack(id="dp1", values={"SourceProfile.parameters.coverage_floor": 5.0})
+        pack = DomainPack(
+            id="dp1", values={"WatchProfile.goal_density_guidance.max_recommended_goals": 5}
+        )
         resolved = resolver.resolve(_plan(), domain_pack=pack)
-        self.assertEqual(resolved.effective["SourceProfile.parameters.coverage_floor"], 5.0)
+        self.assertEqual(
+            resolved.effective["WatchProfile.goal_density_guidance.max_recommended_goals"], 5
+        )
 
 
 class TestUnknownKeyRaises(unittest.TestCase):

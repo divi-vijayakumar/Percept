@@ -17,9 +17,10 @@ Two owner values are not among the ADR's six declared objects, both deliberate:
   structurally for ``SourceProfile``. A gate-tuning field is therefore not ownable by any of the six
   objects; it stays with the Gate.
 - ``"unclassified"`` — a field that genuinely resists classification against the ownership table as
-  written. ADR-008's own text calls out the paradigm case: a "coverage floor" field's owner is an
-  open question (§Corrections(b), §Open questions #1) — ``SourceProfile.parameters["coverage_floor"]``
-  below is marked ``unclassified`` for exactly that reason, not guessed at.
+  written. ADR-008's own paradigm case was a "coverage floor" field (§Corrections(b), §Open questions
+  #1) — resolved by card C2 to ``"SourceProfile"`` (a per-source-class default, the same object that
+  already declares ``coast_interval_s``/``coast_required`` for the same "is this source legitimately
+  quiet" question): ``SourceProfile.parameters["coverage_floor"]`` below now carries that owner.
 
 This module performs no I/O at import (the same "no import-time semantic config" invariant ADR-008
 holds every one of the six objects to): building :data:`REGISTRY` is pure data construction, and
@@ -878,12 +879,15 @@ _SOURCE_PROFILE: tuple[TunableSpec, ...] = (
         note="default_episode_policy input: single-focus attach; off by default.",
     ),
     TunableSpec(
-        path="SourceProfile.parameters.coverage_floor", owner="unclassified", visibility="advisory",
+        path="SourceProfile.parameters.coverage_floor", owner="SourceProfile", visibility="advisory",
         safe_to_optimize=False, default=None, value_type="float", risk="medium",
-        note="ADR-008 §Corrections(b)/§Open questions #1: owner undecided between SourceProfile "
-        "(per-source-class default) and ExecutionPolicy (per-deployment posture); must be explicit, "
-        "opt-in and declared before a zero-admit run is ever reported 'degraded' rather than quiet "
-        "(percept.doctor's own rule). THIS is the tunable the ADR names as unresolved.",
+        note="ADR-008 §Corrections(b)/§Open questions #1, resolved: a per-source-class minimum "
+        "admission count over a run, declared explicitly and opt-in (default None = nothing "
+        "declared). Must be explicit before a zero-admit run is ever reported 'degraded' rather "
+        "than quiet (percept.doctor's own rule) -- an undeclared floor leaves "
+        "RuntimeHealthEvent('zero_admission_coverage') exactly as diagnostic as it always was; a "
+        "declared-and-unmet floor is what makes it read as degraded (percept.runtime.worker.run's "
+        "coverage_floor= kwarg, sourced from this field via percept.runtime_compiler).",
     ),
     TunableSpec(
         path="SourceProfile.stability", owner="SourceProfile", visibility="public", safe_to_optimize=False,
