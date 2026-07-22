@@ -24,6 +24,10 @@ export {
   parseIncidentSnippet,
   makeIncident,
   parseIncident,
+  makeSubjectRef,
+  parseSubjectRef,
+  provisionalSubject,
+  PROVISIONAL_KEY_PREFIX,
 } from "./contract.js";
 
 export { motionScore, makeFrame } from "./motion.js";
