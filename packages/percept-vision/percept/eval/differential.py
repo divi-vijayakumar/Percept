@@ -1144,7 +1144,7 @@ def _fmt(value: float | None, spec: str = ".4g") -> str:
 
 
 def render_text(report: DifferentialReport) -> str:
-    """The human report. Everything the card requires is on this page, including the refusals."""
+    """The human report. Everything required is on this page, including the refusals."""
     reg = report.registration
     lines: list[str] = []
     add = lines.append

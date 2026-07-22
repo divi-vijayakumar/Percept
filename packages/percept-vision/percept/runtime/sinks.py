@@ -568,8 +568,8 @@ class SupersessionSink:
     * resolves the fold's revision-level ``supersedes`` to the PRIOR INCIDENT's id via a bounded
       :class:`SupersessionLedger`, and stamps it onto the outgoing incident as
       ``incident._supersedes_incident_id`` (read via :func:`superseded_incident_id`) — so an in-process
-      ``async for incident in run(...)`` consumer sees ``supersedes=<prior incident id>`` exactly as the
-      card asks, WITHOUT a wire-contract change;
+      ``async for incident in run(...)`` consumer sees ``supersedes=<prior incident id>`` exactly as
+      needed, WITHOUT a wire-contract change;
     * TRACES every supersession (a structured log line by default, or ``on_supersede(record)`` if
       supplied) so a client debugging the stream can SEE the original→correction link even when the
       downstream sink itself carries no supersession field — "trace the supersession, never silent".

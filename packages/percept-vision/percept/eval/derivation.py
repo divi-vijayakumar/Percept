@@ -30,7 +30,7 @@ Two axes, because ADR-005 says one is not enough
 
 :class:`~percept.watchprofile.WatchProfile` is CAMERA-SHAPED — its ``environment`` axis is a camera
 mount and its resolution chain is goal-temporality / camera-mount / start-state. Two of the client
-probes that motivated this card were not cameras at all (a screen recording; a conversation). So a
+probes that motivated this design were not cameras at all (a screen recording; a conversation). So a
 rung here is a PAIR: a :class:`~percept.sourceprofile.SourceProfile` (what KIND of world is on the
 other end of the stream) times a :class:`~percept.watchprofile.WatchProfile` (how to tune the eye
 *within* that world). The derived artifact names both. Per ADR-005's Consequences section, overloading

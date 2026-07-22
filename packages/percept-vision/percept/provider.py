@@ -13,7 +13,7 @@ cross-vendor id silently picks the wrong client. So this module fixes the split:
     adapter identity  = the PROVIDER NAME  ("openrouter", "claude", "gemini", "scripted")
     model id          = CONFIGURATION carried to that adapter (``settings.models.*_model``)
 
-Hence the shape the card names — ``judge="openrouter", model="qwen/..."`` — two arguments, never one
+Hence the shape used — ``judge="openrouter", model="qwen/..."`` — two arguments, never one
 fused string. :func:`resolve_vision` (and the general :func:`resolve`) is that door.
 
 Three properties this module enforces, each with a test:
@@ -88,7 +88,7 @@ class ProviderSpec:
 
     ``ProviderSpec("openrouter", "qwen/qwen3-vl-32b-instruct")`` and
     ``ProviderSpec("openrouter", "opengvlab/internvl3-78b")`` are two configurations of ONE adapter
-    identity — :attr:`identity` is equal for both. That is the whole card in one assertion.
+    identity — :attr:`identity` is equal for both. That is the whole rule in one assertion.
     """
 
     provider: str
@@ -139,8 +139,8 @@ def resolve(
             already-constructed adapter, which is returned verbatim (manual construction).
         model: OPTIONAL model id, e.g. ``"qwen/qwen3-vl-32b-instruct"``. Configuration only: it never
             selects the adapter. Passing it with a manually built adapter is an error (that object's
-            model was fixed when you built it — a silently ignored ``model=`` is the bug this card is
-            about).
+            model was fixed when you built it — a silently ignored ``model=`` is the bug this guards
+            against).
         settings: Base :class:`~percept.config.Settings`; defaults to :func:`load_settings`.
 
     Raises:

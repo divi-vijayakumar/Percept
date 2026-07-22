@@ -186,7 +186,7 @@ class ComponentIdentity:
     """WHICH implementation produced these numbers.
 
     ``role`` is the seam (``"vision"``, ``"judge"``, ``"gate"``, ``"profile"``); ``name`` is the
-    provider/adapter identity (card RB-PROVIDER: the NAME is the identity); ``model`` is
+    provider/adapter identity (the NAME is the identity); ``model`` is
     configuration carried to it (``"claude-sonnet-4-5"``), never the adapter's identity; ``version``
     is the adapter's own version string; ``config_hash`` content-addresses whatever knobs were bound.
     """
@@ -446,7 +446,7 @@ class TracePolicy:
     - ``level="full"`` — everything, including a record per frame. Correct for a 36s probe,
       **dangerous for 24/7**: always pair it with ``max_duration_s`` / ``max_bytes``.
 
-    ``incident_window_s`` gives production the third posture the card asks for: full detail is
+    ``incident_window_s`` gives production the third posture that's needed: full detail is
     retained for records whose ``source_ts`` falls within this many seconds of an incident or a
     health transition, even at ``summary``/``decisions`` level (see
     :meth:`TraceRecorder.mark_incident`). ``max_duration_s`` caps retention by SOURCE time from the

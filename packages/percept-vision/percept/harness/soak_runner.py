@@ -45,7 +45,7 @@ hour-indexed sampler (never estimated here) — mirrors :class:`~percept.harness
 "injected, never estimated" convention in :mod:`percept.harness.metrics`.
 
 Not wired into ``percept/registry.py``. Downstream: the full gated, bars-locked stability soak is
-follow-up work — this card only lands the deterministic driver + its own self-test.
+follow-up work — this module only lands the deterministic driver + its own self-test.
 """
 
 from __future__ import annotations

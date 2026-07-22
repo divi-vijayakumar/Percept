@@ -407,7 +407,7 @@ class SubjectResolverRegistry:
 
     def person_identifying(self) -> list[SubjectResolver]:
         """Every registered resolver that identifies persons. MUST be empty — doctor reports the
-        length, and ``tests/test_envelope.py`` asserts it, so a resolver added by a later card fails
+        length, and ``tests/test_envelope.py`` asserts it, so a resolver added later fails
         the suite instead of review."""
         return [r for r in self._resolvers.values() if r.identifies_persons]
 

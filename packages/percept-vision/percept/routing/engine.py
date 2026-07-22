@@ -1,6 +1,6 @@
 """The local route engine — a confidence-gated, layered fast-path before the conductor.
 
-Structure (the V0.1 seam): a :class:`RouteEngine` walks an ordered list of :class:`RouteLayer`
+Structure: a :class:`RouteEngine` walks an ordered list of :class:`RouteLayer`
 tiers. Each layer scores an utterance and returns a :class:`RouteMatch` (route + confidence)
 or ``None``. The engine takes the **first match at or above the threshold** and turns it into
 a :class:`~percept.adapters.Decision`; if no layer clears the bar it returns ``None`` —
@@ -8,7 +8,7 @@ a :class:`~percept.adapters.Decision`; if no layer clears the bar it returns ``N
 
 Defer-on-miss is therefore **structural**, not a regex special-case: a match whose confidence
 falls below ``threshold`` is indistinguishable from no match at all. To make the router quieter
-you raise the threshold; to special-case nothing you add no code. This is what lets the V0.1
+you raise the threshold; to special-case nothing you add no code. This is what lets a future
 ``LearnedRouteLayer`` (an ONNX intent classifier) slot in front of — or instead of — the regex
 lexicon with **zero changes here**: it is just another ``RouteLayer`` whose ``score`` returns a
 calibrated confidence, and the same threshold gates it.
@@ -59,7 +59,7 @@ class RouteMatch:
 class RouteLayer(Protocol):
     """A tier the engine can ask to score an utterance.
 
-    Implementations: :class:`RegexRouteLayer` (V0.0 lexicon) and, in V0.1,
+    Implementations: :class:`RegexRouteLayer` (the current lexicon) and, in a future tier,
     ``LearnedRouteLayer`` (an embedding + linear/MLP classifier). Both return a
     :class:`RouteMatch` with a **calibrated confidence**, or ``None``; the engine's threshold —
     not the layer — decides whether that confidence is enough to fast-path.
@@ -69,11 +69,11 @@ class RouteLayer(Protocol):
 
 
 class RegexRouteLayer:
-    """The V0.0 lexicon tier: ordered regex rules, first matching rule wins.
+    """The current lexicon tier: ordered regex rules, first matching rule wins.
 
     This is deliberately dumb pattern-matching. It exists to make the *common, confident*
     turns cheap and instant; everything it is unsure about it simply doesn't match, and the
-    engine defers. It is replaced wholesale by ``LearnedRouteLayer`` in V0.1 — the regexes are
+    engine defers. It is replaced wholesale by ``LearnedRouteLayer`` in a future tier — the regexes are
     not a contract, the ``RouteLayer`` seam is.
     """
 
@@ -121,7 +121,7 @@ class RouteEngine:
 
     @classmethod
     def default(cls, *, threshold: float) -> "RouteEngine":
-        """The V0.0 engine: a single regex lexicon layer. V0.1 prepends a LearnedRouteLayer."""
+        """The current engine: a single regex lexicon layer. A future tier prepends a LearnedRouteLayer."""
         return cls([RegexRouteLayer()], threshold=threshold)
 
     def best_match(self, utterance: str, context: dict | None = None) -> RouteMatch | None:

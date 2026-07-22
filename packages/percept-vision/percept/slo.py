@@ -272,7 +272,7 @@ def fovea_call_reduction(report: LoopReport) -> float:
 # ``tests/test_p_lat_base.py``'s ``REFLEX_INFEASIBLE_THRESHOLD_S = 2.0`` (the judge round-trip
 # "reflex" budget). A settle window may spend UP TO that already-accepted budget waiting for a
 # same-turn correction to consolidate, but no more — beyond it the delay is no longer "settling", it
-# is the wide-window withholding this card exists to reject. The ceiling is that same 2.0s (reused,
+# is the wide-window withholding this guard exists to reject. The ceiling is that same 2.0s (reused,
 # not reinvented), and 34s — a real late-retraction gap — sits far outside it, so declaring one is a
 # loud ``ValueError`` at construction, never a silently honoured latency regression.
 
