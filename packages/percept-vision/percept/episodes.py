@@ -190,10 +190,26 @@ def _subject_key_of(exemplar: Any) -> "str | None":
     key = getattr(subject, "key", None)
     return key if key else None
 
+
+def subject_is_unknown(exemplar: Any) -> bool:
+    """True iff ``exemplar`` carries a subject that was SEEN BUT NOT IDENTIFIED (card Y4/Y5).
+
+    Reads a :class:`~percept.contracts.SubjectRef` off ``exemplar.subject`` and returns ``True`` only
+    when its ``resolution`` is ``'unknown'`` — a *visible abstention*, distinct from BOTH a resolved
+    ``'bound'`` subject AND the ABSENCE of a subject (``exemplar.subject is None``, which is ``False``
+    here). This is the discriminator the FOLD keys on so a visible abstention never REARMS the gate and
+    is never granted episode-owned idempotency (two unknowns are NaN-like — never the same episode).
+    An exemplar with no ``subject`` attribute at all is byte-for-byte unchanged: it is not unknown."""
+    subject = getattr(exemplar, "subject", None)
+    if subject is None:
+        return False
+    return getattr(subject, "resolution", None) == "unknown"
+
 ContinuationReason = Literal[
     # -- continued (is_new=False)
     "continued",              # same subject, open, inside the gap, mutation compatible
     "reopened",               # same subject, TERMINAL but the policy allows reopen -> same episode
+    "unknown_provisional_continuation",  # Y4: an UNKNOWN sighting rode the sole open bound episode
     # -- a NEW episode was opened (is_new=True)
     "new_subject",            # no existing episode shares this subject — nothing to continue
     "gap_exceeded",           # same subject, but idle longer than the concern's continuity_gap_s
@@ -206,6 +222,7 @@ ContinuationReason = Literal[
 CONTINUATION_REASONS: tuple[ContinuationReason, ...] = (
     "continued",
     "reopened",
+    "unknown_provisional_continuation",
     "new_subject",
     "gap_exceeded",
     "episode_terminal",
@@ -233,11 +250,19 @@ class EpisodePolicy:
       (a PO reopened) instead of starting a fresh occurrence? Default no.
     * ``terminal_statuses`` — the statuses that mean "this episode is finished". A same-subject
       observation against a terminal episode opens a new one (or reopens, per ``allow_reopen``).
+    * ``unknown_attaches_to_active_bound`` — the card-Y4 OPT-IN for a NARROWLY single-focus source.
+      Default ``False`` (a visible abstention stays unbound and mints no counted episode competitor —
+      the Y5 default). When ``True`` AND the source has exactly ONE open bound episode AND no boundary
+      event intervened, an ``'unknown'`` sighting provisionally CONTINUES that sole episode instead of
+      minting a rival. Only defensible when the source truly holds one thing in focus: with two open
+      bound episodes the sighting could belong to either, so it stays unbound. The attach is RECORDED
+      (its own :data:`ContinuationReason` + a revision), never a silent merge.
     """
 
     continuity_gap_s: float | None = None
     allow_reopen: bool = False
     terminal_statuses: frozenset[str] = frozenset({CLOSED})
+    unknown_attaches_to_active_bound: bool = False
 
     def is_terminal(self, status: str) -> bool:
         return status in self.terminal_statuses
@@ -753,6 +778,60 @@ class EpisodeLog:
         if self.on_continuation is not None:
             self.on_continuation(decision)
 
+    # -- decision (1): the UNKNOWN subject — a visible abstention (card Y4) ----------------------
+    def _single_open_bound(self, pol: EpisodePolicy) -> "Episode | None":
+        """The SOLE open, subject-BOUND episode, or ``None`` if there are zero or MORE than one.
+
+        The gate for the provisional single-focus attach (card Y4): attaching an unidentified
+        sighting is only defensible when the source holds exactly one thing in focus. With two open
+        bound episodes an ``'unknown'`` could belong to either, so a guess is refused and the sighting
+        stays unbound."""
+        found: "Episode | None" = None
+        for e in self._episodes:
+            if e.subject_key is not None and not pol.is_terminal(e.status):
+                if found is not None:
+                    return None  # more than one thing in focus -> not a single-focus source
+                found = e
+        return found
+
+    def _observe_unknown(
+        self, t: float, exemplar: Any, pol: EpisodePolicy
+    ) -> ContinuationDecision:
+        """Fold an UNKNOWN (seen-but-unidentified) observation — the card-Y4 operational semantics.
+
+        Default (``unknown_attaches_to_active_bound=False``): byte-for-byte the Y5 behaviour — mint a
+        fresh episode. An unknown carries no key, so it NEVER collapses with another unknown (they are
+        NaN-like); the reason stays ``"new_subject"`` and the FOLD tags the observation ``unknown`` so
+        it never rearms the gate.
+
+        Opt-in (single-focus): when the source declares one thing in focus and there is exactly one
+        open bound episode that this sighting would CONTINUE (no boundary event — open, inside the
+        gap), the unknown provisionally continues it rather than minting a rival. The attach is
+        RECORDED — a distinct ``"unknown_provisional_continuation"`` reason and a ``confirmed``
+        revision — so it is observable and never a silent merge. A later BOUND sighting of the same
+        subject then continues this very episode, so no duplicate is created and no merge is needed."""
+        if pol.unknown_attaches_to_active_bound:
+            prior = self._single_open_bound(pol)
+            if prior is not None and self.continuation_reason(
+                prior, t, pol, mutation_compatible=True
+            ) == "continued":
+                gap_s = t - prior.last_seen
+                prior.last_seen = t
+                prior.representative = self._retain(exemplar)  # Y14: a HANDLE, never pixels
+                prior.observations += 1
+                self.record_revision(prior, "confirmed", t=t)  # provisional attach, recorded
+                decision = ContinuationDecision(
+                    episode=prior, is_new=False, reason="unknown_provisional_continuation",
+                    subject_matched=True, prior_episode_id=prior.id, gap_s=gap_s,
+                )
+                self._note(decision)
+                return decision
+        # Default (Y5): mint a NEW episode. subject_key stays None, so it can never match anything —
+        # not another unknown, not a later bound subject (no silent merge; card Y4 question 4).
+        decision = self._open(t, exemplar, None, "new_subject", None, None)
+        self._note(decision)
+        return decision
+
     def observe_decision(
         self,
         t: float,
@@ -772,6 +851,13 @@ class EpisodeLog:
         """
         pol = policy if policy is not None else self.policy
         self._prune(t)
+        # Card Y4: a subject SEEN BUT NOT IDENTIFIED ('unknown'). An explicit ``subject_key`` still
+        # wins (the resolver precedence) — only a genuinely unresolved sighting takes the unknown
+        # path. Y5 already fixed the TYPE and the default fold (mint a fresh episode; two unknowns
+        # never collapse); Y4 adds only the opt-in provisional single-focus attach here. The gate
+        # governance (a visible abstention must never REARM) lives in the FOLD, not in this log.
+        if subject_key is None and subject_is_unknown(exemplar):
+            return self._observe_unknown(t, exemplar, pol)
         # Card Y5: an explicit subject_key wins; else a bound verdict.subject.key carried by the
         # exemplar. Resolve it ONCE here so the matched/opened episode STORES the same key the next
         # sighting will match against (a locally-derived-but-unstored key would never continue).
@@ -1022,6 +1108,7 @@ __all__ = [
     "ContinuationReason",
     "CONTINUATION_REASONS",
     "DENIAL_REASONS",
+    "subject_is_unknown",
     "OPEN",
     "CLOSED",
 ]
