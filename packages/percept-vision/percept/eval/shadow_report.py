@@ -379,7 +379,7 @@ def run_probe_02_mutation() -> ProbeReport:
 
 
 def run_shadow_probes() -> dict[str, ProbeReport]:
-    """Both probes. The de-risking read a founder or a client can run with no API spend."""
+    """Run both probes. A read anyone can produce locally with no API spend."""
     return {
         "probe_01": run_probe_01_identity_continuation(),
         "probe_02": run_probe_02_mutation(),

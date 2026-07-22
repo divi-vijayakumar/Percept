@@ -26,7 +26,7 @@
  * `percept.contracts.CONTRACT_VERSION`. Same major == wire-compatible. This is DISTINCT from
  * `WatchSpec.version` (the wire integer, defaults to 1) which stays for payload compat.
  */
-export const CONTRACT_VERSION = "1.4.0"; // JS twin of Python 1.4.0 — + SubjectRef (Y5, additive).
+export const CONTRACT_VERSION = "1.6.0"; // JS twin of Python 1.6.0 — SubjectRef (Y5) + Y2 claim channel + Z3 envelope (all additive).
 // This constant names the PYTHON contract version these shapes are a twin of. The JS side implements a
 // SUBSET of the Python DTOs (the shapes defined below); the version tracks the wire contract, not the
 // coverage. 1.0.0: initial public wire contract (launch).
@@ -551,6 +551,9 @@ function _makeVerdict(v, path) {
     }
     out.asserted_by = v.asserted_by;
   }
+  // -- additive card-Y5 subject carrier (only when present): WHICH subject the fire is about.
+  // Absence is `null`/missing (Python `Verdict.subject: SubjectRef | None = None`), never a third state.
+  if (v.subject != null) out.subject = makeSubjectRef(v.subject);
   return out;
 }
 
@@ -650,6 +653,8 @@ export function makeIncident({
   label = null,
   snippet = null,
   entity_id = null,
+  message = "",
+  label_url = null,
   reason = null,
   watchplan_id = null,
   roi = null,
@@ -661,6 +666,9 @@ export function makeIncident({
   if (!isFiniteNumber(ts)) throw new ContractError("makeIncident: ts must be a finite number");
   if (!_isStringOrNull(label)) throw new ContractError("makeIncident: label must be a string or null");
   if (!_isStringOrNull(entity_id)) throw new ContractError("makeIncident: entity_id must be a string or null");
+  // message is the human-facing alert line (Python `str`, default ""); label_url is str|None.
+  if (typeof message !== "string") throw new ContractError("makeIncident: message must be a string");
+  if (!_isStringOrNull(label_url)) throw new ContractError("makeIncident: label_url must be a string or null");
   return {
     id,
     concern_id,
@@ -669,6 +677,8 @@ export function makeIncident({
     label,
     snippet: snippet == null ? null : makeIncidentSnippet(snippet),
     entity_id,
+    message,
+    label_url,
     ..._incidentEnvelope({ reason, watchplan_id, roi, modality, provenance }, "makeIncident"),
   };
 }
@@ -698,6 +708,11 @@ export function parseIncident(json) {
   // Missing on a pre-1.3 payload -> null (the Python `None` default); never a parse failure.
   const entity_id = obj.entity_id == null ? null : obj.entity_id;
   if (!_isStringOrNull(entity_id)) throw new ContractError("parseIncident: entity_id must be a string or null");
+  // message missing -> "" (Python `str` default); label_url missing -> null. Never a parse failure.
+  const message = obj.message == null ? "" : obj.message;
+  if (typeof message !== "string") throw new ContractError("parseIncident: message must be a string");
+  const label_url = obj.label_url == null ? null : obj.label_url;
+  if (!_isStringOrNull(label_url)) throw new ContractError("parseIncident: label_url must be a string or null");
   return {
     id: obj.id,
     concern_id: obj.concern_id,
@@ -706,6 +721,8 @@ export function parseIncident(json) {
     label,
     snippet,
     entity_id,
+    message,
+    label_url,
     // Missing on a pre-1.6 payload -> null (the Python `None` defaults); never a parse failure.
     ..._incidentEnvelope(obj, "parseIncident"),
   };

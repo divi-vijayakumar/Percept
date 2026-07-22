@@ -1,6 +1,6 @@
 """Schema + validator for the synthetic UNIT-layer capability corpora.
 
-The founder's split, which shapes every line here:
+The split that shapes every line here:
 
     CAPABILITY IS DETERMINISTIC AND BELONGS IN UNIT TESTS.
     QUALITY IS STATISTICAL AND BELONGS IN AN END-TO-END BENCHMARK AT RELEASE.

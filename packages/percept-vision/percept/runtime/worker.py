@@ -1445,7 +1445,7 @@ async def run(
         # Episode boundary: a process activity ends precisely on QUIET frames (no escalation), so the
         # boundary check rides the per-frame cadence — only spending a summarize call when it actually fires.
         check_boundary = getattr(core, "check_episode_boundary", None)
-        # The absence-native differentiators, driven every frame (they fire on QUIET frames the
+        # The absence-native checks, driven every frame (they fire on QUIET frames the
         # gate skips). Both are perception-robust (fire on the LACK of evidence, never a guess) and opt-in
         # per concern — check_observability only for miss_cost=='severe' ("I can't see the baby"), and
         # check_deadlines only for rearm=='deadline' ("overdue"). Default concerns -> both silent,
