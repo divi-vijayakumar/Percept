@@ -207,7 +207,7 @@ def _trace_reason(truth: str, action: str) -> str:
 def _concat_audio(chunks: list) -> Any:
     """Concatenate audio chunks into one clip for ``judge(audio=...)``.
 
-    AUD3: the AudioWindow the runtime pump fills (``runtime/audio.py``'s ``open_audio_source`` — mic,
+    The AudioWindow the runtime pump fills (``runtime/audio.py``'s ``open_audio_source`` — mic,
     wav, AND video-container/ffmpeg demux) holds TYPED :class:`~percept.contracts.AudioFrame` chunks,
     not raw bytes. This function used to only recognize ``(mime, bytes)`` pairs and raw ``bytes`` —
     an ``AudioFrame`` chunk matched NEITHER case and fell through to the ``chunks[-1]`` opaque-descriptor
