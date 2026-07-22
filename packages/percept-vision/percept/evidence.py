@@ -43,10 +43,15 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+import time
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, ClassVar, Iterable, Literal, Mapping
 
-from .clock import Clock, WallClock
+#: The clock seam — a zero-arg callable returning production-domain seconds. Structurally identical to
+#: ``percept.clock.Clock``, but named locally and defaulted to bare ``time.monotonic`` so this
+#: production module keeps ADR-001 §5's rule (``percept/clock.py`` stays harness-only; production time
+#: defaults are bare ``time.monotonic``, never ``clock.WallClock``). A test injects a ``FakeClock``.
+Clock = Callable[[], float]
 
 #: "argument not supplied" sentinel — distinct from ``None``, which is itself a meaningful value for
 #: ``expires_at`` (None = never expires). Not part of the public surface.
@@ -170,9 +175,11 @@ def evidence_ref_of(handle: Any) -> str:
     that never named a stored artifact)."""
     if isinstance(handle, str):
         ref = handle
+    elif hasattr(handle, "ref"):
+        # A handle that exposes ``.ref`` but whose ref is None/empty NAMED no stored artifact — that is
+        # a value problem (ValueError), distinct from an object that is not a handle at all (TypeError).
+        ref = handle.ref
     else:
-        ref = getattr(handle, "ref", None)
-    if ref is None:
         raise TypeError(f"cannot read an evidence ref from {type(handle).__name__}: {handle!r}")
     if not isinstance(ref, str) or not ref:
         raise ValueError(f"evidence ref must be a non-empty string, got {ref!r}")
@@ -269,7 +276,7 @@ class EvidenceStore:
         self,
         *,
         policy: RetentionPolicy | None = None,
-        clock: Clock = WallClock,
+        clock: Clock = time.monotonic,
         authorizer: Authorizer | None = None,
     ) -> None:
         self._policy = policy if policy is not None else RetentionPolicy()
