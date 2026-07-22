@@ -115,18 +115,37 @@ def _resolve_watch(profile_name: str, goal_text: str, *, source_key: str):
     return resolved, profile, settings
 
 
+def _json_safe(value):
+    """Recursively coerce a value into something ``json.dumps`` accepts — SourceProfile snapshot
+    fields carry real ``frozenset``/``set``/``tuple`` values (e.g. ``SourceProfile.modalities``) that
+    are not JSON types by themselves. Sets become sorted lists (deterministic wire output); anything
+    else json.dumps still can't handle falls back to ``str()`` rather than crashing the /run response."""
+    if isinstance(value, (frozenset, set)):
+        return sorted(_json_safe(v) for v in value)
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
 def _resolved_explain_json(resolved) -> "dict | None":
     """Structured per-field provenance ({path, value, owner_layer, source_id, reason, validated_by})
     PLUS the human ``.explain()`` text — the founder sees both the table and the "for a human at 2am"
     rendering ResolvedWatch itself ships."""
     if resolved is None:
         return None
-    fields = [dict(path=p, **resolved.provenance[p].to_dict()) for p in sorted(resolved.provenance)]
+    fields = [
+        dict(path=p, **{k: _json_safe(v) for k, v in resolved.provenance[p].to_dict().items()})
+        for p in sorted(resolved.provenance)
+    ]
     return {
         "text": resolved.explain(),
         "fields": fields,
         "plan_hash": resolved.plan_hash,
-        "source_profile": dict(resolved.source_profile) if resolved.source_profile is not None else None,
+        "source_profile": _json_safe(dict(resolved.source_profile)) if resolved.source_profile is not None else None,
     }
 
 
