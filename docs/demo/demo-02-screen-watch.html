@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Percept Screen Watch — arm a natural-language watch, record a screen share, and inspect the REAL runtime trace produced by watch().">
+<title>Percept Screen Watch · real runtime</title>
+<style>
+:root{
+  --ink:#0a0a0a;--graphite:#4a4a4a;--steel:#8a8a8a;--construction:#b9b9b9;
+  --hairline:#e2e2e2;--paper:#fff;--soft:#f6f6f3;--panel:#fbfbf8;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --display:"Arial Narrow",Eurostile,Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:var(--paper);color:var(--ink);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+button,input,textarea,select{font:inherit}
+button{cursor:pointer}
+button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.topbar{height:68px;border-bottom:1px solid var(--ink);display:flex;align-items:center;justify-content:space-between;padding:0 24px;background:rgba(255,255,255,.96);position:sticky;top:0;z-index:40;backdrop-filter:blur(12px)}
+.brand{display:flex;align-items:center;gap:12px}
+.mark{width:34px;height:34px;flex:none}
+.wordmark{font-family:var(--display);font-size:13px;letter-spacing:.28em}
+.brand small{display:block;margin-top:3px;font:8px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--steel)}
+.topmeta{display:flex;align-items:center;gap:18px;font:9px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--steel)}
+.status{display:inline-flex;align-items:center;gap:7px}
+.status i{width:7px;height:7px;border-radius:50%;background:var(--construction)}
+.status.armed i{background:var(--ink);box-shadow:0 0 0 4px #ededed}
+.status.live i{background:var(--ink);animation:pulse 1s infinite}
+.status.err i{background:#a11}
+@keyframes pulse{50%{box-shadow:0 0 0 7px rgba(0,0,0,0)}}
+.realbar{border-bottom:1px solid var(--hairline);background:#f2f7f2;padding:7px 24px;display:flex;align-items:center;justify-content:space-between;gap:12px;font:8.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--graphite)}
+.realbar b{color:var(--ink)}
+.realbar span{color:var(--steel);text-transform:none;letter-spacing:0;font-size:10px}
+main{padding:20px 24px 28px;display:grid;gap:16px}
+.heroGrid{display:grid;grid-template-columns:minmax(0,1.18fr) minmax(360px,.82fr);gap:16px}
+.panel{border:1px solid var(--ink);background:var(--paper)}
+.panelHead{height:43px;padding:0 13px;border-bottom:1px solid var(--hairline);display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--panel);font:9px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--steel)}
+.panelHead b{color:var(--ink);font-weight:500}
+.sharePanel{display:grid;grid-template-rows:auto 1fr auto;min-height:500px}
+.preview{position:relative;min-height:390px;background:#111;overflow:hidden}
+.preview video{width:100%;height:100%;display:block;object-fit:contain;background:#111}
+.empty{position:absolute;inset:0;display:grid;place-items:center;color:#fff;text-align:center;padding:30px;background:
+  radial-gradient(circle at center,transparent 0 14%,rgba(255,255,255,.02) 14% 15%,transparent 15% 29%,rgba(255,255,255,.02) 29% 30%,transparent 30%),#111}
+.emptyInner{max-width:440px}
+.emptyIcon{width:96px;height:96px;margin:0 auto 22px}
+.empty h1{font-family:var(--display);font-size:30px;font-weight:400;margin:0}
+.empty p{font-size:13px;line-height:1.65;color:#aaa;max-width:390px;margin:12px auto 0}
+.overlayLayer{position:absolute;inset:0;pointer-events:none}
+.overlayBadge{position:absolute;left:12px;top:12px;background:#fff;color:#000;padding:6px 8px;font:9px var(--mono);letter-spacing:.08em;display:none}
+.overlayGrid{position:absolute;inset:0;background:
+ linear-gradient(rgba(255,255,255,.06) 1px,transparent 1px),
+ linear-gradient(90deg,rgba(255,255,255,.06) 1px,transparent 1px);
+ background-size:48px 48px;display:none}
+.overlayBox{position:absolute;border:1px solid #fff;left:10%;top:12%;width:80%;height:74%;display:none}
+.overlayBox::after{content:"WATCH ACTIVE";position:absolute;right:-1px;top:-20px;background:#fff;color:#000;padding:3px 5px;font:8px var(--mono);letter-spacing:.08em}
+.shareControls{border-top:1px solid var(--hairline);padding:11px 13px;display:flex;justify-content:space-between;align-items:center;gap:12px}
+.sessionMeta{font:10px var(--mono);color:var(--steel)}
+.actions{display:flex;gap:8px}
+.primary,.secondary,.quiet{border:1px solid var(--ink);padding:10px 13px;background:var(--ink);color:#fff;font-size:12px;font-weight:650}
+.secondary{background:#fff;color:var(--ink);border-color:var(--construction)}
+.quiet{background:transparent;color:var(--graphite);border-color:var(--hairline)}
+.primary:disabled,.secondary:disabled{opacity:.4;cursor:not-allowed}
+.controlPanel{display:grid;grid-template-rows:auto 1fr}
+.controlBody{padding:18px;display:flex;flex-direction:column}
+.label{font:9px var(--mono);letter-spacing:.13em;text-transform:uppercase;color:var(--steel);margin-bottom:8px}
+.taskInput{width:100%;min-height:96px;resize:none;border:1px solid var(--construction);padding:13px;font-size:16px;line-height:1.5}
+.examples{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 14px}
+.examples button{border:1px solid var(--hairline);background:var(--panel);padding:7px 8px;font:9px var(--mono);color:var(--graphite)}
+.row{display:flex;gap:8px;margin-bottom:8px}
+.row label{flex:1;font:9px var(--mono);color:var(--steel)}
+.row select{width:100%;margin-top:4px;padding:7px;border:1px solid var(--construction);font:11px var(--mono)}
+.agentBox{border-top:1px solid var(--ink);padding-top:15px;margin-top:auto}
+.agentRow{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.agentName{font-family:var(--display);font-size:18px}
+.agentMeta{font:9px var(--mono);color:var(--steel);margin-top:3px}
+.agentSteps{margin:15px 0;display:grid;gap:8px}
+.agentStep{display:grid;grid-template-columns:17px 1fr auto;gap:8px;align-items:center;font-size:11px;color:var(--steel)}
+.agentStep i{width:8px;height:8px;border:1px solid var(--construction);border-radius:50%}
+.agentStep.done{color:var(--ink)} .agentStep.done i{background:var(--ink);border-color:var(--ink)}
+.agentStep.active{color:var(--ink)} .agentStep.active i{border-color:var(--ink);box-shadow:0 0 0 4px #efefef}
+.agentStep span:last-child{font:8px var(--mono)}
+.armBtn{width:100%;border:1px solid var(--ink);background:var(--ink);color:#fff;padding:13px;font-weight:700}
+.armBtn:disabled{background:#ddd;color:#888;border-color:#ddd;cursor:not-allowed}
+.hint{margin-top:10px;font:9.5px var(--mono);color:var(--steel);line-height:1.5}
+.hint.err{color:#a11}
+.runtimeGrid{display:grid;grid-template-columns:1fr 1fr 1.2fr;gap:16px}
+.stack{min-height:302px;display:grid;grid-template-rows:auto 1fr}
+.code{margin:0;padding:15px;background:#0b0b0b;color:#e9e9e9;font:10.5px/1.65 var(--mono);white-space:pre-wrap;overflow:auto;max-height:340px}
+.code .dim{color:#777}
+.metricsBody{padding:13px;display:grid;gap:6px;font:10.5px/1.5 var(--mono)}
+.metricRow{display:flex;justify-content:space-between;gap:12px;border-bottom:1px dotted var(--hairline);padding-bottom:4px}
+.metricRow b{font-weight:600}
+.contextBody{padding:12px;display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
+.ledger{border:1px solid var(--hairline);padding:11px;min-width:0;background:var(--panel)}
+.ledgerHead{display:flex;align-items:center;justify-content:space-between;gap:8px;border-bottom:1px solid var(--hairline);padding-bottom:8px;margin-bottom:8px}
+.ledgerHead b{font:9px var(--mono);letter-spacing:.1em;text-transform:uppercase}
+.ledgerHead span{font:8px var(--mono);color:var(--steel)}
+.ledger pre{margin:0;font:9.5px/1.55 var(--mono);white-space:pre-wrap;color:var(--graphite);min-height:120px}
+.reviewGrid{display:grid;grid-template-columns:1.15fr .95fr;gap:16px}
+.recordingPanel{display:grid;grid-template-rows:auto auto 1fr;min-height:350px}
+.recordingWrap{padding:12px;border-bottom:1px solid var(--hairline);background:#111}
+.recordingWrap video{width:100%;max-height:230px;display:block;background:#111}
+.timelineBody{padding:14px}
+.timelineTop{display:flex;justify-content:space-between;gap:12px;margin-bottom:12px;font:9px var(--mono);color:var(--steel)}
+.frameBar{position:relative;height:96px;border:1px solid var(--hairline);background:var(--panel);overflow:hidden}
+.frames{position:absolute;inset:0;display:flex;align-items:flex-end;gap:1px;padding:14px 10px}
+.frames i{flex:1;background:#ddd;min-width:1px;height:16px}
+.frames i.admitted{background:#777;height:36px}
+.frames i.judged{background:#222;height:56px}
+.frames i.fired{background:#000;height:70px}
+.playhead{position:absolute;top:0;bottom:0;width:1px;background:#000;left:0}
+.annotation{position:absolute;top:8px;transform:translateX(-50%);font:8px var(--mono);letter-spacing:.08em;padding:4px 5px;background:#000;color:#fff;display:none}
+.lanes{display:grid;grid-template-columns:76px 1fr;gap:6px 8px;margin-top:13px}
+.laneName{font:9px var(--mono);color:var(--steel);display:flex;align-items:center}
+.lane{height:19px;background:#f0f0ed;position:relative;border:1px solid #ededeb}
+.lane span{position:absolute;top:4px;bottom:4px;background:#222;left:0;width:0}
+.eventsPanel{min-height:350px;display:grid;grid-template-rows:auto 1fr auto}
+.events{padding:11px;overflow:auto;max-height:300px;display:grid;gap:8px;align-content:start}
+.eventEmpty{border:1px dashed var(--construction);padding:22px;color:var(--steel);font-size:12px;text-align:center}
+.event{border:1px solid var(--hairline);padding:11px;background:#fff}
+.event.fire{border-color:#000}
+.eventHead{display:flex;justify-content:space-between;gap:10px;align-items:center;font:9px var(--mono);letter-spacing:.09em}
+.eventHead span{color:var(--steel)}
+.event h3{font-family:var(--display);font-size:16px;font-weight:400;margin:9px 0 6px}
+.event p{font-size:11px;color:var(--graphite);margin:0}
+.eventFooter{padding:11px;border-top:1px solid var(--hairline);display:flex;gap:7px}
+.eventFooter button{flex:1}
+.traceDrawer{position:fixed;inset:0;background:rgba(0,0,0,.38);z-index:60;display:none;align-items:stretch;justify-content:flex-end}
+.traceDrawer.open{display:flex}
+.tracePanel{width:min(720px,94vw);background:#fff;border-left:1px solid #000;display:grid;grid-template-rows:auto 1fr auto}
+.traceHead{height:54px;border-bottom:1px solid var(--ink);padding:0 16px;display:flex;align-items:center;justify-content:space-between}
+.traceHead b{font-family:var(--display);letter-spacing:.08em}
+.traceHead button{border:0;background:transparent;font-size:20px}
+.traceContent{margin:0;padding:18px;background:#0a0a0a;color:#eee;font:10px/1.65 var(--mono);overflow:auto;white-space:pre-wrap}
+.traceActions{padding:12px;border-top:1px solid var(--ink);display:flex;justify-content:flex-end}
+.shareOverlay{position:fixed;left:20px;bottom:20px;z-index:100;background:#fff;border:1px solid #000;width:290px;display:none;box-shadow:0 18px 60px rgba(0,0,0,.22)}
+.shareOverlay.open{display:block}
+.shareOverlayHead{padding:10px 12px;border-bottom:1px solid var(--hairline);display:flex;justify-content:space-between;font:9px var(--mono);letter-spacing:.1em}
+.shareOverlayBody{padding:12px}
+.shareOverlayBody b{display:block;font-family:var(--display);font-size:16px;margin-bottom:5px}
+.shareOverlayBody p{font-size:11px;color:var(--graphite);line-height:1.5;margin:0 0 10px}
+.shareOverlay button{width:100%}
+@media(max-width:1050px){.heroGrid,.runtimeGrid,.reviewGrid{grid-template-columns:1fr}}
+@media(max-width:700px){.topbar{padding:0 14px}.topmeta span:not(.status){display:none}.realbar{padding:7px 14px;flex-direction:column;align-items:flex-start;gap:3px}main{padding:12px}.contextBody{grid-template-columns:1fr}.preview{min-height:300px}.actions{flex-wrap:wrap}.shareControls{align-items:flex-start;flex-direction:column}.shareOverlay{left:12px;right:12px;bottom:12px;width:auto}}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <svg class="mark" viewBox="-145 -145 290 325" aria-hidden="true">
+      <circle r="104" fill="none" stroke="#8A8A8A" stroke-width="1" stroke-linecap="round" stroke-dasharray=".1 10.79"/>
+      <circle r="86" fill="none" stroke="#0A0A0A" stroke-width=".8" stroke-linecap="round" stroke-dasharray="7 5.87"/>
+      <circle r="58" fill="none" stroke="#0A0A0A" stroke-width=".8"/>
+      <circle r="44" fill="none" stroke="#0A0A0A" stroke-width="1" stroke-linecap="round" stroke-dasharray=".1 7.58"/>
+      <circle r="30" fill="none" stroke="#0A0A0A" stroke-width="1.6"/>
+      <circle r="17" fill="none" stroke="#0A0A0A" stroke-width="2.4"/>
+      <circle r="5.5" fill="#0A0A0A"/>
+      <g stroke="#0A0A0A" stroke-width=".8"><line x1="-100" x2="-21"/><line x1="21" x2="100"/><line y1="-100" y2="-21"/><line y1="21" y2="146"/></g>
+      <g fill="#fff" stroke="#0A0A0A"><circle cx="-104" r="4"/><circle cx="104" r="4"/><circle cy="-104" r="4"/><circle cy="150" r="4"/></g>
+    </svg>
+    <div><div class="wordmark">PERCEPT</div><small>Screen Watch · Demo 02</small></div>
+  </div>
+  <div class="topmeta">
+    <span id="hostMeta">connecting to runtime…</span>
+    <span id="runtimeStatus" class="status"><i></i><b>IDLE</b></span>
+  </div>
+</header>
+<div class="realbar">
+  <b>Real runtime · record a screen, then watch() judges the recording</b>
+  <span id="judgeMeta">judge: checking…</span>
+</div>
+
+<main>
+  <section class="heroGrid">
+    <article class="panel sharePanel">
+      <div class="panelHead"><b>01 · Screen source</b><span id="sessionClock">00:00.0</span></div>
+      <div class="preview">
+        <video id="liveVideo" autoplay muted playsinline></video>
+        <div id="empty" class="empty">
+          <div class="emptyInner">
+            <svg class="emptyIcon" viewBox="-145 -145 290 290" aria-hidden="true">
+              <circle r="104" fill="none" stroke="#777" stroke-width="1" stroke-linecap="round" stroke-dasharray=".1 10.79"/>
+              <circle r="58" fill="none" stroke="#fff" stroke-width=".8"/>
+              <circle r="30" fill="none" stroke="#fff" stroke-width="1.6"/>
+              <circle r="17" fill="none" stroke="#fff" stroke-width="2.4"/>
+              <circle r="5.5" fill="#fff"/>
+              <g stroke="#fff" stroke-width=".8"><line x1="-100" x2="-21"/><line x1="21" x2="100"/><line y1="-100" y2="-21"/><line y1="21" y2="100"/></g>
+            </svg>
+            <h1>Arm a watch, then share a screen.</h1>
+            <p>Record a tab, window, or display. When you stop, the recording is handed to the real runtime — watch() pulls frames, judges episodes, and emits WatchEvents. A key runs a real judge; without one, use the keyless fixture.</p>
+          </div>
+        </div>
+        <div class="overlayLayer">
+          <div id="overlayGrid" class="overlayGrid"></div>
+          <div id="overlayBox" class="overlayBox"></div>
+          <div id="overlayBadge" class="overlayBadge">PERCEPT · RECORDING</div>
+        </div>
+      </div>
+      <div class="shareControls">
+        <div id="sessionMeta" class="sessionMeta">No screen session recorded</div>
+        <div class="actions">
+          <button id="startShareBtn" class="primary" disabled>Share screen</button>
+          <button id="stopShareBtn" class="secondary" disabled>Stop</button>
+        </div>
+      </div>
+    </article>
+
+    <aside class="panel controlPanel">
+      <div class="panelHead"><b>02 · Watch authoring</b><span>client → runtime</span></div>
+      <div class="controlBody">
+        <label class="label" for="taskInput">Natural-language watch target</label>
+        <textarea id="taskInput" class="taskInput" placeholder="Example: Fire when the user reaches a terminal error while installing Claude Code."></textarea>
+        <div class="examples">
+          <button data-example="Fire when the user reaches a terminal error while installing Claude Code.">Terminal error</button>
+          <button data-example="Tell me when the checkout flow reaches the payment confirmation screen.">Checkout success</button>
+          <button data-example="Fire when a spreadsheet shows a visible negative variance above 10%.">Variance alert</button>
+        </div>
+        <div class="row">
+          <label>judge backend
+            <select id="backend"><option value="openrouter">openrouter (qwen)</option><option value="gemini">gemini</option><option value="claude">claude</option></select>
+          </label>
+          <label>fps
+            <select id="fps"><option>1</option><option>2</option></select>
+          </label>
+        </div>
+        <div class="agentBox">
+          <div class="agentRow">
+            <div><div class="agentName">Watch runtime</div><div class="agentMeta">percept.watch() · local harness</div></div>
+            <span id="agentStatus" class="status"><i></i><b>READY</b></span>
+          </div>
+          <div class="agentSteps">
+            <div class="agentStep" data-step="intent"><i></i><span>Author goal (verbatim)</span><span>GOAL</span></div>
+            <div class="agentStep" data-step="record"><i></i><span>Record screen locally</span><span>REC</span></div>
+            <div class="agentStep" data-step="run"><i></i><span>Run watch() over the recording</span><span>RUN</span></div>
+            <div class="agentStep" data-step="emit"><i></i><span>Emit events + write .ptrace</span><span>TRACE</span></div>
+          </div>
+          <button id="armBtn" class="armBtn" disabled>Arm watch</button>
+          <button id="fixtureBtn" class="armBtn" style="margin-top:8px;background:#fff;color:#0a0a0a;border-color:var(--construction)">Run keyless fixture</button>
+          <div id="hint" class="hint">Arm a watch, then Share screen to record. Stop hands the recording to the runtime.</div>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <section class="runtimeGrid">
+    <article class="panel stack">
+      <div class="panelHead"><b>03 · Run manifest</b><span>real · from the .ptrace</span></div>
+      <pre id="manifestOut" class="code"><span class="dim"># Record a screen and run the watch to populate this.</span></pre>
+    </article>
+    <article class="panel stack">
+      <div class="panelHead"><b>04 · Primary metrics</b><span>real · trace summary</span></div>
+      <div id="metricsOut" class="metricsBody"><span class="dim" style="color:#8a8a8a"># The observed → admitted → judged → gate funnel appears here.</span></div>
+    </article>
+    <article class="panel stack">
+      <div class="panelHead"><b>05 · Context ledger</b><span id="ledgerVersion">revision · 0</span></div>
+      <div class="contextBody">
+        <section class="ledger">
+          <div class="ledgerHead"><b>Entity</b><span id="entityRev">shadow</span></div>
+          <pre id="entityLedger">subject: null
+resolution: —
+strategy: —</pre>
+        </section>
+        <section class="ledger">
+          <div class="ledgerHead"><b>Episode</b><span id="episodeRev">shadow</span></div>
+          <pre id="episodeLedger">episode: null
+match: —
+mutation: —</pre>
+        </section>
+        <section class="ledger">
+          <div class="ledgerHead"><b>Gate</b><span id="contextRev">—</span></div>
+          <pre id="contextLedger">action: —
+reason: —
+confidence: —</pre>
+        </section>
+      </div>
+    </article>
+  </section>
+
+  <section class="reviewGrid">
+    <article class="panel recordingPanel">
+      <div class="panelHead"><b>06 · Recorded session + trace</b><span>local playback</span></div>
+      <div class="recordingWrap"><video id="recordedVideo" controls playsinline></video></div>
+      <div class="timelineBody">
+        <div class="timelineTop"><span id="frameCount">0 frames observed</span><span id="traceState">trace idle</span></div>
+        <div class="frameBar">
+          <div id="frames" class="frames"></div>
+          <div id="playhead" class="playhead"></div>
+          <div id="fireAnnotation" class="annotation">FIRE</div>
+        </div>
+        <div class="lanes">
+          <div class="laneName">FRAMES</div><div class="lane"><span id="attentionLane"></span></div>
+          <div class="laneName">EPISODE</div><div class="lane"><span id="episodeLane"></span></div>
+          <div class="laneName">JUDGE</div><div class="lane"><span id="judgeLane"></span></div>
+          <div class="laneName">EVENT</div><div class="lane"><span id="eventLane"></span></div>
+        </div>
+      </div>
+    </article>
+
+    <article class="panel eventsPanel">
+      <div class="panelHead"><b>07 · Subscriber</b><span>real WatchEvents</span></div>
+      <div id="events" class="events"><div class="eventEmpty">No events yet. SILENT gate decisions stay in the trace.</div></div>
+      <div class="eventFooter">
+        <button id="viewTraceBtn" class="secondary" disabled>View full .ptrace</button>
+        <button id="clearEventsBtn" class="quiet">Clear</button>
+      </div>
+    </article>
+  </section>
+</main>
+
+<div id="shareOverlay" class="shareOverlay">
+  <div class="shareOverlayHead"><span>PERCEPT SCREEN WATCH</span><span id="overlayTimer">00:00</span></div>
+  <div class="shareOverlayBody">
+    <b id="overlayTitle">Recording</b>
+    <p id="overlayTask">Percept is recording the shared screen. Stop to hand the recording to the runtime.</p>
+    <button id="overlayStopBtn" class="primary">Stop &amp; run watch</button>
+  </div>
+</div>
+
+<div id="traceDrawer" class="traceDrawer">
+  <aside class="tracePanel">
+    <div class="traceHead"><b>PERCEPT TRACE · .ptrace</b><button id="closeTraceBtn" aria-label="Close">×</button></div>
+    <pre id="traceContent" class="traceContent"></pre>
+    <div class="traceActions"><button id="downloadTraceBtn" class="primary">Download .ptrace</button></div>
+  </aside>
+</div>
+
+<script>
+(() => {
+  const $ = s => document.querySelector(s);
+  const $$ = s => [...document.querySelectorAll(s)];
+  const taskInput=$('#taskInput'), armBtn=$('#armBtn'), frames=$('#frames');
+  let armed=false, sharing=false, stream=null, recorder=null, chunks=[], startedAt=0, timerId=null, recordedBlob=null, lastRun=null;
+
+  fetch('/').then(r=>r.text()).then(t=>{ const m=t.match(/judge key: ([^<]+)/); $('#judgeMeta').textContent='judge: '+(m?m[1].trim():'unknown');
+    $('#hostMeta').textContent='localhost harness · watch v1.0.0 · contract v1.6.0'; })
+    .catch(()=>{ $('#judgeMeta').textContent='judge: harness offline — start docs/demo/serve.py'; $('#hostMeta').textContent='runtime unreachable'; });
+
+  function fmt(t){ if(!Number.isFinite(t))return '00:00.0'; const m=Math.floor(t/60),s=(t%60).toFixed(1).padStart(4,'0'); return String(m).padStart(2,'0')+':'+s; }
+  function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+  function setAgent(step){ const order=['intent','record','run','emit']; $$('.agentStep').forEach(el=>{const i=order.indexOf(el.dataset.step),a=order.indexOf(step);el.classList.toggle('done',a>=0&&i<a);el.classList.toggle('active',i===a);});}
+  function tick(ms){return new Promise(r=>setTimeout(r,ms))}
+  function updateArm(){ armBtn.disabled=!taskInput.value.trim(); }
+  taskInput.addEventListener('input',updateArm);
+  $$('.examples button').forEach(b=>b.onclick=()=>{taskInput.value=b.dataset.example;updateArm()});
+
+  armBtn.onclick=()=>{ if(!taskInput.value.trim())return; armed=true; setAgent('intent');
+    $('#runtimeStatus').className='status armed';$('#runtimeStatus').querySelector('b').textContent='ARMED';
+    $('#agentStatus').className='status armed';$('#agentStatus').querySelector('b').textContent='ARMED';
+    $('#startShareBtn').disabled=false; $('#hint').className='hint'; $('#hint').textContent='Watch armed. Click Share screen to record, then Stop to run the runtime.';
+    armBtn.textContent='Re-arm watch'; };
+
+  async function startShare(){
+    if(!armed)return;
+    try{
+      stream=await navigator.mediaDevices.getDisplayMedia({video:{frameRate:8},audio:false});
+    }catch(e){ $('#sessionMeta').textContent='Screen sharing was cancelled.'; return; }
+    sharing=true; chunks=[]; startedAt=Date.now();
+    $('#liveVideo').srcObject=stream; $('#empty').style.display='none';
+    $('#overlayGrid').style.display=$('#overlayBox').style.display=$('#overlayBadge').style.display='block';
+    $('#runtimeStatus').className='status live';$('#runtimeStatus').querySelector('b').textContent='RECORDING';
+    $('#shareOverlay').classList.add('open'); $('#overlayTask').textContent=taskInput.value.trim();
+    $('#startShareBtn').disabled=true; $('#stopShareBtn').disabled=false; setAgent('record');
+    recorder=new MediaRecorder(stream,{mimeType:MediaRecorder.isTypeSupported('video/webm;codecs=vp9')?'video/webm;codecs=vp9':'video/webm'});
+    recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
+    recorder.onstop=finalize; recorder.start(250);
+    timerId=setInterval(()=>{const el=(Date.now()-startedAt)/1000;$('#sessionClock').textContent=fmt(el);$('#overlayTimer').textContent=fmt(el).slice(0,5);$('#sessionMeta').textContent=`Recording · ${fmt(el)} · local`;},250);
+    stream.getVideoTracks()[0].addEventListener('ended',stopShare);
+  }
+  function stopShare(){
+    if(!sharing)return; sharing=false; clearInterval(timerId);
+    if(recorder&&recorder.state!=='inactive')recorder.stop();
+    if(stream)stream.getTracks().forEach(t=>t.stop());
+    $('#stopShareBtn').disabled=true;$('#startShareBtn').disabled=false;
+    $('#shareOverlay').classList.remove('open');
+    $('#overlayGrid').style.display=$('#overlayBox').style.display=$('#overlayBadge').style.display='none';
+    $('#sessionMeta').textContent='Recording stopped · handing to runtime…';
+  }
+  function finalize(){
+    recordedBlob=new Blob(chunks,{type:recorder?.mimeType||'video/webm'});
+    $('#recordedVideo').src=URL.createObjectURL(recordedBlob);
+    $('#sessionMeta').textContent=`Recorded · ${(recordedBlob.size/1024/1024).toFixed(1)} MB · running watch…`;
+    runReal(recordedBlob);
+  }
+  $('#startShareBtn').onclick=startShare;
+  $('#stopShareBtn').onclick=stopShare;
+  $('#overlayStopBtn').onclick=stopShare;
+  $('#fixtureBtn').onclick=()=>runFixture();
+  $('#clearEventsBtn').onclick=()=>{$('#events').innerHTML='<div class="eventEmpty">Subscriber cleared. The trace still holds every decision.</div>'};
+
+  async function runReal(blob){
+    setAgent('run'); $('#runtimeStatus').className='status armed';$('#runtimeStatus').querySelector('b').textContent='RUNNING';
+    const q=new URLSearchParams({goal:taskInput.value.trim(),backend:$('#backend').value,fps:$('#fps').value,source_name:'screen.webm'});
+    let data;
+    try{ const r=await fetch('/run?'+q.toString(),{method:'POST',body:blob}); data=await r.json(); }
+    catch(e){ return fail('Runtime unreachable — is docs/demo/serve.py running?'); }
+    if(data.error){ return fail(data.message||data.error); }
+    setAgent('emit'); await tick(120); finish(data,'Real judge over your screen recording. ');
+  }
+  async function runFixture(){
+    setAgent('run'); $('#runtimeStatus').className='status armed';$('#runtimeStatus').querySelector('b').textContent='RUNNING';
+    let data; try{ const r=await fetch('/run?mode=fixture',{method:'POST'}); data=await r.json(); }catch(e){ return fail('Runtime unreachable — start docs/demo/serve.py'); }
+    if(data.error){ return fail(data.message||data.error); }
+    finish(data,'Bundled fixture through the real runtime (scripted verdicts). ');
+  }
+  function finish(data,label){
+    lastRun=data; render(data);
+    $$('.agentStep').forEach(el=>el.classList.add('done')); setAgent('');
+    $('#runtimeStatus').className='status';$('#runtimeStatus').querySelector('b').textContent='DONE';
+    $('#agentStatus').className='status';$('#agentStatus').querySelector('b').textContent='DONE';
+    $('#sessionMeta').textContent='Run complete · trace ready';
+    $('#hint').className='hint'; $('#hint').textContent=label+(data.note||'');
+  }
+  function fail(msg){ $('#runtimeStatus').className='status err';$('#runtimeStatus').querySelector('b').textContent='ERROR'; setAgent('');
+    $('#hint').className='hint err'; $('#hint').textContent=msg; }
+
+  // --- render REAL trace (shared with demo 01) ------------------------------
+  function render(d){
+    const recs=d.records||[], summ=d.summary||{}, man=d.manifest||{};
+    $('#manifestOut').textContent=JSON.stringify({run_id:man.run_id,source:man.source,percept_version:man.percept_version,
+      watch_version:man.watch_version,contract_version:man.contract_version,driver:man.driver,plan:man.plan},null,2);
+    renderMetrics(summ); renderTimeline(recs); renderLedger(recs); renderEvents(d.events||[]);
+    $('#viewTraceBtn').disabled=false;
+  }
+  function renderMetrics(s){
+    const g=s.gate_outcomes||{}, c=s.cost||{};
+    const rows=[['watch duration',(s.watch_duration_s??0).toFixed(3)+'s'],['source healthy',(s.source_healthy_s??0).toFixed(3)+'s'],
+      ['observed',`${s.observed??0} ${s.observed_unit||''}`],['admitted',`${s.admitted??0} · union ${(s.admitted_evidence_union_s??0).toFixed(2)}s`],
+      ['judge started / completed',`${s.judge_started??0} / ${s.judge_completed??0}`],['judge degraded / dropped',`${s.judge_degraded??0} / ${s.judge_dropped??0}`],
+      ['gate · FIRE',g.fire??0],['gate · ASK',g.ask??0],['gate · SILENT',g.silent??0],['gate · SUPPRESSED',g.suppressed??0],
+      ['incidents',s.incidents??0],['cost',c.text||'—'],['est. savings',(s.savings&&s.savings.text)||'—']];
+    $('#metricsOut').innerHTML=rows.map(([k,v])=>`<div class="metricRow"><span>${k}</span><b>${esc(v)}</b></div>`).join('');
+  }
+  function timeExtent(recs){ const ts=recs.filter(r=>r.stage==='source.frame').map(r=>r.source_ts).filter(Number.isFinite); return ts.length?[Math.min(...ts),Math.max(...ts)]:[0,1]; }
+  function renderTimeline(recs){
+    const [t0,t1]=timeExtent(recs); const span=(t1-t0)||1;
+    const SLOTS=Math.max(24,Math.min(72,recs.filter(r=>r.stage==='source.frame').length*3));
+    frames.innerHTML=''; const cells=[]; for(let i=0;i<SLOTS;i++){const n=document.createElement('i');frames.appendChild(n);cells.push(n);}
+    const put=(ts,cls)=>{const p=Math.max(0,Math.min(1,(ts-t0)/span));cells[Math.min(SLOTS-1,Math.floor(p*SLOTS))].classList.add(cls);};
+    recs.forEach(r=>{ if(!Number.isFinite(r.source_ts))return;
+      if(r.stage==='source.frame')put(r.source_ts,'admitted');
+      if(r.stage==='judge.finished')put(r.source_ts,'judged');
+      if(r.stage==='gate.classified'&&r.data&&r.data.action==='fire')put(r.source_ts,'fired'); });
+    const nF=recs.filter(r=>r.stage==='source.frame').length, nJ=recs.filter(r=>r.stage==='judge.finished').length;
+    const nEp=recs.filter(r=>r.stage==='shadow.fold'&&r.data&&r.data.fold&&r.data.fold.episode_id).length;
+    const nE=recs.filter(r=>r.stage==='gate.classified'&&r.data&&r.data.action==='fire').length;
+    $('#attentionLane').style.width=nF?'100%':'0';
+    $('#episodeLane').style.width=nF?Math.min(100,nEp/nF*100||8)+'%':'0';
+    $('#judgeLane').style.width=nF?Math.min(100,nJ/nF*100)+'%':'0';
+    $('#eventLane').style.width=nE?Math.min(100,nE*24)+'%':'0';
+    $('#frameCount').textContent=`${nF} frames observed · ${nJ} judged`;
+    $('#traceState').textContent=nE?'fired':'silent';
+  }
+  function renderLedger(recs){
+    const folds=recs.filter(r=>r.stage==='shadow.fold'), lastFold=folds[folds.length-1];
+    const gates=recs.filter(r=>r.stage==='gate.classified'), lastGate=gates[gates.length-1];
+    $('#ledgerVersion').textContent=`revision · ${folds.length}`;
+    if(lastFold&&lastFold.data){ const su=lastFold.data.subject, fo=lastFold.data.fold||{};
+      $('#entityLedger').textContent=su?`subject: ${su.key||'—'}\nresolution: ${su.resolution||'—'}\nstrategy: ${su.strategy||'—'}`:`subject: null\nresolution: unbound\nstrategy: —`;
+      $('#episodeLedger').textContent=`episode: ${fo.episode_id||'null'}\nmatch: ${fo.match||'—'}\nmutation: ${fo.mutation||'—'}`;
+      $('#entityRev').textContent=$('#episodeRev').textContent='shadow · advisory'; }
+    if(lastGate&&lastGate.data){ const gd=lastGate.data;
+      $('#contextLedger').textContent=`action: ${gd.action||'—'}\nreason: ${(gd.reason||'—').slice(0,42)}\nconfidence: ${gd.confidence??'—'}`;
+      $('#contextRev').textContent=gd.action||'—'; }
+  }
+  function renderEvents(events){
+    const box=$('#events'); box.innerHTML='';
+    if(!events.length){box.innerHTML='<div class="eventEmpty">No events fired. Every SILENT decision is still in the .ptrace.</div>';return;}
+    events.forEach((ev,i)=>{ const el=document.createElement('article');el.className='event fire';
+      const conf=(ev.confidence!=null)?` · confidence ${Number(ev.confidence).toFixed(2)}`:'';
+      const ent=ev.entity_id?` · entity ${esc(ev.entity_id)}`:'';
+      el.innerHTML=`<div class="eventHead"><b>${esc((ev.action||'fire').toUpperCase())} · ${esc(ev.goal_id||('evt_'+i))}</b><span>${ev.t!=null?fmt(ev.t):'t=—'}</span></div><h3>${esc(ev.text||ev.goal_id||'WatchEvent')}</h3><p>real WatchEvent from percept.watch()${conf}${ent}</p>`;
+      box.prepend(el); });
+  }
+
+  $('#viewTraceBtn').onclick=async()=>{ if(!lastRun)return; const r=await fetch('/trace/'+lastRun.run_id+'.ptrace'); $('#traceContent').textContent=await r.text(); $('#traceDrawer').classList.add('open'); };
+  $('#closeTraceBtn').onclick=()=>$('#traceDrawer').classList.remove('open');
+  $('#traceDrawer').addEventListener('click',e=>{if(e.target===$('#traceDrawer'))$('#traceDrawer').classList.remove('open')});
+  $('#downloadTraceBtn').onclick=async()=>{ if(!lastRun)return; const r=await fetch('/trace/'+lastRun.run_id+'.ptrace'); const blob=await r.blob();
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=lastRun.run_id+'.ptrace';a.click();URL.revokeObjectURL(a.href); };
+})();
+</script>
+</body>
+</html>
