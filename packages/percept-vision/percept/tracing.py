@@ -412,9 +412,9 @@ _SUMMARY_STAGES: frozenset[str] = frozenset({
     STAGE_RUN_STARTED, STAGE_RUN_ENDED, STAGE_SOURCE_HEALTH,
     STAGE_INCIDENT_CREATED, STAGE_TRACE_DROPPED,
     # Card Y11: the shadow advisory is retained at EVERY level (it is low-volume — one record per
-    # subject/fold decision, not per frame). The founder handoff depends on it surviving a client's
-    # media-OFF ``.ptrace``, which may be captured at production (summary) level; a fold that only
-    # lived at ``full`` would be absent from exactly the trace a client can send back.
+    # subject/fold decision, not per frame). It must survive a client's media-OFF ``.ptrace``, which
+    # may be captured at production (summary) level; a fold that only lived at ``full`` would be absent
+    # from exactly the trace a client can send back for offline grading.
     STAGE_SHADOW_FOLD,
 })
 

@@ -21,7 +21,7 @@ ADR-003 named this ADR as the future home of "what `Incident` durably carries fo
 `JudgmentEvent`." That framing assumes the fuller `Verdict -> GateDecision -> JudgmentEvent ->
 Incident -> DeliveryAttempt[]` chain ADR-001/002/003 describe is the thing shipping today. It is
 not, in full. `JudgmentEvent` and `Incident` both exist as real dataclasses
-(`percept/contracts/__init__.py:514` and `:888`), but `DeliveryAttempt` does not exist anywhere in
+(`percept/contracts/__init__.py:834` and `:1228`), but `DeliveryAttempt` does not exist anywhere in
 the contracts module — there is no class by that name in this codebase today. What is actually
 shipped and frozen as the public seam (per its own module docstring, `watch.py:1-23`) is narrower:
 
@@ -30,8 +30,9 @@ watch(stream, goals, profile=None, *, percept=None, source="camera") -> AsyncIte
 ```
 
 `WATCH_VERSION = "1.0.0"` (`watch.py:41`) versions this function's signature and streaming
-semantics; `CONTRACT_VERSION` in `percept/contracts/__init__.py:33` (currently `"1.3.0"`, bumped
-for `WatchAction`/`WatchEvent`) separately versions the DTO wire shapes it returns. This ADR pins
+semantics; `CONTRACT_VERSION` in `percept/contracts/__init__.py:33` (currently `"1.6.0"` — grew
+additively through `WatchAction`/`WatchEvent`, `SubjectRef` (Y5), the Y2 claim channel, and the Z3
+judgment envelope) separately versions the DTO wire shapes it returns. This ADR pins
 the delivery contract for what is actually implemented — `watch()` and `WatchEvent` — rather than
 inventing behavior for the `Incident`/`DeliveryAttempt` chain ADR-003 gestured at. Reconciling
 `WatchEvent` with that fuller chain is explicitly deferred (see Open Questions).
@@ -335,7 +336,7 @@ guarantee this system cannot deliver.
    question of whether that remains true as `watch()` gets more production traffic is a founder
    call, not an engineering default to slip in quietly.
 4. **Reconciling `WatchEvent` with the `Incident`/`DeliveryAttempt` chain ADR-003 forward-referenced.**
-   `Incident` exists (`contracts/__init__.py:888`) and is what `run()` yields; `DeliveryAttempt` does
+   `Incident` exists (`contracts/__init__.py:1228`) and is what `run()` yields; `DeliveryAttempt` does
    not exist as a type anywhere in `percept/contracts/__init__.py` today. Whether `watch()` should
    ever emit `Incident`/gain a `DeliveryAttempt` ledger, or whether that chain is scoped to `run()`
    only and `watch()` stays the deliberately thinner contract, is unresolved and left to a founder

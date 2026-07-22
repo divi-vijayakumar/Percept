@@ -550,10 +550,10 @@ class EpisodeIncidentLedger:
 
 
 # --------------------------------------------------------------------------------------------------
-# Card Y11 — SHADOW MODE. Emit the subject + the EpisodeFoldResult the model WOULD have proposed,
-# change NOTHING. This is the de-risking gate: it OBSERVES what Y2–Y5 would do without letting any of
-# it govern the gate, re-arm an edge, or suppress a fire. Everything here is a PURE, side-effect-free
-# projection so it can be recomputed in shadow and serialized into the trace / onto an incident.
+# SHADOW MODE. Emit the subject + the EpisodeFoldResult the model WOULD have proposed, change NOTHING.
+# It OBSERVES what the identity/episode model would do without letting any of it govern the gate,
+# re-arm an edge, or suppress a fire. Everything here is a PURE, side-effect-free projection so it can
+# be recomputed in shadow and serialized into the trace / onto an incident.
 # --------------------------------------------------------------------------------------------------
 
 
