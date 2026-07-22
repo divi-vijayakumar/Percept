@@ -795,6 +795,23 @@ def _capture_plan(goals: list, base_fps: float) -> tuple[float, Any, float]:
     return capture, (SamplingController(policy) if policy is not None else None), required
 
 
+def _goals_want_audio(goals: list) -> bool:
+    """True when an active goal's compiled :class:`~percept.sensorplan.SensorPlan` perception modality
+    is ``"fused"``/``"audio"`` — the trigger for auto-deriving ``audio_source`` from a video-container
+    ``source`` (see ``run()``'s container-demux wiring). A goal whose sense doesn't compile a plan is
+    skipped, never treated as wanting audio."""
+    from percept.sensorplan import sensor_plan_for
+
+    for g in goals:
+        try:
+            modality = sensor_plan_for(g).perception.get("modality")
+        except Exception:
+            continue
+        if modality in ("fused", "audio"):
+            return True
+    return False
+
+
 # Recorded-media extensions. A `str` source carrying one of these is a RECORDED source:
 # it has a real media timeline, so `t` (and every `incident.ts`) must be stamped on it. Anything else
 # a str source can be (webcam:, mic:, rtsp://, an opaque live stream) has no media clock at all, so it
@@ -961,12 +978,18 @@ async def run(
     - ``snippet_kind`` — ``"frame"`` keeps decoded frames; ``"clip"`` emits a portable encoded bundle.
     - ``sink_errors`` — ``"raise"`` (default) or ``"ignore"`` for notification/feed hook failures.
     - ``stats`` — optional mutable :class:`RuntimeStats` counters for health dashboards.
-    - ``audio_source`` — optional mic/wav URI (``"mic:0"``) **or** an (async) iterable of
-      ``(t, chunk, energy)`` (see :func:`percept.runtime.audio.open_audio_source`). When set, the worker
-      pumps each chunk into ``core.push_audio`` — **filling the ``AudioWindow`` that ``modality="fused"/
-      "audio"`` goals judge over** (otherwise it stays empty and fused judges degrade to vision-only) —
-      and feeds ``energy`` to the gate, so an off-camera sound (a cry, glass breaking) can escalate a
-      frame the visual motion gate would skip. Default ``None`` → the video-only path is byte-for-byte.
+    - ``audio_source`` — optional mic/wav/video-container URI (``"mic:0"``, ``"clip.wav"``,
+      ``"clip.mp4"``) **or** an (async) iterable of ``(t, chunk, energy)`` (see
+      :func:`percept.runtime.audio.open_audio_source`). When set, the worker pumps each chunk into
+      ``core.push_audio`` — **filling the ``AudioWindow`` that ``modality="fused"/"audio"`` goals judge
+      over** (otherwise it stays empty and fused judges degrade to vision-only) — and feeds ``energy``
+      to the gate, so an off-camera sound (a cry, glass breaking) can escalate a frame the visual motion
+      gate would skip. Default ``None`` → the video-only path is byte-for-byte, UNLESS ``source`` is
+      itself a video container (``.mp4``/``.mov``/``.mkv``/``.webm``) AND an active goal's modality is
+      ``"fused"``/``"audio"`` — then ``audio_source`` is auto-derived as ``source`` (its own audio track,
+      demuxed via ffmpeg) so a caller watching an mp4 with a fused goal needs no extra parameter. A
+      vision-only goal set never triggers this (no ffmpeg subprocess spawned when nothing wants audio),
+      and an explicit ``audio_source`` always wins over the auto-derivation.
     - ``audio_gate`` — the tier-0 audio detector: a name (``"acoustic-onset"``), an instance with
       ``push(t, v) -> [Boundary]``, or ``None`` to only fill the window + feed energy (no onset wake).
     - ``audio_wake`` — kwargs for the onset detector, e.g. ``{"high": 0.3, "low": 0.15, "refractory_s": 5.0}``.
@@ -1313,6 +1336,16 @@ async def run(
     effective_fps = EffectiveFps(
         requested_fps=float(fps), effective_fps=float(capture_fps), reason=_fps_reason,
     )
+    # Auto-derive `audio_source` from a video-container `source` when the caller didn't pass one
+    # explicitly AND an armed goal actually wants audio (fused/audio modality) — a file-driven run over
+    # an mp4/mov/mkv/webm gets its fused judge fed the SAME file's audio track with no extra parameter.
+    # A caller-supplied `audio_source` always wins (never overridden); a vision-only goal set spawns no
+    # ffmpeg demux subprocess at all — the video-only path stays byte-for-byte.
+    if audio_source is None and isinstance(source, str):
+        from percept.runtime.audio import _is_container as _audio_is_container
+
+        if _audio_is_container(source) and _goals_want_audio(list(core.goals.active())):
+            audio_source = source
     # Resolve the clock BEFORE the capture source is opened; both the video and the audio
     # path get their own record (a "mic:0" live mic and a "session.wav" recording resolve differently
     # even inside one run).

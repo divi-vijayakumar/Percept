@@ -1,21 +1,27 @@
 """Audio capture sources for the runtime worker — the twin of ``source.py`` for sound.
 
-``open_audio_source(uri)`` opens a mic (``mic`` = default input, ``mic:0`` = an explicit index) or a
-``.wav`` file on a **background thread** and yields ``(t, chunk, energy)``:
+``open_audio_source(uri)`` opens a mic (``mic`` = default input, ``mic:0`` = an explicit index), a
+``.wav`` file, or a video CONTAINER (``.mp4``/``.mov``/``.mkv``/``.webm``) on a **background thread**
+and yields ``(t, chunk, energy)``:
   * ``chunk``  — a typed :class:`~percept.contracts.AudioFrame` (pcm s16le mono), the payload the
     fused/acoustic judge sees via ``Percept.push_audio`` → ``AudioWindow`` → ``Vision.judge(audio=)``,
   * ``energy`` — normalized short-time RMS in ``[0, 1]``, the tier-0 audio salience signal (the audio
     analog of ``source.py``'s ``gate_frame``), fed to ``MotionGate.evaluate(energy=)`` / an onset gate.
 
 ``sounddevice`` (the ``[mic]`` extra) is imported lazily inside the capture thread and only for
-``mic:`` URIs; a ``.wav`` source uses stdlib ``wave`` (zero-dep, so tests/replay need no extra). This
-mirrors ``source.py``'s "worker is stdlib, capture pulls the optional dep" split.
+``mic:`` URIs; a ``.wav`` source uses stdlib ``wave`` (zero-dep, so tests/replay need no extra). A
+container source shells out to an ``ffmpeg`` subprocess (see ``_capture_container``) — the same demux
+dependency ``source.py``/``eval/count_video.py`` already assume is on PATH for video decode, so this adds
+no NEW external dependency, only a second consumer of it. This mirrors ``source.py``'s "worker is
+stdlib, capture pulls the optional dep" split.
 """
 from __future__ import annotations
 
 import array
 import math
 import queue
+import shutil
+import subprocess
 import threading
 import time
 import wave
@@ -25,6 +31,16 @@ from typing import AsyncIterator, Callable, Literal
 from percept.contracts import AudioFrame
 
 _DEFAULT_SR = 16_000  # matches AudioFrame.sample_rate and the STT stream rate
+
+# Video-container extensions whose audio track this module can demux via ffmpeg. Kept in sync with
+# ``runtime.worker``'s auto-audio-source trigger (a container path + an armed fused/audio goal).
+CONTAINER_SUFFIXES = (".mp4", ".mov", ".mkv", ".webm")
+
+
+class FFmpegNotFoundError(RuntimeError):
+    """A video-container ``audio_source`` needs ``ffmpeg`` on PATH to demux its audio track and it
+    wasn't found. Typed so a caller can distinguish "no audio channel available" from a generic capture
+    failure — a missing dependency must never silently degrade a fused watch to vision-only."""
 
 
 @dataclass(frozen=True)
@@ -52,7 +68,15 @@ def _normalize_uri(uri: str):
         return int(uri.removeprefix("mic://") or 0)
     if uri.startswith("mic:"):
         return int(uri.split(":", 1)[1] or 0)
-    return uri  # a .wav path
+    return uri  # a .wav path or a video-container path (see ``_is_container``)
+
+
+def _is_container(path: str) -> bool:
+    """True when ``path`` names a video container (mp4/mov/mkv/webm) rather than a bare ``.wav`` —
+    the dispatch key ``open_audio_source`` uses to route to ``_capture_container`` (ffmpeg demux)
+    instead of ``_capture_wav`` (stdlib ``wave``)."""
+    low = path.strip().lower().split("?", 1)[0].split("#", 1)[0]
+    return low.endswith(CONTAINER_SUFFIXES)
 
 
 def _rms_energy(pcm: bytes) -> float:
@@ -140,6 +164,74 @@ def _capture_wav(path: str, config: AudioSourceConfig, q: "queue.Queue",
         _put_latest(q, None)  # end sentinel
 
 
+def _read_exact(f, n: int) -> bytes:
+    """Read exactly ``n`` bytes from a pipe (or fewer at EOF) — a ``BufferedReader.read(n)`` may return
+    a short read even mid-stream, so a single call isn't enough to fill one PCM chunk."""
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = f.read(n - len(buf))
+        if not chunk:
+            break
+        buf.extend(chunk)
+    return bytes(buf)
+
+
+def _capture_container(path: str, config: AudioSourceConfig, q: "queue.Queue",
+                       stop: threading.Event, dropped: "list[int] | None",
+                       *, now: "Callable[[], float] | None" = None) -> None:
+    """Demux the audio track of a video container (mp4/mov/mkv/webm) via an ``ffmpeg`` subprocess,
+    streaming raw PCM s16le chunks on the SAME media timebase ``source.py`` stamps video frames on:
+    ``t = i / sample_rate`` for kept audio, exactly mirroring ``t = i / src_fps`` for kept video —
+    both start at ``t=0`` at the container's first sample/frame, so a video incident's ``ts`` and this
+    module's audio events line up without any extra offset bookkeeping.
+
+    Requires ``ffmpeg`` on PATH. Its absence raises :class:`FFmpegNotFoundError` (surfaced to the
+    consumer exactly like a wav/mic capture error) rather than silently yielding zero chunks — a fused
+    goal degrading to vision-only must be visible, never a quiet default."""
+    if now is None:
+        now = time.monotonic
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        _put_latest(q, FFmpegNotFoundError(
+            f"{path!r} is a video container (mp4/mov/mkv/webm) — demuxing its audio track needs "
+            "ffmpeg on PATH. Install it (e.g. `brew install ffmpeg` on macOS, `apt-get install "
+            "ffmpeg` on Debian/Ubuntu) or pass a pre-demuxed .wav as audio_source instead."))
+        _put_latest(q, None)
+        return
+    sr, ch = config.sample_rate, config.channels
+    step = max(1, int(sr * config.chunk_s))
+    nbytes = step * ch * 2  # s16le = 2 bytes/sample
+    cmd = [ffmpeg, "-v", "error", "-i", path, "-vn", "-map", "0:a:0",
+           "-f", "s16le", "-acodec", "pcm_s16le", "-ar", str(sr), "-ac", str(ch), "-"]
+    proc = None
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        i = 0
+        while not stop.is_set():
+            pcm = _read_exact(proc.stdout, nbytes)
+            if not pcm:
+                break
+            t0, t1 = i / sr, (i + step) / sr
+            t_event = now() if config.timebase == "wall" else t1
+            _emit(q, t_event, t0, t1, pcm, sr, ch, dropped)
+            i += step
+        proc.stdout.close()
+        rc = proc.wait(timeout=10)
+        if rc != 0 and i == 0:
+            # Zero chunks EVER produced + a nonzero exit is a real demux failure (no audio stream,
+            # unreadable container, ...) — not a source we can silently treat as "no audio".
+            stderr = proc.stderr.read().decode("utf-8", "replace") if proc.stderr else ""
+            raise RuntimeError(f"ffmpeg failed to demux audio from {path!r}: {stderr.strip()[:500]}")
+    except FileNotFoundError as exc:  # pragma: no cover - shutil.which already guards this path
+        _put_latest(q, FFmpegNotFoundError(f"ffmpeg not found while demuxing {path!r}: {exc}"))
+    except Exception as exc:
+        _put_latest(q, exc)
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+        _put_latest(q, None)  # end sentinel
+
+
 def _capture_mic(device: "int | None", config: AudioSourceConfig, q: "queue.Queue",
                  stop: threading.Event, dropped: "list[int] | None",
                  *, now: "Callable[[], float] | None" = None) -> None:
@@ -197,8 +289,14 @@ async def open_audio_source(
     target = _normalize_uri(uri)
     q: "queue.Queue" = queue.Queue(maxsize=config.queue_size)
     stop = threading.Event()
-    # None (default input device) OR an int index -> mic; a str -> a .wav path.
-    fn = _capture_wav if isinstance(target, str) else _capture_mic
+    # None (default input device) OR an int index -> mic; a str -> a .wav path OR a video-container
+    # path (mp4/mov/mkv/webm) -> ffmpeg demux.
+    if not isinstance(target, str):
+        fn = _capture_mic
+    elif _is_container(target):
+        fn = _capture_container
+    else:
+        fn = _capture_wav
     thread = threading.Thread(target=fn, args=(target, config, q, stop, dropped), daemon=True)
     thread.start()
     try:
@@ -218,4 +316,4 @@ async def open_audio_source(
         stop.set()
 
 
-__all__ = ["AudioSourceConfig", "open_audio_source"]
+__all__ = ["AudioSourceConfig", "open_audio_source", "FFmpegNotFoundError", "CONTAINER_SUFFIXES"]
