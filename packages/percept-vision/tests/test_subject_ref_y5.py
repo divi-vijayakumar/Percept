@@ -67,7 +67,8 @@ class SubjectRefInvariantTests(unittest.TestCase):
         self.assertEqual(ref.resolution, "unknown")
         self.assertIsNone(ref.key)
 
-    def test_resolution_is_two_state_only(self) -> None:
+    def test_resolution_is_a_closed_vocabulary(self) -> None:
+        # bound / unknown / provisional only — an arbitrary fourth string is refused.
         with self.assertRaises(ValueError):
             SubjectRef("content", "acme", "PO-1", "resolved", "durable", "judge")  # type: ignore[arg-type]
 
@@ -183,7 +184,7 @@ class SubjectRefSchemaTests(unittest.TestCase):
         s = defs["SubjectRef"]
         # required = fields without a default (confidence is defaulted, so it is optional)
         self.assertEqual(set(s["required"]), {"scheme", "namespace", "key", "resolution", "scope", "strategy"})
-        self.assertEqual(s["properties"]["resolution"]["enum"], ["bound", "unknown"])
+        self.assertEqual(s["properties"]["resolution"]["enum"], ["bound", "unknown", "provisional"])
         self.assertEqual(s["properties"]["scope"]["enum"], ["session", "source", "durable"])
 
     def test_verdict_schema_refs_subjectref(self) -> None:

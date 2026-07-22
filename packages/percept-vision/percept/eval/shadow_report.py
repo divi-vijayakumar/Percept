@@ -45,6 +45,7 @@ from ..harness.scripted import ScriptedJudge
 from ..harness.synthetic.corpora import continuation as _continuation
 from ..harness.synthetic.corpora import mutation as _mutation
 from ..harness.synthetic.corpora import subject_identity as _subject_identity
+from .identity_ledger import IdentityLedger, Sighting
 from .identity_metrics import (
     AcceptancePolicy,
     AcceptanceResult,
@@ -66,18 +67,20 @@ __all__ = [
     "SHADOW_ACCEPTANCE_POLICY",
 ]
 
-#: The open question card Y4 surfaced, flagged wherever this report touches ``distinct_subject_count``.
-#: The report uses ONE definition — the FIXTURE's (a lone unknown sighting counts as 1 subject, per
-#: ``subject_identity/unreadable_key_binds_unknown``) — and flags that the E-1 oracle
-#: (:class:`percept.eval.identity_ledger.IdentityLedger`) uses the OTHER (unknown sightings are kept
-#: OUT of ``distinct_subject_count`` and tracked separately). They are two different answers to "does
-#: an unidentified sighting count as a subject at all?" — a genuine design question in the eval layer,
-#: left to the identity-ledger owner rather than silently reconciled here.
+#: ``distinct_subject_count`` used to have TWO definitions in this eval layer: the fixture counted a
+#: lone unknown sighting as 1 subject, while :class:`~percept.eval.identity_ledger.IdentityLedger` kept
+#: unknowns out of the count entirely (tracked only as ``unknown_count``) — a genuine divergence on
+#: ``subject_identity/unreadable_key_binds_unknown`` (fixture=1, oracle=0). The oracle now counts BOUND
+#: subjects PLUS UNKNOWN EPISODES (``IdentityLedger.distinct_subject_count`` — see that class), which
+#: is exactly the fixture's answer, so this probe computes ``proposed_dsc`` by running the SAME
+#: verdicts through the SAME ``IdentityLedger`` the E-1 oracle uses, rather than a second ad hoc
+#: formula. There is now one definition, not two flagged in parallel.
 DISTINCT_SUBJECT_COUNT_NOTE = (
-    "distinct_subject_count uses the FIXTURE definition (a lone unknown sighting = 1 subject). The "
-    "E-1 IdentityLedger oracle keeps unknowns OUT of that count (tracked as unknown_count). They "
-    "diverge on subject_identity/unreadable_key_binds_unknown (fixture=1, oracle=0). One definition "
-    "is used here; the other is flagged, not reconciled (card Y4's open question)."
+    "distinct_subject_count is computed by the E-1 IdentityLedger oracle itself (bound subjects plus "
+    "distinct unknown-episodes — an honestly unresolved sighting counts as its own provisional "
+    "subject rather than disappearing from the total, the same UN_<episode_id> accounting "
+    "percept.episodes uses). The fixture and the oracle can no longer diverge because this probe uses "
+    "that ONE formula, not a separate fixture-side count kept in sync by hand."
 )
 
 #: Shadow acceptance uses the E-1 asymmetry (hard false-bind ceiling + weighted harm) but does NOT
@@ -215,15 +218,14 @@ def _identity_outcomes(
                     expected=true_key if legible else "unknown", proposed=predicted_key, kind=kind,
                 )
             )
-        # distinct_subject_count — touched here; ONE definition (fixture), the other flagged.
-        proposed_keys = {
-            getattr(v, "subject_key", None)
-            for v in verdicts if getattr(v, "binding", None) == "resolved"
-        }
-        # Fixture definition: an unknown sighting still counts as 1 subject.
-        proposed_dsc = len(proposed_keys) + (
-            1 if any(getattr(v, "binding", None) != "resolved" for v in verdicts) else 0
-        )
+        # distinct_subject_count — ONE definition, computed by running these SAME proposed verdicts
+        # through the SAME IdentityLedger oracle E-1 scores against, instead of a second fixture-side
+        # formula kept in sync by hand. ``t`` is the step index: this corpus's cases carry no real
+        # clock and default_ttl/unknown_continuity_gap_s are both off, so only sighting ORDER matters.
+        ledger = IdentityLedger()
+        for i, v in enumerate(verdicts):
+            ledger.observe(Sighting.from_verdict(float(i), v))
+        proposed_dsc = ledger.distinct_subject_count
         expected_dsc = expect.get("distinct_subject_count")
         if expected_dsc is not None and proposed_dsc != expected_dsc:
             disagreements.append(

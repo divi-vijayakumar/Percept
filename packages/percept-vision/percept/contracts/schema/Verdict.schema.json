@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://percept.velvee.ai/contracts/Verdict.schema.json",
-  "x-contract-version": "1.6.0",
+  "x-contract-version": "1.7.0",
   "type": "object",
   "title": "Verdict",
   "properties": {
@@ -190,7 +190,8 @@
         "resolution": {
           "enum": [
             "bound",
-            "unknown"
+            "unknown",
+            "provisional"
           ]
         },
         "scope": {
