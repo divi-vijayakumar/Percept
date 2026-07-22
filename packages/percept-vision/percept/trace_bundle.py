@@ -1,7 +1,7 @@
 """The portable trace bundle — ONE file a client attaches to a bug report, and we replay their run.
 
 A media REFERENCE is not self-contained. A trace that says ``file:///Users/them/clip.mp4`` is a
-perfectly good local artifact on their machine and useless on ours. So card D8b names two explicit
+perfectly good local artifact on their machine and useless on ours. So this module names two explicit
 modes, and the mode is always written into the artifact so nobody has to guess which one they hold:
 
 ============  ==============================================================================

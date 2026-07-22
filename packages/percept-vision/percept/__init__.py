@@ -147,6 +147,10 @@ def _resolve_version() -> str:
 __version__ = _resolve_version()
 del _resolve_version, _pkg_version, _PkgNotFound
 
+# Build provenance (version + git commit + CONTRACT_VERSION + build timestamp) — stamped into the
+# wheel/sdist at build time, "unreleased" fallback in a bare source checkout. Stdlib-pure.
+from ._build import BuildInfo, build_info  # noqa: E402
+
 # Imported after __version__ so agent.health() can read it lazily without a cycle.
 from .agent import FireEvent, Percept  # noqa: E402
 from .watch import WATCH_VERSION, watch  # noqa: E402
@@ -154,7 +158,7 @@ from .watch import WATCH_VERSION, watch  # noqa: E402
 # String sugar for watch(): `watch(stream, "the milk is boiling over")`. Exported so callers can
 # reproduce the desugared id (goal_id_for) without re-implementing the documented scheme.
 from .goalsugar import desugar_goal, desugar_goals, goal_id_for  # noqa: E402
-# Provider identity (card RB-PROVIDER): a NAME resolves to a factory; the model id is configuration
+# Provider identity: a NAME resolves to a factory; the model id is configuration
 # carried to it, never the adapter's identity. Stdlib-pure (registry + config), no vendor import.
 from .provider import (  # noqa: E402
     ProviderError,
@@ -168,7 +172,7 @@ from .provider import (  # noqa: E402
 # (cv2/numpy are lazy inside run()), so the zero-vendor-import invariant holds.
 from .runtime import RuntimeSession, RuntimeStats, run, start  # noqa: E402
 
-# The diagnostic data model (card D8a): percept doctor, percept eval and the visualizer all derive
+# The diagnostic data model: percept doctor, percept eval and the visualizer all derive
 # their numbers from THIS module, so three surfaces cannot invent three definitions of the funnel.
 # Imported after __version__ (the manifest stamps it) and stdlib-pure.
 from .tracing import (  # noqa: E402
@@ -183,7 +187,7 @@ from .tracing import (  # noqa: E402
     load_trace,
 )
 
-# The portable trace bundle + the deterministic cognition replay (card D8b). Media inclusion is
+# The portable trace bundle + the deterministic cognition replay. Media inclusion is
 # opt-in and OFF by default (see percept/trace_bundle.py); replay never calls a model.
 from .trace_bundle import (  # noqa: E402
     BundleError,
@@ -200,7 +204,7 @@ from .replay import (  # noqa: E402
     replay_cognition,
 )
 
-# The native visualizer (card D9): lanes over media time, click-through decision chains, the
+# The native visualizer: lanes over media time, click-through decision chains, the
 # per-stat counterfactual. Reads the artifacts above; recomputes no metric. Media embedding is
 # opt-in and OFF by default, and the page makes ZERO network requests.
 from .visualize import (  # noqa: E402
@@ -212,11 +216,13 @@ from .visualize import (  # noqa: E402
 
 __all__ = [
     "__version__",
+    "build_info",
+    "BuildInfo",
     "Percept",
     "FireEvent",
     "ModeError",
     "registry",
-    # fixture-bound offline mode (RB-OFFLINE) — the keyless first run
+    # fixture-bound offline mode — the keyless first run
     "offline_core",
     "offline_frames",
     "offline_goals",
@@ -231,7 +237,7 @@ __all__ = [
     "start",
     "RuntimeSession",
     "RuntimeStats",
-    # the public watch() entrypoint (M1 — the frozen seam every downstream card depends on)
+    # the public watch() entrypoint — the frozen seam every downstream piece depends on
     "watch",
     "WATCH_VERSION",
     "WatchEvent",
@@ -239,7 +245,7 @@ __all__ = [
     "desugar_goal",
     "desugar_goals",
     "goal_id_for",
-    # provider identity (RB-PROVIDER): name -> factory; model id is configuration, not identity
+    # provider identity: name -> factory; model id is configuration, not identity
     "resolve_vision",
     "ProviderSpec",
     "ProviderError",
@@ -288,7 +294,7 @@ __all__ = [
     "FIRE",
     "ASK",
     "SILENT",
-    # O2: the consequence gate's GA decision model — typed vocabulary + suppression codes.
+    # The consequence gate's GA decision model — typed vocabulary + suppression codes.
     # SILENT is exported as a value of the MODEL, not as a deliverable action (see DELIVERED_ACTIONS).
     "GateOutcome",
     "GateReason",
@@ -310,7 +316,7 @@ __all__ = [
     "EPISODE_POLICIES",
     "ContinuationDecision",
     "episode_policy_of",
-    # concern-level identity-resolver selection (card Y6 — concern SELECTS, profile DECLARES)
+    # concern-level identity-resolver selection (concern SELECTS, profile DECLARES)
     "identity_policy_of",
     "select_identity_policy",
     # events + scheduler (Phase 5 — temporal perception; time-triggered fires)
@@ -326,7 +332,7 @@ __all__ = [
     "ConsentDenied",
     "ActionLog",
     "ActionRecord",
-    # envelope (card Z7 / ADR-007 — the three OUT verdicts, in config not prose)
+    # envelope (ADR-007 — the three OUT verdicts, in config not prose)
     "ACTUATION_CLASSES",
     "PHYSICAL_ACTUATION",
     "OUT_OF_ENVELOPE",
@@ -335,7 +341,7 @@ __all__ = [
     "client_asserted_subject",
     "register_subject_resolver",
     "envelope_summary",
-    # routing (Phase 3 — local fast-path; learned tier slots behind RouteLayer in V0.1)
+    # routing (Phase 3 — local fast-path; a future learned tier slots behind RouteLayer)
     "RouteEngine",
     "RouteLayer",
     "RouteMatch",
@@ -360,7 +366,7 @@ __all__ = [
     "otel_exporter",
     "get_logger",
     "health",
-    # diagnostics — the ONE definition of observed/admitted/judged/saved (card D8a)
+    # diagnostics — the ONE definition of observed/admitted/judged/saved
     "RunTraceManifest",
     "TraceRecord",
     "TraceRecorder",
@@ -370,7 +376,7 @@ __all__ = [
     "ComponentIdentity",
     "PlanIdentity",
     "load_trace",
-    # portable trace bundle + deterministic cognition replay (card D8b)
+    # portable trace bundle + deterministic cognition replay
     "TraceBundle",
     "VisualizeError",
     "VizOptions",

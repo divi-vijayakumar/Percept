@@ -1,6 +1,6 @@
-"""Episode / entity-memory judge mode — the deferred H0 arm.
+"""Episode / entity-memory judge mode — the deferred arm.
 
-H0's ablation ladder proved the **eye** (localized salience) is the biggest recall lever and the
+An ablation study proved the **eye** (localized salience) is the biggest recall lever and the
 **ordered window** (temporal input, oldest->newest) the next one. The remaining, still-unproven lever
 is **episode memory**: instead of re-deciding a persistent/temporal goal from a single frame (or even
 a fixed window), thread a per-goal RUNNING ANSWER across successive judged frames so the verdict

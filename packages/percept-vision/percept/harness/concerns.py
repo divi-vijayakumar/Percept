@@ -1,4 +1,4 @@
-"""Concern registry — the standing-concern twin of the detector registry (ticket A2).
+"""Concern registry — the standing-concern twin of the detector registry.
 
 FUTURE (public API, exercised only by tests): this registry + :func:`compile_registered_watchspec`
 are a complete, semver-stable surface, but NOTHING in ``percept/runtime/`` calls them today — the

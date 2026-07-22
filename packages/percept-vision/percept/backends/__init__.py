@@ -27,7 +27,7 @@ __all__ = [
     "ScriptedConductor",
     "FakeSTT",
     "FakeTTS",
-    # probe-harness scaffolding (Viability A12) — wiring-only, not a production backend
+    # probe-harness scaffolding — wiring-only, not a production backend
     "FakeJudge",
     "LatencyProfile",
     "ErrorInjectionConfig",

@@ -1,4 +1,4 @@
-"""The V0.0 routing lexicon — an ordered, data-only rule table.
+"""The current routing lexicon — an ordered, data-only rule table.
 
 This module is **pure data + regexes**. It carries no control flow: the evaluator in
 ``engine.py`` walks it, first confident match wins, and a structural miss DEFERS to the
@@ -8,8 +8,8 @@ the confident table and therefore defers (invariant 2: "when in doubt, defer").
 
 Each :class:`Rule` carries ``examples`` (utterances that should HIT it) and ``defers``
 (utterances that look superficially similar but must DEFER); the L1 suite auto-generates a
-case per example/defer string so the table is self-testing. Regex lexicons are a V0.0
-expedient — a learned tier (``LearnedRouteLayer``) replaces them in V0.1 behind the same
+case per example/defer string so the table is self-testing. Regex lexicons are a current
+expedient — a learned tier (``LearnedRouteLayer``) replaces them in a future tier behind the same
 ``RouteLayer`` seam, so nothing here is load-bearing structure.
 
 A rule never *authors a goal*: authoring is the conductor's sole privilege (it is the only
@@ -163,7 +163,7 @@ DEFAULT_RULES: tuple[Rule, ...] = (
 # only tier allowed to author standing state. A false fast-path could skip goal authoring, so
 # the guard is intentionally broad; a false defer only costs latency (invariant 2).
 #
-# Like the rules, this is a V0.0 regex expedient; the V0.1 LearnedRouteLayer subsumes it by
+# Like the rules, this is a current regex expedient; a future LearnedRouteLayer subsumes it by
 # returning a low confidence on these utterances, which the same threshold gates.
 # ---------------------------------------------------------------------------
 

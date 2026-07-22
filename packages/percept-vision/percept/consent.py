@@ -1,10 +1,10 @@
 """Consent — the SDK primitives (spec §8). The UI lives in project 2 (the assistant).
 
-V0 keeps the trust posture minimal but real:
+This module keeps the trust posture minimal but real:
 
 * a **profile flag** gates the higher-trust ``act`` (computer-use) modality — opt-in via
   ``allow_computer_use``, scoped to a declared **action set**; the SDK *enforces* it;
-* an **action log** records every fire and every act (the audit seed + the V1 feedback corpus).
+* an **action log** records every fire and every act (the audit seed + a future feedback corpus).
 
 The SDK exposes the events; the assistant renders the consent strip / "what I can see" affordance —
 no UI is built here. Nothing acts silently: a blocked ``act`` is logged too.
@@ -31,7 +31,7 @@ class ConsentDenied(PermissionError):
 class ConsentProfile:
     """The act-modality gate. Default: computer-use OFF, no actions permitted.
 
-    Consent is **per-source** (spec §9, A5): ``allowed_sources`` scopes acting to specific
+    Consent is **per-source**: ``allowed_sources`` scopes acting to specific
     ``source_id``s. Empty (the default) = no source restriction, so existing single-source configs are
     byte-for-byte unchanged. A non-empty set is the single-node safety contract — a source NOT in it
     (e.g. another node's camera) can never act, which is exactly the "no cross-node bind" guarantee.
@@ -40,7 +40,7 @@ class ConsentProfile:
     allow_computer_use: bool = False
     allowed_actions: frozenset = frozenset()
     allowed_sources: frozenset = frozenset()
-    #: Card Z7 / ADR-007 — the TYPED envelope declaration for acting, following the ADR-005
+    #: ADR-007 — the TYPED envelope declaration for acting, following the ADR-005
     #: ``UNTUNED`` pattern (a field a tool reads and reports, never a paragraph in a README).
     #: ``"none"`` (default, unchanged behaviour) / ``"screen"`` (advisory software acts — the
     #: narrowed survivor) / ``"physical"`` (actuation with physical consequence). Declaring
@@ -85,7 +85,7 @@ class ActionRecord:
 
 
 class ActionLog:
-    """Append-only audit log of fires + acts. Doubles as the V1 feedback corpus."""
+    """Append-only audit log of fires + acts. Doubles as a future feedback corpus."""
 
     def __init__(self) -> None:
         self._records: list[ActionRecord] = []

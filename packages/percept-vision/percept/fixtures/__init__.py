@@ -1,4 +1,4 @@
-"""Bundled deterministic OFFLINE FIXTURES — the keyless first run (card RB-OFFLINE).
+"""Bundled deterministic OFFLINE FIXTURES — the keyless first run.
 
 Each ``*.json`` here is a self-contained, byte-stable replay: a goal, an ordered list of frame
 tokens, the scripted verdict for each token, and the events the runtime is expected to produce.

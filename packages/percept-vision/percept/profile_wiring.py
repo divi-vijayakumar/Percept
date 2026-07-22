@@ -21,12 +21,12 @@ already reads:
 
 Every value this module produces is either an attribute READ off the ``WatchProfile`` or a field carried
 over from the base :class:`~percept.config.Settings` — there is no knob literal in this file. That is the
-architectural rule this card enforces: *the runtime reads its behavior from a profile; the harness (or, for
+architectural rule this module enforces: *the runtime reads its behavior from a profile; the harness (or, for
 now, this resolver) writes profiles. No knob is hardcoded in firing logic* (see
 ``tests/test_no_hardcoded_knobs.py``).
 
 ``profile=None`` never reaches this module — :func:`percept.watch._settings_from_profile` and
-``watch()`` keep that case on the pre-M2 path (``load_settings()``, env-var driven), byte-for-byte.
+``watch()`` keep that case on the legacy path (``load_settings()``, env-var driven), byte-for-byte.
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ def resolve_watch_profile(profile: WatchProfile, *, base: Settings | None = None
     ``base`` seeds every field a ``WatchProfile`` does NOT own (cache, models, routing, identity,
     episodes, events, consent, and the gate/edge fields the profile itself doesn't carry) — it defaults
     to :func:`~percept.config.load_settings` (today's env-driven defaults), so a profile only overrides
-    the specific knobs H0 found; it never silently resets an operator's env-configured
+    the specific knobs empirical tuning found; it never silently resets an operator's env-configured
     values it has no opinion on.
     """
     base_settings = base if base is not None else load_settings()

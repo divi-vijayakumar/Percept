@@ -46,7 +46,7 @@ from .scheduler import Scheduler
 from .tracing import STAGE_JUDGMENT_EVENT, STAGE_SHADOW_FOLD
 
 
-#: X7 — LRU ceiling on the judgment evidence-sequencer's per-key counters. Matches the gate's own
+#: LRU ceiling on the judgment evidence-sequencer's per-key counters. Matches the gate's own
 #: default ``max_keys`` so the observability map can never outgrow the gate state it mirrors.
 _SEQ_MAX_KEYS = 10_000
 
@@ -60,14 +60,14 @@ class FireEvent:
     text: str
     entity_id: str | None = None
     verdict: Verdict | None = None
-    # X7 — the frozen :class:`percept.contracts.JudgmentEvent` for this decision (ADR-001 §1): the
+    # The frozen :class:`percept.contracts.JudgmentEvent` for this decision (ADR-001 §1): the
     # gate key, the evidence sequence, the action, and the five-stamp two-domain timing the funnel
     # actually took. Populated on the judged watch path (``perceive_judged`` → ``_fire_concern``);
     # ``None`` on every other firing path (episode/rhythm/boundary/transition/absence/process-QA),
     # which take no judge-funnel stamps — an absent event, never an invented one. Appended LAST with
     # a ``None`` default: existing positional constructions and consumers are unchanged.
     judgment: JudgmentEvent | None = None
-    # Z3 — the enriched judgment envelope carried from the executor's ``Fired`` so it survives to the
+    # The enriched judgment envelope carried from the executor's ``Fired`` so it survives to the
     # delivered Incident (``make_incident`` reads these off the fire). All OPTIONAL/defaulted: an
     # episode/rhythm/boundary/transition/absence fire that sets none of them is byte-for-byte unchanged.
     reason: str | None = None
@@ -79,8 +79,8 @@ class FireEvent:
 # -- The resolved WatchProfile.plan_mode -> the concern's PerceptionSpec -----------------------
 # ``plan_mode`` was carried onto the core before anything read it. This module makes it LIVE: a resolved profile whose
 # plan_mode is "window" makes the judge see an ORDERED FRAME WINDOW (``judge(frames=[...])``, oldest→
-# newest, the anchor frame passed separately) instead of one still frame. That is the validated H0 win
-# (H0 dynamic-goal recall rose five points, and to ~nine-in-ten with gate-relax; see
+# newest, the anchor frame passed separately) instead of one still frame. That is the validated win
+# (dynamic-goal recall rose five points, and to ~nine-in-ten with gate-relax; see
 # percept/profiles_default.py::H0_PROVENANCE for the measured numbers): the eye hands the model TIME,
 # not a montage. No number lives here -- this is a plan SHAPE, not a threshold.
 
@@ -109,7 +109,7 @@ def _normalize_plan_mode(mode: str) -> str:
         return mode
     warnings.warn(
         f"plan_mode/temporal {mode!r} is deprecated and now behaves as {replacement!r}: an ordered "
-        "frame window beats a sprite montage unconditionally on the H0 dynamic-goal set, so the plan "
+        "frame window beats a sprite montage unconditionally on the dynamic-goal eval set, so the plan "
         "path no longer builds a montage. Set the plan mode to 'window' explicitly.",
         DeprecationWarning,
         stacklevel=3,
@@ -162,7 +162,7 @@ def _trace_reason(truth: str, action: str) -> str:
     """A human-readable WHY for the ``gate.classified`` trace stage — purely observational, derived
     post-hoc from the already-computed ``truth`` (yes/no/unknown) + ``action`` (fire/ask/silent). Never
     read by firing logic (invariant 1: one gate, one firing path); this only explains its output, the
-    same forensic shape H0's bench trace used (``eval/bench/track_charades_e2e.py::_silent_reason``)."""
+    same forensic shape the eval bench trace used (``eval/bench/track_charades_e2e.py::_silent_reason``)."""
     if action == FIRE:
         return "fire: rising_edge"
     if action == "ask":
@@ -395,7 +395,7 @@ class Percept:
     consent: ConsentProfile = field(default_factory=ConsentProfile)  # the act-modality gate
     action_log: ActionLog = field(default_factory=ActionLog)  # audit: every fire + act
     _executor: Any = None  # BehaviorExecutor — the unified firing path (lazily bound to self.gate)
-    # X7 — the per-key monotonic evidence counter (percept.sequencing.EvidenceSequencer), stamped at
+    # The per-key monotonic evidence counter (percept.sequencing.EvidenceSequencer), stamped at
     # judge-DISPATCH time so every JudgmentEvent carries the same ``evidence_seq`` a GateDecision
     # would. Lazily built and LRU-bounded (``_SEQ_MAX_KEYS``) exactly like the gate's own key maps, so
     # a 24/7 multi-entity watch cannot leak through it. Observability only — nothing branches on it.
@@ -425,10 +425,10 @@ class Percept:
     # on_health itself. Bounded (see _GATE_HEALTH_LOG_MAX) so a core driven WITHOUT the runtime loop
     # (a bare perceive_judged harness, which never drains) cannot leak on a 24/7 watch.
     _gate_health_log: list = field(default_factory=list)  # [(key, reason, at), ...] queued for drain
-    # -- episode-memory reset: the SAME queue-here / drain-in-worker pattern (card Z2). snapshot() does
-    # NOT carry ``episodes`` (the per-goal EpisodeLog map — session-only for v1.4, ADR-006 / card Y9),
+    # -- episode-memory reset: the SAME queue-here / drain-in-worker pattern. snapshot() does
+    # NOT carry ``episodes`` (the per-goal EpisodeLog map — session-only for v1.4, ADR-006),
     # so ``restore()`` cannot rehydrate grouping/counting memory: after a redeploy every counting goal
-    # restarts at zero episodes. That is a documented decision, but a SILENT one — the named Y9 failure
+    # restarts at zero episodes. That is a documented decision, but a SILENT one — the known failure
     # mode is an operator under-counting after a restart with nothing telling them why. restore() queues
     # ONE ``episode_memory_reset`` entry here when it rehydrates active counting goals with an empty
     # episode map; worker.py's run() drains it into ``on_health(RuntimeHealthEvent("episode_memory_reset"))``
@@ -437,13 +437,13 @@ class Percept:
     # -- WatchProfile knobs applied at CORE CREATION time (never a mid-run mutation) ----------------
     # The resolved fovea cadence a WatchProfile's ``cadence`` carries (see percept.profile_wiring).
     # ``None`` (the default -- no profile, or a profile-less ``settings=`` construction) means no
-    # override: byte-for-byte pre-M2 behavior. Set once, in create(); nothing in this class mutates it
+    # override: byte-for-byte the behavior before profile resolution existed. Set once, in create(); nothing in this class mutates it
     # afterward -- a live cadence change is a NEW core, not a field write on this one.
     sense_policy: Any = None  # SensePolicy | None -- see percept.sampling.SensePolicy
     # The resolved WatchProfile.plan_mode ("single"/"strip"/"window"; "sprite" is deprecated and shimmed
     # to "window"). LIVE: _planned_perception() floors every concern's PerceptionSpec with it on
     # the judging path, so plan_mode="window" makes the judge see an ordered frame window
-    # (``judge(frames=[...])``). ``None`` -- no profile override, byte-for-byte pre-M2 behavior.
+    # (``judge(frames=[...])``). ``None`` -- no profile override, byte-for-byte the behavior before profile resolution existed.
     plan_mode: str | None = None
 
     # -- construction --------------------------------------------------------
@@ -561,7 +561,7 @@ class Percept:
             consent=ConsentProfile(
                 allow_computer_use=cfg.consent.allow_computer_use,
                 allowed_actions=cfg.consent.allowed_actions,
-                actuation=getattr(cfg.consent, "actuation", "none"),  # Z7: typed envelope declaration
+                actuation=getattr(cfg.consent, "actuation", "none"),  # typed envelope declaration
             ),
             action_log=ActionLog(),
             _mode=resolved_mode,
@@ -677,9 +677,9 @@ class Percept:
         # whatever the caller supplied — a caller cannot claim interrupt-trust by pre-filling ``origin``.
         # ``replace`` (not in-place set) so this is correct even if Goal is later frozen.
         goal = replace(goal, origin=GoalOrigin.STRUCTURED_TRUSTED)
-        self._arm_deadline(goal)  # R3: resolve an authored duration into an absolute stamp at ARM time
+        self._arm_deadline(goal)  # resolve an authored duration into an absolute stamp at ARM time
         result = self.goals.create(goal)
-        # D3a: cache-invalidate on the direct arm() path too (only apply_goal_ops did before). A goal id
+        # Cache-invalidate on the direct arm() path too (only apply_goal_ops did before). A goal id
         # re-armed with a new condition must not be served a verdict cached under its OLD meaning — the
         # goal-change step of the invalidation order. Runs AFTER _arm_deadline so a legacy
         # deadline_s still raises loudly (never silently cached-then-armed).
@@ -688,7 +688,7 @@ class Percept:
 
     def _arm_deadline(self, goal: Goal) -> None:
         """Resolve a ``deadline`` concern's authored DURATION into an absolute ``deadline_at`` on THIS
-        agent's clock, at the moment the goal is armed (R3: one field, one meaning, one clock).
+        agent's clock, at the moment the goal is armed (one field, one meaning, one clock).
 
         ``deadline_after_s`` (a duration) -> ``deadline_at = clock() + deadline_after_s``. The executor
         only ever compares against ``deadline_at``, on the same timeline the worker stamps frames on
@@ -722,7 +722,7 @@ class Percept:
         ``judge`` answers the SUBJECT question only — which existing episode is this observation
         about (an LLM in real use; a stub in L1 — never assert backend intelligence with a fake).
         Whether that subject's episode is CONTINUED is a separate decision, evaluated against the
-        concern's :class:`~percept.episodes.EpisodePolicy` (card Y1). Returns ``(episode, is_new)``;
+        concern's :class:`~percept.episodes.EpisodePolicy`. Returns ``(episode, is_new)``;
         :meth:`count_event_decision` returns the typed reason as well.
         For goals whose ``state['type'] == 'count'`` (e.g. "how many cups today").
         """
@@ -738,7 +738,7 @@ class Percept:
     ) -> tuple[Any, bool, ContinuationDecision]:
         """:meth:`count_event` plus the typed :class:`~percept.episodes.ContinuationDecision`.
 
-        The decision separates the three collapsed questions (card Y1): ``subject_matched`` (was
+        The decision separates the three collapsed questions: ``subject_matched`` (was
         this the same subject at all), ``is_new`` + ``reason`` (did it continue, and if not WHY),
         and the mutation seam. ``subject_matched and is_new`` — a same-subject observation that
         opened a SECOND episode — is counted as ``episode.denied.<reason>`` so a client can see the
@@ -877,7 +877,7 @@ class Percept:
         return self._executor
 
     def _admit_evidence(self, key: tuple) -> int:
-        """X7: reserve this judgment's ``evidence_seq`` at judge-DISPATCH time (ADR-001 §8).
+        """Reserve this judgment's ``evidence_seq`` at judge-DISPATCH time (ADR-001 §8).
 
         The live watch path is strictly single-flight, so nothing depends on the sequence today — it
         exists so a :class:`~percept.contracts.JudgmentEvent` emitted here correlates with the
@@ -924,7 +924,7 @@ class Percept:
         thin boundary that adapts the executor's ``Fired`` back to the legacy ``FireEvent`` shape; the
         watch + event paths route through here, so both now run on the unified executor (gate unchanged).
 
-        ``timing``/``evidence_seq`` (X7) are the OPTIONAL judgment-funnel stamps the caller collected
+        ``timing``/``evidence_seq`` are the OPTIONAL judgment-funnel stamps the caller collected
         for this unit of evidence; when present the executor freezes them into a
         :class:`~percept.contracts.JudgmentEvent` that rides out on ``FireEvent.judgment``. Callers
         that take no stamps (the event path) pass nothing and get ``judgment=None`` — additive only.
@@ -1165,11 +1165,11 @@ class Percept:
             pass
 
     def _shadow_observe(self, verdict: Any) -> "ShadowObservation":
-        """Card Y11 (SHADOW): the resolved subject + the proposed :class:`ShadowObservation` for a
+        """SHADOW: the resolved subject + the proposed :class:`ShadowObservation` for a
         watch-path verdict. ADVISORY ONLY — it OBSERVES what the fold would propose and governs
         nothing (no gate call, no re-arm, no suppression). The watch path binds no continuation
         decision, so ``decision=None`` (an ``unbound`` fold, or ``unknown`` when the judge saw a
-        subject it could not identify); the subject is the Y5 :class:`~percept.contracts.SubjectRef`
+        subject it could not identify); the subject is the :class:`~percept.contracts.SubjectRef`
         the judge emitted, if any. Never raises — a bad verdict yields an unbound shadow."""
         subject = getattr(verdict, "subject", None)
         if not isinstance(subject, SubjectRef):
@@ -1399,7 +1399,7 @@ class Percept:
         # is in judgment at a time per core in both dispatch modes, so this is the current frame's id.
         self._usage_trace_id = trace_id
         self._usage_source_ts = now
-        # X7 — the judgment clock (ADR-001 §1/§5). Two domains, never mixed: every stamp below is read
+        # The judgment clock (ADR-001 §1/§5). Two domains, never mixed: every stamp below is read
         # from THIS core's injected ``clock`` (monotonic in production, FakeClock in tests), while the
         # caller's stream timeline ``t`` — when one was supplied — rides along ONLY as the untrusted
         # ``source_media_ts``. ``ingest_observed_ts`` is stamped here, at local receipt of the frame:
@@ -1459,7 +1459,7 @@ class Percept:
             # Computed BEFORE the judge call (not just on success) so a degraded tick can be charged
             # to the SAME key the gate/executor use ("the reducer key") — see _note_judge_degraded.
             base_key = (goal.id, focus.id if focus else None)
-            # X7 — open this judgment's timing record. ``admitted_ts`` is stamped HERE: tier-0
+            # Open this judgment's timing record. ``admitted_ts`` is stamped HERE: tier-0
             # detection and focus resolution are done and this concern is about to spend a judge
             # call, which is exactly "admitted to the judge funnel" (ADR-001 §5). ``source_media_ts``
             # is the caller's stream timeline when one was passed and stays None otherwise — it is
@@ -1480,7 +1480,7 @@ class Percept:
                 )
                 judgment_timing.mark_judge_completed()
             except _JudgeDegraded as degraded:
-                # A30 fail-closed boundary (ADR-001 §10 invariant 4): the judge call raised (timeout /
+                # Fail-closed boundary (ADR-001 §10 invariant 4): the judge call raised (timeout /
                 # provider error) or returned a malformed/partial response. NEVER read .confidence/
                 # .satisfied off that — degrade THIS goal's tick to an explicit abstention (ASK-class:
                 # same telemetry a real low-confidence read gets), never a FIRE, and never let the gate
@@ -1493,7 +1493,7 @@ class Percept:
                 self._note_judge_degraded(base_key, degraded.cause)  # queues on_health for worker.py
                 get_logger("percept.agent").warning(
                     "judge.degraded: goal=%r cause=%r — degrading this tick to ASK/SILENT "
-                    "(fail-closed, card A30)", goal.id, degraded.cause,
+                    "(fail-closed)", goal.id, degraded.cause,
                 )
                 if tracing:
                     await self._emit_trace(
@@ -1517,8 +1517,8 @@ class Percept:
                 # Accumulated-coverage stamp (answer-path only): each evidence-bearing observation that
                 # folded into the running answer is a unit of coverage. Reuse the per-concern process_log
                 # the boundary already owns, so len(process_log) IS the evidence count — no gate state.
-                # Bounded so a 24/7 process_qa concern that never hits a boundary can't leak memory (plan
-                # R14); the resolver only reads it as a >= floor count, so a cap never weakens resolution.
+                # Bounded so a 24/7 process_qa concern that never hits a boundary can't leak memory; the
+                # resolver only reads it as a >= floor count, so a cap never weakens resolution.
                 ctx.process_log.append(verdict.running_answer)
                 if len(ctx.process_log) > 256:
                     del ctx.process_log[: len(ctx.process_log) - 256]
@@ -1573,7 +1573,7 @@ class Percept:
                                        confidence=getattr(verdict, "confidence", None),
                                        freshness=freshness,
                                        hold_s=program_of(goal).hold_s)
-                # D11 — project the frozen JudgmentEvent (X7's ONE production construction site,
+                # Project the frozen JudgmentEvent (the one production construction site,
                 # behavior.py:_judgment) into the trace stream so the SAME evidence this decision
                 # judged is resolvable from the .ptrace. Only when THIS tick's fire actually carried
                 # one (the judged watch path only — a degraded tick never reaches here, and
@@ -1588,7 +1588,7 @@ class Percept:
                                            action=ev_fire.judgment.action,
                                            dispatch_seq=ev_fire.judgment.evidence_seq,
                                            entity_id=focus.id if focus else None)
-                # Y11 SHADOW — emit the subject + the fold the model WOULD have proposed, as ADVISORY
+                # SHADOW — emit the subject + the fold the model WOULD have proposed, as ADVISORY
                 # trace data. It changes NOTHING (computed after the gate already classified, governs
                 # no firing) and lands in the ``shadow.fold`` stage so a client's media-OFF .ptrace
                 # carries something gradeable. Only built when a tracer is attached (default path does
@@ -1660,7 +1660,7 @@ class Percept:
             self._note_judge_degraded(process_key, degraded.cause)  # queues on_health for worker.py
             get_logger("percept.agent").warning(
                 "judge.degraded (observe_step): goal=%r cause=%r — logging nothing this tick "
-                "(fail-closed, card A30)", goal.id, degraded.cause,
+                "(fail-closed)", goal.id, degraded.cause,
             )
             return
         self._note_judge_ok(process_key)  # a well-formed verdict resets this key's degrade streak
@@ -1757,7 +1757,7 @@ class Percept:
         earlier = self._window(source).frames()[:-1]  # drop the current frame (passed as `frame`)
         if not earlier:
             return None
-        # B1: a clip window (window_s) bounds the strip by TIME — keep only the earlier frames within
+        # A clip window (window_s) bounds the strip by TIME — keep only the earlier frames within
         # window_s seconds of the current frame, so "a 4s clip" means the last 4s, not a frame count.
         if getattr(spec, "window_s", None):
             now_t = self._window(source).frames()[-1][0]  # current frame's timestamp
@@ -1789,7 +1789,7 @@ class Percept:
         (:func:`~percept.observability.judge_usage`). Backends that don't report usage leave those
         hooks unused; the timing is unconditional.
 
-        THE COST WIRE (card X2). The same usage dict is also emitted as a ``judge.usage`` TRACE
+        THE COST WIRE. The same usage dict is also emitted as a ``judge.usage`` TRACE
         event, which is what carries token/cost out to ``TraceSummary`` (the funnel's counters never
         reached the trace surface, so every traced run reported ``usd: 0.0`` no matter what it spent).
         It is emitted HERE, not at the runtime's judge-result drain, because this wrapper is the only
@@ -1981,7 +1981,7 @@ class Percept:
         if self.audit is None or not self.audit(cache_key):
             return cached
         self.metrics.incr("cache.audit")
-        # A30: the audit re-perceive is ALSO a live judge call on the watch path — guard it the same
+        # The audit re-perceive is ALSO a live judge call on the watch path — guard it the same
         # way. A degraded audit response must not crash the tick (which already has a perfectly good
         # cached verdict in hand); fall back to serving `cached` unchanged, exactly as an un-audited
         # HIT would. The false-serve upgrade only ever happens off a WELL-FORMED fresh verdict.
@@ -2058,7 +2058,7 @@ class Percept:
         return target
 
     def _on_entity_evicted(self, entity_id: str) -> None:
-        """R3 eviction hook: an entity died (graph cap) -> drop its gate keys and its cached verdicts, so no
+        """Eviction hook: an entity died (graph cap) -> drop its gate keys and its cached verdicts, so no
         orphan state survives it. Ties ``FrameHashLayer.invalidate_entity`` to entity DEATH (it previously
         fired only on assertion-override), closing the adjacent-audit gap."""
         self.gate.reset_entity(entity_id)
@@ -2255,7 +2255,7 @@ class Percept:
 
     # -- consent + audit (SDK primitives; the strip UI is project 2) --------
     def _log_fires(self, events: list[FireEvent], t: float) -> None:
-        """Record every fire/ask to the action log (the audit seed + V1 feedback corpus)."""
+        """Record every fire/ask to the action log (the audit seed and feedback corpus)."""
         for ev in events:
             self.action_log.record(
                 ActionRecord(
@@ -2295,7 +2295,7 @@ class Percept:
             if not modality_ok:
                 why = "goal modality is not 'act'"
             elif getattr(self.consent, "actuation", "none") == "physical":
-                # Card Z7 / ADR-007: an OUT-of-envelope declaration, not a permission miss. Say so,
+                # ADR-007: an OUT-of-envelope declaration, not a permission miss. Say so,
                 # so a client debugging at 2am reads the refusal instead of hunting an allowlist.
                 from .envelope import OUT_OF_ENVELOPE  # noqa: PLC0415 — local, avoids import cycle
 
@@ -2381,8 +2381,8 @@ class Percept:
         ``clock_anchor`` records the ``(epoch, monotonic)`` pair the conversion was taken against.
 
         DELIBERATELY ABSENT: ``episodes`` (the per-goal :class:`~percept.episodes.EpisodeLog` map). Its
-        omission is the ratified v1.4 policy (SESSION-ONLY, ADR-006 / card Y9), not an oversight — an
-        :class:`EpisodeLog` is process-lifetime state with no rebasable duration base (see card Z2 and
+        omission is the ratified v1.4 policy (SESSION-ONLY, ADR-006), not an oversight — an
+        :class:`EpisodeLog` is process-lifetime state with no rebasable duration base (see
         ``percept.episodes``). ``test_z2_episode_persistence`` asserts the key stays out of this dict, so
         a future accidental add TRIPS a test and forces the policy to be revisited deliberately rather
         than flipped by accident. The forward seam that will one day carry it is
@@ -2446,10 +2446,10 @@ class Percept:
                     stacklevel=2,
                 )
 
-        # Z2: episode memory is SESSION-ONLY (ADR-006 / card Y9) — snapshot() never carried the
+        # Episode memory is SESSION-ONLY (ADR-006) — snapshot() never carried the
         # ``episodes`` map, so every counting goal we just rehydrated will restart at zero episodes and a
         # subject last seen before the restart will open a NEW episode afterwards. That is a decision, not
-        # a bug, but it is the Y9 failure mode when it is SILENT: an operator watching a counting goal
+        # a bug, but it is a failure mode when it is SILENT: an operator watching a counting goal
         # under-counts after a redeploy with nothing saying why. Queue a single loud ``episode_memory_reset``
         # health event whenever we restored active counting goals into an empty episode map, so the amnesia
         # is observable. Queue-only — worker.py drains it into on_health (Percept never calls on_health).
@@ -2463,7 +2463,7 @@ class Percept:
                         "counting_goals": len(counting),
                         "goal_ids": [g.id for g in counting],
                         "detail": (
-                            "episodes are session-only (ADR-006 / card Y9): counting/episode memory was "
+                            "episodes are session-only (ADR-006): counting/episode memory was "
                             "NOT restored; these goals restart at zero and may under-count until re-observed."
                         ),
                     },

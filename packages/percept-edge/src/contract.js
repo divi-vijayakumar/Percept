@@ -26,7 +26,7 @@
  * `percept.contracts.CONTRACT_VERSION`. Same major == wire-compatible. This is DISTINCT from
  * `WatchSpec.version` (the wire integer, defaults to 1) which stays for payload compat.
  */
-export const CONTRACT_VERSION = "1.6.0"; // JS twin of Python 1.6.0 — SubjectRef (Y5) + Y2 claim channel + Z3 envelope (all additive).
+export const CONTRACT_VERSION = "1.6.0"; // JS twin of Python 1.6.0 — SubjectRef + claim channel + judgment envelope (all additive).
 // This constant names the PYTHON contract version these shapes are a twin of. The JS side implements a
 // SUBSET of the Python DTOs (the shapes defined below); the version tracks the wire contract, not the
 // coverage. 1.0.0: initial public wire contract (launch).
@@ -176,7 +176,7 @@ export function parseWatchCondition(obj, { path = "condition" } = {}) {
     }
     detectors = [...obj.detectors];
   }
-  // cadence (C2): how often to look. Missing tolerated -> (null, "motion"), the default.
+  // cadence: how often to look. Missing tolerated -> (null, "motion"), the default.
   let cadence_s = null;
   if (obj.cadence_s != null) {
     if (!isFiniteNumber(obj.cadence_s)) {
@@ -207,8 +207,8 @@ export function parseWatchCondition(obj, { path = "condition" } = {}) {
     }
     ego_compensate = obj.ego_compensate;
   }
-  // NOTE: `schedule` (Python C1) is not mirrored here yet — it is tolerantly dropped (a known parity
-  // drift, tracked separately). The on-device gate executes neither schedule nor cadence today.
+  // NOTE: `schedule` (present on the Python side) is not mirrored here yet — it is tolerantly dropped
+  // (a known parity drift, tracked separately). The on-device gate executes neither schedule nor cadence today.
   return {
     goal_id: obj.goal_id,
     anchor_text: obj.anchor_text,
@@ -488,14 +488,14 @@ export function parseBoundaryReport(json) {
 // fires an Incident whose snippet is a short clip). `media` is Python `bytes` -> a base64 string on the
 // wire (or null); `verdict` is the firing Verdict { satisfied, confidence, evidence }.
 //
-// `entity_id` (contract 1.3, D4) is the GENERIC correlation handle of the gated subject — the same id
+// `entity_id` (contract 1.3) is the GENERIC correlation handle of the gated subject — the same id
 // that keys the rising-edge gate `(goal_id, entity_id)` on the Python side. It lets a consumer tell two
 // subjects tripping the same concern apart instead of reading their interleaved fires as out-of-order
 // divergence. It is a correlation key only — no claim about who/which document the subject is. `null`
 // when the fire was not entity-scoped; a pre-1.3 payload omitting it parses to `null` unchanged.
 //
-// The enriched judgment envelope (contract 1.6, card Z3) rides through the emission boundary onto the
-// durable record a client reads at 2am: `reason` is the gate's O2 reason code (why the action was
+// The enriched judgment envelope (contract 1.6) rides through the emission boundary onto the
+// durable record a client reads at 2am: `reason` is the gate's reason code (why the action was
 // taken), `watchplan_id` a stable id of the plan it ran under, `roi` the region it fired on (or null,
 // left honest rather than echoing an input hint), `modality` how the eye looked, `provenance` observed
 // vs inferred. All ADDITIVE and OPTIONAL — a pre-1.6 payload omitting them parses to `null` unchanged.
@@ -518,14 +518,14 @@ function _isNumberOrNull(v) {
   return v == null || isFiniteNumber(v);
 }
 
-// The claim-mode / speech-act channel (contract 1.5, card Y2). A value DIFFERENCE is not a
+// The claim-mode / speech-act channel (contract 1.5). A value DIFFERENCE is not a
 // REPLACEMENT: the verdict names the LOCAL speech act so the executor never parses values out of
 // free-text evidence. All five fields are ADDITIVE and OPTIONAL — a pre-1.5 verdict omits them and
 // keeps its exact { satisfied, confidence, evidence } shape (see _makeVerdict).
 const _OPERATIONS = new Set(["assert", "confirm", "replace", "retract", "close", "mention"]);
 
 /**
- * Build a Verdict { satisfied, confidence, evidence } plus the OPTIONAL card-Y2 claim-mode fields
+ * Build a Verdict { satisfied, confidence, evidence } plus the OPTIONAL claim-mode fields
  * when the payload carries them. evidence defaults to "" (Python default). The mutation fields are
  * only attached when PRESENT, so a plain positive verdict round-trips as the pre-1.5 three-field shape.
  */
@@ -536,7 +536,7 @@ function _makeVerdict(v, path) {
   const evidence = v.evidence == null ? "" : v.evidence;
   if (typeof evidence !== "string") throw new ContractError(`${path}.evidence: expected a string`);
   const out = { satisfied: v.satisfied, confidence: v.confidence, evidence };
-  // -- additive card-Y2 claim-mode channel (only when present) --
+  // -- additive claim-mode channel (only when present) --
   if (v.operation != null) {
     if (!_OPERATIONS.has(v.operation)) {
       throw new ContractError(`${path}.operation: expected one of ${[..._OPERATIONS].join("|")}`);
@@ -557,7 +557,7 @@ function _makeVerdict(v, path) {
     }
     out.asserted_by = v.asserted_by;
   }
-  // -- additive card-Y5 subject carrier (only when present): WHICH subject the fire is about.
+  // -- additive subject carrier (only when present): WHICH subject the fire is about.
   // Absence is `null`/missing (Python `Verdict.subject: SubjectRef | None = None`), never a third state.
   if (v.subject != null) out.subject = makeSubjectRef(v.subject);
   return out;
@@ -623,7 +623,7 @@ export function parseIncidentSnippet(obj, { path = "snippet" } = {}) {
 }
 
 /**
- * Normalize the ADDITIVE card-Z3 judgment envelope (contract 1.6) plus the contract-1.7
+ * Normalize the ADDITIVE judgment envelope (contract 1.6) plus the contract-1.7
  * `evidence_seq` link, shared by makeIncident / parseIncident. Every field is optional and defaults
  * null, so a pre-1.6/1.7 payload round-trips its exact shape. `roi` is a Box (validated via
  * makeBox/parseBox), `evidence_seq` a finite number or null, the rest closed-vocab strings or null.
@@ -650,7 +650,7 @@ function _incidentEnvelope(src, ctx) {
 /**
  * Build an Incident. `verdict` is { satisfied, confidence, evidence? }; `label` defaults to null
  * (unlabelled — suggested vocab "real"/"false_alarm"); `snippet` defaults to null; `entity_id`
- * defaults to null (not entity-scoped) — the back-compatible default for pre-1.3 callers. The card-Z3
+ * defaults to null (not entity-scoped) — the back-compatible default for pre-1.3 callers. The judgment
  * envelope (`reason`/`watchplan_id`/`roi`/`modality`/`provenance`, contract 1.6) and `evidence_seq`
  * (contract 1.7) all default null.
  * @returns {{id:string,concern_id:string,verdict:object,ts:number,label:string|null,snippet:object|null,entity_id:string|null,reason:string|null,watchplan_id:string|null,roi:object|null,modality:string|null,provenance:string|null,evidence_seq:number|null}}
@@ -744,7 +744,7 @@ export function parseIncident(json) {
 //               scope: "session"|"source"|"durable", strategy, confidence: number|null }
 // ---------------------------------------------------------------------------
 //
-// The JS twin of the Python `percept.contracts.SubjectRef` (contract 1.4, card Y5): a namespaced,
+// The JS twin of the Python `percept.contracts.SubjectRef` (contract 1.4): a namespaced,
 // tri-state reference to WHICH subject a judgment is about. `PO-4471` is not globally unique across
 // systems, so `namespace` disambiguates the `key`. Two `resolution` states ONLY: "bound" (identified)
 // or "unknown" (seen but unidentified). The ABSENCE of a subject is `null` on the carrier (e.g.

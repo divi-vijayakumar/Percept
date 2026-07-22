@@ -1,4 +1,4 @@
-"""The public ``watch()`` entrypoint — the M1 frozen seam every downstream MVP card depends on.
+"""The public ``watch()`` entrypoint — the frozen seam every downstream capability depends on.
 
 ``watch(stream, goals, profile=None) -> AsyncIterator[WatchEvent]`` is the ONE stable, versioned way
 to run the existing fovea -> judge -> gate path (:meth:`~percept.agent.Percept.perceive_judged`) over a
@@ -6,15 +6,15 @@ stream of frames. It is a thin wrapper, not a new firing path: **no detection be
 here** — this module adds zero judge/gate logic, it only adapts the existing per-frame loop to a
 stream-in/stream-out shape and maps its output to the frozen :class:`~percept.contracts.WatchEvent`.
 
-``profile`` is resolved for real as of card M2: a :class:`~percept.watchprofile.WatchProfile` binds
+``profile`` is resolved for real: a :class:`~percept.watchprofile.WatchProfile` binds
 (environment, goal-type, state) to the runtime's knobs (``salience_stat``, ``plan_mode``, cadence, gate
 config, ...) — the free variables of ``Q(p | environment, goal, state)`` — and that resolution
 (:func:`percept.profile_wiring.resolve_watch_profile`) is applied when :meth:`Percept.create` builds the
 core (never a mid-run mutation). The documented default is still ``profile=None`` -> today's
 :class:`~percept.config.Settings`-driven behavior (:func:`~percept.config.load_settings`), BYTE-FOR-BYTE
-unchanged from pre-M2. See :func:`_settings_from_profile` and :func:`_build_core`.
+unchanged from the legacy default. See :func:`_settings_from_profile` and :func:`_build_core`.
 
-``goals`` additionally accepts bare plain-language strings (card RB-L1SUGAR) —
+``goals`` additionally accepts bare plain-language strings —
 ``watch(stream, "the milk is boiling over")``. That is SUGAR, not a second entrypoint and not a
 compilation step: :func:`percept.goalsugar.desugar_goals` wraps the string, verbatim, in a
 ``Goal`` with a deterministic documented id, and the identical firing path runs. The signature,
@@ -58,7 +58,7 @@ WATCH_VERSION = "1.0.0"
 def _settings_from_profile(profile: Any) -> Settings | None:
     """Resolve ``profile`` to a :class:`Settings` override, or ``None`` for the default.
 
-    A real :class:`~percept.watchprofile.WatchProfile` resolves for real (card M2:
+    A real :class:`~percept.watchprofile.WatchProfile` resolves for real (via
     :func:`percept.profile_wiring.resolve_watch_profile`). Two minimal, non-behavior-changing
     pass-throughs remain for callers that aren't authoring a ``WatchProfile``: a bare ``Settings``
     instance is used directly (handy for tests/callers that already build one), and any other object's
@@ -79,7 +79,7 @@ def _build_core(profile: Any) -> Percept:
     ``WatchProfile`` is applied at CORE CREATION time (cadence -> a real ``SensePolicy``, ``plan_mode``
     threaded through, never a mid-run mutation). Any other ``profile`` shape (``None``, a bare
     ``Settings``, an opaque ``.settings``-bearing object) carries no cadence/plan_mode override — same
-    as pre-M2."""
+    as the legacy default."""
     if isinstance(profile, WatchProfile):
         resolved = resolve_watch_profile(profile)
         return Percept.create(
@@ -151,13 +151,13 @@ async def watch(
 ) -> AsyncIterator[WatchEvent]:
     """Watch ``stream`` (frames) for ``goals``, yielding one :class:`WatchEvent` per gate action.
 
-    The frozen public entrypoint (implementation plan E1/M1): every downstream card — WatchProfiles
-    (E2/M2), resilience/SLOs (E1), the SDK front door (E6) — is built on this seam. It wires directly to
+    The frozen public entrypoint: every downstream capability — WatchProfiles, resilience/SLOs, the
+    SDK front door — is built on this seam. It wires directly to
     the existing runtime (``Percept.create`` + ``Percept.perceive_judged``) with no detection behavior
     added or changed; a ``WatchProfile`` passed as ``profile`` IS resolved into runtime knobs (salience
-    stat/thresholds, gate config, cadence, plan_mode — card M2) when ``watch()`` builds its own core (see
-    the module docstring and :func:`_build_core`). The signature and streaming semantics here are
-    unchanged by M2 — this is additive wiring behind the existing seam, not a contract change.
+    stat/thresholds, gate config, cadence, plan_mode) when ``watch()`` builds its own core (see
+    the module docstring and :func:`_build_core`). The signature and streaming semantics here remain
+    unchanged — this is additive wiring behind the existing seam, not a contract change.
 
     Args:
         stream: An (async or sync) iterable of frames, oldest to newest. A frame is whatever the
@@ -176,8 +176,8 @@ async def watch(
             ``Goal``\\ s, and ``WatchPlan``\\ s may be freely mixed in one iterable.
         profile: OPTIONAL. ``None`` (the default) is today's ``Settings``-driven behavior — the
             documented default profile, BYTE-FOR-BYTE unchanged. A :class:`~percept.watchprofile.WatchProfile`
-            is resolved for real (card M2); other shapes (a bare ``Settings``, an opaque
-            ``.settings``-bearing object) keep their pre-M2 pass-through. See the module docstring.
+            is resolved for real; other shapes (a bare ``Settings``, an opaque
+            ``.settings``-bearing object) keep their legacy pass-through. See the module docstring.
         percept: OPTIONAL, a pre-built :class:`Percept` core to reuse (e.g. one already carrying
             state across calls, or wired with specific backends). When omitted, one is created via
             :func:`_build_core` (applying any ``WatchProfile``-derived knobs at construction time).

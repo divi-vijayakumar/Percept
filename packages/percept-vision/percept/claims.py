@@ -1,4 +1,4 @@
-"""Claim-mode state machine — a value DIFFERENCE is not a REPLACEMENT (card Y2).
+"""Claim-mode state machine — a value DIFFERENCE is not a REPLACEMENT.
 
 The two paying client teams that ran percept 0.7.0 could PERCEIVE correctly — their judges scored
 recall 1.00 on documents, handled retractions and counterfactuals — but the SDK gave the executor no
@@ -25,7 +25,7 @@ what preserves the anchoring mitigation) into an authoritative value, with two h
 The state machine is a pure fold over ``(operation, value, asserted_by)``; the only side effect is the
 authority-downgrade trace line, which a caller may silence with ``trace=False``. It knows nothing
 about the gate, and the gate reads nothing from it: this is the value channel, GATE-IRRELEVANT by
-construction, exactly like every other card-Y2 Verdict addition.
+construction, exactly like every other Verdict addition in this family.
 """
 
 from __future__ import annotations
@@ -83,7 +83,7 @@ class ClaimOutcome:
 
 @dataclass
 class ClaimState:
-    """The authoritative value of ONE claim slot, folded from a stream of speech acts (card Y2).
+    """The authoritative value of ONE claim slot, folded from a stream of speech acts.
 
     ``value`` is ``None`` when the slot is genuinely empty — never ``""`` (an empty string is a value,
     not an absence, and conflating them is exactly the bug the retraction case guards against). The

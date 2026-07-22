@@ -36,7 +36,7 @@ Wire shape — each corpus directory holds exactly two JSON files:
     }
 
 ``expect`` keys are corpus-specific and declared in :data:`REQUIRED_EXPECT_KEYS`; the validator
-enforces them so a malformed fixture fails loudly *before* an implementation card ever reads it.
+enforces them so a malformed fixture fails loudly *before* an implementation ever reads it.
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ CORPUS_KIND: dict[str, str] = {
 CORPUS_NAMES: tuple[str, ...] = tuple(CORPUS_KIND)
 
 #: Corpus name -> keys every case's ``expect`` block MUST carry. This is the contract an
-#: implementation card reads: the expected ANSWER, machine-readable, never just the input.
+#: implementation reads: the expected ANSWER, machine-readable, never just the input.
 REQUIRED_EXPECT_KEYS: dict[str, tuple[str, ...]] = {
     # How many distinct subjects, what durable key each carries, and whether the binding resolved.
     "subject_identity": ("distinct_subject_count", "subjects"),

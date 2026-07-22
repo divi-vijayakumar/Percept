@@ -79,7 +79,7 @@ class EntityGraph:
     ) -> None:
         self._iou = iou_match
         self._max = max_entities
-        # R3: called with an entity id the instant it is evicted (the graph caps at ``max_entities``), so a
+        # Called with an entity id the instant it is evicted (the graph caps at ``max_entities``), so a
         # downstream owner can drop that entity's derived state. :class:`Percept` wires it to
         # ``Gate.reset_entity`` (+ cache invalidation) so a dead entity leaves no orphan gate key behind.
         # Settable after construction too (the gate is built after the graph). Default None -> no-op.
@@ -204,7 +204,7 @@ class EntityGraph:
             oldest = min(self._entities.values(), key=lambda e: e.last_seen)
             del self._entities[oldest.id]
             if self.on_evict is not None:
-                self.on_evict(oldest.id)  # R3: sweep this entity's downstream state (gate keys, cache)
+                self.on_evict(oldest.id)  # sweep this entity's downstream state (gate keys, cache)
 
     # -- assertions / fusion -------------------------------------------------
     def assert_attribute(

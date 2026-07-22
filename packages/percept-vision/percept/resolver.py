@@ -27,7 +27,7 @@ Precedence, low to high (ADR-008 §Precedence)::
 
 **Ownership gates precedence, not the reverse.** A field write from a layer that does not own
 that field's class is a :class:`ConfigError`, raised before any value is produced — never
-last-writer-wins. Ownership is read from :data:`percept.tunables.REGISTRY` (card C0's inventory),
+last-writer-wins. Ownership is read from :data:`percept.tunables.REGISTRY` (the tunables inventory),
 the single source of truth this module does not duplicate.
 
 ``DomainPack`` / ``ExecutionPolicy`` / ``OptimizationLock`` do not exist as real objects yet (ADR-008
@@ -110,7 +110,7 @@ class ConfigError(ValueError):
     produced")."""
 
 
-#: path -> TunableSpec, built once from the card-C0 registry (the single source of truth for
+#: path -> TunableSpec, built once from the tunables registry (the single source of truth for
 #: ownership this module reads and never duplicates).
 _BY_PATH: dict[str, TunableSpec] = {spec.path: spec for spec in REGISTRY}
 
@@ -208,7 +208,7 @@ def _settings_paths(settings: Settings) -> dict[str, Any]:
     """Every ``Settings.*`` tunables-registry path, read off a real :class:`Settings` instance via
     the SAME dotted path the registry names it by (``"Settings.gate.threshold"`` ->
     ``settings.gate.threshold``). Generic over the registry so a new ``Settings`` field picked up
-    by card C0's inventory is read here with no per-field code."""
+    by the tunables inventory is read here with no per-field code."""
     out: dict[str, Any] = {}
     for spec in REGISTRY:
         if not spec.path.startswith("Settings."):

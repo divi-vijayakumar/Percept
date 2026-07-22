@@ -220,7 +220,7 @@ class WebhookSink:
         self.include_media = include_media
         self.retries = retries
         self.retry_backoff_s = retry_backoff_s
-        # ADR-001 §9 / card A9: "delivery attempts" bound. `retries` already bounds the ATTEMPT COUNT
+        # ADR-001 §9: "delivery attempts" bound. `retries` already bounds the ATTEMPT COUNT
         # (finite by construction — a plain int). `max_attempt_age_s` adds an orthogonal wall-clock
         # bound so a long backoff schedule can't keep retrying indefinitely in elapsed time either;
         # either bound reaching its limit is a TERMINAL failure (dead-lettered with a reason). None
@@ -311,7 +311,7 @@ class FileDeadLetterQueue:
 
 
 class BoundedDeadLetterQueue:
-    """A bounded, in-memory dead-letter sink (ADR-001 §9, card A9: "delivery queue" bound).
+    """A bounded, in-memory dead-letter sink (ADR-001 §9: "delivery queue" bound).
 
     A bare ``list`` (the type ``WebhookSink(dead_letter=...)`` has always accepted) grows without
     limit — a sustained outage turns a 24/7 watch's DLQ into an unbounded leak. This wraps the same
@@ -382,7 +382,7 @@ class IdempotencyLedger:
     own ``retries``/``max_attempt_age_s`` + dead-letter queue already own that path; see
     :class:`WebhookSink`).
 
-    BOUNDED (ADR-001 §9) with the same sizing philosophy as :class:`BoundedDeadLetterQueue` (card A9):
+    BOUNDED (ADR-001 §9) with the same sizing philosophy as :class:`BoundedDeadLetterQueue`:
     capped by COUNT (``max_records``) and AGE (``ttl_s``) — drop-oldest-with-trace via
     ``on_evict(event_id, reason)`` (``reason`` is ``"max_records"`` or ``"ttl"``). A 24/7 watch must not
     let this grow without limit; an event_id that ages out of the ledger simply becomes eligible for
@@ -467,7 +467,7 @@ class IdempotencyLedger:
 
 class IdempotentSink:
     """Wrap a notification sink (``on_incident``) with an :class:`IdempotencyLedger` — the production
-    dedupe-on-redelivery guard in the delivery path (ADR-001 §6, card A31).
+    dedupe-on-redelivery guard in the delivery path (ADR-001 §6).
 
     Consults the ledger by ``incident.id`` (the event_id) BEFORE delivering: if this event_id already
     reached a terminal-OK delivery, the call is a no-op — the wrapped sink is NOT invoked again, so a
@@ -509,7 +509,7 @@ class IdempotentSink:
 
 class SupersessionLedger:
     """Bounded ``revision_id -> delivered incident.id`` map for the provisional/superseding delivery
-    path (card Y10).
+    path.
 
     The episode fold names the revision a correction supersedes as a stable revision handle
     (``<episode_id>#r<n>``, :func:`percept.behavior.revision_id`), NOT the prior INCIDENT's id — the
@@ -518,7 +518,7 @@ class SupersessionLedger:
     ``supersedes=<prior incident id>`` and not just an opaque revision string.
 
     BOUNDED with the same sizing philosophy as :class:`IdempotencyLedger` / :class:`BoundedDeadLetterQueue`
-    (ADR-001 §9, card A9): capped by COUNT (``max_records``), drop-oldest-with-trace via
+    (ADR-001 §9): capped by COUNT (``max_records``), drop-oldest-with-trace via
     ``on_evict(revision_id, reason)`` (``reason`` is always ``"max_records"``). A 24/7 watch must not
     let this grow without limit; a revision that ages out simply resolves to ``None`` (an
     unresolved-but-still-TRACED supersession — never a silent drop, see :class:`SupersessionSink`).
@@ -557,9 +557,9 @@ class SupersessionLedger:
 
 class SupersessionSink:
     """Wrap a notification sink (``on_incident``) to relate a SUPERSEDING revision to the incident it
-    corrects, and TRACE that relation — never silent (card Y10).
+    corrects, and TRACE that relation — never silent.
 
-    Y10's delivery model: a finding is emitted PROVISIONALLY on the rising edge; when the Y2 mutation
+    The delivery model: a finding is emitted PROVISIONALLY on the rising edge; when the mutation
     channel later classifies a turn as replace/retract on the same episode, the fold fires a superseding
     revision carrying ``supersedes=<prior revision>`` (surfaced on the fire, then copied onto the
     incident as a runtime-local annotation by :func:`percept.incidents.make_incident`). This wrapper is
@@ -568,8 +568,8 @@ class SupersessionSink:
     * resolves the fold's revision-level ``supersedes`` to the PRIOR INCIDENT's id via a bounded
       :class:`SupersessionLedger`, and stamps it onto the outgoing incident as
       ``incident._supersedes_incident_id`` (read via :func:`superseded_incident_id`) — so an in-process
-      ``async for incident in run(...)`` consumer sees ``supersedes=<prior incident id>`` exactly as the
-      card asks, WITHOUT a wire-contract change;
+      ``async for incident in run(...)`` consumer sees ``supersedes=<prior incident id>`` exactly as
+      needed, WITHOUT a wire-contract change;
     * TRACES every supersession (a structured log line by default, or ``on_supersede(record)`` if
       supplied) so a client debugging the stream can SEE the original→correction link even when the
       downstream sink itself carries no supersession field — "trace the supersession, never silent".
@@ -620,7 +620,7 @@ class SupersessionSink:
 
 def superseded_incident_id(incident: Any) -> "str | None":
     """The PRIOR incident id a superseding revision replaces, once :class:`SupersessionSink` has
-    resolved it (card Y10). ``None`` for an original incident, or when the prior revision aged out of
+    resolved it. ``None`` for an original incident, or when the prior revision aged out of
     the bounded ledger before this correction arrived."""
     return getattr(incident, "_supersedes_incident_id", None)
 
