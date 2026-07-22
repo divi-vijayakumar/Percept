@@ -149,6 +149,8 @@ main{padding:20px 24px 28px;display:grid;gap:16px}
 .shareOverlay button{width:100%}
 .resolvedMeta{padding:10px 13px;border-bottom:1px solid var(--hairline);font:9.5px var(--mono);color:var(--steel);display:flex;flex-wrap:wrap;gap:14px}
 .resolvedMeta b{color:var(--ink)}
+.seamsLine{border-top:1px solid var(--hairline)}
+.seamFallback{color:#a11;cursor:help}
 .resolvedWrap{max-height:280px;overflow:auto}
 .resolvedTable{width:100%;border-collapse:collapse;font:9.5px/1.5 var(--mono)}
 .resolvedTable th{position:sticky;top:0;text-align:left;padding:7px 10px;border-bottom:1px solid var(--ink);color:var(--steel);font:9px var(--mono);letter-spacing:.08em;text-transform:uppercase;background:var(--panel)}
@@ -298,6 +300,7 @@ confidence: —</pre>
   <section class="panel">
     <div class="panelHead"><b>08 · Resolved configuration</b><span>ADR-008 · zero env-var provenance</span></div>
     <div id="resolvedMeta" class="resolvedMeta"><span>Arm a watch to resolve configuration.</span></div>
+    <div id="seamsLine" class="resolvedMeta seamsLine"><span class="muted">model seams — arm a watch to route them.</span></div>
     <div class="resolvedWrap">
       <table class="resolvedTable">
         <thead><tr><th>path</th><th>value</th><th>owner layer</th><th>source</th><th>why</th></tr></thead>
@@ -564,12 +567,30 @@ confidence: —</pre>
   // layer, source, why) straight off ResolvedWatch.provenance, PLUS the WatchReceipt summary for
   // this run. This is the zero-env-var proof: every row's owner_layer names the real ADR-008
   // configuration object that won, not an env var.
+
+  // [DEMO4 Finding 2] per-seam (vision/conductor/specialist) backend+model routing — a fallback
+  // (e.g. openrouter has no conductor/specialist adapter) is rendered in red with the reason as a
+  // hover tooltip, never silently hidden. seams is null on the fixture path (no live backend).
+  function renderSeams(seams){
+    const box=$('#seamsLine');
+    if(!seams){ box.innerHTML='<span class="muted">model seams — fixture run, no live backend routed</span>'; return; }
+    box.innerHTML=['vision','conductor','specialist'].map(name=>{
+      const s=seams[name]||{};
+      const fb=s.fallback_from;
+      const cls=fb?' class="seamFallback"':'';
+      const title=fb?` title="${esc(s.reason||'')}"`:'';
+      const modelTxt=s.model?' · '+esc(s.model):' · —';
+      const fbTxt=fb?` (fallback from ${esc(fb)})`:'';
+      return `<span${cls}${title}>${name} <b>${esc(s.backend||'—')}</b>${modelTxt}${fbTxt}</span>`;
+    }).join('');
+  }
   function renderResolved(d){
     const re=d.resolved_explain, rc=d.receipt;
     const body=$('#resolvedBody'), meta=$('#resolvedMeta');
     if(!re){
       body.innerHTML='<tr><td colspan="5" class="muted">No resolution on this run.</td></tr>';
       meta.innerHTML='<span class="muted">—</span>';
+      renderSeams(d.seams);
       return;
     }
     const sp=re.source_profile||{};
@@ -585,6 +606,7 @@ confidence: —</pre>
         <td>${esc(f.source_id)}</td>
         <td>${esc(f.reason||'')}</td>
       </tr>`).join(''):'<tr><td colspan="5" class="muted">No fields resolved.</td></tr>';
+    renderSeams(d.seams);
   }
 
   $('#viewTraceBtn').onclick=async()=>{ if(!lastRun)return; const r=await fetch('/trace/'+lastRun.run_id+'.ptrace'); $('#traceContent').textContent=await r.text(); $('#traceDrawer').classList.add('open'); };
