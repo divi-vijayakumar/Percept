@@ -122,10 +122,12 @@ class TestNeverFabricatesAContentKey(unittest.TestCase):
         self.assertIsNotNone(fold)
         self.assertEqual(fold.match, "unknown")
         self.assertFalse(fold.should_rearm, "a visible abstention must never rearm the gate")
-        # The episode the log opened for this sighting carries NO subject key -- never an invented one.
+        # The episode the log opened for this sighting carries a provisional key derived
+        # from its own id (UN_<episode_id>) -- never an invented content key.
         log = a.episodes["g1"]
         self.assertEqual(log.count(), 1)
-        self.assertIsNone(log._episodes[0].subject_key)
+        ep = log._episodes[0]
+        self.assertEqual(ep.subject_key, f"UN_{ep.id}")
 
     def test_bound_subject_key_is_exactly_the_judge_emitted_key(self):
         a = _build(identity_policy="content_key")
