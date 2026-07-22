@@ -118,6 +118,16 @@ PHYSICAL_SCENE = SourceProfile(
 #: (docs/how-to/tune-admission.md); the coast is NOT optional and must not be set to None.
 SCREEN_COAST_INTERVAL_S = 2.0
 
+#: The default unknown-to-unknown continuity gap for :data:`SCREEN_DOCUMENT`, in seconds
+#: (``percept.episodes.EpisodePolicy.unknown_continuity_gap_s``). A FLOOR pick, not a tuned value: a
+#: document whose content key is unreadable this coast tick and unreadable the NEXT coast tick
+#: (:data:`SCREEN_COAST_INTERVAL_S` apart) is, on a slow-changing screen source, far more likely to be
+#: the same still-illegible page than a brand-new one — so it is defensible to fold consecutive
+#: illegible sightings into one provisional subject rather than minting a fresh one every coast tick.
+#: Set to a few coast intervals so a couple of missed samples do not manufacture a new subject; a
+#: gap this small still splits genuinely distinct occurrences on any real page-to-page cadence.
+SCREEN_UNKNOWN_CONTINUITY_GAP_S = 3.0 * SCREEN_COAST_INTERVAL_S
+
 SCREEN_DOCUMENT = SourceProfile(
     name="screen_document",
     modalities=frozenset({"video", "text"}),
@@ -140,6 +150,11 @@ SCREEN_DOCUMENT = SourceProfile(
         "evidence_optional_parts": ("previous_screenshot",),
         "identity_key_hint": "document_or_page_key",
         "measured_evidence": SCREEN_EVIDENCE,
+        # An unreadable content key on this source defaults to TEMPORAL-PROXIMITY continuity rather
+        # than minting a fresh provisional subject every tick — see SCREEN_UNKNOWN_CONTINUITY_GAP_S
+        # and SourceProfile.default_episode_policy. A per-profile capability, not a global: a source
+        # with many distinct fast-moving unidentified subjects (physical_scene) does not set this.
+        "unknown_continuity_gap_s": SCREEN_UNKNOWN_CONTINUITY_GAP_S,
     },
     stability="stable",
     notes=(
@@ -148,7 +163,9 @@ SCREEN_DOCUMENT = SourceProfile(
         "UNTUNED and the honest floor is a fixed low-rate coast, so a static-but-important page is "
         "still sampled. The client supplies and tunes the admission signal (their phash / "
         "page-change detector / OCR model, registered with register_detector) — see "
-        "docs/how-to/tune-admission.md. " + SCREEN_EVIDENCE
+        "docs/how-to/tune-admission.md. An unreadable content key defaults to temporal-proximity "
+        "unknown-continuity (SCREEN_UNKNOWN_CONTINUITY_GAP_S) rather than a fresh provisional "
+        "subject per tick. " + SCREEN_EVIDENCE
     ),
 )
 
