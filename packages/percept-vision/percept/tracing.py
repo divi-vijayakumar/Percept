@@ -108,6 +108,12 @@ STAGE_EXTRACTOR_ENRICHED = "extractor.enriched"  # a percept.extraction.Evidence
 #: ``data["facts"]`` is the SAME dict merged into ``context["extractor"]`` for the judge — this
 #: stage is what makes "did the extractor's facts actually reach the judge" answerable from the trace
 #: alone, not just from reading the call site. Purely additive observability — governs nothing.
+STAGE_CAPSULE_ASSEMBLED = "capsule.assembled"  # a percept.capsule.EventCapsule was assembled for
+#: a fired concern whose ``PerceptionSpec.temporal == "event_capsule"``. ``data`` carries only counts/
+#: flags (``episode_id``, ``pre_roll_n``, ``boundary_n``, ``has_early_snapshot``, ``is_complete``) —
+#: frame bytes never enter the trace, matching the media-off ``.ptrace`` discipline every other
+#: advisory stage (``shadow.fold``, ``judgment.event``) already follows. Purely additive observability
+#: — it governs nothing: assembly already happened by the time this stage is emitted.
 
 #: The closed stage vocabulary. A stage outside this tuple is still recorded (forward-compatible)
 #: but is not counted into any funnel field — an unknown stage must never silently move a number.
@@ -126,6 +132,7 @@ TRACE_STAGES: tuple[str, ...] = (
     STAGE_SHADOW_FOLD,
     STAGE_JUDGMENT_EVENT,
     STAGE_EXTRACTOR_ENRICHED,
+    STAGE_CAPSULE_ASSEMBLED,
     STAGE_SOURCE_HEALTH,
     STAGE_TRACE_DROPPED,
     STAGE_RUN_ENDED,
@@ -439,7 +446,7 @@ _SUMMARY_STAGES: frozenset[str] = frozenset({
 _DECISION_STAGES: frozenset[str] = _SUMMARY_STAGES | frozenset({
     STAGE_SOURCE_FRAME, STAGE_JUDGE_STARTED, STAGE_JUDGE_FINISHED, STAGE_JUDGE_DEGRADED,
     STAGE_JUDGE_USAGE, STAGE_JUDGE_DROPPED, STAGE_GATE_CLASSIFIED, STAGE_GATE_SUPPRESSED,
-    STAGE_JUDGMENT_EVENT, STAGE_EXTRACTOR_ENRICHED,
+    STAGE_JUDGMENT_EVENT, STAGE_EXTRACTOR_ENRICHED, STAGE_CAPSULE_ASSEMBLED,
 })
 
 
@@ -1668,6 +1675,7 @@ __all__ = [
     "STAGE_INCIDENT_CREATED",
     "STAGE_SHADOW_FOLD",
     "STAGE_EXTRACTOR_ENRICHED",
+    "STAGE_CAPSULE_ASSEMBLED",
     "STAGE_SOURCE_HEALTH",
     "STAGE_TRACE_DROPPED",
     "STAGE_RUN_STARTED",

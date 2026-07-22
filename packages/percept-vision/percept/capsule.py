@@ -1,4 +1,4 @@
-"""Event capsule — C4b: the ``event_capsule`` composite evidence shape (additive Temporal value).
+"""Event capsule — the ``event_capsule`` composite evidence shape (additive Temporal value).
 
 A plain ``strip``/``window`` is ONE contiguous span. Some fires need a wider story: the lead-up (a
 motion ring already buffers), how the episode itself opened and where it stands now, and — for an
@@ -193,6 +193,25 @@ def assemble_event_capsule(
 
 
 # --------------------------------------------------------------------------------------------------
+# Trace — an ADDITIVE trace stage (percept.tracing.STAGE_CAPSULE_ASSEMBLED). Counts/flags only, no
+# frame bytes, mirroring the media-off ``.ptrace`` discipline percept.behavior's shadow advisory
+# already follows (``_fold_advisory``). This function GOVERNS NOTHING — assembly already happened.
+# --------------------------------------------------------------------------------------------------
+
+
+def capsule_trace_data(capsule: EventCapsule) -> dict:
+    """JSON-safe advisory dict for the ``capsule.assembled`` trace stage. All scalars, so it survives a
+    media-OFF ``.ptrace`` round-trip like every other advisory stage."""
+    return {
+        "episode_id": capsule.episode_id,
+        "pre_roll_n": len(capsule.pre_roll),
+        "boundary_n": len(capsule.boundary),
+        "has_early_snapshot": capsule.has_early_snapshot,
+        "is_complete": capsule.is_complete,
+    }
+
+
+# --------------------------------------------------------------------------------------------------
 # Retention — capsule frames go through the EXISTING EvidenceStore retention mechanism (ADR-003).
 # This module never builds a new store; it only calls ``EvidenceStore.put_bundle`` — the SAME seam
 # incidents.py's clip snippets use for a heterogeneous multi-artifact capture.
@@ -249,5 +268,6 @@ __all__ = [
     "EarlySnapshotTimer",
     "EventCapsule",
     "assemble_event_capsule",
+    "capsule_trace_data",
     "store_event_capsule",
 ]
