@@ -78,13 +78,13 @@ class AdrDoesNotDenyProfileResolutionTests(unittest.TestCase):
     def test_adr_states_the_profile_is_resolved_and_cites_the_code(self):
         text = _adr_text()
         self.assertIn("resolve_watch_profile", text)
-        self.assertIn("`watch.py:63-76`", text)  # _build_core
-        self.assertIn("`watch.py:44-60`", text)  # _settings_from_profile
-        self.assertIn("`watch.py:34-35`", text)  # the imports that make resolution real
+        self.assertIn("`watch.py:77-90`", text)  # _build_core
+        self.assertIn("`watch.py:58-74`", text)  # _settings_from_profile
+        self.assertIn("`watch.py:47`", text)  # the import that makes resolution real
 
     def test_adr_warns_that_percept_kwarg_overrides_profile(self):
         text = _adr_text()
-        self.assertIn("`watch.py:144`", text)
+        self.assertIn("`watch.py:191`", text)
         self.assertRegex(text, r"`percept=`[^\n]*wins over[^\n]*`profile=`")
 
 
@@ -102,36 +102,36 @@ class AdrWatchPyCitationsResolveTests(unittest.TestCase):
             self.assertLessEqual(lo, hi)
 
     def test_watch_version_citation(self):
-        self.assertIn("`watch.py:41`", _adr_text())
-        self.assertTrue(_watch_lines()[41].startswith("WATCH_VERSION"))
+        self.assertIn("`watch.py:55`", _adr_text())
+        self.assertTrue(_watch_lines()[55].startswith("WATCH_VERSION"))
 
     def test_build_core_citation_spans_build_core(self):
         lines = _watch_lines()
-        self.assertTrue(lines[63].startswith("def _build_core("))
-        self.assertIn("return Percept.create(settings=_settings_from_profile(profile))", lines[76])
-        self.assertIn("resolve_watch_profile(profile)", "\n".join(lines[69:76]))
+        self.assertTrue(lines[77].startswith("def _build_core("))
+        self.assertIn("return Percept.create(settings=_settings_from_profile(profile))", lines[90])
+        self.assertIn("resolve_watch_profile(profile)", "\n".join(lines[83:90]))
 
     def test_settings_from_profile_citation_spans_that_function(self):
         lines = _watch_lines()
-        self.assertTrue(lines[44].startswith("def _settings_from_profile("))
-        self.assertIn('getattr(profile, "settings", None)', lines[60])
+        self.assertTrue(lines[58].startswith("def _settings_from_profile("))
+        self.assertIn('getattr(profile, "settings", None)', lines[74])
 
     def test_percept_kwarg_precedence_citation(self):
         self.assertIn(
-            "core = percept if percept is not None else _build_core(profile)", _watch_lines()[144]
+            "core = percept if percept is not None else _build_core(profile)", _watch_lines()[191]
         )
 
     def test_as_watch_event_and_aiter_citations(self):
         lines = _watch_lines()
-        self.assertTrue(lines[79].startswith("def _as_watch_event("))
-        self.assertTrue(lines[90].startswith("async def _aiter("))
-        self.assertIn("yield item", lines[97])
+        self.assertTrue(lines[93].startswith("def _as_watch_event("))
+        self.assertTrue(lines[104].startswith("async def _aiter("))
+        self.assertIn("yield item", lines[108])
 
     def test_yield_loop_citation(self):
         lines = _watch_lines()
-        self.assertIn("now = core.clock()", lines[148])
-        self.assertIn("for ev in fired:", lines[150])
-        self.assertIn("yield _as_watch_event(ev, t=now)", lines[151])
+        self.assertIn("now = core.clock()", lines[194])
+        self.assertIn("for ev in fired:", lines[196])
+        self.assertIn("yield _as_watch_event(ev, t=now)", lines[197])
 
 
 class ProfileReallyChangesGateSemanticsTests(unittest.TestCase):

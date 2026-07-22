@@ -29,7 +29,7 @@ shipped and frozen as the public seam (per its own module docstring, `watch.py:1
 watch(stream, goals, profile=None, *, percept=None, source="camera") -> AsyncIterator[WatchEvent]
 ```
 
-`WATCH_VERSION = "1.0.0"` (`watch.py:41`) versions this function's signature and streaming
+`WATCH_VERSION = "1.0.0"` (`watch.py:55`) versions this function's signature and streaming
 semantics; `CONTRACT_VERSION` in `percept/contracts/__init__.py:33` (currently `"1.6.0"` — grew
 additively through `WatchAction`/`WatchEvent`, `SubjectRef` (Y5), the Y2 claim channel, and the Z3
 judgment envelope) separately versions the DTO wire shapes it returns. This ADR pins
@@ -50,7 +50,7 @@ notification, and this ADR must be honest that they are not the same:
 - `percept.watch()` (`watch.py`) — the M1 frozen public contract. A bare async generator with **no
   internal queue**: `async for frame in _aiter(stream): now = core.clock(); fired = await
   core.perceive_judged(frame, source=source, t=now); for ev in fired: yield
-  _as_watch_event(ev, t=now)` (`watch.py:147-151`). It is deliberately "a thin wrapper, not a new
+  _as_watch_event(ev, t=now)` (`watch.py:193-197`). It is deliberately "a thin wrapper, not a new
   firing path... zero judge/gate logic" (`watch.py:5-6`).
 - `percept.runtime.worker.run()` (`worker.py:856`) — a separate, richer, sink-callback runtime
   (`on_incident`/`on_ask`/`on_frame`/`on_health`) with a bounded capture queue
@@ -92,9 +92,9 @@ Back in `perceive_judged`, a non-`None` `Fired` becomes a `FireEvent` (`agent.py
 `FireEvent` defined `agent.py:42-50`: `goal_id`, `action: GateAction` (`"fire"|"ask"`), `text`,
 `entity_id`, `verdict`) and is appended to that call's `events: list[FireEvent]`
 (`agent.py:1096,1219`). `watch()`'s loop then maps each returned `FireEvent` to a `WatchEvent`
-1:1 via `_as_watch_event` (`watch.py:79-87`), copying `goal_id`, `action`, `text`, `entity_id`,
+1:1 via `_as_watch_event` (`watch.py:93-101`), copying `goal_id`, `action`, `text`, `entity_id`,
 `verdict`, and stamping `t` from the **same** `now = core.clock()` value used to call
-`perceive_judged` (`watch.py:148-151`) — `WatchEvent.t` is frame-admission time, not a delivery
+`perceive_judged` (`watch.py:194-197`) — `WatchEvent.t` is frame-admission time, not a delivery
 timestamp. `WatchAction` (`contracts/__init__.py:1129`) is declared to "mirror
 `percept.gate.GateAction` value-for-value" but is kept as an independent `Literal`, not imported,
 so the contracts package stays dependency-free of the cognition core (`contracts/__init__.py:
@@ -170,12 +170,12 @@ untouched — "belt-and-suspenders against a fault silently arming/disarming an 
 `source_queue_size`, `worker.py:868,1328`, and drop-oldest `frames_dropped`, `worker.py:113,1714`).
 Because the loop `await`s `perceive_judged` inline and only then `yield`s, the async generator
 protocol itself provides backpressure: the next `stream` item is not pulled (`_aiter`'s
-`async for item in stream`, `watch.py:90-97`) until the consumer resumes the generator by
+`async for item in stream`, `watch.py:104-111`) until the consumer resumes the generator by
 requesting the next `WatchEvent`. Concretely:
 
 - **Guaranteed:** no `WatchEvent` that `perceive_judged` has already produced is ever dropped by
   `watch()` itself — the `for ev in fired: yield _as_watch_event(ev, t=now)` loop
-  (`watch.py:150-151`) yields every element unconditionally. Delivery order matches frame-admission
+  (`watch.py:196-197`) yields every element unconditionally. Delivery order matches frame-admission
   order (no concurrency inside `watch()` to reorder it).
 - **Best-effort / NOT guaranteed:** frame throughput and freshness while the consumer is slow.
   `watch()` makes no promise about `stream`'s own buffering — if `stream` wraps a live, free-running
@@ -200,12 +200,12 @@ requesting the next `WatchEvent`. Concretely:
 **`profile` IS resolved — and it changes the numbers §1 is stated against.** (Correction: an earlier
 draft of this ADR listed profile resolution under "NOT guaranteed," describing a pre-M2 `watch.py`.
 That was false as shipped and is retracted here.) Whenever `watch()` builds its own core — i.e.
-whenever `percept=` is NOT passed — `_build_core(profile)` (`watch.py:63-76`) branches on the
+whenever `percept=` is NOT passed — `_build_core(profile)` (`watch.py:77-90`) branches on the
 argument's type:
 
 - A real `percept.watchprofile.WatchProfile` **is resolved for real** (card M2) by
-  `percept.profile_wiring.resolve_watch_profile(profile)` (imported at `watch.py:34-35`, applied at
-  `watch.py:69-75`), and the result is applied at CORE CONSTRUCTION time — never as a mid-run
+  `percept.profile_wiring.resolve_watch_profile(profile)` (imported at `watch.py:47`, applied at
+  `watch.py:83-89`), and the result is applied at CORE CONSTRUCTION time — never as a mid-run
   mutation: `Percept.create(settings=resolved.settings, sense_policy=resolved.sense_policy,
   plan_mode=resolved.plan_mode)`. Concretely, `resolve_watch_profile` seeds from `load_settings()`
   and overrides (`profile_wiring.py:61-83`):
@@ -219,7 +219,7 @@ argument's type:
   `load_settings()` value; `Gate` itself is constructed from `cfg.gate` at `agent.py:504-511`, and
   `fresh_min` is a `Gate` constructor default (`gate.py:207`), not a profile-settable knob.
 - A bare `Settings` is used directly, and any other object's `.settings` attribute is read if
-  present (`_settings_from_profile`, `watch.py:44-60`). Neither of those shapes carries a
+  present (`_settings_from_profile`, `watch.py:58-74`). Neither of those shapes carries a
   `sense_policy`/`plan_mode` override — only a real `WatchProfile` does.
 - `None` (the default) resolves to `None`, so `Percept.create` falls back to `load_settings()` —
   today's documented default behavior, byte-for-byte unchanged.
@@ -227,7 +227,7 @@ argument's type:
 Two things about `profile` that genuinely are NOT guaranteed:
 
 - **`percept=` silently wins over `profile=`.** `watch()` uses a caller-supplied core as-is
-  (`core = percept if percept is not None else _build_core(profile)`, `watch.py:144`), so a
+  (`core = percept if percept is not None else _build_core(profile)`, `watch.py:191`), so a
   `profile` passed alongside an explicit `percept=` is ignored, with no error and no warning.
 - **No mid-run reprofiling.** A `WatchProfile` is resolved once, at core construction; nothing in
   `watch()` re-resolves or re-applies it while the stream is running.
@@ -253,12 +253,12 @@ goals, and (c) the same sequence of `now` values, the entire path from a `Verdic
   hard-quadrant `FIRE`→`ASK` escalation, is a pure function of the goal's authored config and the
   gate's return value (`behavior.py:320-378`).
 - `watch()`'s own loop and `_as_watch_event` mapping add no branching on anything but the above
-  (`watch.py:147-151,79-87`).
+  (`watch.py:193-197,93-101`).
 
 **"The same `now` sequence" is load-bearing, not a footnote.** `core.clock` defaults to
 `time.monotonic` (`clk = clock or time.monotonic`, `agent.py:481`) — wall-clock, and therefore
 **not** reproducible run-to-run by default. `watch()` reads `now = core.clock()` fresh once per
-frame (`watch.py:148`) and that same value feeds both `perceive_judged`'s `t` and the resulting
+frame (`watch.py:194`) and that same value feeds both `perceive_judged`'s `t` and the resulting
 `WatchEvent.t`, and is what refractory/dwell timing compares against. Byte-identical replay of gate
 timing requires the caller to inject a deterministic clock (`Percept.create(clock=...)`) — e.g. one
 driven from each recorded frame's own timestamp — not the default. `watch()` does nothing to make
@@ -324,7 +324,7 @@ guarantee this system cannot deliver.
    does not, as far as this ADR's source reading found. Whether to build one, and its shape, is not
    decided here — it is real, undecided work this ADR surfaces rather than invents.
 2. **Byte-identical `WatchEvent` field equality, or a looser "same actions, same order" bar?**
-   `WatchEvent.t` is stamped from `core.clock()` per frame (`watch.py:148`) and will only match
+   `WatchEvent.t` is stamped from `core.clock()` per frame (`watch.py:194`) and will only match
    across replays if the clock is pinned identically. Recommended default: field-value equality
    given an explicitly pinned clock (the stronger, more useful bar for regression testing) — but
    this is not decided in code or in any PRD text this ADR's author read, and is called out rather
