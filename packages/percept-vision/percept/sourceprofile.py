@@ -246,6 +246,38 @@ class SourceProfile:
         return self.identity_strategy
 
     @property
+    def default_episode_policy(self) -> "EpisodePolicy":
+        """The episode-continuation policy this source class DECLARES as its default — the same
+        "profile declares, concern selects" shape as :attr:`default_identity_policy`, applied to
+        UNKNOWN-sighting continuity rather than identity resolution.
+
+        Built from two independent, both-off-by-default parameters:
+
+        - ``parameters['unknown_continuity_gap_s']`` — unknown-to-unknown temporal-proximity
+          continuity (an unidentified sighting close in time to the last one is probably the same
+          thing seen again). A source with slow-changing content (a document, a page) can defensibly
+          declare this; a source with many distinct fast-moving unidentified things generally should
+          not.
+        - ``parameters['unknown_attaches_to_active_bound']`` — the card-Y4 single-focus attach.
+
+        A concern that authors nothing on ``goal.state['episode']`` gets THIS value via
+        ``percept.episodes.episode_policy_of(goal, default=profile.default_episode_policy)`` — a seam
+        a caller opts into explicitly, mirroring how :func:`percept.identity_policy.select_identity_policy`
+        is an unwired-but-available utility rather than something forced into every call site. Every
+        shipped profile that declares neither parameter gets ``EpisodePolicy()`` — byte-for-byte the
+        Y5 default (mint a fresh episode per unidentified sighting, never collapse).
+        """
+        from .episodes import EpisodePolicy  # local import: episodes.py stays contracts/sourceprofile-free
+
+        gap = self.parameters.get("unknown_continuity_gap_s")
+        return EpisodePolicy(
+            unknown_continuity_gap_s=None if gap is None else float(gap),
+            unknown_attaches_to_active_bound=bool(
+                self.parameters.get("unknown_attaches_to_active_bound", False)
+            ),
+        )
+
+    @property
     def coast_interval_s(self) -> float | None:
         """The fixed low-rate sampling floor, if this profile declares one. The coast is what keeps a
         static-but-important source observed when the change signal is absent or untuned."""

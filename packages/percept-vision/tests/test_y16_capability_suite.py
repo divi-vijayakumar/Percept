@@ -138,8 +138,10 @@ class Capability02UnknownBindingNeverFabricates(unittest.TestCase):
         real = Verdict(scripted[0].satisfied, scripted[0].confidence, subject=_subject_ref(scripted[0]))
         decision = log.observe_decision(steps[0]["t"], real)
 
-        # Not fabricated: no key was invented for the episode.
-        self.assertIsNone(decision.episode.subject_key)
+        # Not fabricated: the episode carries a PROVISIONAL key derived from its own id
+        # (UN_<episode_id>), never an invented content key.
+        self.assertEqual(decision.episode.subject_key, f"UN_{decision.episode.id}")
+        self.assertTrue(decision.episode.subject_key.startswith("UN_"))
         # Not dropped: the sighting still opened an episode (a visible abstention, not a disappearance).
         self.assertEqual(log.count(), 1)
         self.assertEqual(log.count(), expect["distinct_subject_count"])

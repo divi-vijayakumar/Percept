@@ -132,7 +132,8 @@
         "resolution": {
           "enum": [
             "bound",
-            "unknown"
+            "unknown",
+            "provisional"
           ]
         },
         "scope": {
