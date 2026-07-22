@@ -14,7 +14,7 @@ What this module deliberately does NOT do
   a fire matched, that would be two yardsticks, which is the failure mode this codebase keeps
   refusing.
 * **It does not re-implement the funnel.** Degraded time, ASK/FIRE/SILENT gate counts and
-  unresolved judge work come from :class:`percept.tracing.TraceSummary` (card D8a) — the same
+  unresolved judge work come from :class:`percept.tracing.TraceSummary` — the same
   object ``doctor``, ``eval`` and the visualizer read, so this report cannot disagree with them.
 * **It does not approximate its intervals.** Bounds come from :mod:`percept.eval.exact_ci` —
   Garwood/Poisson for rates, Clopper–Pearson for proportions, consistent with

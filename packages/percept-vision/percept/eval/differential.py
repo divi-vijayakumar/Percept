@@ -729,7 +729,7 @@ class _PlanGoal:
 
     ``state`` is carried because the per-goal dwell (``state['hold_s']``) is a resolved policy value
     the plan hash must cover — two arms whose only difference is a sustain window are two different
-    configurations (card X3).
+    configurations.
     """
 
     def __init__(self, payload: Mapping[str, Any]) -> None:
@@ -761,7 +761,7 @@ def load_plan(path: str | Path, *, name: str, fixture_dir: str = "") -> ArmSpec:
     runtime uses to stamp a trace manifest, so an eval's quoted plan hash is comparable with a
     production run's.
 
-    Card X3: the arm's RESOLVED thresholds and policy go into the hash alongside the goals. The
+    The arm's RESOLVED thresholds and policy go into the hash alongside the goals. The
     commonest paired eval on this harness is a threshold A/B — both arms share a goals list by
     construction — and until this, both arms printed the same ``plan_hash``, so the "quote these
     identities" block could not tell a reader which configuration produced which numbers. Key order in
@@ -1162,7 +1162,7 @@ def render_text(report: DifferentialReport) -> str:
             add(f"    {c['role']:<9}: {c['name']} version={c.get('version') or '—'} "
                 f"model={c.get('model') or '—'} config_hash={c.get('config_hash') or '—'}")
         add(f"    thresholds   : {json.dumps(dict(sorted(arm.thresholds.items())), sort_keys=True)}")
-        # Card X3: the resolved policy is IN the plan_hash, so print it right under the hash it moves.
+        # The resolved policy is IN the plan_hash, so print it right under the hash it moves.
         # A reader who sees two different hashes must be able to see WHICH knob differs without
         # opening the plan files.
         add(f"    policy       : {json.dumps(arm.plan.policy_dict, sort_keys=True)}")

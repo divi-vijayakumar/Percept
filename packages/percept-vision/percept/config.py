@@ -101,10 +101,10 @@ class GateSettings:
     # baseline before a key can fire, so a condition already true at start is not a fire. Opt-in; off is
     # byte-for-byte the historical rising-edge gate (fire on first true).
     require_false_first: bool = False  # PERCEPT_GATE_REQUIRE_FALSE_FIRST
-    # L3 (MVP plan E4, precision track): suppress a re-fire landing within this many seconds of the
+    # Refractory suppression (precision track): suppress a re-fire landing within this many seconds of the
     # same key's last real fire, even across a spurious confident-false/confident-true blip mid-episode
-    # (the "RE-FIRES" false-positive source in the H0 precision forensic). A WatchProfile-settable knob
-    # (``gate.refractory_s`` in the MVP plan's WatchProfile schema); off by default (0/neg = byte-for-byte
+    # (the "RE-FIRES" false-positive source found during precision tuning). A WatchProfile-settable knob
+    # (``gate.refractory_s`` in the WatchProfile schema); off by default (0/neg = byte-for-byte
     # the historical gate, no refractory).
     refractory_s: float = 0.0  # PERCEPT_GATE_REFRACTORY_S
 
@@ -143,7 +143,7 @@ class ModelSettings:
 class ConsentSettings:
     allow_computer_use: bool = False  # PERCEPT_ALLOW_COMPUTER_USE — gates the `act` modality
     allowed_actions: frozenset = frozenset()  # PERCEPT_ACT_ALLOWED_ACTIONS — comma-separated scope
-    # PERCEPT_ACTUATION — card Z7 / ADR-007. "none" (default) | "screen" (advisory software acts)
+    # PERCEPT_ACTUATION — ADR-007. "none" (default) | "screen" (advisory software acts)
     # | "physical" (a DECLARATION that this deployment is outside percept's envelope: every act is
     # then refused, because the gate's honest failure mode is ASK and a control loop cannot ask).
     # Typed, so `percept doctor` reports it; see percept.envelope.ACTUATION_CLASSES.

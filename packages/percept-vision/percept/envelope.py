@@ -1,4 +1,4 @@
-"""Envelope — the three OUT verdicts, enforced in CONFIG rather than in prose (card Z7, ADR-007).
+"""Envelope — the three OUT verdicts, enforced in CONFIG rather than in prose (ADR-007).
 
 The seven-domain evaluation returned **OUT** for three domains. Each OUT has a NARROWED survivor that
 is often one config change away from the excluded form, which is exactly why a paragraph in a README
@@ -87,7 +87,7 @@ PERSON_SUBJECT_CLASSES: frozenset[str] = frozenset({"person", "face", "voice", "
 class EnvelopeViolation(ValueError):
     """A construction/registration that would put percept outside its declared envelope.
 
-    Raised, never warned: the whole point of card Z7 is that the refusal survives a client wiring
+    Raised, never warned: the whole point of this envelope is that the refusal survives a client wiring
     something at 2am with no access to us.
     """
 
@@ -207,7 +207,7 @@ OUT_OF_ENVELOPE: Mapping[str, EnvelopeVerdict] = MappingProxyType(
     }
 )
 
-#: Honest status of "assistant-class delivery only" (card Z7, the reported item).
+#: Honest status of "assistant-class delivery only" (the reported item).
 #:
 #: :class:`~percept.contracts.AttentionIntent` has ONE policy-controlled field, ``preempt``, and
 #: :class:`~percept.incidents.AttentionPolicy` clamps it deterministically from durable provenance +
@@ -238,7 +238,7 @@ ATTENTION_CLASS_GAP = (
 
 @dataclass(frozen=True)
 class SubjectResolver:
-    """A typed declaration of HOW a subject key is obtained — the surface card Z7 (a) locks down.
+    """A typed declaration of HOW a subject key is obtained — the surface this envelope locks down.
 
     Construction itself is the refusal. A resolver whose ``subject_class`` is a person class
     (:data:`PERSON_SUBJECT_CLASSES`) may not:
@@ -508,7 +508,7 @@ def assert_no_person_identifying_resolver(
 
 
 # ---------------------------------------------------------------------------
-# Actuation — the typed declaration (card Z7 (b))
+# Actuation — the typed declaration
 # ---------------------------------------------------------------------------
 
 

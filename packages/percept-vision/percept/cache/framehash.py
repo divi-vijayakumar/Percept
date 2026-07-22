@@ -190,7 +190,7 @@ class FrameHashLayer:
         self._clock = clock
         self._key_fn = key_fn or _default_key_fn
         # (goal_id, entity_id, condition) -> _Entry. Condition is part of the slot so a goal re-armed
-        # under a new condition can't be served its stale verdict (D3a); invalidate*() still key off
+        # under a new condition can't be served its stale verdict; invalidate*() still key off
         # slot[0]/slot[1] (goal_id/entity_id), so their scoping is unchanged.
         self._entries: dict[tuple[str, str | None, str | None], _Entry] = {}
 
@@ -310,8 +310,8 @@ class CacheKey:
 
     ``condition`` scopes the entry to the goal's CURRENT plain-language meaning: a goal id re-armed with
     a new condition (voice re-arm) must not be served a verdict cached under its OLD condition. It is
-    part of the entry slot, so a condition change is a clean miss (D3a). ``None`` (the default) keeps the
-    pre-D3a keying — every existing caller that omits it shares one condition-agnostic slot, unchanged."""
+    part of the entry slot, so a condition change is a clean miss. ``None`` (the default) keeps the
+    older keying — every existing caller that omits it shares one condition-agnostic slot, unchanged."""
 
     goal_id: str
     frame: Any

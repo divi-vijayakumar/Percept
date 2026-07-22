@@ -3,11 +3,11 @@
 Identity is established *below the LLM* and handed up as a stable symbol (invariant 4). Two impls
 sit behind the frozen ``Identity`` protocol (``match(obs, known) -> id | None``):
 
-* :class:`ContinuityIdentity` — IoU + label, frame-to-frame. The V0 default; correct for a single
-  dominant object under a near-static camera (state the bound plainly — it is not general).
+* :class:`ContinuityIdentity` — IoU + label, frame-to-frame. The baseline default; correct for a
+  single dominant object under a near-static camera (state the bound plainly — it is not general).
 * :class:`AppearanceIdentity` — continuity first, then a brute-force **appearance** match over the
   recent set so an object is recognized after it leaves and re-enters tracking, and a genuinely new
-  object is distinguished. The fleet-calibrated, high-accuracy re-id service is paid V1.
+  object is distinguished. The fleet-calibrated, high-accuracy re-id service is a paid tier.
 
 Both accept an optional keyword ``signature`` (the appearance embedding of the observation). The
 frozen protocol is ``match(obs, known)``; the extra keyword is optional, so these remain structural
@@ -22,7 +22,7 @@ from typing import Any
 from .adapters import Observation
 
 # An appearance embedding (e.g. a tuple/list of floats). Opaque to the core; produced by an
-# injected embedder (CLIP/etc. in real use, a stub in L1).
+# injected embedder (CLIP/etc. in real use, a stub in tests).
 Signature = Any
 
 

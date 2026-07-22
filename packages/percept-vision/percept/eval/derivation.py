@@ -880,7 +880,7 @@ def render_scorecard(report: DerivationReport) -> str:
             "refusal, not a failure of the job.")
     else:
         vp = report.derived.watch_profile
-        add("DERIVED PROFILE (provenance-stamped, content-addressed — card P4 format)")
+        add("DERIVED PROFILE (provenance-stamped, content-addressed)")
         add(f"  name           : {vp.profile.name}")
         add(f"  content_hash   : {vp.content_hash}")
         add(f"  source_profile : {report.derived.source_profile.name}")

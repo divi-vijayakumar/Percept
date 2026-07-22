@@ -9,7 +9,7 @@ stream timeline; the clock is the wall-clock fallback). This module names that c
 fills it needs: a real :data:`WallClock` and a test-driven :class:`FakeClock`.
 
 ``FakeClock`` is a drop-in for the ``clock`` callable (it IS callable) **plus** an ``advance()`` the test or
-the timeline-replay harness (P5) drives — so a deadline / absence fire can be exercised deterministically
+the timeline-replay harness drives — so a deadline / absence fire can be exercised deterministically
 with zero wall-clock waits and no change to any call site. Pure stdlib.
 """
 

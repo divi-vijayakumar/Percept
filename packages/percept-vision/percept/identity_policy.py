@@ -1,4 +1,4 @@
-"""Concern-level SELECTION of the subject-identity resolver (card Y6, ADR-005 open-question 1).
+"""Concern-level SELECTION of the subject-identity resolver (ADR-005 open-question 1).
 
 ``SourceProfile.identity_strategy`` is too coarse to be the PRIMARY selector. One screen source
 legitimately carries three different identity policies at once: a document content-key for a
@@ -19,7 +19,7 @@ Additive by construction: a concern that authors nothing gets ``source_profile.i
 which for every shipped profile is exactly today's value — unselected behaviour is byte-for-byte
 unchanged.
 
-Envelope relevance (coordinate with card Z7 / ADR-007 §``security_person_id``)
+Envelope relevance (coordinate with ADR-007 §``security_person_id``)
 ------------------------------------------------------------------------------
 
 Making selection per-concern is also what stops a future biometric resolver from becoming GLOBALLY

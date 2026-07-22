@@ -20,7 +20,7 @@ What ADR-003 fixes, and what this module ships:
   forget (§4). A sink MAY opt in to carrying the bare handle string — :meth:`EvidenceArtifact.to_egress`
   takes ``include_ref=True`` — but that is a separate, narrower decision than dereferencing to bytes.
 * **The resolver.** :func:`resolve_evidence` (and :meth:`EvidenceStore.resolve`) is the only sanctioned
-  path from a handle to an artifact. It accepts either a bare ``ref`` string or a Y14
+  path from a handle to an artifact. It accepts either a bare ``ref`` string or an
   :class:`~percept.episodes.EvidenceHandle` (the same opaque-handle shape — reused, not forked).
 * **Four typed failures** (§3): :class:`EvidenceExpired`, :class:`EvidenceUnavailable`,
   :class:`EvidenceAccessDenied`, :class:`EvidenceCorrupt`. Resolution *never* returns ``None`` or an
@@ -166,7 +166,7 @@ class EvidenceArtifact:
 
 
 def evidence_ref_of(handle: Any) -> str:
-    """Extract the opaque ``ref`` string from a handle, reusing (not forking) Y14's shape.
+    """Extract the opaque ``ref`` string from a handle, reusing (not forking) the episode-handle shape.
 
     Accepts a bare ``ref`` string, an :class:`~percept.episodes.EvidenceHandle`, an
     :class:`EvidenceArtifact`, or anything else exposing a ``.ref`` attribute — so

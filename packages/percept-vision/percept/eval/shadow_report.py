@@ -1,9 +1,9 @@
-"""Card Y11 — the SHADOW per-probe report: would the fold the model WOULD have proposed have been
+"""The SHADOW per-probe report: would the fold the model WOULD have proposed have been
 RIGHT, measured against synthetic ground truth?
 
 This is the de-risking measurement. It drives the frozen ``eval/synthetic`` corpora through the SAME
-pure mechanism shadow mode observes — subject resolution (Y5), the episode continuation log (Y1), the
-episode fold (Y3), the claim/mutation state machine (Y2) — and scores each proposal against the
+pure mechanism shadow mode observes — subject resolution, the episode continuation log, the
+episode fold, the claim/mutation state machine — and scores each proposal against the
 fixture's labelled answer. No API spend: the driver is :class:`~percept.harness.scripted.ScriptedJudge`
 over the committed corpus generators, so the report runs in a worktree that does not carry the
 gitignored generated tree.
@@ -19,7 +19,7 @@ TWO probes, mirroring the two client collapses:
   says should NOT happen (treating a mention/negation/attribution as a replacement, or applying an
   unauthorized replace) — again silent state corruption.
 
-THE ASYMMETRY (card Y8, reused): a FALSE-BIND is weighted far worse than an abstention/miss. Both
+THE ASYMMETRY (reused): a FALSE-BIND is weighted far worse than an abstention/miss. Both
 probes fold their per-item outcomes through :mod:`percept.eval.identity_metrics` so the same hard
 false-bind ceiling and weighted harm score that gate E-1 gate the shadow read.
 
@@ -85,7 +85,7 @@ DISTINCT_SUBJECT_COUNT_NOTE = (
 
 #: Shadow acceptance uses the E-1 asymmetry (hard false-bind ceiling + weighted harm) but does NOT
 #: require the judgment-quality non-inferiority arm: shadow measures binding/fold CORRECTNESS, while a
-#: quality delta needs a separate instrumented arm (Y8) that is out of this card's scope.
+#: quality delta needs a separate instrumented arm that is out of this report's scope.
 SHADOW_ACCEPTANCE_POLICY = AcceptancePolicy(require_quality_non_inferior=False)
 
 _MONEY = re.compile(r"\$\d+(?:\.\d+)?[KkMm]?")
@@ -391,7 +391,7 @@ def run_shadow_probes() -> dict[str, ProbeReport]:
 def format_report(reports: dict[str, ProbeReport]) -> str:
     """A plain-text, hand-to-a-client rendering of the shadow probes."""
     lines: list[str] = []
-    lines.append("SHADOW MODE — per-probe report (card Y11)")
+    lines.append("SHADOW MODE — per-probe report")
     lines.append("=" * 72)
     lines.append(
         "Proves the fold WOULD/would-not have been right on SYNTHETIC ground truth. It does NOT "
