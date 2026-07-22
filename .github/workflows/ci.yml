@@ -16,6 +16,19 @@ jobs:
       - name: make test
         run: make test
 
+  l1-capability-gate:
+    name: L1 capability gate — Y16 task-level suite (CAPABILITY asserts, no keys, no stat bars)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: install pytest
+        run: python -m pip install -q pytest
+      - name: make test-capability-gate
+        run: make test-capability-gate
+
   l1-js:
     name: L1 unit — percept-edge (vitest)
     runs-on: ubuntu-latest
