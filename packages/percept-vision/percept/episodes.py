@@ -67,7 +67,7 @@ under-counting after a redeploy, which nothing in this module can detect for you
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
 from .events import frame_nbytes
@@ -295,6 +295,64 @@ def episode_policy_of(goal: Any, default: "EpisodePolicy | None" = None) -> Epis
     return EpisodePolicy(**{k: fields.get(k, getattr(base, k)) for k in _POLICY_KEYS})
 
 
+# ================================================================================================
+# REVISION TIMELINE (card Y15) — a 24/7 confirm heartbeat must not be an unbounded log.
+# ================================================================================================
+#
+# An episode carries a small, BOUNDED timeline of the STATE CHANGES it went through — it opened, an
+# update was accepted, it was retracted, it closed, it expired out of the window, a stretch went
+# unobserved. That timeline is what a client debugging percept at 2am reads to answer "what happened
+# to THIS episode, and when?" without re-deriving it from a firehose of ticks.
+#
+# The stress-test defect (found by the seven-domain eval, card Y15): a long-running watch confirms the
+# SAME finding on every confident tick — a heartbeat — and the naive timeline appended a ``confirmed``
+# row per tick. Over a 24/7 watch that is an UNBOUNDED log: N identical confirmations become N rows,
+# forever. A re-statement of an unchanged fact is not a state change and must not grow the timeline.
+#
+# So ``confirmed`` COALESCES IN PLACE: it advances ``last_confirmed`` (and ``last_seen``) on the
+# existing episode and appends NOTHING. A run of N unchanged confirmations produces exactly ONE row —
+# the ``opened`` that began the episode. Only STATE-CHANGING kinds append
+# (:data:`STATE_CHANGING_REVISION_KINDS`). The timeline is additionally CAPPED (``max_revisions``)
+# with a TRACED drop on overflow, matching the EpisodeLog drop discipline (ADR-001 §9): a
+# bound-driven drop is never silent.
+
+RevisionKind = Literal[
+    "opened",          # the episode began (or reopened) — the one row a pure heartbeat ever produces
+    "confirmed",       # an unchanged re-statement — COALESCES in place, never appends (the Y15 fix)
+    "updated",         # an accepted semantic change to the episode's value → a new revision
+    "retracted",       # the finding was withdrawn
+    "closed",          # the episode reached a terminal status
+    "expired",         # the episode fell out of the counting window
+    "unobserved_gap",  # a stretch nobody observed was recorded against the episode
+]
+
+#: The closed vocabulary of episode state changes. Stable: a code is never renamed or repurposed.
+REVISION_KINDS: tuple[RevisionKind, ...] = (
+    "opened", "confirmed", "updated", "retracted", "closed", "expired", "unobserved_gap",
+)
+
+#: The kinds that APPEND a timeline row. ``confirmed`` is deliberately absent: an unchanged
+#: re-confirmation is a heartbeat, not a state change, and coalesces in place (card Y15). A run of N
+#: confirmations therefore leaves the timeline at the single ``opened`` row.
+STATE_CHANGING_REVISION_KINDS: tuple[RevisionKind, ...] = (
+    "opened", "updated", "retracted", "closed", "expired", "unobserved_gap",
+)
+
+
+@dataclass(frozen=True)
+class Revision:
+    """One STATE CHANGE on an episode's timeline (card Y15).
+
+    A ``confirmed`` heartbeat never becomes a ``Revision`` — it coalesces into the episode's
+    ``last_confirmed`` instead — so an appended row always marks a genuine change, never a
+    re-statement. ``value``/``incident_id`` carry what changed, when relevant (``None`` = absent)."""
+
+    kind: RevisionKind
+    t: float
+    value: Any = None
+    incident_id: str | None = None
+
+
 @dataclass
 class Episode:
     id: str
@@ -332,6 +390,15 @@ class Episode:
     value: Any = None
     # The incident this episode raised, if any. None == no incident (NEVER '').
     incident_id: str | None = None
+    # Y15: the most recent CONFIRMED tick (a heartbeat). An unchanged re-confirmation advances this
+    # in place WITHOUT appending a revision row, so a 24/7 confirm stream never grows the timeline.
+    # ``None`` until the first confirmation; distinct from ``last_seen`` only in intent (a confirm is
+    # a POSITIVE re-statement, where ``last_seen`` also moves on a same-subject continuation).
+    last_confirmed: float | None = None
+    # Y15: the BOUNDED timeline of this episode's STATE CHANGES (opened / updated / retracted /
+    # closed / expired / unobserved_gap). A pure heartbeat produces exactly one row — the ``opened``.
+    # Written only through :meth:`EpisodeLog.record_revision`, the single coalescing choke point.
+    revisions: list["Revision"] = field(default_factory=list)
 
     # -- Z2 forward seam: a persisted representation, present but NOT wired for v1.4 -------------------
     # Persistence is SESSION-ONLY today (ADR-006 / card Y9): ``Percept.snapshot()`` does not carry the
@@ -356,6 +423,8 @@ class Episode:
             "status": self.status,
             "subject_key": self.subject_key,
             "observations": self.observations,
+            "last_confirmed": self.last_confirmed,
+            "revisions": list(self.revisions),
         }
 
     @classmethod
@@ -374,6 +443,8 @@ class Episode:
             status=d.get("status", OPEN),
             subject_key=d.get("subject_key"),
             observations=d.get("observations", 1),
+            last_confirmed=d.get("last_confirmed"),
+            revisions=list(d.get("revisions", [])),
         )
 
 
@@ -494,6 +565,34 @@ class EpisodeLog:
             episode.incident_id = self._absent_if_empty(incident_id)
         return episode
 
+    def record_revision(
+        self, episode: "Episode", kind: "RevisionKind", *, t: float,
+        value: Any = None, incident_id: "str | None" = None,
+    ) -> "Revision | None":
+        """Fold a state change into an episode's BOUNDED timeline — the single coalescing choke point
+        (card Y15). Returns the appended :class:`Revision`, or ``None`` when a confirmation coalesced.
+
+        A ``confirmed`` heartbeat COALESCES IN PLACE: it advances ``last_confirmed`` (and
+        ``last_seen``, never backwards) and appends NOTHING. A run of N unchanged confirmations
+        therefore produces exactly ONE row — the ``opened`` that began the episode — not N. This is
+        the whole card: a 24/7 confirm stream must not turn the timeline into an unbounded log.
+
+        Every OTHER (state-changing) kind appends a row. ``kind`` must be in :data:`REVISION_KINDS`;
+        an unknown kind is a programming error, raised loudly rather than silently mis-recorded.
+        """
+        if kind not in REVISION_KINDS:
+            raise ValueError(f"unknown revision kind {kind!r}; expected one of {REVISION_KINDS}")
+        if kind == "confirmed":
+            # Coalesce in place — a heartbeat is not a new row. Advance last_seen/last_confirmed
+            # (never backwards), the ONLY state a repeated confirmation is allowed to move.
+            if t > episode.last_seen:
+                episode.last_seen = t
+            episode.last_confirmed = t
+            return None
+        revision = Revision(kind=kind, t=t, value=value, incident_id=incident_id)
+        episode.revisions.append(revision)
+        return revision
+
     def _dropped(self, episode: "Episode", reason: str) -> None:
         """ADR-001 §9: a bound-driven drop must never be silent."""
         if self.on_drop is not None:
@@ -599,6 +698,7 @@ class EpisodeLog:
             status=OPEN,
             subject_key=subject_key,
         )
+        self.record_revision(episode, "opened", t=t)  # Y15: the one row a pure heartbeat produces
         self._episodes.append(episode)
         if len(self._episodes) > self.max_episodes:
             oldest = self._episodes.pop(0)  # oldest falls out of the bounded log
@@ -662,6 +762,11 @@ class EpisodeLog:
             prior.observations += 1
             if reason == "reopened":
                 self.transition(prior, OPEN, t=t)  # single writer: clears t_end too
+                self.record_revision(prior, "opened", t=t)  # Y15: a reopen IS a state change
+            else:
+                # Y15: an unchanged continuation is a heartbeat — it COALESCES in place (advances
+                # last_confirmed) and appends NO revision row, so a 24/7 confirm stream is bounded.
+                self.record_revision(prior, "confirmed", t=t)
             decision = ContinuationDecision(
                 episode=prior, is_new=False, reason=reason, subject_matched=True,
                 prior_episode_id=prior.id, gap_s=gap_s,
@@ -705,7 +810,10 @@ class EpisodeLog:
         actually observed; the end is never invented later than the last observation)."""
         for e in self._episodes:
             if e.id == episode_id:
-                self.transition(e, status, t=e.last_seen if t is None else t)
+                close_t = e.last_seen if t is None else t
+                self.transition(e, status, t=close_t)
+                if self.policy.is_terminal(status):  # Y15: reaching a terminal status is a state change
+                    self.record_revision(e, "closed", t=close_t, incident_id=e.incident_id)
                 return e
         return None
 
@@ -877,6 +985,10 @@ __all__ = [
     "MutationCheck",
     "EvidenceHandle",
     "evidence_handle",
+    "Revision",
+    "RevisionKind",
+    "REVISION_KINDS",
+    "STATE_CHANGING_REVISION_KINDS",
     "ContinuationDecision",
     "ContinuationReason",
     "CONTINUATION_REASONS",
