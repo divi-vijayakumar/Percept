@@ -66,8 +66,10 @@ Modality = Literal["vision", "audio", "fused"]
 #: aged past it. Assembly lives in :mod:`percept.capsule` (:func:`~percept.capsule.assemble_event_capsule`);
 #: this token is additive-only — no profile defaults to it, no existing value's behavior changes.
 #: NOT (yet) IN :data:`percept.watchprofile.PLAN_MODES` — a ``WatchProfile.plan_mode`` cannot select
-#: it, and ``agent._PLAN_RANK`` (the plan-mode FLOOR every concern's spec is raised to) has no rung for
-#: it either; validate on fixtures first, wire profile/floor interaction as a follow-up.
+#: it. ``agent._PLAN_RANK`` (the plan-mode FLOOR every concern's spec is raised to) DOES carry a rung
+#: for it, ranked above ``window`` as the superset shape it is — so an authored ``event_capsule``
+#: spec is never silently floored/downgraded by an active profile plan_mode, while the reverse (a
+#: profile upgrading a cheaper spec UP TO capsule) stays refused until a profile can default to it.
 Temporal = Literal["single", "strip", "window", "sprite", "event_capsule"]
 RoiMode = Literal["focus", "hint", "full"]
 Sampling = Literal["recent", "uniform"]

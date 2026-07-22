@@ -99,7 +99,19 @@ class FireEvent:
 #: Plan modes ranked by how much time the judge is given. The profile's plan_mode is a FLOOR, never a
 #: downgrade — a concern that AUTHORED a richer spec keeps it (the brain's explicit HOW outranks a
 #: context default), and a profile can only raise a cheaper spec up to its own rung.
-_PLAN_RANK: dict[str, int] = {"single": 0, "strip": 1, "window": 2}
+#:
+#: ``event_capsule`` sits ABOVE ``window`` (rank 3): it is a composite superset shape (pre-roll +
+#: episode boundary + early snapshot, see :mod:`percept.capsule`), never a subset of what a plain
+#: window gives the judge. Giving it the top rank means the existing floor comparison already does
+#: the right thing for it with no extra branching — an authored ``event_capsule`` spec's rank always
+#: beats any profile's rank, so it is never floored/downgraded by an active plan_mode. The reverse
+#: direction (a profile raising a cheaper spec UP TO capsule) never happens: ``event_capsule`` is
+#: deliberately absent from :data:`percept.watchprofile.PLAN_MODES`, the vocabulary a resolved
+#: ``WatchProfile.plan_mode`` is validated against, so ``mode`` below can never legitimately be
+#: ``"event_capsule"`` — no profile may default/upgrade a concern TO it yet. ``_planned_perception``
+#: also refuses it explicitly as a target, so this holds even for a caller that bypasses profile
+#: validation and passes the raw string directly.
+_PLAN_RANK: dict[str, int] = {"single": 0, "strip": 1, "window": 2, "event_capsule": 3}
 
 #: Deprecated plan modes -> their replacement. ``sprite`` folded the context frames into
 #: ONE montage image to save VLM tokens; an ordered window beats it unconditionally (see
@@ -137,11 +149,16 @@ def _planned_perception(base, plan_mode: str | None):
     1. the deprecation shim — a ``sprite`` plan (authored on the spec OR carried on the profile) is
        normalized to ``window``;
     2. the profile FLOOR — ``plan_mode`` raises a cheaper spec to its rung and never lowers a richer
-       authored one (``_PLAN_RANK``).
+       authored one (``_PLAN_RANK``). An authored ``event_capsule`` spec ranks above every profile
+       plan_mode, so this floor can never silently downgrade it back to a plain strip/window — it
+       always survives, whichever of the four profile plan_modes is active.
 
     ``plan_mode=None`` (no profile, or a profile-less construction) returns the base spec unchanged, so
     the legacy path stays byte-for-byte. An unrecognized mode is ignored rather than trusted — the
-    vocabulary lives in :data:`percept.behavior._VALID_TEMPORAL`, not in a string a caller invented."""
+    vocabulary lives in :data:`percept.behavior._VALID_TEMPORAL`, not in a string a caller invented.
+    ``event_capsule`` itself is refused as an escalation TARGET even though it has a rank: no profile
+    may raise a cheaper spec up to it yet (it is deliberately absent from
+    :data:`percept.watchprofile.PLAN_MODES`), only an authored spec may start there."""
     spec = base
     temporal = _normalize_plan_mode(spec.temporal)
     if temporal != spec.temporal:  # authored sprite -> window (shim), before any ranking
@@ -149,8 +166,8 @@ def _planned_perception(base, plan_mode: str | None):
     if not plan_mode:
         return spec
     mode = _normalize_plan_mode(str(plan_mode))
-    if mode not in _PLAN_RANK:
-        return spec  # unknown/unsupported plan mode: never silently reinterpreted
+    if mode not in _PLAN_RANK or mode == "event_capsule":
+        return spec  # unknown/unsupported plan mode, or a profile trying to select capsule: refused
     if _PLAN_RANK[mode] <= _PLAN_RANK.get(spec.temporal, 0):
         return spec  # the authored spec already sees at least this much time — never downgrade
     n_frames = spec.n_frames if spec.n_frames >= _PLAN_MIN_FRAMES else _PLAN_MIN_FRAMES
