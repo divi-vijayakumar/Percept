@@ -517,11 +517,21 @@ confidence: —</pre>
   // D11: a fire's judgment.event record (same trace_id + goal_id as its gate.classified) carries
   // data.evidence_seq — the RECORDER-stamped seq of the SAME trace's source.frame record, i.e. the
   // literal evidence that fed this judgment. When resolvable, render it as a clickable anchor.
+  // [DEMO3] a fired Incident may also carry revision_id/supersedes (the episode-owned
+  // provisional/superseding link) — the trace records themselves don't carry it, so we correlate by
+  // walking the delivered `events` in fire order, per goal_id (FIFO — same order the runtime delivered
+  // them in), and render "supersedes <id>" when a fire is a correction of an earlier one.
+  function fireQueuesByGoal(events){
+    const q={};
+    (events||[]).forEach(e=>{ if(e.action==='fire'){ (q[e.goal_id]=q[e.goal_id]||[]).push(e); } });
+    return q;
+  }
   function renderJudgments(recs, events){
     const gates=recs.filter(r=>r.stage==='gate.classified');
     const usages=recs.filter(r=>r.stage==='judge.usage');
     const judgments=recs.filter(r=>r.stage==='judgment.event');
     const frames=recs.filter(r=>r.stage==='source.frame');
+    const fireQ=fireQueuesByGoal(events);
     const box=$('#events'); box.innerHTML='';
     if(!gates.length){ box.innerHTML='<div class="eventEmpty">No judgments — tier-0 admitted nothing, so the judge was never called. Every per-frame edge.decision is still in the .ptrace.</div>'; return; }
     gates.forEach((r,i)=>{ const d=r.data||{}, u=(usages[i]&&usages[i].data)||{};
@@ -535,12 +545,46 @@ confidence: —</pre>
       const evId=`ev-${r.seq}`;
       const evLink=evFrame?`<a class="evidenceLink" data-target="${evId}">→ evidence frame #${evFrame.seq}${evFrame.source_ts!=null?' · t='+Number(evFrame.source_ts).toFixed(1):''}</a>
         <pre class="evidenceFrame" id="${evId}">${esc(JSON.stringify(evFrame,null,2))}</pre>`:'';
+      let revLine='';
+      if(fired){
+        const q=fireQ[d.goal_id]; const ev=q&&q.length?q.shift():null;
+        if(ev&&(ev.revision_id||ev.supersedes)){
+          revLine=`<p class="revLine">revision <b>${esc(ev.revision_id||'—')}</b>${ev.supersedes?` · supersedes <b>${esc(ev.supersedes)}</b>`:''}</p>`;
+        }
+      }
       el.innerHTML=`<div class="eventHead"><b>${esc((d.action||'?').toUpperCase())} · ${esc(d.reason||'')}</b><span>${r.source_ts!=null?'t='+Number(r.source_ts).toFixed(1):''}</span></div>
         <h3>${fired?'Incident emitted':'Judgment · no incident'}</h3>
         <p>satisfied ${d.satisfied} · confidence ${d.confidence} · truth ${esc(d.truth||'—')}${ent}${model}${tok}</p>
+        ${revLine}
         ${evLink}`;
       if(evFrame){ el.querySelector('.evidenceLink').onclick=()=>el.querySelector('#'+evId).classList.toggle('open'); }
       box.prepend(el); });
+  }
+  // [DEMO3] "08 · Resolved configuration" — the per-field provenance table (path, value, owner
+  // layer, source, why) straight off ResolvedWatch.provenance, PLUS the WatchReceipt summary for
+  // this run. This is the zero-env-var proof: every row's owner_layer names the real ADR-008
+  // configuration object that won, not an env var.
+  function renderResolved(d){
+    const re=d.resolved_explain, rc=d.receipt;
+    const body=$('#resolvedBody'), meta=$('#resolvedMeta');
+    if(!re){
+      body.innerHTML='<tr><td colspan="5" class="muted">No resolution on this run.</td></tr>';
+      meta.innerHTML='<span class="muted">—</span>';
+      return;
+    }
+    const sp=re.source_profile||{};
+    const profileName=sp['SourceProfile.name']||d.profile||'—';
+    meta.innerHTML=`<span>profile <b>${esc(profileName)}</b></span>
+      <span>plan_hash <b>${esc((re.plan_hash||'').slice(0,12))}</b></span>
+      <span>receipt <b>${esc((rc&&rc.summary)||'—')}</b></span>`;
+    const fields=re.fields||[];
+    body.innerHTML=fields.length?fields.map(f=>`<tr>
+        <td class="path">${esc(f.path)}</td>
+        <td class="value">${esc(JSON.stringify(f.value))}</td>
+        <td>${esc(f.owner_layer)}</td>
+        <td>${esc(f.source_id)}</td>
+        <td>${esc(f.reason||'')}</td>
+      </tr>`).join(''):'<tr><td colspan="5" class="muted">No fields resolved.</td></tr>';
   }
 
   $('#viewTraceBtn').onclick=async()=>{ if(!lastRun)return; const r=await fetch('/trace/'+lastRun.run_id+'.ptrace'); $('#traceContent').textContent=await r.text(); $('#traceDrawer').classList.add('open'); };
