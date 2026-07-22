@@ -106,7 +106,8 @@ main{padding:20px 24px 28px;display:grid;gap:16px}
 .timelineTop{display:flex;justify-content:space-between;gap:12px;margin-bottom:12px;font:9px var(--mono);color:var(--steel)}
 .frameBar{position:relative;height:96px;border:1px solid var(--hairline);background:var(--panel);overflow:hidden}
 .frames{position:absolute;inset:0;display:flex;align-items:flex-end;gap:1px;padding:14px 10px}
-.frames i{flex:1;background:#ddd;min-width:1px;height:16px}
+.frames i{flex:1;background:#e6e6e6;min-width:1px;height:12px}
+.frames i.obs{background:#cfcfcf;height:20px}
 .frames i.admitted{background:#777;height:36px}
 .frames i.judged{background:#222;height:56px}
 .frames i.fired{background:#000;height:70px}
@@ -433,25 +434,28 @@ confidence: —</pre>
       ['incidents',s.incidents??0],['cost',c.text||'—'],['est. savings',(s.savings&&s.savings.text)||'—']];
     $('#metricsOut').innerHTML=rows.map(([k,v])=>`<div class="metricRow"><span>${k}</span><b>${esc(v)}</b></div>`).join('');
   }
-  function timeExtent(recs){ const ts=recs.filter(r=>r.stage==='source.frame').map(r=>r.source_ts).filter(Number.isFinite); return ts.length?[Math.min(...ts),Math.max(...ts)]:[0,1]; }
+  const isFrame=r=>r.stage==='edge.decision'||r.stage==='source.frame';
+  const admitted=r=>r.stage==='source.frame'||(r.data&&(r.data.escalate||r.data.coast_admit));
+  function timeExtent(recs){ const ts=recs.filter(isFrame).map(r=>r.source_ts).filter(Number.isFinite); return ts.length?[Math.min(...ts),Math.max(...ts)]:[0,1]; }
   function renderTimeline(recs){
+    const frameRecs=recs.filter(isFrame);
     const [t0,t1]=timeExtent(recs); const span=(t1-t0)||1;
-    const SLOTS=Math.max(24,Math.min(72,recs.filter(r=>r.stage==='source.frame').length*3));
+    const SLOTS=Math.max(24,Math.min(96,frameRecs.length||24));
     frames.innerHTML=''; const cells=[]; for(let i=0;i<SLOTS;i++){const n=document.createElement('i');frames.appendChild(n);cells.push(n);}
-    const put=(ts,cls)=>{const p=Math.max(0,Math.min(1,(ts-t0)/span));cells[Math.min(SLOTS-1,Math.floor(p*SLOTS))].classList.add(cls);};
+    const put=(ts,cls)=>{ if(Number.isFinite(ts))cells[Math.min(SLOTS-1,Math.max(0,Math.floor(((ts-t0)/span)*SLOTS)))].classList.add(cls); };
+    frameRecs.forEach(r=>{ put(r.source_ts,'obs'); if(admitted(r))put(r.source_ts,'admitted'); });
     recs.forEach(r=>{ if(!Number.isFinite(r.source_ts))return;
-      if(r.stage==='source.frame')put(r.source_ts,'admitted');
       if(r.stage==='judge.finished')put(r.source_ts,'judged');
       if(r.stage==='gate.classified'&&r.data&&r.data.action==='fire')put(r.source_ts,'fired'); });
-    const nF=recs.filter(r=>r.stage==='source.frame').length, nJ=recs.filter(r=>r.stage==='judge.finished').length;
+    const nF=frameRecs.length, nAdm=frameRecs.filter(admitted).length, nJ=recs.filter(r=>r.stage==='judge.finished').length;
     const nEp=recs.filter(r=>r.stage==='shadow.fold'&&r.data&&r.data.fold&&r.data.fold.episode_id).length;
     const nE=recs.filter(r=>r.stage==='gate.classified'&&r.data&&r.data.action==='fire').length;
-    $('#attentionLane').style.width=nF?'100%':'0';
-    $('#episodeLane').style.width=nF?Math.min(100,nEp/nF*100||8)+'%':'0';
+    $('#attentionLane').style.width=nF?Math.min(100,nAdm/nF*100||2)+'%':'0';
+    $('#episodeLane').style.width=nF?Math.min(100,nEp/nF*100)+'%':'0';
     $('#judgeLane').style.width=nF?Math.min(100,nJ/nF*100)+'%':'0';
     $('#eventLane').style.width=nE?Math.min(100,nE*24)+'%':'0';
-    $('#frameCount').textContent=`${nF} frames observed · ${nJ} judged`;
-    $('#traceState').textContent=nE?'fired':'silent';
+    $('#frameCount').textContent=`${nF} observed · ${nAdm} admitted · ${nJ} judged`;
+    $('#traceState').textContent=nE?'fired':(nAdm?'silent':'no admission');
   }
   function renderLedger(recs){
     const folds=recs.filter(r=>r.stage==='shadow.fold'), lastFold=folds[folds.length-1];

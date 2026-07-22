@@ -43,11 +43,49 @@ if _PKG.exists() and str(_PKG) not in sys.path:
     sys.path.insert(0, str(_PKG))
 
 
+def _load_dotenv() -> None:
+    """Best-effort: pull only API KEYS from a repo .env (same rule as percept.watch_cli) — never the
+    PERCEPT_* config, so a stale PERCEPT_VISION_MODEL cannot hijack the UI-chosen provider. Values are
+    loaded into this process only; they are never printed or sent to the browser."""
+    for env in (Path.cwd() / ".env", _PKG / ".env", _PKG.parent.parent / ".env"):
+        if env.exists():
+            for line in env.read_text().splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = (s.strip() for s in line.split("=", 1))
+                    if k.endswith("_API_KEY") or k.endswith("_KEY"):
+                        os.environ.setdefault(k, v)
+
+
 def _have_key() -> str | None:
-    for k in ("OPENROUTER_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY"):
+    # names this repo's .env actually uses: OPENROUTER_API_KEY, ANTHROPIC_API_KEY, GOOGLE_AISTUDIO_API_KEY
+    for k in ("OPENROUTER_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY",
+              "GOOGLE_AISTUDIO_API_KEY", "ANTHROPIC_API_KEY"):
         if os.environ.get(k):
             return k
     return None
+
+
+_DEFAULT_MODEL = {  # same per-provider defaults percept.watch_cli forces
+    "openrouter": "qwen/qwen3-vl-32b-instruct",
+    "gemini": "gemini-3.1-flash-lite",
+    "claude": "claude-sonnet-5",
+}
+
+
+def _apply_good_defaults() -> None:
+    """The H0-winning tier-0 defaults percept.watch_cli sets BEFORE importing percept. Without
+    block_max (the localized 'eye') the gate admits almost nothing on real content — the exact silent
+    failure a client hit. Set at import, before any percept import in the handlers."""
+    os.environ["PERCEPT_SALIENCE_STAT"] = "block_max"
+    os.environ.setdefault("PERCEPT_BENCH_BLOCKMAX_THRESHOLD", "0.20")
+    os.environ.setdefault("PERCEPT_GATE_REFRACTORY_S", "15")
+    os.environ.setdefault("PERCEPT_EGO_COMPENSATE", "false")
+    os.environ.setdefault("PERCEPT_NO_BANNER", "1")
+
+
+_load_dotenv()          # load keys from .env before anything reads them
+_apply_good_defaults()  # block_max eye + thresholds before the first `import percept`
 
 
 def _recorder(core, goals, *, source: str, driver: str):
@@ -91,6 +129,8 @@ async def _run_real(video_path: Path, goal_text: str, backend: str, fps: float, 
     from percept import Goal, Percept
 
     goals = [Goal(id="g0", condition=goal_text, say=goal_text)]
+    os.environ["PERCEPT_VISION_BACKEND"] = backend
+    os.environ["PERCEPT_VISION_MODEL"] = _DEFAULT_MODEL.get(backend, "")
     core = Percept.create(vision=backend)
     for g in goals:
         core.add_goal(g)
