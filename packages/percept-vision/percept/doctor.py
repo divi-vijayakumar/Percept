@@ -1103,7 +1103,7 @@ def render_report(report: DoctorReport) -> str:
 
     e = report.envelope
     if e is not None:
-        out.append(_rule("ENVELOPE (card Z7 / ADR-007)"))
+        out.append(_rule("ENVELOPE (ADR-007)"))
         out.append(f"  actuation declared      {e.check.actuation}"
                    + ("" if e.check.in_envelope else "   ** OUT OF ENVELOPE **"))
         out.append(f"  goals with modality=act {len(e.act_goal_ids)}  {list(e.act_goal_ids)}")
@@ -1172,19 +1172,19 @@ def build_parser() -> argparse.ArgumentParser:
     # it is registered, without editing this parser. An unknown name is a clear exit-5 error.
     p.add_argument(
         "--source-profile", default=None,
-        help="source class (card D7): physical_scene | screen_document | conversation, or any "
+        help="source class: physical_scene | screen_document | conversation, or any "
              "registered third-party profile name (default: physical_scene)",
     )
     p.add_argument(
         "--actuation", default="none", choices=ACTUATION_CLASSES,
-        help="card Z7 / ADR-007: what an act can physically do in this deployment. "
+        help="ADR-007: what an act can physically do in this deployment. "
              "none (default) | screen (advisory software acts — the narrowed survivor) | "
              "physical (OUT of percept's envelope; ConsentProfile.permits() then refuses every "
              "action and doctor exits 6)",
     )
-    p.add_argument("--trace-out", default=None, help="write the D8a trace artifact (JSON) here")
+    p.add_argument("--trace-out", default=None, help="write the trace artifact (JSON) here")
     p.add_argument("--json", action="store_true", help="emit the machine-readable report on stdout")
-    # -- card D9: the native visualizer (no second console-script family; these are flags here) --
+    # -- the native visualizer (no second console-script family; these are flags here) --
     p.add_argument(
         "--visualize-out", default=None,
         help="write the standalone HTML visualizer here (lanes over media time, click-through "
@@ -1210,10 +1210,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """``percept-doctor`` entry point. Exit codes: 0 ok, 2 zero coverage, 3 source failure,
-    4 plan unobservable, 5 invalid configuration, 6 declared out of envelope (card Z7)."""
+    4 plan unobservable, 5 invalid configuration, 6 declared out of envelope."""
     args = build_parser().parse_args(list(argv) if argv is not None else None)
 
-    # -- card D9: render-only mode. No source is opened, no goal is compiled, nothing is spent. --
+    # -- render-only mode. No source is opened, no goal is compiled, nothing is spent. --
     if args.visualize_from:
         from .visualize import VisualizeError, VizOptions, visualize_trace  # noqa: PLC0415
 

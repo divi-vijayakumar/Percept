@@ -1,4 +1,4 @@
-"""Card RB-PROVIDER — provider identity: a name resolves to a factory; a model id never does.
+"""Provider identity: a name resolves to a factory; a model id never does.
 
 Percept already has a name -> factory table (:mod:`percept.registry`). What it did NOT have is a
 statement of *what a provider name is*, and a guard on the one mistake that keeps re-appearing in

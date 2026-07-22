@@ -947,13 +947,13 @@ class EpisodeLog:
         reason = self.continuation_reason(prior, t, pol, mutation_compatible=compatible)
         if reason in ("continued", "reopened"):
             prior.last_seen = t              # continuation — extend, don't count again
-            prior.representative = self._retain(exemplar)  # LIVE (was dead) — a HANDLE (Y14), not pixels
+            prior.representative = self._retain(exemplar)  # LIVE (was dead) — a HANDLE, not pixels
             prior.observations += 1
             if reason == "reopened":
                 self.transition(prior, OPEN, t=t)  # single writer: clears t_end too
-                self.record_revision(prior, "opened", t=t)  # Y15: a reopen IS a state change
+                self.record_revision(prior, "opened", t=t)  # a reopen IS a state change
             else:
-                # Y15: an unchanged continuation is a heartbeat — it COALESCES in place (advances
+                # An unchanged continuation is a heartbeat — it COALESCES in place (advances
                 # last_confirmed) and appends NO revision row, so a 24/7 confirm stream is bounded.
                 self.record_revision(prior, "confirmed", t=t)
             decision = ContinuationDecision(
@@ -1001,7 +1001,7 @@ class EpisodeLog:
             if e.id == episode_id:
                 close_t = e.last_seen if t is None else t
                 self.transition(e, status, t=close_t)
-                if self.policy.is_terminal(status):  # Y15: reaching a terminal status is a state change
+                if self.policy.is_terminal(status):  # reaching a terminal status is a state change
                     self.record_revision(e, "closed", t=close_t, incident_id=e.incident_id)
                 return e
         return None
@@ -1020,7 +1020,7 @@ class EpisodeLog:
 
 
 # ================================================================================================
-# INTERVAL COVERAGE (card Y7 §2) — "time accounted for" comes from OBSERVATION, never interpolation.
+# INTERVAL COVERAGE — "time accounted for" comes from OBSERVATION, never interpolation.
 # ================================================================================================
 #
 # The decisive review catch: ``started_at -> last_seen`` does NOT prove continuous coverage. An
@@ -1121,7 +1121,7 @@ def interval_coverage(
     *,
     observation_valid_for_s: "float | None" = None,
 ) -> Coverage:
-    """Build observed spans + declared gaps from ticks — WITHOUT forward-filling (card Y7 §2).
+    """Build observed spans + declared gaps from ticks — WITHOUT forward-filling.
 
     Two consecutive positive observations merge into one span only when the gap between them is
     within ``observation_valid_for_s`` (``None`` = never merge; each positive stands alone). Any
