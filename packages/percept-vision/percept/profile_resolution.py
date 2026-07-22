@@ -1,6 +1,6 @@
-"""Situation -> WatchProfile resolution rules (impl plan §2/§3, card P2).
+"""Situation -> WatchProfile resolution rules.
 
-``percept.watchprofile`` (card P1) is schema + registry: :meth:`WatchProfileRegistry.resolve` walks an
+``percept.watchprofile`` is schema + registry: :meth:`WatchProfileRegistry.resolve` walks an
 ``(environment, goal_type, state)`` key through an exact-match-then-wildcard chain, but it does not know
 how to turn a plain-language situation into that key — that inference is deliberately left to a layer
 above the registry (see the ``WatchProfileRegistry`` docstring: "this is deliberately just a fallback
@@ -21,9 +21,9 @@ of the knob values this situation implies (independent of whichever profile the 
 registered for that key). :func:`resolve_profile` is a convenience that also fetches the registry's
 best-match profile for ``key`` and layers the axis-derived overrides on top of it.
 
-Design rationale (grounded in this repo's measured H0 results — cited, not re-derived here):
+Design rationale (grounded in this repo's measured tuning results — cited, not re-derived here):
 
-- **block_max always.** Localized (block-max) salience nearly doubled H0 recall vs. a whole-frame mean
+- **block_max always.** Localized (block-max) salience nearly doubled recall vs. a whole-frame mean
   (0.31 -> 0.59; see the project's viability-ladder findings). This dominates regardless of mount or goal
   shape, so ``overrides["salience_stat"]`` is unconditionally ``"block_max"`` — there is no known situation
   where the whole-frame mean is the better choice.
@@ -37,7 +37,7 @@ Design rationale (grounded in this repo's measured H0 results — cited, not re-
   a sprite montage; sprite is strictly worse and must never be selected. ``resolve_situation`` has no code
   path that can produce ``plan_mode="sprite"`` for any input, including unrecognized/wildcard axis values.
 - **start-anchored relaxes the gate.** ``gate.require_false_first=False`` lets an already-true-at-start
-  condition fire on first read; this is the H0 gate-relax finding. A ``"transition"`` start-state does the
+  condition fire on first read; this is the gate-relaxation finding. A ``"transition"`` start-state does the
   opposite (``require_false_first=True``), matching :class:`percept.watchprofile.GateProfile`'s own
   documented semantics ("transition-only goals set it True"). An UNKNOWN start-state defaults to ``True``
   (demand a genuine edge) rather than ``False`` — assuming "already true" when that is not known risks an
@@ -77,7 +77,7 @@ START_STATES: tuple[str, ...] = ("start_anchored", "transition")
 _WILDCARD_PLAN_MODE = "window"
 
 # The block_max threshold this module pins as an override, matching the threshold already shipped by every
-# H0-derived profile in percept.profiles_default (FIXED_CAM_LOCALIZED, DYNAMIC_ACTION, HANDHELD,
+# empirically-derived profile in percept.profiles_default (FIXED_CAM_LOCALIZED, DYNAMIC_ACTION, HANDHELD,
 # WILDCARD_DEFAULT all use stat_thresholds={"block_max": 0.20}) -- reused here, not re-derived.
 _BLOCK_MAX_THRESHOLD = 0.20
 
@@ -127,8 +127,8 @@ def _resolve_state(start_state: Any) -> tuple[str, bool]:
     """Start-state -> ``(state key segment, gate.require_false_first)``.
 
     ``"start_anchored"`` (condition may already be true at t0) -> ``require_false_first=False``, so the
-    gate fires on first read instead of demanding a false->true edge that may never come (the H0
-    gate-relax finding). ``"transition"`` -> ``require_false_first=True`` (only a genuine edge counts).
+    gate fires on first read instead of demanding a false->true edge that may never come (the
+    gate-relaxation finding). ``"transition"`` -> ``require_false_first=True`` (only a genuine edge counts).
     Anything unrecognized -> :data:`WILDCARD` key segment, and ``require_false_first`` defaults to ``True``
     -- the conservative choice: assuming "already true" when that is not actually known risks an
     ungrounded, immediate fire.

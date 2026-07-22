@@ -147,6 +147,10 @@ def _resolve_version() -> str:
 __version__ = _resolve_version()
 del _resolve_version, _pkg_version, _PkgNotFound
 
+# Build provenance (version + git commit + CONTRACT_VERSION + build timestamp) — stamped into the
+# wheel/sdist at build time, "unreleased" fallback in a bare source checkout. Stdlib-pure.
+from ._build import BuildInfo, build_info  # noqa: E402
+
 # Imported after __version__ so agent.health() can read it lazily without a cycle.
 from .agent import FireEvent, Percept  # noqa: E402
 from .watch import WATCH_VERSION, watch  # noqa: E402
@@ -212,6 +216,8 @@ from .visualize import (  # noqa: E402
 
 __all__ = [
     "__version__",
+    "build_info",
+    "BuildInfo",
     "Percept",
     "FireEvent",
     "ModeError",

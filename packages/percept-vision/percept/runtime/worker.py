@@ -591,8 +591,8 @@ async def _drain_gate_health(core: Any, on_health: "Callable | None", t: float) 
 
 async def _drain_restore_health(core: Any, on_health: "Callable | None") -> None:
     """Surface the ``episode_memory_reset`` event ``Percept.restore`` queued on
-    ``core._restore_health_log`` (agent.py, card Z2). Episode/counting memory is SESSION-ONLY for
-    v1.4 (ADR-006 / card Y9): a restart rehydrates goals but NOT the per-goal episode map, so a
+    ``core._restore_health_log`` (agent.py). Episode/counting memory is SESSION-ONLY for
+    v1.4 (ADR-006): a restart rehydrates goals but NOT the per-goal episode map, so a
     counting goal resumes at zero and may under-count until re-observed. restore() queues one entry
     when it restored active counting goals into an empty episode map; this drains it into a loud
     ``on_health`` event so the amnesia is SEEN, not silently discovered as a wrong count at 2am.
@@ -952,7 +952,7 @@ async def run(
     - ``snippet_max_bytes`` — BYTE budget for that pre-roll ring (default ``None`` →
       ``settings.events.preroll_max_bytes``, 128 MB; ``0`` disables the byte bound). ``snippet_size``
       bounds the ring by COUNT, which does not bound memory: the same 48-frame ring holds ~0.4 MB of
-      8x8 test frames and ~300 MB of 1080p RGB, and profiling (card Z1) named this ring as the whole
+      8x8 test frames and ~300 MB of 1080p RGB, and profiling named this ring as the whole
       of the resident-memory plateau clients read as a leak. When the budget is exceeded the OLDEST
       frames are evicted (the newest is never dropped) and each eviction emits a ``preroll_capped``
       health event carrying ``reason``/``frame_bytes``/``held_bytes`` and bumps
@@ -1142,7 +1142,7 @@ async def run(
     # one source (the slot is per-source; a future multi-source runner would key a dict of these).
     # metrics_collector rides along so the scheduler can report queue depth / oldest-pending age.
     # Inline mode has no queue to measure, so the collector is simply unused there.
-    # ADMISSION COVERAGE (X4). A run that admitted NOTHING was previously indistinguishable from a
+    # ADMISSION COVERAGE. A run that admitted NOTHING was previously indistinguishable from a
     # healthy quiet one: `runtime_ended` carried an empty payload. These are the SAME counters the
     # caller's `stats` already holds when it passed one — `_cov` IS `stats` in that case, so nothing
     # is double-counted; when the caller passed none we keep a throwaway so the end-of-run coverage
@@ -1186,7 +1186,7 @@ async def run(
         load = getattr(core, "load_state", None)
         if load is not None:
             load(persistence)
-        # Z2: episode/counting memory is session-only (ADR-006 / card Y9) — restore() rehydrated goals
+        # Episode/counting memory is session-only (ADR-006) — restore() rehydrated goals
         # but NOT the episode map, so any counting goal just resumed at zero. Drain the one-shot
         # ``episode_memory_reset`` restore() queued so that amnesia reaches on_health loudly, once.
         await _drain_restore_health(core, on_health)
@@ -1266,9 +1266,9 @@ async def run(
     perceive_boundary = getattr(core, "perceive_boundary", None)
     goals_revision = getattr(core.goals, "revision", None)  # watch for mid-run goal changes
 
-    # Z3 — the stable id of the PLAN this run is watching under, stamped on every emitted Incident so a
+    # The stable id of the PLAN this run is watching under, stamped on every emitted Incident so a
     # client can join a fire back to the exact goal set + policy it was judged against (the plan_hash that
-    # X3 already computes for doctor/eval but that never reached the wire). The per-goal executor cannot
+    # doctor/eval already computes but that never reached the wire). The per-goal executor cannot
     # know the whole plan; the runtime that owns the goal set does. Computed from the CURRENT active goals
     # and cached by goal-revision, so a mid-run goal edit re-derives it and an idle run never recomputes.
     _watchplan_cache: dict = {}
@@ -1317,7 +1317,7 @@ async def run(
     except Exception:  # noqa: BLE001 - a duck-typed/slotted core must never break the run over telemetry
         pass
     # The incident snippet's rolling pre-roll buffer — the SDK's largest resident structure, and the
-    # one profiling named as the whole of the "runaway memory" two client teams measured (Z1). It is
+    # one profiling named as the whole of the "runaway memory" two client teams measured. It is
     # bounded by COUNT (`snippet_size`, 48) and by BYTES: the count alone does not bound memory, since
     # the same 48 frames cost ~0.4 MB of 8x8 test frames and ~300 MB of 1080p RGB. A byte-bound
     # eviction is REPORTED (`preroll_capped` health event + `stats.preroll_frames_dropped`), never a
@@ -1960,7 +1960,7 @@ async def run(
                 pass
         core.on_trace = _prev_on_trace  # restore — don't leak this run's tracer into the next run(core)
         if on_health is not None:
-            # X4 — a run's COVERAGE, stamped on the way out. `runtime_ended` used to carry an empty
+            # A run's COVERAGE, stamped on the way out. `runtime_ended` used to carry an empty
             # payload, which made a run that admitted zero frames byte-for-byte indistinguishable
             # from a healthy one; a consumer had to have kept its own counters to know.
             _cov_data = {

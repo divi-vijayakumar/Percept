@@ -20,7 +20,7 @@ This bakes in the tuned defaults so it just works:
   * block_max localized salience  — catches low-motion actions the global gate misses
   * a per-episode time-refractory  — one notification per event, not a stream of duplicates
 
-TRACING (card Z5). ``--trace out.json`` records the run's per-frame decision trace — the artifact
+TRACING. ``--trace out.json`` records the run's per-frame decision trace — the artifact
 ``percept-replay`` consumes and ``percept-doctor --visualize-from`` renders. The manifest carries the
 Gate's knobs (``percept.replay.gate_config_of``), which is what makes the replay a replay of THIS run
 rather than of today's library defaults::
@@ -62,7 +62,7 @@ def _load_dotenv() -> None:
                         os.environ.setdefault(k, v)
 
 
-# --- the H0-winning defaults (set BEFORE importing percept so settings pick them up) ---
+# --- the tuned defaults (set BEFORE importing percept so settings pick them up) ---
 def _apply_good_defaults(refractory_s: float, vision: str, model: str | None, egomotion: bool) -> None:
     os.environ["PERCEPT_SALIENCE_STAT"] = "block_max"        # localized recall (the eye)
     os.environ.setdefault("PERCEPT_BENCH_BLOCKMAX_THRESHOLD", "0.20")
@@ -189,7 +189,7 @@ async def _run(args) -> int:
             conf = getattr(getattr(inc, "verdict", None), "confidence", None)
             elapsed = time.monotonic() - t0
             tag = f" ({conf:.0%})" if isinstance(conf, (int, float)) else ""
-            eid = getattr(inc, "entity_id", None)  # D4: which subject fired (None = not entity-scoped)
+            eid = getattr(inc, "entity_id", None)  # which subject fired (None = not entity-scoped)
             ent = f"   ·   entity={eid}" if eid else ""
             print(f"  🔔  [{elapsed:6.1f}s]  {msg}{tag}   ·   goal={gid}{ent}")
     except KeyboardInterrupt:

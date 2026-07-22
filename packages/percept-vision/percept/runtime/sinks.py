@@ -220,7 +220,7 @@ class WebhookSink:
         self.include_media = include_media
         self.retries = retries
         self.retry_backoff_s = retry_backoff_s
-        # ADR-001 §9 / card A9: "delivery attempts" bound. `retries` already bounds the ATTEMPT COUNT
+        # ADR-001 §9: "delivery attempts" bound. `retries` already bounds the ATTEMPT COUNT
         # (finite by construction — a plain int). `max_attempt_age_s` adds an orthogonal wall-clock
         # bound so a long backoff schedule can't keep retrying indefinitely in elapsed time either;
         # either bound reaching its limit is a TERMINAL failure (dead-lettered with a reason). None
@@ -311,7 +311,7 @@ class FileDeadLetterQueue:
 
 
 class BoundedDeadLetterQueue:
-    """A bounded, in-memory dead-letter sink (ADR-001 §9, card A9: "delivery queue" bound).
+    """A bounded, in-memory dead-letter sink (ADR-001 §9: "delivery queue" bound).
 
     A bare ``list`` (the type ``WebhookSink(dead_letter=...)`` has always accepted) grows without
     limit — a sustained outage turns a 24/7 watch's DLQ into an unbounded leak. This wraps the same

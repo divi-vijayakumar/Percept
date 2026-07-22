@@ -1,4 +1,4 @@
-"""M4 — SLO CI asserts: reflex p95, $/stream-hour, fovea call-reduction.
+"""SLO CI asserts: reflex p95, $/stream-hour, fovea call-reduction.
 
 Three pre-registered budget constants, each computed from telemetry the ALREADY-LANDED runtime/
 harness pieces produce — this module adds no new production instrumentation. It wraps:
@@ -9,7 +9,7 @@ harness pieces produce — this module adds no new production instrumentation. I
   cost figures off a :class:`~percept.contracts.Verdict` (``Verdict.usage`` is an existing field;
   this module does not add it).
 * :class:`percept.harness.metrics.CostSample` / :class:`~percept.harness.metrics.CostSummary` —
-  the already-landed $/stream-hour aggregator (``percept/harness/metrics.py``, card A13). This
+  the already-landed $/stream-hour aggregator (``percept/harness/metrics.py``). This
   module supplies the one missing piece: turning judge_usage()'s TOKEN COUNTS into a ``cost_usd``
   figure via a per-model price table, so ``CostSample`` has something to ingest.
 * :class:`percept.harness.tier0.LoopReport` — ``.reduction`` already computes
@@ -38,7 +38,7 @@ already committed to elsewhere in the tree (never invented fresh to make a parti
    15% of the max_fps frame period: ``0.15 * (1/15) ~= 0.0100s``.
 
 2. ``DOLLARS_PER_STREAM_HOUR_CEILING_USD`` — reuses, rather than invents, the ceiling already
-   pre-registered in ``tests/test_p_econ.py`` (Viability §7/G2, card A24):
+   pre-registered in ``tests/test_p_econ.py``:
    ``PLACEHOLDER_COST_CEILING_USD_PER_STREAM_HOUR = 5.0``, itself a placeholder for
    ``eval/viability/reference_config.yaml``'s ``numeric_bars.cost_ceiling_usd_per_stream_hour``
    (currently ``TODO`` pending ``bars_locked: true``). Using the SAME number here (rather than a
@@ -146,7 +146,7 @@ PRICE_TABLE: dict[str, ModelPrice] = {
 DEFAULT_PRICE = ModelPrice(input_per_mtok=15.00, output_per_mtok=75.00)
 
 #: See module docstring §2 — reused, not reinvented, from tests/test_p_econ.py's
-#: PLACEHOLDER_COST_CEILING_USD_PER_STREAM_HOUR (Viability §7/G2 numeric_bars, pending bars_locked).
+#: PLACEHOLDER_COST_CEILING_USD_PER_STREAM_HOUR (Viability §7 numeric_bars, pending bars_locked).
 DOLLARS_PER_STREAM_HOUR_CEILING_USD = 5.0
 
 
@@ -219,7 +219,7 @@ def dollars_per_stream_hour(
 
     Prices each call via :func:`price_usage`, then hands the total to the ALREADY-LANDED
     :class:`~percept.harness.metrics.CostSample` / :class:`~percept.harness.metrics.CostSummary`
-    aggregator (``percept/harness/metrics.py``, card A13) for the actual $/stream-hour division —
+    aggregator (``percept/harness/metrics.py``) for the actual $/stream-hour division —
     this function supplies only the missing "token counts -> cost_usd" step.
     """
     total_cost = sum(price_usage(c.usage, model=c.model, table=table) for c in calls)
@@ -255,10 +255,10 @@ def fovea_call_reduction(report: LoopReport) -> float:
 
 
 # ---------------------------------------------------------------------------
-# 4. Settle-window bound — the SLO on a concern's provisional-delivery DELAY (card Y10)
+# 4. Settle-window bound — the SLO on a concern's provisional-delivery DELAY
 # ---------------------------------------------------------------------------
 #
-# Y10's delivery choice: a finding is emitted PROVISIONALLY on the rising edge, and a later
+# The delivery choice: a finding is emitted PROVISIONALLY on the rising edge, and a later
 # replace/retract on the same episode arrives as a SUPERSEDING revision (linked, never a silent
 # swallow) — NOT withheld behind a "settle window" wide enough to catch a late retraction. A real
 # correction can land 21-34s after the original claim; withholding EVERY incident for a window that
@@ -282,13 +282,13 @@ SETTLE_WINDOW_DEFAULT_S = 0.0
 
 #: The hard ceiling on a DECLARED settle window — the judge round-trip reflex budget
 #: (``REFLEX_INFEASIBLE_THRESHOLD_S = 2.0``, ``tests/test_p_lat_base.py``), reused not reinvented.
-#: A window beyond this is the wide-window withholding Y10 rejects; declaring one raises.
+#: A window beyond this is the wide-window withholding this design rejects; declaring one raises.
 SETTLE_WINDOW_MAX_S = 2.0
 
 
 @dataclass(frozen=True)
 class SettleWindow:
-    """A concern's declared provisional-delivery settle window (card Y10) — CONCERN-SPECIFIC and
+    """A concern's declared provisional-delivery settle window — CONCERN-SPECIFIC and
     SLO-bounded.
 
     A settle window is the small delay a concern may spend after the rising edge, letting a same-turn

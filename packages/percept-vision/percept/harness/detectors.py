@@ -21,13 +21,13 @@ from typing import Any, Callable, Iterable
 
 
 # ---------------------------------------------------------------------------
-# Sense categories — the CLASS of physical signal a detector belongs to (B2)
+# Sense categories — the CLASS of physical signal a detector belongs to
 # ---------------------------------------------------------------------------
 #
 # A detector's ``category`` is the coarse modality of the signal it reads, so a whole CLASS of
 # detectors is discoverable at once — ``detectors_in_category(AUDIO)`` returns every audio Tier-0
 # detector the same way the motion ones group under ``MOTION``. This is what makes ``acoustic-onset``
-# a first-class *audio* sense (B2): it is the AUDIO category, distinct from the MOTION/FRAME detectors,
+# a first-class *audio* sense: it is the AUDIO category, distinct from the MOTION/FRAME detectors,
 # and the brain can ask "what audio senses does this edge have?" without hardcoding names.
 
 #: Built-in sense categories. ``MOTION`` = frame-diff magnitude; ``AUDIO`` = the mic/energy stream;
@@ -151,7 +151,7 @@ class DetectorManifest:
     ``output`` documents the boundary it emits. ``category`` is the coarse sense CLASS (one of
     ``CATEGORY_MOTION``/``CATEGORY_AUDIO``/``CATEGORY_FRAME``) so a whole modality of detectors is
     discoverable at once (``detectors_in_category(CATEGORY_AUDIO)``) — this is what marks
-    ``acoustic-onset`` as the first-class *audio* sense (B2). This manifest contract is the one skills
+    ``acoustic-onset`` as the first-class *audio* sense. This manifest contract is the one skills
     mechanism shared across the three registries (sense primitives, perception specs, edge detectors).
 
     ``category`` is additive and optional (defaults ``""`` = uncategorized) so existing third-party
@@ -522,7 +522,7 @@ def registered() -> list[str]:
 
 def detectors_in_category(category: str) -> list[str]:
     """Registered detector names (sorted) whose manifest ``category`` matches — the modality-as-a-class
-    discovery: ``detectors_in_category(CATEGORY_AUDIO)`` lists every audio Tier-0 sense (B2), the way
+    discovery: ``detectors_in_category(CATEGORY_AUDIO)`` lists every audio Tier-0 sense, the way
     callers already enumerate motion ones. Empty when nothing in that category is registered."""
     return sorted(n for n, (_, m) in _REGISTRY.items() if m.category == category)
 
@@ -567,7 +567,7 @@ register(
         senses="audio energy over time (the mic stream already flowing for STT)",
         when_to_use="audio-cued events — a kettle/boil hiss rising, a timer beep, a rep grunt, a knock",
         output="an 'onset' boundary each time energy spikes up (a sound starting)",
-        category=CATEGORY_AUDIO,  # the first-class AUDIO sense (B2) — discoverable as a class
+        category=CATEGORY_AUDIO,  # the first-class AUDIO sense — discoverable as a class
     ),
 )
 register(

@@ -221,7 +221,7 @@ ContinuationReason = Literal[
     # -- continued (is_new=False)
     "continued",              # same subject, open, inside the gap, mutation compatible
     "reopened",               # same subject, TERMINAL but the policy allows reopen -> same episode
-    "unknown_provisional_continuation",  # Y4: an UNKNOWN sighting rode the sole open bound episode
+    "unknown_provisional_continuation",  # an UNKNOWN sighting rode the sole open bound episode
     "unknown_temporal_continuation",  # an UNKNOWN sighting rode the most recent open PROVISIONAL
     # episode because it arrived within the source's unknown-continuity gap (no bound episode to
     # attach to at all — this is unknown-to-unknown continuity, distinct from the bound-attach above)
@@ -229,7 +229,7 @@ ContinuationReason = Literal[
     "new_subject",            # no existing episode shares this subject — nothing to continue
     "gap_exceeded",           # same subject, but idle longer than the concern's continuity_gap_s
     "episode_terminal",       # same subject, but the episode is finished and reopen is not allowed
-    "mutation_incompatible",  # same subject and live, but the finding contradicts the episode (Y2)
+    "mutation_incompatible",  # same subject and live, but the finding contradicts the episode
 ]
 
 #: The closed vocabulary of WHY an observation did or did not continue an episode. Stable surface:
@@ -260,22 +260,22 @@ class EpisodePolicy:
     """CONCERN-LEVEL continuation semantics. There is no correct global constant for these.
 
     * ``continuity_gap_s`` — the maximum idle time (observation ts minus ``episode.last_seen``) that
-      still counts as the SAME episode. ``None`` = unbounded (the pre-Y1 behavior; kept as the
+      still counts as the SAME episode. ``None`` = unbounded (the original behavior; kept as the
       default so an un-authored concern is byte-for-byte unchanged).
     * ``allow_reopen`` — may a TERMINAL episode be reopened by a later same-subject observation
       (a PO reopened) instead of starting a fresh occurrence? Default no.
     * ``terminal_statuses`` — the statuses that mean "this episode is finished". A same-subject
       observation against a terminal episode opens a new one (or reopens, per ``allow_reopen``).
-    * ``unknown_attaches_to_active_bound`` — the card-Y4 OPT-IN for a NARROWLY single-focus source.
+    * ``unknown_attaches_to_active_bound`` — the OPT-IN for a NARROWLY single-focus source.
       Default ``False`` (a visible abstention stays unbound and mints no counted episode competitor —
-      the Y5 default). When ``True`` AND the source has exactly ONE open bound episode AND no boundary
-      event intervened, an ``'unknown'`` sighting provisionally CONTINUES that sole episode instead of
-      minting a rival. Only defensible when the source truly holds one thing in focus: with two open
-      bound episodes the sighting could belong to either, so it stays unbound. The attach is RECORDED
-      (its own :data:`ContinuationReason` + a revision), never a silent merge.
+      the default behavior). When ``True`` AND the source has exactly ONE open bound episode AND no
+      boundary event intervened, an ``'unknown'`` sighting provisionally CONTINUES that sole episode
+      instead of minting a rival. Only defensible when the source truly holds one thing in focus: with
+      two open bound episodes the sighting could belong to either, so it stays unbound. The attach is
+      RECORDED (its own :data:`ContinuationReason` + a revision), never a silent merge.
     * ``unknown_continuity_gap_s`` — UNKNOWN-TO-UNKNOWN temporal-proximity continuity, independent of
       ``unknown_attaches_to_active_bound`` above (that one attaches to a BOUND episode; this one
-      continues a PROVISIONAL one). Default ``None`` (off — byte-for-byte the Y5 default: every
+      continues a PROVISIONAL one). Default ``None`` (off — byte-for-byte the default behavior: every
       unidentified sighting mints its own fresh episode, keyed ``UN_<episode_id>``, and two unknowns
       never collapse). When set, an unidentified sighting that arrives within this many seconds of the
       most recently seen OPEN provisional episode CONTINUES it (same ``UN_`` key) instead of minting a
@@ -305,7 +305,7 @@ EPISODE_POLICIES: dict[str, EpisodePolicy] = {
     "door_interval": EpisodePolicy(continuity_gap_s=5.0, allow_reopen=False),
     # A conversational claim slot lives as long as the call and may be revisited within it.
     "conversational_claim": EpisodePolicy(continuity_gap_s=1800.0, allow_reopen=True),
-    # Explicit "never split on time" — the pre-Y1 behavior, chosen rather than inherited.
+    # Explicit "never split on time" — the original behavior, chosen rather than inherited.
     "unbounded": EpisodePolicy(),
 }
 
@@ -347,7 +347,7 @@ def episode_policy_of(goal: Any, default: "EpisodePolicy | None" = None) -> Epis
 
 
 # ================================================================================================
-# REVISION TIMELINE (card Y15) — a 24/7 confirm heartbeat must not be an unbounded log.
+# REVISION TIMELINE — a 24/7 confirm heartbeat must not be an unbounded log.
 # ================================================================================================
 #
 # An episode carries a small, BOUNDED timeline of the STATE CHANGES it went through — it opened, an
@@ -355,7 +355,7 @@ def episode_policy_of(goal: Any, default: "EpisodePolicy | None" = None) -> Epis
 # unobserved. That timeline is what a client debugging percept at 2am reads to answer "what happened
 # to THIS episode, and when?" without re-deriving it from a firehose of ticks.
 #
-# The stress-test defect (found by the seven-domain eval, card Y15): a long-running watch confirms the
+# The stress-test defect (found by the seven-domain eval): a long-running watch confirms the
 # SAME finding on every confident tick — a heartbeat — and the naive timeline appended a ``confirmed``
 # row per tick. Over a 24/7 watch that is an UNBOUNDED log: N identical confirmations become N rows,
 # forever. A re-statement of an unchanged fact is not a state change and must not grow the timeline.
@@ -369,7 +369,7 @@ def episode_policy_of(goal: Any, default: "EpisodePolicy | None" = None) -> Epis
 
 RevisionKind = Literal[
     "opened",          # the episode began (or reopened) — the one row a pure heartbeat ever produces
-    "confirmed",       # an unchanged re-statement — COALESCES in place, never appends (the Y15 fix)
+    "confirmed",       # an unchanged re-statement — COALESCES in place, never appends (by design)
     "updated",         # an accepted semantic change to the episode's value → a new revision
     "retracted",       # the finding was withdrawn
     "closed",          # the episode reached a terminal status
@@ -383,7 +383,7 @@ REVISION_KINDS: tuple[RevisionKind, ...] = (
 )
 
 #: The kinds that APPEND a timeline row. ``confirmed`` is deliberately absent: an unchanged
-#: re-confirmation is a heartbeat, not a state change, and coalesces in place (card Y15). A run of N
+#: re-confirmation is a heartbeat, not a state change, and coalesces in place (by design). A run of N
 #: confirmations therefore leaves the timeline at the single ``opened`` row.
 STATE_CHANGING_REVISION_KINDS: tuple[RevisionKind, ...] = (
     "opened", "updated", "retracted", "closed", "expired", "unobserved_gap",
@@ -392,7 +392,7 @@ STATE_CHANGING_REVISION_KINDS: tuple[RevisionKind, ...] = (
 
 @dataclass(frozen=True)
 class Revision:
-    """One STATE CHANGE on an episode's timeline (card Y15).
+    """One STATE CHANGE on an episode's timeline.
 
     A ``confirmed`` heartbeat never becomes a ``Revision`` — it coalesces into the episode's
     ``last_confirmed`` instead — so an appended row always marks a genuine change, never a
@@ -411,20 +411,20 @@ class Episode:
     started_at: float
     last_seen: float
     exemplar: Any = None
-    # Y1: ``exemplar`` is the FIRST observation that opened the episode; ``representative`` is the
-    # MOST RECENT one folded into it. Before Y1 the two were set once and never diverged, which made
+    # ``exemplar`` is the FIRST observation that opened the episode; ``representative`` is the
+    # MOST RECENT one folded into it. Previously the two were set once and never diverged, which made
     # ``representative`` a dead field. It is now updated on every continuation, so a consumer asking
     # "what does this episode look like NOW" gets the current evidence, not the opening frame.
     representative: Any = None
-    # Y1 decision (2): an episode has a LIFECYCLE. Only an ``open`` episode can be continued (unless
+    # Decision (2): an episode has a LIFECYCLE. Only an ``open`` episode can be continued (unless
     # the concern's policy allows reopening a terminal one).
     status: str = OPEN
-    # Y1 decision (1): the subject this episode is about. ``None`` today for judge-matched episodes;
-    # populated when the caller passes a ``subject_key`` (the Y5/Z3 judge-emitted key seam).
+    # Decision (1): the subject this episode is about. ``None`` today for judge-matched episodes;
+    # populated when the caller passes a ``subject_key`` (the judge-emitted key seam).
     subject_key: str | None = None
     # How many observations folded into this episode (1 = just the opening one). Pure observability.
     observations: int = 1
-    # Y7 decision (1): STATE CONSISTENCY. status/t_end are kept consistent BY CONSTRUCTION through
+    # STATE CONSISTENCY. status/t_end are kept consistent BY CONSTRUCTION through
     # ``EpisodeLog.transition`` — the single authoritative writer. No other code path may assign
     # them; a test asserts it. ``value``/``incident_id`` use None as the one and only ABSENCE
     # sentinel: '' is never an absence marker here, so "no value yet" and "the empty string" can
@@ -441,18 +441,18 @@ class Episode:
     value: Any = None
     # The incident this episode raised, if any. None == no incident (NEVER '').
     incident_id: str | None = None
-    # Y15: the most recent CONFIRMED tick (a heartbeat). An unchanged re-confirmation advances this
+    # The most recent CONFIRMED tick (a heartbeat). An unchanged re-confirmation advances this
     # in place WITHOUT appending a revision row, so a 24/7 confirm stream never grows the timeline.
     # ``None`` until the first confirmation; distinct from ``last_seen`` only in intent (a confirm is
     # a POSITIVE re-statement, where ``last_seen`` also moves on a same-subject continuation).
     last_confirmed: float | None = None
-    # Y15: the BOUNDED timeline of this episode's STATE CHANGES (opened / updated / retracted /
+    # The BOUNDED timeline of this episode's STATE CHANGES (opened / updated / retracted /
     # closed / expired / unobserved_gap). A pure heartbeat produces exactly one row — the ``opened``.
     # Written only through :meth:`EpisodeLog.record_revision`, the single coalescing choke point.
     revisions: list["Revision"] = field(default_factory=list)
 
-    # -- Z2 forward seam: a persisted representation, present but NOT wired for v1.4 -------------------
-    # Persistence is SESSION-ONLY today (ADR-006 / card Y9): ``Percept.snapshot()`` does not carry the
+    # -- Forward seam: a persisted representation, present but NOT wired for v1.4 -------------------
+    # Persistence is SESSION-ONLY today (ADR-006): ``Percept.snapshot()`` does not carry the
     # episode map and ``Percept.restore()`` emits an ``episode_memory_reset`` health event instead of
     # rehydrating one. These two methods exist so a LATER phase can turn persistence ON without reshaping
     # the type. The design point that makes that safe: every field here is either an identifier or a
@@ -463,7 +463,7 @@ class Episode:
     # the caller owns; a persistence phase must supply their (de)serialization, so they are carried as-is
     # here and a non-JSON-able payload is that phase's problem to solve, not silently dropped.
     def to_dict(self) -> dict:
-        """JSON-able view of the episode (Z2 forward seam — see the class note). Not called in v1.4."""
+        """JSON-able view of the episode (forward seam — see the class note). Not called in v1.4."""
         return {
             "id": self.id,
             "goal_id": self.goal_id,
@@ -480,7 +480,7 @@ class Episode:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Episode":
-        """Rebuild an :class:`Episode` from :meth:`to_dict` (Z2 forward seam). Not called in v1.4.
+        """Rebuild an :class:`Episode` from :meth:`to_dict` (forward seam). Not called in v1.4.
 
         Stream-time fields (``started_at`` / ``last_seen``) are stored as-taken; a persistence phase
         rebases them into the fresh monotonic frame at restore, the same way deadlines are rebased."""
@@ -501,7 +501,7 @@ class Episode:
 
 @dataclass(frozen=True)
 class ContinuationDecision:
-    """One typed episode decision: the episode, whether it is NEW, and WHY (card Y1).
+    """One typed episode decision: the episode, whether it is NEW, and WHY.
 
     ``subject_matched`` answers decision (1) on its own — it is true whenever an existing episode
     shared this observation's subject, INCLUDING the cases where we then refused to continue it.
@@ -525,19 +525,19 @@ class ContinuationDecision:
 class EpisodeLog:
     """Bounded per-goal episode log. ``observe`` folds a candidate event into new/continuation.
 
-    Boundedness (ADR-001 §9, card A9 subset): ``window_s`` bounds the log in TIME (episodes idle
+    Boundedness (ADR-001 §9): ``window_s`` bounds the log in TIME (episodes idle
     longer than the counting window fall out — "today's cups", not "all-time cups") and
     ``max_episodes`` bounds it in COUNT (a hard ceiling, drop-oldest, the backstop when no window is
     set or the window alone isn't enough). Every bound-driven drop is TRACED — never silent —
     through ``on_drop(episode, reason)`` (``reason`` is ``"window_expired"`` or ``"max_episodes"``);
     the default logs a structured line so a drop is observable even when the caller wires nothing.
 
-    Card Y15: each episode also owns a BOUNDED revision timeline. ``record_revision`` folds a
+    Each episode also owns a BOUNDED revision timeline. ``record_revision`` folds a
     ``confirmed`` heartbeat in place (no row) so a 24/7 confirm stream never grows the log; only
     state-changing kinds append, and the per-episode timeline is capped at ``max_revisions`` with a
     TRACED drop (``on_revision_drop`` / ``episode.revision_dropped``) on overflow.
 
-    Card Y1: ``policy`` carries the CONCERN-LEVEL continuation semantics (see :class:`EpisodePolicy`)
+    ``policy`` carries the CONCERN-LEVEL continuation semantics (see :class:`EpisodePolicy`)
     and ``on_continuation(decision)`` observes every typed :class:`ContinuationDecision`. A denied
     continuation is additionally logged, so "why did this subject open a second episode?" is
     answerable from a log file alone.
