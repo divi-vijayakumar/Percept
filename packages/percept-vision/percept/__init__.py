@@ -70,6 +70,18 @@ from .episodes import (
     episode_policy_of,
 )
 from .events import Event, EventLog, FrameWindow
+from .evidence import (
+    EVICTION_ORDER,
+    EvidenceAccessDenied,
+    EvidenceArtifact,
+    EvidenceCorrupt,
+    EvidenceError,
+    EvidenceExpired,
+    EvidenceStore,
+    EvidenceUnavailable,
+    RetentionPolicy,
+    resolve_evidence,
+)
 from .identity_policy import identity_policy_of, select_identity_policy
 from .gate import (
     ASK,
@@ -252,6 +264,17 @@ __all__ = [
     "Incident",
     "IncidentSnippet",
     "AttentionIntent",
+    # evidence dereference (ADR-003) — the opaque handle, its resolver, typed failures, retention seam
+    "EvidenceArtifact",
+    "EvidenceStore",
+    "resolve_evidence",
+    "RetentionPolicy",
+    "EVICTION_ORDER",
+    "EvidenceError",
+    "EvidenceExpired",
+    "EvidenceUnavailable",
+    "EvidenceAccessDenied",
+    "EvidenceCorrupt",
     # feedback rail — local label + disposition stores
     "LabelRecord",
     "LabelStore",
