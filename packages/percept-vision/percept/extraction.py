@@ -1,6 +1,6 @@
 """EvidenceExtractor — the extraction seam admission was never allowed to be.
 
-``percept.contracts.Enricher`` was removed as a REGISTRY (D6): a detector decides WHEN to look
+``percept.contracts.Enricher`` was removed as a REGISTRY: a detector decides WHEN to look
 closely (admission); nothing in the runtime ever ran a registered enricher to turn that moment
 into structured facts, so the seam was dead weight. That left ``Vision.judge(context={...})`` as
 the only live door for structured facts, and it required the caller to remember to open it by
