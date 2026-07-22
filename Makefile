@@ -7,11 +7,12 @@ EDGE      := packages/percept-edge
 PY        := python3
 # absolute path to the zero-dep contract pkg (vision runs from inside $(SDK), so it needs this)
 
-.PHONY: help test test-harness test-js test-all test-templates parity eval-live eval-benchmark e2e bench audit-benchmark scorecard benchmark-prepare benchmark-fetch benchmark-fetch-charades benchmark-fetch-proactiveqa benchmark-index-proactiveqa benchmark-manifest benchmark-run benchmark-collect check check-skills-sync reproduce clean architecture architecture-check
+.PHONY: help test test-harness test-js test-all test-templates test-capability-gate parity eval-live eval-benchmark e2e bench audit-benchmark scorecard benchmark-prepare benchmark-fetch benchmark-fetch-charades benchmark-fetch-proactiveqa benchmark-index-proactiveqa benchmark-manifest benchmark-run benchmark-collect check check-skills-sync reproduce clean architecture architecture-check
 
 help:
 	@echo "test       L1 unit — percept-vision (incl. percept.harness + percept.contracts; fakes, no keys, fast) + template lane"
 	@echo "test-templates  L1 unit — templates/ reference apps (keyless; pipecat-dependent tests skip cleanly)"
+	@echo "test-capability-gate  L1 capability gate — Y16 task-level suite (CAPABILITY asserts, no keys, no stat bars)"
 	@echo "test-js    L1 unit — percept-edge (vitest; needs npm install)"
 	@echo "test-all   test + test-js"
 	@echo "eval-live  L2 live eval (needs keys; skips without PERCEPT_LIVE=1)"
@@ -46,6 +47,45 @@ test-js:
 	cd $(EDGE) && npm test
 
 test-all: test test-js
+
+# --------------------------------------------------------------------------------------------------
+# Profile-acceptance CI gate — CAPABILITY assertions, not a statistical bar.
+#
+# Runs the Y16 task-level capability suite (9 capabilities over percept.harness.synthetic.corpora,
+# replayed through a REAL ScriptedJudge standing in for a perfect classifier — what's under test is
+# the deterministic runtime: EpisodeLog, percept.claims, interval_coverage, Gate, BehaviorExecutor)
+# plus the synthetic-fixture validity smoke test those capabilities are built on. Every assertion here
+# is pass/fail against a labelled fixture — no API key, no network, no measured rate against a
+# threshold anywhere in this target (contrast percept/slo.py's $/stream-hour-style statistical bars,
+# which pre-register a NUMBER; this gate pre-registers nothing because it has no number to tune).
+#
+# STRICT XFAIL, NO EXTRA FLAG: the suite's 2 documented defects are marked
+# @unittest.expectedFailure (see test_y16_capability_suite.py's module docstring table — capability 5's
+# full-trace discrepancy and capability 7's boundary off-by-one). Both unittest and pytest already
+# treat an expectedFailure that unexpectedly PASSES as a hard FAILURE ("Unexpected success") by
+# default — there is no separate "strict" switch to flip. -rxX below only makes the tolerated xfails
+# (and any XPASS) print in the summary instead of collapsing into the dot count, so a fixed defect
+# whose assertion should be promoted out of expectedFailure is flagged loudly, not silently lost.
+#
+# DESELECTED, NOT FIXED (card Z9, owned elsewhere): tests/test_p_lat_actionable.py and
+# tests/test_p_qual.py fail at COLLECTION — `ModuleNotFoundError: core_archetypes` — because they
+# import a gitignored viability fixture that is not part of every checkout. That import failure is
+# pre-existing and unrelated to capability regressions; --ignore both explicitly so this gate's
+# result depends only on the capabilities it exists to assert, never on an unrelated collection
+# error. (On a base that already has [Z9]'s importorskip guard, both files skip cleanly instead of
+# erroring and these --ignore flags become redundant, not wrong — leave them; they still document
+# the exclusion.)
+#
+# PRE-REGISTRATION DISCIPLINE, PRESERVED: a profile/behavior change still ships with its own frozen
+# statistical run wherever that discipline already applies (percept/slo.py, eval/benchmark_ci_gate) —
+# this target does not touch that machinery and adds none of its own; it only asserts the fixed,
+# labelled capability contract.
+# --------------------------------------------------------------------------------------------------
+test-capability-gate:
+	cd $(SDK) && PYTHONPATH=. $(PY) -m pytest \
+		tests/test_y16_capability_suite.py tests/test_synthetic_fixtures.py \
+		--ignore=tests/test_p_lat_actionable.py --ignore=tests/test_p_qual.py \
+		-rxX -q
 
 clean:  ## remove build + tooling artifacts (leaves out/ — that's intentional local run output)
 	rm -rf packages/*/build packages/*/dist packages/*/*.egg-info
