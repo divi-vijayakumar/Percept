@@ -24,6 +24,8 @@ import {
   parseIncidentSnippet,
   makeSubjectRef,
   parseSubjectRef,
+  provisionalSubject,
+  PROVISIONAL_KEY_PREFIX,
 } from "../src/contract.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -315,8 +317,8 @@ describe("topology-B wire messages — EdgeCapabilities + BoundaryReport", () =>
 });
 
 describe("CONTRACT_VERSION", () => {
-  it("is the semver twin of the Python contract version (1.6.0: SubjectRef + Y2 claim channel + Z3 envelope)", () => {
-    expect(CONTRACT_VERSION).toBe("1.6.0");
+  it("is the semver twin of the Python contract version (1.8.0: one batch bump — 1.7 evidence_seq + SubjectRef 'provisional', 1.8 WatchPlan DTOs are Python-only)", () => {
+    expect(CONTRACT_VERSION).toBe("1.8.0");
   });
 });
 
@@ -344,6 +346,7 @@ describe("Incident / IncidentSnippet", () => {
       roi: null,
       modality: null,
       provenance: null,
+      evidence_seq: null, // contract 1.7 — defaults null on a minimal build
     });
   });
 
@@ -382,6 +385,7 @@ describe("Incident / IncidentSnippet", () => {
       roi: null,
       modality: null,
       provenance: null,
+      evidence_seq: null, // absent on a pre-1.7 payload -> null, never a parse failure
     });
   });
 
@@ -531,5 +535,137 @@ describe("SubjectRef (contract 1.4, card Y5)", () => {
     expect(() =>
       makeSubjectRef({ scheme: "c", namespace: "n", key: "k", resolution: "bound", scope: "durable", strategy: "j", confidence: 1.5 })
     ).toThrow(ContractError);
+  });
+});
+
+describe("SubjectRef 'provisional' resolution state (contract 1.7, card Z10)", () => {
+  it("provisionalSubject(episode_id) mints a session-scoped UN_<episode_id> handle", () => {
+    const s = provisionalSubject("ep-42");
+    expect(s).toEqual({
+      scheme: "episode",
+      namespace: "",
+      key: "UN_ep-42",
+      resolution: "provisional",
+      scope: "session",
+      strategy: "episode_scoped",
+      confidence: null,
+    });
+    // round-trips through JSON byte-for-byte
+    expect(parseSubjectRef(JSON.stringify(s))).toEqual(s);
+  });
+
+  it("PROVISIONAL_KEY_PREFIX is the literal 'UN_' the Python side mints keys with", () => {
+    expect(PROVISIONAL_KEY_PREFIX).toBe("UN_");
+  });
+
+  it("two provisionalSubject() calls for the SAME episode id produce the same key (stable within the episode)", () => {
+    const a = provisionalSubject("ep-1");
+    const b = provisionalSubject("ep-1");
+    expect(a.key).toBe(b.key);
+    // and a DIFFERENT episode id produces a different key
+    const c = provisionalSubject("ep-2");
+    expect(c.key).not.toBe(a.key);
+  });
+
+  it("parses the exact JSON the Python side emits for a provisional ref", () => {
+    const PY =
+      '{"scheme":"episode","namespace":"","key":"UN_ep-99","resolution":"provisional","scope":"session","strategy":"episode_scoped","confidence":null}';
+    expect(parseSubjectRef(PY)).toEqual({
+      scheme: "episode",
+      namespace: "",
+      key: "UN_ep-99",
+      resolution: "provisional",
+      scope: "session",
+      strategy: "episode_scoped",
+      confidence: null,
+    });
+  });
+
+  it("rejects the invariant violations the Python __post_init__ rejects for 'provisional'", () => {
+    // requires episode_id to be a non-empty string
+    expect(() => provisionalSubject("")).toThrow(ContractError);
+    expect(() => provisionalSubject("   ")).toThrow(ContractError);
+    expect(() => provisionalSubject(null)).toThrow(ContractError);
+    // 'provisional' requires a key of the form UN_<episode_id>
+    expect(() =>
+      makeSubjectRef({ scheme: "episode", namespace: "", key: "ep-1", resolution: "provisional", scope: "session", strategy: "s" })
+    ).toThrow(ContractError);
+    expect(() =>
+      makeSubjectRef({ scheme: "episode", namespace: "", key: null, resolution: "provisional", scope: "session", strategy: "s" })
+    ).toThrow(ContractError);
+    // 'provisional' requires scope === "session"
+    expect(() =>
+      makeSubjectRef({ scheme: "episode", namespace: "", key: "UN_ep-1", resolution: "provisional", scope: "durable", strategy: "s" })
+    ).toThrow(ContractError);
+    expect(() =>
+      parseSubjectRef('{"scheme":"episode","namespace":"","key":"UN_ep-1","resolution":"provisional","scope":"source","strategy":"s"}')
+    ).toThrow(ContractError);
+  });
+
+  it("a 'provisional' ref is distinct from a 'bound' ref sharing the same key string (never laundered)", () => {
+    const provisional = provisionalSubject("ep-1");
+    const bound = makeSubjectRef({
+      scheme: "episode",
+      namespace: "acme",
+      key: provisional.key,
+      resolution: "bound",
+      scope: "durable",
+      strategy: "client",
+    });
+    expect(provisional.resolution).not.toBe(bound.resolution);
+    expect(provisional).not.toEqual(bound);
+  });
+});
+
+describe("SubjectRef <-> SubjectRef.schema.json parity (card Z10)", () => {
+  const SCHEMA_PATH = join(
+    __dirname,
+    "..",
+    "..",
+    "percept-vision",
+    "percept",
+    "contracts",
+    "schema",
+    "SubjectRef.schema.json"
+  );
+  const schema = JSON.parse(readFileSync(SCHEMA_PATH, "utf8"));
+
+  it("the schema's x-contract-version matches the JS CONTRACT_VERSION (one frozen contract, two languages)", () => {
+    expect(schema["x-contract-version"]).toBe(CONTRACT_VERSION);
+  });
+
+  it("the schema's resolution/scope enums match the JS closed-vocab literals exactly", () => {
+    expect(schema.properties.resolution.enum.slice().sort()).toEqual(
+      ["bound", "unknown", "provisional"].sort()
+    );
+    expect(schema.properties.scope.enum.slice().sort()).toEqual(
+      ["session", "source", "durable"].sort()
+    );
+    // and every required field on the schema is a field the JS shape actually produces
+    const built = makeSubjectRef({
+      scheme: "content",
+      namespace: "acme",
+      key: "PO-1",
+      resolution: "bound",
+      scope: "durable",
+      strategy: "client",
+    });
+    expect(schema.required.slice().sort()).toEqual(
+      ["scheme", "namespace", "key", "resolution", "scope", "strategy"].sort()
+    );
+    for (const field of schema.required) {
+      expect(Object.prototype.hasOwnProperty.call(built, field)).toBe(true);
+    }
+  });
+
+  it("a provisionalSubject() build validates against the schema's shape (scheme/namespace/key/strategy are strings, key non-null)", () => {
+    const s = provisionalSubject("ep-schema-check");
+    expect(typeof s.scheme).toBe(schema.properties.scheme.type);
+    expect(typeof s.namespace).toBe(schema.properties.namespace.type);
+    expect(typeof s.strategy).toBe(schema.properties.strategy.type);
+    expect(schema.properties.key.anyOf.some((t) => t.type === "string")).toBe(true);
+    expect(typeof s.key).toBe("string");
+    expect(schema.properties.resolution.enum).toContain(s.resolution);
+    expect(schema.properties.scope.enum).toContain(s.scope);
   });
 });
