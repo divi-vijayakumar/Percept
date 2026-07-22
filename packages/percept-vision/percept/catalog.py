@@ -26,6 +26,10 @@ The six registries (name -> where it lives -> what it selects):
    entries in :data:`~percept.execution_policy.DEFAULT_EXECUTION_POLICY_REGISTRY`: named,
    versioned resource/scheduling posture bundles (cadence ceilings, judge-dispatch cache/routing,
    resource budgets) a caller passes to :meth:`percept.resolver.ConfigResolver.resolve`.
+7. **domain packs** (:mod:`percept.domain_pack`) — :class:`~percept.domain_pack.DomainPack`
+   entries in :data:`~percept.domain_pack.DEFAULT_DOMAIN_PACK_REGISTRY`: named, versioned bundles
+   of goal templates, advisory component recommendations, and resolve-time policy clamps for one
+   domain (e.g. ``facility_observation@1``).
 
 **Measured performance is never a descriptor field.** A :class:`ComponentDescriptor` names and
 describes a component; it carries no recall/precision/latency numbers. Anything MEASURED belongs
@@ -50,7 +54,7 @@ from .envelope import DEFAULT_SUBJECT_RESOLVERS
 from .harness import detectors as _detectors
 from .tracing import content_hash
 
-#: The six roles a :class:`ComponentDescriptor` may carry. Closed here (unlike the registries
+#: The seven roles a :class:`ComponentDescriptor` may carry. Closed here (unlike the registries
 #: themselves, which stay open/name-keyed) because this tuple describes THIS module's own survey,
 #: not the extensibility of what it surveys.
 ROLE_DETECTOR = "detector"
@@ -59,6 +63,7 @@ ROLE_IDENTITY_RESOLVER = "identity_resolver"
 ROLE_SENSE = "sense"
 ROLE_PROFILE = "profile"
 ROLE_EXECUTION_POLICY = "execution_policy"
+ROLE_DOMAIN_PACK = "domain_pack"
 
 ROLES: tuple[str, ...] = (
     ROLE_DETECTOR,
@@ -67,6 +72,7 @@ ROLES: tuple[str, ...] = (
     ROLE_SENSE,
     ROLE_PROFILE,
     ROLE_EXECUTION_POLICY,
+    ROLE_DOMAIN_PACK,
 )
 
 
@@ -77,8 +83,8 @@ class ComponentDescriptor:
     - ``role`` — one of :data:`ROLES`.
     - ``name`` — the registry key this component is selected by.
     - ``seam`` — for a backend, which seam it registers under (``"vision"``, ``"stt"``, ...);
-      ``""`` for every other role (a detector/resolver/sense/profile/execution_policy has no seam
-      axis).
+      ``""`` for every other role (a detector/resolver/sense/profile/execution_policy/domain_pack
+      has no seam axis).
     - ``category`` — a coarse class within the role when the source registry has one (a
       detector's sense category, a resolver's ``subject_class``); ``""`` when none applies.
     - ``summary`` — one plain-language line pulled from the source registry's own docs field
@@ -282,6 +288,31 @@ def _execution_policy_descriptors() -> list[ComponentDescriptor]:
     ]
 
 
+def _domain_pack_descriptors() -> list[ComponentDescriptor]:
+    # Same seed-then-resolve pattern as _sense_descriptors/_profile_descriptors/
+    # _execution_policy_descriptors: percept.packs_default seeds DEFAULT_DOMAIN_PACK_REGISTRY as an
+    # import side effect.
+    from . import packs_default  # noqa: F401
+    from .domain_pack import DEFAULT_DOMAIN_PACK_REGISTRY
+
+    return [
+        ComponentDescriptor(
+            role=ROLE_DOMAIN_PACK,
+            name=pack.qualified_name,
+            category=pack.version,
+            summary=pack.notes,
+            metadata={
+                "id": pack.id,
+                "version": pack.version,
+                "templates": sorted(pack.templates),
+                "components": [c.to_dict() for c in pack.components],
+                "policy_clamps": dict(pack.policy_clamps),
+            },
+        )
+        for pack in DEFAULT_DOMAIN_PACK_REGISTRY.all()
+    ]
+
+
 _BUILDERS = (
     _detector_descriptors,
     _backend_descriptors,
@@ -289,6 +320,7 @@ _BUILDERS = (
     _sense_descriptors,
     _profile_descriptors,
     _execution_policy_descriptors,
+    _domain_pack_descriptors,
 )
 
 
@@ -324,6 +356,7 @@ __all__ = [
     "ROLE_SENSE",
     "ROLE_PROFILE",
     "ROLE_EXECUTION_POLICY",
+    "ROLE_DOMAIN_PACK",
     "ComponentDescriptor",
     "QualificationRecord",
     "CatalogSnapshot",
