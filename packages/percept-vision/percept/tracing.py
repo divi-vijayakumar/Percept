@@ -94,6 +94,14 @@ STAGE_SHADOW_FOLD = "shadow.fold"          # card Y11: ADVISORY — the subject 
 #: it changes no firing, re-arms no edge, suppresses nothing. It exists so a client running the wheel
 #: on THEIR data can hand back a ``.ptrace`` (media OFF) that carries what the fold proposed, gradeable
 #: against their ground truth. A consumer that ignores it sees byte-for-byte today's behaviour.
+STAGE_JUDGMENT_EVENT = "judgment.event"    # the frozen percept.contracts.JudgmentEvent for one decision,
+#: projected into the trace stream. Emitted alongside ``gate.classified`` whenever a fire carried a
+#: JudgmentEvent (the judged watch path only — episode/rhythm/boundary/transition/absence fires take no
+#: judge-funnel stamps and emit nothing here). ``data["evidence_seq"]`` is stamped by the RECORDER, not
+#: the caller: the ``seq`` of the ``source.frame`` TraceRecord for this SAME ``trace_id`` — i.e. the
+#: literal evidence that fed this judgment, resolvable within the same ``.ptrace``. ``data["dispatch_seq"]``
+#: carries the JudgmentEvent's OWN ``evidence_seq`` (the per-key ADR-001 §8 dispatch sequence, a distinct
+#: number) so neither meaning is lost. Purely additive observability — governs nothing.
 
 #: The closed stage vocabulary. A stage outside this tuple is still recorded (forward-compatible)
 #: but is not counted into any funnel field — an unknown stage must never silently move a number.
@@ -110,6 +118,7 @@ TRACE_STAGES: tuple[str, ...] = (
     STAGE_GATE_SUPPRESSED,
     STAGE_INCIDENT_CREATED,
     STAGE_SHADOW_FOLD,
+    STAGE_JUDGMENT_EVENT,
     STAGE_SOURCE_HEALTH,
     STAGE_TRACE_DROPPED,
     STAGE_RUN_ENDED,
@@ -423,6 +432,7 @@ _SUMMARY_STAGES: frozenset[str] = frozenset({
 _DECISION_STAGES: frozenset[str] = _SUMMARY_STAGES | frozenset({
     STAGE_SOURCE_FRAME, STAGE_JUDGE_STARTED, STAGE_JUDGE_FINISHED, STAGE_JUDGE_DEGRADED,
     STAGE_JUDGE_USAGE, STAGE_JUDGE_DROPPED, STAGE_GATE_CLASSIFIED, STAGE_GATE_SUPPRESSED,
+    STAGE_JUDGMENT_EVENT,
 })
 
 
