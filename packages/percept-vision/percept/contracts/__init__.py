@@ -39,16 +39,16 @@ CONTRACT_VERSION = "1.7.0"  # 1.7: + Incident.evidence_seq (additive, defaulted 
 # provisional_subject()/PROVISIONAL_KEY_PREFIX (additive, GATE-IRRELEVANT — the gate reads only
 # satisfied/confidence; a producer that never emits 'provisional' is byte-for-byte unchanged, and
 # 'bound'/'unknown' construction and equality are untouched). Both landed in the same 1.7.0 batch.
-# 1.6: + judgment-envelope enrichment (card Z3): JudgmentEvent + Incident
+# 1.6: + judgment-envelope enrichment: JudgmentEvent + Incident
 # gain reason/watchplan_id/roi/modality/provenance (all additive, defaulted, GATE-IRRELEVANT — the gate
 # reads only satisfied/confidence, and a consumer that ignores them sees byte-for-byte today's Incident;
 # watch.py + WATCH_VERSION FROZEN).
 # 1.5: + Verdict claim-mode channel (operation/value/normalized_value/
 # target_revision_id/asserted_by) + ConcernAuthority DTO + Concern.authority (all additive, defaulted,
-# GATE-IRRELEVANT — watch.py + WATCH_VERSION FROZEN; card Y2).
+# GATE-IRRELEVANT — watch.py + WATCH_VERSION FROZEN).
 # 1.4: + SubjectRef DTO (namespaced, tri-state subject identity) +
 # SubjectConflict/SubjectResolution + resolve_subject() + Verdict.subject (all additive, defaulted,
-# GATE-IRRELEVANT — watch.py + WATCH_VERSION FROZEN; card Y5).
+# GATE-IRRELEVANT — watch.py + WATCH_VERSION FROZEN).
 # 1.3: + Incident.entity_id (correlation identity survives the emission
 # boundary; optional, defaults None, additive).
 # 1.2: + WatchAction/WatchEvent (the public watch() stream event; additive).
@@ -136,7 +136,7 @@ class ClipEvent:
 
 
 # ---------------------------------------------------------------------------
-# SubjectRef — the namespaced, tri-state subject identity (card Y5).
+# SubjectRef — the namespaced, tri-state subject identity.
 # ---------------------------------------------------------------------------
 
 
@@ -150,7 +150,7 @@ PROVISIONAL_KEY_PREFIX = "UN_"
 class SubjectRef:
     """A namespaced reference to WHAT a judgment is about — the subject identity, resolved or not.
 
-    Y5 lands the identity contract Y1 left a seam for. The collapse it fixes: two paying client teams
+    This lands the identity contract that an earlier revision left a seam for. The collapse it fixes: two paying client teams
     could perceive a document/entity correctly but the SDK could not *say which one* — a ``PO-4471``
     on one ERP is not the same subject as ``PO-4471`` on another, and an unreadable key is neither a
     fabricated identity nor a missing subject. This DTO makes all three expressible, distinctly.
@@ -305,7 +305,7 @@ def provisional_subject(
 
 @dataclass(frozen=True)
 class SubjectConflict:
-    """A resolution CONFLICT — two BOUND resolvers disagreed on the subject key (card Y5).
+    """A resolution CONFLICT — two BOUND resolvers disagreed on the subject key.
 
     A first-class OUTCOME, not a silently-dropped tie. Precedence still deterministically picks the
     ``winner`` (never a coin-flip), but the ``loser`` — the disagreeing lower-precedence bound ref —
@@ -319,7 +319,7 @@ class SubjectConflict:
 
 @dataclass(frozen=True)
 class SubjectResolution:
-    """Typed result of resolving a subject across precedence-ordered resolvers (card Y5).
+    """Typed result of resolving a subject across precedence-ordered resolvers.
 
     ``subject`` is the winning ref — the highest-precedence BOUND ref when any resolver bound one,
     else the ``unknown`` fallback. ``conflicts`` lists every lower-precedence bound ref that
@@ -336,7 +336,7 @@ class SubjectResolution:
         return bool(self.conflicts)
 
 
-#: Resolver precedence, highest first (card Y5): a client-supplied binding beats a judge-emitted one,
+#: Resolver precedence, highest first: a client-supplied binding beats a judge-emitted one,
 #: which beats track identity. ``unknown`` is the floor when nothing bound.
 SUBJECT_RESOLVER_PRECEDENCE: tuple[str, ...] = ("client", "judge", "track")
 
@@ -392,7 +392,7 @@ def resolve_subject(
 
 
 # ---------------------------------------------------------------------------
-# Claim-mode / speech-act channel (card Y2) — a value DIFFERENCE is not a REPLACEMENT.
+# Claim-mode / speech-act channel — a value DIFFERENCE is not a REPLACEMENT.
 # ---------------------------------------------------------------------------
 
 Operation = Literal["assert", "confirm", "replace", "retract", "close", "mention"]
@@ -448,7 +448,7 @@ class Verdict:
     # Clip judging (1.3): the timestamped events the judge saw inside the judged window, clip-relative
     # seconds (see :class:`ClipEvent`). Empty for single-frame/strip judges — additive and defaulted.
     events: list[ClipEvent] = field(default_factory=list)
-    # Subject identity (1.4, card Y5): WHICH subject this verdict is about — a namespaced, tri-state
+    # Subject identity (1.4): WHICH subject this verdict is about — a namespaced, tri-state
     # :class:`SubjectRef`, or ``None`` when the judge emitted no subject. GATE-IRRELEVANT and appended
     # LAST: the gate reads only ``satisfied``/``confidence``, so a judge that sets nothing reproduces
     # today's firing byte-for-byte, and every existing positional ``Verdict(...)`` keeps its meaning.
@@ -456,7 +456,7 @@ class Verdict:
     # which is a subject that was SEEN but not identified. ``episodes._subject_match`` prefers
     # ``verdict.subject.key`` (when bound) over the judge-match fallback.
     subject: "SubjectRef | None" = None
-    # Structured value + mutation channel (1.5, card Y2) — the CLAIM-MODE contract, so the executor
+    # Structured value + mutation channel (1.5) — the CLAIM-MODE contract, so the executor
     # never has to parse values out of free-text ``evidence`` (unstable, vendor-dependent) and so a
     # value DIFFERENCE is never mistaken for a REPLACEMENT. All additive, defaulted, GATE-IRRELEVANT
     # (the gate reads only satisfied/confidence), appended LAST so every positional ``Verdict(...)``
@@ -567,7 +567,7 @@ class Consequence:
 class ConcernAuthority:
     """CONCERN-LEVEL authority: WHO may issue a MUTATING claim operation against this concern's value.
 
-    The policy the mutation channel (card Y2) needs so that "a seller mentioning $25K must NOT replace
+    The policy the mutation channel needs so that "a seller mentioning $25K must NOT replace
     a BUYER-side stated budget". Authority is evaluated SEPARATELY from the speech act: a well-formed
     ``replace`` from an unauthorized asserter is still a ``replace`` — it is DOWNGRADED (not applied),
     and the downgrade is TRACED (``percept.claims`` logs ``claim.authority_downgrade``), never silent.
@@ -680,7 +680,7 @@ class Concern:
     # library can roll a concern forward/back and slice metrics per version. Not the contract semver
     # (``CONTRACT_VERSION``) and not the wire integer (``WatchSpec.version``).
     version: int = 1
-    # 1.5 (card Y2) — WHO may MUTATE this concern's claimed value. ``None`` (default) == no restriction,
+    # 1.5 — WHO may MUTATE this concern's claimed value. ``None`` (default) == no restriction,
     # byte-for-byte today; a :class:`ConcernAuthority` naming authorized asserters downgrades a mutating
     # operation from anyone else (traced, never silent). Authority is a property of the concern, not the
     # utterance: a seller's textbook ``replace`` against a buyer-authoritative budget is refused here.
@@ -736,7 +736,7 @@ class Decision:
 # literal is duplicated here rather than creating a reverse/circular import.
 JudgmentAction = Literal["fire", "ask", "silent"]
 
-# --- Judgment-envelope enrichment vocabularies (card Z3) -----------------------------------------
+# --- Judgment-envelope enrichment vocabularies -----------------------------------------
 # HOW the judgment was perceived + WHERE it came from — the typed, closed vocabularies that ride on
 # both the frozen :class:`JudgmentEvent` and the delivered :class:`Incident`. Both are additive and
 # always OPTIONAL (``... | None``): a producer that names neither reproduces today's envelope exactly.

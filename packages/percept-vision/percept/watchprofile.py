@@ -1,7 +1,7 @@
 """WatchProfile — ``Q(p | environment, goal, state)`` made concrete.
 
-Precision and recall are not one fixed number; they are a function of the deployment context. H0 found the
-free variables: the tier-0 eye's localization (``salience_stat`` / ``stat_thresholds``), how the judge sees
+Precision and recall are not one fixed number; they are a function of the deployment context. Empirical
+tuning found the free variables: the tier-0 eye's localization (``salience_stat`` / ``stat_thresholds``), how the judge sees
 time (``plan_mode``), how densely the fovea samples (``cadence``), how the gate treats an already-true
 state (``gate.require_false_first``) and repeat firings (``gate.refractory_s``), and how many goals a scene
 can carry before cross-talk (``goal_density_guidance``).
@@ -20,14 +20,14 @@ is a typed handle onto a setting that already exists and is read elsewhere in th
 - ``gate.require_false_first`` <-> :data:`percept.config.GateSettings.require_false_first`.
 - ``gate.refractory_s`` <-> the re-arm separation :func:`percept.individuation.associate` / the edge
   detectors' ``refractory_s`` read — a logical "gate" knob (not a literal ``GateSettings`` field) because
-  the H0 gate-relax finding tunes require-false-first and refractory together.
+  the gate-relaxation finding tunes require-false-first and refractory together.
 - ``goal_density_guidance`` <-> the authoring-time "keep the active goal set small and mutually distinct"
   guidance (docs/how-to/authoring-goals-and-watch-plans.md Part 1.1); advisory, nothing enforces it.
 
 **This module is schema + registry ONLY.** No line in ``agent.py`` / ``runtime/worker.py`` reads a
 WatchProfile yet — that wiring is separate, per the architectural rule: "the runtime reads its
 behavior from a profile; the eval harness writes profiles. No knob is hardcoded in firing logic." Seeded,
-H0-derived default profiles (``fixed-cam-localized``, ``dynamic-action``, ``handheld``) ship in a follow-up
+empirically-derived default profiles (``fixed-cam-localized``, ``dynamic-action``, ``handheld``) ship in a follow-up
 module; this module only makes the shape expressive enough to hold them.
 """
 
@@ -117,7 +117,7 @@ class GateProfile:
 class GoalDensityGuidance:
     """Advisory, NOT enforced by any runtime code: authoring guidance for how many concurrent goals a
     scene tolerates before cross-talk (docs/how-to/authoring-goals-and-watch-plans.md Part 1.1 — "keep the
-    active goal set small and mutually distinct"). H0's operating point held this at <=3 distinct goals.
+    active goal set small and mutually distinct"). The empirically-tuned operating point held this at <=3 distinct goals.
     This rides on the profile so a derived profile can carry the finding that produced it; nothing reads
     it automatically (that's a separate authoring-time surface)."""
 
@@ -142,7 +142,7 @@ class WatchProfile:
     - ``goal_type`` — the goal's temporal character, e.g. ``"stative"``, ``"dynamic"``, ``"periodic"``.
     - ``state`` — already-true-at-start vs. transition-only, e.g. ``"start_anchored"``, ``"transition"``.
 
-    These three are free-text (not a closed enum) deliberately: H0 seeds the first vocabulary; a new
+    These three are free-text (not a closed enum) deliberately: empirical tuning seeds the first vocabulary; a new
     environment/goal-type is added by deriving a profile (the continuous-learning bridge), not by
     editing an enum here.
     """
@@ -269,7 +269,7 @@ class WatchProfileRegistry:
         return iter(self._profiles.values())
 
 
-# A process-wide default registry: H0-derived defaults seed this instance, and the runtime wiring
+# A process-wide default registry: empirically-derived defaults seed this instance, and the runtime wiring
 # reads from it by default. Nothing in this codebase writes to it yet. Tests and callers
 # that want isolation should construct their own ``WatchProfileRegistry()`` instead of touching this one.
 DEFAULT_REGISTRY = WatchProfileRegistry()

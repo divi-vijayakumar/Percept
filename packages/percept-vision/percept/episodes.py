@@ -1,10 +1,10 @@
-"""Episode counting — the cup problem (spec §5.5) and the THREE SEPARATED DECISIONS (card Y1).
+"""Episode counting — the cup problem (spec §5.5) and the THREE SEPARATED DECISIONS.
 
 Counting "cups of coffee" is **episode counting**: not sip-counting (over-counts) and not
 IoU-track-counting (mis-counts across gaps). Per counting goal we keep a bounded **episode log**
 (the counting window — "today's cups", a handful); the count is the number of distinct episodes.
 
-Card Y1 — subject / continuation / mutation are THREE decisions, not one
+Subject / continuation / mutation are THREE decisions, not one
 ------------------------------------------------------------------------
 The original design collapsed them into one judge call ("which episode does this continue?"). That
 is wrong, and wrong in the expensive direction: it fixes duplicate events by MANUFACTURING FALSE
@@ -16,8 +16,8 @@ continuity window as a new workflow occurrence. All of those are one subject and
 So the three decisions are named and evaluated separately here:
 
 1. **SUBJECT** — *what is this observation about?* Exact subject equality (a judge-matched episode
-   id today; a judge-EMITTED ``subject_key`` once cards Y5/Z3 land — pass ``subject_key=`` and no
-   judge call is made). Subject equality is **NECESSARY EVIDENCE** for continuation, never its
+   id today; a judge-EMITTED ``subject_key`` once the subject-key seam lands — pass ``subject_key=``
+   and no judge call is made). Subject equality is **NECESSARY EVIDENCE** for continuation, never its
    definition.
 2. **CONTINUATION** — *does this observation extend the existing episode?* The conjunction below,
    evaluated in :meth:`EpisodeLog.observe_decision`::
@@ -27,10 +27,11 @@ So the three decisions are named and evaluated separately here:
                     and observation.ts - episode.last_seen < continuity_gap_s
                     and mutation_is_compatible)
 
-3. **MUTATION** — *how does this finding modify the episode?* Card Y2 owns the mutation CHANNEL;
-   Y1 lands only its seam: the :data:`MutationCheck` predicate (``(episode, exemplar) -> bool``),
-   defaulting to "compatible", which participates in the conjunction as its last conjunct. Y2
-   replaces the boolean with a richer mutation without touching the other two decisions.
+3. **MUTATION** — *how does this finding modify the episode?* The mutation CHANNEL is owned
+   separately; this module lands only its seam: the :data:`MutationCheck` predicate
+   (``(episode, exemplar) -> bool``), defaulting to "compatible", which participates in the
+   conjunction as its last conjunct. A richer mutation check can replace the boolean without
+   touching the other two decisions.
 
 Every denial is TYPED (:data:`CONTINUATION_REASONS`) and OBSERVABLE (a structured log line plus the
 optional ``on_continuation`` hook) — a same-subject observation that opened a NEW episode is exactly
@@ -42,10 +43,10 @@ conversational claim (a whole call) do not agree on any of ``continuity_gap_s``,
 ``terminal_statuses``. That is :class:`EpisodePolicy`, resolved per goal by
 :func:`episode_policy_of`.
 
-The judge is injected (an LLM in real use; a deterministic stub in L1) so the dedup *logic* is
+The judge is injected (an LLM in real use; a deterministic stub in tests) so the dedup *logic* is
 testable without a model — and so we never assert backend intelligence with a fake.
 
-PERSISTENCE IS SESSION-ONLY — episodes do NOT survive a restart (ADR-006, card Y9)
+PERSISTENCE IS SESSION-ONLY — episodes do NOT survive a restart (ADR-006)
 ---------------------------------------------------------------------------------
 
 An :class:`EpisodeLog` is **process-lifetime state**. ``Percept.snapshot()`` carries ``goals``,
@@ -74,31 +75,31 @@ from .events import frame_nbytes
 from .observability import get_logger, log
 
 # judge(summaries, exemplar) -> the id of the episode this observation shares a SUBJECT with, or
-# None for a new subject. NOTE (Y1): the judge answers decision (1) ONLY. Its answer is evidence for
+# None for a new subject. NOTE: the judge answers decision (1) ONLY. Its answer is evidence for
 # continuation, not continuation itself — the returned episode still has to pass the continuation
-# conjunction. The name is historical; ``subject_key=`` is the forward-looking seam (Y5/Z3).
+# conjunction. The name is historical; ``subject_key=`` is the forward-looking seam.
 EpisodeJudge = Callable[[list[dict], Any], "str | None"]
 
-# The Y2 seam: does this finding MODIFY the episode in a way compatible with continuing it? A
+# The mutation seam: does this finding MODIFY the episode in a way compatible with continuing it? A
 # retraction, a contradicting value or a status flip is incompatible -> a new episode, not a
 # silently mutated old one. Default (no check supplied) is "compatible", which is byte-for-byte the
-# pre-Y1 behavior.
+# original behavior.
 MutationCheck = Callable[["Episode", Any], bool]
 
 # ================================================================================================
-# EVIDENCE HANDLES (card Y14) — an episode retains a HANDLE, never the decoded frame.
+# EVIDENCE HANDLES — an episode retains a HANDLE, never the decoded frame.
 # ================================================================================================
 #
 # The defect: ``Episode.exemplar`` / ``Episode.representative`` are opaque ``Any`` and the counting
-# path folded DECODED FRAMES into them. Z1 already proved retention is a fixed plateau of
+# path folded DECODED FRAMES into them. Frame retention is a fixed plateau of
 # ~50 x frame_bytes for the FrameWindow (46 MB at 640x480, ~300 MB at 1080p); an episode log that
 # ALSO pins a frame per episode multiplies that, and ``max_episodes`` bounds the COUNT of episodes,
 # never their BYTES — so a per-episode frame makes the log's memory scale with source resolution,
-# exactly the class of leak Z1's byte budget closed for the window.
+# the same class of leak the frame window's byte budget was built to close.
 #
 # The fix is the ADR-003 opaque-handle shape (docs/adr/ADR-003): store a small descriptor — an
 # opaque ``ref`` and a cheap ``fingerprint`` — NEVER the pixels. A handle carries no ``nbytes`` /
-# ``w`` / ``h`` / ``size`` attribute, so the SAME measuring function Z1 shipped
+# ``w`` / ``h`` / ``size`` attribute, so the SAME measuring function used elsewhere
 # (:func:`percept.events.frame_nbytes`) reports it as 0 (unmeasurably small) — retained evidence
 # bytes then stop scaling with resolution and with N observations. ``source_nbytes`` records how big
 # the frame this handle STANDS IN FOR was, for observability (how much was NOT retained); it is a
@@ -108,7 +109,7 @@ MutationCheck = Callable[["Episode", Any], bool]
 
 @dataclass(frozen=True)
 class EvidenceHandle:
-    """An opaque HANDLE to evidence — a small descriptor, NEVER a decoded frame (card Y14, ADR-003).
+    """An opaque HANDLE to evidence — a small descriptor, NEVER a decoded frame (ADR-003).
 
     ``ref`` is an opaque store key in the ADR-003 sense: a caller MUST NOT parse it, construct one, or
     assume it is a filesystem path. ``fingerprint`` is a cheap dHash-style signature (see

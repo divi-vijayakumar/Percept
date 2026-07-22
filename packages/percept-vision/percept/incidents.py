@@ -33,7 +33,7 @@ def make_incident(
     The fire's ``verdict`` carries the VLM's evidence; ``text`` (the goal's ``say``) becomes the
     human-facing ``message``. ``label`` stays ``None`` until a human / the calibration loop classifies it.
 
-    ``entity_id`` (D4, contract 1.3) carries the gated subject's correlation handle THROUGH the
+    ``entity_id`` (contract 1.3) carries the gated subject's correlation handle THROUGH the
     emission boundary. The gate key is already ``(goal_id, entity_id)``, so identity was computed
     upstream and then dropped here; a consumer that cannot tell two subjects apart reads their
     interleaved fires as out-of-order divergence. Taken from the fire's own ``entity_id`` (duck-typed,
@@ -44,14 +44,14 @@ def make_incident(
     goal_id = getattr(fire, "goal_id", "")
     if entity_id is None:
         entity_id = getattr(fire, "entity_id", None)
-    # X7's JudgmentEvent (when the fire carried one) is the source of truth for evidence_seq — the
+    # The fire's JudgmentEvent (when the fire carried one) is the source of truth for evidence_seq — the
     # per-key ADR-001 §8 dispatch sequence. A fire from a path that takes no judge-funnel stamps
     # (episode/rhythm/boundary/transition/absence) carries no ``.judgment``, so this stays None rather
     # than a fabricated number.
     judgment = getattr(fire, "judgment", None)
     evidence_seq = getattr(judgment, "evidence_seq", None) if judgment is not None else None
-    # Z3 — carry the enriched judgment envelope THROUGH the emission boundary; Y10 attaches the
-    # provisional/superseding link as runtime-local attrs AFTER construction, so bind to a variable.
+    # Carry the enriched judgment envelope THROUGH the emission boundary; the provisional/superseding
+    # link is attached as runtime-local attrs AFTER construction, so bind to a variable.
     incident = Incident(
         id=id or f"inc-{goal_id}-{ts:.3f}-{uuid.uuid4().hex[:8]}",
         concern_id=goal_id,
@@ -67,7 +67,7 @@ def make_incident(
         provenance=getattr(fire, "provenance", None),
         evidence_seq=evidence_seq,
     )
-    # Y10 — carry the provisional/superseding link ACROSS the emission boundary as RUNTIME-LOCAL
+    # Carry the provisional/superseding link ACROSS the emission boundary as RUNTIME-LOCAL
     # annotations (private instance attrs, exactly like Incident's bound label state): the delivery
     # path (``SupersessionSink``) and an in-process ``async for incident in run(...)`` consumer read
     # them to relate a correction to the incident it supersedes, while the WIRE Incident shape stays
@@ -76,8 +76,8 @@ def make_incident(
     # :func:`incident_revision` / :func:`incident_supersedes`.
     incident._revision_id = getattr(fire, "revision_id", None)  # type: ignore[attr-defined]
     incident._supersedes = getattr(fire, "supersedes", None)  # type: ignore[attr-defined]
-    # Y11 — the SHADOW advisory (resolved subject + proposed EpisodeFoldResult), attached as a
-    # RUNTIME-LOCAL annotation exactly like Y10's revision link: the WIRE Incident stays frozen (no
+    # The SHADOW advisory (resolved subject + proposed EpisodeFoldResult), attached as a
+    # RUNTIME-LOCAL annotation exactly like the revision link above: the WIRE Incident stays frozen (no
     # schema bump, no webhook-payload change), and a consumer that ignores it sees byte-for-byte
     # today's Incident. It GOVERNS NOTHING — it records what the fold WOULD have proposed. Taken from
     # the ``shadow`` kwarg, else the fire's own ``shadow`` (duck-typed) if it carries one. Stored as
@@ -93,19 +93,19 @@ def make_incident(
 def incident_revision(incident: Any) -> str | None:
     """This incident's stable episode-revision id (``<episode_id>#r<n>``), or ``None``.
 
-    The runtime-local annotation :func:`make_incident` copies off the fire (card Y10). ``None`` for an
-    incident that carried no episode revision (an unbound/ambiguous or pre-Y10 fire)."""
+    The runtime-local annotation :func:`make_incident` copies off the fire. ``None`` for an
+    incident that carried no episode revision (an unbound/ambiguous or older fire)."""
     return getattr(incident, "_revision_id", None)
 
 
 def incident_supersedes(incident: Any) -> str | None:
     """The PRIOR revision id this incident supersedes (a replace/retract correction), or ``None`` for
-    an original ("provisional") incident. Runtime-local annotation (card Y10)."""
+    an original ("provisional") incident. Runtime-local annotation."""
     return getattr(incident, "_supersedes", None)
 
 
 def incident_shadow(incident: Any) -> dict | None:
-    """The Y11 SHADOW advisory (``{"subject": ..., "fold": ...}``) attached to this incident, or
+    """The SHADOW advisory (``{"subject": ..., "fold": ...}``) attached to this incident, or
     ``None``. Runtime-local annotation — ADVISORY ONLY, it governs nothing. Reconstruct the typed
     :class:`~percept.behavior.ShadowObservation` with ``ShadowObservation.from_advisory(...)``."""
     return getattr(incident, "_shadow", None)
