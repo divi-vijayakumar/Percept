@@ -307,17 +307,14 @@ class TestSituationResolverProvenanceStamped(unittest.TestCase):
         resolver = ConfigResolver()
         resolved = resolver.resolve(_plan(), situation=("stative", "fixed", "start_anchored"))
         self.assertEqual(
-            resolved.provenance["Settings.edge.salience_stat"].source_id,
+            resolved.provenance["WatchProfile.plan_mode"].source_id,
             "profile_resolution.resolve_situation",
         )
 
     def test_no_situation_no_situation_derived_fields(self) -> None:
         resolver = ConfigResolver()
         resolved = resolver.resolve(_plan())
-        self.assertNotEqual(
-            resolved.provenance["Settings.edge.salience_stat"].source_id,
-            "profile_resolution.resolve_situation",
-        )
+        self.assertNotIn("WatchProfile.plan_mode", resolved.effective)
 
     def test_never_selects_sprite(self) -> None:
         """Corrections(a): window beats sprite unconditionally; the situation resolver has no code

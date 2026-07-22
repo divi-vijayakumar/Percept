@@ -249,7 +249,7 @@ def _source_profile_paths(profile: SourceProfile) -> dict[str, Any]:
 
 #: Which ``Settings.edge.*`` threshold field a salience_stat's cutoff rides on — mirrors
 #: ``_expand_explicit_path``'s ``stat_thresholds`` fan-out, applied here to a SourceProfile's OWN
-#: declared ``parameters['salience_stat']``/``parameters['salience_threshold']`` (card C2: "salience
+#: declared ``parameters['salience_stat']``/``parameters['salience_threshold']`` ("salience
 #: params -> edge settings").
 _SALIENCE_THRESHOLD_PATH: dict[str, str] = {
     "mean": "Settings.edge.motion_gate",
@@ -259,9 +259,9 @@ _SALIENCE_THRESHOLD_PATH: dict[str, str] = {
 
 
 def _source_profile_runtime_bindings(profile: SourceProfile) -> dict[str, Any]:
-    """Card C2: bind a resolved :class:`SourceProfile`'s DECLARED strategy onto the runtime fields
+    """Bind a resolved :class:`SourceProfile`'s DECLARED strategy onto the runtime fields
     that actually implement it — the missing half of ADR-005's "SourceProfile selects strategies"
-    promise, which until this card stopped at the profile object and never reached
+    promise, which previously stopped at the profile object and never reached
     :class:`~percept.config.Settings` / ``Goal.state`` (this is why passing ``source_profile=`` to
     ``percept doctor`` used to change only the REPORTED note, never the replayed admission).
 
@@ -315,8 +315,8 @@ def _source_profile_runtime_bindings(profile: SourceProfile) -> dict[str, Any]:
 #: registry ownership (WatchProfile.plan_mode -> "WatchPlan"; Settings.edge.ego_compensate ->
 #: "SourceProfile"; Settings.gate.require_false_first -> "Gate"), not re-decided here.
 #:
-#: ``salience_stat``/``stat_thresholds`` are deliberately ABSENT: ADR-008's ownership transfer (card
-#: C2) moved them out of the situation axes entirely — resolve_situation() no longer emits them (see
+#: ``salience_stat``/``stat_thresholds`` are deliberately ABSENT: ADR-008's ownership transfer moved
+#: them out of the situation axes entirely — resolve_situation() no longer emits them (see
 #: percept.profile_resolution), so this mapping only needs to name the keys it still does.
 _SITUATION_PATHS: tuple[tuple[str, str], ...] = (
     ("plan_mode", "WatchProfile.plan_mode"),
@@ -603,7 +603,7 @@ class ConfigResolver:
             _LayerContribution(
                 LAYER_SOURCE_PROFILE, source_profile_bindings,
                 source_profile.name if source_profile else "source_profile",
-                "source profile declared strategy bound to runtime fields (salience/coast, card C2)",
+                "source profile declared strategy bound to runtime fields (salience/coast)",
             ),
             _LayerContribution(
                 LAYER_DOMAIN_PACK, domain_pack_values,

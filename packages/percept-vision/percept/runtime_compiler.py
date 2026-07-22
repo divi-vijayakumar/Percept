@@ -96,7 +96,7 @@ class CompiledWatch:
       (``"auto"``/``"media"``/``"wall"``), or ``None`` when no profile contributed one — a caller
       threads this straight into :func:`percept.runtime.worker.run`'s own ``timebase=`` kwarg
       (``run(core, source, timebase=compiled.timebase or "auto")``), never a new timebase concept
-      (card C2: "default_timebase -> run(timebase=)").
+      ("default_timebase -> run(timebase=)").
     - ``watchspec_kwargs`` — ``threshold``/``salience_stat``/``ego_compensate``/``stat_thresholds``,
       exactly :func:`percept.harness.tier0.compile_watchspec`'s deployment-default kwargs.
     - ``components`` — provider NAME identities the compiler carried forward (``vision``,

@@ -23,7 +23,7 @@ best-match profile for ``key`` and layers the axis-derived overrides on top of i
 
 Design rationale (grounded in this repo's measured tuning results — cited, not re-derived here):
 
-- **salience_stat is NOT a situation axis (ADR-008 ownership transfer, card C2).** Localized
+- **salience_stat is NOT a situation axis (ADR-008 ownership transfer).** Localized
   (block-max) salience nearly doubled recall vs. a whole-frame mean (0.31 -> 0.59; see the project's
   viability-ladder findings), which is why every shipped :class:`~percept.watchprofile.WatchProfile`
   (``percept.profiles_default``) and both stable :class:`~percept.sourceprofile.SourceProfile`
@@ -160,7 +160,7 @@ class SituationResolution:
           rather than being merged into a returned ``WatchProfile`` by :func:`resolve_profile`.
 
       ``"salience_stat"``/``"stat_thresholds"`` are deliberately NOT situation-axis overrides
-      (ADR-008 ownership transfer, card C2): which statistic to use is owned by the profile/source
+      (ADR-008 ownership transfer): which statistic to use is owned by the profile/source
       layer, not by goal-temporality/camera-mount/start-state. :func:`resolve_profile` passes
       whatever the resolved registry profile (or resolved :class:`~percept.sourceprofile.SourceProfile`)
       already declares straight through, unmodified.
@@ -207,8 +207,8 @@ def resolve_profile(
     resulting key (exact match, then :data:`~percept.watchprofile.WILDCARD` fallback, per
     :meth:`~percept.watchprofile.WatchProfileRegistry.resolve`), and layer the situation's overrides
     (``plan_mode``, ``gate.require_false_first``) on top of it via :func:`dataclasses.replace`.
-    ``salience_stat``/``stat_thresholds`` are NOT overridden here (ADR-008 ownership transfer, card
-    C2) — the resolved profile's own declared value passes through untouched, whatever it is. Returns
+    ``salience_stat``/``stat_thresholds`` are NOT overridden here (ADR-008 ownership transfer) — the
+    resolved profile's own declared value passes through untouched, whatever it is. Returns
     ``(profile, overrides)`` -- ``overrides`` is the same dict :func:`resolve_situation` produced,
     included because ``"ego_compensate"`` has no home on :class:`~percept.watchprofile.WatchProfile`
     yet (see :class:`SituationResolution`) and callers need it.

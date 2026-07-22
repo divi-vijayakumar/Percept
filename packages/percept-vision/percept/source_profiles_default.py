@@ -1,12 +1,13 @@
-"""The shipped :class:`~percept.sourceprofile.SourceProfile` set (ADR-005, promoted by card C2).
+"""The shipped :class:`~percept.sourceprofile.SourceProfile` set (ADR-005, extended with a tuned
+localized admission default for screen_document).
 
 Three profiles ship. Two are stable; one is explicitly EXPERIMENTAL and says so in its own
 ``stability`` field, not only in prose:
 
 - :data:`PHYSICAL_SCENE` — the source class percept's stock tier-0 eye was calibrated on. Cameras.
   Admission is the measured admission stack (localized ``block_max`` salience over the 48x36 gate frame).
-- :data:`SCREEN_DOCUMENT` — screen recordings, document/page content. Card C2 promotes this profile
-  to TUNED @1: the SAME localized ``block_max``/0.20 signal :data:`PHYSICAL_SCENE` carries — never a
+- :data:`SCREEN_DOCUMENT` — screen recordings, document/page content. TUNED @1: the SAME localized
+  ``block_max``/0.20 signal :data:`PHYSICAL_SCENE` carries — never a
   lowered cutoff — is the declared default admission for screen content large enough to register on
   the 48x36 gate frame (a highlighted cell, a popup, a UI element). A fixed low-rate coast
   (1.0-2.0s) remains the floor UNDERNEATH it: the measured evidence below shows a full-PAGE,
@@ -139,14 +140,15 @@ SCREEN_DOCUMENT = SourceProfile(
     name="screen_document",
     modalities=frozenset({"video", "text"}),
     temporal_unit="page",
-    # TUNED @1 (card C2): the same localized tier-0 salience stack physical_scene ships, applied to
+    # TUNED @1: the same localized tier-0 salience stack physical_scene ships, applied to
     # screen content. parameters["change_signal"] names a REAL signal (never UNTUNED) at the SAME
     # cutoff physical_scene carries — see the module docstring for the scope this does and does not
     # cover, and why the coast below stays mandatory alongside it.
     admission_strategy="tier0_localized_salience_or_coast",
-    # Ordered frame WINDOW, never a sprite montage (ADR-008 Corrections(a): window beat sprite
-    # unconditionally on the H0 dynamic-goal set). parameters["plan_mode"] states this explicitly so
-    # a caller reading this profile's parameters sees the same rule the resolver enforces globally.
+    # Ordered frame WINDOW, never a sprite montage (ADR-008 Corrections(a): an ordered frame window
+    # beat a sprite montage unconditionally in the dynamic-goal viability evaluation). parameters
+    # ["plan_mode"] states this explicitly so a caller reading this profile's parameters sees the
+    # same rule the resolver enforces globally.
     evidence_strategy="screenshot_plus_changed_region",
     # NEVER geometry alone. IoU+label cannot separate INV-2291 from INV-2294: two invoices rendered
     # in the same screen region carrying the same label are the SAME entity by construction under a
@@ -178,7 +180,7 @@ SCREEN_DOCUMENT = SourceProfile(
     },
     stability="stable",
     notes=(
-        "Screen recordings, document and page content. TUNED @1 (card C2): the declared default "
+        "Screen recordings, document and page content. TUNED @1: the declared default "
         "admission is localized block_max salience at 0.20 — the SAME cutoff physical_scene carries, "
         "never lowered — which clears on a screen change large enough to register on the 48x36 gate "
         "frame (a highlighted cell, a popup, a UI element). A fixed low-rate coast remains mandatory "

@@ -396,8 +396,9 @@ def test_a_non_camera_source_derives_without_touching_the_camera_axis(tmp_path: 
     )
     assert report.derived.source_profile.name == "screen_document"
     assert report.derived.watch_profile.profile.environment == "fixed_camera"
-    # the scorecard tells the 2am reader the source is admission-untuned
-    assert "UNTUNED" in render_scorecard(report)
+    # the scorecard tells the 2am reader WHICH admission signal is active for this source (card C2:
+    # screen_document ships a tuned localized default, not UNTUNED, but the scorecard still names it).
+    assert "admission via 'tier0_localized_salience_or_coast'" in render_scorecard(report)
 
 
 # ---------------------------------------------------------------------------
