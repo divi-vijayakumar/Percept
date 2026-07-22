@@ -32,11 +32,12 @@ from .episodes import (
     Episode,
     EpisodeJudge,
     EpisodeLog,
+    EpisodePolicy,
     MutationCheck,
     episode_policy_of,
     subject_is_unknown,
 )
-from .identity_policy import identity_policy_of
+from .identity_policy import identity_policy_of, select_identity_policy
 from .events import AudioWindow, EventLog, FrameWindow
 from .gate import FIRE, Gate, GateAction, classify
 from .goals import GoalOp, GoalRegistry
@@ -749,6 +750,39 @@ class Percept:
                 "a deadline concern whose stamp would fire on the wrong timeline or never fire."
             )
 
+    def _episode_default(self, fallback: "EpisodePolicy | None") -> "EpisodePolicy | None":
+        """The :class:`~percept.episodes.EpisodePolicy` an episode-owning call site should pass as
+        ``episode_policy_of(goal, default=...)`` when the goal itself authors nothing.
+
+        The RESOLVED ``self.source_profile`` (set by :meth:`configure` /
+        :func:`percept.watchplan_apply.apply_watch_plan` when a profile was actually named) wins over
+        the call site's own hardcoded ``fallback`` (``EPISODE_POLICIES['document_presence']`` /
+        ``['conversational_claim']`` / ``None``) — a source class's declared continuation semantics
+        (:attr:`~percept.sourceprofile.SourceProfile.default_episode_policy`) are more specific than
+        the generic per-mode default. ``self.source_profile is None`` (a bare ``create()``, or a
+        profile-less ``configure()``) returns ``fallback`` unchanged — byte-for-byte today's behavior.
+        Explicit ``goal.state['episode']`` authoring always wins regardless (handled inside
+        :func:`~percept.episodes.episode_policy_of` itself, upstream of this default).
+        """
+        if self.source_profile is not None:
+            return self.source_profile.default_episode_policy
+        return fallback
+
+    def _resolved_identity_policy(self, goal: Goal) -> str | None:
+        """The identity policy THIS concern is running under, for the document/claim episode-fold
+        gates below. Concern-declared (``goal.state['identity_policy']``) always wins; with no
+        resolved ``self.source_profile`` this is exactly :func:`~percept.identity_policy.identity_policy_of`
+        — ``None`` when the goal declared nothing, byte-for-byte today's behavior (an undeclared goal
+        never enters document/claim episode-fold mode on a profile-less core). When a profile WAS
+        resolved, an undeclared goal instead inherits the profile's capability via
+        :func:`~percept.identity_policy.select_identity_policy` (``source_profile.identity_strategy``)
+        — the ADR-005 "profile declares, concern selects" shape this call site never actually threaded
+        before this wiring.
+        """
+        if self.source_profile is not None:
+            return select_identity_policy(goal, self.source_profile)
+        return identity_policy_of(goal)
+
     # -- episode counting (the cup problem) ---------------------------------
     def count_event(
         self, goal_id: str, exemplar: Any, judge: "EpisodeJudge | None" = None, *,
@@ -791,7 +825,10 @@ class Percept:
                 goal_id,
                 window_s=self.settings.episodes.window_s,
                 max_episodes=self.settings.episodes.max_episodes,
-                policy=episode_policy_of(goal) if goal is not None else None,
+                policy=(
+                    episode_policy_of(goal, default=self._episode_default(None))
+                    if goal is not None else None
+                ),
             )
             self.episodes[goal_id] = log
         decision = log.observe_decision(
@@ -1274,7 +1311,9 @@ class Percept:
                 goal.id,
                 window_s=self.settings.episodes.window_s,
                 max_episodes=self.settings.episodes.max_episodes,
-                policy=episode_policy_of(goal, default=EPISODE_POLICIES["document_presence"]),
+                policy=episode_policy_of(
+                    goal, default=self._episode_default(EPISODE_POLICIES["document_presence"])
+                ),
             )
             self.episodes[goal.id] = log
         decision = log.observe_decision(t, verdict)
@@ -1339,7 +1378,9 @@ class Percept:
                 goal.id,
                 window_s=self.settings.episodes.window_s,
                 max_episodes=self.settings.episodes.max_episodes,
-                policy=episode_policy_of(goal, default=EPISODE_POLICIES["conversational_claim"]),
+                policy=episode_policy_of(
+                    goal, default=self._episode_default(EPISODE_POLICIES["conversational_claim"])
+                ),
             )
             self.episodes[goal.id] = log
         state = self._claim_states.get(goal.id)
