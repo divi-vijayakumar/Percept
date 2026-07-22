@@ -1,8 +1,8 @@
 """``percept`` — the thin umbrella CLI over the package's independent console scripts.
 
-Seven `[project.scripts]` entry points already exist (``percept-watch``, ``percept-doctor``,
+Eight `[project.scripts]` entry points already exist (``percept-watch``, ``percept-doctor``,
 ``percept-replay``, ``percept-bench``, ``percept-eval``, ``percept-derive-profile``,
-``percept-schema``), each a self-contained ``main(argv) -> int``. This module invents no new
+``percept-optimize``, ``percept-schema``), each a self-contained ``main(argv) -> int``. This module invents no new
 argument parsing for any of them — it only routes ``percept <name> ...`` to the SAME unmodified
 ``main`` function the standalone script calls, so ``percept watch --source 0`` and
 ``percept-watch --source 0`` are byte-identical in behavior. A caller who already has muscle
@@ -42,6 +42,7 @@ _DELEGATES: dict[str, str] = {
     "bench": "percept.bench",
     "eval": "percept.eval.differential",
     "derive-profile": "percept.eval.derivation",
+    "optimize": "percept.optimizer",
     "schema": "percept.contracts.jsonschema",
 }
 

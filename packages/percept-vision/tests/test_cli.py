@@ -58,6 +58,12 @@ def test_delegation_reaches_the_real_replay_parser():
     assert exc.value.code == 0
 
 
+def test_delegation_reaches_the_real_optimize_parser():
+    with pytest.raises(SystemExit) as exc:
+        main(["optimize", "--help"])
+    assert exc.value.code == 0
+
+
 # ---------------------------------------------------------------------------
 # percept resolve
 # ---------------------------------------------------------------------------

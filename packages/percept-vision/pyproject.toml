@@ -84,6 +84,7 @@ percept-replay = "percept.replay:main"
 percept-bench = "percept.bench:main"
 percept-eval = "percept.eval.differential:main"
 percept-derive-profile = "percept.eval.derivation:main"
+percept-optimize = "percept.optimizer:main"
 percept-schema = "percept.contracts.jsonschema:main"
 
 # ADR-008 DomainPack discovery (percept.domain_pack.discover_domain_pack_entrypoints): each entry
