@@ -346,6 +346,7 @@ describe("Incident / IncidentSnippet", () => {
       roi: null,
       modality: null,
       provenance: null,
+      evidence_seq: null, // contract 1.7 — defaults null on a minimal build
     });
   });
 
@@ -384,6 +385,7 @@ describe("Incident / IncidentSnippet", () => {
       roi: null,
       modality: null,
       provenance: null,
+      evidence_seq: null, // absent on a pre-1.7 payload -> null, never a parse failure
     });
   });
 
