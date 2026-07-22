@@ -26,7 +26,10 @@
  * `percept.contracts.CONTRACT_VERSION`. Same major == wire-compatible. This is DISTINCT from
  * `WatchSpec.version` (the wire integer, defaults to 1) which stays for payload compat.
  */
-export const CONTRACT_VERSION = "1.6.0"; // JS twin of Python 1.6.0 — SubjectRef + claim channel + judgment envelope (all additive).
+export const CONTRACT_VERSION = "1.8.0"; // JS twin of Python 1.8.0 — one batch bump covering 1.7 (Incident.evidence_seq
+// + SubjectRef 'provisional' resolution state / provisionalSubject()) and 1.8 (WatchPlan/SettingOrigin/
+// ResolvedWatch/WatchReceipt/FieldDiagnostic — Python-side-only config-provenance DTOs with no wire/gate
+// surface for the edge, so this bump carries no further JS shape changes beyond what 1.7 already added).
 // This constant names the PYTHON contract version these shapes are a twin of. The JS side implements a
 // SUBSET of the Python DTOs (the shapes defined below); the version tracks the wire contract, not the
 // coverage. 1.0.0: initial public wire contract (launch).
@@ -740,26 +743,41 @@ export function parseIncident(json) {
 }
 
 // ---------------------------------------------------------------------------
-// SubjectRef  { scheme, namespace, key: string|null, resolution: "bound"|"unknown",
+// SubjectRef  { scheme, namespace, key: string|null, resolution: "bound"|"unknown"|"provisional",
 //               scope: "session"|"source"|"durable", strategy, confidence: number|null }
 // ---------------------------------------------------------------------------
 //
-// The JS twin of the Python `percept.contracts.SubjectRef` (contract 1.4): a namespaced,
-// tri-state reference to WHICH subject a judgment is about. `PO-4471` is not globally unique across
-// systems, so `namespace` disambiguates the `key`. Two `resolution` states ONLY: "bound" (identified)
-// or "unknown" (seen but unidentified). The ABSENCE of a subject is `null` on the carrier (e.g.
-// `verdict.subject`), NOT a third resolution value.
+// The JS twin of the Python `percept.contracts.SubjectRef` (contract 1.4, +'provisional' in 1.7):
+// a namespaced, tri-state reference to WHICH subject a judgment is about. `PO-4471` is not globally
+// unique across systems, so `namespace` disambiguates the `key`. THREE `resolution` states: "bound"
+// (we know which subject this is), "unknown" (seen but unidentified, no key at all), or "provisional"
+// (seen, could not identify, but stayed in view long enough within ONE episode to earn a
+// SESSION-LOCAL handle — the key is always `UN_<episode_id>` (`PROVISIONAL_KEY_PREFIX`), minted by
+// the episode log itself, never by a judge and never from pixels; use `provisionalSubject(episode_id)`
+// rather than constructing this shape by hand). The ABSENCE of a subject is `null` on the carrier
+// (e.g. `verdict.subject`), NOT a fourth resolution value.
 //
 // Invariants mirrored byte-for-byte with the Python `__post_init__`:
-//   - "bound"   REQUIRES a non-empty namespace AND a non-empty key.
-//   - "unknown" REQUIRES key === null (an unresolved subject must not carry a key).
+//   - "bound"       REQUIRES a non-empty namespace AND a non-empty key.
+//   - "unknown"     REQUIRES key === null (an unresolved subject must not carry a key).
+//   - "provisional" REQUIRES a key of the form `UN_<episode_id>` (`PROVISIONAL_KEY_PREFIX` + episode
+//     id) AND scope === "session" — a session-local handle claiming source/durable stability would be
+//     exactly the re-identification record percept refuses to produce.
 //   - `scope: "durable"` documents IDENTIFIER stability ONLY — NOT a claim that episode state is
 //     persisted (percept episode state is session-only).
 //   - `confidence` is NOT defaulted to 1.0 (a judge-emitted key is not certain by construction); it
 //     is a number in [0,1] or null ("unstated").
 // ---------------------------------------------------------------------------
 
-const _SUBJECT_RESOLUTIONS = new Set(["bound", "unknown"]);
+/**
+ * The prefix a 'provisional' SubjectRef key always carries — `UN_<episode_id>`. Named so nothing
+ * constructs the shape by hand: the key is always "this run's episode id, prefixed", never a value
+ * that could be mistaken for a durable/biometric identifier. The JS twin of Python's
+ * `percept.contracts.PROVISIONAL_KEY_PREFIX`.
+ */
+export const PROVISIONAL_KEY_PREFIX = "UN_";
+
+const _SUBJECT_RESOLUTIONS = new Set(["bound", "unknown", "provisional"]);
 const _SUBJECT_SCOPES = new Set(["session", "source", "durable"]);
 
 function _validateSubjectRef(scheme, namespace, key, resolution, scope, strategy, confidence, ctx) {
@@ -775,6 +793,21 @@ function _validateSubjectRef(scheme, namespace, key, resolution, scope, strategy
   if (resolution === "bound") {
     if (!namespace) throw new ContractError(`${ctx}: 'bound' requires a non-empty namespace`);
     if (typeof key !== "string" || !key) throw new ContractError(`${ctx}: 'bound' requires a non-empty key`);
+  } else if (resolution === "provisional") {
+    if (typeof key !== "string" || !key || !key.startsWith(PROVISIONAL_KEY_PREFIX)) {
+      throw new ContractError(
+        `${ctx}: 'provisional' requires a key of the form ${PROVISIONAL_KEY_PREFIX}<episode id> ` +
+          `(got ${JSON.stringify(key)}). A provisional handle is minted by the episode that observed ` +
+          "the sighting, never invented ad hoc — use provisionalSubject(episode_id)."
+      );
+    }
+    if (scope !== "session") {
+      throw new ContractError(
+        `${ctx}: 'provisional' requires scope === "session" (got ${JSON.stringify(scope)}). A ` +
+          "session-local handle claiming source/durable stability would be exactly the " +
+          "re-identification record percept refuses to produce."
+      );
+    }
   } else {
     // "unknown"
     if (key !== null && key !== undefined) {
@@ -790,6 +823,8 @@ function _validateSubjectRef(scheme, namespace, key, resolution, scope, strategy
 
 /**
  * Build a SubjectRef. `confidence` defaults to null (NOT 1.0 — a judge-emitted key is not certain).
+ * `resolution` is "bound" | "unknown" | "provisional" — for "provisional", prefer
+ * `provisionalSubject(episode_id)` rather than constructing this shape by hand.
  * @returns {{scheme:string,namespace:string,key:string|null,resolution:string,scope:string,strategy:string,confidence:number|null}}
  * @throws {ContractError}
  */
@@ -806,12 +841,38 @@ export function makeSubjectRef({
   return {
     scheme,
     namespace,
-    key: resolution === "bound" ? key : null,
+    key: resolution === "unknown" ? null : key,
     resolution,
     scope,
     strategy,
     confidence: confidence == null ? null : confidence,
   };
+}
+
+/**
+ * Build the 'provisional' SubjectRef for a session-local, unidentified sighting — the JS twin of
+ * Python's `percept.contracts.provisional_subject(episode_id)`. The ONLY door a provisional identity
+ * comes through: an episode log observed a subject it could not identify and gave it a handle keyed
+ * to the episode itself (`UN_<episode_id>`), never to pixels or any cross-session signal. Two
+ * sightings only ever share this ref when they are the SAME episode.
+ * @returns {{scheme:string,namespace:string,key:string,resolution:"provisional",scope:"session",strategy:string,confidence:null}}
+ * @throws {ContractError}
+ */
+export function provisionalSubject(
+  episode_id,
+  { scheme = "episode", namespace = "", strategy = "episode_scoped" } = {}
+) {
+  if (typeof episode_id !== "string" || !episode_id.trim()) {
+    throw new ContractError("provisionalSubject: episode_id must be a non-empty string");
+  }
+  return makeSubjectRef({
+    scheme,
+    namespace,
+    key: `${PROVISIONAL_KEY_PREFIX}${episode_id}`,
+    resolution: "provisional",
+    scope: "session",
+    strategy,
+  });
 }
 
 /**
@@ -835,7 +896,7 @@ export function parseSubjectRef(json, { path = "subject" } = {}) {
   return {
     scheme: obj.scheme,
     namespace: obj.namespace,
-    key: obj.resolution === "bound" ? key : null,
+    key: obj.resolution === "unknown" ? null : key,
     resolution: obj.resolution,
     scope: obj.scope,
     strategy: obj.strategy,
