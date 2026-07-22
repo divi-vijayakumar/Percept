@@ -1265,7 +1265,7 @@ class TraceRecorder:
         )
         self._seq += 1
         if stage == STAGE_SOURCE_FRAME:
-            # D11 — remember THIS trace_id's admitted-frame seq so a same-trace judgment.event
+            # Remember THIS trace_id's admitted-frame seq so a same-trace judgment.event
             # (emitted later, same tick) can resolve back to it. Bounded exactly like
             # ``_observed_wall`` — a correlation map must not leak on a 24/7 run.
             if len(self._frame_seq) >= 4 * self._max_records:
@@ -1405,7 +1405,7 @@ class TraceRecorder:
 
         Maps ``RuntimeHealthEvent`` kinds onto this module's vocabulary — scheduler drops become
         ``judge.dropped``, gate suppression becomes ``gate.suppressed``, and the degrade/recover
-        latch (M3R) becomes ``source.health`` transitions that drive ``source_healthy_s``. Kinds
+        latch becomes ``source.health`` transitions that drive ``source_healthy_s``. Kinds
         outside those sets are recorded verbatim under ``source.health`` with ``state="info"`` so a
         new runtime event can never be silently lost.
         """

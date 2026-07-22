@@ -116,7 +116,7 @@ def motion_score(
     so the gate treats the very first frame as "no motion yet". Mismatched dimensions are a
     contract error and raise.
 
-    ``region`` (a normalized :class:`~percept.adapters.Box`, the C1 "watch-out zone") restricts the
+    ``region`` (a normalized :class:`~percept.adapters.Box`, the "watch-out zone") restricts the
     diff to that rectangle: motion outside the box is ignored, so only movement *inside* the zone
     can escalate.
 
@@ -390,13 +390,13 @@ def ego_residual_score(prev_frame: Any, frame: Any, *, k: int = 4) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Civil time — the injected clock the schedule gate consults (C1)
+# Civil time — the injected clock the schedule gate consults
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class CivilTime:
-    """The civil moment a :class:`~percept.adapters.Schedule` is checked against (C1).
+    """The civil moment a :class:`~percept.adapters.Schedule` is checked against.
 
     Deliberately just ``(weekday, minute_of_day)`` so the gate's schedule decision is *pure*: no
     timezone, no wall-clock read inside the gate. The wall-clock -> civil conversion lives at the
@@ -423,7 +423,7 @@ def schedule_active(schedule: Schedule | None, now: CivilTime | None) -> bool:
     """Is a condition armed at ``now``? Opt-in: a ``None`` schedule OR a ``None`` clock -> always armed.
 
     The two ``None`` short-circuits keep the default path (no schedule, or no injected clock) byte-for-byte
-    identical to pre-C1 — schedule enforcement engages **only** when both a schedule and a clock are present.
+    identical to the schedule-less gate — schedule enforcement engages **only** when both a schedule and a clock are present.
     """
     if schedule is None or now is None:
         return True

@@ -23,7 +23,7 @@
 // `category` is the coarse sense CLASS a detector belongs to ("motion" | "audio" | "frame" plus
 // additive channels like "presence", "pose", "audio_event", "change", "semantic_relevance"), so a whole
 // modality is discoverable at once (`detectorsInCategory("audio")` lists every audio skill) — this is
-// what marks `acoustic-onset` as the first-class AUDIO sense (B2). It mirrors the Python
+// what marks `acoustic-onset` as the first-class AUDIO sense. It mirrors the Python
 // `DetectorManifest.category` byte-for-byte so the manifest rides the capability handshake unchanged.
 
 // Boundary is a wire shape — defined (with validation) in the frozen contract; skills emit it.

@@ -912,23 +912,23 @@ class JudgmentEvent:
 
     ``key``/``evidence_seq`` mirror :class:`percept.sequencing.GateDecision` so a
     JudgmentEvent can be correlated back to the serialized-reducer decision that produced it —
-    added here additively; A8's fields are untouched.
+    added here additively; the earlier GateDecision fields are untouched.
     """
 
     key: Hashable
     evidence_seq: int
     action: JudgmentAction
     timing: JudgmentTiming
-    # --- Judgment-envelope enrichment (card Z3) — additive, defaulted, non-latency observability ----
+    # --- Judgment-envelope enrichment — additive, defaulted, non-latency observability ----
     # The typed WHY/WHERE/HOW of this decision, so the frozen event a client reads at 2am is not silent
     # about the things it already knew. All OPTIONAL: an event built with none of them is byte-for-byte
-    # the pre-Z3 envelope (and every existing keyword construction keeps its meaning — these append LAST).
+    # the earlier envelope (and every existing keyword construction keeps its meaning — these append LAST).
     #
     # - ``reason``       — the closed ``percept.gate.GateReason`` code the gate decided by (``rising_edge``/
-    #   ``dwell_satisfied``/``low_confidence``/``stale``/...). It EXISTED on ``GateOutcome`` (O2) but only
+    #   ``dwell_satisfied``/``low_confidence``/``stale``/...). It already EXISTED on ``GateOutcome`` but only
     #   ever reached the health/trace channel; here it rides on the judgment itself.
-    # - ``watchplan_id`` — a stable id of the PLAN this judgment ran under (a ``PlanIdentity.plan_hash``,
-    #   card X3). The executor does not know the whole plan, so it leaves this ``None``; the runtime that
+    # - ``watchplan_id`` — a stable id of the PLAN this judgment ran under (a ``PlanIdentity.plan_hash``).
+    #   The executor does not know the whole plan, so it leaves this ``None``; the runtime that
     #   owns the goal set stamps it on the delivered :class:`Incident`.
     # - ``roi``          — the region the judgment actually fired on, WHEN the judge/gate knows it. Left
     #   ``None`` honestly rather than echoing a ``WatchCondition.region_hint`` INPUT as if it were an output.
@@ -1334,7 +1334,7 @@ class Incident:
     # 1.3: the correlation handle of the gated subject. Appended LAST so every existing
     # positional construction of Incident(...) keeps its meaning.
     entity_id: str | None = None
-    # 1.6 (card Z3) — the enriched judgment envelope, carried THROUGH the emission boundary onto the
+    # 1.6 — the enriched judgment envelope, carried THROUGH the emission boundary onto the
     # durable record a client actually receives. Two paying client teams found percept perceived
     # correctly but was UNOBSERVABLE: the reason a fire was withheld, the plan it ran under, the region/
     # modality/provenance of the evidence — all existed internally yet none reached a delivered Incident.

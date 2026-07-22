@@ -16,7 +16,7 @@ and it prints a notification the moment each one becomes true — once per episo
 Needs an OpenRouter key (cheap, fast Qwen judge):  export OPENROUTER_API_KEY=sk-or-...
 (or use --vision gemini / claude with that provider's key.)
 
-This bakes in the H0-winning defaults so it just works:
+This bakes in the tuned defaults so it just works:
   * block_max localized salience  — catches low-motion actions the global gate misses
   * a per-episode time-refractory  — one notification per event, not a stream of duplicates
 

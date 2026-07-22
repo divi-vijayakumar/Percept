@@ -557,7 +557,7 @@ function _makeVerdict(v, path) {
     }
     out.asserted_by = v.asserted_by;
   }
-  // -- additive card-Y5 subject carrier (only when present): WHICH subject the fire is about.
+  // -- additive subject carrier (only when present): WHICH subject the fire is about.
   // Absence is `null`/missing (Python `Verdict.subject: SubjectRef | None = None`), never a third state.
   if (v.subject != null) out.subject = makeSubjectRef(v.subject);
   return out;
@@ -623,7 +623,7 @@ export function parseIncidentSnippet(obj, { path = "snippet" } = {}) {
 }
 
 /**
- * Normalize the ADDITIVE card-Z3 judgment envelope (contract 1.6) plus the contract-1.7
+ * Normalize the ADDITIVE judgment envelope (contract 1.6) plus the contract-1.7
  * `evidence_seq` link, shared by makeIncident / parseIncident. Every field is optional and defaults
  * null, so a pre-1.6/1.7 payload round-trips its exact shape. `roi` is a Box (validated via
  * makeBox/parseBox), `evidence_seq` a finite number or null, the rest closed-vocab strings or null.
@@ -650,7 +650,7 @@ function _incidentEnvelope(src, ctx) {
 /**
  * Build an Incident. `verdict` is { satisfied, confidence, evidence? }; `label` defaults to null
  * (unlabelled — suggested vocab "real"/"false_alarm"); `snippet` defaults to null; `entity_id`
- * defaults to null (not entity-scoped) — the back-compatible default for pre-1.3 callers. The card-Z3
+ * defaults to null (not entity-scoped) — the back-compatible default for pre-1.3 callers. The judgment
  * envelope (`reason`/`watchplan_id`/`roi`/`modality`/`provenance`, contract 1.6) and `evidence_seq`
  * (contract 1.7) all default null.
  * @returns {{id:string,concern_id:string,verdict:object,ts:number,label:string|null,snippet:object|null,entity_id:string|null,reason:string|null,watchplan_id:string|null,roi:object|null,modality:string|null,provenance:string|null,evidence_seq:number|null}}
@@ -744,7 +744,7 @@ export function parseIncident(json) {
 //               scope: "session"|"source"|"durable", strategy, confidence: number|null }
 // ---------------------------------------------------------------------------
 //
-// The JS twin of the Python `percept.contracts.SubjectRef` (contract 1.4, card Y5): a namespaced,
+// The JS twin of the Python `percept.contracts.SubjectRef` (contract 1.4): a namespaced,
 // tri-state reference to WHICH subject a judgment is about. `PO-4471` is not globally unique across
 // systems, so `namespace` disambiguates the `key`. Two `resolution` states ONLY: "bound" (identified)
 // or "unknown" (seen but unidentified). The ABSENCE of a subject is `null` on the carrier (e.g.

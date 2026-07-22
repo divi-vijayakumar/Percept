@@ -116,7 +116,7 @@ class EvidenceHandle:
     :func:`percept.cache.framehash.dhash`) the :class:`EpisodeJudge` can compare on WITHOUT the
     pixels. ``source_nbytes`` is the measured size of the frame this handle replaced (0 = unknown) —
     observability only, and deliberately NOT called ``nbytes`` so :func:`percept.events.frame_nbytes`
-    reads the handle as ~0 bytes retained, the property the whole card exists to guarantee."""
+    reads the handle as ~0 bytes retained, the property this design exists to guarantee."""
 
     ref: str | None = None
     fingerprint: int | None = None
@@ -152,7 +152,7 @@ def evidence_handle(exemplar: Any, *, max_inline_bytes: int = _MAX_INLINE_EVIDEN
 
     An :class:`EvidenceHandle` passes through unchanged (idempotent). A cheap descriptor (measured at
     or below ``max_inline_bytes`` by :func:`percept.events.frame_nbytes`) is returned AS-IS, so string
-    tokens, dicts and pixel-free verdicts — everything the counting path used before this card — are
+    tokens, dicts and pixel-free verdicts — everything the counting path used before this change — are
     byte-for-byte unchanged. Anything larger is a decoded frame: it is replaced by a small handle
     (fingerprint + measured ``source_nbytes``) and the pixels are NOT retained. This is the single
     choke point; :class:`EpisodeLog` routes every stored exemplar/representative through it so the
@@ -184,7 +184,7 @@ _UNSET: Any = object()
 
 
 def _subject_key_of(exemplar: Any) -> "str | None":
-    """The judge-emitted (or episode-minted) subject key an exemplar carries, or ``None`` (card Y5).
+    """The judge-emitted (or episode-minted) subject key an exemplar carries, or ``None``.
 
     Reads a ``SubjectRef`` off ``exemplar.subject`` (e.g. a :class:`~percept.contracts.Verdict`) and
     returns its ``key`` when the ref is ``resolution='bound'`` OR ``resolution='provisional'`` (the
@@ -204,7 +204,7 @@ def _subject_key_of(exemplar: Any) -> "str | None":
 
 
 def subject_is_unknown(exemplar: Any) -> bool:
-    """True iff ``exemplar`` carries a subject that was SEEN BUT NOT IDENTIFIED (card Y4/Y5).
+    """True iff ``exemplar`` carries a subject that was SEEN BUT NOT IDENTIFIED.
 
     Reads a :class:`~percept.contracts.SubjectRef` off ``exemplar.subject`` and returns ``True`` only
     when its ``resolution`` is ``'unknown'`` — a *visible abstention*, distinct from BOTH a resolved
