@@ -88,6 +88,26 @@ PHYSICAL_PROVENANCE = (
 # physical_scene — cameras. The calibrated case.
 # ---------------------------------------------------------------------------
 
+#: PHYSICAL_SCENE's conservative default_episode_policy capability — the SAME
+#: "profile declares, concern selects" mechanism SCREEN_DOCUMENT uses
+#: (``SourceProfile.default_episode_policy``, Y17's pattern), but a DIFFERENT one of its two
+#: independent knobs: single-focus ATTACH, never unknown-to-unknown temporal continuity.
+#:
+#: ``unknown_continuity_gap_s`` stays UNSET (``None``) here on purpose — that capability is
+#: SCREEN-ONLY (see SCREEN_DOCUMENT / SCREEN_UNKNOWN_CONTINUITY_GAP_S above): a physical scene
+#: routinely holds several distinct, fast-moving unidentified subjects (two strangers crossing a
+#: doorway a second apart are not "probably the same thing seen again" the way two illegible page
+#: samples are), so collapsing unknown sightings by elapsed time alone would silently merge them.
+#:
+#: ``unknown_attaches_to_active_bound=True`` is the conservative knob that DOES apply: it is
+#: self-limiting by construction (``EpisodePolicy`` docstring, ``percept/episodes.py``) — it only
+#: ever continues a sighting when the source has EXACTLY ONE open bound episode, and stays unbound
+#: the moment a second one opens. That is precisely the common single-subject watch pattern these
+#: demos ship (a doorway, a workbench, one inspected part): a brief occlusion of the ONE tracked
+#: subject continues its episode instead of minting a rival, while a multi-subject scene is
+#: completely unaffected (two-or-more open episodes -> the flag is a no-op, sightings stay unbound).
+PHYSICAL_UNKNOWN_ATTACHES_TO_ACTIVE_BOUND = True
+
 PHYSICAL_SCENE = SourceProfile(
     name="physical_scene",
     modalities=frozenset({"video"}),
@@ -105,11 +125,18 @@ PHYSICAL_SCENE = SourceProfile(
         "coast_interval_s": None,   # motion IS the signal here; no coast needed
         "episode_unit": "activity_interval",
         "change_signal": "tier0_motion_salience",
+        # See PHYSICAL_UNKNOWN_ATTACHES_TO_ACTIVE_BOUND's docstring above for why this is the
+        # conservative choice and unknown_continuity_gap_s is deliberately absent.
+        "unknown_attaches_to_active_bound": PHYSICAL_UNKNOWN_ATTACHES_TO_ACTIVE_BOUND,
     },
     stability="stable",
     notes=(
         "Cameras: fixed, handheld or wearable. Motion on the 48x36 tier-0 gate frame is a REAL "
-        "admission signal for this source class. " + PHYSICAL_PROVENANCE
+        "admission signal for this source class. " + PHYSICAL_PROVENANCE + " Default episode policy: "
+        "a brief occlusion of the sole tracked subject (unknown_attaches_to_active_bound=True) "
+        "continues its episode rather than minting a rival, self-limited to scenes with exactly one "
+        "open bound episode; unknown-to-unknown temporal continuity stays OFF (screen_document-only) "
+        "because a physical scene routinely holds multiple distinct unidentified subjects."
     ),
 )
 
@@ -257,6 +284,7 @@ __all__ = [
     "SCREEN_EVIDENCE",
     "PHYSICAL_PROVENANCE",
     "SCREEN_COAST_INTERVAL_S",
+    "PHYSICAL_UNKNOWN_ATTACHES_TO_ACTIVE_BOUND",
     "PHYSICAL_SCENE",
     "SCREEN_DOCUMENT",
     "CONVERSATION",
