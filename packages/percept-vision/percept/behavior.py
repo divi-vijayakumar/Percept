@@ -37,7 +37,14 @@ from typing import Callable, Hashable, Literal
 
 from .adapters import Verdict
 from .concern import consequence_of, is_hard_quadrant
-from .contracts import Box, EvidenceModality, JudgmentEvent, JudgmentProvenance, JudgmentTimingBuilder
+from .contracts import (
+    Box,
+    EvidenceModality,
+    JudgmentEvent,
+    JudgmentProvenance,
+    JudgmentTimingBuilder,
+    SubjectRef,
+)
 from .episodes import EPISODE_POLICIES, ContinuationDecision
 from .gate import ASK, FIRE, Gate, classify
 from .observability import get_logger
@@ -542,6 +549,100 @@ class EpisodeIncidentLedger:
         return revision_id(episode_id, n)
 
 
+# --------------------------------------------------------------------------------------------------
+# Card Y11 — SHADOW MODE. Emit the subject + the EpisodeFoldResult the model WOULD have proposed,
+# change NOTHING. This is the de-risking gate: it OBSERVES what Y2–Y5 would do without letting any of
+# it govern the gate, re-arm an edge, or suppress a fire. Everything here is a PURE, side-effect-free
+# projection so it can be recomputed in shadow and serialized into the trace / onto an incident.
+# --------------------------------------------------------------------------------------------------
+
+
+def _subject_advisory(subject: "SubjectRef | None") -> "dict | None":
+    """Serialize a resolved :class:`~percept.contracts.SubjectRef` to a JSON-safe advisory dict.
+
+    ``None`` (the absence of a subject — NOT an ``unknown`` ref) round-trips as ``None``. Every field
+    is a scalar so it survives a ``.ptrace`` round-trip (card D8b) with media OFF."""
+    if subject is None:
+        return None
+    return {
+        "scheme": subject.scheme,
+        "namespace": subject.namespace,
+        "key": subject.key,
+        "resolution": subject.resolution,
+        "scope": subject.scope,
+        "strategy": subject.strategy,
+        "confidence": subject.confidence,
+    }
+
+
+def _subject_from_advisory(payload: "dict | None") -> "SubjectRef | None":
+    """Inverse of :func:`_subject_advisory` — reconstruct the ref from a loaded trace record."""
+    if not payload:
+        return None
+    return SubjectRef(
+        scheme=str(payload["scheme"]),
+        namespace=str(payload.get("namespace") or ""),
+        key=payload.get("key"),
+        resolution=payload["resolution"],
+        scope=payload.get("scope", "session"),
+        strategy=payload.get("strategy", ""),
+        confidence=payload.get("confidence"),
+    )
+
+
+def _fold_advisory(fold: "EpisodeFoldResult") -> dict:
+    """Serialize an :class:`EpisodeFoldResult` to a JSON-safe advisory dict (all scalars)."""
+    return {
+        "episode_id": fold.episode_id,
+        "match": fold.match,
+        "mutation": fold.mutation,
+        "should_rearm": fold.should_rearm,
+        "should_evaluate_gate": fold.should_evaluate_gate,
+        "supersedes": fold.supersedes,
+    }
+
+
+def _fold_from_advisory(payload: "dict") -> "EpisodeFoldResult":
+    """Inverse of :func:`_fold_advisory` — reconstruct the fold from a loaded trace record."""
+    return EpisodeFoldResult(
+        episode_id=payload.get("episode_id"),
+        match=payload["match"],
+        mutation=payload["mutation"],
+        should_rearm=bool(payload["should_rearm"]),
+        should_evaluate_gate=bool(payload["should_evaluate_gate"]),
+        supersedes=payload.get("supersedes"),
+    )
+
+
+@dataclass(frozen=True)
+class ShadowObservation:
+    """What card Y11 OBSERVES for one observation: the resolved subject + the proposed fold.
+
+    ADVISORY ONLY. It is computed from the same pure :func:`episode_fold` the executor would honour,
+    but nothing here re-arms, suppresses, or alters what fires — a consumer that ignores it sees
+    byte-for-byte today's behaviour. Its whole job is to LAND IN THE TRACE (``shadow.fold`` stage)
+    and survive a media-OFF ``.ptrace`` round-trip, so a client can grade what the fold proposed
+    against their own ground truth.
+
+    :meth:`to_advisory` / :meth:`from_advisory` are the round-trip pair the trace uses; ``subject``
+    is ``None`` for the genuine absence of a subject (never an ``unknown`` ref with no key)."""
+
+    subject: "SubjectRef | None"
+    fold: "EpisodeFoldResult"
+
+    def to_advisory(self) -> dict:
+        """The JSON-safe advisory dict written into a trace record's ``data`` (and onto an incident)."""
+        return {"subject": _subject_advisory(self.subject), "fold": _fold_advisory(self.fold)}
+
+    @classmethod
+    def from_advisory(cls, payload: "dict") -> "ShadowObservation":
+        """Reconstruct a :class:`ShadowObservation` from a loaded trace record's advisory dict."""
+        return cls(
+            subject=_subject_from_advisory(payload.get("subject")),
+            fold=_fold_from_advisory(payload["fold"]),
+        )
+
+
 def ask_text(goal) -> str:  # mirrors agent._ask_text
     return f'About "{goal.condition}" — can you confirm?'
 
@@ -612,6 +713,28 @@ class BehaviorExecutor:
         return episode_fold(
             decision, emitted=emitted, mutation=mutation, ambiguous=ambiguous, unknown=unknown
         )
+
+    def shadow_observe(
+        self,
+        decision: "ContinuationDecision | None",
+        *,
+        subject: "SubjectRef | None" = None,
+        mutation: EpisodeMutation = "confirmed",
+        operation: "str | None" = None,
+        ambiguous: bool = False,
+        unknown: bool = False,
+    ) -> ShadowObservation:
+        """Card Y11: OBSERVE what the fold WOULD propose for this observation — change nothing.
+
+        Resolves to a :class:`ShadowObservation` (the ``subject`` + the proposed
+        :class:`EpisodeFoldResult`) by calling the SAME pure :meth:`fold_episode`. It reads the
+        emission ledger but never records into it and never touches the gate, so it is safe to run in
+        pure shadow beside the live path. The resulting advisory is what card Y11 writes into the
+        ``shadow.fold`` trace stage and attaches to an incident — governing nothing."""
+        fold = self.fold_episode(
+            decision, mutation=mutation, operation=operation, ambiguous=ambiguous, unknown=unknown
+        )
+        return ShadowObservation(subject=subject, fold=fold)
 
     def _fire_when(self, expr: str) -> Callable[[dict], bool]:
         pred = self._fire_when_cache.get(expr)
@@ -1200,6 +1323,7 @@ __all__ = [
     "EPISODE_MUTATIONS",
     "EpisodeFoldResult",
     "EpisodeIncidentLedger",
+    "ShadowObservation",
     "episode_fold",
     "episode_mutation_of",
     "revision_id",

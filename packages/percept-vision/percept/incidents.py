@@ -26,6 +26,7 @@ def make_incident(
     id: str | None = None,
     entity_id: str | None = None,
     watchplan_id: str | None = None,
+    shadow: Any = None,
 ) -> Incident:
     """Map a fire to an :class:`Incident`. ``id`` defaults to a deterministic, sortable handle.
 
@@ -68,6 +69,17 @@ def make_incident(
     # :func:`incident_revision` / :func:`incident_supersedes`.
     incident._revision_id = getattr(fire, "revision_id", None)  # type: ignore[attr-defined]
     incident._supersedes = getattr(fire, "supersedes", None)  # type: ignore[attr-defined]
+    # Y11 — the SHADOW advisory (resolved subject + proposed EpisodeFoldResult), attached as a
+    # RUNTIME-LOCAL annotation exactly like Y10's revision link: the WIRE Incident stays frozen (no
+    # schema bump, no webhook-payload change), and a consumer that ignores it sees byte-for-byte
+    # today's Incident. It GOVERNS NOTHING — it records what the fold WOULD have proposed. Taken from
+    # the ``shadow`` kwarg, else the fire's own ``shadow`` (duck-typed) if it carries one. Stored as
+    # its JSON-safe advisory dict (``ShadowObservation.to_advisory()``) or a raw dict; read via
+    # :func:`incident_shadow`.
+    shadow_val = shadow if shadow is not None else getattr(fire, "shadow", None)
+    if shadow_val is not None and hasattr(shadow_val, "to_advisory"):
+        shadow_val = shadow_val.to_advisory()
+    incident._shadow = shadow_val  # type: ignore[attr-defined]
     return incident
 
 
@@ -83,6 +95,13 @@ def incident_supersedes(incident: Any) -> str | None:
     """The PRIOR revision id this incident supersedes (a replace/retract correction), or ``None`` for
     an original ("provisional") incident. Runtime-local annotation (card Y10)."""
     return getattr(incident, "_supersedes", None)
+
+
+def incident_shadow(incident: Any) -> dict | None:
+    """The Y11 SHADOW advisory (``{"subject": ..., "fold": ...}``) attached to this incident, or
+    ``None``. Runtime-local annotation — ADVISORY ONLY, it governs nothing. Reconstruct the typed
+    :class:`~percept.behavior.ShadowObservation` with ``ShadowObservation.from_advisory(...)``."""
+    return getattr(incident, "_shadow", None)
 
 
 def _encode_frame_bundle(frames: list, *, t_start: float, t_end: float) -> tuple[str, bytes]:

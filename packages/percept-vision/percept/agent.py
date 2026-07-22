@@ -16,11 +16,11 @@ from typing import Any, Callable, Hashable
 
 from . import registry
 from .adapters import Box, Decision, Goal, GoalOrigin, TurnResult, Verdict
-from .behavior import BehaviorExecutor, program_of
+from .behavior import BehaviorExecutor, ShadowObservation, program_of
 from .cache import CacheCascade, CacheKey, FrameHashLayer
 from .concern import attention_weight, consequence_of, requires_verification, resolution_ready
 from .config import ModeError, Settings, load_settings, missing_credential, resolve_mode
-from .contracts import JudgmentEvent, JudgmentTimingBuilder
+from .contracts import JudgmentEvent, JudgmentTimingBuilder, SubjectRef
 from .escalation import MAX_PERCEPTION_LEVEL, escalate_perception, should_escalate
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
 from .entity import EntityGraph
@@ -38,6 +38,7 @@ from .observability import Funnel, Metrics, OTelExporter, TraceEvent, get_logger
 from .rhythm import RhythmTracker
 from .routing import RouteEngine
 from .scheduler import Scheduler
+from .tracing import STAGE_SHADOW_FOLD
 
 
 #: X7 — LRU ceiling on the judgment evidence-sequencer's per-key counters. Matches the gate's own
@@ -1074,6 +1075,25 @@ class Percept:
         except Exception:  # noqa: BLE001 — a tracer is observability; swallow its failures
             pass
 
+    def _shadow_observe(self, verdict: Any) -> "ShadowObservation":
+        """Card Y11 (SHADOW): the resolved subject + the proposed :class:`ShadowObservation` for a
+        watch-path verdict. ADVISORY ONLY — it OBSERVES what the fold would propose and governs
+        nothing (no gate call, no re-arm, no suppression). The watch path binds no continuation
+        decision, so ``decision=None`` (an ``unbound`` fold, or ``unknown`` when the judge saw a
+        subject it could not identify); the subject is the Y5 :class:`~percept.contracts.SubjectRef`
+        the judge emitted, if any. Never raises — a bad verdict yields an unbound shadow."""
+        subject = getattr(verdict, "subject", None)
+        if not isinstance(subject, SubjectRef):
+            subject = None
+        unknown = subject is not None and subject.resolution == "unknown"
+        operation = getattr(verdict, "operation", None)
+        # An unknown subject carries no key: it is a visible abstention, never a bound identity that
+        # could drive a fold, so drop it to None on the ref carrier and mark the fold unknown.
+        subject_ref = subject if (subject is not None and subject.resolution == "bound") else None
+        return self.executor.shadow_observe(
+            None, subject=subject_ref, operation=operation, unknown=unknown
+        )
+
     async def perceive_judged(
         self, frame: Any, source: str = "camera", *, t: float | None = None,
         expected_goals_revision: int | None = None,
@@ -1295,6 +1315,13 @@ class Percept:
                                        confidence=getattr(verdict, "confidence", None),
                                        freshness=freshness,
                                        hold_s=program_of(goal).hold_s)
+                # Y11 SHADOW — emit the subject + the fold the model WOULD have proposed, as ADVISORY
+                # trace data. It changes NOTHING (computed after the gate already classified, governs
+                # no firing) and lands in the ``shadow.fold`` stage so a client's media-OFF .ptrace
+                # carries something gradeable. Only built when a tracer is attached (default path does
+                # no shadow work at all).
+                await self._emit_trace(trace_id, now, STAGE_SHADOW_FOLD, goal_id=goal.id,
+                                       **self._shadow_observe(verdict).to_advisory())
         self._log_fires(events, now)
         if _stale():
             return events  # aborted mid-loop: skip auto-refinement (it authors goal changes)
