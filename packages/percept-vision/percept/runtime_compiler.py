@@ -92,6 +92,11 @@ class CompiledWatch:
     - ``sense_policy`` — a real :class:`~percept.sampling.SensePolicy`, or ``None`` when nothing in
       ``resolved.effective`` named a cadence override (byte-for-byte pre-ADR-008: no override).
     - ``plan_mode`` — the resolved temporal-shape string, or ``None`` (no override).
+    - ``timebase`` — the resolved :class:`~percept.sourceprofile.SourceProfile.default_timebase`
+      (``"auto"``/``"media"``/``"wall"``), or ``None`` when no profile contributed one — a caller
+      threads this straight into :func:`percept.runtime.worker.run`'s own ``timebase=`` kwarg
+      (``run(core, source, timebase=compiled.timebase or "auto")``), never a new timebase concept
+      (card C2: "default_timebase -> run(timebase=)").
     - ``watchspec_kwargs`` — ``threshold``/``salience_stat``/``ego_compensate``/``stat_thresholds``,
       exactly :func:`percept.harness.tier0.compile_watchspec`'s deployment-default kwargs.
     - ``components`` — provider NAME identities the compiler carried forward (``vision``,
@@ -104,6 +109,7 @@ class CompiledWatch:
     goal: Goal
     sense_policy: SensePolicy | None
     plan_mode: str | None
+    timebase: str | None
     watchspec_kwargs: Mapping[str, Any]
     components: Mapping[str, Any]
 
@@ -311,6 +317,13 @@ def runtime_compile(resolved: ResolvedWatch) -> CompiledWatch:
 
     sense_policy = _sense_policy_from_effective(resolved.effective)
 
+    # timebase: an explicit "Percept.create.timebase"/"run.timebase" override (if a caller ever
+    # authors one via WatchPlan.explicit) wins over the profile's own default_timebase — same
+    # more-specific-ask precedent as plan_mode above.
+    timebase = resolved.effective.get("Percept.create.timebase")
+    if timebase is None:
+        timebase = resolved.effective.get("SourceProfile.default_timebase")
+
     watchspec_kwargs: dict[str, Any] = {
         "threshold": settings.gate.threshold,
         "salience_stat": settings.edge.salience_stat,
@@ -335,6 +348,7 @@ def runtime_compile(resolved: ResolvedWatch) -> CompiledWatch:
         goal=goal,
         sense_policy=sense_policy,
         plan_mode=plan_mode,
+        timebase=timebase,
         watchspec_kwargs=watchspec_kwargs,
         components=components,
     )

@@ -69,7 +69,7 @@ from .contracts.watchplan import (
     WatchReceipt,
 )
 from .profile_resolution import resolve_profile, resolve_situation
-from .sourceprofile import SourceProfile
+from .sourceprofile import SourceProfile, coast_sense_prior
 from .tracing import content_hash
 from .tunables import REGISTRY, TunableSpec
 from .watchprofile import CadenceProfile, WatchProfileRegistry
@@ -244,6 +244,69 @@ def _source_profile_paths(profile: SourceProfile) -> dict[str, Any]:
         path = f"SourceProfile.parameters.{key}"
         if path in _BY_PATH:
             out[path] = value
+    return out
+
+
+#: Which ``Settings.edge.*`` threshold field a salience_stat's cutoff rides on — mirrors
+#: ``_expand_explicit_path``'s ``stat_thresholds`` fan-out, applied here to a SourceProfile's OWN
+#: declared ``parameters['salience_stat']``/``parameters['salience_threshold']`` (card C2: "salience
+#: params -> edge settings").
+_SALIENCE_THRESHOLD_PATH: dict[str, str] = {
+    "mean": "Settings.edge.motion_gate",
+    "block_max": "Settings.edge.motion_gate_block_max",
+    "p95": "Settings.edge.motion_gate_p95",
+}
+
+
+def _source_profile_runtime_bindings(profile: SourceProfile) -> dict[str, Any]:
+    """Card C2: bind a resolved :class:`SourceProfile`'s DECLARED strategy onto the runtime fields
+    that actually implement it — the missing half of ADR-005's "SourceProfile selects strategies"
+    promise, which until this card stopped at the profile object and never reached
+    :class:`~percept.config.Settings` / ``Goal.state`` (this is why passing ``source_profile=`` to
+    ``percept doctor`` used to change only the REPORTED note, never the replayed admission).
+
+    - **salience params -> edge settings.** When the profile DECLARES a tuned admission signal
+      (:attr:`SourceProfile.admission_tuned`) via ``parameters['salience_stat']``, that statistic and
+      its ``parameters['salience_threshold']`` become ``Settings.edge.salience_stat`` and the
+      matching per-stat cutoff (:data:`_SALIENCE_THRESHOLD_PATH`) — the same fields
+      :func:`percept.harness.tier0.compile_watchspec` already reads. An UNTUNED profile contributes
+      nothing here (there is no calibrated statistic to bind).
+    - **coast floor -> the existing runtime seams.** A declared ``coast_interval_s``
+      (:attr:`SourceProfile.coast_interval_s`) always contributes a SAMPLING floor
+      (:func:`percept.sourceprofile.coast_sense_prior` -> ``Goal.state.sense.{base_fps,max_fps}``),
+      so the capture loop keeps producing frames at least that often. When the profile is NOT
+      admission_tuned, the coast is additionally the ONLY defensible admission mechanism, so it also
+      forces ``Goal.state.cadence = {min_judge_interval: coast, gate_on: 'fixed'}`` — the tier-0
+      gate's existing "look every cadence_s regardless of pixel motion" floor
+      (``percept.harness.tier0._coerce_cadence`` / ``MotionGate.evaluate``). A TUNED profile (its own
+      salience stat admits on its own) does NOT force ``gate_on='fixed'`` — that would SILENCE the
+      real signal (the gate ignores motion entirely in fixed mode), not floor it — so once a profile
+      is promoted to tuned the coast stays a pure sampling floor underneath the real admission.
+
+    Both contributions are layered at the SourceProfile precedence tier (:data:`LAYER_SOURCE_PROFILE`,
+    same as :func:`_source_profile_paths`), so an explicit WatchPlan/env value for the same path still
+    wins per the normal precedence chain — this function only supplies the DEFAULT a profile implies.
+    """
+    out: dict[str, Any] = {}
+
+    if profile.admission_tuned:
+        stat = profile.parameters.get("salience_stat")
+        if stat in _SALIENCE_THRESHOLD_PATH:
+            out["Settings.edge.salience_stat"] = stat
+            threshold = profile.parameters.get("salience_threshold")
+            if isinstance(threshold, (int, float)) and not isinstance(threshold, bool):
+                out[_SALIENCE_THRESHOLD_PATH[stat]] = float(threshold)
+
+    coast = profile.coast_interval_s
+    if coast:
+        prior = coast_sense_prior(profile)
+        if prior:
+            out["Goal.state.sense.base_fps"] = prior["base_fps"]
+            out["Goal.state.sense.max_fps"] = prior["max_fps"]
+        if not profile.admission_tuned:
+            out["Goal.state.cadence.min_judge_interval"] = coast
+            out["Goal.state.cadence.gate_on"] = "fixed"
+
     return out
 
 
@@ -452,6 +515,9 @@ class ConfigResolver:
         }
 
         source_profile_values = _source_profile_paths(source_profile) if source_profile else {}
+        source_profile_bindings = (
+            _source_profile_runtime_bindings(source_profile) if source_profile else {}
+        )
 
         situation_profile_name: str | None = None
         situation_source_id = "profile_resolution.resolve_situation"
@@ -534,6 +600,11 @@ class ConfigResolver:
                 "derived from goal-temporality/camera-mount/start-state situation axes",
             ),
             _LayerContribution(
+                LAYER_SOURCE_PROFILE, source_profile_bindings,
+                source_profile.name if source_profile else "source_profile",
+                "source profile declared strategy bound to runtime fields (salience/coast, card C2)",
+            ),
+            _LayerContribution(
                 LAYER_DOMAIN_PACK, domain_pack_values,
                 domain_pack.id if domain_pack else "domain_pack", "domain pack declaration",
             ),
@@ -571,6 +642,7 @@ class ConfigResolver:
                 )
                 if contribution.layer in (LAYER_SOURCE_PROFILE,) and (
                     (contribution.values is source_profile_values and source_profile_explicit)
+                    or (contribution.values is source_profile_bindings and source_profile_explicit)
                     or (contribution.values is situation_values and situation_is_explicit)
                 ):
                     explicit_profile_owned.add(path)
