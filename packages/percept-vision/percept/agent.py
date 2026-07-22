@@ -454,6 +454,13 @@ class Percept:
     # an "extractor.enriched" trace stage. GATE-IRRELEVANT: the gate still reads only the judge's
     # own satisfied/confidence.
     extractor: Any = None
+    # The optional DirectJudge routing layer (percept.direct_judge.DirectJudge). ``None`` (the
+    # default) -- perceive_judged routes nothing and every judge call is byte-for-byte unchanged.
+    # When set, it is consulted right before the judge call: CONFIDENT skips the judge entirely
+    # (zero vision calls -- its normalized Verdict is used as-is, and the UNCHANGED Gate still
+    # classifies it); UNCERTAIN merges its facts into context["extractor"] and the judge is still
+    # called; DEGRADED (or no rule matched) falls through to today's judge call, untouched.
+    direct_judge: Any = None
 
     # -- construction --------------------------------------------------------
     @classmethod
@@ -466,6 +473,7 @@ class Percept:
         stt: Any = None,
         tts: Any = None,
         extractor: Any = None,
+        direct_judge: Any = None,
         settings: Settings | None = None,
         clock: Callable[[], float] | None = None,
         discover_plugins: bool = True,
@@ -547,6 +555,7 @@ class Percept:
             stt=_resolve("stt", stt, cfg),
             tts=_resolve("tts", tts, cfg),
             extractor=extractor,  # optional; None -> perceive_judged calls nothing, byte-for-byte
+            direct_judge=direct_judge,  # optional; None -> every judge call is byte-for-byte
             settings=cfg,
             metrics=Metrics(),
             graph=EntityGraph(
@@ -1485,6 +1494,24 @@ class Percept:
                 process_ctx if extractor_ctx is None else
                 {**(process_ctx or {}), **extractor_ctx}
             )
+            # DirectJudge routing (percept.direct_judge): ``None`` by default -- direct_result stays
+            # None, the block below is skipped, and every judge call is byte-for-byte unchanged.
+            # CONFIDENT is handled inside the try/except below (it substitutes the judge call
+            # itself, spending zero vision calls); UNCERTAIN's facts are merged into the SAME
+            # reserved "extractor" context key the EvidenceExtractor seam uses, here, BEFORE the
+            # judge call, so a direct rule's partial signal reaches the judge exactly like an
+            # extractor's would.
+            direct_result = None
+            if self.direct_judge is not None:
+                direct_result = self.direct_judge.route(
+                    goal.condition, frame, roi,
+                    facts=(extractor_ctx or {}).get(EXTRACTOR_CONTEXT_KEY, {}).get("facts", {}),
+                    stakes=goal.state.get("stakes", "medium"),
+                )
+                if direct_result.outcome == "uncertain" and direct_result.facts:
+                    prior = dict((judge_context or {}).get(EXTRACTOR_CONTEXT_KEY) or {})
+                    prior["facts"] = {**prior.get("facts", {}), **direct_result.facts}
+                    judge_context = {**(judge_context or {}), EXTRACTOR_CONTEXT_KEY: prior}
             # Computed BEFORE the judge call (not just on success) so a degraded tick can be charged
             # to the SAME key the gate/executor use ("the reducer key") — see _note_judge_degraded.
             base_key = (goal.id, focus.id if focus else None)
@@ -1503,10 +1530,17 @@ class Percept:
                                        temporal=getattr(spec, "temporal", None), roi=roi is not None)
             try:
                 judgment_timing.mark_judge_started()
-                verdict = await self._judge(
-                    goal, frame, roi, corrections, entity_id=focus.id if focus else None,
-                    frames=strip, audio=audio, context=judge_context,
-                )
+                if direct_result is not None and direct_result.outcome == "confident":
+                    # The confident DirectJudge path: use its normalized Verdict AS the judge's
+                    # verdict — self._judge / self.vision are never called (zero vision calls).
+                    # The Gate stays sole authority: `verdict` flows into the exact same
+                    # freshness/classify/gate path below as a real judge call would.
+                    verdict = direct_result.verdict
+                else:
+                    verdict = await self._judge(
+                        goal, frame, roi, corrections, entity_id=focus.id if focus else None,
+                        frames=strip, audio=audio, context=judge_context,
+                    )
                 judgment_timing.mark_judge_completed()
             except _JudgeDegraded as degraded:
                 # Fail-closed boundary (ADR-001 §10 invariant 4): the judge call raised (timeout /
