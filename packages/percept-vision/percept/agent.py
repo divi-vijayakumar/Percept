@@ -76,6 +76,16 @@ class FireEvent:
     modality: str | None = None
     roi: object | None = None
     provenance: str | None = None
+    # The episode-owned provisional/superseding link carried from the executor's ``Fired``
+    # (``behavior.Fired.revision_id``/``.supersedes``) so a live delivery — ``incidents.make_incident``
+    # in the ``worker.py`` path — can put the correction relation on the wire instead of reading None on
+    # every fire. ``revision_id`` is THIS fire's stable episode-revision handle
+    # (``<episode_id>#r<n>``); ``supersedes`` names the prior revision this one corrects, and is
+    # ``None`` for an original/provisional fire. Both OPTIONAL/defaulted and appended LAST: every
+    # existing positional ``FireEvent(...)`` construction and every consumer that ignores them sees
+    # byte-for-byte today's shape.
+    revision_id: str | None = None
+    supersedes: str | None = None
 
 
 # -- The resolved WatchProfile.plan_mode -> the concern's PerceptionSpec -----------------------
@@ -1017,7 +1027,8 @@ class Percept:
             return None
         return FireEvent(fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict,
                          fired.judgment, reason=fired.reason, modality=fired.modality,
-                         roi=fired.roi, provenance=fired.provenance)
+                         roi=fired.roi, provenance=fired.provenance,
+                         revision_id=fired.revision_id, supersedes=fired.supersedes)
 
     def perceive_boundary(self, goal_id: str, *, t: float = 0.0) -> FireEvent | None:
         """Consume one EDGE boundary (a detector's timed event — a rep peak, an audio onset) as a

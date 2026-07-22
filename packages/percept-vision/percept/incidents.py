@@ -50,8 +50,10 @@ def make_incident(
     # than a fabricated number.
     judgment = getattr(fire, "judgment", None)
     evidence_seq = getattr(judgment, "evidence_seq", None) if judgment is not None else None
-    # Carry the enriched judgment envelope THROUGH the emission boundary; the provisional/superseding
-    # link is attached as runtime-local attrs AFTER construction, so bind to a variable.
+    # The episode-owned provisional/superseding link, read once off the fire and used for BOTH the
+    # 1.8 wire fields below and the runtime-local mirror further down.
+    revision_id = getattr(fire, "revision_id", None)
+    supersedes = getattr(fire, "supersedes", None)
     incident = Incident(
         id=id or f"inc-{goal_id}-{ts:.3f}-{uuid.uuid4().hex[:8]}",
         concern_id=goal_id,
@@ -66,16 +68,16 @@ def make_incident(
         modality=getattr(fire, "modality", None),
         provenance=getattr(fire, "provenance", None),
         evidence_seq=evidence_seq,
+        revision_id=revision_id,
+        supersedes=supersedes,
     )
-    # Carry the provisional/superseding link ACROSS the emission boundary as RUNTIME-LOCAL
-    # annotations (private instance attrs, exactly like Incident's bound label state): the delivery
-    # path (``SupersessionSink``) and an in-process ``async for incident in run(...)`` consumer read
-    # them to relate a correction to the incident it supersedes, while the WIRE Incident shape stays
-    # frozen — ``asdict`` / the JSON schema / a webhook payload never see them (no contract bump). A
-    # fire that carries no episode revision (the common case) leaves both ``None``. Read via
-    # :func:`incident_revision` / :func:`incident_supersedes`.
-    incident._revision_id = getattr(fire, "revision_id", None)  # type: ignore[attr-defined]
-    incident._supersedes = getattr(fire, "supersedes", None)  # type: ignore[attr-defined]
+    # ALSO mirror the link as RUNTIME-LOCAL annotations (private instance attrs, exactly like
+    # Incident's bound label state) — kept for the existing ``SupersessionSink`` delivery-boundary
+    # resolution (fold revision -> prior INCIDENT id) and any in-process consumer already reading
+    # :func:`incident_revision` / :func:`incident_supersedes`. Redundant with the 1.8 wire fields
+    # above by design: this mirror predates them and nothing here changes its meaning.
+    incident._revision_id = revision_id  # type: ignore[attr-defined]
+    incident._supersedes = supersedes  # type: ignore[attr-defined]
     # The SHADOW advisory (resolved subject + proposed EpisodeFoldResult), attached as a
     # RUNTIME-LOCAL annotation exactly like the revision link above: the WIRE Incident stays frozen (no
     # schema bump, no webhook-payload change), and a consumer that ignores it sees byte-for-byte

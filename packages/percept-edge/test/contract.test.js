@@ -317,7 +317,7 @@ describe("topology-B wire messages — EdgeCapabilities + BoundaryReport", () =>
 });
 
 describe("CONTRACT_VERSION", () => {
-  it("is the semver twin of the Python contract version (1.8.0: one batch bump — 1.7 evidence_seq + SubjectRef 'provisional', 1.8 WatchPlan DTOs are Python-only)", () => {
+  it("is the semver twin of the Python contract version (1.8.0: one batch bump — 1.7 evidence_seq + SubjectRef 'provisional', 1.8 WatchPlan DTOs (Python-only) + Incident.revision_id/supersedes)", () => {
     expect(CONTRACT_VERSION).toBe("1.8.0");
   });
 });
@@ -347,6 +347,8 @@ describe("Incident / IncidentSnippet", () => {
       modality: null,
       provenance: null,
       evidence_seq: null, // contract 1.7 — defaults null on a minimal build
+      revision_id: null, // contract 1.8 — defaults null on a minimal build
+      supersedes: null, // contract 1.8 — defaults null on a minimal build
     });
   });
 
@@ -386,6 +388,8 @@ describe("Incident / IncidentSnippet", () => {
       modality: null,
       provenance: null,
       evidence_seq: null, // absent on a pre-1.7 payload -> null, never a parse failure
+      revision_id: null, // absent on a pre-1.8 payload -> null, never a parse failure
+      supersedes: null, // absent on a pre-1.8 payload -> null, never a parse failure
     });
   });
 
@@ -434,6 +438,41 @@ describe("Incident / IncidentSnippet", () => {
     // closed-vocab fields reject an out-of-vocabulary value
     expect(() => makeIncident({ id: "x", concern_id: "c", verdict: { satisfied: true, confidence: 1 }, ts: 0, modality: "smell" })).toThrow();
     expect(() => makeIncident({ id: "x", concern_id: "c", verdict: { satisfied: true, confidence: 1 }, ts: 0, provenance: "guessed" })).toThrow();
+  });
+
+  it("carries the supersession link through build + round-trip (contract 1.8)", () => {
+    // An original/provisional incident: revision_id set, supersedes null.
+    const original = makeIncident({
+      id: "inc-orig",
+      concern_id: "c-price",
+      verdict: { satisfied: true, confidence: 0.9 },
+      ts: 0.0,
+      revision_id: "g:ep1#r1",
+    });
+    expect(original.revision_id).toBe("g:ep1#r1");
+    expect(original.supersedes).toBeNull();
+    expect(parseIncident(JSON.stringify(original))).toEqual(original);
+
+    // A superseding correction: both populated, linking back to the prior revision.
+    const correction = makeIncident({
+      id: "inc-corr",
+      concern_id: "c-price",
+      verdict: { satisfied: true, confidence: 0.9 },
+      ts: 25.0,
+      revision_id: "g:ep1#r2",
+      supersedes: "g:ep1#r1",
+    });
+    expect(correction.revision_id).toBe("g:ep1#r2");
+    expect(correction.supersedes).toBe("g:ep1#r1");
+    expect(parseIncident(JSON.stringify(correction))).toEqual(correction);
+
+    // rejects a non-string/non-null value
+    expect(() =>
+      makeIncident({ id: "x", concern_id: "c", verdict: { satisfied: true, confidence: 1 }, ts: 0, revision_id: 7 })
+    ).toThrow(ContractError);
+    expect(() =>
+      makeIncident({ id: "x", concern_id: "c", verdict: { satisfied: true, confidence: 1 }, ts: 0, supersedes: 7 })
+    ).toThrow(ContractError);
   });
 
   it("snippet tolerates omitted payload fields -> null (redacted record shape)", () => {

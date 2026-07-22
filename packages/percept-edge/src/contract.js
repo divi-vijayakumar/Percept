@@ -29,7 +29,9 @@
 export const CONTRACT_VERSION = "1.8.0"; // JS twin of Python 1.8.0 — one batch bump covering 1.7 (Incident.evidence_seq
 // + SubjectRef 'provisional' resolution state / provisionalSubject()) and 1.8 (WatchPlan/SettingOrigin/
 // ResolvedWatch/WatchReceipt/FieldDiagnostic — Python-side-only config-provenance DTOs with no wire/gate
-// surface for the edge, so this bump carries no further JS shape changes beyond what 1.7 already added).
+// surface for the edge — plus Incident.revision_id/Incident.supersedes, the episode-owned
+// provisional/superseding link put ON THE WIRE so a webhook consumer sees the correction relation
+// directly instead of only a runtime-local Python annotation).
 // This constant names the PYTHON contract version these shapes are a twin of. The JS side implements a
 // SUBSET of the Python DTOs (the shapes defined below); the version tracks the wire contract, not the
 // coverage. 1.0.0: initial public wire contract (launch).
@@ -495,7 +497,7 @@ export function parseBoundaryReport(json) {
 //             ts, label: string|null, snippet: IncidentSnippet|null, entity_id: string|null,
 //             reason: string|null, watchplan_id: string|null, roi: Box|null,
 //             modality: "vision"|"audio"|"fused"|null, provenance: "observed"|"inferred"|null,
-//             evidence_seq: number|null }
+//             evidence_seq: number|null, revision_id: string|null, supersedes: string|null }
 // IncidentSnippet  { kind: "frame"|"clip"|"audio", media: string|null (base64),
 //                    mime: string|null, frames: array|null, t_start: number|null, t_end: number|null }
 //
@@ -520,6 +522,13 @@ export function parseBoundaryReport(json) {
 // carried on the Python side (`JudgmentEvent.evidence_seq`), copied through so a consumer can
 // correlate this Incident back to the judgment record that produced it. ADDITIVE and OPTIONAL — a
 // pre-1.7 payload omitting it parses to `null` unchanged.
+//
+// `revision_id`/`supersedes` (contract 1.8) are the episode-owned provisional/superseding link: a
+// claim-mode correction (a later turn classified replace/retract on the same episode) fires a
+// SUPERSEDING revision. `revision_id` is THIS incident's stable episode-revision handle
+// (`<episode_id>#r<n>`); `supersedes` names the PRIOR revision this one corrects and is `null` for an
+// original/provisional incident (the common case). Both ADDITIVE and OPTIONAL — a pre-1.8 payload
+// omitting them parses to `null` unchanged.
 // ---------------------------------------------------------------------------
 
 const _SNIPPET_KINDS = new Set(["frame", "clip", "audio"]);
@@ -639,10 +648,12 @@ export function parseIncidentSnippet(obj, { path = "snippet" } = {}) {
 }
 
 /**
- * Normalize the ADDITIVE judgment envelope (contract 1.6) plus the contract-1.7
- * `evidence_seq` link, shared by makeIncident / parseIncident. Every field is optional and defaults
- * null, so a pre-1.6/1.7 payload round-trips its exact shape. `roi` is a Box (validated via
- * makeBox/parseBox), `evidence_seq` a finite number or null, the rest closed-vocab strings or null.
+ * Normalize the ADDITIVE judgment envelope (contract 1.6) plus the contract-1.7 `evidence_seq`
+ * link and the contract-1.8 `revision_id`/`supersedes` supersession link, shared by
+ * makeIncident / parseIncident. Every field is optional and defaults null, so a pre-1.6/1.7/1.8
+ * payload round-trips its exact shape. `roi` is a Box (validated via makeBox/parseBox),
+ * `evidence_seq` a finite number or null, `revision_id`/`supersedes` strings or null, the rest
+ * closed-vocab strings or null.
  */
 function _incidentEnvelope(src, ctx) {
   const reason = src.reason == null ? null : src.reason;
@@ -660,16 +671,20 @@ function _incidentEnvelope(src, ctx) {
   }
   const evidence_seq = src.evidence_seq == null ? null : src.evidence_seq;
   if (!_isNumberOrNull(evidence_seq)) throw new ContractError(`${ctx}: evidence_seq must be a finite number or null`);
-  return { reason, watchplan_id, roi, modality, provenance, evidence_seq };
+  const revision_id = src.revision_id == null ? null : src.revision_id;
+  if (!_isStringOrNull(revision_id)) throw new ContractError(`${ctx}: revision_id must be a string or null`);
+  const supersedes = src.supersedes == null ? null : src.supersedes;
+  if (!_isStringOrNull(supersedes)) throw new ContractError(`${ctx}: supersedes must be a string or null`);
+  return { reason, watchplan_id, roi, modality, provenance, evidence_seq, revision_id, supersedes };
 }
 
 /**
  * Build an Incident. `verdict` is { satisfied, confidence, evidence? }; `label` defaults to null
  * (unlabelled — suggested vocab "real"/"false_alarm"); `snippet` defaults to null; `entity_id`
  * defaults to null (not entity-scoped) — the back-compatible default for pre-1.3 callers. The judgment
- * envelope (`reason`/`watchplan_id`/`roi`/`modality`/`provenance`, contract 1.6) and `evidence_seq`
- * (contract 1.7) all default null.
- * @returns {{id:string,concern_id:string,verdict:object,ts:number,label:string|null,snippet:object|null,entity_id:string|null,reason:string|null,watchplan_id:string|null,roi:object|null,modality:string|null,provenance:string|null,evidence_seq:number|null}}
+ * envelope (`reason`/`watchplan_id`/`roi`/`modality`/`provenance`, contract 1.6), `evidence_seq`
+ * (contract 1.7), and `revision_id`/`supersedes` (contract 1.8) all default null.
+ * @returns {{id:string,concern_id:string,verdict:object,ts:number,label:string|null,snippet:object|null,entity_id:string|null,reason:string|null,watchplan_id:string|null,roi:object|null,modality:string|null,provenance:string|null,evidence_seq:number|null,revision_id:string|null,supersedes:string|null}}
  */
 export function makeIncident({
   id,
@@ -687,6 +702,8 @@ export function makeIncident({
   modality = null,
   provenance = null,
   evidence_seq = null,
+  revision_id = null,
+  supersedes = null,
 } = {}) {
   if (typeof id !== "string") throw new ContractError("makeIncident: id must be a string");
   if (typeof concern_id !== "string") throw new ContractError("makeIncident: concern_id must be a string");
@@ -706,7 +723,10 @@ export function makeIncident({
     entity_id,
     message,
     label_url,
-    ..._incidentEnvelope({ reason, watchplan_id, roi, modality, provenance, evidence_seq }, "makeIncident"),
+    ..._incidentEnvelope(
+      { reason, watchplan_id, roi, modality, provenance, evidence_seq, revision_id, supersedes },
+      "makeIncident",
+    ),
   };
 }
 

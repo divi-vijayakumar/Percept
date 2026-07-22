@@ -36,6 +36,10 @@ CONTRACT_VERSION = "1.8.0"  # 1.8: + WatchPlan/SettingOrigin/ResolvedWatch/Watch
 # top level and from percept.adapters; no existing DTO shape changes. GATE-IRRELEVANT (the gate reads
 # only satisfied/confidence; nothing here touches Verdict/Gate) — a consumer that never constructs one of
 # these five new types sees byte-for-byte today's contract.
+# 1.8 also: + Incident.revision_id/Incident.supersedes — the episode-owned provisional/superseding
+# link put ON THE WIRE (it previously existed only as a runtime-local annotation the live delivery path
+# never carried through to a webhook consumer). Additive, defaulted None, GATE-IRRELEVANT; watch.py +
+# WATCH_VERSION FROZEN. Same batch as the WatchPlan DTOs above — CONTRACT_VERSION does not move again.
 # 1.7: + Incident.evidence_seq (additive, defaulted None) — the
 # JudgmentEvent.evidence_seq (the per-key ADR-001 §8 dispatch sequence) a fire's judgment already
 # carried now rides through to the delivered Incident, so a client can correlate a fire back to the
@@ -1359,6 +1363,20 @@ class Incident:
     # for a pre-1.7 Incident — an absent link, never a fabricated one. Appended LAST: every existing
     # positional ``Incident(...)`` construction keeps its meaning.
     evidence_seq: int | None = None
+    # 1.8 — the episode-owned provisional/superseding link, ON THE WIRE: a claim-mode correction
+    # (a later turn the mutation channel classifies replace/retract on the same episode) fires a
+    # SUPERSEDING revision, and until now that relation existed only as a runtime-local annotation
+    # (``percept.incidents.incident_revision``/``incident_supersedes``) invisible to an out-of-process
+    # webhook consumer. ``revision_id`` is THIS incident's stable episode-revision handle
+    # (``<episode_id>#r<n>``, :func:`percept.behavior.revision_id`); ``supersedes`` names the PRIOR
+    # revision this one corrects, and is ``None`` for an original/provisional incident (the common
+    # case). ``make_incident`` copies both straight off the fire's ``FireEvent``/``Fired``. ``None``
+    # when the fire carried no episode fold (episode/rhythm/boundary/transition/absence fires, or a
+    # pre-1.8 Incident) — an absent link, never a fabricated one. Additive, defaulted, appended LAST:
+    # every existing positional ``Incident(...)`` construction keeps its meaning, and a consumer that
+    # ignores these two fields sees byte-for-byte the pre-1.8 Incident.
+    revision_id: str | None = None
+    supersedes: str | None = None
 
     def bind_labeler(
         self,
