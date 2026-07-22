@@ -59,6 +59,8 @@ def _print_top_help() -> None:
     ]
     for name in sorted(_DELEGATES):
         lines.append(f"  {name:<16} -> percept-{name}")
+    lines.append("  eval ingest-trace -> percept.eval.telemetry_fixtures (a .ptrace + labels sidecar "
+                 "-> labeled derivation fixture cases)")
     lines.append("")
     lines.append("Own commands:")
     lines.append("  resolve          resolve a WatchPlan config and show per-field provenance")
@@ -76,6 +78,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         _print_top_help()
         return 0
     command, rest = args[0], args[1:]
+    if command == "eval" and rest and rest[0] == "ingest-trace":
+        # NOT a delegate: percept.eval.differential.main() parses `eval`'s OWN argv shape
+        # (--baseline/--candidate/...) and would reject "ingest-trace" as an unknown positional.
+        # This is a second, independent job under the same verb — card L2's telemetry -> fixtures
+        # pipeline — so it is routed to its own module before the delegate table is consulted.
+        mod = importlib.import_module("percept.eval.telemetry_fixtures")
+        return int(mod.main(rest[1:]))
     if command in _DELEGATES:
         mod = importlib.import_module(_DELEGATES[command])
         return int(mod.main(rest))
