@@ -57,12 +57,34 @@ import sys
 import unittest
 from pathlib import Path
 
+import pytest
+
 # Make `eval/viability/fixtures/` importable as bare modules, same pattern as
 # `eval/viability/fixtures/test_core_archetypes.py` (eval/viability is not an installed package).
 _EVAL_VIABILITY_FIXTURES = Path(__file__).resolve().parents[3] / "eval" / "viability" / "fixtures"
 _EVAL_VIABILITY = Path(__file__).resolve().parents[3] / "eval" / "viability"
 sys.path.insert(0, str(_EVAL_VIABILITY_FIXTURES))
 sys.path.insert(0, str(_EVAL_VIABILITY))
+
+# `eval/viability/` is intentionally git-untracked and gitignored (see commit cc46b37,
+# "untrack internal product-strategy docs before any public push") — it holds the founder
+# bars / GO-NOGO memo / quality-gate protocol and is kept LOCAL-ONLY on machines that have run
+# the viability harness, never shipped or checked into the public repo. On a clean checkout (and
+# in CI) `core_archetypes.py` / `ground_truth.py` genuinely do not exist, so this whole scaffold
+# — which reuses those fixtures verbatim, by design (see module docstring) — is unimportable and
+# must skip cleanly rather than error at collection. When the fixtures ARE present (e.g. locally,
+# with the viability harness checked out alongside the repo), the tests run for real and assert
+# exactly what they always did.
+pytest.importorskip(
+    "core_archetypes",
+    reason="eval/viability/fixtures/core_archetypes.py is git-untracked/gitignored (internal "
+    "viability harness, kept local-only) — not present on a clean checkout/CI",
+)
+pytest.importorskip(
+    "ground_truth",
+    reason="eval/viability/ground_truth.py is git-untracked/gitignored (internal viability "
+    "harness, kept local-only) — not present on a clean checkout/CI",
+)
 
 from core_archetypes import build_core_archetype_fixtures  # noqa: E402
 from ground_truth import CORE_ARCHETYPE_ELIGIBLE_AFTER_S  # noqa: E402

@@ -54,6 +54,8 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from percept.adapters import Goal
 from percept.agent import Percept
 from percept.backends.fake_judge import ErrorInjectionConfig, FakeJudge, LatencyProfile
@@ -65,6 +67,21 @@ from percept.harness.golden_eval import GroundTruthEpisode, score
 # ...` resolves regardless of pytest's rootdir/import mode.
 _VIABILITY_FIXTURES_DIR = Path(__file__).resolve().parents[3] / "eval" / "viability" / "fixtures"
 sys.path.insert(0, str(_VIABILITY_FIXTURES_DIR))
+
+# `eval/viability/` is intentionally git-untracked and gitignored (see commit cc46b37,
+# "untrack internal product-strategy docs before any public push") — it holds the founder
+# bars / GO-NOGO memo / quality-gate protocol and is kept LOCAL-ONLY on machines that have run
+# the viability harness, never shipped or checked into the public repo. On a clean checkout (and
+# in CI) `core_archetypes.py` genuinely does not exist, so this whole scaffold — which reuses
+# those fixtures verbatim, by design (see module docstring) — is unimportable and must skip
+# cleanly rather than error at collection. When the fixture IS present (e.g. locally, with the
+# viability harness checked out alongside the repo), the tests run for real and assert exactly
+# what they always did.
+pytest.importorskip(
+    "core_archetypes",
+    reason="eval/viability/fixtures/core_archetypes.py is git-untracked/gitignored (internal "
+    "viability harness, kept local-only) — not present on a clean checkout/CI",
+)
 
 from core_archetypes import build_core_archetype_fixtures  # noqa: E402
 
