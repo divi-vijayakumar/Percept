@@ -16,6 +16,7 @@ from importlib import metadata as importlib_metadata
 from typing import Any, Callable
 
 from .backends import fake as _fake
+from .extractors import ocr as _ocr
 
 # seam -> {name -> factory(settings) -> adapter}
 _REGISTRY: dict[str, dict[str, Callable[[Any], Any]]] = {
@@ -111,6 +112,13 @@ register("transport", "scripted", lambda s: _fake.FakeVoiceTransport())
 # backend is (a plugin entry point, or a direct `register("extractor", name, factory)` call).
 register("extractor", "fake", lambda s: _fake.ScriptedExtractor())
 register("extractor", "scripted", lambda s: _fake.ScriptedExtractor())
+# OCR (percept.extractors.ocr): "ocr-scripted" is the deterministic offline double (same
+# import-cost profile as the generic "scripted" extractor above — zero heavy deps, CI-safe).
+# "ocr" is the real pytesseract+Pillow backend; constructing it never imports either (only
+# TesseractOCR.extract does), so this registration is safe even when the optional
+# percept-vision[ocr] extra is not installed — the typed error surfaces at first actual use.
+register("extractor", "ocr-scripted", lambda s: _ocr.ScriptedOCR(s if isinstance(s, dict) else None))
+register("extractor", "ocr", lambda s: _ocr.TesseractOCR(s))
 
 
 def discover_entrypoints() -> None:

@@ -43,6 +43,7 @@ claude = ["anthropic>=0.40"]
 gemini = ["google-genai>=1.0"]
 openrouter = ["openai>=1.40"]
 deepgram = ["deepgram-sdk>=3"]
+ocr = ["pytesseract>=0.3", "Pillow>=10"]                     # real OCR extractor (percept.extractors.ocr.TesseractOCR); also needs the tesseract binary on PATH
 audio = ["numpy>=1.24"]
 harness = ["numpy>=1.24"]                                    # tier-0 salience gate + detectors fast path
 edge = ["numpy>=1.24"]                                       # Python tier-0 edge (parity with percept-edge JS)
