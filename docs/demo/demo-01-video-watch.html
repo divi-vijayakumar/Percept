@@ -145,6 +145,17 @@ main{padding:20px 24px 28px;display:grid;gap:16px}
 .traceHead button{border:0;background:transparent;font-size:20px}
 .traceContent{margin:0;padding:18px;background:#0a0a0a;color:#eee;font:10px/1.65 var(--mono);overflow:auto;white-space:pre-wrap}
 .traceActions{padding:12px;border-top:1px solid var(--ink);display:flex;justify-content:flex-end;gap:8px}
+.resolvedMeta{padding:10px 13px;border-bottom:1px solid var(--hairline);font:9.5px var(--mono);color:var(--steel);display:flex;flex-wrap:wrap;gap:14px}
+.resolvedMeta b{color:var(--ink)}
+.resolvedWrap{max-height:280px;overflow:auto}
+.resolvedTable{width:100%;border-collapse:collapse;font:9.5px/1.5 var(--mono)}
+.resolvedTable th{position:sticky;top:0;text-align:left;padding:7px 10px;border-bottom:1px solid var(--ink);color:var(--steel);font:9px var(--mono);letter-spacing:.08em;text-transform:uppercase;background:var(--panel)}
+.resolvedTable td{padding:6px 10px;border-bottom:1px solid var(--hairline);color:var(--graphite);vertical-align:top}
+.resolvedTable td.path{color:var(--ink);white-space:nowrap}
+.resolvedTable td.value{color:#000;font-weight:600;white-space:nowrap}
+.resolvedTable td.muted{color:var(--steel)}
+.revLine{margin-top:5px!important;color:var(--steel)!important;font:9.5px var(--mono)!important}
+.revLine b{color:var(--ink);font-weight:600}
 @media(max-width:1050px){.heroGrid,.runtimeGrid,.streamGrid{grid-template-columns:1fr}.contextBody{grid-template-columns:1fr 1fr 1fr}}
 @media(max-width:680px){.topbar{padding:0 14px}.topmeta span:not(.status){display:none}.realbar{padding:7px 14px;flex-direction:column;align-items:flex-start;gap:3px}main{padding:12px 12px 20px}.contextBody{grid-template-columns:1fr}.heroGrid{min-height:auto}.stage{min-height:290px}.emptyState h1{font-size:24px}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
@@ -289,6 +300,17 @@ confidence: —</pre>
     </article>
   </section>
 
+  <section class="panel">
+    <div class="panelHead"><b>08 · Resolved configuration</b><span>ADR-008 · zero env-var provenance</span></div>
+    <div id="resolvedMeta" class="resolvedMeta"><span>Arm a watch to resolve configuration.</span></div>
+    <div class="resolvedWrap">
+      <table class="resolvedTable">
+        <thead><tr><th>path</th><th>value</th><th>owner layer</th><th>source</th><th>why</th></tr></thead>
+        <tbody id="resolvedBody"><tr><td colspan="5" class="muted">—</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
   <section class="streamGrid">
     <article class="panel timelinePanel">
       <div class="panelHead"><b>06 · Runtime trace</b><span>frames → judge → gate → event</span></div>
@@ -373,9 +395,11 @@ confidence: —</pre>
     setBusy(true,'RUNNING');
     setAgent('intent'); await tick(150); setAgent('run');
     let url='/run', opts={method:'POST'};
-    if(mode==='fixture'){ url='/run?mode=fixture'; }
+    // [DEMO3] this page's source class, named EXPLICITLY — resolved server-side through
+    // Percept.configure()/ConfigResolver, never a PERCEPT_* env var. See "08 · Resolved configuration".
+    if(mode==='fixture'){ url='/run?mode=fixture&profile=physical_scene'; }
     else{
-      const q=new URLSearchParams({goal:taskInput.value.trim(),backend:$('#backend').value,fps:$('#fps').value,source_name:sourceFile.name});
+      const q=new URLSearchParams({goal:taskInput.value.trim(),backend:$('#backend').value,fps:$('#fps').value,source_name:sourceFile.name,profile:'physical_scene'});
       url='/run?'+q.toString(); opts.body=sourceFile;
     }
     let data;
@@ -405,6 +429,7 @@ confidence: —</pre>
     renderTimeline(recs);
     renderLedger(recs);
     renderJudgments(recs, d.events||[]);
+    renderResolved(d);
     $('#viewTraceBtn').disabled=false;
     const fired=(summ.gate_outcomes&&summ.gate_outcomes.fire)||0;
     $('#frameTag').textContent=`${summ.observed||0} observed · ${summ.admitted||0} admitted · ${fired} fire`;
@@ -499,11 +524,21 @@ confidence: —</pre>
   // D11: a fire's judgment.event record (same trace_id + goal_id as its gate.classified) carries
   // data.evidence_seq — the RECORDER-stamped seq of the SAME trace's source.frame record, i.e. the
   // literal evidence that fed this judgment. When resolvable, render it as a clickable anchor.
+  // [DEMO3] a fired Incident may also carry revision_id/supersedes (the episode-owned
+  // provisional/superseding link) — the trace records themselves don't carry it, so we correlate by
+  // walking the delivered `events` in fire order, per goal_id (FIFO — same order the runtime delivered
+  // them in), and render "supersedes <id>" when a fire is a correction of an earlier one.
+  function fireQueuesByGoal(events){
+    const q={};
+    (events||[]).forEach(e=>{ if(e.action==='fire'){ (q[e.goal_id]=q[e.goal_id]||[]).push(e); } });
+    return q;
+  }
   function renderJudgments(recs, events){
     const gates=recs.filter(r=>r.stage==='gate.classified');
     const usages=recs.filter(r=>r.stage==='judge.usage');
     const judgments=recs.filter(r=>r.stage==='judgment.event');
     const frames=recs.filter(r=>r.stage==='source.frame');
+    const fireQ=fireQueuesByGoal(events);
     const box=$('#events'); box.innerHTML='';
     if(!gates.length){
       box.innerHTML='<div class="eventEmpty">No judgments — tier-0 admitted nothing, so the judge was never called. Every per-frame edge.decision is still in the .ptrace.</div>';
@@ -522,13 +557,47 @@ confidence: —</pre>
       const evId=`ev-${r.seq}`;
       const evLink=evFrame?`<a class="evidenceLink" data-target="${evId}">→ evidence frame #${evFrame.seq}${evFrame.source_ts!=null?' · t='+Number(evFrame.source_ts).toFixed(1):''}</a>
         <pre class="evidenceFrame" id="${evId}">${esc(JSON.stringify(evFrame,null,2))}</pre>`:'';
+      let revLine='';
+      if(fired){
+        const q=fireQ[d.goal_id]; const ev=q&&q.length?q.shift():null;
+        if(ev&&(ev.revision_id||ev.supersedes)){
+          revLine=`<p class="revLine">revision <b>${esc(ev.revision_id||'—')}</b>${ev.supersedes?` · supersedes <b>${esc(ev.supersedes)}</b>`:''}</p>`;
+        }
+      }
       el.innerHTML=`<div class="eventHead"><b>${esc((d.action||'?').toUpperCase())} · ${esc(d.reason||'')}</b><span>${r.source_ts!=null?'t='+Number(r.source_ts).toFixed(1):''}</span></div>
         <h3>${fired?'Incident emitted':'Judgment · no incident'}</h3>
         <p>satisfied ${d.satisfied} · confidence ${d.confidence} · truth ${esc(d.truth||'—')}${ent}${model}${tok}</p>
+        ${revLine}
         ${evLink}`;
       if(evFrame){ el.querySelector('.evidenceLink').onclick=()=>el.querySelector('#'+evId).classList.toggle('open'); }
       box.prepend(el);
     });
+  }
+  // [DEMO3] "08 · Resolved configuration" — the per-field provenance table (path, value, owner
+  // layer, source, why) straight off ResolvedWatch.provenance, PLUS the WatchReceipt summary for
+  // this run. This is the zero-env-var proof: every row's owner_layer names the real ADR-008
+  // configuration object that won, not an env var.
+  function renderResolved(d){
+    const re=d.resolved_explain, rc=d.receipt;
+    const body=$('#resolvedBody'), meta=$('#resolvedMeta');
+    if(!re){
+      body.innerHTML='<tr><td colspan="5" class="muted">No resolution on this run.</td></tr>';
+      meta.innerHTML='<span class="muted">—</span>';
+      return;
+    }
+    const sp=re.source_profile||{};
+    const profileName=sp['SourceProfile.name']||d.profile||'—';
+    meta.innerHTML=`<span>profile <b>${esc(profileName)}</b></span>
+      <span>plan_hash <b>${esc((re.plan_hash||'').slice(0,12))}</b></span>
+      <span>receipt <b>${esc((rc&&rc.summary)||'—')}</b></span>`;
+    const fields=re.fields||[];
+    body.innerHTML=fields.length?fields.map(f=>`<tr>
+        <td class="path">${esc(f.path)}</td>
+        <td class="value">${esc(JSON.stringify(f.value))}</td>
+        <td>${esc(f.owner_layer)}</td>
+        <td>${esc(f.source_id)}</td>
+        <td>${esc(f.reason||'')}</td>
+      </tr>`).join(''):'<tr><td colspan="5" class="muted">No fields resolved.</td></tr>';
   }
 
   // --- trace drawer ---------------------------------------------------------

@@ -147,6 +147,17 @@ main{padding:20px 24px 28px;display:grid;gap:16px}
 .shareOverlayBody b{display:block;font-family:var(--display);font-size:16px;margin-bottom:5px}
 .shareOverlayBody p{font-size:11px;color:var(--graphite);line-height:1.5;margin:0 0 10px}
 .shareOverlay button{width:100%}
+.resolvedMeta{padding:10px 13px;border-bottom:1px solid var(--hairline);font:9.5px var(--mono);color:var(--steel);display:flex;flex-wrap:wrap;gap:14px}
+.resolvedMeta b{color:var(--ink)}
+.resolvedWrap{max-height:280px;overflow:auto}
+.resolvedTable{width:100%;border-collapse:collapse;font:9.5px/1.5 var(--mono)}
+.resolvedTable th{position:sticky;top:0;text-align:left;padding:7px 10px;border-bottom:1px solid var(--ink);color:var(--steel);font:9px var(--mono);letter-spacing:.08em;text-transform:uppercase;background:var(--panel)}
+.resolvedTable td{padding:6px 10px;border-bottom:1px solid var(--hairline);color:var(--graphite);vertical-align:top}
+.resolvedTable td.path{color:var(--ink);white-space:nowrap}
+.resolvedTable td.value{color:#000;font-weight:600;white-space:nowrap}
+.resolvedTable td.muted{color:var(--steel)}
+.revLine{margin-top:5px!important;color:var(--steel)!important;font:9.5px var(--mono)!important}
+.revLine b{color:var(--ink);font-weight:600}
 @media(max-width:1050px){.heroGrid,.runtimeGrid,.reviewGrid{grid-template-columns:1fr}}
 @media(max-width:700px){.topbar{padding:0 14px}.topmeta span:not(.status){display:none}.realbar{padding:7px 14px;flex-direction:column;align-items:flex-start;gap:3px}main{padding:12px}.contextBody{grid-template-columns:1fr}.preview{min-height:300px}.actions{flex-wrap:wrap}.shareControls{align-items:flex-start;flex-direction:column}.shareOverlay{left:12px;right:12px;bottom:12px;width:auto}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
@@ -284,6 +295,17 @@ confidence: —</pre>
     </article>
   </section>
 
+  <section class="panel">
+    <div class="panelHead"><b>08 · Resolved configuration</b><span>ADR-008 · zero env-var provenance</span></div>
+    <div id="resolvedMeta" class="resolvedMeta"><span>Arm a watch to resolve configuration.</span></div>
+    <div class="resolvedWrap">
+      <table class="resolvedTable">
+        <thead><tr><th>path</th><th>value</th><th>owner layer</th><th>source</th><th>why</th></tr></thead>
+        <tbody id="resolvedBody"><tr><td colspan="5" class="muted">—</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
   <section class="reviewGrid">
     <article class="panel recordingPanel">
       <div class="panelHead"><b>06 · Recorded session + trace</b><span>local playback</span></div>
@@ -398,7 +420,9 @@ confidence: —</pre>
 
   async function runReal(blob){
     setAgent('run'); $('#runtimeStatus').className='status armed';$('#runtimeStatus').querySelector('b').textContent='RUNNING';
-    const q=new URLSearchParams({goal:taskInput.value.trim(),backend:$('#backend').value,fps:$('#fps').value,source_name:'screen.webm'});
+    // [DEMO3] this page's source class, named EXPLICITLY — resolved server-side through
+    // Percept.configure()/ConfigResolver, never a PERCEPT_* env var. See "08 · Resolved configuration".
+    const q=new URLSearchParams({goal:taskInput.value.trim(),backend:$('#backend').value,fps:$('#fps').value,source_name:'screen.webm',profile:'screen_document'});
     let data;
     try{ const r=await fetch('/run?'+q.toString(),{method:'POST',body:blob}); data=await r.json(); }
     catch(e){ return fail('Runtime unreachable — is docs/demo/serve.py running?'); }
@@ -407,7 +431,7 @@ confidence: —</pre>
   }
   async function runFixture(){
     setAgent('run'); $('#runtimeStatus').className='status armed';$('#runtimeStatus').querySelector('b').textContent='RUNNING';
-    let data; try{ const r=await fetch('/run?mode=fixture',{method:'POST'}); data=await r.json(); }catch(e){ return fail('Runtime unreachable — start docs/demo/serve.py'); }
+    let data; try{ const r=await fetch('/run?mode=fixture&profile=screen_document',{method:'POST'}); data=await r.json(); }catch(e){ return fail('Runtime unreachable — start docs/demo/serve.py'); }
     if(data.error){ return fail(data.message||data.error); }
     finish(data,'Bundled fixture through the real runtime (scripted verdicts). ');
   }
@@ -427,6 +451,7 @@ confidence: —</pre>
     const recs=d.records||[], summ=d.summary||{}, man=d.manifest||{};
     renderPlan(d.goal, man.plan||{}); renderSpec(man);
     renderMetrics(summ); renderTimeline(recs); renderLedger(recs); renderJudgments(recs, d.events||[]);
+    renderResolved(d);
     $('#viewTraceBtn').disabled=false;
   }
   function renderPlan(goal, plan){
