@@ -1440,11 +1440,11 @@ class TraceRecorder:
                 elif kind == "gate_suppressed":
                     self.record(STAGE_GATE_SUPPRESSED, source_ts=ts, kind=kind, **data)
                 elif kind == "zero_admission_coverage":
-                    # ADR-008 §Corrections(b) / card C2: this ONE kind is degraded IFF the payload
+                    # ADR-008 §Corrections(b): this ONE kind is degraded IFF the payload
                     # says a declared coverage floor went unmet (percept.runtime.worker.run's
                     # coverage_floor= kwarg) — never inferred from the zero itself. No floor
-                    # declared (floor_unmet absent/False, the default) stays exactly the pre-C2
-                    # diagnostic-only reading: a still, motion-gated source correctly admitting
+                    # declared (floor_unmet absent/False, the default) stays exactly the
+                    # diagnostic-only reading it always was: a still, motion-gated source admitting
                     # nothing never opens an unhealthy interval.
                     state = "degraded" if data.get("floor_unmet") else "info"
                     self.record(STAGE_SOURCE_HEALTH, source_ts=ts, kind=kind, state=state, **data)

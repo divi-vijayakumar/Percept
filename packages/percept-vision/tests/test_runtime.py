@@ -195,6 +195,39 @@ class RuntimeWorkerTests(unittest.TestCase):
 
         self.assertNotIn("zero_admission_coverage", DEGRADED_HEALTH_KINDS)
 
+    def test_zero_admission_still_camera_stays_non_alarming_with_no_declared_floor(self):
+        # Regression (card C2): still-camera, motion-gated, admitting 0 — with NO coverage_floor
+        # passed to run() (the default) — must stay byte-for-byte the pre-existing diagnostic-only
+        # reading: floor_unmet is False and coverage_floor is None in the payload.
+        still_only = [(float(i), STILL, "clear") for i in range(5)]
+        events = []
+        asyncio.run(_collect(_core(), still_only, on_health=events.append))
+        zero = [e for e in events if e.kind == "zero_admission_coverage"]
+        self.assertEqual(len(zero), 1)
+        self.assertIsNone(zero[0].data["coverage_floor"])
+        self.assertFalse(zero[0].data["floor_unmet"])
+
+    def test_zero_admission_with_declared_unmet_coverage_floor_is_flagged(self):
+        # A DECLARED, UNMET coverage_floor (e.g. sourced from a SourceProfile via
+        # percept.runtime_compiler) is what changes the reading — never the zero itself.
+        still_only = [(float(i), STILL, "clear") for i in range(5)]
+        events = []
+        asyncio.run(_collect(_core(), still_only, on_health=events.append, coverage_floor=1.0))
+        zero = [e for e in events if e.kind == "zero_admission_coverage"]
+        self.assertEqual(len(zero), 1)
+        self.assertEqual(zero[0].data["coverage_floor"], 1.0)
+        self.assertTrue(zero[0].data["floor_unmet"])
+
+    def test_zero_admission_with_declared_met_coverage_floor_of_zero_is_not_flagged(self):
+        # A DECLARED floor of exactly 0 admissions ("this source is expected to be quiet") is MET
+        # by an actual zero, so floor_unmet stays False even though a floor was declared.
+        still_only = [(float(i), STILL, "clear") for i in range(5)]
+        events = []
+        asyncio.run(_collect(_core(), still_only, on_health=events.append, coverage_floor=0.0))
+        zero = [e for e in events if e.kind == "zero_admission_coverage"]
+        self.assertEqual(zero[0].data["coverage_floor"], 0.0)
+        self.assertFalse(zero[0].data["floor_unmet"])
+
     def test_runtime_health_reports_sink_errors(self):
         events = []
 

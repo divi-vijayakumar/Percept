@@ -18,7 +18,7 @@ Two owner values are not among the ADR's six declared objects, both deliberate:
   objects; it stays with the Gate.
 - ``"unclassified"`` — a field that genuinely resists classification against the ownership table as
   written. ADR-008's own paradigm case was a "coverage floor" field (§Corrections(b), §Open questions
-  #1) — resolved by card C2 to ``"SourceProfile"`` (a per-source-class default, the same object that
+  #1) — resolved here to ``"SourceProfile"`` (a per-source-class default, the same object that
   already declares ``coast_interval_s``/``coast_required`` for the same "is this source legitimately
   quiet" question): ``SourceProfile.parameters["coverage_floor"]`` below now carries that owner.
 

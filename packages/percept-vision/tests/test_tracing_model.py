@@ -356,6 +356,42 @@ class TestFunnelDerivation(unittest.TestCase):
         rec.close()
         self.assertAlmostEqual(rec.summary().source_healthy_s, 10.0)
 
+    def test_zero_admission_coverage_undeclared_floor_stays_non_alarming(self):
+        """ADR-008 Corrections(b): no coverage_floor declared -> zero_admission_coverage is exactly
+        the pre-existing diagnostic-only reading, byte-for-byte -- a still, motion-gated camera
+        correctly admitting nothing must never open an unhealthy interval."""
+        rec = recorder(policy=TracePolicy(level="full"))
+        rec.record(OBSERVATION_STAGE, trace_id="c@0", source_ts=0.0)
+        rec.health_sink()(_Health(
+            "zero_admission_coverage", ts=10.0,
+            data={"frames_seen": 5, "admitted": 0, "coverage_floor": None, "floor_unmet": False},
+        ))
+        rec.record(OBSERVATION_STAGE, trace_id="c@40", source_ts=40.0)
+        rec.close()
+        kinds = [r.data.get("kind") for r in rec.records]
+        self.assertIn("zero_admission_coverage", kinds)
+        rows = [r for r in rec.records if r.data.get("kind") == "zero_admission_coverage"]
+        self.assertEqual(rows[0].data.get("state"), "info")
+        # never latches an unhealthy interval
+        self.assertAlmostEqual(rec.summary().source_healthy_s, 40.0)
+
+    def test_zero_admission_coverage_declared_and_unmet_floor_is_degraded(self):
+        """ADR-008 Corrections(b): a DECLARED, UNMET coverage floor is what makes the SAME event
+        kind read as degraded -- never inferred from the zero admission count alone."""
+        rec = recorder(policy=TracePolicy(level="full"))
+        rec.record(OBSERVATION_STAGE, trace_id="c@0", source_ts=0.0)
+        rec.health_sink()(_Health(
+            "zero_admission_coverage", ts=10.0,
+            data={"frames_seen": 5, "admitted": 0, "coverage_floor": 3.0, "floor_unmet": True},
+        ))
+        rec.record(OBSERVATION_STAGE, trace_id="c@40", source_ts=40.0)
+        rec.close()
+        rows = [r for r in rec.records if r.data.get("kind") == "zero_admission_coverage"]
+        self.assertEqual(rows[0].data.get("state"), "degraded")
+        # the unhealthy interval opened at ts=10 and was never explicitly recovered, so it runs to
+        # the end of the run -- the same "unrecovered degradation" shape capture_plan_unmet has.
+        self.assertAlmostEqual(rec.summary().source_healthy_s, 10.0)
+
     def test_scheduler_drops_land_in_the_funnel(self):
         rec = recorder(policy=TracePolicy(level="full"))
         sink = rec.health_sink()

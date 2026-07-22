@@ -1990,7 +1990,7 @@ async def run(
                 # `coverage_floor` (None by default) is the ONE thing that changes the reading: an
                 # explicit, opt-in declaration this run must clear (never inferred from the zero
                 # itself, per ADR-008 Corrections(b)). Undeclared -> floor_unmet is always False, the
-                # SAME diagnostic-only event byte-for-byte pre-C2. Declared and unmet -> floor_unmet
+                # SAME diagnostic-only event byte-for-byte as always. Declared and unmet -> floor_unmet
                 # is True, and percept.tracing.TraceRecorder.health_sink classifies THIS occurrence
                 # (this kind string, this payload) as degraded — the kind itself is unchanged.
                 _zero = dict(_cov_data)
