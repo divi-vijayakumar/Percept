@@ -1,6 +1,6 @@
 # Percept — Client Preview Onboarding
 
-**Wheel:** `percept_vision-0.8.0-py3-none-any.whl` · **Watch API:** 1.0.0 · **Contract:** 1.8.0
+**Wheel:** `percept_vision-0.8.1-py3-none-any.whl` · **Watch API:** 1.0.0 · **Contract:** 1.9.0
 
 This is a **local preview wheel** for early feedback, not a public release. Everything below is
 verified against the code in this build — every code sample runs as written.
@@ -11,10 +11,10 @@ verified against the code in this build — every code sample runs as written.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install percept_vision-0.8.0-py3-none-any.whl
+pip install percept_vision-0.8.1-py3-none-any.whl
 
 # optional extras
-pip install "percept_vision-0.8.0-py3-none-any.whl[ocr]"   # OCR evidence extractor (pytesseract + Pillow)
+pip install "percept_vision-0.8.1-py3-none-any.whl[ocr]"   # OCR evidence extractor (pytesseract + Pillow)
 ```
 
 Every wheel is provenance-stamped. Confirm exactly what you're running:
@@ -22,7 +22,7 @@ Every wheel is provenance-stamped. Confirm exactly what you're running:
 ```python
 import percept
 print(percept.build_info())
-# BuildInfo(package_version='0.8.0', git_commit='0430895…', contract_version='1.8.0', build_timestamp='2026-07-22T…Z')
+# BuildInfo(package_version='0.8.1', git_commit='<git sha>…', contract_version='1.9.0', build_timestamp='2026-07-23T…Z')
 ```
 
 A returned `.ptrace` (see §3) carries this same stamp, so any trace you send back ties to the exact build.
@@ -59,8 +59,13 @@ select `screen_document` explicitly and the admission tuning comes with it. When
 value your explicit profile owns, resolution still succeeds but emits a **loud diagnostic** you can see.
 
 The three source profiles that ship: **`physical_scene`** (a camera on the world), **`screen_document`**
-(a screen/document capture), **`conversation`**. The four execution policies: **`balanced@1`**,
-**`burst@1`**, **`low_cost@1`**, **`privacy_edge@1`**.
+(a screen/document capture), **`conversation`**. The five execution policies: **`balanced@1`**,
+**`burst@1`**, **`low_cost@1`**, **`privacy_edge@1`**, **`strict_admission@1`** (signal-only admission —
+a `SourceProfile`-declared coast floor is NOT bound into the runtime; judge calls are spent only on
+tuned-signal escalations and audio wakes. If the profile marks its coast `coast_required`, `strict_admission`
+still overrides it, but LOUDLY — a `coast_required_overridden` receipt warning, never a silent drop. Good
+default for a blank/static-input admission control where you never want to pay a judge call for "nothing
+changed").
 
 ---
 
@@ -113,7 +118,7 @@ async for _ in percept.run(core, source="driveway.mp4", on_incident=sink, on_ask
     pass
 ```
 
-The POST body is the **Incident envelope (contract 1.8.0)**:
+The POST body is the **Incident envelope (contract 1.9.0)**:
 
 | field | meaning |
 |---|---|
@@ -122,6 +127,8 @@ The POST body is the **Incident envelope (contract 1.8.0)**:
 | `reason`, `roi`, `modality`, `provenance` | why it fired, where in frame, vision/audio/fused, which components |
 | `entity_id` | subject correlation when identity tracking is on |
 | `evidence_seq` | **dereferences to the exact source frame** in the `.ptrace` that produced this fire |
+| `judgment_event_id` | opaque, injective `f"{goal}#{entity}#{seq}"`-derived handle — the ONE `judgment.event` trace row this Incident resolves to (`percept.contracts.judgment_event_id`; verify with `percept.replay.verify_evidence_links`). `None` when the judgment's timing stamp failed to freeze — links are absent, never fabricated. |
+| `evidence_origin` | where the evidence came from: `"watch"` \| `"transition"` \| `None`. The A→B transition path (§5's `state={"type": "transition", ...}`) now emits a real, resolvable judgment too — pre-1.9 it emitted none at all. |
 | `revision_id`, `supersedes` | the correction chain — a later fire that revises an earlier provisional one names it in `supersedes`, never a silent edit |
 
 **(c) Evaluation artifacts** — a `.ptrace` bundle (every judgment round-trips to its evidence frame;
