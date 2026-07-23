@@ -1581,13 +1581,11 @@ class Percept:
             # HOW to look = the authored/preset spec, floored by the resolved profile's plan_mode —
             # "window" hands the judge an ordered clip, never a montage — then escalated by this
             # concern's current ladder rung (single→strip→+audio) when it's been recurrently ambiguous
-            # (set in _deliberate_confused).
-            spec = _escalated_perception(
-                _planned_perception(program_of(goal).perception, self.plan_mode), ctx.perception_level
-            )
+            # (set in _deliberate_confused). Same resolution the transition path now shares via
+            # _resolve_strip; strip is the temporal strip per the spec (None = single).
+            spec, strip = self._resolve_strip(goal, source, perception_level=ctx.perception_level)
             roi = self._resolve_roi(goal, focus, spec)
             corrections = focus.asserted() if focus else {}
-            strip = self._strip_frames(source, spec)  # temporal strip per the spec; None = single (today)
             audio = self._audio_clip(source, spec)  # audio clip for a fused/audio spec; None otherwise
             self.funnel.judged(concern=goal.id, camera=source)  # a judge call is being spent
             # Item 2 process-QA: opt-in goals carry a per-concern running answer in/out of the judge.
@@ -1829,6 +1827,34 @@ class Percept:
         roi: Box | None = focus.box if focus else None
         corrections = focus.asserted() if focus else {}
         entity = focus.id if focus else "scene"
+        # Judge from/to over the SAME resolved temporal strip the watch path uses — not bare single
+        # frames. _resolve_strip floors the authored spec by the compiled plan_mode; ``strip`` is None
+        # (the degenerate single-frame case) when the plan is 'single' or the window holds no earlier
+        # frames, keeping every single-frame transition goal byte-for-byte (no frames= passed). This is
+        # what lets a state change caught only across frames (a status flip that lands between samples /
+        # renders a frame late) fire — a bare single-frame judge of the anchor alone misses it.
+        _, strip = self._resolve_strip(goal, source)
+        # Extractor enrichment threaded exactly like perceive_judged — extract ONCE per tick off
+        # goal.condition + this frame/roi, emit the extractor.enriched trace stage, and merge the facts
+        # into context= for BOTH the from and the to judge call (the reserved EXTRACTOR_CONTEXT_KEY
+        # sub-dict). None by default (no extractor) -> no context= kwarg, byte-for-byte.
+        judge_context = None
+        enriched = False
+        if self.extractor is not None:
+            enrichment = self.extractor.extract(goal.condition, frame, roi)
+            if tracing:
+                await self._emit_trace(trace_id, now, "extractor.enriched", goal_id=goal.id,
+                                       facts=dict(enrichment.facts))
+            if not enrichment.is_empty:
+                judge_context = {EXTRACTOR_CONTEXT_KEY: enrichment.to_dict()}
+                enriched = True
+        # Pass frames=/context= ONLY when they exist, so a single-frame goal with no extractor calls
+        # ``vision.judge`` with the exact single-frame signature (some Vision doubles accept neither kwarg).
+        judge_kwargs: dict[str, Any] = {}
+        if strip is not None:
+            judge_kwargs["frames"] = strip
+        if judge_context is not None:
+            judge_kwargs["context"] = judge_context
         # Reserve this judgment's evidence_seq at judge-DISPATCH (ADR-001 §8), keyed like the judged
         # path (goal, focus-or-None), BEFORE the first judge call.
         evidence_seq = self._admit_evidence((goal.id, focus.id if focus else None))
@@ -1841,9 +1867,11 @@ class Percept:
         timing.set_source_media_ts(t)
         timing.mark_judge_started()
         self.funnel.judged(concern=goal.id, camera=source)  # the 'from' judge call is being spent
-        from_v = await self.vision.judge(from_cond, frame, roi=roi, corrections=corrections or None)
+        from_v = await self.vision.judge(from_cond, frame, roi=roi, corrections=corrections or None,
+                                         **judge_kwargs)
         self.funnel.judged(concern=goal.id, camera=source)  # the 'to' judge call is being spent
-        to_v = await self.vision.judge(to_cond, frame, roi=roi, corrections=corrections or None)
+        to_v = await self.vision.judge(to_cond, frame, roi=roi, corrections=corrections or None,
+                                       **judge_kwargs)
         timing.mark_judge_completed()
         if stale is not None and stale():
             return None  # goals changed while the from/to judges were in flight — apply nothing
@@ -1858,6 +1886,8 @@ class Percept:
                 trace_id, now, STAGE_TRANSITION_DECISION, goal_id=goal.id, entity_id=entity,
                 from_truth=tick.from_truth, to_truth=tick.to_truth, armed=tick.armed,
                 fired_latch=tick.fired_latch, outcome=tick.outcome,
+                # So a miss is diagnosable as single-frame-vs-strip and with/without extractor facts.
+                strip_len=(len(strip) if strip else 0), enriched=enriched,
             )
         fired = tick.fired
         if fired is None:
@@ -1890,10 +1920,7 @@ class Percept:
         log. NEVER fires here — a process goal's answer is produced by :meth:`summarize_process` at the
         episode boundary / on demand. The gate is untouched (no verdict routed)."""
         ctx = self.executor.ctx(goal.id)
-        spec = _escalated_perception(
-            _planned_perception(program_of(goal).perception, self.plan_mode), ctx.perception_level
-        )
-        strip = self._strip_frames(source, spec)
+        _, strip = self._resolve_strip(goal, source, perception_level=ctx.perception_level)
         self.funnel.judged(concern=goal.id, camera=source)  # an observe call is being spent
         # Process goals have no entity/focus concept here; a 1-tuple key never collides with a watch
         # goal's (goal_id, entity_id) 2-tuple key (see perceive_judged's base_key).
@@ -1989,6 +2016,22 @@ class Percept:
                 return Box(*hint)
             # no usable hint authored -> fall back to the focus box (never worse than today)
         return focus.box if focus else None
+
+    def _resolve_strip(self, goal, source: str, *, perception_level: int = 0):
+        """Resolve the perception spec — the authored/preset ``PerceptionSpec`` FLOORED by the resolved
+        ``plan_mode`` and then ESCALATED by this concern's ladder rung — and assemble the temporal strip
+        off the rolling window. Returns ``(spec, strip)``; ``strip`` is ``None`` for single-frame
+        perception (``plan_mode`` 'single', an authored single spec, or no earlier frames in the window).
+
+        Shared by the watch path (:meth:`perceive_judged` / :meth:`_observe_and_log`) and the A→B
+        transition path (:meth:`_perceive_transition`) so BOTH floor to the SAME strip the compiled plan
+        mode asks for, rather than the transition path judging bare single frames. The transition path
+        passes no ``perception_level`` (it is not on the confusion-escalation ladder), so it gets the
+        plan-mode floor only — still single when the plan is 'single', a strip when the plan widened one."""
+        spec = _escalated_perception(
+            _planned_perception(program_of(goal).perception, self.plan_mode), perception_level
+        )
+        return spec, self._strip_frames(source, spec)
 
     def _strip_frames(self, source: str, spec) -> list | None:
         """Assemble the temporal strip/window per the ``PerceptionSpec`` from the rolling FrameWindow:
