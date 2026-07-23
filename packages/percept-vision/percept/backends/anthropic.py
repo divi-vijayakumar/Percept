@@ -43,6 +43,26 @@ _JUDGE_SYSTEM = (
     "confident yes is the worst outcome."
 )
 
+# CLAIM-MODE contract addendum (1.5). Appended to the per-frame question ONLY when the caller marks
+# the goal claim-mode (``context["claim_mode"]`` — set in ``agent.perceive_judged`` when the concern's
+# resolved identity policy is ``claim_slot``). It advertises the OPTIONAL mutation-channel fields the
+# claim ledger folds (:func:`_apply_claim_fields` maps them onto the existing ``Verdict`` fields). A
+# non-claim goal never sees this text, so its prompt is byte-for-byte unchanged. Provider-agnostic:
+# gemini/openrouter import it so the correction contract is identical on every parsing backend.
+_CLAIM_MODE_CONTRACT = (
+    " This watch tracks a CLAIMED VALUE a person may later CORRECT. In ADDITION to the fields above, "
+    "you MAY include these OPTIONAL fields, but ONLY when the evidence plainly supports them: "
+    '"operation" — one of "assert", "replace", "retract", "confirm" (DEFAULT "assert"). Use "replace" '
+    "ONLY for an explicit correction speech-act — \"actually it's X\", \"correction: ...\", a visible "
+    "reversal of a value stated earlier. A question, hypothetical, or proposal (\"could we do X?\") is "
+    'NEVER a correction — leave "operation" at "assert". Use "retract" when a value is explicitly '
+    'withdrawn ("never mind", "forget that"). Use "confirm" for a restatement of the SAME value. '
+    '"value" — the asserted or corrected value exactly as heard/seen (e.g. "$25K"). "normalized_value" '
+    "— a canonical form ONLY when you are confident (e.g. 25000); otherwise OMIT it. Never invent an "
+    "operation you are unsure of: when in doubt omit all three and the default assert applies. Do NOT "
+    "state who spoke."
+)
+
 # Outbound-call timeout (seconds) for the Anthropic client. A hung socket on the hot 24/7 path
 # must surface as a retryable failure, not a stall — the SDK raises ``APITimeoutError`` past this
 # and ``with_retry`` re-attempts. Overridable via ``PERCEPT_VISION_TIMEOUT_S`` (rule 5: no literal
@@ -97,6 +117,11 @@ class AnthropicVision:
     first call so the module imports with no key present (L2 boundary).
     """
 
+    #: This backend PARSES the claim-mode correction channel (operation/value) — read by
+    #: ``watchplan_apply`` to decide whether a ``claim_slot`` plan needs the "backend unverified"
+    #: warning. A client backend that emits the channel declares the same marker.
+    PARSES_CLAIM_CHANNEL = True
+
     def __init__(self, settings: Any = None, *, client: Any = None) -> None:
         self._settings = _settings_of(settings)
         self._client = client  # injectable for L2 fixtures; built lazily otherwise
@@ -148,8 +173,10 @@ class AnthropicVision:
         """
         del audio  # accepted for protocol parity; Claude is vision-only (honest degrade)
         client = self._with_timeout(self._ensure_client())
+        claim_mode = bool(context and context.get("claim_mode"))  # claim-slot concern -> parse the correction channel
         content = self._build_content(condition, frame, roi=roi, exemplar=exemplar,
-                                      corrections=corrections, frames=frames, context=context)
+                                      corrections=corrections, frames=frames, context=context,
+                                      claim_mode=claim_mode)
 
         async def _call():
             # The SDK call is synchronous — run it off the event loop so the explicit timeout and
@@ -164,7 +191,7 @@ class AnthropicVision:
 
         # Survive transient resets/timeouts in batch captures; trip the breaker on a run of failures.
         resp = await with_retry(_call, breaker=self._breaker)
-        verdict = _parse_verdict(_text_of(resp))
+        verdict = _parse_verdict(_text_of(resp), claim_mode=claim_mode)
         verdict.usage = _usage_of(resp)  # 1.3 metering: token/cost funnel (was always {})
         return verdict
 
@@ -209,10 +236,15 @@ class AnthropicVision:
         corrections: dict | None,
         frames: list | None = None,
         context: dict | None = None,
+        claim_mode: bool = False,
     ) -> list:
         """Build the multimodal user turn: the temporal strip + ROI crop, the exemplar, and the
         narrow question. ``frames`` are earlier-context images (oldest→newest); the current frame is
-        last so the model reads time from image order."""
+        last so the model reads time from image order.
+
+        ``claim_mode`` (default ``False``) appends the correction-channel contract
+        (:data:`_CLAIM_MODE_CONTRACT`) so a claim-slot concern can emit ``operation``/``value``; a
+        non-claim goal leaves it ``False`` and the assembled prompt is byte-for-byte unchanged."""
         strip = [f for f in (frames or []) if f is not frame]  # earlier context, oldest->newest
         content: list = [_image_block(f, roi=roi, label="earlier moment") for f in strip]
         content.append(_image_block(frame, roi=roi, label="region of interest"))
@@ -240,12 +272,16 @@ class AnthropicVision:
                 f"read): {facts}. "
             )
         if context:
-            spec_facts = "; ".join(f"{k}={v}" for k, v in context.items())
-            question += (
-                f"A specialist model has reported these structured facts (trust them over your own "
-                f"read): {spec_facts}. "
-            )
+            # ``claim_mode`` is a RESERVED control key (not a specialist fact) — never surface it as one.
+            spec_facts = "; ".join(f"{k}={v}" for k, v in context.items() if k != "claim_mode")
+            if spec_facts:
+                question += (
+                    f"A specialist model has reported these structured facts (trust them over your own "
+                    f"read): {spec_facts}. "
+                )
         question += 'Answer as STRICT JSON {"satisfied", "confidence", "evidence"}.'
+        if claim_mode:
+            question += _CLAIM_MODE_CONTRACT
         content.append({"type": "text", "text": question})
         return content
 
@@ -365,18 +401,49 @@ def _salvage_verdict(text: str) -> Verdict | None:
                    evidence=(m_ev.group(1).strip() if m_ev else ""))
 
 
-def _parse_verdict(text: str) -> Verdict:
+# The closed set of operations a CLAIM-MODE judge may emit (a strict subset of the contract's
+# ``Operation`` vocabulary — ``close``/``mention`` are ledger-internal, never judge-authored). Anything
+# outside this set degrades to ``"assert"``: a parser never INVENTS a mutation the model did not clearly
+# request (invariant 1 — a value DIFFERENCE must never be mistaken for a correction).
+_CLAIM_OPERATIONS: frozenset[str] = frozenset({"assert", "replace", "retract", "confirm"})
+
+
+def _apply_claim_fields(verdict: Verdict, data: Any) -> None:
+    """Map the OPTIONAL claim-mode channel fields off a parsed judge reply onto ``verdict`` in place.
+
+    Strict validation, never fabrication: an unknown/malformed/absent ``operation`` degrades to
+    ``"assert"`` (the safe default — asserts can only ESTABLISH an empty slot, never overwrite);
+    ``value`` is taken verbatim as the judge emitted it; ``normalized_value`` is folded only when
+    present. ``asserted_by`` is NEVER populated — there is no diarization, so a speaker is never
+    fabricated (authority defaults to unrestricted, so revision chains still form)."""
+    if not isinstance(data, dict):
+        return
+    op = data.get("operation", "assert")
+    op = op.strip().lower() if isinstance(op, str) else "assert"
+    verdict.operation = op if op in _CLAIM_OPERATIONS else "assert"
+    if "value" in data:
+        verdict.value = data.get("value")  # verbatim as heard/seen; may be None
+    nv = data.get("normalized_value")
+    if nv is not None:
+        verdict.normalized_value = nv
+    # asserted_by intentionally left at its default (None): no speaker attribution is ever invented.
+
+
+def _parse_verdict(text: str, *, claim_mode: bool = False) -> Verdict:
     """Parse the strict-JSON judge reply into a ``Verdict`` (defensive defaults on a bad read).
 
     A parse failure is treated as *low-confidence unknown* (satisfied=False, confidence=0.0) so
     the gate defers to ASK rather than risking a confident-wrong fire (invariant 1) — UNLESS the
     decisive fields survive a truncation, in which case :func:`_salvage_verdict` recovers them.
-    """
+
+    ``claim_mode`` (default ``False``) additionally folds the OPTIONAL correction channel
+    (:func:`_apply_claim_fields`) onto the verdict; a non-claim call sets none of those fields and is
+    byte-for-byte the pre-claim parser (the malformed-JSON salvage path is shared, unchanged)."""
     try:
         data = _coerce_json(text)
         ap = data.get("action_present")
         phase = str(data.get("phase", "")).lower()
-        return Verdict(
+        verdict = Verdict(
             satisfied=bool(data.get("satisfied", False)),
             confidence=float(data.get("confidence", 0.0)),
             evidence=str(data.get("evidence", "")),
@@ -384,6 +451,9 @@ def _parse_verdict(text: str) -> Verdict:
             phase=phase if phase in ("pre", "during", "post") else "",
             action_present=(bool(ap) if isinstance(ap, bool) else None),
         )
+        if claim_mode:
+            _apply_claim_fields(verdict, data)
+        return verdict
     except (ValueError, TypeError, AttributeError, KeyError):
         salvaged = _salvage_verdict(text)
         if salvaged is not None:

@@ -25,8 +25,9 @@ from typing import Any, AsyncIterator
 from ..adapters import AudioFrame, Box, Decision, Goal, Observation, Verdict
 from ._resilience import CircuitBreaker, with_retry
 
-# Reuse the provider-agnostic prompts + JSON-contract parsers (the contract is identical).
-from .anthropic import _JUDGE_SYSTEM, _parse_observations, _parse_verdict
+# Reuse the provider-agnostic prompts + JSON-contract parsers (the contract is identical, incl. the
+# claim-mode correction channel — one contract string, one parser, every parsing backend).
+from .anthropic import _CLAIM_MODE_CONTRACT, _JUDGE_SYSTEM, _parse_observations, _parse_verdict
 from .anthropic_text import _CONDUCTOR_SYSTEM, _coerce_decision, _extract_json
 
 GEMINI_DEFAULT = "gemini-3.5-flash"  # GA flash (structured output + function calling); 2.5-flash hit
@@ -200,6 +201,9 @@ class _GeminiBase:
 class GeminiVision(_GeminiBase):
     """``Vision`` adapter backed by Gemini Flash — narrow grounded VQA, same firing contract as Claude."""
 
+    #: PARSES the claim-mode correction channel (see :class:`~percept.backends.anthropic.AnthropicVision`).
+    PARSES_CLAIM_CHANNEL = True
+
     def __init__(self, settings: Any = None, *, client: Any = None) -> None:
         super().__init__(settings, client=client, model_attr="vision_model")
         self._breaker = CircuitBreaker()  # transient-error resilience for batch captures
@@ -225,6 +229,7 @@ class GeminiVision(_GeminiBase):
         if context and context.get("observe_step"):
             # Item 4 logsum: report ONLY this clip's step delta (no memory shown). evidence=the step.
             return await self._observe_step(condition, frame, frames)
+        claim_mode = bool(context and context.get("claim_mode"))  # claim-slot: parse the correction channel
         _, types = _require_genai()
         client = self._ensure_client()
         # temporal strip: earlier context frames (oldest->newest), then the current frame last, so the
@@ -274,11 +279,13 @@ class GeminiVision(_GeminiBase):
                 f"{facts}. "
             )
         if context:
-            spec_facts = "; ".join(f"{k}={v}" for k, v in context.items())
-            question += (
-                f"A specialist model has reported these structured facts (trust them over your own "
-                f"read): {spec_facts}. "
-            )
+            # ``claim_mode`` is a RESERVED control key (not a specialist fact) — never surface it as one.
+            spec_facts = "; ".join(f"{k}={v}" for k, v in context.items() if k != "claim_mode")
+            if spec_facts:
+                question += (
+                    f"A specialist model has reported these structured facts (trust them over your own "
+                    f"read): {spec_facts}. "
+                )
         if strip:
             # clip judging: ask for the temporal structure too (parsed into Verdict.phase/action_present;
             # single-frame replies omit these and default cleanly).
@@ -287,6 +294,8 @@ class GeminiVision(_GeminiBase):
                          'frames), "phase" (one of "pre","during","post")}.')
         else:
             question += 'Answer as STRICT JSON {"satisfied", "confidence", "evidence"}.'
+        if claim_mode:
+            question += _CLAIM_MODE_CONTRACT  # advertise the OPTIONAL correction fields (byte-for-byte off)
         parts.append(question)
 
         async def _call():
@@ -299,7 +308,7 @@ class GeminiVision(_GeminiBase):
             )
 
         resp = await with_retry(_call, breaker=self._breaker, timeout_s=_REQUEST_TIMEOUT_MS / 1000)  # survive transient resets in batch captures
-        verdict = _parse_verdict(resp.text or "")
+        verdict = _parse_verdict(resp.text or "", claim_mode=claim_mode)
         verdict.usage = _usage_of(resp)  # 1.3 metering: light up the token/cost funnel (was always {})
         return verdict
 

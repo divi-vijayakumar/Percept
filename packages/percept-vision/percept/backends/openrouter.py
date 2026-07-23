@@ -24,8 +24,9 @@ from typing import Any
 from ..adapters import Box, Goal, Observation, Verdict
 from ._resilience import CircuitBreaker, with_retry
 # Reuse the validated, well-tested response parsing from the Claude adapter (same strict-JSON verdict
-# shape, same defensive "unparsed -> low-confidence unknown" fallback that keeps the gate at ASK).
-from .anthropic import _JUDGE_SYSTEM, _coerce_json, _parse_observations, _parse_verdict
+# shape, same defensive "unparsed -> low-confidence unknown" fallback that keeps the gate at ASK, and
+# the same claim-mode correction contract so a correction parses identically on every backend).
+from .anthropic import _CLAIM_MODE_CONTRACT, _JUDGE_SYSTEM, _coerce_json, _parse_observations, _parse_verdict
 
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 _PROCESS_QA_SYSTEM = (
@@ -161,6 +162,9 @@ class OpenRouterVision:
     Constructed by the registry as ``OpenRouterVision(settings)`` (``vision="openrouter"``). The client is
     built lazily on first call so the module imports with no key present (L2 boundary)."""
 
+    #: PARSES the claim-mode correction channel (see :class:`~percept.backends.anthropic.AnthropicVision`).
+    PARSES_CLAIM_CHANNEL = True
+
     def __init__(self, settings: Any = None, *, client: Any = None) -> None:
         self._settings = _settings_of(settings)
         self._client = client  # injectable for L2 fixtures; built lazily otherwise
@@ -209,8 +213,10 @@ class OpenRouterVision:
         if ctx.get("process_qa"):  # accumulating-answer question (mirror GeminiVision._judge_process_qa)
             return await self._judge_process_qa(condition, frame, frames, str(ctx.get("running_answer") or ""))
         client = self._ensure_client()
+        claim_mode = bool(ctx.get("claim_mode"))  # claim-slot concern -> parse the correction channel
         content = self._build_content(condition, frame, exemplar=exemplar,
-                                      corrections=corrections, frames=frames, context=context)
+                                      corrections=corrections, frames=frames, context=context,
+                                      claim_mode=claim_mode)
         messages = [{"role": "system", "content": _JUDGE_SYSTEM},
                     {"role": "user", "content": content}]
 
@@ -223,7 +229,7 @@ class OpenRouterVision:
             )
 
         resp = await with_retry(_call, breaker=self._breaker)
-        verdict = _parse_verdict(_text_of(resp))
+        verdict = _parse_verdict(_text_of(resp), claim_mode=claim_mode)
         verdict.usage = _usage_of(resp)  # 1.3 metering: token/cost funnel (was always {})
         return verdict
 
@@ -289,6 +295,7 @@ class OpenRouterVision:
         corrections: dict | None,
         frames: list | None = None,
         context: dict | None = None,
+        claim_mode: bool = False,
     ) -> list:
         strip = [f for f in (frames or []) if f is not frame]  # earlier context, oldest->newest
         content: list = [_image_block(f) for f in strip]
@@ -311,10 +318,13 @@ class OpenRouterVision:
             facts = "; ".join(f"{k}={v}" for k, v in corrections.items())
             question += f"Trust these authoritative facts over your own read: {facts}. "
         if context and isinstance(context, dict):
-            spec = "; ".join(f"{k}={v}" for k, v in context.items() if k != "process_qa")
+            # ``process_qa``/``claim_mode`` are RESERVED control keys, never surfaced as specialist facts.
+            spec = "; ".join(f"{k}={v}" for k, v in context.items() if k not in ("process_qa", "claim_mode"))
             if spec:
                 question += f"A specialist model reported these structured facts (trust them): {spec}. "
         question += 'Answer as STRICT JSON {"satisfied", "confidence", "evidence"}.'
+        if claim_mode:
+            question += _CLAIM_MODE_CONTRACT  # advertise the OPTIONAL correction fields (byte-for-byte off)
         content.append({"type": "text", "text": question})
         return content
 

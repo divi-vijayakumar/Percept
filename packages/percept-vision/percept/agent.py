@@ -1634,6 +1634,14 @@ class Percept:
                     prior = dict((judge_context or {}).get(EXTRACTOR_CONTEXT_KEY) or {})
                     prior["facts"] = {**prior.get("facts", {}), **direct_result.facts}
                     judge_context = {**(judge_context or {}), EXTRACTOR_CONTEXT_KEY: prior}
+            # CLAIM-MODE seam (1.5): mark the judge context when THIS concern resolves to the
+            # claim-slot identity policy, so a parsing backend (claude/gemini/openrouter) advertises
+            # the correction contract and folds ``operation``/``value`` off the reply. A reserved
+            # control key read by _judge (context plumbing) and the backends; every non-claim concern
+            # leaves judge_context untouched, byte-for-byte. The fold itself stays authority-gated in
+            # _claim_episode_fold — this only lets a LIVE reply reach it.
+            if self._resolved_identity_policy(goal) == "claim_slot":
+                judge_context = {**(judge_context or {}), "claim_mode": True}
             # Computed BEFORE the judge call (not just on success) so a degraded tick can be charged
             # to the SAME key the gate/executor use ("the reducer key") — see _note_judge_degraded.
             base_key = (goal.id, focus.id if focus else None)
@@ -2170,19 +2178,27 @@ class Percept:
             context
             and (context.get("process_qa") or context.get("observe_step") or context.get(EXTRACTOR_CONTEXT_KEY))
         )
+        # CLAIM-MODE (1.5): a claim-slot concern's reply carries a correction channel (operation/value)
+        # the backend must be TOLD to parse. Route it like process_mode — bypass the single-frame cache
+        # (a "replace"/"retract" verdict must never be re-served from a frame-hashed slot) and forward
+        # ``context`` so ``context["claim_mode"]`` reaches the backend. A non-claim goal has no such key,
+        # so claim_mode stays False and the path below is byte-for-byte the pre-1.5 cache path.
+        claim_mode = bool(context and context.get("claim_mode"))
         # PR 1.5: a per-goal reference image ("is this THE mug <exemplar>?") — deictic/individuation
         # grounding the backends already implement but the watch path never supplied. Stable per goal
         # (set in goal.state), so it rides the goal's cache scope; None (the default) is byte-for-byte.
         exemplar = goal.state.get("exemplar")
-        if frames or audio or process_mode:
+        if frames or audio or process_mode or claim_mode:
             # The strip/audio (escalation) path is rare-by-design and multi-frame; bypass the
             # single-frame cache (its key dHashes ONE frame) so a strip verdict never pollutes — nor is
             # served from — a single-frame slot. The cache stays single-frame-pure. A process-QA judge
             # ALSO bypasses (its running answer/step accumulates per-call), and so does an
             # extractor-enriched judge (context["extractor"] is per-call, computed off THIS frame —
-            # must never be cached/served under a different frame's slot). ``context`` is passed ONLY
-            # in process_mode so a plain strip judge with neither is byte-for-byte.
-            extra = {"context": context} if process_mode else {}
+            # must never be cached/served under a different frame's slot). A CLAIM-MODE judge bypasses
+            # too: a correction (replace/retract) must never be cached and re-served under a frame hash.
+            # ``context`` is passed in process_mode OR claim_mode so a plain strip judge with neither is
+            # byte-for-byte.
+            extra = {"context": context} if (process_mode or claim_mode) else {}
             # The strip/audio/process-QA judge is on the live watch path (perceive_judged /
             # _observe_and_log) — a malformed/timeout/partial response here must degrade the tick,
             # never crash it, so this goes through the fail-closed boundary (may raise
