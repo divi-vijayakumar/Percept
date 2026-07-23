@@ -38,6 +38,12 @@ class FakeVision:
     something to track in offline tests.
     """
 
+    #: The L1 fake is treated as claim-channel-parsing (scripted, offline): a ``claim_slot`` plan armed
+    #: on a fake/scripted backend must NOT raise the "backend unverified" receipt warning, so the keyless
+    #: recipe test drives the real fold without a spurious diagnostic (mirrors the registry's fake/scripted
+    #: parity). A recipe double that feeds model-reply JSON through the real parser inherits this marker.
+    PARSES_CLAIM_CHANNEL = True
+
     def __init__(
         self,
         script: dict[str, Verdict] | None = None,

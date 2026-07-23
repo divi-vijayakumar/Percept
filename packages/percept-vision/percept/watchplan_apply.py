@@ -69,6 +69,38 @@ _WRAPPED_COERCERS: tuple[tuple[str, Any], ...] = (
 #: hashes (idempotency ledger). Not a dataclass field on ``Percept`` — see module docstring.
 _LEDGER_ATTR = "_watchplan_applied_hashes"
 
+#: The class-attribute marker a vision backend sets to declare it PARSES the claim-mode correction
+#: channel (operation/value). The three real backends (claude/gemini/openrouter) and the L1 fakes
+#: declare it; any other selected backend (incl. a client's custom one) cannot fold a live correction,
+#: so arming a ``claim_slot`` plan on it earns a (non-rejecting) receipt warning.
+_CLAIM_PARSING_MARKER = "PARSES_CLAIM_CHANNEL"
+
+
+def _claim_backend_warning(percept: Any, goal: Any) -> "FieldDiagnostic | None":
+    """A receipt WARNING (never a rejection) when ``goal`` arms ``identity_policy='claim_slot'`` but the
+    core's selected vision backend does not parse the correction channel.
+
+    The claim/supersession fold is fully wired, but it only mutates when a backend emits
+    ``operation``/``value`` — a backend that does not (no :data:`_CLAIM_PARSING_MARKER`) will still
+    arm and run, silently never producing a revision chain. That is exactly a loud-but-non-fatal
+    condition: warn, don't reject."""
+    if goal.state.get("identity_policy") != "claim_slot":
+        return None
+    vision = getattr(percept, "vision", None)
+    if vision is None or getattr(vision, _CLAIM_PARSING_MARKER, False):
+        return None
+    return FieldDiagnostic(
+        path="Goal.state.identity_policy",
+        code="claim_mode_backend_unverified",
+        goal_id=goal.id,
+        message=(
+            f"identity_policy='claim_slot' needs a claim-channel-parsing vision backend "
+            f"(claude/gemini/openrouter) to fold live corrections into a revision chain; the selected "
+            f"{type(vision).__name__} does not parse operation/value, so corrections will not supersede. "
+            "The plan is armed — this is a capability warning, not a rejection."
+        ),
+    )
+
 
 def _behavior_leaf_checks(raw: dict) -> list[tuple[str, str, Any]]:
     """``(diagnostic leaf path, coerced-output key to check, raw authored value)`` triples for every
@@ -175,6 +207,12 @@ def _apply_one(
     base = resolver.last_receipt  # the resolution-time WatchReceipt (accepted_fields + warnings)
     warnings = base.warnings if base is not None else ()
     accepted_fields = base.accepted_fields if base is not None else ()
+
+    # Capability warning assembled HERE (watchplan_apply's own channel — NOT resolver.py's binding
+    # function): a claim_slot plan armed on a non-parsing vision backend can never form a revision chain.
+    backend_warning = _claim_backend_warning(percept, goal)
+    if backend_warning is not None:
+        warnings = (*warnings, backend_warning)
 
     status: ReceiptStatus
     if coerced:

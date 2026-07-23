@@ -17,9 +17,13 @@ from __future__ import annotations
 
 import unittest
 
+from percept import Goal, Percept
 from percept.backends import anthropic as an
 from percept.backends import gemini as gm
 from percept.backends import openrouter as orr
+from percept.backends.fake import FakeVision
+from percept.contracts.watchplan import WatchPlan
+from percept.watchplan_apply import apply_watch_plan
 
 FRAME = b"\x89PNG\r\n\x1a\n-fake-bytes"
 COND = "a buyer states the approved budget"
@@ -162,6 +166,63 @@ class TestParserStrictness(unittest.TestCase):
         self.assertFalse(v.satisfied)
         self.assertEqual(v.confidence, 0.0)
         self.assertEqual(v.operation, "assert")
+
+
+# --------------------------------------------------------------------------------------------------
+# Receipt capability warning — a claim_slot plan on a non-parsing backend warns (never rejects).
+# --------------------------------------------------------------------------------------------------
+
+
+class _NonParsingVision:
+    """A minimal vision backend WITHOUT the ``PARSES_CLAIM_CHANNEL`` marker (a client's custom judge
+    that does not emit the correction channel)."""
+
+    async def judge(self, *a, **k):  # pragma: no cover - never called in these apply-time tests
+        from percept.adapters import Verdict
+
+        return Verdict(satisfied=False, confidence=0.0, evidence="")
+
+    async def detect(self, *a, **k):
+        return []
+
+    async def detect_events(self, *a, **k):
+        return []
+
+
+_CLAIM_PLAN = WatchPlan(
+    condition="a buyer states the approved budget",
+    explicit={"Goal.state.identity_policy": "claim_slot"},
+)
+
+
+class TestReceiptCapabilityWarning(unittest.TestCase):
+    def test_non_parsing_backend_warns_but_arms(self):
+        core = Percept.create(vision=_NonParsingVision(), discover_plugins=False)
+        receipt = apply_watch_plan(core, _CLAIM_PLAN)
+        # The plan ARMS (a warning, not a rejection) ...
+        self.assertEqual(len(receipt.watch_ids), 1)
+        self.assertEqual(receipt.status, "applied_with_warnings")
+        # ... and the machine-actionable warning code is present, scoped to the goal.
+        codes = [w.code for w in receipt.warnings]
+        self.assertIn("claim_mode_backend_unverified", codes)
+        warn = next(w for w in receipt.warnings if w.code == "claim_mode_backend_unverified")
+        self.assertEqual(warn.path, "Goal.state.identity_policy")
+        self.assertEqual(warn.goal_id, receipt.watch_ids[0])
+
+    def test_fake_backend_is_parsing_capable_no_warning(self):
+        core = Percept.create(vision=FakeVision(), discover_plugins=False)
+        receipt = apply_watch_plan(core, _CLAIM_PLAN)
+        self.assertEqual(len(receipt.watch_ids), 1)
+        self.assertNotIn(
+            "claim_mode_backend_unverified", [w.code for w in receipt.warnings]
+        )
+
+    def test_non_claim_plan_never_warns_even_on_non_parsing_backend(self):
+        core = Percept.create(vision=_NonParsingVision(), discover_plugins=False)
+        receipt = apply_watch_plan(core, WatchPlan(condition="a person is in the zone"))
+        self.assertNotIn(
+            "claim_mode_backend_unverified", [w.code for w in receipt.warnings]
+        )
 
 
 if __name__ == "__main__":
