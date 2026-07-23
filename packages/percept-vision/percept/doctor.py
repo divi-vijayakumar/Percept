@@ -123,6 +123,8 @@ SOURCE_PROFILE_EXPERIMENTAL = "SOURCE_PROFILE_EXPERIMENTAL"
 SOURCE_PROFILE_SELECTION_AMBIGUOUS = "SOURCE_PROFILE_SELECTION_AMBIGUOUS"
 OUT_OF_ENVELOPE_ACTUATION = "OUT_OF_ENVELOPE_ACTUATION"      #: ADR-007
 PERSON_IDENTIFYING_RESOLVER = "PERSON_IDENTIFYING_RESOLVER"  #: ADR-007
+EVIDENCE_LINK_BROKEN = "EVIDENCE_LINK_BROKEN"                #: a supplied trace has a delivered Incident
+#: that does not resolve to exactly one judgment.event (percept.replay.verify_evidence_links)
 
 #: Why a frame did NOT become a candidate for a goal. Every non-admit lands in exactly one bucket —
 #: "it was quiet" is only ONE of these, and conflating it with the others is the bug this module fixes.
@@ -642,12 +644,19 @@ def run_doctor(
     visualize_out: str | None = None,
     visualize_media: bool = False,
     golden: Any = None,
+    trace_records: Any = None,
 ) -> DoctorReport:
     """Run the tier-0 dry run and build the :class:`DoctorReport`. Spends no judge call, ever.
 
     Either ``source`` (a cv2-readable URI decoded through the runtime's own capture path) or
     ``frames`` (an explicit ``[(t, Frame), ...]`` stream, which is how the tests drive it) must be
     given. ``goals`` accepts :class:`~percept.adapters.Goal` objects or plain condition strings.
+
+    ``trace_records`` (optional) is a client's recorded :class:`~percept.tracing.TraceRecord` stream: when
+    supplied, doctor runs the pure evidence-link audit (:func:`percept.replay.verify_evidence_links`) over
+    it and adds an ``EVIDENCE_LINK_BROKEN`` finding if any delivered Incident fails to resolve to exactly
+    one judgment record. The dry run itself spends no judge call, so this audit only ever concerns the
+    trace the caller handed in — never doctor's own recorder.
 
     Raises :class:`DoctorConfigError` for an invalid configuration; every other failure — including
     a source that will not open — is REPORTED (with an exit code), not raised.
@@ -893,6 +902,25 @@ def run_doctor(
                 UNEXPLAINED_SUPPRESSION, "error",
                 f"{g.goal_id}: {g.suppressions['unexplained']} non-admits could not be attributed to "
                 "a rule — this is a doctor bug, please report it with this JSON",
+            ))
+
+    # An OPTIONAL evidence-link audit: only when the caller SUPPLIED a trace (a client's .ptrace). The
+    # dry run itself spends no judge call and emits no judgment.event/incident.created, so this never
+    # fires on doctor's own recorder — it verifies the trace a client handed over resolves every
+    # delivered Incident back to EXACTLY ONE judgment record (percept.replay.verify_evidence_links). A
+    # broken link is an ERROR-severity finding but not its own exit code: it is a data-integrity fact
+    # about the supplied trace, surfaced loudly rather than folded into a pass/fail the run doesn't own.
+    if trace_records is not None:
+        from .replay import verify_evidence_links  # noqa: PLC0415 — optional, avoids an import at module load
+
+        link_report = verify_evidence_links(trace_records)
+        if not link_report.ok:
+            kinds = ", ".join(sorted({v.kind for v in link_report.violations}))
+            findings.append(Finding(
+                EVIDENCE_LINK_BROKEN, "error",
+                f"supplied trace: {len(link_report.violations)} of {link_report.checked} verifiable "
+                f"incident(s) did not resolve to exactly one judgment.event ({kinds}); "
+                f"{link_report.legacy_unverifiable} legacy incident(s) carried no link and were not checked",
             ))
 
     # The source profile is a REPORTED fact, and an untuned admission signal is a finding,

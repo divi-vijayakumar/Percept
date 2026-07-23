@@ -48,6 +48,9 @@ from typing import Any, Iterable, Mapping, Sequence
 from .gate import ASK, FIRE, SILENT, Gate, GateAction, classify
 from .tracing import (
     STAGE_GATE_CLASSIFIED,
+    STAGE_INCIDENT_CREATED,
+    STAGE_JUDGMENT_EVENT,
+    STAGE_SOURCE_FRAME,
     RunTraceManifest,
     TraceRecord,
     canonical_json,
@@ -388,6 +391,150 @@ def replay_report_json(report: ReplayReport, *, indent: int | None = 2) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Evidence-link verification — does every delivered Incident resolve to EXACTLY ONE judgment?
+# ---------------------------------------------------------------------------
+#
+# The client-audit question ADR-001 §8 leaves open: a delivered Incident claims to be produced by a
+# specific judgment, and a ``.ptrace`` carries both records — but nothing PROVED the link resolves. This
+# is that proof, PURE over one trace stream (no model, no clock, no I/O), so a client can run it on the
+# trace they were handed. It never guesses: a row that carries no ``judgment_event_id`` is LEGACY and
+# counted ``legacy_unverifiable``, never a violation — the audit reports what it can attest and abstains
+# on what predates the link, exactly like ``ReplayReport`` states when the gate knobs were not recorded.
+
+#: The closed vocabulary of ways an evidence link can FAIL to resolve. Each is a distinct debugging fact.
+EVIDENCE_LINK_VIOLATIONS: tuple[str, ...] = (
+    "unresolved_evidence_ref",  # an incident.created's judgment_event_id matches ZERO judgment.event rows
+    "ambiguous_evidence_ref",   # ...matches MORE THAN ONE (the id must be injective within a trace)
+    "missing_source_frame",     # the resolved judgment.event's evidence_seq resolves to no same-trace source.frame
+)
+
+
+@dataclass(frozen=True)
+class EvidenceLinkViolation:
+    """One incident.created row whose evidence link did NOT resolve cleanly. Reported, never hidden."""
+
+    seq: int
+    trace_id: str
+    kind: str                       # one of EVIDENCE_LINK_VIOLATIONS
+    judgment_event_id: str | None   # the handle that failed to resolve
+    incident_id: str | None = None
+    detail: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "seq": self.seq, "trace_id": self.trace_id, "kind": self.kind,
+            "judgment_event_id": self.judgment_event_id, "incident_id": self.incident_id,
+            "detail": self.detail,
+        }
+
+
+@dataclass(frozen=True)
+class EvidenceLinkReport:
+    """The result of verifying evidence links over one trace stream — mirrors the :class:`ReplayReport`
+    idiom (counts + a typed ``violations`` tuple + ``to_dict``).
+
+    ``checked`` is the number of incident.created rows that carried a ``judgment_event_id`` (the ones an
+    audit CAN verify); ``resolved`` is how many of those resolved to EXACTLY ONE judgment.event whose
+    own recorder-stamped ``evidence_seq`` in turn resolved to EXACTLY ONE same-trace source.frame.
+    ``legacy_unverifiable`` counts id-absent incident rows — pre-1.9 records the audit abstains on rather
+    than faulting. A stream is :attr:`ok` iff it produced no violations.
+    """
+
+    checked: int = 0
+    resolved: int = 0
+    legacy_unverifiable: int = 0
+    judgment_events: int = 0
+    violations: tuple[EvidenceLinkViolation, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        """True iff no evidence link failed to resolve (legacy-unverifiable rows do not count against it)."""
+        return not self.violations
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": "evidence_link_verification",
+            "ok": self.ok,
+            "checked": self.checked,
+            "resolved": self.resolved,
+            "legacy_unverifiable": self.legacy_unverifiable,
+            "judgment_events": self.judgment_events,
+            "violations": [v.to_dict() for v in self.violations],
+        }
+
+
+def verify_evidence_links(records: Iterable[TraceRecord]) -> EvidenceLinkReport:
+    """PURE audit over one trace stream: every ``incident.created`` row that carries a
+    ``judgment_event_id`` must resolve to EXACTLY ONE ``judgment.event`` row, whose recorder-stamped
+    ``evidence_seq`` must in turn resolve to EXACTLY ONE same-trace ``source.frame``.
+
+    No model, no clock, no I/O — a client runs this on the ``.ptrace`` they were handed. The three ways
+    a link can fail are the closed :data:`EVIDENCE_LINK_VIOLATIONS` vocabulary. An incident row WITHOUT a
+    ``judgment_event_id`` is LEGACY: counted ``legacy_unverifiable`` and never a violation (the audit
+    attests what it can and abstains on what predates the link).
+    """
+    recs = list(records)
+    # judgment.event rows indexed by their OPAQUE handle; a handle appearing twice is what makes an
+    # incident referencing it "ambiguous" (the id is required to be injective within a trace).
+    by_id: dict[str, list[TraceRecord]] = {}
+    judgment_events = 0
+    for r in recs:
+        if r.stage != STAGE_JUDGMENT_EVENT:
+            continue
+        judgment_events += 1
+        jid = r.data.get("judgment_event_id")
+        if jid is None:
+            continue  # a pre-1.9 judgment.event row — nothing to index it by
+        by_id.setdefault(str(jid), []).append(r)
+    # (trace_id, seq) of every admitted source.frame, so a judgment's stamped evidence_seq can be proven
+    # to name a real frame IN THE SAME TRACE (not merely some frame somewhere in the stream).
+    source_frames: set[tuple[str, int]] = {
+        (r.trace_id, int(r.seq)) for r in recs if r.stage == STAGE_SOURCE_FRAME
+    }
+
+    checked = resolved = legacy = 0
+    violations: list[EvidenceLinkViolation] = []
+    for inc in recs:
+        if inc.stage != STAGE_INCIDENT_CREATED:
+            continue
+        jid = inc.data.get("judgment_event_id")
+        inc_id = inc.data.get("incident_id")
+        if jid is None:
+            legacy += 1  # a pre-1.9 incident — never a violation, just unverifiable
+            continue
+        checked += 1
+        matches = by_id.get(str(jid), [])
+        if len(matches) == 0:
+            violations.append(EvidenceLinkViolation(
+                seq=inc.seq, trace_id=inc.trace_id, kind="unresolved_evidence_ref",
+                judgment_event_id=str(jid), incident_id=inc_id,
+                detail="no judgment.event row carries this judgment_event_id",
+            ))
+            continue
+        if len(matches) > 1:
+            violations.append(EvidenceLinkViolation(
+                seq=inc.seq, trace_id=inc.trace_id, kind="ambiguous_evidence_ref",
+                judgment_event_id=str(jid), incident_id=inc_id,
+                detail=f"{len(matches)} judgment.event rows carry this judgment_event_id (must be exactly one)",
+            ))
+            continue
+        je = matches[0]
+        ev_seq = je.data.get("evidence_seq")
+        if ev_seq is None or (je.trace_id, int(ev_seq)) not in source_frames:
+            violations.append(EvidenceLinkViolation(
+                seq=inc.seq, trace_id=inc.trace_id, kind="missing_source_frame",
+                judgment_event_id=str(jid), incident_id=inc_id,
+                detail="the resolved judgment.event's evidence_seq names no source.frame in the same trace",
+            ))
+            continue
+        resolved += 1
+    return EvidenceLinkReport(
+        checked=checked, resolved=resolved, legacy_unverifiable=legacy,
+        judgment_events=judgment_events, violations=tuple(violations),
+    )
+
+
+# ---------------------------------------------------------------------------
 # The front door: load an artifact a shipped command actually produces
 # ---------------------------------------------------------------------------
 
@@ -507,7 +654,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 __all__ = [
     "GATE_CONFIG_KEYS",
     "REPLAY_VERSION",
+    "EVIDENCE_LINK_VIOLATIONS",
     "Divergence",
+    "EvidenceLinkReport",
+    "EvidenceLinkViolation",
     "ReplayGoalConfig",
     "ReplayInput",
     "ReplayLoadError",
@@ -520,4 +670,5 @@ __all__ = [
     "replay_cognition",
     "replay_inputs",
     "replay_report_json",
+    "verify_evidence_links",
 ]
