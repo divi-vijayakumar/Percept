@@ -50,12 +50,14 @@ def test_judgment_event_carries_no_evidence_pointer() -> None:
     """``JudgmentEvent`` has no evidence payload; ``evidence_seq`` is an ordering int, not a ref."""
     names = _fields(JudgmentEvent)
     # Card Z3 enriched the envelope with scalar OBSERVABILITY metadata (reason/watchplan_id/roi/
-    # modality/provenance). None of it is a handle to the raw evidence BYTES — which is the premise this
-    # test guards: evidence_seq stays an ordering int, no field is a ``*_ref`` pointer, and there is no
-    # media/frame handle. A Box ``roi`` is coordinates, not a pixel pointer.
+    # modality/provenance); INC1 (contract 1.9) adds evidence_origin — a closed judged/transition
+    # vocabulary naming WHICH path produced the evidence. None of it is a handle to the raw evidence
+    # BYTES — which is the premise this test guards: evidence_seq stays an ordering int, no field is a
+    # ``*_ref`` pointer, and there is no media/frame handle. A Box ``roi`` is coordinates, not a pixel
+    # pointer; evidence_origin is a category label, not a pointer to anything.
     assert names == {
         "key", "evidence_seq", "action", "timing",
-        "reason", "watchplan_id", "roi", "modality", "provenance",
+        "reason", "watchplan_id", "roi", "modality", "provenance", "evidence_origin",
     }
     assert not any(n.endswith("_ref") for n in names)
     assert not ({"frame_ref", "evidence_ref", "media", "frames"} & names)
