@@ -287,6 +287,14 @@ direct_judge_routes, fixtures, quality_bars, search_space, notes`. `components` 
 (`preferred`/`required`, surfaced to the operator); `policy_clamps` are *enforced* (resolve-time errors).
 Keep the two distinct — that separation is the point.
 
+**A worked fused-compare template** (e.g. "does the spoken threshold match the visible one"): give the
+template `extractors=("ocr-fields-scripted",)` (or chain `percept.extractors.fields.chain_ocr_then_fields`
+yourself) so each side lands as a typed `{field, raw, normalized, kind}` fact instead of raw text, then
+write `condition` to compare `normalized` values, never `raw` ones — `"25,000 dollars"` and `"threshold:
+25,000 dollars"` both normalize to `"USD 25000.00"` and correctly read as equal despite differing surface
+text. State the ASK rule explicitly in the condition too: *"if either side's normalized value is missing,
+ASK — never report a mismatch on an unnormalizable value."*
+
 ---
 
 ## 6. Run the optimizer to get the frontier

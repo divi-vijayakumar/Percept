@@ -249,6 +249,16 @@ class GoalTemplate:
       IS the domain's consequence default for this goal shape (composed straight onto the rendered
       :class:`~percept.contracts.WatchPlan.consequence` field, never through the ownership-gated
       ``explicit`` channel).
+
+    **Fused compares (e.g. "does modality A's value match modality B's") are an ``extractors``
+    concern, not a ``condition``-prose one:** name a typed extractor (``"ocr-fields-scripted"`` /
+    ``"fields"``, see :mod:`percept.extractors.fields`) so each side's mention lands as
+    ``{field, raw, normalized, kind}`` before the judge ever reasons over it, and phrase
+    ``condition`` to compare the two ``normalized`` values — never the two ``raw`` ones, which
+    differ in surface form even when the underlying value is identical. Always state the
+    abstention rule too: a ``normalized=None`` on either side means "cannot confirm equal or
+    different" and must ASK, never a confident mismatch — see the worked example in
+    ``client-preview/ONBOARDING.md`` §5.
     """
 
     name: str
