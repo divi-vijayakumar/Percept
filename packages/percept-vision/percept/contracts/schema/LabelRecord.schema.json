@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://percept.velvee.ai/contracts/LabelRecord.schema.json",
-  "x-contract-version": "1.8.0",
+  "x-contract-version": "1.9.0",
   "type": "object",
   "title": "LabelRecord",
   "properties": {
@@ -1111,6 +1111,29 @@
           "anyOf": [
             {
               "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "judgment_event_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_origin": {
+          "anyOf": [
+            {
+              "enum": [
+                "judged",
+                "transition"
+              ]
             },
             {
               "type": "null"

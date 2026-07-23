@@ -26,12 +26,13 @@
  * `percept.contracts.CONTRACT_VERSION`. Same major == wire-compatible. This is DISTINCT from
  * `WatchSpec.version` (the wire integer, defaults to 1) which stays for payload compat.
  */
-export const CONTRACT_VERSION = "1.8.0"; // JS twin of Python 1.8.0 — one batch bump covering 1.7 (Incident.evidence_seq
-// + SubjectRef 'provisional' resolution state / provisionalSubject()) and 1.8 (WatchPlan/SettingOrigin/
-// ResolvedWatch/WatchReceipt/FieldDiagnostic — Python-side-only config-provenance DTOs with no wire/gate
-// surface for the edge — plus Incident.revision_id/Incident.supersedes, the episode-owned
-// provisional/superseding link put ON THE WIRE so a webhook consumer sees the correction relation
-// directly instead of only a runtime-local Python annotation).
+export const CONTRACT_VERSION = "1.9.0"; // JS twin of Python 1.9.0 — the evidence-link batch:
+// Incident.judgment_event_id (the OPAQUE, INJECTIVE handle joining an Incident to the judgment.event
+// that produced it — see judgmentEventId()) + Incident.evidence_origin ("judged"|"transition"|null,
+// which firing path produced the evidence). Both ADDITIVE/OPTIONAL, so a pre-1.9 payload parses to null
+// unchanged. 1.8 covered WatchPlan/SettingOrigin/ResolvedWatch/WatchReceipt/FieldDiagnostic (Python-only
+// config-provenance DTOs) + Incident.revision_id/Incident.supersedes; 1.7 Incident.evidence_seq +
+// SubjectRef 'provisional' resolution state / provisionalSubject().
 // This constant names the PYTHON contract version these shapes are a twin of. The JS side implements a
 // SUBSET of the Python DTOs (the shapes defined below); the version tracks the wire contract, not the
 // coverage. 1.0.0: initial public wire contract (launch).
@@ -529,11 +530,40 @@ export function parseBoundaryReport(json) {
 // (`<episode_id>#r<n>`); `supersedes` names the PRIOR revision this one corrects and is `null` for an
 // original/provisional incident (the common case). Both ADDITIVE and OPTIONAL — a pre-1.8 payload
 // omitting them parses to `null` unchanged.
+//
+// `judgment_event_id`/`evidence_origin` (contract 1.9) are the durable EVIDENCE LINK a client audit
+// resolves against. `judgment_event_id` is the OPAQUE, INJECTIVE handle (see `judgmentEventId`) a
+// `judgment.event` trace row ALSO carries, so a delivered Incident joins back to EXACTLY ONE judgment
+// record — equality-compare it, never parse it. `evidence_origin` is "judged" | "transition" | null:
+// which firing path produced the evidence (the rising-edge watch path vs the A→B transition path, which
+// from 1.9 on also emits a judgment record). Both ADDITIVE and OPTIONAL — a pre-1.9 payload omitting
+// them parses to `null` unchanged; a `null` origin is read as "judged".
 // ---------------------------------------------------------------------------
 
 const _SNIPPET_KINDS = new Set(["frame", "clip", "audio"]);
 const _EVIDENCE_MODALITIES = new Set(["vision", "audio", "fused"]);
 const _JUDGMENT_PROVENANCES = new Set(["observed", "inferred"]);
+// contract 1.9 — the CLOSED EvidenceOrigin vocabulary: which firing path produced a judgment's
+// evidence. `judged` = the rising-edge watch path; `transition` = the A→B path (two judge calls). A
+// `null`/absent origin is LEGACY and read as "judged".
+const _EVIDENCE_ORIGINS = new Set(["judged", "transition"]);
+
+/**
+ * The OPAQUE, INJECTIVE handle joining an Incident to the `judgment.event` that produced it —
+ * `"{goal}#{entity}#{seq}"`, each component percent-escaped before joining. The IDENTICAL formula as
+ * Python `percept.contracts.judgment_event_id`: `%` → `%25` FIRST, then `#` → `%23`, applied IN EACH
+ * COMPONENT, so distinct `(goalId, entityId, dispatchSeq)` triples always map to distinct ids even when
+ * a raw id itself contains a `#` or `%`. `entityId` of `null`/`undefined` is treated as the empty string
+ * (a scene-scoped / non-entity fire). OPAQUE to consumers: equality-compare it, never parse it.
+ * @returns {string}
+ */
+export function judgmentEventId(goalId, entityId, dispatchSeq) {
+  const esc = (part) => String(part).replace(/%/g, "%25").replace(/#/g, "%23");
+  const goal = esc(goalId);
+  const entity = esc(entityId == null ? "" : entityId);
+  const seq = esc(dispatchSeq);
+  return `${goal}#${entity}#${seq}`;
+}
 
 function _isStringOrNull(v) {
   return v == null || typeof v === "string";
@@ -675,7 +705,19 @@ function _incidentEnvelope(src, ctx) {
   if (!_isStringOrNull(revision_id)) throw new ContractError(`${ctx}: revision_id must be a string or null`);
   const supersedes = src.supersedes == null ? null : src.supersedes;
   if (!_isStringOrNull(supersedes)) throw new ContractError(`${ctx}: supersedes must be a string or null`);
-  return { reason, watchplan_id, roi, modality, provenance, evidence_seq, revision_id, supersedes };
+  // contract 1.9 — the durable evidence link: an OPAQUE handle (string|null) + a closed-vocab origin.
+  const judgment_event_id = src.judgment_event_id == null ? null : src.judgment_event_id;
+  if (!_isStringOrNull(judgment_event_id)) {
+    throw new ContractError(`${ctx}: judgment_event_id must be a string or null`);
+  }
+  const evidence_origin = src.evidence_origin == null ? null : src.evidence_origin;
+  if (evidence_origin != null && !_EVIDENCE_ORIGINS.has(evidence_origin)) {
+    throw new ContractError(`${ctx}: evidence_origin must be one of ${[..._EVIDENCE_ORIGINS].join("|")} or null`);
+  }
+  return {
+    reason, watchplan_id, roi, modality, provenance, evidence_seq, revision_id, supersedes,
+    judgment_event_id, evidence_origin,
+  };
 }
 
 /**
@@ -704,6 +746,8 @@ export function makeIncident({
   evidence_seq = null,
   revision_id = null,
   supersedes = null,
+  judgment_event_id = null,
+  evidence_origin = null,
 } = {}) {
   if (typeof id !== "string") throw new ContractError("makeIncident: id must be a string");
   if (typeof concern_id !== "string") throw new ContractError("makeIncident: concern_id must be a string");
@@ -724,7 +768,10 @@ export function makeIncident({
     message,
     label_url,
     ..._incidentEnvelope(
-      { reason, watchplan_id, roi, modality, provenance, evidence_seq, revision_id, supersedes },
+      {
+        reason, watchplan_id, roi, modality, provenance, evidence_seq, revision_id, supersedes,
+        judgment_event_id, evidence_origin,
+      },
       "makeIncident",
     ),
   };

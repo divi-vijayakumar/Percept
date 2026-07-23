@@ -1,0 +1,95 @@
+{
+  "note": "shared judgment_event_id golden vectors \u2014 Python is source of truth; JS judgmentEventId must match byte-for-byte",
+  "vectors": [
+    {
+      "goal": "g1",
+      "entity": "e1",
+      "seq": 1,
+      "id": "g1#e1#1"
+    },
+    {
+      "goal": "goal",
+      "entity": "scene",
+      "seq": 7,
+      "id": "goal#scene#7"
+    },
+    {
+      "goal": "g",
+      "entity": null,
+      "seq": 3,
+      "id": "g##3"
+    },
+    {
+      "goal": "g",
+      "entity": "",
+      "seq": 3,
+      "id": "g##3"
+    },
+    {
+      "goal": "a#b",
+      "entity": "c",
+      "seq": 1,
+      "id": "a%23b#c#1"
+    },
+    {
+      "goal": "a",
+      "entity": "#b",
+      "seq": 1,
+      "id": "a#%23b#1"
+    },
+    {
+      "goal": "a%b",
+      "entity": "c%d",
+      "seq": 2,
+      "id": "a%25b#c%25d#2"
+    },
+    {
+      "goal": "pct%25",
+      "entity": "hash%23",
+      "seq": 5,
+      "id": "pct%2525#hash%2523#5"
+    },
+    {
+      "goal": "a#",
+      "entity": "b",
+      "seq": 1,
+      "id": "a%23#b#1"
+    },
+    {
+      "goal": "a",
+      "entity": "#b",
+      "seq": 1,
+      "id": "a#%23b#1"
+    },
+    {
+      "goal": "100%",
+      "entity": "#1",
+      "seq": 0,
+      "id": "100%25#%231#0"
+    },
+    {
+      "goal": "",
+      "entity": "",
+      "seq": 0,
+      "id": "##0"
+    },
+    {
+      "goal": "goal-1",
+      "entity": "entity/2",
+      "seq": 42,
+      "id": "goal-1#entity/2#42"
+    },
+    {
+      "goal": "g#e",
+      "entity": "",
+      "seq": 9,
+      "id": "g%23e##9"
+    },
+    {
+      "goal": "%",
+      "entity": "#",
+      "seq": 1,
+      "id": "%25#%23#1"
+    }
+  ]
+}

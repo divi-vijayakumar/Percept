@@ -30,7 +30,20 @@ from typing import Any, Awaitable, Callable, ClassVar, Hashable, Literal, Protoc
 #: Bump the MAJOR on any breaking change to a frozen shape; MINOR for additive (new optional
 #: field / new DTO); PATCH for docs/non-wire tweaks. This is distinct from ``WatchSpec.version``
 #: (a wire integer kept for byte-for-byte payload compat).
-CONTRACT_VERSION = "1.8.0"  # 1.8: + WatchPlan/SettingOrigin/ResolvedWatch/WatchReceipt/FieldDiagnostic
+CONTRACT_VERSION = "1.9.0"  # 1.9: + evidence-link correlation — judgment_event_id() + EvidenceOrigin
+# 1.9: the durable evidence LINK between a judgment and the Incident it produced. Three additive,
+# defaulted, GATE-IRRELEVANT fields + one pure helper, so a client audit can prove every delivered
+# Incident resolves to EXACTLY ONE judgment record (and vice versa), including the transition path that
+# until now emitted no judgment record at all:
+#   * :func:`judgment_event_id` — a pure, OPAQUE, INJECTIVE handle ``"{goal}#{entity}#{seq}"`` (each
+#     component percent-escaped) joining a ``judgment.event`` trace row to its Incident. Derivable, so it
+#     is NOT stored on :class:`JudgmentEvent` (zero information); it IS stored on :class:`Incident`.
+#   * :data:`EvidenceOrigin` — a CLOSED ``judged``/``transition`` vocabulary naming which firing path
+#     produced the evidence. ``None`` == legacy, read as ``"judged"``.
+#   * :attr:`JudgmentEvent.evidence_origin` + :attr:`Incident.judgment_event_id` /
+#     :attr:`Incident.evidence_origin` — all appended LAST, defaulted None; a producer/consumer that
+#     names none of them sees byte-for-byte the pre-1.9 envelope. watch.py + WATCH_VERSION FROZEN.
+# 1.8: + WatchPlan/SettingOrigin/ResolvedWatch/WatchReceipt/FieldDiagnostic
 # DTOs (percept.contracts.watchplan, ADR-008 — configuration ownership/resolution/provenance): portable
 # typed intent + per-field resolution provenance. A NEW additive module, re-exported from this package's
 # top level and from percept.adapters; no existing DTO shape changes. GATE-IRRELEVANT (the gate reads
@@ -760,6 +773,36 @@ EvidenceModality = Literal["vision", "audio", "fused"]
 #: absence conclusion: the thing did NOT happen in time). ``None`` == unstated.
 JudgmentProvenance = Literal["observed", "inferred"]
 
+#: WHICH firing path produced a judgment's evidence — a CLOSED vocabulary (1.9). ``judged`` — the
+#: rising-edge judged watch path (one gate call over one verdict, the common case). ``transition`` — the
+#: A→B transition path, which spends TWO real judge calls (the ``from`` and ``to`` states) and fires only
+#: after the ``from`` state was witnessed. ``None`` == legacy: a reader treats an absent origin as
+#: ``"judged"`` (the only path that emitted a judgment record before 1.9).
+EvidenceOrigin = Literal["judged", "transition"]
+
+
+def judgment_event_id(
+    goal_id: str, entity_id: "str | None", dispatch_seq: int
+) -> str:
+    """The OPAQUE, INJECTIVE handle joining a ``judgment.event`` trace row to the :class:`Incident`
+    it produced: ``"{goal}#{entity}#{seq}"``, each component percent-escaped before joining.
+
+    OPAQUE to consumers: **equality-compare it, never parse it.** The escaping — ``%`` → ``%25``
+    then ``#`` → ``%23``, applied IN EACH COMPONENT before the ``#`` separators are inserted —
+    guarantees injectivity: distinct ``(goal_id, entity_id, dispatch_seq)`` triples always map to
+    distinct ids, even when a raw ``goal_id``/``entity_id`` itself contains a ``#`` or ``%``. A
+    ``entity_id`` of ``None`` is treated as the empty string (a scene-scoped / non-entity fire), so a
+    ``None`` entity and an ``""`` entity share one handle by design.
+    """
+    def _esc(part: str) -> str:
+        # ``%`` FIRST so the ``%23`` this step's ``#`` rule emits is never itself re-escaped.
+        return part.replace("%", "%25").replace("#", "%23")
+
+    goal = _esc(str(goal_id))
+    entity = _esc("" if entity_id is None else str(entity_id))
+    seq = _esc(str(dispatch_seq))
+    return f"{goal}#{entity}#{seq}"
+
 
 @dataclass(frozen=True)
 class JudgmentTiming:
@@ -949,6 +992,13 @@ class JudgmentEvent:
     roi: "Box | None" = None
     modality: "EvidenceModality | None" = None
     provenance: "JudgmentProvenance | None" = None
+    # 1.9 — WHICH firing path produced this judgment's evidence (:data:`EvidenceOrigin`): ``judged``
+    # (the rising-edge watch path) vs ``transition`` (the A→B path that spends two judge calls). Appended
+    # LAST, defaulted None; ``None`` == legacy and a reader treats it as ``"judged"``. A stable
+    # ``judgment_event_id`` is deliberately NOT a field here — it is fully derivable from
+    # (key's goal/entity, ``evidence_seq``) via :func:`judgment_event_id`, so storing it would carry zero
+    # information; it lives on the delivered :class:`Incident`, the record a client actually correlates.
+    evidence_origin: "EvidenceOrigin | None" = None
 
 
 # ---------------------------------------------------------------------------
@@ -1377,6 +1427,20 @@ class Incident:
     # ignores these two fields sees byte-for-byte the pre-1.8 Incident.
     revision_id: str | None = None
     supersedes: str | None = None
+    # 1.9 — the durable EVIDENCE LINK a client audit resolves against. ``judgment_event_id`` is the
+    # OPAQUE, INJECTIVE handle (:func:`judgment_event_id`) that a ``judgment.event`` trace row ALSO
+    # carries, so a delivered Incident joins back to EXACTLY ONE judgment record (equality-compare only;
+    # never parse it). ``evidence_origin`` (:data:`EvidenceOrigin`) names WHICH firing path produced the
+    # evidence — ``judged`` vs ``transition`` — so the audit can tell a rising-edge fire from the A→B
+    # transition path that, from 1.9 on, also emits a judgment record. Both ``None`` when the fire carried
+    # no JudgmentEvent (episode/rhythm/boundary/absence fires take no judge-funnel stamps) or for a
+    # pre-1.9 Incident — an absent link, never a fabricated one; a ``None`` origin is read as ``"judged"``.
+    # ``make_incident`` derives ``judgment_event_id`` from the fire's (goal_id, entity_id, evidence_seq)
+    # and copies ``evidence_origin`` off the fire's ``JudgmentEvent``. Additive, defaulted, appended LAST:
+    # every existing positional ``Incident(...)`` keeps its meaning, and a consumer that ignores both sees
+    # byte-for-byte the pre-1.9 Incident.
+    judgment_event_id: str | None = None
+    evidence_origin: "EvidenceOrigin | None" = None
 
     def bind_labeler(
         self,
@@ -1926,6 +1990,8 @@ __all__ = [
     "Concern",
     "Decision",
     "JudgmentAction",
+    "EvidenceOrigin",
+    "judgment_event_id",
     "JudgmentTiming",
     "JudgmentTimingBuilder",
     "JudgmentEvent",
