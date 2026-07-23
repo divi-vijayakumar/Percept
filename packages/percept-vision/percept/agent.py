@@ -1827,12 +1827,14 @@ class Percept:
         roi: Box | None = focus.box if focus else None
         corrections = focus.asserted() if focus else {}
         entity = focus.id if focus else "scene"
-        # INC4: judge from/to over the SAME resolved temporal strip the watch path uses — not bare
-        # single frames. _resolve_strip floors the authored spec by the compiled plan_mode; ``strip`` is
-        # None (the degenerate single-frame case) when the plan is 'single' or the window holds no
-        # earlier frames, keeping every single-frame transition goal byte-for-byte (no frames= passed).
+        # Judge from/to over the SAME resolved temporal strip the watch path uses — not bare single
+        # frames. _resolve_strip floors the authored spec by the compiled plan_mode; ``strip`` is None
+        # (the degenerate single-frame case) when the plan is 'single' or the window holds no earlier
+        # frames, keeping every single-frame transition goal byte-for-byte (no frames= passed). This is
+        # what lets a state change caught only across frames (a status flip that lands between samples /
+        # renders a frame late) fire — a bare single-frame judge of the anchor alone misses it.
         _, strip = self._resolve_strip(goal, source)
-        # INC4: extractor enrichment threaded exactly like perceive_judged — extract ONCE per tick off
+        # Extractor enrichment threaded exactly like perceive_judged — extract ONCE per tick off
         # goal.condition + this frame/roi, emit the extractor.enriched trace stage, and merge the facts
         # into context= for BOTH the from and the to judge call (the reserved EXTRACTOR_CONTEXT_KEY
         # sub-dict). None by default (no extractor) -> no context= kwarg, byte-for-byte.
@@ -1847,7 +1849,7 @@ class Percept:
                 judge_context = {EXTRACTOR_CONTEXT_KEY: enrichment.to_dict()}
                 enriched = True
         # Pass frames=/context= ONLY when they exist, so a single-frame goal with no extractor calls
-        # ``vision.judge`` with the exact pre-INC4 signature (some Vision doubles accept neither kwarg).
+        # ``vision.judge`` with the exact single-frame signature (some Vision doubles accept neither kwarg).
         judge_kwargs: dict[str, Any] = {}
         if strip is not None:
             judge_kwargs["frames"] = strip
@@ -1884,7 +1886,7 @@ class Percept:
                 trace_id, now, STAGE_TRANSITION_DECISION, goal_id=goal.id, entity_id=entity,
                 from_truth=tick.from_truth, to_truth=tick.to_truth, armed=tick.armed,
                 fired_latch=tick.fired_latch, outcome=tick.outcome,
-                # INC4: so a miss is diagnosable as single-frame-vs-strip and with/without extractor facts.
+                # So a miss is diagnosable as single-frame-vs-strip and with/without extractor facts.
                 strip_len=(len(strip) if strip else 0), enriched=enriched,
             )
         fired = tick.fired
