@@ -16,6 +16,7 @@ from importlib import metadata as importlib_metadata
 from typing import Any, Callable
 
 from .backends import fake as _fake
+from .extractors import fields as _fields
 from .extractors import ocr as _ocr
 
 # seam -> {name -> factory(settings) -> adapter}
@@ -119,6 +120,24 @@ register("extractor", "scripted", lambda s: _fake.ScriptedExtractor())
 # percept-vision[ocr] extra is not installed — the typed error surfaces at first actual use.
 register("extractor", "ocr-scripted", lambda s: _ocr.ScriptedOCR(s if isinstance(s, dict) else None))
 register("extractor", "ocr", lambda s: _ocr.TesseractOCR(s))
+# Fields (percept.extractors.fields): typed numeric/currency/date/frequency normalization out of
+# OCR-style text, so a fused compare judges NORMALIZED values, not raw surface text (the seam that
+# closes the "25,000 dollars" vs "threshold: 25,000 dollars" false-mismatch incident). "fields" is
+# the REAL backend — pure-Python regex/format logic, no vendor dependency, no lazy import (unlike
+# TesseractOCR, nothing optional to install). "fields-scripted" is the deterministic offline double
+# for CI, scripted by frame token the same way "ocr-scripted" is. "ocr-fields-scripted" is the
+# convenience composition (percept.extractors.fields.chain_ocr_then_fields) wired to the scripted
+# OCR+fields backends in one registry name, so a caller gets {"text", "regions", "fields"} facts
+# out of a single extractor= without hand-wiring the chain themselves.
+register("extractor", "fields-scripted", lambda s: _fields.ScriptedFields(s if isinstance(s, dict) else None))
+register("extractor", "fields", lambda s: _fields.FieldNormalizer())
+register(
+    "extractor",
+    "ocr-fields-scripted",
+    lambda s: _fields.chain_ocr_then_fields(
+        _ocr.ScriptedOCR(s if isinstance(s, dict) else None), _fields.FieldNormalizer()
+    ),
+)
 
 
 def discover_entrypoints() -> None:
