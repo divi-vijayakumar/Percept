@@ -191,6 +191,15 @@ class EdgeSettings:
     # @0.20 -> 0.85 recall, p95 @0.15 -> 0.79, vs the mean's 0.06 at 0.10. See docs/reference/edge-policy.
     motion_gate_block_max: float = 0.20  # PERCEPT_MOTION_GATE_BLOCK_MAX
     motion_gate_p95: float = 0.15  # PERCEPT_MOTION_GATE_P95
+    # Whether a SourceProfile-declared coast floor is bound into the runtime. A profile such as
+    # SCREEN_DOCUMENT declares a fixed low-rate coast (``coast_interval_s``) that admits a judge call
+    # on a fixed cadence regardless of the tuned salience signal — the floor that keeps an
+    # illegible-to-tier-0 document from going wholly unwatched. Strict deployments that want
+    # SIGNAL-ONLY admission (judge calls spent only on tuned-signal escalations and audio wakes) set
+    # this False via the ``strict_admission`` ExecutionPolicy; the resolver then skips binding the
+    # coast contributions and a profile-declared ``coast_required`` is overridden LOUDLY (receipt
+    # warning), never silently. Off changes nothing for profiles that declare no coast.
+    coast_enabled: bool = True  # PERCEPT_COAST_ENABLED — bind a SourceProfile coast floor into the runtime
 
 
 @dataclass(frozen=True)
@@ -275,6 +284,7 @@ def load_settings() -> Settings:
             ego_compensate=_env("PERCEPT_EGO_COMPENSATE", False, _as_bool),
             motion_gate_block_max=_env("PERCEPT_MOTION_GATE_BLOCK_MAX", 0.20, float),
             motion_gate_p95=_env("PERCEPT_MOTION_GATE_P95", 0.15, float),
+            coast_enabled=_env("PERCEPT_COAST_ENABLED", True, _as_bool),
         ),
     )
 

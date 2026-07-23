@@ -375,6 +375,16 @@ _SETTINGS: tuple[TunableSpec, ...] = (
         env_var="PERCEPT_MOTION_GATE_P95", requires_recompile=True, risk="medium",
         note="p95-scale escalation cutoff (calibrated: 0.15 -> 0.79 recall).",
     ),
+    # coast_enabled is a scheduling/cost posture, not an admission-signal calibration -> ExecutionPolicy:
+    # whether a SourceProfile-declared coast floor is bound into the runtime at all. The strict_admission
+    # policy sets it False for signal-only admission (percept.execution_policies_default).
+    TunableSpec(
+        path="Settings.edge.coast_enabled", owner="ExecutionPolicy", visibility="public",
+        safe_to_optimize=False, default=True, value_type="bool", env_var="PERCEPT_COAST_ENABLED",
+        requires_recompile=True, risk="medium",
+        note="whether a SourceProfile-declared coast floor is bound into the runtime; strict deployments "
+        "disable via ExecutionPolicy.",
+    ),
 )
 
 # ======================================================================================================
@@ -865,6 +875,12 @@ _SOURCE_PROFILE: tuple[TunableSpec, ...] = (
         path="SourceProfile.parameters.coast_interval_s", owner="SourceProfile", visibility="public",
         safe_to_optimize=True, default=None, value_type="float", bounds=(0.0, float("inf")), risk="low",
         note="fixed low-rate sampling floor when the change signal is absent/untuned.",
+    ),
+    TunableSpec(
+        path="SourceProfile.parameters.coast_required", owner="SourceProfile", visibility="descriptive",
+        safe_to_optimize=False, default=False, value_type="bool", risk="low",
+        note="the profile's own assertion that its coast floor is not optional; read by the resolver and "
+        "doctor so a strict_admission override of the coast is reported LOUDLY, never silently dropped.",
     ),
     TunableSpec(
         path="SourceProfile.parameters.unknown_continuity_gap_s", owner="SourceProfile",
