@@ -139,6 +139,36 @@ print(receipt.dropped_fields)  # tuple of FieldDiagnostic {path, code, goal_id} 
 print(receipt.coerced_fields, receipt.warnings)
 ```
 
+### Corrections & revision chains
+
+Some watches track a **claimed value a person can later correct** — "the approved budget is $40K …
+actually, make that $25K". Arm the concern in **claim-slot** mode with one explicit key:
+
+```python
+plan = WatchPlan(
+    condition="a buyer states the approved budget",
+    explicit={"Goal.state.identity_policy": "claim_slot"},
+)
+```
+
+Now a later correction does not silently overwrite the earlier value — it **supersedes** it, and the
+link rides out on the incident you already receive:
+
+- the correction's incident carries a new `revision_id` and names the value it replaced in
+  `supersedes` (the original incident's `revision_id`); the webhook JSON carries both fields (see the
+  Incident table above). A **retraction** ("never mind") supersedes too and clears the value.
+- a **question or hypothetical** ("could we do $25K?") is *not* a correction — it never mutates the
+  slot and never emits a `supersedes` link.
+
+Honest limits, today:
+
+- **No speaker attribution.** There is no diarization, so an incident never claims *who* spoke; a
+  correction is applied on its content, not on an asserted role.
+- **Only three backends parse the correction channel:** `vision="gemini" | "claude" | "openrouter"`.
+  Arm `claim_slot` on any other backend and the receipt returns a warning
+  (`code="claim_mode_backend_unverified"`) — the plan still arms and runs, but corrections will not
+  form a revision chain, so check `receipt.warnings` before you rely on supersession.
+
 ### See where every value came from — before you run
 
 ```bash
