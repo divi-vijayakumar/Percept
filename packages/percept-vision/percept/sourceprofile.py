@@ -280,7 +280,14 @@ class SourceProfile:
     @property
     def coast_interval_s(self) -> float | None:
         """The fixed low-rate sampling floor, if this profile declares one. The coast is what keeps a
-        static-but-important source observed when the change signal is absent or untuned."""
+        static-but-important source observed when the change signal is absent or untuned.
+
+        A profile may additionally declare ``parameters['coast_required'] = True`` — its assertion that
+        this floor is not optional. That flag is READ (never inert): the resolver binds the coast
+        UNLESS the resolved :attr:`~percept.config.EdgeSettings.coast_enabled` is False (a
+        ``strict_admission`` ExecutionPolicy), and when it is, a ``coast_required`` profile has its
+        override reported LOUDLY (a ``coast_required_overridden`` receipt warning; a ``percept doctor``
+        finding on a resulting zero-admission run) rather than the floor being dropped in silence."""
         value = self.parameters.get("coast_interval_s")
         return None if value is None else float(value)
 
