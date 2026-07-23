@@ -192,7 +192,9 @@ _SALIENCE_THRESHOLD_PATH: dict[str, str] = {
 }
 
 
-def _source_profile_runtime_bindings(profile: SourceProfile) -> dict[str, Any]:
+def _source_profile_runtime_bindings(
+    profile: SourceProfile, *, coast_enabled: bool = True
+) -> dict[str, Any]:
     """Bind a resolved :class:`SourceProfile`'s DECLARED strategy onto the runtime fields
     that actually implement it — the missing half of ADR-005's "SourceProfile selects strategies"
     promise, which previously stopped at the profile object and never reached
@@ -220,6 +222,15 @@ def _source_profile_runtime_bindings(profile: SourceProfile) -> dict[str, Any]:
     Both contributions are layered at the SourceProfile precedence tier (:data:`LAYER_SOURCE_PROFILE`,
     same as :func:`_source_profile_paths`), so an explicit WatchPlan/env value for the same path still
     wins per the normal precedence chain — this function only supplies the DEFAULT a profile implies.
+
+    ``coast_enabled`` is the RESOLVED :attr:`~percept.config.EdgeSettings.coast_enabled` posture
+    (default ``True``; the ``strict_admission`` ExecutionPolicy sets it ``False``). It is a GATING
+    READ, not a precedence write: when ``False``, the coast's contributions (the sampling floor AND,
+    on an untuned profile, the fixed-cadence admission floor) are simply not emitted, so judge calls
+    are spent only on the tuned signal (and audio wakes). The salience-param bindings are unaffected —
+    disabling the coast never touches a profile's real tuned admission signal. The loud receipt
+    warning that a coast (and a possible ``coast_required``) was overridden is raised by the caller
+    (:meth:`ConfigResolver.resolve`), which owns the diagnostics channel.
     """
     out: dict[str, Any] = {}
 
@@ -232,7 +243,7 @@ def _source_profile_runtime_bindings(profile: SourceProfile) -> dict[str, Any]:
                 out[_SALIENCE_THRESHOLD_PATH[stat]] = float(threshold)
 
     coast = profile.coast_interval_s
-    if coast:
+    if coast and coast_enabled:
         prior = coast_sense_prior(profile)
         if prior:
             out["Goal.state.sense.base_fps"] = prior["base_fps"]
@@ -527,9 +538,44 @@ class ConfigResolver:
         }
 
         source_profile_values = _source_profile_paths(source_profile) if source_profile else {}
+        # Resolve Settings.edge.coast_enabled AHEAD of layering the profile's coast contributions:
+        # a GATING READ (no ownership move, no precedence write for this path — its own SettingOrigin
+        # still lands in the merge below). Only ExecutionPolicy (owner) and Deployment/env can legally
+        # write it, in that precedence order (env beats policy), atop the SDK default.
+        _COAST_ENABLED_PATH = "Settings.edge.coast_enabled"
+        coast_enabled = bool(sdk_snapshot.get(_COAST_ENABLED_PATH, True))
+        _ep_values = execution_policy.values if execution_policy else {}
+        if _COAST_ENABLED_PATH in _ep_values:
+            coast_enabled = bool(_ep_values[_COAST_ENABLED_PATH])
+        if _COAST_ENABLED_PATH in deployment_contribution:
+            coast_enabled = bool(deployment_contribution[_COAST_ENABLED_PATH])
         source_profile_bindings = (
-            _source_profile_runtime_bindings(source_profile) if source_profile else {}
+            _source_profile_runtime_bindings(source_profile, coast_enabled=coast_enabled)
+            if source_profile else {}
         )
+        # A profile that declares a coast floor which coast_enabled=False now suppresses is reported
+        # LOUDLY, never silently: a plan-level (goal_id=None) diagnostic on the coast interval's path,
+        # escalated to coast_required_overridden when the profile asserted the coast is not optional.
+        coast_warning: FieldDiagnostic | None = None
+        if source_profile is not None and not coast_enabled and source_profile.coast_interval_s:
+            _coast_required = bool(source_profile.parameters.get("coast_required"))
+            coast_warning = FieldDiagnostic(
+                path="SourceProfile.parameters.coast_interval_s",
+                code="coast_required_overridden" if _coast_required else "coast_disabled",
+                goal_id=None,
+                message=(
+                    f"source profile {source_profile.name!r} declares a coast floor "
+                    f"(coast_interval_s={source_profile.coast_interval_s:g}s"
+                    + (", coast_required=True" if _coast_required else "")
+                    + "), but Settings.edge.coast_enabled is False (signal-only admission): the coast "
+                    "is NOT bound into the runtime, so judge calls are spent only on the tuned "
+                    "admission signal (and audio wakes)."
+                    + (
+                        " The profile's coast_required assertion is OVERRIDDEN by ExecutionPolicy."
+                        if _coast_required else ""
+                    )
+                ),
+            )
 
         situation_profile_name: str | None = None
         situation_source_id = "profile_resolution.resolve_situation"
@@ -583,6 +629,8 @@ class ConfigResolver:
 
         optimization_lock_hash: str | None = None
         warnings: list[FieldDiagnostic] = []
+        if coast_warning is not None:
+            warnings.append(coast_warning)
         if optimization_lock is not None:
             optimization_lock_hash = optimization_lock.content_hash
             if optimization_lock.locked_hash is not None and optimization_lock.locked_hash != optimization_lock_hash:
