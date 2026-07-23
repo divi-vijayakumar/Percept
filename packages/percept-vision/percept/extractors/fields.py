@@ -181,11 +181,16 @@ def _segments(text: str) -> list[str]:
 def extract_fields(text: str) -> list[dict[str, Any]]:
     """Parse ``text`` into typed field dicts: ``{"field", "raw", "normalized", "kind"}``.
 
-    A ``"<label>: <value>"`` segment splits into ``field=<label lowercased>`` /
-    ``raw=<value>``; a bare segment (no ``:``) is ``field=None`` with the whole segment as
-    ``raw`` — the shape a spoken/transcript mention naturally has (no label is ever spoken).
-    NEVER raises and NEVER guesses: an unparseable/ambiguous value keeps its (possibly
-    ``"unknown"``) ``kind`` with ``normalized=None`` rather than inventing a canonical form.
+    A ``"<label>: <value>"`` segment splits into ``field=<label lowercased>`` / ``raw=<value>`` and
+    ALWAYS emits an entry (a label is an explicit assertion of a field, so even an unclassifiable
+    value is reported with ``kind="unknown"`` rather than dropped). A bare segment (no ``:``) is
+    ``field=None`` with the whole segment as ``raw`` — the shape a spoken/transcript mention
+    naturally has (no label is ever spoken) — but is only emitted when :func:`classify_value`
+    recognizes a numeric/currency/date/frequency SHAPE in it (``kind != "unknown"``); unlabeled
+    prose with no recognizable value shape at all is not a field mention and is silently skipped,
+    never reported as a fabricated ``"unknown"`` field. NEVER raises and NEVER guesses: an
+    unparseable/ambiguous value keeps its (possibly ``"unknown"``) ``kind`` with
+    ``normalized=None`` rather than inventing a canonical form.
     """
     fields: list[dict[str, Any]] = []
     for segment in _segments(text):
@@ -193,10 +198,13 @@ def extract_fields(text: str) -> list[dict[str, Any]]:
         if m:
             label = m.group("label").strip().lower()
             raw = m.group("value").strip()
+            kind, normalized = classify_value(raw)
         else:
             label = None
             raw = segment
-        kind, normalized = classify_value(raw)
+            kind, normalized = classify_value(raw)
+            if kind == "unknown":
+                continue  # unlabeled prose with no recognizable value shape is not a field mention
         fields.append({"field": label, "raw": raw, "normalized": normalized, "kind": kind})
     return fields
 
