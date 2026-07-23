@@ -258,7 +258,8 @@ class TimebaseEndToEndTests(unittest.TestCase):
     def test_effective_config_serializes_to_a_flat_record(self):
         _captured, stats = self._run("clip.mp4")
         d = stats.effective_config.as_dict()
-        self.assertEqual(set(d), {"fps", "video_timebase"})
+        self.assertEqual(set(d), {"fps", "video_timebase", "coast_enabled"})
+        self.assertIs(d["coast_enabled"], True)  # default posture: coast floor is bound
         self.assertEqual(set(d["fps"]),
                          {"requested_fps", "effective_fps", "reason", "overridden"})
         self.assertEqual(set(d["video_timebase"]), {"requested", "resolved", "reason"})
