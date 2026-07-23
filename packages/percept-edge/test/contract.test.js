@@ -26,6 +26,7 @@ import {
   parseSubjectRef,
   provisionalSubject,
   PROVISIONAL_KEY_PREFIX,
+  judgmentEventId,
 } from "../src/contract.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -317,8 +318,36 @@ describe("topology-B wire messages — EdgeCapabilities + BoundaryReport", () =>
 });
 
 describe("CONTRACT_VERSION", () => {
-  it("is the semver twin of the Python contract version (1.8.0: one batch bump — 1.7 evidence_seq + SubjectRef 'provisional', 1.8 WatchPlan DTOs (Python-only) + Incident.revision_id/supersedes)", () => {
-    expect(CONTRACT_VERSION).toBe("1.8.0");
+  it("is the semver twin of the Python contract version (1.9.0: the evidence-link batch — Incident.judgment_event_id + Incident.evidence_origin + judgmentEventId())", () => {
+    expect(CONTRACT_VERSION).toBe("1.9.0");
+  });
+});
+
+describe("judgmentEventId — shared golden-vector parity with Python", () => {
+  // The SAME fixture the Python-side test_inc1_evidence_links.py::TestGoldenVectorParity asserts.
+  // Python is source of truth; the JS twin must match byte-for-byte, including '#'/'%' escaping and
+  // the None/empty-entity equivalence.
+  const golden = JSON.parse(
+    readFileSync(join(__dirname, "fixtures", "judgment_event_id.golden.json"), "utf8"),
+  );
+  it("matches every shared vector", () => {
+    expect(golden.vectors.length).toBeGreaterThanOrEqual(10);
+    for (const v of golden.vectors) {
+      expect(judgmentEventId(v.goal, v.entity, v.seq)).toBe(v.id);
+    }
+  });
+  it("treats a null/undefined entity as the empty string", () => {
+    expect(judgmentEventId("g", null, 3)).toBe(judgmentEventId("g", "", 3));
+    expect(judgmentEventId("g", undefined, 3)).toBe("g##3");
+  });
+  it("stays injective when a component contains '#' or '%'", () => {
+    const ids = new Set([
+      judgmentEventId("a#b", "c", 1),
+      judgmentEventId("a", "#b", 1),
+      judgmentEventId("a#", "b", 1),
+      judgmentEventId("a%b", "c", 1),
+    ]);
+    expect(ids.size).toBe(4);
   });
 });
 
@@ -349,6 +378,8 @@ describe("Incident / IncidentSnippet", () => {
       evidence_seq: null, // contract 1.7 — defaults null on a minimal build
       revision_id: null, // contract 1.8 — defaults null on a minimal build
       supersedes: null, // contract 1.8 — defaults null on a minimal build
+      judgment_event_id: null, // contract 1.9 — defaults null on a minimal build
+      evidence_origin: null, // contract 1.9 — defaults null on a minimal build
     });
   });
 
@@ -390,7 +421,33 @@ describe("Incident / IncidentSnippet", () => {
       evidence_seq: null, // absent on a pre-1.7 payload -> null, never a parse failure
       revision_id: null, // absent on a pre-1.8 payload -> null, never a parse failure
       supersedes: null, // absent on a pre-1.8 payload -> null, never a parse failure
+      judgment_event_id: null, // absent on a pre-1.9 payload -> null, never a parse failure
+      evidence_origin: null, // absent on a pre-1.9 payload -> null, never a parse failure
     });
+  });
+
+  it("carries the 1.9 evidence link (judgment_event_id + evidence_origin) through build + round-trip", () => {
+    const inc = makeIncident({
+      id: "inc-19",
+      concern_id: "c-door-open",
+      verdict: { satisfied: true, confidence: 0.95 },
+      ts: 2.0,
+      entity_id: "scene",
+      evidence_seq: 7,
+      judgment_event_id: judgmentEventId("c-door-open", "scene", 7),
+      evidence_origin: "transition",
+    });
+    expect(inc.judgment_event_id).toBe("c-door-open#scene#7");
+    expect(inc.evidence_origin).toBe("transition");
+    expect(parseIncident(JSON.stringify(inc))).toEqual(inc);
+    // evidence_origin is a CLOSED vocabulary — an out-of-vocab value is rejected.
+    expect(() => makeIncident({ id: "x", concern_id: "c", verdict: { satisfied: true, confidence: 1 }, ts: 0, evidence_origin: "guessed" })).toThrow(ContractError);
+    // a pre-1.9 payload omitting both parses to null, never a failure.
+    const legacy = parseIncident(
+      '{"id":"i","concern_id":"c","verdict":{"satisfied":true,"confidence":0.9,"evidence":""},"ts":5.0}'
+    );
+    expect(legacy.judgment_event_id).toBeNull();
+    expect(legacy.evidence_origin).toBeNull();
   });
 
   it("carries entity_id through build + round-trip (D4: identity survives the wire)", () => {
