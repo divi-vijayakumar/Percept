@@ -1389,6 +1389,21 @@
     {
       "bounds": null,
       "choices": null,
+      "default": true,
+      "env_var": "PERCEPT_COAST_ENABLED",
+      "note": "whether a SourceProfile-declared coast floor is bound into the runtime; strict deployments disable via ExecutionPolicy.",
+      "owner": "ExecutionPolicy",
+      "path": "Settings.edge.coast_enabled",
+      "requires_recompile": true,
+      "requires_restart": false,
+      "risk": "medium",
+      "safe_to_optimize": false,
+      "value_type": "bool",
+      "visibility": "public"
+    },
+    {
+      "bounds": null,
+      "choices": null,
       "default": false,
       "env_var": "PERCEPT_EGO_COMPENSATE",
       "note": "remove global camera motion before diffing.",
@@ -2017,6 +2032,21 @@
       "safe_to_optimize": true,
       "value_type": "float",
       "visibility": "public"
+    },
+    {
+      "bounds": null,
+      "choices": null,
+      "default": false,
+      "env_var": null,
+      "note": "the profile's own assertion that its coast floor is not optional; read by the resolver and doctor so a strict_admission override of the coast is reported LOUDLY, never silently dropped.",
+      "owner": "SourceProfile",
+      "path": "SourceProfile.parameters.coast_required",
+      "requires_recompile": false,
+      "requires_restart": false,
+      "risk": "low",
+      "safe_to_optimize": false,
+      "value_type": "bool",
+      "visibility": "descriptive"
     },
     {
       "bounds": null,

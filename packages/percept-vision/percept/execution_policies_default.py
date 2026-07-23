@@ -1,6 +1,6 @@
 """The shipped :class:`~percept.execution_policy.ExecutionPolicy` set (ADR-008).
 
-Four policies, each named ``{id}@1`` and built ONLY from the 13 tunables-registry paths
+Five policies, each named ``{id}@1`` and built ONLY from the tunables-registry paths
 :data:`percept.tunables.REGISTRY` assigns owner ``"ExecutionPolicy"`` (see
 :mod:`percept.execution_policy`'s module docstring for the full list). No new temporal shapes, no
 ``event_capsule`` defaults — every value below is an existing ``Settings``/``WatchProfile.cadence``
@@ -23,6 +23,11 @@ field.
   ``DeploymentConfig``'s, per the tunables registry) — it only turns down every retention knob
   ``ExecutionPolicy`` actually owns. Inventing an enforcement mechanism here would be out of this
   card's scope.
+- :data:`STRICT_ADMISSION_V1` — signal-only admission: ``Settings.edge.coast_enabled`` set False so
+  a SourceProfile-declared coast floor is NOT bound into the runtime. Judge calls are spent only on
+  tuned-signal escalations (and audio wakes), never on a fixed coast cadence over static content.
+  A profile that declares ``coast_required`` is overridden LOUDLY (the resolver emits a receipt
+  warning and the run resolves ``applied_with_warnings``), never silently.
 
 Import this module for its side effect (seeds :data:`~percept.execution_policy.DEFAULT_EXECUTION_POLICY_REGISTRY`)
 before reading the registry directly; :func:`percept.execution_policy.get_execution_policy` already
@@ -92,7 +97,27 @@ PRIVACY_EDGE_V1 = ExecutionPolicy(
     ),
 )
 
-_SHIPPED: tuple[ExecutionPolicy, ...] = (BALANCED_V1, BURST_V1, LOW_COST_V1, PRIVACY_EDGE_V1)
+#: Signal-only admission: a SourceProfile-declared coast floor is NOT bound into the runtime.
+STRICT_ADMISSION_V1 = ExecutionPolicy(
+    id="strict_admission",
+    version="1",
+    values={
+        "Settings.edge.coast_enabled": False,  # default True — do not bind any coast floor
+    },
+    notes=(
+        "signal-only admission: a SourceProfile-declared coast floor is NOT bound; judge calls are "
+        "spent only on tuned-signal escalations (and audio wakes). A profile-declared coast_required "
+        "is overridden LOUDLY (receipt warning), never silently."
+    ),
+)
+
+_SHIPPED: tuple[ExecutionPolicy, ...] = (
+    BALANCED_V1,
+    BURST_V1,
+    LOW_COST_V1,
+    PRIVACY_EDGE_V1,
+    STRICT_ADMISSION_V1,
+)
 
 for _policy in _SHIPPED:
     register_execution_policy(_policy)
@@ -102,4 +127,5 @@ __all__ = [
     "BURST_V1",
     "LOW_COST_V1",
     "PRIVACY_EDGE_V1",
+    "STRICT_ADMISSION_V1",
 ]

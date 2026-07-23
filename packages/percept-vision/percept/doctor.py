@@ -119,6 +119,7 @@ SINGLE_FRAME_RUN = "SINGLE_FRAME_RUN"
 EGO_COMPENSATED_GATE = "EGO_COMPENSATED_GATE"
 UNEXPLAINED_SUPPRESSION = "UNEXPLAINED_SUPPRESSION"
 ADMISSION_SIGNAL_UNTUNED = "ADMISSION_SIGNAL_UNTUNED"
+COAST_DISABLED_ON_REQUIRED = "COAST_DISABLED_ON_REQUIRED"  #: strict coast override starved a coast-required profile
 SOURCE_PROFILE_EXPERIMENTAL = "SOURCE_PROFILE_EXPERIMENTAL"
 SOURCE_PROFILE_SELECTION_AMBIGUOUS = "SOURCE_PROFILE_SELECTION_AMBIGUOUS"
 OUT_OF_ENVELOPE_ACTUATION = "OUT_OF_ENVELOPE_ACTUATION"      #: ADR-007
@@ -878,6 +879,21 @@ def run_doctor(
             "nothing and saves every model call. Check the per-stat table — if an alternative "
             "statistic WOULD have admitted, the eye is mis-selected, not the scene",
         ))
+        # The one reading a zero-admission run does NOT own by itself: this profile ASSERTED its coast
+        # floor is not optional (coast_required=True), yet Settings.edge.coast_enabled is False — a
+        # strict_admission ExecutionPolicy overrode the floor that was the profile's only defense
+        # against exactly this silence. Named as a combination so the client can see the two decisions
+        # that produced the zero, and either supply a tuned change signal or re-enable the coast.
+        _coast_disabled = not bool(getattr(getattr(cfg, "edge", None), "coast_enabled", True))
+        if _coast_disabled and bool(src_profile.parameters.get("coast_required")):
+            findings.append(Finding(
+                COAST_DISABLED_ON_REQUIRED, "warn",
+                f"source profile '{src_profile.name}' declares coast_required=True (its coast floor is "
+                "not optional), but Settings.edge.coast_enabled is False (a strict_admission "
+                "ExecutionPolicy overrode it): the profile's only non-signal admission mechanism was "
+                "unbound, and this run admitted zero frames. Either supply a tuned change signal or "
+                "re-enable the coast (drop the strict_admission policy) for this source class",
+            ))
     for g in goal_diags:
         if not g.observable:
             findings.append(Finding(SIGNAL_UNAVAILABLE, "error", f"{g.goal_id}: {g.unobservable_reason}"))

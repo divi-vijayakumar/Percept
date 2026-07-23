@@ -192,6 +192,11 @@ SCREEN_DOCUMENT = SourceProfile(
         # floor UNDERNEATH that tuned default, not a replacement for it (SCREEN_COAST_INTERVAL_S is
         # in [1.0, 2.0]s — a fail-safe FLOOR pick, not a tuned value, see its own docstring above).
         "coast_interval_s": SCREEN_COAST_INTERVAL_S,
+        # This profile's own assertion that its coast floor is not optional. It is READ, not inert:
+        # the resolver (percept.resolver) and percept.doctor consult it so that a strict_admission
+        # ExecutionPolicy (Settings.edge.coast_enabled=False) which unbinds the coast reports the
+        # override LOUDLY — a receipt warning coded coast_required_overridden, and a doctor finding
+        # when such a run then admits zero frames — rather than silently dropping the floor.
         "coast_required": True,
         "episode_unit": "page_interval",
         "evidence_parts": ("full_screenshot", "changed_region_crop", "previous_screenshot"),

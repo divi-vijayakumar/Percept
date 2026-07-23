@@ -1,10 +1,10 @@
 """ExecutionPolicy (percept/execution_policy.py, percept/execution_policies_default.py) — card C4a.
 
-Covers, per the card's own exit criteria: each of the four shipped policies (balanced@1, burst@1,
-low_cost@1, privacy_edge@1) resolves through ConfigResolver AND compiles through
+Covers, per the card's own exit criteria: each of the shipped policies (balanced@1, burst@1,
+low_cost@1, privacy_edge@1, strict_admission@1) resolves through ConfigResolver AND compiles through
 percept.runtime_compiler.runtime_compile; balanced@1 proves byte-for-byte equality with a
 no-execution-policy resolution; a policy writing outside ExecutionPolicy's ownership raises
-ConfigError; and the four policies are visible via percept.catalog (the same surface
+ConfigError; and the shipped policies are visible via percept.catalog (the same surface
 SourceProfiles/WatchProfiles already use).
 
 No runtime execution beyond what ConfigResolver.resolve/runtime_compile already do internally —
@@ -33,7 +33,7 @@ from percept.resolver import ConfigError, ConfigResolver, LAYER_EXECUTION_POLICY
 from percept.runtime_compiler import runtime_compile
 from percept.tunables import REGISTRY
 
-_SHIPPED_NAMES = ("balanced@1", "burst@1", "low_cost@1", "privacy_edge@1")
+_SHIPPED_NAMES = ("balanced@1", "burst@1", "low_cost@1", "privacy_edge@1", "strict_admission@1")
 
 _OWNER_BY_PATH = {spec.path: spec.owner for spec in REGISTRY}
 
@@ -176,7 +176,7 @@ class TestCatalogSurfacing(unittest.TestCase):
     def test_snapshot_includes_execution_policies(self) -> None:
         snap = catalog.snapshot()
         by_role = snap.by_role(catalog.ROLE_EXECUTION_POLICY)
-        self.assertEqual(len(by_role), 4)
+        self.assertEqual(len(by_role), len(_SHIPPED_NAMES))
 
 
 class TestRegistryLookup(unittest.TestCase):

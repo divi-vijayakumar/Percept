@@ -97,11 +97,16 @@ class EffectiveConfig:
     fps: EffectiveFps
     video_timebase: EffectiveTimebase
     audio_timebase: EffectiveTimebase | None = None
+    # The resolved admission posture this run opened with: whether a SourceProfile-declared coast
+    # floor is bound into the runtime (Settings.edge.coast_enabled). False under a strict_admission
+    # ExecutionPolicy — a signal-only run states its posture rather than leaving it to be inferred.
+    coast_enabled: bool = True
 
     def as_dict(self) -> dict:
         d = {"fps": self.fps.as_dict(), "video_timebase": self.video_timebase.as_dict()}
         if self.audio_timebase is not None:
             d["audio_timebase"] = self.audio_timebase.as_dict()
+        d["coast_enabled"] = self.coast_enabled
         return d
 
 
@@ -119,6 +124,15 @@ class RuntimeStats:
     sink_errors: int = 0
     audio_chunks: int = 0  # audio chunks pumped into the AudioWindow (fused/acoustic perception)
     audio_wakes: int = 0  # audio onsets that admitted a frame the visual gate would have skipped
+    # Admission partition (each admitted frame lands in EXACTLY one bucket, so the totals sum cleanly):
+    #   escalations == signal_admits + coast_admits + audio_wakes
+    # - signal_admits: the tuned motion/salience gate escalated (decision.escalate) — the real signal.
+    # - coast_admits: a fixed-cadence coast floor forced the judge on a frame the gate would have
+    #   skipped (coast_admit and NOT escalate). A strict_admission ExecutionPolicy (coast_enabled=False)
+    #   strips a SourceProfile coast at resolve time, so this stays 0 on static content there.
+    # - audio_wakes: an audio onset admitted a frame neither the gate nor the coast would (above).
+    signal_admits: int = 0  # tuned-signal (motion/salience) escalations
+    coast_admits: int = 0  # fixed-cadence coast admits (no tuned signal, no audio)
     boundaries: int = 0  # edge-detector boundaries (rep peaks / onsets) fed to perceive_boundary
     utterances: int = 0  # complete spoken utterances endpointed and handed to on_utterance
     # Frames evicted from the incident snippet's pre-roll ring by its BYTE budget (not by the count
@@ -1366,6 +1380,7 @@ async def run(
     audio_tb = _resolve_timebase(audio_source, timebase) if audio_source is not None else None
     effective_config = EffectiveConfig(
         fps=effective_fps, video_timebase=video_tb, audio_timebase=audio_tb,
+        coast_enabled=bool(getattr(getattr(settings, "edge", None), "coast_enabled", True)),
     )
     if stats is not None:
         stats.effective_config = effective_config
@@ -2007,6 +2022,13 @@ async def run(
             if _funnel is not None:
                 _funnel.gated(camera=gate_source)  # tier-0 escalated this frame — a cloud call will be spent
             _cov.escalations += 1
+            # Partition the admit into exactly one cause bucket (see RuntimeStats): a tuned-signal
+            # escalation, else a fixed-cadence coast admit, else an audio wake. This mirrors the
+            # `cause` string computed just below for the escalation health event.
+            if decision.escalate:
+                _cov.signal_admits += 1
+            elif coast_admit:
+                _cov.coast_admits += 1
             if audio_admit and not (decision.escalate or coast_admit):
                 _cov.audio_wakes += 1
             if on_health is not None:
@@ -2081,6 +2103,12 @@ async def run(
             _cov_data = {
                 "frames_seen": _cov.frames,
                 "admitted": _cov.escalations,
+                # The admission split (escalations == signal_admits + coast_admits + audio_wakes): a
+                # consumer auditing a strict_admission run reads coast_admits==0 directly here instead
+                # of inferring it from the total.
+                "signal_admits": _cov.signal_admits,
+                "coast_admits": _cov.coast_admits,
+                "audio_wakes": _cov.audio_wakes,
                 "judge_calls": _cov.judge_calls,
                 "incidents": _cov.incidents,
             }
