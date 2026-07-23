@@ -102,6 +102,14 @@ STAGE_JUDGMENT_EVENT = "judgment.event"    # the frozen percept.contracts.Judgme
 #: literal evidence that fed this judgment, resolvable within the same ``.ptrace``. ``data["dispatch_seq"]``
 #: carries the JudgmentEvent's OWN ``evidence_seq`` (the per-key ADR-001 §8 dispatch sequence, a distinct
 #: number) so neither meaning is lost. Purely additive observability — governs nothing.
+STAGE_TRANSITION_DECISION = "transition.decision"  # EVERY tick of an A→B transition goal (fire or not),
+#: so the transition state machine is observable from the .ptrace without the frame. ``data`` carries
+#: ``goal_id``, ``entity_id`` (the focus used, incl. the scene-scoped ``"scene"``), ``from_truth`` /
+#: ``to_truth`` (the classify outputs for this tick), ``armed`` (post-tick ``seen_from`` latch),
+#: ``fired_latch`` (post-tick ``fired`` latch), and ``outcome`` (one of ``fire`` / ``armed`` /
+#: ``rearmed`` / ``suppressed_latched`` / ``idle``). On a firing tick a ``judgment.event`` row rides
+#: alongside it exactly as the judged watch path emits one. Purely additive observability — governs
+#: nothing (the decision already happened in the executor by the time this is emitted).
 STAGE_EXTRACTOR_ENRICHED = "extractor.enriched"  # a percept.extraction.EvidenceExtractor ran for this
 #: goal and produced an Enrichment (possibly empty) BEFORE the judge call it feeds. Emitted right
 #: before ``judge.started`` when an extractor is configured; absent entirely when none is.
@@ -131,6 +139,7 @@ TRACE_STAGES: tuple[str, ...] = (
     STAGE_INCIDENT_CREATED,
     STAGE_SHADOW_FOLD,
     STAGE_JUDGMENT_EVENT,
+    STAGE_TRANSITION_DECISION,
     STAGE_EXTRACTOR_ENRICHED,
     STAGE_CAPSULE_ASSEMBLED,
     STAGE_SOURCE_HEALTH,
@@ -446,7 +455,8 @@ _SUMMARY_STAGES: frozenset[str] = frozenset({
 _DECISION_STAGES: frozenset[str] = _SUMMARY_STAGES | frozenset({
     STAGE_SOURCE_FRAME, STAGE_JUDGE_STARTED, STAGE_JUDGE_FINISHED, STAGE_JUDGE_DEGRADED,
     STAGE_JUDGE_USAGE, STAGE_JUDGE_DROPPED, STAGE_GATE_CLASSIFIED, STAGE_GATE_SUPPRESSED,
-    STAGE_JUDGMENT_EVENT, STAGE_EXTRACTOR_ENRICHED, STAGE_CAPSULE_ASSEMBLED,
+    STAGE_JUDGMENT_EVENT, STAGE_TRANSITION_DECISION, STAGE_EXTRACTOR_ENRICHED,
+    STAGE_CAPSULE_ASSEMBLED,
 })
 
 

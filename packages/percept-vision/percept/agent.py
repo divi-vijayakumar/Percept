@@ -20,7 +20,7 @@ from .behavior import BehaviorExecutor, EpisodeFoldResult, ShadowObservation, pr
 from .cache import CacheCascade, CacheKey, FrameHashLayer
 from .concern import attention_weight, consequence_of, requires_verification, resolution_ready
 from .config import ModeError, Settings, load_settings, missing_credential, resolve_mode
-from .contracts import JudgmentEvent, JudgmentTimingBuilder, SubjectRef
+from .contracts import JudgmentEvent, JudgmentTimingBuilder, SubjectRef, judgment_event_id
 from .escalation import MAX_PERCEPTION_LEVEL, escalate_perception, should_escalate
 from .consent import ActionLog, ActionRecord, ConsentDenied, ConsentProfile
 from .entity import EntityGraph
@@ -45,7 +45,7 @@ from .observability import Funnel, Metrics, OTelExporter, TraceEvent, get_logger
 from .rhythm import RhythmTracker
 from .routing import RouteEngine
 from .scheduler import Scheduler
-from .tracing import STAGE_JUDGMENT_EVENT, STAGE_SHADOW_FOLD
+from .tracing import STAGE_JUDGMENT_EVENT, STAGE_SHADOW_FOLD, STAGE_TRANSITION_DECISION
 
 
 #: LRU ceiling on the judgment evidence-sequencer's per-key counters. Matches the gate's own
@@ -1564,7 +1564,10 @@ class Percept:
                 break  # revision moved during a prior goal's judge — stop before judging under it
             gtype = goal.state.get("type", "watch")
             if gtype == "transition":
-                ev = await self._perceive_transition(goal, frame, focus, stale=_stale)
+                ev = await self._perceive_transition(
+                    goal, frame, focus, now=now, t=t, ingest_observed_at=ingest_observed_at,
+                    trace_id=trace_id, tracing=tracing, source=source, stale=_stale,
+                )
                 if ev is not None:
                     events.append(ev)
                 continue
@@ -1766,10 +1769,20 @@ class Percept:
                 # sequence, a distinct number, so neither meaning is lost (see
                 # tracing.STAGE_JUDGMENT_EVENT). Purely additive observability — governs nothing.
                 if ev_fire is not None and ev_fire.judgment is not None:
-                    await self._emit_trace(trace_id, now, STAGE_JUDGMENT_EVENT, goal_id=goal.id,
-                                           action=ev_fire.judgment.action,
-                                           dispatch_seq=ev_fire.judgment.evidence_seq,
-                                           entity_id=focus.id if focus else None)
+                    await self._emit_trace(
+                        trace_id, now, STAGE_JUDGMENT_EVENT, goal_id=goal.id,
+                        action=ev_fire.judgment.action,
+                        dispatch_seq=ev_fire.judgment.evidence_seq,
+                        entity_id=focus.id if focus else None,
+                        # The OPAQUE, INJECTIVE evidence link a client audit resolves: the SAME handle the
+                        # delivered Incident carries (make_incident derives it from the same goal/entity/
+                        # seq), so exactly one judgment.event row answers each incident.created. A None
+                        # evidence_origin on the judged path reads as "judged" — stamp it explicitly here.
+                        judgment_event_id=judgment_event_id(
+                            goal.id, focus.id if focus else None, ev_fire.judgment.evidence_seq,
+                        ),
+                        evidence_origin=ev_fire.judgment.evidence_origin or "judged",
+                    )
                 # SHADOW — emit the subject + the fold the model WOULD have proposed, as ADVISORY
                 # trace data. It changes NOTHING (computed after the gate already classified, governs
                 # no firing) and lands in the ``shadow.fold`` stage so a client's media-OFF .ptrace
@@ -1784,7 +1797,8 @@ class Percept:
         return events
 
     async def _perceive_transition(
-        self, goal, frame, focus, *, stale: Callable[[], bool] | None = None
+        self, goal, frame, focus, *, now: float, t: float | None, ingest_observed_at: float,
+        trace_id: str, tracing: bool, source: str, stale: Callable[[], bool] | None = None,
     ) -> FireEvent | None:
         """Fire on a state change A->B, but ONLY after the 'from' state A was witnessed.
 
@@ -1793,26 +1807,72 @@ class Percept:
         confident B *after* A has been seen fires once. This is what a single-frame judge can't do
         ("waking up" looks like "awake"): you must have seen the *before* state. Joining mid-stream
         already in B (never saw A) correctly never fires.
+
+        The transition path spends TWO real judge calls (``from`` and ``to``) but produces ONE frozen
+        :class:`~percept.contracts.JudgmentEvent` for the fire — built from REAL two-domain stamps that
+        bracket both judge calls, and marked ``evidence_origin="transition"``. That is what lets a
+        transition fire correlate to its delivered Incident (via :func:`judgment_event_id`) exactly like
+        the judged watch path, and it emits ``transition.decision`` EVERY tick (fire or not) so the
+        state machine is observable from the ``.ptrace`` alone.
         """
         from_cond, to_cond = goal.state.get("from"), goal.state.get("to")
         if not from_cond or not to_cond:
             return None
         roi: Box | None = focus.box if focus else None
         corrections = focus.asserted() if focus else {}
+        entity = focus.id if focus else "scene"
+        # Reserve this judgment's evidence_seq at judge-DISPATCH (ADR-001 §8), keyed like the judged
+        # path (goal, focus-or-None), BEFORE the first judge call.
+        evidence_seq = self._admit_evidence((goal.id, focus.id if focus else None))
+        # REAL stamps only — no fabrications. ingest/admit are the frame's honest local times; the
+        # source timeline ``t`` (when supplied) rides as the untrusted source_media_ts; the judge window
+        # brackets BOTH judge calls (the two the transition sense actually spends).
+        timing = JudgmentTimingBuilder(clock=self.clock)
+        timing.mark_ingest_observed(at=ingest_observed_at)
+        timing.mark_admitted()
+        timing.set_source_media_ts(t)
+        timing.mark_judge_started()
+        self.funnel.judged(concern=goal.id, camera=source)  # the 'from' judge call is being spent
         from_v = await self.vision.judge(from_cond, frame, roi=roi, corrections=corrections or None)
+        self.funnel.judged(concern=goal.id, camera=source)  # the 'to' judge call is being spent
         to_v = await self.vision.judge(to_cond, frame, roi=roi, corrections=corrections or None)
+        timing.mark_judge_completed()
         if stale is not None and stale():
             return None  # goals changed while the from/to judges were in flight — apply nothing
-        # Perception (judging from/to) stays here; the seen_from/fired state machine + firing now live
-        # in the executor, with that state ISOLATED in its per-concern context (never the gate).
-        fired = self.executor.fire_transition(
-            goal, from_v, to_v, focus_id=focus.id if focus else "scene"
+        # Perception (judging from/to) stays here; the seen_from/fired state machine + firing live in
+        # the executor, with that state ISOLATED in its per-concern context (never the gate). The
+        # executor hands back the tick facts so this method never reaches into that ctx.
+        tick = self.executor.transition_decide(
+            goal, from_v, to_v, focus_id=entity, timing=timing, evidence_seq=evidence_seq,
         )
+        if tracing:
+            await self._emit_trace(
+                trace_id, now, STAGE_TRANSITION_DECISION, goal_id=goal.id, entity_id=entity,
+                from_truth=tick.from_truth, to_truth=tick.to_truth, armed=tick.armed,
+                fired_latch=tick.fired_latch, outcome=tick.outcome,
+            )
+        fired = tick.fired
         if fired is None:
             return None
         goal.state["count"] = goal.state.get("count", 0) + 1
         self.metrics.incr("transition.fire")
-        return FireEvent(fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict)
+        if fired.action == FIRE:
+            self.funnel.fired(concern=goal.id, camera=source)  # a transition rising-edge fire emitted
+        ev = FireEvent(
+            fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict,
+            judgment=fired.judgment, provenance=fired.provenance, modality=fired.modality,
+        )
+        # The SAME STAGE_JUDGMENT_EVENT row shape the watch path emits — so the recorder's frame-seq
+        # stamping (data["evidence_seq"] = this trace_id's source.frame seq) works unchanged — but with
+        # evidence_origin="transition" and the judgment_event_id the delivered Incident will also carry.
+        if tracing and ev.judgment is not None:
+            await self._emit_trace(
+                trace_id, now, STAGE_JUDGMENT_EVENT, goal_id=goal.id,
+                action=ev.judgment.action, dispatch_seq=ev.judgment.evidence_seq, entity_id=entity,
+                judgment_event_id=judgment_event_id(goal.id, entity, ev.judgment.evidence_seq),
+                evidence_origin=ev.judgment.evidence_origin or "transition",
+            )
+        return ev
 
     async def _observe_and_log(
         self, goal: Goal, frame: Any, source: str, now: float,

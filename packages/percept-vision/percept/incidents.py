@@ -13,7 +13,15 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from percept.contracts import AttentionIntent, Consequence, GoalOrigin, Incident, IncidentSnippet, Verdict
+from percept.contracts import (
+    AttentionIntent,
+    Consequence,
+    GoalOrigin,
+    Incident,
+    IncidentSnippet,
+    Verdict,
+    judgment_event_id,
+)
 
 from .concern import consequence_of
 
@@ -50,6 +58,14 @@ def make_incident(
     # than a fabricated number.
     judgment = getattr(fire, "judgment", None)
     evidence_seq = getattr(judgment, "evidence_seq", None) if judgment is not None else None
+    # The 1.9 evidence LINK a client audit resolves against. ``judgment_event_id`` is the OPAQUE,
+    # INJECTIVE handle the matching ``judgment.event`` trace row ALSO carries (derived from the SAME
+    # goal/entity/seq the agent used when it emitted that row) — so exactly one judgment record answers
+    # each delivered Incident. Derived only when the fire carried a JudgmentEvent (evidence_seq is not
+    # None); ``None`` otherwise, never a fabricated link. ``evidence_origin`` is copied straight off the
+    # fire's JudgmentEvent (``judged`` vs ``transition``); ``None`` reads as ``judged``.
+    jid = judgment_event_id(goal_id, entity_id, evidence_seq) if evidence_seq is not None else None
+    evidence_origin = getattr(judgment, "evidence_origin", None) if judgment is not None else None
     # The episode-owned provisional/superseding link, read once off the fire and used for BOTH the
     # 1.8 wire fields below and the runtime-local mirror further down.
     revision_id = getattr(fire, "revision_id", None)
@@ -70,6 +86,8 @@ def make_incident(
         evidence_seq=evidence_seq,
         revision_id=revision_id,
         supersedes=supersedes,
+        judgment_event_id=jid,
+        evidence_origin=evidence_origin,
     )
     # ALSO mirror the link as RUNTIME-LOCAL annotations (private instance attrs, exactly like
     # Incident's bound label state) — kept for the existing ``SupersessionSink`` delivery-boundary

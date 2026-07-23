@@ -1765,6 +1765,10 @@ async def run(
                         f"{gate_source}@{at}", at, "incident.created",
                         goal_id=incident.concern_id, incident_id=incident.id, from_boundary=from_boundary,
                         entity_id=incident.entity_id,
+                        # The 1.9 evidence link, carried onto the trace row a client audit resolves: this
+                        # incident joins back to EXACTLY ONE judgment.event carrying the same handle.
+                        judgment_event_id=incident.judgment_event_id,
+                        evidence_origin=incident.evidence_origin,
                     )
                 if on_health is not None:
                     await _call_sink(
