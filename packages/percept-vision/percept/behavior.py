@@ -293,6 +293,26 @@ class Fired:
     supersedes: str | None = None
 
 
+@dataclass
+class TransitionTick:
+    """One A→B transition tick's result: the fire (if any) PLUS the facts the agent's
+    ``transition.decision`` trace needs, so the agent never reaches into the executor's isolated ctx.
+
+    ``from_truth``/``to_truth`` are the :func:`~percept.gate.classify` outputs for this tick; ``armed``
+    is the post-tick ``seen_from`` latch (the goal has witnessed its ``from`` state and is waiting for
+    ``to``); ``fired_latch`` is the post-tick ``fired`` latch (this focus already fired and will not
+    re-fire until re-armed); ``outcome`` is the typed WHY, one of ``fire`` / ``armed`` / ``rearmed`` /
+    ``suppressed_latched`` / ``idle``. ``fired`` is the historical ``Fired | None`` the legacy
+    :meth:`BehaviorExecutor.fire_transition` facade returns directly."""
+
+    fired: Fired | None
+    from_truth: str
+    to_truth: str
+    armed: bool
+    fired_latch: bool
+    outcome: str
+
+
 # --------------------------------------------------------------------------------------------------
 # EPISODE-OWNED IDEMPOTENCY. The gate bit must stop being accidental per-episode memory.
 # --------------------------------------------------------------------------------------------------
@@ -908,6 +928,7 @@ class BehaviorExecutor:
                 key=key, evidence_seq=int(evidence_seq), action=action, timing=timing.freeze(),
                 reason=env.get("reason"), roi=env.get("roi"),
                 modality=env.get("modality"), provenance=env.get("provenance"),
+                evidence_origin=env.get("evidence_origin"),
             )
         except Exception as exc:  # never let an observability record perturb the firing path
             self.metrics.incr("judgment.build_failed")
@@ -919,19 +940,76 @@ class BehaviorExecutor:
 
     # -- transition sense: replicates agent._perceive_transition; state in ISOLATED ctx ---------
     def fire_transition(
-        self, goal, from_v: Verdict, to_v: Verdict, *, focus_id: Hashable = "scene"
+        self, goal, from_v: Verdict, to_v: Verdict, *, focus_id: Hashable = "scene",
+        timing: JudgmentTimingBuilder | None = None, evidence_seq: int | None = None,
     ) -> Fired | None:
+        """LEGACY FACADE — the historical ``Fired | None`` return every positional caller relies on.
+
+        Delegates to :meth:`transition_decide` (which also carries the per-tick facts the agent's
+        ``transition.decision`` trace needs) and hands back only its ``.fired``. The two keyword-only
+        params are additive and defaulted: a caller that threads no ``timing`` gets a ``Fired`` whose
+        ``.judgment`` is ``None`` (the transition path took no judge-funnel stamps), byte-for-byte the
+        pre-1.9 behaviour.
+        """
+        return self.transition_decide(
+            goal, from_v, to_v, focus_id=focus_id, timing=timing, evidence_seq=evidence_seq,
+        ).fired
+
+    def transition_decide(
+        self, goal, from_v: Verdict, to_v: Verdict, *, focus_id: Hashable = "scene",
+        timing: JudgmentTimingBuilder | None = None, evidence_seq: int | None = None,
+    ) -> "TransitionTick":
+        """Run one A→B transition tick and return BOTH the fire (if any) and the tick facts.
+
+        The state machine is byte-for-byte the historical ``fire_transition``: observing a confident
+        ``from`` state arms (and re-arms) the goal; a confident ``to`` state AFTER ``from`` was seen
+        fires once. What is new is purely additive observability: when the caller threads the funnel's
+        ``timing``/``evidence_seq`` in (the live watch loop does), a fired tick builds a frozen
+        :class:`~percept.contracts.JudgmentEvent` through the ONE construction site (:meth:`_judgment`)
+        with ``evidence_origin="transition"`` — so the transition path, which historically emitted no
+        judgment record at all, now correlates to a delivered Incident exactly like the judged path.
+        The gate never ran here, so ``reason`` stays ``None`` (the frozen ``GateReason`` vocabulary is
+        not stretched to name a path it never decided).
+
+        The returned :class:`TransitionTick` carries the classify outputs, the post-tick latch state,
+        and a typed ``outcome`` so the agent can emit ``transition.decision`` WITHOUT reaching into this
+        executor's isolated per-concern ctx.
+        """
         thr, fresh_min = self.gate.threshold, self.gate.fresh_min
         ctx = self.ctx(goal.id)
         st = ctx.transitions.setdefault(focus_id, {"seen_from": False, "fired": False})  # NOT gate._armed
-        ctx.confusion.record(to_v, classify(to_v, 1.0, thr, fresh_min))
-        if classify(from_v, 1.0, thr, fresh_min) == "yes":
+        from_truth = classify(from_v, 1.0, thr, fresh_min)
+        to_truth = classify(to_v, 1.0, thr, fresh_min)
+        prior_seen, prior_fired = st["seen_from"], st["fired"]
+        ctx.confusion.record(to_v, to_truth)
+        if from_truth == "yes":
             st["seen_from"], st["fired"] = True, False  # in 'from' -> arm (and re-arm)
-        if st["seen_from"] and not st["fired"] and classify(to_v, 1.0, thr, fresh_min) == "yes":
+        fired: Fired | None = None
+        if st["seen_from"] and not st["fired"] and to_truth == "yes":
             st["fired"] = True
             ctx.count += 1
-            return Fired(goal.id, FIRE, goal.say, focus_id, to_v)
-        return None
+            # env: the transition path is a DIRECT visual observation, but the gate never ran — reason
+            # stays None (GateReason is frozen) and evidence_origin marks WHICH path produced it.
+            env = dict(reason=None, modality="vision", roi=None, provenance="observed",
+                       evidence_origin="transition")
+            judgment = self._judgment((goal.id, focus_id), evidence_seq, FIRE, timing, env)
+            fired = Fired(goal.id, FIRE, goal.say, focus_id, to_v, judgment,
+                          reason=None, modality="vision", provenance="observed")
+        # The typed WHY of this tick, for transition.decision. Priority: a fire dominates; else an
+        # arming tick reports armed (first) vs rearmed (A re-seen while already armed/latched); else a
+        # to==yes while the latch is spent is a suppressed re-fire; else idle.
+        if fired is not None:
+            outcome = "fire"
+        elif from_truth == "yes":
+            outcome = "rearmed" if (prior_seen or prior_fired) else "armed"
+        elif st["seen_from"] and st["fired"] and to_truth == "yes":
+            outcome = "suppressed_latched"
+        else:
+            outcome = "idle"
+        return TransitionTick(
+            fired=fired, from_truth=from_truth, to_truth=to_truth,
+            armed=st["seen_from"], fired_latch=st["fired"], outcome=outcome,
+        )
 
     # -- absence sense: replicates agent.check_deadlines firing for one concern -----------------
     def fire_absence(
@@ -1333,6 +1411,7 @@ __all__ = [
     "ConfusionSignal",
     "ConcernContext",
     "Fired",
+    "TransitionTick",
     "EpisodeMatch",
     "EpisodeMutation",
     "EPISODE_MATCHES",
