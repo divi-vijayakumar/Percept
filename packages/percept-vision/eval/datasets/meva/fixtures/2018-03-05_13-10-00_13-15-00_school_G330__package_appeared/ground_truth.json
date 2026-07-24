@@ -1,0 +1,14 @@
+{
+  "episodes": [
+    {
+      "allowed_lateness_s": 2.0,
+      "annotation_version": "meva-kpf-1",
+      "annotator_or_fixture_id": "2018-03-05_13-10-00_13-15-00_school_G330__package_appeared",
+      "decision_eligible_ts": 50.0,
+      "episode_end_ts": 60.0,
+      "episode_id": "person_abandons_package-1",
+      "event_start_ts": 50.0
+    }
+  ],
+  "goal_shape": "point"
+}

@@ -1,0 +1,14 @@
+{
+  "episodes": [
+    {
+      "allowed_lateness_s": 2.0,
+      "annotation_version": "meva-kpf-1",
+      "annotator_or_fixture_id": "2018-03-07_09-05-00_09-10-00_bus_G506__package_appeared",
+      "decision_eligible_ts": 40.0,
+      "episode_end_ts": 50.0,
+      "episode_id": "person_abandons_package-2",
+      "event_start_ts": 40.0
+    }
+  ],
+  "goal_shape": "point"
+}

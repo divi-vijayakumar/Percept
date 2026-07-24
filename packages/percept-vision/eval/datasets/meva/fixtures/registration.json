@@ -1,0 +1,78 @@
+{
+  "bars": [
+    {
+      "direction": "min",
+      "metric": "candidate_recall",
+      "require_ci_excludes_zero": false,
+      "value": 0.8
+    },
+    {
+      "direction": "min",
+      "metric": "recall_delta",
+      "require_ci_excludes_zero": true,
+      "value": 0.05
+    },
+    {
+      "direction": "max",
+      "metric": "false_fire_delta",
+      "require_ci_excludes_zero": false,
+      "value": 0.0
+    }
+  ],
+  "bars_hash": "a64fd8abb801b6d8d05da86a644040659237e82ab24cf70df9ad17d10566d003",
+  "bootstrap_seed": 103553569068162,
+  "declared_at": "2026-07-23",
+  "fixture_set_hash": "c490894b6a8f56184ee37fa883120b16fb0a832a40786f834ca89173eb754b22",
+  "fixture_to_scene": {
+    "2018-03-05_11-25-00_11-30-00_school_G330__door_left_open": "2018-03-05_11-25-00_11-30-00_school",
+    "2018-03-05_11-25-00_11-30-00_school_G330__zone_occupied": "2018-03-05_11-25-00_11-30-00_school",
+    "2018-03-05_11-25-00_11-30-00_school_G420__door_left_open": "2018-03-05_11-25-00_11-30-00_school",
+    "2018-03-05_11-25-00_11-30-00_school_G420__zone_occupied": "2018-03-05_11-25-00_11-30-00_school",
+    "2018-03-05_13-10-00_13-15-00_school_G330__package_appeared": "2018-03-05_13-10-00_13-15-00_school",
+    "2018-03-05_13-10-00_13-15-00_school_G330__zone_occupied": "2018-03-05_13-10-00_13-15-00_school",
+    "2018-03-05_13-10-00_13-15-00_school_G420__package_appeared": "2018-03-05_13-10-00_13-15-00_school",
+    "2018-03-05_13-10-00_13-15-00_school_G420__zone_occupied": "2018-03-05_13-10-00_13-15-00_school",
+    "2018-03-07_09-05-00_09-10-00_bus_G505__door_left_open": "2018-03-07_09-05-00_09-10-00_bus",
+    "2018-03-07_09-05-00_09-10-00_bus_G505__package_appeared": "2018-03-07_09-05-00_09-10-00_bus",
+    "2018-03-07_09-05-00_09-10-00_bus_G506__door_left_open": "2018-03-07_09-05-00_09-10-00_bus",
+    "2018-03-07_09-05-00_09-10-00_bus_G506__package_appeared": "2018-03-07_09-05-00_09-10-00_bus",
+    "2018-03-07_14-40-00_14-45-00_bus_G505__zone_occupied": "2018-03-07_14-40-00_14-45-00_bus",
+    "2018-03-07_14-40-00_14-45-00_bus_G506__zone_occupied": "2018-03-07_14-40-00_14-45-00_bus"
+  },
+  "registration_hash": "5e2e71b31482c47adbb74dbeefd06da3f92ca81e8bd75bae38aba576f10587c0",
+  "scenes": {
+    "dev": [],
+    "test": [
+      "2018-03-05_13-10-00_13-15-00_school",
+      "2018-03-07_14-40-00_14-45-00_bus"
+    ],
+    "train": [
+      "2018-03-05_11-25-00_11-30-00_school",
+      "2018-03-07_09-05-00_09-10-00_bus"
+    ]
+  },
+  "schema": "eval.datasets.meva.registration/1",
+  "split": {
+    "declared": true,
+    "exploratory": [
+      "2018-03-05_11-25-00_11-30-00_school_G330__door_left_open",
+      "2018-03-05_11-25-00_11-30-00_school_G330__zone_occupied",
+      "2018-03-05_11-25-00_11-30-00_school_G420__door_left_open",
+      "2018-03-05_11-25-00_11-30-00_school_G420__zone_occupied",
+      "2018-03-07_09-05-00_09-10-00_bus_G505__door_left_open",
+      "2018-03-07_09-05-00_09-10-00_bus_G505__package_appeared",
+      "2018-03-07_09-05-00_09-10-00_bus_G506__door_left_open",
+      "2018-03-07_09-05-00_09-10-00_bus_G506__package_appeared"
+    ],
+    "held_out": [
+      "2018-03-05_13-10-00_13-15-00_school_G330__package_appeared",
+      "2018-03-05_13-10-00_13-15-00_school_G330__zone_occupied",
+      "2018-03-05_13-10-00_13-15-00_school_G420__package_appeared",
+      "2018-03-05_13-10-00_13-15-00_school_G420__zone_occupied",
+      "2018-03-07_14-40-00_14-45-00_bus_G505__zone_occupied",
+      "2018-03-07_14-40-00_14-45-00_bus_G506__zone_occupied"
+    ],
+    "split_name": "test"
+  },
+  "split_source": "splits.json"
+}
