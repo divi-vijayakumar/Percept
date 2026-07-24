@@ -38,6 +38,7 @@ from .episodes import (
     subject_is_unknown,
 )
 from .identity_policy import identity_policy_of, select_identity_policy
+from .judge_context import JUDGE_STATIC_CONTEXT_KEY, ReservedContextKeyError
 from .events import AudioWindow, EventLog, FrameWindow
 from .gate import FIRE, Gate, GateAction, classify
 from .goals import GoalOp, GoalRegistry
@@ -291,6 +292,37 @@ class _JudgeDegraded(Exception):
         super().__init__(f"judge call failed closed: {cause!r}")
 
 
+class JudgeBindingInvariantError(RuntimeError):
+    """Fail-closed dispatch invariant (ADR-009): a goal was MARKED judge-requesting (a
+    per-goal judge binding was expected) but no binding is present at dispatch time.
+
+    Rather than silently fall back to the deployment-default judge — which would run a goal that
+    explicitly requested a specialist judge against the wrong evaluator — the dispatch path raises
+    this and spends ZERO judge calls. Defined LOCALLY here (a ``RuntimeError`` subclass) so this
+    module stays self-contained: the parallel ``percept.judge_registry`` build declares the same
+    name for the merged wave, and the merge gate must reconcile the two to one home.
+    """
+
+
+def _judge_binding_trace(binding: Any) -> dict:
+    """The additive judge-provenance keys a trace event carries when (and ONLY when) a per-goal judge
+    binding is in force: ``judge_resolved`` (the resolved judge ref), ``judge_context_sha256``
+    (the bound static-context digest, or ``None``), and ``fallback_used`` (always ``False`` — this path
+    is reached only when the requested judge bound exactly).
+
+    Stamped from the BINDING, never from the adapter's returned Verdict, so a judge can never set or
+    override its own provenance. Returns ``{}`` when ``binding`` is ``None`` — every trace event emitted
+    without a binding keeps its exact prior shape.
+    """
+    if binding is None:
+        return {}
+    return {
+        "judge_resolved": binding.spec.resolved_ref,
+        "judge_context_sha256": binding.spec.context_sha256,
+        "fallback_used": False,
+    }
+
+
 class DeterministicAuditor:
     """Decides which cache HITs to re-perceive (false-serve audit) — **no RNG** (rule 2).
 
@@ -476,6 +508,16 @@ class Percept:
     # the SAME ``(goal_id, entity_id)`` key the gate/executor already use ("the reducer key").
     _judge_degrade_streak: dict = field(default_factory=dict)  # key -> consecutive degraded-tick count
     _judge_health_log: list = field(default_factory=list)  # [(kind, key, cause), ...] queued for drain
+    # -- per-goal judge binding (fail-closed dispatch). ``_judge_bindings`` maps a goal/concern
+    # id -> a BoundJudge-shaped object (``.spec`` ResolvedJudgeSpec, ``.adapter`` the judge to call,
+    # ``.static_context`` a ResolvedJudgeContext | None) registered by watchplan_apply's COMMIT phase and
+    # released on goal removal/re-arm. ``_judge_requesting_goal_ids`` is the set of goals that MUST carry a
+    # binding: a goal in this set with NO table entry is an invariant violation and the dispatch path
+    # raises ``JudgeBindingInvariantError`` rather than falling back to ``self.vision``. Both empty (the
+    # default) => every judge call routes to ``self.vision``, byte-for-byte the behavior before per-goal
+    # bindings existed.
+    _judge_bindings: dict = field(default_factory=dict)  # goal_id -> BoundJudge-shaped binding
+    _judge_requesting_goal_ids: set = field(default_factory=set)  # goal ids that MUST have a binding
     # -- consequence-gate GA: the SAME queue-here / drain-in-worker pattern for GATE SUPPRESSION.
     # ``Gate`` calls ``_note_gate_suppressed`` for every decision whose reason is in
     # ``percept.gate.SUPPRESSION_REASONS`` (start_anchored / refractory) -- i.e. a fire the baseline
@@ -784,6 +826,48 @@ class Percept:
         self.invalidate_cache(goal.id)
         return result
 
+    # -- per-goal judge binding: register/release/select ---------------------------------------------
+    def _register_judge_binding(self, goal_id: str, bound: Any) -> None:
+        """Bind ``goal_id`` to a BoundJudge-shaped judge (``.spec``/``.adapter``/``.static_context``).
+
+        Called by :func:`percept.watchplan_apply.apply_watch_plan`'s COMMIT phase, AFTER every goal in a
+        batch prepared cleanly. Marks the goal judge-requesting so a later dispatch that finds the binding
+        gone fails closed (:class:`JudgeBindingInvariantError`) instead of silently using ``self.vision``.
+        """
+        self._judge_requesting_goal_ids.add(goal_id)
+        self._judge_bindings[goal_id] = bound
+
+    def _release_judge_binding(self, goal_id: str) -> None:
+        """Drop ``goal_id``'s judge binding and its judge-requesting mark (goal removal / re-arm).
+
+        Idempotent — releasing an unbound goal is a no-op, so a plain (judge-less) goal's lifecycle is
+        byte-for-byte unchanged.
+        """
+        self._judge_bindings.pop(goal_id, None)
+        self._judge_requesting_goal_ids.discard(goal_id)
+
+    def _select_judge_adapter(self, goal: Goal) -> tuple[Any, Any]:
+        """Return ``(adapter, bound_or_None)`` for ``goal``'s judge call — the EXACT fail-closed rule:
+
+        * a binding exists -> ``(bound.adapter, bound)`` (route to the bound judge);
+        * no binding but the goal is MARKED judge-requesting -> raise :class:`JudgeBindingInvariantError`
+          (fail closed; NO adapter is called, so zero judge calls are spent);
+        * neither -> ``(self.vision, None)`` (the deployment default, byte-for-byte unchanged).
+
+        Raised OUTSIDE the ``_safe_timed_judge`` boundary (see :meth:`_judge`) so the invariant error
+        propagates rather than degrading to ASK/SILENT like a live judge fault.
+        """
+        goal_id = getattr(goal, "id", None)
+        bound = self._judge_bindings.get(goal_id)
+        if bound is not None:
+            return bound.adapter, bound
+        if goal_id in self._judge_requesting_goal_ids:
+            raise JudgeBindingInvariantError(
+                f"goal {goal_id!r} is marked judge-requesting but has no bound judge; refusing to fall "
+                f"back to the deployment-default judge (fail-closed dispatch, ADR-009)"
+            )
+        return self.vision, None
+
     def _arm_deadline(self, goal: Goal) -> None:
         """Resolve a ``deadline`` concern's authored DURATION into an absolute ``deadline_at`` on THIS
         agent's clock, at the moment the goal is armed (one field, one meaning, one clock).
@@ -1001,6 +1085,10 @@ class Percept:
             # changed must not be served from a verdict cached under its old meaning.
             if op.op in ("update", "complete", "cancel") and gid is not None:
                 self.invalidate_cache(gid)
+            # A completed/cancelled goal releases its per-goal judge binding so a later goal
+            # re-using the id cannot inherit a stale judge, and the invariant mark cannot outlive the goal.
+            if op.op in ("complete", "cancel") and gid is not None:
+                self._release_judge_binding(gid)
 
     # -- unified firing via the general executor ----------------------------
     @property
@@ -1653,9 +1741,14 @@ class Percept:
             judgment_timing.mark_admitted()
             judgment_timing.set_source_media_ts(t)
             evidence_seq = self._admit_evidence(base_key)  # reserved at DISPATCH, per ADR-001 §8
+            # Runtime-stamped judge provenance for this goal's trace events — additive keys
+            # present ONLY when a per-goal binding exists (empty dict otherwise, so an unbound goal's
+            # judge.started/finished are byte-for-byte unchanged).
+            judge_prov = _judge_binding_trace(self._judge_bindings.get(goal.id))
             if tracing:
                 await self._emit_trace(trace_id, now, "judge.started", goal_id=goal.id,
-                                       temporal=getattr(spec, "temporal", None), roi=roi is not None)
+                                       temporal=getattr(spec, "temporal", None), roi=roi is not None,
+                                       **judge_prov)
             try:
                 judgment_timing.mark_judge_started()
                 if direct_result is not None and direct_result.outcome == "confident":
@@ -1698,7 +1791,8 @@ class Percept:
             if tracing:
                 await self._emit_trace(trace_id, now, "judge.finished", goal_id=goal.id,
                                        satisfied=getattr(verdict, "satisfied", None),
-                                       confidence=getattr(verdict, "confidence", None))
+                                       confidence=getattr(verdict, "confidence", None),
+                                       **judge_prov)
             if _stale():
                 break  # THE choke point: the judge returned, but the plan changed while it was in
                 # flight — abort before ANY application (ctx, coverage stamps, gate, disposition).
@@ -2090,8 +2184,14 @@ class Percept:
         clip audit alike. A drained runtime result carries FIRES only; metering there would omit
         every judgment that didn't fire and report a confident undercount.
         """
+        # Per-goal routing: ``_adapter``/``_binding`` are threaded in by :meth:`_judge` (the only
+        # goal-aware caller); popped here so they never reach ``adapter.judge``. When absent (e.g.
+        # ``judge_clip``, or any goal with no binding) ``adapter`` is ``self.vision`` and ``binding`` is
+        # None -> the call and its trace are byte-for-byte the unbound path.
+        adapter = kwargs.pop("_adapter", None) or self.vision
+        binding = kwargs.pop("_binding", None)
         t0 = self.clock()
-        verdict = await self.vision.judge(*args, **kwargs)
+        verdict = await adapter.judge(*args, **kwargs)
         usage = judge_usage(verdict)
         self.funnel.record_judge(latency_s=self.clock() - t0, **usage)
         if usage and self.on_trace is not None:
@@ -2101,6 +2201,7 @@ class Percept:
                 "judge.usage",  # percept.tracing.STAGE_JUDGE_USAGE (string here to keep agent import-light)
                 model=self._judge_model(),
                 **usage,
+                **_judge_binding_trace(binding),  # additive provenance, ONLY when a binding exists
             )
         return verdict
 
@@ -2217,6 +2318,25 @@ class Percept:
         audio: Any = None,
         context: dict | None = None,
     ) -> Verdict:
+        # Per-goal judge routing (fail-closed) — selected BEFORE any judge call and OUTSIDE the
+        # _safe_timed_judge boundary, so a marked-but-unbound goal raises JudgeBindingInvariantError here
+        # (propagates; never degraded to ASK) and NO adapter is called. No binding => (self.vision, None):
+        # the whole block below is byte-for-byte the unbound path.
+        adapter, bound = self._select_judge_adapter(goal)
+        # Static-context injection at the dispatch site: only when the binding carries a verified static
+        # context. A caller context already holding the reserved key is a bug (ReservedContextKeyError);
+        # otherwise COPY the caller's dict (never mutate it) and inject the decoded text under the reserved
+        # key. ``force_context`` then guarantees the injected context reaches the adapter even on the
+        # single-frame path (which normally forwards no context).
+        force_context = bound is not None and bound.static_context is not None
+        if force_context:
+            if context is not None and JUDGE_STATIC_CONTEXT_KEY in context:
+                raise ReservedContextKeyError(
+                    f"goal {goal.id!r} judge context already carries the reserved key "
+                    f"{JUDGE_STATIC_CONTEXT_KEY!r}; a bound static context cannot be injected over it"
+                )
+            context = dict(context) if context else {}
+            context[JUDGE_STATIC_CONTEXT_KEY] = bound.static_context.decoded_text
         process_mode = bool(
             context
             and (context.get("process_qa") or context.get("observe_step") or context.get(EXTRACTOR_CONTEXT_KEY))
@@ -2231,7 +2351,7 @@ class Percept:
         # grounding the backends already implement but the watch path never supplied. Stable per goal
         # (set in goal.state), so it rides the goal's cache scope; None (the default) is byte-for-byte.
         exemplar = goal.state.get("exemplar")
-        if frames or audio or process_mode or claim_mode:
+        if frames or audio or process_mode or claim_mode or force_context:
             # The strip/audio (escalation) path is rare-by-design and multi-frame; bypass the
             # single-frame cache (its key dHashes ONE frame) so a strip verdict never pollutes — nor is
             # served from — a single-frame slot. The cache stays single-frame-pure. A process-QA judge
@@ -2241,14 +2361,17 @@ class Percept:
             # too: a correction (replace/retract) must never be cached and re-served under a frame hash.
             # ``context`` is passed in process_mode OR claim_mode so a plain strip judge with neither is
             # byte-for-byte.
-            extra = {"context": context} if (process_mode or claim_mode) else {}
+            # ``force_context`` also forwards ``context`` here so an injected static context reaches the
+            # adapter on a plain single-frame binding (no process/claim/strip). With no binding this is
+            # exactly the unbound rule (context only on process/claim).
+            extra = {"context": context} if (process_mode or claim_mode or force_context) else {}
             # The strip/audio/process-QA judge is on the live watch path (perceive_judged /
             # _observe_and_log) — a malformed/timeout/partial response here must degrade the tick,
             # never crash it, so this goes through the fail-closed boundary (may raise
             # _JudgeDegraded, caught by every caller of _judge).
             return await self._safe_timed_judge(
                 goal.condition, frame, roi=roi, exemplar=exemplar, corrections=corrections or None,
-                frames=frames, audio=audio, **extra,
+                frames=frames, audio=audio, _adapter=adapter, _binding=bound, **extra,
             )
         # A structured key so the FrameHashLayer can ROI-crop + dHash the frame and scope its
         # entry to (goal, entity); the legacy stub cascade ignores the extra fields harmlessly.
@@ -2258,12 +2381,15 @@ class Percept:
         hit = self.cache.resolve(cache_key)
         if hit.status == "HIT" and hit.verdict is not None:
             self.metrics.incr("cache.hit")
-            return await self._audit_or_use(goal, frame, roi, corrections, cache_key, hit.verdict)
+            return await self._audit_or_use(
+                goal, frame, roi, corrections, cache_key, hit.verdict, adapter=adapter, binding=bound
+            )
         # Same fail-closed boundary for the cache-miss (single-frame) judge — the other half of
         # the live watch path. A well-formed Verdict is cached exactly as before; a degraded response
         # raises _JudgeDegraded BEFORE `cache.store` is ever reached, so a failure is never cached.
         verdict = await self._safe_timed_judge(
-            goal.condition, frame, roi=roi, exemplar=exemplar, corrections=corrections or None
+            goal.condition, frame, roi=roi, exemplar=exemplar, corrections=corrections or None,
+            _adapter=adapter, _binding=bound,
         )
         self.cache.store(cache_key, verdict, verdict.confidence)
         return verdict
@@ -2276,6 +2402,9 @@ class Percept:
         corrections: dict[str, str],
         cache_key: Any,
         cached: Verdict,
+        *,
+        adapter: Any = None,
+        binding: Any = None,
     ) -> Verdict:
         """Trust-but-verify a cache HIT.
 
@@ -2294,7 +2423,7 @@ class Percept:
         try:
             fresh = await self._safe_timed_judge(
                 goal.condition, frame, roi=roi, exemplar=goal.state.get("exemplar"),
-                corrections=corrections or None,
+                corrections=corrections or None, _adapter=adapter, _binding=binding,
             )
         except _JudgeDegraded:
             self.metrics.incr("judge.degraded")

@@ -38,7 +38,7 @@ editing that class's frozen field list).
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any, Iterable
 
 from .behavior import (
@@ -49,6 +49,8 @@ from .behavior import (
     coerce_authored_sense,
 )
 from .contracts.watchplan import FieldDiagnostic, ReceiptStatus, WatchPlan, WatchReceipt
+from .deployment_judges import load_deployment_judges
+from .judge_context import JudgeContextError, JudgeContextStore
 from .resolver import ConfigError, ConfigResolver
 from .runtime_compiler import runtime_compile
 
@@ -167,42 +169,123 @@ def _coerce_goal_state(state: dict, *, goal_id: str) -> tuple[dict, list[FieldDi
     return state, diagnostics
 
 
-def _apply_one(
-    percept: Any, plan: WatchPlan, resolver: ConfigResolver, resolve_kwargs: dict
-) -> tuple[str | None, WatchReceipt]:
-    """Resolve + compile + arm ONE plan. Returns ``(goal_id_or_None, receipt)`` — ``goal_id`` is
-    ``None`` only when the plan was rejected outright (nothing armed)."""
+class _JudgePrepareError(Exception):
+    """A judge PREPARE-phase failure — adapter construction or static-context verification.
+
+    Raised INSIDE Phase 1 (prepare) so :func:`apply_watch_plan` commits NOTHING: an atomic apply
+    arms every goal or none. Carries a structured :class:`FieldDiagnostic` the batch surfaces on the
+    rejected :class:`WatchReceipt` (the file's existing diagnostic idiom), not a bare string.
+    """
+
+    def __init__(self, diagnostic: FieldDiagnostic) -> None:
+        super().__init__(diagnostic.message)
+        self.diagnostic = diagnostic
+
+
+@dataclass
+class _PreparedGoal:
+    """One goal fully prepared in Phase 1 — resolved/compiled/coerced + its judge binding (if any),
+    with the receipt it will land. Holds NO runtime mutation: nothing is armed until Phase 2 commit."""
+
+    goal: Any
+    binding: Any | None  # a BoundJudge-shaped object (``.spec``/``.adapter``/``.static_context``), or None
+    plan_hash: str
+    receipt: WatchReceipt
+
+
+def _prepare_judge_binding(
+    resolved_judge: Any, percept: Any, deployment_judges: Any, *, goal_id: str | None
+) -> Any:
+    """Build a BoundJudge-shaped binding for a resolved judge WITHOUT mutating runtime state.
+
+    Lazily imports :mod:`percept.judge_registry` (a sibling built by the parallel wave — NOT importable
+    at module top until the merge) so a plan that requests no judge never touches it. Constructs the
+    adapter via ``get_or_create_adapter(spec, cfg)`` and, when the judge binds a static context, verifies
+    the exact bytes through :class:`percept.judge_context.JudgeContextStore` against the resolved digest.
+    ANY failure raises :class:`_JudgePrepareError` so the whole batch arms nothing.
+    """
+    try:
+        from . import judge_registry  # noqa: PLC0415 — LAZY: only when a judge was actually requested.
+    except ImportError as exc:
+        raise _JudgePrepareError(FieldDiagnostic(
+            path="ResolvedWatch.judge", code="judge_registry_unavailable", goal_id=goal_id,
+            message=f"a judge was requested but percept.judge_registry is not importable: {exc}",
+        )) from exc
+
+    cfg = getattr(percept, "settings", None)
+    try:
+        adapter = judge_registry.get_or_create_adapter(resolved_judge, cfg)
+    except Exception as exc:  # noqa: BLE001 — any factory/config failure fails closed, arms nothing.
+        raise _JudgePrepareError(FieldDiagnostic(
+            path="ResolvedWatch.judge", code="judge_adapter_unavailable", goal_id=goal_id,
+            message=f"judge adapter could not be constructed: {exc}",
+        )) from exc
+
+    static_context = None
+    if resolved_judge.context_ref is not None:
+        if deployment_judges is None:
+            deployment_judges = load_deployment_judges()
+        root = getattr(deployment_judges, "context_store_root", None)
+        if root is None:
+            raise _JudgePrepareError(FieldDiagnostic(
+                path="ResolvedWatch.judge.context_ref", code="judge_context_store_unconfigured",
+                goal_id=goal_id,
+                message="judge binds a static context but the deployment has no context_store_root",
+            ))
+        try:
+            static_context = JudgeContextStore.from_dir(root).resolve(
+                resolved_judge.context_ref, resolved_judge.context_sha256 or "",
+            )
+        except JudgeContextError as exc:
+            raise _JudgePrepareError(FieldDiagnostic(
+                path="ResolvedWatch.judge.context_ref", code="judge_context_unverified",
+                goal_id=goal_id, message=f"judge static context failed verification: {exc}",
+            )) from exc
+
+    return judge_registry.BoundJudge(spec=resolved_judge, adapter=adapter, static_context=static_context)
+
+
+def _prepare_one(
+    percept: Any,
+    plan: WatchPlan,
+    resolver: ConfigResolver,
+    resolve_kwargs: dict,
+    deployment_judges: Any,
+    known: dict,
+) -> tuple[str, Any]:
+    """Phase 1 PREPARE for ONE plan — resolve + compile + coerce + build the judge binding, WITHOUT any
+    runtime mutation. Returns one of:
+
+    * ``("rejected", receipt)`` — a resolution ownership violation (per-plan; the batch continues);
+    * ``("cached", (goal_id, receipt))`` — an idempotent no-op (this plan_hash already applied, or a
+      within-batch duplicate);
+    * ``("prepared", _PreparedGoal)`` — ready to commit.
+
+    Raises :class:`_JudgePrepareError` on a judge prepare failure (aborts the WHOLE batch)."""
     try:
         resolved = resolver.resolve(plan, **resolve_kwargs)
     except ConfigError as exc:
-        return None, WatchReceipt(
+        return "rejected", WatchReceipt(
             status="rejected",
             dropped_fields=(FieldDiagnostic(
                 path="WatchPlan", code="ownership_violation", goal_id=plan.id, message=str(exc),
             ),),
         )
 
-    ledger: dict[str, tuple[str, WatchReceipt]] = getattr(percept, _LEDGER_ATTR, None)
-    if ledger is None:
-        ledger = {}
-        setattr(percept, _LEDGER_ATTR, ledger)
-    cached = ledger.get(resolved.plan_hash)
+    cached = known.get(resolved.plan_hash)
     if cached is not None:
-        return cached  # idempotent no-op: identical plan already applied to this core
+        return "cached", cached  # idempotent no-op: identical plan already applied / duplicated in-batch
 
     compiled = runtime_compile(resolved)
     state, coerced = _coerce_goal_state(compiled.goal.state, goal_id=compiled.goal.id)
     goal = replace(compiled.goal, state=state)
-    percept.add_goal(goal)
-    # Thread the RESOLVED SourceProfile OBJECT (the actual ``resolve_kwargs["source_profile"]`` this
-    # batch was called with — never ``resolved.source_profile``, which is a plain JSON-shaped snapshot
-    # dict, see ``ResolvedWatch``'s docstring) onto the core, the same additive field
-    # ``Percept.configure`` populates. Only set when THIS call actually named one — a plan applied with
-    # no ``source_profile=`` leaves whatever the core already carried untouched (e.g. one set by an
-    # earlier ``configure()``/``apply_watch_plan`` call), so a profile once resolved for a core is never
-    # silently cleared by a later profile-less arm.
-    if resolve_kwargs.get("source_profile") is not None:
-        percept.source_profile = resolve_kwargs["source_profile"]
+
+    # JUDGE PREPARE (no runtime mutation): construct the adapter + verify any static context and build
+    # the binding NOW, so a bad judge never arms a goal. resolved.judge is None for every judge-less plan
+    # (the default), so this whole branch is skipped and judge_registry is never imported.
+    binding = None
+    if getattr(resolved, "judge", None) is not None:
+        binding = _prepare_judge_binding(resolved.judge, percept, deployment_judges, goal_id=goal.id)
 
     base = resolver.last_receipt  # the resolution-time WatchReceipt (accepted_fields + warnings)
     warnings = base.warnings if base is not None else ()
@@ -213,6 +296,15 @@ def _apply_one(
     backend_warning = _claim_backend_warning(percept, goal)
     if backend_warning is not None:
         warnings = (*warnings, backend_warning)
+
+    # Judge provenance echoed onto the receipt (additive; all None when no judge was requested).
+    judge_fields: dict[str, Any] = {}
+    if getattr(resolved, "judge", None) is not None:
+        j = resolved.judge
+        judge_fields = dict(
+            judge_requested=j.requested_ref, judge_resolved=j.resolved_ref,
+            judge_context_ref=j.context_ref, judge_context_sha256=j.context_sha256,
+        )
 
     status: ReceiptStatus
     if coerced:
@@ -228,9 +320,11 @@ def _apply_one(
         accepted_fields=accepted_fields,
         coerced_fields=tuple(coerced),
         warnings=warnings,
+        **judge_fields,
     )
-    ledger[resolved.plan_hash] = (goal.id, receipt)
-    return goal.id, receipt
+    return "prepared", _PreparedGoal(
+        goal=goal, binding=binding, plan_hash=resolved.plan_hash, receipt=receipt
+    )
 
 
 def apply_watch_plan(
@@ -246,15 +340,26 @@ def apply_watch_plan(
     situation: tuple[Any, Any, Any] | None = None,
     registry: Any = None,
     settings: Any = None,
+    deployment_judges: Any = None,
 ) -> WatchReceipt:
     """Resolve, compile, and arm ``plans`` on ``percept`` — see module docstring for the full
     semantics (coercion-at-apply, multi-goal batching, idempotency).
 
     ``percept`` is a :class:`~percept.agent.Percept` core (typed ``Any`` here to avoid importing
     ``percept.agent`` — this module is a leaf the agent module can import FROM, never the reverse).
-    Every keyword beyond ``resolver``/``plans`` is passed straight through to
+    Every keyword beyond ``resolver``/``plans``/``deployment_judges`` is passed straight through to
     :meth:`percept.resolver.ConfigResolver.resolve` for EVERY plan in the batch (the same six-object
     configuration inputs apply to every goal a single call arms).
+
+    **Two-phase atomic apply**: the batch is PREPARED in full first — every plan resolved,
+    compiled, coerced, and (for a plan that requested a judge) its adapter constructed and any static
+    context verified — with NO runtime mutation. Only once every plan prepared cleanly does Phase 2
+    COMMIT arm the goals and register their judge bindings. A judge PREPARE failure (adapter cannot be
+    built, or a static context fails its digest check) arms NOTHING and surfaces a rejected receipt with
+    a structured diagnostic; prior runtime state is untouched. ``deployment_judges`` (a
+    :class:`~percept.deployment_judges.DeploymentJudges`) supplies the ``context_store_root`` a bound
+    static context resolves against; ``None`` defers to :func:`percept.deployment_judges.load_deployment_judges`
+    and is only consulted when a plan actually binds a context.
     """
     resolver = resolver if resolver is not None else ConfigResolver()
     resolve_kwargs = dict(
@@ -271,6 +376,51 @@ def apply_watch_plan(
     if not plan_list:
         raise ValueError("apply_watch_plan requires at least one WatchPlan")
 
+    # -- Phase 1 PREPARE: resolve/compile/coerce every plan + build every judge binding. No runtime
+    # mutation yet. ``known`` seeds idempotency from the core's applied-hash ledger and grows as each
+    # plan prepares, so a within-batch duplicate is a no-op even though the ledger is written only at
+    # commit. A _JudgePrepareError from ANY plan aborts the whole batch — arm nothing.
+    ledger: dict[str, tuple[str, WatchReceipt]] = getattr(percept, _LEDGER_ATTR, None) or {}
+    known: dict[str, tuple[str, WatchReceipt]] = dict(ledger)
+    per_plan_receipts: list[WatchReceipt] = []
+    prepared: list[_PreparedGoal] = []
+    try:
+        for plan in plan_list:
+            kind, payload = _prepare_one(
+                percept, plan, resolver, resolve_kwargs, deployment_judges, known
+            )
+            if kind == "prepared":
+                prepared.append(payload)
+                per_plan_receipts.append(payload.receipt)
+                known[payload.plan_hash] = (payload.goal.id, payload.receipt)
+            elif kind == "cached":
+                per_plan_receipts.append(payload[1])
+            else:  # "rejected"
+                per_plan_receipts.append(payload)
+    except _JudgePrepareError as exc:
+        # Fail-closed atomic apply: a judge prepare failed — COMMIT nothing, leave the runtime untouched
+        # (no goal armed, no binding registered, the ledger unwritten). Surface the structured failure.
+        return WatchReceipt(status="rejected", dropped_fields=(exc.diagnostic,))
+
+    # -- Phase 2 COMMIT: every plan prepared cleanly — NOW arm each goal, register its judge binding, and
+    # write the idempotency ledger. This is the ONLY place this call mutates runtime state.
+    if prepared:
+        real_ledger = getattr(percept, _LEDGER_ATTR, None)
+        if real_ledger is None:
+            real_ledger = {}
+            setattr(percept, _LEDGER_ATTR, real_ledger)
+        # Thread the RESOLVED SourceProfile OBJECT (the actual ``resolve_kwargs["source_profile"]`` this
+        # batch was called with — never ``resolved.source_profile``, a plain JSON snapshot) onto the core,
+        # the same additive field ``Percept.configure`` populates. Only when THIS call named one; a
+        # profile-less arm leaves whatever the core already carried untouched.
+        if resolve_kwargs.get("source_profile") is not None:
+            percept.source_profile = resolve_kwargs["source_profile"]
+        for p in prepared:
+            percept.add_goal(p.goal)
+            if p.binding is not None:
+                percept._register_judge_binding(p.goal.id, p.binding)
+            real_ledger[p.plan_hash] = (p.goal.id, p.receipt)
+
     watch_ids: list[str] = []
     accepted: list[str] = []
     dropped: list[FieldDiagnostic] = []
@@ -280,10 +430,8 @@ def apply_watch_plan(
     n_partial = 0
     n_warned = 0
 
-    for plan in plan_list:
-        goal_id, receipt = _apply_one(percept, plan, resolver, resolve_kwargs)
-        if goal_id is not None:
-            watch_ids.append(goal_id)
+    for receipt in per_plan_receipts:
+        watch_ids.extend(receipt.watch_ids)
         accepted.extend(receipt.accepted_fields)
         dropped.extend(receipt.dropped_fields)
         coerced.extend(receipt.coerced_fields)
