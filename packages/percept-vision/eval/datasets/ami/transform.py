@@ -275,21 +275,33 @@ def _float_or_none(value: str | None) -> float | None:
 
 
 def _read_words_file(path: Path) -> list[NxtWord]:
-    """Parse one ``*.words.xml`` into its words IN DOCUMENT ORDER (order the range syntax spans)."""
+    """Parse one ``*.words.xml`` into its timed tokens IN DOCUMENT ORDER (order the range syntax spans).
+
+    Includes EVERY stand-off token carrying a ``nite:id`` — not just ``<w>`` but the timed non-lexical
+    tokens the REAL AMI words layer interleaves (``<vocalsound>``, ``<disfmarker>``, ``<gap>``,
+    ``<pause>``, ``<nonvocalsound>``, ``<transformerror>`` …). A dialogue act's ``nite:child`` range can
+    legitimately START or END on one of these (measured: ``ES2002a.A.dialog-act.dharshi.6``'s sole child
+    is ``id(ES2002a.A.words49)`` — a ``<vocalsound>``), so they MUST be in the ordered id index or
+    :func:`_resolve_word_range` raises :class:`AmiTransformError` on a valid real act and the whole
+    meeting read fails. Only ``<w>`` carries transcript text (non-lexical tokens get ``text=""``), so
+    they never pollute a transcript window; but they DO carry ``starttime``/``endtime`` and are valid
+    span boundaries. An element with no ``nite:id`` cannot be a range target and is skipped.
+
+    The synthetic committed sample is ``<w>``-only, so this is a strict superset — the offline tests are
+    unaffected (verified: the 18-test suite stays green).
+    """
     root = _parse_xml(path)
     out: list[NxtWord] = []
-    for w in root:
-        if _localname(w.tag) != "w":
-            continue
-        wid = w.get(f"{_NITE}id")
+    for elem in root:
+        wid = elem.get(f"{_NITE}id")
         if not wid:
-            raise AmiTransformError(f"{path}: a <w> element is missing nite:id")
+            continue
         out.append(
             NxtWord(
                 word_id=wid,
-                text=(w.text or "").strip(),
-                start=_float_or_none(w.get("starttime")),
-                end=_float_or_none(w.get("endtime")),
+                text=(elem.text or "").strip() if _localname(elem.tag) == "w" else "",
+                start=_float_or_none(elem.get("starttime")),
+                end=_float_or_none(elem.get("endtime")),
             )
         )
     return out
@@ -417,12 +429,25 @@ def _localname(tag: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _find(base: Path, pattern: str) -> list[Path]:
+    """``rglob`` ``pattern`` under ``base``, skipping hidden / AppleDouble (``._*``) sidecar files.
+
+    ``rglob`` (not ``glob``) so BOTH layouts resolve from one code path: the committed synthetic sample
+    is a FLAT ``testdata/nxt`` dir, while the REAL AMI NXT export splits layers into per-``layer``
+    subdirectories (``words/``, ``dialogueActs/``, ``abstractive/``, ``extractive/`` …). ``rglob``
+    matches a flat top-level file too, so the offline tests are unaffected. The ``._*`` filter drops the
+    macOS AppleDouble sidecars an extraction onto a non-HFS volume (e.g. an exFAT external drive) leaves
+    next to every real file — those would otherwise mint bogus meeting ids like ``._ES2002a``.
+    """
+    return sorted(p for p in base.rglob(pattern) if not p.name.startswith("."))
+
+
 def discover_meeting_ids(root: str | Path) -> list[str]:
     """Every meeting id under ``root``, derived from the one ``<meeting>.abssumm.xml`` per meeting."""
     base = Path(root)
     if not base.is_dir():
         raise AmiTransformError(f"AMI corpus root is not a directory: {base}")
-    ids = sorted(p.name[: -len(".abssumm.xml")] for p in base.glob("*.abssumm.xml"))
+    ids = sorted({p.name[: -len(".abssumm.xml")] for p in _find(base, "*.abssumm.xml")})
     if not ids:
         raise AmiTransformError(f"no *.abssumm.xml under {base} — is this an AMI NXT export?")
     return ids
@@ -434,22 +459,23 @@ def read_meeting_annotations(root: str | Path, meeting_id: str) -> MeetingAnnota
 
     words: dict[str, NxtWord] = {}
     words_by_file: dict[str, list[str]] = {}
-    for wf in sorted(base.glob(f"{meeting_id}.*.words.xml")):
+    for wf in _find(base, f"{meeting_id}.*.words.xml"):
         file_words = _read_words_file(wf)
         words_by_file[wf.name] = [w.word_id for w in file_words]
         for w in file_words:
             words[w.word_id] = w
 
     dialogue_acts: dict[str, NxtDialogueAct] = {}
-    for df in sorted(base.glob(f"{meeting_id}.*.dialog-act.xml")):
+    for df in _find(base, f"{meeting_id}.*.dialog-act.xml"):
         for act in _read_dialogue_acts_file(df, words_by_file, words):
             dialogue_acts[act.da_id] = act
 
-    abssumm_path = base / f"{meeting_id}.abssumm.xml"
+    abssumm_matches = _find(base, f"{meeting_id}.abssumm.xml")
+    abssumm_path = abssumm_matches[0] if abssumm_matches else base / f"{meeting_id}.abssumm.xml"
     sentence_sections = _read_abssumm_file(abssumm_path)
 
-    summlink_path = base / f"{meeting_id}.summlink.xml"
-    summary_links = tuple(_read_summlink_file(summlink_path)) if summlink_path.exists() else ()
+    summlink_matches = _find(base, f"{meeting_id}.summlink.xml")
+    summary_links = tuple(_read_summlink_file(summlink_matches[0])) if summlink_matches else ()
 
     return MeetingAnnotations(
         meeting_id=meeting_id,
