@@ -3,19 +3,17 @@
 The open-source **cognition layer** for goal-driven, proactive vision agents.
 **Package: `percept-vision` · import: `import percept`** (name ≠ import).
 
-> **⚠️ Research preview — v0.6.0.** Published for real-life testing and feedback, **not** for
-> production. The cognition core (gate, entity graph, executor, events, scheduler, consent) runs and is
-> tested offline with fakes. APIs may change between `0.6.x` releases — pin a version. **No benchmark
-> numbers are published yet** (the model-sweep phase comes later). Issues and feedback welcome.
+**percept-vision 1.0.0** · docs & demos: **[percept.percia.ai](https://percept.percia.ai)** · Apache-2.0
 
 You state a goal in plain language — *"nudge me when I drink a coffee"*, *"tell me when the kettle
 boils"* — and percept turns a live audio-visual stream into an agent that **reasons over entities
 across time**, **fires only on the rising edge** of a condition becoming true, and **refuses to
 guess** — a three-state gate maps *known → act · not → silent · unknown → ask*.
 
-The wedge is **temporal cognition** — entity memory + the three-state gate + reasoning over events —
-which a raw VLM-in-a-loop and a per-frame pipeline both lack. percept builds on frontier models for
-perception behind vendor-neutral seams.
+percept keeps a cheap, stateful **System 1** (senses, the gate, entity memory) in the loop the whole
+time and summons a frontier VLM as **System 2** only when the cheaper tiers can't resolve the goal —
+so a still scene costs nothing. Frontier models sit behind vendor-neutral seams; the core is pure
+standard library.
 
 ## Install
 
@@ -24,14 +22,15 @@ pip install percept-vision        # core: PURE STDLIB — runs offline with fake
 ```
 
 The core has **zero dependencies** and runs with deterministic fake backends, so `pip install` then run
-works with no API keys. Python **≥ 3.10**. Frontier backends are opt-in extras:
+works with no API keys. Python **≥ 3.10**. Capture and frontier backends are opt-in extras:
 
 ```bash
-pip install "percept-vision[gemini]"     # GeminiVision
-pip install "percept-vision[claude]"     # AnthropicVision (Claude)
-pip install "percept-vision[deepgram]"   # Deepgram STT + TTS (voice)
-pip install "percept-vision[runtime]"    # camera/video/RTSP runtime worker
-pip install "percept-vision[bench]"      # benchmark + scorecard tooling
+pip install "percept-vision[runtime]"    # camera/video/RTSP capture worker (OpenCV)
+pip install "percept-vision[gemini]"     # GeminiVision             (GEMINI_API_KEY)
+pip install "percept-vision[claude]"     # AnthropicVision / Claude  (ANTHROPIC_API_KEY)
+pip install "percept-vision[openrouter]" # OpenRouter (e.g. Qwen)   (OPENROUTER_API_KEY)
+pip install "percept-vision[deepgram]"   # Deepgram STT + TTS        (DEEPGRAM_API_KEY)
+pip install "percept-vision[bench]"      # benchmark + scorecard tooling (from a repo checkout)
 pip install "percept-vision[edge]"       # Python tier-0 gate + detector registry
 pip install "percept-vision[all]"        # everything
 ```
@@ -45,8 +44,9 @@ import asyncio
 from percept import Percept, Goal
 
 async def main():
-    # Fake backends by default — offline, no keys. discover_plugins=False skips plugin lookup.
-    agent = Percept.create(discover_plugins=False)
+    # mode="offline" selects scripted backends — keyless, deterministic. (A bare live create()
+    # raises ModeError rather than silently faking; you ask for scripted OUT LOUD.)
+    agent = Percept.create(mode="offline", discover_plugins=False)
 
     agent.add_goal(Goal(
         id="caffeine",
@@ -73,8 +73,28 @@ where `action` is `"fire"` or `"ask"`. Swap the fake for real eyes — the cogni
 agent = Percept.create(vision="gemini")          # needs percept-vision[gemini] + GEMINI_API_KEY
 ```
 
-Backends are selected by name (`"fake"` · `"gemini"` · `"claude"`), by adapter instance, or by env
-(`PERCEPT_VISION_BACKEND`).
+Backends are selected by name (`"scripted"` (canonical) · `"gemini"` · `"claude"` · `"openrouter"`), by
+adapter instance, or by env (`PERCEPT_VISION_BACKEND`).
+
+## Watch a live source
+
+For a real watch agent you don't write a capture loop — **`percept.run` owns it**: it opens the source,
+runs the cheap tier-0 gate (a still scene spends no cloud calls), judges, and **yields an `Incident` on
+each rising-edge fire**. Needs `percept-vision[runtime]` + a backend + a key:
+
+```python
+import asyncio, percept
+
+async def main():
+    async for incident in percept.run(
+        source="webcam:0",                       # "rtsp://…" URL | a video file path, too
+        goals=["the milk is boiling over"],      # each string becomes a Goal
+        vision="gemini",
+    ):
+        print(f"[FIRE] {incident.message}")
+
+asyncio.run(main())
+```
 
 ## Architecture — two layers, four tiers
 
@@ -85,10 +105,11 @@ when it must (`vision.judge(condition, frame) → Verdict`, behind vendor-neutra
 VLM-in-a-loop collapses the two; percept keeps them apart so the common case costs nothing.
 
 Full architecture — the four tiers (Feeds → Measures → Cognition → VLM), every claim anchored to code,
-plus the **generated** architecture diagram — is in the repo:
+plus the **generated** architecture diagram — is in the docs:
 [Architecture](https://github.com/divi-vijayakumar/Percept/blob/main/docs/explanation/architecture.md)
 · [Concepts](https://github.com/divi-vijayakumar/Percept/blob/main/docs/explanation/concepts.md)
-· [docs index](https://github.com/divi-vijayakumar/Percept/blob/main/docs/README.md).
+· [docs index](https://github.com/divi-vijayakumar/Percept/blob/main/docs/README.md)
+· [percept.percia.ai](https://percept.percia.ai).
 
 ## The envelope (refusals, stated proudly)
 
@@ -105,18 +126,18 @@ These refusals are a feature. **Do not lead with surveillance demos.**
   wire-contract are bundled in as the `percept.harness` and `percept.contracts` subpackages.
 - **percept-edge** (npm) — the on-device reactive edge in JS/WASM: VAD + motion gate that share the
   Tier0Signal/detector wire-contract. The edge's detector + gate **outputs** are byte-for-byte
-  identical to the Python harness (verified, 12/12); the WatchSpec it consumes is a documented subset
-  (server-only fields like `schedule`/`cadence` are enforced in the cognition layer, not on-device).
+  identical to the Python harness (verified); the WatchSpec it consumes is a documented subset.
 
-> **Versioning.** Package version `percept-vision 0.6.0` (research preview). The **wire-contract**
-> version is separate — `CONTRACT_VERSION = "1.3.0"` (additive-only). A `0.6.0` install exporting
-> contract `1.3.0` is expected, not a bug.
+> **Versioning.** Package version `percept-vision 1.0.0`. The **wire-contract** version is separate —
+> `CONTRACT_VERSION = "1.10.0"` (additive-only); the `watch()` entrypoint is `WATCH_VERSION = "1.1.0"`.
+> A `1.0.0` install exporting contract `1.10.0` is expected, not a bug.
 
 ## Benchmark status
 
 **No Percept accuracy numbers are published yet.** The benchmark is designed but the reproducible
 model-sweep run is a separate, later phase — see the
-[methodology](https://github.com/divi-vijayakumar/Percept/blob/main/docs/reference/benchmark-methodology.md).
+[methodology](https://github.com/divi-vijayakumar/Percept/blob/main/docs/reference/benchmark-methodology.md)
+and the [benchmarks how-to](https://github.com/divi-vijayakumar/Percept/blob/main/docs/how-to/benchmarks.md).
 The scorecard tooling operates on a manifest you provide; the bundled golden set ships with the **source
 repo, not the wheel**, so the default-manifest commands run from a repo checkout:
 
@@ -128,9 +149,10 @@ percept-bench scorecard --manifest eval/golden-v1/MANIFEST.json --out out/scorec
 
 ## Status
 
-**v0.6.0 — research preview.** The cognition core runs and is tested offline with fakes (the L1 lane,
-no keys); the frontier backends and the edge packages are wired behind their seams. No benchmark
-numbers yet. We are in **real-life testing** — APIs may change. Issues and contributions welcome:
+**v1.0.0 — first stable release.** The cognition core, the batteries-included runtime, layered
+configuration, the fail-closed judge, and the offline quality rail run and are tested; the frontier
+backends and the edge packages are wired behind their seams. No benchmark numbers are published yet.
+Issues and contributions welcome:
 [github.com/divi-vijayakumar/Percept](https://github.com/divi-vijayakumar/Percept).
 
 ## License

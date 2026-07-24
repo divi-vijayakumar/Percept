@@ -1,8 +1,16 @@
 # Changelog — `percept-edge`
 
-Notable changes to the `percept-edge` npm package. **Research preview** — the public surface may change
-between `0.x` releases; pin a version. The package version (this file) moves independently of the wire
-`CONTRACT_VERSION` in `src/contract.js`, which changes only on wire-shape changes.
+Notable changes to the `percept-edge` npm package. From **1.0.0** the public surface follows semantic
+versioning. The package version (this file) moves independently of the wire `CONTRACT_VERSION` in
+`src/contract.js` (currently `1.9.0`, additive-compatible with the Python `percept.contracts` wire),
+which changes only on wire-shape changes.
+
+## 1.0.0 — first stable release
+
+First stable release of the on-device edge, published alongside `percept-vision 1.0.0`. Gate + DSP
+skills, the capability handshake, and `PrivacyScreen` egress screening are stable; the JS detector/gate
+outputs remain byte-for-byte with the Python `percept.edge` harness (parity-verified). No wire-contract
+change from the previous line.
 
 ## 0.7.0 — PrivacyScreen (on-device egress screening)
 

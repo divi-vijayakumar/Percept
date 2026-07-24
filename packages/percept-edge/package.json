@@ -1,6 +1,6 @@
 {
   "name": "percept-edge",
-  "version": "0.7.0",
+  "version": "1.0.0",
   "description": "Research preview — on-device reactive edge for the Percept SDK: VAD + motion gate + on-device multi-modal PrivacyScreen + the WatchSpec/Tier0Signal wire-contract.",
   "type": "module",
   "license": "Apache-2.0",

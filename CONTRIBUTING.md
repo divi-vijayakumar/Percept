@@ -1,6 +1,7 @@
 # Contributing to Percept
 
-Percept is a research preview. Issues, discussion, and pull requests are welcome.
+Percept is an open-source cognition layer for goal-driven, proactive vision agents (v1.0.0). Issues,
+discussion, and pull requests are welcome. Docs: <https://percept.percia.ai>.
 
 ## Setup
 

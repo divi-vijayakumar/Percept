@@ -1,16 +1,17 @@
 # `percept-edge`
 
-> **⚠️ Research preview (v0.7.0).** Published for real-life testing + feedback, **not production**. APIs
-> may change between `0.x` releases — pin a version.
+> **percept-edge 1.0.0** · the on-device edge for [percept-vision](https://pypi.org/project/percept-vision/) ·
+> docs: <https://percept.percia.ai> · Apache-2.0. The package version moves independently of the wire
+> `CONTRACT_VERSION` in `src/contract.js` — pin a version.
 
 The on-device **reactive edge** for the [Percept](https://pypi.org/project/percept-vision/) SDK — the
 cheap, high-fps reflex that runs next to the camera. It does two jobs:
 
 1. **gates** — decides *when* a frame is worth an expensive cloud vision call (motion + VAD salience), so
-   the cloud VLM runs only on the frames that matter (~83% fewer calls in practice);
+   the cloud VLM runs only on the frames that matter (a large reduction in cloud calls);
 2. **runs the brain-selected edge skills** — cheap detectors that propose *timed events* the cognition
    core counts (reps, sound onsets) **without** a cloud call;
-3. **screens egress for sensitive content** (`0.7`) — a multi-modal, on-device privacy classifier on the
+3. **screens egress for sensitive content** — a multi-modal, on-device privacy classifier on the
    *outbound* boundary (`PrivacyScreen`), so a frame/message can be redacted or held before it reaches a
    cloud judge. This layer can *never* be a cloud call — you can't ship sensitive data to a remote LLM to
    ask whether it's safe to ship — so it is an owned on-device artifact.
@@ -145,7 +146,7 @@ npm run eval    # prints the scorecard + regression-checks it against eval/score
   and sends `Tier0Signal` + `BoundaryReport` up; the server maps boundaries to `perceive_boundary`. Use
   this to keep frames on-device until something matters (bandwidth + privacy).
 
-## Known tuning (it's a research preview)
+## Known tuning
 
 The motion-gate threshold (a `WatchCondition.threshold`, default `0.3`; the edge falls back to
 `Edge.defaultThreshold = 0.05` when a condition sets none) is a **cost↔recall knob**: well-calibrated for salient motion,
