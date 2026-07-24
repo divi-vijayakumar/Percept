@@ -157,6 +157,27 @@ def discover_entrypoints() -> None:
             continue
 
 
+def has(seam: str, name: str) -> bool:
+    """True iff ``name`` is a registered factory for ``seam`` — a NON-instantiating lookup.
+
+    The read-only counterpart to :func:`make`: it answers "would ``make(seam, name, ...)`` find a
+    factory?" WITHOUT constructing (or importing) the adapter, so a caller can authorize a
+    ``factory_ref`` (ADR-009) against the installed factory set without paying the adapter's
+    construction/import cost or triggering a lazy vendor import. It considers the SAME sources
+    ``make`` resolves against: the built-in/plugin ``register`` table first, and — only on a miss —
+    :func:`discover_entrypoints` (the ``percept.backends`` entry-point group ``make`` relies on
+    having been loaded), so an entry-point-advertised factory is recognized here exactly as it would
+    be by ``make``."""
+    if seam not in _REGISTRY:
+        raise ValueError(f"unknown seam {seam!r}; expected one of {_SEAMS}")
+    if name in _REGISTRY[seam]:
+        return True
+    # Miss against the already-registered table: give entry-point advertised factories the same
+    # chance make() would (they register into _REGISTRY as a side effect), then re-check.
+    discover_entrypoints()
+    return name in _REGISTRY[seam]
+
+
 def make(seam: str, name: str, settings: Any = None) -> Any:
     """Resolve ``name`` for ``seam`` to a constructed adapter, or raise a clear error."""
     if seam not in _REGISTRY:
@@ -212,6 +233,7 @@ def seams() -> tuple[str, ...]:
 __all__ = [
     "register",
     "discover_entrypoints",
+    "has",
     "make",
     "make_vision",
     "make_specialist",

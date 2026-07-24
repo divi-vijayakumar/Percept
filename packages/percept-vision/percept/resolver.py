@@ -69,19 +69,23 @@ semantics).
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, replace
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from . import catalog
 from .config import Settings, load_settings
 from .contracts.watchplan import (
     FieldDiagnostic,
+    ResolvedJudgeSpec,
     ResolvedWatch,
     SettingOrigin,
     WatchPlan,
     WatchReceipt,
 )
+from .deployment_judges import DeploymentJudges, load_deployment_judges
 from .domain_pack import DomainPack
+from .judge_context import JudgeContextStore
 from .execution_policy import ExecutionPolicy
 from .optimization_lock import OptimizationLock
 from .profile_resolution import resolve_profile, resolve_situation
@@ -492,6 +496,7 @@ class ConfigResolver:
         situation: tuple[Any, Any, Any] | None = None,
         registry: "WatchProfileRegistry | None" = None,
         settings: Settings | None = None,
+        deployment_judges: DeploymentJudges | None = None,
     ) -> ResolvedWatch:
         """Resolve ``watch_plan`` (plus whichever of the other five inputs are given — any may be
         omitted, an omitted object contributes nothing, it does not error) into a
@@ -520,9 +525,18 @@ class ConfigResolver:
         - ``settings`` — a test-injection seam standing in for what :func:`percept.config.load_settings`
           would return (the Deployment/env layer). ``None`` (the default) calls
           :func:`~percept.config.load_settings` for real, reading ``PERCEPT_*`` env vars.
+        - ``deployment_judges`` — the deployment-owned judge catalog
+          (:class:`percept.deployment_judges.DeploymentJudges`) a :attr:`~percept.contracts.WatchPlan.judge`
+          REQUEST is reconciled against (ADR-009). ``None`` (the default) calls
+          :func:`~percept.deployment_judges.load_deployment_judges` at use time, reading
+          ``PERCEPT_JUDGE_CATALOG``; an unset catalog authorizes NO judge, so any judge request fails
+          closed. A judge request that is not authorized — or a bound ``judge_context`` a store cannot
+          verify — raises PRE-ARM (a :class:`ConfigError` subclass / :class:`percept.judge_context.JudgeContextError`);
+          the watch NEVER silently downgrades to the generalist vision model.
 
         Raises :class:`ConfigError` for an out-of-ownership write or an unknown tunable path,
-        BEFORE any value is produced (ADR-008).
+        BEFORE any value is produced (ADR-008). Also raises PRE-ARM for an unauthorized judge request
+        or an unverifiable judge context (ADR-009).
         """
         sdk_settings = Settings()
         sdk_snapshot = _settings_paths(sdk_settings)
@@ -775,6 +789,53 @@ class ConfigResolver:
         # complete, raised BEFORE anything downstream (ResolvedWatch, RuntimeCompiler) is built.
         _check_policy_clamps(domain_pack, watch_plan, effective)
 
+        # -- judge authorization (ADR-009): reconcile the WatchPlan.judge REQUEST against the
+        # deployment-owned catalog in one atomic, fail-closed step, PRE-ARM. Judge identity is its
+        # OWN resolved component — never folded into Settings.models.vision — so nothing above (the
+        # provider-name merge, the effective/provenance maps) is touched by it. Any refusal (unknown
+        # ref, uninstalled factory, unsupported/unverifiable context) propagates before the watch
+        # arms; there is NO fallback to the generalist. resolve_authorized is imported lazily so this
+        # module stays importable before judge_registry (which reads ConfigError from here) loads.
+        judge_spec: ResolvedJudgeSpec | None = None
+        effective_judges = (
+            deployment_judges if deployment_judges is not None else load_deployment_judges()
+        )
+        if watch_plan.judge is not None:
+            from .judge_registry import resolve_authorized
+
+            judge_spec = resolve_authorized(
+                watch_plan.judge,
+                effective_judges,
+                judge_context=watch_plan.judge_context,
+            )
+            # A bound judge_context is VALIDATED now (bytes verified against the pinned digest) when
+            # the deployment provides a store root; the verified bytes are discarded (the apply phase
+            # re-resolves — the sha256 makes that re-read deterministic). A context bound with no
+            # store root to resolve it against is a refusal, not a pass. Any JudgeContextError
+            # propagates pre-arm, same fail-closed posture as an unauthorized ref.
+            if watch_plan.judge_context is not None:
+                root = effective_judges.context_store_root
+                if root is None:
+                    raise ConfigError(
+                        f"WatchPlan bound a judge_context (ref="
+                        f"{watch_plan.judge_context.ref!r}) but the deployment catalog declares no "
+                        "context_store_root to verify it against — refused pre-arm (ADR-009: a "
+                        "static context is verified at resolve, never retrieved live)"
+                    )
+                JudgeContextStore.from_dir(root).resolve(
+                    watch_plan.judge_context.ref,
+                    watch_plan.judge_context.sha256,
+                    media_type=watch_plan.judge_context.media_type,
+                )
+        elif watch_plan.judge_context is not None:
+            # A context with no judge to hand it to is unsupported in this wheel — fail closed rather
+            # than bind a context that nothing will consume.
+            raise ConfigError(
+                "WatchPlan bound a judge_context but named no judge — a judge_context is meaningless "
+                "without a judge to inject it into; set WatchPlan.judge or drop the binding "
+                "(refused pre-arm)"
+            )
+
         plan_hash = content_hash(watch_plan.to_dict())
 
         # A provisional ResolvedWatch (components/component_snapshot_hash not yet final) so
@@ -800,25 +861,110 @@ class ConfigResolver:
             "providers": provider_components,
             "catalog_component_hash": catalog_component_hash,
         }
+        # ADDITIVE judge component (ADR-009): present ONLY when a judge was requested, so a plan that
+        # named no judge produces a byte-for-byte identical `components` (and thus an identical
+        # component_snapshot_hash) to the pre-ADR-009 path — the block is added BEFORE the hash is
+        # taken so a requested judge actually moves the hash.
+        if judge_spec is not None:
+            components["judge"] = {
+                "requested_ref": judge_spec.requested_ref,
+                "resolved_ref": judge_spec.resolved_ref,
+                "factory_ref": judge_spec.factory_ref,
+                "provider": judge_spec.provider_ref,
+                "model_requested": judge_spec.model_requested,
+                "model_resolved": judge_spec.model_resolved,
+                "prompt_envelope_sha256": judge_spec.prompt_envelope_sha256,
+                "context": (
+                    {"ref": judge_spec.context_ref, "sha256": judge_spec.context_sha256}
+                    if judge_spec.context_ref is not None
+                    else None
+                ),
+            }
         component_snapshot_hash = content_hash(components)
 
         resolved = replace(
             provisional,
             components=components,
             component_snapshot_hash=component_snapshot_hash,
+            judge=judge_spec,
         )
 
         status = "applied_with_warnings" if warnings else "applied"
+        _binding = watch_plan.judge_context
         self.last_receipt = WatchReceipt(
             status=status,
             accepted_fields=tuple(sorted(effective)),
             warnings=tuple(warnings),
+            judge_requested=watch_plan.judge,
+            judge_resolved=(judge_spec.resolved_ref if judge_spec is not None else None),
+            judge_context_ref=(_binding.ref if _binding is not None else None),
+            judge_context_sha256=(_binding.sha256 if _binding is not None else None),
+            fallback_used=False,
         )
         return resolved
 
 
+# ---------------------------------------------------------------------------
+# Content-hash projection — a document hash with named subtrees excluded.
+# ---------------------------------------------------------------------------
+
+
+def _remove_json_pointer(root: Any, pointer: str) -> None:
+    """Delete the node ``pointer`` addresses from ``root`` IN PLACE; a no-op if it is absent.
+
+    ``pointer`` is an RFC-6901 JSON Pointer (``"/a/b/0"``; ``~1``→``/``, ``~0``→``~``). A pointer
+    that does not resolve (a missing key, an out-of-range or non-integer list index, a scalar where a
+    container was expected) removes nothing rather than raising — a projection over an absent path is
+    simply the unchanged document. The empty pointer (whole-document root) is left untouched: a hash
+    over "nothing" is not a meaningful projection."""
+    if not pointer or pointer == "/":
+        return
+    tokens = [tok.replace("~1", "/").replace("~0", "~") for tok in pointer.split("/")[1:]]
+    cur = root
+    for tok in tokens[:-1]:
+        if isinstance(cur, Mapping):
+            if tok not in cur:
+                return
+            cur = cur[tok]
+        elif isinstance(cur, list):
+            try:
+                idx = int(tok)
+            except ValueError:
+                return
+            if not (0 <= idx < len(cur)):
+                return
+            cur = cur[idx]
+        else:
+            return
+    last = tokens[-1]
+    if isinstance(cur, dict):
+        cur.pop(last, None)
+    elif isinstance(cur, list):
+        try:
+            idx = int(last)
+        except ValueError:
+            return
+        if 0 <= idx < len(cur):
+            del cur[idx]
+
+
+def hash_projection(document: Any, excluded_json_pointers: Sequence[str]) -> str:
+    """Content-hash ``document`` with the ``excluded_json_pointers`` subtrees removed first.
+
+    A generic projection helper (no probe-specific paths baked in): deep-copy the document, delete
+    every listed JSON-Pointer path from the copy, then hash the remainder with the same
+    :func:`percept.tracing.content_hash` every other digest in this module uses — so two documents
+    that differ ONLY within excluded paths hash identically, and a different exclusion set yields a
+    different projection. Absent paths are ignored (removal of nothing changes nothing)."""
+    projected = copy.deepcopy(document)
+    for pointer in excluded_json_pointers:
+        _remove_json_pointer(projected, pointer)
+    return content_hash(projected)
+
+
 __all__ = [
     "ConfigError",
+    "hash_projection",
     "PRECEDENCE",
     "LAYER_SDK",
     "LAYER_SOURCE_PROFILE",
