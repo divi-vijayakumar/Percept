@@ -85,7 +85,7 @@ _CATALOG_ENV_VAR = "PERCEPT_JUDGE_CATALOG"
 class DeploymentJudges:
     """A deployment's catalog of authorized judges.
 
-    ``available_judges`` maps an opaque **judge ref** (e.g. ``"audit_specialist_judge@0.1"``) to the
+    ``available_judges`` maps an opaque **judge ref** (e.g. ``"acme_specialist_judge@0.1"``) to the
     spec for reaching it. Judge refs are opaque strings: this module never parses a version out of a
     ref, never orders refs, and never treats two refs as related. A request is authorized iff its
     exact ref is a key here.

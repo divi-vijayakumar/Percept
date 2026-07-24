@@ -1,9 +1,11 @@
 # ADR-009: The operational judge request — deployment-owned availability, fail-closed resolution
 
-- **Status:** Accepted. Reference incident **PERCEPT-SDK-P06-001**. The catalog half of this ADR
-  ships in code now (`percept/deployment_judges.py`, `tests/test_deployment_judges.py`): the
-  deployment-owned judge availability object and its loaders. The resolver reconciliation and the
-  dispatch-side re-check this ADR specifies land in follow-on cards against the contract fixed here.
+- **Status:** Accepted. Motivated by a pre-1.10 gap: a `WatchPlan.judge` value was accepted and
+  serialized but never consumed by resolution or runtime component selection, so a requested judge
+  silently had no effect. The catalog half of this ADR ships in code
+  (`percept/deployment_judges.py`, `tests/test_deployment_judges.py`): the deployment-owned judge
+  availability object and its loaders. The resolver reconciliation and the dispatch-side re-check
+  this ADR specifies ship alongside it (`percept/judge_registry.py`, resolver and dispatch wiring).
 - **Depends on:** ADR-008 (Configuration ownership, resolution, and provenance — this ADR
   materializes the first concrete slice of its `DeploymentConfig` object, previously recorded there
   as "not yet in code"); ADR-005 (Source profiles — the `FORBIDDEN_FIELDS` / refuse-at-construction

@@ -257,8 +257,7 @@ class GoalTemplate:
     ``condition`` to compare the two ``normalized`` values — never the two ``raw`` ones, which
     differ in surface form even when the underlying value is identical. Always state the
     abstention rule too: a ``normalized=None`` on either side means "cannot confirm equal or
-    different" and must ASK, never a confident mismatch — see the worked example in
-    ``client-preview/ONBOARDING.md`` §5.
+    different" and must ASK, never a confident mismatch.
     """
 
     name: str

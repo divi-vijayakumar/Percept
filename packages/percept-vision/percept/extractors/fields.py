@@ -33,7 +33,7 @@ SHAPE was recognized, e.g. "this was clearly currency-shaped") but sets ``normal
 than inventing a canonical form. A mention this module cannot classify at all gets
 ``kind="unknown"``, ``normalized=None``. A judge condition MUST treat ``normalized=None`` on either
 side of a compare as "cannot confirm equal or different" (ASK), never as grounds for a confident
-mismatch — see the worked example in ``client-preview/ONBOARDING.md`` §5.
+mismatch.
 """
 
 from __future__ import annotations
