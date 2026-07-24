@@ -182,4 +182,7 @@ packages/percept-vision/eval/LABELING_PIPELINE.md
 # Synthetic UNIT-layer capability fixtures — GENERATED, never committed, never shipped.
 # Regenerate: cd packages/percept-vision && python3 -m percept.harness.synthetic.generate
 eval/synthetic/
+
+# MEVA end-to-end pilot scratch (raw video, annotations, generated fixtures) — never committed.
+eval/datasets/meva/_pilot_data/
 client-preview/*.whl

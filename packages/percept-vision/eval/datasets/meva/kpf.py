@@ -141,19 +141,37 @@ def parse_clip_id(name: str) -> tuple[str, str, str, str]:
     return stem, scene_id, site, camera
 
 
+#: The versioned key a KPF ``act`` record carries its ``{type_name: confidence}`` map under. MEVA
+#: revisions bump it: ``act2`` (the older/DIVA-style + this repo's synthetic sample) and ``act3``
+#: (the real KF1 public drops). Match any ``act<N>`` so a future ``act4`` needs no code change.
+_ACT_TYPE_KEY_RE = re.compile(r"^act(\d+)$")
+
+
 def _activity_type(record: Mapping[str, Any]) -> str:
-    """Extract the activity type name from a KPF ``act`` record (``act2`` dict or ``activity`` str)."""
-    act2 = record.get("act2")
-    if isinstance(act2, Mapping) and act2:
-        # {type_name: confidence, ...} — pick the highest-confidence name, ties broken by name so
-        # the read is deterministic.
-        return max(sorted(act2), key=lambda k: (float(act2[k]), k)) if len(act2) > 1 else next(iter(act2))
-    if isinstance(act2, str) and act2:
-        return act2
+    """Extract the activity type name from a KPF ``act`` record.
+
+    The type map lives under a versioned ``act<N>`` key — ``act2`` (synthetic/DIVA sample) or
+    ``act3`` (real KF1 drops) — as a ``{type_name: confidence}`` dict; older DIVA-style files carry
+    a plain ``activity: <name>`` string instead. All are accepted. When more than one ``act<N>`` key
+    is present the highest N wins (the newest revision's label is canonical); reads are deterministic.
+    """
+    act_keys = sorted(
+        (k for k in record if _ACT_TYPE_KEY_RE.match(str(k))),
+        key=lambda k: int(_ACT_TYPE_KEY_RE.match(str(k)).group(1)),
+        reverse=True,
+    )
+    for key in act_keys:
+        actn = record[key]
+        if isinstance(actn, Mapping) and actn:
+            # {type_name: confidence, ...} — pick the highest-confidence name, ties broken by name
+            # so the read is deterministic.
+            return max(sorted(actn), key=lambda k: (float(actn[k]), k)) if len(actn) > 1 else next(iter(actn))
+        if isinstance(actn, str) and actn:
+            return actn
     activity = record.get("activity")
     if isinstance(activity, str) and activity:
         return activity
-    raise KpfError(f"act record has no 'act2' type map or 'activity' name: {record!r}")
+    raise KpfError(f"act record has no 'act<N>' type map or 'activity' name: {record!r}")
 
 
 def _frame_bounds(timespan: Any, *, context: str) -> tuple[int, int]:

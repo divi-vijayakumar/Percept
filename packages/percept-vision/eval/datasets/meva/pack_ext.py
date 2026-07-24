@@ -76,6 +76,7 @@ def _spec(template: str, goal_shape: str) -> ConditionSpec:
 #: activity type absent from this map is intentionally DROPPED by the transform (not every MEVA
 #: activity is a facility-observation condition) — see :func:`condition_for`.
 MEVA_ACTIVITY_TO_CONDITION: dict[str, ConditionSpec] = {
+    # snake_case KF1 / DIVA vocabulary (this repo's synthetic sample).
     "person_opens_facility_door": _spec("door_left_open", "episode"),
     "person_loiters": _spec("zone_occupied", "episode"),
     "person_enters_scene_through_structure": _spec("zone_occupied", "episode"),
@@ -83,6 +84,16 @@ MEVA_ACTIVITY_TO_CONDITION: dict[str, ConditionSpec] = {
     "person_abandons_package": _spec("package_appeared", "point"),
     "person_drops_off_package": _spec("package_appeared", "point"),
     "abandonment": _spec("package_appeared", "point"),
+    # CamelCase MEVA-KF1 vocabulary as it appears in the REAL public drops (act3 records). These are
+    # the same three facility conditions under the names the shipped annotations actually use:
+    #   Open_Facility_Door -> door_left_open (a person opens the facility door)
+    #   Enter_Facility / Exit_Facility -> zone_occupied (a person is present in the doorway zone,
+    #       transiting the structure — the person-in-monitored-zone occupancy episode)
+    #   Abandon_Package -> package_appeared (an object is left and becomes present)
+    "Open_Facility_Door": _spec("door_left_open", "episode"),
+    "Enter_Facility": _spec("zone_occupied", "episode"),
+    "Exit_Facility": _spec("zone_occupied", "episode"),
+    "Abandon_Package": _spec("package_appeared", "point"),
 }
 
 
