@@ -1702,8 +1702,10 @@ class WatchEvent:
 
 from .watchplan import (  # noqa: E402 — re-export after the DTOs those bump comments describe
     RECEIPT_STATUSES,
+    ArtifactBinding,
     FieldDiagnostic,
     ReceiptStatus,
+    ResolvedJudgeSpec,
     ResolvedWatch,
     SettingOrigin,
     WatchPlan,
@@ -2043,6 +2045,8 @@ __all__ = [
     "WatchPlan",
     "ResolvedWatch",
     "WatchReceipt",
+    "ArtifactBinding",
+    "ResolvedJudgeSpec",
     # Protocols
     "Vision",
     "Specialist",

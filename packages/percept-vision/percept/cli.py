@@ -170,8 +170,10 @@ def _cmd_resolve(argv: Sequence[str]) -> int:
                 return 2
             data["condition"] = ns.condition
         try:
-            plan = WatchPlan(**data)
-        except TypeError as exc:
+            # from_dict (not WatchPlan(**data)) so the flat judge_context_* wire keys round-trip back
+            # into an ArtifactBinding; a half-specified binding raises ValueError, an unknown field TypeError.
+            plan = WatchPlan.from_dict(data)
+        except (TypeError, ValueError) as exc:
             print(f"percept resolve: invalid WatchPlan fields in {ns.config}: {exc}", file=sys.stderr)
             return 2
     else:

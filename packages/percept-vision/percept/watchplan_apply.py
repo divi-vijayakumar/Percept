@@ -371,6 +371,13 @@ def apply_watch_plan(
         situation=situation,
         registry=registry,
         settings=settings,
+        # Thread the SAME deployment catalog into the resolve-side authorization (ADR-009) that the
+        # prepare-side binding uses. Without this the resolver reconciles WatchPlan.judge against the
+        # DEFAULT (env) catalog — empty unless PERCEPT_JUDGE_CATALOG is set — so a caller that supplies
+        # its catalog to apply_watch_plan (rather than via env) would have EVERY judge request rejected
+        # as unknown before the binding step is ever reached. ``None`` defers to load_deployment_judges,
+        # exactly as resolve() does on its own, so a judge-less batch is byte-for-byte unchanged.
+        deployment_judges=deployment_judges,
     )
     plan_list = [plans] if isinstance(plans, WatchPlan) else list(plans)
     if not plan_list:

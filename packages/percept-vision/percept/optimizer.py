@@ -596,7 +596,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             from .contracts.watchplan import WatchPlan  # noqa: PLC0415 - CLI-only, avoid an import cycle
 
             plan_data = dict(_load_structured(args.plan))
-            plan = WatchPlan(**plan_data)
+            # from_dict (not WatchPlan(**plan_data)) so a persisted plan's flat judge_context_* wire
+            # keys round-trip back into an ArtifactBinding rather than TypeError-ing as unknown kwargs.
+            plan = WatchPlan.from_dict(plan_data)
             base_plan_hash = content_hash(plan.to_dict())
         report = optimize(
             fixtures_root=args.fixtures,

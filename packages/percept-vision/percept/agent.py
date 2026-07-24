@@ -1918,6 +1918,13 @@ class Percept:
         from_cond, to_cond = goal.state.get("from"), goal.state.get("to")
         if not from_cond or not to_cond:
             return None
+        # Per-goal judge routing (fail-closed) — selected BEFORE any judge call AND before any side
+        # effect (evidence admission, funnel.judged), exactly like _judge routes the watch path. A goal
+        # MARKED judge-requesting but with no binding raises JudgeBindingInvariantError here (propagates;
+        # NO adapter called, zero judge calls, zero evidence admitted) rather than silently falling back
+        # to the deployment-default judge — the failure class this incident forbids on EVERY dispatch
+        # path. No binding => (self.vision, None): every line below is byte-for-byte the unbound path.
+        adapter, bound = self._select_judge_adapter(goal)
         roi: Box | None = focus.box if focus else None
         corrections = focus.asserted() if focus else {}
         entity = focus.id if focus else "scene"
@@ -1942,6 +1949,19 @@ class Percept:
             if not enrichment.is_empty:
                 judge_context = {EXTRACTOR_CONTEXT_KEY: enrichment.to_dict()}
                 enriched = True
+        # Static-context injection at the transition dispatch site — the SAME rule _judge applies: only
+        # when the binding carries a verified static context; a caller/extractor context already holding
+        # the reserved key is a bug (ReservedContextKeyError, raised BEFORE any judge call); otherwise
+        # COPY (never mutate) the extractor context and inject the decoded text under the reserved key so
+        # it reaches BOTH the 'from' and 'to' judge call. No binding / no static context => untouched.
+        if bound is not None and bound.static_context is not None:
+            if judge_context is not None and JUDGE_STATIC_CONTEXT_KEY in judge_context:
+                raise ReservedContextKeyError(
+                    f"goal {goal.id!r} judge context already carries the reserved key "
+                    f"{JUDGE_STATIC_CONTEXT_KEY!r}; a bound static context cannot be injected over it"
+                )
+            judge_context = dict(judge_context) if judge_context else {}
+            judge_context[JUDGE_STATIC_CONTEXT_KEY] = bound.static_context.decoded_text
         # Pass frames=/context= ONLY when they exist, so a single-frame goal with no extractor calls
         # ``vision.judge`` with the exact single-frame signature (some Vision doubles accept neither kwarg).
         judge_kwargs: dict[str, Any] = {}
@@ -1961,11 +1981,11 @@ class Percept:
         timing.set_source_media_ts(t)
         timing.mark_judge_started()
         self.funnel.judged(concern=goal.id, camera=source)  # the 'from' judge call is being spent
-        from_v = await self.vision.judge(from_cond, frame, roi=roi, corrections=corrections or None,
-                                         **judge_kwargs)
+        from_v = await adapter.judge(from_cond, frame, roi=roi, corrections=corrections or None,
+                                     **judge_kwargs)
         self.funnel.judged(concern=goal.id, camera=source)  # the 'to' judge call is being spent
-        to_v = await self.vision.judge(to_cond, frame, roi=roi, corrections=corrections or None,
-                                       **judge_kwargs)
+        to_v = await adapter.judge(to_cond, frame, roi=roi, corrections=corrections or None,
+                                   **judge_kwargs)
         timing.mark_judge_completed()
         if stale is not None and stale():
             return None  # goals changed while the from/to judges were in flight — apply nothing
