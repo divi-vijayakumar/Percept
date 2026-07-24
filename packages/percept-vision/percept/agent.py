@@ -37,7 +37,12 @@ from .episodes import (
     episode_policy_of,
     subject_is_unknown,
 )
-from .identity_policy import identity_policy_of, select_identity_policy, transition_latch_key
+from .identity_policy import (
+    PER_ENTITY_IDENTITY_POLICIES,
+    identity_policy_of,
+    select_identity_policy,
+    transition_latch_key,
+)
 from .judge_context import JUDGE_STATIC_CONTEXT_KEY, ReservedContextKeyError
 from .events import AudioWindow, EventLog, FrameWindow
 from .gate import FIRE, Gate, GateAction, classify
@@ -1772,13 +1777,9 @@ class Percept:
                 # call found it — belt-and-suspenders against a fault silently arming/disarming an
                 # edge). The exception is swallowed HERE — it must never escape to worker.py's run()
                 # loop and end the watch.
-                self.metrics.incr("judge.degraded")
                 self.funnel.refused(concern=goal.id, camera=source)
-                self._note_judge_degraded(base_key, degraded.cause)  # queues on_health for worker.py
-                get_logger("percept.agent").warning(
-                    "judge.degraded: goal=%r cause=%r — degrading this tick to ASK/SILENT "
-                    "(fail-closed)", goal.id, degraded.cause,
-                )
+                self._degrade_tick(base_key, degraded.cause, goal_id=goal.id, label="",
+                                   action="degrading this tick to ASK/SILENT")
                 if tracing:
                     await self._emit_trace(
                         trace_id, now, "judge.degraded", goal_id=goal.id, cause=repr(degraded.cause),
@@ -1936,6 +1937,23 @@ class Percept:
         # except a per-entity track/appearance resolver with an entity actually in focus.
         declared = identity_policy_of(goal)
         latch_key, latch_key_source = transition_latch_key(declared, focus.id if focus else None)
+        # A per-entity transition with NO subject in focus has nothing to attribute an A→B edge to:
+        # spend no judges and touch no latch. Latching the shared "scene" key here would let a focus
+        # dropout ARM and FIRE across the very entities this policy isolates (a from=yes then a to=yes,
+        # both under no-focus, would fire under entity_id="scene"). Skipping instead DEFERS the edge to
+        # when the subject is back in focus — the arm on its real key is untouched. Emitted as its own
+        # transition.decision row (from/to None ⇒ no judges ran) so the skip is auditable.
+        if declared in PER_ENTITY_IDENTITY_POLICIES and focus is None:
+            if tracing:
+                await self._emit_trace(
+                    trace_id, now, STAGE_TRANSITION_DECISION, goal_id=goal.id, entity_id=latch_key,
+                    from_truth=None, to_truth=None, armed=None, fired_latch=None, outcome="idle",
+                    strip_len=0, enriched=False,
+                    identity_policy=declared, latch_key=latch_key, latch_key_source=latch_key_source,
+                    focus_entity_id=None,
+                    from_confidence=None, to_confidence=None, from_evidence=None, to_evidence=None,
+                )
+            return None
         # Judge from/to over the SAME resolved temporal strip the watch path uses — not bare single
         # frames. _resolve_strip floors the authored spec by the compiled plan_mode; ``strip`` is None
         # (the degenerate single-frame case) when the plan is 'single' or the window holds no earlier
@@ -2008,12 +2026,8 @@ class Percept:
             # this tick — do NOT call the executor, do NOT mutate the latch (a phantom arm/fire off a
             # garbled response is the false-fire this path must never produce) — and never crash the
             # watch. The degrade streak is keyed by the SAME (goal, latch_key) the fire path uses.
-            self.metrics.incr("judge.degraded")
-            self._note_judge_degraded((goal.id, latch_key), degraded.cause)  # queues on_health
-            get_logger("percept.agent").warning(
-                "judge.degraded (transition): goal=%r cause=%r — applying nothing this tick "
-                "(fail-closed)", goal.id, degraded.cause,
-            )
+            self._degrade_tick((goal.id, latch_key), degraded.cause, goal_id=goal.id,
+                               label=" (transition)", action="applying nothing this tick")
             if tracing:
                 await self._emit_trace(
                     trace_id, now, STAGE_TRANSITION_DECISION, goal_id=goal.id, entity_id=latch_key,
@@ -2048,10 +2062,10 @@ class Percept:
                 # gap (a miss no longer discards the verdicts that explain it).
                 identity_policy=declared, latch_key=latch_key, latch_key_source=latch_key_source,
                 focus_entity_id=focus.id if focus else None,
-                from_confidence=getattr(from_v, "confidence", None),
-                to_confidence=getattr(to_v, "confidence", None),
-                from_evidence=getattr(from_v, "evidence", None),
-                to_evidence=getattr(to_v, "evidence", None),
+                # from_v/to_v are well-formed Verdicts here — _safe_timed_judge rejected any
+                # non-Verdict as _JudgeDegraded above — so read the fields directly.
+                from_confidence=from_v.confidence, to_confidence=to_v.confidence,
+                from_evidence=from_v.evidence, to_evidence=to_v.evidence,
             )
         fired = tick.fired
         if fired is None:
@@ -2097,12 +2111,8 @@ class Percept:
             # A failed/malformed observe-step judge logs NOTHING this tick (never a phantom step
             # off a garbled/timed-out response) and never crashes the run — this goal never touches
             # the gate anyway (see the docstring above), so there is nothing further to degrade.
-            self.metrics.incr("judge.degraded")
-            self._note_judge_degraded(process_key, degraded.cause)  # queues on_health for worker.py
-            get_logger("percept.agent").warning(
-                "judge.degraded (observe_step): goal=%r cause=%r — logging nothing this tick "
-                "(fail-closed)", goal.id, degraded.cause,
-            )
+            self._degrade_tick(process_key, degraded.cause, goal_id=goal.id,
+                               label=" (observe_step)", action="logging nothing this tick")
             return
         self._note_judge_ok(process_key)  # a well-formed verdict resets this key's degrade streak
         if stale is not None and stale():
@@ -2314,6 +2324,17 @@ class Percept:
         if not _is_valid_verdict(verdict):
             raise _JudgeDegraded(verdict)
         return verdict
+
+    def _degrade_tick(self, key: Hashable, cause: Any, *, goal_id: str, label: str, action: str) -> None:
+        """Shared fail-closed bookkeeping for a degraded judge tick: count it, queue the health
+        escalation for ``key``, and warn. Each caller keeps its OWN path-specific side effects
+        (``funnel.refused``, the trace emit, the return value) — this is only the common core the
+        watch / observe-step / transition degrade handlers all repeat verbatim."""
+        self.metrics.incr("judge.degraded")
+        self._note_judge_degraded(key, cause)  # queues on_health for worker.py
+        get_logger("percept.agent").warning(
+            "judge.degraded%s: goal=%r cause=%r — %s (fail-closed)", label, goal_id, cause, action,
+        )
 
     def _note_judge_degraded(self, key: Hashable, cause: Any) -> None:
         """Record a degraded judge tick for ``key`` (the SAME ``(goal_id, entity_id)`` key

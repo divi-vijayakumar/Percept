@@ -164,6 +164,39 @@ class TestScenePerceiveTransition(unittest.TestCase):
         self.assertIsNone(ev1)  # arming tick never fires
         self.assertIsNone(ev2)  # e2 was never armed -> no fire under per-entity isolation
 
+    def test_track_policy_no_focus_does_not_leak_to_scene_latch(self):
+        # P06-002 review finding: a per-entity goal must NOT arm/fire the shared "scene" latch during
+        # a focus dropout. Both the arm (from=yes) and the completion (to=yes) happen under focus=None:
+        # the pre-fix fallback-to-scene would arm then FIRE "scene", conflating entities; the fix SKIPS
+        # unfocused per-entity ticks, so nothing fires.
+        script = {
+            (FROM, "f1"): (True, 0.95), (TO, "f1"): (False, 0.9),   # from=yes, focus None
+            (FROM, "f2"): (False, 0.9), (TO, "f2"): (True, 0.95),   # to=yes, focus None
+        }
+        core = Percept.create(vision=_StubVision(script), discover_plugins=False)
+        g = _goal(state_extra={"identity_policy": "track_iou_label"})
+        core.add_goal(g)
+        self.assertIsNone(_perceive(core, g, "f1", None))
+        self.assertIsNone(_perceive(core, g, "f2", None))
+
+    def test_track_policy_fire_defers_across_focus_dropout(self):
+        # The complement: a per-entity edge that spans a dropout still fires once the subject returns.
+        # arm under e1, a no-focus dropout tick (skipped, latch untouched), complete under e1 -> fires.
+        script = {
+            (FROM, "f1"): (True, 0.95), (TO, "f1"): (False, 0.9),   # arm under e1
+            (FROM, "f2"): (False, 0.9), (TO, "f2"): (False, 0.9),   # dropout (focus None -> skipped)
+            (FROM, "f3"): (False, 0.9), (TO, "f3"): (True, 0.95),   # complete under e1
+        }
+        core = Percept.create(vision=_StubVision(script), discover_plugins=False)
+        g = _goal(state_extra={"identity_policy": "track_iou_label"})
+        core.add_goal(g)
+        fires = []
+        for tok, focus in [("f1", _Focus("e1")), ("f2", None), ("f3", _Focus("e1"))]:
+            ev = _perceive(core, g, tok, focus)
+            if ev is not None and ev.action == FIRE:
+                fires.append(ev)
+        self.assertEqual(len(fires), 1)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
