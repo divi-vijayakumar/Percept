@@ -17,6 +17,7 @@ after seeing the scores.
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 from typing import Sequence
 
@@ -179,6 +180,15 @@ def build_preregistration(
     fixtures = load_fixtures(root)
     split: HeldOutSplit = load_held_out_split(root, fixtures, split_name=split_name)
     bars: BarsDocument = load_bars(bars_path)
+    # Freeze PATH-INDEPENDENTLY: load_held_out_split / load_bars stamp ``source`` with the absolute
+    # checkout path (``str(path)``), and DerivationPreRegistration folds both into its
+    # registration_hash — so the SAME labeled corpus in two checkouts would hash differently (a
+    # worktree path leaked into the committed hash and broke on merge). Normalize ``source`` to its
+    # basename so the frozen hash is portable, per fixture_set_hash's own contract: "two checkouts
+    # of the same labeled corpus must hash identically".
+    split = replace(split, source=Path(split.source).name)
+    if bars.source and bars.source != "(none supplied)":
+        bars = replace(bars, source=Path(bars.source).name)
     return DerivationPreRegistration(
         ladder=build_screen_ladder(),
         split=split,

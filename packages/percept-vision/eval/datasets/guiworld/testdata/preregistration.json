@@ -21,10 +21,10 @@
   ],
   "bars_declared_by": "DS3 \u2014 GUI-World screen_document pack",
   "bars_hash": "0cba19c2869eee59a098457f0103cfc03a30c07073f876db1d9e3dbe2d02803d",
-  "bars_source": "/Users/dhivyavijayakumar/git/Percept-sdk/.claude/worktrees/agent-ab657769507546b56/packages/percept-vision/eval/datasets/guiworld/bars.json",
-  "bootstrap_seed": 248911614841531,
+  "bars_source": "bars.json",
+  "bootstrap_seed": 67117583526303,
   "declared_at": "2026-07-23",
-  "eval_run_id": "derive-e262406212bb",
+  "eval_run_id": "derive-3d0b07b9699f",
   "expected_registration_hash": null,
   "fixture_set_hash": "3939d62845408a403c4cf175795a936e81c4a19022ed8a0afda1960adb6226c6",
   "ladder": {
@@ -167,7 +167,7 @@
     "winner_rule": "the earliest rung, in the operator's declared order, that meets EVERY supplied bar"
   },
   "ladder_source": "eval.datasets.guiworld",
-  "registration_hash": "e262406212bbc6ea783d53745980b09949e451a72824efe2abbf42d06494dcfb",
+  "registration_hash": "3d0b07b9699f041f0f1a536bc3a326eac2aa9b831364a6ad7496ede6c1ed5a48",
   "split": {
     "declared": true,
     "exploratory": [
@@ -187,7 +187,7 @@
       "gw-web-01__modal_appeared",
       "gw-web-01__page_changed"
     ],
-    "source": "/Users/dhivyavijayakumar/git/Percept-sdk/.claude/worktrees/agent-ab657769507546b56/packages/percept-vision/eval/datasets/guiworld/testdata/fixtures/splits.json",
+    "source": "splits.json",
     "split_name": "test"
   }
 }
