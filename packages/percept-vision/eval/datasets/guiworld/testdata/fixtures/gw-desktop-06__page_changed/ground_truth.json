@@ -1,0 +1,14 @@
+{
+  "episodes": [
+    {
+      "allowed_lateness_s": 2.0,
+      "annotation_version": "guiworld-keyframe-v1",
+      "annotator_or_fixture_id": "guiworld:gw-desktop-06",
+      "decision_eligible_ts": 11.0,
+      "episode_end_ts": 12.5,
+      "episode_id": "gw-desktop-06__page_changed::reports-folder::00",
+      "event_start_ts": 11.0
+    }
+  ],
+  "goal_shape": "point"
+}

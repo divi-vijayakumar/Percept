@@ -1,0 +1,73 @@
+{
+  "_note": "Synthetic, GUI-World-representative keyframe annotations (NOT the real dataset). Shape mirrors ONE-Lab/GUI-World temporal GUI events; used to unit-test the transform with no download. Real GUI-World is CC BY 4.0.",
+  "sessions": [
+    {
+      "video_id": "gw-web-01",
+      "platform": "web",
+      "duration_s": 58.0,
+      "annotator": "guiworld-keyframe",
+      "keyframes": [
+        {"t": 6.2, "event": "modal_open", "caption": "A cookie-consent modal dialog appears over the article", "content_key": "cookie-consent"},
+        {"t": 12.0, "event": "scroll", "caption": "The user scrolls the article body"},
+        {"t": 21.8, "event": "navigate", "caption": "The user clicks a link and the page changes to the pricing page", "content_key": "pricing"},
+        {"t": 40.1, "event": "error_toast", "caption": "A red error toast reads 'Payment failed'"},
+        {"t": 52.0, "event": "modal_open", "caption": "A newsletter signup modal appears", "content_key": "newsletter"}
+      ]
+    },
+    {
+      "video_id": "gw-desktop-02",
+      "platform": "desktop",
+      "duration_s": 31.0,
+      "annotator": "guiworld-keyframe",
+      "keyframes": [
+        {"t": 3.5, "event": "error_dialog", "caption": "A 'Save failed: disk full' error dialog is displayed", "content_key": "save-failed"},
+        {"t": 15.0, "event": "dialog_open", "caption": "An 'unsaved changes' confirmation dialog appears", "content_key": "unsaved-changes"},
+        {"t": 27.4, "event": "type", "caption": "The user types into the editor"}
+      ]
+    },
+    {
+      "video_id": "gw-mobile-03",
+      "platform": "mobile",
+      "fps": 30.0,
+      "duration_s": 20.0,
+      "annotator": "guiworld-keyframe",
+      "keyframes": [
+        {"frame": 90, "event": "tab_switch", "caption": "The user switches to the Messages tab", "content_key": "messages"},
+        {"frame": 300, "event": "navigate", "caption": "A deep link opens the order-details screen", "content_key": "order-details"},
+        {"frame": 540, "event": "toast_error", "caption": "A toast shows 'Network request failed'", "content_key": "network-failed"}
+      ]
+    },
+    {
+      "video_id": "gw-web-04",
+      "platform": "web",
+      "duration_s": 14.0,
+      "annotator": "guiworld-keyframe",
+      "keyframes": [
+        {"t": 5.0, "event": "modal_open", "caption": "A login modal appears in the center of the screen", "content_key": "login-step-1"},
+        {"t": 9.5, "event": "modal_open", "caption": "A second login modal (2FA) appears in the same center region", "content_key": "login-2fa"}
+      ]
+    },
+    {
+      "video_id": "gw-multi-05",
+      "platform": "multi_window",
+      "duration_s": 36.0,
+      "annotator": "guiworld-keyframe",
+      "keyframes": [
+        {"t": 8.0, "event": "navigate", "caption": "The active window navigates to the dashboard", "content_key": "dashboard"},
+        {"t": 19.0, "event": "error_banner", "caption": "A red banner reads 'Sync error, retrying'", "content_key": "sync-error"},
+        {"t": 30.0, "event": "modal_open", "caption": "A 'Session expired' modal appears", "content_key": "session-expired"}
+      ]
+    },
+    {
+      "video_id": "gw-desktop-06",
+      "platform": "desktop",
+      "duration_s": 30.0,
+      "annotator": "guiworld-keyframe",
+      "keyframes": [
+        {"t": 4.0, "event": "hover", "caption": "The user hovers a toolbar icon"},
+        {"t": 11.0, "event": "navigate", "caption": "The file explorer navigates into the Reports folder", "content_key": "reports-folder"},
+        {"t": 25.5, "event": "", "caption": "An error appeared: 'Access denied'", "content_key": "access-denied"}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "episodes": [
+    {
+      "allowed_lateness_s": 2.0,
+      "annotation_version": "guiworld-keyframe-v1",
+      "annotator_or_fixture_id": "guiworld:gw-multi-05",
+      "decision_eligible_ts": 19.0,
+      "episode_end_ts": 25.0,
+      "episode_id": "gw-multi-05__error_shown::sync-error::00",
+      "event_start_ts": 19.0
+    }
+  ],
+  "goal_shape": "episode"
+}
