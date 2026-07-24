@@ -30,7 +30,28 @@ from typing import Any, Awaitable, Callable, ClassVar, Hashable, Literal, Protoc
 #: Bump the MAJOR on any breaking change to a frozen shape; MINOR for additive (new optional
 #: field / new DTO); PATCH for docs/non-wire tweaks. This is distinct from ``WatchSpec.version``
 #: (a wire integer kept for byte-for-byte payload compat).
-CONTRACT_VERSION = "1.9.0"  # 1.9: + evidence-link correlation — judgment_event_id() + EvidenceOrigin
+CONTRACT_VERSION = "1.10.0"  # 1.10: + judge made operational — WatchPlan.judge_context + judge provenance
+# 1.10: WatchPlan.judge becomes OPERATIONAL. Until now WatchPlan.judge was accepted +
+# serialized but never consumed; it is now a REQUEST validated at resolution against the deployment-owned
+# judge catalog, failing closed (pre-arm error) when the requested judge is unavailable — a request, not
+# an override. Additive DTOs + fields, all defaulted so a plan/receipt/ResolvedWatch that names no judge
+# is byte-for-byte the pre-1.10 shape:
+#   * :class:`ArtifactBinding` — an immutable ref + SHA-256 content-address for a judge-context artifact
+#     (prompt envelope / rubric / policy doc); ref grammar ``[A-Za-z0-9._@-]+`` (no path separators),
+#     digest normalized to bare-lowercase hex (accepts an optional ``sha256:`` prefix on input).
+#   * :class:`ResolvedJudgeSpec` — the resolver's judge OUTPUT (requested/resolved ref, factory,
+#     provider, model requested vs resolved, prompt-envelope + context digests).
+#   * :attr:`WatchPlan.judge_context` — an OPTIONAL ``ArtifactBinding`` binding the exact judge-context
+#     bytes a plan was authored against; projected onto the wire as flat ``judge_context_ref/_sha256/
+#     _media_type`` (+ ``_schema_version`` when set) ONLY when bound, so plan_hash for existing plans is
+#     stable; ``WatchPlan.from_dict`` reconstructs it and rejects a half-specified (ref-without-hash /
+#     hash-without-ref) binding.
+#   * :attr:`ResolvedWatch.judge` (+ additive ``components["judge"]`` projection) and
+#     :attr:`WatchReceipt.judge_requested`/``judge_resolved``/``judge_context_ref``/``judge_context_sha256``/
+#     ``fallback_used`` — judge provenance carried through resolution and onto the applied receipt.
+# GATE-IRRELEVANT (the gate reads only satisfied/confidence); Verdict/Incident/JudgmentEvent + the
+# judgment/evidence shapes are UNCHANGED; watch.py + WATCH_VERSION move independently (see watch.py).
+# 1.9: + evidence-link correlation — judgment_event_id() + EvidenceOrigin
 # 1.9: the durable evidence LINK between a judgment and the Incident it produced. Three additive,
 # defaulted, GATE-IRRELEVANT fields + one pure helper, so a client audit can prove every delivered
 # Incident resolves to EXACTLY ONE judgment record (and vice versa), including the transition path that

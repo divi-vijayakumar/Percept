@@ -39,6 +39,7 @@ snapshot fields from them.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, Mapping
@@ -122,6 +123,115 @@ class SettingOrigin:
         }
 
 
+#: The grammar an :class:`ArtifactBinding.ref` must satisfy — a flat, path-separator-free name token
+#: (``[A-Za-z0-9._@-]+``). Deliberately excludes ``/`` and ``\\`` so a ref can never smuggle a path
+#: traversal into a resolver that reads it back; the digest, not the ref, is the integrity anchor.
+_ARTIFACT_REF_RE = re.compile(r"[A-Za-z0-9._@-]+")
+#: A bare, lowercase, 64-char SHA-256 hex digest (no ``sha256:`` prefix — that is stripped on input).
+_SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
+
+
+@dataclass(frozen=True)
+class ArtifactBinding:
+    """An immutable, content-addressed pointer to a judge-context artifact.
+
+    A :class:`WatchPlan` may bind a piece of judge context (a prompt envelope, a rubric, a policy
+    doc) by *identity + content hash* so the exact bytes a plan was authored against are pinned:
+    resolution refuses a binding whose digest does not match the artifact the deployment resolves,
+    and the applied digest rides through to the :class:`WatchReceipt` for audit. It carries no bytes
+    itself — only the ref that names the artifact and the digest that fixes its content.
+
+    - ``ref`` — the artifact name, VERBATIM. Must be non-empty and match ``[A-Za-z0-9._@-]+``
+      (:data:`_ARTIFACT_REF_RE`): a flat token with no path separators, so a ref cannot encode a
+      traversal.
+    - ``sha256`` — the artifact's SHA-256, stored as a bare 64-char lowercase hex digest. Input
+      normalization accepts an optional ``"sha256:"`` prefix and any letter case and reduces both to
+      the canonical bare-lowercase form, so ``"sha256:ABC…"`` and ``"abc…"`` bind identically.
+    - ``media_type`` — the artifact's MIME type (default ``text/plain; charset=utf-8``); carried so a
+      consumer reads the bytes with the right decoder without a second lookup.
+    - ``schema_version`` — an OPTIONAL version tag for the artifact's own schema, or ``None``.
+    """
+
+    ref: str
+    sha256: str
+    media_type: str = "text/plain; charset=utf-8"
+    schema_version: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.ref, str) or not self.ref.strip():
+            raise ValueError(f"ArtifactBinding.ref must be a non-empty string, got {self.ref!r}")
+        if not _ARTIFACT_REF_RE.fullmatch(self.ref):
+            raise ValueError(
+                f"ArtifactBinding.ref must match [A-Za-z0-9._@-]+ (no path separators), got {self.ref!r}"
+            )
+        raw = self.sha256
+        if not isinstance(raw, str) or not raw.strip():
+            raise ValueError(f"ArtifactBinding.sha256 must be a non-empty hex digest, got {raw!r}")
+        digest = raw.strip()
+        if digest[:7].lower() == "sha256:":
+            digest = digest[7:]
+        digest = digest.lower()
+        if not _SHA256_HEX_RE.fullmatch(digest):
+            raise ValueError(
+                "ArtifactBinding.sha256 must be a 64-char SHA-256 hex digest "
+                f"(optionally 'sha256:'-prefixed, any case, on input), got {raw!r}"
+            )
+        object.__setattr__(self, "sha256", digest)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ref": self.ref,
+            "sha256": self.sha256,
+            "media_type": self.media_type,
+            "schema_version": self.schema_version,
+        }
+
+
+@dataclass(frozen=True)
+class ResolvedJudgeSpec:
+    """The resolver's OUTPUT for the judge slot — the concrete judge a requested ref bound to.
+
+    Where :attr:`WatchPlan.judge` is a *request* (a name the user asked for), this is the *result*:
+    which factory/provider/model actually resolved, plus the content addresses that pin the prompt
+    envelope and any bound judge context. It is a provenance record — the ``components["judge"]`` block
+    on :class:`ResolvedWatch` documents the nested wire projection of these same facts.
+
+    - ``requested_ref`` — the judge ref the plan asked for, or ``None`` when the plan named none.
+    - ``resolved_ref`` — the judge ref that actually resolved (may differ from the request under a
+      documented fallback; see :attr:`WatchReceipt.fallback_used`).
+    - ``factory_ref`` — the registered factory identity that constructed the judge.
+    - ``provider_ref`` — the backend/provider identity the judge runs against.
+    - ``model_requested`` / ``model_resolved`` — the model asked for vs. the model that bound.
+    - ``prompt_envelope_sha256`` — content address of the prompt envelope the judge ran under, or
+      ``None`` when not tracked.
+    - ``context_ref`` / ``context_sha256`` — the bound judge-context artifact's ref + digest (mirrors
+      the applied :class:`ArtifactBinding`), or ``None`` when the plan bound no context.
+    """
+
+    requested_ref: str | None
+    resolved_ref: str
+    factory_ref: str
+    provider_ref: str
+    model_requested: str
+    model_resolved: str
+    prompt_envelope_sha256: str | None
+    context_ref: str | None
+    context_sha256: str | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "requested_ref": self.requested_ref,
+            "resolved_ref": self.resolved_ref,
+            "factory_ref": self.factory_ref,
+            "provider_ref": self.provider_ref,
+            "model_requested": self.model_requested,
+            "model_resolved": self.model_resolved,
+            "prompt_envelope_sha256": self.prompt_envelope_sha256,
+            "context_ref": self.context_ref,
+            "context_sha256": self.context_sha256,
+        }
+
+
 @dataclass(frozen=True)
 class WatchPlan:
     """Portable, typed intent — the user's stated ask, before any resolution happens.
@@ -143,7 +253,19 @@ class WatchPlan:
     - ``detectors`` — cheap edge-signal detector names this plan requests.
     - ``extractors`` — extractor names this plan requests (free text; open registry, mirrors
       ``percept.harness.detectors``'s own openness).
-    - ``judge`` — a requested judge/backend name, or ``None`` to defer to ``DeploymentConfig``.
+    - ``judge`` — a requested judge reference, or ``None``. Resolution validates it against the
+      deployment-owned judge catalog and fails closed (a pre-arm error) if the requested judge is
+      unavailable — it is a REQUEST, not an override: a plan may ask for a judge, but the deployment
+      owns which judges exist, and an ask for one that does not resolve stops the arm rather than
+      silently substituting.
+    - ``judge_context`` — an OPTIONAL :class:`ArtifactBinding` pinning the exact judge-context
+      artifact (prompt envelope / rubric / policy doc) this plan was authored against, by ref + SHA-256.
+      ``None`` (the default) binds no context and — critically — makes :meth:`to_dict` emit NOTHING new,
+      so an existing plan's wire bytes (and its ``plan_hash``) are byte-for-byte what they were before
+      this field existed. When set, the binding is projected onto the wire as the flat
+      ``judge_context_ref`` / ``judge_context_sha256`` / ``judge_context_media_type`` keys (plus
+      ``judge_context_schema_version`` only when the binding carries one); :meth:`from_dict` reconstructs
+      it and REFUSES a half-specified binding (a ref without a hash, or a hash without a ref).
     - ``consequence`` — the ``(miss_cost, false_fire_cost, protected_floor)`` triple, expressed as
       a plain mapping (not the ``percept.contracts.Consequence`` frozen dataclass — this module
       does not import from ``percept.contracts``'s own sibling definitions to avoid a second DTO
@@ -180,6 +302,9 @@ class WatchPlan:
     source: str = "camera"
     profile: str | None = None
     id: str | None = None
+    # Appended LAST + defaulted None so field order (and thus positional construction) of every
+    # pre-1.10 field is untouched; an unset binding contributes nothing to the wire (see to_dict).
+    judge_context: ArtifactBinding | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.condition, str) or not self.condition.strip():
@@ -200,9 +325,14 @@ class WatchPlan:
             raise ValueError("WatchPlan.consequence must be a mapping or None")
         if self.schedule is not None and not isinstance(self.schedule, Mapping):
             raise ValueError("WatchPlan.schedule must be a mapping or None")
+        if self.judge_context is not None and not isinstance(self.judge_context, ArtifactBinding):
+            raise ValueError(
+                "WatchPlan.judge_context must be an ArtifactBinding or None, got "
+                f"{type(self.judge_context).__name__}"
+            )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "condition": self.condition,
             "sense": self.sense,
             "target": self.target,
@@ -220,6 +350,50 @@ class WatchPlan:
             "profile": self.profile,
             "id": self.id,
         }
+        # BACK-COMPAT INVARIANT: when no judge context is bound, emit NOTHING new — the key set (and
+        # thus the serialized bytes and plan_hash) is identical to the pre-1.10 output. The binding
+        # rides the wire as flat keys, added only when present so an unset plan is unchanged.
+        if self.judge_context is not None:
+            b = self.judge_context
+            d["judge_context_ref"] = b.ref
+            d["judge_context_sha256"] = b.sha256
+            d["judge_context_media_type"] = b.media_type
+            if b.schema_version is not None:
+                d["judge_context_schema_version"] = b.schema_version
+        return d
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "WatchPlan":
+        """Reconstruct a :class:`WatchPlan` from its :meth:`to_dict` wire form — the plan-read-back path.
+
+        Folds the flat ``judge_context_*`` wire keys back into an :class:`ArtifactBinding` and REFUSES a
+        half-specified binding: a ``judge_context_ref`` without a ``judge_context_sha256`` (or vice versa)
+        raises ``ValueError`` rather than binding an unpinned or unnamed artifact. A payload carrying no
+        ``judge_context_*`` keys reconstructs exactly as a pre-1.10 plan did (``judge_context=None``).
+        """
+        payload = dict(data)
+        ref = payload.pop("judge_context_ref", None)
+        sha = payload.pop("judge_context_sha256", None)
+        media = payload.pop("judge_context_media_type", None)
+        schema_version = payload.pop("judge_context_schema_version", None)
+        existing = payload.pop("judge_context", None)
+        if (ref is None) != (sha is None):
+            raise ValueError(
+                "WatchPlan judge_context wire fields must appear together: judge_context_ref requires "
+                "judge_context_sha256 and vice versa (a ref without a hash, or a hash without a ref, is "
+                "a half-specified binding)"
+            )
+        binding: ArtifactBinding | None = None
+        if ref is not None and sha is not None:
+            kwargs: dict[str, Any] = {"ref": ref, "sha256": sha}
+            if media is not None:
+                kwargs["media_type"] = media
+            if schema_version is not None:
+                kwargs["schema_version"] = schema_version
+            binding = ArtifactBinding(**kwargs)
+        elif isinstance(existing, ArtifactBinding):
+            binding = existing
+        return cls(judge_context=binding, **payload)
 
 
 @dataclass(frozen=True)
@@ -240,6 +414,15 @@ class ResolvedWatch:
       ``stt``/``tts``) read back from :func:`percept.runtime_compiler.runtime_compile`, and
       ``catalog_component_hash`` is :attr:`percept.catalog.CatalogSnapshot.component_hash` — the
       registered component SET's own content address at resolution time.
+      When a plan requested a judge (:attr:`WatchPlan.judge`), ``components`` ALSO carries an additive
+      ``components["judge"]`` block — the nested wire projection of :attr:`ResolvedWatch.judge` — present
+      ONLY when a judge was requested::
+
+          {"requested_ref", "resolved_ref", "factory_ref", "provider", "model_requested",
+           "model_resolved", "prompt_envelope_sha256", "context": {"ref", "sha256"}}
+
+      A plan that named no judge omits the block entirely, so a pre-1.10 ``components`` snapshot is
+      byte-for-byte unchanged.
     - ``effective`` — the plain resolved value per field, keyed by the same dotted-path
       vocabulary as :class:`percept.tunables.TunableSpec.path`. This is the "what" view.
     - ``provenance`` — the same keys, each mapped to its full :class:`SettingOrigin`. This is the
@@ -262,10 +445,17 @@ class ResolvedWatch:
     plan_hash: str
     component_snapshot_hash: str
     optimization_lock_hash: str | None = None
+    # Appended LAST + defaulted None so pre-1.10 field order/construction is untouched; a resolution
+    # that requested no judge leaves this None and its serialization (see to_dict) emits nothing new.
+    judge: ResolvedJudgeSpec | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.plan, WatchPlan):
             raise ValueError(f"ResolvedWatch.plan must be a WatchPlan, got {type(self.plan).__name__}")
+        if self.judge is not None and not isinstance(self.judge, ResolvedJudgeSpec):
+            raise ValueError(
+                f"ResolvedWatch.judge must be a ResolvedJudgeSpec or None, got {type(self.judge).__name__}"
+            )
         object.__setattr__(self, "source_profile", _freeze_snapshot(self.source_profile))
         object.__setattr__(self, "domain_pack", _freeze_snapshot(self.domain_pack))
         object.__setattr__(self, "execution_policy", _freeze_snapshot(self.execution_policy))
@@ -304,7 +494,7 @@ class ResolvedWatch:
         return "\n".join(lines)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "plan": self.plan.to_dict(),
             "source_profile": dict(self.source_profile) if self.source_profile is not None else None,
             "domain_pack": dict(self.domain_pack) if self.domain_pack is not None else None,
@@ -316,6 +506,11 @@ class ResolvedWatch:
             "component_snapshot_hash": self.component_snapshot_hash,
             "optimization_lock_hash": self.optimization_lock_hash,
         }
+        # Additive + present ONLY when a judge was requested, so a pre-1.10 ResolvedWatch serializes
+        # byte-for-byte as before.
+        if self.judge is not None:
+            d["judge"] = self.judge.to_dict()
+        return d
 
 
 def _freeze_snapshot(snapshot: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
@@ -344,6 +539,14 @@ class WatchReceipt:
       posture, but reported here instead of silently disappearing).
     - ``warnings`` — :class:`FieldDiagnostic` entries that are loud but non-fatal (the
       env-overrides-explicit-profile case ADR-008 names).
+    - ``judge_requested`` / ``judge_resolved`` — the judge ref the plan asked for vs. the judge that
+      actually bound at arm time; ``None`` when the plan named no judge. They differ only
+      under a documented fallback — see ``fallback_used``.
+    - ``judge_context_ref`` / ``judge_context_sha256`` — the applied judge-context binding's ref +
+      canonical (bare-lowercase) SHA-256 digest, echoed onto the receipt for audit; ``None`` when the
+      plan bound no judge context.
+    - ``fallback_used`` — ``True`` when the resolved judge (or its model) is NOT the one requested
+      because a documented fallback applied; ``False`` (the default) when the request bound exactly.
     """
 
     status: ReceiptStatus
@@ -353,6 +556,12 @@ class WatchReceipt:
     dropped_fields: tuple[FieldDiagnostic, ...] = ()
     coerced_fields: tuple[FieldDiagnostic, ...] = ()
     warnings: tuple[FieldDiagnostic, ...] = ()
+    # Judge provenance — all appended LAST + defaulted so a pre-1.10 receipt is unchanged.
+    judge_requested: str | None = None
+    judge_resolved: str | None = None
+    judge_context_ref: str | None = None
+    judge_context_sha256: str | None = None
+    fallback_used: bool = False
 
     def __post_init__(self) -> None:
         if self.status not in RECEIPT_STATUSES:
@@ -376,12 +585,19 @@ class WatchReceipt:
             "dropped_fields": [d.to_dict() for d in self.dropped_fields],
             "coerced_fields": [d.to_dict() for d in self.coerced_fields],
             "warnings": [d.to_dict() for d in self.warnings],
+            "judge_requested": self.judge_requested,
+            "judge_resolved": self.judge_resolved,
+            "judge_context_ref": self.judge_context_ref,
+            "judge_context_sha256": self.judge_context_sha256,
+            "fallback_used": self.fallback_used,
         }
 
 
 __all__ = [
     "ReceiptStatus",
     "RECEIPT_STATUSES",
+    "ArtifactBinding",
+    "ResolvedJudgeSpec",
     "FieldDiagnostic",
     "SettingOrigin",
     "WatchPlan",

@@ -52,7 +52,7 @@ from .watchprofile import WatchProfile
 #: semantics — distinct from ``percept.contracts.CONTRACT_VERSION`` (the DTO wire shapes it returns).
 #: Bump MAJOR on a breaking change to the signature or streaming contract; MINOR for an additive
 #: (new optional kwarg); PATCH otherwise.
-WATCH_VERSION = "1.0.0"
+WATCH_VERSION = "1.1.0"
 
 
 def _settings_from_profile(profile: Any) -> Settings | None:
