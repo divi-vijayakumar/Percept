@@ -1,0 +1,8 @@
+<nite:root xmlns:nite="http://nite.sourceforge.net/" nite:id="ES0001a.A.dialog-act">
+  <dact nite:id="ES0001a.A.dialog-act.1">
+    <nite:child href="ES0001a.A.words.xml#id(ES0001a.A.words0)..id(ES0001a.A.words6)"/>
+  </dact>
+  <dact nite:id="ES0001a.A.dialog-act.3">
+    <nite:child href="ES0001a.A.words.xml#id(ES0001a.A.words7)..id(ES0001a.A.words9)"/>
+  </dact>
+</nite:root>

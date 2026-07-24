@@ -1,0 +1,23 @@
+{
+  "goal_shape": "episode",
+  "episodes": [
+    {
+      "episode_id": "IS0001a.A.dialog-act.1:decision",
+      "event_start_ts": 1.0,
+      "decision_eligible_ts": 1.0,
+      "episode_end_ts": 3.4,
+      "allowed_lateness_s": 24.0,
+      "annotation_version": "eligibility-rubric-v1",
+      "annotator_or_fixture_id": "IS0001a.A.dialog-act.1"
+    },
+    {
+      "episode_id": "IS0001a.B.dialog-act.2:problem",
+      "event_start_ts": 1.0,
+      "decision_eligible_ts": 1.0,
+      "episode_end_ts": 3.0,
+      "allowed_lateness_s": 24.0,
+      "annotation_version": "eligibility-rubric-v1",
+      "annotator_or_fixture_id": "IS0001a.B.dialog-act.2"
+    }
+  ]
+}

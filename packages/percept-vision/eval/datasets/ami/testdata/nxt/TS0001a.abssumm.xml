@@ -1,0 +1,11 @@
+<nite:root xmlns:nite="http://nite.sourceforge.net/" nite:id="TS0001a.abssumm">
+  <decisions>
+    <sentence nite:id="TS0001a.abssumm.s3">The team chose supplier two.</sentence>
+  </decisions>
+  <actions>
+    <sentence nite:id="TS0001a.abssumm.s1">Engineering will run the load test.</sentence>
+  </actions>
+  <problems>
+    <sentence nite:id="TS0001a.abssumm.s2">The vendor keeps missing deadlines.</sentence>
+  </problems>
+</nite:root>

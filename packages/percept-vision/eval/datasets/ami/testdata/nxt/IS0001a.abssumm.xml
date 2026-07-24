@@ -1,0 +1,8 @@
+<nite:root xmlns:nite="http://nite.sourceforge.net/" nite:id="IS0001a.abssumm">
+  <decisions>
+    <sentence nite:id="IS0001a.abssumm.s1">The team adopted the new logo.</sentence>
+  </decisions>
+  <problems>
+    <sentence nite:id="IS0001a.abssumm.s2">The schedule is too tight.</sentence>
+  </problems>
+</nite:root>
