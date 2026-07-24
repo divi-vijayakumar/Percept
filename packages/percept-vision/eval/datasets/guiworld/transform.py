@@ -277,6 +277,90 @@ def load_sessions(path: str | Path) -> tuple[GuiWorldSession, ...]:
 
 
 # ---------------------------------------------------------------------------
+# 2b. Native ONE-Lab/GUI-World record schema (real dataset)
+# ---------------------------------------------------------------------------
+#
+# The real ONE-Lab/GUI-World annotation record differs from the representative schema above in
+# three ways this reader reconciles:
+#
+#   * SESSION ID lives in ``video_path`` ("website/79.mp4"), not a ``video_id`` field.
+#   * KEYFRAMES carry a ``frame`` INDEX + a ``sub_goal`` (the action caption) — no ``t`` seconds,
+#     no ``event`` type, no ``content_key``. Seconds are ``frame / fps``, and the recording's fps is
+#     NOT in the record and VARIES per video (measured 30 / ~59.2 / 60 across the benchmark), so it
+#     MUST be supplied by probing the actual video (ffprobe). Passing a wrong constant fps would
+#     silently move every ground-truth timestamp.
+#   * ``sub_goal`` is sometimes an annotator TRANSLATION artifact, not screen text: a leading
+#     "Translate:" marker (the English rendering of a non-English sub-goal), or the bare literal
+#     "Translation failed" when that rendering itself failed. The former is stripped; the latter is
+#     blanked (so it can never be misread as an on-screen error via the "failed" keyword).
+
+#: A leading annotator translation marker ("Translate: ...", "Translation: ..."). Provenance, not
+#: screen text — stripped before the sub_goal is classified.
+_TRANSLATE_PREFIX_RE = re.compile(r"^\s*translat(?:e|ion)\s*[:\-]\s*", re.IGNORECASE)
+
+#: A sub_goal that is ONLY a failed-translation marker (the annotator's translation pipeline
+#: failed). It carries no screen information, so it is blanked — otherwise "Translation failed"
+#: would spuriously classify as ``error_shown`` on the "failed" keyword (a real GUI-World trap).
+_TRANSLATION_FAILED_RE = re.compile(r"^\s*translat(?:ion|e)\s+(?:failed|error|error occurred)\s*[.!]?\s*$", re.IGNORECASE)
+
+
+def clean_sub_goal(text: str) -> str:
+    """Normalize a GUI-World ``sub_goal`` to classifiable screen text.
+
+    Strips a leading "Translate:" provenance marker and surrounding quotes; returns ``""`` for a
+    bare failed-translation marker (an annotation artifact, never screen content).
+    """
+    t = (text or "").strip()
+    if _TRANSLATION_FAILED_RE.match(t):
+        return ""
+    t = _TRANSLATE_PREFIX_RE.sub("", t).strip()
+    return t.strip('"').strip("'").strip()
+
+
+def native_video_id(video_path: str) -> str:
+    """Recover a session id from a GUI-World ``video_path`` ("website/79.mp4" -> "website-79").
+
+    The result never contains :data:`FIXTURE_SEP` (so the split unit stays recoverable).
+    """
+    slug = Path(str(video_path)).with_suffix("").as_posix().replace("/", "-")
+    return slug.replace(FIXTURE_SEP, "-")
+
+
+def parse_guiworld_native(raw: Mapping[str, Any], *, fps: float) -> GuiWorldSession:
+    """Parse ONE real ONE-Lab/GUI-World record into a :class:`GuiWorldSession`.
+
+    ``fps`` is the recording's true frame rate (probe it from the video — it varies per video and is
+    absent from the record). Keyframe seconds are ``frame / fps``; the ``sub_goal`` becomes the
+    classification caption (there is no ``event`` type in the native schema) after
+    :func:`clean_sub_goal` scrubs translation artifacts. Keyframes without a ``frame`` are skipped.
+    """
+    if not fps or float(fps) <= 0:
+        raise ValueError(
+            "parse_guiworld_native requires a positive fps — the native record omits it and it "
+            "varies per video; probe it from the actual video (e.g. ffprobe)."
+        )
+    fps_val = float(fps)
+    keyframes = tuple(
+        GuiWorldKeyframe(
+            t=float(kf["frame"]) / fps_val,
+            event="",  # native schema has no event type; the (cleaned) sub_goal classifies
+            caption=clean_sub_goal(str(kf.get("sub_goal", ""))),
+            content_key=None,  # native schema has no content key; episode id falls back to ordinal
+        )
+        for kf in raw.get("keyframes", ())
+        if kf.get("frame") is not None
+    )
+    return GuiWorldSession(
+        video_id=native_video_id(str(raw["video_path"])),
+        platform=str(raw.get("system", "")),
+        keyframes=keyframes,
+        fps=fps_val,
+        duration_s=None,
+        annotator="guiworld-onelab-native",
+    )
+
+
+# ---------------------------------------------------------------------------
 # 3. Session -> fixtures
 # ---------------------------------------------------------------------------
 

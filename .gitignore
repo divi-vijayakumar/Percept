@@ -185,4 +185,9 @@ eval/synthetic/
 
 # MEVA end-to-end pilot scratch (raw video, annotations, generated fixtures) — never committed.
 eval/datasets/meva/_pilot_data/
+# End-to-end real-data pilot scratch (raw video, annotations, generated fixtures, run/score
+# artifacts) — never committed. Anchored at the real package path so the rule actually matches;
+# also catch any _pilot_data dir under the eval datasets tree.
+packages/percept-vision/eval/datasets/guiworld/_pilot_data/
+packages/percept-vision/eval/datasets/*/_pilot_data/
 client-preview/*.whl
