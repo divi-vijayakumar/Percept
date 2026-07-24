@@ -1,0 +1,7 @@
+# MEVA KPF activity annotations — SYNTHETIC sample (not real MEVA data).
+# Schema reference: gitlab.kitware.com/meva/meva-data-repo
+# Scene D (bus, 14-40 session), camera view G506 — SAME event as G505, different view.
+- { meta: "activity annotations: person_loiters" }
+- { act: { act2: { person_loiters: 1.0 }, id2: 1, src: truth,
+           timespan: [ { tsr0: [ 600, 1200 ] } ],
+           actors: [ { id1: 16, timespan: [ { tsr0: [ 600, 1200 ] } ] } ] } }

@@ -1,0 +1,25 @@
+{
+  "bars": [
+    {
+      "direction": "min",
+      "metric": "candidate_recall",
+      "require_ci_excludes_zero": false,
+      "value": 0.8
+    },
+    {
+      "direction": "min",
+      "metric": "recall_delta",
+      "require_ci_excludes_zero": true,
+      "value": 0.05
+    },
+    {
+      "direction": "max",
+      "metric": "false_fire_delta",
+      "require_ci_excludes_zero": false,
+      "value": 0.0
+    }
+  ],
+  "declared_at": "2026-07-23",
+  "declared_by": "percept DS1 (MEVA -> facility_observation acceptance bars)",
+  "source": "eval.datasets.meva.transform.DEFAULT_BARS"
+}

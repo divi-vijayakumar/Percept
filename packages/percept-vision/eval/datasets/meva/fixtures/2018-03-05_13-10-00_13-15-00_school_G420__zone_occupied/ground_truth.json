@@ -1,0 +1,14 @@
+{
+  "episodes": [
+    {
+      "allowed_lateness_s": 2.0,
+      "annotation_version": "meva-kpf-1",
+      "annotator_or_fixture_id": "2018-03-05_13-10-00_13-15-00_school_G420__zone_occupied",
+      "decision_eligible_ts": 8.0,
+      "episode_end_ts": 12.0,
+      "episode_id": "person_enters_through_structure-2",
+      "event_start_ts": 8.0
+    }
+  ],
+  "goal_shape": "episode"
+}

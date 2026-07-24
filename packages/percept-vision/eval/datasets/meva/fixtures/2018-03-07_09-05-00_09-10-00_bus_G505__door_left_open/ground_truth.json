@@ -1,0 +1,14 @@
+{
+  "episodes": [
+    {
+      "allowed_lateness_s": 2.0,
+      "annotation_version": "meva-kpf-1",
+      "annotator_or_fixture_id": "2018-03-07_09-05-00_09-10-00_bus_G505__door_left_open",
+      "decision_eligible_ts": 15.0,
+      "episode_end_ts": 20.0,
+      "episode_id": "person_opens_facility_door-1",
+      "event_start_ts": 15.0
+    }
+  ],
+  "goal_shape": "episode"
+}

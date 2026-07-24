@@ -1,0 +1,14 @@
+{
+  "episodes": [
+    {
+      "allowed_lateness_s": 2.0,
+      "annotation_version": "meva-kpf-1",
+      "annotator_or_fixture_id": "2018-03-05_11-25-00_11-30-00_school_G420__zone_occupied",
+      "decision_eligible_ts": 30.0,
+      "episode_end_ts": 50.0,
+      "episode_id": "person_loiters-2",
+      "event_start_ts": 30.0
+    }
+  ],
+  "goal_shape": "episode"
+}
