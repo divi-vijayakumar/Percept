@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Fixed
+- **Transition goals no longer miss the rising edge when the in-focus entity changes (P06-002).** An
+  A→B transition goal's arm/fire latch was keyed by the volatile `focus.id`, so the moment the
+  in-focus entity changed between the arming (A) observation and the completing (B) observation the
+  two landed under different keys and the edge was silently dropped. The latch is now keyed by the
+  concern's **declared identity policy**, defaulting to a stable `"scene"` scope — a global
+  workflow-state goal latches globally and fires across a focus flip, while a goal that declares a
+  per-entity track/appearance policy keeps per-entity isolation. Consequently the `entity_id` on the
+  `transition.decision` trace stage (and on the resulting Incident) now reports the **latch key**; the
+  raw in-focus id is preserved in a new additive `focus_entity_id` field, alongside `identity_policy`,
+  `latch_key`, `latch_key_source`, and the `from_`/`to_` confidence+evidence behind the decision.
+- **Transition judge calls are now metered and fail-closed (P06-002).** The transition path's two
+  judge calls (`from`/`to`) went to `adapter.judge` directly, bypassing the `_timed_judge` cost/latency
+  wire and the `_safe_timed_judge` fail-closed boundary. Both calls now route through that boundary, so
+  they record the same `judge.latency`/usage telemetry as the watch path and a timeout/malformed
+  verdict degrades the tick (`judge.degraded`, a new `judge_degraded` outcome on `transition.decision`)
+  instead of crashing the run or phantom-firing. Contract (`CONTRACT_VERSION` 1.10.0) is unchanged —
+  the new trace fields are purely additive observability.
+
 ### Added
 - **`percept-watch --trace PATH` + a `percept-replay` command — ADR-004's normative replay is now
   REACHABLE (card Z5).** `percept.replay.replay_cognition` was good, tested code consuming an

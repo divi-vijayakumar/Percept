@@ -104,12 +104,18 @@ STAGE_JUDGMENT_EVENT = "judgment.event"    # the frozen percept.contracts.Judgme
 #: number) so neither meaning is lost. Purely additive observability — governs nothing.
 STAGE_TRANSITION_DECISION = "transition.decision"  # EVERY tick of an A→B transition goal (fire or not),
 #: so the transition state machine is observable from the .ptrace without the frame. ``data`` carries
-#: ``goal_id``, ``entity_id`` (the focus used, incl. the scene-scoped ``"scene"``), ``from_truth`` /
-#: ``to_truth`` (the classify outputs for this tick), ``armed`` (post-tick ``seen_from`` latch),
-#: ``fired_latch`` (post-tick ``fired`` latch), and ``outcome`` (one of ``fire`` / ``armed`` /
-#: ``rearmed`` / ``suppressed_latched`` / ``idle``). On a firing tick a ``judgment.event`` row rides
-#: alongside it exactly as the judged watch path emits one. Purely additive observability — governs
-#: nothing (the decision already happened in the executor by the time this is emitted).
+#: ``goal_id``, ``entity_id`` (the LATCH key this tick was scoped by — the declared-identity-derived
+#: key, incl. the scene-scoped ``"scene"``; the raw in-focus id is preserved separately in
+#: ``focus_entity_id``), ``from_truth`` / ``to_truth`` (the classify outputs for this tick), ``armed``
+#: (post-tick ``seen_from`` latch), ``fired_latch`` (post-tick ``fired`` latch), and ``outcome`` (one
+#: of ``fire`` / ``armed`` / ``rearmed`` / ``suppressed_latched`` / ``idle`` / ``judge_degraded`` —
+#: the last emitted when a from|to judge failed closed, with ``from_truth``/``to_truth`` ``None`` and
+#: no executor tick). Additive fields: ``identity_policy`` (the concern-declared policy name or
+#: None), ``latch_key``, ``latch_key_source`` (why that key was chosen), ``focus_entity_id`` (what
+#: in_focus said), and ``from_confidence`` / ``to_confidence`` / ``from_evidence`` / ``to_evidence``
+#: (the verdicts behind the decision, so a miss carries its own evidence). On a firing tick a
+#: ``judgment.event`` row rides alongside it exactly as the judged watch path emits one. Purely
+#: additive observability — governs nothing (the decision already happened by the time this is emitted).
 STAGE_EXTRACTOR_ENRICHED = "extractor.enriched"  # a percept.extraction.EvidenceExtractor ran for this
 #: goal and produced an Enrichment (possibly empty) BEFORE the judge call it feeds. Emitted right
 #: before ``judge.started`` when an extractor is configured; absent entirely when none is.

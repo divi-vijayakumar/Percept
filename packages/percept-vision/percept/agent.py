@@ -37,7 +37,7 @@ from .episodes import (
     episode_policy_of,
     subject_is_unknown,
 )
-from .identity_policy import identity_policy_of, select_identity_policy
+from .identity_policy import identity_policy_of, select_identity_policy, transition_latch_key
 from .judge_context import JUDGE_STATIC_CONTEXT_KEY, ReservedContextKeyError
 from .events import AudioWindow, EventLog, FrameWindow
 from .gate import FIRE, Gate, GateAction, classify
@@ -1927,7 +1927,15 @@ class Percept:
         adapter, bound = self._select_judge_adapter(goal)
         roi: Box | None = focus.box if focus else None
         corrections = focus.asserted() if focus else {}
-        entity = focus.id if focus else "scene"
+        # The rising-edge latch is scoped by the concern's DECLARED identity policy, defaulting to the
+        # stable "scene" — NOT the volatile focus.id, which would split the latch (miss the edge) the
+        # moment the in-focus entity changes between the arming (A) and completing (B) observations.
+        # Use the CONCERN-declared policy (identity_policy_of), NOT _resolved_identity_policy /
+        # select_identity_policy: a profile default (e.g. screen_document's content_key) must not
+        # re-scope this latch. transition_latch_key fails toward the stable "scene" for every policy
+        # except a per-entity track/appearance resolver with an entity actually in focus.
+        declared = identity_policy_of(goal)
+        latch_key, latch_key_source = transition_latch_key(declared, focus.id if focus else None)
         # Judge from/to over the SAME resolved temporal strip the watch path uses — not bare single
         # frames. _resolve_strip floors the authored spec by the compiled plan_mode; ``strip`` is None
         # (the degenerate single-frame case) when the plan is 'single' or the window holds no earlier
@@ -1969,9 +1977,10 @@ class Percept:
             judge_kwargs["frames"] = strip
         if judge_context is not None:
             judge_kwargs["context"] = judge_context
-        # Reserve this judgment's evidence_seq at judge-DISPATCH (ADR-001 §8), keyed like the judged
-        # path (goal, focus-or-None), BEFORE the first judge call.
-        evidence_seq = self._admit_evidence((goal.id, focus.id if focus else None))
+        # Reserve this judgment's evidence_seq at judge-DISPATCH (ADR-001 §8), keyed by the SAME stable
+        # (goal, latch_key) the executor, degrade-streak and judgment_event_id use — so evidence-seq,
+        # degrade streak and judgment key are ONE key, BEFORE the first judge call.
+        evidence_seq = self._admit_evidence((goal.id, latch_key))
         # REAL stamps only — no fabrications. ingest/admit are the frame's honest local times; the
         # source timeline ``t`` (when supplied) rides as the untrusted source_media_ts; the judge window
         # brackets BOTH judge calls (the two the transition sense actually spends).
@@ -1980,28 +1989,69 @@ class Percept:
         timing.mark_admitted()
         timing.set_source_media_ts(t)
         timing.mark_judge_started()
-        self.funnel.judged(concern=goal.id, camera=source)  # the 'from' judge call is being spent
-        from_v = await adapter.judge(from_cond, frame, roi=roi, corrections=corrections or None,
-                                     **judge_kwargs)
-        self.funnel.judged(concern=goal.id, camera=source)  # the 'to' judge call is being spent
-        to_v = await adapter.judge(to_cond, frame, roi=roi, corrections=corrections or None,
-                                   **judge_kwargs)
+        # Both judge calls now route through the metered, fail-closed boundary (never adapter.judge
+        # directly), so the transition path records the same judge.latency/usage telemetry as the
+        # watch path AND degrades — never crashes, never phantom-fires — on a timeout/malformed verdict.
+        try:
+            self.funnel.judged(concern=goal.id, camera=source)  # the 'from' judge call is being spent
+            from_v = await self._safe_timed_judge(
+                from_cond, frame, roi=roi, corrections=corrections or None,
+                _adapter=adapter, _binding=bound, **judge_kwargs,
+            )
+            self.funnel.judged(concern=goal.id, camera=source)  # the 'to' judge call is being spent
+            to_v = await self._safe_timed_judge(
+                to_cond, frame, roi=roi, corrections=corrections or None,
+                _adapter=adapter, _binding=bound, **judge_kwargs,
+            )
+        except _JudgeDegraded as degraded:
+            # A failed/malformed from|to judge fails CLOSED exactly like _observe_and_log: apply nothing
+            # this tick — do NOT call the executor, do NOT mutate the latch (a phantom arm/fire off a
+            # garbled response is the false-fire this path must never produce) — and never crash the
+            # watch. The degrade streak is keyed by the SAME (goal, latch_key) the fire path uses.
+            self.metrics.incr("judge.degraded")
+            self._note_judge_degraded((goal.id, latch_key), degraded.cause)  # queues on_health
+            get_logger("percept.agent").warning(
+                "judge.degraded (transition): goal=%r cause=%r — applying nothing this tick "
+                "(fail-closed)", goal.id, degraded.cause,
+            )
+            if tracing:
+                await self._emit_trace(
+                    trace_id, now, STAGE_TRANSITION_DECISION, goal_id=goal.id, entity_id=latch_key,
+                    from_truth=None, to_truth=None, armed=None, fired_latch=None,
+                    outcome="judge_degraded",
+                    strip_len=(len(strip) if strip else 0), enriched=enriched,
+                    identity_policy=declared, latch_key=latch_key, latch_key_source=latch_key_source,
+                    focus_entity_id=focus.id if focus else None,
+                    from_confidence=None, to_confidence=None, from_evidence=None, to_evidence=None,
+                )
+            return None
         timing.mark_judge_completed()
+        self._note_judge_ok((goal.id, latch_key))  # a well-formed from+to resets this key's degrade streak
         if stale is not None and stale():
             return None  # goals changed while the from/to judges were in flight — apply nothing
         # Perception (judging from/to) stays here; the seen_from/fired state machine + firing live in
         # the executor, with that state ISOLATED in its per-concern context (never the gate). The
         # executor hands back the tick facts so this method never reaches into that ctx.
         tick = self.executor.transition_decide(
-            goal, from_v, to_v, focus_id=entity, timing=timing, evidence_seq=evidence_seq,
+            goal, from_v, to_v, focus_id=latch_key, timing=timing, evidence_seq=evidence_seq,
         )
         if tracing:
             await self._emit_trace(
-                trace_id, now, STAGE_TRANSITION_DECISION, goal_id=goal.id, entity_id=entity,
+                trace_id, now, STAGE_TRANSITION_DECISION, goal_id=goal.id, entity_id=latch_key,
                 from_truth=tick.from_truth, to_truth=tick.to_truth, armed=tick.armed,
                 fired_latch=tick.fired_latch, outcome=tick.outcome,
                 # So a miss is diagnosable as single-frame-vs-strip and with/without extractor facts.
                 strip_len=(len(strip) if strip else 0), enriched=enriched,
+                # Additive fields: entity_id now reports the LATCH key, so focus_entity_id
+                # preserves what in_focus said; identity_policy/latch_key_source make the scoping
+                # decision auditable; the from/to confidence+evidence close the dropped-evidence-on-miss
+                # gap (a miss no longer discards the verdicts that explain it).
+                identity_policy=declared, latch_key=latch_key, latch_key_source=latch_key_source,
+                focus_entity_id=focus.id if focus else None,
+                from_confidence=getattr(from_v, "confidence", None),
+                to_confidence=getattr(to_v, "confidence", None),
+                from_evidence=getattr(from_v, "evidence", None),
+                to_evidence=getattr(to_v, "evidence", None),
             )
         fired = tick.fired
         if fired is None:
@@ -2020,8 +2070,8 @@ class Percept:
         if tracing and ev.judgment is not None:
             await self._emit_trace(
                 trace_id, now, STAGE_JUDGMENT_EVENT, goal_id=goal.id,
-                action=ev.judgment.action, dispatch_seq=ev.judgment.evidence_seq, entity_id=entity,
-                judgment_event_id=judgment_event_id(goal.id, entity, ev.judgment.evidence_seq),
+                action=ev.judgment.action, dispatch_seq=ev.judgment.evidence_seq, entity_id=latch_key,
+                judgment_event_id=judgment_event_id(goal.id, latch_key, ev.judgment.evidence_seq),
                 evidence_origin=ev.judgment.evidence_origin or "transition",
             )
         return ev

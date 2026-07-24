@@ -29,11 +29,19 @@ re-checks the envelope: :func:`select_identity_policy` refuses to hand back a po
 a person-identifying resolver — the same refusal :meth:`SubjectResolverRegistry.register` already
 makes at registration time, re-applied at SELECTION time so a resolver that reached the registry by
 some other door still cannot be switched on by naming it in a profile default.
+
+Recognized no-subject scope (ADR-005 vocabulary)
+------------------------------------------------------------------------------
+
+``"scene"`` (:data:`SCENE_IDENTITY`) is the recognized name for the *global workflow-state* scope the
+module preamble anticipates — "NO subject at all". It is a scope value, NOT a SubjectResolver (it is
+deliberately never registered), and it is the stable value transition goals latch against when no
+per-entity resolver applies (see :func:`transition_latch_key`).
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Hashable
 
 from .envelope import (
     DEFAULT_SUBJECT_RESOLVERS,
@@ -47,6 +55,56 @@ from .sourceprofile import SourceProfile
 #: state channel ``episode_policy_of`` / ``sense`` / ``perception`` already use. Absent (or blank /
 #: non-string) means "declared nothing" and the source-profile default is inherited.
 STATE_KEY = "identity_policy"
+
+#: The recognized "no subject at all" scope (ADR-005) — a global workflow-state scope, NOT a
+#: SubjectResolver (deliberately never registered). It is the stable value transition goals latch
+#: against when no per-entity resolver applies.
+SCENE_IDENTITY = "scene"
+
+#: The shipped resolver names that scope to a per-entity handle (a scene-local OBJECT track). Only
+#: these re-scope a transition latch to the in-focus entity; every other declared policy
+#: (``content_key``, ``speaker_label``, an unknown name) latches on the stable scene scope, so a
+#: volatile per-tick focus never splits the latch. Mirrors the shipped
+#: :data:`~percept.envelope.DEFAULT_SUBJECT_RESOLVERS` object resolvers.
+PER_ENTITY_IDENTITY_POLICIES: frozenset[str] = frozenset(
+    {"track_iou_label", "appearance_recent_set"}
+)
+
+
+def transition_latch_key(
+    declared_policy: str | None, focus_id: Hashable
+) -> tuple[Hashable, str]:
+    """The stable key a transition goal's rising-edge latch is scoped by, plus its provenance.
+
+    A transition goal arms on state A and fires on a later state B; the two observations must latch
+    against the SAME key or the edge is missed. Keying by the volatile in-focus ``focus.id`` splits
+    that latch the moment the in-focus entity changes between arming and completing. So the latch is
+    scoped by the concern's DECLARED identity policy, and the contract is **fail-toward-stable**: when
+    no per-entity resolver was declared (or a per-entity resolver was declared but nothing is in
+    focus), the key falls back to the literal stable :data:`SCENE_IDENTITY` (never a per-tick value),
+    so a scene / workflow-state goal latches globally and fires across a focus flip.
+
+    Returns ``(latch_key, latch_key_source)``. The mapping (consulting ONLY ``declared_policy``):
+
+    * ``None`` -> ``("scene", "default_scene")`` — nothing declared, global scene scope.
+    * ``"scene"`` / :data:`SCENE_IDENTITY` -> ``("scene", "declared")`` — explicit scene scope.
+    * a per-entity policy (:data:`PER_ENTITY_IDENTITY_POLICIES`) WITH ``focus_id`` present ->
+      ``(focus_id, "declared")`` — per-entity isolation holds.
+    * a per-entity policy with ``focus_id`` ``None`` -> ``("scene", "fallback_scene")``.
+    * anything else (``content_key``, ``speaker_label``, an unknown name) ->
+      ``("scene", "fallback_scene")``.
+
+    The fallback is ALWAYS the literal ``"scene"``, never a per-tick value.
+    """
+    if declared_policy is None:
+        return SCENE_IDENTITY, "default_scene"
+    if declared_policy == SCENE_IDENTITY:
+        return SCENE_IDENTITY, "declared"
+    if declared_policy in PER_ENTITY_IDENTITY_POLICIES:
+        if focus_id is not None:
+            return focus_id, "declared"
+        return SCENE_IDENTITY, "fallback_scene"
+    return SCENE_IDENTITY, "fallback_scene"
 
 
 def identity_policy_of(goal: Any) -> str | None:
@@ -115,6 +173,9 @@ def select_identity_policy(
 
 __all__ = [
     "STATE_KEY",
+    "SCENE_IDENTITY",
+    "PER_ENTITY_IDENTITY_POLICIES",
+    "transition_latch_key",
     "identity_policy_of",
     "select_identity_policy",
 ]
