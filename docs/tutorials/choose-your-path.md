@@ -12,8 +12,13 @@ until you need it.
 | Drive a live watch (arm/ask/pause by voice or code) | [Command seam](../reference/command-seam.md) — `RuntimeSession` | `[runtime]` + a backend | — |
 | Watch my screen | [Screenshare how-to](../how-to/screenshare.md) | `[runtime]` (+ `[screen]`) | camera/benchmark internals |
 | Use a real VLM | [Backends reference](../reference/backends.md) | `[gemini]` or `[claude]` | harness internals |
+| Write my own judge / vision backend | [Custom judge & backend how-to](../how-to/custom-judge.md) | your backend | harness internals |
+| Author a profile for my use case | [Custom configuration how-to](../how-to/custom-configuration.md) | `pip install percept-vision` | edge, harness |
+| Tune the eye for my content | [Tuning admission how-to](../how-to/tune-admission.md) | `pip install percept-vision` | edge, harness |
+| Configure env vars / thresholds | [Configuration reference](../configuration.md) | core | — |
 | Run on-device edge gating | [Edge parity reference](../reference/edge-parity.md) | `npm install percept-edge` | process-QA, benchmark methodology |
-| Evaluate my own concerns | [Eval how-to](../how-to/eval.md) | `[bench]` | runtime internals |
+| Evaluate / optimize / benchmark | [Eval](../how-to/eval.md) · [Optimize](../how-to/optimize.md) · [Benchmarks](../how-to/benchmarks.md) | `[bench]` | runtime internals |
+| Look up a CLI command | [Command-line reference](../reference/cli.md) | core | — |
 
 ## You probably don't need this yet
 

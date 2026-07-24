@@ -4,6 +4,20 @@ Percept ships the eval harness it uses on itself, so you can measure the only nu
 for a proactive agent on **your** concerns: does it fire when it should, stay silent when it
 shouldn't, and **refuse to guess** when it isn't sure?
 
+## Which tool?
+
+Three distinct CLIs cover three distinct questions. Pick by what you are trying to learn:
+
+| tool | question it answers | input | output / verdict |
+|---|---|---|---|
+| `percept-bench` | per-concern **precision / recall** for one configuration | a labelled-clip **manifest** (one JSON file) | a P/R report; offline, deterministic `fake` backend. **The rest of this page.** |
+| `percept-eval` | did the **candidate** beat the **baseline**? (paired A/B) | two **plans** + a **fixtures directory** + pre-registered **bars** | exit `0` pass / `1` a bar failed / `2` refused. See [Differential A/B](#differential-ab-percept-eval). |
+| `percept-optimize` | which **safe tunables** to pick | a search space over declared-safe tunables | an `OptimizationLock`. See [optimize.md](./optimize.md). |
+
+`percept-bench` scores **one** config against ground truth. `percept-eval` scores **two** configs
+against each other on the same fixtures, and only pronounces pass/fail against bars you declared
+*before* looking. `percept-optimize` searches the tunable space and hands you a lock, not a metric.
+
 This page covers the **consumer-facing** path — a per-concern precision / recall report from a
 manifest of labelled clips, runnable **fully offline** (the deterministic `fake` backend, no keys).
 The SDK's own internal gate (`eval.run`, asserting `false_fire == 0` on a held-out golden split) is
@@ -256,3 +270,61 @@ percept-bench scorecard --mode full --require-release \
 
 `--require-release` writes the card, then exits non-zero unless the rendered stamp is `RELEASE`
 (`mode=full`, pinned manifest, and no modeled cells).
+
+---
+
+## Differential A/B (`percept-eval`)
+
+`percept-bench` measures **one** configuration. `percept-eval` answers a different question: **did a
+change help?** It runs two **plans** — a `baseline` and a `candidate` — *paired* over the same fixtures,
+so the difference is attributable to the one thing you changed, and pronounces PASS/FAIL only against
+**bars you declared before scoring**.
+
+```bash
+percept-eval --baseline base.yaml \
+             --candidate cand.yaml \
+             --fixtures ./fixtures \
+             --bars bars.yaml \
+             --split test \
+             --json report.json
+```
+
+- **`--baseline` / `--candidate`** *(required)* — the two plan files (`.yaml`/`.json`).
+- **`--fixtures`** *(required)* — the fixtures root (layout below).
+- **`--bars`** — the **client-supplied** bars file. Omit it and `percept-eval` reports the numbers
+  *without* pronouncing a verdict — Percept never sets a threshold on your behalf. A bar you set after
+  seeing the result is not a bar.
+- **`--split`** — which split to score; `test` (default) is the held-out one. Tune against it and you
+  have measured nothing.
+- **`--json`** — write the full paired report as JSON.
+- **`--frontier`** — also emit the **operating-frontier report**: exact one-sided 95% bounds on FIRE
+  recall and false FIREs per scheduled watch-hour, ASK rate, coverage, and duplicate FIREs per episode.
+  See [operating-frontier.md](../reference/operating-frontier.md).
+
+Exit codes: **`0`** pass (or reported, when no bars) / **`1`** a bar failed / **`2`** refused (bad input,
+a missing/broken split, or a configuration that drifted after the bars were declared).
+
+### The fixtures directory
+
+`percept-eval`, `percept-derive-profile`, and `percept-optimize` all read the same fixtures layout —
+predictions and ground truth on disk, not a live backend:
+
+```
+fixtures/
+  splits.json                 # optional; "test" is the held-out split
+  <fixture_id>/
+    ground_truth.json         # goal_shape + labeled episodes
+    <arm>/events.json         # the arm's predicted JudgmentEvents
+    <arm>/trace.json          # the arm's TraceSummary artifact (optional)
+```
+
+`<arm>` is `baseline` / `candidate` for a differential A/B; for a `percept-derive-profile` ladder it is
+each rung/template name instead (see [derive-a-profile.md](./derive-a-profile.md)). Everything but
+`ground_truth.json` is optional — an arm with no `trace.json` is scored on events alone and simply
+excluded from the funnel comparison.
+
+Scope honesty carries over: a fixture declares a `goal_shape`, and shapes the one-to-one event matcher
+cannot honestly validate are **reported but never scored** into a delta or a bar.
+
+> Still no published Percept accuracy numbers. `percept-eval` is the tool you point at **your** fixtures
+> with **your** bars; the SDK ships the harness, not a benchmarked claim.

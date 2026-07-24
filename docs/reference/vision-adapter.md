@@ -10,9 +10,9 @@ This page is the contract. The *executable* version of this page is
 
 | artefact | version | what it versions |
 |---|---|---|
-| `percept.contracts.CONTRACT_VERSION` | `1.3.0` | the DTO wire shapes (`Verdict`, `Observation`, `Box`, …) |
-| `percept.watch.WATCH_VERSION` | `1.0.0` | the `watch()` entrypoint signature + streaming semantics |
-| `percept.conformance.CONFORMANCE_VERSION` | `1.0.0` | the set of conformance checks and their severities |
+| `percept.contracts.CONTRACT_VERSION` | `1.10.0` | the DTO wire shapes (`Verdict`, `Observation`, `Box`, …) |
+| `percept.watch.WATCH_VERSION` | `1.1.0` | the `watch()` entrypoint signature + streaming semantics |
+| `percept.conformance.CONFORMANCE_VERSION` | `1.1.0` | the set of conformance checks and their severities |
 
 ---
 
@@ -152,6 +152,10 @@ per-plugin errors), so an adapter that raises at import time simply *does not ap
 python -m percept.conformance myvlm.vision:MyVision          # exits 0 when conformant, 1 when not
 python -m percept.conformance --static myvlm.vision:MyVision # shape only, no calls, no key needed
 ```
+
+The CLI `--role` selects which suite to run; it now accepts `{vision, detector, structural, semantic}`
+(`vision` is the default, documented here — the other three check admission detectors and the tier-0
+`structural_adapter` / `semantic_adapter` channels). The pass/fail rule is role-independent.
 
 In your own test suite:
 

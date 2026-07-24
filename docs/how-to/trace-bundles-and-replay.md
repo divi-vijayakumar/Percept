@@ -7,8 +7,9 @@ Two things people mean by "replay". Percept ships one of them, and says so.
 | **Cognition replay** | recorded normalized verdicts + timestamps fed back through the Gate and the incident logic | **yes** — same trace in, byte-identical decisions out | `percept.replay` (this page) |
 | **Media reevaluation** | recorded media sent to live model calls again | **no** — sampling, model drift, provider changes | `percept eval` |
 
-A trace that holds only a media URI and needs a mutable cloud model does **not** "replay the run".
-See `docs/adr/ADR-004-delivery-flow-replay.md` §2 for the normative definition.
+A trace that holds only a media URI and needs a mutable cloud model does **not** "replay the run" —
+the normative definition of deterministic cognition replay lives in the `percept.replay` module
+docstring (the design rationale is ADR-004).
 
 ## Record a run so it can be replayed
 

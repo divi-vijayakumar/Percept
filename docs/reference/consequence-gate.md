@@ -44,8 +44,8 @@ Two opt-in guards sit on top, both **off by default**:
   something you asked to be told about.)
 - **`refractory_s`** — a fire landing within N seconds of the *same key's* last real fire is
   withheld, even if a spurious confident-false blip re-armed the edge in between. This is the fix for
-  mid-episode judge jitter: ~12% of false fires on the H0 charades-e2e track were re-fires of one
-  true episode. A genuine second episode still fires once the window has elapsed.
+  mid-episode judge jitter, where a meaningful share of false fires are re-fires of one true episode
+  after a momentary flip. A genuine second episode still fires once the window has elapsed.
 
 Both are `GateSettings` fields (`PERCEPT_GATE_REQUIRE_FALSE_FIRST`, `PERCEPT_GATE_REFRACTORY_S`) and
 both are `WatchProfile.gate` knobs, so a profile can turn them on per deployment context without any

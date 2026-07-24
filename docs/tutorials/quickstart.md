@@ -7,6 +7,8 @@ once, on the rising edge** of a condition becoming true — and **refuses to gue
 This page gets you from `pip install` to a firing event in about 60 seconds — first fully offline
 (no keys), then against a real vision backend.
 
+Home: <https://percept.percia.ai>.
+
 ---
 
 ## Install
@@ -141,7 +143,8 @@ never pixels.
 > `percept.run` owns capture, gating, and incident emission.
 
 You can also select backends per-seam via env vars without touching code
-(`PERCEPT_VISION_BACKEND=gemini`, etc.) — see [backends.md](../reference/backends.md).
+(`PERCEPT_VISION_BACKEND=gemini`, etc.) — see [backends.md](../reference/backends.md). Every tunable
+env var (backends, gate thresholds, salience) is listed in [configuration.md](../configuration.md).
 
 ---
 
@@ -193,5 +196,7 @@ To **drive** a running watch — arm goals by voice, ask "what do you see?", pau
 - **[concepts.md](../explanation/concepts.md)** — the three-state gate, rising-edge firing, BehaviorProgram vs
   PerceptionSpec, edge detectors, and the escalation ladder.
 - **[backends.md](../reference/backends.md)** — install extras, keys, env-var selection, and swapping backends.
+- **[configuration.md](../configuration.md)** — every `PERCEPT_*` env var you can tune, in one place.
 - **[e2e-flow-milk-boilover.md](../explanation/e2e-flow-milk-boilover.md)** — a full trace of one request through
   the whole system, and where the perception bottleneck lives.
+- **Website:** <https://percept.percia.ai>.

@@ -1,19 +1,20 @@
-# Scope and persistence for contract v1.4
+# Scope and persistence (percept 1.0.0)
 
-**Read this before you design around percept.** It states, plainly, what v1.4 covers, what it
+**Read this before you design around percept.** It states, plainly, what percept 1.0.0 covers, what it
 explicitly does not cover, and what happens to state when the process restarts. Everything here is a
 **decision already taken**, not a roadmap. It describes no new behaviour — it bounds how the shipped
-behaviour may be read.
+behaviour may be read. (The wire contract at this release is `CONTRACT_VERSION = "1.10.0"`; the scope
+below is a product decision, independent of that number.)
 
-Normative source: [ADR-006 §Consequences → "Founder scope decisions taken for contract
-v1.4"](../adr/ADR-006-incident-relations.md). Mirrored in the module docstrings of
-`percept/sourceprofile.py` and `percept/episodes.py`.
+Normative source: the scope decisions recorded in ADR-006, mirrored in the module docstrings of
+`percept/sourceprofile.py`, `percept/episodes.py`, and `percept/incidents.py` (the public code is the
+source of truth).
 
 ---
 
 ## 1. Scope is narrow
 
-v1.4 handles exactly two subject kinds:
+percept 1.0.0 handles exactly two subject kinds:
 
 | Subject kind | What identifies it | What you supply |
 | --- | --- | --- |
@@ -35,8 +36,8 @@ Percept does not ship these and does not partially ship them.
 `SourceProfile.identity_strategy` is free text over an open registry, so a future resolution scheme
 is added by *registering* one rather than by editing percept
 ([registration](registration.md), [derive a profile](../how-to/derive-a-profile.md)). That openness
-is a seam for you to extend — it is **not** a claim that v1.4 generalises. v1.4 does not generalise
-ahead of evidence.
+is a seam for you to extend — it is **not** a claim that percept generalises. percept does not
+generalise ahead of evidence.
 
 ---
 
@@ -54,9 +55,10 @@ What that means concretely:
 - `EpisodeLog`'s `window_s` / `max_episodes` bounds are a **memory** story (a long-running process
   does not grow without limit). They are **not** a durability story.
 
-**This blocks any 24/7 viability claim** until a later phase gives episodes a persisted
-representation. If your deployment plan assumes continuous multi-day counting across redeploys,
-percept v1.4 does not support it, and it will fail quietly — as under-counting, not as an error.
+**This blocks any 24/7 continuous-operation guarantee** until a later release gives episodes a
+persisted representation. If your deployment plan assumes continuous multi-day counting across
+redeploys, percept 1.0.0 does not support it, and it will fail quietly — as under-counting, not as an
+error.
 
 ### `scope='durable'` means identifier stability, never restart-safety
 
@@ -83,6 +85,6 @@ Any delay is **concern-specific** and **bounded by a declared latency SLO** (`pe
 never a global default applied to every finding.
 
 Consumer consequence: treat a finding as provisional until superseded, and resolve currency by the
-supersede link rather than by "latest timestamp wins", which the runtime has never promised. See
-[ADR-006 §3](../adr/ADR-006-incident-relations.md) for why an unlinked correction is treated as a
-defect class rather than as partial credit.
+supersede link rather than by "latest timestamp wins", which the runtime has never promised. The
+incident-relations design (ADR-006) is why an unlinked correction is treated as a defect class rather
+than as partial credit; the behaviour lives in `percept/incidents.py`.

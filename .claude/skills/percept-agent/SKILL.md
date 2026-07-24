@@ -14,6 +14,8 @@ Percept is the OSS **cognition layer** for goal-driven, proactive vision agents.
 plain language ("tell me when the kettle boils") and Percept turns a stream of per-frame perception
 verdicts into an agent that **fires once on the rising edge** and **refuses to guess** when unsure.
 
+Percept is **v1.0.0** — `pip install percept-vision`, `import percept`. Home: <https://percept.percia.ai>.
+
 Use this skill when the user wants a "watch X / notify me when Y" perception agent. Scaffold from the
 template in this directory, then adapt.
 
@@ -36,15 +38,16 @@ Other judges (swap `vision=`): `pip install "percept-vision[gemini]"` (`GEMINI_A
 `"percept-vision[claude]"` (`ANTHROPIC_API_KEY`). Core install is pure-stdlib and runs offline on the FAKE
 backend (no keys) for tests. The package is `percept-vision`; the import is `import percept`. Python >= 3.10.
 
-> **Winning defaults (H0-validated) — set these for a real watch:**
+> **Recommended defaults for a real watch:**
 > ```bash
 > export PERCEPT_SALIENCE_STAT=block_max     # localized motion — catches low-motion actions (holding, sitting)
 > export PERCEPT_GATE_REFRACTORY_S=15        # one notification per episode (suppress duplicate fires)
 > export PERCEPT_EGO_COMPENSATE=true         # MOVING camera only (glasses/body-cam): subtract head motion
 > ```
-> On a **fixed** camera use `block_max` + refractory. On **glasses/body-cam**, also set `ego_compensate`
-> (measured: without it a moving camera escalates ~98% of frames; with it, ~30%). Full guide:
-> `docs/integration.md`.
+> On a **fixed** camera use `block_max` + refractory. On **glasses/body-cam**, also set `ego_compensate`:
+> a moving camera otherwise escalates on nearly every frame, and ego-compensation subtracts the head
+> motion so only real scene changes reach the judge. Full guide: `docs/integration.md`. Every tunable env
+> var is listed in `docs/configuration.md`.
 
 ## 2. The real watch agent — `percept.run` owns the capture loop
 
@@ -181,5 +184,12 @@ Verified output of the offline template (no keys):
   omit it to use the real clock.
 - Don't lead with surveillance demos — Percept is assistant-class (informs a consenting user who stays
   responsible), never a safety mechanism on a clock it can't guarantee. See the repo README "envelope".
-- More: `docs/quickstart.md`, `docs/concepts.md` (gate, rising edge, escalation ladder),
-  `docs/backends.md` (extras, keys, env-var selection).
+- More docs:
+  - `docs/tutorials/quickstart.md` — pip-install to a firing event, offline then real backend.
+  - `docs/explanation/concepts.md` — gate, rising edge, escalation ladder.
+  - `docs/reference/backends.md` — extras, keys, env-var backend selection.
+  - `docs/configuration.md` — every `PERCEPT_*` env var / threshold; `docs/how-to/custom-configuration.md` — author a profile.
+  - `docs/how-to/custom-judge.md` — bring your own vision backend or a specialist judge (with the conformance suite).
+  - `docs/how-to/tune-admission.md` — tune the eye for your content; `docs/how-to/optimize.md` — search safe tunables.
+  - `docs/how-to/eval.md` · `docs/how-to/benchmarks.md` — evaluate + benchmark on your data.
+  - `docs/reference/cli.md` — all nine `percept-*` commands; `docs/integration.md` — the full runtime integration guide.

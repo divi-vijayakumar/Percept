@@ -29,8 +29,8 @@ python3 -m build
 
 ## 3. Artifact **content** — the leak class a file manifest cannot catch
 
-> **Learned the hard way in 0.7.0.** The 0.7.0 audit checked the sdist *file list*, found it clean
-> (276 files, no keys, no datasets), and passed. It was looking for files that shouldn't ship. The
+> **Learned the hard way on a pre-1.0 release.** That audit checked the sdist *file list*, found it
+> clean (276 files, no keys, no datasets), and passed. It was looking for files that shouldn't ship. The
 > actual leak was inside files that **should** ship: commercial-strategy language written into source
 > docstrings — "the raw material of the **moat**", "so the **paid side** can price escalations",
 > "`good: bool` … (False -> **billing credit on the paid side**)". A file-manifest check is
@@ -55,7 +55,9 @@ python3 -m build
       ```bash
       grep -rInE '(Viability §|spec §|impl plan §|PCPT-[0-9]+|board card|direction doc)' /tmp/rc
       ```
-- [ ] Any `ADR-NNN` cited in shipped source exists in [`docs/adr/`](../adr/).
+- [ ] The ADR set is internal (`internal-docs/adr/`, gitignored), so any `ADR-NNN` cited in shipped
+      source or docs is **self-describing prose** (name + rationale) or points to public code — never a
+      link to a non-public `docs/adr/` path.
 - [ ] Generated schemas regenerate clean and match the source:
       ```bash
       python3 -m percept.contracts.jsonschema && git diff --exit-code -- percept/contracts/schema
@@ -89,5 +91,5 @@ python3 -m build
 ## 7. Publish
 
 - [ ] Version bumped in `pyproject.toml` and `CHANGELOG.md` entry written.
-- [ ] Tag the release commit — 0.7.0 shipped untagged, so there is no commit that reproduces it.
+- [ ] Tag the release commit — a prior release shipped untagged, so there was no commit that reproduced it.
 - [ ] `python3 -m twine upload dist/*`.

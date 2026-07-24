@@ -117,3 +117,14 @@ Fixtures declare a `goal_shape`, and shapes the one-to-one event matcher cannot 
 (supersession, correction, settled interval, speaker-attributed claim, document identity change —
 ADR-006) are **reported but never scored**, and never folded into a delta or a bar. If your
 held-out split contains only unsupported shapes, the job says so and declares nothing.
+
+## See also
+
+`percept-derive-profile` and [`percept-optimize`](./optimize.md) are **siblings**: this command picks
+the winning rung of a **ladder you authored** and emits a content-addressed `WatchProfile`;
+`percept-optimize` *searches* a typed space of declared-safe tunables and emits an `OptimizationLock`.
+Both refuse to declare a winner without pre-registered bars and a held-out split.
+
+- [`optimize.md`](./optimize.md) — tune safe tunables → `OptimizationLock`.
+- [`eval.md`](./eval.md) — the paired A/B (`percept-eval`) that shares this fixtures-directory layout,
+  and the wider benchmark harness.

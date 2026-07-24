@@ -85,8 +85,8 @@ window); the names were kept apart deliberately to avoid collision.
   itself (the function signature + streaming semantics). Bump MAJOR on a breaking signature/streaming
   change, MINOR for an additive optional kwarg, PATCH otherwise.
 - **`percept.CONTRACT_VERSION`** — semver of the DTO wire shapes `watch()` returns (`WatchEvent` and
-  friends). `WatchEvent` shipped in `1.3.0`. Same-MAJOR is wire-compatible (see
-  `percept.contracts.negotiate`).
+  friends). It is `1.10.0` at this release (`WATCH_VERSION` is `1.1.0`), and the two version
+  independently. Same-MAJOR is wire-compatible (see `percept.contracts.negotiate`).
 
 These are independent: a `watch()` behavior change (new kwarg) bumps `WATCH_VERSION`; a new/changed
 DTO field bumps `CONTRACT_VERSION`. Most changes bump at most one.

@@ -52,6 +52,73 @@ async for incident in percept.run(
     print(incident.message)
 ```
 
+## Custom run — build your own core, then drive it
+
+The convenience form is a shortcut over the explicit path: build a **core** yourself, then hand it to
+`run()` as the **first positional** (`run(core, source=...)`). Reach for the custom path when you need
+more control than `goals=`/`vision=` give you — pick each seam, arm goals with per-goal `state`, inject
+an adapter instance, or set the gate/model ids explicitly.
+
+Two ways to build the core:
+
+- **`Percept.create(...)`** — the direct constructor. Select backends by **name** (`vision="gemini"`,
+  `conductor="claude"`, …) or pass an **adapter instance**; keyless offline is `mode="offline"`.
+- **`Percept.configure(...)`** — the same constructor behind the configuration boundary (source
+  profile, domain pack, execution policy, optimization lock). Every kwarg it doesn't consume
+  (`vision=`, `mode=`, …) passes straight through to `create`. Use it when a `SourceProfile` or an
+  `OptimizationLock` shapes the run; otherwise `create` is enough.
+
+```python
+from percept import Percept, Goal
+from percept.runtime import run
+
+core = Percept.create(vision="gemini", conductor="claude")     # keyless? mode="offline"
+core.add_goal(Goal(
+    id="zone",
+    condition="a person is in the restricted zone",
+    say="Alert: person in zone",
+    state={"salience_stat": "block_max"},                      # per-goal tuning the plain form can't set
+))
+
+async for incident in run(
+    core,                        # the pre-built core is the first positional
+    source="rtsp://door-cam/stream",
+    on_incident=notify,          # each rising-edge fire
+    on_ask=log_refusal,          # low-confidence refusals (asks, not incidents)
+    on_frame=mjpeg_streamer,     # the live feed — wire an MJPEG streamer here
+    on_trace=trace_sink,         # the per-frame decision trace (why a frame stayed silent)
+):
+    ...
+```
+
+Pass a built core **or** the coreless `goals=`/`vision=` — never both. Supplying `goals=`/`vision=`
+*together with* a core raises `ValueError` rather than silently discarding them.
+
+**Custom sinks.** `on_incident`, `on_ask`, `on_frame`, `on_trace` and `on_health` are plain callables,
+so any function (or async function) is a sink. The built-in `webhook(...)` sink below is just one
+`on_incident` implementation; write your own for SMS, Slack, a queue, or a datastore. `sink_errors`
+controls whether a throwing sink takes the run down (`"raise"`, the default) or is swallowed
+(`"ignore"`).
+
+**Drive it live — the command seam.** A headless `async for incident in run(...)` only *reads* the
+world. To also *command* a running watch — arm a goal by voice, ask "what do you see?" grounded on the
+current frame, pause or mute — wrap it in a `RuntimeSession` via `percept.runtime.start`:
+
+```python
+from percept.runtime import start
+
+session = await start(core, source="webcam:0", on_incident=notify)
+
+await session.arm(Goal(id="dog", condition="my dog is on the couch", say="off the couch!"))
+answer = await session.ask("what do you see?")   # grounded on the latest frame
+session.pause(); session.resume()                # stop/resume judging
+session.mute();  session.unmute()                # judge, but suppress alerts
+```
+
+`start` wraps `run(core, source=..., regate_on_goal_change=True, ...)` in a background task; the
+headless `run()` stays the front door. The full interface — voice arming, barge-in, deafen-during-
+playback — is in [command-seam.md](../reference/command-seam.md).
+
 ### `run(...)` parameters
 
 **Source & core**
@@ -80,7 +147,7 @@ async for incident in percept.run(
 - `gate_source` — an alternate cheap-gate frame source (decoupled from the judge frame).
 - `episode_inactivity_s` — idle gap that closes an episode.
 - `coverage_staleness_s` — how long without an observation before a coverage-loss ("I can't see the stove") fires.
-- `regate_on_goal_change` — re-run the tier-0 gate when goals are armed/disarmed at runtime (default off).
+- `regate_on_goal_change` — re-run the tier-0 gate when goals are armed/disarmed at runtime (default on).
 
 **Audio (fused listen)**
 - `audio_source` — a mic/audio URI (`"mic:0"`) that fills the audio window for `modality="fused"` goals. Extra: `[mic]`.
@@ -92,6 +159,10 @@ async for incident in percept.run(
 
 **Runtime control & durability**
 - `paused` / `muted` — start paused (no judging) or muted (judge, but suppress alerts).
+- `judge_dispatch` — how an admitted frame's cloud judgment is driven. `"async"` (default) hands it to
+  a single-flight scheduler so one slow VLM turn never stalls capture or the gate; `"inline"` awaits the
+  judge at the admit site (the historical loop, kept as an escape hatch). `incident.ts` stays the
+  admission time either way.
 - `clock` — inject a clock (tests / deterministic replay).
 - `persistence` / `restore` / `autosave_every_s` — persist cognition state to a store, restore it on start, and autosave every N seconds so a restart doesn't lose the gate/entity state.
 

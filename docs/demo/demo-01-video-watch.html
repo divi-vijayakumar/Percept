@@ -472,7 +472,7 @@ confidence: —</pre>
   fetch('/').then(r=>r.text()).then(t=>{
     const m=t.match(/judge key: ([^<]+)/); const key=m?m[1].trim():'unknown';
     $('#judgeMeta').textContent = 'judge: '+key;
-    $('#hostMeta').textContent = 'localhost harness · watch v1.0.0 · contract v1.6.0';
+    $('#hostMeta').textContent = 'localhost harness · watch v1.1.0 · contract v1.10.0';
   }).catch(()=>{ $('#judgeMeta').textContent='judge: harness offline — start docs/demo/serve.py';
     $('#hostMeta').textContent='runtime unreachable'; });
 

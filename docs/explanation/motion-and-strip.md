@@ -1,58 +1,102 @@
-# How the gate works: motion (t0 vs t1), the strip, and cadence
+# Motion score and the temporal strip
 
-Three separate decisions drive *when* and *how* the brain looks. Keeping them distinct is the whole game.
+The tier-0 wake layer answers one cheap question per frame — *is anything worth a closer look?* — so the
+brain spends a paid model call only when something plausibly changed. Three decisions are involved, and
+keeping them distinct is the whole game: **how** motion is measured, **whether** the camera itself is
+moving, and **how much history** the model sees once it does look. This page explains each conceptually;
+for the exact env vars and thresholds see [Configuration](../configuration.md) and
+[Edge policy](../reference/edge-policy.md).
 
-## 1. The motion score — `t0` vs `t1`
-The tier-0 gate is **mean absolute pixel difference**, normalized to 0–1 (no model, deterministic):
+## The motion score
 
-```
-motion = Σ |t1[i] − t0[i]|  /  (n_pixels × 255)
-```
+The tier-0 gate diffs each frame against the previous one and summarizes the difference into a single
+`0..1` motion score. It is pure, deterministic, and model-free. The score is compared against a cutoff:
+below it the goal coasts and spends nothing; above it the frame escalates toward perception.
 
-On a 2×2 luma patch (real frames downsample to ~48×36 — same math):
+*How* the frame-diff is summarized is the key choice — the `salience_stat` field, resolved over an 8×6
+block grid:
 
-| case | t0 → t1 | motion | decision |
-|---|---|---|---|
-| **identical** (still scene) | `[100,100,100,100]` → `[100,100,100,100]` | **0.00** | skip — no cloud call |
-| **big change** (someone walked in) | `[0,0,0,0]` → `[255,255,255,255]` | **1.00** | escalate |
-| **partial** (something moved in part) | `…` → one region jumps | ~**0.15** | threshold decides |
-| **subtle** (slow slump, a screen scroll) | `[100,…]` → `[105,…]` | ~**0.005** | skip ← the recall trap |
+| statistic | what it summarizes | catches |
+|---|---|---|
+| `mean` (default) | the average difference across the whole frame | large, whole-frame change — someone walks in, the scene shifts |
+| `block_max` | the single most-changed block | a *localized* action — a coffee sip, a shelf grab, one error line on a large screen |
+| `p95` | the 95th-percentile block | localized change, but more robust to a lone noisy block than `block_max` |
 
-Identical frames cancel to 0; any real change accumulates; **the threshold is the dial** between
-"worth a cloud call" and "still". The subtle case is why low-pixel-motion events get silently skipped —
-see §3.
+The whole-frame **mean averages a small action away**: a hand moving in one corner barely moves the
+average of a mostly-still frame, so the mean-based gate skips it. A **localized** statistic keeps the
+signal where it is strong instead of diluting it across the frame, so a small or low-motion event can
+still clear the bar. `salience_stat` defaults to `"mean"` (env `PERCEPT_SALIENCE_STAT`); pick
+`block_max` or `p95` per **camera mount** — a static desk, security, or screenshare camera benefits from a
+localized statistic.
 
-## 2. The strip — frames *after* (and before) the motion
-Every frame is cheaply buffered into a rolling `FrameWindow`. When the gate escalates, the brain doesn't
-just judge that one frame — with `PerceptionSpec.temporal="strip"` it judges the **lead-up**:
+## Thresholds are per-statistic — not interchangeable
 
-```
-… t-2  t-1   t0    t1 …      every frame → buffer + gate
-                   ▲
-   gate: t0→t1 motion HIGH  → escalate at t1
-        strip = the last n_frames = [t-2, t-1, t0, t1]   (frames BEFORE + at the motion)
-        vision.judge(condition, frames=strip) → Verdict
-```
+`block_max` and `p95` take the *max* / *95th-percentile* block, so their values sit on a **higher scale**
+than the whole-frame mean. The mean-tuned cutoff is far too low for them — it would over-fire constantly.
+Each statistic therefore has its own base cutoff, and the compiler picks the right one for a goal's
+resolved `salience_stat`:
 
-The strip is what lets the VLM see the **transition**: a *fall* (the descent, not just "on the floor"),
-a *screenshare* (what scrolled past). The **motion score decides whether to look; the strip decides how
-much history the VLM sees when it does** — two separate knobs.
+| statistic | env var | default cutoff |
+|---|---|---|
+| `mean` | `PERCEPT_MOTION_GATE` | `0.10` |
+| `block_max` | `PERCEPT_MOTION_GATE_BLOCK_MAX` | `0.20` |
+| `p95` | `PERCEPT_MOTION_GATE_P95` | `0.15` |
 
-## 3. Cadence — *how often* to look, and *on what signal*
-The motion gate is right for **physical** events. But a **screenshare** changes content with ~0 pixel
-motion (the subtle case in §1) → the motion gate never escalates → fast content is missed. So a goal also
-carries a **cadence**, distinct from the strip:
+The rule: **never carry a threshold across statistics.** A `0.10` cutoff that is right for the mean is
+wrong for `block_max`, which lives on a higher scale. The localized statistic is used only for the
+*escalate decision*; the reported `Tier0Signal.motion` gauge stays the whole-frame mean so it remains
+comparable across configurations.
 
-```python
-# physical event — motion-gated (default)
-state = {"perception": {"temporal": "strip", "n_frames": 4}}
+## Ego-motion compensation for a moving camera
 
-# content event — look every 0.5s regardless of motion
-state = {"cadence": {"min_judge_interval": 0.5, "gate_on": "fixed"}}
-```
+On a wearable, drone, robot, or handheld camera, the *camera* moves, so a raw frame-diff lights up on
+every frame — the whole scene shifts even when nothing in it happened. `ego_compensate` (default
+`False`, env `PERCEPT_EGO_COMPENSATE`) removes the global camera/head translation via a coarse
+integer-pixel shift search and gates on the **residual** motion — the part that is not explained by the
+camera moving. A pan or a head turn no longer escalates; a hand entering the frame still does.
 
-`gate_on="fixed"` makes the gate escalate on a timer even with zero motion (the floor for content events);
-`cadence_s` also rate-limits a motion goal (a ceiling). The lesson: **if the gate's signal doesn't match
-the event type, the strip never even gets assembled — you have to clear the gate first.**
+Set `ego_compensate` once for a moving-camera build. Leave it off for a fixed mount, where there is no
+ego-motion to subtract.
 
-See [the runtime guide](../how-to/runtime.md) for using these on a live `run(source) → incidents` loop.
+## Selection: deployment default, per-goal override
+
+Both `salience_stat` and `ego_compensate` follow the same pattern as other tier-0 knobs: the **deployment
+declares a default** (via the settings above) and a **goal may override** it through
+`goal.state["salience_stat"]` / `goal.state["ego_compensate"]`. The compiler resolves the effective value
+onto each watch condition so it rides the wire and the edge honors it without reading server config; a
+malformed override falls back to the deployment default. One static camera can thus run a `block_max`
+shelf watch beside a whole-frame `mean` crowd-density watch.
+
+## The temporal strip
+
+Once the gate escalates, the model need not see only the single triggering frame. Every frame is cheaply
+buffered into a rolling `FrameWindow`, so a goal can ask the model to judge a **strip** — a short,
+ordered sequence of recent frames — instead of one snapshot. The strip is what lets the model see a
+*transition* rather than a still: the descent of a fall, not just "on the floor"; the moment a value
+crosses a line, not just the after-state.
+
+The two decisions stay separate: the **motion score decides whether to look**, and the **strip decides
+how much history the model sees when it does.** You select it per goal via the perception spec
+(`temporal="strip"`, `n_frames=…`); the default is a single frame.
+
+## When there is no pixel motion: fixed cadence
+
+Some content changes *meaning* without changing *pixels* enough to move the motion score — a dashboard, a
+document, a screenshare that scrolls or updates a number. The motion gate is structurally blind to these:
+frame-to-frame difference stays near zero, so it never escalates, and the strip is never even assembled.
+
+The fix is not a better motion statistic — it is to stop gating on motion at all. For this content a goal
+uses a **fixed cadence**: `gate_on="fixed"` makes the gate escalate on a timer every
+`min_judge_interval` seconds regardless of motion, giving the model a steady look at content that a
+frame-diff cannot see. This is the pattern behind
+[watching a screenshare](../how-to/screenshare.md) — use `gate_on="fixed"` for screens, documents, and
+reminders, and the motion gate for physical events.
+
+## See also
+
+- [../how-to/screenshare.md](../how-to/screenshare.md) — the fixed-cadence screen-watching template.
+- [../how-to/authoring-goals-and-watch-plans.md](../how-to/authoring-goals-and-watch-plans.md) — where
+  `salience_stat`, `ego_compensate`, and `gate_on` are set on a goal.
+- [../configuration.md](../configuration.md) · [../reference/edge-policy.md](../reference/edge-policy.md)
+  — the exact env vars, thresholds, and wake-policy channels.
+- [Architecture](architecture.md) · [End to end: one judged request](e2e-flow-milk-boilover.md)

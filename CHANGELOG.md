@@ -1,9 +1,32 @@
 # Changelog
 
-Notable changes to Percept. This is a **research preview** — the SDK's public surface may change between
-0.x releases.
+Notable changes to Percept. From **1.0.0** the public surface follows semantic versioning: the `watch()`
+seam (`WATCH_VERSION`) and the wire contract (`CONTRACT_VERSION`) are versioned independently of the
+package, and same-MAJOR changes are additive. See the README "What can you rely on?" table for the
+per-surface stability guarantees.
 
-## Unreleased
+## 1.0.0 — first stable release (2026-07-23)
+
+The first stable public release. `pip install percept-vision` (`import percept`); the core is pure
+standard library and runs offline with deterministic fakes. Highlights of the surface as of 1.0.0:
+
+- **Wire contract at `CONTRACT_VERSION = "1.10.0"`** (additive-only across the pre-1.0 line). 1.10 makes
+  the judge operational: `WatchPlan.judge` + `WatchPlan.judge_context` (an `ArtifactBinding` bound to an
+  immutable, SHA-256-verified static context) and judge provenance. The `watch()` entrypoint is at
+  `WATCH_VERSION = "1.1.0"`; the adapter conformance suite at `CONFORMANCE_VERSION = "1.1.0"`.
+- **Batteries-included runtime** — `percept.run(source, goals, vision) → Incident` and
+  `percept.RuntimeSession` (the command seam) open a camera/video/RTSP source, run the tier-0 gate, judge
+  only on escalation, and deliver on the rising edge.
+- **Layered configuration with provenance** — the `Settings` tree, versioned `SourceProfile` /
+  `WatchProfile`s, and the `ConfigResolver` precedence chain (ADR-008).
+- **Offline quality rail** — `percept-eval` (differential A/B), `percept-optimize` (locked-config
+  search), `percept-derive-profile`, `percept-bench` (per-concern P/R + scorecard), and the model-free
+  `percept-doctor` / `percept-replay` / trace visualizer. No Percept accuracy numbers are published yet
+  (methodology + runbook only — see `docs/how-to/benchmarks.md`).
+
+The detailed additive changes that accumulated on the pre-1.0 development line are recorded below.
+
+### Contract — wire version 1.2.0 → 1.3.0 (additive; same MAJOR, wire-compatible)
 
 ### Contract — wire version 1.2.0 → 1.3.0 (additive; same MAJOR, wire-compatible)
 - **`Incident.entity_id`** (D4) — the gated subject's correlation handle now SURVIVES the emission

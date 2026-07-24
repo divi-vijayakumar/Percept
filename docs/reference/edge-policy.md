@@ -72,6 +72,10 @@ static camera): `block_max@0.20` recovers **0.85** recall where the whole-frame 
 roughly half the calls of the naive `0.10`. Raising the cutoff trades recall for cost
 (`block_max`: 0.94 @ 0.15 · 0.85 @ 0.20 · 0.68 @ 0.25) — tune per deployment.
 
+> These are **tier-0 motion-gate calibration** figures on a public dataset — the admit/recall of the
+> cheap wake channel, used to set the shipped threshold defaults. They are **not** a Percept end-to-end
+> accuracy claim; no product accuracy numbers are published yet (see the README "Benchmark status").
+
 ### Audio fusion (motion-invariant recall)
 
 Audio is motion-invariant, so it is the most reliable wake when the visual channel is weak. Setting a

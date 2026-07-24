@@ -470,7 +470,7 @@ confidence: —</pre>
   }
 
   fetch('/').then(r=>r.text()).then(t=>{ const m=t.match(/judge key: ([^<]+)/); $('#judgeMeta').textContent='judge: '+(m?m[1].trim():'unknown');
-    $('#hostMeta').textContent='localhost harness · watch v1.0.0 · contract v1.6.0'; })
+    $('#hostMeta').textContent='localhost harness · watch v1.1.0 · contract v1.10.0'; })
     .catch(()=>{ $('#judgeMeta').textContent='judge: harness offline — start docs/demo/serve.py'; $('#hostMeta').textContent='runtime unreachable'; });
 
   function fmt(t){ if(!Number.isFinite(t))return '00:00.0'; const m=Math.floor(t/60),s=(t%60).toFixed(1).padStart(4,'0'); return String(m).padStart(2,'0')+':'+s; }

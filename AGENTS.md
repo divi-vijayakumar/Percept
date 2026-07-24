@@ -1,9 +1,10 @@
 # AGENTS.md — building with Percept
 
-Guidance for AI coding assistants (Codex, Cursor, Copilot, Claude) integrating the **Percept** SDK.
-Percept is a **cognition layer** for goal-driven, proactive vision agents: you state a goal in plain
-language and it turns an audio-visual stream into an agent that fires **only on the rising edge** of a
-condition becoming true, and **refuses to guess** when it's unsure.
+Guidance for AI coding assistants (Codex, Cursor, Copilot, Claude) integrating the **Percept** SDK
+(`percept-vision 1.0.0`). Percept is a **cognition layer** for goal-driven, proactive vision agents: you
+state a goal in plain language and it turns an audio-visual stream into an agent that fires **only on
+the rising edge** of a condition becoming true, and **refuses to guess** when it's unsure. Docs online:
+**[percept.percia.ai](https://percept.percia.ai)**.
 
 ## Mental model — two layers
 
@@ -22,11 +23,12 @@ cognition = "should I act, given the history".
 ## Install
 
 ```bash
-pip install percept-vision            # CORE — pure stdlib, runs OFFLINE with the fake backend, no keys
-pip install "percept-vision[gemini]"  # + Gemini backend   -> export GEMINI_API_KEY=...  (or GOOGLE_API_KEY)
-pip install "percept-vision[claude]"  # + Claude backend   -> export ANTHROPIC_API_KEY=...
-pip install "percept-vision[edge]"    # + Python tier-0 gate + detector registry
-pip install "percept-vision[runtime]" # + camera/video/RTSP runtime worker
+pip install percept-vision                # CORE — pure stdlib, runs OFFLINE with the fake backend, no keys
+pip install "percept-vision[gemini]"      # + Gemini backend     -> export GEMINI_API_KEY=...  (or GOOGLE_API_KEY)
+pip install "percept-vision[claude]"      # + Claude backend     -> export ANTHROPIC_API_KEY=...
+pip install "percept-vision[openrouter]"  # + OpenRouter (Qwen…) -> export OPENROUTER_API_KEY=...
+pip install "percept-vision[edge]"        # + Python tier-0 gate + detector registry
+pip install "percept-vision[runtime]"     # + camera/video/RTSP runtime worker
 ```
 
 Python **>=3.10**. Import is `import percept`. The server-side edge (tier-0 salience gate + the cheap
@@ -60,7 +62,7 @@ asyncio.run(main())
 ```
 
 ### API surface (confirm signatures in `packages/percept-vision/percept/agent.py`)
-- `Percept.create(*, vision="fake"|"gemini"|"claude"|<instance>, discover_plugins=False, ...)` — the agent.
+- `Percept.create(*, vision="scripted"|"gemini"|"claude"|"openrouter"|<instance>, discover_plugins=False, ...)` — the agent. (`"scripted"` is the canonical fake; `"fake"` still works.)
 - `agent.add_goal(Goal(id=<str>, condition=<plain language>, say=<what to say on fire>))`.
 - `await agent.perceive_judged(frame, source="camera", *, t=None) -> list[FireEvent]` — judges every active
   goal, runs each verdict through the gate, returns the rising-edge events for this frame (`[]` = silent).
@@ -90,6 +92,10 @@ asyncio.run(main())
 
 ## Where to look
 - `docs/README.md` (index) · `docs/tutorials/quickstart.md` · `docs/explanation/concepts.md` · `docs/reference/backends.md` — adopter docs.
+- `docs/reference/cli.md` — all nine console scripts and their flags.
+- `docs/configuration.md` — every tunable + env var; `docs/how-to/custom-configuration.md` — author a profile.
+- `docs/how-to/custom-judge.md` — bring your own vision backend or a specialist judge (with a conformance suite).
+- `docs/how-to/eval.md` · `docs/how-to/optimize.md` · `docs/how-to/benchmarks.md` — the offline quality rail.
 - `templates/` — copyable reference applications; `templates/realtime_voice_watch_agent/` is the flagship voice+vision agent.
 - `.claude/skills/percept-agent/` — a Claude Code skill that scaffolds an agent from a plain-language goal (kept in sync with `.agents/skills/percept-agent/`).
 - `percept.edge` / `percept.harness` — the server-side edge (tier-0 gate + detector registry)

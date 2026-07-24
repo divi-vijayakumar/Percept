@@ -28,7 +28,7 @@ percept-doctor --source probes/01-screen-walkthrough/data/clean.mp4 \
                --fps 5
 ```
 
-The measured report on that real client fixture — a 36 s accounting screen recording, 180 frames,
+A worked report on a screen-recording fixture — a 36 s accounting screen capture, 180 frames,
 1920x1080, containing a **hard cut between two different documents** (doctor's SALIENCE STATS panel,
 condensed to the columns that matter here):
 
@@ -296,8 +296,8 @@ The loop, once: `percept-doctor` → change one thing → `percept eval` → kee
 
 ## See also
 
-- [`../adr/ADR-005-source-profiles.md`](../adr/ADR-005-source-profiles.md) — the decision, the measured
-  evidence, and why gate semantics are source-independent.
+- [`../how-to/custom-configuration.md`](../how-to/custom-configuration.md) — author a `SourceProfile` /
+  `WatchProfile` (why gate semantics are source-independent; the source-class axis is ADR-005).
 - [`../reference/registration.md`](../reference/registration.md) — the detector / concern / enricher
   registries in full.
 - [`../reference/consequence-gate.md`](../reference/consequence-gate.md) — `FIRE`/`ASK`/`SILENT`, the

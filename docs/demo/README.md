@@ -29,7 +29,7 @@ Everything the pages render is real runtime output:
 
 | Panel | Source (real) |
 |---|---|
-| Run manifest | `.ptrace` `manifest` — `percept_version`, `watch_version` 1.0.0, `contract_version` 1.6.0, plan hash |
+| Run manifest | `.ptrace` `manifest` — `percept_version`, `watch_version` 1.1.0, `contract_version` 1.10.0, plan hash |
 | Primary metrics | `.ptrace` `summary` — the `observed → admitted → judge_started → judge_completed → gate` funnel, cost, savings |
 | Timeline / lanes | trace `records` — `source.frame`, `judge.started/finished`, `gate.classified` |
 | Context ledger | `shadow.fold` records — the **advisory** subject + `EpisodeFoldResult` (Y11 shadow mode) |

@@ -50,7 +50,8 @@ clip = AudioFrame(
 | `t_start`/`t_end` | `float \| None`             | optional clip bounds in seconds                         |
 
 It is a **frozen** dataclass (stdlib only) and ships in the committed JSON Schema
-(`schema/AudioFrame.schema.json`), so non-Python consumers can validate the wire shape too.
+(`percept/contracts/schema/AudioFrame.schema.json`), so non-Python consumers can validate the wire
+shape too.
 
 `AudioFrame.as_pair()` renders it to the legacy `(mime, bytes)` shape the backends already read, so
 the typed object flows through the existing path unchanged. Prefer the pre-`encoded` blob when present;
