@@ -28,7 +28,6 @@ from __future__ import annotations
 import asyncio
 import unittest
 
-import percept
 from percept.adapters import Box, Goal, Verdict
 from percept.agent import Percept
 from percept.gate import FIRE
@@ -468,16 +467,6 @@ class TransitionLatchKeyMapping(unittest.TestCase):
                 transition_latch_key(policy, "e1"), ("scene", "fallback_scene"),
                 f"{policy!r} is neither scene nor a track policy -> fallback_scene",
             )
-
-
-# ==================================================================================
-# Independence sanity: percept must resolve to THIS worktree.
-# ==================================================================================
-
-
-class WorktreeIndependence(unittest.TestCase):
-    def test_percept_resolves_to_this_worktree(self):
-        self.assertIn("p06-002-tests", percept.__file__)
 
 
 # ----------------------------------------------------------------------------------
