@@ -1,0 +1,23 @@
+{
+  "episodes": [
+    {
+      "allowed_lateness_s": 2.0,
+      "annotation_version": "guiworld-keyframe-v1",
+      "annotator_or_fixture_id": "guiworld:gw-web-01",
+      "decision_eligible_ts": 6.2,
+      "episode_end_ts": 12.2,
+      "episode_id": "gw-web-01__modal_appeared::cookie-consent::00",
+      "event_start_ts": 6.2
+    },
+    {
+      "allowed_lateness_s": 2.0,
+      "annotation_version": "guiworld-keyframe-v1",
+      "annotator_or_fixture_id": "guiworld:gw-web-01",
+      "decision_eligible_ts": 52.0,
+      "episode_end_ts": 58.0,
+      "episode_id": "gw-web-01__modal_appeared::newsletter::01",
+      "event_start_ts": 52.0
+    }
+  ],
+  "goal_shape": "episode"
+}

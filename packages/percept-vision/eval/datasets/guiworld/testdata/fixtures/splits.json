@@ -1,0 +1,20 @@
+{
+  "dev": [],
+  "test": [
+    "gw-desktop-06__error_shown",
+    "gw-desktop-06__page_changed",
+    "gw-mobile-03__error_shown",
+    "gw-mobile-03__page_changed",
+    "gw-web-01__error_shown",
+    "gw-web-01__modal_appeared",
+    "gw-web-01__page_changed"
+  ],
+  "train": [
+    "gw-desktop-02__error_shown",
+    "gw-desktop-02__modal_appeared",
+    "gw-multi-05__error_shown",
+    "gw-multi-05__modal_appeared",
+    "gw-multi-05__page_changed",
+    "gw-web-04__modal_appeared"
+  ]
+}

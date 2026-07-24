@@ -1,0 +1,14 @@
+{
+  "episodes": [
+    {
+      "allowed_lateness_s": 2.0,
+      "annotation_version": "guiworld-keyframe-v1",
+      "annotator_or_fixture_id": "guiworld:gw-desktop-02",
+      "decision_eligible_ts": 15.0,
+      "episode_end_ts": 21.0,
+      "episode_id": "gw-desktop-02__modal_appeared::unsaved-changes::00",
+      "event_start_ts": 15.0
+    }
+  ],
+  "goal_shape": "episode"
+}

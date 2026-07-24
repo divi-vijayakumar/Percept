@@ -1,0 +1,23 @@
+{
+  "episodes": [
+    {
+      "allowed_lateness_s": 2.0,
+      "annotation_version": "guiworld-keyframe-v1",
+      "annotator_or_fixture_id": "guiworld:gw-mobile-03",
+      "decision_eligible_ts": 3.0,
+      "episode_end_ts": 4.5,
+      "episode_id": "gw-mobile-03__page_changed::messages::00",
+      "event_start_ts": 3.0
+    },
+    {
+      "allowed_lateness_s": 2.0,
+      "annotation_version": "guiworld-keyframe-v1",
+      "annotator_or_fixture_id": "guiworld:gw-mobile-03",
+      "decision_eligible_ts": 10.0,
+      "episode_end_ts": 11.5,
+      "episode_id": "gw-mobile-03__page_changed::order-details::01",
+      "event_start_ts": 10.0
+    }
+  ],
+  "goal_shape": "point"
+}
