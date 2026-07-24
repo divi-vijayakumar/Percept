@@ -1,0 +1,12 @@
+<nite:root xmlns:nite="http://nite.sourceforge.net/" nite:id="ES0001b.A.words">
+  <w nite:id="ES0001b.A.words0" starttime="1.0" endtime="1.4">We</w>
+  <w nite:id="ES0001b.A.words1" starttime="1.4" endtime="1.8">will</w>
+  <w nite:id="ES0001b.A.words2" starttime="1.8" endtime="2.2">ship</w>
+  <w nite:id="ES0001b.A.words3" starttime="2.2" endtime="2.6">in</w>
+  <w nite:id="ES0001b.A.words4" starttime="2.6" endtime="3.0">March</w>
+  <w nite:id="ES0001b.A.words5" starttime="4.0" endtime="4.4">Marketing</w>
+  <w nite:id="ES0001b.A.words6" starttime="4.4" endtime="4.8">will</w>
+  <w nite:id="ES0001b.A.words7" starttime="4.8" endtime="5.2">draft</w>
+  <w nite:id="ES0001b.A.words8" starttime="5.2" endtime="5.6">the</w>
+  <w nite:id="ES0001b.A.words9" starttime="5.6" endtime="6.0">brief</w>
+</nite:root>

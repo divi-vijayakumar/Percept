@@ -1,0 +1,14 @@
+<nite:root xmlns:nite="http://nite.sourceforge.net/" nite:id="TS0001a.summlink">
+  <summlink nite:id="TS0001a.summlink.0">
+    <nite:pointer role="extractive" href="TS0001a.A.dialog-act.xml#id(TS0001a.A.dialog-act.1)"/>
+    <nite:pointer role="abstractive" href="TS0001a.abssumm.xml#id(TS0001a.abssumm.s1)"/>
+  </summlink>
+  <summlink nite:id="TS0001a.summlink.1">
+    <nite:pointer role="extractive" href="TS0001a.B.dialog-act.xml#id(TS0001a.B.dialog-act.2)"/>
+    <nite:pointer role="abstractive" href="TS0001a.abssumm.xml#id(TS0001a.abssumm.s2)"/>
+  </summlink>
+  <summlink nite:id="TS0001a.summlink.2">
+    <nite:pointer role="extractive" href="TS0001a.A.dialog-act.xml#id(TS0001a.A.dialog-act.3)"/>
+    <nite:pointer role="abstractive" href="TS0001a.abssumm.xml#id(TS0001a.abssumm.s3)"/>
+  </summlink>
+</nite:root>

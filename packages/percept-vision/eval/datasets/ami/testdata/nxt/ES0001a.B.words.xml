@@ -1,0 +1,11 @@
+<nite:root xmlns:nite="http://nite.sourceforge.net/" nite:id="ES0001a.B.words">
+  <w nite:id="ES0001a.B.words0" starttime="1.0" endtime="1.4">The</w>
+  <w nite:id="ES0001a.B.words1" starttime="1.4" endtime="1.8">battery</w>
+  <w nite:id="ES0001a.B.words2" starttime="1.8" endtime="2.2">life</w>
+  <w nite:id="ES0001a.B.words3" starttime="2.2" endtime="2.6">worries</w>
+  <w nite:id="ES0001a.B.words4" starttime="2.6" endtime="3.0">me</w>
+  <w nite:id="ES0001a.B.words5" starttime="4.0" endtime="4.4">I</w>
+  <w nite:id="ES0001a.B.words6" starttime="4.4" endtime="4.8">think</w>
+  <w nite:id="ES0001a.B.words7" starttime="4.8" endtime="5.2">so</w>
+  <w nite:id="ES0001a.B.words8" starttime="5.2" endtime="5.6">too</w>
+</nite:root>

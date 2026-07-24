@@ -1,0 +1,12 @@
+<nite:root xmlns:nite="http://nite.sourceforge.net/" nite:id="ES0001b.abssumm">
+  <abstract>
+    <sentence nite:id="ES0001b.abssumm.s1">A planning meeting.</sentence>
+  </abstract>
+  <decisions>
+    <sentence nite:id="ES0001b.abssumm.s2">The team decided to ship in March.</sentence>
+    <sentence nite:id="ES0001b.abssumm.s3">The team decided on the blue theme.</sentence>
+  </decisions>
+  <actions>
+    <sentence nite:id="ES0001b.abssumm.s4">Marketing will draft the brief.</sentence>
+  </actions>
+</nite:root>

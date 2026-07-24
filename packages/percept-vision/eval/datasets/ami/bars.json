@@ -1,0 +1,24 @@
+{
+  "declared_by": "percept-eval / DS2 AMI meeting pack",
+  "declared_at": "2026-07-23",
+  "bars": [
+    {
+      "metric": "candidate_recall",
+      "direction": "min",
+      "value": 0.6,
+      "require_ci_excludes_zero": false
+    },
+    {
+      "metric": "recall_delta",
+      "direction": "min",
+      "value": 0.05,
+      "require_ci_excludes_zero": true
+    },
+    {
+      "metric": "false_fire_delta",
+      "direction": "max",
+      "value": 0.0,
+      "require_ci_excludes_zero": false
+    }
+  ]
+}

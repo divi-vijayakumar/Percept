@@ -1,0 +1,14 @@
+<nite:root xmlns:nite="http://nite.sourceforge.net/" nite:id="ES0001a.abssumm">
+  <abstract>
+    <sentence nite:id="ES0001a.abssumm.s1">The team opened the design review.</sentence>
+  </abstract>
+  <decisions>
+    <sentence nite:id="ES0001a.abssumm.s2">The team decided on a rubber case.</sentence>
+  </decisions>
+  <actions>
+    <sentence nite:id="ES0001a.abssumm.s3">The designer will source rubber casing.</sentence>
+  </actions>
+  <problems>
+    <sentence nite:id="ES0001a.abssumm.s4">Battery life is an unresolved concern.</sentence>
+  </problems>
+</nite:root>
