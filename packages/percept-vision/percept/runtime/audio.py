@@ -1,8 +1,8 @@
 """Audio capture sources for the runtime worker — the twin of ``source.py`` for sound.
 
 ``open_audio_source(uri)`` opens a mic (``mic`` = default input, ``mic:0`` = an explicit index), a
-``.wav`` file, or a video CONTAINER (``.mp4``/``.mov``/``.mkv``/``.webm``) on a **background thread**
-and yields ``(t, chunk, energy)``:
+``.wav`` file, or a video container (``.mp4``/``.mov``/``.mkv``/``.webm``) on a **background thread**
+and yields versioned source envelopes for programmable Watches:
   * ``chunk``  — a typed :class:`~percept.contracts.AudioFrame` (pcm s16le mono), the payload the
     fused/acoustic judge sees via ``Percept.push_audio`` → ``AudioWindow`` → ``Vision.judge(audio=)``,
   * ``energy`` — normalized short-time RMS in ``[0, 1]``, the tier-0 audio salience signal (the audio
@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import AsyncIterator, Callable, Literal
 
 from percept.contracts import AudioFrame
+from percept.runtime.envelope import SourceEnvelope, SourceFormat
 
 _DEFAULT_SR = 16_000  # matches AudioFrame.sample_rate and the STT stream rate
 
@@ -51,9 +52,8 @@ class AudioSourceConfig:
     channels: int = 1
     chunk_s: float = 0.25  # gate cadence: ~4 energy readings/sec
     queue_size: int = 256
-    # Timestamp origin for the yielded event ``t`` (A-clock switch, introduced NO-OP). ``"media"`` =
-    # today's ``(i+step)/sr`` byte-for-byte; ``"wall"`` = ``time.monotonic()`` per emitted chunk. The
-    # ``AudioFrame.t_start/t_end`` PCM-slice offsets stay MEDIA under BOTH modes (two jobs, two fields).
+    # Clock selected by the transitional tuple view.  Every envelope independently carries local
+    # observation time and the PCM sample position intrinsic to its AudioFrame.
     timebase: Literal["media", "wall"] = "media"
 
 
@@ -130,12 +130,54 @@ def _put_latest(q: "queue.Queue", item, dropped: "list[int] | None" = None) -> N
         q.put(item, timeout=0.1)
 
 
-def _emit(q, t_event: float, t0: float, t1: float, pcm: bytes, sr: int, ch: int, dropped) -> None:
-    # ``t_event`` is the event timestamp on the yielded tuple (media or wall per timebase); ``t0``/``t1``
-    # are the MEDIA PCM-slice offsets on the AudioFrame — always media, regardless of timebase.
+def _put_terminal(q: "queue.Queue", item, stop: threading.Event) -> None:
+    """Publish an error/end marker after queued evidence instead of evicting that evidence."""
+    while not stop.is_set():
+        try:
+            q.put(item, timeout=0.1)
+            return
+        except queue.Full:
+            continue
+
+
+def _emit(
+    q,
+    observed_time: float,
+    source_time: float,
+    t0: float,
+    t1: float,
+    pcm: bytes,
+    sr: int,
+    ch: int,
+    sequence: int,
+    timebase: str,
+    dropped,
+) -> None:
     frame = AudioFrame(pcm=pcm, sample_rate=sr, channels=ch, sample_format="s16le",
                        t_start=t0, t_end=t1)
-    _put_latest(q, (t_event, frame, _rms_energy(pcm)), dropped)
+    _put_latest(
+        q,
+        SourceEnvelope(
+            source_id="audio",
+            modality="audio",
+            epoch=0,
+            sequence=sequence,
+            observed_time=observed_time,
+            # PCM sample position is intrinsic to the captured payload.  It is not inferred from a
+            # device's claimed delivery rate.
+            source_time=source_time,
+            format=SourceFormat(
+                media_type="audio/pcm",
+                sample_rate=sr,
+                channels=ch,
+                sample_format="s16le",
+            ),
+            payload=frame,
+            signal=_rms_energy(pcm),
+            legacy_timebase="observed" if timebase == "wall" else "source",
+        ),
+        dropped,
+    )
 
 
 def _capture_wav(path: str, config: AudioSourceConfig, q: "queue.Queue",
@@ -154,14 +196,14 @@ def _capture_wav(path: str, config: AudioSourceConfig, q: "queue.Queue",
                 pcm = w.readframes(step)
                 if not pcm:
                     break
-                t0, t1 = i / sr, (i + step) / sr
-                t_event = now() if config.timebase == "wall" else t1
-                _emit(q, t_event, t0, t1, pcm, sr, ch, dropped)
-                i += step
+                samples = len(pcm) // max(1, ch * w.getsampwidth())
+                t0, t1 = i / sr, (i + samples) / sr
+                _emit(q, now(), t1, t0, t1, pcm, sr, ch, i // step, config.timebase, dropped)
+                i += samples
     except Exception as exc:  # surface to the consumer, like source.py
-        _put_latest(q, exc)
+        _put_terminal(q, exc, stop)
     finally:
-        _put_latest(q, None)  # end sentinel
+        _put_terminal(q, None, stop)
 
 
 def _read_exact(f, n: int) -> bytes:
@@ -180,10 +222,9 @@ def _capture_container(path: str, config: AudioSourceConfig, q: "queue.Queue",
                        stop: threading.Event, dropped: "list[int] | None",
                        *, now: "Callable[[], float] | None" = None) -> None:
     """Demux the audio track of a video container (mp4/mov/mkv/webm) via an ``ffmpeg`` subprocess,
-    streaming raw PCM s16le chunks on the SAME media timebase ``source.py`` stamps video frames on:
-    ``t = i / sample_rate`` for kept audio, exactly mirroring ``t = i / src_fps`` for kept video —
-    both start at ``t=0`` at the container's first sample/frame, so a video incident's ``ts`` and this
-    module's audio events line up without any extra offset bookkeeping.
+    streaming raw PCM s16le chunks with source time measured from emitted sample positions. Video
+    capture independently preserves decoder-provided media positions; neither adapter derives source
+    time from a reported delivery rate.
 
     Requires ``ffmpeg`` on PATH. Its absence raises :class:`FFmpegNotFoundError` (surfaced to the
     consumer exactly like a wav/mic capture error) rather than silently yielding zero chunks — a fused
@@ -192,11 +233,11 @@ def _capture_container(path: str, config: AudioSourceConfig, q: "queue.Queue",
         now = time.monotonic
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
-        _put_latest(q, FFmpegNotFoundError(
+        _put_terminal(q, FFmpegNotFoundError(
             f"{path!r} is a video container (mp4/mov/mkv/webm) — demuxing its audio track needs "
             "ffmpeg on PATH. Install it (e.g. `brew install ffmpeg` on macOS, `apt-get install "
-            "ffmpeg` on Debian/Ubuntu) or pass a pre-demuxed .wav as audio_source instead."))
-        _put_latest(q, None)
+            "ffmpeg` on Debian/Ubuntu) or pass a pre-demuxed .wav as audio_source instead."), stop)
+        _put_terminal(q, None, stop)
         return
     sr, ch = config.sample_rate, config.channels
     step = max(1, int(sr * config.chunk_s))
@@ -211,10 +252,10 @@ def _capture_container(path: str, config: AudioSourceConfig, q: "queue.Queue",
             pcm = _read_exact(proc.stdout, nbytes)
             if not pcm:
                 break
-            t0, t1 = i / sr, (i + step) / sr
-            t_event = now() if config.timebase == "wall" else t1
-            _emit(q, t_event, t0, t1, pcm, sr, ch, dropped)
-            i += step
+            samples = len(pcm) // max(1, ch * 2)
+            t0, t1 = i / sr, (i + samples) / sr
+            _emit(q, now(), t1, t0, t1, pcm, sr, ch, i // step, config.timebase, dropped)
+            i += samples
         proc.stdout.close()
         rc = proc.wait(timeout=10)
         if rc != 0 and i == 0:
@@ -223,13 +264,13 @@ def _capture_container(path: str, config: AudioSourceConfig, q: "queue.Queue",
             stderr = proc.stderr.read().decode("utf-8", "replace") if proc.stderr else ""
             raise RuntimeError(f"ffmpeg failed to demux audio from {path!r}: {stderr.strip()[:500]}")
     except FileNotFoundError as exc:  # pragma: no cover - shutil.which already guards this path
-        _put_latest(q, FFmpegNotFoundError(f"ffmpeg not found while demuxing {path!r}: {exc}"))
+        _put_terminal(q, FFmpegNotFoundError(f"ffmpeg not found while demuxing {path!r}: {exc}"), stop)
     except Exception as exc:
-        _put_latest(q, exc)
+        _put_terminal(q, exc, stop)
     finally:
         if proc is not None and proc.poll() is None:
             proc.kill()
-        _put_latest(q, None)  # end sentinel
+        _put_terminal(q, None, stop)
 
 
 def _capture_mic(device: "int | None", config: AudioSourceConfig, q: "queue.Queue",
@@ -242,10 +283,10 @@ def _capture_mic(device: "int | None", config: AudioSourceConfig, q: "queue.Queu
     try:
         import sounddevice as sd  # lazy: the [mic] extra
     except Exception as exc:  # pragma: no cover - exercised only without the extra
-        _put_latest(q, RuntimeError(
+        _put_terminal(q, RuntimeError(
             "mic: source needs the [mic] extra — pip install 'percept-vision[mic]' (sounddevice). "
-            f"({exc})"))
-        _put_latest(q, None)
+            f"({exc})"), stop)
+        _put_terminal(q, None, stop)
         return
     sr, ch = config.sample_rate, config.channels
     step = max(1, int(sr * config.chunk_s))
@@ -258,14 +299,14 @@ def _capture_mic(device: "int | None", config: AudioSourceConfig, q: "queue.Queu
                 pcm = bytes(data)
                 if not pcm:
                     continue
-                t0, t1 = i / sr, (i + step) / sr
-                t_event = now() if config.timebase == "wall" else t1
-                _emit(q, t_event, t0, t1, pcm, sr, ch, dropped)
-                i += step
+                samples = len(pcm) // max(1, ch * 2)
+                t0, t1 = i / sr, (i + samples) / sr
+                _emit(q, now(), t1, t0, t1, pcm, sr, ch, i // step, config.timebase, dropped)
+                i += samples
     except Exception as exc:
-        _put_latest(q, exc)
+        _put_terminal(q, exc, stop)
     finally:
-        _put_latest(q, None)
+        _put_terminal(q, None, stop)
 
 
 async def open_audio_source(
@@ -277,11 +318,11 @@ async def open_audio_source(
     maxsize: int = 256,
     timebase: "Literal['media', 'wall']" = "media",
     dropped: "list[int] | None" = None,
-) -> AsyncIterator[tuple]:
-    """Threaded audio capture → async ``(t, AudioFrame, energy)`` iterator. Stops the thread on exit.
+) -> AsyncIterator[SourceEnvelope]:
+    """Threaded audio capture → async source-envelope iterator. Stops the thread on exit.
 
-    ``timebase`` selects the event ``t`` origin (``"media"`` = today's ``(i+step)/sr``; ``"wall"`` =
-    monotonic per chunk). ``AudioFrame.t_start/t_end`` remain MEDIA offsets under both modes."""
+    Every item preserves the PCM source position and local observation time independently. ``timebase``
+    selects only the transitional tuple view. ``AudioFrame.t_start/t_end`` remain media offsets."""
     import asyncio
 
     config = AudioSourceConfig(sample_rate=sample_rate, channels=channels,

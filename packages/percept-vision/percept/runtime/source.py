@@ -1,7 +1,7 @@
 """Capture sources for the runtime worker.
 
-``open_source(uri)`` opens a cv2-readable URI (file / RTSP / ``webcam:0`` / ``webcam://0``) on a **background thread** and
-yields ``(t, gate_frame, judge_frame)``:
+``open_source(uri)`` opens a cv2-readable URI (file / RTSP / ``webcam:0`` / ``webcam://0``) on a
+**background thread** and yields versioned source envelopes for programmable Watches:
   * ``gate_frame`` — a small gray :class:`~percept.edge.tier0.Frame` for the motion gate (still-vs-moved
     doesn't need full resolution),
   * ``judge_frame`` — a ``("image/jpeg", bytes)`` pair the VLM judges.
@@ -13,11 +13,14 @@ follow-up; v1 reuses the deterministic decode pattern from ``eval/count_video.py
 from __future__ import annotations
 
 import asyncio
+import math
 import queue
 import threading
 import time
 from dataclasses import dataclass
 from typing import AsyncIterator, Callable, Literal
+
+from percept.runtime.envelope import SourceEnvelope, SourceFormat
 
 GATE_W, GATE_H = 48, 36  # tier-0 downsample (still vs moved; full res not needed for the gate)
 
@@ -40,9 +43,8 @@ class SourceConfig:
     reconnects: int = 0
     reconnect_backoff_s: float = 0.5
     rtsp_tcp: bool = True
-    # Timestamp origin for the yielded ``t`` (A-clock switch, introduced NO-OP). ``"media"`` = today's
-    # arithmetic byte-for-byte (``t = i / src_fps``, unclamped reported fps). ``"wall"`` = ``time.monotonic()``
-    # stamped per KEPT frame. Default stays ``"media"`` — a later PR flips it.
+    # Clock selected by the transitional tuple view.  Every envelope carries observed monotonic time
+    # independently and carries decoder source time only when the decoder actually provides it.
     timebase: Literal["media", "wall"] = "media"
 
 
@@ -78,6 +80,16 @@ def _put_latest(q: "queue.Queue", item, dropped: "list[int] | None" = None) -> N
         q.put(item, timeout=0.1)
 
 
+def _put_terminal(q: "queue.Queue", item, stop: threading.Event) -> None:
+    """Publish an error/end marker after queued evidence instead of evicting that evidence."""
+    while not stop.is_set():
+        try:
+            q.put(item, timeout=0.1)
+            return
+        except queue.Full:
+            continue
+
+
 def _open_capture(cv2, uri: str, config: SourceConfig):
     source = _normalize_uri(uri)
     if isinstance(source, str) and source.startswith("rtsp://") and config.rtsp_tcp:
@@ -85,12 +97,41 @@ def _open_capture(cv2, uri: str, config: SourceConfig):
     return cv2.VideoCapture(source)
 
 
+def _source_time(cap, cv2, uri: str) -> float | None:
+    """Read a decoder-provided media timestamp, or return ``None``.
+
+    Device/network sources do not have a trustworthy media clock.  A reported FPS plus a local frame
+    counter is a cadence estimate, not a source timestamp, so this adapter deliberately does not turn
+    ``i / fps`` into provenance.
+    """
+    source = _normalize_uri(uri)
+    if not isinstance(source, str):
+        return None
+    if source.lower().startswith(("rtsp://", "rtsps://", "rtp://", "udp://", "tcp://")):
+        return None
+    prop = getattr(cv2, "CAP_PROP_POS_MSEC", None)
+    if prop is None:
+        return None
+    try:
+        value = float(cap.get(prop)) / 1000.0
+    except Exception:  # noqa: BLE001 - optional backend property
+        return None
+    return value if math.isfinite(value) and value >= 0.0 else None
+
+
+def _video_format(bgr) -> SourceFormat:
+    shape = getattr(bgr, "shape", ())
+    height = int(shape[0]) if len(shape) >= 2 and int(shape[0]) > 0 else None
+    width = int(shape[1]) if len(shape) >= 2 and int(shape[1]) > 0 else None
+    return SourceFormat(media_type="image/jpeg", width=width, height=height)
+
+
 def _capture(uri: str, config: SourceConfig, q: "queue.Queue", stop: threading.Event,
              dropped: "list[int] | None" = None, *, now: "Callable[[], float] | None" = None,
              health: "list | None" = None) -> None:
     """Blocking capture loop, run on a daemon thread; pushes frames into ``q`` until stopped/EOF.
 
-    ``now`` is the wall clock used for ``timebase="wall"`` stamps AND for the A-4 delivered-fps measure
+    ``now`` is the observation clock stamped on every envelope and used by the delivered-fps measure
     (injectable so tests need no real sleeping; defaults to ``time.monotonic``). ``health`` mirrors the
     ``dropped`` shared-list telemetry pattern: the capture thread appends ``(kind, data)`` events (today
     only ``("fps_misreported", {"reported", "measured"})``) for the worker to surface via ``on_health``."""
@@ -101,6 +142,7 @@ def _capture(uri: str, config: SourceConfig, q: "queue.Queue", stop: threading.E
     if now is None:
         now = time.monotonic
     attempts = 0
+    epoch = 0
     try:
         while not stop.is_set():
             cap = _open_capture(cv2, uri, config)
@@ -110,6 +152,7 @@ def _capture(uri: str, config: SourceConfig, q: "queue.Queue", stop: threading.E
             src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
             step = max(1, round(src_fps / config.fps))
             i = 0
+            sequence = 0
             read_ts: "list[float]" = []   # wall times of recent raw reads (A-4 delivered-fps window)
             fps_reported = False           # emit the misreport at most once per open
             try:
@@ -119,7 +162,7 @@ def _capture(uri: str, config: SourceConfig, q: "queue.Queue", stop: threading.E
                         break
                     # A-4: measure the RAW read rate over a rolling wall-clock window and flag a source
                     # whose delivered fps diverges from its reported CAP_PROP_FPS. Emit-only (does NOT
-                    # touch `step`/`t`), so the media lane stays byte-for-byte. Guarded by `health`.
+                    # touch decimation or either envelope clock). Guarded by `health`.
                     if health is not None and not fps_reported:
                         tw = now()
                         read_ts.append(tw)
@@ -134,23 +177,42 @@ def _capture(uri: str, config: SourceConfig, q: "queue.Queue", stop: threading.E
                                                {"reported": src_fps, "measured": measured}))
                                 fps_reported = True
                     if i % step == 0:
-                        t = now() if config.timebase == "wall" else i / src_fps
+                        observed_time = now()
+                        source_time = _source_time(cap, cv2, uri)
                         gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
                         g = cv2.resize(gray, (GATE_W, GATE_H))
                         gate_frame = Frame(w=GATE_W, h=GATE_H, pixels=tuple(int(p) for p in g.flatten()))
-                        _, buf = cv2.imencode(".jpg", bgr)
-                        _put_latest(q, (t, gate_frame, ("image/jpeg", buf.tobytes())), dropped)
+                        encoded, buf = cv2.imencode(".jpg", bgr)
+                        jpeg = buf.tobytes() if encoded and buf is not None else b""
+                        _put_latest(
+                            q,
+                            SourceEnvelope(
+                                source_id="video",
+                                modality="video",
+                                epoch=epoch,
+                                sequence=sequence,
+                                observed_time=observed_time,
+                                source_time=source_time,
+                                format=_video_format(bgr),
+                                payload=("image/jpeg", jpeg),
+                                signal=gate_frame,
+                                legacy_timebase="observed" if config.timebase == "wall" else "source",
+                            ),
+                            dropped,
+                        )
+                        sequence += 1
                     i += 1
             finally:
                 cap.release()
             if attempts >= config.reconnects:
                 break
             attempts += 1
+            epoch += 1
             time.sleep(config.reconnect_backoff_s)
     except Exception as exc:
-        _put_latest(q, exc)
+        _put_terminal(q, exc, stop)
     finally:
-        _put_latest(q, None)  # end sentinel
+        _put_terminal(q, None, stop)  # end sentinel never evicts a captured envelope
 
 
 async def open_source(
@@ -164,11 +226,13 @@ async def open_source(
     timebase: "Literal['media', 'wall']" = "media",
     dropped: "list[int] | None" = None,
     health: "list | None" = None,
-) -> AsyncIterator[tuple]:
+) -> AsyncIterator[SourceEnvelope]:
     """Threaded capture: read frames off a daemon thread (so capture never blocks the consumer/event
-    loop), yield ``(t, gate_frame, judge_frame)`` asynchronously. Stops the thread on consumer exit.
+    loop), yield :class:`~percept.runtime.envelope.SourceEnvelope` items asynchronously. Stops the
+    thread on consumer exit.
 
-    ``timebase`` selects the ``t`` origin (``"media"`` = today's ``i/src_fps``; ``"wall"`` = monotonic).
+    The envelope always preserves observation time and source time independently.  ``timebase`` only
+    selects the transitional tuple view; source time remains ``None`` when the decoder supplied none.
     ``health`` is an optional shared list the capture thread appends A-4 ``fps_misreported`` events to."""
     config = SourceConfig(
         fps=fps,

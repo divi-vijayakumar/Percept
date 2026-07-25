@@ -8,12 +8,14 @@ import threading
 import unittest
 from unittest.mock import patch
 
+from percept.runtime import SourceTracker
 from percept.runtime.source import SourceConfig, _capture, _open_capture, _put_latest
 
 
 class _FakeCv2:
     CAP_FFMPEG = 1900
     CAP_PROP_FPS = 5
+    CAP_PROP_POS_MSEC = 0
     COLOR_BGR2GRAY = 6
 
     def __init__(self, cap=None):
@@ -34,6 +36,16 @@ class _FakeCv2:
         return True, _FakeBuffer()
 
 
+class _ReconnectCv2(_FakeCv2):
+    def __init__(self, caps):
+        super().__init__()
+        self.caps = list(caps)
+
+    def VideoCapture(self, *args):
+        self.calls.append(args)
+        return self.caps.pop(0)
+
+
 class _FakeGray:
     def __init__(self, n):
         self.n = n
@@ -44,7 +56,7 @@ class _FakeGray:
 
 class _FakeBuffer:
     def tobytes(self):
-        return b"jpeg"
+        return b"\xff\xd8jpeg\xff\xd9"
 
 
 class _FakeCap:
@@ -52,13 +64,14 @@ class _FakeCap:
         self.opened = opened
         self.reads = list(reads or [])
         self.fps = fps
+        self.position_ms = 0.0
         self.released = False
 
     def isOpened(self):
         return self.opened
 
     def get(self, prop):
-        return self.fps
+        return self.position_ms if prop == _FakeCv2.CAP_PROP_POS_MSEC else self.fps
 
     def read(self):
         return self.reads.pop(0) if self.reads else (False, None)
@@ -111,10 +124,64 @@ class RuntimeSourceTests(unittest.TestCase):
         with patch.dict(sys.modules, {"cv2": cv2}):
             _capture("video.mp4", SourceConfig(fps=4.0), q, threading.Event())
         item = q.get_nowait()
+        self.assertEqual(item.source_time, 0.0)
+        self.assertIsNotNone(item.observed_time)
         self.assertEqual(item[0], 0.0)
-        self.assertEqual(item[2], ("image/jpeg", b"jpeg"))
+        self.assertEqual(item[2], ("image/jpeg", b"\xff\xd8jpeg\xff\xd9"))
         self.assertIsNone(q.get_nowait())
         self.assertTrue(cap.released)
+
+    def test_reconnect_starts_a_new_epoch_at_sequence_zero(self):
+        caps = [
+            _FakeCap(reads=[(True, object()), (False, None)], fps=4.0),
+            _FakeCap(reads=[(True, object()), (False, None)], fps=4.0),
+        ]
+        cv2 = _ReconnectCv2(caps)
+        q = queue.Queue()
+        with patch.dict(sys.modules, {"cv2": cv2}), patch("time.sleep", return_value=None):
+            _capture(
+                "video.mp4",
+                SourceConfig(fps=4.0, reconnects=1),
+                q,
+                threading.Event(),
+            )
+        first, second = q.get_nowait(), q.get_nowait()
+        self.assertEqual((first.epoch, first.sequence), (0, 0))
+        self.assertEqual((second.epoch, second.sequence), (1, 0))
+        tracker = SourceTracker()
+        self.assertTrue(tracker.inspect(first).accepted)
+        reconnect = tracker.inspect(second)
+        self.assertTrue(reconnect.accepted)
+        self.assertEqual(reconnect.events, ("source_reconnect",))
+        self.assertIsNone(q.get_nowait())
+
+    def test_queue_eviction_becomes_a_sequence_gap(self):
+        tracker = SourceTracker()
+        q = queue.Queue(maxsize=1)
+        first = self._captured_envelope(0)
+        self.assertTrue(tracker.inspect(first).accepted)
+        _put_latest(q, self._captured_envelope(1))
+        _put_latest(q, self._captured_envelope(2))
+        gap = tracker.inspect(q.get_nowait())
+        self.assertEqual(gap.events, ("source_gap",))
+        self.assertEqual(gap.coverage.missing_sequences, 1)
+
+    @staticmethod
+    def _captured_envelope(sequence):
+        from percept.runtime import SourceEnvelope, SourceFormat
+        from percept.edge.tier0 import gray_frame
+
+        return SourceEnvelope(
+            source_id="video",
+            modality="video",
+            epoch=0,
+            sequence=sequence,
+            observed_time=float(sequence),
+            source_time=float(sequence),
+            format=SourceFormat(media_type="image/jpeg"),
+            payload=("image/jpeg", b"\xff\xd8jpeg\xff\xd9"),
+            signal=gray_frame(2, 2, 0),
+        )
 
 
 if __name__ == "__main__":

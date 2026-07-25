@@ -9,6 +9,15 @@ extra (`pip install "percept-vision[runtime]"` → opencv-python-headless). A pr
 works with no extra (tests, offline replay).
 """
 from percept.runtime._vad import EnergyVad, endpoint_energy_sequence, frame_energy
+from percept.runtime.envelope import (
+    SOURCE_ENVELOPE_VERSION,
+    SourceCoverage,
+    SourceCoverageEffect,
+    SourceEnvelope,
+    SourceFormat,
+    SourceInspection,
+    SourceTracker,
+)
 from percept.runtime.session import RuntimeSession, start
 from percept.runtime.sinks import BoundedDeadLetterQueue, FileDeadLetterQueue, WebhookSink, incident_payload, webhook
 from percept.runtime.worker import (
@@ -32,6 +41,13 @@ __all__ = [
     "EnergyVad",
     "frame_energy",
     "endpoint_energy_sequence",
+    "SOURCE_ENVELOPE_VERSION",
+    "SourceCoverage",
+    "SourceCoverageEffect",
+    "SourceEnvelope",
+    "SourceFormat",
+    "SourceInspection",
+    "SourceTracker",
     "WebhookSink",
     "FileDeadLetterQueue",
     "BoundedDeadLetterQueue",

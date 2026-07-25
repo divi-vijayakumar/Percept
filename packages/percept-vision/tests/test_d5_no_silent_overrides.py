@@ -9,7 +9,7 @@
   (c) ``timebase="wall"`` for every ``str`` source made ``incident.ts`` meaningless against media time
       (a 36s clip decoded in 0.72s stamped every incident with the decode instant). ``timebase="auto"``
       resolves to MEDIA for recorded sources, WALL for live devices, with an explicit override — and
-      BOTH clocks are recorded regardless.
+      source and observation clocks are preserved independently without synthesizing either one.
 """
 from __future__ import annotations
 
@@ -26,7 +26,6 @@ from percept.runtime.worker import (
     FPS_REASONS,
     TIMEBASE_CHOICES,
     EffectiveConfig,
-    _frame_clocks,
     _is_recorded_source,
     _resolve_timebase,
 )
@@ -204,13 +203,6 @@ class TimebaseResolutionTests(unittest.TestCase):
             _resolve_timebase("clip.mp4", "monotonic")
         self.assertEqual(TIMEBASE_CHOICES, ("auto", "media", "wall"))
 
-    def test_frame_clocks_record_both_regardless_of_the_stamped_one(self):
-        media, wall = _frame_clocks(3.5, timebase="media", t0=0.0, wall_now=1000.0)
-        self.assertEqual((media, wall), (3.5, 1000.0))
-        media, wall = _frame_clocks(1002.0, timebase="wall", t0=1000.0, wall_now=1002.0)
-        self.assertEqual((media, wall), (2.0, 1002.0))
-
-
 class TimebaseEndToEndTests(unittest.TestCase):
     def _run(self, source, **kw):
         captured: dict = {}
@@ -250,10 +242,9 @@ class TimebaseEndToEndTests(unittest.TestCase):
 
     def test_both_clocks_are_recorded_on_a_wall_run(self):
         _captured, stats = self._run("webcam:0")
-        self.assertIsNotNone(stats.last_media_t)
         self.assertIsNotNone(stats.last_wall_t)
-        # media-equivalent on a live source is the elapsed stream offset, not the monotonic stamp
-        self.assertLess(stats.last_media_t, 1.0)
+        # A live source with only an observation clock does not gain a fabricated media timeline.
+        self.assertIsNone(stats.last_media_t)
 
     def test_effective_config_serializes_to_a_flat_record(self):
         _captured, stats = self._run("clip.mp4")

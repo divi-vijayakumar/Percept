@@ -7,7 +7,8 @@ the rising edge spends a cloud judgment (``core.perceive_judged``), turning each
 
 The **cognition is unchanged** — this *drives* ``vision.judge`` / the three-state gate, it doesn't edit
 them. ``source`` is a URI string (file / RTSP / ``webcam:0``), opened on a capture thread, **or** an
-iterable of ``(t, gate_frame, judge_frame)`` (tests / a pre-decoded clip).
+iterable of versioned ``SourceEnvelope`` items. Legacy ``(t, gate_frame, judge_frame)`` tuples remain
+accepted and are normalized at ingress.
 """
 from __future__ import annotations
 
@@ -22,6 +23,13 @@ from percept.events import FrameWindow, frame_nbytes
 from percept.gate import FIRE, ASK
 from percept.incidents import make_incident, snippet_from_window
 from percept.observability import get_logger
+from percept.runtime.envelope import (
+    SourceEnvelope,
+    SourceInspection,
+    SourceTracker,
+    legacy_audio_envelope,
+    legacy_video_envelope,
+)
 
 _log = get_logger("percept.runtime.worker")
 
@@ -169,18 +177,26 @@ class RuntimeStats:
     # judge_dispatch="async" accounting. The scheduler is single-flight + one latest-pending, so under
     # overload an admitted frame may be replaced before its judge launches (superseded) or discarded
     # because goals changed after admission (revision_dropped). The honest budget invariant is
-    # ``judge_calls + judge_superseded + judge_revision_dropped == admitted escalations`` (once drained);
-    # inline mode never touches either counter.
+    # Absent a source discontinuity, ``judge_calls + judge_superseded +
+    # judge_revision_dropped == admitted escalations`` once drained. A discontinuity additionally
+    # reports active/pending drops below; an active drop already spent a judge call, while a pending
+    # drop did not, so the split is retained rather than hiding that distinction.
     judge_superseded: int = 0  # pending judge candidate replaced by a newer admitted frame
     judge_revision_dropped: int = 0  # pending candidate dropped: goals.revision moved after admission
+    judge_source_discontinuity_dropped: int = 0
+    judge_source_discontinuity_active_dropped: int = 0
+    judge_source_discontinuity_pending_dropped: int = 0
     # The EFFECTIVE configuration this run actually opened with (never only the
     # requested one), populated once at start. `None` until run() has resolved it.
     effective_config: "EffectiveConfig | None" = None
-    # The two clocks of the most recent frame, recorded REGARDLESS of which one `t`
-    # (and therefore `incident.ts`) is stamped on — so an incident timestamp can always be located
-    # on the other timeline after the fact. See :func:`_frame_clocks`.
+    # The two independent clocks of the most recent accepted envelope.  Either remains ``None`` when
+    # the source did not carry it; the runtime never back-fills source time from cadence or elapsed time.
     last_media_t: float | None = None
     last_wall_t: float | None = None
+    source_observed: int = 0
+    source_excluded: int = 0
+    source_discontinuities: int = 0
+    source_missing_sequences: int = 0
 
 
 @dataclass(frozen=True)
@@ -298,6 +314,8 @@ class _JudgeScheduler:
         self._backpressure_reported = False  # latched: "judge_scheduler_backpressure" already fired
         self._perceive_accepts_goal_ids = _accepts_keyword(core.perceive_judged, "goal_ids")
         self._active_filter_goal_ids: tuple[str, ...] | None = None
+        self._active_invalidated = False
+        self._active_invalidation_reason = "source_discontinuity"
 
     def _mc_now(self, fallback: float) -> float:
         """"Now" for a MetricsCollector stamp: the core's own clock when available (real elapsed time
@@ -360,6 +378,33 @@ class _JudgeScheduler:
             self._check_backpressure(t)
         self._pending = (t, judge_frame, revision, goal_ids)
         self._mc_admit(t)  # queued behind the active judgment — pending in the funnel from this instant
+
+    def invalidate_source_continuity(self, reasons: tuple[str, ...]) -> None:
+        """Prevent pre-discontinuity judgments from mutating post-discontinuity state."""
+        reason = ",".join(reasons) or "source_discontinuity"
+        if self._active is not None and not self._active.done():
+            self._active_invalidated = True
+            self._active_invalidation_reason = reason
+            self._active.cancel()
+        if self._pending is not None:
+            dropped_t = self._pending[0]
+            self._mc_resolve(dropped_t)
+            self._pending = None
+            if self._stats is not None:
+                self._stats.judge_source_discontinuity_dropped += 1
+                self._stats.judge_source_discontinuity_pending_dropped += 1
+            self._trace.append((
+                "judge_source_discontinuity_dropped",
+                {
+                    "source": self._source,
+                    "reason": reason,
+                    "dropped_t": dropped_t,
+                    "slot": "pending",
+                },
+            ))
+            funnel = getattr(self._core, "funnel", None)
+            if funnel is not None:
+                funnel.dropped(reason="source_discontinuity", camera=self._source)
 
     def _check_stall(self, now_t: float) -> None:
         if self._stall_reported or self._active is None or self._active_launch_wall is None:
@@ -471,8 +516,28 @@ class _JudgeScheduler:
         # then failure (fatal: never launch pending after a failure), then result + pending launch.
         if task.cancelled():
             self._mc_resolve(self._active_t)  # no longer pending, whether or not it truly judged
+            invalidated = self._active_invalidated
+            if invalidated:
+                if self._stats is not None:
+                    self._stats.judge_source_discontinuity_dropped += 1
+                    self._stats.judge_source_discontinuity_active_dropped += 1
+                self._trace.append((
+                    "judge_source_discontinuity_dropped",
+                    {
+                        "source": self._source,
+                        "reason": self._active_invalidation_reason,
+                        "dropped_t": self._active_t,
+                        "slot": "active",
+                    },
+                ))
+                funnel = getattr(self._core, "funnel", None)
+                if funnel is not None:
+                    funnel.dropped(reason="source_discontinuity", camera=self._source)
             self._active = None
             self._active_filter_goal_ids = None
+            self._active_invalidated = False
+            if invalidated and not self._closing:
+                self._launch_pending()
             return
         exc = task.exception()
         if exc is not None:
@@ -483,13 +548,32 @@ class _JudgeScheduler:
             self._pending = None
             self._active = None
             self._active_filter_goal_ids = None
+            self._active_invalidated = False
             return
         self._mc_resolve(self._active_t)
         result = task.result()
         if self._active_filter_goal_ids is not None:
             result = _filter_goal_events(result, self._active_filter_goal_ids)
-        self._results.append((self._active_t, result))
+        if self._active_invalidated:
+            if self._stats is not None:
+                self._stats.judge_source_discontinuity_dropped += 1
+                self._stats.judge_source_discontinuity_active_dropped += 1
+            self._trace.append((
+                "judge_source_discontinuity_dropped",
+                {
+                    "source": self._source,
+                    "reason": self._active_invalidation_reason,
+                    "dropped_t": self._active_t,
+                    "slot": "active",
+                },
+            ))
+            funnel = getattr(self._core, "funnel", None)
+            if funnel is not None:
+                funnel.dropped(reason="source_discontinuity", camera=self._source)
+        else:
+            self._results.append((self._active_t, result))
         self._active_filter_goal_ids = None
+        self._active_invalidated = False
         self._active = None
         # A judgment completing WITHOUT raising is the same "reachable again" proof the agent level
         # (_note_judge_ok) uses — clear both latches and, only if one was actually
@@ -704,36 +788,75 @@ def _log_disposition(log: Any, *, incident_id: str, fire: Any, disposition: str,
         pass
 
 
-async def _aiter(source: Any, fps: float, **source_kwargs) -> AsyncIterator[tuple]:
-    """Normalize ``source`` to an async iterator of ``(t, gate_frame, judge_frame)``."""
+async def _aiter(source: Any, fps: float, **source_kwargs) -> AsyncIterator[SourceEnvelope]:
+    """Normalize captured and pushed video inputs to the versioned source envelope."""
+    sequence = 0
+
+    def normalize(item: Any) -> SourceEnvelope:
+        nonlocal sequence
+        if isinstance(item, SourceEnvelope):
+            return item
+        result = legacy_video_envelope(
+            item,
+            source_id="video",
+            sequence=sequence,
+            observed_time=time.monotonic(),
+            timebase=(
+                "observed"
+                if isinstance(source, str) and source_kwargs.get("timebase") == "wall"
+                else "source"
+            ),
+        )
+        sequence += 1
+        return result
+
     if isinstance(source, str):
         from percept.runtime.source import open_source
 
         async for item in open_source(source, fps=fps, **source_kwargs):
-            yield item
+            yield normalize(item)
     elif hasattr(source, "__aiter__"):
         async for item in source:  # already an async iterator
-            yield item
+            yield normalize(item)
     else:  # a sync iterable (a pre-decoded clip / a test stream)
         for item in source:
-            yield item
+            yield normalize(item)
             await asyncio.sleep(0)  # cooperate with the event loop
 
 
-async def _audio_aiter(source: Any, **source_kwargs) -> AsyncIterator[tuple]:
-    """Normalize an audio ``source`` to an async iterator of ``(t, chunk, energy)`` — the audio twin
-    of :func:`_aiter`. A ``str`` is a mic/wav URI; anything else is an (async) iterable (tests/replay)."""
+async def _audio_aiter(source: Any, **source_kwargs) -> AsyncIterator[SourceEnvelope]:
+    """Normalize captured and pushed audio inputs to the versioned source envelope."""
+    sequence = 0
+
+    def normalize(item: Any) -> SourceEnvelope:
+        nonlocal sequence
+        if isinstance(item, SourceEnvelope):
+            return item
+        result = legacy_audio_envelope(
+            item,
+            source_id="audio",
+            sequence=sequence,
+            observed_time=time.monotonic(),
+            timebase=(
+                "observed"
+                if isinstance(source, str) and source_kwargs.get("timebase") == "wall"
+                else "source"
+            ),
+        )
+        sequence += 1
+        return result
+
     if isinstance(source, str):
         from percept.runtime.audio import open_audio_source
 
         async for item in open_audio_source(source, **source_kwargs):
-            yield item
+            yield normalize(item)
     elif hasattr(source, "__aiter__"):
         async for item in source:
-            yield item
+            yield normalize(item)
     else:
         for item in source:
-            yield item
+            yield normalize(item)
             await asyncio.sleep(0)
 
 
@@ -941,18 +1064,6 @@ def _resolve_timebase(source: Any, requested: str) -> EffectiveTimebase:
     return EffectiveTimebase(requested=requested, resolved="wall", reason="live-source")
 
 
-def _frame_clocks(t: float, *, timebase: str, t0: float | None, wall_now: float) -> tuple[float, float]:
-    """Both clocks for a frame stamped ``t``, recorded regardless of which one ``t`` IS.
-
-    On ``"media"`` the frame's media offset IS ``t`` and the wall reading is the worker's receipt time.
-    On ``"wall"`` the frame's wall time IS ``t`` and the media-equivalent is the elapsed stream offset
-    (``t - t0``) — a live camera has no media clock, and elapsed-since-open is the honest analogue.
-    Nothing here is inferred from a rate; both values are measured."""
-    if timebase == "wall":
-        return ((t - t0) if t0 is not None else 0.0), t
-    return t, wall_now
-
-
 def _as_goal(g: Any, i: int) -> Any:
     """Coerce a convenience `goals=[...]` entry into a Goal: a plain condition string, a dict of Goal
     fields, or a Goal passthrough. A string `"the milk is boiling over"` -> Goal(id=f"g{i}", condition=,
@@ -1041,6 +1152,11 @@ async def run(
     - ``on_ask(event)`` — optional refusal sink for low-confidence reads; asks are not incidents.
     - ``on_frame(t, judge_frame)`` — the live-feed hook (wire an MJPEG streamer here).
     - ``on_health(event)`` — optional structured health/telemetry hook.
+    - ``source`` — captured and pushed inputs share the versioned
+      :class:`~percept.runtime.envelope.SourceEnvelope` contract. Duplicate, reordered, corrupt,
+      unsupported-version, or reset-without-epoch items are excluded before the Watch gate. Sequence
+      gaps, reconnects, and format changes accept the current item but reset temporal perception state
+      and report ``coverage_effect="observed_after_discontinuity"``.
     - ``source_*`` — capture queue/reconnect/RTSP options for URI sources.
     - ``snippet_pre_s`` — seconds of pre-roll captured into each incident's snippet.
     - ``snippet_max_bytes`` — BYTE budget for that pre-roll ring (default ``None`` →
@@ -1167,6 +1283,9 @@ async def run(
     stays diagnostic, exactly the way ``percept doctor`` reports ``ZERO_ADMITS_ON_FIXTURE``. If the
     scene was NOT quiet, the eye is mis-selected — ``percept doctor`` will show which statistic would
     have admitted.
+    ``runtime_ended.data["source_coverage"]`` separately reports, per modality, accepted observations,
+    excluded inputs, accepted discontinuities, and sequence positions known to be missing. These are
+    ingress facts and do not imply that a Watch was admitted to a judge.
     - ``coverage_floor`` — an explicit, OPT-IN minimum admission count this run declares it must
       clear (e.g. sourced from a :class:`~percept.sourceprofile.SourceProfile`'s
       ``parameters['coverage_floor']` via :mod:`percept.runtime_compiler`). ``None`` (default)
@@ -1193,9 +1312,9 @@ async def run(
       every incident with the decode instant, which made the timestamps useless as audit evidence),
       WALL/monotonic for a LIVE device/stream (``webcam:0``, ``rtsp://…`` — those must share the
       agent's deadline clock). ``"media"``/``"wall"`` force the choice. A non-``str``
-      source feeds its own explicit ``t`` and is never re-stamped, whatever this says. BOTH clocks are
-      recorded per frame regardless (``stats.last_media_t`` / ``stats.last_wall_t``), so an incident
-      timestamp can always be located on the other timeline afterwards.
+      source feeds its own explicit ``t`` and is never re-stamped, whatever this says.
+      ``stats.last_media_t`` and ``stats.last_wall_t`` preserve the clocks the source envelope
+      actually carried; either remains ``None`` when the source did not supply that clock.
 
     The capture rate this run actually opens with is RECORDED, never silently substituted —
     ``stats.effective_config`` (an :class:`EffectiveConfig`) carries ``requested_fps``/``effective_fps``
@@ -1318,6 +1437,8 @@ async def run(
     # is double-counted; when the caller passed none we keep a throwaway so the end-of-run coverage
     # payload is still honest (and so the async scheduler's judge_calls land somewhere countable).
     _cov = stats if stats is not None else RuntimeStats()
+    _video_source_tracker = SourceTracker()
+    _audio_source_tracker = SourceTracker()
     _judge_sched = (
         _JudgeScheduler(
             core, gate_source, _cov, metrics_collector=metrics_collector,
@@ -1665,6 +1786,50 @@ async def run(
                 pass  # event loop already closed on teardown — nothing to surface into
         return _cb
 
+    _source_health_seen: set[tuple[str, str, int, str]] = set()
+    dropped: list[int] = [0]  # shared with the capture thread
+    source_health: list = []  # capture thread events drained on the video cadence
+
+    async def _record_source_inspection(
+        envelope: SourceEnvelope,
+        inspection: SourceInspection,
+        *,
+        ts: float,
+    ) -> None:
+        video_cov = _video_source_tracker.coverage
+        audio_cov = _audio_source_tracker.coverage
+        _cov.source_observed = video_cov.observed + audio_cov.observed
+        _cov.source_excluded = video_cov.excluded + audio_cov.excluded
+        _cov.source_discontinuities = video_cov.discontinuities + audio_cov.discontinuities
+        _cov.source_missing_sequences = (
+            video_cov.missing_sequences + audio_cov.missing_sequences
+        )
+        if on_health is None:
+            return
+        for kind in inspection.events:
+            marker = (envelope.source_id, envelope.modality, envelope.epoch, kind)
+            if kind == "source_time_unknown" and marker in _source_health_seen:
+                continue
+            _source_health_seen.add(marker)
+            await _call_sink(
+                on_health,
+                RuntimeHealthEvent(
+                    kind,
+                    ts=ts,
+                    data={
+                        "version": envelope.version,
+                        "source_id": envelope.source_id,
+                        "modality": envelope.modality,
+                        "epoch": envelope.epoch,
+                        "sequence": envelope.sequence,
+                        "source_time": envelope.source_time,
+                        "observed_time": envelope.observed_time,
+                        "coverage_effect": inspection.coverage.kind,
+                        "missing_sequences": inspection.coverage.missing_sequences,
+                    },
+                ),
+            )
+
     try:
         if on_health is not None:
             await _call_sink(on_health, RuntimeHealthEvent("runtime_started", data={"source": repr(source)}))
@@ -1677,8 +1842,6 @@ async def run(
             # correct, and the loud channel stays reserved for a requirement that is actually unmet.
             await _call_sink(on_health, RuntimeHealthEvent(
                 "effective_config", data=effective_config.as_dict()))
-        dropped: list[int] = [0]  # shared with the capture thread; surfaced as stats.frames_dropped
-        source_health: list = []  # capture thread appends (kind, data); drained → on_health below
         source_kwargs = {
             "maxsize": source_queue_size,
             "reconnects": source_reconnects,
@@ -1687,13 +1850,9 @@ async def run(
             "dropped": dropped,
             "health": source_health,
         }
-        # A capture opened via open_source stamps each frame on the timebase
-        # resolved above — WALL for a live device/stream (so frame `t` shares the timeline the agent
-        # resolves deadlines / verification concerns on, self.clock), MEDIA for a recorded file (so
-        # `incident.ts` means something against the media). Deterministic sources (iterables, replay,
-        # the eval harness, every offline test) feed explicit `t` and are never re-stamped — the kwarg
-        # only reaches open_source for a str source (see _aiter). A WALL path is the only one
-        # _assert_timebase can guard: on media, `t` is deliberately not the core clock.
+        # A captured SourceEnvelope always preserves both clocks it actually has.  This setting selects
+        # which clock drives Watch evaluation: observation time for a live source, source time for
+        # recorded media. Deterministic legacy tuples carry their explicit source `t`.
         live_video = isinstance(source, str)
         if live_video:
             source_kwargs["timebase"] = video_tb.resolved
@@ -1703,8 +1862,8 @@ async def run(
         # ~256 @4/s ~64s — a single global tolerance would false-fire on a legitimately-backlogged audio
         # chunk behind a blocked pump, an expected condition). Only armed on live paths (media is offline).
         _skew_emitted: set[str] = set()
-        # The first frame's `t`, so a WALL-timebase run can still report an honest
-        # media-equivalent (elapsed stream offset). One-element list = assignable from the loop below.
+        # The first frame's selected `t`, retained only for legacy cross-modal pacing.  Elapsed
+        # observation time is never recorded as source/media provenance.
         _clock_t0: list = [None]
         # The most recent frame timestamp, so the end-of-source gate-suppression drain can stamp its
         # events on the stream timeline. 0.0 until the first frame (an empty source drains nothing).
@@ -1849,7 +2008,40 @@ async def run(
             async def _pump_audio():
                 # Pump every chunk into the AudioWindow (un-strands modality="fused"/"audio") and track
                 # energy + onsets. Never lets a bad audio chunk kill the run — the watch survives a mic drop.
-                async for at, chunk, energy in _audio_aiter(audio_source, **audio_kwargs):
+                async for envelope in _audio_aiter(audio_source, **audio_kwargs):
+                    require_source_time = audio_tb is not None and audio_tb.resolved == "media"
+                    inspection = _audio_source_tracker.inspect(
+                        envelope, require_source_time=require_source_time
+                    )
+                    at = (
+                        envelope.source_time
+                        if require_source_time and envelope.source_time is not None
+                        else envelope.observed_time
+                    )
+                    await _record_source_inspection(envelope, inspection, ts=at)
+                    if not inspection.accepted:
+                        continue
+                    chunk, energy = envelope.payload, envelope.signal
+                    if inspection.resets_continuity:
+                        window = getattr(core, "audio_windows", {}).get(gate_source)
+                        if window is not None and hasattr(window, "clear"):
+                            window.clear()
+                        if onset is not None and hasattr(onset, "reset"):
+                            onset.reset()
+                        if _vad is not None and hasattr(_vad, "reset"):
+                            _vad.reset()
+                        _utt["start"] = None
+                        _utt_buf.clear()
+                        _prev_chunk_at[0] = None
+                        audio.update({
+                            "energy": None,
+                            "energy_t": None,
+                            "chunk_dt": None,
+                            "wake": False,
+                            "wake_at": None,
+                        })
+                        if _judge_sched is not None:
+                            _judge_sched.invalidate_source_continuity(inspection.events)
                     # Hold a FILE/CONTAINER chunk back until the video loop's judged media time has
                     # (almost) reached it — never busy-wait, park on the Event the frame loop sets every
                     # tick. `_audio_paced` is False for a live mic (byte-for-byte unchanged: this loop
@@ -2036,7 +2228,17 @@ async def run(
                 _cov.incidents += 1
                 yield incident
 
-        async for t, gate_frame, judge_frame in _aiter(source, capture_fps, **source_kwargs):
+        async for envelope in _aiter(source, capture_fps, **source_kwargs):
+            require_source_time = (video_tb.resolved if live_video else "media") == "media"
+            inspection = _video_source_tracker.inspect(
+                envelope, require_source_time=require_source_time
+            )
+            t = (
+                envelope.source_time
+                if require_source_time and envelope.source_time is not None
+                else envelope.observed_time
+            )
+            await _record_source_inspection(envelope, inspection, ts=t)
             # Async judge dispatch: surface everything the off-loop scheduler finished since the last
             # frame — fires route through the SAME _emit_fires machinery at their ADMISSION time `jt`
             # (incident.ts is the admitting frame, not the completion time). drain() also re-raises a
@@ -2056,6 +2258,21 @@ async def run(
                 # Surface any judge_degraded/judge_persistent_failure events queued by the
                 # perceive_judged calls that just drained above (core is shared across dispatch modes).
                 await _drain_judge_health(core, on_health, t)
+            if not inspection.accepted:
+                continue
+            gate_frame, judge_frame = envelope.signal, envelope.payload
+            if inspection.resets_continuity:
+                gate.reset()
+                for bank in banks.values():
+                    bank.reset()
+                for controller in coasts.values():
+                    controller.reset()
+                clips.clear()
+                _cap_t0 = None
+                _cap_n = 0
+                _cap_unmet_emitted = False
+                if _judge_sched is not None:
+                    _judge_sched.invalidate_source_continuity(inspection.events)
             # Surface any gate SUPPRESSION queued since the last tick (require_false_first /
             # refractory withholding a fire the baseline gate would have delivered). Drained here —
             # UNCONDITIONALLY, outside the dispatch-mode branch above and BEFORE the per-frame
@@ -2064,19 +2281,16 @@ async def run(
             # so this drains an empty queue and emits nothing unless a profile turned one on.
             _last_t = t
             await _drain_gate_health(core, on_health, t)
-            # Record BOTH clocks for this frame, whichever one `t` is stamped on, so an
-            # incident timestamp can be located on the other timeline after the run.
+            # Preserve both clocks exactly as supplied.  In particular, a live source with no source
+            # clock keeps ``last_media_t=None``; elapsed observation time is not relabelled as media.
             if stats is not None:
-                stats.last_media_t, stats.last_wall_t = _frame_clocks(
-                    t, timebase=(video_tb.resolved if live_video else "media"),
-                    t0=_clock_t0[0], wall_now=wall_clock(),
-                )
+                stats.last_media_t = envelope.source_time
+                stats.last_wall_t = envelope.observed_time
             if _audio_paced:
                 # Advance the marker the paced audio pump awaits, to THIS frame's media time —
-                # same `_frame_clocks` semantics as the stats mirror above (media `t` IS the media time;
-                # a wall-timebase video's media-equivalent is the elapsed stream offset). Setting the
-                # Event wakes the pump task (parked in `_video_progress.wait()`), which then re-checks
-                # whether it has caught up enough to push its held chunk.
+                # A media-selected `t` is the source position.  For the legacy mixed-clock case, the
+                # elapsed observation offset is used only to pace the local pump and is never exposed
+                # as source provenance.
                 _video_media_t[0] = (
                     t if (video_tb.resolved if live_video else "media") == "media"
                     else ((t - _clock_t0[0]) if _clock_t0[0] is not None else 0.0)
@@ -2086,7 +2300,7 @@ async def run(
                 _clock_t0[0] = t
             # On a WALL-timebase source, frame `t` IS the wall clock — if it has drifted from the core
             # clock past the video tolerance, the timelines the gate/deadlines share have come apart. Emit
-            # once. A media-timebase source runs `t` on a synthetic timeline by design and is never checked.
+            # once. A source-time path is intentionally distinct from the core clock and is never checked.
             if live_video and video_tb.resolved == "wall":
                 await _assert_timebase(
                     t, getattr(core, "clock", None),
@@ -2406,6 +2620,7 @@ async def run(
             _t.cancel()
         if autosave_task is not None:
             autosave_task.cancel()
+        _cov.frames_dropped = dropped[0]
         # One last save on the way out so a clean shutdown loses nothing since the last autosave.
         if persistence is not None and getattr(core, "save_state", None):
             try:
@@ -2428,6 +2643,10 @@ async def run(
                 "audio_wakes": _cov.audio_wakes,
                 "judge_calls": _cov.judge_calls,
                 "incidents": _cov.incidents,
+                "source_coverage": {
+                    "video": _video_source_tracker.coverage.as_dict(),
+                    "audio": _audio_source_tracker.coverage.as_dict(),
+                },
             }
             if _cov.frames > 0 and _cov.escalations == 0:
                 # A FACT, not automatically a verdict. A still camera under a motion-gated watch

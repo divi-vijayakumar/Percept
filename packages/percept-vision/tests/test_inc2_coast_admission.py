@@ -104,6 +104,9 @@ MOVED = gray_frame(W, H, 255)
 BLANK = [(round(0.5 * i, 2), STILL, "blank") for i in range(11)]  # t = 0.0 .. 5.0 at 2 fps
 # A real content change: STILL -> MOVED clears the motion gate -> a tuned-signal admit.
 CHANGED = [(0.0, STILL, "blank"), (1.0, MOVED, "banner"), (2.0, STILL, "blank")]
+# One continuous synthetic stream for the mixed partition test.  Concatenating CHANGED at t=0 after
+# BLANK ends at t=5 would now correctly be rejected as an undeclared timestamp reset.
+MIXED = BLANK + [(t + 6.0, frame, token) for t, frame, token in CHANGED]
 
 
 def _doc_vision() -> FakeVision:
@@ -174,7 +177,7 @@ class PartitionInvariantTests(unittest.TestCase):
     def test_escalations_equal_signal_plus_coast_plus_audio(self):
         # A MIXED run: some coast admits (static ticks) AND a motion escalation (the change).
         stats = RuntimeStats()
-        _run(_doc_core(None), BLANK + CHANGED, stats)
+        _run(_doc_core(None), MIXED, stats)
         self.assertEqual(
             stats.escalations,
             stats.signal_admits + stats.coast_admits + stats.audio_wakes,

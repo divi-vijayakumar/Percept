@@ -35,12 +35,13 @@ class _FakeGray:
 
 class _FakeBuffer:
     def tobytes(self):
-        return b"jpeg"
+        return b"\xff\xd8jpeg\xff\xd9"
 
 
 class _FakeCv2:
     CAP_FFMPEG = 1900
     CAP_PROP_FPS = 5
+    CAP_PROP_POS_MSEC = 0
     COLOR_BGR2GRAY = 6
 
     def __init__(self, cap):
@@ -71,17 +72,21 @@ class _PacedCap:
         self.dt = 1.0 / delivered_fps
         self.clock = clock
         self.released = False
+        self.read_count = 0
 
     def isOpened(self):
         return True
 
     def get(self, prop):
+        if prop == _FakeCv2.CAP_PROP_POS_MSEC:
+            return max(0, self.read_count - 1) * 1000.0 / self.reported
         return self.reported
 
     def read(self):
         if self.left <= 0:
             return (False, None)
         self.left -= 1
+        self.read_count += 1
         self.clock[0] += self.dt
         return (True, object())
 
@@ -112,7 +117,7 @@ class VideoTimebaseTests(unittest.TestCase):
         ts = [it[0] for it in _drain(q)]
         step = 8  # round(30 / 4) — the unclamped reported fps drives the decimation
         expected = [i / 30.0 for i in range(24) if i % step == 0]
-        self.assertEqual(ts, expected)  # 0/30, 8/30, 16/30 — exact media offsets
+        self.assertEqual(ts, expected)  # decoder-provided media positions, never an adapter estimate
 
     def test_wall_timebase_stamps_now_not_media(self):
         clock = [100.0]

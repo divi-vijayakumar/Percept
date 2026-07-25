@@ -99,6 +99,11 @@ class FrameWindow:
     def latest(self) -> tuple[float, Any] | None:
         return self._frames[-1] if self._frames else None
 
+    def clear(self) -> None:
+        """Drop retained frames at a source discontinuity."""
+        self._frames.clear()
+        self._bytes = 0
+
     def __len__(self) -> int:
         return len(self._frames)
 
@@ -126,6 +131,10 @@ class AudioWindow:
         end = self._chunks[-1][0] if now is None else now
         start = end - seconds
         return [c for t, c in self._chunks if t >= start]
+
+    def clear(self) -> None:
+        """Drop retained chunks at a source discontinuity."""
+        self._chunks.clear()
 
     def __len__(self) -> int:
         return len(self._chunks)

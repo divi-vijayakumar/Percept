@@ -181,6 +181,7 @@ RECOVERED_HEALTH_KINDS: frozenset[str] = frozenset({"judge_scheduler_recovered"}
 JUDGE_DROP_HEALTH_KINDS: frozenset[str] = frozenset({
     "judge_superseded",
     "judge_revision_dropped",
+    "judge_source_discontinuity_dropped",
 })
 
 #: Gate actions counted in :attr:`TraceSummary.gate_outcomes`. ``fire``/``ask``/``silent`` come from

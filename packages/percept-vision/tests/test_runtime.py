@@ -148,6 +148,16 @@ class RuntimeWorkerTests(unittest.TestCase):
         self.assertEqual(ended[0].data, {
             "frames_seen": 4, "admitted": 3, "signal_admits": 3, "coast_admits": 0,
             "audio_wakes": 0, "judge_calls": 3, "incidents": 2,
+            "source_coverage": {
+                "video": {
+                    "observed": 4, "excluded": 0, "discontinuities": 0,
+                    "missing_sequences": 0,
+                },
+                "audio": {
+                    "observed": 0, "excluded": 0, "discontinuities": 0,
+                    "missing_sequences": 0,
+                },
+            },
         })
         # the admission split partitions the total: escalations == signal + coast + audio
         self.assertEqual(
