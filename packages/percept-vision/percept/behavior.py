@@ -48,7 +48,7 @@ from .contracts import (
 )
 from .episodes import EPISODE_POLICIES, ContinuationDecision
 from .duration_routes import duration_policy
-from .gate import ASK, FIRE, Gate, classify
+from .gate import ASK, FIRE, Gate, GateOutcome, classify
 from .observability import get_logger
 
 # --------------------------------------------------------------------------------------------------
@@ -809,6 +809,7 @@ class BehaviorExecutor:
         timing: JudgmentTimingBuilder | None = None,
         evidence_seq: int = 0,
         fold: "EpisodeFoldResult | None" = None,
+        outcome_sink: "Callable[[GateOutcome], None] | None" = None,
     ) -> Fired | None:
         """Run one judged concern through the (unchanged) gate and return the firing, if any.
 
@@ -829,6 +830,9 @@ class BehaviorExecutor:
         path actually makes. It never influences whether or what fires: gate semantics, the
         never-contract, the accumulator and the hard-quadrant escalation are untouched, and a
         failure to build the event degrades to ``judgment=None`` rather than to a changed decision.
+
+        ``outcome_sink`` is an internal observability seam: when supplied, it receives the exact
+        typed outcome from this method's sole gate evaluation. It never causes a second evaluation.
         """
         ctx = self.ctx(goal.id)
         truth = classify(verdict, freshness, self.gate.threshold, self.gate.fresh_min)
@@ -862,6 +866,8 @@ class BehaviorExecutor:
             max_support_gap_s=max_support_gap_s, now=t,
             no_evict=program.key.suppress_false,
         )
+        if outcome_sink is not None:
+            outcome_sink(outcome)
         action = outcome.action
         # The envelope the executor knows at fire time: the gate reason, how the eye looked, and
         # that a judged read is a DIRECT observation. ``roi`` stays None — the judge does not report the

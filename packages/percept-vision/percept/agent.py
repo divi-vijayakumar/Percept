@@ -48,7 +48,7 @@ from .identity_policy import (
 )
 from .judge_context import JUDGE_STATIC_CONTEXT_KEY, ReservedContextKeyError
 from .events import AudioUnit, AudioWindow, EventLog, FrameWindow
-from .gate import FIRE, Gate, GateAction, classify
+from .gate import FIRE, Gate, GateAction, GateOutcome, classify
 from .goals import GoalOp, GoalRegistry
 from .observability import Funnel, Metrics, OTelExporter, TraceEvent, get_logger, health, judge_usage
 from .rhythm import RhythmTracker
@@ -198,16 +198,20 @@ def _escalated_perception(base, level: int):
     return spec
 
 
-def _trace_reason(truth: str, action: str) -> str:
-    """A human-readable WHY for the ``gate.classified`` trace stage — purely observational, derived
-    post-hoc from the already-computed ``truth`` (yes/no/unknown) + ``action`` (fire/ask/silent). Never
-    read by firing logic (invariant 1: one gate, one firing path); this only explains its output, the
-    same forensic shape the eval bench trace used (``eval/bench/track_charades_e2e.py::_silent_reason``)."""
+def _trace_reason(truth: str, action: str, gate_reason: str | None = None) -> str:
+    """Human-readable WHY for ``gate.classified``.
+
+    The typed ``gate_reason`` comes from the actual :class:`GateOutcome`; truth/action provide the
+    compatibility fallback for paths that did not evaluate the gate. This is observational only.
+    """
     if action == FIRE:
-        return "fire: rising_edge"
+        return f"fire: {gate_reason or 'rising_edge'}"
     if action == "ask":
-        return "ask: low_confidence_or_stale"
+        return f"ask: {gate_reason or 'low_confidence_or_stale'}"
     # silent
+    if gate_reason is not None:
+        label = "verdict_not_satisfied" if gate_reason == "not_satisfied" else gate_reason
+        return f"silent: {label}"
     if truth == "no":
         return "silent: verdict_not_satisfied"
     if truth == "yes":
@@ -1289,6 +1293,7 @@ class Percept:
         timing: JudgmentTimingBuilder | None = None,
         evidence_seq: int = 0,
         fold: "EpisodeFoldResult | None" = None,
+        outcome_sink: "Callable[[GateOutcome], None] | None" = None,
     ) -> FireEvent | None:
         """One firing path — delegates to the :class:`~percept.behavior.BehaviorExecutor` (the general
         ``sense·key·accumulate`` executor that now owns the per-concern re-arm key-synthesis, the
@@ -1307,7 +1312,7 @@ class Percept:
         """
         fired = self.executor.fire_judged(
             goal, verdict, base_key, program_of(goal), freshness=freshness, t=t, metric=metric,
-            timing=timing, evidence_seq=evidence_seq, fold=fold,
+            timing=timing, evidence_seq=evidence_seq, fold=fold, outcome_sink=outcome_sink,
         )
         if fired is None:
             return None
@@ -2053,9 +2058,13 @@ class Percept:
             # selects exactly one), so at most one of these returns non-None.
             doc_fold = self._document_episode_fold(goal, verdict, now)
             claim_fold = self._claim_episode_fold(goal, verdict, now)
-            ev_fire = self._fire_concern(goal, verdict, base_key, freshness=freshness, t=now,
-                                         timing=judgment_timing, evidence_seq=evidence_seq,
-                                         fold=doc_fold if doc_fold is not None else claim_fold)
+            gate_outcomes: list[GateOutcome] = []
+            ev_fire = self._fire_concern(
+                goal, verdict, base_key, freshness=freshness, t=now,
+                timing=judgment_timing, evidence_seq=evidence_seq,
+                fold=doc_fold if doc_fold is not None else claim_fold,
+                outcome_sink=gate_outcomes.append,
+            )
             if ev_fire is not None:
                 if ev_fire.action == FIRE:
                     self.funnel.fired(concern=goal.id, camera=source)  # a rising-edge fire emitted
@@ -2076,9 +2085,15 @@ class Percept:
                 # The gate's own INPUTS ride along with its output, so a recorded trace is
                 # replayable through the (deterministic) gate without the original frame or any
                 # model call — see percept.replay. Purely additive trace data; nothing branches on it.
+                gate_reason = (
+                    gate_outcomes[-1].reason
+                    if gate_outcomes and resolved is None
+                    else None
+                )
                 await self._emit_trace(trace_id, now, "gate.classified", goal_id=goal.id,
                                        truth=truth, action=action,
-                                       reason=_trace_reason(truth, action),
+                                       reason=_trace_reason(truth, action, gate_reason),
+                                       gate_reason=gate_reason,
                                        entity_id=reducer_entity_id,
                                        satisfied=getattr(verdict, "satisfied", None),
                                        confidence=getattr(verdict, "confidence", None),

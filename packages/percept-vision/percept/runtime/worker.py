@@ -170,7 +170,7 @@ class RuntimeStats:
     audio_chunks: int = 0  # audio chunks pumped into the AudioWindow (fused/acoustic perception)
     audio_wakes: int = 0  # audio onsets that admitted a frame the visual gate would have skipped
     # Admission partition (each admitted frame lands in EXACTLY one bucket, so the totals sum cleanly):
-    #   escalations == signal_admits + coast_admits + audio_wakes
+    #   escalations == signal_admits + fixed_admits + coast_admits + audio_wakes
     # - signal_admits: the tuned motion/salience gate escalated (decision.escalate) — the real signal.
     # - coast_admits: a fixed-cadence coast floor forced the judge on a frame the gate would have
     #   skipped (coast_admit and NOT escalate). A strict_admission ExecutionPolicy (coast_enabled=False)
@@ -1317,9 +1317,9 @@ async def run(
       either.
 
     ADMISSION COVERAGE. Every run closes with ``RuntimeHealthEvent("runtime_ended")`` carrying this
-    run's counters — ``frames_seen`` / ``admitted`` / ``judge_calls`` / ``incidents`` — so a consumer
-    that kept no state of its own can still say what the session did. When a run observed frames but
-    admitted NONE of them, a ``RuntimeHealthEvent("zero_admission_coverage")`` is emitted immediately
+    run's counters — including exact fixed/per-goal admission, dispatch, judge, and incident counts —
+    so a consumer that kept no state of its own can still say what the session did. When a run observed
+    frames but admitted NONE of them, a ``RuntimeHealthEvent("zero_admission_coverage")`` is emitted immediately
     BEFORE it, carrying the same counts plus the ``threshold`` and salience ``stat`` the frames were
     judged against, PLUS ``coverage_floor`` and ``floor_unmet`` (below). By default that event states
     a FACT, not a degradation verdict: a still camera under a motion-gated watch correctly admits
@@ -1435,37 +1435,43 @@ async def run(
             if program_of(goal).perception.modality in ("vision", "fused")
         ]
 
+    clear_pending_dwell = getattr(core, "clear_pending_dwell", None)
+
+    def _require_duration_runtime() -> None:
+        """Validate duration shape and its continuity hook for the CURRENT source goals."""
+        source_goals = _source_goals()
+        require_duration_routes(
+            source_goals,
+            driver="percept.run",
+            require_worker_cadence=True,
+        )
+        duration_goal_ids = [
+            str(goal.id)
+            for goal in source_goals
+            if isinstance(getattr(goal, "state", None), Mapping)
+            and "hold_s" in goal.state
+        ]
+        if duration_goal_ids and not callable(clear_pending_dwell):
+            raise UnsupportedDurationRouteError(
+                (
+                    DurationRouteIssue(
+                        path="Runtime.clear_pending_dwell",
+                        code=UNSUPPORTED_DURATION_ROUTE,
+                        goal_id=goal_id,
+                        message=(
+                            "is required to invalidate sustained-duration evidence across "
+                            "run and pause continuity boundaries"
+                        ),
+                    )
+                    for goal_id in duration_goal_ids
+                ),
+                driver="percept.run",
+            )
+
     # Route support is source-local. Refuse before this worker opens or pulls its source; repeat this
     # preflight during regating so a newly armed unsupported Goal cannot reach detection or judging.
     require_worker_routes(_source_goals(), driver="percept.run")
-    require_duration_routes(
-        _source_goals(),
-        driver="percept.run",
-        require_worker_cadence=True,
-    )
-    clear_pending_dwell = getattr(core, "clear_pending_dwell", None)
-    duration_goal_ids = [
-        str(goal.id)
-        for goal in _source_goals()
-        if isinstance(getattr(goal, "state", None), Mapping)
-        and "hold_s" in goal.state
-    ]
-    if duration_goal_ids and not callable(clear_pending_dwell):
-        raise UnsupportedDurationRouteError(
-            (
-                DurationRouteIssue(
-                    path="Runtime.clear_pending_dwell",
-                    code=UNSUPPORTED_DURATION_ROUTE,
-                    goal_id=goal_id,
-                    message=(
-                        "is required to invalidate sustained-duration evidence across "
-                        "run and pause continuity boundaries"
-                    ),
-                )
-                for goal_id in duration_goal_ids
-            ),
-            driver="percept.run",
-        )
+    _require_duration_runtime()
     if callable(clear_pending_dwell):
         # Every run is a new observation session even when a caller reuses the same in-process core.
         clear_pending_dwell(gate_source)
@@ -1622,11 +1628,7 @@ async def run(
         not reset mid-rep) — so arming one goal never disturbs the others."""
         _require_source_scoped_callbacks()
         require_worker_routes(_source_goals(), driver="percept.run")
-        require_duration_routes(
-            _source_goals(),
-            driver="percept.run",
-            require_worker_cadence=True,
-        )
+        _require_duration_runtime()
         visual_active = _visual_goals()
         conditions = []
         runtime_bindings = getattr(core, "_watch_runtime_bindings", {})
@@ -2927,10 +2929,10 @@ async def run(
                         )
             emit_trace = getattr(core, "_emit_trace", None)
             if getattr(core, "on_trace", None) is not None and emit_trace is not None:
-                # The tier-0 edge decision — the same shape used elsewhere for forensic tracing (motion/structural/
-                # semantic/threshold/escalate) — emitted for EVERY frame, escalated or not, so "why didn't
-                # it fire" can be answered even when the gate never spent a cloud call. trace_id matches
-                # the one perceive_judged uses below (source+ts), so a dashboard can correlate the two.
+                # The tier-0 edge decision — signal, threshold, exact ordered goal ids + aligned
+                # admission causes — emitted for EVERY frame, escalated or not, so "why didn't it fire"
+                # can be answered even when the gate never spent a cloud call. trace_id matches the one
+                # perceive_judged uses below (source+ts), so a dashboard can correlate the two.
                 await emit_trace(
                     f"{gate_source}@{t}", t, "edge.decision",
                     motion=round(float(decision.signal.motion), 4),
@@ -2940,6 +2942,7 @@ async def run(
                     escalate=bool(decision.escalate),
                     coast_admit=coast_admit,
                     goal_ids=tuple(admitted_goal_ids),
+                    admission_causes=tuple(admitted_causes),
                 )
             # Remember WHAT this frame had to clear, so an end-of-run zero-admission report can name
             # the bar the scene never crossed (a regate can move it; the last one applied is the one
@@ -3058,12 +3061,18 @@ async def run(
             _cov_data = {
                 "frames_seen": _cov.frames,
                 "admitted": _cov.escalations,
-                # The admission split (escalations == signal_admits + coast_admits + audio_wakes): a
-                # consumer auditing a strict_admission run reads coast_admits==0 directly here instead
-                # of inferring it from the total.
+                # The per-frame admission split (escalations == signal_admits + fixed_admits +
+                # coast_admits + audio_wakes): a consumer auditing fixed or strict admission reads
+                # the exact bucket directly instead of inferring it from the total.
                 "signal_admits": _cov.signal_admits,
+                "fixed_admits": _cov.fixed_admits,
                 "coast_admits": _cov.coast_admits,
                 "audio_wakes": _cov.audio_wakes,
+                "fixed_opportunities": _cov.fixed_opportunities,
+                "goal_admissions": _cov.goal_admissions,
+                "admission_by_goal": dict(_cov.admission_by_goal),
+                "admission_by_cause": dict(_cov.admission_by_cause),
+                "perceive_dispatches": _cov.perceive_dispatches,
                 "judge_calls": _cov.judge_calls,
                 "incidents": _cov.incidents,
                 "source_coverage": {

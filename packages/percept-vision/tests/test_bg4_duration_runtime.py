@@ -165,6 +165,43 @@ def test_direct_mode_allows_missing_cadence_but_worker_refuses_before_source_pul
     assert pulled is False
 
 
+def test_dynamic_duration_regate_rejects_generic_core_without_continuity_hook():
+    vision = RecordingFakeVision()
+    base = Percept.create(vision=vision, discover_plugins=False)
+
+    class CoreWithoutContinuityHook:
+        def __getattr__(self, name):
+            if name == "clear_pending_dwell":
+                raise AttributeError(name)
+            return getattr(base, name)
+
+    pulled: list[float] = []
+
+    async def source():
+        pulled.append(0.0)
+        yield (0.0, STILL, "open")
+        base.add_goal(duration_goal())
+        pulled.append(5.0)
+        yield (5.0, STILL, "open")
+        pulled.append(10.0)
+        yield (10.0, STILL, "open")
+
+    with pytest.raises(UnsupportedDurationRouteError) as caught:
+        asyncio.run(
+            collect(
+                CoreWithoutContinuityHook(),
+                source(),
+                judge_dispatch="inline",
+                regate_on_goal_change=True,
+            )
+        )
+
+    assert caught.value.issues[0].path == "Runtime.clear_pending_dwell"
+    assert pulled == [0.0, 5.0]
+    assert vision.detect_calls == 0
+    assert vision.judge_calls == []
+
+
 def test_gate_support_gap_boundary_and_pending_clear_do_not_rearm():
     key = ("door", "scene")
     gate = Gate()
@@ -355,6 +392,66 @@ def test_static_door_template_apply_and_run_has_exact_fixed_accounting(dispatch)
     assert stats.judge_calls == 3
     assert stats.fires == 1
     assert stats.incidents == 1
+
+
+def test_fixed_runtime_health_and_trace_retain_exact_admission_and_dwell_reasons():
+    core = Percept.create(
+        vision=FakeVision(script={"open": YES}),
+        discover_plugins=False,
+    )
+    core.add_goal(duration_goal(hold_s=10.0, cadence=FIXED_5))
+    health = []
+    traces = []
+
+    incidents = asyncio.run(
+        collect(
+            core,
+            [(0.0, STILL, "open"), (5.0, STILL, "open"), (10.0, STILL, "open")],
+            judge_dispatch="inline",
+            on_health=health.append,
+            on_trace=traces.append,
+        )
+    )
+
+    assert len(incidents) == 1
+    assert incidents[0].reason == "dwell_satisfied"
+
+    ended = [event for event in health if event.kind == "runtime_ended"]
+    assert len(ended) == 1
+    assert {
+        key: ended[0].data[key]
+        for key in (
+            "fixed_admits",
+            "fixed_opportunities",
+            "goal_admissions",
+            "admission_by_goal",
+            "admission_by_cause",
+            "perceive_dispatches",
+        )
+    } == {
+        "fixed_admits": 3,
+        "fixed_opportunities": 3,
+        "goal_admissions": 3,
+        "admission_by_goal": {"door": 3},
+        "admission_by_cause": {"fixed": 3},
+        "perceive_dispatches": 3,
+    }
+
+    edge = [event for event in traces if event.stage == "edge.decision"]
+    assert [event.data["goal_ids"] for event in edge] == [("door",)] * 3
+    assert [event.data["admission_causes"] for event in edge] == [("fixed",)] * 3
+
+    gate = [event for event in traces if event.stage == "gate.classified"]
+    assert [event.data["reason"] for event in gate] == [
+        "silent: dwell_pending",
+        "silent: dwell_pending",
+        "fire: dwell_satisfied",
+    ]
+    assert [event.data["gate_reason"] for event in gate] == [
+        "dwell_pending",
+        "dwell_pending",
+        "dwell_satisfied",
+    ]
 
 
 def test_remote_topologies_reject_duration_with_structured_issue():
