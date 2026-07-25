@@ -607,9 +607,8 @@ class TestEndToEndArm(unittest.TestCase):
     def test_execution_policy_composes_alongside_domain_pack(self) -> None:
         """DomainPack + ExecutionPolicy resolve together onto the SAME ResolvedWatch — the
         precedence chain (SourceProfile < DomainPack < ExecutionPolicy < ...) composes rather than
-        one layer excluding the other. apply_watch_plan only threads the resulting GOAL onto the
-        live core (Settings are a per-Percept.create() concern, unchanged by this card) — checked
-        here at the resolver, where the composition actually happens."""
+        one layer excluding the other. Core-scoped settings must be selected when constructing the
+        core; applying a conflicting per-Watch value is rejected rather than silently inert."""
         from percept.execution_policies_default import LOW_COST_V1
 
         resolver = ConfigResolver()
@@ -623,7 +622,25 @@ class TestEndToEndArm(unittest.TestCase):
         receipt = apply_watch_plan(
             core, plan, domain_pack=FACILITY_OBSERVATION_V1, execution_policy=LOW_COST_V1
         )
+        self.assertEqual(receipt.status, "rejected")
+        self.assertEqual(
+            receipt.dropped_fields[0].code,
+            "core_scoped_setting_requires_separate_runtime",
+        )
+
+        configured = Percept.configure(
+            mode="offline",
+            discover_plugins=False,
+            execution_policy=LOW_COST_V1,
+        )
+        receipt = apply_watch_plan(
+            configured,
+            plan,
+            domain_pack=FACILITY_OBSERVATION_V1,
+            execution_policy=LOW_COST_V1,
+        )
         self.assertEqual(receipt.status, "applied")
+        self.assertTrue(configured.settings.cache.enabled)
 
 
 # ---------------------------------------------------------------------------

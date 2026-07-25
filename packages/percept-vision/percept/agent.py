@@ -523,6 +523,15 @@ class Percept:
     # bindings existed.
     _judge_bindings: dict = field(default_factory=dict)  # goal_id -> BoundJudge-shaped binding
     _judge_requesting_goal_ids: set = field(default_factory=set)  # goal ids that MUST have a binding
+    # RuntimeCompiler output bound per programmable Watch.  Values are ``(CompiledWatch,
+    # SourceProfile | None)`` tuples registered atomically with the goal by ``apply_watch_plan``.
+    # Keeping the already-compiled object keyed by goal lets a shared core execute different
+    # admission, temporal, episode, and source-profile choices without last-arm-wins mutation.
+    _watch_runtime_bindings: dict = field(default_factory=dict)
+    # Executable identity paired with ``_watch_runtime_bindings``. The apply ledger consults this
+    # before treating an old receipt as an idempotent hit, so replacing goal ``g`` with a different
+    # compiled Watch does not make a later re-apply of the first plan a false no-op.
+    _watch_runtime_keys: dict = field(default_factory=dict)
     # -- consequence-gate GA: the SAME queue-here / drain-in-worker pattern for GATE SUPPRESSION.
     # ``Gate`` calls ``_note_gate_suppressed`` for every decision whose reason is in
     # ``percept.gate.SUPPRESSION_REASONS`` (start_anchored / refractory) -- i.e. a fire the baseline
@@ -823,6 +832,10 @@ class Percept:
         # ``replace`` (not in-place set) so this is correct even if Goal is later frozen.
         goal = replace(goal, origin=GoalOrigin.STRUCTURED_TRUSTED)
         self._arm_deadline(goal)  # resolve an authored duration into an absolute stamp at ARM time
+        # A direct same-id re-arm must not inherit the prior WatchPlan's compiled configuration or
+        # judge adapter. ``apply_watch_plan`` registers replacement bindings immediately afterward.
+        self._release_judge_binding(goal.id)
+        self._release_watch_runtime(goal.id)
         result = self.goals.create(goal)
         # Cache-invalidate on the direct arm() path too (only apply_goal_ops did before). A goal id
         # re-armed with a new condition must not be served a verdict cached under its OLD meaning — the
@@ -850,6 +863,43 @@ class Percept:
         """
         self._judge_bindings.pop(goal_id, None)
         self._judge_requesting_goal_ids.discard(goal_id)
+
+    def _register_watch_runtime(
+        self,
+        goal_id: str,
+        compiled: Any,
+        source_profile: Any = None,
+        application_key: str | None = None,
+    ) -> None:
+        """Bind one compiled Watch to its armed goal without mutating core-wide defaults."""
+        self._watch_runtime_bindings[goal_id] = (compiled, source_profile)
+        if application_key is not None:
+            self._watch_runtime_keys[goal_id] = application_key
+
+    def _release_watch_runtime(self, goal_id: str) -> None:
+        """Release an applied Watch's session-local compiled binding."""
+        self._watch_runtime_bindings.pop(goal_id, None)
+        self._watch_runtime_keys.pop(goal_id, None)
+
+    def _watch_runtime_for(self, goal: "Goal | str") -> Any:
+        goal_id = goal if isinstance(goal, str) else goal.id
+        return self._watch_runtime_bindings.get(goal_id)
+
+    def _settings_for_goal(self, goal: Goal) -> Any:
+        bound = self._watch_runtime_for(goal)
+        return bound[0].settings if bound is not None else self.settings
+
+    def _source_profile_for_goal(self, goal: Goal) -> Any:
+        bound = self._watch_runtime_for(goal)
+        if bound is not None and bound[1] is not None:
+            return bound[1]
+        return self.source_profile
+
+    def _plan_mode_for_goal(self, goal: Goal) -> str | None:
+        bound = self._watch_runtime_for(goal)
+        if bound is not None:
+            return bound[0].plan_mode
+        return self.plan_mode
 
     def _select_judge_adapter(self, goal: Goal) -> tuple[Any, Any]:
         """Return ``(adapter, bound_or_None)`` for ``goal``'s judge call — the EXACT fail-closed rule:
@@ -897,12 +947,14 @@ class Percept:
                 "a deadline concern whose stamp would fire on the wrong timeline or never fire."
             )
 
-    def _episode_default(self, fallback: "EpisodePolicy | None") -> "EpisodePolicy | None":
+    def _episode_default(
+        self, goal: Goal, fallback: "EpisodePolicy | None"
+    ) -> "EpisodePolicy | None":
         """The :class:`~percept.episodes.EpisodePolicy` an episode-owning call site should pass as
         ``episode_policy_of(goal, default=...)`` when the goal itself authors nothing.
 
-        The RESOLVED ``self.source_profile`` (set by :meth:`configure` /
-        :func:`percept.watchplan_apply.apply_watch_plan` when a profile was actually named) wins over
+        The source profile resolved for this Watch (falling back to the core's
+        ``self.source_profile``) wins over
         the call site's own hardcoded ``fallback`` (``EPISODE_POLICIES['document_presence']`` /
         ``['conversational_claim']`` / ``None``) — a source class's declared continuation semantics
         (:attr:`~percept.sourceprofile.SourceProfile.default_episode_policy`) are more specific than
@@ -911,14 +963,15 @@ class Percept:
         Explicit ``goal.state['episode']`` authoring always wins regardless (handled inside
         :func:`~percept.episodes.episode_policy_of` itself, upstream of this default).
         """
-        if self.source_profile is not None:
-            return self.source_profile.default_episode_policy
+        source_profile = self._source_profile_for_goal(goal)
+        if source_profile is not None:
+            return source_profile.default_episode_policy
         return fallback
 
     def _resolved_identity_policy(self, goal: Goal) -> str | None:
         """The identity policy THIS concern is running under, for the document/claim episode-fold
         gates below. Concern-declared (``goal.state['identity_policy']``) always wins; with no
-        resolved ``self.source_profile`` this is exactly :func:`~percept.identity_policy.identity_policy_of`
+        resolved source profile this is exactly :func:`~percept.identity_policy.identity_policy_of`
         — ``None`` when the goal declared nothing, byte-for-byte today's behavior (an undeclared goal
         never enters document/claim episode-fold mode on a profile-less core). When a profile WAS
         resolved, an undeclared goal instead inherits the profile's capability via
@@ -926,8 +979,9 @@ class Percept:
         — the ADR-005 "profile declares, concern selects" shape this call site never actually threaded
         before this wiring.
         """
-        if self.source_profile is not None:
-            return select_identity_policy(goal, self.source_profile)
+        source_profile = self._source_profile_for_goal(goal)
+        if source_profile is not None:
+            return select_identity_policy(goal, source_profile)
         return identity_policy_of(goal)
 
     # -- episode counting (the cup problem) ---------------------------------
@@ -968,12 +1022,13 @@ class Percept:
         log = self.episodes.get(goal_id)
         if log is None:
             goal = self.goals.get(goal_id)
+            goal_settings = self._settings_for_goal(goal) if goal is not None else self.settings
             log = EpisodeLog(
                 goal_id,
-                window_s=self.settings.episodes.window_s,
-                max_episodes=self.settings.episodes.max_episodes,
+                window_s=goal_settings.episodes.window_s,
+                max_episodes=goal_settings.episodes.max_episodes,
                 policy=(
-                    episode_policy_of(goal, default=self._episode_default(None))
+                    episode_policy_of(goal, default=self._episode_default(goal, None))
                     if goal is not None else None
                 ),
             )
@@ -1094,6 +1149,7 @@ class Percept:
             # re-using the id cannot inherit a stale judge, and the invariant mark cannot outlive the goal.
             if op.op in ("complete", "cancel") and gid is not None:
                 self._release_judge_binding(gid)
+                self._release_watch_runtime(gid)
 
     # -- unified firing via the general executor ----------------------------
     @property
@@ -1459,12 +1515,16 @@ class Percept:
         self._doc_episode_hwm[goal.id] = t
         log = self.episodes.get(goal.id)
         if log is None:
+            goal_settings = self._settings_for_goal(goal)
             log = EpisodeLog(
                 goal.id,
-                window_s=self.settings.episodes.window_s,
-                max_episodes=self.settings.episodes.max_episodes,
+                window_s=goal_settings.episodes.window_s,
+                max_episodes=goal_settings.episodes.max_episodes,
                 policy=episode_policy_of(
-                    goal, default=self._episode_default(EPISODE_POLICIES["document_presence"])
+                    goal,
+                    default=self._episode_default(
+                        goal, EPISODE_POLICIES["document_presence"]
+                    ),
                 ),
             )
             self.episodes[goal.id] = log
@@ -1526,12 +1586,16 @@ class Percept:
         self._claim_hwm[goal.id] = t
         log = self.episodes.get(goal.id)
         if log is None:
+            goal_settings = self._settings_for_goal(goal)
             log = EpisodeLog(
                 goal.id,
-                window_s=self.settings.episodes.window_s,
-                max_episodes=self.settings.episodes.max_episodes,
+                window_s=goal_settings.episodes.window_s,
+                max_episodes=goal_settings.episodes.max_episodes,
                 policy=episode_policy_of(
-                    goal, default=self._episode_default(EPISODE_POLICIES["conversational_claim"])
+                    goal,
+                    default=self._episode_default(
+                        goal, EPISODE_POLICIES["conversational_claim"]
+                    ),
                 ),
             )
             self.episodes[goal.id] = log
@@ -1581,11 +1645,17 @@ class Percept:
     async def perceive_judged(
         self, frame: Any, source: str = "camera", *, t: float | None = None,
         expected_goals_revision: int | None = None,
+        goal_ids: "tuple[str, ...] | None" = None,
     ) -> list[FireEvent]:
-        """Judge every active *watch* goal against ``frame`` and emit gate actions on rising edges.
+        """Judge selected active *watch* goals against ``frame`` and emit rising-edge actions.
 
         Event / scheduler goals run through their own paths (:meth:`perceive_events`, :meth:`tick`)
         but feed the **same three-state gate** — one gate, two perception tracks.
+
+        ``goal_ids`` is the admission result from the runtime's per-Watch tier-0 gate. ``None``
+        preserves the manual API's historical "all active goals" behavior; a tuple restricts both
+        detector context and judgment to those Watches, so one Watch's permissive admission settings
+        cannot spend calls or mutate gate state for another.
 
         ``expected_goals_revision`` (the non-blocking-dispatch seam): the goal-registry revision this
         frame was ADMITTED under. When set, the call aborts — returning without applying anything —
@@ -1615,6 +1685,10 @@ class Percept:
         ``None`` (the default) never checks — byte-for-byte the inline path.
         """
         now = self.clock() if t is None else t
+        active_goals = list(self.goals.active())
+        if goal_ids is not None:
+            selected = frozenset(goal_ids)
+            active_goals = [goal for goal in active_goals if goal.id in selected]
 
         def _stale() -> bool:
             return (
@@ -1645,14 +1719,14 @@ class Percept:
         self._window(source).push(now, frame)  # feed the rolling window for temporal perception
         if _stale():
             return []  # admitted under an old revision; spend nothing, apply nothing
-        observations = await self.vision.detect(frame, self.goals.active())
+        observations = await self.vision.detect(frame, active_goals)
         self.graph.ingest(observations, frame, source, t=now)  # goal-independent world-state: proceeds
         focus = self.graph.in_focus()
         if _stale():
             return []  # revision moved during the detect call — nothing goal-conditioned applied yet
 
         events: list[FireEvent] = []
-        for goal in self.goals.active():
+        for goal in active_goals:
             if _stale():
                 break  # revision moved during a prior goal's judge — stop before judging under it
             gtype = goal.state.get("type", "watch")
@@ -1680,6 +1754,15 @@ class Percept:
             roi = self._resolve_roi(goal, focus, spec)
             corrections = focus.asserted() if focus else {}
             audio = self._audio_clip(source, spec)  # audio clip for a fused/audio spec; None otherwise
+            if (
+                self._watch_runtime_for(goal) is not None
+                and spec.modality in ("audio", "fused")
+                and audio is None
+            ):
+                raise RuntimeError(
+                    f"compiled {spec.modality} Watch {goal.id!r} has no audio evidence in source "
+                    f"{source!r}; refusing to judge it as vision-only."
+                )
             self.funnel.judged(concern=goal.id, camera=source)  # a judge call is being spent
             # Item 2 process-QA: opt-in goals carry a per-concern running answer in/out of the judge.
             # GATE-IRRELEVANT — the verdict's satisfied/confidence still drive the (unchanged) gate; the
@@ -2203,7 +2286,10 @@ class Percept:
         passes no ``perception_level`` (it is not on the confusion-escalation ladder), so it gets the
         plan-mode floor only — still single when the plan is 'single', a strip when the plan widened one."""
         spec = _escalated_perception(
-            _planned_perception(program_of(goal).perception, self.plan_mode), perception_level
+            _planned_perception(
+                program_of(goal).perception, self._plan_mode_for_goal(goal)
+            ),
+            perception_level,
         )
         return spec, self._strip_frames(source, spec)
 

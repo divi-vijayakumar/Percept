@@ -251,7 +251,9 @@ class _JudgeScheduler:
         self._metrics = metrics_collector
         self._active: "asyncio.Task | None" = None
         self._active_t: float | None = None  # admission t of the in-flight judgment (rides the result)
-        self._pending: tuple[float, Any, Any] | None = None  # (t, judge_frame, admission_revision)
+        # (t, judge_frame, admission_revision, admitted_goal_ids). The ids are frozen at the same
+        # instant as the revision so a queued frame cannot broaden into unrelated Watches later.
+        self._pending: tuple[float, Any, Any, tuple[str, ...] | None] | None = None
         self._results: deque = deque()  # completed (t, [FireEvent]) awaiting drain()
         # ADR-001 §9: TRACED bound-driven drops (superseded pending / revision-dropped pending) — a
         # (kind, data) pair per drop, drained every frame tick by run() alongside drain(), so this list
@@ -292,14 +294,16 @@ class _JudgeScheduler:
     def pending(self) -> int:
         return 0 if self._pending is None else 1
 
-    def submit(self, t: float, judge_frame: Any) -> None:
+    def submit(
+        self, t: float, judge_frame: Any, goal_ids: tuple[str, ...] | None = None
+    ) -> None:
         """Admit a frame for judgment. Never blocks; never launches after a failure or during close."""
         if self._fatal is not None or self._closing:
             return  # drain() re-raises the failure on the next loop tick; a closing run spends nothing
         revision = getattr(self._core.goals, "revision", None)  # ADMISSION-time, never launch-time
         if self._active is None:
             self._mc_admit(t)  # launching right away — admitted into the funnel from this instant
-            self._launch(t, judge_frame, revision)
+            self._launch(t, judge_frame, revision, goal_ids)
             return
         # The scheduler has no timer of its own — every submit() (the frame cadence) is the one
         # chance to notice the CURRENT active judgment has been outstanding too long. Checked before
@@ -325,7 +329,7 @@ class _JudgeScheduler:
             # the frame rate (sustained overwrite) — distinct from, and louder than, any one supersede.
             self._consec_supersede += 1
             self._check_backpressure(t)
-        self._pending = (t, judge_frame, revision)
+        self._pending = (t, judge_frame, revision, goal_ids)
         self._mc_admit(t)  # queued behind the active judgment — pending in the funnel from this instant
 
     def _check_stall(self, now_t: float) -> None:
@@ -379,14 +383,23 @@ class _JudgeScheduler:
             {"source": self._source, "recovered_from": recovered, "resolved_t": self._active_t},
         ))
 
-    def _launch(self, t: float, frame: Any, revision: Any) -> None:
+    def _launch(
+        self,
+        t: float,
+        frame: Any,
+        revision: Any,
+        goal_ids: tuple[str, ...] | None,
+    ) -> None:
         if self._stats is not None:
             self._stats.judge_calls += 1  # counted at launch — a superseded candidate spent nothing
         self._active_t = t
         self._active_launch_wall = self._mc_now(t)  # this task's own clock, for stall detection
         self._stall_reported = False  # a fresh launch is unlatched — the stall window resets
+        kwargs = {"t": t, "expected_goals_revision": revision}
+        if goal_ids is not None:
+            kwargs["goal_ids"] = goal_ids
         self._active = asyncio.create_task(
-            self._core.perceive_judged(frame, self._source, t=t, expected_goals_revision=revision)
+            self._core.perceive_judged(frame, self._source, **kwargs)
         )
         self._active.add_done_callback(self._on_done)
 
@@ -397,7 +410,7 @@ class _JudgeScheduler:
             self._mc_resolve(self._pending[0])  # leaving the funnel un-launched, not a real judgment
             self._pending = None
             return
-        t, frame, revision = self._pending
+        t, frame, revision, goal_ids = self._pending
         self._pending = None
         current = getattr(self._core.goals, "revision", None)
         if revision != current:
@@ -417,7 +430,7 @@ class _JudgeScheduler:
             if funnel is not None:
                 funnel.dropped(reason="goals_revision_changed", camera=self._source)
             return
-        self._launch(t, frame, revision)
+        self._launch(t, frame, revision, goal_ids)
 
     def _on_done(self, task: "asyncio.Task") -> None:
         # ORDERED checks — cancellation FIRST (close(drain=False) must not become a fatal error),
@@ -1157,7 +1170,9 @@ async def run(
     *whether* to fire. Yields incidents lazily, so an ``async for incident in run(...)`` is the front door.
     """
     from percept.labelstore import verdict_ref as _verdict_ref
+    from percept.behavior import program_of
     from percept.config import load_settings
+    from percept.contracts import WatchSpec
     from percept.edge.detectors import DetectorBank
     from percept.edge.tier0 import MotionGate, compile_watchspec
 
@@ -1193,6 +1208,60 @@ async def run(
         _guard_live_language_path(core, allow_scripted_brain=allow_scripted_brain)
 
     settings = getattr(core, "settings", None) or load_settings()
+
+    def _source_goals() -> list:
+        """Active Watches bound to this worker's source key, in registry order."""
+        return [
+            goal
+            for goal in core.goals.active()
+            if getattr(goal, "source", "camera") == gate_source
+        ]
+
+    def _visual_goals() -> list:
+        """Source Watches whose compiled perception actually consumes video frames."""
+        return [
+            goal
+            for goal in _source_goals()
+            if program_of(goal).perception.modality in ("vision", "fused")
+        ]
+
+    # A compiled SourceProfile coverage floor must not become an inert field. The existing health
+    # contract is source/run-level, so it can faithfully inherit the floor for one Watch. With
+    # multiple Watches, aggregate admissions could make one Watch appear covered by another's calls;
+    # refuse that ambiguous topology until per-Watch coverage counters exist.
+    if coverage_floor is None:
+        bound_floors = [
+            (goal.id, bound[0].coverage_floor)
+            for goal in _source_goals()
+            if (bound := getattr(core, "_watch_runtime_bindings", {}).get(goal.id)) is not None
+            and bound[0].coverage_floor is not None
+        ]
+        if bound_floors and len(_source_goals()) != 1:
+            raise ValueError(
+                "compiled SourceProfile coverage_floor is per Watch, but this worker's coverage "
+                "health counter is source-aggregate. Run the Watches on separate workers or pass "
+                "an explicit source-level coverage_floor; refusing a false per-Watch guarantee."
+            )
+        if bound_floors:
+            coverage_floor = bound_floors[0][1]
+
+    # A SourceProfile timebase is a source-level constraint: one worker cannot interpret the same
+    # timestamp as both media and wall time.  Honor the compiled value when run() stayed on "auto";
+    # reject incompatible profiles instead of making arming order choose the clock silently.
+    if timebase == "auto":
+        bound_timebases = {
+            bound[0].timebase
+            for goal in _source_goals()
+            if (bound := getattr(core, "_watch_runtime_bindings", {}).get(goal.id)) is not None
+            and bound[0].timebase not in (None, "auto")
+        }
+        if len(bound_timebases) > 1:
+            raise ValueError(
+                "active Watches on one source require incompatible compiled timebases "
+                f"{sorted(bound_timebases)}; run them on separate workers or select one timebase."
+            )
+        if bound_timebases:
+            timebase = next(iter(bound_timebases))
 
     if judge_dispatch not in ("inline", "async"):
         raise ValueError(
@@ -1277,20 +1346,27 @@ async def run(
         tier-0 gate). On a regate the new gate ADOPTS the prior gate's per-goal throttle + prev frame,
         and a surviving goal's detector bank is REUSED (its running rep-peak / refractory state must
         not reset mid-rep) — so arming one goal never disturbs the others."""
-        active = list(core.goals.active())
-        s = compile_watchspec(
-            active,
-            threshold=settings.edge.motion_gate,
-            # Deployment-wide salience-mode defaults (per-goal goal.state may override); resolved onto
-            # each WatchCondition so the gate/edge honor the effective value.
-            salience_stat=settings.edge.salience_stat,
-            ego_compensate=settings.edge.ego_compensate,
-            # Per-stat base cutoffs — block_max/p95 need a higher threshold than the mean-tuned default.
-            stat_thresholds={
-                "block_max": settings.edge.motion_gate_block_max,
-                "p95": settings.edge.motion_gate_p95,
-            },
-        )
+        visual_active = _visual_goals()
+        conditions = []
+        runtime_bindings = getattr(core, "_watch_runtime_bindings", {})
+        for goal in visual_active:
+            bound = runtime_bindings.get(goal.id)
+            kwargs = (
+                dict(bound[0].watchspec_kwargs)
+                if bound is not None
+                else {
+                    "threshold": settings.edge.motion_gate,
+                    "salience_stat": settings.edge.salience_stat,
+                    "ego_compensate": settings.edge.ego_compensate,
+                    "stat_thresholds": {
+                        "mean": settings.edge.motion_gate,
+                        "block_max": settings.edge.motion_gate_block_max,
+                        "p95": settings.edge.motion_gate_p95,
+                    },
+                }
+            )
+            conditions.extend(compile_watchspec([goal], **kwargs).conditions)
+        s = WatchSpec(conditions=conditions)
         # clock: a civil-time source arms per-goal Schedules; None -> always-armed (default).
         # The tier-0 extension seam, reachable from the supported entrypoint. None -> the gate's
         # structural/semantic channels stay 0.0 and this is byte-for-byte the motion-only path.
@@ -1316,14 +1392,19 @@ async def run(
                 b[c.goal_id] = prev_banks[c.goal_id]
             else:
                 b[c.goal_id] = DetectorBank(c.detectors)
-        # Rebuild the fovea coast alongside the spec/gate/banks so a brief-action
-        # goal armed MID-RUN gets its above-Nyquist coast too (it was previously computed once at t0 and a
-        # mid-run brief goal never received one). `_req` is the coverage floor the open source must
-        # meet. No brief goal -> (None, 0.0) -> byte-for-byte the fixed-fps path.
-        _cap, _coast, _req = _capture_plan(active, fps)
-        return s, g, b, _coast, _req
+        # One fovea coast controller per Watch. A shared "most sensitive" controller made one
+        # Watch's cadence admit every other Watch on the source; compiling each existing
+        # SensorPlan independently preserves the already-defined per-concern allocation semantics.
+        _coasts = {}
+        _req = 0.0
+        for goal in visual_active:
+            _cap, _coast, _goal_req = _capture_plan([goal], fps)
+            if _coast is not None:
+                _coasts[goal.id] = _coast
+            _req = max(_req, _goal_req)
+        return s, g, b, _coasts, _req
 
-    spec, gate, banks, coast, required_fps = _build_gate()
+    spec, gate, banks, coasts, required_fps = _build_gate()
     perceive_boundary = getattr(core, "perceive_boundary", None)
     goals_revision = getattr(core.goals, "revision", None)  # watch for mid-run goal changes
 
@@ -1341,7 +1422,7 @@ async def run(
             return hit[1]
         try:  # best-effort: an observability id must never break the firing path
             from percept.tracing import PlanIdentity  # noqa: PLC0415 - lazy, avoids an import cycle
-            pid = PlanIdentity.from_goals(core.goals.active(), revision=rev).plan_hash
+            pid = PlanIdentity.from_goals(_source_goals(), revision=rev).plan_hash
         except Exception:  # noqa: BLE001
             pid = None
         _watchplan_cache["v"] = (rev, pid)
@@ -1351,7 +1432,7 @@ async def run(
     # The source-open rate is FIXED once (a live source can't change fps mid-stream), so when a brief goal
     # could be armed MID-RUN (regate on) over a LIVE source we open at the headroom cap now, leaving the
     # capture headroom a voice-armed brief goal will need — gate/coast then ration the actual judging.
-    capture_fps, _, _ = _capture_plan(list(core.goals.active()), fps)
+    capture_fps, _, _ = _capture_plan(_visual_goals(), fps)
     # The same two overrides as before — but RECORDED, not silent. `reason` names which one
     # moved the rate (a plan cadence, or the fixed-at-open headroom cap a str source needs), so a client
     # reading the effective config can tell a deliberate 5x from an accident.
@@ -1371,8 +1452,54 @@ async def run(
     if audio_source is None and isinstance(source, str):
         from percept.runtime.audio import _is_container as _audio_is_container
 
-        if _audio_is_container(source) and _goals_want_audio(list(core.goals.active())):
+        if _audio_is_container(source) and _goals_want_audio(_source_goals()):
             audio_source = source
+    runtime_bindings = getattr(core, "_watch_runtime_bindings", {})
+    compiled_audio_goals = [
+        goal
+        for goal in _source_goals()
+        if goal.id in runtime_bindings
+        and program_of(goal).perception.modality in ("audio", "fused")
+    ]
+    if compiled_audio_goals and audio_source is None:
+        raise ValueError(
+            "compiled audio/fused Watches require audio_source= (or a media container with an "
+            "audio track); refusing to run them as silent vision-only Watches."
+        )
+    if (
+        audio_gate is None
+        and any(program_of(goal).perception.modality == "audio" for goal in compiled_audio_goals)
+    ):
+        raise ValueError(
+            "a compiled audio-only Watch requires an audio admission gate; audio_gate=None would "
+            "leave it with no executable admission path."
+        )
+    if audio_source is not None and audio_gate is not None:
+        audio_goals = [
+            goal
+            for goal in _source_goals()
+            if program_of(goal).perception.modality in ("audio", "fused")
+        ]
+        if len(audio_goals) > 1:
+            runtime_bindings = getattr(core, "_watch_runtime_bindings", {})
+
+            def _audio_policy_signature(goal: Any) -> str:
+                bound = runtime_bindings.get(goal.id)
+                watchspec = dict(bound[0].watchspec_kwargs) if bound is not None else {}
+                return repr((
+                    watchspec,
+                    goal.state.get("cadence"),
+                    goal.state.get("sense"),
+                    goal.state.get("perception"),
+                ))
+
+            signatures = {_audio_policy_signature(goal) for goal in audio_goals}
+            if len(signatures) > 1:
+                raise ValueError(
+                    "audio onset admission is shared by this worker, but active audio/fused "
+                    "Watches resolve to different admission policies. Run them on separate workers "
+                    "or give them one identical policy; refusing cross-Watch wake leakage."
+                )
     # Resolve the clock BEFORE the capture source is opened; both the video and the audio
     # path get their own record (a "mic:0" live mic and a "session.wav" recording resolve differently
     # even inside one run).
@@ -1553,6 +1680,32 @@ async def run(
         # event loop, cooperative — no lock). Default (audio_source=None) leaves it inert: energy stays
         # None and wake stays False, so gate.evaluate and the admit test are byte-for-byte the video path.
         audio = {"energy": None, "energy_t": None, "chunk_dt": None, "wake": False, "wake_at": None}
+        _audio_missing_reported: set[str] = set()
+
+        def _compiled_audio_ready(goal_id: str) -> bool:
+            """True unless this is a compiled audio/fused Watch missing a real audio payload."""
+            if goal_id not in getattr(core, "_watch_runtime_bindings", {}):
+                return True  # legacy goals retain their documented vision-only degradation
+            goal = core.goals.get(goal_id)
+            if goal is None:
+                return False
+            perception = program_of(goal).perception
+            if perception.modality not in ("audio", "fused"):
+                return True
+            clip_for = getattr(core, "_audio_clip", None)
+            clip = clip_for(gate_source, perception) if callable(clip_for) else None
+            if clip is None:
+                return False
+            encoded = getattr(clip, "encoded", None)
+            pcm = getattr(clip, "pcm", None)
+            if encoded is not None or pcm is not None:
+                return bool(encoded or pcm)
+            if isinstance(clip, tuple) and len(clip) == 2:
+                return bool(clip[1])
+            if isinstance(clip, (bytes, bytearray, memoryview)):
+                return bool(clip)
+            return True
+
         _prev_chunk_at: list = [None]  # last chunk's t — for the observed inter-chunk cadence (chunk_dt)
         audio_task = None
         # Media-clock pacing for a FILE/CONTAINER audio_source (see `_AUDIO_PACE_LOOKAHEAD_S`).
@@ -1876,7 +2029,7 @@ async def run(
                         # frame and REUSES surviving goals' detector banks (no throttle release / rep
                         # drop). Coast + required_fps are rebuilt too (a mid-run brief goal gets its
                         # coast).
-                        spec, gate, banks, coast, required_fps = _build_gate(gate, banks)
+                        spec, gate, banks, coasts, required_fps = _build_gate(gate, banks)
                     else:
                         _log.warning(
                             "goals_changed_without_regate: core.goals.revision moved %s->%s while "
@@ -1987,10 +2140,14 @@ async def run(
                         if fired is not None:
                             async for incident in _emit_fires([fired], at=b.t):
                                 yield incident
-            # A brief-action goal's fovea coast forces a judge on a quiet, in-window frame the
-            # motion gate would skip (above-Nyquist coverage). No brief goal -> coast is None -> this is
-            # byte-for-byte the gate-only path.
-            coast_admit = bool(coast and coast.should_process("__coast__", t, float(decision.signal.motion)))
+            # A brief-action Watch's own fovea coast admits only that Watch. Each controller carries
+            # its own cadence state, so a dense Watch cannot spend judgment calls for a sparse one.
+            coast_goal_ids = [
+                goal_id
+                for goal_id, controller in coasts.items()
+                if controller.should_process(goal_id, t, float(decision.signal.motion))
+            ]
+            coast_admit = bool(coast_goal_ids)
             # An audio onset admits a frame the visual gate would skip (off-camera cry / glass break). One-shot:
             # consumed here so a single onset causes one judge, not a run of them (AcousticOnset hysteresis +
             # refractory already debounce the signal itself).
@@ -1998,6 +2155,50 @@ async def run(
             audio["wake"] = False
             if audio_admit:
                 audio["wake_at"] = None
+            admitted_goal_ids = list(decision.goal_ids)
+            if coast_admit:
+                for goal_id in coast_goal_ids:
+                    if goal_id not in admitted_goal_ids:
+                        admitted_goal_ids.append(goal_id)
+            if audio_admit:
+                audio_goals = [
+                    goal
+                    for goal in _source_goals()
+                    if getattr(program_of(goal), "perception", None).modality in ("audio", "fused")
+                ]
+                # Backward compatibility for an explicitly configured audio wake on legacy
+                # vision-only goals: when no Watch declares an audio modality, the wake retains its
+                # historical all-goals behavior. Once audio/fused Watches exist, only they consume it.
+                for goal in audio_goals or _source_goals():
+                    if goal.id not in admitted_goal_ids:
+                        admitted_goal_ids.append(goal.id)
+            # A compiled audio/fused Watch may never fall through to a provider with ``audio=None``:
+            # that changes the question into vision-only perception. Drop only the affected Watch,
+            # report the missing channel once, and keep this source worker alive for other Watches.
+            missing_audio = [
+                goal_id
+                for goal_id in admitted_goal_ids
+                if not _compiled_audio_ready(goal_id)
+            ]
+            for goal_id in missing_audio:
+                admitted_goal_ids.remove(goal_id)
+                if goal_id not in _audio_missing_reported:
+                    _audio_missing_reported.add(goal_id)
+                    _log.warning(
+                        "compiled_audio_evidence_unavailable: goal=%r source=%r; "
+                        "skipping judgment rather than degrading to vision-only",
+                        goal_id,
+                        gate_source,
+                    )
+                    if on_health is not None:
+                        await _call_sink(
+                            on_health,
+                            RuntimeHealthEvent(
+                                "audio_evidence_unavailable",
+                                ts=t,
+                                data={"goal_id": goal_id, "source": gate_source},
+                            ),
+                        )
             emit_trace = getattr(core, "_emit_trace", None)
             if getattr(core, "on_trace", None) is not None and emit_trace is not None:
                 # The tier-0 edge decision — the same shape used elsewhere for forensic tracing (motion/structural/
@@ -2012,12 +2213,13 @@ async def run(
                     threshold=round(float(decision.threshold), 4),
                     escalate=bool(decision.escalate),
                     coast_admit=coast_admit,
+                    goal_ids=tuple(admitted_goal_ids),
                 )
             # Remember WHAT this frame had to clear, so an end-of-run zero-admission report can name
             # the bar the scene never crossed (a regate can move it; the last one applied is the one
             # a reader should tune).
             _cov_threshold = float(decision.threshold)
-            if not (decision.escalate or coast_admit or audio_admit):
+            if not admitted_goal_ids:
                 continue  # still / sub-cadence -> no cloud call, no incident
             if _funnel is not None:
                 _funnel.gated(camera=gate_source)  # tier-0 escalated this frame — a cloud call will be spent
@@ -2045,10 +2247,16 @@ async def run(
             # means changes. judge_calls is counted at LAUNCH either way (inline: launch == admit;
             # async: a superseded/revision-dropped candidate never spent a call — the scheduler counts).
             if _judge_sched is not None:
-                _judge_sched.submit(t, judge_frame)
+                _judge_sched.submit(t, judge_frame, tuple(admitted_goal_ids))
             else:
                 _cov.judge_calls += 1
-                async for incident in _emit_fires(await core.perceive_judged(judge_frame, gate_source, t=t), at=t):
+                fires = await core.perceive_judged(
+                    judge_frame,
+                    gate_source,
+                    t=t,
+                    goal_ids=tuple(admitted_goal_ids),
+                )
+                async for incident in _emit_fires(fires, at=t):
                     yield incident
         # Source exhausted (finite file / test stream): a judgment may still be IN FLIGHT and one more
         # PENDING behind it. Flush to QUIESCENCE (completing the active may launch the pending — one

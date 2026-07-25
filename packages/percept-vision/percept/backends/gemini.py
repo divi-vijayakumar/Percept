@@ -203,6 +203,10 @@ class GeminiVision(_GeminiBase):
 
     #: PARSES the claim-mode correction channel (see :class:`~percept.backends.anthropic.AnthropicVision`).
     PARSES_CLAIM_CHANNEL = True
+    # Narrow, enforced capability marker used by WatchPlan apply. This adapter attaches ``audio`` as
+    # a native Gemini part below; adapters that merely accept-and-discard the protocol argument do
+    # not set the marker.
+    SUPPORTS_AUDIO_INPUT = True
 
     def __init__(self, settings: Any = None, *, client: Any = None) -> None:
         super().__init__(settings, client=client, model_attr="vision_model")

@@ -75,6 +75,45 @@ _BEHAVIOR_FLAT_KEYS: tuple[str, ...] = (
     "fire_when", "window_s", "miss_cost", "false_fire_cost", "protected_floor",
 )
 
+# ``WatchPlan.sense`` is the portable media spelling at the configuration boundary.  The existing
+# behavior runtime calls the image modality ``vision``; ``video`` is accepted as the source-facing
+# synonym and normalized at compile time.  No other media shape is silently approximated.
+_SENSE_MODALITIES: dict[str, str] = {
+    "video": "vision",
+    "vision": "vision",
+    "audio": "audio",
+    "fused": "fused",
+}
+_SENSE_SOURCE_REQUIREMENTS: dict[str, frozenset[str]] = {
+    "video": frozenset({"video"}),
+    "vision": frozenset({"video"}),
+    "audio": frozenset({"audio"}),
+    "fused": frozenset({"video", "audio"}),
+}
+
+
+def supports_sense(sense: str | None) -> bool:
+    """Whether the runtime can execute a WatchPlan media sense."""
+    return sense is None or sense in _SENSE_MODALITIES
+
+
+def sense_matches_modalities(sense: str | None, modalities: Any) -> bool:
+    """Whether a SourceProfile actually carries every channel requested by a media sense."""
+    if sense is None:
+        return True
+    required = _SENSE_SOURCE_REQUIREMENTS.get(sense)
+    return required is not None and required.issubset(frozenset(modalities))
+
+
+def modality_matches_source(modality: str, modalities: Any) -> bool:
+    """Whether a compiled perception modality is executable on a SourceProfile's channels."""
+    required = {
+        "vision": frozenset({"video"}),
+        "audio": frozenset({"audio"}),
+        "fused": frozenset({"video", "audio"}),
+    }.get(modality)
+    return required is not None and required.issubset(frozenset(modalities))
+
 
 @dataclass(frozen=True)
 class CompiledWatch:
@@ -204,6 +243,7 @@ def _settings_from_effective(effective: Mapping[str, Any]) -> Settings:
                 "Settings.edge.motion_gate_block_max", base.edge.motion_gate_block_max
             ),
             motion_gate_p95=get("Settings.edge.motion_gate_p95", base.edge.motion_gate_p95),
+            coast_enabled=get("Settings.edge.coast_enabled", base.edge.coast_enabled),
         ),
     )
 
@@ -264,6 +304,10 @@ def _goal_state_from_resolved(resolved: ResolvedWatch) -> dict[str, Any]:
         }
 
     state: dict[str, Any] = {"type": "watch", "count": 0}
+    if plan.target is not None:
+        # Target is an inspectable entity/subject hint carried with the executable Goal. It does not
+        # override the plain-language condition or invent an identity resolver.
+        state["target"] = plan.target
     if behavior_raw:
         state["behavior"] = behavior_raw
     state.update(nested)  # rhythm/episode/sense/perception raw sub-blocks + any flat pass-through
@@ -271,6 +315,15 @@ def _goal_state_from_resolved(resolved: ResolvedWatch) -> dict[str, Any]:
         state["detectors"] = list(plan.detectors)  # coerced downstream by detectors_for() itself
     if plan.schedule is not None:
         state["schedule"] = dict(plan.schedule)  # coerced downstream by compile_watchspec itself
+    if plan.sense is not None:
+        modality = _SENSE_MODALITIES.get(plan.sense)
+        if modality is None:
+            raise ValueError(
+                f"WatchPlan.sense {plan.sense!r} is not executable by this runtime; "
+                f"supported media senses are {tuple(_SENSE_MODALITIES)}"
+            )
+        perception = state.setdefault("perception", {})
+        perception.setdefault("modality", modality)
     return state
 
 
@@ -309,6 +362,22 @@ def runtime_compile(resolved: ResolvedWatch) -> CompiledWatch:
     settings = _settings_from_effective(resolved.effective)
     state = _goal_state_from_resolved(resolved)
     plan = resolved.plan
+    perception = state.get("perception")
+    if isinstance(perception, dict) and perception.get("modality") in ("audio", "fused"):
+        # A modality label without a clip duration strands the already-wired AudioWindow: the agent's
+        # audio assembly correctly returns no payload when ``audio_s`` is absent. Bind the resolved
+        # event-window duration as the default so a compiled audio/fused Watch actually hands audio to
+        # a capable judge. An explicit Goal.state.perception.audio_s remains more specific.
+        perception.setdefault("audio_s", settings.events.audio_window_s)
+    sense_policy = _sense_policy_from_effective(resolved.effective)
+    if sense_policy is not None:
+        # Cadence already has a runtime primitive: the authored ``Goal.state.sense`` block consumed
+        # by ``sensor_plan_for``/``runtime.worker._capture_plan``.  Put the compiled per-Watch policy
+        # there so two Watches can carry different capture floors without mutating a shared core.
+        sense = state.setdefault("sense", {})
+        sense.setdefault("base_fps", sense_policy.base_fps)
+        sense.setdefault("max_fps", sense_policy.max_fps)
+        sense.setdefault("escalate_threshold", sense_policy.escalate_threshold)
     goal_id = plan.id if plan.id else goal_id_for(plan.condition)
     goal = Goal(
         id=goal_id, condition=plan.condition, say=plan.condition, source=plan.source, state=state
@@ -322,8 +391,6 @@ def runtime_compile(resolved: ResolvedWatch) -> CompiledWatch:
     if plan_mode is None:
         plan_mode = resolved.effective.get("WatchProfile.plan_mode")
 
-    sense_policy = _sense_policy_from_effective(resolved.effective)
-
     # timebase: an explicit "Percept.create.timebase"/"run.timebase" override (if a caller ever
     # authors one via WatchPlan.explicit) wins over the profile's own default_timebase — same
     # more-specific-ask precedent as plan_mode above.
@@ -336,7 +403,7 @@ def runtime_compile(resolved: ResolvedWatch) -> CompiledWatch:
     coverage_floor = resolved.effective.get("SourceProfile.parameters.coverage_floor")
 
     watchspec_kwargs: dict[str, Any] = {
-        "threshold": settings.gate.threshold,
+        "threshold": settings.edge.motion_gate,
         "salience_stat": settings.edge.salience_stat,
         "ego_compensate": settings.edge.ego_compensate,
         "stat_thresholds": {
@@ -366,4 +433,10 @@ def runtime_compile(resolved: ResolvedWatch) -> CompiledWatch:
     )
 
 
-__all__ = ["CompiledWatch", "runtime_compile"]
+__all__ = [
+    "CompiledWatch",
+    "modality_matches_source",
+    "runtime_compile",
+    "sense_matches_modalities",
+    "supports_sense",
+]

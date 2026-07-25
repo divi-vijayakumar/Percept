@@ -631,6 +631,9 @@ class GateDecision:
     signal: Tier0Signal
     escalate: bool
     threshold: float
+    # Exact Watches whose own condition admitted this frame.  Empty when nothing admitted. Appended
+    # and defaulted so existing positional construction stays compatible.
+    goal_ids: tuple[str, ...] = ()
 
 
 class MotionGate:
@@ -758,6 +761,7 @@ class MotionGate:
         # Armed = in-schedule conditions only; an out-of-schedule goal cannot escalate or set the cutoff.
         armed = [c for c in self._spec.conditions if schedule_active(c.schedule, when)]
         escalate = False
+        admitted_goal_ids: list[str] = []
         for c in armed:
             # Cadence: a goal can't escalate more than once per cadence_s. For gate_on="fixed" this
             # cadence IS the escalation trigger (a floor — look every cadence_s even with no pixel motion,
@@ -777,6 +781,7 @@ class MotionGate:
                 fired = m >= c.threshold
             if fired:
                 escalate = True
+                admitted_goal_ids.append(c.goal_id)
                 self._last_escalate[c.goal_id] = ts
         self._prev = f
         # Reported cutoff = the most-sensitive ARMED goal's threshold (default when none is armed).
@@ -784,7 +789,12 @@ class MotionGate:
         signal = Tier0Signal(
             motion=motion, structural=structural, semantic=semantic, ts=ts, energy=energy
         )
-        return GateDecision(signal=signal, escalate=escalate, threshold=thr)
+        return GateDecision(
+            signal=signal,
+            escalate=escalate,
+            threshold=thr,
+            goal_ids=tuple(admitted_goal_ids),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -970,7 +980,10 @@ class GatedWatchLoop:
                 if self._funnel is not None:
                     self._funnel.gated(camera=self._source)  # the gate spent a cloud call this frame
                 fired = await self._core.perceive_judged(
-                    item.frame, self._source, t=item.ts
+                    item.frame,
+                    self._source,
+                    t=item.ts,
+                    goal_ids=decision.goal_ids,
                 )
                 report.fire_events.extend(fired or [])
         return report

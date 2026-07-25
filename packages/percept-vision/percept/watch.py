@@ -135,7 +135,7 @@ def _arm_goals(core: Percept, goals: Any, *, source: str) -> None:
     for item in items:
         if isinstance(item, WatchPlan):
             _flush_legacy()
-            apply_watch_plan(core, item)
+            _require_applied(apply_watch_plan(core, item), item)
         else:
             legacy_batch.append(item)
     _flush_legacy()
@@ -195,6 +195,13 @@ async def watch(
         fired = await core.perceive_judged(frame, source=source, t=now)
         for ev in fired:
             yield _as_watch_event(ev, t=now)
+
+
+def _require_applied(receipt: Any, plan: WatchPlan) -> None:
+    """Raise at the public front door when a WatchPlan failed before arming."""
+    if receipt.status == "rejected":
+        detail = "; ".join(d.message for d in receipt.dropped_fields)
+        raise ValueError(f"WatchPlan {plan.id or plan.condition!r} was rejected: {detail}")
 
 
 __all__ = ["watch", "WATCH_VERSION"]

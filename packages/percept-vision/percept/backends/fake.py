@@ -43,6 +43,9 @@ class FakeVision:
     #: recipe test drives the real fold without a spurious diagnostic (mirrors the registry's fake/scripted
     #: parity). A recipe double that feeds model-reply JSON through the real parser inherits this marker.
     PARSES_CLAIM_CHANNEL = True
+    # The scripted backend consumes the audio token when supplied, so it is a valid deterministic
+    # test double for the runtime's audio/fused payload contract.
+    SUPPORTS_AUDIO_INPUT = True
 
     def __init__(
         self,

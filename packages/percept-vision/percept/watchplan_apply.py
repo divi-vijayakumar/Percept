@@ -28,12 +28,12 @@ non-field-loss diagnostic — e.g. env overriding an explicitly-selected profile
 dropped/coerced, while at least one goal did arm), ``"rejected"`` (every plan in the batch was
 rejected — nothing armed at all).
 
-**Idempotency by plan_hash**: a plan whose :attr:`ResolvedWatch.plan_hash` was already
-applied to THIS ``percept`` core re-arms nothing and returns the SAME receipt as the first
-application — a no-op, not a re-arm, not a second goal. The applied-hash ledger is scoped to the
-``percept`` core it was applied to (an attribute set dynamically on the instance, not a new
-dataclass field on :class:`~percept.agent.Percept` — this module owns its own bookkeeping rather than
-editing that class's frozen field list).
+**Idempotency by executable identity**: a plan whose :attr:`ResolvedWatch.plan_hash` AND
+:attr:`ResolvedWatch.component_snapshot_hash` were already applied to THIS ``percept`` core re-arms
+nothing and returns the SAME receipt as the first application — a no-op, not a re-arm, not a second
+goal. The component snapshot matters because the same portable intent resolved against a different
+SourceProfile/policy is a different executable Watch. The ledger is scoped to the ``percept`` core
+it was applied to.
 """
 
 from __future__ import annotations
@@ -47,12 +47,19 @@ from .behavior import (
     coerce_authored_perception,
     coerce_authored_rhythm,
     coerce_authored_sense,
+    program_of,
 )
 from .contracts.watchplan import FieldDiagnostic, ReceiptStatus, WatchPlan, WatchReceipt
 from .deployment_judges import load_deployment_judges
 from .judge_context import JudgeContextError, JudgeContextStore
 from .resolver import ConfigError, ConfigResolver
-from .runtime_compiler import runtime_compile
+from .runtime_compiler import (
+    modality_matches_source,
+    runtime_compile,
+    sense_matches_modalities,
+    supports_sense,
+)
+from .tracing import content_hash
 
 #: ``Goal.state["behavior"]`` RAW-shape leaf keys that sit flat (not nested under "accumulate"/
 #: "consequence") — mirrors ``coerce_authored_behavior``'s own reads.
@@ -76,9 +83,12 @@ _LEDGER_ATTR = "_watchplan_applied_hashes"
 #: declare it; any other selected backend (incl. a client's custom one) cannot fold a live correction,
 #: so arming a ``claim_slot`` plan on it earns a (non-rejecting) receipt warning.
 _CLAIM_PARSING_MARKER = "PARSES_CLAIM_CHANNEL"
+_AUDIO_INPUT_MARKER = "SUPPORTS_AUDIO_INPUT"
 
 
-def _claim_backend_warning(percept: Any, goal: Any) -> "FieldDiagnostic | None":
+def _claim_backend_warning(
+    percept: Any, goal: Any, *, adapter: Any = None
+) -> "FieldDiagnostic | None":
     """A receipt WARNING (never a rejection) when ``goal`` arms ``identity_policy='claim_slot'`` but the
     core's selected vision backend does not parse the correction channel.
 
@@ -88,7 +98,7 @@ def _claim_backend_warning(percept: Any, goal: Any) -> "FieldDiagnostic | None":
     condition: warn, don't reject."""
     if goal.state.get("identity_policy") != "claim_slot":
         return None
-    vision = getattr(percept, "vision", None)
+    vision = adapter if adapter is not None else getattr(percept, "vision", None)
     if vision is None or getattr(vision, _CLAIM_PARSING_MARKER, False):
         return None
     return FieldDiagnostic(
@@ -189,8 +199,112 @@ class _PreparedGoal:
 
     goal: Any
     binding: Any | None  # a BoundJudge-shaped object (``.spec``/``.adapter``/``.static_context``), or None
-    plan_hash: str
+    compiled: Any
+    source_profile: Any | None
+    application_key: str
     receipt: WatchReceipt
+
+
+_PER_WATCH_SETTINGS_SECTIONS: frozenset[str] = frozenset({"edge", "episodes"})
+
+
+def _application_key(resolved: Any) -> str:
+    """Stable identity of the portable plan plus the configuration it actually compiled against."""
+    effective_hash = content_hash(dict(resolved.effective))
+    return f"{resolved.plan_hash}:{effective_hash}:{resolved.component_snapshot_hash}"
+
+
+def _unsupported_plan_fields(plan: WatchPlan) -> tuple[FieldDiagnostic, ...]:
+    """Typed WatchPlan fields that this runtime cannot execute yet.
+
+    These fields are useful contract reservations, but accepting one today would produce an inert
+    configuration. Refuse before resolution/arm so the public receipt never says a Watch carrying an
+    ignored admission strategy, evidence strategy, extractor selection, or uncertainty policy
+    was applied.
+    """
+    values = {
+        "admission": plan.admission,
+        "evidence": plan.evidence,
+        "extractors": plan.extractors,
+        "uncertainty": plan.uncertainty,
+    }
+    return tuple(
+        FieldDiagnostic(
+            path=f"WatchPlan.{name}",
+            code="unsupported_watchplan_field",
+            goal_id=plan.id,
+            message=(
+                f"WatchPlan.{name} is not executable by this runtime build; refusing to arm "
+                "instead of accepting an inert field."
+            ),
+        )
+        for name, value in values.items()
+        if value not in (None, (), [])
+    )
+
+
+def _media_backend_diagnostic(
+    percept: Any, goal: Any, *, adapter: Any = None
+) -> FieldDiagnostic | None:
+    """Fail closed when an audio/fused Watch selects an adapter that discards audio."""
+    modality = program_of(goal).perception.modality
+    if modality not in ("audio", "fused"):
+        return None
+    selected = adapter if adapter is not None else getattr(percept, "vision", None)
+    if selected is not None and getattr(selected, _AUDIO_INPUT_MARKER, False):
+        return None
+    return FieldDiagnostic(
+        path="WatchPlan.sense",
+        code="audio_input_backend_unsupported",
+        goal_id=goal.id,
+        message=(
+            f"compiled modality {modality!r} requires a judge that consumes audio, but "
+            f"{type(selected).__name__ if selected is not None else 'the selected backend'} does "
+            "not declare enforced audio input support. Gemini and the scripted test backend support "
+            "this path; vision-only adapters are refused rather than silently degrading."
+        ),
+    )
+
+
+def _unsupported_core_setting(percept: Any, compiled: Any, *, goal_id: str) -> FieldDiagnostic | None:
+    """Return the first compiled setting this shared core cannot isolate per Watch.
+
+    Admission (``edge``) and episode bounds already have per-goal consumers.  The remaining
+    ``Settings`` sections construct core-wide components (gate, entity graph, cache, providers,
+    routing, evidence windows, and consent) and cannot truthfully be changed by arming one goal on an
+    existing core.  Refuse a differing value instead of accepting configuration that never executes.
+    """
+    core_settings = getattr(percept, "settings", None)
+    if core_settings is None:
+        return None
+    for section_name, compiled_section in vars(compiled.settings).items():
+        if section_name in _PER_WATCH_SETTINGS_SECTIONS:
+            continue
+        core_section = getattr(core_settings, section_name, None)
+        if core_section == compiled_section:
+            continue
+        compiled_values = vars(compiled_section)
+        core_values = vars(core_section) if core_section is not None else {}
+        field_name = next(
+            (
+                name
+                for name, value in compiled_values.items()
+                if core_values.get(name) != value
+            ),
+            "<section>",
+        )
+        return FieldDiagnostic(
+            path=f"Settings.{section_name}.{field_name}",
+            code="core_scoped_setting_requires_separate_runtime",
+            goal_id=goal_id,
+            message=(
+                f"Settings.{section_name}.{field_name} resolves differently for this Watch, but "
+                "the current runtime constructs that setting once per Percept core. Build the core "
+                "with Percept.configure(...) or use a separate core; refusing to arm an inert "
+                "per-Watch override."
+            ),
+        )
+    return None
 
 
 def _prepare_judge_binding(
@@ -262,23 +376,136 @@ def _prepare_one(
     * ``("prepared", _PreparedGoal)`` — ready to commit.
 
     Raises :class:`_JudgePrepareError` on a judge prepare failure (aborts the WHOLE batch)."""
+    inert = _unsupported_plan_fields(plan)
+    if inert:
+        return "rejected", WatchReceipt(status="rejected", dropped_fields=inert)
+
+    plan_resolve_kwargs = dict(resolve_kwargs)
+    selected_source_profile = plan_resolve_kwargs.get("source_profile")
+    if plan.profile is not None:
+        if (
+            selected_source_profile is not None
+            and getattr(selected_source_profile, "name", None) != plan.profile
+        ):
+            return "rejected", WatchReceipt(
+                status="rejected",
+                dropped_fields=(FieldDiagnostic(
+                    path="WatchPlan.profile",
+                    code="conflicting_source_profile",
+                    goal_id=plan.id,
+                    message=(
+                        f"WatchPlan.profile={plan.profile!r} conflicts with the caller-supplied "
+                        f"source profile {getattr(selected_source_profile, 'name', None)!r}"
+                    ),
+                ),),
+            )
+        if selected_source_profile is None:
+            try:
+                from .sourceprofile import get_source_profile  # noqa: PLC0415
+
+                selected_source_profile = get_source_profile(plan.profile)
+            except Exception as exc:  # noqa: BLE001 - registry miss/invalid plugin fails pre-arm.
+                return "rejected", WatchReceipt(
+                    status="rejected",
+                    dropped_fields=(FieldDiagnostic(
+                        path="WatchPlan.profile",
+                        code="source_profile_unavailable",
+                        goal_id=plan.id,
+                        message=f"source profile {plan.profile!r} is unavailable: {exc}",
+                    ),),
+                )
+            plan_resolve_kwargs["source_profile"] = selected_source_profile
+            plan_resolve_kwargs["source_profile_explicit"] = True
+
+    if (
+        selected_source_profile is not None
+        and not sense_matches_modalities(plan.sense, selected_source_profile.modalities)
+    ):
+        return "rejected", WatchReceipt(
+            status="rejected",
+            dropped_fields=(FieldDiagnostic(
+                path="WatchPlan.sense",
+                code="source_profile_modality_mismatch",
+                goal_id=plan.id,
+                message=(
+                    f"WatchPlan.sense={plan.sense!r} is incompatible with source profile "
+                    f"{selected_source_profile.name!r} modalities "
+                    f"{sorted(selected_source_profile.modalities)!r}; refusing to arm a Watch "
+                    "whose requested channel is absent."
+                ),
+            ),),
+        )
+
     try:
-        resolved = resolver.resolve(plan, **resolve_kwargs)
+        resolved = resolver.resolve(plan, **plan_resolve_kwargs)
     except ConfigError as exc:
         return "rejected", WatchReceipt(
             status="rejected",
             dropped_fields=(FieldDiagnostic(
-                path="WatchPlan", code="ownership_violation", goal_id=plan.id, message=str(exc),
+                path="WatchPlan",
+                code="ownership_violation",
+                goal_id=plan.id,
+                message=str(exc),
+            ),),
+        )
+    except ValueError as exc:
+        unsupported_sense = not supports_sense(plan.sense)
+        return "rejected", WatchReceipt(
+            status="rejected",
+            dropped_fields=(FieldDiagnostic(
+                path="WatchPlan.sense" if unsupported_sense else "WatchPlan",
+                code="unsupported_media_sense" if unsupported_sense else "configuration_invalid",
+                goal_id=plan.id,
+                message=str(exc),
             ),),
         )
 
-    cached = known.get(resolved.plan_hash)
+    application_key = _application_key(resolved)
+    cached = known.get(application_key)
     if cached is not None:
-        return "cached", cached  # idempotent no-op: identical plan already applied / duplicated in-batch
+        # A historical ledger entry is an idempotent hit only while that exact executable still owns
+        # the goal id. Reconfiguring/replacing the same id invalidates the old hit. The third tuple
+        # element is the prepare-phase marker for an identical duplicate in this same batch.
+        current_key = getattr(percept, "_watch_runtime_keys", {}).get(cached[0])
+        if len(cached) > 2 or current_key == application_key:
+            return "cached", (cached[0], cached[1])
 
-    compiled = runtime_compile(resolved)
+    try:
+        compiled = runtime_compile(resolved)
+    except ValueError as exc:
+        return "rejected", WatchReceipt(
+            status="rejected",
+            dropped_fields=(FieldDiagnostic(
+                path="WatchPlan.sense",
+                code="unsupported_media_sense",
+                goal_id=plan.id,
+                message=str(exc),
+            ),),
+        )
+    unsupported = _unsupported_core_setting(percept, compiled, goal_id=compiled.goal.id)
+    if unsupported is not None:
+        return "rejected", WatchReceipt(status="rejected", dropped_fields=(unsupported,))
     state, coerced = _coerce_goal_state(compiled.goal.state, goal_id=compiled.goal.id)
     goal = replace(compiled.goal, state=state)
+    modality = program_of(goal).perception.modality
+    if (
+        selected_source_profile is not None
+        and not modality_matches_source(modality, selected_source_profile.modalities)
+    ):
+        return "rejected", WatchReceipt(
+            status="rejected",
+            dropped_fields=(FieldDiagnostic(
+                path="WatchPlan.sense",
+                code="source_profile_modality_mismatch",
+                goal_id=goal.id,
+                message=(
+                    f"compiled modality {modality!r} is incompatible with source profile "
+                    f"{selected_source_profile.name!r} modalities "
+                    f"{sorted(selected_source_profile.modalities)!r}; refusing to arm a Watch "
+                    "whose required channel is absent."
+                ),
+            ),),
+        )
 
     # JUDGE PREPARE (no runtime mutation): construct the adapter + verify any static context and build
     # the binding NOW, so a bad judge never arms a goal. resolved.judge is None for every judge-less plan
@@ -286,6 +513,10 @@ def _prepare_one(
     binding = None
     if getattr(resolved, "judge", None) is not None:
         binding = _prepare_judge_binding(resolved.judge, percept, deployment_judges, goal_id=goal.id)
+    selected_adapter = binding.adapter if binding is not None else getattr(percept, "vision", None)
+    media_error = _media_backend_diagnostic(percept, goal, adapter=selected_adapter)
+    if media_error is not None:
+        return "rejected", WatchReceipt(status="rejected", dropped_fields=(media_error,))
 
     base = resolver.last_receipt  # the resolution-time WatchReceipt (accepted_fields + warnings)
     warnings = base.warnings if base is not None else ()
@@ -293,7 +524,7 @@ def _prepare_one(
 
     # Capability warning assembled HERE (watchplan_apply's own channel — NOT resolver.py's binding
     # function): a claim_slot plan armed on a non-parsing vision backend can never form a revision chain.
-    backend_warning = _claim_backend_warning(percept, goal)
+    backend_warning = _claim_backend_warning(percept, goal, adapter=selected_adapter)
     if backend_warning is not None:
         warnings = (*warnings, backend_warning)
 
@@ -323,7 +554,12 @@ def _prepare_one(
         **judge_fields,
     )
     return "prepared", _PreparedGoal(
-        goal=goal, binding=binding, plan_hash=resolved.plan_hash, receipt=receipt
+        goal=goal,
+        binding=binding,
+        compiled=compiled,
+        source_profile=selected_source_profile,
+        application_key=application_key,
+        receipt=receipt,
     )
 
 
@@ -370,7 +606,9 @@ def apply_watch_plan(
         optimization_lock=optimization_lock,
         situation=situation,
         registry=registry,
-        settings=settings,
+        # The core's actual deployment settings are the default base. Reading env again here could
+        # compile a Watch against a different configuration than the already-constructed runtime.
+        settings=settings if settings is not None else getattr(percept, "settings", None),
         # Thread the SAME deployment catalog into the resolve-side authorization (ADR-009) that the
         # prepare-side binding uses. Without this the resolver reconciles WatchPlan.judge against the
         # DEFAULT (env) catalog — empty unless PERCEPT_JUDGE_CATALOG is set — so a caller that supplies
@@ -399,7 +637,11 @@ def apply_watch_plan(
             if kind == "prepared":
                 prepared.append(payload)
                 per_plan_receipts.append(payload.receipt)
-                known[payload.plan_hash] = (payload.goal.id, payload.receipt)
+                known[payload.application_key] = (
+                    payload.goal.id,
+                    payload.receipt,
+                    "prepared_in_batch",
+                )
             elif kind == "cached":
                 per_plan_receipts.append(payload[1])
             else:  # "rejected"
@@ -416,17 +658,17 @@ def apply_watch_plan(
         if real_ledger is None:
             real_ledger = {}
             setattr(percept, _LEDGER_ATTR, real_ledger)
-        # Thread the RESOLVED SourceProfile OBJECT (the actual ``resolve_kwargs["source_profile"]`` this
-        # batch was called with — never ``resolved.source_profile``, a plain JSON snapshot) onto the core,
-        # the same additive field ``Percept.configure`` populates. Only when THIS call named one; a
-        # profile-less arm leaves whatever the core already carried untouched.
-        if resolve_kwargs.get("source_profile") is not None:
-            percept.source_profile = resolve_kwargs["source_profile"]
         for p in prepared:
             percept.add_goal(p.goal)
+            percept._register_watch_runtime(
+                p.goal.id,
+                p.compiled,
+                p.source_profile,
+                application_key=p.application_key,
+            )
             if p.binding is not None:
                 percept._register_judge_binding(p.goal.id, p.binding)
-            real_ledger[p.plan_hash] = (p.goal.id, p.receipt)
+            real_ledger[p.application_key] = (p.goal.id, p.receipt)
 
     watch_ids: list[str] = []
     accepted: list[str] = []
