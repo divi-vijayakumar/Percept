@@ -616,6 +616,56 @@ def test_invalid_explicit_seq_zero_does_not_poison_corrected_retry_or_coverage(
     }
 
 
+@pytest.mark.parametrize(
+    "invalid_event_t",
+    [float("nan"), True, float("inf")],
+    ids=["nan", "bool", "infinity"],
+)
+def test_invalid_explicit_event_time_does_not_kill_pump_or_poison_corrected_retry(
+    invalid_event_t: float,
+) -> None:
+    invalid = AudioUnit(
+        0,
+        0.0,
+        0.1,
+        b"invalid-event-time",
+        event_t=invalid_event_t,
+        energy=0.0,
+    )
+    corrected = AudioUnit(
+        0,
+        0.0,
+        0.1,
+        b"corrected",
+        event_t=0.1,
+        energy=0.0,
+    )
+    following = AudioUnit(
+        1,
+        0.1,
+        0.2,
+        b"following",
+        event_t=0.2,
+        energy=0.0,
+    )
+    core, _, health = _run_audio_units([invalid, corrected, following])
+
+    assert [(unit.seq, unit.chunk) for unit in core._audio_window("camera").units()] == [
+        (0, b"corrected"),
+        (1, b"following"),
+    ]
+    health_kinds = [event.kind for event in health]
+    assert health_kinds.count("audio_unit_rejected") == 1
+    assert "audio_pump_died" not in health_kinds
+    ended = next(event for event in health if event.kind == "runtime_ended")
+    assert ended.data["source_coverage"]["audio"] == {
+        "observed": 2,
+        "excluded": 1,
+        "discontinuities": 0,
+        "missing_sequences": 0,
+    }
+
+
 def test_overlapping_explicit_unit_does_not_poison_corrected_retry_or_coverage() -> None:
     first = AudioUnit(0, 0.0, 0.1, b"first", energy=0.0)
     overlapping = AudioUnit(1, 0.05, 0.15, b"overlap", energy=0.0)

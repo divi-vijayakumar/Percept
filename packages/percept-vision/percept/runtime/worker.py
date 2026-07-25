@@ -20,12 +20,19 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable
 
-from percept.events import AudioBoundary, AudioUnit, FrameWindow, frame_nbytes
+from percept.events import (
+    AudioBoundary,
+    AudioUnit,
+    FrameWindow,
+    frame_nbytes,
+    validate_audio_unit,
+)
 from percept.gate import FIRE, ASK
 from percept.incidents import make_incident, snippet_from_window
 from percept.observability import get_logger
 from percept.runtime.envelope import (
     SourceEnvelope,
+    SourceFormat,
     SourceInspection,
     SourceTracker,
     audio_unit_envelope,
@@ -2138,15 +2145,42 @@ async def run(
                     submitted_unit = ingress.unit
                     envelope = ingress.envelope
                     if submitted_unit is not None:
+                        observed_time = (
+                            ingress.observed_time
+                            if ingress.observed_time is not None
+                            else time.monotonic()
+                        )
+                        original_unit = submitted_unit
+                        try:
+                            # Validate the caller's complete unit before the carrier envelope or
+                            # normalization can replace its event clock, payload, energy, or metadata.
+                            submitted_unit = validate_audio_unit(original_unit)
+                        except Exception as exc:  # noqa: BLE001 - one bad unit cannot kill the pump
+                            rejected_envelope = SourceEnvelope(
+                                source_id="audio",
+                                modality="audio",
+                                epoch=0,
+                                sequence=synthetic_carrier_sequence,
+                                observed_time=observed_time,
+                                source_time=None,
+                                format=SourceFormat(
+                                    media_type="application/x-percept-opaque"
+                                ),
+                                payload="<invalid-audio-unit>",
+                                legacy_timebase="observed",
+                            )
+                            await _reject_unit(
+                                rejected_envelope,
+                                original_unit,
+                                observed_time,
+                                exc,
+                            )
+                            continue
                         envelope = audio_unit_envelope(
                             submitted_unit,
                             source_id="audio",
                             sequence=synthetic_carrier_sequence,
-                            observed_time=(
-                                ingress.observed_time
-                                if ingress.observed_time is not None
-                                else time.monotonic()
-                            ),
+                            observed_time=observed_time,
                         )
                     elif envelope is None:
                         envelope = legacy_audio_envelope(
@@ -2208,6 +2242,15 @@ async def run(
                         )
                         await _record_source_inspection(envelope, inspection, ts=at)
                         continue
+                    if at is None:
+                        await _reject_unit(
+                            envelope,
+                            submitted_unit,
+                            None,
+                            ValueError("audio event time must be finite"),
+                        )
+                        continue
+                    at = float(at)
                     from percept.runtime.audio import normalize_audio_envelope
 
                     direction = audio_kwargs.get("direction")
@@ -2261,7 +2304,6 @@ async def run(
                     if submitted_unit is not None or ingress.legacy_item is not None:
                         synthetic_carrier_sequence += 1
                     await _record_source_inspection(envelope, inspection, ts=at)
-                    assert at is not None  # accepted previews guarantee a finite selected lane clock
                     chunk, energy = envelope.payload, envelope.signal
                     if inspection.resets_continuity:
                         _reset_audio_temporal_state(clear_window=True)
