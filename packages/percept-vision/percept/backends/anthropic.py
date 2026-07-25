@@ -1,7 +1,7 @@
-"""Claude (Anthropic) vision adapter — narrow grounded VQA (spec §6.1).
+"""Claude (Anthropic) vision adapter for narrow grounded visual questions.
 
-The single biggest quality/cost lever (spec §6.1): stop calling the cloud VLM as "describe the
-scene." Call it as a **narrow grounded question about a cropped ROI** — *"is the user drinking
+Call the cloud VLM as a **narrow grounded question about a cropped ROI**, rather than a generic
+scene description — *"is the user drinking
 from THIS mug <exemplar>?"* — and attach the deictic exemplar image when the user demonstrated
 ("this mug"). The judge returns the firing-contract ``Verdict{satisfied, confidence, evidence}``;
 it never compiles the goal to ``attr=value`` (one firing path, one gate).

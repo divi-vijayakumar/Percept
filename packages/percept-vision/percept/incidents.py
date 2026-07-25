@@ -181,7 +181,7 @@ def snippet_from_window(window: Any, *, kind: str = "frame", pre_s: float | None
 # This lives here (not in the frozen contracts membrane) because it is *behaviour*, not a wire shape:
 # it consumes an :class:`Incident` + a :class:`Goal`'s durable ``origin``/consequence and returns the
 # clamped intent. Keeping the policy beside the incident producer keeps the contract package pure and
-# puts the requested->effective decision in one deterministic, testable place (spec §2.2).
+# puts the requested->effective decision in one deterministic, testable place.
 # ---------------------------------------------------------------------------
 
 _Preempt = Literal["interrupt", "queue", "drop"]
@@ -227,7 +227,7 @@ def parse_requested_delivery(delivery: Any) -> RequestedDelivery:
 
 @dataclass(frozen=True)
 class AttentionPolicy:
-    """Deterministic requested->effective attention clamp (spec §2.2). No I/O, no clock, no RNG.
+    """Deterministic requested-to-effective attention clamp. No I/O, clock, or RNG.
 
     The one rule that matters: a requested ``preempt="interrupt"`` is CLAMPED to ``"queue"`` unless the
     request carries earned authority. Authority comes ONLY from:

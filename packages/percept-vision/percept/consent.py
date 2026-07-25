@@ -1,4 +1,4 @@
-"""Consent — the SDK primitives (spec §8). The UI lives in project 2 (the assistant).
+"""Consent primitives for configuring safe, explicit action boundaries.
 
 This module keeps the trust posture minimal but real:
 
@@ -6,8 +6,8 @@ This module keeps the trust posture minimal but real:
   ``allow_computer_use``, scoped to a declared **action set**; the SDK *enforces* it;
 * an **action log** records every fire and every act (the audit seed + a future feedback corpus).
 
-The SDK exposes the events; the assistant renders the consent strip / "what I can see" affordance —
-no UI is built here. Nothing acts silently: a blocked ``act`` is logged too.
+The SDK exposes auditable events for an application's own interface. Nothing acts silently: a
+blocked ``act`` is logged too.
 """
 
 from __future__ import annotations

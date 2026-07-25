@@ -145,8 +145,8 @@ PRICE_TABLE: dict[str, ModelPrice] = {
 #: fail conservative (never silently under-count spend for an un-catalogued model).
 DEFAULT_PRICE = ModelPrice(input_per_mtok=15.00, output_per_mtok=75.00)
 
-#: See module docstring §2 — reused, not reinvented, from tests/test_p_econ.py's
-#: PLACEHOLDER_COST_CEILING_USD_PER_STREAM_HOUR (Viability §7 numeric_bars, pending bars_locked).
+#: A conservative provisional ceiling for stream-hour cost accounting. Deployments should set
+#: their own budget from observed workload and provider pricing.
 DOLLARS_PER_STREAM_HOUR_CEILING_USD = 5.0
 
 

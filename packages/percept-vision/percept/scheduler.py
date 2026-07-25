@@ -1,4 +1,4 @@
-"""Scheduler — time-triggered proactive fires (TimeSpeak, spec §10 / impl plan §7).
+"""Scheduler — time-triggered proactive fires for programmable Watches.
 
 Timing lives in the clock; **content judgment lives in the model**. On a tick, ``due`` returns the
 timers whose moment has arrived; the agent re-invokes the conductor with a ``scheduler_tick`` event

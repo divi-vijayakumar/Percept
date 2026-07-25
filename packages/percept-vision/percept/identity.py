@@ -1,4 +1,4 @@
-"""Identity — the "same thing?" question (spec §5.4).
+"""Identity — the "same thing?" question for a live Watch.
 
 Identity is established *below the LLM* and handed up as a stable symbol (invariant 4). Two impls
 sit behind the frozen ``Identity`` protocol (``match(obs, known) -> id | None``):
@@ -7,7 +7,8 @@ sit behind the frozen ``Identity`` protocol (``match(obs, known) -> id | None``)
   single dominant object under a near-static camera (state the bound plainly — it is not general).
 * :class:`AppearanceIdentity` — continuity first, then a brute-force **appearance** match over the
   recent set so an object is recognized after it leaves and re-enters tracking, and a genuinely new
-  object is distinguished. The fleet-calibrated, high-accuracy re-id service is a paid tier.
+  object is distinguished. Its limits remain explicit: it is not a general person re-identification
+  system.
 
 Both accept an optional keyword ``signature`` (the appearance embedding of the observation). The
 frozen protocol is ``match(obs, known)``; the extra keyword is optional, so these remain structural

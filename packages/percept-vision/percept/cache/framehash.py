@@ -9,9 +9,9 @@ a near-match within the **TTL** is a HIT carrying a *decayed* confidence:
 
 where ``sim`` rises toward 1 as the Hamming distance falls to 0, and ``age_decay`` falls toward
 0 as the entry ages toward the TTL. Past the TTL the entry is a hard miss (always DEFER) — the
-ceiling that bounds the slow drift a hash cannot see (spec §6.2).
+ceiling that bounds the slow drift a hash cannot see.
 
-Invalidation order (spec §6.2): **goal-change -> assertion-override -> TTL -> L0 frame-diff**.
+Invalidation order: **goal-change -> assertion-override -> TTL -> L0 frame-diff**.
 ``invalidate(goal_id=...)`` drops a goal's entries on goal-change; ``invalidate_entity(...)``
 drops the entries a user correction touched (assertion-override); TTL is enforced on every
 lookup; the dHash near-match *is* the L0 frame-diff backstop.

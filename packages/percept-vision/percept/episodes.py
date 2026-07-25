@@ -1,4 +1,4 @@
-"""Episode counting — the cup problem (spec §5.5) and the THREE SEPARATED DECISIONS.
+"""Episode counting for repeated activity and the THREE SEPARATED DECISIONS.
 
 Counting "cups of coffee" is **episode counting**: not sip-counting (over-counts) and not
 IoU-track-counting (mis-counts across gaps). Per counting goal we keep a bounded **episode log**
