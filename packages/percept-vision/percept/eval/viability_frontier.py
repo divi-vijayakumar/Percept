@@ -30,6 +30,7 @@ __all__ = [
     "ViabilityInputError",
     "Ratio",
     "ConditionalRatio",
+    "CallIntensity",
     "Precision",
     "CallReduction",
     "ArchetypePolicy",
@@ -81,6 +82,7 @@ _ROW_KEYS = {
     "evidence_kind",
     "candidate_windows_total",
     "candidate_windows_admitted",
+    "runtime_dispatches",
     "judge_calls",
     "decisions",
     "event_windows",
@@ -250,6 +252,37 @@ class CallReduction:
 
 
 @dataclass(frozen=True)
+class CallIntensity:
+    """Exact provider-call intensity.
+
+    One runtime dispatch can make multiple provider calls (for example, a transition Watch judges
+    both its ``from`` and ``to`` predicates). Unlike :class:`Ratio`, the numerator is therefore not
+    bounded by the candidate denominator.
+    """
+
+    numerator: int
+    denominator: int
+
+    def __post_init__(self) -> None:
+        if self.numerator < 0 or self.denominator <= 0:
+            raise ViabilityInputError(
+                f"invalid call intensity {self.numerator}/{self.denominator}; require "
+                "numerator >= 0 and denominator > 0"
+            )
+
+    @property
+    def value(self) -> float:
+        return self.numerator / self.denominator
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "numerator": self.numerator,
+            "denominator": self.denominator,
+            "value": self.value,
+        }
+
+
+@dataclass(frozen=True)
 class ArchetypePolicy:
     """One archetype's preregistered viability policy; no field has a default."""
 
@@ -317,6 +350,7 @@ class _ArmRow:
     evidence_kind: str
     candidate_windows_total: int
     candidate_windows_admitted: int
+    runtime_dispatches: int
     judge_calls: int
     decisions: dict[str, int]
     event_windows: tuple[_EventWindow, ...]
@@ -355,12 +389,16 @@ class _ArmRow:
             doc["candidate_windows_admitted"],
             f"{context}.candidate_windows_admitted",
         )
+        dispatches = _count(doc["runtime_dispatches"], f"{context}.runtime_dispatches")
         calls = _count(doc["judge_calls"], f"{context}.judge_calls")
         _require(
             admitted <= total,
             f"{context}: admitted candidates exceed the candidate denominator",
         )
-        _require(calls <= admitted, f"{context}: judge calls exceed admitted candidates")
+        _require(
+            dispatches <= admitted,
+            f"{context}: runtime dispatches exceed admitted candidates",
+        )
 
         decisions_doc = _object(doc["decisions"], f"{context}.decisions")
         _exact_keys(decisions_doc, _DECISION_KEYS, f"{context}.decisions")
@@ -369,8 +407,9 @@ class _ArmRow:
             for key in _DECISION_KEYS
         }
         _require(
-            sum(decisions.values()) == calls,
-            f"{context}: decision counts sum to {sum(decisions.values())}, not judge_calls={calls}",
+            sum(decisions.values()) == dispatches,
+            f"{context}: decision counts sum to {sum(decisions.values())}, not "
+            f"runtime_dispatches={dispatches}",
         )
 
         raw_events = doc["event_windows"]
@@ -435,6 +474,7 @@ class _ArmRow:
             evidence_kind,
             total,
             admitted,
+            dispatches,
             calls,
             decisions,
             events,
@@ -451,6 +491,7 @@ class _ArmRow:
         return (
             self.match_signature(),
             self.candidate_windows_admitted,
+            self.runtime_dispatches,
             self.judge_calls,
             tuple(sorted(self.decisions.items())),
             tuple(
@@ -471,13 +512,14 @@ class ArmMetrics:
     precision: ConditionalRatio
     false_positive_rate: Ratio
     admitted_rate: Ratio
-    judge_call_rate: Ratio
+    judge_call_intensity: CallIntensity
     decision_abstention_rate: ConditionalRatio
     event_abstention_rate: Ratio
     event_missing_rate: Ratio
     execution_missing_rate: ConditionalRatio
     candidate_windows: int
     admitted_candidates: int
+    runtime_dispatches: int
     judge_calls: int
     decisions: dict[str, int]
     event_windows: int
@@ -490,7 +532,7 @@ class ArmMetrics:
             "precision": self.precision.to_dict(),
             "false_positive_rate": self.false_positive_rate.to_dict(),
             "admitted_rate": self.admitted_rate.to_dict(),
-            "judge_call_rate": self.judge_call_rate.to_dict(),
+            "judge_call_intensity": self.judge_call_intensity.to_dict(),
             "decision_abstention_rate": self.decision_abstention_rate.to_dict(),
             "event_abstention_rate": self.event_abstention_rate.to_dict(),
             "event_missing_rate": self.event_missing_rate.to_dict(),
@@ -498,6 +540,7 @@ class ArmMetrics:
             "counts": {
                 "candidate_windows": self.candidate_windows,
                 "admitted_candidates": self.admitted_candidates,
+                "runtime_dispatches": self.runtime_dispatches,
                 "judge_calls": self.judge_calls,
                 "decisions": dict(self.decisions),
                 "event_windows": self.event_windows,
@@ -511,6 +554,7 @@ def _aggregate(rows: Sequence[_ArmRow]) -> ArmMetrics:
     _require(bool(rows), "cannot aggregate an empty arm")
     candidate_windows = sum(row.candidate_windows_total for row in rows)
     admitted = sum(row.candidate_windows_admitted for row in rows)
+    dispatches = sum(row.runtime_dispatches for row in rows)
     calls = sum(row.judge_calls for row in rows)
     decisions = {
         key: sum(row.decisions[key] for row in rows)
@@ -530,7 +574,7 @@ def _aggregate(rows: Sequence[_ArmRow]) -> ArmMetrics:
     non_event_candidates = candidate_windows - event_candidates
     event_abstentions = sum(event.outcome in ("ask", "silent") for event in event_windows)
     event_missing = sum(event.outcome == "missing" for event in event_windows)
-    missing_units = sum(row.candidate_windows_admitted - row.judge_calls for row in rows)
+    missing_units = sum(row.candidate_windows_admitted - row.runtime_dispatches for row in rows)
     missing_units += decisions["missing"]
 
     return ArmMetrics(
@@ -540,16 +584,17 @@ def _aggregate(rows: Sequence[_ArmRow]) -> ArmMetrics:
         precision=ConditionalRatio(true_positive_fires, len(fire_decisions)),
         false_positive_rate=Ratio(false_positive_fires, non_event_candidates),
         admitted_rate=Ratio(admitted, candidate_windows),
-        judge_call_rate=Ratio(calls, candidate_windows),
+        judge_call_intensity=CallIntensity(calls, candidate_windows),
         decision_abstention_rate=ConditionalRatio(
             decisions["ask"] + decisions["silent"],
-            calls,
+            dispatches,
         ),
         event_abstention_rate=Ratio(event_abstentions, len(event_windows)),
         event_missing_rate=Ratio(event_missing, len(event_windows)),
         execution_missing_rate=ConditionalRatio(missing_units, admitted),
         candidate_windows=candidate_windows,
         admitted_candidates=admitted,
+        runtime_dispatches=dispatches,
         judge_calls=calls,
         decisions=decisions,
         event_windows=len(event_windows),
@@ -643,7 +688,7 @@ class ViabilityFrontierReport:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema": "percept.eval.viability_frontier/2",
+            "schema": "percept.eval.viability_frontier/3",
             "track": self.track,
             "scope": self.scope,
             "declared_evidence_kind": self.evidence_kind,
@@ -701,7 +746,7 @@ class _Manifest:
 def _validate_manifest(value: Any) -> _Manifest:
     doc = _object(value, "manifest")
     _exact_keys(doc, _MANIFEST_KEYS, "manifest")
-    _require(doc["schema_version"] == "2", "manifest.schema_version must be '2'")
+    _require(doc["schema_version"] == "3", "manifest.schema_version must be '3'")
     _require(doc["track"] == "viability_frontier", "manifest.track must be 'viability_frontier'")
     _require(doc["scope"] == SCOPE, f"manifest.scope must be {SCOPE!r}")
     evidence_kind = _identifier(doc["evidence_kind"], "manifest.evidence_kind").lower()
@@ -1050,9 +1095,9 @@ def evaluate_viability_frontier(
                 )
                 _require(
                     baseline.candidate_windows_admitted == baseline.candidate_windows_total
-                    and baseline.judge_calls == baseline.candidate_windows_total,
+                    and baseline.runtime_dispatches == baseline.candidate_windows_total,
                     f"{archetype.id}/{point.id}/{case.id}: baseline must be exhaustive "
-                    "(admitted == calls == candidate total)",
+                    "(admitted == runtime dispatches == candidate total)",
                 )
                 _require(
                     baseline.decisions["missing"] == 0
@@ -1199,13 +1244,13 @@ def render_text(report: ViabilityFrontierReport) -> str:
                 f"config={point.configuration_sha256} "
                 f"clear={str(point.clears_policy).lower()}: "
                 f"baseline_event_recall={_ratio_text(baseline.event_recall)}, "
-                f"baseline_judge_call_rate={_ratio_text(baseline.judge_call_rate)}; "
+                f"baseline_judge_call_intensity={_ratio_text(baseline.judge_call_intensity)}; "
                 f"candidate_recall={_ratio_text(adaptive.candidate_recall)}, "
                 f"event_recall={_ratio_text(adaptive.event_recall)}, "
                 f"precision={_ratio_text(adaptive.precision)}, "
                 f"false_positive_rate={_ratio_text(adaptive.false_positive_rate)}, "
                 f"admitted_rate={_ratio_text(adaptive.admitted_rate)}, "
-                f"judge_call_rate={_ratio_text(adaptive.judge_call_rate)}, "
+                f"judge_call_intensity={_ratio_text(adaptive.judge_call_intensity)}, "
                 f"call_reduction={_ratio_text(point.call_reduction)}, "
                 f"decision_abstention={_ratio_text(adaptive.decision_abstention_rate)}, "
                 f"event_abstention={_ratio_text(adaptive.event_abstention_rate)}, "

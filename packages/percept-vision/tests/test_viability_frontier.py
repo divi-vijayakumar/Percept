@@ -67,7 +67,7 @@ def test_manifest_derived_frontier_has_exact_denominators(manifest, rows):
         "denominator": 16,
         "value": 0.5,
     }
-    assert conservative.adaptive.judge_call_rate.to_dict() == {
+    assert conservative.adaptive.judge_call_intensity.to_dict() == {
         "numerator": 8,
         "denominator": 16,
         "value": 0.5,
@@ -92,6 +92,31 @@ def test_manifest_derived_frontier_has_exact_denominators(manifest, rows):
     assert sparse.call_reduction.value == pytest.approx(0.75)
 
 
+def test_transition_provider_calls_are_distinct_from_runtime_dispatches(manifest, rows):
+    for row in rows:
+        if row["archetype"] == "state_change":
+            row["judge_calls"] = 2 * row["runtime_dispatches"]
+
+    conservative = evaluate_viability_frontier(manifest, rows).archetype(
+        "state_change"
+    ).operating_points[0]
+
+    assert conservative.baseline.runtime_dispatches == 16
+    assert conservative.baseline.judge_calls == 32
+    assert conservative.baseline.judge_call_intensity.to_dict() == {
+        "numerator": 32,
+        "denominator": 16,
+        "value": 2.0,
+    }
+    assert conservative.adaptive.runtime_dispatches == 8
+    assert conservative.adaptive.judge_calls == 16
+    assert conservative.call_reduction.to_dict() == {
+        "numerator": 16,
+        "denominator": 32,
+        "value": 0.5,
+    }
+
+
 def test_policies_are_per_archetype_and_select_different_points(manifest, rows):
     report = evaluate_viability_frontier(manifest, rows)
     state = report.archetype("state_change")
@@ -107,6 +132,7 @@ def test_pareto_frontier_marks_a_dominated_point(manifest, rows):
     for case_id in ("state-01", "state-02"):
         row = _row(mutated, case_id, "conservative", "adaptive")
         row["candidate_windows_admitted"] = 6
+        row["runtime_dispatches"] = 6
         row["judge_calls"] = 6
         row["decisions"] = {"fire": 2, "ask": 0, "silent": 4, "missing": 0}
     state_02 = _row(mutated, "state-02", "conservative", "adaptive")
@@ -122,6 +148,7 @@ def test_pareto_frontier_marks_a_dominated_point(manifest, rows):
 def test_abstentions_and_missing_work_are_reported_not_erased(manifest, rows):
     mutated = copy.deepcopy(rows)
     row = _row(mutated, "brief-01", "conservative", "adaptive")
+    row["runtime_dispatches"] = 3
     row["judge_calls"] = 3
     row["decisions"] = {"fire": 1, "ask": 1, "silent": 0, "missing": 1}
     row["event_windows"][1]["outcome"] = "ask"
@@ -162,6 +189,7 @@ def test_zero_call_conditional_rates_are_undefined_and_policy_fails_closed(
 ):
     for case_id in ("state-01", "state-02"):
         row = _row(rows, case_id, "sparse", "adaptive")
+        row["runtime_dispatches"] = 0
         row["judge_calls"] = 0
         row["decisions"] = {"fire": 0, "ask": 0, "silent": 0, "missing": 0}
         row["fire_event_ids"] = []
@@ -195,6 +223,7 @@ def test_zero_admission_missing_rate_is_undefined_not_zero(manifest, rows):
     for case_id in ("state-01", "state-02"):
         row = _row(rows, case_id, "sparse", "adaptive")
         row["candidate_windows_admitted"] = 0
+        row["runtime_dispatches"] = 0
         row["judge_calls"] = 0
         row["decisions"] = {"fire": 0, "ask": 0, "silent": 0, "missing": 0}
         row["fire_event_ids"] = []
@@ -397,6 +426,16 @@ def test_missing_denominator_field_fails_closed(manifest, rows):
         evaluate_viability_frontier(manifest, rows)
 
 
+def test_measured_evidence_cannot_infer_runtime_dispatches(manifest, rows):
+    manifest["evidence_kind"] = "measured"
+    for row in rows:
+        row["evidence_kind"] = "measured"
+    rows[0].pop("runtime_dispatches")
+
+    with pytest.raises(ViabilityInputError, match="runtime_dispatches"):
+        evaluate_viability_frontier(manifest, rows)
+
+
 def test_incomplete_decision_denominator_fails_closed(manifest, rows):
     rows[0]["decisions"]["silent"] -= 1
     with pytest.raises(ViabilityInputError, match="decision counts sum"):
@@ -560,6 +599,7 @@ def test_policy_infeasible_raw_dominator_cannot_erase_feasible_frontier(manifest
         sparse["event_windows"][1]["outcome"] = "fire"
     sparse_with_fp = _row(rows, "brief-01", "sparse", "adaptive")
     sparse_with_fp["candidate_windows_admitted"] = 3
+    sparse_with_fp["runtime_dispatches"] = 3
     sparse_with_fp["judge_calls"] = 3
     sparse_with_fp["decisions"] = {"fire": 3, "ask": 0, "silent": 0, "missing": 0}
     sparse_with_fp["fire_event_ids"].append("brief-01/false-positive-1")
@@ -580,6 +620,7 @@ def test_policy_infeasible_raw_dominator_cannot_erase_feasible_frontier(manifest
 def test_non_exhaustive_baseline_fails_closed(manifest, rows):
     baseline = _row(rows, "state-01", "conservative", "baseline")
     baseline["candidate_windows_admitted"] = 7
+    baseline["runtime_dispatches"] = 7
     baseline["judge_calls"] = 7
     baseline["decisions"]["silent"] -= 1
     with pytest.raises(ViabilityInputError, match="baseline must be exhaustive"):
@@ -595,7 +636,7 @@ def test_loaders_refuse_empty_evidence_file(tmp_path):
 
 def test_json_report_counts_come_from_manifest(manifest, rows):
     payload = json.loads(evaluate_viability_frontier(manifest, rows).to_json())
-    assert payload["schema"] == "percept.eval.viability_frontier/2"
+    assert payload["schema"] == "percept.eval.viability_frontier/3"
     assert payload["declared_evidence_kind"] == "synthetic"
     assert payload["declared_preregistered"] is True
     assert "evidence_kind" not in payload
