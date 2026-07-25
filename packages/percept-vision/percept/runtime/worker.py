@@ -831,36 +831,29 @@ async def _aiter(source: Any, fps: float, **source_kwargs) -> AsyncIterator[Sour
 
 @dataclass(frozen=True)
 class _AudioIngress:
-    envelope: SourceEnvelope
+    envelope: SourceEnvelope | None = None
     unit: AudioUnit | None = None
+    legacy_item: Any = None
+    legacy_timebase: str = "source"
+    observed_time: float | None = None
 
 
 async def _audio_aiter(source: Any, **source_kwargs) -> AsyncIterator[_AudioIngress]:
     """Normalize audio inputs to an envelope plus any explicitly ordered unit."""
-    sequence = 0
 
     def normalize(item: Any) -> _AudioIngress:
-        nonlocal sequence
         if isinstance(item, SourceEnvelope):
             return _AudioIngress(item)
-        timebase = "observed" if source_kwargs.get("timebase") == "wall" else "source"
         if isinstance(item, AudioUnit):
-            envelope = audio_unit_envelope(
-                item,
-                source_id="audio",
-                observed_time=time.monotonic(),
-                timebase=timebase,
-            )
-            return _AudioIngress(envelope, item)
-        envelope = legacy_audio_envelope(
-            item,
-            source_id="audio",
-            sequence=sequence,
+            # AudioUnit sequence/interval authority belongs to AudioWindow. The worker creates a
+            # separate observation-only carrier envelope only after transactional unit preflight.
+            return _AudioIngress(unit=item, observed_time=time.monotonic())
+        timebase = "observed" if source_kwargs.get("timebase") == "wall" else "source"
+        return _AudioIngress(
+            legacy_item=item,
+            legacy_timebase=timebase,
             observed_time=time.monotonic(),
-            timebase=timebase,
         )
-        sequence += 1
-        return _AudioIngress(envelope)
 
     if isinstance(source, str):
         from percept.runtime.audio import open_audio_source
@@ -2094,8 +2087,12 @@ async def run(
                         min_speech_frames=utterance_min_speech_frames,
                     )
 
-            def _reset_audio_temporal_state() -> None:
-                """Re-arm live DSP after a forward discontinuity; the current unit starts a new span."""
+            def _reset_audio_temporal_state(*, clear_window: bool = False) -> None:
+                """Reset every live-audio clock/DSP state at a continuity boundary."""
+                if clear_window:
+                    window = getattr(core, "audio_windows", {}).get(gate_source)
+                    if window is not None and hasattr(window, "clear"):
+                        window.clear()
                 audio.update(
                     {
                         "energy": None,
@@ -2118,9 +2115,102 @@ async def run(
             async def _pump_audio():
                 # Pump every chunk into the AudioWindow (un-strands modality="fused"/"audio") and track
                 # energy + onsets. Never lets a bad audio chunk kill the run — the watch survives a mic drop.
+                synthetic_carrier_sequence = 0
                 async for ingress in _audio_aiter(audio_source, **audio_kwargs):
+                    submitted_unit = ingress.unit
                     envelope = ingress.envelope
-                    require_source_time = audio_tb is not None and audio_tb.resolved == "media"
+                    unit_preview = None
+                    if submitted_unit is not None:
+                        from percept.events import validate_audio_unit
+
+                        try:
+                            submitted_unit = validate_audio_unit(submitted_unit)
+                            audio_window_for = getattr(core, "_audio_window", None)
+                            if not callable(audio_window_for):
+                                raise TypeError(
+                                    "explicit AudioUnit ingress requires an inspectable AudioWindow"
+                                )
+                            unit_preview = audio_window_for(gate_source).preview_unit(submitted_unit)
+                            if not unit_preview.accepted:
+                                raise ValueError(
+                                    f"audio unit admission rejected: {unit_preview.as_dict()!r}"
+                                )
+                        except Exception as exc:  # noqa: BLE001 - one invalid unit cannot poison ingress
+                            observed_time = (
+                                ingress.observed_time
+                                if ingress.observed_time is not None
+                                else time.monotonic()
+                            )
+                            try:
+                                rejected_envelope = audio_unit_envelope(
+                                    ingress.unit,
+                                    source_id="audio",
+                                    sequence=synthetic_carrier_sequence,
+                                    observed_time=observed_time,
+                                )
+                            except Exception:
+                                from percept.runtime.envelope import SourceFormat
+
+                                rejected_envelope = SourceEnvelope(
+                                    source_id="audio",
+                                    modality="audio",
+                                    epoch=0,
+                                    sequence=synthetic_carrier_sequence,
+                                    observed_time=observed_time,
+                                    source_time=None,
+                                    format=SourceFormat(
+                                        media_type="application/x-percept-opaque"
+                                    ),
+                                    payload="<invalid-audio-unit>",
+                                )
+                            rejected = _audio_source_tracker.exclude(
+                                "source_audio_unit_rejected"
+                            )
+                            await _record_source_inspection(
+                                rejected_envelope, rejected, ts=observed_time
+                            )
+                            if on_health is not None:
+                                await _call_sink(
+                                    on_health,
+                                    RuntimeHealthEvent(
+                                        "audio_unit_rejected",
+                                        ts=observed_time,
+                                        data={
+                                            "source": gate_source,
+                                            "seq": getattr(ingress.unit, "seq", None),
+                                            "error": repr(exc),
+                                        },
+                                    ),
+                                )
+                            continue
+                        envelope = audio_unit_envelope(
+                            submitted_unit,
+                            source_id="audio",
+                            sequence=synthetic_carrier_sequence,
+                            observed_time=(
+                                ingress.observed_time
+                                if ingress.observed_time is not None
+                                else time.monotonic()
+                            ),
+                        )
+                    elif envelope is None:
+                        envelope = legacy_audio_envelope(
+                            ingress.legacy_item,
+                            source_id="audio",
+                            sequence=synthetic_carrier_sequence,
+                            observed_time=(
+                                ingress.observed_time
+                                if ingress.observed_time is not None
+                                else time.monotonic()
+                            ),
+                            timebase=ingress.legacy_timebase,
+                        )
+                    assert envelope is not None
+                    require_source_time = (
+                        submitted_unit is None
+                        and audio_tb is not None
+                        and audio_tb.resolved == "media"
+                    )
                     if envelope.modality in ("video", "audio") and envelope.modality != "audio":
                         # Reject a valid envelope routed to the wrong lane before it can create tracker
                         # state or reach a modality-specific gate/window.
@@ -2136,11 +2226,15 @@ async def run(
                         if _judge_sched is not None:
                             _judge_sched.invalidate_source_continuity(inspection.events)
                     at = (
-                        envelope.source_time
-                        if require_source_time
-                        and isinstance(envelope.source_time, (int, float))
-                        and not isinstance(envelope.source_time, bool)
-                        else envelope.observed_time
+                        submitted_unit.t
+                        if submitted_unit is not None
+                        else (
+                            envelope.source_time
+                            if require_source_time
+                            and isinstance(envelope.source_time, (int, float))
+                            and not isinstance(envelope.source_time, bool)
+                            else envelope.observed_time
+                        )
                     )
                     if not (
                         isinstance(at, (int, float))
@@ -2151,26 +2245,12 @@ async def run(
                     await _record_source_inspection(envelope, inspection, ts=at)
                     if not inspection.accepted:
                         continue
+                    if submitted_unit is not None or ingress.legacy_item is not None:
+                        synthetic_carrier_sequence += 1
                     assert at is not None  # accepted envelope validation guarantees a finite lane clock
                     chunk, energy = envelope.payload, envelope.signal
                     if inspection.resets_continuity:
-                        window = getattr(core, "audio_windows", {}).get(gate_source)
-                        if window is not None and hasattr(window, "clear"):
-                            window.clear()
-                        if onset is not None and hasattr(onset, "reset"):
-                            onset.reset()
-                        if _vad is not None and hasattr(_vad, "reset"):
-                            _vad.reset()
-                        _utt["start"] = None
-                        _utt_buf.clear()
-                        _prev_chunk_at[0] = None
-                        audio.update({
-                            "energy": None,
-                            "energy_t": None,
-                            "chunk_dt": None,
-                            "wake": False,
-                            "wake_at": None,
-                        })
+                        _reset_audio_temporal_state(clear_window=True)
                     from percept.runtime.audio import normalize_audio_envelope
 
                     direction = audio_kwargs.get("direction")
@@ -2183,7 +2263,7 @@ async def run(
                     unit = normalize_audio_envelope(
                         envelope,
                         event_t=at,
-                        unit=ingress.unit,
+                        unit=submitted_unit,
                         direction=direction,
                         participant_id=audio_kwargs.get("participant_id"),
                     )

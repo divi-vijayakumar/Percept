@@ -68,6 +68,9 @@ class SourceEnvelope:
     discontinuity: Literal["capture_overflow"] | None = None
     # Transitional selection for ``as_legacy`` only.  It never changes either preserved clock.
     legacy_timebase: Literal["source", "observed"] = field(default="source", repr=False, compare=False)
+    # Audio provenance that must survive capture-envelope validation before ordered-unit ingestion.
+    audio_direction: Literal["input", "output", "mixed", "unknown"] | None = None
+    participant_id: str | None = None
 
     def __post_init__(self) -> None:
         """Own mutable media buffers even though callers may pass ``bytearray``/``memoryview``.
@@ -355,6 +358,15 @@ def _validation_event(envelope: Any) -> str | None:
         or envelope.modality not in ("video", "audio")
         or not isinstance(envelope.format, SourceFormat)
         or envelope.discontinuity not in (None, "capture_overflow")
+        or envelope.audio_direction not in (None, "input", "output", "mixed", "unknown")
+        or (
+            envelope.participant_id is not None
+            and not isinstance(envelope.participant_id, str)
+        )
+        or (
+            envelope.modality != "audio"
+            and (envelope.audio_direction is not None or envelope.participant_id is not None)
+        )
     ):
         return "source_corrupt_payload"
     fmt = envelope.format
@@ -545,37 +557,34 @@ def audio_unit_envelope(
     unit: Any,
     *,
     source_id: str,
+    sequence: int,
     observed_time: float,
-    timebase: Literal["source", "observed"] = "source",
 ) -> SourceEnvelope:
-    """Wrap an ordered audio unit without flattening its source interval or sequence."""
+    """Wrap an ordered unit in an observation-only carrier envelope.
+
+    The envelope ``sequence`` is arrival order and belongs to ``SourceTracker``. ``unit.seq`` and its
+    source interval remain independent and belong to ``AudioWindow``; no transport source clock is
+    fabricated from them.
+    """
     from percept.events import AudioUnit
 
     if not isinstance(unit, AudioUnit):
         raise TypeError("audio unit envelope input must be an AudioUnit")
-    frame = unit.chunk
-    pcm = getattr(frame, "pcm", None)
-    if isinstance(pcm, (bytes, bytearray, memoryview)) and pcm:
-        source_format = SourceFormat(
-            media_type="audio/pcm",
-            sample_rate=getattr(frame, "sample_rate", unit.sample_rate),
-            channels=getattr(frame, "channels", unit.channels),
-            sample_format=getattr(frame, "sample_format", unit.sample_format),
-        )
-    else:
-        source_format = SourceFormat(media_type="application/x-percept-opaque")
     return SourceEnvelope(
         source_id=source_id,
         modality="audio",
         epoch=0,
-        sequence=unit.seq,
-        observed_time=unit.t if timebase == "observed" else observed_time,
-        # ``t_end`` is the intrinsic source position. ``event_t`` may instead be a wall/receipt clock.
-        source_time=None if timebase == "observed" else unit.t_end,
-        format=source_format,
-        payload=frame,
+        sequence=sequence,
+        observed_time=observed_time,
+        source_time=None,
+        # The carrier deliberately does not duplicate AudioUnit media/format authority. Ordered
+        # interval, format, duplicate, and reorder decisions remain transactional in AudioWindow.
+        format=SourceFormat(media_type="application/x-percept-opaque"),
+        payload=unit.chunk,
         signal=unit.energy,
-        legacy_timebase=timebase,
+        audio_direction=unit.direction,
+        participant_id=unit.participant_id,
+        legacy_timebase="observed",
     )
 
 

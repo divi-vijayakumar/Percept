@@ -434,13 +434,16 @@ class AudioWindow:
             unit = normalize_audio_unit((float(t), chunk, None), seq=self.next_seq)
         return self.push_unit(unit)
 
-    def push_unit(self, unit: AudioUnit) -> AudioPushResult:
+    def _preview_unit(
+        self, unit: AudioUnit
+    ) -> tuple[AudioUnit, AudioPushResult, int, int]:
+        """Validate and plan one insertion without mutating timeline or duplicate history."""
         unit = validate_audio_unit(unit)
         unit_bytes = _audio_nbytes(unit.chunk)
         if unit_bytes > self._max_bytes:
             raise ValueError("audio unit exceeds the window byte cap")
         if unit.seq in self._seen_seq:
-            return AudioPushResult(accepted=False, duplicate=True)
+            return unit, AudioPushResult(accepted=False, duplicate=True), 0, unit_bytes
 
         previous_max_seq = self._max_seq
         reordered = previous_max_seq is not None and unit.seq < previous_max_seq
@@ -475,12 +478,17 @@ class AudioWindow:
         # Overlapping PCM has no implicit merge policy. Reject it before mutating the timeline; a
         # future caller can explicitly mix/trim and submit a non-overlapping replacement.
         if overlap_s:
-            return AudioPushResult(
-                accepted=False,
-                reordered=reordered,
-                missing=missing,
-                gap_s=gap_s,
-                overlap_s=overlap_s,
+            return (
+                unit,
+                AudioPushResult(
+                    accepted=False,
+                    reordered=reordered,
+                    missing=missing,
+                    gap_s=gap_s,
+                    overlap_s=overlap_s,
+                ),
+                index,
+                unit_bytes,
             )
 
         def _format_diff(other: AudioUnit | None) -> bool:
@@ -507,6 +515,30 @@ class AudioWindow:
 
         format_changed = _format_diff(previous) or _format_diff(following)
 
+        return (
+            unit,
+            AudioPushResult(
+                accepted=True,
+                reordered=reordered,
+                missing=missing,
+                gap_s=gap_s,
+                overlap_s=overlap_s,
+                format_changed=format_changed,
+            ),
+            index,
+            unit_bytes,
+        )
+
+    def preview_unit(self, unit: AudioUnit) -> AudioPushResult:
+        """Return the exact admission decision without mutating retained audio or sequence state."""
+        return self._preview_unit(unit)[1]
+
+    def push_unit(self, unit: AudioUnit) -> AudioPushResult:
+        unit, preview, index, unit_bytes = self._preview_unit(unit)
+        if not preview.accepted:
+            return preview
+
+        previous_max_seq = self._max_seq
         self._units.insert(index, unit)
         self._bytes += unit_bytes
         self._max_seq = unit.seq if previous_max_seq is None else max(previous_max_seq, unit.seq)
@@ -546,11 +578,11 @@ class AudioWindow:
 
         return AudioPushResult(
             accepted=True,
-            reordered=reordered,
-            missing=missing,
-            gap_s=gap_s,
-            overlap_s=overlap_s,
-            format_changed=format_changed,
+            reordered=preview.reordered,
+            missing=preview.missing,
+            gap_s=preview.gap_s,
+            overlap_s=preview.overlap_s,
+            format_changed=preview.format_changed,
             expired=expired,
             expired_bytes=expired_bytes,
             evicted=evicted,

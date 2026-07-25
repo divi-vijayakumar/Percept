@@ -205,9 +205,10 @@ def normalize_audio_envelope(
 ) -> AudioUnit:
     """Convert one accepted source envelope into the ordered unit consumed by ``AudioWindow``.
 
-    A caller-supplied ``AudioUnit`` keeps its exact interval and annotations. Captured and legacy
-    envelopes derive an interval from their owned frame bytes. In both cases, source sequence,
-    approved media bytes, event clock, and energy come from the envelope that passed tracking.
+    A caller-supplied ``AudioUnit`` keeps its own sequence, exact interval, and annotations; its
+    envelope sequence is only carrier arrival order. Captured and legacy envelopes derive an ordered
+    unit from their source sequence and owned frame bytes. Approved media bytes, event clock, energy,
+    direction, and participant provenance always come through the envelope that passed tracking.
     """
     if not isinstance(envelope, SourceEnvelope) or envelope.modality != "audio":
         raise TypeError("audio normalization requires an audio SourceEnvelope")
@@ -219,18 +220,19 @@ def normalize_audio_envelope(
     else:
         normalized = replace(
             unit,
-            seq=envelope.sequence,
             chunk=envelope.payload,
             event_t=event_t,
             energy=envelope.signal,
         )
-    if direction is not None or participant_id is not None:
+    resolved_direction = direction if direction is not None else envelope.audio_direction
+    resolved_participant = (
+        participant_id if participant_id is not None else envelope.participant_id
+    )
+    if resolved_direction is not None or resolved_participant is not None:
         normalized = replace(
             normalized,
-            direction=direction or normalized.direction,
-            participant_id=(
-                normalized.participant_id if participant_id is None else participant_id
-            ),
+            direction=resolved_direction or normalized.direction,
+            participant_id=resolved_participant,
         )
     return normalized
 
@@ -300,6 +302,8 @@ def _emit(
     epoch: int = 0,
     sample_format: str = "s16le",
     discontinuity: "Literal['capture_overflow'] | None" = None,
+    direction: AudioDirection = "unknown",
+    participant_id: str | None = None,
 ) -> None:
     frame = AudioFrame(pcm=pcm, sample_rate=sr, channels=ch, sample_format=sample_format,
                        t_start=t0, t_end=t1)
@@ -322,6 +326,8 @@ def _emit(
             ),
             payload=frame,
             signal=_pcm_frame_energy(pcm, sample_format),
+            audio_direction=direction,
+            participant_id=participant_id,
             discontinuity=discontinuity,
             legacy_timebase="observed" if timebase == "wall" else "source",
         ),
@@ -377,6 +383,8 @@ def _capture_wav(path: str, config: AudioSourceConfig, q: "queue.Queue",
                     q, now(), t1, t0, t1, converted, sr, ch, i // step,
                     config.timebase, dropped, source_id=f"audio:{path}",
                     sample_format=sample_format,
+                    direction=config.direction or "unknown",
+                    participant_id=config.participant_id,
                 )
                 i += samples
     except Exception as exc:  # surface to the consumer, like source.py
@@ -436,6 +444,8 @@ def _capture_container(path: str, config: AudioSourceConfig, q: "queue.Queue",
             _emit(
                 q, now(), t1, t0, t1, pcm, sr, ch, i // step, config.timebase, dropped,
                 source_id=f"audio:{path}",
+                direction=config.direction or "unknown",
+                participant_id=config.participant_id,
             )
             i += samples
         proc.stdout.close()
@@ -498,6 +508,8 @@ def _capture_mic(device: "int | None", config: AudioSourceConfig, q: "queue.Queu
                     q, now(), t1, t0, t1, pcm, sr, ch, sequence,
                     config.timebase, dropped, source_id=f"audio:mic:{device_id}",
                     epoch=epoch, discontinuity=discontinuity,
+                    direction=config.direction or "input",
+                    participant_id=config.participant_id,
                 )
                 epoch_i += samples
                 sequence += 1

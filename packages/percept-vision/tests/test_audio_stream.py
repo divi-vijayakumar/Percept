@@ -6,6 +6,7 @@ import json
 import asyncio
 import queue
 import struct
+import wave
 from pathlib import Path
 
 import pytest
@@ -268,6 +269,7 @@ def test_audio_envelope_normalization_preserves_exact_unit_metadata_and_owned_by
     envelope = audio_unit_envelope(
         submitted,
         source_id="audio:push",
+        sequence=0,
         observed_time=50.0,
     )
     mutable[0] = 9
@@ -429,6 +431,202 @@ def _run_audio_units(units, **kwargs):
     return core, utterances, health
 
 
+def test_explicit_audio_unit_sequence_is_ordered_by_audio_window_not_source_tracker() -> None:
+    units = [
+        AudioUnit(1, 0.1, 0.2, b"newer", energy=0.0),
+        AudioUnit(0, 0.0, 0.1, b"older", energy=0.0),
+    ]
+    core, _, health = _run_audio_units(units)
+
+    assert [(unit.seq, unit.chunk) for unit in core._audio_window("camera").units()] == [
+        (0, b"older"),
+        (1, b"newer"),
+    ]
+    assert "source_reorder" not in [event.kind for event in health]
+    ended = next(event for event in health if event.kind == "runtime_ended")
+    assert ended.data["source_coverage"]["audio"] == {
+        "observed": 2,
+        "excluded": 0,
+        "discontinuities": 0,
+        "missing_sequences": 0,
+    }
+
+
+@pytest.mark.parametrize("discontinuity", ["gap", "format"])
+def test_explicit_audio_gap_or_format_change_resets_dsp_but_retains_ordered_evidence(
+    discontinuity: str,
+) -> None:
+    first = AudioUnit(
+        0,
+        0.0,
+        0.1,
+        AudioFrame(pcm=b"\x01\x00", sample_rate=16_000),
+        energy=0.001,
+    )
+    if discontinuity == "gap":
+        second = AudioUnit(
+            2,
+            0.2,
+            0.3,
+            AudioFrame(pcm=b"\x00\x00", sample_rate=16_000),
+            energy=0.0,
+        )
+    else:
+        second = AudioUnit(
+            1,
+            0.1,
+            0.2,
+            AudioFrame(
+                pcm=b"\x00\x00\x00\x00",
+                sample_rate=16_000,
+                sample_format="f32le",
+            ),
+            energy=0.0,
+        )
+    core, _, health = _run_audio_units(
+        [first, second],
+        on_utterance=lambda *_: None,
+        utterance_hangover_frames=1,
+        utterance_min_speech_frames=1,
+    )
+
+    assert [unit.seq for unit in core._audio_window("camera").units()] == [
+        first.seq,
+        second.seq,
+    ]
+    assert [boundary.kind for boundary in core._audio_window("camera").boundaries()] == [
+        "vad_start"
+    ]
+    assert "source_gap" not in [event.kind for event in health]
+    assert "source_format_change" not in [event.kind for event in health]
+    assert "audio_discontinuity" in [event.kind for event in health]
+    assert core.source_continuity_generation("camera") == 0
+
+
+def test_actual_source_envelope_reorder_is_excluded_before_live_audio_dsp() -> None:
+    fmt = SourceFormat(media_type="application/x-percept-opaque")
+    newer = SourceEnvelope(
+        source_id="audio:wire",
+        modality="audio",
+        epoch=0,
+        sequence=1,
+        observed_time=100.0,
+        source_time=0.2,
+        format=fmt,
+        payload=b"quiet",
+        signal=0.0,
+    )
+    reordered = SourceEnvelope(
+        source_id="audio:wire",
+        modality="audio",
+        epoch=0,
+        sequence=0,
+        observed_time=101.0,
+        source_time=0.1,
+        format=fmt,
+        payload=b"loud",
+        signal=0.2,
+    )
+    core, _, health = _run_audio_units([newer, reordered])
+
+    assert [(unit.seq, unit.chunk) for unit in core._audio_window("camera").units()] == [
+        (1, b"quiet")
+    ]
+    assert core._audio_window("camera").boundaries() == []
+    assert "source_reorder" in [event.kind for event in health]
+    ended = next(event for event in health if event.kind == "runtime_ended")
+    assert ended.data["source_coverage"]["audio"] == {
+        "observed": 1,
+        "excluded": 1,
+        "discontinuities": 1,
+        "missing_sequences": 1,
+    }
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        AudioUnit(0, 0.2, 0.1, b"bad-interval", energy=0.0),
+        AudioUnit(
+            0,
+            0.0,
+            0.1,
+            AudioFrame(pcm=b"\x00\x00", sample_rate=16_000),
+            sample_rate=8_000,
+            channels=1,
+            sample_format="s16le",
+            energy=0.0,
+        ),
+    ],
+    ids=["interval", "format"],
+)
+def test_invalid_explicit_seq_zero_does_not_poison_corrected_retry_or_coverage(
+    invalid: AudioUnit,
+) -> None:
+    corrected = AudioUnit(0, 0.0, 0.1, b"corrected", energy=0.0)
+    following = AudioUnit(1, 0.1, 0.2, b"following", energy=0.0)
+    core, _, health = _run_audio_units([invalid, corrected, following])
+
+    assert [(unit.seq, unit.chunk) for unit in core._audio_window("camera").units()] == [
+        (0, b"corrected"),
+        (1, b"following"),
+    ]
+    ended = next(event for event in health if event.kind == "runtime_ended")
+    assert ended.data["source_coverage"]["audio"] == {
+        "observed": 2,
+        "excluded": 1,
+        "discontinuities": 0,
+        "missing_sequences": 0,
+    }
+
+
+def test_overlapping_explicit_unit_does_not_poison_corrected_retry_or_coverage() -> None:
+    first = AudioUnit(0, 0.0, 0.1, b"first", energy=0.0)
+    overlapping = AudioUnit(1, 0.05, 0.15, b"overlap", energy=0.0)
+    corrected = AudioUnit(1, 0.1, 0.2, b"corrected", energy=0.0)
+    core, _, health = _run_audio_units([first, overlapping, corrected])
+
+    assert [(unit.seq, unit.chunk) for unit in core._audio_window("camera").units()] == [
+        (0, b"first"),
+        (1, b"corrected"),
+    ]
+    ended = next(event for event in health if event.kind == "runtime_ended")
+    assert ended.data["source_coverage"]["audio"] == {
+        "observed": 2,
+        "excluded": 1,
+        "discontinuities": 0,
+        "missing_sequences": 0,
+    }
+
+
+def test_capture_metadata_survives_source_envelope_to_audio_unit(tmp_path: Path) -> None:
+    path = tmp_path / "metadata.wav"
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(8_000)
+        wav.writeframes(b"\x01\x00" * 80)
+
+    async def capture_one():
+        stream = open_audio_source(
+            str(path),
+            chunk_s=0.01,
+            direction="output",
+            participant_id="assistant",
+        )
+        try:
+            return await anext(stream)
+        finally:
+            await stream.aclose()
+
+    envelope = asyncio.run(capture_one())
+    unit = normalize_audio_envelope(envelope, event_t=envelope.source_time)
+    assert envelope.audio_direction == "output"
+    assert envelope.participant_id == "assistant"
+    assert unit.direction == "output"
+    assert unit.participant_id == "assistant"
+
+
 @pytest.mark.parametrize("case", ["duplicate", "overlap", "reorder"])
 def test_duplicate_overlap_and_reorder_never_replay_through_live_onset(case: str) -> None:
     def quiet(seq, start, end):
@@ -466,33 +664,63 @@ def test_duplicate_overlap_and_reorder_never_replay_through_live_onset(case: str
 def test_source_gap_and_format_change_reset_window_and_in_progress_vad(
     discontinuity: str,
 ) -> None:
-    first = AudioUnit(
-        0,
-        0.0,
-        0.1,
-        AudioFrame(pcm=b"\x01\x00", sample_rate=16_000),
-        energy=0.001,
+    first_frame = AudioFrame(
+        pcm=b"\x01\x00",
+        sample_rate=16_000,
+        t_start=0.0,
+        t_end=0.1,
+    )
+    first = SourceEnvelope(
+        source_id="audio:capture",
+        modality="audio",
+        epoch=0,
+        sequence=0,
+        observed_time=100.0,
+        source_time=0.1,
+        format=SourceFormat(
+            media_type="audio/pcm",
+            sample_rate=16_000,
+            channels=1,
+            sample_format="s16le",
+        ),
+        payload=first_frame,
+        signal=0.001,
     )
     if discontinuity == "gap":
-        second = AudioUnit(
-            2,
-            0.2,
-            0.3,
-            AudioFrame(pcm=b"\x00\x00", sample_rate=16_000),
-            energy=0.0,
+        second_frame = AudioFrame(
+            pcm=b"\x00\x00",
+            sample_rate=16_000,
+            t_start=0.2,
+            t_end=0.3,
         )
+        second_format = first.format
+        second_sequence = 2
     else:
-        second = AudioUnit(
-            1,
-            0.1,
-            0.2,
-            AudioFrame(
-                pcm=b"\x00\x00\x00\x00",
-                sample_rate=16_000,
-                sample_format="f32le",
-            ),
-            energy=0.0,
+        second_frame = AudioFrame(
+            pcm=b"\x00\x00\x00\x00",
+            sample_rate=16_000,
+            sample_format="f32le",
+            t_start=0.1,
+            t_end=0.2,
         )
+        second_format = SourceFormat(
+            media_type="audio/pcm",
+            sample_rate=16_000,
+            channels=1,
+            sample_format="f32le",
+        )
+        second_sequence = 1
+    second = SourceEnvelope(
+        source_id="audio:capture",
+        modality="audio",
+        epoch=0,
+        sequence=second_sequence,
+        observed_time=101.0,
+        source_time=second_frame.t_end,
+        format=second_format,
+        payload=second_frame,
+        signal=0.0,
+    )
     utterances = []
     core, _, health = _run_audio_units(
         [first, second],
@@ -504,7 +732,7 @@ def test_source_gap_and_format_change_reset_window_and_in_progress_vad(
     # Source continuity is authoritative: the old boundary and media are discarded before the first
     # unit in the new continuity span enters the ordered audio window.
     assert core._audio_window("camera").boundaries() == []
-    assert [unit.seq for unit in core._audio_window("camera").units()] == [second.seq]
+    assert [unit.seq for unit in core._audio_window("camera").units()] == [second.sequence]
     expected = "source_gap" if discontinuity == "gap" else "source_format_change"
     assert expected in [event.kind for event in health]
     assert core.source_continuity_generation("camera") == 1
@@ -515,6 +743,69 @@ def test_source_gap_and_format_change_reset_window_and_in_progress_vad(
         "discontinuities": 1,
         "missing_sequences": 1 if discontinuity == "gap" else 0,
     }
+
+
+def test_audio_reconnect_resets_wall_anchor_before_source_clock_restarts() -> None:
+    core = _runtime_core()
+    still = gray_frame(8, 8, 0)
+    health = []
+    fmt = SourceFormat(
+        media_type="audio/pcm",
+        sample_rate=16_000,
+        channels=1,
+        sample_format="s16le",
+    )
+
+    async def audio():
+        for epoch, source_time, observed_time in ((0, 10.0, 100.0), (1, 0.1, 101.0)):
+            yield SourceEnvelope(
+                source_id="audio:reconnect",
+                modality="audio",
+                epoch=epoch,
+                sequence=0,
+                observed_time=observed_time,
+                source_time=source_time,
+                format=fmt,
+                payload=AudioFrame(
+                    pcm=b"\x01\x00" * 16,
+                    sample_rate=16_000,
+                    t_start=max(0.0, source_time - 0.001),
+                    t_end=source_time,
+                ),
+                signal=0.001,
+            )
+            await asyncio.sleep(0.001)
+
+    async def video():
+        for seq in range(30):
+            yield (seq * 0.1, still, "quiet")
+            await asyncio.sleep(0.001)
+
+    wall_times = iter((100.0, 101.0))
+
+    async def collect():
+        return [
+            incident
+            async for incident in run(
+                core,
+                source=video(),
+                audio_source=audio(),
+                timebase="media",
+                audio_window_s=10.0,
+                on_utterance=lambda *_: None,
+                stale_audio_s=1.0,
+                wall_clock=lambda: next(wall_times, 101.0),
+                on_health=health.append,
+                allow_scripted_brain=True,
+                judge_dispatch="inline",
+            )
+        ]
+
+    asyncio.run(collect())
+    kinds = [event.kind for event in health]
+    assert "source_reconnect" in kinds
+    assert "audio_stale" not in kinds
+    assert core.source_continuity_generation("camera") == 1
 
 
 def test_public_amplitude_thresholds_preserve_pre_mean_square_sensitivity() -> None:
