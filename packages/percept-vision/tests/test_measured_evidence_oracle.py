@@ -82,7 +82,15 @@ def _media_document(
     # case retains exactly the same media and labels, as a matched frontier requires.
     dark = 17 + case_number
     light = 235 - case_number
-    fills = (dark,) * 6 if still else (dark, light, dark, light, dark, dark)
+    # Baseline admission uses a zero threshold but still requires a nonzero observed delta.  Every
+    # normal consecutive frame therefore changes by more than the sparse 0.75 threshold.  The
+    # zero-admission control retains a small nonzero delta at every step: baseline stays exhaustive
+    # while each normalized delta remains far below the adaptive 0.25 threshold.
+    fills = (
+        (dark, dark + 3, dark + 1, dark + 4, dark + 2, dark + 5)
+        if still
+        else (dark, light, dark, light, dark, light)
+    )
     states = (False, False, True, False, True, True)
     frames = []
     for index, (fill, present) in enumerate(zip(fills, states)):
@@ -192,11 +200,16 @@ def _write_cell(
         "replay": {
             "fps": 4.0,
             "timebase": "media",
-            "source_id": f"independent-camera-{case_number}",
+            # The shipped package-appearance Watch is scoped to the canonical ``camera`` source.
+            # Case independence comes from media/events, not by silently moving the replay to a
+            # different source that the compiled Watch correctly ignores.
+            "source_id": "camera",
         },
         "watch": {
             "template_ref": "facility_observation@1/package_appeared",
-            "parameters": {"zone_name": f"receiving-zone-{case_number}"},
+            # A frontier operating point has one exact executable configuration across cases.
+            # Cases vary in media and event labels while exercising the same Watch parameters.
+            "parameters": {"zone_name": "receiving-zone"},
             "domain_pack": "facility_observation@1",
         },
         "judge": {
@@ -492,8 +505,10 @@ def test_loader_rejects_symlink_and_hardlink_receipt_inputs(
     source = executed_matrix.cells[0].receipt_path
     symlink = tmp_path / "receipt-symlink.json"
     symlink.symlink_to(source)
+    hardlink_source = tmp_path / "hardlink-source.json"
+    shutil.copyfile(source, hardlink_source)
     hardlink = tmp_path / "receipt-hardlink.json"
-    os.link(source, hardlink)
+    os.link(hardlink_source, hardlink)
 
     for path in (symlink, hardlink):
         with pytest.raises(MatchedWatchInputError):
@@ -624,7 +639,7 @@ def test_bundle_derives_exactly_eight_rows_exclusively_from_four_genuine_receipt
         (row["case_id"], row["operating_point"], row["arm"]): row for row in expected
     }
     assert actual_by_key == expected_by_key
-    assert report.schema == _MEASURED_SCHEMA
+    assert report.to_dict()["schema"] == _MEASURED_SCHEMA
 
 
 def test_bundle_api_has_no_direct_row_json_ingress(
