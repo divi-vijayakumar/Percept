@@ -261,9 +261,12 @@ def test_run_start_pause_resume_and_source_generation_break_pending_dwell():
         yield (0.0, STILL, "open")
         paused_state[0] = True
         yield (5.0, STILL, "open")
+        # Seed a new pending proof while the worker remains paused.  Without an independent
+        # resume-boundary clear, the worker's next read at t=16 would mature this t=6 proof.
+        assert await pause_core.perceive_judged("open", t=6.0) == []
         paused_state[0] = False
-        yield (10.0, STILL, "open")
-        yield (20.0, STILL, "open")
+        yield (16.0, STILL, "open")
+        yield (26.0, STILL, "open")
 
     incidents = asyncio.run(
         collect(
@@ -273,7 +276,7 @@ def test_run_start_pause_resume_and_source_generation_break_pending_dwell():
             judge_dispatch="inline",
         )
     )
-    assert [incident.ts for incident in incidents] == [20.0]
+    assert [incident.ts for incident in incidents] == [26.0]
 
 
 def test_fixed_admission_cause_is_aligned_ordered_and_closed():
