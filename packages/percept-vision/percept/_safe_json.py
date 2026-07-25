@@ -73,7 +73,10 @@ def _parse_error(message: str) -> SafeJSONInputError:
 def _path_text(path: str | Path) -> tuple[str, str]:
     try:
         raw = os.fspath(path)
-    except (TypeError, ValueError) as exc:
+    # Path-like implementations are caller code and may raise more than TypeError/ValueError.
+    # Convert every ordinary failure to the controlled input error, while leaving
+    # KeyboardInterrupt/SystemExit and other BaseException control flow untouched.
+    except Exception as exc:
         raise _input_error(f"invalid input path: {exc}") from exc
     if not isinstance(raw, str):
         raise _input_error("input path must resolve to text")
@@ -304,3 +307,30 @@ def load_jsonl_file(
         if line.strip():
             rows.append(_parse_json(line, context=f"JSONL row {line_number}"))
     return SafeJSONResult(rows, receipt)
+
+
+def load_json_or_jsonl_file(
+    path: str | Path,
+    *,
+    max_bytes: int = SAFE_JSON_MAX_BYTES,
+) -> tuple[SafeJSONResult, bool]:
+    """Read JSON or JSONL according to the safely coerced input path suffix.
+
+    The path is coerced exactly once inside :func:`_read_snapshot`; a stateful or hostile
+    ``__fspath__`` therefore cannot make format selection refer to a different file than the
+    descriptor-backed snapshot.
+    """
+
+    payload, receipt = _read_snapshot(path, max_bytes=max_bytes)
+    is_jsonl = Path(receipt.path).suffix.lower() == ".jsonl"
+    if not is_jsonl:
+        return (
+            SafeJSONResult(_parse_json(_decode_utf8(payload), context="document"), receipt),
+            False,
+        )
+    text = _decode_utf8(payload)
+    rows: list[Any] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if line.strip():
+            rows.append(_parse_json(line, context=f"JSONL row {line_number}"))
+    return SafeJSONResult(rows, receipt), True

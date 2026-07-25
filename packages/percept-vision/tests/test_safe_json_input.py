@@ -19,6 +19,26 @@ from percept.eval.viability_frontier import (
 )
 
 
+class _HostilePath:
+    def __fspath__(self) -> str:
+        raise RuntimeError("hostile path coercion")
+
+
+@pytest.mark.parametrize("loader", [load_viability_manifest, load_viability_evidence])
+def test_public_loaders_turn_bytes_paths_into_controlled_errors(tmp_path, loader):
+    source = tmp_path / "input.json"
+    source.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ViabilityInputError, match="input path must resolve to text"):
+        loader(os.fsencode(source))
+
+
+@pytest.mark.parametrize("loader", [load_viability_manifest, load_viability_evidence])
+def test_public_loaders_control_hostile_pathlike_exceptions(loader):
+    with pytest.raises(ViabilityInputError, match="hostile path coercion"):
+        loader(_HostilePath())
+
+
 def test_safe_json_receipt_binds_exact_descriptor_snapshot(tmp_path):
     source = tmp_path / "input.json"
     source.write_text('{"watch":"door"}', encoding="utf-8")

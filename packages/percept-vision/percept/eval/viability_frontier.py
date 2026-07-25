@@ -21,7 +21,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from percept._safe_json import SafeJSONInputError, load_json_file, load_jsonl_file
+from percept._safe_json import SafeJSONInputError, load_json_file, load_json_or_jsonl_file
 
 __all__ = [
     "ARMS",
@@ -827,25 +827,29 @@ def _validate_manifest(value: Any) -> _Manifest:
 
 def load_viability_manifest(path: str | Path) -> dict[str, Any]:
     """Load and validate a preregistered viability manifest."""
-    source = Path(path)
+    source = _path_label(path)
     try:
-        doc = load_json_file(source).value
+        doc = load_json_file(path).value
     except SafeJSONInputError as exc:
         raise ViabilityInputError(f"cannot read manifest {source}: {exc}") from exc
     _validate_manifest(doc)
     return doc
 
 
+def _path_label(path: object) -> str:
+    try:
+        return str(path)
+    except Exception:
+        return "<invalid path>"
+
+
 def load_viability_evidence(path: str | Path) -> list[dict[str, Any]]:
     """Load JSON or JSONL evidence. Empty files and malformed rows fail closed."""
-    source = Path(path)
-    is_jsonl = source.suffix.lower() == ".jsonl"
+    source = _path_label(path)
     try:
-        if is_jsonl:
-            rows = load_jsonl_file(source).value
-        else:
-            payload = load_json_file(source).value
-            rows = payload if isinstance(payload, list) else payload.get("rows")
+        result, is_jsonl = load_json_or_jsonl_file(path)
+        payload = result.value
+        rows = payload if is_jsonl or isinstance(payload, list) else payload.get("rows")
     except SafeJSONInputError as exc:
         if exc.code == "empty":
             raise ViabilityInputError(f"evidence is empty: {source}") from exc
