@@ -809,8 +809,8 @@ def _validate_manifest(value: Any) -> _Manifest:
     )
     raw_archetypes = doc["archetypes"]
     _require(
-        isinstance(raw_archetypes, list) and len(raw_archetypes) >= 2,
-        "manifest.archetypes must contain at least 2 archetypes",
+        isinstance(raw_archetypes, list) and len(raw_archetypes) >= 1,
+        "manifest.archetypes must contain at least 1 archetype",
     )
 
     archetypes: list[_ArchetypeSpec] = []
@@ -1232,6 +1232,11 @@ def evaluate_viability_frontier(
     ]
     if spec.evidence_kind == "synthetic":
         blockers.append("declared synthetic evidence validates diagnostic mechanics only")
+    if len(spec.archetypes) < 2:
+        blockers.append(
+            "single-archetype evidence is diagnostic and does not establish "
+            "supported-matrix coverage"
+        )
     if not spec.preregistered:
         blockers.append("manifest declares that its policies were not preregistered")
     if not policy_cleared:

@@ -305,7 +305,7 @@ def test_rows_refuse_modeled_or_stub_data(manifest, rows, kind):
 
 def test_empty_manifest_archetypes_fail_closed(manifest, rows):
     manifest["archetypes"] = []
-    with pytest.raises(ViabilityInputError, match="at least 2 archetypes"):
+    with pytest.raises(ViabilityInputError, match="at least 1 archetype"):
         evaluate_viability_frontier(manifest, rows)
 
 
@@ -503,8 +503,12 @@ def test_deleted_archetype_even_with_rows_deleted_is_thin_evidence(manifest, row
     deleted = manifest["archetypes"].pop()
     deleted_cases = {case["id"] for case in deleted["cases"]}
     rows[:] = [row for row in rows if row["case_id"] not in deleted_cases]
-    with pytest.raises(ViabilityInputError, match="at least 2 archetypes"):
-        evaluate_viability_frontier(manifest, rows)
+    report = evaluate_viability_frontier(manifest, rows)
+    assert report.launch_qualified is False
+    assert any(
+        "single-archetype evidence is diagnostic" in blocker
+        for blocker in report.qualification_blockers
+    )
 
 
 def test_deleted_case_even_with_rows_deleted_is_thin_evidence(manifest, rows):

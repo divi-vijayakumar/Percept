@@ -13,7 +13,7 @@ import argparse
 import asyncio
 import json
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
@@ -155,7 +155,7 @@ def _freeze(value: Any) -> Any:
         return MappingProxyType({str(key): _freeze(item) for key, item in value.items()})
     if isinstance(value, (list, tuple)):
         return tuple(_freeze(item) for item in value)
-    if isinstance(value, set):
+    if isinstance(value, (set, frozenset)):
         return tuple(sorted(_freeze(item) for item in value))
     return value
 
@@ -166,6 +166,10 @@ def _thaw(value: Any) -> Any:
     if isinstance(value, tuple):
         return [_thaw(item) for item in value]
     return value
+
+
+def _json_shape(value: Any) -> Any:
+    return _thaw(_freeze(value))
 
 
 def _safe_receipt_dict(receipt: SafeInputReceipt) -> dict[str, Any]:
@@ -290,6 +294,8 @@ class ArmReceipt:
     apply_receipt: Mapping[str, Any]
     compiled_binding: Mapping[str, Any]
     judge_identity: Mapping[str, str]
+    media_identity: Mapping[str, Any]
+    replay_identity: Mapping[str, Any]
     configuration_sha256: str
     candidate_timestamps: tuple[float, ...]
     candidates: tuple[CandidateReceipt, ...]
@@ -313,6 +319,8 @@ class ArmReceipt:
             "apply_receipt": _thaw(self.apply_receipt),
             "compiled_binding": _thaw(self.compiled_binding),
             "judge_identity": _thaw(self.judge_identity),
+            "media_identity": _thaw(self.media_identity),
+            "replay_identity": _thaw(self.replay_identity),
             "configuration_sha256": self.configuration_sha256,
             "candidate_timestamps": list(self.candidate_timestamps),
             "candidates": [item.to_dict() for item in self.candidates],
@@ -347,6 +355,7 @@ class MatchedWatchReceipt:
     comparable: bool
     comparability_blockers: tuple[str, ...]
     run_timestamp: str
+    origin_evidence_sha256: str
 
     @property
     def launch_qualified(self) -> bool:
@@ -400,13 +409,24 @@ class MatchedWatchReceipt:
             arm["runtime_stats"].pop("last_wall_t", None)
         return result
 
+    def evidence_dict(self) -> dict[str, Any]:
+        result = self.content_dict()
+        result["run_timestamp"] = self.run_timestamp
+        return result
+
     @property
     def content_sha256(self) -> str:
         return _canonical_sha(self.hash_content_dict())
 
+    @property
+    def evidence_sha256(self) -> str:
+        return _canonical_sha(self.evidence_dict())
+
     def to_dict(self) -> dict[str, Any]:
         result = self.content_dict()
         result["content_sha256"] = self.content_sha256
+        result["evidence_sha256"] = self.evidence_sha256
+        result["origin_evidence_sha256"] = self.origin_evidence_sha256
         result["run_timestamp"] = self.run_timestamp
         return result
 
@@ -563,6 +583,11 @@ def load_matched_watch_manifest(path: str | Path) -> _Manifest:
     for frame in frames:
         owners = [event.id for event in events if event.start <= frame.t <= event.end]
         _require(len(owners) <= 1, f"candidate t={frame.t} belongs to multiple event windows {owners!r}")
+    for event in events:
+        _require(
+            any(event.start <= frame.t <= event.end for frame in frames),
+            f"event {event.id!r} contains zero enumerated candidates",
+        )
     for index, left in enumerate(events):
         for right in events[index + 1 :]:
             _require(
@@ -678,8 +703,28 @@ def _trace_dict(event: Any) -> dict[str, Any]:
     }
 
 
-def _health_dict(event: RuntimeHealthEvent) -> dict[str, Any]:
-    return {"kind": event.kind, "ts": event.ts, "data": dict(event.data or {})}
+def _health_dict(event: RuntimeHealthEvent, manifest: _Manifest) -> dict[str, Any]:
+    data = dict(event.data or {})
+    if event.kind == "runtime_started":
+        # Runtime emits repr(source), which contains every synthetic pixel. Store a compact,
+        # reconstructable identity at the receipt boundary instead of retaining or later masking it.
+        data = {
+            "source_kind": "synthetic_video",
+            "media": {
+                "sha256": manifest.media_receipt.sha256,
+                "byte_count": manifest.media_receipt.byte_count,
+                "schema": _MEDIA_SCHEMA,
+                "width": manifest.width,
+                "height": manifest.height,
+            },
+            "replay": {
+                "fps": manifest.fps,
+                "timebase": "media",
+                "source_id": manifest.source_id,
+            },
+            "candidate_count": len(manifest.frames),
+        }
+    return {"kind": event.kind, "ts": event.ts, "data": data}
 
 
 def _incident_dict(incident: Any) -> dict[str, Any]:
@@ -884,9 +929,9 @@ async def _run_arm(manifest: _Manifest, plan: Any, arm: str) -> ArmReceipt:
     }
     config_sha = _canonical_sha(
         {
-            "effective": resolved_dict["effective"],
-            "source_profile": _profile_dict(profile),
-            "compiled_binding": compiled_dict,
+            "effective": _json_shape(resolved_dict["effective"]),
+            "source_profile": _json_shape(_profile_dict(profile)),
+            "compiled_binding": _json_shape(compiled_dict),
         }
     )
     return ArmReceipt(
@@ -896,6 +941,22 @@ async def _run_arm(manifest: _Manifest, plan: Any, arm: str) -> ArmReceipt:
         _freeze(apply_receipt.to_dict()),
         _freeze(compiled_dict),
         _freeze(manifest.judge_identity),
+        _freeze(
+            {
+                "sha256": manifest.media_receipt.sha256,
+                "byte_count": manifest.media_receipt.byte_count,
+                "schema": _MEDIA_SCHEMA,
+                "width": manifest.width,
+                "height": manifest.height,
+            }
+        ),
+        _freeze(
+            {
+                "fps": manifest.fps,
+                "timebase": "media",
+                "source_id": manifest.source_id,
+            }
+        ),
         config_sha,
         candidate_ts,
         tuple(candidates),
@@ -911,7 +972,7 @@ async def _run_arm(manifest: _Manifest, plan: Any, arm: str) -> ArmReceipt:
             for item in asks
         ),
         tuple(_freeze(_trace_dict(item)) for item in traces),
-        tuple(_freeze(_health_dict(item)) for item in health),
+        tuple(_freeze(_health_dict(item, manifest)) for item in health),
         _freeze(asdict(stats)),
         dispatch_count,
         len(adapter.calls),
@@ -1055,7 +1116,7 @@ async def run_matched_watch_async(path: str | Path) -> MatchedWatchReceipt:
         )
         for event in manifest.events
     )
-    return MatchedWatchReceipt(
+    receipt = MatchedWatchReceipt(
         _freeze(dict(manifest.document)),
         _freeze(_safe_receipt_dict(manifest.input_receipt)),
         _freeze(_safe_receipt_dict(manifest.media_receipt)),
@@ -1071,7 +1132,9 @@ async def run_matched_watch_async(path: str | Path) -> MatchedWatchReceipt:
         not blockers,
         blockers,
         datetime.now(timezone.utc).isoformat(),
+        "",
     )
+    return replace(receipt, origin_evidence_sha256=receipt.evidence_sha256)
 
 
 def run_matched_watch(path: str | Path) -> MatchedWatchReceipt:
@@ -1095,6 +1158,7 @@ def _event_rows(receipt: MatchedWatchReceipt, arm: ArmReceipt) -> tuple[list[dic
             for item in arm.candidates
             if event["window_start_s"] <= item.t <= event["window_end_s"]
         ]
+        _require(candidates, f"event {event['id']!r} contains zero enumerated candidates")
         fires = [
             incident
             for incident in arm.incidents
@@ -1131,9 +1195,219 @@ def _event_rows(receipt: MatchedWatchReceipt, arm: ArmReceipt) -> tuple[list[dic
     return events, fire_ids
 
 
+def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
+    """Reconstruct the receipt's cross-field invariants from its raw append-only records."""
+
+    manifest = _thaw(receipt.manifest)
+    _exact(manifest, _MANIFEST_KEYS, "receipt.manifest")
+    _require(manifest["schema"] == _SCHEMA, "receipt manifest schema mismatch")
+    _require(manifest["archetype"] == _ARCHETYPE, "receipt archetype mismatch")
+    _require(manifest["replay"]["timebase"] == "media", "receipt replay timebase mismatch")
+    _require(manifest["watch"]["template_ref"] == _TEMPLATE, "receipt Watch template mismatch")
+    _require(manifest["watch"]["domain_pack"] == _PACK, "receipt DomainPack mismatch")
+    rendered = watch_template(_TEMPLATE, manifest["watch"]["parameters"]).to_dict()
+    _require(rendered == _thaw(receipt.watch_plan), "receipt WatchPlan render mismatch")
+    _require(_canonical_sha(rendered) == receipt.watch_plan_sha256, "receipt WatchPlan identity mismatch")
+    _require(manifest["judge"] == _thaw(receipt.judge_identity), "receipt judge identity mismatch")
+    _require(manifest["events"] == _thaw(receipt.event_windows), "receipt event windows mismatch")
+    _require(
+        manifest["media"]["sha256"] == receipt.media_input_receipt["sha256"],
+        "receipt media identity mismatch",
+    )
+    provenance = _thaw(receipt.build_provenance)
+    _require(
+        receipt.package_version == provenance.get("package_version")
+        and set(provenance)
+        == {"package_version", "git_commit", "contract_version", "build_timestamp"},
+        "receipt build provenance mismatch",
+    )
+    _require(provenance == build_info().to_dict(), "receipt build provenance is not the active build")
+
+    for arm in (receipt.baseline, receipt.adaptive):
+        _require(
+            arm.valid == (not arm.blockers),
+            f"{arm.arm} cached validity disagrees with its blockers",
+        )
+        expected_replay = {
+            "fps": float(manifest["replay"]["fps"]),
+            "timebase": "media",
+            "source_id": manifest["replay"]["source_id"],
+        }
+        _require(_thaw(arm.replay_identity) == expected_replay, "arm replay identity mismatch")
+        _require(
+            arm.media_identity["sha256"] == receipt.media_input_receipt["sha256"],
+            "arm media identity mismatch",
+        )
+        _require(arm.judge_identity == receipt.judge_identity, "arm judge identity mismatch")
+        _require(
+            arm.apply_receipt["status"] in {"applied", "applied_with_warnings"}
+            and tuple(arm.apply_receipt["watch_ids"]) == (arm.compiled_binding["goal_id"],),
+            "apply receipt does not bind the compiled goal",
+        )
+        _require(
+            content_hash(_thaw(arm.resolved_watch["components"]))
+            == arm.resolved_watch["component_snapshot_hash"],
+            "arm component snapshot hash mismatch",
+        )
+        _require(
+            f"sha256:{arm.resolved_watch['plan_hash']}" == receipt.watch_plan_sha256,
+            "arm resolved plan hash mismatch",
+        )
+        candidates = arm.candidates
+        _require(
+            [item.index for item in candidates] == list(range(len(candidates))),
+            "candidate indices are not exact and contiguous",
+        )
+        _require(
+            tuple(item.t for item in candidates) == arm.candidate_timestamps,
+            "candidate timestamp sequence mismatch",
+        )
+        edge = [item for item in arm.traces if item["stage"] == "edge.decision"]
+        transitions = [item for item in arm.traces if item["stage"] == "transition.decision"]
+        source_frames = [item for item in arm.traces if item["stage"] == "source.frame"]
+        dispatched = [item for item in candidates if item.runtime_dispatched]
+        started = [item for item in arm.health if item["kind"] == "runtime_started"]
+        _require(len(started) == 1, "runtime_started health record is missing or duplicated")
+        _require(
+            _thaw(started[0]["data"])
+            == {
+                "source_kind": "synthetic_video",
+                "media": _thaw(arm.media_identity),
+                "replay": _thaw(arm.replay_identity),
+                "candidate_count": len(candidates),
+            },
+            "runtime_started source identity disagrees with media/replay receipt",
+        )
+        _require(
+            [item["t"] for item in edge] == [item.t for item in candidates],
+            "edge trace coverage/timestamps mismatch",
+        )
+        _require(
+            [_thaw(item["data"]) for item in edge]
+            == [_thaw(item.edge_decision) for item in candidates],
+            "candidate edge records disagree with traces",
+        )
+        _require(
+            [item["t"] for item in transitions] == [item.t for item in dispatched]
+            and [item["t"] for item in source_frames] == [item.t for item in dispatched],
+            "transition/source trace coverage mismatch",
+        )
+        _require(
+            [item["data"]["outcome"] for item in transitions]
+            == [item.transition_outcome for item in dispatched],
+            "candidate transition outcomes disagree with traces",
+        )
+
+        incident_ids = [str(item["id"]) for item in arm.incidents]
+        linked = [
+            (candidate, incident_id)
+            for candidate in candidates
+            for incident_id in candidate.incident_ids
+        ]
+        _require(
+            len(incident_ids) == len(set(incident_ids)) == len(linked)
+            and sorted(incident_ids) == sorted(incident_id for _, incident_id in linked),
+            "incident IDs are not in one-to-one candidate ownership",
+        )
+        incidents = {str(item["id"]): item for item in arm.incidents}
+        for candidate, incident_id in linked:
+            _require(
+                float(incidents[incident_id]["ts"]) == candidate.t,
+                "incident timestamp does not match its candidate",
+            )
+        incident_traces = [item for item in arm.traces if item["stage"] == "incident.created"]
+        judgment_traces = [item for item in arm.traces if item["stage"] == "judgment.event"]
+        _require(
+            len(incident_traces) == len(judgment_traces) == len(arm.incidents),
+            "judgment/incident trace completeness mismatch",
+        )
+        _require(
+            sorted(str(item["data"]["incident_id"]) for item in incident_traces)
+            == sorted(incident_ids),
+            "incident trace IDs disagree with delivered incidents",
+        )
+        for incident in arm.incidents:
+            _require(
+                any(
+                    trace["data"]["judgment_event_id"] == incident["judgment_event_id"]
+                    and trace["t"] == incident["ts"]
+                    for trace in judgment_traces
+                ),
+                "JudgmentEvent trace does not link to delivered Incident",
+            )
+
+        fire_decisions = sum(item.decision == "fire" for item in dispatched)
+        ask_decisions = sum(item.decision == "ask" for item in dispatched)
+        missing_decisions = sum(item.decision == "missing" for item in dispatched)
+        _require(
+            fire_decisions == len(arm.incidents) == arm.runtime_stats["fires"]
+            and ask_decisions == len(arm.asks) == arm.runtime_stats["asks"],
+            "FIRE/ASK decisions disagree with runtime stats and outputs",
+        )
+        for candidate in dispatched:
+            has_error = any(call.status != "success" for call in candidate.provider_calls)
+            _require(
+                (candidate.decision == "missing") == has_error,
+                "missing decision disagrees with provider outcomes",
+            )
+            _require(
+                (candidate.decision == "fire") == bool(candidate.incident_ids),
+                "FIRE decision disagrees with incident link",
+            )
+        _require(
+            missing_decisions == arm.provider_call_failures,
+            "missing decisions disagree with provider failures",
+        )
+
+        ended = [item for item in arm.health if item["kind"] == "runtime_ended"]
+        _require(len(ended) == 1, "runtime_ended health record is missing or duplicated")
+        ended_data = ended[0]["data"]
+        _require(
+            ended_data["frames_seen"] == arm.runtime_stats["frames"]
+            and ended_data["admitted"] == arm.runtime_stats["escalations"]
+            and ended_data["perceive_dispatches"] == arm.runtime_stats["perceive_dispatches"]
+            and ended_data["judge_calls"] == arm.runtime_stats["judge_calls"]
+            and ended_data["incidents"] == arm.runtime_stats["incidents"],
+            "runtime_ended health disagrees with RuntimeStats",
+        )
+        _require(
+            len([item for item in arm.health if item["kind"] == "escalation"])
+            == sum(item.admitted for item in candidates),
+            "escalation health coverage mismatch",
+        )
+        effective = [item for item in arm.health if item["kind"] == "effective_config"]
+        _require(len(effective) == 1, "effective_config health record is missing or duplicated")
+        _require(
+            float(effective[0]["data"]["fps"]["requested_fps"]) == arm.replay_identity["fps"]
+            and effective[0]["data"]["video_timebase"]["resolved"] == arm.replay_identity["timebase"],
+            "observed effective config disagrees with replay identity",
+        )
+
+    adaptive_doc = manifest["adaptive"]
+    _require(
+        receipt.adaptive.source_profile["parameters"]["salience_stat"]
+        == adaptive_doc["salience_stat"]
+        and float(receipt.adaptive.source_profile["parameters"]["salience_threshold"])
+        == float(adaptive_doc["threshold"]),
+        "adaptive manifest/profile binding mismatch",
+    )
+    recomputed_blockers = validate_matched_arms(
+        receipt.baseline,
+        receipt.adaptive,
+        watch_plan_sha256=receipt.watch_plan_sha256,
+        expected_media_sha256=receipt.media_input_receipt.get("sha256"),
+    )
+    _require(
+        receipt.comparability_blockers == recomputed_blockers
+        and receipt.comparable == (not recomputed_blockers),
+        "cached receipt comparable state disagrees with recomputed blockers",
+    )
+
+
 def derive_viability_rows(receipt: MatchedWatchReceipt) -> tuple[dict[str, Any], dict[str, Any]]:
     """Derive the v3 viability rows exclusively from an immutable execution receipt."""
 
+    _validate_receipt(receipt)
     _require(receipt.evidence_classification in _EVIDENCE_CLASSES, "unsupported evidence classification")
     manifest_media = _object(receipt.manifest.get("media"), "receipt.manifest.media")
     _require(
@@ -1278,6 +1552,10 @@ def derive_viability_rows(receipt: MatchedWatchReceipt) -> tuple[dict[str, Any],
         baseline["candidate_windows_admitted"] == baseline["candidate_windows_total"]
         and baseline["runtime_dispatches"] == baseline["candidate_windows_total"],
         "derived baseline is not exhaustive",
+    )
+    _require(
+        receipt.origin_evidence_sha256 == receipt.evidence_sha256,
+        "receipt evidence origin seal mismatch",
     )
     return baseline, adaptive
 

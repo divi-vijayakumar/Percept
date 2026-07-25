@@ -12,9 +12,12 @@ from percept.eval.matched_watch import (
     MatchedWatchInputError,
     derive_viability_rows,
     load_matched_watch_manifest,
+    main,
     run_matched_watch,
     validate_matched_arms,
 )
+from percept.eval.viability_frontier import evaluate_viability_frontier
+from percept.tracing import content_hash
 
 
 def _sha(payload: bytes) -> str:
@@ -30,10 +33,17 @@ def _verdict(satisfied: bool, evidence: str, *, error: str | None = None) -> dic
     }
 
 
-def _documents(*, fills=(0, 255, 0, 255), fail_to_at: int | None = None):
+def _documents(
+    *,
+    fills=(0, 255, 0, 255),
+    states: tuple[bool, ...] | None = None,
+    fail_to_at: int | None = None,
+):
+    if states is not None:
+        assert len(states) == len(fills)
     frames = []
     for index, fill in enumerate(fills):
-        present = index >= 2
+        present = states[index] if states is not None else index >= 2
         frames.append(
             {
                 "t": float(index),
@@ -64,6 +74,9 @@ def _write_case(
     media_sha=None,
     event_start=2.0,
     event_end=3.0,
+    case_id="physical-package-001",
+    events=None,
+    operating_point="block-max-0.5",
 ):
     media_doc = media or _documents()
     media_bytes = json.dumps(media_doc, sort_keys=True, separators=(",", ":")).encode()
@@ -71,7 +84,7 @@ def _write_case(
     media_path.write_bytes(media_bytes)
     manifest = {
         "schema": "percept.eval.matched_watch/v1",
-        "case_id": "physical-package-001",
+        "case_id": case_id,
         "archetype": "physical_scene/package_appeared",
         "split": "dev",
         "media": {
@@ -90,13 +103,13 @@ def _write_case(
             "prompt_sha256": _sha(b"fixed transition prompt"),
         },
         "adaptive": {
-            "operating_point": "block-max-0.5",
+            "operating_point": operating_point,
             "salience_stat": "block_max",
             "threshold": threshold,
         },
-        "events": [
+        "events": events or [
             {
-                "id": "physical-package-001/e1",
+                "id": f"{case_id}/e1",
                 "eligible_at_s": 2.0,
                 "window_start_s": event_start,
                 "window_end_s": event_end,
@@ -234,3 +247,299 @@ def test_nonmonotonic_media_and_overlapping_event_ownership_fail_closed(tmp_path
     media["frames"][2]["t"] = 1.0
     with pytest.raises(MatchedWatchInputError, match="strictly increasing"):
         load_matched_watch_manifest(_write_case(tmp_path, media=media))
+
+
+def test_cli_output_is_create_exclusive_and_json_serializable(tmp_path):
+    manifest = _write_case(tmp_path)
+    output = tmp_path / "receipt.json"
+
+    assert main(["--manifest", str(manifest), "--out", str(output)]) == 0
+    assert json.loads(output.read_text(encoding="utf-8"))["launch_qualified"] is False
+    with pytest.raises(SystemExit):
+        main(["--manifest", str(manifest), "--out", str(output)])
+
+
+def test_synthetic_dimensions_and_aggregate_allocation_are_bounded(tmp_path):
+    fractional = _documents()
+    fractional["width"] = 8.5
+    with pytest.raises(MatchedWatchInputError, match="exact integer"):
+        load_matched_watch_manifest(_write_case(tmp_path, media=fractional))
+
+    oversized = _documents(fills=tuple(0 for _ in range(16)))
+    oversized["width"] = 512
+    oversized["height"] = 512
+    with pytest.raises(MatchedWatchInputError, match="total-pixel"):
+        load_matched_watch_manifest(_write_case(tmp_path, media=oversized))
+
+
+def test_huge_numeric_input_is_normalized_to_contract_error(tmp_path):
+    media = _documents()
+    media["frames"][1]["t"] = 10**1000
+    with pytest.raises(MatchedWatchInputError, match="finite number"):
+        load_matched_watch_manifest(_write_case(tmp_path, media=media))
+
+
+def test_derived_rows_are_accepted_by_a_matching_v3_frontier_manifest(tmp_path):
+    policy = {
+        "min_candidate_recall": 0.0,
+        "min_event_recall": 0.0,
+        "min_precision": 0.0,
+        "min_call_reduction": 0.0,
+        "max_event_abstention_rate": 1.0,
+        "max_missing_rate": 1.0,
+    }
+    point_thresholds = {"block-max-0.25": 0.25, "block-max-0.75": 0.75}
+    cases = []
+    operating_points = {}
+    rows = []
+    for case_index in range(2):
+        case_id = f"physical-package-{case_index + 1:03d}"
+        events = [
+            {
+                "id": f"{case_id}/e1",
+                "eligible_at_s": 2.0,
+                "window_start_s": 2.0,
+                "window_end_s": 2.0,
+                "review_authority": "fixture-authority/v1",
+                "label_digest": _sha(f"{case_id}: package visible at t=2".encode()),
+            },
+            {
+                "id": f"{case_id}/e2",
+                "eligible_at_s": 4.0,
+                "window_start_s": 4.0,
+                "window_end_s": 5.0,
+                "review_authority": "fixture-authority/v1",
+                "label_digest": _sha(f"{case_id}: package visible at t=4".encode()),
+            },
+        ]
+        cases.append(
+            {
+                "id": case_id,
+                "candidate_windows_total": 6,
+                "events": [
+                    {"id": events[0]["id"], "candidate_windows": 1},
+                    {"id": events[1]["id"], "candidate_windows": 2},
+                ],
+            }
+        )
+        for point, threshold in point_thresholds.items():
+            case_dir = tmp_path / f"{case_id}-{point}"
+            case_dir.mkdir()
+            receipt = run_matched_watch(
+                    _write_case(
+                        case_dir,
+                        media=_documents(
+                            fills=(0, 255, 0, 255, 0, 0),
+                            states=(False, False, True, False, True, True),
+                        ),
+                    threshold=threshold,
+                    case_id=case_id,
+                    events=events,
+                    operating_point=point,
+                )
+            )
+            baseline, adaptive = derive_viability_rows(receipt)
+            rows.extend((baseline, adaptive))
+            if point not in operating_points:
+                adaptive_arm = receipt.adaptive.to_dict()
+                operating_points[point] = {
+                    "id": point,
+                    "configuration": {
+                        "effective": adaptive_arm["resolved_watch"]["effective"],
+                        "source_profile": adaptive_arm["source_profile"],
+                        "compiled_binding": adaptive_arm["compiled_binding"],
+                    },
+                    "configuration_sha256": adaptive["configuration_sha256"],
+                }
+    archetypes = [
+        {
+            "id": "physical_scene/package_appeared",
+            "provider_call_contract": {
+                "completed_dispatch_calls": 2,
+                "missing_dispatch_min_calls": 1,
+                "missing_dispatch_max_calls": 2,
+            },
+            "cases": cases,
+            "operating_points": list(operating_points.values()),
+            "policy": policy,
+        }
+    ]
+    report = evaluate_viability_frontier(
+        {
+            "schema_version": "3",
+            "track": "viability_frontier",
+            "scope": "programmable Watches over live multimodal streams",
+            "evidence_kind": "synthetic",
+            "preregistered": True,
+            "archetypes": archetypes,
+        },
+        rows,
+    )
+    assert report.launch_qualified is False
+
+
+def test_unlabelled_real_transition_is_preserved_as_false_positive_fire_id(tmp_path):
+    receipt = run_matched_watch(
+        _write_case(
+            tmp_path,
+            media=_documents(
+                fills=(0, 255, 0, 255, 0, 0),
+                states=(False, False, True, False, True, True),
+            ),
+            event_start=2.0,
+            event_end=2.0,
+        )
+    )
+    _, adaptive = derive_viability_rows(receipt)
+    unaligned = next(
+        str(incident["id"])
+        for incident in receipt.adaptive.incidents
+        if incident["ts"] == 4.0
+    )
+
+    assert adaptive["fire_event_ids"] == ["physical-package-001/e1", unaligned]
+
+
+def test_coherent_nonzero_baseline_configuration_cannot_bypass_exhaustive_gate(tmp_path):
+    receipt = run_matched_watch(_write_case(tmp_path))
+    baseline = receipt.baseline.to_dict()
+    profile = baseline["source_profile"]
+    profile["parameters"]["salience_threshold"] = 0.25
+    resolved = baseline["resolved_watch"]
+    resolved["effective"]["Settings.edge.motion_gate_block_max"] = 0.25
+    binding = baseline["compiled_binding"]
+    binding["watchspec_kwargs"]["stat_thresholds"]["block_max"] = 0.25
+    configuration = {
+        "effective": resolved["effective"],
+        "source_profile": profile,
+        "compiled_binding": binding,
+    }
+    configuration_sha256 = f"sha256:{content_hash(configuration)}"
+    coherent_baseline = replace(
+        receipt.baseline,
+        source_profile=profile,
+        resolved_watch=resolved,
+        compiled_binding=binding,
+        configuration_sha256=configuration_sha256,
+    )
+    tampered = replace(
+        receipt,
+        baseline=coherent_baseline,
+        comparable=True,
+        comparability_blockers=(),
+    )
+
+    with pytest.raises(
+        MatchedWatchInputError,
+        match="baseline compiled admission threshold|cached receipt comparable",
+    ):
+        derive_viability_rows(tampered)
+
+
+def test_evidence_origin_seal_binds_safe_input_descriptor_provenance(tmp_path):
+    receipt = run_matched_watch(_write_case(tmp_path))
+    manifest_input = dict(receipt.manifest_input_receipt)
+    manifest_input.update(
+        path="/forged/manifest.json",
+        canonical_path="/forged/manifest.json",
+        device=int(manifest_input["device"]) + 1,
+        inode=int(manifest_input["inode"]) + 1,
+        modified_time_ns=int(manifest_input["modified_time_ns"]) + 1,
+    )
+    forged = replace(receipt, manifest_input_receipt=manifest_input)
+
+    assert forged.content_sha256 == receipt.content_sha256
+    assert forged.evidence_sha256 != receipt.evidence_sha256
+    with pytest.raises(MatchedWatchInputError, match="origin seal"):
+        derive_viability_rows(forged)
+
+
+def test_runtime_started_receipt_identity_is_compact_and_manifest_bound(tmp_path):
+    receipt = run_matched_watch(_write_case(tmp_path))
+    arm = receipt.adaptive.to_dict()
+    data = next(item["data"] for item in arm["health"] if item["kind"] == "runtime_started")
+
+    assert data["source_kind"] == "synthetic_video"
+    assert data["candidate_count"] == len(receipt.adaptive.candidates)
+    assert data["media"] == arm["media_identity"]
+    assert data["replay"] == arm["replay_identity"]
+    encoded = json.dumps(arm["health"], sort_keys=True)
+    assert len(json.dumps(data, sort_keys=True)) < 1_024
+    assert "pixels=" not in encoded
+    assert "_JudgePayload" not in encoded
+
+
+def test_evidence_origin_seal_binds_runtime_started_and_last_wall_time(tmp_path):
+    receipt = run_matched_watch(_write_case(tmp_path))
+    health = list(receipt.adaptive.health)
+    started_index = next(
+        index for index, item in enumerate(health) if item["kind"] == "runtime_started"
+    )
+    changed_started = dict(health[started_index])
+    changed_data = dict(changed_started["data"])
+    changed_data["candidate_count"] = int(changed_data["candidate_count"]) + 1
+    changed_started["data"] = changed_data
+    health[started_index] = changed_started
+    changed_health_receipt = replace(
+        receipt,
+        adaptive=replace(receipt.adaptive, health=tuple(health)),
+    )
+    stats = dict(receipt.adaptive.runtime_stats)
+    stats["last_wall_t"] = float(stats["last_wall_t"]) + 1.0
+    changed_wall_receipt = replace(
+        receipt,
+        adaptive=replace(receipt.adaptive, runtime_stats=stats),
+    )
+
+    for forged in (changed_health_receipt, changed_wall_receipt):
+        assert forged.content_sha256 == receipt.content_sha256
+        assert forged.evidence_sha256 != receipt.evidence_sha256
+        with pytest.raises(MatchedWatchInputError):
+            derive_viability_rows(forged)
+
+
+def test_evidence_origin_seal_binds_run_timestamp(tmp_path):
+    receipt = run_matched_watch(_write_case(tmp_path))
+    forged = replace(receipt, run_timestamp="2099-01-01T00:00:00+00:00")
+
+    assert forged.content_sha256 == receipt.content_sha256
+    assert forged.evidence_sha256 != receipt.evidence_sha256
+    with pytest.raises(MatchedWatchInputError, match="origin seal"):
+        derive_viability_rows(forged)
+
+
+def test_none_origin_cannot_reseal_forged_build_provenance(tmp_path):
+    receipt = run_matched_watch(_write_case(tmp_path))
+    provenance = dict(receipt.build_provenance)
+    provenance["git_commit"] = "forged"
+    forged = replace(
+        receipt,
+        build_provenance=provenance,
+        origin_evidence_sha256=None,
+    )
+
+    assert forged.origin_evidence_sha256 is None
+    with pytest.raises(MatchedWatchInputError, match="build provenance|origin seal"):
+        derive_viability_rows(forged)
+
+
+def test_none_origin_cannot_reseal_cached_validity_or_comparability_mismatch(tmp_path):
+    receipt = run_matched_watch(_write_case(tmp_path))
+    invalid_arm = replace(
+        receipt,
+        adaptive=replace(receipt.adaptive, valid=False),
+        origin_evidence_sha256=None,
+    )
+    stale_comparability = replace(
+        receipt,
+        comparable=False,
+        comparability_blockers=(),
+        origin_evidence_sha256=None,
+    )
+
+    assert invalid_arm.origin_evidence_sha256 is None
+    assert stale_comparability.origin_evidence_sha256 is None
+    with pytest.raises(MatchedWatchInputError, match="cached validity"):
+        derive_viability_rows(invalid_arm)
+    with pytest.raises(MatchedWatchInputError, match="cached receipt comparable"):
+        derive_viability_rows(stale_comparability)
