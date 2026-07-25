@@ -412,6 +412,12 @@ class SourceTracker:
         self._streams: dict[tuple[str, SourceModality], _StreamState] = {}
         self.coverage = SourceCoverage()
 
+    def preview(self, envelope: Any, *, require_source_time: bool = False) -> SourceInspection:
+        """Return the exact ingress decision without mutating stream state or coverage."""
+        probe = SourceTracker()
+        probe._streams = dict(self._streams)
+        return probe.inspect(envelope, require_source_time=require_source_time)
+
     def inspect(self, envelope: Any, *, require_source_time: bool = False) -> SourceInspection:
         invalid = _validation_event(envelope)
         if invalid is not None:

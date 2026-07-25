@@ -431,6 +431,42 @@ def _run_audio_units(units, **kwargs):
     return core, utterances, health
 
 
+def _real_audio_envelope(
+    sequence: int,
+    t_start: float,
+    t_end: float,
+    *,
+    observed_time: float,
+    epoch: int = 0,
+    source_id: str = "audio:wire",
+    signal: float = 0.0,
+    sample_format: str = "s16le",
+) -> SourceEnvelope:
+    pcm = b"\x00\x00\x00\x00" if sample_format == "f32le" else b"\x00\x00"
+    return SourceEnvelope(
+        source_id=source_id,
+        modality="audio",
+        epoch=epoch,
+        sequence=sequence,
+        observed_time=observed_time,
+        source_time=t_end,
+        format=SourceFormat(
+            media_type="audio/pcm",
+            sample_rate=16_000,
+            channels=1,
+            sample_format=sample_format,
+        ),
+        payload=AudioFrame(
+            pcm=pcm,
+            sample_rate=16_000,
+            sample_format=sample_format,
+            t_start=t_start,
+            t_end=t_end,
+        ),
+        signal=signal,
+    )
+
+
 def test_explicit_audio_unit_sequence_is_ordered_by_audio_window_not_source_tracker() -> None:
     units = [
         AudioUnit(1, 0.1, 0.2, b"newer", energy=0.0),
@@ -590,6 +626,45 @@ def test_overlapping_explicit_unit_does_not_poison_corrected_retry_or_coverage()
         (0, b"first"),
         (1, b"corrected"),
     ]
+    ended = next(event for event in health if event.kind == "runtime_ended")
+    assert ended.data["source_coverage"]["audio"] == {
+        "observed": 2,
+        "excluded": 1,
+        "discontinuities": 0,
+        "missing_sequences": 0,
+    }
+
+
+def test_invalid_real_envelope_seq_zero_does_not_poison_corrected_retry_or_coverage() -> None:
+    invalid = _real_audio_envelope(0, 0.2, 0.1, observed_time=100.0)
+    corrected = _real_audio_envelope(0, 0.0, 0.1, observed_time=101.0)
+    following = _real_audio_envelope(1, 0.1, 0.2, observed_time=102.0)
+    core, _, health = _run_audio_units([invalid, corrected, following])
+
+    assert [
+        (unit.seq, unit.t_start, unit.t_end)
+        for unit in core._audio_window("camera").units()
+    ] == [(0, 0.0, 0.1), (1, 0.1, 0.2)]
+    ended = next(event for event in health if event.kind == "runtime_ended")
+    assert ended.data["source_coverage"]["audio"] == {
+        "observed": 2,
+        "excluded": 1,
+        "discontinuities": 0,
+        "missing_sequences": 0,
+    }
+
+
+def test_overlapping_real_envelope_does_not_poison_corrected_retry_or_coverage() -> None:
+    first = _real_audio_envelope(0, 0.0, 0.1, observed_time=100.0)
+    overlapping = _real_audio_envelope(1, 0.05, 0.15, observed_time=101.0)
+    corrected = _real_audio_envelope(1, 0.1, 0.2, observed_time=102.0)
+    core, _, health = _run_audio_units([first, overlapping, corrected])
+
+    assert [
+        (unit.seq, unit.t_start, unit.t_end)
+        for unit in core._audio_window("camera").units()
+    ] == [(0, 0.0, 0.1), (1, 0.1, 0.2)]
+    assert "source_duplicate" not in [event.kind for event in health]
     ended = next(event for event in health if event.kind == "runtime_ended")
     assert ended.data["source_coverage"]["audio"] == {
         "observed": 2,

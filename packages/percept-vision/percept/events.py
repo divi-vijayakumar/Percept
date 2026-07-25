@@ -529,8 +529,15 @@ class AudioWindow:
             unit_bytes,
         )
 
-    def preview_unit(self, unit: AudioUnit) -> AudioPushResult:
+    def preview_unit(self, unit: AudioUnit, *, reset: bool = False) -> AudioPushResult:
         """Return the exact admission decision without mutating retained audio or sequence state."""
+        if reset:
+            empty = AudioWindow(
+                self._seconds,
+                max_units=self._max_units,
+                max_bytes=self._max_bytes,
+            )
+            return empty.preview_unit(unit)
         return self._preview_unit(unit)[1]
 
     def push_unit(self, unit: AudioUnit) -> AudioPushResult:
