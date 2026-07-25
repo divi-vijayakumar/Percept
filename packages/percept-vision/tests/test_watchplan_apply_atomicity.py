@@ -408,7 +408,7 @@ class AtomicApplyTests(unittest.TestCase):
                     "rejected",
                 )
 
-    def test_cached_judge_context_rechecks_bound_bytes_against_digest(self):
+    def test_cached_judge_context_rechecks_canonical_runtime_representation(self):
         core = _core()
         plan = _plan("p1")
         with TemporaryDirectory() as tmp:
@@ -434,23 +434,35 @@ class AtomicApplyTests(unittest.TestCase):
                     ("applied", "applied_with_warnings"),
                 )
             prior = core._judge_bindings["p1"]
-            bad_context = dataclasses.replace(
-                prior.static_context,
-                content_bytes=b"TAMPERED RUBRIC",
-            )
-            replacement = dataclasses.replace(prior, static_context=bad_context)
-            core._judge_bindings["p1"] = replacement
-            core._judge_binding_tokens["p1"] = id(replacement)
+            for name, bad_context in {
+                "content bytes changed": dataclasses.replace(
+                    prior.static_context,
+                    content_bytes=b"TAMPERED RUBRIC",
+                ),
+                "decoded text diverges from verified bytes": dataclasses.replace(
+                    prior.static_context,
+                    decoded_text="A DIFFERENT RUNTIME PROMPT",
+                ),
+                "content is not valid utf8": dataclasses.replace(
+                    prior.static_context,
+                    content_bytes=b"\xff\xfe",
+                    decoded_text="replacement text",
+                ),
+            }.items():
+                with self.subTest(name=name):
+                    replacement = dataclasses.replace(prior, static_context=bad_context)
+                    core._judge_bindings["p1"] = replacement
+                    core._judge_binding_tokens["p1"] = id(replacement)
 
-            self.assertEqual(
-                apply_watch_plan(
-                    core,
-                    plan,
-                    resolver=resolver,
-                    deployment_judges=deployment,
-                ).status,
-                "rejected",
-            )
+                    self.assertEqual(
+                        apply_watch_plan(
+                            core,
+                            plan,
+                            resolver=resolver,
+                            deployment_judges=deployment,
+                        ).status,
+                        "rejected",
+                    )
 
     def test_compiled_watch_snapshot_refuses_before_producing_an_artifact(self):
         core = _core()

@@ -288,11 +288,19 @@ def _cached_runtime_intact(
         str(getattr(static_context, "sha256", "")).strip().lower().removeprefix("sha256:")
     )
     content = getattr(static_context, "content_bytes", None)
+    if not isinstance(content, bytes):
+        return False
+    try:
+        canonical_text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        # JudgeContextStore.resolve uses the same strict UTF-8 contract. A hand-built/tampered bound
+        # context must not bypass it on the cached path.
+        return False
     return (
         getattr(static_context, "ref", None) == resolved_judge.context_ref
         and context_sha == expected_sha
-        and isinstance(content, bytes)
         and hashlib.sha256(content).hexdigest() == expected_sha
+        and getattr(static_context, "decoded_text", None) == canonical_text
     )
 
 
