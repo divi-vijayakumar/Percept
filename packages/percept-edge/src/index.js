@@ -34,6 +34,8 @@ export { motionScore, makeFrame } from "./motion.js";
 
 export {
   frameEnergy,
+  pcm16Energy,
+  OrderedAudioBuffer,
   EnergyVad,
   endpointEnergySequence,
   SileroVadAdapter,

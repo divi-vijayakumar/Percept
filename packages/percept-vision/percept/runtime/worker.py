@@ -1189,7 +1189,8 @@ async def run(
       and an explicit ``audio_source`` always wins over the auto-derivation.
     - ``audio_gate`` — the tier-0 audio detector: a name (``"acoustic-onset"``), an instance with
       ``push(t, v) -> [Boundary]``, or ``None`` to only fill the window + feed energy (no onset wake).
-    - ``audio_wake`` — kwargs for the onset detector, e.g. ``{"high": 0.3, "low": 0.15, "refractory_s": 5.0}``.
+    - ``audio_wake`` — kwargs for the mean-square-energy onset detector, e.g.
+      ``{"high": 0.09, "low": 0.02, "refractory_s": 5.0}``.
     - ``audio_settle_s`` — seconds to WAIT after an acoustic onset before the woken judge runs. An
       onset marks the START of a sound, and the audio clip is sliced backward from the judge moment —
       judging at the onset itself would hand the model the silence BEFORE the sound. The settle keeps
@@ -2109,6 +2110,9 @@ async def run(
                             "wake": False,
                             "wake_at": None,
                         })
+                    from percept.runtime.audio import normalize_audio_unit
+
+                    unit = normalize_audio_unit((at, chunk, energy), seq=envelope.sequence)
                     # Hold a FILE/CONTAINER chunk back until the video loop's judged media time has
                     # (almost) reached it — never busy-wait, park on the Event the frame loop sets every
                     # tick. `_audio_paced` is False for a live mic (byte-for-byte unchanged: this loop
@@ -2133,12 +2137,23 @@ async def run(
                     # signals freeze, without ending the session. Default (muted=None) is byte-for-byte.
                     if muted is not None and muted():
                         continue
+                    ingest = None
                     try:
-                        core.push_audio(chunk, source=gate_source, t=at)
+                        ingest = core.push_audio(unit, source=gate_source)
                     except Exception:  # noqa: BLE001 - audio ingress must not crash the video watch
                         pass
                     if stats is not None:
                         stats.audio_chunks += 1
+                    if (
+                        ingest is not None
+                        and getattr(ingest, "discontinuous", False)
+                        and on_health is not None
+                    ):
+                        data = ingest.as_dict()
+                        data.update({"source": gate_source, "seq": unit.seq})
+                        await _call_sink(
+                            on_health, RuntimeHealthEvent("audio_discontinuity", ts=at, data=data)
+                        )
                     # Track the cadence + the time of the last REAL reading (a None-energy chunk is not
                     # a fresh reading). The frame loop reads energy only while fresh (dead mic → video-only).
                     if _prev_chunk_at[0] is not None:
@@ -2154,6 +2169,14 @@ async def run(
                             if getattr(b, "kind", None) == "onset" and audio["wake_at"] is None:
                                 # settle: judge AFTER the sound has filled the window, not at its first instant
                                 audio["wake_at"] = at + max(0.0, float(audio_settle_s))
+                            if getattr(b, "kind", None) == "onset":
+                                from percept.events import AudioBoundary
+
+                                audio_window_for = getattr(core, "_audio_window", None)
+                                if callable(audio_window_for):
+                                    audio_window_for(gate_source).annotate(
+                                        unit.seq, AudioBoundary("onset", float(b.t))
+                                    )
 
                     # Voice escalation: endpoint a complete utterance and hand its clip to on_utterance.
                     # Runs AFTER push_audio so the just-heard chunk is already in the window we clip from.
@@ -2185,6 +2208,13 @@ async def run(
                             if getattr(ev, "started", False):
                                 _utt["start"] = at
                                 _utt_buf.clear()  # a fresh turn — drop any pre-start residue
+                                from percept.events import AudioBoundary
+
+                                audio_window_for = getattr(core, "_audio_window", None)
+                                if callable(audio_window_for):
+                                    audio_window_for(gate_source).annotate(
+                                        unit.seq, AudioBoundary("vad_start", at)
+                                    )
                             # Accumulate the turn into our OWN buffer (started→endpoint), bounded by
                             # utterance_max_s so a stuck-open mic can't grow it without limit.
                             if _utt["start"] is not None:
@@ -2193,6 +2223,13 @@ async def run(
                                 while _utt_buf and _utt_buf[0][0] < _cutoff:
                                     _utt_buf.pop(0)
                             if getattr(ev, "endpoint", False):
+                                from percept.events import AudioBoundary
+
+                                audio_window_for = getattr(core, "_audio_window", None)
+                                if callable(audio_window_for):
+                                    audio_window_for(gate_source).annotate(
+                                        unit.seq, AudioBoundary("endpoint", at)
+                                    )
                                 start_t = _utt["start"] if _utt["start"] is not None else at
                                 _utt["start"] = None
                                 buf = list(_utt_buf)

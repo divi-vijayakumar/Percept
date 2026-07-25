@@ -230,7 +230,7 @@ class AcousticOnset:
     signal = "energy"
     name = "acoustic-onset"
 
-    def __init__(self, *, high: float = 0.3, low: float = 0.15, refractory_s: float = 0.0) -> None:
+    def __init__(self, *, high: float = 0.09, low: float = 0.02, refractory_s: float = 0.0) -> None:
         self.high = high
         self.low = low
         self.refractory_s = refractory_s

@@ -44,7 +44,7 @@ from .identity_policy import (
     transition_latch_key,
 )
 from .judge_context import JUDGE_STATIC_CONTEXT_KEY, ReservedContextKeyError
-from .events import AudioWindow, EventLog, FrameWindow
+from .events import AudioUnit, AudioWindow, EventLog, FrameWindow
 from .gate import FIRE, Gate, GateAction, classify
 from .goals import GoalOp, GoalRegistry
 from .observability import Funnel, Metrics, OTelExporter, TraceEvent, get_logger, health, judge_usage
@@ -1106,10 +1106,17 @@ class Percept:
             self.audio_windows[source] = win
         return win
 
-    def push_audio(self, chunk: Any, source: str = "camera", *, t: float | None = None) -> None:
-        """Feed an audio chunk from the voice loop's mic stream (the same audio already flowing for STT)
-        into the rolling AudioWindow — the source for fused/acoustic perception. No new capture path."""
-        self._audio_window(source).push(self.clock() if t is None else t, chunk)
+    def push_audio(self, chunk: Any, source: str = "camera", *, t: float | None = None):
+        """Feed captured, replayed, or application-pushed audio into one ordered source timeline.
+
+        An :class:`~percept.events.AudioUnit` retains sequence, interval, format, participant/direction,
+        and cheap-boundary metadata. Legacy opaque chunks remain supported with ``t=`` and receive a
+        local sequence number. The returned ``AudioPushResult`` makes discontinuities observable.
+        """
+        window = self._audio_window(source)
+        if isinstance(chunk, AudioUnit):
+            return window.push_unit(chunk)
+        return window.push(self.clock() if t is None else t, chunk)
 
     def _audio_clip(self, source: str, spec) -> Any:
         """Assemble one audio clip for a fused/audio ``PerceptionSpec`` from the AudioWindow, else None."""

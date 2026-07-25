@@ -1,0 +1,130 @@
+{
+  "energy_vectors": [
+    {
+      "name": "silence",
+      "samples": [0, 0, 0, 0],
+      "expected": 0.0
+    },
+    {
+      "name": "dc_offset",
+      "samples": [8192, 8192, 8192, 8192],
+      "expected": 0.0625
+    },
+    {
+      "name": "impulse",
+      "samples": [32767, 0, 0, 0],
+      "expected": 0.24998474144376814
+    },
+    {
+      "name": "clipping",
+      "samples": [-32768, 32767, -32768, 32767],
+      "expected": 0.9999694828875363
+    },
+    {
+      "name": "stereo_imbalance",
+      "samples": [32767, 0, 32767, 0],
+      "expected": 0.4999694828875363
+    },
+    {
+      "name": "chunk_boundary",
+      "samples": [8192, 8192, -8192, -8192],
+      "chunks": [[8192, 8192], [-8192, -8192]],
+      "expected": 0.0625
+    },
+    {
+      "name": "echo",
+      "samples": [4096, -4096, 4096, -4096],
+      "expected": 0.015625
+    }
+  ],
+  "timeline_vectors": [
+    {
+      "name": "sample_rate_change",
+      "units": [
+        {"seq": 0, "t_start": 0.0, "t_end": 0.1, "sample_rate": 16000, "channels": 1},
+        {"seq": 1, "t_start": 0.1, "t_end": 0.2, "sample_rate": 8000, "channels": 1}
+      ],
+      "expected": [
+        {"accepted": true},
+        {"accepted": true, "format_changed": true}
+      ],
+      "order": [0, 1]
+    },
+    {
+      "name": "chunk_boundary",
+      "units": [
+        {"seq": 0, "t_start": 0.0, "t_end": 0.1, "sample_rate": 16000, "channels": 1},
+        {"seq": 1, "t_start": 0.1, "t_end": 0.2, "sample_rate": 16000, "channels": 1}
+      ],
+      "expected": [
+        {"accepted": true},
+        {"accepted": true}
+      ],
+      "order": [0, 1]
+    },
+    {
+      "name": "missing_overlap",
+      "units": [
+        {"seq": 0, "t_start": 0.0, "t_end": 0.1, "sample_rate": 16000, "channels": 1},
+        {"seq": 2, "t_start": 0.08, "t_end": 0.18, "sample_rate": 16000, "channels": 1}
+      ],
+      "expected": [
+        {"accepted": true},
+        {"accepted": true, "missing": 1, "overlap_s": 0.02}
+      ],
+      "order": [0, 2]
+    },
+    {
+      "name": "duplicate_reorder",
+      "units": [
+        {"seq": 0, "t_start": 0.0, "t_end": 0.1, "sample_rate": 16000, "channels": 1},
+        {"seq": 2, "t_start": 0.2, "t_end": 0.3, "sample_rate": 16000, "channels": 1},
+        {"seq": 2, "t_start": 0.2, "t_end": 0.3, "sample_rate": 16000, "channels": 1},
+        {"seq": 1, "t_start": 0.1, "t_end": 0.2, "sample_rate": 16000, "channels": 1}
+      ],
+      "expected": [
+        {"accepted": true},
+        {"accepted": true, "missing": 1, "gap_s": 0.1},
+        {"accepted": false, "duplicate": true},
+        {"accepted": true, "reordered": true}
+      ],
+      "order": [0, 1, 2]
+    },
+    {
+      "name": "echo",
+      "units": [
+        {
+          "seq": 0,
+          "t_start": 0.0,
+          "t_end": 0.1,
+          "sample_rate": 16000,
+          "channels": 1,
+          "direction": "output",
+          "participant_id": "assistant"
+        },
+        {
+          "seq": 1,
+          "t_start": 0.05,
+          "t_end": 0.15,
+          "sample_rate": 16000,
+          "channels": 1,
+          "direction": "input",
+          "participant_id": "user",
+          "boundaries": [
+            {"kind": "onset", "t": 0.05},
+            {"kind": "vad_start", "t": 0.05},
+            {"kind": "endpoint", "t": 0.15}
+          ]
+        }
+      ],
+      "expected": [
+        {"accepted": true},
+        {"accepted": true, "overlap_s": 0.05}
+      ],
+      "order": [0, 1],
+      "directions": ["output", "input"],
+      "participants": ["assistant", "user"],
+      "boundary_kinds": ["onset", "vad_start", "endpoint"]
+    }
+  ]
+}

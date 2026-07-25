@@ -95,7 +95,7 @@ export class AcousticOnset {
   static signal = "energy";
   static skillName = "acoustic-onset";
 
-  constructor({ high = 0.3, low = 0.15, refractoryS = 0.0 } = {}) {
+  constructor({ high = 0.09, low = 0.02, refractoryS = 0.0 } = {}) {
     this.high = high;
     this.low = low;
     this.refractoryS = refractoryS;

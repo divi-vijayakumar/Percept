@@ -63,7 +63,7 @@ class OpenAudioSourceTests(unittest.TestCase):
 
         self.assertEqual(len(rows), 8)  # 2s / 0.25s
         self.assertTrue(all(isinstance(f, AudioFrame) for _, f, _ in rows))
-        self.assertGreater(max(e for _, _, e in rows[:4]), 0.2)  # tone is loud
+        self.assertGreater(max(e for _, _, e in rows[:4]), 0.06)  # mean-square energy: tone is loud
         self.assertLess(max(e for _, _, e in rows[-4:]), 0.01)  # silence is ~0
 
 

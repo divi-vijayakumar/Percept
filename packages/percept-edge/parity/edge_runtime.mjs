@@ -10,6 +10,7 @@
 import { MotionPeriodicity, AcousticOnset } from "../src/skills.js";
 import { motionScore, egoResidualScore } from "../src/motion.js";
 import { Edge } from "../src/edge.js";
+import { OrderedAudioBuffer, pcm16Energy } from "../src/vad.js";
 
 function readStdin() {
   return new Promise((resolve) => {
@@ -49,6 +50,18 @@ const result = {
       { k: k ?? 4 }
     )
   ),
+  audioEnergies: (cases.audioEnergyVectors || []).map(({ samples }) => pcm16Energy(samples)),
+  audioTimelines: (cases.audioTimelineVectors || []).map(({ units }) => {
+    const timeline = new OrderedAudioBuffer({ seconds: 10 });
+    const results = units.map((unit) => timeline.push(unit));
+    return {
+      results,
+      order: timeline.units().map((unit) => unit.seq),
+      directions: timeline.units().map((unit) => unit.direction),
+      participants: timeline.units().map((unit) => unit.participant_id),
+      boundaryKinds: timeline.boundaries().map((boundary) => boundary.kind),
+    };
+  }),
 };
 
 if (cases.latency) {

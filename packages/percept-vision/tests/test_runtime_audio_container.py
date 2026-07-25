@@ -73,8 +73,7 @@ class _SpyVision:
 
 
 def _pcm_rms(pcm: bytes) -> float:
-    """Normalized RMS ([0, 1]) of s16le PCM — the same measure ``runtime/audio.py``'s tier-0 energy
-    signal uses, computed independently here so the test doesn't depend on that private helper."""
+    """Normalized RMS ([0, 1]) used only as an intuitive clip-content assertion in these tests."""
     n = len(pcm) - (len(pcm) % 2)
     if n <= 0:
         return 0.0
@@ -134,7 +133,7 @@ def _fused_core(on_exhausted: str = "repeat") -> tuple[Percept, ScriptedJudge]:
 
 
 def _write_onset_wav(path: str, *, sr: int = 16_000) -> None:
-    """1s silence -> 1s loud tone (the onset, energy well above AcousticOnset's default high=0.3) ->
+    """1s silence -> 1s loud tone (the onset, mean-square energy above the default high=0.09) ->
     1s silence. Pure stdlib (``wave`` + ``array``) — no ffmpeg, no numpy."""
     silence = array.array("h", [0] * sr)
     tone = array.array(

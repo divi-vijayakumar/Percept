@@ -5,8 +5,9 @@
 and yields versioned source envelopes for programmable Watches:
   * ``chunk``  — a typed :class:`~percept.contracts.AudioFrame` (pcm s16le mono), the payload the
     fused/acoustic judge sees via ``Percept.push_audio`` → ``AudioWindow`` → ``Vision.judge(audio=)``,
-  * ``energy`` — normalized short-time RMS in ``[0, 1]``, the tier-0 audio salience signal (the audio
-    analog of ``source.py``'s ``gate_frame``), fed to ``MotionGate.evaluate(energy=)`` / an onset gate.
+  * ``energy`` — normalized mean-square PCM energy in ``[0, 1]``, the tier-0 audio salience signal
+    (the audio analog of ``source.py``'s ``gate_frame``), fed to ``MotionGate.evaluate(energy=)`` /
+    an onset gate.
 
 ``sounddevice`` (the ``[mic]`` extra) is imported lazily inside the capture thread and only for
 ``mic:`` URIs; a ``.wav`` source uses stdlib ``wave`` (zero-dep, so tests/replay need no extra). A
@@ -22,6 +23,7 @@ import math
 import queue
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import wave
@@ -29,6 +31,7 @@ from dataclasses import dataclass
 from typing import AsyncIterator, Callable, Literal
 
 from percept.contracts import AudioFrame
+from percept.events import AudioDirection, AudioUnit
 from percept.runtime.envelope import SourceEnvelope, SourceFormat
 
 _DEFAULT_SR = 16_000  # matches AudioFrame.sample_rate and the STT stream rate
@@ -55,6 +58,9 @@ class AudioSourceConfig:
     # Clock selected by the transitional tuple view.  Every envelope independently carries local
     # observation time and the PCM sample position intrinsic to its AudioFrame.
     timebase: Literal["media", "wall"] = "media"
+    # Retained when known. A mic defaults to ``input``; a file/container has no inherent direction.
+    direction: AudioDirection | None = None
+    participant_id: str | None = None
 
 
 def _normalize_uri(uri: str):
@@ -79,24 +85,96 @@ def _is_container(path: str) -> bool:
     return low.endswith(CONTAINER_SUFFIXES)
 
 
-def _rms_energy(pcm: bytes, sample_format: str = "s16le") -> float:
-    """Short-time RMS normalized to [0, 1] for the PCM formats emitted by this adapter."""
+def pcm_energy(pcm: bytes) -> float:
+    """Mean-square energy of s16le PCM normalized to ``[0, 1]``.
+
+    This is the same definition as :func:`percept.runtime.frame_energy` and JavaScript
+    ``percept-edge/frameEnergy``. It deliberately is not RMS: the VAD, onset gate, runtime capture,
+    and edge must compare one quantity against their thresholds.
+    """
+    if len(pcm) % 2:
+        raise ValueError("s16le PCM length must be even")
+    if not pcm:
+        return 0.0
+    samples = array.array("h")
+    samples.frombytes(pcm)
+    if sys.byteorder != "little":  # PCM is explicitly s16le; array follows host byte order.
+        samples.byteswap()
+    if not samples:
+        return 0.0
+    denom = float(32768 * 32768 * len(samples))
+    return min(1.0, sum(s * s for s in samples) / denom)
+
+
+# Private compatibility alias for downstream code that imported the old helper. Its value now follows
+# the public mean-square energy contract; the name is retained only to avoid an import break.
+_rms_energy = pcm_energy
+
+
+def _pcm_frame_energy(pcm: bytes, sample_format: str) -> float:
+    """Mean-square energy for the raw PCM formats accepted by :class:`AudioFrame`."""
+    if sample_format == "s16le":
+        return pcm_energy(pcm)
+    if sample_format == "f32le":
+        if len(pcm) % 4:
+            raise ValueError("f32le PCM length must be divisible by four")
+        if not pcm:
+            return 0.0
+        samples = array.array("f")
+        samples.frombytes(pcm)
+        if sys.byteorder != "little":
+            samples.byteswap()
+        if any(not math.isfinite(sample) or not -1.0 <= sample <= 1.0 for sample in samples):
+            raise ValueError("f32le PCM samples must be finite and within [-1, 1]")
+        return min(1.0, sum(sample * sample for sample in samples) / len(samples))
     if sample_format == "u8":
         if not pcm:
             return 0.0
-        mean_sq = sum((sample - 128) ** 2 for sample in pcm) / len(pcm)
-        return min(1.0, math.sqrt(mean_sq) / 128.0)
-    if sample_format != "s16le":
-        raise ValueError(f"unsupported PCM energy format: {sample_format!r}")
-    n = len(pcm) - (len(pcm) % 2)
-    if n <= 0:
-        return 0.0
-    samples = array.array("h")
-    samples.frombytes(pcm[:n])
-    if not samples:
-        return 0.0
-    mean_sq = sum(s * s for s in samples) / len(samples)
-    return min(1.0, math.sqrt(mean_sq) / 32768.0)
+        return min(1.0, sum(((sample - 128) / 128) ** 2 for sample in pcm) / len(pcm))
+    raise ValueError("unsupported PCM sample format")
+
+
+def normalize_audio_unit(item, *, seq: int) -> AudioUnit:
+    """Normalize a pushed/replayed legacy row to the same unit capture produces."""
+    if isinstance(item, AudioUnit):
+        return item
+    try:
+        at, chunk, energy = item
+    except (TypeError, ValueError) as exc:
+        raise TypeError("audio source items must be AudioUnit or (t, chunk, energy)") from exc
+    at = float(at)
+    sample_rate = getattr(chunk, "sample_rate", None)
+    channels = getattr(chunk, "channels", None)
+    t_start = getattr(chunk, "t_start", None)
+    t_end = getattr(chunk, "t_end", None)
+    if t_start is None or t_end is None:
+        duration = None
+        pcm = getattr(chunk, "pcm", None)
+        if (
+            isinstance(pcm, (bytes, bytearray, memoryview))
+            and isinstance(sample_rate, int)
+            and sample_rate > 0
+            and isinstance(channels, int)
+            and channels > 0
+            and getattr(chunk, "sample_format", "s16le") == "s16le"
+        ):
+            duration = len(pcm) / (2 * sample_rate * channels)
+        t_end = at
+        t_start = at - duration if duration is not None else at
+    if energy is None:
+        pcm = getattr(chunk, "pcm", None)
+        if isinstance(pcm, (bytes, bytearray, memoryview)):
+            energy = pcm_energy(bytes(pcm))
+    return AudioUnit(
+        seq=seq,
+        t_start=float(t_start),
+        t_end=float(t_end),
+        chunk=chunk,
+        event_t=at,
+        energy=None if energy is None else float(energy),
+        sample_rate=sample_rate,
+        channels=channels,
+    )
 
 
 _POLL = object()  # sentinel: "queue was empty this poll, try again" (distinct from the None end-sentinel)
@@ -185,7 +263,7 @@ def _emit(
                 sample_format=sample_format,
             ),
             payload=frame,
-            signal=_rms_energy(pcm, sample_format),
+            signal=_pcm_frame_energy(pcm, sample_format),
             discontinuity=discontinuity,
             legacy_timebase="observed" if timebase == "wall" else "source",
         ),
@@ -230,6 +308,7 @@ def _capture_wav(path: str, config: AudioSourceConfig, q: "queue.Queue",
             sample_width = w.getsampwidth()
             step = max(1, int(sr * config.chunk_s))
             i = 0
+            seq = 0
             while not stop.is_set():
                 pcm = w.readframes(step)
                 if not pcm:
@@ -291,6 +370,7 @@ def _capture_container(path: str, config: AudioSourceConfig, q: "queue.Queue",
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         i = 0
+        seq = 0
         while not stop.is_set():
             pcm = _read_exact(proc.stdout, nbytes)
             if not pcm:
@@ -379,6 +459,8 @@ async def open_audio_source(
     chunk_s: float = 0.25,
     maxsize: int = 256,
     timebase: "Literal['media', 'wall']" = "media",
+    direction: "AudioDirection | None" = None,
+    participant_id: str | None = None,
     dropped: "list[int] | None" = None,
 ) -> AsyncIterator[SourceEnvelope]:
     """Threaded audio capture → async source-envelope iterator. Stops the thread on exit.
@@ -388,7 +470,8 @@ async def open_audio_source(
     import asyncio
 
     config = AudioSourceConfig(sample_rate=sample_rate, channels=channels,
-                               chunk_s=chunk_s, queue_size=maxsize, timebase=timebase)
+                               chunk_s=chunk_s, queue_size=maxsize, timebase=timebase,
+                               direction=direction, participant_id=participant_id)
     target = _normalize_uri(uri)
     q: "queue.Queue" = queue.Queue(maxsize=config.queue_size)
     stop = threading.Event()
@@ -419,4 +502,12 @@ async def open_audio_source(
         stop.set()
 
 
-__all__ = ["AudioSourceConfig", "open_audio_source", "FFmpegNotFoundError", "CONTAINER_SUFFIXES"]
+__all__ = [
+    "AudioSourceConfig",
+    "AudioUnit",
+    "open_audio_source",
+    "normalize_audio_unit",
+    "pcm_energy",
+    "FFmpegNotFoundError",
+    "CONTAINER_SUFFIXES",
+]

@@ -15,15 +15,21 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 from pathlib import Path
 
-from percept.adapters import Box
+from percept.adapters import AudioFrame, Box
+from percept.events import AudioBoundary, AudioUnit, AudioWindow
 from percept.harness.detectors import AcousticOnset, MotionPeriodicity
 from percept.harness.tier0 import ego_residual_score, motion_score
+from percept.runtime.audio import pcm_energy
 
 HERE = Path(__file__).resolve().parent
+AUDIO_FIXTURE = json.loads(
+    (HERE.parent / "test" / "fixtures" / "audio_stream.golden.json").read_text()
+)
 
 # --- deterministic test cases (must produce identical output in both languages) ---
 MOTION_SIGNALS = [
@@ -143,6 +149,8 @@ def main():
         "framePairs": [{"w": w, "h": h, "a": a, "b": b} for (w, h, a, b) in FRAME_PAIRS],
         "saliencePairs": SALIENCE_PAIRS,
         "egoPairs": EGO_PAIRS,
+        "audioEnergyVectors": AUDIO_FIXTURE["energy_vectors"],
+        "audioTimelineVectors": AUDIO_FIXTURE["timeline_vectors"],
         "latency": LATENCY,
     }
     js = run_js(cases)
@@ -162,6 +170,42 @@ def main():
         ego_residual_score((c["w"], c["h"], tuple(c["a"])), (c["w"], c["h"], tuple(c["b"])), k=c["k"])
         for c in EGO_PAIRS
     ]
+    py_audio_energy = [
+        pcm_energy(struct.pack(f"<{len(c['samples'])}h", *c["samples"]))
+        for c in AUDIO_FIXTURE["energy_vectors"]
+    ]
+    py_audio_timelines = []
+    for case in AUDIO_FIXTURE["timeline_vectors"]:
+        timeline = AudioWindow(seconds=10)
+        results = []
+        for row in case["units"]:
+            boundaries = tuple(
+                AudioBoundary(boundary["kind"], boundary["t"])
+                for boundary in row.get("boundaries", ())
+            )
+            unit = AudioUnit(
+                seq=row["seq"],
+                t_start=row["t_start"],
+                t_end=row["t_end"],
+                chunk=AudioFrame(
+                    pcm=b"\x00\x00",
+                    sample_rate=row.get("sample_rate", 16_000),
+                    channels=row.get("channels", 1),
+                ),
+                sample_rate=row.get("sample_rate"),
+                channels=row.get("channels"),
+                direction=row.get("direction", "unknown"),
+                participant_id=row.get("participant_id"),
+                boundaries=boundaries,
+            )
+            results.append(timeline.push_unit(unit).as_dict())
+        py_audio_timelines.append({
+            "results": results,
+            "order": [unit.seq for unit in timeline.units()],
+            "directions": [unit.direction for unit in timeline.units()],
+            "participants": [unit.participant_id for unit in timeline.units()],
+            "boundaryKinds": [boundary.kind for boundary in timeline.boundaries()],
+        })
 
     checks = []
     for i, (pj, jj) in enumerate(zip(py_motion, js["motionBoundaries"])):
@@ -176,6 +220,32 @@ def main():
         checks.append((f"salience[{i}] {stat}{roi} = {ps:.6f}", abs(ps - jsc) <= 1e-9))
     for i, (ps, jsc) in enumerate(zip(py_ego, js["egoScores"])):
         checks.append((f"ego-residual[{i}] (k={EGO_PAIRS[i]['k']}) = {ps:.6f}", abs(ps - jsc) <= 1e-9))
+    for i, (ps, jsc) in enumerate(zip(py_audio_energy, js["audioEnergies"])):
+        name = AUDIO_FIXTURE["energy_vectors"][i]["name"]
+        checks.append((f"audio-energy[{i}] {name} = {ps:.6f}", abs(ps - jsc) <= 1e-12))
+    for i, (py_timeline, js_timeline) in enumerate(
+        zip(py_audio_timelines, js["audioTimelines"])
+    ):
+        name = AUDIO_FIXTURE["timeline_vectors"][i]["name"]
+        same = (
+            py_timeline["order"] == js_timeline["order"]
+            and py_timeline["directions"] == js_timeline["directions"]
+            and py_timeline["participants"] == js_timeline["participants"]
+            and py_timeline["boundaryKinds"] == js_timeline["boundaryKinds"]
+        )
+        if same:
+            keys = (
+                "accepted", "duplicate", "reordered", "missing", "gap_s", "overlap_s",
+                "format_changed", "expired", "evicted",
+            )
+            for py_result, js_result in zip(py_timeline["results"], js_timeline["results"]):
+                for key in keys:
+                    left, right = py_result[key], js_result[key]
+                    if isinstance(left, float):
+                        same = same and abs(left - right) <= 1e-12
+                    else:
+                        same = same and left == right
+        checks.append((f"audio-timeline[{i}] {name}", same))
 
     print("=" * 72)
     print("  EDGE <-> HARNESS PARITY   (percept-edge JS  vs  percept-harness Python)")

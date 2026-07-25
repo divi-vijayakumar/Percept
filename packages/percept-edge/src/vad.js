@@ -28,6 +28,182 @@ export function frameEnergy(samples) {
 }
 
 /**
+ * Mean-square energy of signed 16-bit PCM, normalized to [0, 1].
+ * This is the byte-domain twin of Python runtime/audio.py `pcm_energy`.
+ * @param {Int16Array|number[]} samples
+ * @returns {number}
+ */
+export function pcm16Energy(samples) {
+  const n = samples.length;
+  if (n === 0) return 0;
+  let acc = 0;
+  for (let i = 0; i < n; i++) {
+    const s = samples[i] / 32768;
+    acc += s * s;
+  }
+  return Math.min(1, acc / n);
+}
+
+/**
+ * Bounded ordered buffer for transport-neutral audio units.
+ *
+ * A unit is `{seq,t_start,t_end,energy,sample_rate,channels,direction,participant_id,boundaries}`.
+ * `push` explicitly reports duplicate/reorder/missing/gap/overlap/format-change outcomes, matching
+ * Python `AudioWindow.push_unit`; no image/frame carrier is involved.
+ */
+export class OrderedAudioBuffer {
+  constructor({ seconds = 4, maxUnits = 4096 } = {}) {
+    this.seconds = Math.max(0.5, seconds);
+    this.maxUnits = Math.max(1, Math.trunc(maxUnits));
+    this._units = [];
+    this._maxSeq = null;
+  }
+
+  push(unit) {
+    if (!Number.isInteger(unit.seq) || unit.seq < 0) {
+      throw new Error("audio unit seq must be a non-negative integer");
+    }
+    if (!Number.isFinite(unit.t_start) || !Number.isFinite(unit.t_end)) {
+      throw new Error("audio unit times must be finite");
+    }
+    if (unit.t_end < unit.t_start) throw new Error("audio unit t_end must be >= t_start");
+    if (
+      unit.energy != null &&
+      (!Number.isFinite(unit.energy) || unit.energy < 0 || unit.energy > 1)
+    ) {
+      throw new Error("audio unit energy must be finite and within [0, 1]");
+    }
+    if (
+      unit.sample_rate != null &&
+      (!Number.isInteger(unit.sample_rate) || unit.sample_rate <= 0)
+    ) {
+      throw new Error("audio unit sample_rate must be positive when known");
+    }
+    if (unit.channels != null && (!Number.isInteger(unit.channels) || unit.channels <= 0)) {
+      throw new Error("audio unit channels must be positive when known");
+    }
+    if (
+      unit.direction != null &&
+      !["input", "output", "mixed", "unknown"].includes(unit.direction)
+    ) {
+      throw new Error("audio unit direction is invalid");
+    }
+    if (unit.participant_id != null && typeof unit.participant_id !== "string") {
+      throw new Error("audio unit participant_id must be a string when known");
+    }
+    if (this._units.some((existing) => existing.seq === unit.seq)) {
+      return this._result({ accepted: false, duplicate: true });
+    }
+
+    const previousMaxSeq = this._maxSeq;
+    const reordered = previousMaxSeq !== null && unit.seq < previousMaxSeq;
+    const missing =
+      previousMaxSeq !== null && unit.seq > previousMaxSeq
+        ? Math.max(0, unit.seq - previousMaxSeq - 1)
+        : 0;
+
+    let index = 0;
+    while (
+      index < this._units.length &&
+      (this._units[index].t_start < unit.t_start ||
+        (this._units[index].t_start === unit.t_start && this._units[index].seq < unit.seq))
+    ) {
+      index++;
+    }
+    const previous = index > 0 ? this._units[index - 1] : null;
+    const following = index < this._units.length ? this._units[index] : null;
+    let gap_s = 0;
+    let overlap_s = 0;
+    if (previous) {
+      if (unit.t_start > previous.t_end) gap_s = unit.t_start - previous.t_end;
+      else if (unit.t_start < previous.t_end) overlap_s = previous.t_end - unit.t_start;
+    }
+    if (following) {
+      if (unit.t_end < following.t_start) gap_s = Math.max(gap_s, following.t_start - unit.t_end);
+      else if (unit.t_end > following.t_start) {
+        overlap_s = Math.max(overlap_s, unit.t_end - following.t_start);
+      }
+    }
+    const formatDiff = (other) =>
+      Boolean(
+        other &&
+          ((unit.sample_rate != null &&
+            other.sample_rate != null &&
+            unit.sample_rate !== other.sample_rate) ||
+            (unit.channels != null &&
+              other.channels != null &&
+              unit.channels !== other.channels))
+      );
+    const format_changed = formatDiff(previous) || formatDiff(following);
+
+    this._units.splice(index, 0, {
+      direction: "unknown",
+      participant_id: null,
+      boundaries: [],
+      ...unit,
+    });
+    this._maxSeq = previousMaxSeq === null ? unit.seq : Math.max(previousMaxSeq, unit.seq);
+
+    const newestEnd = Math.max(...this._units.map((row) => row.t_end));
+    const cutoff = newestEnd - this.seconds;
+    let expired = 0;
+    while (this._units.length > 1) {
+      const staleIndex = this._units.findIndex((retained) => retained.t_end < cutoff);
+      if (staleIndex < 0) break;
+      this._units.splice(staleIndex, 1);
+      expired++;
+    }
+    let evicted = 0;
+    while (this._units.length > 1 && this._units.length > this.maxUnits) {
+      this._units.shift();
+      evicted++;
+    }
+    return this._result({
+      accepted: true,
+      reordered,
+      missing,
+      gap_s,
+      overlap_s,
+      format_changed,
+      expired,
+      evicted,
+    });
+  }
+
+  _result(overrides = {}) {
+    return {
+      accepted: true,
+      duplicate: false,
+      reordered: false,
+      missing: 0,
+      gap_s: 0,
+      overlap_s: 0,
+      format_changed: false,
+      expired: 0,
+      evicted: 0,
+      ...overrides,
+    };
+  }
+
+  units() {
+    return this._units.map((unit) => ({ ...unit, boundaries: [...(unit.boundaries ?? [])] }));
+  }
+
+  window(tStart, tEnd) {
+    if (tEnd < tStart) throw new Error("audio window t_end must be >= t_start");
+    return this.units().filter((unit) => unit.t_end >= tStart && unit.t_start <= tEnd);
+  }
+
+  boundaries(tStart = null, tEnd = null) {
+    return this._units
+      .flatMap((unit) => unit.boundaries ?? [])
+      .filter((boundary) => tStart === null || boundary.t >= tStart)
+      .filter((boundary) => tEnd === null || boundary.t <= tEnd)
+      .sort((a, b) => a.t - b.t || a.kind.localeCompare(b.kind));
+  }
+}
+
+/**
  * Streaming energy-threshold endpointer.
  *
  * Feed it per-frame energy (or raw PCM frames via `pushSamples`). It tracks
