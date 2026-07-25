@@ -41,8 +41,8 @@
     {
       "name": "sample_rate_change",
       "units": [
-        {"seq": 0, "t_start": 0.0, "t_end": 0.1, "sample_rate": 16000, "channels": 1},
-        {"seq": 1, "t_start": 0.1, "t_end": 0.2, "sample_rate": 8000, "channels": 1}
+        {"seq": 0, "t_start": 0.0, "t_end": 0.1, "sample_rate": 16000, "channels": 1, "sample_format": "s16le", "byte_length": 2},
+        {"seq": 1, "t_start": 0.1, "t_end": 0.2, "sample_rate": 8000, "channels": 1, "sample_format": "s16le", "byte_length": 2}
       ],
       "expected": [
         {"accepted": true},
@@ -53,8 +53,8 @@
     {
       "name": "chunk_boundary",
       "units": [
-        {"seq": 0, "t_start": 0.0, "t_end": 0.1, "sample_rate": 16000, "channels": 1},
-        {"seq": 1, "t_start": 0.1, "t_end": 0.2, "sample_rate": 16000, "channels": 1}
+        {"seq": 0, "t_start": 0.0, "t_end": 0.1, "sample_rate": 16000, "channels": 1, "sample_format": "s16le", "byte_length": 2},
+        {"seq": 1, "t_start": 0.1, "t_end": 0.2, "sample_rate": 16000, "channels": 1, "sample_format": "s16le", "byte_length": 2}
       ],
       "expected": [
         {"accepted": true},
@@ -65,22 +65,22 @@
     {
       "name": "missing_overlap",
       "units": [
-        {"seq": 0, "t_start": 0.0, "t_end": 0.1, "sample_rate": 16000, "channels": 1},
-        {"seq": 2, "t_start": 0.08, "t_end": 0.18, "sample_rate": 16000, "channels": 1}
+        {"seq": 0, "t_start": 0.0, "t_end": 0.1, "sample_rate": 16000, "channels": 1, "sample_format": "s16le", "byte_length": 2},
+        {"seq": 2, "t_start": 0.08, "t_end": 0.18, "sample_rate": 16000, "channels": 1, "sample_format": "s16le", "byte_length": 2}
       ],
       "expected": [
         {"accepted": true},
-        {"accepted": true, "missing": 1, "overlap_s": 0.02}
+        {"accepted": false, "missing": 1, "overlap_s": 0.02}
       ],
-      "order": [0, 2]
+      "order": [0]
     },
     {
       "name": "duplicate_reorder",
       "units": [
-        {"seq": 0, "t_start": 0.0, "t_end": 0.1, "sample_rate": 16000, "channels": 1},
-        {"seq": 2, "t_start": 0.2, "t_end": 0.3, "sample_rate": 16000, "channels": 1},
-        {"seq": 2, "t_start": 0.2, "t_end": 0.3, "sample_rate": 16000, "channels": 1},
-        {"seq": 1, "t_start": 0.1, "t_end": 0.2, "sample_rate": 16000, "channels": 1}
+        {"seq": 0, "t_start": 0.0, "t_end": 0.1, "sample_rate": 16000, "channels": 1, "sample_format": "s16le", "byte_length": 2},
+        {"seq": 2, "t_start": 0.2, "t_end": 0.3, "sample_rate": 16000, "channels": 1, "sample_format": "s16le", "byte_length": 2},
+        {"seq": 2, "t_start": 0.2, "t_end": 0.3, "sample_rate": 16000, "channels": 1, "sample_format": "s16le", "byte_length": 2},
+        {"seq": 1, "t_start": 0.1, "t_end": 0.2, "sample_rate": 16000, "channels": 1, "sample_format": "s16le", "byte_length": 2}
       ],
       "expected": [
         {"accepted": true},
@@ -99,27 +99,31 @@
           "t_end": 0.1,
           "sample_rate": 16000,
           "channels": 1,
+          "sample_format": "s16le",
+          "byte_length": 2,
           "direction": "output",
           "participant_id": "assistant"
         },
         {
           "seq": 1,
-          "t_start": 0.05,
-          "t_end": 0.15,
+          "t_start": 0.1,
+          "t_end": 0.2,
           "sample_rate": 16000,
           "channels": 1,
+          "sample_format": "s16le",
+          "byte_length": 2,
           "direction": "input",
           "participant_id": "user",
           "boundaries": [
-            {"kind": "onset", "t": 0.05},
-            {"kind": "vad_start", "t": 0.05},
-            {"kind": "endpoint", "t": 0.15}
+            {"kind": "onset", "t": 0.1},
+            {"kind": "vad_start", "t": 0.1},
+            {"kind": "endpoint", "t": 0.2}
           ]
         }
       ],
       "expected": [
         {"accepted": true},
-        {"accepted": true, "overlap_s": 0.05}
+        {"accepted": true}
       ],
       "order": [0, 1],
       "directions": ["output", "input"],

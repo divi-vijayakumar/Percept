@@ -1,10 +1,10 @@
-"""Edge↔harness parity + edge latency.
+"""Edge↔harness selected-contract parity + edge latency.
 
-Proves the JS percept-edge route ≡ the Python percept-harness route on identical inputs (same frozen
-contract, same detector algorithms) — the rigorous form of "do the edge benchmarks match the harness
-route": if every gate decision and boundary is identical, downstream precision / recall / proactivity
-are identical *by construction*, because the only difference between the two routes is WHERE the gate
-runs, not WHAT it decides. Also measures edge frame latency (JS Edge.processFrame throughput).
+Compares the explicitly listed detector boundaries, motion scores, audio energy, and ordered-audio
+result fields between the JS percept-edge route and Python percept-harness route on identical inputs.
+Passing means those selected fields conform for these frozen vectors; it is not a byte-for-byte
+serialization proof or a claim about untested downstream precision/recall. Also measures edge frame
+latency (JS Edge.processFrame throughput).
 
 Run (node auto-discovered via PATH or ~/.nvm; or set PERCEPT_NODE):
     PYTHONPATH=packages/percept-vision \
@@ -236,7 +236,7 @@ def main():
         if same:
             keys = (
                 "accepted", "duplicate", "reordered", "missing", "gap_s", "overlap_s",
-                "format_changed", "expired", "evicted",
+                "format_changed", "expired", "expired_bytes", "evicted", "evicted_bytes",
             )
             for py_result, js_result in zip(py_timeline["results"], js_timeline["results"]):
                 for key in keys:
@@ -248,15 +248,17 @@ def main():
         checks.append((f"audio-timeline[{i}] {name}", same))
 
     print("=" * 72)
-    print("  EDGE <-> HARNESS PARITY   (percept-edge JS  vs  percept-harness Python)")
+    print("  EDGE <-> HARNESS SELECTED-CONTRACT PARITY   (JS vs Python)")
     print("=" * 72)
     allok = True
     for name, ok in checks:
         allok = allok and ok
         print(f"   [{'MATCH' if ok else 'DIFF!'}]  {name}")
     print("-" * 72)
-    print(f"   {len(checks)} checks - "
-          f"{'ALL MATCH: the two routes are byte-for-byte equivalent' if allok else 'MISMATCH FOUND'}")
+    print(
+        f"   {len(checks)} checks - "
+        f"{'ALL SELECTED FIELDS MATCH ON FROZEN VECTORS' if allok else 'MISMATCH FOUND'}"
+    )
     lat = js.get("latency")
     if lat:
         print("-" * 72)

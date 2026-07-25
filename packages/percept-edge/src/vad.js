@@ -38,6 +38,9 @@ export function pcm16Energy(samples) {
   if (n === 0) return 0;
   let acc = 0;
   for (let i = 0; i < n; i++) {
+    if (!Number.isInteger(samples[i]) || samples[i] < -32768 || samples[i] > 32767) {
+      throw new Error("pcm16Energy samples must be signed 16-bit integers");
+    }
     const s = samples[i] / 32768;
     acc += s * s;
   }
@@ -52,16 +55,34 @@ export function pcm16Energy(samples) {
  * Python `AudioWindow.push_unit`; no image/frame carrier is involved.
  */
 export class OrderedAudioBuffer {
-  constructor({ seconds = 4, maxUnits = 4096 } = {}) {
+  constructor({ seconds = 4, maxUnits = 4096, maxBytes = 16 * 1024 * 1024 } = {}) {
+    if (!Number.isFinite(seconds) || seconds <= 0) {
+      throw new Error("seconds must be finite and positive");
+    }
+    if (!Number.isSafeInteger(maxUnits) || maxUnits <= 0) {
+      throw new Error("maxUnits must be a positive safe integer");
+    }
+    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+      throw new Error("maxBytes must be a positive safe integer");
+    }
     this.seconds = Math.max(0.5, seconds);
-    this.maxUnits = Math.max(1, Math.trunc(maxUnits));
+    this.maxUnits = maxUnits;
+    this.maxBytes = maxBytes;
     this._units = [];
+    this._bytes = 0;
     this._maxSeq = null;
+    this._seenLimit = Math.max(4096, maxUnits * 2);
+    if (!Number.isSafeInteger(this._seenLimit)) {
+      throw new Error("maxUnits is too large for bounded duplicate history");
+    }
+    this._seenOrder = [];
+    this._seenSeq = new Set();
   }
 
   push(unit) {
-    if (!Number.isInteger(unit.seq) || unit.seq < 0) {
-      throw new Error("audio unit seq must be a non-negative integer");
+    if (!unit || typeof unit !== "object") throw new Error("audio unit must be an object");
+    if (!Number.isSafeInteger(unit.seq) || unit.seq < 0) {
+      throw new Error("audio unit seq must be a non-negative safe integer");
     }
     if (!Number.isFinite(unit.t_start) || !Number.isFinite(unit.t_end)) {
       throw new Error("audio unit times must be finite");
@@ -75,12 +96,21 @@ export class OrderedAudioBuffer {
     }
     if (
       unit.sample_rate != null &&
-      (!Number.isInteger(unit.sample_rate) || unit.sample_rate <= 0)
+      (!Number.isSafeInteger(unit.sample_rate) || unit.sample_rate <= 0)
     ) {
       throw new Error("audio unit sample_rate must be positive when known");
     }
-    if (unit.channels != null && (!Number.isInteger(unit.channels) || unit.channels <= 0)) {
+    if (
+      unit.channels != null &&
+      (!Number.isSafeInteger(unit.channels) || unit.channels <= 0)
+    ) {
       throw new Error("audio unit channels must be positive when known");
+    }
+    if (
+      unit.sample_format != null &&
+      !["s16le", "f32le", "u8"].includes(unit.sample_format)
+    ) {
+      throw new Error("audio unit sample_format is invalid");
     }
     if (
       unit.direction != null &&
@@ -91,7 +121,49 @@ export class OrderedAudioBuffer {
     if (unit.participant_id != null && typeof unit.participant_id !== "string") {
       throw new Error("audio unit participant_id must be a string when known");
     }
-    if (this._units.some((existing) => existing.seq === unit.seq)) {
+    if (unit.event_t != null && !Number.isFinite(unit.event_t)) {
+      throw new Error("audio unit event_t must be finite when known");
+    }
+    if (unit.boundaries != null && !Array.isArray(unit.boundaries)) {
+      throw new Error("audio unit boundaries must be an array");
+    }
+    const boundaries = (unit.boundaries ?? []).map((boundary) => {
+      if (
+        !boundary ||
+        !["onset", "vad_start", "endpoint"].includes(boundary.kind) ||
+        !Number.isFinite(boundary.t)
+      ) {
+        throw new Error("audio unit boundary is invalid");
+      }
+      return Object.freeze({ kind: boundary.kind, t: boundary.t });
+    });
+    if (unit.frame != null) {
+      for (const key of ["sample_rate", "channels", "sample_format"]) {
+        if (unit[key] != null && unit.frame[key] != null && unit[key] !== unit.frame[key]) {
+          throw new Error(`audio unit ${key} disagrees with its frame`);
+        }
+      }
+      for (const key of ["t_start", "t_end"]) {
+        if (unit.frame[key] != null && !Number.isFinite(unit.frame[key])) {
+          throw new Error(`audio frame ${key} must be finite when known`);
+        }
+        if (unit.frame[key] != null && unit.frame[key] !== unit[key]) {
+          throw new Error(`audio unit ${key} disagrees with its frame`);
+        }
+      }
+    }
+    const byteLength = audioUnitBytes(unit);
+    if (byteLength > this.maxBytes) {
+      throw new Error("audio unit exceeds the buffer byte cap");
+    }
+    const pcm = unit.pcm ?? unit.frame?.pcm;
+    if (pcm != null && unit.sample_format != null && unit.channels != null) {
+      const bytesPerSample = { s16le: 2, f32le: 4, u8: 1 }[unit.sample_format];
+      if (byteLength % (bytesPerSample * unit.channels) !== 0) {
+        throw new Error("audio unit PCM is not aligned to its format/channels");
+      }
+    }
+    if (this._seenSeq.has(unit.seq)) {
       return this._result({ accepted: false, duplicate: true });
     }
 
@@ -124,39 +196,72 @@ export class OrderedAudioBuffer {
         overlap_s = Math.max(overlap_s, unit.t_end - following.t_start);
       }
     }
+    if (overlap_s) {
+      return this._result({
+        accepted: false,
+        reordered,
+        missing,
+        gap_s,
+        overlap_s,
+      });
+    }
     const formatDiff = (other) =>
       Boolean(
         other &&
           ((unit.sample_rate != null &&
             other.sample_rate != null &&
             unit.sample_rate !== other.sample_rate) ||
-            (unit.channels != null &&
-              other.channels != null &&
-              unit.channels !== other.channels))
+          (unit.channels != null &&
+            other.channels != null &&
+            unit.channels !== other.channels) ||
+          (unit.sample_format != null &&
+            other.sample_format != null &&
+            unit.sample_format !== other.sample_format))
       );
     const format_changed = formatDiff(previous) || formatDiff(following);
 
-    this._units.splice(index, 0, {
+    const retainedFrame =
+      unit.frame == null ? undefined : Object.freeze({ ...unit.frame });
+    const retained = Object.freeze({
       direction: "unknown",
       participant_id: null,
-      boundaries: [],
+      sample_format: null,
       ...unit,
+      ...(retainedFrame === undefined ? {} : { frame: retainedFrame }),
+      byte_length: byteLength,
+      boundaries: Object.freeze(boundaries),
     });
+    this._units.splice(index, 0, retained);
+    this._bytes += byteLength;
     this._maxSeq = previousMaxSeq === null ? unit.seq : Math.max(previousMaxSeq, unit.seq);
+    this._seenSeq.add(unit.seq);
+    this._seenOrder.push(unit.seq);
+    while (this._seenOrder.length > this._seenLimit) {
+      this._seenSeq.delete(this._seenOrder.shift());
+    }
 
     const newestEnd = Math.max(...this._units.map((row) => row.t_end));
     const cutoff = newestEnd - this.seconds;
     let expired = 0;
+    let expired_bytes = 0;
     while (this._units.length > 1) {
       const staleIndex = this._units.findIndex((retained) => retained.t_end < cutoff);
       if (staleIndex < 0) break;
-      this._units.splice(staleIndex, 1);
+      const [dropped] = this._units.splice(staleIndex, 1);
+      this._bytes -= dropped.byte_length;
       expired++;
+      expired_bytes += dropped.byte_length;
     }
     let evicted = 0;
-    while (this._units.length > 1 && this._units.length > this.maxUnits) {
-      this._units.shift();
+    let evicted_bytes = 0;
+    while (
+      this._units.length > 1 &&
+      (this._units.length > this.maxUnits || this._bytes > this.maxBytes)
+    ) {
+      const dropped = this._units.shift();
+      this._bytes -= dropped.byte_length;
       evicted++;
+      evicted_bytes += dropped.byte_length;
     }
     return this._result({
       accepted: true,
@@ -166,7 +271,9 @@ export class OrderedAudioBuffer {
       overlap_s,
       format_changed,
       expired,
+      expired_bytes,
       evicted,
+      evicted_bytes,
     });
   }
 
@@ -180,27 +287,69 @@ export class OrderedAudioBuffer {
       overlap_s: 0,
       format_changed: false,
       expired: 0,
+      expired_bytes: 0,
       evicted: 0,
+      evicted_bytes: 0,
       ...overrides,
     };
   }
 
   units() {
-    return this._units.map((unit) => ({ ...unit, boundaries: [...(unit.boundaries ?? [])] }));
+    return this._units.map((unit) => ({
+      ...unit,
+      boundaries: unit.boundaries.map((boundary) => ({ ...boundary })),
+      ...(unit.frame == null ? {} : { frame: { ...unit.frame } }),
+    }));
   }
 
   window(tStart, tEnd) {
+    if (!Number.isFinite(tStart) || !Number.isFinite(tEnd)) {
+      throw new Error("audio window times must be finite");
+    }
     if (tEnd < tStart) throw new Error("audio window t_end must be >= t_start");
-    return this.units().filter((unit) => unit.t_end >= tStart && unit.t_start <= tEnd);
+    return this.units().filter(
+      (unit) =>
+        (unit.t_end > tStart && unit.t_start < tEnd) ||
+        (unit.t_start === unit.t_end && tStart <= unit.t_start && unit.t_start < tEnd)
+    );
   }
 
   boundaries(tStart = null, tEnd = null) {
+    if (tStart != null && !Number.isFinite(tStart)) {
+      throw new Error("boundary window start must be finite");
+    }
+    if (tEnd != null && !Number.isFinite(tEnd)) {
+      throw new Error("boundary window end must be finite");
+    }
+    if (tStart != null && tEnd != null && tEnd < tStart) {
+      throw new Error("boundary window end must be >= start");
+    }
     return this._units
       .flatMap((unit) => unit.boundaries ?? [])
       .filter((boundary) => tStart === null || boundary.t >= tStart)
-      .filter((boundary) => tEnd === null || boundary.t <= tEnd)
+      .filter((boundary) => tEnd === null || boundary.t < tEnd)
       .sort((a, b) => a.t - b.t || a.kind.localeCompare(b.kind));
   }
+}
+
+function audioUnitBytes(unit) {
+  const payload = unit.pcm ?? unit.frame?.pcm;
+  const actual =
+    ArrayBuffer.isView(payload)
+      ? payload.byteLength
+      : payload instanceof ArrayBuffer
+        ? payload.byteLength
+        : null;
+  if (unit.byte_length != null) {
+    if (!Number.isSafeInteger(unit.byte_length) || unit.byte_length < 0) {
+      throw new Error("audio unit byte_length must be a non-negative safe integer");
+    }
+    if (actual !== null && unit.byte_length !== actual) {
+      throw new Error("audio unit byte_length disagrees with its PCM payload");
+    }
+    return unit.byte_length;
+  }
+  return actual ?? 0;
 }
 
 /**
@@ -221,6 +370,15 @@ export class EnergyVad {
     hangoverFrames = 8,
     minSpeechFrames = 3,
   } = {}) {
+    if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
+      throw new Error("threshold must be finite and within [0, 1]");
+    }
+    if (!Number.isSafeInteger(hangoverFrames) || hangoverFrames <= 0) {
+      throw new Error("hangoverFrames must be a positive safe integer");
+    }
+    if (!Number.isSafeInteger(minSpeechFrames) || minSpeechFrames <= 0) {
+      throw new Error("minSpeechFrames must be a positive safe integer");
+    }
     this.threshold = threshold;
     this.hangoverFrames = hangoverFrames;
     this.minSpeechFrames = minSpeechFrames;
@@ -246,6 +404,9 @@ export class EnergyVad {
    * true on the frame the utterance is considered finished.
    */
   pushEnergy(energy) {
+    if (!Number.isFinite(energy) || energy < 0 || energy > 1) {
+      throw new Error("energy must be finite and within [0, 1]");
+    }
     this._frameIndex += 1;
     const isSpeech = energy >= this.threshold;
     let started = false;

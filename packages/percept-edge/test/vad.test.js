@@ -78,4 +78,21 @@ describe("EnergyVad endpointing — fixture energy sequence", () => {
     const ev = vad.pushSamples(new Float32Array([0.5, -0.5, 0.5, -0.5]));
     expect(ev.speech).toBe(true);
   });
+
+  it.each([
+    { threshold: Number.NaN },
+    { threshold: 2 },
+    { hangoverFrames: 0 },
+    { hangoverFrames: 1.5 },
+    { minSpeechFrames: 0 },
+  ])("rejects invalid config %#", (config) => {
+    expect(() => new EnergyVad(config)).toThrow();
+  });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, -0.1, 1.1])(
+    "rejects invalid energy %s",
+    (energy) => {
+      expect(() => new EnergyVad().pushEnergy(energy)).toThrow();
+    }
+  );
 });

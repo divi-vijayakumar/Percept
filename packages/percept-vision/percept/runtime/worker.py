@@ -20,7 +20,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable
 
-from percept.events import FrameWindow, frame_nbytes
+from percept.events import AudioBoundary, FrameWindow, frame_nbytes
 from percept.gate import FIRE, ASK
 from percept.incidents import make_incident, snippet_from_window
 from percept.observability import get_logger
@@ -901,17 +901,16 @@ def _clip_from_chunks(chunks: list, *, t_start: float | None = None, t_end: floa
 
     if not chunks:
         return None
-    pcm_frames = [c for c in chunks if hasattr(c, "pcm")]
-    if not pcm_frames:
-        return _concat_audio(chunks)  # raw bytes / (mime, bytes) test source
+    clip = _concat_audio(chunks)
+    if clip is None or not hasattr(clip, "pcm"):
+        return clip  # raw bytes / (mime, bytes), or a rejected mixed-format sequence
     from percept.contracts import AudioFrame
 
-    first = pcm_frames[0]
     return AudioFrame(
-        pcm=b"".join(bytes(f.pcm) for f in pcm_frames),
-        sample_rate=first.sample_rate,
-        channels=first.channels,
-        sample_format=first.sample_format,
+        pcm=clip.pcm,
+        sample_rate=clip.sample_rate,
+        channels=clip.channels,
+        sample_format=clip.sample_format,
         t_start=t_start,
         t_end=t_end,
     )
@@ -936,6 +935,18 @@ def _energy_fresh(energy_t: float | None, now: float | None, chunk_dt: float | N
         return True
     dt = chunk_dt if (chunk_dt and chunk_dt > 0) else _DEFAULT_CHUNK_DT_S
     return (now - energy_t) <= max(_ENERGY_STALE_FACTOR * dt, _ENERGY_STALE_FLOOR_S)
+
+
+def _amplitude_threshold_to_energy(value: float, *, name: str) -> float:
+    """Convert the runtime's legacy RMS/amplitude threshold knob to mean-square energy."""
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or not 0.0 <= value <= 1.0
+    ):
+        raise ValueError(f"{name} must be finite and within [0, 1]")
+    return float(value) ** 2
 
 
 # Cap so a tiny brief-window prior can't explode the capture rate (mirrors the bench
@@ -1190,7 +1201,8 @@ async def run(
     - ``audio_gate`` — the tier-0 audio detector: a name (``"acoustic-onset"``), an instance with
       ``push(t, v) -> [Boundary]``, or ``None`` to only fill the window + feed energy (no onset wake).
     - ``audio_wake`` — kwargs for the mean-square-energy onset detector, e.g.
-      ``{"high": 0.09, "low": 0.02, "refractory_s": 5.0}``.
+      ``{"high": 0.3, "low": 0.15, "refractory_s": 5.0}``. The public values remain legacy
+      RMS/amplitude thresholds and are squared internally for the mean-square energy stream.
     - ``audio_settle_s`` — seconds to WAIT after an acoustic onset before the woken judge runs. An
       onset marks the START of a sound, and the audio clip is sliced backward from the judge moment —
       judging at the onset itself would hand the model the silence BEFORE the sound. The settle keeps
@@ -2034,7 +2046,16 @@ async def run(
             if audio_gate is not None:
                 if isinstance(audio_gate, str):
                     from percept.edge.detectors import AcousticOnset
-                    onset = AcousticOnset(**(audio_wake or {})) if audio_gate == "acoustic-onset" else None
+                    if audio_gate == "acoustic-onset":
+                        wake_opts = dict(audio_wake or {})
+                        for key in ("high", "low"):
+                            if key in wake_opts:
+                                wake_opts[key] = _amplitude_threshold_to_energy(
+                                    wake_opts[key], name=f"audio_wake.{key}"
+                                )
+                        onset = AcousticOnset(**wake_opts)
+                    else:
+                        onset = None
                 else:
                     onset = audio_gate  # a caller-supplied detector instance
 
@@ -2050,10 +2071,33 @@ async def run(
                 else:
                     from percept.runtime._vad import EnergyVad
                     _vad = EnergyVad(
-                        threshold=utterance_threshold,
+                        threshold=_amplitude_threshold_to_energy(
+                            utterance_threshold, name="utterance_threshold"
+                        ),
                         hangover_frames=utterance_hangover_frames,
                         min_speech_frames=utterance_min_speech_frames,
                     )
+
+            def _reset_audio_temporal_state() -> None:
+                """Re-arm live DSP after a forward discontinuity; the current unit starts a new span."""
+                audio.update(
+                    {
+                        "energy": None,
+                        "energy_t": None,
+                        "chunk_dt": None,
+                        "wake": False,
+                        "wake_at": None,
+                    }
+                )
+                _prev_chunk_at[0] = None
+                _wall_anchor[0] = None
+                reset_onset = getattr(onset, "reset", None)
+                if callable(reset_onset):
+                    reset_onset()
+                if _vad is not None:
+                    _vad.reset()
+                _utt["start"] = None
+                _utt_buf.clear()
 
             async def _pump_audio():
                 # Pump every chunk into the AudioWindow (un-strands modality="fused"/"audio") and track
@@ -2137,13 +2181,23 @@ async def run(
                     # signals freeze, without ending the session. Default (muted=None) is byte-for-byte.
                     if muted is not None and muted():
                         continue
-                    ingest = None
                     try:
                         ingest = core.push_audio(unit, source=gate_source)
-                    except Exception:  # noqa: BLE001 - audio ingress must not crash the video watch
-                        pass
-                    if stats is not None:
-                        stats.audio_chunks += 1
+                    except Exception as exc:  # noqa: BLE001 - reject one malformed unit, keep capture alive
+                        if on_health is not None:
+                            await _call_sink(
+                                on_health,
+                                RuntimeHealthEvent(
+                                    "audio_unit_rejected",
+                                    ts=at,
+                                    data={
+                                        "source": gate_source,
+                                        "seq": getattr(unit, "seq", None),
+                                        "error": repr(exc),
+                                    },
+                                ),
+                            )
+                        continue
                     if (
                         ingest is not None
                         and getattr(ingest, "discontinuous", False)
@@ -2154,6 +2208,22 @@ async def run(
                         await _call_sink(
                             on_health, RuntimeHealthEvent("audio_discontinuity", ts=at, data=data)
                         )
+                    if ingest is not None and not getattr(ingest, "accepted", True):
+                        continue
+                    if stats is not None:
+                        stats.audio_chunks += 1
+
+                    # A historical insertion repairs the ordered evidence window but must never be
+                    # replayed through LIVE gate/VAD state after newer audio was already processed.
+                    if ingest is not None and getattr(ingest, "reordered", False):
+                        continue
+                    if ingest is not None and (
+                        getattr(ingest, "missing", 0)
+                        or getattr(ingest, "gap_s", 0.0)
+                        or getattr(ingest, "format_changed", False)
+                    ):
+                        _reset_audio_temporal_state()
+
                     # Track the cadence + the time of the last REAL reading (a None-energy chunk is not
                     # a fresh reading). The frame loop reads energy only while fresh (dead mic → video-only).
                     if _prev_chunk_at[0] is not None:
@@ -2170,8 +2240,6 @@ async def run(
                                 # settle: judge AFTER the sound has filled the window, not at its first instant
                                 audio["wake_at"] = at + max(0.0, float(audio_settle_s))
                             if getattr(b, "kind", None) == "onset":
-                                from percept.events import AudioBoundary
-
                                 audio_window_for = getattr(core, "_audio_window", None)
                                 if callable(audio_window_for):
                                     audio_window_for(gate_source).annotate(
@@ -2208,8 +2276,6 @@ async def run(
                             if getattr(ev, "started", False):
                                 _utt["start"] = at
                                 _utt_buf.clear()  # a fresh turn — drop any pre-start residue
-                                from percept.events import AudioBoundary
-
                                 audio_window_for = getattr(core, "_audio_window", None)
                                 if callable(audio_window_for):
                                     audio_window_for(gate_source).annotate(
@@ -2223,8 +2289,6 @@ async def run(
                                 while _utt_buf and _utt_buf[0][0] < _cutoff:
                                     _utt_buf.pop(0)
                             if getattr(ev, "endpoint", False):
-                                from percept.events import AudioBoundary
-
                                 audio_window_for = getattr(core, "_audio_window", None)
                                 if callable(audio_window_for):
                                     audio_window_for(gate_source).annotate(

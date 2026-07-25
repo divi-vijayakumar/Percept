@@ -19,7 +19,7 @@ cheap, high-fps reflex that runs next to the camera. It does two jobs:
 Pure ESM JavaScript, **zero runtime dependencies** (vitest is the only devDep). The DSP skills + the gate
 need no model and no native deps; the one model-backed skill (pose) takes a pluggable adapter you supply.
 
-## The wire contract (detector + gate OUTPUTS: byte-for-byte with the Python SDK)
+## The wire contract (validated shapes + selected-field Python conformance)
 
 ```text
 down (cloud → edge):
@@ -34,15 +34,16 @@ up   (edge → cloud):
 `detectors` carries the brain's skill selection; `EdgeCapabilities` advertises what this edge can run so
 the brain selects only within it (the capability handshake). Every shape has `make*`/`parse*` validators
 in `src/contract.js`, kept identical to the Python `percept.edge` contract dataclasses — verified by a
-cross-language parity harness (12/12 byte-for-byte; the JS and Python detectors + gate produce identical
-output on identical input).
+contract test suite. The cross-language parity harness separately compares 33 selected detector,
+salience, energy, and ordered-audio timeline fields on frozen vectors. A passing run establishes
+conformance for those listed fields and vectors; it is not a serialization-wide equivalence claim.
 
 > **WatchSpec is a documented subset on-device.** The edge executes `cadence_s` (a per-condition
 > escalation throttle) and `gate_on` (`motion`/`structural`/`semantic`/`fixed`) locally in
 > `_shouldEscalate` (`src/edge.js`). The one server-only field is **`schedule`** — civil-time windows are
 > enforced by the cognition layer when it gates, not on-device. The edge only *proposes* (Tier0Signal +
-> boundaries), so the "byte-for-byte" guarantee is on the **detector + gate outputs** (verified 12/12),
-> not full `WatchCondition` field parity — an edge never fires on its own.
+> boundaries). The parity guarantee covers only the fields explicitly checked by `parity/compare.py`,
+> not full `WatchCondition` parity or downstream behavior — an edge never fires on its own.
 
 ## The gate (the reflex)
 

@@ -95,7 +95,7 @@ clean:  ## remove build + tooling artifacts (leaves out/ — that's intentional 
 	rm -rf .pytest_cache .ruff_cache .mypy_cache packages/*/.pytest_cache
 	find . -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
 
-parity:  ## Edge<->harness conformance — JS percept-edge vs Python percept.harness, byte-for-byte
+parity:  ## Edge<->harness conformance — selected JS/Python fields on frozen vectors
 	PYTHONPATH=$(SDK) $(PY) $(EDGE)/parity/compare.py
 
 eval-live:

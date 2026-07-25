@@ -10,6 +10,7 @@ semantics (a new event is a rising edge; counting falls out as "distinct events 
 from __future__ import annotations
 
 import math
+from collections import deque
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
@@ -120,6 +121,12 @@ class AudioBoundary:
     kind: AudioBoundaryKind
     t: float
 
+    def __post_init__(self) -> None:
+        if self.kind not in ("onset", "vad_start", "endpoint"):
+            raise ValueError("audio boundary kind is invalid")
+        if not isinstance(self.t, (int, float)) or isinstance(self.t, bool) or not math.isfinite(self.t):
+            raise ValueError("audio boundary time must be finite")
+
 
 @dataclass(frozen=True)
 class AudioUnit:
@@ -140,6 +147,7 @@ class AudioUnit:
     energy: float | None = None
     sample_rate: int | None = None
     channels: int | None = None
+    sample_format: str | None = None
     direction: AudioDirection = "unknown"
     participant_id: str | None = None
     boundaries: tuple[AudioBoundary, ...] = ()
@@ -153,6 +161,12 @@ class AudioUnit:
         yield self.t
         yield self.chunk
         yield self.energy
+
+    def __len__(self) -> int:
+        return 3
+
+    def __getitem__(self, index):
+        return (self.t, self.chunk, self.energy)[index]
 
 
 @dataclass(frozen=True)
@@ -201,11 +215,13 @@ class AudioPushResult:
 
 def _audio_nbytes(chunk: Any) -> int:
     pcm = getattr(chunk, "pcm", None)
-    if isinstance(pcm, (bytes, bytearray, memoryview)):
+    if isinstance(pcm, (bytes, bytearray, memoryview)) and pcm:
         return len(pcm)
     encoded = getattr(chunk, "encoded", None)
     if isinstance(encoded, (bytes, bytearray, memoryview)):
         return len(encoded)
+    if isinstance(pcm, (bytes, bytearray, memoryview)):
+        return 0
     if isinstance(chunk, (bytes, bytearray, memoryview)):
         return len(chunk)
     if (
@@ -215,6 +231,116 @@ def _audio_nbytes(chunk: Any) -> int:
     ):
         return len(chunk[1])
     return 0
+
+
+_PCM_BYTES_PER_SAMPLE = {"s16le": 2, "f32le": 4, "u8": 1}
+
+
+def _canonical_audio_unit(unit: AudioUnit) -> AudioUnit:
+    """Fill unit format metadata from a typed frame without changing explicit values."""
+    if not all(hasattr(unit.chunk, name) for name in ("sample_rate", "channels", "sample_format")):
+        return unit
+    return replace(
+        unit,
+        sample_rate=unit.sample_rate if unit.sample_rate is not None else unit.chunk.sample_rate,
+        channels=unit.channels if unit.channels is not None else unit.chunk.channels,
+        sample_format=(
+            unit.sample_format if unit.sample_format is not None else unit.chunk.sample_format
+        ),
+    )
+
+
+def validate_audio_unit(unit: AudioUnit) -> AudioUnit:
+    """Validate and return the canonical unit; malformed audio fails before state mutation."""
+    unit = _canonical_audio_unit(unit)
+    if not isinstance(unit.seq, int) or isinstance(unit.seq, bool) or unit.seq < 0:
+        raise ValueError("audio unit seq must be a non-negative integer")
+    if (
+        not isinstance(unit.t_start, (int, float))
+        or isinstance(unit.t_start, bool)
+        or not isinstance(unit.t_end, (int, float))
+        or isinstance(unit.t_end, bool)
+        or not math.isfinite(unit.t_start)
+        or not math.isfinite(unit.t_end)
+    ):
+        raise ValueError("audio unit times must be finite")
+    if unit.event_t is not None and (
+        not isinstance(unit.event_t, (int, float))
+        or isinstance(unit.event_t, bool)
+        or not math.isfinite(unit.event_t)
+    ):
+        raise ValueError("audio unit event_t must be finite when known")
+    if unit.t_end < unit.t_start:
+        raise ValueError("audio unit t_end must be >= t_start")
+    if unit.energy is not None and (
+        not isinstance(unit.energy, (int, float))
+        or isinstance(unit.energy, bool)
+        or not math.isfinite(unit.energy)
+        or not 0.0 <= unit.energy <= 1.0
+    ):
+        raise ValueError("audio unit energy must be finite and within [0, 1]")
+    if unit.sample_rate is not None and (
+        not isinstance(unit.sample_rate, int)
+        or isinstance(unit.sample_rate, bool)
+        or unit.sample_rate <= 0
+    ):
+        raise ValueError("audio unit sample_rate must be positive when known")
+    if unit.channels is not None and (
+        not isinstance(unit.channels, int)
+        or isinstance(unit.channels, bool)
+        or unit.channels <= 0
+    ):
+        raise ValueError("audio unit channels must be positive when known")
+    if unit.sample_format is not None and unit.sample_format not in _PCM_BYTES_PER_SAMPLE:
+        raise ValueError("audio unit sample_format is invalid")
+    if unit.direction not in ("input", "output", "mixed", "unknown"):
+        raise ValueError("audio unit direction is invalid")
+    if unit.participant_id is not None and not isinstance(unit.participant_id, str):
+        raise ValueError("audio unit participant_id must be a string when known")
+    if not isinstance(unit.boundaries, tuple) or not all(
+        isinstance(boundary, AudioBoundary) for boundary in unit.boundaries
+    ):
+        raise ValueError("audio unit boundaries must be an AudioBoundary tuple")
+
+    if all(hasattr(unit.chunk, name) for name in ("sample_rate", "channels", "sample_format", "pcm")):
+        frame = unit.chunk
+        if unit.sample_rate != frame.sample_rate:
+            raise ValueError("audio unit sample_rate disagrees with its frame")
+        if unit.channels != frame.channels:
+            raise ValueError("audio unit channels disagrees with its frame")
+        if unit.sample_format != frame.sample_format:
+            raise ValueError("audio unit sample_format disagrees with its frame")
+        if frame.t_start is not None and (
+            not isinstance(frame.t_start, (int, float))
+            or isinstance(frame.t_start, bool)
+            or not math.isfinite(frame.t_start)
+        ):
+            raise ValueError("audio frame t_start must be finite when known")
+        if frame.t_end is not None and (
+            not isinstance(frame.t_end, (int, float))
+            or isinstance(frame.t_end, bool)
+            or not math.isfinite(frame.t_end)
+        ):
+            raise ValueError("audio frame t_end must be finite when known")
+        if (
+            frame.t_start is not None
+            and frame.t_end is not None
+            and frame.t_end < frame.t_start
+        ):
+            raise ValueError("audio frame t_end must be >= t_start")
+        if frame.t_start is not None and not math.isclose(
+            float(frame.t_start), float(unit.t_start), rel_tol=0.0, abs_tol=1e-9
+        ):
+            raise ValueError("audio unit t_start disagrees with its frame")
+        if frame.t_end is not None and not math.isclose(
+            float(frame.t_end), float(unit.t_end), rel_tol=0.0, abs_tol=1e-9
+        ):
+            raise ValueError("audio unit t_end disagrees with its frame")
+        if frame.pcm:
+            bytes_per_frame = _PCM_BYTES_PER_SAMPLE[frame.sample_format] * frame.channels
+            if len(frame.pcm) % bytes_per_frame:
+                raise ValueError("audio frame PCM is not aligned to its format/channels")
+    return unit
 
 
 class AudioWindow:
@@ -233,12 +359,26 @@ class AudioWindow:
         max_units: int = 4096,
         max_bytes: int = 16 * 1024 * 1024,
     ) -> None:
+        if (
+            not isinstance(seconds, (int, float))
+            or isinstance(seconds, bool)
+            or not math.isfinite(seconds)
+            or seconds <= 0
+        ):
+            raise ValueError("seconds must be finite and positive")
+        if not isinstance(max_units, int) or isinstance(max_units, bool) or max_units <= 0:
+            raise ValueError("max_units must be a positive integer")
+        if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes <= 0:
+            raise ValueError("max_bytes must be a positive integer")
         self._seconds = max(0.5, seconds)
-        self._max_units = max(1, int(max_units))
-        self._max_bytes = max(1, int(max_bytes))
+        self._max_units = max_units
+        self._max_bytes = max_bytes
         self._units: list[AudioUnit] = []
         self._bytes = 0
         self._max_seq: int | None = None
+        self._seen_limit = max(4096, self._max_units * 2)
+        self._seen_order: deque[int] = deque()
+        self._seen_seq: set[int] = set()
 
     @property
     def _chunks(self) -> list[tuple[float, Any]]:
@@ -249,44 +389,38 @@ class AudioWindow:
     def nbytes(self) -> int:
         return self._bytes
 
+    @property
+    def next_seq(self) -> int:
+        return 0 if self._max_seq is None else self._max_seq + 1
+
+    @property
+    def latest_event_t(self) -> float | None:
+        """Latest accepted event-clock timestamp, used to migrate legacy tuple streams safely."""
+        if not self._units:
+            return None
+        return max(unit.t for unit in self._units)
+
     def push(self, t: float | AudioUnit, chunk: Any = None) -> AudioPushResult:
         if isinstance(t, AudioUnit):
             unit = t
         else:
-            seq = 0 if self._max_seq is None else self._max_seq + 1
-            unit = AudioUnit(seq=seq, t_start=float(t), t_end=float(t), chunk=chunk)
+            at = float(t)
+            previous_t = self.latest_event_t
+            unit = AudioUnit(
+                seq=self.next_seq,
+                t_start=at if previous_t is None else previous_t,
+                t_end=at,
+                chunk=chunk,
+                event_t=at,
+            )
         return self.push_unit(unit)
 
     def push_unit(self, unit: AudioUnit) -> AudioPushResult:
-        if not isinstance(unit.seq, int) or isinstance(unit.seq, bool) or unit.seq < 0:
-            raise ValueError("audio unit seq must be a non-negative integer")
-        if not math.isfinite(unit.t_start) or not math.isfinite(unit.t_end):
-            raise ValueError("audio unit times must be finite")
-        if unit.t_end < unit.t_start:
-            raise ValueError("audio unit t_end must be >= t_start")
-        if unit.energy is not None and (
-            not isinstance(unit.energy, (int, float))
-            or not math.isfinite(unit.energy)
-            or not 0.0 <= unit.energy <= 1.0
-        ):
-            raise ValueError("audio unit energy must be finite and within [0, 1]")
-        if unit.sample_rate is not None and (
-            not isinstance(unit.sample_rate, int)
-            or isinstance(unit.sample_rate, bool)
-            or unit.sample_rate <= 0
-        ):
-            raise ValueError("audio unit sample_rate must be positive when known")
-        if unit.channels is not None and (
-            not isinstance(unit.channels, int)
-            or isinstance(unit.channels, bool)
-            or unit.channels <= 0
-        ):
-            raise ValueError("audio unit channels must be positive when known")
-        if unit.direction not in ("input", "output", "mixed", "unknown"):
-            raise ValueError("audio unit direction is invalid")
-        if unit.participant_id is not None and not isinstance(unit.participant_id, str):
-            raise ValueError("audio unit participant_id must be a string when known")
-        if any(existing.seq == unit.seq for existing in self._units):
+        unit = validate_audio_unit(unit)
+        unit_bytes = _audio_nbytes(unit.chunk)
+        if unit_bytes > self._max_bytes:
+            raise ValueError("audio unit exceeds the window byte cap")
+        if unit.seq in self._seen_seq:
             return AudioPushResult(accepted=False, duplicate=True)
 
         previous_max_seq = self._max_seq
@@ -317,6 +451,17 @@ class AudioWindow:
             elif unit.t_end > following.t_start:
                 overlap_s = max(overlap_s, unit.t_end - following.t_start)
 
+        # Overlapping PCM has no implicit merge policy. Reject it before mutating the timeline; a
+        # future caller can explicitly mix/trim and submit a non-overlapping replacement.
+        if overlap_s:
+            return AudioPushResult(
+                accepted=False,
+                reordered=reordered,
+                missing=missing,
+                gap_s=gap_s,
+                overlap_s=overlap_s,
+            )
+
         def _format_diff(other: AudioUnit | None) -> bool:
             return bool(
                 other is not None
@@ -331,14 +476,24 @@ class AudioWindow:
                         and other.channels is not None
                         and unit.channels != other.channels
                     )
+                    or (
+                        unit.sample_format is not None
+                        and other.sample_format is not None
+                        and unit.sample_format != other.sample_format
+                    )
                 )
             )
 
         format_changed = _format_diff(previous) or _format_diff(following)
 
         self._units.insert(index, unit)
-        self._bytes += _audio_nbytes(unit.chunk)
+        self._bytes += unit_bytes
         self._max_seq = unit.seq if previous_max_seq is None else max(previous_max_seq, unit.seq)
+        self._seen_seq.add(unit.seq)
+        self._seen_order.append(unit.seq)
+        while len(self._seen_order) > self._seen_limit:
+            forgotten = self._seen_order.popleft()
+            self._seen_seq.discard(forgotten)
 
         newest_end = max(u.t_end for u in self._units)
         cutoff = newest_end - self._seconds
@@ -383,6 +538,10 @@ class AudioWindow:
 
     def annotate(self, seq: int, *boundaries: AudioBoundary) -> bool:
         """Attach boundary annotations to an already-retained unit without duplicating them."""
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
+            raise ValueError("audio annotation seq must be a non-negative integer")
+        if not all(isinstance(boundary, AudioBoundary) for boundary in boundaries):
+            raise ValueError("audio annotations must be AudioBoundary values")
         for index, unit in enumerate(self._units):
             if unit.seq != seq:
                 continue
@@ -399,28 +558,91 @@ class AudioWindow:
         return list(self._units)
 
     def window(self, t_start: float, t_end: float) -> list[AudioUnit]:
-        """Units intersecting the explicit half-open ``[t_start, t_end]`` window."""
+        """Units intersecting the explicit half-open ``[t_start, t_end)`` window."""
+        if (
+            not isinstance(t_start, (int, float))
+            or isinstance(t_start, bool)
+            or not isinstance(t_end, (int, float))
+            or isinstance(t_end, bool)
+            or not math.isfinite(t_start)
+            or not math.isfinite(t_end)
+        ):
+            raise ValueError("audio window times must be finite")
         if t_end < t_start:
             raise ValueError("audio window t_end must be >= t_start")
-        return [u for u in self._units if u.t_end >= t_start and u.t_start <= t_end]
+        return [
+            unit
+            for unit in self._units
+            if (
+                unit.t_end > t_start and unit.t_start < t_end
+            ) or (
+                unit.t_start == unit.t_end and t_start <= unit.t_start < t_end
+            )
+        ]
 
     def boundaries(
         self, t_start: float | None = None, t_end: float | None = None
     ) -> list[AudioBoundary]:
+        for name, value in (("t_start", t_start), ("t_end", t_end)):
+            if value is not None and (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+            ):
+                raise ValueError(f"audio boundary {name} must be finite")
+        if t_start is not None and t_end is not None and t_end < t_start:
+            raise ValueError("audio boundary t_end must be >= t_start")
         out = [boundary for unit in self._units for boundary in unit.boundaries]
         if t_start is not None:
             out = [boundary for boundary in out if boundary.t >= t_start]
         if t_end is not None:
-            out = [boundary for boundary in out if boundary.t <= t_end]
+            out = [boundary for boundary in out if boundary.t < t_end]
         return sorted(out, key=lambda boundary: (boundary.t, boundary.kind))
 
     def clip(self, seconds: float, *, now: float | None = None) -> list[Any]:
-        """Audio payloads within the last ``seconds`` (oldest→newest)."""
+        """Latest contiguous, format-homogeneous audio segment within the requested duration."""
+        if (
+            not isinstance(seconds, (int, float))
+            or isinstance(seconds, bool)
+            or not math.isfinite(seconds)
+            or seconds <= 0
+        ):
+            raise ValueError("audio clip seconds must be finite and positive")
+        if now is not None and (
+            not isinstance(now, (int, float))
+            or isinstance(now, bool)
+            or not math.isfinite(now)
+        ):
+            raise ValueError("audio clip now must be finite when known")
         if not self._units:
             return []
         end = max(unit.t_end for unit in self._units) if now is None else now
         start = end - seconds
-        return [unit.chunk for unit in self.window(start, end)]
+        candidates = [
+            unit
+            for unit in self._units
+            if unit.t_end >= start and unit.t_start <= end
+        ]
+        if not candidates:
+            return []
+        contiguous = [candidates[-1]]
+        for unit in reversed(candidates[:-1]):
+            newer = contiguous[0]
+            same_format = (
+                unit.sample_rate,
+                unit.channels,
+                unit.sample_format,
+            ) == (
+                newer.sample_rate,
+                newer.channels,
+                newer.sample_format,
+            )
+            if not same_format or not math.isclose(
+                unit.t_end, newer.t_start, rel_tol=0.0, abs_tol=1e-9
+            ):
+                break
+            contiguous.insert(0, unit)
+        return [unit.chunk for unit in contiguous]
 
     def clear(self) -> None:
         """Drop retained chunks at a source discontinuity."""
@@ -479,5 +701,6 @@ __all__ = [
     "AudioUnit",
     "AudioPushResult",
     "AudioWindow",
+    "validate_audio_unit",
     "EventLog",
 ]

@@ -234,9 +234,25 @@ def _concat_audio(chunks: list) -> Any:
         return None
     first = chunks[0]
     if isinstance(first, AudioFrame):
-        pcm_frames = [c for c in chunks if isinstance(c, AudioFrame) and c.pcm]
+        if not all(isinstance(c, AudioFrame) for c in chunks):
+            return None
+        pcm_frames = [c for c in chunks if c.pcm]
         if not pcm_frames:
             return chunks[-1]  # encoded-only (or empty) frames — nothing to concat, pass the latest through
+        if len(pcm_frames) != len(chunks):
+            return None  # never flatten a mixed encoded/raw sequence
+        formats = {
+            (c.sample_rate, c.channels, c.sample_format)
+            for c in pcm_frames
+        }
+        if len(formats) != 1:
+            return None  # split/resample belongs upstream; never mislabel mixed PCM as the first format
+        bytes_per_sample = {"s16le": 2, "f32le": 4, "u8": 1}
+        if any(
+            len(c.pcm) % (bytes_per_sample[c.sample_format] * c.channels)
+            for c in pcm_frames
+        ):
+            return None
         head, tail = pcm_frames[0], pcm_frames[-1]
         return AudioFrame(
             pcm=b"".join(bytes(c.pcm) for c in pcm_frames),
@@ -247,8 +263,18 @@ def _concat_audio(chunks: list) -> Any:
             t_end=tail.t_end,
         )
     if isinstance(first, tuple) and len(first) == 2 and isinstance(first[1], (bytes, bytearray)):
+        if not all(
+            isinstance(c, tuple)
+            and len(c) == 2
+            and isinstance(c[1], (bytes, bytearray))
+            and str(c[0]) == str(first[0])
+            for c in chunks
+        ):
+            return None
         return (str(first[0]), b"".join(bytes(c[1]) for c in chunks))
     if isinstance(first, (bytes, bytearray)):
+        if not all(isinstance(c, (bytes, bytearray)) for c in chunks):
+            return None
         return b"".join(bytes(c) for c in chunks)
     return chunks[-1]  # opaque descriptor — pass the latest through
 
@@ -1116,7 +1142,15 @@ class Percept:
         window = self._audio_window(source)
         if isinstance(chunk, AudioUnit):
             return window.push_unit(chunk)
-        return window.push(self.clock() if t is None else t, chunk)
+        from percept.runtime.audio import normalize_audio_unit
+
+        at = self.clock() if t is None else t
+        unit = normalize_audio_unit(
+            (at, chunk, None),
+            seq=window.next_seq,
+            previous_event_t=window.latest_event_t,
+        )
+        return window.push_unit(unit)
 
     def _audio_clip(self, source: str, spec) -> Any:
         """Assemble one audio clip for a fused/audio ``PerceptionSpec`` from the AudioWindow, else None."""

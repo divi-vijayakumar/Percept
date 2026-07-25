@@ -145,6 +145,7 @@ def normalize_audio_unit(item, *, seq: int) -> AudioUnit:
     at = float(at)
     sample_rate = getattr(chunk, "sample_rate", None)
     channels = getattr(chunk, "channels", None)
+    sample_format = getattr(chunk, "sample_format", None)
     t_start = getattr(chunk, "t_start", None)
     t_end = getattr(chunk, "t_end", None)
     if t_start is None or t_end is None:
@@ -156,15 +157,30 @@ def normalize_audio_unit(item, *, seq: int) -> AudioUnit:
             and sample_rate > 0
             and isinstance(channels, int)
             and channels > 0
-            and getattr(chunk, "sample_format", "s16le") == "s16le"
+            and sample_format in ("s16le", "f32le", "u8")
         ):
-            duration = len(pcm) / (2 * sample_rate * channels)
+            bytes_per_sample = {"s16le": 2, "f32le": 4, "u8": 1}[sample_format]
+            bytes_per_frame = bytes_per_sample * channels
+            if len(pcm) % bytes_per_frame:
+                raise ValueError("audio frame PCM is not aligned to its format/channels")
+            duration = len(pcm) / (bytes_per_frame * sample_rate)
         t_end = at
-        t_start = at - duration if duration is not None else at
+        if previous_event_t is not None:
+            previous_event_t = float(previous_event_t)
+            if not math.isfinite(previous_event_t):
+                raise ValueError("previous audio event time must be finite")
+            if at < previous_event_t:
+                raise ValueError("legacy audio tuple timestamps must be non-decreasing")
+            t_start = previous_event_t
+        else:
+            t_start = at - duration if duration is not None else at
     if energy is None:
         pcm = getattr(chunk, "pcm", None)
-        if isinstance(pcm, (bytes, bytearray, memoryview)):
-            energy = pcm_energy(bytes(pcm))
+        if (
+            isinstance(pcm, (bytes, bytearray, memoryview))
+            and sample_format in ("s16le", "f32le", "u8")
+        ):
+            energy = _pcm_frame_energy(bytes(pcm), sample_format)
     return AudioUnit(
         seq=seq,
         t_start=float(t_start),
@@ -174,6 +190,7 @@ def normalize_audio_unit(item, *, seq: int) -> AudioUnit:
         energy=None if energy is None else float(energy),
         sample_rate=sample_rate,
         channels=channels,
+        sample_format=sample_format,
     )
 
 
@@ -308,7 +325,6 @@ def _capture_wav(path: str, config: AudioSourceConfig, q: "queue.Queue",
             sample_width = w.getsampwidth()
             step = max(1, int(sr * config.chunk_s))
             i = 0
-            seq = 0
             while not stop.is_set():
                 pcm = w.readframes(step)
                 if not pcm:
@@ -370,7 +386,6 @@ def _capture_container(path: str, config: AudioSourceConfig, q: "queue.Queue",
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         i = 0
-        seq = 0
         while not stop.is_set():
             pcm = _read_exact(proc.stdout, nbytes)
             if not pcm:
@@ -468,6 +483,38 @@ async def open_audio_source(
     Every item preserves the PCM source position and local observation time independently. ``timebase``
     selects only the transitional tuple view. ``AudioFrame.t_start/t_end`` remain media offsets."""
     import asyncio
+
+    if not isinstance(sample_rate, int) or isinstance(sample_rate, bool) or sample_rate <= 0:
+        raise ValueError("sample_rate must be a positive integer")
+    if not isinstance(channels, int) or isinstance(channels, bool) or channels <= 0:
+        raise ValueError("channels must be a positive integer")
+    if (
+        not isinstance(chunk_s, (int, float))
+        or isinstance(chunk_s, bool)
+        or not math.isfinite(chunk_s)
+        or chunk_s <= 0
+    ):
+        raise ValueError("chunk_s must be finite and positive")
+    if not isinstance(maxsize, int) or isinstance(maxsize, bool) or maxsize <= 0:
+        raise ValueError("maxsize must be positive; zero would create an unbounded queue")
+    if timebase not in ("media", "wall"):
+        raise ValueError("timebase must be 'media' or 'wall'")
+
+    if not isinstance(sample_rate, int) or isinstance(sample_rate, bool) or sample_rate <= 0:
+        raise ValueError("sample_rate must be a positive integer")
+    if not isinstance(channels, int) or isinstance(channels, bool) or channels <= 0:
+        raise ValueError("channels must be a positive integer")
+    if (
+        not isinstance(chunk_s, (int, float))
+        or isinstance(chunk_s, bool)
+        or not math.isfinite(chunk_s)
+        or chunk_s <= 0
+    ):
+        raise ValueError("chunk_s must be finite and positive")
+    if not isinstance(maxsize, int) or isinstance(maxsize, bool) or maxsize <= 0:
+        raise ValueError("maxsize must be positive; zero would create an unbounded queue")
+    if timebase not in ("media", "wall"):
+        raise ValueError("timebase must be 'media' or 'wall'")
 
     config = AudioSourceConfig(sample_rate=sample_rate, channels=channels,
                                chunk_s=chunk_s, queue_size=maxsize, timebase=timebase,
