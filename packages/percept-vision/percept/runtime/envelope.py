@@ -8,7 +8,7 @@ tuple view for one compatibility cycle.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 SOURCE_ENVELOPE_VERSION = 1
@@ -28,8 +28,10 @@ class SourceFormat:
     sample_format: str | None = None
 
     def __post_init__(self) -> None:
-        if not self.media_type:
+        if not isinstance(self.media_type, str) or not self.media_type:
             raise ValueError("source format media_type must be non-empty")
+        if self.sample_format is not None and not isinstance(self.sample_format, str):
+            raise ValueError("source format sample_format must be a string or None")
         for name in ("width", "height", "sample_rate", "channels"):
             value = getattr(self, name)
             if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value <= 0):
@@ -61,8 +63,45 @@ class SourceEnvelope:
     payload: Any
     signal: Any = None
     version: int = SOURCE_ENVELOPE_VERSION
+    # An adapter-known break whose exact missing sample/frame count is unavailable.  The epoch must
+    # still advance; this names why continuity broke without inventing a numeric gap.
+    discontinuity: Literal["capture_overflow"] | None = None
     # Transitional selection for ``as_legacy`` only.  It never changes either preserved clock.
     legacy_timebase: Literal["source", "observed"] = field(default="source", repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        """Own mutable media buffers even though callers may pass ``bytearray``/``memoryview``.
+
+        A frozen envelope around a mutable byte buffer is not actually immutable: validation could
+        approve one byte sequence and the judge could later consume another.  Normalize the media
+        carriers we understand at construction time.  Opaque objects remain caller-owned by design.
+        """
+        payload = self.payload
+        if isinstance(payload, (bytearray, memoryview)):
+            object.__setattr__(self, "payload", bytes(payload))
+            return
+        if (
+            isinstance(payload, tuple)
+            and len(payload) == 2
+            and isinstance(payload[1], (bytearray, memoryview))
+        ):
+            object.__setattr__(self, "payload", (payload[0], bytes(payload[1])))
+            return
+        # Avoid duck-typing arbitrary properties while normalizing an untrusted envelope.
+        from percept.contracts import AudioFrame
+
+        if isinstance(payload, AudioFrame):
+            updates = {}
+            if isinstance(payload.pcm, (bytearray, memoryview)):
+                updates["pcm"] = bytes(payload.pcm)
+            if isinstance(payload.encoded, (bytearray, memoryview)):
+                updates["encoded"] = bytes(payload.encoded)
+            if updates:
+                try:
+                    object.__setattr__(self, "payload", replace(payload, **updates))
+                except (TypeError, ValueError):
+                    # A duck-typed/non-dataclass payload is rejected later rather than mutated here.
+                    pass
 
     @property
     def event_time(self) -> float:
@@ -170,10 +209,39 @@ def _video_payload_valid(envelope: SourceEnvelope) -> bool:
             return False
         if payload[0] != envelope.format.media_type:
             return False
-        if payload[0].lower() == "image/jpeg":
-            encoded = bytes(payload[1])
-            if len(encoded) < 4 or not encoded.startswith(b"\xff\xd8"):
+        encoded = bytes(payload[1])
+        media_type = payload[0].lower()
+        # Validate complete container signatures, not merely a JPEG prefix.  Unknown encoded image
+        # formats fail closed; callers with a specialist payload can use the explicit opaque format.
+        if media_type in ("image/jpeg", "image/jpg"):
+            if len(encoded) < 4 or not (
+                encoded.startswith(b"\xff\xd8") and encoded.endswith(b"\xff\xd9")
+            ):
                 return False
+        elif media_type == "image/png":
+            if (
+                len(encoded) < 20
+                or not encoded.startswith(b"\x89PNG\r\n\x1a\n")
+                or encoded[-12:-8] != b"\x00\x00\x00\x00"
+                or encoded[-8:-4] != b"IEND"
+            ):
+                return False
+        elif media_type == "image/webp":
+            if len(encoded) < 12 or not (
+                encoded.startswith(b"RIFF") and encoded[8:12] == b"WEBP"
+            ):
+                return False
+            if int.from_bytes(encoded[4:8], "little") + 8 != len(encoded):
+                return False
+        elif media_type == "image/gif":
+            gif_signatures = (
+                bytes.fromhex("474946383761"),
+                bytes.fromhex("474946383961"),
+            )
+            if not encoded.startswith(gif_signatures) or not encoded.endswith(b";"):
+                return False
+        else:
+            return False
     frame = envelope.signal
     width, height = getattr(frame, "w", None), getattr(frame, "h", None)
     pixels = getattr(frame, "pixels", None)
@@ -211,13 +279,36 @@ def _audio_payload_valid(envelope: SourceEnvelope) -> bool:
         return False
     if getattr(frame, "sample_format", None) != envelope.format.sample_format:
         return False
-    sample_width = {"s16le": 2, "f32le": 4, "u8": 1}.get(
-        getattr(frame, "sample_format", None)
-    )
+    sample_format = getattr(frame, "sample_format", None)
+    if not isinstance(sample_format, str):
+        return False
+    sample_width = {"s16le": 2, "f32le": 4, "u8": 1}.get(sample_format)
     if pcm and (
         sample_width is None
         or len(pcm) % (getattr(frame, "channels") * sample_width) != 0
     ):
+        return False
+    media_type = envelope.format.media_type.lower()
+    if media_type in ("audio/pcm", "audio/l16"):
+        if not pcm:
+            return False
+    elif encoded:
+        mime = getattr(frame, "mime", None)
+        if not isinstance(mime, str) or mime.lower() != media_type:
+            return False
+        blob = bytes(encoded)
+        if media_type in ("audio/wav", "audio/x-wav"):
+            if len(blob) < 12 or not (blob.startswith(b"RIFF") and blob[8:12] == b"WAVE"):
+                return False
+        elif media_type == "audio/flac":
+            if not blob.startswith(b"fLaC"):
+                return False
+        elif media_type in ("audio/ogg", "application/ogg"):
+            if not blob.startswith(b"OggS"):
+                return False
+        else:
+            return False
+    else:
         return False
     energy = envelope.signal
     return energy is None or (_finite(energy) and 0.0 <= float(energy) <= 1.0)
@@ -226,13 +317,24 @@ def _audio_payload_valid(envelope: SourceEnvelope) -> bool:
 def _validation_event(envelope: Any) -> str | None:
     if not isinstance(envelope, SourceEnvelope):
         return "source_corrupt_payload"
-    if envelope.version != SOURCE_ENVELOPE_VERSION:
+    if type(envelope.version) is not int or envelope.version != SOURCE_ENVELOPE_VERSION:
         return "source_version_unsupported"
     if (
         not isinstance(envelope.source_id, str)
         or not envelope.source_id
         or envelope.modality not in ("video", "audio")
         or not isinstance(envelope.format, SourceFormat)
+        or envelope.discontinuity not in (None, "capture_overflow")
+    ):
+        return "source_corrupt_payload"
+    fmt = envelope.format
+    if (
+        not isinstance(fmt.media_type, str)
+        or not fmt.media_type
+        or (
+            fmt.sample_format is not None
+            and not isinstance(fmt.sample_format, str)
+        )
     ):
         return "source_corrupt_payload"
     if (
@@ -248,9 +350,12 @@ def _validation_event(envelope: Any) -> str | None:
         or (envelope.source_time is not None and float(envelope.source_time) < 0.0)
     ):
         return "source_corrupt_payload"
-    if envelope.modality == "video":
-        return None if _video_payload_valid(envelope) else "source_corrupt_payload"
-    return None if _audio_payload_valid(envelope) else "source_corrupt_payload"
+    try:
+        if envelope.modality == "video":
+            return None if _video_payload_valid(envelope) else "source_corrupt_payload"
+        return None if _audio_payload_valid(envelope) else "source_corrupt_payload"
+    except Exception:  # noqa: BLE001 - untrusted payload validation is a fail-closed boundary
+        return "source_corrupt_payload"
 
 
 class SourceTracker:
@@ -275,6 +380,8 @@ class SourceTracker:
         previous = self._streams.get(key)
         events: list[str] = []
         missing = 0
+        if envelope.discontinuity == "capture_overflow":
+            events.append("source_capture_overflow")
 
         if previous is None and envelope.sequence > 0:
             missing = envelope.sequence
@@ -300,9 +407,12 @@ class SourceTracker:
                     return self._record(False, ("source_corrupt_payload",), "excluded")
                 if envelope.observed_time < previous.observed_time:
                     return self._record(False, ("source_observed_time_reset",), "excluded")
-                events.append("source_reconnect")
+                if envelope.discontinuity != "capture_overflow":
+                    events.append("source_reconnect")
                 if envelope.epoch > previous.epoch + 1:
                     events.append("source_epoch_gap")
+            if envelope.discontinuity is not None and envelope.epoch == previous.epoch:
+                return self._record(False, ("source_corrupt_payload",), "excluded")
             if envelope.format != previous.format:
                 events.append("source_format_change")
 
@@ -322,6 +432,7 @@ class SourceTracker:
                 "source_reconnect",
                 "source_epoch_gap",
                 "source_format_change",
+                "source_capture_overflow",
             }
             for event in events
         )

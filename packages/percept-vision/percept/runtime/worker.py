@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import math
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -1041,7 +1042,12 @@ def _is_recorded_source(uri: str) -> bool:
     return base.endswith(_RECORDED_SUFFIXES)
 
 
-def _resolve_timebase(source: Any, requested: str) -> EffectiveTimebase:
+def _resolve_timebase(
+    source: Any,
+    requested: str,
+    *,
+    deterministic_override: bool = True,
+) -> EffectiveTimebase:
     """Resolve ``run(timebase=…)`` against ``source``.
 
     ``"auto"`` (the default) is the fix for a specific bug: a 36s clip decoded in 0.72s
@@ -1053,12 +1059,12 @@ def _resolve_timebase(source: Any, requested: str) -> EffectiveTimebase:
         raise ValueError(
             f"timebase must be one of {TIMEBASE_CHOICES}, got {requested!r}"
         )
+    if requested != "auto" and (isinstance(source, str) or deterministic_override):
+        return EffectiveTimebase(requested=requested, resolved=requested, reason="explicit-override")
     if not isinstance(source, str):
         # A deterministic iterable (tests, replay, the eval harness) feeds its OWN explicit `t`; the
         # worker never re-stamps it, so nothing is resolved for it — byte-for-byte unchanged.
         return EffectiveTimebase(requested=requested, resolved="media", reason="deterministic-stream")
-    if requested != "auto":
-        return EffectiveTimebase(requested=requested, resolved=requested, reason="explicit-override")
     if _is_recorded_source(source):
         return EffectiveTimebase(requested=requested, resolved="media", reason="recorded-source")
     return EffectiveTimebase(requested=requested, resolved="wall", reason="live-source")
@@ -1407,6 +1413,7 @@ async def run(
     # A SourceProfile timebase is a source-level constraint: one worker cannot interpret the same
     # timestamp as both media and wall time.  Honor the compiled value when run() stayed on "auto";
     # reject incompatible profiles instead of making arming order choose the clock silently.
+    _caller_timebase_explicit = timebase != "auto"
     if timebase == "auto":
         bound_timebases = {
             bound[0].timebase
@@ -1692,8 +1699,20 @@ async def run(
     # Resolve the clock BEFORE the capture source is opened; both the video and the audio
     # path get their own record (a "mic:0" live mic and a "session.wav" recording resolve differently
     # even inside one run).
-    video_tb = _resolve_timebase(source, timebase)
-    audio_tb = _resolve_timebase(audio_source, timebase) if audio_source is not None else None
+    video_tb = _resolve_timebase(
+        source,
+        timebase,
+        deterministic_override=_caller_timebase_explicit,
+    )
+    audio_tb = (
+        _resolve_timebase(
+            audio_source,
+            timebase,
+            deterministic_override=_caller_timebase_explicit,
+        )
+        if audio_source is not None
+        else None
+    )
     effective_config = EffectiveConfig(
         fps=effective_fps, video_timebase=video_tb, audio_timebase=audio_tb,
         coast_enabled=bool(getattr(getattr(settings, "edge", None), "coast_enabled", True)),
@@ -1786,7 +1805,7 @@ async def run(
                 pass  # event loop already closed on teardown — nothing to surface into
         return _cb
 
-    _source_health_seen: set[tuple[str, str, int, str]] = set()
+    _source_health_seen: set[tuple[str, str, int | None, str]] = set()
     dropped: list[int] = [0]  # shared with the capture thread
     source_health: list = []  # capture thread events drained on the video cadence
 
@@ -1794,7 +1813,7 @@ async def run(
         envelope: SourceEnvelope,
         inspection: SourceInspection,
         *,
-        ts: float,
+        ts: float | None,
     ) -> None:
         video_cov = _video_source_tracker.coverage
         audio_cov = _audio_source_tracker.coverage
@@ -1806,8 +1825,32 @@ async def run(
         )
         if on_health is None:
             return
+        # Validation deliberately accepts an arbitrary SourceEnvelope object so malformed producer
+        # fields can be excluded and reported.  Never place those arbitrary values directly in a set
+        # key or health payload: lists/dicts are unhashable and reprs may be unbounded.
+        def _safe_text(value: Any, fallback: str) -> str:
+            if isinstance(value, str) and value:
+                return value[:256]
+            return fallback
+
+        def _safe_int(value: Any) -> int | None:
+            return value if type(value) is int else None
+
+        def _safe_time(value: Any) -> float | None:
+            if (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(float(value))
+                and float(value) >= 0.0
+            ):
+                return float(value)
+            return None
+
+        safe_source_id = _safe_text(envelope.source_id, "<invalid-source-id>")
+        safe_modality = _safe_text(envelope.modality, "<invalid-modality>")
+        safe_epoch = _safe_int(envelope.epoch)
         for kind in inspection.events:
-            marker = (envelope.source_id, envelope.modality, envelope.epoch, kind)
+            marker = (safe_source_id, safe_modality, safe_epoch, kind)
             if kind == "source_time_unknown" and marker in _source_health_seen:
                 continue
             _source_health_seen.add(marker)
@@ -1817,13 +1860,13 @@ async def run(
                     kind,
                     ts=ts,
                     data={
-                        "version": envelope.version,
-                        "source_id": envelope.source_id,
-                        "modality": envelope.modality,
-                        "epoch": envelope.epoch,
-                        "sequence": envelope.sequence,
-                        "source_time": envelope.source_time,
-                        "observed_time": envelope.observed_time,
+                        "version": _safe_int(envelope.version),
+                        "source_id": safe_source_id,
+                        "modality": safe_modality,
+                        "epoch": safe_epoch,
+                        "sequence": _safe_int(envelope.sequence),
+                        "source_time": _safe_time(envelope.source_time),
+                        "observed_time": _safe_time(envelope.observed_time),
                         "coverage_effect": inspection.coverage.kind,
                         "missing_sequences": inspection.coverage.missing_sequences,
                     },
@@ -2010,17 +2053,31 @@ async def run(
                 # energy + onsets. Never lets a bad audio chunk kill the run — the watch survives a mic drop.
                 async for envelope in _audio_aiter(audio_source, **audio_kwargs):
                     require_source_time = audio_tb is not None and audio_tb.resolved == "media"
-                    inspection = _audio_source_tracker.inspect(
-                        envelope, require_source_time=require_source_time
-                    )
+                    if envelope.modality in ("video", "audio") and envelope.modality != "audio":
+                        # Reject a valid envelope routed to the wrong lane before it can create tracker
+                        # state or reach a modality-specific gate/window.
+                        inspection = _audio_source_tracker.exclude("source_modality_mismatch")
+                    else:
+                        inspection = _audio_source_tracker.inspect(
+                            envelope, require_source_time=require_source_time
+                        )
                     at = (
                         envelope.source_time
-                        if require_source_time and envelope.source_time is not None
+                        if require_source_time
+                        and isinstance(envelope.source_time, (int, float))
+                        and not isinstance(envelope.source_time, bool)
                         else envelope.observed_time
                     )
+                    if not (
+                        isinstance(at, (int, float))
+                        and not isinstance(at, bool)
+                        and math.isfinite(float(at))
+                    ):
+                        at = None
                     await _record_source_inspection(envelope, inspection, ts=at)
                     if not inspection.accepted:
                         continue
+                    assert at is not None  # accepted envelope validation guarantees a finite lane clock
                     chunk, energy = envelope.payload, envelope.signal
                     if inspection.resets_continuity:
                         window = getattr(core, "audio_windows", {}).get(gate_source)
@@ -2229,15 +2286,26 @@ async def run(
                 yield incident
 
         async for envelope in _aiter(source, capture_fps, **source_kwargs):
-            require_source_time = (video_tb.resolved if live_video else "media") == "media"
-            inspection = _video_source_tracker.inspect(
-                envelope, require_source_time=require_source_time
-            )
+            require_source_time = video_tb.resolved == "media"
+            if envelope.modality in ("video", "audio") and envelope.modality != "video":
+                inspection = _video_source_tracker.exclude("source_modality_mismatch")
+            else:
+                inspection = _video_source_tracker.inspect(
+                    envelope, require_source_time=require_source_time
+                )
             t = (
                 envelope.source_time
-                if require_source_time and envelope.source_time is not None
+                if require_source_time
+                and isinstance(envelope.source_time, (int, float))
+                and not isinstance(envelope.source_time, bool)
                 else envelope.observed_time
             )
+            if not (
+                isinstance(t, (int, float))
+                and not isinstance(t, bool)
+                and math.isfinite(float(t))
+            ):
+                t = None
             await _record_source_inspection(envelope, inspection, ts=t)
             # Async judge dispatch: surface everything the off-loop scheduler finished since the last
             # frame — fires route through the SAME _emit_fires machinery at their ADMISSION time `jt`
@@ -2260,6 +2328,7 @@ async def run(
                 await _drain_judge_health(core, on_health, t)
             if not inspection.accepted:
                 continue
+            assert t is not None  # accepted envelope validation guarantees a finite lane clock
             gate_frame, judge_frame = envelope.signal, envelope.payload
             if inspection.resets_continuity:
                 gate.reset()

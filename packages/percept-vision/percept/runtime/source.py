@@ -32,6 +32,7 @@ GATE_W, GATE_H = 48, 36  # tier-0 downsample (still vs moved; full res not neede
 _FPS_WINDOW_S = 2.0      # rolling window the delivered rate is measured over
 _FPS_MIN_EVAL_S = 1.0    # minimum elapsed wall time before we trust a measurement
 _FPS_TOL = 0.25          # relative gap (|measured-reported|/reported) that counts as a misreport
+_POLL = object()
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,14 @@ def _put_terminal(q: "queue.Queue", item, stop: threading.Event) -> None:
             continue
 
 
+def _get_polling(q: "queue.Queue", timeout: float = 0.5):
+    """Bound one executor-backed queue wait so cancellation cannot strand a worker thread."""
+    try:
+        return q.get(timeout=timeout)
+    except queue.Empty:
+        return _POLL
+
+
 def _open_capture(cv2, uri: str, config: SourceConfig):
     source = _normalize_uri(uri)
     if isinstance(source, str) and source.startswith("rtsp://") and config.rtsp_tcp:
@@ -97,7 +106,9 @@ def _open_capture(cv2, uri: str, config: SourceConfig):
     return cv2.VideoCapture(source)
 
 
-def _source_time(cap, cv2, uri: str) -> float | None:
+def _source_time(
+    cap, cv2, uri: str, *, previous: float | None = None, after_first: bool = False
+) -> float | None:
     """Read a decoder-provided media timestamp, or return ``None``.
 
     Device/network sources do not have a trustworthy media clock.  A reported FPS plus a local frame
@@ -116,7 +127,13 @@ def _source_time(cap, cv2, uri: str) -> float | None:
         value = float(cap.get(prop)) / 1000.0
     except Exception:  # noqa: BLE001 - optional backend property
         return None
-    return value if math.isfinite(value) and value >= 0.0 else None
+    if not math.isfinite(value) or value < 0.0:
+        return None
+    # OpenCV backends commonly report a permanent 0.0 when POS_MSEC is unsupported.  Zero is valid
+    # for the first decoded frame, but a non-advancing decoder clock is not timestamp provenance.
+    if after_first and previous is not None and value <= previous:
+        return None
+    return value
 
 
 def _video_format(bgr) -> SourceFormat:
@@ -153,6 +170,7 @@ def _capture(uri: str, config: SourceConfig, q: "queue.Queue", stop: threading.E
             step = max(1, round(src_fps / config.fps))
             i = 0
             sequence = 0
+            previous_source_time: float | None = None
             read_ts: "list[float]" = []   # wall times of recent raw reads (A-4 delivered-fps window)
             fps_reported = False           # emit the misreport at most once per open
             try:
@@ -178,7 +196,15 @@ def _capture(uri: str, config: SourceConfig, q: "queue.Queue", stop: threading.E
                                 fps_reported = True
                     if i % step == 0:
                         observed_time = now()
-                        source_time = _source_time(cap, cv2, uri)
+                        source_time = _source_time(
+                            cap,
+                            cv2,
+                            uri,
+                            previous=previous_source_time,
+                            after_first=sequence > 0,
+                        )
+                        if source_time is not None:
+                            previous_source_time = source_time
                         gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
                         g = cv2.resize(gray, (GATE_W, GATE_H))
                         gate_frame = Frame(w=GATE_W, h=GATE_H, pixels=tuple(int(p) for p in g.flatten()))
@@ -187,7 +213,7 @@ def _capture(uri: str, config: SourceConfig, q: "queue.Queue", stop: threading.E
                         _put_latest(
                             q,
                             SourceEnvelope(
-                                source_id="video",
+                                source_id=f"video:{uri}",
                                 modality="video",
                                 epoch=epoch,
                                 sequence=sequence,
@@ -250,7 +276,9 @@ async def open_source(
     thread.start()
     try:
         while True:
-            item = await asyncio.to_thread(q.get)
+            item = await asyncio.to_thread(_get_polling, q)
+            if item is _POLL:
+                continue
             if item is None:
                 break
             if isinstance(item, Exception):

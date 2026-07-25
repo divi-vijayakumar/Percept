@@ -79,8 +79,15 @@ def _is_container(path: str) -> bool:
     return low.endswith(CONTAINER_SUFFIXES)
 
 
-def _rms_energy(pcm: bytes) -> float:
-    """Short-time RMS of s16le PCM, normalized to [0, 1] (pure stdlib — no numpy)."""
+def _rms_energy(pcm: bytes, sample_format: str = "s16le") -> float:
+    """Short-time RMS normalized to [0, 1] for the PCM formats emitted by this adapter."""
+    if sample_format == "u8":
+        if not pcm:
+            return 0.0
+        mean_sq = sum((sample - 128) ** 2 for sample in pcm) / len(pcm)
+        return min(1.0, math.sqrt(mean_sq) / 128.0)
+    if sample_format != "s16le":
+        raise ValueError(f"unsupported PCM energy format: {sample_format!r}")
     n = len(pcm) - (len(pcm) % 2)
     if n <= 0:
         return 0.0
@@ -152,15 +159,20 @@ def _emit(
     sequence: int,
     timebase: str,
     dropped,
+    *,
+    source_id: str,
+    epoch: int = 0,
+    sample_format: str = "s16le",
+    discontinuity: "Literal['capture_overflow'] | None" = None,
 ) -> None:
-    frame = AudioFrame(pcm=pcm, sample_rate=sr, channels=ch, sample_format="s16le",
+    frame = AudioFrame(pcm=pcm, sample_rate=sr, channels=ch, sample_format=sample_format,
                        t_start=t0, t_end=t1)
     _put_latest(
         q,
         SourceEnvelope(
-            source_id="audio",
+            source_id=source_id,
             modality="audio",
-            epoch=0,
+            epoch=epoch,
             sequence=sequence,
             observed_time=observed_time,
             # PCM sample position is intrinsic to the captured payload.  It is not inferred from a
@@ -170,14 +182,39 @@ def _emit(
                 media_type="audio/pcm",
                 sample_rate=sr,
                 channels=ch,
-                sample_format="s16le",
+                sample_format=sample_format,
             ),
             payload=frame,
-            signal=_rms_energy(pcm),
+            signal=_rms_energy(pcm, sample_format),
+            discontinuity=discontinuity,
             legacy_timebase="observed" if timebase == "wall" else "source",
         ),
         dropped,
     )
+
+
+def _wav_pcm(pcm: bytes, sample_width: int) -> tuple[bytes, str]:
+    """Return truthful AudioFrame PCM for a stdlib ``wave`` sample width.
+
+    WAV 8-bit PCM is unsigned and is preserved as ``u8``.  Signed 24/32-bit PCM is narrowed to the
+    high 16 bits sample-by-sample; declaring those original bytes ``s16le`` would corrupt channel
+    alignment and energy.  Widths outside PCM 8/16/24/32 fail loudly.
+    """
+    if sample_width == 1:
+        return bytes(pcm), "u8"
+    if sample_width == 2:
+        return bytes(pcm), "s16le"
+    if sample_width not in (3, 4):
+        raise ValueError(f"unsupported WAV sample width: {sample_width * 8} bits")
+    shift = 8 * (sample_width - 2)
+    out = bytearray()
+    for offset in range(0, len(pcm), sample_width):
+        raw = pcm[offset:offset + sample_width]
+        if len(raw) != sample_width:
+            raise ValueError("WAV payload ended inside a PCM sample")
+        narrowed = int.from_bytes(raw, "little", signed=True) >> shift
+        out.extend(narrowed.to_bytes(2, "little", signed=True))
+    return bytes(out), "s16le"
 
 
 def _capture_wav(path: str, config: AudioSourceConfig, q: "queue.Queue",
@@ -190,15 +227,21 @@ def _capture_wav(path: str, config: AudioSourceConfig, q: "queue.Queue",
         with wave.open(path, "rb") as w:
             sr = w.getframerate()
             ch = w.getnchannels()
+            sample_width = w.getsampwidth()
             step = max(1, int(sr * config.chunk_s))
             i = 0
             while not stop.is_set():
                 pcm = w.readframes(step)
                 if not pcm:
                     break
-                samples = len(pcm) // max(1, ch * w.getsampwidth())
+                samples = len(pcm) // max(1, ch * sample_width)
                 t0, t1 = i / sr, (i + samples) / sr
-                _emit(q, now(), t1, t0, t1, pcm, sr, ch, i // step, config.timebase, dropped)
+                converted, sample_format = _wav_pcm(pcm, sample_width)
+                _emit(
+                    q, now(), t1, t0, t1, converted, sr, ch, i // step,
+                    config.timebase, dropped, source_id=f"audio:{path}",
+                    sample_format=sample_format,
+                )
                 i += samples
     except Exception as exc:  # surface to the consumer, like source.py
         _put_terminal(q, exc, stop)
@@ -254,7 +297,10 @@ def _capture_container(path: str, config: AudioSourceConfig, q: "queue.Queue",
                 break
             samples = len(pcm) // max(1, ch * 2)
             t0, t1 = i / sr, (i + samples) / sr
-            _emit(q, now(), t1, t0, t1, pcm, sr, ch, i // step, config.timebase, dropped)
+            _emit(
+                q, now(), t1, t0, t1, pcm, sr, ch, i // step, config.timebase, dropped,
+                source_id=f"audio:{path}",
+            )
             i += samples
         proc.stdout.close()
         rc = proc.wait(timeout=10)
@@ -290,19 +336,35 @@ def _capture_mic(device: "int | None", config: AudioSourceConfig, q: "queue.Queu
         return
     sr, ch = config.sample_rate, config.channels
     step = max(1, int(sr * config.chunk_s))
-    i = 0
+    epoch = 0
+    epoch_i = 0
+    sequence = 0
     try:
         with sd.RawInputStream(samplerate=sr, channels=ch, dtype="int16",
                                blocksize=step, device=device) as stream:
             while not stop.is_set():
-                data, _overflowed = stream.read(step)
+                data, overflowed = stream.read(step)
                 pcm = bytes(data)
                 if not pcm:
                     continue
+                discontinuity = None
+                if overflowed:
+                    # sounddevice reports that continuity was lost but not how many samples.  Start a
+                    # new epoch rather than claim contiguous positions or fabricate a gap count.
+                    epoch += 1
+                    epoch_i = 0
+                    sequence = 0
+                    discontinuity = "capture_overflow"
                 samples = len(pcm) // max(1, ch * 2)
-                t0, t1 = i / sr, (i + samples) / sr
-                _emit(q, now(), t1, t0, t1, pcm, sr, ch, i // step, config.timebase, dropped)
-                i += samples
+                t0, t1 = epoch_i / sr, (epoch_i + samples) / sr
+                device_id = "default" if device is None else str(device)
+                _emit(
+                    q, now(), t1, t0, t1, pcm, sr, ch, sequence,
+                    config.timebase, dropped, source_id=f"audio:mic:{device_id}",
+                    epoch=epoch, discontinuity=discontinuity,
+                )
+                epoch_i += samples
+                sequence += 1
     except Exception as exc:
         _put_terminal(q, exc, stop)
     finally:

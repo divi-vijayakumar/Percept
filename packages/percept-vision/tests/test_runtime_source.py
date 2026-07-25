@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import queue
 import sys
 import threading
@@ -9,7 +10,13 @@ import unittest
 from unittest.mock import patch
 
 from percept.runtime import SourceTracker
-from percept.runtime.source import SourceConfig, _capture, _open_capture, _put_latest
+from percept.runtime.source import (
+    SourceConfig,
+    _capture,
+    _open_capture,
+    _put_latest,
+    _put_terminal,
+)
 
 
 class _FakeCv2:
@@ -106,6 +113,33 @@ class RuntimeSourceTests(unittest.TestCase):
         self.assertEqual(dropped[0], 1)
         self.assertEqual(q.get_nowait(), "new")
 
+    def test_terminal_waits_behind_full_evidence_and_stops_on_cancel(self):
+        q = queue.Queue(maxsize=1)
+        q.put_nowait("evidence")
+        stop = threading.Event()
+        done = threading.Event()
+
+        def publish():
+            _put_terminal(q, None, stop)
+            done.set()
+
+        thread = threading.Thread(target=publish, daemon=True)
+        thread.start()
+        self.assertFalse(done.wait(0.15))
+        self.assertEqual(q.get_nowait(), "evidence")
+        self.assertTrue(done.wait(1.0))
+        self.assertIsNone(q.get_nowait())
+
+        q.put_nowait("evidence")
+        done.clear()
+        stop.clear()
+        thread = threading.Thread(target=publish, daemon=True)
+        thread.start()
+        self.assertFalse(done.wait(0.15))
+        stop.set()
+        self.assertTrue(done.wait(1.0))
+        self.assertEqual(q.get_nowait(), "evidence")
+
     def test_capture_reports_open_failure(self):
         cap = _FakeCap(opened=False)
         cv2 = _FakeCv2(cap)
@@ -128,8 +162,44 @@ class RuntimeSourceTests(unittest.TestCase):
         self.assertIsNotNone(item.observed_time)
         self.assertEqual(item[0], 0.0)
         self.assertEqual(item[2], ("image/jpeg", b"\xff\xd8jpeg\xff\xd9"))
+        self.assertEqual(item.source_id, "video:video.mp4")
         self.assertIsNone(q.get_nowait())
         self.assertTrue(cap.released)
+
+    def test_nonadvancing_opencv_position_is_not_relabelled_as_source_time(self):
+        cap = _FakeCap(
+            reads=[(True, object()), (True, object()), (False, None)],
+            fps=4.0,
+        )
+        cv2 = _FakeCv2(cap)  # this fake mirrors an unsupported POS_MSEC: permanent 0.0
+        q = queue.Queue()
+        with patch.dict(sys.modules, {"cv2": cv2}):
+            _capture("video.mp4", SourceConfig(fps=4.0), q, threading.Event())
+        first, second = q.get_nowait(), q.get_nowait()
+        self.assertEqual(first.source_time, 0.0)
+        self.assertIsNone(second.source_time)
+        self.assertIsNone(q.get_nowait())
+
+    def test_cancel_while_video_producer_stalled_does_not_strand_to_thread_get(self):
+        import percept.runtime.source as source_mod
+
+        def stalled_capture(uri, config, q, stop, dropped, *, health=None):
+            # Deliberately ignores cancellation long enough to reproduce an empty capture queue.
+            stop.wait(30.0)
+
+        async def consume():
+            async for _ in source_mod.open_source("fake.mp4"):
+                pass
+
+        async def exercise():
+            with patch.object(source_mod, "_capture", stalled_capture):
+                task = asyncio.create_task(consume())
+                await asyncio.sleep(0.1)
+                task.cancel()
+                await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+
+        with self.assertRaises(asyncio.CancelledError):
+            asyncio.run(exercise())
 
     def test_reconnect_starts_a_new_epoch_at_sequence_zero(self):
         caps = [

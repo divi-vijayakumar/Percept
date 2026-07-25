@@ -3,7 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import queue
+import sys
+import tempfile
+import threading
 import unittest
+import wave
 from unittest.mock import patch
 
 from percept import Goal, Percept
@@ -19,6 +24,7 @@ from percept.runtime import (
     SourceTracker,
     run,
 )
+from percept.runtime.audio import AudioSourceConfig, _capture_mic, _capture_wav
 from percept.runtime.envelope import legacy_video_envelope
 from percept.runtime.source import _source_time
 
@@ -223,6 +229,46 @@ class SourceTrackerTableTests(unittest.TestCase):
         self.assertFalse(result.accepted)
         self.assertEqual(result.events, ("source_corrupt_payload",))
 
+    def test_declared_jpeg_requires_a_complete_container(self):
+        envelope = SourceEnvelope(
+            source_id="video:fixture",
+            modality="video",
+            epoch=0,
+            sequence=0,
+            observed_time=1.0,
+            source_time=0.0,
+            format=SourceFormat(media_type="image/jpeg"),
+            payload=("image/jpeg", b"\xff\xd8truncated"),
+            signal=STILL,
+        )
+        self.assertEqual(
+            SourceTracker().inspect(envelope).events,
+            ("source_corrupt_payload",),
+        )
+
+    def test_version_must_be_exact_int_not_bool(self):
+        result = SourceTracker().inspect(_video(0, version=True))
+        self.assertFalse(result.accepted)
+        self.assertEqual(result.events, ("source_version_unsupported",))
+
+    def test_mutable_encoded_payload_is_owned_immutably(self):
+        mutable = bytearray(b"\xff\xd8jpeg\xff\xd9")
+        envelope = SourceEnvelope(
+            source_id="video:fixture",
+            modality="video",
+            epoch=0,
+            sequence=0,
+            observed_time=1.0,
+            source_time=0.0,
+            format=SourceFormat(media_type="image/jpeg"),
+            payload=("image/jpeg", mutable),
+            signal=STILL,
+        )
+        mutable[:] = b"corrupted later"
+        self.assertIsInstance(envelope.payload[1], bytes)
+        self.assertEqual(envelope.payload[1], b"\xff\xd8jpeg\xff\xd9")
+        self.assertTrue(SourceTracker().inspect(envelope).accepted)
+
     def test_audio_uses_the_same_format_and_corruption_contract(self):
         def audio(sequence, sample_rate, *, declared_rate=None, pcm=b"\x00\x00"):
             frame = AudioFrame(pcm=pcm, sample_rate=sample_rate, channels=1, sample_format="s16le")
@@ -384,6 +430,165 @@ class LiveRuntimeSourceCoverageTests(unittest.TestCase):
         self.assertEqual(ended.data["source_coverage"]["video"]["observed"], 1)
         self.assertEqual(ended.data["source_coverage"]["video"]["excluded"], 0)
 
+    def test_explicit_wall_time_accepts_observation_only_custom_envelope(self):
+        envelope = SourceEnvelope(
+            source_id="video:custom",
+            modality="video",
+            epoch=0,
+            sequence=0,
+            observed_time=1234.5,
+            source_time=None,
+            format=OPAQUE,
+            payload="clear",
+            signal=STILL,
+            legacy_timebase="observed",
+        )
+        events = []
+        stats = RuntimeStats()
+
+        async def collect():
+            async for _ in run(
+                self._core(),
+                source=[envelope],
+                timebase="wall",
+                judge_dispatch="inline",
+                on_health=events.append,
+                stats=stats,
+            ):
+                pass
+
+        asyncio.run(collect())
+        ended = next(event for event in events if event.kind == "runtime_ended")
+        self.assertEqual(ended.data["source_coverage"]["video"]["observed"], 1)
+        self.assertEqual(ended.data["source_coverage"]["video"]["excluded"], 0)
+        self.assertEqual(stats.last_wall_t, 1234.5)
+        self.assertIsNone(stats.last_media_t)
+
+    def test_wrong_modality_is_excluded_before_video_tracker_and_gate(self):
+        audio = SourceEnvelope(
+            source_id="audio:wrong-lane",
+            modality="audio",
+            epoch=0,
+            sequence=0,
+            observed_time=1.0,
+            source_time=0.0,
+            format=OPAQUE,
+            payload="not-video",
+            signal=0.0,
+        )
+        events = []
+        stats = RuntimeStats()
+
+        async def collect():
+            async for _ in run(
+                self._core(),
+                source=[audio],
+                on_health=events.append,
+                stats=stats,
+            ):
+                pass
+
+        asyncio.run(collect())
+        self.assertEqual(stats.frames, 0)
+        mismatch = [event for event in events if event.kind == "source_modality_mismatch"]
+        self.assertEqual(len(mismatch), 1)
+        ended = next(event for event in events if event.kind == "runtime_ended")
+        self.assertEqual(
+            ended.data["source_coverage"]["video"],
+            {
+                "observed": 0,
+                "excluded": 1,
+                "discontinuities": 0,
+                "missing_sequences": 0,
+            },
+        )
+
+    def test_wrong_modality_is_excluded_before_audio_tracker_and_window(self):
+        mismatch_seen = asyncio.Event()
+        events = []
+        stats = RuntimeStats()
+
+        async def audio_stream():
+            yield _video(
+                0,
+                source_time=None,
+                observed_time=10.0,
+                payload="clear",
+                frame=STILL,
+            )
+
+        async def video_stream():
+            await mismatch_seen.wait()
+            yield SourceEnvelope(
+                source_id="video:custom",
+                modality="video",
+                epoch=0,
+                sequence=0,
+                observed_time=11.0,
+                source_time=None,
+                format=OPAQUE,
+                payload="clear",
+                signal=STILL,
+                legacy_timebase="observed",
+            )
+
+        def health(event):
+            events.append(event)
+            if event.kind == "source_modality_mismatch":
+                mismatch_seen.set()
+
+        async def collect():
+            async for _ in run(
+                self._core(),
+                source=video_stream(),
+                audio_source=audio_stream(),
+                timebase="wall",
+                on_health=health,
+                stats=stats,
+            ):
+                pass
+
+        asyncio.run(collect())
+        ended = next(event for event in events if event.kind == "runtime_ended")
+        self.assertEqual(
+            ended.data["source_coverage"]["audio"],
+            {
+                "observed": 0,
+                "excluded": 1,
+                "discontinuities": 0,
+                "missing_sequences": 0,
+            },
+        )
+        self.assertEqual(stats.audio_chunks, 0)
+
+    def test_malformed_fields_are_sanitized_before_health_deduplication(self):
+        malformed = SourceEnvelope(
+            source_id=["unhashable"],
+            modality="video",
+            epoch=["unhashable"],
+            sequence=0,
+            observed_time=1.0,
+            source_time=None,
+            format=OPAQUE,
+            payload="clear",
+            signal=STILL,
+        )
+        events = []
+
+        async def collect():
+            async for _ in run(
+                self._core(),
+                source=[malformed],
+                timebase="wall",
+                on_health=events.append,
+            ):
+                pass
+
+        asyncio.run(collect())
+        corrupt = next(event for event in events if event.kind == "source_corrupt_payload")
+        self.assertEqual(corrupt.data["source_id"], "<invalid-source-id>")
+        self.assertIsNone(corrupt.data["epoch"])
+
     def test_discontinuity_cancels_an_inflight_pre_gap_judgment(self):
         started = asyncio.Event()
 
@@ -424,6 +629,145 @@ class LiveRuntimeSourceCoverageTests(unittest.TestCase):
         self.assertEqual(len(dropped), 1)
         self.assertEqual(dropped[0].data["slot"], "active")
         self.assertEqual(stats.incidents, 0)
+
+    def test_discontinuity_drops_result_from_cancellation_resistant_judge(self):
+        started = asyncio.Event()
+
+        class ResistantVision(FakeVision):
+            async def judge(self, condition, frame, **kwargs):
+                started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    # An integration can suppress cancellation.  The scheduler cannot terminate an
+                    # adversarial coroutine, but its invalidation token must still reject the result.
+                    return Verdict(satisfied=True, confidence=0.99, evidence="stale")
+
+        core = Percept.create(vision=ResistantVision(), discover_plugins=False)
+        core.add_goal(Goal(id="g", condition="the watched condition is visible", say="seen"))
+        stats = RuntimeStats()
+
+        async def stream():
+            yield _video(0, source_time=0.0, observed_time=100.0, frame=STILL)
+            yield _video(1, source_time=1.0, observed_time=101.0, payload="moved", frame=MOVED)
+            await started.wait()
+            yield _video(3, source_time=3.0, observed_time=103.0, frame=STILL)
+
+        async def collect():
+            return [
+                incident
+                async for incident in run(
+                    core,
+                    source=stream(),
+                    judge_dispatch="async",
+                    stats=stats,
+                )
+            ]
+
+        incidents = asyncio.run(collect())
+        self.assertEqual(incidents, [])
+        self.assertEqual(stats.judge_source_discontinuity_active_dropped, 1)
+
+
+class CaptureEnvelopeHardeningTests(unittest.TestCase):
+    def test_opencv_nonadvancing_pos_msec_becomes_unknown(self):
+        class Cv:
+            CAP_PROP_POS_MSEC = 1
+
+        class Cap:
+            def get(self, _prop):
+                return 0.0
+
+        first = _source_time(Cap(), Cv(), "clip.mp4")
+        second = _source_time(
+            Cap(), Cv(), "clip.mp4", previous=first, after_first=True
+        )
+        self.assertEqual(first, 0.0)
+        self.assertIsNone(second)
+
+    def test_wav_widths_are_preserved_or_converted_truthfully(self):
+        cases = [
+            (1, b"\x00\x80\xff", "u8", b"\x00\x80\xff"),
+            (3, b"\x00\x00\x00\xff\xff\x7f", "s16le", b"\x00\x00\xff\x7f"),
+            (
+                4,
+                b"\x00\x00\x00\x00\xff\xff\xff\x7f",
+                "s16le",
+                b"\x00\x00\xff\x7f",
+            ),
+        ]
+        for width, raw, expected_format, expected_pcm in cases:
+            with self.subTest(width=width):
+                with tempfile.NamedTemporaryFile(suffix=".wav") as f:
+                    with wave.open(f.name, "wb") as wav:
+                        wav.setnchannels(1)
+                        wav.setsampwidth(width)
+                        wav.setframerate(8_000)
+                        wav.writeframes(raw)
+                    q = queue.Queue()
+                    _capture_wav(
+                        f.name,
+                        AudioSourceConfig(chunk_s=1.0),
+                        q,
+                        threading.Event(),
+                        None,
+                    )
+                    envelope = q.get_nowait()
+                    self.assertEqual(envelope.payload.sample_format, expected_format)
+                    self.assertEqual(envelope.format.sample_format, expected_format)
+                    self.assertEqual(envelope.payload.pcm, expected_pcm)
+                    self.assertEqual(envelope.source_id, f"audio:{f.name}")
+                    self.assertTrue(SourceTracker().inspect(envelope).accepted)
+                    self.assertIsNone(q.get_nowait())
+
+    def test_microphone_overflow_starts_an_explicit_new_epoch(self):
+        stop = threading.Event()
+
+        class Stream:
+            def __init__(self, **_kwargs):
+                self.reads = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def read(self, _step):
+                self.reads += 1
+                if self.reads == 3:
+                    stop.set()
+                return (b"\x00\x00", self.reads == 2)
+
+        class SoundDevice:
+            RawInputStream = Stream
+
+        q = queue.Queue()
+        with patch.dict(sys.modules, {"sounddevice": SoundDevice()}):
+            _capture_mic(
+                7,
+                AudioSourceConfig(sample_rate=8_000, chunk_s=0.1),
+                q,
+                stop,
+                None,
+            )
+        envelopes = [q.get_nowait(), q.get_nowait(), q.get_nowait()]
+        with self.assertRaises(queue.Empty):
+            q.get_nowait()  # stop was already set, so teardown does not publish an unused sentinel
+        self.assertEqual(
+            [(item.epoch, item.sequence) for item in envelopes],
+            [(0, 0), (1, 0), (1, 1)],
+        )
+        self.assertEqual(envelopes[1].discontinuity, "capture_overflow")
+        self.assertEqual(envelopes[1].source_id, "audio:mic:7")
+        tracker = SourceTracker()
+        self.assertTrue(tracker.inspect(envelopes[0]).accepted)
+        overflow = tracker.inspect(envelopes[1])
+        self.assertTrue(overflow.accepted)
+        self.assertEqual(overflow.events, ("source_capture_overflow",))
+        self.assertEqual(overflow.coverage.kind, "observed_after_discontinuity")
+        self.assertEqual(overflow.coverage.missing_sequences, 0)
+        self.assertTrue(tracker.inspect(envelopes[2]).accepted)
 
 
 if __name__ == "__main__":
