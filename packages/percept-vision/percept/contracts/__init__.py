@@ -565,7 +565,7 @@ class GoalOrigin(Enum):
     SYSTEM_TEMPLATE = "system_template"
 
 
-@dataclass
+@dataclass(frozen=True)
 class Goal:
     """A standing watch/count/remind goal, stated as a plain-language condition."""
 

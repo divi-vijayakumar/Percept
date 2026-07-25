@@ -342,15 +342,25 @@ class AtomicApplyTests(unittest.TestCase):
                 source_profile,
             )
 
+        def replace_goal(core, **changes):
+            current = core.goals.get("p1")
+            core.goals._goals["p1"] = dataclasses.replace(current, **changes)
+
+        def mutate_state(core, key):
+            core.goals.get("p1").state[key] = {"tampered": True}
+
         attacks = {
             "missing runtime binding": lambda core: core._watch_runtime_bindings.pop("p1"),
             "mismatched runtime executable": mismatch_runtime,
             "missing runtime key": lambda core: core._watch_runtime_keys.pop("p1"),
             "missing ledger": lambda core: core._watchplan_applied_hashes.clear(),
-            "changed say": lambda core: setattr(core.goals.get("p1"), "say", "tampered"),
-            "changed condition": lambda core: setattr(
-                core.goals.get("p1"), "condition", "tampered"
-            ),
+            "changed say": lambda core: replace_goal(core, say="tampered"),
+            "changed condition": lambda core: replace_goal(core, condition="tampered"),
+            "changed schedule": lambda core: mutate_state(core, "schedule"),
+            "changed perception": lambda core: mutate_state(core, "perception"),
+            "changed behavior": lambda core: mutate_state(core, "behavior"),
+            "changed detectors": lambda core: mutate_state(core, "detectors"),
+            "changed sense": lambda core: mutate_state(core, "sense"),
         }
         for name, attack in attacks.items():
             with self.subTest(name=name):
@@ -361,26 +371,94 @@ class AtomicApplyTests(unittest.TestCase):
 
                 self.assertEqual(apply_watch_plan(core, plan).status, "rejected")
 
-    def test_cached_judged_receipt_requires_live_judge_binding(self):
+    def test_cached_judged_receipt_requires_the_exact_usable_judge_binding(self):
+        def missing(core):
+            core._judge_bindings.pop("p1")
+
+        def adapter_none(core):
+            prior = core._judge_bindings["p1"]
+            replacement = dataclasses.replace(prior, adapter=None)
+            core._judge_bindings["p1"] = replacement
+            core._judge_binding_tokens["p1"] = id(replacement)
+
+        def replaced(core):
+            prior = core._judge_bindings["p1"]
+            core._judge_bindings["p1"] = dataclasses.replace(
+                prior, adapter=SpyJudge("replacement")
+            )
+
+        for name, attack in {
+            "missing": missing,
+            "adapter none": adapter_none,
+            "replaced binding": replaced,
+        }.items():
+            with self.subTest(name=name):
+                core = _core()
+                plan = _plan("p1")
+                resolver = JudgeInjectingResolver({"p1": _spec("judge@1")})
+                with installed_registry(lambda spec, cfg: SpyJudge()):
+                    self.assertIn(
+                        apply_watch_plan(core, plan, resolver=resolver).status,
+                        ("applied", "applied_with_warnings"),
+                    )
+                attack(core)
+
+                self.assertEqual(
+                    apply_watch_plan(core, plan, resolver=resolver).status,
+                    "rejected",
+                )
+
+    def test_cached_judge_context_rechecks_bound_bytes_against_digest(self):
         core = _core()
         plan = _plan("p1")
-        resolver = JudgeInjectingResolver({"p1": _spec("judge@1")})
-        with installed_registry(lambda spec, cfg: SpyJudge()):
-            self.assertIn(
-                apply_watch_plan(core, plan, resolver=resolver).status,
-                ("applied", "applied_with_warnings"),
+        with TemporaryDirectory() as tmp:
+            artifact = Path(tmp) / "rubric.txt"
+            artifact.write_bytes(b"VERIFIED RUBRIC")
+            digest = hashlib.sha256(b"VERIFIED RUBRIC").hexdigest()
+            resolver = JudgeInjectingResolver({
+                "p1": _spec(
+                    "judge@1",
+                    context_ref="rubric.txt",
+                    context_sha256=digest,
+                )
+            })
+            deployment = DeploymentJudges(available_judges={}, context_store_root=tmp)
+            with installed_registry(lambda spec, cfg: SpyJudge()):
+                self.assertIn(
+                    apply_watch_plan(
+                        core,
+                        plan,
+                        resolver=resolver,
+                        deployment_judges=deployment,
+                    ).status,
+                    ("applied", "applied_with_warnings"),
+                )
+            prior = core._judge_bindings["p1"]
+            bad_context = dataclasses.replace(
+                prior.static_context,
+                content_bytes=b"TAMPERED RUBRIC",
             )
-        core._judge_bindings.pop("p1")
+            replacement = dataclasses.replace(prior, static_context=bad_context)
+            core._judge_bindings["p1"] = replacement
+            core._judge_binding_tokens["p1"] = id(replacement)
 
-        self.assertEqual(
-            apply_watch_plan(core, plan, resolver=resolver).status,
-            "rejected",
-        )
+            self.assertEqual(
+                apply_watch_plan(
+                    core,
+                    plan,
+                    resolver=resolver,
+                    deployment_judges=deployment,
+                ).status,
+                "rejected",
+            )
 
     def test_compiled_watch_snapshot_refuses_before_producing_an_artifact(self):
         core = _core()
         self.assertEqual(apply_watch_plan(core, _plan("p1")).status, "applied")
-        from percept.agent import CompiledWatchSnapshotUnsupportedError
+        import percept
+        from percept import CompiledWatchSnapshotUnsupportedError
+
+        self.assertIn("CompiledWatchSnapshotUnsupportedError", percept.__all__)
 
         class RecordingPersistence:
             def __init__(self):
@@ -398,6 +476,27 @@ class AtomicApplyTests(unittest.TestCase):
         self.assertEqual(persistence.saved, [])
         self.assertIn("p1", core._watch_runtime_bindings)
         self.assertIsNotNone(core.goals.get("p1"))
+
+    def test_direct_registry_restore_releases_prior_compiled_owner_state(self):
+        core = _core()
+        plan = _plan("p1")
+        resolver = JudgeInjectingResolver({"p1": _spec("judge@1")})
+        with installed_registry(lambda spec, cfg: SpyJudge()):
+            self.assertIn(
+                apply_watch_plan(core, plan, resolver=resolver).status,
+                ("applied", "applied_with_warnings"),
+            )
+        registry_snapshot = core.goals.snapshot()
+
+        core.goals.restore(registry_snapshot)
+
+        self.assertIsNotNone(core.goals.get("p1"))
+        self.assertEqual(core._watch_runtime_bindings, {})
+        self.assertEqual(core._watch_runtime_keys, {})
+        self.assertEqual(core._judge_bindings, {})
+        self.assertEqual(core._judge_binding_tokens, {})
+        self.assertEqual(core._judge_requesting_goal_ids, set())
+        self.assertEqual(core._watchplan_applied_hashes, {})
 
     def test_plain_goal_snapshot_restore_remains_supported(self):
         core = _core()

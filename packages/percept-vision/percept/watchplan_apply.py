@@ -40,6 +40,7 @@ use a new id (or explicitly end the old goal first).
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, replace
 from typing import Any, Iterable
 
@@ -51,6 +52,7 @@ from .behavior import (
     coerce_authored_sense,
     program_of,
 )
+from .contracts import GoalOrigin
 from .contracts.watchplan import FieldDiagnostic, ReceiptStatus, WatchPlan, WatchReceipt
 from .deployment_judges import load_deployment_judges
 from .judge_context import JudgeContextError, JudgeContextStore
@@ -86,6 +88,9 @@ _LEDGER_ATTR = "_watchplan_applied_hashes"
 #: so arming a ``claim_slot`` plan on it earns a (non-rejecting) receipt warning.
 _CLAIM_PARSING_MARKER = "PARSES_CLAIM_CHANNEL"
 _FUSED_AUDIO_INPUT_MARKER = "SUPPORTS_FUSED_AUDIO_INPUT"
+_RUNTIME_MUTABLE_GOAL_STATE_KEYS = frozenset(
+    {"count", "subject", "deadline_at", "deadline_at_epoch"}
+)
 
 
 def _claim_backend_warning(
@@ -246,15 +251,48 @@ def _cached_runtime_intact(
         for name in static_fields
     ):
         return False
+    if getattr(current_goal, "origin", None) is not GoalOrigin.STRUCTURED_TRUSTED:
+        return False
+    current_state = {
+        key: value
+        for key, value in current_goal.state.items()
+        if key not in _RUNTIME_MUTABLE_GOAL_STATE_KEYS
+    }
+    expected_state = {
+        key: value
+        for key, value in expected_goal.state.items()
+        if key not in _RUNTIME_MUTABLE_GOAL_STATE_KEYS
+    }
+    if current_state != expected_state:
+        return False
     judge_bindings = getattr(percept, "_judge_bindings", {})
     judge_requesting = getattr(percept, "_judge_requesting_goal_ids", set())
     bound_judge = judge_bindings.get(goal_id)
     if resolved_judge is None:
         return bound_judge is None and goal_id not in judge_requesting
+    if (
+        goal_id not in judge_requesting
+        or bound_judge is None
+        or getattr(bound_judge, "spec", None) != resolved_judge
+        or getattr(bound_judge, "adapter", None) is None
+        or getattr(percept, "_judge_binding_tokens", {}).get(goal_id) != id(bound_judge)
+    ):
+        return False
+    static_context = getattr(bound_judge, "static_context", None)
+    if resolved_judge.context_ref is None:
+        return resolved_judge.context_sha256 is None and static_context is None
+    if static_context is None or resolved_judge.context_sha256 is None:
+        return False
+    expected_sha = resolved_judge.context_sha256.strip().lower().removeprefix("sha256:")
+    context_sha = (
+        str(getattr(static_context, "sha256", "")).strip().lower().removeprefix("sha256:")
+    )
+    content = getattr(static_context, "content_bytes", None)
     return (
-        goal_id in judge_requesting
-        and bound_judge is not None
-        and getattr(bound_judge, "spec", None) == resolved_judge
+        getattr(static_context, "ref", None) == resolved_judge.context_ref
+        and context_sha == expected_sha
+        and isinstance(content, bytes)
+        and hashlib.sha256(content).hexdigest() == expected_sha
     )
 
 
@@ -847,6 +885,7 @@ def apply_watch_plan(
         watch_bindings_before = dict(getattr(percept, "_watch_runtime_bindings", {}))
         watch_keys_before = dict(getattr(percept, "_watch_runtime_keys", {}))
         judge_bindings_before = dict(getattr(percept, "_judge_bindings", {}))
+        judge_tokens_before = dict(getattr(percept, "_judge_binding_tokens", {}))
         judge_requesting_before = set(getattr(percept, "_judge_requesting_goal_ids", set()))
         ledger_existed = hasattr(percept, _LEDGER_ATTR)
         ledger_before = dict(getattr(percept, _LEDGER_ATTR, {}) or {})
@@ -876,6 +915,8 @@ def apply_watch_plan(
             percept._watch_runtime_keys.update(watch_keys_before)
             percept._judge_bindings.clear()
             percept._judge_bindings.update(judge_bindings_before)
+            percept._judge_binding_tokens.clear()
+            percept._judge_binding_tokens.update(judge_tokens_before)
             percept._judge_requesting_goal_ids.clear()
             percept._judge_requesting_goal_ids.update(judge_requesting_before)
             if ledger_existed:

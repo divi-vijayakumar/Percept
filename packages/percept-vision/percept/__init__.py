@@ -125,14 +125,12 @@ from .routing import (
 # Single-sourced from pyproject ``[project].version`` — never a hand-synced literal. Installed: read
 # the dist metadata. Bare source checkout (no metadata): read pyproject directly (it isn't in the
 # wheel, but a checkout always has it), so a version bump can't leave a stale fallback here.
-from importlib.metadata import PackageNotFoundError as _PkgNotFound  # noqa: E402
-from importlib.metadata import version as _pkg_version  # noqa: E402
-
-
 def _resolve_version() -> str:
+    from importlib.metadata import PackageNotFoundError, version
+
     try:
-        return _pkg_version("percept-vision")
-    except _PkgNotFound:  # pragma: no cover - dev-only path (uninstalled source tree)
+        return version("percept-vision")
+    except PackageNotFoundError:  # pragma: no cover - dev-only path (uninstalled source tree)
         import pathlib
         import re
 
@@ -152,7 +150,7 @@ del _resolve_version
 from ._build import BuildInfo, build_info  # noqa: E402
 
 # Imported after __version__ so agent.health() can read it lazily without a cycle.
-from .agent import FireEvent, Percept  # noqa: E402
+from .agent import CompiledWatchSnapshotUnsupportedError, FireEvent, Percept  # noqa: E402
 from .watch import WATCH_VERSION, watch  # noqa: E402
 
 # String sugar for watch(): `watch(stream, "the milk is boiling over")`. Exported so callers can
@@ -307,6 +305,7 @@ __all__ = [
     "Entity",
     "GoalRegistry",
     "GoalOp",
+    "CompiledWatchSnapshotUnsupportedError",
     # identity + episodes (Phase 4 — re-id across gaps; the cup problem)
     "ContinuityIdentity",
     "AppearanceIdentity",

@@ -527,6 +527,7 @@ class Percept:
     # bindings existed.
     _judge_bindings: dict = field(default_factory=dict)  # goal_id -> BoundJudge-shaped binding
     _judge_requesting_goal_ids: set = field(default_factory=set)  # goal ids that MUST have a binding
+    _judge_binding_tokens: dict = field(default_factory=dict)  # goal_id -> identity of applied binding
     # RuntimeCompiler output bound per programmable Watch.  Values are ``(CompiledWatch,
     # SourceProfile | None)`` tuples registered atomically with the goal by ``apply_watch_plan``.
     # Keeping the already-compiled object keyed by goal lets a shared core execute different
@@ -867,6 +868,7 @@ class Percept:
         """
         self._judge_requesting_goal_ids.add(goal_id)
         self._judge_bindings[goal_id] = bound
+        self._judge_binding_tokens[goal_id] = id(bound)
 
     def _release_judge_binding(self, goal_id: str) -> None:
         """Drop ``goal_id``'s judge binding and its judge-requesting mark (goal removal / re-arm).
@@ -875,6 +877,7 @@ class Percept:
         byte-for-byte unchanged.
         """
         self._judge_bindings.pop(goal_id, None)
+        self._judge_binding_tokens.pop(goal_id, None)
         self._judge_requesting_goal_ids.discard(goal_id)
 
     def _register_watch_runtime(
@@ -3102,6 +3105,7 @@ class Percept:
         self._watch_runtime_bindings.clear()
         self._watch_runtime_keys.clear()
         self._judge_bindings.clear()
+        self._judge_binding_tokens.clear()
         self._judge_requesting_goal_ids.clear()
         ledger = getattr(self, "_watchplan_applied_hashes", None)
         if isinstance(ledger, dict):

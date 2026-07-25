@@ -1,6 +1,7 @@
 """L1: the goal registry — apply ops, lifecycle, active filtering."""
 
 import unittest
+from dataclasses import FrozenInstanceError
 
 from percept.adapters import Goal
 from percept.goals import GoalOp, GoalRegistry
@@ -31,9 +32,20 @@ class TestGoalRegistry(unittest.TestCase):
         self.assertEqual(self.reg.status("g1"), "cancelled")
 
     def test_update_mutates_fields(self):
-        self.reg.create(g())
+        original = self.reg.create(g())
+        state = original.state
         self.reg.apply([GoalOp(op="update", goal_id="g1", fields={"say": "new line"})])
         self.assertEqual(self.reg.get("g1").say, "new line")
+        self.assertIs(self.reg.get("g1").state, state)
+        self.assertIsNot(self.reg.get("g1"), original)
+
+    def test_top_level_goal_fields_cannot_bypass_registry_revision(self):
+        goal = self.reg.create(g())
+
+        with self.assertRaises(FrozenInstanceError):
+            goal.source = "other-camera"
+
+        self.assertEqual(self.reg.get("g1").source, "camera")
 
     def test_direct_create_rejects_duplicate_id_even_after_cancel(self):
         self.reg.create(g())

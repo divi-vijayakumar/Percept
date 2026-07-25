@@ -6,7 +6,7 @@ mutable registry and the op vocabulary the conductor emits.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Callable, Literal
 
 from .adapters import Goal, GoalOrigin
@@ -136,7 +136,10 @@ class GoalRegistry:
             elif op.op == "update":
                 goal = self._goals[op.goal_id]  # type: ignore[index]
                 if "say" in op.fields:
-                    goal.say = op.fields["say"]
+                    # Goal's top-level executable fields are frozen. Replace only the proven-safe
+                    # presentation field; dataclasses.replace keeps the same mutable state object, so
+                    # runtime-owned count/deadline cognition is preserved.
+                    self._goals[op.goal_id] = replace(goal, say=op.fields["say"])  # type: ignore[index]
                 self._bump()
             elif op.op == "complete":
                 self._set_status(op.goal_id, "complete")
@@ -182,8 +185,8 @@ class GoalRegistry:
         return out
 
     def restore(self, items: list[dict]) -> None:
-        self._goals = {}
-        self._status = {}
+        restored_goals: dict[str, Goal] = {}
+        restored_status: dict[str, GoalStatus] = {}
         for item in items:
             gd = dict(item["goal"])
             # Keep a PERSISTED origin (that is the point of durability — trust survives restart); a goal
@@ -200,8 +203,24 @@ class GoalRegistry:
                 except ValueError:
                     origin = GoalOrigin.RESTORED
             goal = Goal(**gd, origin=origin)
-            self._goals[goal.id] = goal
-            self._status[goal.id] = item.get("status", "active")
+            if goal.id in restored_goals:
+                raise ValueError(f"duplicate goal id {goal.id!r} in snapshot")
+            status = item.get("status", "active")
+            if status not in ("active", "complete", "cancelled"):
+                raise ValueError(f"invalid goal status {status!r} for {goal.id!r}")
+            restored_goals[goal.id] = goal
+            restored_status[goal.id] = status
+
+        # Parse and validate the entire snapshot before touching either registry or owner state. Then
+        # notify the singular no-fail owner hook that every prior id is leaving; Percept uses this to
+        # release compiled runtime/judge bindings and apply receipts even when callers invoke
+        # ``core.goals.restore`` directly.
+        if self._owner_mutation_hook is not None and self._goals:
+            self._owner_mutation_hook(
+                tuple(GoalOp(op="cancel", goal_id=goal_id) for goal_id in self._goals)
+            )
+        self._goals = restored_goals
+        self._status = restored_status
         # A restore IS a goal-set mutation — fire subscribers so a grounding snapshot bound via
         # on_goal_change is invalidated on rehydrate, exactly as it is on arm/disarm.
         self._bump()
