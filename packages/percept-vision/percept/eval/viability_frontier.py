@@ -6,13 +6,16 @@ windows. It does not choose a universal threshold: every archetype's policy and 
 must be preregistered in the input manifest.
 
 The evaluator reports rates and their exact integer denominators. It does not estimate monetary
-cost. Synthetic evidence may validate these mechanics, but can never qualify a launch.
+cost. This module is diagnostic-only: release qualification fails closed until a separately
+verified, provenance-preserving measured-evidence adapter is implemented.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -21,8 +24,10 @@ from typing import Any, Mapping, Sequence
 __all__ = [
     "ARMS",
     "EVIDENCE_KINDS",
+    "REQUIRED_MEASURED_ADAPTER",
     "ViabilityInputError",
     "Ratio",
+    "Precision",
     "CallReduction",
     "ArchetypePolicy",
     "ArmMetrics",
@@ -41,6 +46,8 @@ ARMS = ("baseline", "adaptive")
 EVIDENCE_KINDS = ("measured", "synthetic")
 EVENT_OUTCOMES = ("fire", "ask", "silent", "missing")
 SCOPE = "programmable Watches over live multimodal streams"
+REQUIRED_MEASURED_ADAPTER = "percept.eval.viability_frontier.measured_evidence/v1"
+_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 _MANIFEST_KEYS = {
     "schema_version",
@@ -51,9 +58,13 @@ _MANIFEST_KEYS = {
     "archetypes",
 }
 _ARCHETYPE_KEYS = {"id", "cases", "operating_points", "policy"}
+_CASE_KEYS = {"id", "candidate_windows_total", "events"}
+_MANIFEST_EVENT_KEYS = {"id", "candidate_windows"}
+_OPERATING_POINT_KEYS = {"id", "configuration", "configuration_sha256"}
 _POLICY_KEYS = {
     "min_candidate_recall",
     "min_event_recall",
+    "min_precision",
     "min_call_reduction",
     "max_event_abstention_rate",
     "max_missing_rate",
@@ -62,6 +73,7 @@ _ROW_KEYS = {
     "case_id",
     "archetype",
     "operating_point",
+    "configuration_sha256",
     "arm",
     "evidence_kind",
     "candidate_windows_total",
@@ -69,6 +81,7 @@ _ROW_KEYS = {
     "judge_calls",
     "decisions",
     "event_windows",
+    "fire_event_ids",
 }
 _DECISION_KEYS = {"fire", "ask", "silent", "missing"}
 _EVENT_KEYS = {"id", "candidate_windows", "admitted_candidates", "outcome"}
@@ -136,6 +149,11 @@ def _unique_ids(values: Any, context: str, *, minimum: int = 1) -> tuple[str, ..
     return result
 
 
+def _canonical_sha256(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return f"sha256:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
+
+
 @dataclass(frozen=True)
 class Ratio:
     """An exact numerator and denominator, with no hidden or inferred denominator."""
@@ -159,6 +177,41 @@ class Ratio:
             "numerator": self.numerator,
             "denominator": self.denominator,
             "value": self.value,
+        }
+
+
+@dataclass(frozen=True)
+class Precision:
+    """Exact true-positive FIRE decisions over all FIRE decisions.
+
+    With no FIRE decisions, precision is undefined. ``value`` is conservatively zero for policy
+    evaluation, while ``defined`` and the exact ``0/0`` denominator remain visible in reports.
+    """
+
+    numerator: int
+    denominator: int
+
+    def __post_init__(self) -> None:
+        if self.numerator < 0 or self.denominator < 0 or self.numerator > self.denominator:
+            raise ViabilityInputError(
+                f"invalid precision {self.numerator}/{self.denominator}; require "
+                "0 <= numerator <= denominator"
+            )
+
+    @property
+    def defined(self) -> bool:
+        return self.denominator > 0
+
+    @property
+    def value(self) -> float:
+        return self.numerator / self.denominator if self.defined else 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "numerator": self.numerator,
+            "denominator": self.denominator,
+            "value": self.value if self.defined else None,
+            "defined": self.defined,
         }
 
 
@@ -195,6 +248,7 @@ class ArchetypePolicy:
 
     min_candidate_recall: float
     min_event_recall: float
+    min_precision: float
     min_call_reduction: float
     max_event_abstention_rate: float
     max_missing_rate: float
@@ -209,6 +263,7 @@ class ArchetypePolicy:
         return {
             "min_candidate_recall": self.min_candidate_recall,
             "min_event_recall": self.min_event_recall,
+            "min_precision": self.min_precision,
             "min_call_reduction": self.min_call_reduction,
             "max_event_abstention_rate": self.max_event_abstention_rate,
             "max_missing_rate": self.max_missing_rate,
@@ -250,6 +305,7 @@ class _ArmRow:
     case_id: str
     archetype: str
     operating_point: str
+    configuration_sha256: str
     arm: str
     evidence_kind: str
     candidate_windows_total: int
@@ -257,6 +313,7 @@ class _ArmRow:
     judge_calls: int
     decisions: dict[str, int]
     event_windows: tuple[_EventWindow, ...]
+    fire_event_ids: tuple[str, ...]
 
     @classmethod
     def from_mapping(cls, value: Any, index: int) -> "_ArmRow":
@@ -266,6 +323,14 @@ class _ArmRow:
         case_id = _identifier(doc["case_id"], f"{context}.case_id")
         archetype = _identifier(doc["archetype"], f"{context}.archetype")
         operating_point = _identifier(doc["operating_point"], f"{context}.operating_point")
+        configuration_sha256 = _identifier(
+            doc["configuration_sha256"],
+            f"{context}.configuration_sha256",
+        )
+        _require(
+            bool(_SHA256_RE.fullmatch(configuration_sha256)),
+            f"{context}.configuration_sha256 must be sha256:<64 lowercase hex>",
+        )
         arm = _identifier(doc["arm"], f"{context}.arm")
         _require(arm in ARMS, f"{context}.arm must be one of {ARMS!r}")
         evidence_kind = _identifier(doc["evidence_kind"], f"{context}.evidence_kind").lower()
@@ -328,10 +393,37 @@ class _ArmRow:
             sum(event.outcome == "ask" for event in events) <= decisions["ask"],
             f"{context}: event-window ASK outcomes exceed ASK decisions",
         )
+        fire_event_ids = _unique_ids(
+            doc["fire_event_ids"],
+            f"{context}.fire_event_ids",
+            minimum=0,
+        )
+        _require(
+            len(fire_event_ids) == decisions["fire"],
+            f"{context}: fire_event_ids count does not match FIRE decisions",
+        )
+        event_outcomes = {event.id: event.outcome for event in events}
+        known_fires = {event_id for event_id in fire_event_ids if event_id in event_outcomes}
+        expected_fires = {
+            event.id
+            for event in events
+            if event.outcome == "fire"
+        }
+        _require(
+            known_fires == expected_fires,
+            f"{context}: FIRE decisions must be tied exactly to event-window ids with outcome 'fire'",
+        )
+        false_positive_fires = len(fire_event_ids) - len(known_fires)
+        non_event_candidates = total - sum(event.candidate_windows for event in events)
+        _require(
+            false_positive_fires <= non_event_candidates,
+            f"{context}: false-positive FIRE decisions exceed non-event candidate windows",
+        )
         return cls(
             case_id,
             archetype,
             operating_point,
+            configuration_sha256,
             arm,
             evidence_kind,
             total,
@@ -339,6 +431,7 @@ class _ArmRow:
             calls,
             decisions,
             events,
+            fire_event_ids,
         )
 
     def match_signature(self) -> tuple[int, tuple[tuple[str, int], ...]]:
@@ -357,6 +450,7 @@ class _ArmRow:
                 (event.id, event.admitted_candidates, event.outcome)
                 for event in self.event_windows
             ),
+            self.fire_event_ids,
         )
 
 
@@ -367,6 +461,8 @@ class ArmMetrics:
     case_count: int
     candidate_recall: Ratio
     event_recall: Ratio
+    precision: Precision
+    false_positive_rate: Ratio
     admitted_rate: Ratio
     judge_call_rate: Ratio
     decision_abstention_rate: Ratio
@@ -384,6 +480,8 @@ class ArmMetrics:
             "case_count": self.case_count,
             "candidate_recall": self.candidate_recall.to_dict(),
             "event_recall": self.event_recall.to_dict(),
+            "precision": self.precision.to_dict(),
+            "false_positive_rate": self.false_positive_rate.to_dict(),
             "admitted_rate": self.admitted_rate.to_dict(),
             "judge_call_rate": self.judge_call_rate.to_dict(),
             "decision_abstention_rate": self.decision_abstention_rate.to_dict(),
@@ -396,6 +494,8 @@ class ArmMetrics:
                 "judge_calls": self.judge_calls,
                 "decisions": dict(self.decisions),
                 "event_windows": self.event_windows,
+                "true_positive_fires": self.precision.numerator,
+                "false_positive_fires": self.precision.denominator - self.precision.numerator,
             },
         }
 
@@ -413,6 +513,14 @@ def _aggregate(rows: Sequence[_ArmRow]) -> ArmMetrics:
     event_candidates = sum(event.candidate_windows for event in event_windows)
     admitted_event_candidates = sum(event.admitted_candidates for event in event_windows)
     event_fires = sum(event.outcome == "fire" for event in event_windows)
+    fire_decisions = [event_id for row in rows for event_id in row.fire_event_ids]
+    true_positive_fires = sum(
+        event_id in {event.id for event in row.event_windows}
+        for row in rows
+        for event_id in row.fire_event_ids
+    )
+    false_positive_fires = len(fire_decisions) - true_positive_fires
+    non_event_candidates = candidate_windows - event_candidates
     event_abstentions = sum(event.outcome in ("ask", "silent") for event in event_windows)
     event_missing = sum(event.outcome == "missing" for event in event_windows)
     missing_units = sum(row.candidate_windows_admitted - row.judge_calls for row in rows)
@@ -426,6 +534,8 @@ def _aggregate(rows: Sequence[_ArmRow]) -> ArmMetrics:
         case_count=len(rows),
         candidate_recall=Ratio(admitted_event_candidates, event_candidates),
         event_recall=Ratio(event_fires, len(event_windows)),
+        precision=Precision(true_positive_fires, len(fire_decisions)),
+        false_positive_rate=Ratio(false_positive_fires, non_event_candidates),
         admitted_rate=Ratio(admitted, candidate_windows),
         judge_call_rate=Ratio(calls, candidate_windows),
         decision_abstention_rate=Ratio(
@@ -446,22 +556,28 @@ def _aggregate(rows: Sequence[_ArmRow]) -> ArmMetrics:
 @dataclass(frozen=True)
 class OperatingPointResult:
     id: str
+    configuration_sha256: str
     baseline: ArmMetrics
     adaptive: ArmMetrics
     call_reduction: CallReduction
+    meets_policy_thresholds: bool
     clears_policy: bool
     policy_failures: tuple[str, ...]
     pareto_frontier: bool = False
+    policy_feasible_pareto: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
+            "configuration_sha256": self.configuration_sha256,
             "baseline": self.baseline.to_dict(),
             "adaptive": self.adaptive.to_dict(),
             "call_reduction": self.call_reduction.to_dict(),
+            "meets_policy_thresholds": self.meets_policy_thresholds,
             "clears_policy": self.clears_policy,
             "policy_failures": list(self.policy_failures),
             "pareto_frontier": self.pareto_frontier,
+            "policy_feasible_pareto": self.policy_feasible_pareto,
         }
 
 
@@ -477,6 +593,12 @@ class ArchetypeResult:
     def frontier(self) -> tuple[OperatingPointResult, ...]:
         return tuple(point for point in self.operating_points if point.pareto_frontier)
 
+    @property
+    def policy_feasible_frontier(self) -> tuple[OperatingPointResult, ...]:
+        return tuple(
+            point for point in self.operating_points if point.policy_feasible_pareto
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
@@ -485,6 +607,9 @@ class ArchetypeResult:
             "policy": self.policy.to_dict(),
             "operating_points": [point.to_dict() for point in self.operating_points],
             "frontier_operating_points": [point.id for point in self.frontier],
+            "policy_feasible_frontier_operating_points": [
+                point.id for point in self.policy_feasible_frontier
+            ],
             "clears_policy": self.clears_policy,
         }
 
@@ -498,6 +623,8 @@ class ViabilityFrontierReport:
     archetypes: tuple[ArchetypeResult, ...]
     launch_qualified: bool
     qualification_reason: str
+    qualification_blockers: tuple[str, ...]
+    required_measured_adapter: str
 
     @property
     def policy_cleared(self) -> bool:
@@ -513,11 +640,11 @@ class ViabilityFrontierReport:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema": "percept.eval.viability_frontier/1",
+            "schema": "percept.eval.viability_frontier/2",
             "track": self.track,
             "scope": self.scope,
-            "evidence_kind": self.evidence_kind,
-            "preregistered": self.preregistered,
+            "declared_evidence_kind": self.evidence_kind,
+            "declared_preregistered": self.preregistered,
             "archetype_count": len(self.archetypes),
             "case_count": sum(len(archetype.case_ids) for archetype in self.archetypes),
             "operating_point_count": sum(
@@ -526,6 +653,8 @@ class ViabilityFrontierReport:
             "policy_cleared": self.policy_cleared,
             "launch_qualified": self.launch_qualified,
             "qualification_reason": self.qualification_reason,
+            "qualification_blockers": list(self.qualification_blockers),
+            "required_measured_adapter": self.required_measured_adapter,
             "archetypes": [archetype.to_dict() for archetype in self.archetypes],
         }
 
@@ -534,10 +663,26 @@ class ViabilityFrontierReport:
 
 
 @dataclass(frozen=True)
+class _CaseSpec:
+    id: str
+    candidate_windows_total: int
+    events: tuple[tuple[str, int], ...]
+
+    def match_signature(self) -> tuple[int, tuple[tuple[str, int], ...]]:
+        return (self.candidate_windows_total, self.events)
+
+
+@dataclass(frozen=True)
+class _OperatingPointSpec:
+    id: str
+    configuration_sha256: str
+
+
+@dataclass(frozen=True)
 class _ArchetypeSpec:
     id: str
-    cases: tuple[str, ...]
-    operating_points: tuple[str, ...]
+    cases: tuple[_CaseSpec, ...]
+    operating_points: tuple[_OperatingPointSpec, ...]
     policy: ArchetypePolicy
 
 
@@ -553,7 +698,7 @@ class _Manifest:
 def _validate_manifest(value: Any) -> _Manifest:
     doc = _object(value, "manifest")
     _exact_keys(doc, _MANIFEST_KEYS, "manifest")
-    _require(doc["schema_version"] == "1", "manifest.schema_version must be '1'")
+    _require(doc["schema_version"] == "2", "manifest.schema_version must be '2'")
     _require(doc["track"] == "viability_frontier", "manifest.track must be 'viability_frontier'")
     _require(doc["scope"] == SCOPE, f"manifest.scope must be {SCOPE!r}")
     evidence_kind = _identifier(doc["evidence_kind"], "manifest.evidence_kind").lower()
@@ -562,16 +707,20 @@ def _validate_manifest(value: Any) -> _Manifest:
         "manifest.evidence_kind must be 'measured' or 'synthetic'; "
         "modeled and stub data are refused",
     )
-    _require(doc["preregistered"] is True, "manifest.preregistered must be true")
+    _require(
+        isinstance(doc["preregistered"], bool),
+        "manifest.preregistered must be a caller-declared boolean",
+    )
     raw_archetypes = doc["archetypes"]
     _require(
-        isinstance(raw_archetypes, list) and raw_archetypes,
-        "manifest.archetypes must be non-empty",
+        isinstance(raw_archetypes, list) and len(raw_archetypes) >= 2,
+        "manifest.archetypes must contain at least 2 archetypes",
     )
 
     archetypes: list[_ArchetypeSpec] = []
     archetype_ids: set[str] = set()
     global_cases: set[str] = set()
+    global_events: set[str] = set()
     for index, raw in enumerate(raw_archetypes):
         context = f"manifest.archetypes[{index}]"
         archetype = _object(raw, context)
@@ -579,22 +728,96 @@ def _validate_manifest(value: Any) -> _Manifest:
         archetype_id = _identifier(archetype["id"], f"{context}.id")
         _require(archetype_id not in archetype_ids, f"duplicate archetype id {archetype_id!r}")
         archetype_ids.add(archetype_id)
-        cases = _unique_ids(archetype["cases"], f"{context}.cases")
-        overlap = global_cases.intersection(cases)
-        _require(not overlap, f"case ids must be globally unique; duplicated {sorted(overlap)!r}")
-        global_cases.update(cases)
-        operating_points = _unique_ids(
-            archetype["operating_points"],
-            f"{context}.operating_points",
-            minimum=2,
+        raw_cases = archetype["cases"]
+        _require(
+            isinstance(raw_cases, list) and len(raw_cases) >= 2,
+            f"{context}.cases must contain at least 2 manifest-anchored cases",
         )
+        cases: list[_CaseSpec] = []
+        for case_index, raw_case in enumerate(raw_cases):
+            case_context = f"{context}.cases[{case_index}]"
+            case = _object(raw_case, case_context)
+            _exact_keys(case, _CASE_KEYS, case_context)
+            case_id = _identifier(case["id"], f"{case_context}.id")
+            _require(case_id not in global_cases, f"duplicate case id {case_id!r}")
+            global_cases.add(case_id)
+            total = _count(
+                case["candidate_windows_total"],
+                f"{case_context}.candidate_windows_total",
+                positive=True,
+            )
+            raw_events = case["events"]
+            _require(
+                isinstance(raw_events, list) and len(raw_events) >= 2,
+                f"{case_context}.events must contain at least 2 manifest-anchored events",
+            )
+            events: list[tuple[str, int]] = []
+            for event_index, raw_event in enumerate(raw_events):
+                event_context = f"{case_context}.events[{event_index}]"
+                event = _object(raw_event, event_context)
+                _exact_keys(event, _MANIFEST_EVENT_KEYS, event_context)
+                event_id = _identifier(event["id"], f"{event_context}.id")
+                _require(event_id not in global_events, f"duplicate event id {event_id!r}")
+                global_events.add(event_id)
+                event_candidates = _count(
+                    event["candidate_windows"],
+                    f"{event_context}.candidate_windows",
+                    positive=True,
+                )
+                events.append((event_id, event_candidates))
+            anchored_event_candidates = sum(count for _, count in events)
+            _require(
+                anchored_event_candidates < total,
+                f"{case_context}: event candidate windows must be less than the exact case "
+                "candidate denominator so false-positive rate has a denominator",
+            )
+            cases.append(_CaseSpec(case_id, total, tuple(events)))
+
+        raw_points = archetype["operating_points"]
+        _require(
+            isinstance(raw_points, list) and len(raw_points) >= 2,
+            f"{context}.operating_points must contain at least 2 configured points",
+        )
+        operating_points: list[_OperatingPointSpec] = []
+        point_ids: set[str] = set()
+        point_fingerprints: set[str] = set()
+        for point_index, raw_point in enumerate(raw_points):
+            point_context = f"{context}.operating_points[{point_index}]"
+            point = _object(raw_point, point_context)
+            _exact_keys(point, _OPERATING_POINT_KEYS, point_context)
+            point_id = _identifier(point["id"], f"{point_context}.id")
+            _require(point_id not in point_ids, f"{context}.operating_points contains duplicate ids")
+            point_ids.add(point_id)
+            configuration = _object(point["configuration"], f"{point_context}.configuration")
+            _require(bool(configuration), f"{point_context}.configuration must be non-empty")
+            fingerprint = _identifier(
+                point["configuration_sha256"],
+                f"{point_context}.configuration_sha256",
+            )
+            _require(
+                bool(_SHA256_RE.fullmatch(fingerprint)),
+                f"{point_context}.configuration_sha256 must be sha256:<64 lowercase hex>",
+            )
+            computed = _canonical_sha256(configuration)
+            _require(
+                fingerprint == computed,
+                f"{point_context}.configuration_sha256 does not match canonical configuration",
+            )
+            _require(
+                fingerprint not in point_fingerprints,
+                f"{context}.operating_points must have distinct configuration fingerprints",
+            )
+            point_fingerprints.add(fingerprint)
+            operating_points.append(_OperatingPointSpec(point_id, fingerprint))
         policy = ArchetypePolicy.from_mapping(archetype["policy"], f"{context}.policy")
-        archetypes.append(_ArchetypeSpec(archetype_id, cases, operating_points, policy))
+        archetypes.append(
+            _ArchetypeSpec(archetype_id, tuple(cases), tuple(operating_points), policy)
+        )
     return _Manifest(
         track="viability_frontier",
         scope=SCOPE,
         evidence_kind=evidence_kind,
-        preregistered=True,
+        preregistered=doc["preregistered"],
         archetypes=tuple(archetypes),
     )
 
@@ -657,6 +880,14 @@ def _policy_failures(
             policy.min_event_recall,
         ),
         (
+            adaptive.precision.defined
+            and adaptive.precision.value >= policy.min_precision,
+            "precision",
+            adaptive.precision.value,
+            ">=",
+            policy.min_precision,
+        ),
+        (
             call_reduction.value >= policy.min_call_reduction,
             "call_reduction",
             call_reduction.value,
@@ -692,21 +923,39 @@ def _policy_failures(
 
 
 def _mark_pareto(points: Sequence[OperatingPointResult]) -> tuple[OperatingPointResult, ...]:
+    def dominates(other: OperatingPointResult, candidate: OperatingPointResult) -> bool:
+        return (
+            other.id != candidate.id
+            and other.adaptive.event_recall.value >= candidate.adaptive.event_recall.value
+            and other.call_reduction.value >= candidate.call_reduction.value
+            and (
+                other.adaptive.event_recall.value > candidate.adaptive.event_recall.value
+                or other.call_reduction.value > candidate.call_reduction.value
+            )
+        )
+
     marked: list[OperatingPointResult] = []
     for candidate in points:
-        candidate_recall = candidate.adaptive.event_recall.value
-        candidate_reduction = candidate.call_reduction.value
-        dominated = any(
-            other.id != candidate.id
-            and other.adaptive.event_recall.value >= candidate_recall
-            and other.call_reduction.value >= candidate_reduction
-            and (
-                other.adaptive.event_recall.value > candidate_recall
-                or other.call_reduction.value > candidate_reduction
-            )
+        raw_dominated = any(dominates(other, candidate) for other in points)
+        feasible_dominated = candidate.meets_policy_thresholds and any(
+            other.meets_policy_thresholds and dominates(other, candidate)
             for other in points
         )
-        marked.append(replace(candidate, pareto_frontier=not dominated))
+        policy_feasible_pareto = (
+            candidate.meets_policy_thresholds and not feasible_dominated
+        )
+        failures = candidate.policy_failures
+        if feasible_dominated:
+            failures = (*failures, "operating point is dominated and not policy-feasible Pareto")
+        marked.append(
+            replace(
+                candidate,
+                pareto_frontier=not raw_dominated,
+                policy_feasible_pareto=policy_feasible_pareto,
+                clears_policy=policy_feasible_pareto,
+                policy_failures=failures,
+            )
+        )
     return tuple(marked)
 
 
@@ -727,11 +976,16 @@ def evaluate_viability_frontier(
 
     expected: set[tuple[str, str, str]] = set()
     case_owner: dict[str, str] = {}
+    case_specs: dict[str, _CaseSpec] = {}
+    point_fingerprints: dict[tuple[str, str], str] = {}
     for archetype in spec.archetypes:
-        for case_id in archetype.cases:
-            case_owner[case_id] = archetype.id
+        for point in archetype.operating_points:
+            point_fingerprints[(archetype.id, point.id)] = point.configuration_sha256
+        for case in archetype.cases:
+            case_owner[case.id] = archetype.id
+            case_specs[case.id] = case
             for point in archetype.operating_points:
-                expected.update((case_id, point, arm) for arm in ARMS)
+                expected.update((case.id, point.id, arm) for arm in ARMS)
     actual = set(row_index)
     missing = sorted(expected - actual)
     extra = sorted(actual - expected)
@@ -749,6 +1003,18 @@ def evaluate_viability_frontier(
             f"row {row.case_id!r}/{row.operating_point!r}/{row.arm!r} evidence_kind "
             f"{row.evidence_kind!r} does not match manifest {spec.evidence_kind!r}",
         )
+        expected_fingerprint = point_fingerprints[(owner, row.operating_point)]
+        _require(
+            row.configuration_sha256 == expected_fingerprint,
+            f"row {row.case_id!r}/{row.operating_point!r}/{row.arm!r} configuration "
+            "fingerprint does not match its manifest operating point",
+        )
+        anchored_case = case_specs[row.case_id]
+        _require(
+            row.match_signature() == anchored_case.match_signature(),
+            f"{row.archetype}/{row.operating_point}/{row.case_id}: evidence does not match "
+            "manifest-anchored exact case/event/candidate denominators",
+        )
 
     archetype_results: list[ArchetypeResult] = []
     for archetype in spec.archetypes:
@@ -757,18 +1023,40 @@ def evaluate_viability_frontier(
         for point in archetype.operating_points:
             baseline_rows: list[_ArmRow] = []
             adaptive_rows: list[_ArmRow] = []
-            for case_id in archetype.cases:
-                baseline = row_index[(case_id, point, "baseline")]
-                adaptive = row_index[(case_id, point, "adaptive")]
+            for case in archetype.cases:
+                baseline = row_index[(case.id, point.id, "baseline")]
+                adaptive = row_index[(case.id, point.id, "adaptive")]
                 _require(
                     baseline.match_signature() == adaptive.match_signature(),
-                    f"{archetype.id}/{point}/{case_id}: baseline and adaptive arms do not share "
+                    f"{archetype.id}/{point.id}/{case.id}: baseline and adaptive arms do not share "
                     "the exact candidate/event-window denominators",
                 )
-                canonical = canonical_baselines.setdefault(case_id, baseline.baseline_signature())
+                _require(
+                    baseline.candidate_windows_admitted == baseline.candidate_windows_total
+                    and baseline.judge_calls == baseline.candidate_windows_total,
+                    f"{archetype.id}/{point.id}/{case.id}: baseline must be exhaustive "
+                    "(admitted == calls == candidate total)",
+                )
+                _require(
+                    baseline.decisions["missing"] == 0
+                    and all(event.outcome != "missing" for event in baseline.event_windows),
+                    f"{archetype.id}/{point.id}/{case.id}: baseline must have no missing work",
+                )
+                _require(
+                    all(
+                        event.admitted_candidates == event.candidate_windows
+                        for event in baseline.event_windows
+                    ),
+                    f"{archetype.id}/{point.id}/{case.id}: baseline must admit every "
+                    "manifest-anchored event candidate",
+                )
+                canonical = canonical_baselines.setdefault(
+                    case.id,
+                    baseline.baseline_signature(),
+                )
                 _require(
                     canonical == baseline.baseline_signature(),
-                    f"{archetype.id}/{case_id}: baseline arm changed across operating points",
+                    f"{archetype.id}/{case.id}: baseline arm changed across operating points",
                 )
                 baseline_rows.append(baseline)
                 adaptive_rows.append(adaptive)
@@ -785,11 +1073,13 @@ def evaluate_viability_frontier(
             failures = _policy_failures(archetype.policy, adaptive_metrics, reduction)
             point_results.append(
                 OperatingPointResult(
-                    id=point,
+                    id=point.id,
+                    configuration_sha256=point.configuration_sha256,
                     baseline=baseline_metrics,
                     adaptive=adaptive_metrics,
                     call_reduction=reduction,
-                    clears_policy=not failures,
+                    meets_policy_thresholds=not failures,
+                    clears_policy=False,
                     policy_failures=failures,
                 )
             )
@@ -797,7 +1087,7 @@ def evaluate_viability_frontier(
         archetype_results.append(
             ArchetypeResult(
                 id=archetype.id,
-                case_ids=archetype.cases,
+                case_ids=tuple(case.id for case in archetype.cases),
                 policy=archetype.policy,
                 operating_points=points,
                 clears_policy=any(point.clears_policy for point in points),
@@ -805,17 +1095,26 @@ def evaluate_viability_frontier(
         )
 
     policy_cleared = all(archetype.clears_policy for archetype in archetype_results)
+    blockers = [
+        (
+            f"release qualification is disabled until a separately verified "
+            f"{REQUIRED_MEASURED_ADAPTER} adapter supplies provenance-preserving matched evidence"
+        ),
+        (
+            "manifest evidence_kind and preregistered fields are caller-declared metadata, "
+            "not independent attestation"
+        ),
+    ]
     if spec.evidence_kind == "synthetic":
-        launch_qualified = False
-        reason = "synthetic evidence validates evaluator mechanics only and cannot qualify a launch"
-    elif not policy_cleared:
-        launch_qualified = False
-        reason = (
-            "at least one archetype has no operating point that clears its preregistered policy"
+        blockers.append("declared synthetic evidence validates diagnostic mechanics only")
+    if not spec.preregistered:
+        blockers.append("manifest declares that its policies were not preregistered")
+    if not policy_cleared:
+        blockers.append(
+            "at least one archetype has no policy-feasible point on the Pareto frontier"
         )
-    else:
-        launch_qualified = True
-        reason = "measured matched evidence clears every preregistered archetype policy"
+    launch_qualified = False
+    reason = "; ".join(blockers)
     return ViabilityFrontierReport(
         track=spec.track,
         scope=spec.scope,
@@ -824,6 +1123,8 @@ def evaluate_viability_frontier(
         archetypes=tuple(archetype_results),
         launch_qualified=launch_qualified,
         qualification_reason=reason,
+        qualification_blockers=tuple(blockers),
+        required_measured_adapter=REQUIRED_MEASURED_ADAPTER,
     )
 
 
@@ -837,7 +1138,9 @@ def evaluate_viability_files(
     )
 
 
-def _ratio_text(ratio: Ratio | CallReduction) -> str:
+def _ratio_text(ratio: Ratio | Precision | CallReduction) -> str:
+    if isinstance(ratio, Precision) and not ratio.defined:
+        return f"undefined ({ratio.numerator}/{ratio.denominator})"
     return f"{ratio.value:.3f} ({ratio.numerator}/{ratio.denominator})"
 
 
@@ -846,7 +1149,10 @@ def render_text(report: ViabilityFrontierReport) -> str:
     lines = [
         "VIABILITY FRONTIER — RECALL VS JUDGE-CALL REDUCTION",
         f"Scope: {report.scope}",
-        f"Evidence: {report.evidence_kind}; preregistered={str(report.preregistered).lower()}",
+        (
+            f"Caller-declared metadata (not attested): evidence_kind={report.evidence_kind}; "
+            f"preregistered={str(report.preregistered).lower()}"
+        ),
         (
             f"Manifest-derived coverage: {len(report.archetypes)} archetype(s), "
             f"{sum(len(a.case_ids) for a in report.archetypes)} case(s), "
@@ -864,12 +1170,21 @@ def render_text(report: ViabilityFrontierReport) -> str:
             baseline = point.baseline
             adaptive = point.adaptive
             marker = "PARETO" if point.pareto_frontier else "dominated"
+            feasible_marker = (
+                "policy-feasible-Pareto"
+                if point.policy_feasible_pareto
+                else "not-policy-feasible-Pareto"
+            )
             lines.append(
-                f"  {point.id} [{marker}] clear={str(point.clears_policy).lower()}: "
+                f"  {point.id} [{marker}; {feasible_marker}] "
+                f"config={point.configuration_sha256} "
+                f"clear={str(point.clears_policy).lower()}: "
                 f"baseline_event_recall={_ratio_text(baseline.event_recall)}, "
                 f"baseline_judge_call_rate={_ratio_text(baseline.judge_call_rate)}; "
                 f"candidate_recall={_ratio_text(adaptive.candidate_recall)}, "
                 f"event_recall={_ratio_text(adaptive.event_recall)}, "
+                f"precision={_ratio_text(adaptive.precision)}, "
+                f"false_positive_rate={_ratio_text(adaptive.false_positive_rate)}, "
                 f"admitted_rate={_ratio_text(adaptive.admitted_rate)}, "
                 f"judge_call_rate={_ratio_text(adaptive.judge_call_rate)}, "
                 f"call_reduction={_ratio_text(point.call_reduction)}, "
@@ -886,6 +1201,9 @@ def render_text(report: ViabilityFrontierReport) -> str:
             f"POLICY CLEARED: {str(report.policy_cleared).upper()}",
             f"LAUNCH QUALIFIED: {str(report.launch_qualified).upper()}",
             f"Reason: {report.qualification_reason}",
+            f"Required measured adapter/schema: {report.required_measured_adapter}",
+            "Qualification blockers:",
+            *(f"- {blocker}" for blocker in report.qualification_blockers),
         ]
     )
     return "\n".join(lines) + "\n"
@@ -904,7 +1222,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--require-launch-qualification",
         action="store_true",
-        help="return status 1 unless measured evidence clears every archetype policy",
+        help=(
+            "return status 1; release qualification is unavailable until the separately verified "
+            "measured-evidence adapter is implemented"
+        ),
     )
     return parser
 

@@ -77,6 +77,17 @@ def test_manifest_derived_frontier_has_exact_denominators(manifest, rows):
         "denominator": 16,
         "value": 0.5,
     }
+    assert conservative.adaptive.precision.to_dict() == {
+        "numerator": 4,
+        "denominator": 4,
+        "value": 1.0,
+        "defined": True,
+    }
+    assert conservative.adaptive.false_positive_rate.to_dict() == {
+        "numerator": 0,
+        "denominator": 8,
+        "value": 0.0,
+    }
     assert sparse.adaptive.event_recall.value == pytest.approx(0.75)
     assert sparse.call_reduction.value == pytest.approx(0.75)
 
@@ -101,6 +112,7 @@ def test_pareto_frontier_marks_a_dominated_point(manifest, rows):
     state_02 = _row(mutated, "state-02", "conservative", "adaptive")
     state_02["decisions"] = {"fire": 1, "ask": 0, "silent": 5, "missing": 0}
     state_02["event_windows"][1]["outcome"] = "silent"
+    state_02["fire_event_ids"].remove("state-02/e2")
 
     state = evaluate_viability_frontier(manifest, mutated).archetype("state_change")
     assert [point.id for point in state.frontier] == ["sparse"]
@@ -113,6 +125,7 @@ def test_abstentions_and_missing_work_are_reported_not_erased(manifest, rows):
     row["judge_calls"] = 3
     row["decisions"] = {"fire": 1, "ask": 1, "silent": 0, "missing": 1}
     row["event_windows"][1]["outcome"] = "ask"
+    row["fire_event_ids"].remove("brief-01/e2")
 
     point = evaluate_viability_frontier(manifest, mutated).archetype(
         "brief_action"
@@ -156,6 +169,9 @@ def test_render_is_scoped_and_contains_no_cost_or_backend_claim(manifest, rows):
     assert "Manifest-derived coverage: 2 archetype(s), 4 case(s), 4 operating point(s)" in text
     assert "candidate_recall=0.500 (4/8)" in text
     assert "call_reduction=0.750 (12/16)" in text
+    assert "Caller-declared metadata (not attested)" in text
+    assert "percept.eval.viability_frontier.measured_evidence/v1" in text
+    assert "Qualification blockers:" in text
     for forbidden in ("$", "provider", "api key", "universal threshold"):
         assert forbidden not in text.lower()
 
@@ -176,13 +192,13 @@ def test_rows_refuse_modeled_or_stub_data(manifest, rows, kind):
 
 def test_empty_manifest_archetypes_fail_closed(manifest, rows):
     manifest["archetypes"] = []
-    with pytest.raises(ViabilityInputError, match="archetypes must be non-empty"):
+    with pytest.raises(ViabilityInputError, match="at least 2 archetypes"):
         evaluate_viability_frontier(manifest, rows)
 
 
 def test_empty_archetype_cases_fail_closed(manifest, rows):
     manifest["archetypes"][0]["cases"] = []
-    with pytest.raises(ViabilityInputError, match="at least 1"):
+    with pytest.raises(ViabilityInputError, match="at least 2"):
         evaluate_viability_frontier(manifest, rows)
 
 
@@ -195,6 +211,7 @@ def test_fewer_than_two_operating_points_fail_closed(manifest, rows):
 @pytest.mark.parametrize("field", sorted({
     "min_candidate_recall",
     "min_event_recall",
+    "min_precision",
     "min_call_reduction",
     "max_event_abstention_rate",
     "max_missing_rate",
@@ -205,10 +222,11 @@ def test_every_policy_field_is_required_with_no_default(manifest, rows, field):
         evaluate_viability_frontier(manifest, rows)
 
 
-def test_policy_must_be_preregistered(manifest, rows):
+def test_caller_preregistered_flag_is_reported_as_metadata_not_attestation(manifest, rows):
     manifest["preregistered"] = False
-    with pytest.raises(ViabilityInputError, match="preregistered must be true"):
-        evaluate_viability_frontier(manifest, rows)
+    report = evaluate_viability_frontier(manifest, rows)
+    assert report.launch_qualified is False
+    assert any("not preregistered" in blocker for blocker in report.qualification_blockers)
 
 
 def test_duplicate_archetype_fails_closed(manifest, rows):
@@ -219,12 +237,12 @@ def test_duplicate_archetype_fails_closed(manifest, rows):
 
 def test_duplicate_case_fails_closed(manifest, rows):
     manifest["archetypes"][0]["cases"].append(manifest["archetypes"][0]["cases"][0])
-    with pytest.raises(ViabilityInputError, match="duplicate ids"):
+    with pytest.raises(ViabilityInputError, match="duplicate case"):
         evaluate_viability_frontier(manifest, rows)
 
 
 def test_duplicate_operating_point_fails_closed(manifest, rows):
-    manifest["archetypes"][0]["operating_points"][1] = "conservative"
+    manifest["archetypes"][0]["operating_points"][1]["id"] = "conservative"
     with pytest.raises(ViabilityInputError, match="duplicate ids"):
         evaluate_viability_frontier(manifest, rows)
 
@@ -270,22 +288,21 @@ def test_archetype_mismatch_fails_closed(manifest, rows):
 def test_event_window_mismatch_between_arms_fails_closed(manifest, rows):
     row = _row(rows, "state-01", "conservative", "adaptive")
     row["event_windows"][0]["id"] = "different-event"
-    with pytest.raises(ViabilityInputError, match="exact candidate/event-window denominators"):
+    row["fire_event_ids"][0] = "different-event"
+    with pytest.raises(ViabilityInputError, match="manifest-anchored exact"):
         evaluate_viability_frontier(manifest, rows)
 
 
 def test_candidate_denominator_mismatch_between_arms_fails_closed(manifest, rows):
     row = _row(rows, "state-01", "conservative", "adaptive")
     row["candidate_windows_total"] = 9
-    with pytest.raises(ViabilityInputError, match="exact candidate/event-window denominators"):
+    with pytest.raises(ViabilityInputError, match="manifest-anchored exact"):
         evaluate_viability_frontier(manifest, rows)
 
 
 def test_baseline_must_be_identical_across_operating_points(manifest, rows):
     row = _row(rows, "state-01", "sparse", "baseline")
-    row["candidate_windows_admitted"] = 7
-    row["judge_calls"] = 7
-    row["decisions"] = {"fire": 2, "ask": 0, "silent": 5, "missing": 0}
+    row["decisions"] = {"fire": 2, "ask": 1, "silent": 5, "missing": 0}
     with pytest.raises(ViabilityInputError, match="baseline arm changed"):
         evaluate_viability_frontier(manifest, rows)
 
@@ -320,25 +337,169 @@ def test_evidence_kind_must_match_manifest(manifest, rows):
         evaluate_viability_frontier(manifest, rows)
 
 
-def test_negative_call_reduction_is_reported_and_fails_policy(manifest, rows):
-    mutated = copy.deepcopy(rows)
-    # Lower the repeated matched baseline to three calls per case at one point while leaving the
-    # adaptive arm at four. Apply the same baseline to both operating points to preserve matching.
-    for point in ("conservative", "sparse"):
-        for case_id in ("state-01", "state-02"):
-            baseline = _row(mutated, case_id, point, "baseline")
-            baseline["candidate_windows_admitted"] = 3
-            baseline["judge_calls"] = 3
-            baseline["decisions"] = {"fire": 2, "ask": 0, "silent": 1, "missing": 0}
-            for event in baseline["event_windows"]:
-                event["admitted_candidates"] = 1
-    # Sparse must stay within its baseline; conservative intentionally exceeds it.
-    state = evaluate_viability_frontier(manifest, mutated).archetype("state_change")
-    conservative = state.operating_points[0]
-    assert conservative.call_reduction.numerator == -2
-    assert conservative.call_reduction.denominator == 6
-    assert conservative.call_reduction.value == pytest.approx(-1 / 3)
+def test_relabeling_synthetic_as_measured_cannot_qualify_release(manifest, rows):
+    manifest["evidence_kind"] = "measured"
+    for row in rows:
+        row["evidence_kind"] = "measured"
+
+    report = evaluate_viability_frontier(manifest, rows)
+
+    assert report.policy_cleared is True
+    assert report.launch_qualified is False
+    assert report.required_measured_adapter == (
+        "percept.eval.viability_frontier.measured_evidence/v1"
+    )
+    assert any("caller-declared metadata" in blocker for blocker in report.qualification_blockers)
+    assert any(
+        report.required_measured_adapter in blocker
+        for blocker in report.qualification_blockers
+    )
+
+
+def test_deleted_archetype_even_with_rows_deleted_is_thin_evidence(manifest, rows):
+    deleted = manifest["archetypes"].pop()
+    deleted_cases = {case["id"] for case in deleted["cases"]}
+    rows[:] = [row for row in rows if row["case_id"] not in deleted_cases]
+    with pytest.raises(ViabilityInputError, match="at least 2 archetypes"):
+        evaluate_viability_frontier(manifest, rows)
+
+
+def test_deleted_case_even_with_rows_deleted_is_thin_evidence(manifest, rows):
+    deleted = manifest["archetypes"][0]["cases"].pop()
+    rows[:] = [row for row in rows if row["case_id"] != deleted["id"]]
+    with pytest.raises(ViabilityInputError, match="at least 2 manifest-anchored cases"):
+        evaluate_viability_frontier(manifest, rows)
+
+
+def test_deleted_manifest_event_even_with_rows_deleted_is_thin_evidence(manifest, rows):
+    case = manifest["archetypes"][0]["cases"][0]
+    deleted = case["events"].pop()
+    for row in rows:
+        if row["case_id"] != case["id"]:
+            continue
+        row["event_windows"] = [
+            event for event in row["event_windows"] if event["id"] != deleted["id"]
+        ]
+        if deleted["id"] in row["fire_event_ids"]:
+            row["fire_event_ids"].remove(deleted["id"])
+            row["decisions"]["fire"] -= 1
+            row["decisions"]["silent"] += 1
+    with pytest.raises(ViabilityInputError, match="at least 2 manifest-anchored events"):
+        evaluate_viability_frontier(manifest, rows)
+
+
+def test_deleted_evidence_event_fails_manifest_anchor(manifest, rows):
+    row = _row(rows, "state-01", "conservative", "adaptive")
+    deleted = row["event_windows"].pop()
+    row["fire_event_ids"].remove(deleted["id"])
+    row["decisions"]["fire"] -= 1
+    row["decisions"]["silent"] += 1
+    with pytest.raises(ViabilityInputError, match="manifest-anchored exact"):
+        evaluate_viability_frontier(manifest, rows)
+
+
+def test_extra_fire_is_counted_as_false_positive_and_fails_precision_policy(manifest, rows):
+    row = _row(rows, "state-01", "conservative", "adaptive")
+    row["decisions"]["fire"] += 1
+    row["decisions"]["silent"] -= 1
+    row["fire_event_ids"].append("state-01/false-positive-1")
+
+    point = evaluate_viability_frontier(manifest, rows).archetype(
+        "state_change"
+    ).operating_points[0]
+
+    assert point.adaptive.precision.to_dict() == {
+        "numerator": 4,
+        "denominator": 5,
+        "value": 0.8,
+        "defined": True,
+    }
+    assert point.adaptive.false_positive_rate.to_dict() == {
+        "numerator": 1,
+        "denominator": 8,
+        "value": 0.125,
+    }
+    assert point.meets_policy_thresholds is False
+    assert any("precision" in failure for failure in point.policy_failures)
+
+
+def test_identical_operating_point_configurations_fail_closed(manifest, rows):
+    points = manifest["archetypes"][0]["operating_points"]
+    points[1]["configuration"] = copy.deepcopy(points[0]["configuration"])
+    points[1]["configuration_sha256"] = points[0]["configuration_sha256"]
+    with pytest.raises(ViabilityInputError, match="distinct configuration fingerprints"):
+        evaluate_viability_frontier(manifest, rows)
+
+
+def test_configuration_fingerprint_must_match_canonical_configuration(manifest, rows):
+    point = manifest["archetypes"][0]["operating_points"][0]
+    point["configuration"]["sampling_stride"] = 2
+    with pytest.raises(ViabilityInputError, match="does not match canonical configuration"):
+        evaluate_viability_frontier(manifest, rows)
+
+
+def test_evidence_row_must_carry_manifest_configuration_fingerprint(manifest, rows):
+    row = _row(rows, "state-01", "conservative", "adaptive")
+    row["configuration_sha256"] = (
+        "sha256:bb0b3e40ce6e010dfdb7c34370259274461915a9fd06b5c21b6d5ff24913c1bb"
+    )
+    with pytest.raises(ViabilityInputError, match="fingerprint does not match"):
+        evaluate_viability_frontier(manifest, rows)
+
+
+def test_dominated_threshold_passing_point_does_not_clear_policy(manifest, rows):
+    manifest["archetypes"][0]["policy"]["min_call_reduction"] = 0.5
+    row = _row(rows, "state-02", "conservative", "adaptive")
+    row["event_windows"][1]["outcome"] = "silent"
+    row["fire_event_ids"].remove("state-02/e2")
+    row["decisions"]["fire"] -= 1
+    row["decisions"]["silent"] += 1
+
+    conservative, sparse = evaluate_viability_frontier(manifest, rows).archetype(
+        "state_change"
+    ).operating_points
+
+    assert conservative.meets_policy_thresholds is True
+    assert conservative.pareto_frontier is False
+    assert conservative.policy_feasible_pareto is False
     assert conservative.clears_policy is False
+    assert any("dominated" in failure for failure in conservative.policy_failures)
+    assert sparse.clears_policy is True
+
+
+def test_policy_infeasible_raw_dominator_cannot_erase_feasible_frontier(manifest, rows):
+    manifest["archetypes"][1]["policy"]["min_candidate_recall"] = 0.5
+    for case_id in ("brief-01", "brief-02"):
+        sparse = _row(rows, case_id, "sparse", "adaptive")
+        sparse["decisions"] = {"fire": 2, "ask": 0, "silent": 0, "missing": 0}
+        sparse["fire_event_ids"] = [f"{case_id}/e1", f"{case_id}/e2"]
+        sparse["event_windows"][1]["outcome"] = "fire"
+    sparse_with_fp = _row(rows, "brief-01", "sparse", "adaptive")
+    sparse_with_fp["candidate_windows_admitted"] = 3
+    sparse_with_fp["judge_calls"] = 3
+    sparse_with_fp["decisions"] = {"fire": 3, "ask": 0, "silent": 0, "missing": 0}
+    sparse_with_fp["fire_event_ids"].append("brief-01/false-positive-1")
+
+    conservative, sparse = evaluate_viability_frontier(manifest, rows).archetype(
+        "brief_action"
+    ).operating_points
+
+    assert sparse.pareto_frontier is True
+    assert sparse.meets_policy_thresholds is False
+    assert any("precision" in failure for failure in sparse.policy_failures)
+    assert conservative.pareto_frontier is False
+    assert conservative.meets_policy_thresholds is True
+    assert conservative.policy_feasible_pareto is True
+    assert conservative.clears_policy is True
+
+
+def test_non_exhaustive_baseline_fails_closed(manifest, rows):
+    baseline = _row(rows, "state-01", "conservative", "baseline")
+    baseline["candidate_windows_admitted"] = 7
+    baseline["judge_calls"] = 7
+    baseline["decisions"]["silent"] -= 1
+    with pytest.raises(ViabilityInputError, match="baseline must be exhaustive"):
+        evaluate_viability_frontier(manifest, rows)
 
 
 def test_loaders_refuse_empty_evidence_file(tmp_path):
@@ -350,6 +511,11 @@ def test_loaders_refuse_empty_evidence_file(tmp_path):
 
 def test_json_report_counts_come_from_manifest(manifest, rows):
     payload = json.loads(evaluate_viability_frontier(manifest, rows).to_json())
+    assert payload["schema"] == "percept.eval.viability_frontier/2"
+    assert payload["declared_evidence_kind"] == "synthetic"
+    assert payload["declared_preregistered"] is True
+    assert "evidence_kind" not in payload
+    assert "preregistered" not in payload
     assert payload["archetype_count"] == len(manifest["archetypes"])
     assert payload["case_count"] == sum(len(item["cases"]) for item in manifest["archetypes"])
     assert payload["operating_point_count"] == sum(

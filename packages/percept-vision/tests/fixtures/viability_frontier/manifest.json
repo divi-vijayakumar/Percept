@@ -1,5 +1,5 @@
 {
-  "schema_version": "1",
+  "schema_version": "2",
   "track": "viability_frontier",
   "scope": "programmable Watches over live multimodal streams",
   "evidence_kind": "synthetic",
@@ -8,16 +8,39 @@
     {
       "id": "state_change",
       "cases": [
-        "state-01",
-        "state-02"
+        {
+          "id": "state-01",
+          "candidate_windows_total": 8,
+          "events": [
+            {"id": "state-01/e1", "candidate_windows": 2},
+            {"id": "state-01/e2", "candidate_windows": 2}
+          ]
+        },
+        {
+          "id": "state-02",
+          "candidate_windows_total": 8,
+          "events": [
+            {"id": "state-02/e1", "candidate_windows": 2},
+            {"id": "state-02/e2", "candidate_windows": 2}
+          ]
+        }
       ],
       "operating_points": [
-        "conservative",
-        "sparse"
+        {
+          "id": "conservative",
+          "configuration": {"tier0_threshold": 0.35, "sampling_stride": 1},
+          "configuration_sha256": "sha256:9683185478371be68cafe46fbba4fa5c9950b216fcf81031328e0499c1a6f058"
+        },
+        {
+          "id": "sparse",
+          "configuration": {"tier0_threshold": 0.8, "sampling_stride": 4},
+          "configuration_sha256": "sha256:bb0b3e40ce6e010dfdb7c34370259274461915a9fd06b5c21b6d5ff24913c1bb"
+        }
       ],
       "policy": {
         "min_candidate_recall": 0.5,
         "min_event_recall": 0.75,
+        "min_precision": 1.0,
         "min_call_reduction": 0.65,
         "max_event_abstention_rate": 0.25,
         "max_missing_rate": 0.0
@@ -26,16 +49,39 @@
     {
       "id": "brief_action",
       "cases": [
-        "brief-01",
-        "brief-02"
+        {
+          "id": "brief-01",
+          "candidate_windows_total": 8,
+          "events": [
+            {"id": "brief-01/e1", "candidate_windows": 2},
+            {"id": "brief-01/e2", "candidate_windows": 2}
+          ]
+        },
+        {
+          "id": "brief-02",
+          "candidate_windows_total": 8,
+          "events": [
+            {"id": "brief-02/e1", "candidate_windows": 2},
+            {"id": "brief-02/e2", "candidate_windows": 2}
+          ]
+        }
       ],
       "operating_points": [
-        "conservative",
-        "sparse"
+        {
+          "id": "conservative",
+          "configuration": {"tier0_threshold": 0.35, "sampling_stride": 1},
+          "configuration_sha256": "sha256:9683185478371be68cafe46fbba4fa5c9950b216fcf81031328e0499c1a6f058"
+        },
+        {
+          "id": "sparse",
+          "configuration": {"tier0_threshold": 0.8, "sampling_stride": 4},
+          "configuration_sha256": "sha256:bb0b3e40ce6e010dfdb7c34370259274461915a9fd06b5c21b6d5ff24913c1bb"
+        }
       ],
       "policy": {
         "min_candidate_recall": 0.75,
         "min_event_recall": 1.0,
+        "min_precision": 1.0,
         "min_call_reduction": 0.5,
         "max_event_abstention_rate": 0.0,
         "max_missing_rate": 0.0

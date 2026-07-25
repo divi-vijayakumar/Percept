@@ -82,8 +82,9 @@ test-capability-gate:
 
 # Deterministic schema/evaluator contract only. The committed evidence is explicitly synthetic:
 # this target validates matched arms, exact denominators, policy evaluation, and Pareto selection,
-# and the report must state LAUNCH QUALIFIED: FALSE. A measured launch gate must supply its own
-# preregistered manifest and matched evidence, then use --require-launch-qualification.
+# and the report must state LAUNCH QUALIFIED: FALSE. Release qualification remains disabled until
+# percept.eval.viability_frontier.measured_evidence/v1 is implemented as a separately verified,
+# provenance-preserving adapter; caller-declared "measured" metadata is never an attestation.
 viability-frontier-contract:
 	PYTHONPATH=$(SDK) PERCEPT_MODE=offline $(PY) -m percept.eval.viability_frontier \
 		--manifest $(SDK)/tests/fixtures/viability_frontier/manifest.json \
