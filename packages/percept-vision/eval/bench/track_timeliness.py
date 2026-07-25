@@ -50,7 +50,7 @@ def _result(p_pauc, pvqa_native, p50, p90, *, n_fired, total, calls, notes, mode
     p50s = "n/a" if p50 is None else f"{p50:.1f}"
     p90s = "n/a" if p90 is None else f"{p90:.1f}"
     headline = {
-        f"timeliness P-PAUC / PVQA-native (N PT actions)":
+        "timeliness P-PAUC / PVQA-native (N PT actions)":
             f"{p_pauc:.1f} / {pvqa_native:.1f} (fired {n_fired}/{total})",
         "timeliness reaction λ p50/p90 (s)": f"{p50s} / {p90s}",
     }

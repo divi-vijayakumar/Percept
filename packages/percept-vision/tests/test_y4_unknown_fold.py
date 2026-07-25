@@ -21,7 +21,6 @@ from percept.adapters import Verdict
 from percept.behavior import (
     EPISODE_MATCHES,
     BehaviorExecutor,
-    EpisodeFoldResult,
     episode_fold,
 )
 from percept.contracts import SubjectRef

@@ -34,7 +34,7 @@ import unittest
 from percept import Goal, Percept
 from percept.adapters import Verdict
 from percept.harness.tier0 import Frame, gray_frame
-from percept.runtime.worker import RuntimeHealthEvent, RuntimeStats, _JudgeScheduler
+from percept.runtime.worker import RuntimeStats, _JudgeScheduler
 from percept.runtime.worker import run as worker_run
 
 W = H = 8
@@ -109,7 +109,6 @@ class JudgeRaisesTests(unittest.TestCase):
         core = _core(vision, _watch_goal())
         stats = RuntimeStats()
         health_kinds: list[str] = []
-        seen_sched: list[_JudgeScheduler] = []
 
         async def _source():
             for i in range(6):
@@ -178,7 +177,6 @@ class JudgeHangsTests(unittest.TestCase):
         core = _core(vision, _watch_goal())
         stats = RuntimeStats()
         stalled_events: list[dict] = []
-        sched_box: list[_JudgeScheduler] = []
 
         # very small threshold so the synthetic (near-instant, real-wall-clock) stream can cross it
         # without simulating real time — the scheduler measures elapsed WALL time via core.clock().
@@ -366,7 +364,6 @@ class InvariantHeldThroughoutTests(unittest.TestCase):
 
         # Poll the invariant on every frame via a wrapped submit(), since the scheduler instance is
         # only constructed once run() starts.
-        polled: list[tuple[int, int]] = []
         asyncio.run(_collect())
         self.assertEqual(len(seen), 1, "one scheduler per run()")
         sched = seen[0]

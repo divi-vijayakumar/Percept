@@ -126,8 +126,6 @@ class WatchProfileThreadingTests(unittest.TestCase):
     def test_watch_threads_settings_profile_into_a_built_core(self):
         # a bare Settings passed as ``profile`` is honored when watch() builds its own core.
         custom = Settings()
-        core_holder: list[Percept] = []
-
         async def _run():
             async for _ in watch([], [_goal()], custom):
                 pass

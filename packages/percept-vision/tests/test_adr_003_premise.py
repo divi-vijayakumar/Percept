@@ -123,7 +123,6 @@ def test_adr_003_cites_the_label_record_precedent_by_line() -> None:
     assert "L-1269" in text, "LabelRecord.frame_ref must be cited by line"
     assert "L-1277" in text or "EGRESS_FIELDS" in text
     src = (Path(__file__).resolve().parents[1] / "percept" / "contracts" / "__init__.py").read_text()
-    lines = src.splitlines()
     for needle in ("class LabelRecord", "frame_ref", "EGRESS_FIELDS"):
         # assert the SYMBOL EXISTS, not the line it sits on — additive contract edits (SubjectRef,
         # the Y2 mutation channel) shift every line below and must not break a citation test.

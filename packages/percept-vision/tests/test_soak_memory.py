@@ -93,13 +93,13 @@ def _drive(n_frames: int, *, sample_every: int = 25, **kw):
     stats = RuntimeStats()
     core = _core()
 
-    async def go():
-        async for _inc in run(core, source=source(), stats=stats,
+    async def go(runtime_core):
+        async for _inc in run(runtime_core, source=source(), stats=stats,
                               judge_dispatch="inline", on_health=health.append, **kw):
             pass
 
     CensusFrame.live = 0
-    asyncio.run(go())
+    asyncio.run(go(core))
     del core
     gc.collect()
     return samples, stats, health
@@ -193,9 +193,18 @@ class RuntimeSoakTests(unittest.TestCase):
         # The diagnosis is only real if turning the named knob moves the measured retention.
         small, _s, _h = _drive(200, sample_every=25, snippet_size=4)
         large, _s2, _h2 = _drive(200, sample_every=25, snippet_size=40)
-        self.assertLess(max(l for _, l in small), max(l for _, l in large))
-        self.assertLessEqual(max(l for _, l in small), 12 + self.RETENTION_SLACK)  # window dominates
-        self.assertLessEqual(max(l for _, l in large), 40 + self.RETENTION_SLACK)
+        self.assertLess(
+            max(live_count for _, live_count in small),
+            max(live_count for _, live_count in large),
+        )
+        self.assertLessEqual(
+            max(live_count for _, live_count in small),
+            12 + self.RETENTION_SLACK,
+        )  # window dominates
+        self.assertLessEqual(
+            max(live_count for _, live_count in large),
+            40 + self.RETENTION_SLACK,
+        )
 
     def test_the_byte_budget_bounds_the_run_and_every_drop_is_announced(self):
         cap = 8 * PAYLOAD
@@ -217,7 +226,10 @@ class RuntimeSoakTests(unittest.TestCase):
                                         snippet_max_bytes=0)
         self.assertEqual(stats.preroll_frames_dropped, 0)
         self.assertEqual([e for e in health if e.kind == "preroll_capped"], [])
-        self.assertLessEqual(max(l for _, l in samples), 16 + self.RETENTION_SLACK)
+        self.assertLessEqual(
+            max(live_count for _, live_count in samples),
+            16 + self.RETENTION_SLACK,
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover

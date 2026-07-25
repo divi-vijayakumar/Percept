@@ -16,9 +16,7 @@ regression); frames with no green box = the performer wasn't held that frame (lo
 from __future__ import annotations
 
 import hashlib
-from pathlib import Path
-
-from eval.bench.hero_ab import (EXPECTED_ROM, FPS, MIN_CONF, VLM_PRIOR, _arm_a, _goal_state)
+from eval.bench.hero_ab import EXPECTED_ROM, FPS, MIN_CONF, VLM_PRIOR, _goal_state
 from eval.bench.pose_cache import load_detections, reconstruct
 from eval.bench.repcount import _STAGING
 

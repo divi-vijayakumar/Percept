@@ -145,7 +145,7 @@ def _resolve_version() -> str:
 
 
 __version__ = _resolve_version()
-del _resolve_version, _pkg_version, _PkgNotFound
+del _resolve_version
 
 # Build provenance (version + git commit + CONTRACT_VERSION + build timestamp) — stamped into the
 # wheel/sdist at build time, "unreleased" fallback in a bare source checkout. Stdlib-pure.

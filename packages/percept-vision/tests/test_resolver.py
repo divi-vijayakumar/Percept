@@ -25,7 +25,6 @@ from percept.resolver import (
     DomainPack,
     ExecutionPolicy,
     LAYER_DEPLOYMENT,
-    LAYER_DOMAIN_PACK,
     LAYER_EXECUTION_POLICY,
     LAYER_GATE,
     LAYER_OPTIMIZATION_LOCK,

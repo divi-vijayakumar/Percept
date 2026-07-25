@@ -13,7 +13,7 @@ import unittest
 
 from percept import Goal, Percept
 from percept.rhythm_hero import RhythmHero, escalate_count
-from percept.harness.detectors import PersonMeasure, make_detector, person_measures
+from percept.harness.detectors import make_detector, person_measures
 from percept.harness.pose import PoseDetection, PoseKeypoint
 
 

@@ -7,7 +7,7 @@ EDGE      := packages/percept-edge
 PY        := python3
 # absolute path to the zero-dep contract pkg (vision runs from inside $(SDK), so it needs this)
 
-.PHONY: help test test-harness test-js test-all test-templates test-capability-gate parity eval-live eval-benchmark e2e bench audit-benchmark scorecard benchmark-prepare benchmark-fetch benchmark-fetch-charades benchmark-fetch-proactiveqa benchmark-index-proactiveqa benchmark-manifest benchmark-run benchmark-collect check check-skills-sync reproduce clean architecture architecture-check
+.PHONY: help test test-harness test-js test-all test-templates test-capability-gate parity eval-live eval-benchmark e2e bench audit-benchmark scorecard benchmark-prepare benchmark-fetch benchmark-fetch-charades benchmark-fetch-proactiveqa benchmark-index-proactiveqa benchmark-manifest benchmark-run benchmark-collect check lint lint-all check-skills-sync reproduce clean architecture architecture-check
 
 help:
 	@echo "test       L1 unit — percept-vision (incl. percept.harness + percept.contracts; fakes, no keys, fast) + template lane"
@@ -28,7 +28,9 @@ help:
 	@echo "benchmark-manifest  write ignored content-hashed candidate manifest (PT_ACTION=200 PT_SOUND=100)"
 	@echo "benchmark-run  run reproducible local scorecard wrapper (TRACKS=stable N=8 WORKERS=2)"
 	@echo "benchmark-collect  re-render a local scorecard (RUN_DIR=eval/local-benchmark/runs/<id>)"
-	@echo "check      lint + types (best-effort; skips missing tools)"
+	@echo "check      architecture + compile + supported-surface lint; fails on real findings"
+	@echo "lint       Ruff gate for the shipped runtime, tests, and active benchmark harness"
+	@echo "lint-all   Ruff diagnostic for all SDK files, including legacy experiment scripts"
 	@echo "reproduce  reproduce a published scorecard row"
 
 # PERCEPT_MODE=offline: the suite is offline BY CONSTRUCTION (one declared property — RFC-offline-scripted-mode).
@@ -161,10 +163,19 @@ exp-categorical:
 check-skills-sync:  ## Verify skill directories are byte-identical
 	@diff -r .claude/skills/percept-agent .agents/skills/percept-agent --exclude="__pycache__" > /dev/null && echo "skills sync ok" || (echo "ERROR: skill directories out of sync (KEEP IN SYNC: edit BOTH)"; exit 1)
 
-check: architecture-check check-skills-sync
+check: architecture-check check-skills-sync lint
 	@cd $(SDK) && PYTHONPATH=. $(PY) -m compileall -q percept tests && echo "compileall ok"
 	@$(PY) -m compileall -q templates && echo "templates compileall ok"
-	@cd $(SDK) && (ruff check . || echo "ruff not installed — skipping lint")
+
+lint:
+	@cd $(SDK) && if $(PY) -m ruff --version >/dev/null 2>&1; then \
+		$(PY) -m ruff check percept tests eval/bench; \
+	else \
+		echo "ruff not installed — skipping lint"; \
+	fi
+
+lint-all:
+	cd $(SDK) && $(PY) -m ruff check .
 
 architecture:  ## (re)generate architecture.html + docs/architecture.svg from code + meta
 	$(PY) tools/build_architecture.py --meta docs/architecture.meta.json --out architecture.html --svg docs/architecture.svg

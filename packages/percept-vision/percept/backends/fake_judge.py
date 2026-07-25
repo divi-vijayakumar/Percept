@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from ..contracts import Verdict

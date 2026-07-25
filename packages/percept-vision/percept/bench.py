@@ -190,23 +190,4 @@ if __name__ == "__main__":  # pragma: no cover - exercised through subprocess te
     raise SystemExit(main())
 
 
-__all__ = [
-    "BenchmarkGate",
-    "ConcernObservation",
-    "ConcernReport",
-    "Manifest",
-    "ManifestClip",
-    "check_benchmark_gate",
-    "edges_from_manifest",
-    "audit_artifacts",
-    "format_audit",
-    "format_report",
-    "per_concern_report",
-    "run_manifest",
-    "score_concern",
-    "ValidationError",
-    "validate_baselines",
-    "validate_golden_manifest",
-    "main",
-    "scorecard_main",
-]
+__all__ = [*_LAZY, "main", "scorecard_main"]

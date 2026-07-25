@@ -141,7 +141,6 @@ def _percentile(values: Sequence[float], q: float) -> float:
 
 def _interp(times: Sequence[float], values: Sequence[float], tq: float) -> float:
     """Linear interpolation of ``values`` at query time ``tq`` (clamped to the endpoints)."""
-    n = len(times)
     if tq <= times[0]:
         return values[0]
     if tq >= times[-1]:

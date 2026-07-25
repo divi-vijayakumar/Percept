@@ -12,7 +12,6 @@ from eval.reliability import (
     below_threshold,
     discrimination,
     ece,
-    reliability_bins,
     reliability_report,
     silent_frame_pairs,
 )

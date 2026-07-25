@@ -89,9 +89,9 @@ pytest.importorskip(
 from core_archetypes import build_core_archetype_fixtures  # noqa: E402
 from ground_truth import CORE_ARCHETYPE_ELIGIBLE_AFTER_S  # noqa: E402
 
-from percept.clock import FakeClock
-from percept.contracts import JudgmentTiming
-from percept.harness.metrics import MetricsCollector, PercentileSummary, percentile
+from percept.clock import FakeClock  # noqa: E402
+from percept.contracts import JudgmentTiming  # noqa: E402
+from percept.harness.metrics import MetricsCollector, PercentileSummary, percentile  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Combined Reflex gate — Viability §7: BOTH G3-A and G3-B must be < 2s.

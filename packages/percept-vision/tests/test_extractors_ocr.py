@@ -13,7 +13,6 @@ import unittest
 import pytest
 
 from percept import registry
-from percept.contracts import Box
 from percept.extraction import Enrichment
 from percept.extractors import ocr as ocr_mod
 from percept.extractors.ocr import ScriptedOCR, TesseractOCR, _frame_key

@@ -177,8 +177,6 @@ class WatchThreadsProfileAtBuildTests(unittest.TestCase):
 
     def test_watch_builds_a_core_carrying_the_resolved_profile(self):
         profile = _profile(gate=GateProfile(require_false_first=True, refractory_s=1.5))
-        captured: list[Percept] = []
-
         async def _run():
             goal = Goal(id="g", condition="anything", say="hi")
             async for _ in watch([], [goal], profile, source="camera"):

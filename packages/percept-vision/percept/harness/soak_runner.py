@@ -50,7 +50,6 @@ follow-up work — this module only lands the deterministic driver + its own sel
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass, field
 from typing import Callable, Sequence
 

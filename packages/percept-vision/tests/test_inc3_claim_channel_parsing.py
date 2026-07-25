@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import unittest
 
-from percept import Goal, Percept
+from percept import Percept
 from percept.backends import anthropic as an
 from percept.backends import gemini as gm
 from percept.backends import openrouter as orr

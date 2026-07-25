@@ -20,7 +20,6 @@ import os
 
 import pytest
 
-from percept.config import Settings
 from percept.contracts.watchplan import WatchPlan
 from percept.doctor import ZERO_ADMITS_ON_FIXTURE, run_doctor
 from percept.harness.tier0 import Frame

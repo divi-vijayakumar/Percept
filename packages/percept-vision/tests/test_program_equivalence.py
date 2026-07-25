@@ -13,7 +13,6 @@ from percept.behavior import (
     BehaviorExecutor,
     BehaviorProgram,
     ConcernContext,
-    KeySpec,
     UnsafeExpression,
     compile_fire_when,
     program_of,

@@ -236,8 +236,6 @@ class OpenRouterVision:
     async def _judge_process_qa(self, condition: str, frame: Any, frames: list | None, prior: str) -> Verdict:
         """One process-QA step: integrate this clip into the running answer (Item 2). Returns the rewritten
         ordered answer on ``Verdict.running_answer``; on a parse miss the prior answer is preserved."""
-        import json
-
         client = self._ensure_client()
         strip = [f for f in (frames or []) if f is not frame]
         content: list = [_image_block(f) for f in strip]

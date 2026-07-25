@@ -65,7 +65,7 @@ import itertools
 import json
 import random
 import sys
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence

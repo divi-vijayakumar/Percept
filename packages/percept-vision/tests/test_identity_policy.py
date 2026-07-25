@@ -12,7 +12,7 @@ import types
 import pytest
 
 from percept.contracts import Goal
-from percept.envelope import EnvelopeViolation, SubjectResolver, SubjectResolverRegistry
+from percept.envelope import EnvelopeViolation, SubjectResolverRegistry
 from percept.identity_policy import (
     STATE_KEY,
     identity_policy_of,

@@ -84,7 +84,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Iterator, Mapping
+from typing import TYPE_CHECKING, Any, Iterator, Mapping
+
+if TYPE_CHECKING:
+    from .episodes import EpisodePolicy
 
 #: ``parameters["change_signal"] == UNTUNED`` means: percept ships NO calibrated admission signal for
 #: this source class and the profile says so out loud. It is not a placeholder to be quietly filled by

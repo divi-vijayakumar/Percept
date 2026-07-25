@@ -34,7 +34,7 @@ _RB_OFFLINE_RE = re.compile(r"\bRB-OFFLINE\b")
 # citations. Ruff/flake8 noqa codes, media/encoding formats, and protocol/transport acronyms.
 _ALLOWLIST = frozenset(
     {
-        # ruff/flake8 `# noqa: <code>` rule codes
+        # ruff/flake8 suppression rule codes
         "BLE001", "E402", "F403", "UP006", "SLF001", "F401", "E731", "D401", "ARG001",
         "PLC0415",
         # media / encoding / format acronyms
