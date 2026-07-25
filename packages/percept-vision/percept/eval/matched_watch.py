@@ -15,12 +15,11 @@ import json
 import math
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
-from percept import Percept
+from percept import Percept, build_info
 from percept._safe_json import SafeInputReceipt, SafeJSONInputError, load_json_file
 from percept.adapters import Verdict
 from percept.config import Settings
@@ -119,17 +118,18 @@ def _exact(value: Mapping[str, Any], keys: set[str], context: str) -> None:
 
 def _text(value: Any, context: str) -> str:
     _require(isinstance(value, str) and bool(value.strip()), f"{context} must be non-empty text")
-    return value.strip()
+    result = value.strip()
+    _require(len(result) <= 4096, f"{context} exceeds the 4096-character limit")
+    return result
 
 
 def _number(value: Any, context: str, *, minimum: float | None = None) -> float:
-    _require(
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(float(value)),
-        f"{context} must be a finite number",
-    )
-    result = float(value)
+    _require(isinstance(value, (int, float)) and not isinstance(value, bool), f"{context} must be a finite number")
+    try:
+        result = float(value)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise MatchedWatchInputError(f"{context} must be a finite number") from exc
+    _require(math.isfinite(result), f"{context} must be a finite number")
     if minimum is not None:
         _require(result >= minimum, f"{context} must be >= {minimum}")
     return result
@@ -341,6 +341,7 @@ class MatchedWatchReceipt:
     event_windows: tuple[Mapping[str, Any], ...]
     evidence_classification: str
     package_version: str
+    build_provenance: Mapping[str, str]
     baseline: ArmReceipt
     adaptive: ArmReceipt
     comparable: bool
@@ -363,6 +364,7 @@ class MatchedWatchReceipt:
             "event_windows": [_thaw(item) for item in self.event_windows],
             "evidence_classification": self.evidence_classification,
             "package_version": self.package_version,
+            "build_provenance": _thaw(self.build_provenance),
             "baseline": self.baseline.to_dict(),
             "adaptive": self.adaptive.to_dict(),
             "comparable": self.comparable,
@@ -456,11 +458,27 @@ def load_matched_watch_manifest(path: str | Path) -> _Manifest:
     media = _object(media_loaded.value, "media")
     _exact(media, _MEDIA_KEYS, "media")
     _require(media["schema"] == _MEDIA_SCHEMA, f"media.schema must be {_MEDIA_SCHEMA!r}")
-    width = int(_number(media["width"], "media.width", minimum=1))
-    height = int(_number(media["height"], "media.height", minimum=1))
+    _require(
+        isinstance(media["width"], int) and not isinstance(media["width"], bool),
+        "media.width must be an exact integer",
+    )
+    _require(
+        isinstance(media["height"], int) and not isinstance(media["height"], bool),
+        "media.height must be an exact integer",
+    )
+    width, height = media["width"], media["height"]
+    _require(1 <= width <= 512 and 1 <= height <= 512, "media dimensions exceed the 512x512 L1 limit")
+    _require(width * height <= 262_144, "media pixel budget exceeds 262144")
 
     raw_frames = media["frames"]
-    _require(isinstance(raw_frames, list) and raw_frames, "media.frames must be non-empty")
+    _require(
+        isinstance(raw_frames, list) and 0 < len(raw_frames) <= 10_000,
+        "media.frames must contain 1..10000 candidates",
+    )
+    _require(
+        len(raw_frames) * width * height <= 4_000_000,
+        "synthetic replay exceeds the 4000000 total-pixel allocation budget",
+    )
     frames: list[_FrameSpec] = []
     prior_t: float | None = None
     for index, raw in enumerate(raw_frames):
@@ -906,7 +924,14 @@ async def _run_arm(manifest: _Manifest, plan: Any, arm: str) -> ArmReceipt:
 
 def _sanitized_effective(arm: ArmReceipt) -> dict[str, Any]:
     effective = dict(arm.resolved_watch["effective"])
-    return {key: value for key, value in effective.items() if key not in _SHA_PATHS}
+    stat = arm.source_profile["parameters"]["salience_stat"]
+    active = {
+        "mean": "Settings.edge.motion_gate",
+        "block_max": "Settings.edge.motion_gate_block_max",
+        "p95": "Settings.edge.motion_gate_p95",
+    }[stat]
+    effective[active] = "<matched-arm-threshold>"
+    return effective
 
 
 def _sanitized_profile(arm: ArmReceipt) -> dict[str, Any]:
@@ -918,8 +943,10 @@ def _sanitized_profile(arm: ArmReceipt) -> dict[str, Any]:
 def _sanitized_binding(arm: ArmReceipt) -> dict[str, Any]:
     binding = _thaw(arm.compiled_binding)
     kwargs = binding["watchspec_kwargs"]
-    kwargs.pop("threshold", None)
-    kwargs.pop("stat_thresholds", None)
+    stat = arm.source_profile["parameters"]["salience_stat"]
+    kwargs["stat_thresholds"][stat] = "<matched-arm-threshold>"
+    if stat == "mean":
+        kwargs["threshold"] = "<matched-arm-threshold>"
     return binding
 
 
@@ -1013,10 +1040,8 @@ async def run_matched_watch_async(path: str | Path) -> MatchedWatchReceipt:
         watch_plan_sha256=plan_sha,
         expected_media_sha256=manifest.media_receipt.sha256,
     )
-    try:
-        package_version = version("percept-vision")
-    except PackageNotFoundError:
-        package_version = "source-tree"
+    provenance = build_info().to_dict()
+    package_version = provenance["package_version"]
     events = tuple(
         MappingProxyType(
             {
@@ -1040,6 +1065,7 @@ async def run_matched_watch_async(path: str | Path) -> MatchedWatchReceipt:
         events,
         manifest.evidence_classification,
         package_version,
+        _freeze(provenance),
         baseline,
         adaptive,
         not blockers,
@@ -1109,10 +1135,72 @@ def derive_viability_rows(receipt: MatchedWatchReceipt) -> tuple[dict[str, Any],
     """Derive the v3 viability rows exclusively from an immutable execution receipt."""
 
     _require(receipt.evidence_classification in _EVIDENCE_CLASSES, "unsupported evidence classification")
-    _require(receipt.comparable, f"matched arms are not comparable: {receipt.comparability_blockers!r}")
-    _require(receipt.baseline.valid and receipt.adaptive.valid, "one or more arm receipts are invalid")
+    manifest_media = _object(receipt.manifest.get("media"), "receipt.manifest.media")
+    _require(
+        manifest_media.get("sha256") == receipt.media_input_receipt.get("sha256"),
+        "receipt media identity does not match its manifest",
+    )
+    _require(
+        _canonical_sha(_thaw(receipt.watch_plan)) == receipt.watch_plan_sha256,
+        "receipt WatchPlan identity mismatch",
+    )
+    _require(
+        _thaw(receipt.manifest.get("judge")) == _thaw(receipt.judge_identity),
+        "receipt judge identity does not match its manifest",
+    )
+    manifest_events = _thaw(receipt.manifest.get("events"))
+    _require(manifest_events == _thaw(receipt.event_windows), "receipt event windows do not match manifest")
+    recomputed_blockers = validate_matched_arms(
+        receipt.baseline,
+        receipt.adaptive,
+        watch_plan_sha256=receipt.watch_plan_sha256,
+        expected_media_sha256=receipt.media_input_receipt.get("sha256"),
+    )
+    _require(not recomputed_blockers, f"matched arms are not comparable: {recomputed_blockers!r}")
     rows: list[dict[str, Any]] = []
     for arm in (receipt.baseline, receipt.adaptive):
+        _require(arm.judge_identity == receipt.judge_identity, "arm judge identity mismatch")
+        recomputed_config = _canonical_sha(
+            {
+                "effective": _thaw(arm.resolved_watch["effective"]),
+                "source_profile": _thaw(arm.source_profile),
+                "compiled_binding": _thaw(arm.compiled_binding),
+            }
+        )
+        _require(recomputed_config == arm.configuration_sha256, "arm configuration hash mismatch")
+        stats = arm.runtime_stats
+        admitted_count = sum(candidate.admitted for candidate in arm.candidates)
+        dispatch_count = sum(candidate.runtime_dispatched for candidate in arm.candidates)
+        _require(
+            stats.get("frames") == len(arm.candidates)
+            and stats.get("goal_admissions") == admitted_count
+            and stats.get("escalations") == admitted_count
+            and stats.get("perceive_dispatches") == dispatch_count
+            and stats.get("judge_calls") == dispatch_count
+            and arm.runtime_dispatches == dispatch_count,
+            "RuntimeStats/runtime dispatch receipt mismatch",
+        )
+        incident_ids = {str(item["id"]) for item in arm.incidents}
+        candidate_incident_ids = {
+            incident_id
+            for candidate in arm.candidates
+            for incident_id in candidate.incident_ids
+        }
+        _require(
+            incident_ids == candidate_incident_ids,
+            "incident records and candidate FIRE links disagree",
+        )
+        _require(
+            tuple(candidate.t for candidate in arm.candidates) == arm.candidate_timestamps,
+            "candidate timestamps disagree with arm receipt",
+        )
+        from_hash = _canonical_sha(receipt.watch_plan["explicit"]["Goal.state.from"])
+        to_hash = _canonical_sha(receipt.watch_plan["explicit"]["Goal.state.to"])
+        for candidate in arm.candidates:
+            _require(
+                (candidate.decision == "fire") == bool(candidate.incident_ids),
+                "candidate decision and incident links disagree",
+            )
         observed_calls = [
             call
             for candidate in arm.candidates
@@ -1128,6 +1216,11 @@ def derive_viability_rows(receipt: MatchedWatchReceipt) -> tuple[dict[str, Any],
                 _require(
                     [call.predicate for call in candidate.provider_calls] == ["from", "to"],
                     "transition dispatch does not carry exact from/to provider subcalls",
+                )
+                _require(
+                    [call.condition_sha256 for call in candidate.provider_calls]
+                    == [from_hash, to_hash],
+                    "provider condition hashes do not match WatchPlan transition",
                 )
                 _require(
                     all(
