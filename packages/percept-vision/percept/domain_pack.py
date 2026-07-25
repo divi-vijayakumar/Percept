@@ -239,6 +239,8 @@ class GoalTemplate:
     - ``sense`` / ``target`` / ``detectors`` / ``extractors`` / ``source`` — mirror
       :class:`~percept.contracts.WatchPlan`'s own same-named fields; ``target`` may also contain
       tokens.
+    - ``identity_policy`` — optional concern-level subject scope/resolver selection, rendered through
+      the typed ``Goal.state.identity_policy`` WatchPlan path rather than hidden in behavior prose.
     - ``behavior`` — the RAW ``goal.state["behavior"]``-shape dict (``type``/``rearm``/``cadence_s``/
       ``deadline_after_s``/``from``/``to``, plus nested ``accumulate``/``consequence`` sub-dicts) —
       the SAME input shape :func:`~percept.behavior.coerce_authored_behavior` expects. Validated at
@@ -272,6 +274,7 @@ class GoalTemplate:
     consequence: Mapping[str, Any] | None = None
     source: str = "camera"
     notes: str = ""
+    identity_policy: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.strip():
@@ -283,6 +286,12 @@ class GoalTemplate:
         object.__setattr__(self, "parameters", MappingProxyType(dict(self.parameters)))
         object.__setattr__(self, "detectors", tuple(self.detectors))
         object.__setattr__(self, "extractors", tuple(self.extractors))
+        if self.identity_policy is not None:
+            if not isinstance(self.identity_policy, str) or not self.identity_policy.strip():
+                raise DomainPackError(
+                    "GoalTemplate.identity_policy must be a non-empty string or None"
+                )
+            object.__setattr__(self, "identity_policy", self.identity_policy.strip())
 
         if not isinstance(self.behavior, Mapping):
             raise DomainPackError("GoalTemplate.behavior must be a mapping")
@@ -349,6 +358,8 @@ class GoalTemplate:
                     f"invalid behavior for {bad}"
                 )
         explicit = _behavior_to_explicit(behavior) if behavior else {}
+        if self.identity_policy is not None:
+            explicit["Goal.state.identity_policy"] = self.identity_policy
         if self.episode:
             for key, value in self.episode.items():
                 explicit[f"Goal.state.episode.{key}"] = value
@@ -381,6 +392,7 @@ class GoalTemplate:
             "consequence": dict(self.consequence) if self.consequence is not None else None,
             "source": self.source,
             "notes": self.notes,
+            "identity_policy": self.identity_policy,
         }
 
 

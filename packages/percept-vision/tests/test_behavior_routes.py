@@ -7,7 +7,7 @@ import unittest
 from dataclasses import replace
 
 from percept import Goal, Percept
-from percept.adapters import Verdict
+from percept.adapters import Box, Observation, Verdict
 from percept.behavior import coerce_authored_behavior
 from percept.behavior_routes import (
     BehaviorRoute,
@@ -25,9 +25,11 @@ from percept.edge.tier0 import (
     gray_frame,
     watchspec_unsupported,
 )
+from percept.incidents import make_incident
 from percept.observability import funnel_key
 from percept.packs_default import FACILITY_OBSERVATION_V1
 from percept.runtime import RuntimeStats, run
+from percept.sourceprofile import SourceProfile
 from percept.watchplan_apply import apply_watch_plan
 
 
@@ -61,6 +63,20 @@ class _RouteVision:
 
     async def detect_events(self, frames, goals):
         return []
+
+
+class _EntityRouteVision(_RouteVision):
+    def __init__(
+        self,
+        script: dict[tuple[str, str], Verdict],
+        detections: dict[str, list[Observation]],
+    ) -> None:
+        super().__init__(script)
+        self.detections = detections
+
+    async def detect(self, frame, goals):
+        self.detect_calls += 1
+        return list(self.detections.get(str(frame), ()))
 
 
 def _transition_plan_core(
@@ -672,6 +688,183 @@ class FacilityOccupancyRuntimeTests(unittest.TestCase):
             _collect(core, _motion_source(tokens), judge_dispatch="inline")
         )
         self.assertEqual([incident.concern_id for incident in incidents], [goal_id])
+
+
+class SceneScopedWatchTests(unittest.TestCase):
+    E1 = Observation("person", Box(0.05, 0.05, 0.2, 0.2), 0.95)
+    E2 = Observation("person", Box(0.70, 0.70, 0.2, 0.2), 0.95)
+
+    @staticmethod
+    def _profile_inheriting_scene() -> SourceProfile:
+        return SourceProfile(
+            name="scene-default",
+            modalities=frozenset({"video"}),
+            temporal_unit="frame",
+            admission_strategy="tier0_motion_salience",
+            evidence_strategy="crop",
+            identity_strategy="scene",
+        )
+
+    def _direct_focus_turnover(
+        self,
+        *,
+        declared_policy: str | None,
+        source_profile: SourceProfile | None = None,
+    ):
+        condition = "a person is present"
+        vision = _EntityRouteVision(
+            {
+                (condition, "e1"): Verdict(True, 0.95, "person one"),
+                (condition, "e2"): Verdict(True, 0.95, "person two"),
+            },
+            {"e1": [self.E1], "e2": [self.E2]},
+        )
+        traces = []
+        core = Percept.create(
+            vision=vision,
+            discover_plugins=False,
+            on_trace=traces.append,
+            source_profile=source_profile,
+        )
+        state = {"type": "watch"}
+        if declared_policy is not None:
+            state["identity_policy"] = declared_policy
+        core.add_goal(Goal("g", condition, "occupied", state=state))
+        first = asyncio.run(core.perceive_judged("e1", t=1.0))
+        second = asyncio.run(core.perceive_judged("e2", t=2.0))
+        return core, traces, first, second
+
+    def test_declared_scene_uses_one_nonentity_reducer_across_focus_turnover(self):
+        core, traces, first, second = self._direct_focus_turnover(
+            declared_policy="scene"
+        )
+        self.assertEqual([event.action for event in first], ["fire"])
+        self.assertEqual(second, [])
+        fire = first[0]
+        self.assertIsNone(fire.entity_id)
+        self.assertEqual(fire.judgment.key, ("g", None))
+        incident = make_incident(fire, ts=1.0)
+        self.assertIsNone(incident.entity_id)
+        gate_rows = [row for row in traces if row.stage == "gate.classified"]
+        self.assertEqual([row.data["entity_id"] for row in gate_rows], [None, None])
+        judgment_row = next(row for row in traces if row.stage == "judgment.event")
+        self.assertIsNone(judgment_row.data["entity_id"])
+        self.assertEqual(
+            incident.judgment_event_id,
+            judgment_row.data["judgment_event_id"],
+        )
+        self.assertIn(("g", None), core.gate._armed)
+        self.assertFalse(
+            any(key[0] == "g" and key[1] is not None for key in core.gate._armed)
+        )
+
+    def test_ordinary_per_entity_and_profile_inherited_scope_are_unchanged(self):
+        cases = (
+            ("undeclared", None, None),
+            ("declared-track", "track_iou_label", None),
+            ("profile-inherited-scene", None, self._profile_inheriting_scene()),
+        )
+        for label, declared, profile in cases:
+            with self.subTest(case=label):
+                _core, traces, first, second = self._direct_focus_turnover(
+                    declared_policy=declared,
+                    source_profile=profile,
+                )
+                self.assertEqual(
+                    [event.action for event in first + second],
+                    ["fire", "fire"],
+                )
+                entity_ids = [event.entity_id for event in first + second]
+                self.assertTrue(all(entity_id is not None for entity_id in entity_ids))
+                self.assertNotEqual(entity_ids[0], entity_ids[1])
+                self.assertEqual(
+                    [event.judgment.key[-1] for event in first + second],
+                    entity_ids,
+                )
+                gate_rows = [row for row in traces if row.stage == "gate.classified"]
+                self.assertEqual(
+                    [row.data["entity_id"] for row in gate_rows],
+                    entity_ids,
+                )
+
+    def test_zone_template_real_worker_fires_once_per_contiguous_scene_interval(self):
+        plan = watch_template("facility_observation@1/zone_occupied")
+        condition = plan.condition
+        tokens = [
+            "prime",
+            "occupied-e1",
+            "occupied-e2",
+            "empty-e2",
+            "occupied-e2-again",
+        ]
+        vision = _EntityRouteVision(
+            {
+                (condition, "occupied-e1"): Verdict(True, 0.95, "person one"),
+                (condition, "occupied-e2"): Verdict(True, 0.95, "person two"),
+                (condition, "empty-e2"): Verdict(False, 0.95, "zone empty"),
+                (condition, "occupied-e2-again"): Verdict(True, 0.95, "person two"),
+            },
+            {
+                "occupied-e1": [self.E1],
+                "occupied-e2": [self.E2],
+                "empty-e2": [self.E2],
+                "occupied-e2-again": [self.E2],
+            },
+        )
+        core = Percept.create(vision=vision, discover_plugins=False)
+        receipt = apply_watch_plan(
+            core, plan, domain_pack=FACILITY_OBSERVATION_V1
+        )
+        self.assertEqual(receipt.status, "applied")
+        goal_id = receipt.watch_ids[0]
+        self.assertEqual(core.goals.get(goal_id).state["identity_policy"], "scene")
+
+        traces = []
+        incidents = asyncio.run(
+            _collect(
+                core,
+                _motion_source(tokens),
+                judge_dispatch="inline",
+                on_trace=traces.append,
+            )
+        )
+
+        # e1 true opens the scene interval; e2 true is the same interval; false closes/re-arms;
+        # e2 true then opens one new interval.
+        self.assertEqual(
+            [incident.concern_id for incident in incidents],
+            [goal_id, goal_id],
+        )
+        self.assertEqual([incident.entity_id for incident in incidents], [None, None])
+        self.assertTrue(
+            all(incident.judgment_event_id is not None for incident in incidents)
+        )
+        gate_rows = [
+            row
+            for row in traces
+            if row.stage == "gate.classified" and row.goal_id == goal_id
+        ]
+        self.assertEqual(
+            [row.data["entity_id"] for row in gate_rows],
+            [None, None, None, None],
+        )
+        judgment_rows = [
+            row
+            for row in traces
+            if row.stage == "judgment.event" and row.goal_id == goal_id
+        ]
+        self.assertEqual(
+            [row.data["entity_id"] for row in judgment_rows],
+            [None, None],
+        )
+        self.assertEqual(
+            [row.data["judgment_event_id"] for row in judgment_rows],
+            [incident.judgment_event_id for incident in incidents],
+        )
+        self.assertIn((goal_id, None), core.gate._armed)
+        self.assertFalse(
+            any(key[0] == goal_id and key[1] is not None for key in core.gate._armed)
+        )
 
 
 if __name__ == "__main__":

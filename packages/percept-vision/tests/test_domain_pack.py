@@ -125,6 +125,16 @@ class TestGoalTemplateValidation(unittest.TestCase):
         t = GoalTemplate(name="t4", condition="x", episode={"policy": "door_interval"})
         self.assertEqual(t.episode["policy"], "door_interval")
 
+    def test_identity_policy_must_be_nonempty_when_declared(self) -> None:
+        for invalid in ("", "  ", 7):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(DomainPackError):
+                    GoalTemplate(
+                        name="bad",
+                        condition="x",
+                        identity_policy=invalid,  # type: ignore[arg-type]
+                    )
+
     def test_empty_condition_raises(self) -> None:
         with self.assertRaises(DomainPackError):
             GoalTemplate(name="t", condition="")
@@ -189,6 +199,16 @@ class TestGoalTemplateRender(unittest.TestCase):
         self.assertEqual(plan.consequence["miss_cost"], "severe")
         # consequence is NOT ownership-gated explicit -- it rides the WatchPlan.consequence field.
         self.assertNotIn("Goal.state.miss_cost", plan.explicit)
+
+    def test_identity_policy_renders_to_typed_state_path_and_serializes(self) -> None:
+        t = GoalTemplate(
+            name="scene",
+            condition="the zone is occupied",
+            identity_policy=" scene ",
+        )
+        self.assertEqual(t.identity_policy, "scene")
+        self.assertEqual(t.render().explicit["Goal.state.identity_policy"], "scene")
+        self.assertEqual(t.to_dict()["identity_policy"], "scene")
 
 
 # ---------------------------------------------------------------------------
@@ -396,6 +416,11 @@ class TestFacilityObservationPack(unittest.TestCase):
     def test_zone_occupied_uses_contiguous_watch_semantics(self) -> None:
         plan = FACILITY_OBSERVATION_V1.template("zone_occupied").render()
         self.assertNotIn("Goal.state.type", plan.explicit)
+        self.assertEqual(plan.explicit["Goal.state.identity_policy"], "scene")
+        self.assertEqual(
+            FACILITY_OBSERVATION_V1.template("zone_occupied").to_dict()["identity_policy"],
+            "scene",
+        )
         self.assertIn("contiguous occupied interval", FACILITY_OBSERVATION_V1.template("zone_occupied").notes)
         self.assertIn("does not identify", FACILITY_OBSERVATION_V1.template("zone_occupied").notes)
 

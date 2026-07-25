@@ -14,9 +14,11 @@ import pytest
 from percept.contracts import Goal
 from percept.envelope import EnvelopeViolation, SubjectResolverRegistry
 from percept.identity_policy import (
+    SCENE_IDENTITY,
     STATE_KEY,
     identity_policy_of,
     select_identity_policy,
+    watch_reducer_entity_id,
 )
 from percept.source_profiles_default import CONVERSATION, PHYSICAL_SCENE, SCREEN_DOCUMENT
 from percept.sourceprofile import SourceProfile
@@ -96,6 +98,22 @@ def test_concern_wins_even_when_it_matches_a_different_source_default():
 
 def test_declared_policy_is_stripped():
     assert identity_policy_of(_goal(**{STATE_KEY: "  content_key  "})) == "content_key"
+
+
+@pytest.mark.parametrize(
+    ("declared", "expected"),
+    [
+        (SCENE_IDENTITY, None),
+        (None, "e1"),
+        ("track_iou_label", "e1"),
+        ("content_key", "e1"),
+    ],
+)
+def test_ordinary_watch_reducer_only_scene_declaration_opts_out_of_focus(
+    declared, expected
+):
+    state = {} if declared is None else {STATE_KEY: declared}
+    assert watch_reducer_entity_id(_goal(**state), "e1") == expected
 
 
 def test_selection_allows_a_client_registered_custom_resolver_name():

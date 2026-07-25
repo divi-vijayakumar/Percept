@@ -31,6 +31,7 @@ from __future__ import annotations
 
 from .direct_judge import DirectRouting
 from .domain_pack import ComponentRecommendation, DomainPack, GoalTemplate, register_domain_pack
+from .identity_policy import SCENE_IDENTITY
 
 # ---------------------------------------------------------------------------
 # Templates
@@ -89,6 +90,7 @@ _ZONE_OCCUPIED = GoalTemplate(
     condition="a person is present in the {zone_name}",
     parameters={"zone_name": "restricted zone"},
     target="person",
+    identity_policy=SCENE_IDENTITY,
     consequence={"miss_cost": "mild", "false_fire_cost": "trivial"},
     notes=(
         "fires once per contiguous occupied interval of the named zone. It does not identify, "

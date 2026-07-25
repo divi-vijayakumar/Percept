@@ -124,6 +124,18 @@ def identity_policy_of(goal: Any) -> str | None:
     return None
 
 
+def watch_reducer_entity_id(goal: Any, focus_id: Hashable) -> Hashable:
+    """Choose the ordinary judged-Watch reducer entity without changing legacy scope.
+
+    Only a concern that explicitly declares ``identity_policy="scene"`` opts out of focus identity
+    and reduces onto the existing non-entity key ``None``. Undeclared concerns — including those
+    whose source profile happens to inherit a scene-like default — and every other declared policy
+    keep the historical focus entity unchanged.
+    """
+
+    return None if identity_policy_of(goal) == SCENE_IDENTITY else focus_id
+
+
 def _assert_within_envelope(
     policy: str,
     resolvers: SubjectResolverRegistry,
@@ -177,5 +189,6 @@ __all__ = [
     "PER_ENTITY_IDENTITY_POLICIES",
     "transition_latch_key",
     "identity_policy_of",
+    "watch_reducer_entity_id",
     "select_identity_policy",
 ]

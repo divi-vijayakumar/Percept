@@ -43,6 +43,7 @@ from .identity_policy import (
     identity_policy_of,
     select_identity_policy,
     transition_latch_key,
+    watch_reducer_entity_id,
 )
 from .judge_context import JUDGE_STATIC_CONTEXT_KEY, ReservedContextKeyError
 from .events import AudioUnit, AudioWindow, EventLog, FrameWindow
@@ -1942,9 +1943,14 @@ class Percept:
             # _claim_episode_fold — this only lets a LIVE reply reach it.
             if self._resolved_identity_policy(goal) == "claim_slot":
                 judge_context = {**(judge_context or {}), "claim_mode": True}
-            # Computed BEFORE the judge call (not just on success) so a degraded tick can be charged
-            # to the SAME key the gate/executor use ("the reducer key") — see _note_judge_degraded.
-            base_key = (goal.id, focus.id if focus else None)
+            # Computed BEFORE the judge call (not just on success) so cache, degradation, sequencing,
+            # gate, evidence and trace all use ONE effective reducer entity. Only a concern-declared
+            # identity_policy="scene" opts out of volatile focus identity; undeclared/profile-only
+            # and every other policy preserve the historical focus-scoped reducer.
+            reducer_entity_id = watch_reducer_entity_id(
+                goal, focus.id if focus else None
+            )
+            base_key = (goal.id, reducer_entity_id)
             # Open this judgment's timing record. ``admitted_ts`` is stamped HERE: tier-0
             # detection and focus resolution are done and this concern is about to spend a judge
             # call, which is exactly "admitted to the judge funnel" (ADR-001 §5). ``source_media_ts``
@@ -1973,7 +1979,7 @@ class Percept:
                     verdict = direct_result.verdict
                 else:
                     verdict = await self._judge(
-                        goal, frame, roi, corrections, entity_id=focus.id if focus else None,
+                        goal, frame, roi, corrections, entity_id=reducer_entity_id,
                         frames=strip, audio=audio, context=judge_context, stale=_stale,
                     )
                 judgment_timing.mark_judge_completed()
@@ -1997,7 +2003,7 @@ class Percept:
                     )
                     await self._emit_trace(trace_id, now, "gate.classified", goal_id=goal.id,
                                            truth="unknown", action="ask",
-                                           entity_id=focus.id if focus else None, degraded=True)
+                                           entity_id=reducer_entity_id, degraded=True)
                 continue  # next goal this SAME frame; the watch loop (and run) continues either way
             if _stale():
                 break  # source/goal generation moved while the judge was in flight: commit nothing
@@ -2064,7 +2070,7 @@ class Percept:
                 await self._emit_trace(trace_id, now, "gate.classified", goal_id=goal.id,
                                        truth=truth, action=action,
                                        reason=_trace_reason(truth, action),
-                                       entity_id=focus.id if focus else None,
+                                       entity_id=reducer_entity_id,
                                        satisfied=getattr(verdict, "satisfied", None),
                                        confidence=getattr(verdict, "confidence", None),
                                        freshness=freshness,
@@ -2084,13 +2090,13 @@ class Percept:
                         trace_id, now, STAGE_JUDGMENT_EVENT, goal_id=goal.id,
                         action=ev_fire.judgment.action,
                         dispatch_seq=ev_fire.judgment.evidence_seq,
-                        entity_id=focus.id if focus else None,
+                        entity_id=reducer_entity_id,
                         # The OPAQUE, INJECTIVE evidence link a client audit resolves: the SAME handle the
                         # delivered Incident carries (make_incident derives it from the same goal/entity/
                         # seq), so exactly one judgment.event row answers each incident.created. A None
                         # evidence_origin on the judged path reads as "judged" — stamp it explicitly here.
                         judgment_event_id=judgment_event_id(
-                            goal.id, focus.id if focus else None, ev_fire.judgment.evidence_seq,
+                            goal.id, reducer_entity_id, ev_fire.judgment.evidence_seq,
                         ),
                         evidence_origin=ev_fire.judgment.evidence_origin or "judged",
                     )
