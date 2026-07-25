@@ -18,10 +18,28 @@ from percept.eval.viability_frontier import (
     main,
 )
 
+REPO = Path(__file__).resolve().parents[3]
+FIXTURE = REPO / "packages" / "percept-vision" / "tests" / "fixtures" / "viability_frontier"
+MANIFEST = FIXTURE / "manifest.json"
+EVIDENCE = FIXTURE / "observations.jsonl"
+
 
 class _HostilePath:
     def __fspath__(self) -> str:
         raise RuntimeError("hostile path coercion")
+
+
+class _StatefulPath:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.calls = 0
+
+    def __fspath__(self) -> str:
+        self.calls += 1
+        return str(self.path)
+
+    def __str__(self) -> str:
+        return os.fspath(self)
 
 
 @pytest.mark.parametrize("loader", [load_viability_manifest, load_viability_evidence])
@@ -37,6 +55,21 @@ def test_public_loaders_turn_bytes_paths_into_controlled_errors(tmp_path, loader
 def test_public_loaders_control_hostile_pathlike_exceptions(loader):
     with pytest.raises(ViabilityInputError, match="hostile path coercion"):
         loader(_HostilePath())
+
+
+@pytest.mark.parametrize(
+    ("loader", "source"),
+    [
+        (load_viability_manifest, MANIFEST),
+        (load_viability_evidence, EVIDENCE),
+    ],
+)
+def test_public_loaders_coerce_stateful_pathlike_exactly_once(loader, source):
+    stateful = _StatefulPath(source)
+
+    loader(stateful)
+
+    assert stateful.calls == 1
 
 
 def test_safe_json_receipt_binds_exact_descriptor_snapshot(tmp_path):

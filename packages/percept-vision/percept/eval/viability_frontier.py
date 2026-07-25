@@ -837,10 +837,10 @@ def load_viability_manifest(path: str | Path) -> dict[str, Any]:
 
 
 def _path_label(path: object) -> str:
-    try:
-        return str(path)
-    except Exception:
-        return "<invalid path>"
+    # Do not invoke arbitrary ``__str__``/``__fspath__`` caller code before the safe reader's
+    # single protected coercion. Strings are already inert labels; every other input gets a stable
+    # placeholder until a verified receipt exists.
+    return path if isinstance(path, str) else "<path input>"
 
 
 def load_viability_evidence(path: str | Path) -> list[dict[str, Any]]:
