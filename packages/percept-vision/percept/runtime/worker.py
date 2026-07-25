@@ -26,6 +26,23 @@ from percept.observability import get_logger
 _log = get_logger("percept.runtime.worker")
 
 
+def _accepts_keyword(callable_obj: Any, name: str) -> bool:
+    """Whether a duck-typed callable explicitly accepts ``name`` or arbitrary keywords.
+
+    Signature inspection happens before invocation: an internal ``TypeError`` raised by the callable
+    is therefore never mistaken for an unsupported keyword and retried/swallowed.
+    """
+    try:
+        parameters = inspect.signature(callable_obj).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == name
+        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
+
 # The vocabulary of REASONS a run's effective fps can differ from the requested one.
 # Closed set on purpose: a client reading a manifest at 2am must be able to map the value to a
 # sentence, not guess. "profile-default" means nothing overrode the request.
@@ -269,6 +286,7 @@ class _JudgeScheduler:
         self._stall_reported = False        # latched: "judge_scheduler_stalled" already fired for it
         self._consec_supersede = 0          # supersessions in a row with no intervening completion
         self._backpressure_reported = False  # latched: "judge_scheduler_backpressure" already fired
+        self._perceive_accepts_goal_ids = _accepts_keyword(core.perceive_judged, "goal_ids")
 
     def _mc_now(self, fallback: float) -> float:
         """"Now" for a MetricsCollector stamp: the core's own clock when available (real elapsed time
@@ -396,7 +414,7 @@ class _JudgeScheduler:
         self._active_launch_wall = self._mc_now(t)  # this task's own clock, for stall detection
         self._stall_reported = False  # a fresh launch is unlatched — the stall window resets
         kwargs = {"t": t, "expected_goals_revision": revision}
-        if goal_ids is not None:
+        if goal_ids is not None and self._perceive_accepts_goal_ids:
             kwargs["goal_ids"] = goal_ids
         self._active = asyncio.create_task(
             self._core.perceive_judged(frame, self._source, **kwargs)
@@ -1489,6 +1507,7 @@ async def run(
                 return repr((
                     watchspec,
                     goal.state.get("cadence"),
+                    goal.state.get("schedule"),
                     goal.state.get("sense"),
                     goal.state.get("perception"),
                 ))
@@ -1651,6 +1670,16 @@ async def run(
         # byte-for-byte. Sync (unlike the async boundary check).
         check_coverage = getattr(core, "check_observability", None)
         check_deadlines = getattr(core, "check_deadlines", None)
+        boundary_accepts_goal_ids = (
+            check_boundary is not None and _accepts_keyword(check_boundary, "goal_ids")
+        )
+        coverage_accepts_goal_ids = (
+            check_coverage is not None and _accepts_keyword(check_coverage, "goal_ids")
+        )
+        deadlines_accepts_goal_ids = (
+            check_deadlines is not None and _accepts_keyword(check_deadlines, "goal_ids")
+        )
+        perceive_accepts_goal_ids = _accepts_keyword(core.perceive_judged, "goal_ids")
 
         # --- autosave: periodically persist state so a crash/restart resumes, not restarts. ----
         # Also persists the delivery idempotency ledger's snapshot() (event_id -> ts of a
@@ -2097,17 +2126,33 @@ async def run(
                 continue
 
             # boundary first: it must see quiet frames too (the episode ends when activity stops)
+            source_goal_ids = tuple(goal.id for goal in _source_goals())
             if check_boundary is not None:
-                async for incident in _emit_fires(await check_boundary(t=t, inactivity_s=episode_inactivity_s), at=t, from_boundary=True):
+                boundary_kwargs = {"t": t, "inactivity_s": episode_inactivity_s}
+                if boundary_accepts_goal_ids:
+                    boundary_kwargs["goal_ids"] = source_goal_ids
+                async for incident in _emit_fires(
+                    await check_boundary(**boundary_kwargs), at=t, from_boundary=True
+                ):
                     yield incident
             # Absence-native fires — coverage loss ("I can't see the baby") + overdue deadlines.
             # Sync; ride every frame so they fire on quiet frames the gate skips. from_boundary=True marks
             # that they did NOT pass through perceive_judged (no upstream judge stage in their trace).
             if check_coverage is not None:
-                async for incident in _emit_fires(check_coverage(t=t, staleness_s=coverage_staleness_s), at=t, from_boundary=True):
+                coverage_kwargs = {"t": t, "staleness_s": coverage_staleness_s}
+                if coverage_accepts_goal_ids:
+                    coverage_kwargs["goal_ids"] = source_goal_ids
+                async for incident in _emit_fires(
+                    check_coverage(**coverage_kwargs), at=t, from_boundary=True
+                ):
                     yield incident
             if check_deadlines is not None:
-                async for incident in _emit_fires(check_deadlines(t=t), at=t, from_boundary=True):
+                deadline_kwargs = {"t": t}
+                if deadlines_accepts_goal_ids:
+                    deadline_kwargs["goal_ids"] = source_goal_ids
+                async for incident in _emit_fires(
+                    check_deadlines(**deadline_kwargs), at=t, from_boundary=True
+                ):
                     yield incident
 
             # Feed the latest audio energy so a goal with a WakePolicy can fuse it; None (no audio_source)
@@ -2169,9 +2214,13 @@ async def run(
                 # Backward compatibility for an explicitly configured audio wake on legacy
                 # vision-only goals: when no Watch declares an audio modality, the wake retains its
                 # historical all-goals behavior. Once audio/fused Watches exist, only they consume it.
-                for goal in audio_goals or _source_goals():
-                    if goal.id not in admitted_goal_ids:
-                        admitted_goal_ids.append(goal.id)
+                externally_admitted = gate.admit_external(
+                    [goal.id for goal in (audio_goals or _source_goals())],
+                    ts=t,
+                )
+                for goal_id in externally_admitted:
+                    if goal_id not in admitted_goal_ids:
+                        admitted_goal_ids.append(goal_id)
             # A compiled audio/fused Watch may never fall through to a provider with ``audio=None``:
             # that changes the question into vision-only perception. Drop only the affected Watch,
             # report the missing channel once, and keep this source worker alive for other Watches.
@@ -2250,11 +2299,11 @@ async def run(
                 _judge_sched.submit(t, judge_frame, tuple(admitted_goal_ids))
             else:
                 _cov.judge_calls += 1
+                perceive_kwargs = {"t": t}
+                if perceive_accepts_goal_ids:
+                    perceive_kwargs["goal_ids"] = tuple(admitted_goal_ids)
                 fires = await core.perceive_judged(
-                    judge_frame,
-                    gate_source,
-                    t=t,
-                    goal_ids=tuple(admitted_goal_ids),
+                    judge_frame, gate_source, **perceive_kwargs
                 )
                 async for incident in _emit_fires(fires, at=t):
                     yield incident

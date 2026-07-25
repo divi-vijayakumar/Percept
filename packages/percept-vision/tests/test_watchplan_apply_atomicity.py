@@ -1,9 +1,8 @@
-"""P06-001 two-phase atomic ``apply_watch_plan`` — a batch arms every goal or none.
+"""P06-001 prepared ``apply_watch_plan`` with bounded rollback.
 
-Phase 1 PREPARE builds every goal + every judge binding with NO runtime mutation; Phase 2 COMMIT
-arms the goals and registers the bindings only after the whole batch prepared. A judge PREPARE
-failure (a factory that raises, or a static context that fails its digest check) must leave the
-runtime untouched and surface a structured rejected receipt.
+Phase 1 PREPARE builds every goal + every judge binding with NO runtime mutation. Cache invalidation
+is preflighted before Phase 2 COMMIT, and owned goal/binding/ledger state is restored if commit fails.
+A judge PREPARE failure must leave the runtime untouched and surface a structured rejected receipt.
 
 All doubles are LOCAL. ``percept.judge_registry`` (built by the parallel wave) is not importable in
 this worktree, so the tests install a fake module matching its pinned interface
@@ -218,6 +217,105 @@ class AtomicApplyTests(unittest.TestCase):
         core.apply_goal_ops([GoalOp(op="cancel", goal_id="p1")])
         self.assertNotIn("p1", core._judge_bindings)
         self.assertNotIn("p1", core._judge_requesting_goal_ids)
+
+    def test_cache_invalidation_failure_arms_nothing(self):
+        core = _core()
+        apply_watch_plan(core, _plan("prior"))
+        goals_before = core.goals.snapshot()
+        bindings_before = dict(core._watch_runtime_bindings)
+        keys_before = dict(core._watch_runtime_keys)
+        ledger_before = dict(core._watchplan_applied_hashes)
+
+        def fail_cache(_goal_id):
+            raise RuntimeError("cache backend unavailable")
+
+        core.invalidate_cache = fail_cache
+        receipt = apply_watch_plan(core, [_plan("p1"), _plan("p2")])
+
+        self.assertEqual(receipt.status, "rejected")
+        self.assertEqual(receipt.dropped_fields[0].code, "commit_preflight_failed")
+        self.assertEqual(core.goals.snapshot(), goals_before)
+        self.assertEqual(core._watch_runtime_bindings, bindings_before)
+        self.assertEqual(core._watch_runtime_keys, keys_before)
+        self.assertEqual(core._watchplan_applied_hashes, ledger_before)
+
+    def test_unexpected_commit_failure_restores_owned_runtime_state(self):
+        core = _core()
+        original_register = core._register_watch_runtime
+        calls = 0
+
+        def fail_second(goal_id, compiled, source_profile=None, application_key=None):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("binding store failed")
+            return original_register(
+                goal_id,
+                compiled,
+                source_profile,
+                application_key=application_key,
+            )
+
+        core._register_watch_runtime = fail_second
+        receipt = apply_watch_plan(core, [_plan("p1"), _plan("p2")])
+
+        self.assertEqual(receipt.status, "rejected")
+        self.assertEqual(receipt.dropped_fields[0].code, "commit_failed_rolled_back")
+        self.assertIsNone(core.goals.get("p1"))
+        self.assertIsNone(core.goals.get("p2"))
+        self.assertEqual(core._watch_runtime_bindings, {})
+        self.assertEqual(core._watch_runtime_keys, {})
+        self.assertEqual(core._judge_bindings, {})
+        self.assertFalse(hasattr(core, "_watchplan_applied_hashes"))
+
+    def test_distinct_plans_with_one_goal_id_reject_the_entire_batch(self):
+        core = _core()
+        receipt = apply_watch_plan(
+            core,
+            [
+                WatchPlan(id="same", condition="first condition"),
+                WatchPlan(id="same", condition="different condition"),
+            ],
+        )
+        self.assertEqual(receipt.status, "rejected")
+        self.assertEqual(receipt.dropped_fields[0].code, "duplicate_goal_id_in_batch")
+        self.assertEqual(core.goals.all(), [])
+
+    def test_goal_update_clears_compiled_binding_key_and_apply_ledger_hit(self):
+        core = _core()
+        plan = _plan("p1")
+        self.assertEqual(apply_watch_plan(core, plan).status, "applied")
+        self.assertTrue(core._watchplan_applied_hashes)
+
+        core.apply_goal_ops([
+            GoalOp(op="update", goal_id="p1", fields={"condition": "updated condition"})
+        ])
+
+        self.assertNotIn("p1", core._watch_runtime_bindings)
+        self.assertNotIn("p1", core._watch_runtime_keys)
+        self.assertFalse(core._watchplan_applied_hashes)
+        replay = apply_watch_plan(core, plan)
+        self.assertEqual(replay.status, "rejected")
+        self.assertEqual(
+            replay.dropped_fields[0].code,
+            "active_goal_id_reconfiguration_unsupported",
+        )
+
+    def test_restore_clears_session_local_compiled_and_apply_state(self):
+        core = _core()
+        self.assertEqual(apply_watch_plan(core, _plan("p1")).status, "applied")
+        snap = core.snapshot()
+        self.assertIn("p1", core._watch_runtime_bindings)
+        self.assertTrue(core._watchplan_applied_hashes)
+
+        core.restore(snap)
+
+        self.assertIsNotNone(core.goals.get("p1"))
+        self.assertEqual(core._watch_runtime_bindings, {})
+        self.assertEqual(core._watch_runtime_keys, {})
+        self.assertEqual(core._judge_bindings, {})
+        self.assertEqual(core._judge_requesting_goal_ids, set())
+        self.assertFalse(core._watchplan_applied_hashes)
 
 
 if __name__ == "__main__":  # pragma: no cover

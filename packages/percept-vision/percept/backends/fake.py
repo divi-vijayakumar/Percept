@@ -45,7 +45,7 @@ class FakeVision:
     PARSES_CLAIM_CHANNEL = True
     # The scripted backend consumes the audio token when supplied, so it is a valid deterministic
     # test double for the runtime's audio/fused payload contract.
-    SUPPORTS_AUDIO_INPUT = True
+    SUPPORTS_FUSED_AUDIO_INPUT = True
 
     def __init__(
         self,

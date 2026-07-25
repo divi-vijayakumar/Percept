@@ -826,22 +826,21 @@ class Percept:
         return cls.configure(**dict(bundle))
 
     # -- goal authoring ------------------------------------------------------
-    def add_goal(self, goal: Goal) -> Goal:
+    def add_goal(self, goal: Goal, *, _cache_preinvalidated: bool = False) -> Goal:
         # PROVENANCE: the STRUCTURED entry point stamps STRUCTURED_TRUSTED, OVERWRITING
         # whatever the caller supplied — a caller cannot claim interrupt-trust by pre-filling ``origin``.
         # ``replace`` (not in-place set) so this is correct even if Goal is later frozen.
         goal = replace(goal, origin=GoalOrigin.STRUCTURED_TRUSTED)
         self._arm_deadline(goal)  # resolve an authored duration into an absolute stamp at ARM time
+        # Fail before mutating the registry or bindings. ``apply_watch_plan`` preflights a whole batch
+        # and sets the private flag so a cache failure cannot leave half the batch armed.
+        if not _cache_preinvalidated:
+            self.invalidate_cache(goal.id)
         # A direct same-id re-arm must not inherit the prior WatchPlan's compiled configuration or
         # judge adapter. ``apply_watch_plan`` registers replacement bindings immediately afterward.
         self._release_judge_binding(goal.id)
         self._release_watch_runtime(goal.id)
         result = self.goals.create(goal)
-        # Cache-invalidate on the direct arm() path too (only apply_goal_ops did before). A goal id
-        # re-armed with a new condition must not be served a verdict cached under its OLD meaning — the
-        # goal-change step of the invalidation order. Runs AFTER _arm_deadline so a legacy
-        # deadline_s still raises loudly (never silently cached-then-armed).
-        self.invalidate_cache(goal.id)
         return result
 
     # -- per-goal judge binding: register/release/select ---------------------------------------------
@@ -877,9 +876,14 @@ class Percept:
             self._watch_runtime_keys[goal_id] = application_key
 
     def _release_watch_runtime(self, goal_id: str) -> None:
-        """Release an applied Watch's session-local compiled binding."""
+        """Release an applied Watch's compiled binding and invalidate its apply-ledger hits."""
         self._watch_runtime_bindings.pop(goal_id, None)
         self._watch_runtime_keys.pop(goal_id, None)
+        ledger = getattr(self, "_watchplan_applied_hashes", None)
+        if isinstance(ledger, dict):
+            for key, value in list(ledger.items()):
+                if value and value[0] == goal_id:
+                    ledger.pop(key, None)
 
     def _watch_runtime_for(self, goal: "Goal | str") -> Any:
         goal_id = goal if isinstance(goal, str) else goal.id
@@ -1145,9 +1149,10 @@ class Percept:
             # changed must not be served from a verdict cached under its old meaning.
             if op.op in ("update", "complete", "cancel") and gid is not None:
                 self.invalidate_cache(gid)
-            # A completed/cancelled goal releases its per-goal judge binding so a later goal
-            # re-using the id cannot inherit a stale judge, and the invariant mark cannot outlive the goal.
-            if op.op in ("complete", "cancel") and gid is not None:
+            # Every lifecycle mutation invalidates compiled/judge identity. An update can change the
+            # condition, source, schedule or modality just as decisively as a cancel/re-arm; a create
+            # may replace an existing id. Neither may retain a stale binding or apply-ledger hit.
+            if op.op in ("create", "update", "complete", "cancel") and gid is not None:
                 self._release_judge_binding(gid)
                 self._release_watch_runtime(gid)
 
@@ -1310,7 +1315,11 @@ class Percept:
 
     # -- observability: coverage-loss fires with the concern's consequence ----
     def check_observability(
-        self, *, t: float | None = None, staleness_s: float | None = None
+        self,
+        *,
+        t: float | None = None,
+        staleness_s: float | None = None,
+        goal_ids: "tuple[str, ...] | None" = None,
     ) -> list[FireEvent]:
         """Fire when a high-consequence concern LOSES perceptual coverage.
 
@@ -1327,7 +1336,10 @@ class Percept:
         now = self.clock() if t is None else t
         bound = staleness_s if staleness_s is not None else self.settings.gate.validity_window_s
         out: list[FireEvent] = []
+        selected = None if goal_ids is None else frozenset(goal_ids)
         for goal in self.goals.active():
+            if selected is not None and goal.id not in selected:
+                continue
             if goal.state.get("miss_cost", "mild") != "severe":
                 continue
             last = self.last_supported.get(goal.id)
@@ -1359,7 +1371,9 @@ class Percept:
         )
 
     # -- absence-native firing: an expected concern overdue -----------------
-    def check_deadlines(self, *, t: float | None = None) -> list[FireEvent]:
+    def check_deadlines(
+        self, *, t: float | None = None, goal_ids: "tuple[str, ...] | None" = None
+    ) -> list[FireEvent]:
         """An EXPECTED concern not satisfied by its deadline fires "overdue".
 
         Absence IS the firing — there is no positive event to perceive, so this is perception-robust
@@ -1370,7 +1384,10 @@ class Percept:
         """
         now = self.clock() if t is None else t
         out: list[FireEvent] = []
+        selected = None if goal_ids is None else frozenset(goal_ids)
         for goal in self.goals.active():
+            if selected is not None and goal.id not in selected:
+                continue
             if goal.state.get("rearm") != "deadline":
                 continue
             # absence firing (synthetic overdue verdict on the __overdue__ key) lives in the executor;
@@ -1387,7 +1404,11 @@ class Percept:
 
     # -- Item 4: the episode boundary fires the consolidated process answer -------------------
     async def check_episode_boundary(
-        self, *, t: float | None = None, inactivity_s: float | None = None
+        self,
+        *,
+        t: float | None = None,
+        inactivity_s: float | None = None,
+        goal_ids: "tuple[str, ...] | None" = None,
     ) -> list[FireEvent]:
         """A process activity that has gone quiet (no NEW step for ``inactivity_s``) ENDED — summarize the
         logged deltas, emit the answer, and wipe. Cognition-owned, perception-robust (fires on the
@@ -1398,7 +1419,10 @@ class Percept:
         now = self.clock() if t is None else t
         bound = inactivity_s if inactivity_s is not None else self.settings.gate.validity_window_s
         out: list[FireEvent] = []
+        selected = None if goal_ids is None else frozenset(goal_ids)
         for goal in self.goals.active():
+            if selected is not None and goal.id not in selected:
+                continue
             gtype = goal.state.get("type")
             ctx = self.executor.ctx(goal.id)
             ended = (
@@ -3028,6 +3052,17 @@ class Percept:
         duration-from-restore-now so the concern still fires."""
         # v1 vs v2 is detected structurally (a v2 goal carries deadline_at_epoch; a v1 goal a legacy
         # deadline_s), so a missing/renumbered version field can never silently mis-route a deadline.
+        # Compiled Watch and judge bindings are session-local and are not serialized in this snapshot.
+        # Clear them (and every apply-ledger hit) before restoring goals; retaining one would attach
+        # pre-restart configuration or an adapter to a newly deserialized goal solely because its id
+        # matched.
+        self._watch_runtime_bindings.clear()
+        self._watch_runtime_keys.clear()
+        self._judge_bindings.clear()
+        self._judge_requesting_goal_ids.clear()
+        ledger = getattr(self, "_watchplan_applied_hashes", None)
+        if isinstance(ledger, dict):
+            ledger.clear()
         self.goals.restore(snap.get("goals", []))
         self.graph.restore(snap.get("entities", []))
         self.action_log = ActionLog()

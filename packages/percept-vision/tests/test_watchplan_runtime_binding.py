@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import unittest
 
-from percept import Percept
+from percept import Goal, Percept
 from percept.adapters import Verdict
 from percept.backends.anthropic import AnthropicVision
 from percept.backends.fake import FakeVision
@@ -20,10 +20,14 @@ from percept.behavior import program_of
 from percept.contracts import AudioFrame
 from percept.contracts.watchplan import WatchPlan
 from percept.goals import GoalOp
-from percept.harness.tier0 import Frame, gray_frame
+from percept.harness.tier0 import CivilTime, Frame, gray_frame
 from percept.profile_wiring import resolve_watch_profile
-from percept.runtime.worker import run
-from percept.sourceprofile import SourceProfile
+from percept.runtime.worker import RuntimeStats, run
+from percept.sourceprofile import (
+    DEFAULT_SOURCE_REGISTRY,
+    SourceProfile,
+    register_source_profile,
+)
 from percept.watchplan_apply import apply_watch_plan
 from percept.watchprofile import (
     CadenceProfile,
@@ -53,6 +57,7 @@ def _profile(
     coast_interval_s: float | None = None,
     identity: str = "track_continuity",
     timebase: str = "auto",
+    coverage_floor: float | None = None,
     modalities: frozenset[str] = frozenset({"video"}),
 ) -> SourceProfile:
     parameters = {
@@ -61,6 +66,8 @@ def _profile(
     }
     if coast_interval_s is not None:
         parameters["coast_interval_s"] = coast_interval_s
+    if coverage_floor is not None:
+        parameters["coverage_floor"] = coverage_floor
     return SourceProfile(
         name=name,
         modalities=modalities,
@@ -74,7 +81,7 @@ def _profile(
 
 
 class RecordingVision:
-    SUPPORTS_AUDIO_INPUT = True
+    SUPPORTS_FUSED_AUDIO_INPUT = True
 
     def __init__(self) -> None:
         self.detected: list[tuple[str, ...]] = []
@@ -92,7 +99,7 @@ class RecordingVision:
 
 
 class VisionOnlyRecording(RecordingVision):
-    SUPPORTS_AUDIO_INPUT = False
+    SUPPORTS_FUSED_AUDIO_INPUT = False
 
 
 async def _collect(core: Percept, source, **kwargs):
@@ -105,7 +112,6 @@ class WatchPlanCompilationTests(unittest.TestCase):
         expected = {
             "video": "vision",
             "vision": "vision",
-            "audio": "audio",
             "fused": "fused",
         }
         for index, (sense, modality) in enumerate(expected.items()):
@@ -167,59 +173,27 @@ class WatchPlanCompilationTests(unittest.TestCase):
             "source_profile_modality_mismatch",
         )
 
-    def test_audio_and_fused_refuse_a_backend_that_discards_audio(self) -> None:
-        for backend_type in (AnthropicVision, OpenRouterVision):
-            for sense in ("audio", "fused"):
-                with self.subTest(backend=backend_type.__name__, sense=sense):
-                    core = Percept.create(
-                        vision=backend_type(client=object()),
-                        discover_plugins=False,
-                    )
-                    receipt = apply_watch_plan(
-                        core,
-                        WatchPlan(id=sense, condition="a sound matters", sense=sense),
-                    )
-                    self.assertEqual(receipt.status, "rejected")
-                    self.assertEqual(
-                        receipt.dropped_fields[0].code,
-                        "audio_input_backend_unsupported",
-                    )
-                    self.assertEqual(core.goals.all(), [])
-
-    def test_gemini_and_scripted_accept_audio_and_fused_before_any_provider_call(self) -> None:
-        backends = (
-            GeminiVision(client=object()),
-            FakeVision(),
+    def test_audio_only_is_rejected_until_it_has_a_carrier_independent_loop(self) -> None:
+        core = Percept.create(vision=RecordingVision(), discover_plugins=False)
+        receipt = apply_watch_plan(
+            core,
+            WatchPlan(id="audio", condition="a sound matters", sense="audio"),
         )
-        for backend in backends:
-            for sense in ("audio", "fused"):
-                with self.subTest(backend=type(backend).__name__, sense=sense):
-                    kwargs = {"mode": "offline"} if isinstance(backend, FakeVision) else {}
-                    core = Percept.create(
-                        vision=backend,
-                        discover_plugins=False,
-                        **kwargs,
-                    )
-                    receipt = apply_watch_plan(
-                        core,
-                        WatchPlan(id=sense, condition="a sound matters", sense=sense),
-                    )
-                    self.assertEqual(receipt.status, "applied")
-                    self.assertEqual(
-                        program_of(core.goals.get(sense)).perception.modality,
-                        sense,
-                    )
+        self.assertEqual(receipt.status, "rejected")
+        self.assertEqual(receipt.dropped_fields[0].code, "unsupported_media_sense")
+        self.assertIn("carrier-independent audio", receipt.dropped_fields[0].message)
+        self.assertEqual(core.goals.all(), [])
 
-    def test_unverified_custom_backend_is_also_refused_for_audio(self) -> None:
-        for sense in ("audio", "fused"):
-            with self.subTest(sense=sense):
+    def test_fused_refuses_a_backend_that_discards_audio(self) -> None:
+        for backend_type in (AnthropicVision, OpenRouterVision):
+            with self.subTest(backend=backend_type.__name__):
                 core = Percept.create(
-                    vision=VisionOnlyRecording(),
+                    vision=backend_type(client=object()),
                     discover_plugins=False,
                 )
                 receipt = apply_watch_plan(
                     core,
-                    WatchPlan(id=sense, condition="a sound matters", sense=sense),
+                    WatchPlan(id="fused", condition="a sound matters", sense="fused"),
                 )
                 self.assertEqual(receipt.status, "rejected")
                 self.assertEqual(
@@ -227,6 +201,45 @@ class WatchPlanCompilationTests(unittest.TestCase):
                     "audio_input_backend_unsupported",
                 )
                 self.assertEqual(core.goals.all(), [])
+
+    def test_gemini_and_scripted_accept_fused_before_any_provider_call(self) -> None:
+        backends = (
+            GeminiVision(client=object()),
+            FakeVision(),
+        )
+        for backend in backends:
+            with self.subTest(backend=type(backend).__name__):
+                kwargs = {"mode": "offline"} if isinstance(backend, FakeVision) else {}
+                core = Percept.create(
+                    vision=backend,
+                    discover_plugins=False,
+                    **kwargs,
+                )
+                receipt = apply_watch_plan(
+                    core,
+                    WatchPlan(id="fused", condition="a sound matters", sense="fused"),
+                )
+                self.assertEqual(receipt.status, "applied")
+                self.assertEqual(
+                    program_of(core.goals.get("fused")).perception.modality,
+                    "fused",
+                )
+
+    def test_unverified_custom_backend_is_also_refused_for_fused(self) -> None:
+        core = Percept.create(
+            vision=VisionOnlyRecording(),
+            discover_plugins=False,
+        )
+        receipt = apply_watch_plan(
+            core,
+            WatchPlan(id="fused", condition="a sound matters", sense="fused"),
+        )
+        self.assertEqual(receipt.status, "rejected")
+        self.assertEqual(
+            receipt.dropped_fields[0].code,
+            "audio_input_backend_unsupported",
+        )
+        self.assertEqual(core.goals.all(), [])
 
     def test_reserved_but_inert_typed_fields_are_rejected(self) -> None:
         fields = {
@@ -277,20 +290,39 @@ class WatchPlanCompilationTests(unittest.TestCase):
         self.assertIs(core._watch_runtime_bindings["g"], first_binding)
 
         reconfigured = apply_watch_plan(core, plan, source_profile=local)
-        self.assertEqual(reconfigured.status, "applied")
-        self.assertGreater(core.goals.revision, first_revision)
-        compiled, bound_profile = core._watch_runtime_bindings["g"]
-        self.assertIs(bound_profile, local)
-        self.assertEqual(compiled.watchspec_kwargs["salience_stat"], "block_max")
-        self.assertEqual(compiled.watchspec_kwargs["stat_thresholds"]["block_max"], 0.2)
+        self.assertEqual(reconfigured.status, "rejected")
+        self.assertEqual(
+            reconfigured.dropped_fields[0].code,
+            "active_goal_id_reconfiguration_unsupported",
+        )
+        self.assertEqual(core.goals.revision, first_revision)
+        self.assertIs(core._watch_runtime_bindings["g"], first_binding)
 
-        second_revision = core.goals.revision
-        restored = apply_watch_plan(core, plan, source_profile=strict)
-        self.assertEqual(restored.status, "applied")
-        self.assertGreater(core.goals.revision, second_revision)
-        restored_compiled, restored_profile = core._watch_runtime_bindings["g"]
-        self.assertIs(restored_profile, strict)
-        self.assertEqual(restored_compiled.watchspec_kwargs["salience_stat"], "mean")
+    def test_changed_same_id_plan_cannot_inherit_live_cognitive_state(self) -> None:
+        core = Percept.create(vision=RecordingVision(), discover_plugins=False)
+        original = WatchPlan(id="g", condition="a person enters", sense="video")
+        self.assertEqual(apply_watch_plan(core, original).status, "applied")
+        goal_before = core.goals.get("g")
+        binding_before = core._watch_runtime_bindings["g"]
+        ctx_before = core.executor.ctx("g")
+        ctx_before.process_log = [{"step": "existing episode state"}]
+        revision_before = core.goals.revision
+
+        receipt = apply_watch_plan(
+            core,
+            WatchPlan(id="g", condition="a different person leaves", sense="video"),
+        )
+
+        self.assertEqual(receipt.status, "rejected")
+        self.assertEqual(
+            receipt.dropped_fields[0].code,
+            "active_goal_id_reconfiguration_unsupported",
+        )
+        self.assertIs(core.goals.get("g"), goal_before)
+        self.assertIs(core._watch_runtime_bindings["g"], binding_before)
+        self.assertIs(core.executor.ctx("g"), ctx_before)
+        self.assertEqual(ctx_before.process_log, [{"step": "existing episode state"}])
+        self.assertEqual(core.goals.revision, revision_before)
 
     def test_watch_profile_cadence_and_plan_mode_reach_the_armed_watch(self) -> None:
         profile = WatchProfile(
@@ -328,8 +360,127 @@ class WatchPlanCompilationTests(unittest.TestCase):
         self.assertEqual(goal.state["sense"]["base_fps"], 2.0)
         self.assertEqual(goal.state["sense"]["max_fps"], 3.0)
 
+    def test_apply_inherits_the_core_source_profile_and_its_runtime_contract(self) -> None:
+        profile = _profile(
+            "core-selected",
+            stat="block_max",
+            threshold=0.23,
+            timebase="wall",
+            coverage_floor=2.0,
+        )
+        core = Percept.create(
+            vision=RecordingVision(),
+            source_profile=profile,
+            discover_plugins=False,
+        )
+        receipt = apply_watch_plan(
+            core,
+            WatchPlan(id="g", condition="a person enters", sense="video"),
+        )
+        self.assertEqual(receipt.status, "applied")
+        compiled, bound = core._watch_runtime_bindings["g"]
+        self.assertIs(bound, profile)
+        self.assertEqual(compiled.timebase, "wall")
+        self.assertEqual(compiled.coverage_floor, 2.0)
+        self.assertEqual(compiled.watchspec_kwargs["salience_stat"], "block_max")
+
+    def test_apply_rejects_a_sense_missing_from_the_core_source_profile(self) -> None:
+        core = Percept.create(
+            vision=RecordingVision(),
+            source_profile=_profile(
+                "core-audio-only",
+                modalities=frozenset({"audio"}),
+            ),
+            discover_plugins=False,
+        )
+        receipt = apply_watch_plan(
+            core,
+            WatchPlan(id="g", condition="a person enters", sense="video"),
+        )
+        self.assertEqual(receipt.status, "rejected")
+        self.assertEqual(
+            receipt.dropped_fields[0].code,
+            "source_profile_modality_mismatch",
+        )
+
+    def test_profile_name_collision_is_rejected_instead_of_guessing_a_profile_kind(self) -> None:
+        name = "p1-profile-kind-collision"
+        source_profile = _profile(name)
+        watch_profile = WatchProfile(
+            name=name,
+            environment="fixed",
+            goal_type="dynamic",
+            state="transition",
+        )
+        registry = WatchProfileRegistry()
+        registry.register(watch_profile)
+        register_source_profile(source_profile)
+        try:
+            core = Percept.create(vision=RecordingVision(), discover_plugins=False)
+            receipt = apply_watch_plan(
+                core,
+                WatchPlan(id="g", condition="a person enters", profile=name),
+                registry=registry,
+            )
+            self.assertEqual(receipt.status, "rejected")
+            self.assertEqual(
+                receipt.dropped_fields[0].code,
+                "ambiguous_profile_kind",
+            )
+        finally:
+            DEFAULT_SOURCE_REGISTRY.unregister(name)
+
+    def test_explicit_source_profile_disambiguates_a_same_named_watch_profile(self) -> None:
+        profile = _profile("p1-explicit-source-kind")
+        registry = WatchProfileRegistry()
+        registry.register(WatchProfile(
+            name=profile.name,
+            environment="fixed",
+            goal_type="dynamic",
+            state="transition",
+        ))
+        core = Percept.create(vision=RecordingVision(), discover_plugins=False)
+        receipt = apply_watch_plan(
+            core,
+            WatchPlan(id="g", condition="a person enters", profile=profile.name),
+            source_profile=profile,
+            registry=registry,
+        )
+        self.assertEqual(receipt.status, "applied")
+        self.assertIs(core._watch_runtime_bindings["g"][1], profile)
+
 
 class PerWatchRuntimeIsolationTests(unittest.TestCase):
+    def test_duck_typed_perceive_without_goal_ids_runs_inline_and_async(self) -> None:
+        for dispatch in ("inline", "async"):
+            with self.subTest(dispatch=dispatch):
+                core = Percept.create(vision=RecordingVision(), discover_plugins=False)
+                core.add_goal(Goal(id="g", condition="a person enters", say="person"))
+                calls = []
+
+                async def legacy_perceive(
+                    frame,
+                    source="camera",
+                    *,
+                    t=None,
+                    expected_goals_revision=None,
+                ):
+                    calls.append((frame, source, t, expected_goals_revision))
+                    return []
+
+                core.perceive_judged = legacy_perceive
+                asyncio.run(
+                    _collect(
+                        core,
+                        [
+                            (0.0, STILL, "prime"),
+                            (1.0, gray_frame(W, H, 255), "changed"),
+                        ],
+                        judge_dispatch=dispatch,
+                    )
+                )
+                self.assertEqual(len(calls), 1)
+
     def test_different_source_profiles_admit_only_the_matching_watch(self) -> None:
         for dispatch in ("inline", "async"):
             with self.subTest(dispatch=dispatch):
@@ -397,6 +548,40 @@ class PerWatchRuntimeIsolationTests(unittest.TestCase):
         )
         self.assertTrue(all(ids == ("a",) for ids in vision.detected))
 
+    def test_source_key_also_scopes_boundary_coverage_and_deadline_incidents(self) -> None:
+        core = Percept.create(vision=RecordingVision(), discover_plugins=False)
+        core.add_goal(Goal(id="a", condition="camera a", say="a", source="camera-a"))
+        other = Goal(
+            id="b",
+            condition="camera b",
+            say="b",
+            source="camera-b",
+            state={
+                "type": "process",
+                "rearm": "deadline",
+                "deadline_at": 1.0,
+                "miss_cost": "severe",
+            },
+        )
+        core.add_goal(other)
+        core.last_supported["b"] = 0.0
+        other_ctx = core.executor.ctx("b")
+        other_ctx.process_log = [{"step": "camera b step"}]
+        other_ctx.last_step_at = 0.0
+
+        incidents = asyncio.run(
+            _collect(
+                core,
+                [(10.0, STILL, "quiet")],
+                gate_source="camera-a",
+                coverage_staleness_s=1.0,
+                episode_inactivity_s=1.0,
+                judge_dispatch="inline",
+            )
+        )
+        self.assertFalse(any(incident.goal_id == "b" for incident in incidents))
+        self.assertEqual(other_ctx.process_log, [{"step": "camera b step"}])
+
     def test_per_watch_coast_does_not_wake_a_sparser_watch(self) -> None:
         vision = RecordingVision()
         core = Percept.create(vision=vision, discover_plugins=False)
@@ -448,19 +633,17 @@ class PerWatchRuntimeIsolationTests(unittest.TestCase):
         self.assertIsInstance(vision.audio_payloads[0], AudioFrame)
         self.assertTrue(vision.audio_payloads[0].pcm)
 
-    def test_compiled_audio_and_fused_require_an_audio_source(self) -> None:
-        for sense in ("audio", "fused"):
-            with self.subTest(sense=sense):
-                core = Percept.create(vision=RecordingVision(), discover_plugins=False)
-                self.assertEqual(
-                    apply_watch_plan(
-                        core,
-                        WatchPlan(id=sense, condition="a sound matters", sense=sense),
-                    ).status,
-                    "applied",
-                )
-                with self.assertRaisesRegex(ValueError, "require audio_source"):
-                    asyncio.run(_collect(core, [], judge_dispatch="inline"))
+    def test_compiled_fused_requires_an_audio_source(self) -> None:
+        core = Percept.create(vision=RecordingVision(), discover_plugins=False)
+        self.assertEqual(
+            apply_watch_plan(
+                core,
+                WatchPlan(id="fused", condition="a sound matters", sense="fused"),
+            ).status,
+            "applied",
+        )
+        with self.assertRaisesRegex(ValueError, "require audio_source"):
+            asyncio.run(_collect(core, [], judge_dispatch="inline"))
 
     def test_compiled_fused_watch_skips_and_reports_an_empty_audio_window(self) -> None:
         vision = RecordingVision()
@@ -488,9 +671,45 @@ class PerWatchRuntimeIsolationTests(unittest.TestCase):
         self.assertEqual(len(unavailable), 1)
         self.assertEqual(unavailable[0].data["goal_id"], "fused")
 
-    def test_visual_motion_never_admits_an_audio_only_watch(self) -> None:
+    def test_wrong_day_audio_onset_cannot_admit_a_fused_watch(self) -> None:
         vision = RecordingVision()
         core = Percept.create(vision=vision, discover_plugins=False)
+        receipt = apply_watch_plan(
+            core,
+            WatchPlan(
+                id="fused",
+                condition="someone calls for help",
+                sense="fused",
+                schedule={"days": [1]},
+            ),
+            source_profile=_profile(
+                "scheduled-av",
+                threshold=0.99,
+                modalities=frozenset({"video", "audio"}),
+            ),
+        )
+        self.assertEqual(receipt.status, "applied")
+        audio = [
+            (0.1, AudioFrame(pcm=b"\x00\x00", sample_rate=16_000), 0.0),
+            (1.1, AudioFrame(pcm=b"\xff\x7f", sample_rate=16_000), 0.5),
+        ]
+        stats = RuntimeStats()
+        asyncio.run(
+            _collect(
+                core,
+                [(float(i), STILL, f"f{i}") for i in range(5)],
+                audio_source=audio,
+                audio_settle_s=0.0,
+                clock=lambda: CivilTime(weekday=2, minute_of_day=600),
+                stats=stats,
+                judge_dispatch="inline",
+            )
+        )
+        self.assertEqual(stats.escalations, 0)
+        self.assertEqual(vision.judged, [])
+
+    def test_audio_only_watch_never_arms_on_the_video_carrier(self) -> None:
+        core = Percept.create(vision=RecordingVision(), discover_plugins=False)
         receipt = apply_watch_plan(
             core,
             WatchPlan(id="audio", condition="someone speaks", sense="audio"),
@@ -500,16 +719,9 @@ class PerWatchRuntimeIsolationTests(unittest.TestCase):
                 modalities=frozenset({"audio"}),
             ),
         )
-        self.assertEqual(receipt.status, "applied")
-        asyncio.run(
-            _collect(
-                core,
-                [(0.0, STILL, "prime"), (1.0, gray_frame(W, H, 255), "changed")],
-                audio_source=[],
-                judge_dispatch="inline",
-            )
-        )
-        self.assertEqual(vision.judged, [])
+        self.assertEqual(receipt.status, "rejected")
+        self.assertEqual(receipt.dropped_fields[0].code, "unsupported_media_sense")
+        self.assertIsNone(core.goals.get("audio"))
 
     def test_profile_identity_defaults_remain_bound_to_their_own_watch(self) -> None:
         core = Percept.create(vision=RecordingVision(), discover_plugins=False)
@@ -560,24 +772,33 @@ class PerWatchRuntimeIsolationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "incompatible compiled timebases"):
             asyncio.run(_collect(conflict, [], judge_dispatch="inline"))
 
-    def test_different_audio_admission_policies_fail_closed_on_one_worker(self) -> None:
+    def test_different_fused_schedules_fail_closed_on_one_shared_audio_worker(self) -> None:
         core = Percept.create(vision=RecordingVision(), discover_plugins=False)
         apply_watch_plan(
             core,
-            WatchPlan(id="audio", condition="someone speaks", sense="audio"),
+            WatchPlan(
+                id="fused-a",
+                condition="someone speaks",
+                sense="fused",
+                schedule={"days": [1]},
+            ),
             source_profile=_profile(
-                "audio-profile",
+                "fused-a-profile",
                 threshold=0.1,
-                modalities=frozenset({"audio"}),
+                modalities=frozenset({"video", "audio"}),
             ),
         )
         apply_watch_plan(
             core,
-            WatchPlan(id="fused", condition="a speaker points", sense="fused"),
+            WatchPlan(
+                id="fused-b",
+                condition="a speaker points",
+                sense="fused",
+                schedule={"days": [2]},
+            ),
             source_profile=_profile(
-                "fused-profile",
-                stat="block_max",
-                threshold=0.2,
+                "fused-b-profile",
+                threshold=0.1,
                 modalities=frozenset({"video", "audio"}),
             ),
         )

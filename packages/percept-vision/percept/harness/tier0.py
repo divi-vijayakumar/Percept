@@ -21,6 +21,7 @@ back up — even motion-only.
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Sequence
@@ -36,6 +37,18 @@ from .detectors import (
     partition_by_capability,
     wake_score,
 )
+
+
+def _accepts_keyword(callable_obj: Any, name: str) -> bool:
+    try:
+        parameters = inspect.signature(callable_obj).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == name
+        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
 
 try:  # OPTIONAL fast path only — the stdlib path below is the source of truth for L1.
     import numpy as _np  # type: ignore
@@ -716,6 +729,38 @@ class MotionGate:
         }
         self._prev = prev._prev
 
+    def admit_external(
+        self,
+        goal_ids: Sequence[str],
+        *,
+        ts: float,
+        now: CivilTime | None = None,
+    ) -> tuple[str, ...]:
+        """Admit an external wake (for example audio onset) through each Watch's schedule/cadence.
+
+        The external signal decides *why* the worker asks, but it does not bypass the same temporal
+        policy that guards visual admission. Accepted ids share ``_last_escalate`` with
+        :meth:`evaluate`, so an audio wake cannot double-spend inside a goal's cadence window.
+        """
+        requested = frozenset(goal_ids)
+        when = now if now is not None else (self._clock() if self._clock is not None else None)
+        admitted: list[str] = []
+        for condition in self._spec.conditions:
+            if (
+                condition.goal_id not in requested
+                or not schedule_active(condition.schedule, when)
+            ):
+                continue
+            if (
+                condition.cadence_s is not None
+                and ts - self._last_escalate.get(condition.goal_id, float("-inf"))
+                < condition.cadence_s
+            ):
+                continue
+            admitted.append(condition.goal_id)
+            self._last_escalate[condition.goal_id] = ts
+        return tuple(admitted)
+
     def evaluate(
         self,
         frame: Any,
@@ -979,11 +1024,11 @@ class GatedWatchLoop:
                 report.vision_calls += 1
                 if self._funnel is not None:
                     self._funnel.gated(camera=self._source)  # the gate spent a cloud call this frame
+                kwargs = {"t": item.ts}
+                if _accepts_keyword(self._core.perceive_judged, "goal_ids"):
+                    kwargs["goal_ids"] = decision.goal_ids
                 fired = await self._core.perceive_judged(
-                    item.frame,
-                    self._source,
-                    t=item.ts,
-                    goal_ids=decision.goal_ids,
+                    item.frame, self._source, **kwargs
                 )
                 report.fire_events.extend(fired or [])
         return report

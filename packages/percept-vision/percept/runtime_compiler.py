@@ -90,11 +90,12 @@ _SENSE_SOURCE_REQUIREMENTS: dict[str, frozenset[str]] = {
     "audio": frozenset({"audio"}),
     "fused": frozenset({"video", "audio"}),
 }
+_EXECUTABLE_SENSES: frozenset[str] = frozenset({"video", "vision", "fused"})
 
 
 def supports_sense(sense: str | None) -> bool:
     """Whether the runtime can execute a WatchPlan media sense."""
-    return sense is None or sense in _SENSE_MODALITIES
+    return sense is None or sense in _EXECUTABLE_SENSES
 
 
 def sense_matches_modalities(sense: str | None, modalities: Any) -> bool:
@@ -316,11 +317,17 @@ def _goal_state_from_resolved(resolved: ResolvedWatch) -> dict[str, Any]:
     if plan.schedule is not None:
         state["schedule"] = dict(plan.schedule)  # coerced downstream by compile_watchspec itself
     if plan.sense is not None:
+        if plan.sense == "audio":
+            raise ValueError(
+                "WatchPlan.sense 'audio' is not executable by the video-carrier runtime: "
+                "carrier-independent audio scheduling and an audio-only judge path are not yet "
+                "implemented. Use sense='fused' with a video+audio source."
+            )
         modality = _SENSE_MODALITIES.get(plan.sense)
         if modality is None:
             raise ValueError(
                 f"WatchPlan.sense {plan.sense!r} is not executable by this runtime; "
-                f"supported media senses are {tuple(_SENSE_MODALITIES)}"
+                f"supported media senses are {tuple(sorted(_EXECUTABLE_SENSES))}"
             )
         perception = state.setdefault("perception", {})
         perception.setdefault("modality", modality)

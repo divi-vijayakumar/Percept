@@ -473,6 +473,30 @@ class SchedulerUnitTests(unittest.TestCase):
 
         asyncio.run(main())
 
+    def test_internal_typeerror_is_not_retried_as_keyword_incompatibility(self):
+        class BrokenCore(_StubCore):
+            async def perceive_judged(
+                self,
+                frame,
+                source,
+                *,
+                t=None,
+                expected_goals_revision=None,
+                goal_ids=None,
+            ):
+                raise TypeError("internal judge bug")
+
+        async def main():
+            core = BrokenCore()
+            sched = _JudgeScheduler(core, "camera", RuntimeStats())
+            sched.submit(1.0, "f1", ("g",))
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            with self.assertRaisesRegex(TypeError, "internal judge bug"):
+                sched.drain()
+
+        asyncio.run(main())
+
 
 class AbsenceInterleavingTests(unittest.TestCase):
     def test_absence_fire_during_in_flight_judge_does_not_double_fire_its_key(self):
