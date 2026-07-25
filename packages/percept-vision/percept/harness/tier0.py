@@ -26,11 +26,15 @@ import inspect
 import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Literal, Sequence
 
 from percept.adapters import Box, Goal, Schedule, Tier0Signal, WatchCondition, WatchSpec
 from percept.behavior_routes import goal_behavior_route, needs_watch_condition, require_worker_routes
 from percept.config import Settings, load_settings
+from percept.duration_routes import (
+    require_duration_routes,
+    require_in_process_duration_topology,
+)
 from percept.interest import InterestIntervalEvent, Tier0MotionInterest
 
 from .detectors import (
@@ -467,6 +471,10 @@ SALIENCE_STAT_KEY = "salience_stat"
 EGO_COMPENSATE_KEY = "ego_compensate"
 _GATE_ON_VOCAB = {"motion", "structural", "semantic", "fixed"}
 _SALIENCE_STAT_VOCAB = {"mean", "block_max", "p95"}
+AdmissionCause = Literal["motion", "structural", "semantic", "fixed"]
+ADMISSION_CAUSES: tuple[AdmissionCause, ...] = (
+    "motion", "structural", "semantic", "fixed",
+)
 
 
 def compile_watchspec(
@@ -498,6 +506,17 @@ def compile_watchspec(
     Every frame-worker route compiles: ordinary Watches, transitions, and process observation.
     External event, boundary, rhythm, and scheduler primitives never become frame Watches.
     """
+    goals = list(goals)
+    require_duration_routes(
+        goals,
+        driver="compile_watchspec",
+        require_worker_cadence=True,
+    )
+    require_in_process_duration_topology(
+        goals,
+        driver="compile_watchspec",
+        remote=edge_capabilities is not None,
+    )
     conditions: list[WatchCondition] = []
     for goal in goals:
         if not needs_watch_condition(goal_behavior_route(goal)):
@@ -650,6 +669,26 @@ class GateDecision:
     # Exact Watches whose own condition admitted this frame.  Empty when nothing admitted. Appended
     # and defaulted so existing positional construction stays compatible.
     goal_ids: tuple[str, ...] = ()
+    # Ordered 1:1 with ``goal_ids``. A fixed cadence is reported as ``"fixed"`` and never relabelled
+    # as motion salience.
+    admission_causes: tuple[AdmissionCause, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.goal_ids and not self.admission_causes:
+            # Additive compatibility: before typed causes existed, a non-empty ``goal_ids`` tuple
+            # could only describe the historical motion/salience admission path.
+            object.__setattr__(
+                self,
+                "admission_causes",
+                tuple("motion" for _ in self.goal_ids),
+            )
+        if len(self.goal_ids) != len(self.admission_causes):
+            raise ValueError("GateDecision goal_ids and admission_causes must be aligned 1:1")
+        if len(set(self.goal_ids)) != len(self.goal_ids):
+            raise ValueError("GateDecision must carry each admitted goal id exactly once")
+        invalid = [cause for cause in self.admission_causes if cause not in ADMISSION_CAUSES]
+        if invalid:
+            raise ValueError(f"GateDecision admission cause(s) outside closed vocabulary: {invalid!r}")
 
 
 class MotionGate:
@@ -810,6 +849,7 @@ class MotionGate:
         armed = [c for c in self._spec.conditions if schedule_active(c.schedule, when)]
         escalate = False
         admitted_goal_ids: list[str] = []
+        admission_causes: list[AdmissionCause] = []
         for c in armed:
             # Cadence: a goal can't escalate more than once per cadence_s. For gate_on="fixed" this
             # cadence IS the escalation trigger (a floor — look every cadence_s even with no pixel motion,
@@ -830,6 +870,7 @@ class MotionGate:
             if fired:
                 escalate = True
                 admitted_goal_ids.append(c.goal_id)
+                admission_causes.append(c.gate_on)
                 self._last_escalate[c.goal_id] = ts
         self._prev = f
         # Reported cutoff = the most-sensitive ARMED goal's threshold (default when none is armed).
@@ -842,6 +883,7 @@ class MotionGate:
             escalate=escalate,
             threshold=thr,
             goal_ids=tuple(admitted_goal_ids),
+            admission_causes=tuple(admission_causes),
         )
 
 
@@ -870,6 +912,9 @@ class LoopReport:
     # ``GatedWatchLoop(interest=...)`` is supplied; these are admission-interest intervals, never
     # semantic Watch verdicts.
     interest_events: list[InterestIntervalEvent] = field(default_factory=list)
+    fixed_opportunities: int = 0
+    admission_by_goal: dict[str, int] = field(default_factory=dict)
+    admission_by_cause: dict[str, int] = field(default_factory=dict)
 
     def boundary_count(self, goal_id: str, *, kind: str | None = None) -> int:
         """How many boundaries a goal's detectors proposed (e.g. peaks = reps), optionally by kind."""
@@ -1077,6 +1122,11 @@ class GatedWatchLoop:
                     _as_frame(item.frame) if self._interest is not None else None
                 )
                 decision = self._gate.evaluate(item.frame, ts=item.ts, energy=energy, signals=extra)
+                for goal_id, cause in zip(decision.goal_ids, decision.admission_causes):
+                    report.admission_by_goal[goal_id] = report.admission_by_goal.get(goal_id, 0) + 1
+                    report.admission_by_cause[cause] = report.admission_by_cause.get(cause, 0) + 1
+                    if cause == "fixed":
+                        report.fixed_opportunities += 1
                 report.frames += 1
                 report.signals.append(decision.signal)  # report Tier0Signal UP every frame
                 if self._interest is not None:
@@ -1234,6 +1284,11 @@ class RemoteEdgeReceiver:
     ) -> WatchSpec:
         """Compile the ``WatchSpec`` to send DOWN — detectors filtered to the edge's advertised skills."""
         active = list(goals) if goals is not None else list(self._core.goals.active())
+        require_in_process_duration_topology(
+            active,
+            driver="RemoteEdgeReceiver.watchspec",
+            remote=True,
+        )
         return compile_watchspec(
             active, threshold=threshold, version=version, edge_capabilities=self._capabilities
         )

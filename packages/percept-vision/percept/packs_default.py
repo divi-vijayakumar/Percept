@@ -3,8 +3,8 @@
 One pack, four templates, built ONLY from senses that already exist in
 :func:`percept.behavior.program_of` — no new temporal shape, no new sense, nothing invented:
 
-- ``door_left_open`` — the **absence** sense (``rearm="deadline"``): the condition is expected to
-  become false (the door closes) by a deadline; staying true past it fires.
+- ``door_left_open`` — an ordinary scene Watch with sustained truth and an explicit fixed
+  observation cadence.
 - ``package_appeared`` — the **transition** sense (``type="transition"``, ``from``/``to``): a state
   change from "nothing" to "present".
 - ``standing_water`` — also the **transition** sense: the same from/absent-to-present shape as a
@@ -37,19 +37,27 @@ from .identity_policy import SCENE_IDENTITY
 # Templates
 # ---------------------------------------------------------------------------
 
-#: Absence sense: the door is expected to close within `deadline_after_s`; if it stays open past
-#: that deadline, the goal fires (percept.behavior.program_of: rearm == "deadline" -> sense="absence").
+#: Sustained scene Watch: the compatibility parameter ``deadline_after_s`` names the required-open
+#: duration, while the executable Goal receives only hold + fixed-cadence state.
 _DOOR_LEFT_OPEN = GoalTemplate(
     name="door_left_open",
     condition="the {door_name} is open",
-    parameters={"door_name": "door", "deadline_after_s": 300.0},
+    parameters={
+        "door_name": "door",
+        "deadline_after_s": 300.0,
+        "observation_interval_s": 15.0,
+    },
     target="door",
-    behavior={"rearm": "deadline", "deadline_after_s": "{deadline_after_s}"},
-    episode={"policy": "door_interval"},  # a re-opening within 5s stays the same episode
+    identity_policy=SCENE_IDENTITY,
+    hold_s="{deadline_after_s}",
+    cadence={
+        "min_judge_interval": "{observation_interval_s}",
+        "gate_on": "fixed",
+    },
     consequence={"miss_cost": "mild", "false_fire_cost": "trivial"},
     notes=(
-        "fires once the door has stayed open past deadline_after_s (default 300s / 5min) — "
-        "a quick open/close within the deadline never fires."
+        "fires once after the door has been continuously observed open for deadline_after_s "
+        "(default 300s / 5min); a shorter open interval does not fire."
     ),
 )
 
@@ -175,7 +183,7 @@ FACILITY_OBSERVATION_V1 = DomainPack(
     search_space=_SEARCH_SPACE,
     notes=(
         "unattended-facility observation: door left open, package appeared, standing water, zone "
-        "occupied — built from existing transition/absence/Watch behavior. No security@1 "
+        "occupied — built from existing transition and Watch behavior. No security@1 "
         "pack ships here (deferred until identity/tracking calibration lands)."
     ),
 )

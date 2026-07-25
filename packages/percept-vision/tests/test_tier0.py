@@ -20,6 +20,7 @@ import unittest
 from percept.adapters import Box, Goal, Schedule, Tier0Signal, WatchCondition, WatchSpec
 from percept.agent import Percept
 from percept.config import load_settings
+from percept.duration_routes import UnsupportedDurationRouteError
 from percept.harness.detectors import WakePolicy
 
 from percept.harness.tier0 import (
@@ -364,8 +365,13 @@ class CadenceGateTests(unittest.TestCase):
         self.cfg = load_settings()
 
     def _gate(self, **cadence):
+        goal = (
+            watch_goal("g1", "the screen changed", cadence=cadence)
+            if cadence
+            else watch_goal("g1", "the screen changed")
+        )
         spec = compile_watchspec(
-            [watch_goal("g1", "the screen changed", cadence=cadence)],
+            [goal],
             threshold=self.cfg.edge.motion_gate,
         )
         return MotionGate(spec, settings=self.cfg)
@@ -392,11 +398,10 @@ class CadenceGateTests(unittest.TestCase):
         self.assertFalse(gate.evaluate(still(), ts=1.0).escalate)   # still vs still -> silent
         self.assertTrue(gate.evaluate(motion(), ts=2.0).escalate)   # still -> motion -> escalate
 
-    def test_fixed_without_interval_falls_back_to_motion(self):
-        # a fixed cadence with no period is meaningless -> the firewall drops it to motion
-        gate = self._gate(gate_on="fixed")  # no min_judge_interval
-        gate.evaluate(still(), ts=0.0)
-        self.assertFalse(gate.evaluate(still(), ts=1.0).escalate)   # no fixed cadence -> still=silent
+    def test_fixed_without_interval_fails_closed(self):
+        # An explicitly fixed cadence without its period is malformed authoring, not a motion fallback.
+        with self.assertRaises(UnsupportedDurationRouteError):
+            self._gate(gate_on="fixed")
 
 
 class ScheduleGateTests(unittest.TestCase):

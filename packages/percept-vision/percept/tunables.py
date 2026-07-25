@@ -561,7 +561,19 @@ _GOAL_STATE: tuple[TunableSpec, ...] = (
     TunableSpec(
         path="Goal.state.hold_s", owner="WatchPlan", visibility="public", safe_to_optimize=False,
         default=None, value_type="float", bounds=(0.0, float("inf")), risk="medium",
-        note="R-1 sustained-duration dwell before firing.",
+        note="Positive sustained-truth duration before firing; validated against its execution route.",
+    ),
+    TunableSpec(
+        path="Goal.state.cadence.min_judge_interval", owner="WatchPlan", visibility="public",
+        safe_to_optimize=False, default=None, value_type="float",
+        bounds=(0.0, float("inf")), risk="medium",
+        note="Per-Watch minimum observation interval consumed by tier-0 admission.",
+    ),
+    TunableSpec(
+        path="Goal.state.cadence.gate_on", owner="WatchPlan", visibility="public",
+        safe_to_optimize=False, default=None, value_type="enum",
+        choices=("motion", "structural", "semantic", "fixed"), risk="high",
+        note="Per-Watch tier-0 admission mode; sustained worker Watches require fixed.",
     ),
     TunableSpec(
         path="Goal.state.from", owner="WatchPlan", visibility="public", safe_to_optimize=False,

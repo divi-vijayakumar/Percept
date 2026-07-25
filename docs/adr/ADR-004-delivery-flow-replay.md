@@ -75,7 +75,7 @@ calls `self._fire_concern(...)`, which is `BehaviorExecutor.fire_judged` (`behav
 aliased per `behavior.py:3-10`). `fire_judged` classifies the verdict
 (`classify(verdict, freshness, threshold, fresh_min)`, `gate.py:186-198`) and calls
 `self.gate.evaluate(key, verdict, freshness=freshness, hold_s=..., now=t, ...)` — "the only firing
-path" (`gate.py:202`; `evaluate` returns the `.action` of `Gate.decide`, `gate.py:317-336`) —
+path" (`gate.py:202`; `evaluate` returns the `.action` of `Gate.decide`, `gate.py:321-342`) —
 which returns exactly one of `FIRE` / `ASK` / `SILENT`
 (`GateAction = Literal["fire","ask","silent"]`, `gate.py:76`). `fire_judged` then maps that:
 
@@ -139,21 +139,21 @@ entity does not double-fire until it goes confident-`false` and re-arms. Mechani
 `Gate.evaluate`:
 
 - A `FIRE` decision sets `self._armed[key] = False` and stamps `self._last_fire[key] = now`
-  (`gate.py:431-434`; the dwell-satisfied fire does the same at `gate.py:440-444`) — this happens
+  (`gate.py:444-448`; the dwell-satisfied fire does the same at `gate.py:467-471`) — this happens
   **before** `fire_judged`'s hard-quadrant escalation check, so the edge is consumed identically
   whether the outward `WatchAction` the caller receives ends up being `"fire"` or the escalated
   `"ask"`. The guarantee is anchored to edge consumption, not to the literal string in
   `WatchEvent.action`.
-- A confident-`false` re-arms it: `self._armed[key] = True` (`gate.py:404-407`).
+- A confident-`false` re-arms it: `self._armed[key] = True` (`gate.py:414-417`).
 - `refractory_s` (L3, off by default — `None`/`0` = "byte-for-byte the historical gate," `gate.py:
   17-20, 365-375`) is an additional time-based guard: a fire landing within `refractory_s` seconds of
   that key's last **real** fire is suppressed even if a spurious confident-`false` blip re-armed
-  the edge in between (`gate.py:423-429`). It is set gate-wide from
+  the edge in between (`gate.py:434-443`). It is set gate-wide from
   `cfg.gate.refractory_s or None` at construction (`agent.py:504-507`) — off unless a caller's
   `Settings`/profile turns it on.
 - `require_false_first` (opt-in, default off) and `hold_s` (dwell, opt-in via a goal's program)
-  are two further, off-by-default authored variants on the same edge (`gate.py:361-375,408-417,
-  435-445`) — neither changes the default at-most-once semantics described above.
+  are two further, off-by-default authored variants on the same edge (`gate.py:360-383,406-433,
+  449-472`) — neither changes the default at-most-once semantics described above.
 
 So: **the guarantee is "at most one edge-consuming outward event per `(goal, entity)` per
 continuous true-episode,"** not "at most one event per goal ever" (multiple entities under one
@@ -161,10 +161,11 @@ goal each get their own edge) and not "exactly one" (a `SILENT` tick or an abort
 zero).
 
 **Fail-closed judging never fires.** If the judge call raises or returns something malformed
-(`_JudgeDegraded`), `perceive_judged` never reads `.confidence`/`.satisfied` off it, degrades that
-goal's tick to an ASK-class abstention, and explicitly leaves the gate's armed/dwell state
-untouched — "belt-and-suspenders against a fault silently arming/disarming an edge"
-(`agent.py:1156-1179`). A degraded judge call cannot produce a `FIRE`.
+(`_JudgeDegraded`), `perceive_judged` never reads `.confidence`/`.satisfied` off it and degrades
+that goal's tick to an ASK-class abstention. It preserves the gate's armed/disarmed bit and
+last-fire/refractory memory, but clears pending positive-dwell and last-supported evidence: a
+failed read cannot prove continuity. No-hold gate state is unchanged
+(`agent.py:1995-2007,2561-2577`). A degraded judge call cannot produce a `FIRE`.
 
 **Backpressure on a slow consumer.** `watch()` has no internal queue (contrast `run()`'s bounded
 `source_queue_size`, `worker.py:868,1328`, and drop-oldest `frames_dropped`, `worker.py:113,1714`).
@@ -192,7 +193,7 @@ requesting the next `WatchEvent`. Concretely:
   bounded by `Gate`'s TTL/LRU eviction (`_DEFAULT_MAX_KEYS=10_000`, `_DEFAULT_KEY_TTL_S=3600.0`,
   `gate.py:73-74`) and **not persisted** by `watch()` itself — `Percept.snapshot()`/`restore()`
   exist and round-trip `self.gate.snapshot()` (`agent.py:2031,2077`, `Gate.snapshot`/`restore`,
-  `gate.py:477-510`), but `watch()` never calls them. Across an unmanaged process restart with no
+  `gate.py:523-557`), but `watch()` never calls them. Across an unmanaged process restart with no
   persistence explicitly wired by the caller, a still-true condition can re-fire.
 - No wall-clock delivery-latency SLA — how quickly the consumer's `async for` loop resumes after a
   `yield` is entirely a function of the consumer's own code, not bounded by `watch()`.
@@ -247,7 +248,7 @@ goals, and (c) the same sequence of `now` values, the entire path from a `Verdic
 - `classify()` is pure arithmetic — `verdict.confidence < threshold`, `freshness < fresh_min`,
   `verdict.satisfied` (`gate.py:186-198`). No randomness, no I/O.
 - `Gate.evaluate`'s armed-bit rising edge, `require_false_first`, dwell, and refractory logic are
-  all pure state transitions over `(key, truth, now)` (`gate.py:400-445`) — deterministic given the
+  all pure state transitions over `(key, truth, now)` (`gate.py:405-472`) — deterministic given the
   same key and the same `now` sequence.
 - `BehaviorExecutor.fire_judged`'s mapping from `GateAction` to `Fired`/`None`, including the
   hard-quadrant `FIRE`→`ASK` escalation, is a pure function of the goal's authored config and the

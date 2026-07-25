@@ -140,6 +140,44 @@
       "visibility": "descriptive"
     },
     {
+      "bounds": null,
+      "choices": [
+        "motion",
+        "structural",
+        "semantic",
+        "fixed"
+      ],
+      "default": null,
+      "env_var": null,
+      "note": "Per-Watch tier-0 admission mode; sustained worker Watches require fixed.",
+      "owner": "WatchPlan",
+      "path": "Goal.state.cadence.gate_on",
+      "requires_recompile": false,
+      "requires_restart": false,
+      "risk": "high",
+      "safe_to_optimize": false,
+      "value_type": "enum",
+      "visibility": "public"
+    },
+    {
+      "bounds": [
+        0.0,
+        Infinity
+      ],
+      "choices": null,
+      "default": null,
+      "env_var": null,
+      "note": "Per-Watch minimum observation interval consumed by tier-0 admission.",
+      "owner": "WatchPlan",
+      "path": "Goal.state.cadence.min_judge_interval",
+      "requires_recompile": false,
+      "requires_restart": false,
+      "risk": "medium",
+      "safe_to_optimize": false,
+      "value_type": "float",
+      "visibility": "public"
+    },
+    {
       "bounds": [
         1.0,
         Infinity
@@ -360,7 +398,7 @@
       "choices": null,
       "default": null,
       "env_var": null,
-      "note": "R-1 sustained-duration dwell before firing.",
+      "note": "Positive sustained-truth duration before firing; validated against its execution route.",
       "owner": "WatchPlan",
       "path": "Goal.state.hold_s",
       "requires_recompile": false,

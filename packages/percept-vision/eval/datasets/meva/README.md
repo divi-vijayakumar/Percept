@@ -35,9 +35,11 @@ token is the **scene** (the multiview recording session); the camera token is th
 
 ## Activity → condition mapping
 
+Door-opening labels such as `person_opens_facility_door` and `Open_Facility_Door` are intentionally
+unmapped: they identify an opening action, not evidence that a door stayed open for a duration.
+
 | MEVA activity type | `facility_observation` template | goal shape | sense |
 |---|---|---|---|
-| `person_opens_facility_door` | `door_left_open` | `episode` | absence (deadline) |
 | `person_loiters`, `person_enters_scene_through_structure` | `zone_occupied` | `episode` | count |
 | `person_abandons_package`, `abandonment`, `person_drops_off_package` | `package_appeared` | `point` | transition |
 

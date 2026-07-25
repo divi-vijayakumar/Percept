@@ -65,6 +65,7 @@ from .behavior_routes import (
 from .contracts import GoalOrigin
 from .contracts.watchplan import FieldDiagnostic, ReceiptStatus, WatchPlan, WatchReceipt
 from .deployment_judges import load_deployment_judges
+from .duration_routes import duration_route_issues
 from .judge_context import JudgeContextError, JudgeContextStore
 from .resolver import ConfigError, ConfigResolver
 from .runtime_compiler import (
@@ -237,6 +238,27 @@ def _runtime_route_diagnostic(state: Any, *, goal_id: str | None) -> FieldDiagno
             f"behavior type {authored_type} resolves to route {route.value!r}, which "
             f"percept.run cannot execute; no Watch was armed.{guidance}"
         ),
+    )
+
+
+def _duration_route_diagnostic(state: Any, *, goal_id: str | None) -> FieldDiagnostic | None:
+    """Return the shared fail-closed duration diagnostic for worker-bound WatchPlans."""
+
+    issues = duration_route_issues(
+        state,
+        goal_id=goal_id,
+        require_worker_cadence=True,
+        canonical_goal=False,
+        validate_cadence_without_hold=True,
+    )
+    if not issues:
+        return None
+    issue = issues[0]
+    return FieldDiagnostic(
+        path=issue.path,
+        code=issue.code,
+        goal_id=goal_id,
+        message=issue.message,
     )
 
 
@@ -702,6 +724,9 @@ def _prepare_one(
                 message=str(exc),
             ),),
         )
+    duration_error = _duration_route_diagnostic(compiled.goal.state, goal_id=compiled.goal.id)
+    if duration_error is not None:
+        raise _RoutePrepareError(duration_error)
     route_error = _runtime_route_diagnostic(compiled.goal.state, goal_id=compiled.goal.id)
     if route_error is not None:
         raise _RoutePrepareError(route_error)

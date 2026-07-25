@@ -70,6 +70,7 @@ from typing import Any, Iterator, Literal, Mapping
 from .behavior import coerce_authored_behavior, coerce_authored_episode
 from .contracts.watchplan import WatchPlan
 from .direct_judge import DirectRouting
+from .duration_routes import duration_route_issues
 
 
 class DomainPackError(ValueError):
@@ -158,6 +159,12 @@ def _substitute_behavior(behavior: Mapping[str, Any], params: Mapping[str, Any])
         else:
             out[key] = value  # unrecognized key: passed through so the diff check below catches it
     return out
+
+
+def _substitute_cadence(cadence: Mapping[str, Any], params: Mapping[str, Any]) -> dict[str, Any]:
+    """Substitute the two closed sustained-Watch cadence leaves."""
+
+    return {key: _substitute(value, params) for key, value in cadence.items()}
 
 
 def _behavior_authoring_diff(behavior: Mapping[str, Any]) -> list[str]:
@@ -275,6 +282,10 @@ class GoalTemplate:
     source: str = "camera"
     notes: str = ""
     identity_policy: str | None = None
+    # Appended fields preserve every existing positional construction. A bare parameter token keeps
+    # its numeric type through rendering; cadence is the explicit worker observation policy.
+    hold_s: float | str | None = None
+    cadence: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.strip():
@@ -293,6 +304,27 @@ class GoalTemplate:
                 )
             object.__setattr__(self, "identity_policy", self.identity_policy.strip())
 
+        if isinstance(self.hold_s, str):
+            token = _PARAM_REF_RE.match(self.hold_s)
+            if token is None or token.group(1) not in self.parameters:
+                raise DomainPackError(
+                    "GoalTemplate.hold_s string must be exactly one declared parameter token"
+                )
+        elif self.hold_s is not None and type(self.hold_s) not in (int, float):
+            raise DomainPackError("GoalTemplate.hold_s must be a real number, parameter token, or None")
+
+        cadence = self.cadence
+        if cadence is not None:
+            if not isinstance(cadence, Mapping):
+                raise DomainPackError("GoalTemplate.cadence must be a mapping or None")
+            unknown_cadence = set(cadence) - {"min_judge_interval", "gate_on"}
+            if unknown_cadence:
+                raise DomainPackError(
+                    f"GoalTemplate.cadence has unsupported key(s) {sorted(unknown_cadence)!r}"
+                )
+            cadence = dict(cadence)
+            object.__setattr__(self, "cadence", MappingProxyType(cadence))
+
         if not isinstance(self.behavior, Mapping):
             raise DomainPackError("GoalTemplate.behavior must be a mapping")
         behavior = dict(self.behavior)
@@ -306,6 +338,24 @@ class GoalTemplate:
                 f"{bad} (unknown/malformed keys are authoring errors, never silently coerced)"
             )
         object.__setattr__(self, "behavior", MappingProxyType(behavior))
+
+        duration_state: dict[str, Any] = {"type": "watch"}
+        if behavior:
+            duration_state["behavior"] = rendered_default
+        if self.hold_s is not None:
+            duration_state["hold_s"] = _substitute(self.hold_s, self.parameters)
+        if cadence is not None:
+            duration_state["cadence"] = _substitute_cadence(cadence, self.parameters)
+        duration_issues = duration_route_issues(
+            duration_state,
+            require_worker_cadence=True,
+            validate_cadence_without_hold=True,
+        )
+        if duration_issues:
+            issue = duration_issues[0]
+            raise DomainPackError(
+                f"GoalTemplate {self.name!r}: {issue.code}: {issue.path} {issue.message}"
+            )
 
         if self.episode is not None:
             if not isinstance(self.episode, Mapping):
@@ -358,6 +408,29 @@ class GoalTemplate:
                     f"invalid behavior for {bad}"
                 )
         explicit = _behavior_to_explicit(behavior) if behavior else {}
+        if self.hold_s is not None:
+            explicit["Goal.state.hold_s"] = _substitute(self.hold_s, params)
+        if self.cadence is not None:
+            rendered_cadence = _substitute_cadence(self.cadence, params)
+            for key in ("min_judge_interval", "gate_on"):
+                if key in rendered_cadence:
+                    explicit[f"Goal.state.cadence.{key}"] = rendered_cadence[key]
+            duration_state = {"type": "watch", "cadence": rendered_cadence}
+            if self.hold_s is not None:
+                duration_state["hold_s"] = explicit["Goal.state.hold_s"]
+            if behavior:
+                duration_state["behavior"] = behavior
+            issues = duration_route_issues(
+                duration_state,
+                require_worker_cadence=True,
+                validate_cadence_without_hold=True,
+            )
+            if issues:
+                issue = issues[0]
+                raise DomainPackError(
+                    f"GoalTemplate {self.name!r}: override(s) {sorted(overrides)} produced "
+                    f"{issue.code} for {issue.path}: {issue.message}"
+                )
         if self.identity_policy is not None:
             explicit["Goal.state.identity_policy"] = self.identity_policy
         if self.episode:
@@ -393,6 +466,8 @@ class GoalTemplate:
             "source": self.source,
             "notes": self.notes,
             "identity_policy": self.identity_policy,
+            "hold_s": self.hold_s,
+            "cadence": dict(self.cadence) if self.cadence is not None else None,
         }
 
 

@@ -18,6 +18,7 @@ from . import registry
 from .adapters import AudioFrame, Box, Decision, Goal, GoalOrigin, TurnResult, Verdict
 from .behavior import BehaviorExecutor, EpisodeFoldResult, ShadowObservation, program_of
 from .behavior_routes import BehaviorRoute, goal_behavior_route, require_worker_routes
+from .duration_routes import duration_policy, require_duration_routes
 from .cache import CacheCascade, CacheKey, FrameHashLayer
 from .concern import attention_weight, consequence_of, requires_verification, resolution_ready
 from .config import ModeError, Settings, load_settings, missing_credential, resolve_mode
@@ -1802,6 +1803,11 @@ class Percept:
         if goal_ids is not None:
             selected = frozenset(goal_ids)
             active_goals = [goal for goal in active_goals if goal.id in selected]
+        require_duration_routes(
+            active_goals,
+            driver="Percept.perceive_judged",
+            require_worker_cadence=False,
+        )
         unsupported_goals = [
             goal
             for goal in active_goals
@@ -1978,6 +1984,7 @@ class Percept:
                     # verdict — self._judge / self.vision are never called (zero vision calls).
                     # The Gate stays sole authority: `verdict` flows into the exact same
                     # freshness/classify/gate path below as a real judge call would.
+                    self.metrics.incr("direct_judge.hit")
                     verdict = direct_result.verdict
                 else:
                     verdict = await self._judge(
@@ -1992,10 +1999,10 @@ class Percept:
                 # provider error) or returned a malformed/partial response. NEVER read .confidence/
                 # .satisfied off that — degrade THIS goal's tick to an explicit abstention (ASK-class:
                 # same telemetry a real low-confidence read gets), never a FIRE, and never let the gate
-                # see it at all (the gate's armed/dwell edge state must stay exactly as a failed judge
-                # call found it — belt-and-suspenders against a fault silently arming/disarming an
-                # edge). The exception is swallowed HERE — it must never escape to worker.py's run()
-                # loop and end the watch.
+                # see it at all. Fail-closed bookkeeping preserves the armed/disarmed edge and
+                # last-fire/refractory memory, but clears pending positive-dwell support: a failed read
+                # cannot prove continuity. No-hold state is unchanged. The exception is swallowed HERE
+                # — it must never escape to worker.py's run() loop and end the watch.
                 self.funnel.refused(concern=goal.id, camera=source)
                 self._degrade_tick(base_key, degraded.cause, goal_id=goal.id, label="",
                                    action="degrading this tick to ASK/SILENT")
@@ -2556,6 +2563,13 @@ class Percept:
         escalation for ``key``, and warn. Each caller keeps its OWN path-specific side effects
         (``funnel.refused``, the trace emit, the return value) — this is only the common core the
         watch / observe-step / transition degrade handlers all repeat verbatim."""
+        goal = self.goals.get(goal_id)
+        if goal is not None:
+            hold_s, _ = duration_policy(goal.state)
+            if hold_s is not None:
+                # A failed/malformed provider response supplies no continuity evidence. Remove only
+                # pending dwell; an already-fired edge stays disarmed until a supported false read.
+                self.gate.clear_pending_dwell_goal(goal_id)
         self.metrics.incr("judge.degraded")
         self._note_judge_degraded(key, cause)  # queues on_health for worker.py
         get_logger("percept.agent").warning(
@@ -2753,8 +2767,14 @@ class Percept:
                 goal.condition, frame, roi=roi, exemplar=goal.state.get("exemplar"),
                 corrections=corrections or None, _adapter=adapter, _binding=binding,
             )
-        except _JudgeDegraded:
-            self.metrics.incr("judge.degraded")
+        except _JudgeDegraded as degraded:
+            self._degrade_tick(
+                (goal.id, getattr(cache_key, "entity_id", None)),
+                degraded.cause,
+                goal_id=goal.id,
+                label=" (cache audit)",
+                action="discarding prior dwell support and serving the cached read",
+            )
             return cached
         if fresh.satisfied != cached.satisfied:
             self.metrics.incr("cache.false_serve")  # the cache's analog of false-fire
@@ -3292,6 +3312,24 @@ class Percept:
         """Return the current generation of temporally continuous evidence for ``source``."""
         return int(self._source_continuity_generations.get(source, 0))
 
+    def clear_pending_dwell(
+        self,
+        source: str = "camera",
+        *,
+        goal_ids: "tuple[str, ...] | None" = None,
+    ) -> None:
+        """Invalidate unproven duration support for selected Watches on one source."""
+
+        selected = None if goal_ids is None else frozenset(goal_ids)
+        for goal in self.goals.all():
+            if (
+                getattr(goal, "source", "camera") == source
+                and (selected is None or goal.id in selected)
+            ):
+                hold_s, _ = duration_policy(goal.state)
+                if hold_s is not None:
+                    self.gate.clear_pending_dwell_goal(goal.id)
+
     def advance_source_continuity(self, source: str = "camera") -> int:
         """Invalidate in-flight work admitted before a source discontinuity.
 
@@ -3299,6 +3337,7 @@ class Percept:
         became false. It only advances the commit generation and clears the temporal frame window so
         later judgments cannot combine frames from opposite sides of the gap.
         """
+        self.clear_pending_dwell(source)
         generation = self.source_continuity_generation(source) + 1
         self._source_continuity_generations[source] = generation
         window = self.windows.get(source)

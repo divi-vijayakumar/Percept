@@ -384,7 +384,10 @@ class TestWatchTemplateAPI(unittest.TestCase):
             {"door_name": "loading dock door", "deadline_after_s": 120.0},
         )
         self.assertIn("loading dock door", plan.condition)
-        self.assertEqual(plan.explicit["Goal.state.deadline_after_s"], 120.0)
+        self.assertEqual(plan.explicit["Goal.state.hold_s"], 120.0)
+        self.assertEqual(plan.explicit["Goal.state.cadence.min_judge_interval"], 15.0)
+        self.assertEqual(plan.explicit["Goal.state.cadence.gate_on"], "fixed")
+        self.assertNotIn("Goal.state.deadline_after_s", plan.explicit)
 
 
 # ---------------------------------------------------------------------------
@@ -399,11 +402,15 @@ class TestFacilityObservationPack(unittest.TestCase):
             {"door_left_open", "package_appeared", "standing_water", "zone_occupied"},
         )
 
-    def test_door_left_open_uses_absence_sense(self) -> None:
-        """rearm='deadline' -> sense='absence' per percept.behavior.program_of."""
+    def test_door_left_open_uses_sustained_scene_watch(self) -> None:
         plan = FACILITY_OBSERVATION_V1.template("door_left_open").render()
-        self.assertEqual(plan.explicit["Goal.state.rearm"], "deadline")
-        self.assertIn("Goal.state.deadline_after_s", plan.explicit)
+        self.assertEqual(plan.explicit["Goal.state.hold_s"], 300.0)
+        self.assertEqual(plan.explicit["Goal.state.cadence.min_judge_interval"], 15.0)
+        self.assertEqual(plan.explicit["Goal.state.cadence.gate_on"], "fixed")
+        self.assertEqual(plan.explicit["Goal.state.identity_policy"], "scene")
+        self.assertNotIn("Goal.state.rearm", plan.explicit)
+        self.assertNotIn("Goal.state.deadline_after_s", plan.explicit)
+        self.assertFalse(any(path.startswith("Goal.state.episode.") for path in plan.explicit))
 
     def test_package_appeared_uses_transition_sense(self) -> None:
         plan = FACILITY_OBSERVATION_V1.template("package_appeared").render()
@@ -593,9 +600,15 @@ class TestEndToEndArm(unittest.TestCase):
         self.assertEqual(receipt.status, "applied")
         self.assertEqual(len(receipt.watch_ids), 1)
         goal = core.goals.get(receipt.watch_ids[0])
-        self.assertEqual(goal.state["rearm"], "deadline")
-        self.assertEqual(goal.state["deadline_after_s"], 45.0)
-        self.assertEqual(goal.state["episode"]["policy"], "door_interval")
+        self.assertEqual(goal.state["hold_s"], 45.0)
+        self.assertEqual(
+            goal.state["cadence"],
+            {"min_judge_interval": 15.0, "gate_on": "fixed"},
+        )
+        self.assertEqual(goal.state["identity_policy"], "scene")
+        self.assertNotIn("rearm", goal.state)
+        self.assertNotIn("deadline_after_s", goal.state)
+        self.assertNotIn("episode", goal.state)
         self.assertIn("back door", goal.condition)
 
     def test_arm_package_appeared_on_real_core(self) -> None:
@@ -736,7 +749,7 @@ class TestZeroCoreEditsProof(unittest.TestCase):
         that this pack composes with the EXISTING sense vocabulary rather than inventing a new one."""
         core = Percept.create(mode="offline", discover_plugins=False)
         expected_sense = {
-            "door_left_open": "absence",
+            "door_left_open": "judge",
             "package_appeared": "transition",
             "standing_water": "transition",
             "zone_occupied": "judge",

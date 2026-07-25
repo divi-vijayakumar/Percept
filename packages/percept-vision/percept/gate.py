@@ -230,6 +230,9 @@ class Gate:
         # R-1 sustained-duration (dwell): key -> the time it first became continuously true. Only
         # populated when a goal sets ``hold_s``; empty otherwise, so the no-dwell path is byte-for-byte.
         self._dwell_since: dict[Hashable, float] = {}
+        # Positive-dwell support continuity: the last confidently-true observation for a pending key.
+        # Empty on every no-hold Watch and cleared together with pending dwell, never restored.
+        self._dwell_last_supported: dict[Hashable, float] = {}
         # Precision track: key -> the ``now`` timestamp of that key's last REAL fire (only set when a fire is
         # actually emitted, never on a refractory-suppressed one — the window is anchored to the last
         # genuine notification, not re-triggered by the suppression itself). Empty unless refractory is
@@ -264,6 +267,7 @@ class Gate:
     def _drop(self, key: Hashable) -> None:
         self._armed.pop(key, None)
         self._dwell_since.pop(key, None)
+        self._dwell_last_supported.pop(key, None)
         self._touched.pop(key, None)
         self._no_evict.discard(key)
         self._last_fire.pop(key, None)
@@ -321,6 +325,7 @@ class Gate:
         *,
         freshness: float = 1.0,
         hold_s: float | None = None,
+        max_support_gap_s: float | None = None,
         now: float | None = None,
         no_evict: bool = False,
         require_false_first: bool = False,
@@ -331,7 +336,8 @@ class Gate:
         The historical entry point, unchanged: same signature, same return type, same edge effects.
         Callers that want the typed WHY as well call :meth:`decide` instead."""
         return self.decide(
-            key, verdict, freshness=freshness, hold_s=hold_s, now=now, no_evict=no_evict,
+            key, verdict, freshness=freshness, hold_s=hold_s,
+            max_support_gap_s=max_support_gap_s, now=now, no_evict=no_evict,
             require_false_first=require_false_first, refractory_s=refractory_s,
         ).action
 
@@ -342,6 +348,7 @@ class Gate:
         *,
         freshness: float = 1.0,
         hold_s: float | None = None,
+        max_support_gap_s: float | None = None,
         now: float | None = None,
         no_evict: bool = False,
         require_false_first: bool = False,
@@ -352,8 +359,9 @@ class Gate:
 
         ``hold_s`` (R-1) is an optional sustained-duration/dwell: with it set, an armed key does not fire
         the instant it becomes true — it must stay confidently true for ``hold_s`` seconds (measured on
-        ``now``, the stream timeline) first. A confident-false in between resets the dwell (a transient
-        blip never fires). ``hold_s=None`` (the default) is byte-for-byte the rising-edge gate.
+        ``now``, the stream timeline) first. A confident-false, low-confidence read, stale read, or ASK
+        in between resets pending dwell support (a transient or unsupported interval never fires).
+        ``hold_s=None`` (the default) is byte-for-byte the rising-edge gate.
 
         ``no_evict`` marks this key exempt from TTL/LRU eviction — set by the executor for never-goals and
         the per-goal absence/resolved singletons, whose edge must survive an idle gap (dropping it would
@@ -396,14 +404,16 @@ class Gate:
             self._bound(key, ref)
         truth = classify(verdict, freshness, self.threshold, self.fresh_min)
         if truth == "unknown":
-            # asking never changes the edge — the fact is still pending. The two ASK codes split the
-            # single "unknown" truth back into WHICH arm of invariant 2 refused: a low-confidence read
-            # or a stale supporting fact (confidence is checked first, matching `classify`).
+            if hold_s is not None and hold_s > 0:
+                self.clear_pending_dwell(key)
+            # ASK preserves the armed/fired rising-edge bit. For positive dwell it invalidates only
+            # the unproven continuity timer above. The two ASK codes split the single "unknown" truth
+            # into WHICH arm refused: low confidence or stale support.
             reason: GateReason = "low_confidence" if verdict.confidence < self.threshold else "stale"
             return _d(ASK, reason)
         if truth == "no":
             self._armed[key] = True  # confident-false re-arms
-            self._dwell_since.pop(key, None)  # ...and breaks any in-progress dwell (blip resets the clock)
+            self.clear_pending_dwell(key)  # ...and breaks any in-progress dwell (blip resets the clock)
             return _d(SILENT, "not_satisfied")
         # truth == "yes"
         if (require_false_first or self.require_false_first) and key not in self._armed:
@@ -414,8 +424,12 @@ class Gate:
             # a genuine rising-edge fire requires. Opt-in: without this flag a new key defaults to armed
             # (byte-for-byte the historical rising-edge gate) so existing callers are unchanged.
             self._armed[key] = False
+            if hold_s is not None and hold_s > 0:
+                self.clear_pending_dwell(key)
             return _d(SILENT, "start_anchored")
         if not self._armed.get(key, True):  # new keys default to armed -> fresh edge
+            if hold_s is not None and hold_s > 0:
+                self.clear_pending_dwell(key)
             return _d(SILENT, "already_fired")  # already true / already fired this episode
         # Precision track: time-refractory, checked AFTER the edge/require-false-first logic (a fire must already be
         # "due") and BEFORE it is actually emitted — so a suppressed fire still counts as this episode's
@@ -425,7 +439,7 @@ class Gate:
             last_fire = self._last_fire.get(key)
             if last_fire is not None and (now - last_fire) < effective_refractory:
                 self._armed[key] = False  # treat as already-fired; a later confident-false re-arms it
-                self._dwell_since.pop(key, None)
+                self.clear_pending_dwell(key)
                 return _d(SILENT, "refractory")
         if hold_s is None or hold_s <= 0 or now is None:
             self._armed[key] = False
@@ -434,12 +448,25 @@ class Gate:
             return _d(FIRE, "rising_edge")  # no dwell -> the rising-edge fire (byte-for-byte)
         # dwell: require the condition to have held continuously for hold_s before firing.
         t0 = self._dwell_since.get(key)
+        last_supported = self._dwell_last_supported.get(key)
+        if (
+            t0 is not None
+            and last_supported is not None
+            and max_support_gap_s is not None
+            and max_support_gap_s > 0
+            and now - last_supported > max_support_gap_s
+        ):
+            # An unmarked stall longer than the supported-read budget cannot prove continuity.
+            t0 = None
+            self.clear_pending_dwell(key)
         if t0 is None:
             self._dwell_since[key] = now  # first sustained-true tick -> start the dwell timer
+            self._dwell_last_supported[key] = now
             return _d(SILENT, "dwell_pending")
+        self._dwell_last_supported[key] = now
         if now - t0 >= hold_s:
             self._armed[key] = False
-            self._dwell_since.pop(key, None)
+            self.clear_pending_dwell(key)
             self._last_fire[key] = now
             return _d(FIRE, "dwell_satisfied")
         return _d(SILENT, "dwell_pending")  # still accumulating dwell — true, but not long enough yet
@@ -449,8 +476,22 @@ class Gate:
         refractory memory — an explicit rearm is a fresh episode boundary, so a stale last-fire stamp
         must not suppress the next legitimate fire."""
         self._armed[key] = True
-        self._dwell_since.pop(key, None)
+        self.clear_pending_dwell(key)
         self._last_fire.pop(key, None)
+
+    def clear_pending_dwell(self, key: Hashable) -> None:
+        """Drop only unproven duration support for ``key``; never re-arm or erase a prior fire."""
+
+        self._dwell_since.pop(key, None)
+        self._dwell_last_supported.pop(key, None)
+
+    def clear_pending_dwell_goal(self, goal_id: str) -> None:
+        """Drop pending duration support for every reducer key owned by ``goal_id``."""
+
+        keys = set(self._dwell_since) | set(self._dwell_last_supported)
+        for key in keys:
+            if isinstance(key, tuple) and key and key[0] == goal_id:
+                self.clear_pending_dwell(key)
 
     def reset_goal(self, goal_id: str) -> None:
         """Drop all edge state for a goal so its next evaluation starts fresh."""
@@ -460,6 +501,11 @@ class Gate:
         # dwell/touched keys that never had an `_armed` entry too (e.g. an in-progress dwell), keeping
         # the maps aligned. (`_last_fire` is only ever set alongside `_armed`, so it needs no extra sweep.)
         for key in [k for k in self._dwell_since if isinstance(k, tuple) and k and k[0] == goal_id]:
+            self._drop(key)
+        for key in [
+            k for k in self._dwell_last_supported
+            if isinstance(k, tuple) and k and k[0] == goal_id
+        ]:
             self._drop(key)
 
     def reset_entity(self, entity_id: Hashable) -> None:
@@ -503,6 +549,7 @@ class Gate:
             return
         self._armed = {tuple(k): bool(v) for k, v in snap.get("armed", [])}
         self._dwell_since = {}
+        self._dwell_last_supported = {}
         self._touched = {tuple(k): float(t) for k, t in snap.get("touched", [])}
         self._no_evict = {tuple(k) for k in snap.get("no_evict", [])}
         # Precision track: restore last-fire stamps; missing key (legacy snapshot) -> empty, a no-op (no refractory

@@ -40,11 +40,17 @@ class GateDwellTests(unittest.TestCase):
         self.assertEqual(g.evaluate("k", YES, hold_s=10, now=18.0), SILENT)  # 9s since restart < 10
         self.assertEqual(g.evaluate("k", YES, hold_s=10, now=19.0), FIRE)    # 10s since restart -> fire
 
-    def test_ask_does_not_break_the_dwell(self):
+    def test_ask_breaks_positive_dwell_support(self):
         g = Gate()
         self.assertEqual(g.evaluate("k", YES, hold_s=10, now=0.0), SILENT)   # timer starts
-        self.assertEqual(g.evaluate("k", UNSURE, hold_s=10, now=3.0), ASK)   # uncertain -> ASK, timer kept
-        self.assertEqual(g.evaluate("k", YES, hold_s=10, now=10.0), FIRE)    # dwell measured from t0=0
+        self.assertEqual(g.evaluate("k", UNSURE, hold_s=10, now=3.0), ASK)   # unknown breaks support
+        self.assertEqual(g.evaluate("k", YES, hold_s=10, now=10.0), SILENT)  # timer restarts at 10
+        self.assertEqual(g.evaluate("k", YES, hold_s=10, now=20.0), FIRE)
+
+    def test_ask_without_hold_preserves_rising_edge_compatibility(self):
+        g = Gate()
+        self.assertEqual(g.evaluate("k", UNSURE), ASK)
+        self.assertEqual(g.evaluate("k", YES), FIRE)
 
     def test_zero_or_negative_hold_s_is_immediate(self):
         g = Gate()

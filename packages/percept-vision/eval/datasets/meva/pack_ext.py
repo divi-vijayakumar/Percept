@@ -16,10 +16,10 @@ Two things live here, kept separate:
    never mutates the shared :data:`percept.domain_pack.DEFAULT_DOMAIN_PACK_REGISTRY` that sibling
    pack cards also touch.
 
-Mapping rationale (from the DS1 brief):
+Mapping rationale:
 
-* ``person_opens_facility_door`` -> ``door_left_open`` (absence sense; fires if the door stays open
-  past a deadline). Goal shape ``episode`` — a continuous true-episode with a rising edge.
+* Door-opening actions are deliberately unmapped. An opening action does not prove that a door
+  remained open for a sustained Watch duration.
 * ``person_loiters`` / ``person_enters_scene_through_structure`` (person-enters-zone) ->
   ``zone_occupied`` (episode/count sense). Goal shape ``episode``.
 * ``person_abandons_package`` / abandoned-object / drop-off -> ``package_appeared`` (transition
@@ -47,8 +47,7 @@ __all__ = [
     "register",
 ]
 
-#: The shipped pack the transform maps onto. ``watch_template(f"{FACILITY_PACK_REF}/door_left_open")``
-#: renders a portable WatchPlan for the mapped condition without arming anything.
+#: The shipped pack the transform maps onto.
 FACILITY_PACK_REF = "facility_observation@1"
 
 
@@ -77,7 +76,6 @@ def _spec(template: str, goal_shape: str) -> ConditionSpec:
 #: activity is a facility-observation condition) — see :func:`condition_for`.
 MEVA_ACTIVITY_TO_CONDITION: dict[str, ConditionSpec] = {
     # snake_case KF1 / DIVA vocabulary (this repo's synthetic sample).
-    "person_opens_facility_door": _spec("door_left_open", "episode"),
     "person_loiters": _spec("zone_occupied", "episode"),
     "person_enters_scene_through_structure": _spec("zone_occupied", "episode"),
     "person_enters_through_structure": _spec("zone_occupied", "episode"),
@@ -86,11 +84,9 @@ MEVA_ACTIVITY_TO_CONDITION: dict[str, ConditionSpec] = {
     "abandonment": _spec("package_appeared", "point"),
     # CamelCase MEVA-KF1 vocabulary as it appears in the REAL public drops (act3 records). These are
     # the same three facility conditions under the names the shipped annotations actually use:
-    #   Open_Facility_Door -> door_left_open (a person opens the facility door)
     #   Enter_Facility / Exit_Facility -> zone_occupied (a person is present in the doorway zone,
     #       transiting the structure — the person-in-monitored-zone occupancy episode)
     #   Abandon_Package -> package_appeared (an object is left and becomes present)
-    "Open_Facility_Door": _spec("door_left_open", "episode"),
     "Enter_Facility": _spec("zone_occupied", "episode"),
     "Exit_Facility": _spec("zone_occupied", "episode"),
     "Abandon_Package": _spec("package_appeared", "point"),
@@ -111,23 +107,10 @@ def mapped_activity_types() -> tuple[str, ...]:
 # Optional MEVA-tuned pack scaffolding — NOT auto-registered (see module docstring).
 # ---------------------------------------------------------------------------
 
-#: Templates named with MEVA's own activity vocabulary, reusing the SHIPPED senses (absence /
-#: transition / count) so a caller can arm a goal straight from a MEVA activity name. The behavior
+#: Templates named with MEVA's own activity vocabulary, reusing the shipped transition/count
+#: primitives so a caller can arm a goal straight from a qualified MEVA activity name. The behavior
 #: dicts mirror ``percept.packs_default`` exactly — no new sense is invented here.
 _MEVA_TEMPLATES = (
-    GoalTemplate(
-        name="person_opens_facility_door",
-        condition="the {door_name} is open",
-        parameters={"door_name": "facility door", "deadline_after_s": 300.0},
-        target="door",
-        behavior={"rearm": "deadline", "deadline_after_s": "{deadline_after_s}"},
-        episode={"policy": "door_interval"},
-        consequence={"miss_cost": "mild", "false_fire_cost": "trivial"},
-        notes=(
-            "MEVA person_opens_facility_door -> facility_observation door_left_open: fires once the "
-            "door has stayed open past deadline_after_s."
-        ),
-    ),
     GoalTemplate(
         name="person_loiters",
         condition="a person is present in the {zone_name}",
@@ -187,7 +170,8 @@ def build_meva_facility_pack() -> DomainPack:
         policy_clamps={"false_negative_cost_min": "mild", "retention_max_days": 30.0},
         notes=(
             "MEVA-vocabulary view of facility_observation for dataset->fixture eval. Templates are "
-            "named after MEVA activity types and reuse the shipped absence/transition/count senses; "
+            "named after qualified MEVA activity types and reuse shipped transition/count senses; "
+            "door-opening actions are excluded from sustained-door qualification; "
             "no new sense is introduced. Not auto-registered — register() it explicitly."
         ),
     )

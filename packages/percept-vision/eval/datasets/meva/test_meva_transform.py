@@ -27,8 +27,8 @@ from eval.datasets.meva import kpf, pack_ext, transform
 
 # The pre-registered, frozen hashes (path-independent by construction). A silent relabel of the
 # committed sample changes the fixture-set hash and fails these loudly — which is the point.
-FROZEN_FIXTURE_SET_HASH = "c490894b6a8f56184ee37fa883120b16fb0a832a40786f834ca89173eb754b22"
-FROZEN_REGISTRATION_HASH = "5e2e71b31482c47adbb74dbeefd06da3f92ca81e8bd75bae38aba576f10587c0"
+FROZEN_FIXTURE_SET_HASH = "cc096a8c30094adabe8f77ef29ff746db92abe776cb21c1689c5720b803efc83"
+FROZEN_REGISTRATION_HASH = "6ab68daf91edb5277c51f0bce51c763ecbea9451ed9d20a28745923cb35064d5"
 
 FIXTURES = transform.FIXTURES_DIR
 TESTDATA = transform.TESTDATA_DIR
@@ -84,12 +84,9 @@ def test_mapping_targets_expected_conditions_and_shapes() -> None:
     fixtures = transform.build_fixtures(clips)
     by_id = {mf.fixture_id: mf for mf in fixtures}
 
-    # 4 scenes x 2 cameras, mapped conditions per scene -> 14 fixtures (see the sample layout).
-    assert len(fixtures) == 14
-
-    door = by_id["2018-03-05_11-25-00_11-30-00_school_G330__door_left_open"]
-    assert door.condition.template == "door_left_open"
-    assert door.fixture.goal_shape == "episode"
+    # Door-opening actions are excluded; the remaining qualified conditions produce 10 fixtures.
+    assert len(fixtures) == 10
+    assert not any("__door_left_open" in fixture_id for fixture_id in by_id)
 
     zone = by_id["2018-03-07_14-40-00_14-45-00_bus_G505__zone_occupied"]
     assert zone.condition.template == "zone_occupied"
@@ -112,23 +109,28 @@ def test_unmapped_activity_is_dropped() -> None:
             assert "vehicle_turns_left" not in ep.episode_id
 
 
+def test_door_opening_actions_do_not_qualify_sustained_door() -> None:
+    assert pack_ext.condition_for("person_opens_facility_door") is None
+    assert pack_ext.condition_for("Open_Facility_Door") is None
+    fixtures = transform.build_fixtures(kpf.iter_kpf_dir(TESTDATA))
+    assert not any("__door_left_open" in fixture.fixture_id for fixture in fixtures)
+    assert not any(
+        path.parent.name.endswith("__door_left_open")
+        for path in FIXTURES.glob("*/ground_truth.json")
+    )
+
+
 def test_fire_timestamp_lands_on_activity_begin() -> None:
     clips = kpf.iter_kpf_dir(TESTDATA)
     fixtures = {mf.fixture_id: mf for mf in transform.build_fixtures(clips)}
-
-    door = fixtures["2018-03-05_11-25-00_11-30-00_school_G330__door_left_open"].fixture
-    (ep,) = door.episodes
-    assert ep.ground_truth.event_start_ts == 10.0        # begin frame 300 / 30 fps
-    assert ep.ground_truth.decision_eligible_ts == 10.0  # the fire anchor IS the begin
-    assert ep.episode_end_ts == 16.0                     # end frame 480 / 30 fps
 
     package = fixtures["2018-03-05_13-10-00_13-15-00_school_G330__package_appeared"].fixture
     (pep,) = package.episodes
     assert pep.ground_truth.decision_eligible_ts == 50.0  # begin frame 1500 / 30 fps
 
     # The canonical golden timeline fires at exactly the pinned begin instant.
-    golden = build_golden_timeline(door.episodes)
-    assert golden[0].timing.decision_emitted_ts == 10.0
+    golden = build_golden_timeline(package.episodes)
+    assert golden[0].timing.decision_emitted_ts == 50.0
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +140,7 @@ def test_fire_timestamp_lands_on_activity_begin() -> None:
 
 def test_fixtures_load_through_percept_loader() -> None:
     fixtures = load_fixtures(FIXTURES)
-    assert len(fixtures) == 14
+    assert len(fixtures) == 10
     # Every mapped condition is a SUPPORTED scope shape -> it can be scored (not dropped by scope).
     assert all(f.scope.scorable for f in fixtures)
 
@@ -272,21 +274,17 @@ def test_shipped_templates_render_the_mapped_conditions() -> None:
     pack = get_domain_pack("facility_observation@1")
     for spec in pack_ext.MEVA_ACTIVITY_TO_CONDITION.values():
         assert spec.template in pack.templates
-    plan = watch_template("facility_observation@1/door_left_open")
-    assert "open" in plan.condition
+    assert pack_ext.condition_for("person_opens_facility_door") is None
+    assert pack_ext.condition_for("Open_Facility_Door") is None
 
 
 def test_meva_pack_scaffolding_builds_and_registers_cleanly() -> None:
     pack = pack_ext.build_meva_facility_pack()
     assert isinstance(pack, DomainPack)
     assert set(pack.templates) == {
-        "person_opens_facility_door",
         "person_loiters",
         "person_abandons_package",
     }
-    # A MEVA-named template renders to the same door condition shape.
-    plan = pack.template("person_opens_facility_door").render()
-    assert "open" in plan.condition
 
     # register() is opt-in and reversible — it must not permanently mutate the shared registry.
     from percept.domain_pack import DEFAULT_DOMAIN_PACK_REGISTRY

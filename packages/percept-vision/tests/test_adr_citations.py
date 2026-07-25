@@ -97,14 +97,14 @@ GATE_ANCHORS = [
     (202, "evaluate`` is the only firing path"),
     (229, "_armed"),
     (232, "_dwell_since"),
-    (237, "_last_fire"),
-    (251, "_no_evict"),
-    (338, "def decide("),
-    (405, "confident-false re-arms"),
-    (423, "effective_refractory"),
-    (429, '"refractory"'),
-    (465, "def reset_entity("),
-    (477, "def snapshot("),
+    (240, "_last_fire"),
+    (254, "_no_evict"),
+    (344, "def decide("),
+    (415, "confident-false re-arms"),
+    (437, "effective_refractory"),
+    (443, '"refractory"'),
+    (511, "def reset_entity("),
+    (523, "def snapshot("),
 ]
 
 
@@ -119,8 +119,8 @@ def test_gate_line_anchors_still_hold(lineno, token):
 #: The corrected gate.py cites, verbatim, as ADR-006 now writes them.
 GATE_CITES = [
     ":13-16", ":32-40", ":73-74", ":76", ":107-117", ":121-131", ":139",
-    ":186-198", ":202", ":229-237", ":232", ":245-246", ":251",
-    ":338", ":405", ":423-429", ":465", ":477-510",
+    ":186-198", ":202", ":229-240", ":232", ":248-249", ":254",
+    ":344", ":415", ":434-443", ":511", ":523-557",
 ]
 
 

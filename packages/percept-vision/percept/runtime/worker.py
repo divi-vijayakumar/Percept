@@ -17,7 +17,8 @@ import inspect
 import math
 import time
 from collections import deque
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable
 
 from percept.events import (
@@ -176,6 +177,7 @@ class RuntimeStats:
     #   strips a SourceProfile coast at resolve time, so this stays 0 on static content there.
     # - audio_wakes: an audio onset admitted a frame neither the gate nor the coast would (above).
     signal_admits: int = 0  # tuned-signal (motion/salience) escalations
+    fixed_admits: int = 0  # fixed-only per-Watch cadence admits (never motion-labelled)
     coast_admits: int = 0  # fixed-cadence coast admits (no tuned signal, no audio)
     boundaries: int = 0  # edge-detector boundaries (rep peaks / onsets) fed to perceive_boundary
     utterances: int = 0  # complete spoken utterances endpointed and handed to on_utterance
@@ -206,6 +208,13 @@ class RuntimeStats:
     source_excluded: int = 0
     source_discontinuities: int = 0
     source_missing_sequences: int = 0
+    # Per-Watch admission accounting. A fixed opportunity is a fixed-cadence condition whose interval
+    # elapsed; every such opportunity admits exactly that goal in the in-process topology.
+    fixed_opportunities: int = 0
+    goal_admissions: int = 0
+    admission_by_goal: dict[str, int] = field(default_factory=dict)
+    admission_by_cause: dict[str, int] = field(default_factory=dict)
+    perceive_dispatches: int = 0
 
 
 @dataclass(frozen=True)
@@ -478,6 +487,7 @@ class _JudgeScheduler:
     ) -> None:
         if self._stats is not None:
             self._stats.judge_calls += 1  # counted at launch — a superseded candidate spent nothing
+            self._stats.perceive_dispatches += 1
         self._active_t = t
         self._active_launch_wall = self._mc_now(t)  # this task's own clock, for stall detection
         self._stall_reported = False  # a fresh launch is unlatched — the stall window resets
@@ -1367,6 +1377,12 @@ async def run(
     from percept.behavior_routes import require_worker_routes
     from percept.config import load_settings
     from percept.contracts import WatchSpec
+    from percept.duration_routes import (
+        UNSUPPORTED_DURATION_ROUTE,
+        DurationRouteIssue,
+        UnsupportedDurationRouteError,
+        require_duration_routes,
+    )
     from percept.edge.detectors import DetectorBank
     from percept.edge.tier0 import MotionGate, compile_watchspec
 
@@ -1422,6 +1438,37 @@ async def run(
     # Route support is source-local. Refuse before this worker opens or pulls its source; repeat this
     # preflight during regating so a newly armed unsupported Goal cannot reach detection or judging.
     require_worker_routes(_source_goals(), driver="percept.run")
+    require_duration_routes(
+        _source_goals(),
+        driver="percept.run",
+        require_worker_cadence=True,
+    )
+    clear_pending_dwell = getattr(core, "clear_pending_dwell", None)
+    duration_goal_ids = [
+        str(goal.id)
+        for goal in _source_goals()
+        if isinstance(getattr(goal, "state", None), Mapping)
+        and "hold_s" in goal.state
+    ]
+    if duration_goal_ids and not callable(clear_pending_dwell):
+        raise UnsupportedDurationRouteError(
+            (
+                DurationRouteIssue(
+                    path="Runtime.clear_pending_dwell",
+                    code=UNSUPPORTED_DURATION_ROUTE,
+                    goal_id=goal_id,
+                    message=(
+                        "is required to invalidate sustained-duration evidence across "
+                        "run and pause continuity boundaries"
+                    ),
+                )
+                for goal_id in duration_goal_ids
+            ),
+            driver="percept.run",
+        )
+    if callable(clear_pending_dwell):
+        # Every run is a new observation session even when a caller reuses the same in-process core.
+        clear_pending_dwell(gate_source)
 
     # A compiled SourceProfile coverage floor must not become an inert field. The existing health
     # contract is source/run-level, so it can faithfully inherit the floor for one Watch. With
@@ -1575,6 +1622,11 @@ async def run(
         not reset mid-rep) — so arming one goal never disturbs the others."""
         _require_source_scoped_callbacks()
         require_worker_routes(_source_goals(), driver="percept.run")
+        require_duration_routes(
+            _source_goals(),
+            driver="percept.run",
+            require_worker_cadence=True,
+        )
         visual_active = _visual_goals()
         conditions = []
         runtime_bindings = getattr(core, "_watch_runtime_bindings", {})
@@ -2552,6 +2604,7 @@ async def run(
                 _cov.incidents += 1
                 yield incident
 
+        _was_paused = False
         async for envelope in _aiter(source, capture_fps, **source_kwargs):
             require_source_time = video_tb.resolved == "media"
             if envelope.modality in ("video", "audio") and envelope.modality != "video":
@@ -2725,7 +2778,14 @@ async def run(
             # SLEEP (RuntimeSession.pause): keep capturing + streaming frames to subscribers (the camera
             # panel stays live) but spend NO gate/judge/incident this tick — a cost-free pause that resumes
             # instantly. Default (paused=None) is byte-for-byte.
-            if paused is not None and paused():
+            is_paused = bool(paused is not None and paused())
+            if is_paused != _was_paused:
+                # Neither a pause nor a resume is evidence that a condition remained continuously
+                # true. Pending dwell is invalidated on both boundaries without re-arming fired state.
+                if callable(clear_pending_dwell):
+                    clear_pending_dwell(gate_source)
+                _was_paused = is_paused
+            if is_paused:
                 continue
 
             # boundary first: it must see quiet frames too (the episode ends when activity stops)
@@ -2813,10 +2873,12 @@ async def run(
             if audio_admit:
                 audio["wake_at"] = None
             admitted_goal_ids = list(decision.goal_ids)
+            admitted_causes = list(decision.admission_causes)
             if coast_admit:
                 for goal_id in coast_goal_ids:
                     if goal_id not in admitted_goal_ids:
                         admitted_goal_ids.append(goal_id)
+                        admitted_causes.append("coast")
             if audio_admit:
                 audio_goals = [
                     goal
@@ -2833,6 +2895,7 @@ async def run(
                 for goal_id in externally_admitted:
                     if goal_id not in admitted_goal_ids:
                         admitted_goal_ids.append(goal_id)
+                        admitted_causes.append("audio")
             # A compiled audio/fused Watch may never fall through to a provider with ``audio=None``:
             # that changes the question into vision-only perception. Drop only the affected Watch,
             # report the missing channel once, and keep this source worker alive for other Watches.
@@ -2842,7 +2905,9 @@ async def run(
                 if not _compiled_audio_ready(goal_id)
             ]
             for goal_id in missing_audio:
-                admitted_goal_ids.remove(goal_id)
+                missing_index = admitted_goal_ids.index(goal_id)
+                admitted_goal_ids.pop(missing_index)
+                admitted_causes.pop(missing_index)
                 if goal_id not in _audio_missing_reported:
                     _audio_missing_reported.add(goal_id)
                     _log.warning(
@@ -2885,18 +2950,35 @@ async def run(
             if _funnel is not None:
                 _funnel.gated(camera=gate_source)  # tier-0 escalated this frame — a cloud call will be spent
             _cov.escalations += 1
+            for goal_id, cause in zip(admitted_goal_ids, admitted_causes):
+                _cov.goal_admissions += 1
+                _cov.admission_by_goal[goal_id] = _cov.admission_by_goal.get(goal_id, 0) + 1
+                _cov.admission_by_cause[cause] = _cov.admission_by_cause.get(cause, 0) + 1
+                if cause == "fixed":
+                    _cov.fixed_opportunities += 1
             # Partition the admit into exactly one cause bucket (see RuntimeStats): a tuned-signal
             # escalation, else a fixed-cadence coast admit, else an audio wake. This mirrors the
             # `cause` string computed just below for the escalation health event.
-            if decision.escalate:
+            gate_causes = set(decision.admission_causes)
+            if decision.escalate and gate_causes - {"fixed"}:
                 _cov.signal_admits += 1
+            elif decision.escalate and gate_causes == {"fixed"}:
+                _cov.fixed_admits += 1
             elif coast_admit:
                 _cov.coast_admits += 1
             if audio_admit and not (decision.escalate or coast_admit):
                 _cov.audio_wakes += 1
             if on_health is not None:
-                cause = "audio" if (audio_admit and not (decision.escalate or coast_admit)) else \
-                    ("both" if (audio_admit and decision.escalate) else ("coast" if coast_admit and not decision.escalate else "motion"))
+                if audio_admit and not (decision.escalate or coast_admit):
+                    cause = "audio"
+                elif audio_admit and decision.escalate:
+                    cause = "both"
+                elif coast_admit and not decision.escalate:
+                    cause = "coast"
+                elif gate_causes == {"fixed"}:
+                    cause = "fixed"
+                else:
+                    cause = "motion"
                 _esc_data = {"source": gate_source, "cause": cause}
                 if _judge_sched is not None:
                     # Live scheduler-shape proof (each 0/1 by construction): read BEFORE this frame's
@@ -2910,6 +2992,7 @@ async def run(
             if _judge_sched is not None:
                 _judge_sched.submit(t, judge_frame, tuple(admitted_goal_ids))
             else:
+                _cov.perceive_dispatches += 1
                 _cov.judge_calls += 1
                 perceive_kwargs = {"t": t}
                 if perceive_accepts_goal_ids:

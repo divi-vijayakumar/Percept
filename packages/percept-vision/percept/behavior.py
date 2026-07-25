@@ -47,6 +47,7 @@ from .contracts import (
     SubjectRef,
 )
 from .episodes import EPISODE_POLICIES, ContinuationDecision
+from .duration_routes import duration_policy
 from .gate import ASK, FIRE, Gate, classify
 from .observability import get_logger
 
@@ -855,8 +856,10 @@ class BehaviorExecutor:
         # implementation of ``evaluate`` (``evaluate`` returns ``decide(...).action``), so the edge
         # effects and the action are byte-for-byte identical — we simply also read the ``reason`` the
         # gate already computed, which until now reached only the health/trace channel, never the wire.
+        hold_s, max_support_gap_s = duration_policy(goal.state)
         outcome = self.gate.decide(
-            key, verdict, freshness=freshness, hold_s=program.hold_s, now=t,
+            key, verdict, freshness=freshness, hold_s=hold_s,
+            max_support_gap_s=max_support_gap_s, now=t,
             no_evict=program.key.suppress_false,
         )
         action = outcome.action
@@ -1139,14 +1142,19 @@ def program_of(goal) -> BehaviorProgram:
             accumulate=Accumulator(fire_when=s.get("fire_when"), window_s=s.get("window_s")),
         )
     # R-1: sustained-duration dwell, authored via goal.state["hold_s"] (same channel as deadline_after_s /
-    # cadence_s). Absent -> None -> byte-for-byte the rising-edge gate. Coerced defensively (untrusted).
+    # cadence_s). Absent -> None -> byte-for-byte the rising-edge gate. Public runtime entry points
+    # validate authored duration state before this internal defensive conversion.
     hold = _coerce_hold_s(s.get("hold_s"))
     return replace(prog, perception=_perception_for(prog.sense, s.get("perception")), hold_s=hold)
 
 
 def _coerce_hold_s(v: object) -> float | None:
-    """goal.state['hold_s'] -> a positive float dwell, or None. A non-numeric / non-positive hint -> None
-    (no dwell), so a malformed value can never silently suppress firing."""
+    """Internal conversion of a previously validated positive ``goal.state['hold_s']``.
+
+    Structured apply, Tier-0/worker, GatedLoop, and direct judged entry points reject invalid authored
+    duration state before :func:`program_of` reaches this helper. ``None`` remains only a defensive
+    compatibility fallback for internal/legacy callers, never the supported public contract.
+    """
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         return None
     return float(v) if v > 0 else None
