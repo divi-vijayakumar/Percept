@@ -152,6 +152,16 @@ from ._build import BuildInfo, build_info  # noqa: E402
 # Imported after __version__ so agent.health() can read it lazily without a cycle.
 from .agent import CompiledWatchSnapshotUnsupportedError, FireEvent, Percept  # noqa: E402
 from .watch import WATCH_VERSION, watch  # noqa: E402
+from .interest import (  # noqa: E402
+    INTEREST_ENTERED,
+    INTEREST_EXITED,
+    INTEREST_UPDATED,
+    InterestIntervalConfig,
+    InterestIntervalEngine,
+    InterestIntervalEvent,
+    InterestSample,
+    Tier0MotionInterest,
+)
 
 # String sugar for watch(): `watch(stream, "the milk is boiling over")`. Exported so callers can
 # reproduce the desugared id (goal_id_for) without re-implementing the documented scheme.
@@ -239,6 +249,15 @@ __all__ = [
     "watch",
     "WATCH_VERSION",
     "WatchEvent",
+    # deterministic video-interest interval lifecycle (admission signal, not semantic judgment)
+    "INTEREST_ENTERED",
+    "INTEREST_UPDATED",
+    "INTEREST_EXITED",
+    "InterestIntervalConfig",
+    "InterestSample",
+    "InterestIntervalEvent",
+    "InterestIntervalEngine",
+    "Tier0MotionInterest",
     # string sugar for watch() goals (pass-through, never compilation)
     "desugar_goal",
     "desugar_goals",

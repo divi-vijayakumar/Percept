@@ -28,6 +28,7 @@ from typing import Any, Callable, Iterable, Sequence
 
 from percept.adapters import Box, Goal, Schedule, Tier0Signal, WatchCondition, WatchSpec
 from percept.config import Settings, load_settings
+from percept.interest import InterestIntervalEvent, Tier0MotionInterest
 
 from .detectors import (
     Boundary,
@@ -863,6 +864,10 @@ class LoopReport:
     # edge boundaries the detectors emit (the count comes from HERE, not from a per-frame VLM call):
     # (goal_id, Boundary) pairs across the whole run.
     boundaries: list[tuple[str, Boundary]] = field(default_factory=list)
+    # Opt-in VID lifecycle events over the REPORTED mean-motion gauge. Empty unless
+    # ``GatedWatchLoop(interest=...)`` is supplied; these are admission-interest intervals, never
+    # semantic Watch verdicts.
+    interest_events: list[InterestIntervalEvent] = field(default_factory=list)
 
     def boundary_count(self, goal_id: str, *, kind: str | None = None) -> int:
         """How many boundaries a goal's detectors proposed (e.g. peaks = reps), optionally by kind."""
@@ -932,6 +937,7 @@ class GatedWatchLoop:
         edge_capabilities: Iterable[str] | None = None,
         clock: Callable[[], CivilTime] | None = None,
         wake_policy: WakePolicy | dict[str, Any] | None = None,
+        interest: Tier0MotionInterest | None = None,
     ) -> None:
         self._core = core
         cfg = settings or getattr(core, "settings", None) or load_settings()
@@ -954,6 +960,12 @@ class GatedWatchLoop:
         self._banks = {
             c.goal_id: DetectorBank(c.detectors) for c in self._spec.conditions if c.detectors
         }
+        if interest is not None and interest.engine.source != source:
+            raise ValueError(
+                "tier-0 interest source must match the GatedWatchLoop source "
+                f"({interest.engine.source!r} != {source!r})"
+            )
+        self._interest = interest
 
     @staticmethod
     def _resolve_funnel(core: Any):
@@ -1003,6 +1015,8 @@ class GatedWatchLoop:
             decision = self._gate.evaluate(item.frame, ts=item.ts, energy=energy, signals=extra)
             report.frames += 1
             report.signals.append(decision.signal)  # report Tier0Signal UP every frame
+            if self._interest is not None:
+                report.interest_events.extend(self._interest.observe(decision))
             if self._funnel is not None:
                 self._funnel.seen(camera=self._source)  # the ungated baseline: a frame was observed
             # Edge detectors run on the cheap motion/energy signals at native fps — the count/boundaries
@@ -1041,6 +1055,10 @@ class GatedWatchLoop:
                         if getattr(event, "goal_id", None) in admitted
                     ]
                 report.fire_events.extend(fired or [])
+        if self._interest is not None:
+            # ``run`` consumes a finite iterable, so reaching its end has unambiguous EOS semantics.
+            # The adapter preserves the last positive evidence bound and stamps EOS separately.
+            report.interest_events.extend(self._interest.end_of_stream())
         return report
 
 
@@ -1057,6 +1075,7 @@ async def run_gated_watch(
     cheap_signals: Sequence[dict[str, float]] | None = None,
     settings: Settings | None = None,
     wake_policy: WakePolicy | dict[str, Any] | None = None,
+    interest: Tier0MotionInterest | None = None,
 ) -> LoopReport:
     """One-call entrypoint for the wired loop (the cross-package e2e drives this).
 
@@ -1065,7 +1084,13 @@ async def run_gated_watch(
     Returns the :class:`LoopReport`.
     """
     loop = GatedWatchLoop(
-        core, goals, threshold=threshold, source=source, settings=settings, wake_policy=wake_policy
+        core,
+        goals,
+        threshold=threshold,
+        source=source,
+        settings=settings,
+        wake_policy=wake_policy,
+        interest=interest,
     )
     return await loop.run(
         stream, clock_start=clock_start, dt=dt, energies=energies, cheap_signals=cheap_signals
