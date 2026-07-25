@@ -146,8 +146,14 @@ class RuntimeWorkerTests(unittest.TestCase):
         ended = [e for e in events if e.kind == "runtime_ended"]
         self.assertEqual(len(ended), 1)
         self.assertEqual(ended[0].data, {
-            "frames_seen": 4, "admitted": 3, "signal_admits": 3, "coast_admits": 0,
-            "audio_wakes": 0, "judge_calls": 3, "incidents": 2,
+            "frames_seen": 4, "admitted": 3,
+            "signal_admits": 3, "fixed_admits": 0, "coast_admits": 0, "audio_wakes": 0,
+            "fixed_opportunities": 0,
+            "goal_admissions": 3,
+            "admission_by_goal": {"zone": 3},
+            "admission_by_cause": {"motion": 3},
+            "perceive_dispatches": 3,
+            "judge_calls": 3, "incidents": 2,
             "source_coverage": {
                 "video": {
                     "observed": 4, "excluded": 0, "discontinuities": 0,
@@ -159,10 +165,13 @@ class RuntimeWorkerTests(unittest.TestCase):
                 },
             },
         })
-        # the admission split partitions the total: escalations == signal + coast + audio
+        # the per-frame admission split partitions the total.
         self.assertEqual(
             ended[0].data["admitted"],
-            ended[0].data["signal_admits"] + ended[0].data["coast_admits"] + ended[0].data["audio_wakes"],
+            ended[0].data["signal_admits"]
+            + ended[0].data["fixed_admits"]
+            + ended[0].data["coast_admits"]
+            + ended[0].data["audio_wakes"],
         )
         # the payload is exactly what the caller's own stats object saw — one set of counters
         self.assertEqual(ended[0].data["frames_seen"], stats.frames)
