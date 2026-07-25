@@ -9,8 +9,8 @@ One pack, four templates, built ONLY from senses that already exist in
   change from "nothing" to "present".
 - ``standing_water`` — also the **transition** sense: the same from/absent-to-present shape as a
   package, a different domain.
-- ``zone_occupied`` — the **episode** sense (``type="count"``): each distinct occupancy is counted
-  as its own episode (``fire_episode`` firing mechanics, per ``percept.behavior.program_of``).
+- ``zone_occupied`` — an ordinary Watch: one rising-edge incident per contiguous occupied interval.
+  It does not identify, track, or count distinct people.
 
 Every :class:`~percept.domain_pack.ComponentRecommendation` here is ``strength="preferred"`` —
 this pack recommends, it never requires (ADR-008 Invariants: "templates never auto-arm"; no
@@ -83,16 +83,17 @@ _STANDING_WATER = GoalTemplate(
     notes="fires once, on the rising edge of standing water becoming visible in the named zone.",
 )
 
-#: Episode sense: each distinct occupancy of the zone is counted as its own episode
-#: (percept.behavior.program_of: type == "count" -> sense="episode", count_distinct accumulator).
+#: Ordinary Watch: each confidently observed empty interval re-arms the next occupied rising edge.
 _ZONE_OCCUPIED = GoalTemplate(
     name="zone_occupied",
     condition="a person is present in the {zone_name}",
     parameters={"zone_name": "restricted zone"},
     target="person",
-    behavior={"type": "count"},
     consequence={"miss_cost": "mild", "false_fire_cost": "trivial"},
-    notes="fires once per distinct occupancy episode of the named zone (not once per frame).",
+    notes=(
+        "fires once per contiguous occupied interval of the named zone. It does not identify, "
+        "track, or count distinct people in a crowd."
+    ),
 )
 
 _TEMPLATES = {
@@ -108,14 +109,6 @@ _COMPONENTS = (
         ref="sense:physical_scene",
         strength="preferred",
         reason="a facility camera is a fixed physical scene, not a screen or a conversation.",
-    ),
-    ComponentRecommendation(
-        ref="identity_resolver:appearance_recent_set",
-        strength="preferred",
-        reason=(
-            "zone_occupied needs short-horizon person tracking across a few frames, not "
-            "persistent cross-session identity."
-        ),
     ),
     ComponentRecommendation(
         ref="execution_policy:low_cost@1",
@@ -180,7 +173,7 @@ FACILITY_OBSERVATION_V1 = DomainPack(
     search_space=_SEARCH_SPACE,
     notes=(
         "unattended-facility observation: door left open, package appeared, standing water, zone "
-        "occupied — built entirely from existing transition/absence/episode senses. No security@1 "
+        "occupied — built from existing transition/absence/Watch behavior. No security@1 "
         "pack ships here (deferred until identity/tracking calibration lands)."
     ),
 )

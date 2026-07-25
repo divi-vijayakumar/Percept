@@ -17,6 +17,7 @@ from typing import Any, Callable, Hashable
 from . import registry
 from .adapters import AudioFrame, Box, Decision, Goal, GoalOrigin, TurnResult, Verdict
 from .behavior import BehaviorExecutor, EpisodeFoldResult, ShadowObservation, program_of
+from .behavior_routes import BehaviorRoute, goal_behavior_route
 from .cache import CacheCascade, CacheKey, FrameHashLayer
 from .concern import attention_weight, consequence_of, requires_verification, resolution_ready
 from .config import ModeError, Settings, load_settings, missing_credential, resolve_mode
@@ -1844,8 +1845,8 @@ class Percept:
         for goal in active_goals:
             if _stale():
                 break  # revision moved during a prior goal's judge — stop before judging under it
-            gtype = goal.state.get("type", "watch")
-            if gtype == "transition":
+            route = goal_behavior_route(goal)
+            if route is BehaviorRoute.FRAME_TRANSITION:
                 ev = await self._perceive_transition(
                     goal, frame, focus, now=now, t=t, ingest_observed_at=ingest_observed_at,
                     trace_id=trace_id, tracing=tracing, source=source, stale=_stale,
@@ -1853,12 +1854,12 @@ class Percept:
                 if ev is not None:
                     events.append(ev)
                 continue
-            if gtype == "process":
+            if route is BehaviorRoute.FRAME_PROCESS:
                 # Item 4: log a delta, never fire here
                 await self._observe_and_log(goal, frame, source, now, stale=_stale)
                 continue
-            if gtype != "watch":
-                continue  # event/count/remind goals are handled by their dedicated paths
+            if route is not BehaviorRoute.FRAME_WATCH:
+                continue  # external primitives are driven by their dedicated public APIs
             ctx = self.executor.ctx(goal.id)
             # HOW to look = the authored/preset spec, floored by the resolved profile's plan_mode —
             # "window" hands the judge an ordered clip, never a montage — then escalated by this

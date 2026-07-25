@@ -36,6 +36,7 @@ from dataclasses import dataclass, field, replace
 from typing import Callable, Hashable, Literal
 
 from .adapters import Verdict
+from .behavior_routes import is_known_behavior_type
 from .concern import consequence_of, is_hard_quadrant
 from .contracts import (
     Box,
@@ -1182,10 +1183,17 @@ def coerce_authored_behavior(raw) -> dict:
     if not isinstance(raw, dict):
         return {}
     out: dict = {}
-    # tracking pattern (transition needs both from/to in plain language)
-    if raw.get("type") == "transition" and isinstance(raw.get("from"), str) and isinstance(raw.get("to"), str):
+    # Execution route. Preserve every closed-vocabulary route so a later worker boundary can either
+    # execute it or reject it loudly; an explicit route must never be laundered into the default Watch.
+    if (
+        raw.get("type") == "transition"
+        and isinstance(raw.get("from"), str)
+        and raw["from"].strip()
+        and isinstance(raw.get("to"), str)
+        and raw["to"].strip()
+    ):
         out.update(type="transition", **{"from": raw["from"], "to": raw["to"]})
-    elif raw.get("type") in {"event", "count"}:
+    elif raw.get("type") != "transition" and is_known_behavior_type(raw.get("type")):
         out["type"] = raw["type"]
     # re-arm (interval needs a positive cadence; deadline needs a non-negative deadline)
     rearm = raw.get("rearm")

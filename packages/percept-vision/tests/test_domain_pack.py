@@ -393,10 +393,11 @@ class TestFacilityObservationPack(unittest.TestCase):
         plan = FACILITY_OBSERVATION_V1.template("standing_water").render()
         self.assertEqual(plan.explicit["Goal.state.type"], "transition")
 
-    def test_zone_occupied_uses_episode_sense(self) -> None:
-        """type='count' -> sense='episode' per percept.behavior.program_of."""
+    def test_zone_occupied_uses_contiguous_watch_semantics(self) -> None:
         plan = FACILITY_OBSERVATION_V1.template("zone_occupied").render()
-        self.assertEqual(plan.explicit["Goal.state.type"], "count")
+        self.assertNotIn("Goal.state.type", plan.explicit)
+        self.assertIn("contiguous occupied interval", FACILITY_OBSERVATION_V1.template("zone_occupied").notes)
+        self.assertIn("does not identify", FACILITY_OBSERVATION_V1.template("zone_occupied").notes)
 
     def test_all_components_are_preferred_not_required(self) -> None:
         """'recommended (not required) components' — the card's own posture; no security@1."""
@@ -587,7 +588,7 @@ class TestEndToEndArm(unittest.TestCase):
         receipt = apply_watch_plan(core, plan, domain_pack=FACILITY_OBSERVATION_V1)
         self.assertEqual(receipt.status, "applied")
         goal = core.goals.get(receipt.watch_ids[0])
-        self.assertEqual(goal.state["type"], "count")
+        self.assertEqual(goal.state["type"], "watch")
         self.assertIn("server room", goal.condition)
 
     def test_arm_rejected_when_clamp_violated(self) -> None:
@@ -713,7 +714,7 @@ class TestZeroCoreEditsProof(unittest.TestCase):
             "door_left_open": "absence",
             "package_appeared": "transition",
             "standing_water": "transition",
-            "zone_occupied": "episode",
+            "zone_occupied": "judge",
         }
         for name, sense in expected_sense.items():
             plan = watch_template(f"facility_observation@1/{name}")

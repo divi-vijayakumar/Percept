@@ -831,12 +831,16 @@
       "choices": [
         "watch",
         "transition",
+        "process",
+        "event",
         "count",
-        "rhythm"
+        "rhythm",
+        "remind",
+        "scheduler"
       ],
       "default": "watch",
       "env_var": null,
-      "note": "which BehaviorProgram sense program_of() compiles to (behavior.py).",
+      "note": "the closed execution route selected for this Goal.",
       "owner": "WatchPlan",
       "path": "Goal.state.type",
       "requires_recompile": false,

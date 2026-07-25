@@ -1364,6 +1364,7 @@ async def run(
     """
     from percept.labelstore import verdict_ref as _verdict_ref
     from percept.behavior import program_of
+    from percept.behavior_routes import require_worker_routes
     from percept.config import load_settings
     from percept.contracts import WatchSpec
     from percept.edge.detectors import DetectorBank
@@ -1417,6 +1418,10 @@ async def run(
             for goal in _source_goals()
             if program_of(goal).perception.modality in ("vision", "fused")
         ]
+
+    # Route support is source-local. Refuse before this worker opens or pulls its source; repeat this
+    # preflight during regating so a newly armed unsupported Goal cannot reach detection or judging.
+    require_worker_routes(_source_goals(), driver="percept.run")
 
     # A compiled SourceProfile coverage floor must not become an inert field. The existing health
     # contract is source/run-level, so it can faithfully inherit the floor for one Watch. With
@@ -1569,6 +1574,7 @@ async def run(
         and a surviving goal's detector bank is REUSED (its running rep-peak / refractory state must
         not reset mid-rep) — so arming one goal never disturbs the others."""
         _require_source_scoped_callbacks()
+        require_worker_routes(_source_goals(), driver="percept.run")
         visual_active = _visual_goals()
         conditions = []
         runtime_bindings = getattr(core, "_watch_runtime_bindings", {})

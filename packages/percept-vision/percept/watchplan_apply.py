@@ -52,6 +52,11 @@ from .behavior import (
     coerce_authored_sense,
     program_of,
 )
+from .behavior_routes import (
+    authored_behavior_type,
+    behavior_route,
+    worker_can_drive,
+)
 from .contracts import GoalOrigin
 from .contracts.watchplan import FieldDiagnostic, ReceiptStatus, WatchPlan, WatchReceipt
 from .deployment_judges import load_deployment_judges
@@ -197,6 +202,37 @@ class _JudgePrepareError(Exception):
     def __init__(self, diagnostic: FieldDiagnostic) -> None:
         super().__init__(diagnostic.message)
         self.diagnostic = diagnostic
+
+
+class _RoutePrepareError(Exception):
+    """An unsupported frame-worker route found before any plan in the batch is armed."""
+
+    def __init__(self, diagnostic: FieldDiagnostic) -> None:
+        super().__init__(diagnostic.message)
+        self.diagnostic = diagnostic
+
+
+def _runtime_route_diagnostic(state: Any, *, goal_id: str | None) -> FieldDiagnostic | None:
+    """Return the fail-closed apply diagnostic for a non-frame-worker behavior state."""
+
+    route = behavior_route(state)
+    if worker_can_drive(route):
+        return None
+    authored_type = authored_behavior_type(state)
+    guidance = (
+        " Use the matching direct event, boundary, rhythm, or scheduler primitive."
+        if route.value != "unsupported"
+        else ""
+    )
+    return FieldDiagnostic(
+        path="Goal.state.type",
+        code="unsupported_runtime_route",
+        goal_id=goal_id,
+        message=(
+            f"behavior type {authored_type!r} resolves to route {route.value!r}, which "
+            f"percept.run cannot execute; no Watch was armed.{guidance}"
+        ),
+    )
 
 
 @dataclass
@@ -491,7 +527,20 @@ def _prepare_one(
       within-batch duplicate);
     * ``("prepared", _PreparedGoal)`` — ready to commit.
 
-    Raises :class:`_JudgePrepareError` on a judge prepare failure (aborts the WHOLE batch)."""
+    A judge or runtime-route prepare failure aborts the WHOLE batch."""
+    explicit_type = plan.explicit.get("Goal.state.type")
+    if "Goal.state.type" in plan.explicit:
+        authored = {"type": explicit_type}
+        for key in ("from", "to"):
+            path = f"Goal.state.{key}"
+            if path in plan.explicit:
+                authored[key] = plan.explicit[path]
+        route_error = _runtime_route_diagnostic(
+            {"type": "watch", "behavior": authored}, goal_id=plan.id
+        )
+        if route_error is not None:
+            raise _RoutePrepareError(route_error)
+
     inert = _unsupported_plan_fields(plan)
     if inert:
         return "rejected", WatchReceipt(status="rejected", dropped_fields=inert)
@@ -648,6 +697,9 @@ def _prepare_one(
                 message=str(exc),
             ),),
         )
+    route_error = _runtime_route_diagnostic(compiled.goal.state, goal_id=compiled.goal.id)
+    if route_error is not None:
+        raise _RoutePrepareError(route_error)
     unsupported = _unsupported_core_setting(percept, compiled, goal_id=compiled.goal.id)
     if unsupported is not None:
         return "rejected", WatchReceipt(status="rejected", dropped_fields=(unsupported,))
@@ -865,8 +917,8 @@ def apply_watch_plan(
                 per_plan_receipts.append(payload[1])
             else:  # "rejected"
                 per_plan_receipts.append(payload)
-    except _JudgePrepareError as exc:
-        # A judge prepare failed — COMMIT nothing, leave the runtime untouched
+    except (_JudgePrepareError, _RoutePrepareError) as exc:
+        # A prepare invariant failed — COMMIT nothing, leave the runtime untouched
         # (no goal armed, no binding registered, the ledger unwritten). Surface the structured failure.
         return WatchReceipt(status="rejected", dropped_fields=(exc.diagnostic,))
 

@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Sequence
 
 from percept.adapters import Box, Goal, Schedule, Tier0Signal, WatchCondition, WatchSpec
+from percept.behavior_routes import goal_behavior_route, needs_watch_condition, require_worker_routes
 from percept.config import Settings, load_settings
 from percept.interest import InterestIntervalEvent, Tier0MotionInterest
 
@@ -494,13 +495,12 @@ def compile_watchspec(
     (default, in-process topology A — the edge runs the whole registry) sends the full selection. Use
     :func:`watchspec_unsupported` to see what was dropped (to pick a fallback).
 
-    Only goals whose ``state['type']`` is ``'watch'`` (the default) or ``'process'`` compile — event /
-    count / remind goals run their own tracks and never gate the watch-frame stream. A ``process`` goal
-    (Item 4 log→summarize) gates the same motion stream so the edge wakes it to observe a step delta.
+    Every frame-worker route compiles: ordinary Watches, transitions, and process observation.
+    External event, boundary, rhythm, and scheduler primitives never become frame Watches.
     """
     conditions: list[WatchCondition] = []
     for goal in goals:
-        if goal.state.get("type", "watch") not in ("watch", "process"):
+        if not needs_watch_condition(goal_behavior_route(goal)):
             continue
         bias = float(goal.state.get(MOTION_BIAS_KEY, 0.0))
         supported, _dropped = partition_by_capability(detectors_for(goal), edge_capabilities)
@@ -538,7 +538,7 @@ def watchspec_unsupported(
     """
     out: list[tuple[str, list[str]]] = []
     for goal in goals:
-        if goal.state.get("type", "watch") not in ("watch", "process"):
+        if not needs_watch_condition(goal_behavior_route(goal)):
             continue
         _, dropped = partition_by_capability(detectors_for(goal), edge_capabilities)
         if dropped:
@@ -965,6 +965,7 @@ class GatedWatchLoop:
         self._settings = cfg
         self._source = source
         active = list(goals) if goals is not None else list(core.goals.active())
+        require_worker_routes(active, driver="GatedWatchLoop")
         thr = cfg.edge.motion_gate if threshold is None else threshold
         # edge_capabilities=None -> in-process edge runs the whole registry; a remote edge advertises a
         # subset and the brain selects within it (the capability handshake).

@@ -25,6 +25,7 @@ import unittest
 from percept import Goal, Percept
 from percept.adapters import Verdict
 from percept.backends.fake import FakeVision
+from percept.behavior_routes import UnsupportedBehaviorRouteError
 from percept.edge.tier0 import gray_frame
 from percept.episodes import Episode, EpisodeLog
 from percept.persistence import InMemoryPersistence
@@ -96,16 +97,32 @@ class RestoreAnnouncesTheReset(unittest.TestCase):
         store = InMemoryPersistence()
         c1 = _core()
         c1.add_goal(_count_goal())
-        asyncio.run(_drain(c1, persistence=store))  # session 1: arm + save
+        c1.save_state(store)  # direct count primitive state; the frame worker must not drive it
 
         c2 = _core()  # session 2: restart
         events: list = []
-        asyncio.run(_drain(c2, persistence=store, restore=True, on_health=events.append))
+        pulls: list[bool] = []
+
+        def source():
+            pulls.append(True)
+            yield from SRC
+
+        with self.assertRaises(UnsupportedBehaviorRouteError):
+            asyncio.run(
+                _drain(
+                    c2,
+                    source=source(),
+                    persistence=store,
+                    restore=True,
+                    on_health=events.append,
+                )
+            )
 
         kinds = [e.kind for e in events]
         self.assertEqual(kinds.count("episode_memory_reset"), 1, "emitted exactly once, at startup")
         ev = next(e for e in events if e.kind == "episode_memory_reset")
         self.assertEqual(ev.data["goal_ids"], ["cups"])
+        self.assertEqual(pulls, [], "unsupported restored goal must fail before source consumption")
 
     def test_default_watch_run_emits_no_reset(self):
         """No persistence/restore -> no reset event; the health channel stays byte-for-byte quiet."""
@@ -146,8 +163,8 @@ class TheForwardSeamExistsButIsNotWired(unittest.TestCase):
         self.assertEqual(fresh.episodes, {}, "episodes stay session-only — the seam is not wired")
 
 
-async def _drain(core, **kw):
-    return [inc async for inc in run(core, source=SRC, **kw)]
+async def _drain(core, source=SRC, **kw):
+    return [inc async for inc in run(core, source=source, **kw)]
 
 
 if __name__ == "__main__":  # pragma: no cover

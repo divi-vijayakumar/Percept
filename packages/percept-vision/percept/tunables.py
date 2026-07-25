@@ -35,6 +35,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from .behavior_routes import BEHAVIOR_TYPES
+
 #: Schema version of the *tunables.json* artifact itself (the shape of a serialized TunableSpec).
 #: Bump on any change to :class:`TunableSpec`'s fields — independent of every other version ADR-008's
 #: version ledger names (SDK package version, WATCH_VERSION, CONTRACT_VERSION, ...).
@@ -511,8 +513,9 @@ _RUN_PARAMETERS: tuple[TunableSpec, ...] = (
 _GOAL_STATE: tuple[TunableSpec, ...] = (
     TunableSpec(
         path="Goal.state.type", owner="WatchPlan", visibility="public", safe_to_optimize=False,
-        default="watch", value_type="enum", choices=("watch", "transition", "count", "rhythm"),
-        risk="medium", note="which BehaviorProgram sense program_of() compiles to (behavior.py).",
+        default="watch", value_type="enum",
+        choices=BEHAVIOR_TYPES,
+        risk="medium", note="the closed execution route selected for this Goal.",
     ),
     TunableSpec(
         path="Goal.state.rearm", owner="WatchPlan", visibility="public", safe_to_optimize=False,
