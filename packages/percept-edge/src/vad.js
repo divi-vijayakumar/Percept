@@ -81,6 +81,21 @@ export class OrderedAudioBuffer {
 
   push(unit) {
     if (!unit || typeof unit !== "object") throw new Error("audio unit must be an object");
+    if (unit.frame != null && typeof unit.frame !== "object") {
+      throw new Error("audio unit frame must be an object when known");
+    }
+    const frame = unit.frame ?? null;
+    for (const key of ["sample_rate", "channels", "sample_format"]) {
+      if (unit[key] != null && frame?.[key] != null && unit[key] !== frame[key]) {
+        throw new Error(`audio unit ${key} disagrees with its frame`);
+      }
+    }
+    unit = {
+      ...unit,
+      sample_rate: unit.sample_rate ?? frame?.sample_rate ?? null,
+      channels: unit.channels ?? frame?.channels ?? null,
+      sample_format: unit.sample_format ?? frame?.sample_format ?? null,
+    };
     if (!Number.isSafeInteger(unit.seq) || unit.seq < 0) {
       throw new Error("audio unit seq must be a non-negative safe integer");
     }
@@ -137,17 +152,12 @@ export class OrderedAudioBuffer {
       }
       return Object.freeze({ kind: boundary.kind, t: boundary.t });
     });
-    if (unit.frame != null) {
-      for (const key of ["sample_rate", "channels", "sample_format"]) {
-        if (unit[key] != null && unit.frame[key] != null && unit[key] !== unit.frame[key]) {
-          throw new Error(`audio unit ${key} disagrees with its frame`);
-        }
-      }
+    if (frame != null) {
       for (const key of ["t_start", "t_end"]) {
-        if (unit.frame[key] != null && !Number.isFinite(unit.frame[key])) {
+        if (frame[key] != null && !Number.isFinite(frame[key])) {
           throw new Error(`audio frame ${key} must be finite when known`);
         }
-        if (unit.frame[key] != null && unit.frame[key] !== unit[key]) {
+        if (frame[key] != null && frame[key] !== unit[key]) {
           throw new Error(`audio unit ${key} disagrees with its frame`);
         }
       }
@@ -163,6 +173,8 @@ export class OrderedAudioBuffer {
         throw new Error("audio unit PCM is not aligned to its format/channels");
       }
     }
+    const detachedUnitPcm = unit.pcm == null ? undefined : clonePcm(unit.pcm);
+    const detachedFramePcm = frame?.pcm == null ? undefined : clonePcm(frame.pcm);
     if (this._seenSeq.has(unit.seq)) {
       return this._result({ accepted: false, duplicate: true });
     }
@@ -187,14 +199,14 @@ export class OrderedAudioBuffer {
     let gap_s = 0;
     let overlap_s = 0;
     if (previous) {
-      if (unit.t_start > previous.t_end) gap_s = unit.t_start - previous.t_end;
-      else if (unit.t_start < previous.t_end) overlap_s = previous.t_end - unit.t_start;
+      const delta = unit.t_start - previous.t_end;
+      if (delta > 1e-9) gap_s = delta;
+      else if (delta < -1e-9) overlap_s = -delta;
     }
     if (following) {
-      if (unit.t_end < following.t_start) gap_s = Math.max(gap_s, following.t_start - unit.t_end);
-      else if (unit.t_end > following.t_start) {
-        overlap_s = Math.max(overlap_s, unit.t_end - following.t_start);
-      }
+      const delta = following.t_start - unit.t_end;
+      if (delta > 1e-9) gap_s = Math.max(gap_s, delta);
+      else if (delta < -1e-9) overlap_s = Math.max(overlap_s, -delta);
     }
     if (overlap_s) {
       return this._result({
@@ -221,12 +233,20 @@ export class OrderedAudioBuffer {
     const format_changed = formatDiff(previous) || formatDiff(following);
 
     const retainedFrame =
-      unit.frame == null ? undefined : Object.freeze({ ...unit.frame });
+      frame == null
+        ? undefined
+        : Object.freeze({
+            ...frame,
+            sample_rate: unit.sample_rate,
+            channels: unit.channels,
+            sample_format: unit.sample_format,
+            ...(detachedFramePcm === undefined ? {} : { pcm: detachedFramePcm }),
+          });
     const retained = Object.freeze({
       direction: "unknown",
       participant_id: null,
-      sample_format: null,
       ...unit,
+      ...(detachedUnitPcm === undefined ? {} : { pcm: detachedUnitPcm }),
       ...(retainedFrame === undefined ? {} : { frame: retainedFrame }),
       byte_length: byteLength,
       boundaries: Object.freeze(boundaries),
@@ -295,11 +315,24 @@ export class OrderedAudioBuffer {
   }
 
   units() {
-    return this._units.map((unit) => ({
-      ...unit,
-      boundaries: unit.boundaries.map((boundary) => ({ ...boundary })),
-      ...(unit.frame == null ? {} : { frame: { ...unit.frame } }),
-    }));
+    return this._units.map((unit) => {
+      const boundaries = Object.freeze(
+        unit.boundaries.map((boundary) => Object.freeze({ ...boundary }))
+      );
+      const frame =
+        unit.frame == null
+          ? undefined
+          : Object.freeze({
+              ...unit.frame,
+              ...(unit.frame.pcm == null ? {} : { pcm: clonePcm(unit.frame.pcm) }),
+            });
+      return Object.freeze({
+        ...unit,
+        ...(unit.pcm == null ? {} : { pcm: clonePcm(unit.pcm) }),
+        boundaries,
+        ...(frame === undefined ? {} : { frame }),
+      });
+    });
   }
 
   window(tStart, tEnd) {
@@ -350,6 +383,20 @@ function audioUnitBytes(unit) {
     return unit.byte_length;
   }
   return actual ?? 0;
+}
+
+function clonePcm(payload) {
+  if (payload == null) return payload;
+  if (payload instanceof ArrayBuffer) return payload.slice(0);
+  if (payload instanceof DataView) {
+    const copy = payload.buffer.slice(
+      payload.byteOffset,
+      payload.byteOffset + payload.byteLength
+    );
+    return new DataView(copy);
+  }
+  if (ArrayBuffer.isView(payload)) return new payload.constructor(payload);
+  throw new Error("audio PCM must be an ArrayBuffer or typed-array view");
 }
 
 /**

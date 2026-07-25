@@ -35,7 +35,7 @@ def _core() -> Percept:
 
 
 def _frame(byte: int) -> AudioFrame:
-    return AudioFrame(pcm=bytes([byte, byte]), sample_rate=16000, channels=1)
+    return AudioFrame(pcm=bytes([byte, byte]) * 1600, sample_rate=16000, channels=1)
 
 
 async def _audio_gen(energies, *, dt=0.1, offset=0.05, clock=None, done=None):
@@ -318,8 +318,8 @@ class UtteranceTruncationTests(unittest.TestCase):
         self.assertEqual(len(heard), 1)
         clip = heard[0]
         self.assertIsInstance(clip, AudioFrame)
-        # ~128 chunks * 2 bytes = ~256 B; a 4s window slice would be ~80 B. The whole turn survives.
-        self.assertGreater(len(clip.pcm), 2 * 100)
+        # ~128 100ms chunks survive; a 4s window slice would retain only ~40 chunks.
+        self.assertGreater(len(clip.pcm), 3200 * 100)
         self.assertNotIn("utterance_truncated", health)
 
     def test_over_long_utterance_trips_truncation_health(self):

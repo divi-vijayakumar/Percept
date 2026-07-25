@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, is_dataclass, replace
 from typing import Any, Literal
 
 
@@ -236,16 +236,39 @@ def _audio_nbytes(chunk: Any) -> int:
 _PCM_BYTES_PER_SAMPLE = {"s16le": 2, "f32le": 4, "u8": 1}
 
 
+def _immutable_audio_chunk(chunk: Any) -> Any:
+    """Detach retained PCM/encoded bytes from caller-owned mutable buffers."""
+    if isinstance(chunk, (bytearray, memoryview)):
+        return bytes(chunk)
+    if (
+        isinstance(chunk, tuple)
+        and len(chunk) == 2
+        and isinstance(chunk[1], (bytearray, memoryview))
+    ):
+        return (chunk[0], bytes(chunk[1]))
+    if is_dataclass(chunk):
+        updates = {}
+        for name in ("pcm", "encoded"):
+            value = getattr(chunk, name, None)
+            if isinstance(value, (bytearray, memoryview)):
+                updates[name] = bytes(value)
+        if updates:
+            return replace(chunk, **updates)
+    return chunk
+
+
 def _canonical_audio_unit(unit: AudioUnit) -> AudioUnit:
-    """Fill unit format metadata from a typed frame without changing explicit values."""
-    if not all(hasattr(unit.chunk, name) for name in ("sample_rate", "channels", "sample_format")):
-        return unit
+    """Detach mutable bytes and fill unit format metadata from a typed frame."""
+    chunk = _immutable_audio_chunk(unit.chunk)
+    if not all(hasattr(chunk, name) for name in ("sample_rate", "channels", "sample_format")):
+        return replace(unit, chunk=chunk) if chunk is not unit.chunk else unit
     return replace(
         unit,
-        sample_rate=unit.sample_rate if unit.sample_rate is not None else unit.chunk.sample_rate,
-        channels=unit.channels if unit.channels is not None else unit.chunk.channels,
+        chunk=chunk,
+        sample_rate=unit.sample_rate if unit.sample_rate is not None else chunk.sample_rate,
+        channels=unit.channels if unit.channels is not None else chunk.channels,
         sample_format=(
-            unit.sample_format if unit.sample_format is not None else unit.chunk.sample_format
+            unit.sample_format if unit.sample_format is not None else chunk.sample_format
         ),
     )
 
@@ -301,6 +324,12 @@ def validate_audio_unit(unit: AudioUnit) -> AudioUnit:
         isinstance(boundary, AudioBoundary) for boundary in unit.boundaries
     ):
         raise ValueError("audio unit boundaries must be an AudioBoundary tuple")
+
+    raw_chunk = unit.chunk if isinstance(unit.chunk, bytes) else None
+    if raw_chunk is not None and unit.sample_format is not None:
+        bytes_per_frame = _PCM_BYTES_PER_SAMPLE[unit.sample_format] * (unit.channels or 1)
+        if len(raw_chunk) % bytes_per_frame:
+            raise ValueError("audio chunk PCM is not aligned to its declared format/channels")
 
     if all(hasattr(unit.chunk, name) for name in ("sample_rate", "channels", "sample_format", "pcm")):
         frame = unit.chunk
@@ -393,26 +422,16 @@ class AudioWindow:
     def next_seq(self) -> int:
         return 0 if self._max_seq is None else self._max_seq + 1
 
-    @property
-    def latest_event_t(self) -> float | None:
-        """Latest accepted event-clock timestamp, used to migrate legacy tuple streams safely."""
-        if not self._units:
-            return None
-        return max(unit.t for unit in self._units)
-
     def push(self, t: float | AudioUnit, chunk: Any = None) -> AudioPushResult:
         if isinstance(t, AudioUnit):
             unit = t
         else:
-            at = float(t)
-            previous_t = self.latest_event_t
-            unit = AudioUnit(
-                seq=self.next_seq,
-                t_start=at if previous_t is None else previous_t,
-                t_end=at,
-                chunk=chunk,
-                event_t=at,
-            )
+            # Use the exact same duration/rate/channel/energy normalization as capture, replay, and
+            # Percept.push_audio. In particular, a typed frame is never stored as a zero-duration
+            # point with unknown energy.
+            from percept.runtime.audio import normalize_audio_unit
+
+            unit = normalize_audio_unit((float(t), chunk, None), seq=self.next_seq)
         return self.push_unit(unit)
 
     def push_unit(self, unit: AudioUnit) -> AudioPushResult:
@@ -441,15 +460,17 @@ class AudioWindow:
         gap_s = 0.0
         overlap_s = 0.0
         if previous is not None:
-            if unit.t_start > previous.t_end:
-                gap_s = unit.t_start - previous.t_end
-            elif unit.t_start < previous.t_end:
-                overlap_s = previous.t_end - unit.t_start
+            delta = unit.t_start - previous.t_end
+            if delta > 1e-9:
+                gap_s = delta
+            elif delta < -1e-9:
+                overlap_s = -delta
         if following is not None:
-            if unit.t_end < following.t_start:
-                gap_s = max(gap_s, following.t_start - unit.t_end)
-            elif unit.t_end > following.t_start:
-                overlap_s = max(overlap_s, unit.t_end - following.t_start)
+            delta = following.t_start - unit.t_end
+            if delta > 1e-9:
+                gap_s = max(gap_s, delta)
+            elif delta < -1e-9:
+                overlap_s = max(overlap_s, -delta)
 
         # Overlapping PCM has no implicit merge policy. Reject it before mutating the timeline; a
         # future caller can explicitly mix/trim and submit a non-overlapping replacement.
@@ -616,15 +637,24 @@ class AudioWindow:
             raise ValueError("audio clip now must be finite when known")
         if not self._units:
             return []
-        end = max(unit.t_end for unit in self._units) if now is None else now
+        end = max(unit.t_end for unit in self._units) if now is None else float(now)
         start = end - seconds
-        candidates = [
-            unit
-            for unit in self._units
-            if unit.t_end >= start and unit.t_start <= end
-        ]
+        # The logical clip includes audio ending exactly at ``end``. Express that as a true half-open
+        # interval by advancing only its exclusive upper bound by one representable float. The lower
+        # bound stays exact, so a chunk ending exactly at ``start`` is excluded.
+        candidates = self.window(start, math.nextafter(end, math.inf))
         if not candidates:
             return []
+        if all(
+            unit.t_start == unit.t_end
+            and unit.sample_rate is None
+            and unit.channels is None
+            and unit.sample_format is None
+            for unit in candidates
+        ):
+            # Legacy opaque/encoded rows have no source duration to prove or disprove continuity.
+            # Preserve their historical event-time clip behavior; typed PCM takes the strict path below.
+            return [unit.chunk for unit in candidates]
         contiguous = [candidates[-1]]
         for unit in reversed(candidates[:-1]):
             newer = contiguous[0]

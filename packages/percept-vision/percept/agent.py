@@ -1145,11 +1145,7 @@ class Percept:
         from percept.runtime.audio import normalize_audio_unit
 
         at = self.clock() if t is None else t
-        unit = normalize_audio_unit(
-            (at, chunk, None),
-            seq=window.next_seq,
-            previous_event_t=window.latest_event_t,
-        )
+        unit = normalize_audio_unit((at, chunk, None), seq=window.next_seq)
         return window.push_unit(unit)
 
     def _audio_clip(self, source: str, spec) -> Any:

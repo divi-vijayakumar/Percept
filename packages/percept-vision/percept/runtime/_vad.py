@@ -11,6 +11,7 @@ same energy sequence → same endpoints, deterministic.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -57,7 +58,26 @@ class EnergyVad:
         hangover_frames: int = 8,
         min_speech_frames: int = 3,
     ) -> None:
-        self.threshold = threshold
+        if (
+            not isinstance(threshold, (int, float))
+            or isinstance(threshold, bool)
+            or not math.isfinite(threshold)
+            or not 0.0 <= threshold <= 1.0
+        ):
+            raise ValueError("threshold must be finite and within [0, 1]")
+        if (
+            not isinstance(hangover_frames, int)
+            or isinstance(hangover_frames, bool)
+            or hangover_frames <= 0
+        ):
+            raise ValueError("hangover_frames must be a positive integer")
+        if (
+            not isinstance(min_speech_frames, int)
+            or isinstance(min_speech_frames, bool)
+            or min_speech_frames <= 0
+        ):
+            raise ValueError("min_speech_frames must be a positive integer")
+        self.threshold = float(threshold)
         self.hangover_frames = hangover_frames
         self.min_speech_frames = min_speech_frames
         self.reset()
@@ -75,6 +95,13 @@ class EnergyVad:
 
     def push(self, energy: float) -> VadEvent:
         """Push one frame's energy and return its :class:`VadEvent`. Mirrors ``pushEnergy`` exactly."""
+        if (
+            not isinstance(energy, (int, float))
+            or isinstance(energy, bool)
+            or not math.isfinite(energy)
+            or not 0.0 <= energy <= 1.0
+        ):
+            raise ValueError("energy must be finite and within [0, 1]")
         self._frame_index += 1
         is_speech = energy >= self.threshold
         started = False

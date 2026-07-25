@@ -92,6 +92,26 @@ def test_explicit_window_returns_interval_intersections() -> None:
     assert [unit.seq for unit in timeline.window(0.05, 0.15)] == [0, 1]
 
 
+def test_exact_100ms_clip_uses_half_open_lower_boundary() -> None:
+    timeline = AudioWindow(seconds=10)
+    first = AudioFrame(pcm=b"\x00\x00" * 1600, sample_rate=16_000)
+    second = AudioFrame(pcm=b"\x01\x00" * 1600, sample_rate=16_000)
+    timeline.push(0.1, first)
+    timeline.push(0.2, second)
+    assert timeline.clip(0.1) == [second]
+
+
+def test_public_window_push_normalizes_typed_frame_duration_and_energy() -> None:
+    timeline = AudioWindow(seconds=10)
+    frame = AudioFrame(pcm=b"\x00\x20" * 160, sample_rate=16_000)
+    result = timeline.push(1.0, frame)
+    unit = timeline.units()[0]
+    assert result.accepted
+    assert (unit.t_start, unit.t_end) == pytest.approx((0.99, 1.0))
+    assert unit.energy == pytest.approx(0.0625)
+    assert (unit.sample_rate, unit.channels, unit.sample_format) == (16_000, 1, "s16le")
+
+
 def test_buffer_is_bounded_under_deterministic_overload() -> None:
     timeline = AudioWindow(seconds=1000, max_units=8, max_bytes=16)
     evicted = 0
@@ -144,6 +164,50 @@ def test_odd_s16_pcm_and_oversized_units_fail_before_window_mutation() -> None:
         timeline.push_unit(AudioUnit(0, 0.0, 0.1, encoded))
 
 
+def test_declared_raw_pcm_alignment_and_mutable_buffer_copy() -> None:
+    timeline = AudioWindow(seconds=10)
+    mutable = bytearray(b"\x01\x00\x02\x00")
+    timeline.push_unit(
+        AudioUnit(
+            0,
+            0.0,
+            0.1,
+            mutable,
+            sample_rate=16_000,
+            channels=1,
+            sample_format="s16le",
+        )
+    )
+    mutable[0] = 9
+    retained = timeline.units()[0]
+    assert retained.chunk == b"\x01\x00\x02\x00"
+    assert isinstance(retained.chunk, bytes)
+
+    with pytest.raises(ValueError, match="aligned"):
+        timeline.push_unit(
+            AudioUnit(
+                1,
+                0.1,
+                0.2,
+                bytearray(b"\x00\x00\x00"),
+                sample_rate=16_000,
+                channels=1,
+                sample_format="s16le",
+            )
+        )
+
+
+def test_typed_frame_mutable_pcm_is_detached_on_ingress() -> None:
+    mutable = bytearray(b"\x01\x00")
+    frame = AudioFrame(pcm=mutable, sample_rate=16_000)
+    timeline = AudioWindow(seconds=10)
+    timeline.push_unit(AudioUnit(0, 0.0, 0.1, frame))
+    mutable[0] = 7
+    retained = timeline.units()[0].chunk
+    assert retained.pcm == b"\x01\x00"
+    assert isinstance(retained.pcm, bytes)
+
+
 def test_duplicate_history_survives_count_eviction() -> None:
     timeline = AudioWindow(seconds=100, max_units=2, max_bytes=100)
     for seq in range(3):
@@ -192,7 +256,7 @@ def test_legacy_push_normalizes_to_typed_unit_with_known_format() -> None:
     assert unit.energy == pytest.approx(0.0625)
 
 
-def test_percept_push_audio_uses_capture_normalization_and_legacy_continuity() -> None:
+def test_percept_push_audio_uses_true_duration_and_exposes_legacy_gap() -> None:
     core = Percept.create(vision=FakeVision(), discover_plugins=False)
     frame = AudioFrame(pcm=b"\x00\x20" * 160, sample_rate=16_000, channels=1)
     first = core.push_audio(frame, t=3.0)
@@ -205,7 +269,8 @@ def test_percept_push_audio_uses_capture_normalization_and_legacy_continuity() -
     assert units[0].channels == 1
     assert units[0].sample_format == "s16le"
     assert units[0].energy == pytest.approx(0.0625)
-    assert (units[1].t_start, units[1].t_end) == (3.0, 3.5)
+    assert (units[1].t_start, units[1].t_end) == pytest.approx((3.49, 3.5))
+    assert second.gap_s == pytest.approx(0.49)
 
 
 @pytest.mark.parametrize(

@@ -123,10 +123,104 @@ describe("shared ordered audio timeline vectors", () => {
     const firstRead = timeline.units();
     expect(firstRead[0].boundaries[0].t).toBe(0.05);
     expect(firstRead[0].frame.sample_rate).toBe(16000);
-    firstRead[0].boundaries[0].t = 7;
-    firstRead[0].frame.sample_rate = 4000;
+    expect(Object.isFrozen(firstRead[0])).toBe(true);
+    expect(Object.isFrozen(firstRead[0].boundaries)).toBe(true);
+    expect(Object.isFrozen(firstRead[0].boundaries[0])).toBe(true);
+    expect(Object.isFrozen(firstRead[0].frame)).toBe(true);
+    expect(() => {
+      firstRead[0].boundaries[0].t = 7;
+    }).toThrow(TypeError);
+    expect(() => {
+      firstRead[0].frame.sample_rate = 4000;
+    }).toThrow(TypeError);
     expect(timeline.units()[0].boundaries[0].t).toBe(0.05);
     expect(timeline.units()[0].frame.sample_rate).toBe(16000);
+  });
+
+  it("canonicalizes frame-only format metadata and validates PCM alignment", () => {
+    const timeline = new OrderedAudioBuffer();
+    timeline.push({
+      seq: 0,
+      t_start: 0,
+      t_end: 0.1,
+      frame: {
+        sample_rate: 16000,
+        channels: 2,
+        sample_format: "s16le",
+        pcm: new Uint8Array(4),
+      },
+    });
+    const retained = timeline.units()[0];
+    expect(retained.sample_rate).toBe(16000);
+    expect(retained.channels).toBe(2);
+    expect(retained.sample_format).toBe("s16le");
+    expect(retained.byte_length).toBe(4);
+
+    expect(() =>
+      new OrderedAudioBuffer().push({
+        seq: 0,
+        t_start: 0,
+        t_end: 0.1,
+        frame: {
+          sample_rate: 16000,
+          channels: 2,
+          sample_format: "s16le",
+          pcm: new Uint8Array(2),
+        },
+      })
+    ).toThrow(/aligned/);
+    expect(() =>
+      new OrderedAudioBuffer().push({
+        seq: 0,
+        t_start: 0,
+        t_end: 0.1,
+        frame: {
+          sample_rate: 0,
+          channels: 1,
+          sample_format: "s16le",
+          pcm: new Uint8Array(2),
+        },
+      })
+    ).toThrow(/sample_rate/);
+  });
+
+  it("deep-copies top-level and frame PCM on ingress and every egress", () => {
+    const topPcm = new Uint8Array([1, 2]);
+    const framePcm = new Uint8Array([3, 4]);
+    const timeline = new OrderedAudioBuffer();
+    timeline.push({
+      seq: 0,
+      t_start: 0,
+      t_end: 0.1,
+      sample_rate: 16000,
+      channels: 1,
+      sample_format: "s16le",
+      byte_length: 2,
+      pcm: topPcm,
+    });
+    timeline.push({
+      seq: 1,
+      t_start: 0.1,
+      t_end: 0.2,
+      frame: {
+        sample_rate: 16000,
+        channels: 1,
+        sample_format: "s16le",
+        pcm: framePcm,
+      },
+    });
+    topPcm[0] = 9;
+    framePcm[0] = 9;
+    const firstRead = timeline.units();
+    expect([...firstRead[0].pcm]).toEqual([1, 2]);
+    expect([...firstRead[1].frame.pcm]).toEqual([3, 4]);
+    firstRead[0].pcm[0] = 8;
+    firstRead[1].frame.pcm[0] = 8;
+    const secondRead = timeline.units();
+    expect([...secondRead[0].pcm]).toEqual([1, 2]);
+    expect([...secondRead[1].frame.pcm]).toEqual([3, 4]);
+    expect(secondRead[0].pcm).not.toBe(firstRead[0].pcm);
+    expect(secondRead[1].frame.pcm).not.toBe(firstRead[1].frame.pcm);
   });
 
   it("uses half-open windows for units and boundaries", () => {

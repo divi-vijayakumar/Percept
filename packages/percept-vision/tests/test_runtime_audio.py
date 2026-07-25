@@ -139,10 +139,10 @@ class RuntimeAudioIngressTests(unittest.TestCase):
         stats = RuntimeStats()
         video = [(float(i), STILL, "quiet") for i in range(6)]
         audio = [
-            (0.1, AudioFrame(pcm=b"\x00\x00", sample_rate=16000), 0.0),
-            (1.1, AudioFrame(pcm=b"\xff\x7f", sample_rate=16000), 0.5),  # loud -> onset
-            (2.1, AudioFrame(pcm=b"\x00\x00", sample_rate=16000), 0.0),
-            (3.1, AudioFrame(pcm=b"\x00\x00", sample_rate=16000), 0.0),
+            (0.1, AudioFrame(pcm=b"\x00\x00" * 16000, sample_rate=16000), 0.0),
+            (1.1, AudioFrame(pcm=b"\xff\x7f" * 16000, sample_rate=16000), 0.5),
+            (2.1, AudioFrame(pcm=b"\x00\x00" * 16000, sample_rate=16000), 0.0),
+            (3.1, AudioFrame(pcm=b"\x00\x00" * 16000, sample_rate=16000), 0.0),
         ]
         asyncio.run(_collect(_quiet_core(), video, audio_source=audio, stats=stats))
         self.assertGreaterEqual(stats.escalations, 1)  # audio woke the gate despite zero motion

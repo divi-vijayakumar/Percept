@@ -6,6 +6,7 @@ trailing-silence frames following a `min_speech_frames`-long speech run), and dr
 """
 from __future__ import annotations
 
+import math
 import unittest
 
 from percept.runtime import EnergyVad, endpoint_energy_sequence, frame_energy
@@ -74,6 +75,21 @@ class EnergyVadStateTests(unittest.TestCase):
         vad.reset()
         self.assertFalse(vad.speaking)
         self.assertEqual(vad.push(0.0).frame, 0)  # frame index restarts
+
+    def test_invalid_config_and_energy_fail_closed_like_javascript(self):
+        for kwargs in (
+            {"threshold": math.nan},
+            {"threshold": 1.1},
+            {"hangover_frames": 0},
+            {"hangover_frames": 1.5},
+            {"min_speech_frames": 0},
+        ):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                EnergyVad(**kwargs)
+        vad = EnergyVad()
+        for energy in (math.nan, math.inf, -0.1, 1.1, True):
+            with self.subTest(energy=energy), self.assertRaises(ValueError):
+                vad.push(energy)
 
 
 if __name__ == "__main__":

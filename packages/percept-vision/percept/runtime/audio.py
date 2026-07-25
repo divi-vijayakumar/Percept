@@ -134,8 +134,17 @@ def _pcm_frame_energy(pcm: bytes, sample_format: str) -> float:
     raise ValueError("unsupported PCM sample format")
 
 
-def normalize_audio_unit(item, *, seq: int) -> AudioUnit:
-    """Normalize a pushed/replayed legacy row to the same unit capture produces."""
+def normalize_audio_unit(
+    item,
+    *,
+    seq: int,
+) -> AudioUnit:
+    """Normalize a pushed/replayed legacy row to the same unit capture produces.
+
+    Legacy ``(t, chunk, energy)`` rows expose only one event timestamp. For typed raw PCM, derive the
+    source interval from the payload's true duration and anchor its end at ``t``. Never stretch a row
+    back to the previous event timestamp: doing so would hide an actual dropped-audio gap.
+    """
     if isinstance(item, AudioUnit):
         return item
     try:
@@ -165,15 +174,7 @@ def normalize_audio_unit(item, *, seq: int) -> AudioUnit:
                 raise ValueError("audio frame PCM is not aligned to its format/channels")
             duration = len(pcm) / (bytes_per_frame * sample_rate)
         t_end = at
-        if previous_event_t is not None:
-            previous_event_t = float(previous_event_t)
-            if not math.isfinite(previous_event_t):
-                raise ValueError("previous audio event time must be finite")
-            if at < previous_event_t:
-                raise ValueError("legacy audio tuple timestamps must be non-decreasing")
-            t_start = previous_event_t
-        else:
-            t_start = at - duration if duration is not None else at
+        t_start = at - duration if duration is not None else at
     if energy is None:
         pcm = getattr(chunk, "pcm", None)
         if (

@@ -29,7 +29,7 @@ def _core() -> Percept:
 
 
 def _frame(byte: int) -> AudioFrame:
-    return AudioFrame(pcm=bytes([byte, byte]), sample_rate=16000, channels=1)
+    return AudioFrame(pcm=bytes([byte, byte]) * 1600, sample_rate=16000, channels=1)
 
 
 def _audio_from_energies(energies, *, dt=0.1, offset=0.05):
