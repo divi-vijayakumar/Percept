@@ -314,6 +314,9 @@ class _JudgeScheduler:
         self._consec_supersede = 0          # supersessions in a row with no intervening completion
         self._backpressure_reported = False  # latched: "judge_scheduler_backpressure" already fired
         self._perceive_accepts_goal_ids = _accepts_keyword(core.perceive_judged, "goal_ids")
+        self._perceive_accepts_source_generation = _accepts_keyword(
+            core.perceive_judged, "expected_source_generation"
+        )
         self._active_filter_goal_ids: tuple[str, ...] | None = None
         self._active_invalidated = False
         self._active_invalidation_reason = "source_discontinuity"
@@ -471,6 +474,10 @@ class _JudgeScheduler:
         self._active_launch_wall = self._mc_now(t)  # this task's own clock, for stall detection
         self._stall_reported = False  # a fresh launch is unlatched — the stall window resets
         kwargs = {"t": t, "expected_goals_revision": revision}
+        if self._perceive_accepts_source_generation:
+            generation_for = getattr(self._core, "source_continuity_generation", None)
+            if callable(generation_for):
+                kwargs["expected_source_generation"] = generation_for(self._source)
         if goal_ids is not None and self._perceive_accepts_goal_ids:
             kwargs["goal_ids"] = goal_ids
         self._active_filter_goal_ids = (
@@ -802,11 +809,7 @@ async def _aiter(source: Any, fps: float, **source_kwargs) -> AsyncIterator[Sour
             source_id="video",
             sequence=sequence,
             observed_time=time.monotonic(),
-            timebase=(
-                "observed"
-                if isinstance(source, str) and source_kwargs.get("timebase") == "wall"
-                else "source"
-            ),
+            timebase="observed" if source_kwargs.get("timebase") == "wall" else "source",
         )
         sequence += 1
         return result
@@ -838,11 +841,7 @@ async def _audio_aiter(source: Any, **source_kwargs) -> AsyncIterator[SourceEnve
             source_id="audio",
             sequence=sequence,
             observed_time=time.monotonic(),
-            timebase=(
-                "observed"
-                if isinstance(source, str) and source_kwargs.get("timebase") == "wall"
-                else "source"
-            ),
+            timebase="observed" if source_kwargs.get("timebase") == "wall" else "source",
         )
         sequence += 1
         return result
@@ -1895,12 +1894,14 @@ async def run(
         }
         # A captured SourceEnvelope always preserves both clocks it actually has.  This setting selects
         # which clock drives Watch evaluation: observation time for a live source, source time for
-        # recorded media. Deterministic legacy tuples carry their explicit source `t`.
+        # recorded media. Deterministic legacy tuples preserve their explicit `t` under the selected
+        # source/observation interpretation.
         live_video = isinstance(source, str)
-        if live_video:
-            source_kwargs["timebase"] = video_tb.resolved
+        # The normalizer needs the selected clock for custom legacy tuples too. URI sources pass the
+        # same value through to their capture adapter.
+        source_kwargs["timebase"] = video_tb.resolved
         live_audio = isinstance(audio_source, str)
-        audio_kwargs = {"timebase": audio_tb.resolved} if live_audio and audio_tb else {}
+        audio_kwargs = {"timebase": audio_tb.resolved} if audio_tb else {}
         # Emit-once skew tripwires, one per capture path (frame queue ~64 @4fps ~16s; audio queue
         # ~256 @4/s ~64s — a single global tolerance would false-fire on a legitimately-backlogged audio
         # chunk behind a blocked pump, an expected condition). Only armed on live paths (media is offline).
@@ -1961,6 +1962,11 @@ async def run(
         # None and wake stays False, so gate.evaluate and the admit test are byte-for-byte the video path.
         audio = {"energy": None, "energy_t": None, "chunk_dt": None, "wake": False, "wake_at": None}
         _audio_missing_reported: set[str] = set()
+
+        def _advance_source_continuity() -> None:
+            advance = getattr(core, "advance_source_continuity", None)
+            if callable(advance):
+                advance(gate_source)
 
         def _compiled_audio_ready(goal_id: str) -> bool:
             """True unless this is a compiled audio/fused Watch missing a real audio payload."""
@@ -2061,6 +2067,12 @@ async def run(
                         inspection = _audio_source_tracker.inspect(
                             envelope, require_source_time=require_source_time
                         )
+                    if inspection.resets_continuity:
+                        # Advance before the first await after inspection. A cancellation-resistant
+                        # pre-gap judge must see the new generation before it can commit stale state.
+                        _advance_source_continuity()
+                        if _judge_sched is not None:
+                            _judge_sched.invalidate_source_continuity(inspection.events)
                     at = (
                         envelope.source_time
                         if require_source_time
@@ -2097,8 +2109,6 @@ async def run(
                             "wake": False,
                             "wake_at": None,
                         })
-                        if _judge_sched is not None:
-                            _judge_sched.invalidate_source_continuity(inspection.events)
                     # Hold a FILE/CONTAINER chunk back until the video loop's judged media time has
                     # (almost) reached it — never busy-wait, park on the Event the frame loop sets every
                     # tick. `_audio_paced` is False for a live mic (byte-for-byte unchanged: this loop
@@ -2293,6 +2303,12 @@ async def run(
                 inspection = _video_source_tracker.inspect(
                     envelope, require_source_time=require_source_time
                 )
+            if inspection.resets_continuity:
+                # This must precede health-sink awaits and result draining: both yield control and can
+                # let a cancellation-resistant stale judge finish.
+                _advance_source_continuity()
+                if _judge_sched is not None:
+                    _judge_sched.invalidate_source_continuity(inspection.events)
             t = (
                 envelope.source_time
                 if require_source_time
@@ -2340,8 +2356,6 @@ async def run(
                 _cap_t0 = None
                 _cap_n = 0
                 _cap_unmet_emitted = False
-                if _judge_sched is not None:
-                    _judge_sched.invalidate_source_continuity(inspection.events)
             # Surface any gate SUPPRESSION queued since the last tick (require_false_first /
             # refractory withholding a fire the baseline gate would have delivered). Drained here —
             # UNCONDITIONALLY, outside the dispatch-mode branch above and BEFORE the per-frame

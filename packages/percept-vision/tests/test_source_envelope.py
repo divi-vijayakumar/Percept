@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import itertools
 import queue
 import sys
@@ -27,6 +28,7 @@ from percept.runtime import (
 from percept.runtime.audio import AudioSourceConfig, _capture_mic, _capture_wav
 from percept.runtime.envelope import legacy_video_envelope
 from percept.runtime.source import _source_time
+from percept.runtime.worker import _aiter
 
 STILL = gray_frame(8, 8, 0)
 MOVED = gray_frame(8, 8, 255)
@@ -297,6 +299,66 @@ class SourceTrackerTableTests(unittest.TestCase):
         corrupt = tracker.inspect(audio(2, 8_000, declared_rate=16_000))
         self.assertFalse(corrupt.accepted)
         self.assertEqual(corrupt.events, ("source_corrupt_payload",))
+
+    def test_encoded_wav_requires_complete_riff_chunks_and_lengths(self):
+        def envelope(blob):
+            frame = AudioFrame(
+                encoded=blob,
+                mime="audio/wav",
+                sample_rate=8_000,
+                channels=1,
+                sample_format="s16le",
+            )
+            return SourceEnvelope(
+                source_id="audio:wav",
+                modality="audio",
+                epoch=0,
+                sequence=0,
+                observed_time=1.0,
+                source_time=0.0,
+                format=SourceFormat(
+                    media_type="audio/wav",
+                    sample_rate=8_000,
+                    channels=1,
+                    sample_format="s16le",
+                ),
+                payload=frame,
+                signal=0.0,
+            )
+
+        invalid = [
+            b"RIFF\x04\x00\x00\x00WAVE",  # signature-only, no fmt/data chunks
+            b"RIFF\x24\x00\x00\x00WAVEfmt ",  # declared body is truncated
+        ]
+        for blob in invalid:
+            with self.subTest(blob=blob):
+                result = SourceTracker().inspect(envelope(blob))
+                self.assertFalse(result.accepted)
+                self.assertEqual(result.events, ("source_corrupt_payload",))
+
+        encoded = io.BytesIO()
+        with wave.open(encoded, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(8_000)
+            wav.writeframes(b"\x00\x00")
+        self.assertTrue(SourceTracker().inspect(envelope(encoded.getvalue())).accepted)
+
+    def test_explicit_wall_legacy_tuple_preserves_its_timestamp(self):
+        async def normalize():
+            return [
+                envelope
+                async for envelope in _aiter(
+                    [(42.0, STILL, "clear")],
+                    4.0,
+                    timebase="wall",
+                )
+            ]
+
+        envelope = asyncio.run(normalize())[0]
+        self.assertEqual(envelope.observed_time, 42.0)
+        self.assertIsNone(envelope.source_time)
+        self.assertEqual(envelope.event_time, 42.0)
 
 
 class SourceTrackerPropertyTests(unittest.TestCase):
@@ -630,20 +692,28 @@ class LiveRuntimeSourceCoverageTests(unittest.TestCase):
         self.assertEqual(dropped[0].data["slot"], "active")
         self.assertEqual(stats.incidents, 0)
 
-    def test_discontinuity_drops_result_from_cancellation_resistant_judge(self):
+    def test_cancellation_resistant_stale_true_cannot_spend_post_gap_rising_edge(self):
         started = asyncio.Event()
 
         class ResistantVision(FakeVision):
-            async def judge(self, condition, frame, **kwargs):
-                started.set()
-                try:
-                    await asyncio.Event().wait()
-                except asyncio.CancelledError:
-                    # An integration can suppress cancellation.  The scheduler cannot terminate an
-                    # adversarial coroutine, but its invalidation token must still reject the result.
-                    return Verdict(satisfied=True, confidence=0.99, evidence="stale")
+            def __init__(self):
+                super().__init__()
+                self.calls = 0
 
-        core = Percept.create(vision=ResistantVision(), discover_plugins=False)
+            async def judge(self, condition, frame, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    started.set()
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError:
+                        # Suppress cancellation and return a stale confident true. The worker's result
+                        # filter is too late if this verdict has already disarmed the core gate.
+                        return Verdict(satisfied=True, confidence=0.99, evidence="stale")
+                return Verdict(satisfied=True, confidence=0.99, evidence="fresh")
+
+        vision = ResistantVision()
+        core = Percept.create(vision=vision, discover_plugins=False)
         core.add_goal(Goal(id="g", condition="the watched condition is visible", say="seen"))
         stats = RuntimeStats()
 
@@ -652,6 +722,7 @@ class LiveRuntimeSourceCoverageTests(unittest.TestCase):
             yield _video(1, source_time=1.0, observed_time=101.0, payload="moved", frame=MOVED)
             await started.wait()
             yield _video(3, source_time=3.0, observed_time=103.0, frame=STILL)
+            yield _video(4, source_time=4.0, observed_time=104.0, payload="moved", frame=MOVED)
 
         async def collect():
             return [
@@ -665,7 +736,9 @@ class LiveRuntimeSourceCoverageTests(unittest.TestCase):
             ]
 
         incidents = asyncio.run(collect())
-        self.assertEqual(incidents, [])
+        self.assertEqual(len(incidents), 1)
+        self.assertEqual(incidents[0].message, "seen")
+        self.assertEqual(vision.calls, 2)
         self.assertEqual(stats.judge_source_discontinuity_active_dropped, 1)
 
 

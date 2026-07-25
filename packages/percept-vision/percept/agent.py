@@ -488,6 +488,10 @@ class Percept:
     _rhythm_multi: dict = field(default_factory=dict)  # (goal_id, entity_id) -> RhythmTracker (per-person streams)
     windows: dict = field(default_factory=dict)  # source -> FrameWindow (temporal perception)
     audio_windows: dict = field(default_factory=dict)  # source -> AudioWindow (fused/acoustic perception)
+    # Source-continuity generation per runtime source. Async judgments capture this value at launch
+    # and re-check it before committing cache/gate/executor state. A capture gap advances the
+    # generation so cancellation-resistant stale work cannot spend the next rising edge.
+    _source_continuity_generations: dict = field(default_factory=dict)
     perception_cooldown_s: float = 5.0  # the perception-rung refractory (shorter than the LLM's 30s)
     event_log: Any = None  # EventLog — temporal dedup of detected events (built in create)
     scheduler: Any = None  # Scheduler — time-triggered proactive fires (built in create)
@@ -1707,6 +1711,7 @@ class Percept:
     async def perceive_judged(
         self, frame: Any, source: str = "camera", *, t: float | None = None,
         expected_goals_revision: int | None = None,
+        expected_source_generation: int | None = None,
         goal_ids: "tuple[str, ...] | None" = None,
     ) -> list[FireEvent]:
         """Judge selected active *watch* goals against ``frame`` and emit rising-edge actions.
@@ -1728,6 +1733,11 @@ class Percept:
         coverage/deadline satisfaction, or judge old evidence as-if under the newly authored plan.
         Filtering the *returned* fires would be too late — the gate mutates inside this call
         (:meth:`_fire_concern` / the executor), so the abort lives here, before the gate.
+
+        ``expected_source_generation`` is the matching transport-continuity guard. The runtime
+        captures it when async work launches and advances it at a sequence gap/reconnect/format break,
+        before yielding control. A stale result may still finish if its judge suppresses task
+        cancellation, but it cannot populate the verdict cache or mutate cognition state.
 
         Abort semantics (what is protected vs what may proceed):
 
@@ -1754,8 +1764,14 @@ class Percept:
 
         def _stale() -> bool:
             return (
-                expected_goals_revision is not None
-                and self.goals.revision != expected_goals_revision
+                (
+                    expected_goals_revision is not None
+                    and self.goals.revision != expected_goals_revision
+                )
+                or (
+                    expected_source_generation is not None
+                    and self.source_continuity_generation(source) != expected_source_generation
+                )
             )
         # Per-frame decision trace (opt-in via on_trace; no-op otherwise). trace_id correlates this
         # frame's stages; derived from source+timestamp — deterministic WHEN t is supplied (as in
@@ -1910,10 +1926,12 @@ class Percept:
                 else:
                     verdict = await self._judge(
                         goal, frame, roi, corrections, entity_id=focus.id if focus else None,
-                        frames=strip, audio=audio, context=judge_context,
+                        frames=strip, audio=audio, context=judge_context, stale=_stale,
                     )
                 judgment_timing.mark_judge_completed()
             except _JudgeDegraded as degraded:
+                if _stale():
+                    break  # stale transport/goal work cannot alter the degradation breaker either
                 # Fail-closed boundary (ADR-001 §10 invariant 4): the judge call raised (timeout /
                 # provider error) or returned a malformed/partial response. NEVER read .confidence/
                 # .satisfied off that — degrade THIS goal's tick to an explicit abstention (ASK-class:
@@ -1933,15 +1951,14 @@ class Percept:
                                            truth="unknown", action="ask",
                                            entity_id=focus.id if focus else None, degraded=True)
                 continue  # next goal this SAME frame; the watch loop (and run) continues either way
+            if _stale():
+                break  # source/goal generation moved while the judge was in flight: commit nothing
             self._note_judge_ok(base_key)  # a well-formed verdict resets this key's degrade streak
             if tracing:
                 await self._emit_trace(trace_id, now, "judge.finished", goal_id=goal.id,
                                        satisfied=getattr(verdict, "satisfied", None),
                                        confidence=getattr(verdict, "confidence", None),
                                        **judge_prov)
-            if _stale():
-                break  # THE choke point: the judge returned, but the plan changed while it was in
-                # flight — abort before ANY application (ctx, coverage stamps, gate, disposition).
             resolved: FireEvent | None = None
             if process_ctx is not None and getattr(verdict, "running_answer", ""):
                 ctx.running_answer = verdict.running_answer  # accumulate the model's rewritten summary
@@ -2167,6 +2184,8 @@ class Percept:
                 _adapter=adapter, _binding=bound, **judge_kwargs,
             )
         except _JudgeDegraded as degraded:
+            if stale is not None and stale():
+                return None
             # A failed/malformed from|to judge fails CLOSED exactly like _observe_and_log: apply nothing
             # this tick — do NOT call the executor, do NOT mutate the latch (a phantom arm/fire off a
             # garbled response is the false-fire this path must never produce) — and never crash the
@@ -2185,9 +2204,9 @@ class Percept:
                 )
             return None
         timing.mark_judge_completed()
-        self._note_judge_ok((goal.id, latch_key))  # a well-formed from+to resets this key's degrade streak
         if stale is not None and stale():
             return None  # goals changed while the from/to judges were in flight — apply nothing
+        self._note_judge_ok((goal.id, latch_key))  # a well-formed from+to resets this key's degrade streak
         # Perception (judging from/to) stays here; the seen_from/fired state machine + firing live in
         # the executor, with that state ISOLATED in its per-concern context (never the gate). The
         # executor hands back the tick facts so this method never reaches into that ctx.
@@ -2250,18 +2269,20 @@ class Percept:
         process_key = (goal.id,)
         try:
             verdict = await self._judge(
-                goal, frame, None, {}, frames=strip, context={"observe_step": True}
+                goal, frame, None, {}, frames=strip, context={"observe_step": True}, stale=stale
             )
         except _JudgeDegraded as degraded:
+            if stale is not None and stale():
+                return
             # A failed/malformed observe-step judge logs NOTHING this tick (never a phantom step
             # off a garbled/timed-out response) and never crashes the run — this goal never touches
             # the gate anyway (see the docstring above), so there is nothing further to degrade.
             self._degrade_tick(process_key, degraded.cause, goal_id=goal.id,
                                label=" (observe_step)", action="logging nothing this tick")
             return
-        self._note_judge_ok(process_key)  # a well-formed verdict resets this key's degrade streak
         if stale is not None and stale():
             return  # goals changed while the observe call was in flight — don't log a step under it
+        self._note_judge_ok(process_key)  # a well-formed verdict resets this key's degrade streak
         step = (getattr(verdict, "evidence", "") or "").strip()
         if step and step != "not enough evidence":
             ctx.process_log.append(step)  # the VLM never sees this back — cheap append only
@@ -2556,6 +2577,7 @@ class Percept:
         frames: list | None = None,
         audio: Any = None,
         context: dict | None = None,
+        stale: "Callable[[], bool] | None" = None,
     ) -> Verdict:
         # Per-goal judge routing (fail-closed) — selected BEFORE any judge call and OUTSIDE the
         # _safe_timed_judge boundary, so a marked-but-unbound goal raises JudgeBindingInvariantError here
@@ -2621,7 +2643,15 @@ class Percept:
         if hit.status == "HIT" and hit.verdict is not None:
             self.metrics.incr("cache.hit")
             return await self._audit_or_use(
-                goal, frame, roi, corrections, cache_key, hit.verdict, adapter=adapter, binding=bound
+                goal,
+                frame,
+                roi,
+                corrections,
+                cache_key,
+                hit.verdict,
+                adapter=adapter,
+                binding=bound,
+                stale=stale,
             )
         # Same fail-closed boundary for the cache-miss (single-frame) judge — the other half of
         # the live watch path. A well-formed Verdict is cached exactly as before; a degraded response
@@ -2630,7 +2660,8 @@ class Percept:
             goal.condition, frame, roi=roi, exemplar=exemplar, corrections=corrections or None,
             _adapter=adapter, _binding=bound,
         )
-        self.cache.store(cache_key, verdict, verdict.confidence)
+        if stale is None or not stale():
+            self.cache.store(cache_key, verdict, verdict.confidence)
         return verdict
 
     async def _audit_or_use(
@@ -2644,6 +2675,7 @@ class Percept:
         *,
         adapter: Any = None,
         binding: Any = None,
+        stale: "Callable[[], bool] | None" = None,
     ) -> Verdict:
         """Trust-but-verify a cache HIT.
 
@@ -2669,7 +2701,8 @@ class Percept:
             return cached
         if fresh.satisfied != cached.satisfied:
             self.metrics.incr("cache.false_serve")  # the cache's analog of false-fire
-            self.cache.store(cache_key, fresh, fresh.confidence)  # fresh read wins
+            if stale is None or not stale():
+                self.cache.store(cache_key, fresh, fresh.confidence)  # fresh read wins
             return fresh
         return cached
 
@@ -3197,6 +3230,24 @@ class Percept:
         payload["mode"] = self._mode
         payload["scripted"] = list(self._scripted)
         return payload
+
+    def source_continuity_generation(self, source: str = "camera") -> int:
+        """Return the current generation of temporally continuous evidence for ``source``."""
+        return int(self._source_continuity_generations.get(source, 0))
+
+    def advance_source_continuity(self, source: str = "camera") -> int:
+        """Invalidate in-flight work admitted before a source discontinuity.
+
+        This does not re-arm the consequence gate: a transport gap is not evidence that a condition
+        became false. It only advances the commit generation and clears the temporal frame window so
+        later judgments cannot combine frames from opposite sides of the gap.
+        """
+        generation = self.source_continuity_generation(source) + 1
+        self._source_continuity_generations[source] = generation
+        window = self.windows.get(source)
+        if window is not None and hasattr(window, "clear"):
+            window.clear()
+        return generation
 
 
 __all__ = ["Percept", "FireEvent", "guard_live_language_path"]

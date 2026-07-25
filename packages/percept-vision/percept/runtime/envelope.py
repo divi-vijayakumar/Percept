@@ -192,6 +192,36 @@ def _finite(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
 
 
+def _wav_container_valid(blob: bytes) -> bool:
+    """Validate RIFF length and require structurally complete ``fmt `` + non-empty ``data`` chunks."""
+    if len(blob) < 12 or not (blob.startswith(b"RIFF") and blob[8:12] == b"WAVE"):
+        return False
+    if int.from_bytes(blob[4:8], "little") + 8 != len(blob):
+        return False
+    offset = 12
+    saw_format = False
+    saw_audio = False
+    while offset < len(blob):
+        if offset + 8 > len(blob):
+            return False
+        chunk_id = blob[offset:offset + 4]
+        chunk_size = int.from_bytes(blob[offset + 4:offset + 8], "little")
+        content_start = offset + 8
+        content_end = content_start + chunk_size
+        if content_end > len(blob):
+            return False
+        if chunk_id == b"fmt ":
+            if chunk_size < 16:
+                return False
+            saw_format = True
+        elif chunk_id == b"data":
+            if chunk_size <= 0:
+                return False
+            saw_audio = True
+        offset = content_end + (chunk_size & 1)
+    return offset == len(blob) and saw_format and saw_audio
+
+
 def _video_payload_valid(envelope: SourceEnvelope) -> bool:
     payload = envelope.payload
     if envelope.format.media_type == "application/x-percept-opaque":
@@ -298,7 +328,7 @@ def _audio_payload_valid(envelope: SourceEnvelope) -> bool:
             return False
         blob = bytes(encoded)
         if media_type in ("audio/wav", "audio/x-wav"):
-            if len(blob) < 12 or not (blob.startswith(b"RIFF") and blob[8:12] == b"WAVE"):
+            if not _wav_container_valid(blob):
                 return False
         elif media_type == "audio/flac":
             if not blob.startswith(b"fLaC"):
