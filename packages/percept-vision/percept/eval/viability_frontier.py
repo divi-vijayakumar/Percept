@@ -21,6 +21,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from percept._safe_json import SafeJSONInputError, load_json_file, load_jsonl_file
+
 __all__ = [
     "ARMS",
     "EVIDENCE_KINDS",
@@ -826,10 +828,9 @@ def _validate_manifest(value: Any) -> _Manifest:
 def load_viability_manifest(path: str | Path) -> dict[str, Any]:
     """Load and validate a preregistered viability manifest."""
     source = Path(path)
-    _require(source.is_file(), f"manifest does not exist: {source}")
     try:
-        doc = json.loads(source.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        doc = load_json_file(source).value
+    except SafeJSONInputError as exc:
         raise ViabilityInputError(f"cannot read manifest {source}: {exc}") from exc
     _validate_manifest(doc)
     return doc
@@ -838,20 +839,22 @@ def load_viability_manifest(path: str | Path) -> dict[str, Any]:
 def load_viability_evidence(path: str | Path) -> list[dict[str, Any]]:
     """Load JSON or JSONL evidence. Empty files and malformed rows fail closed."""
     source = Path(path)
-    _require(source.is_file(), f"evidence does not exist: {source}")
+    is_jsonl = source.suffix.lower() == ".jsonl"
     try:
-        text = source.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise ViabilityInputError(f"cannot read evidence {source}: {exc}") from exc
-    _require(bool(text.strip()), f"evidence is empty: {source}")
-    try:
-        if source.suffix.lower() == ".jsonl":
-            rows = [json.loads(line) for line in text.splitlines() if line.strip()]
+        if is_jsonl:
+            rows = load_jsonl_file(source).value
         else:
-            payload = json.loads(text)
+            payload = load_json_file(source).value
             rows = payload if isinstance(payload, list) else payload.get("rows")
-    except (AttributeError, json.JSONDecodeError) as exc:
+    except SafeJSONInputError as exc:
+        if exc.code == "empty":
+            raise ViabilityInputError(f"evidence is empty: {source}") from exc
+        action = "parse" if exc.phase == "parse" else "read"
+        raise ViabilityInputError(f"cannot {action} evidence {source}: {exc}") from exc
+    except AttributeError as exc:
         raise ViabilityInputError(f"cannot parse evidence {source}: {exc}") from exc
+    if is_jsonl:
+        _require(bool(rows), f"evidence is empty: {source}")
     _require(
         isinstance(rows, list) and rows,
         f"evidence must contain a non-empty row list: {source}",
