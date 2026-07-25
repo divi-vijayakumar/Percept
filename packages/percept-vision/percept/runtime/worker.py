@@ -44,7 +44,7 @@ def _accepts_keyword(callable_obj: Any, name: str) -> bool:
 
 
 def _filter_goal_events(events: Any, allowed_goal_ids: tuple[str, ...]) -> list:
-    """Fail closed at a legacy callback boundary that cannot accept ``goal_ids`` itself."""
+    """Delivery isolation for a legacy callback that cannot accept ``goal_ids`` itself."""
     allowed = frozenset(allowed_goal_ids)
     return [
         event
@@ -1255,7 +1255,6 @@ async def run(
             goal
             for goal in core.goals.active()
             if getattr(goal, "source", "camera") == gate_source
-            and goal.id not in getattr(core, "_watch_rebind_required", set())
         ]
 
     def _visual_goals() -> list:
@@ -1380,6 +1379,32 @@ async def run(
     if on_incident is not None:
         on_incident = IdempotentSink(on_incident, _idem_ledger, clock=wall_clock)
 
+    def _require_source_scoped_callbacks() -> None:
+        """Reject a legacy duck core before it can spend or mutate across source boundaries."""
+        active_sources = {
+            getattr(goal, "source", "camera")
+            for goal in core.goals.active()
+        }
+        if len(active_sources) <= 1:
+            return
+        callbacks = {
+            "perceive_judged": getattr(core, "perceive_judged", None),
+            "check_episode_boundary": getattr(core, "check_episode_boundary", None),
+            "check_observability": getattr(core, "check_observability", None),
+            "check_deadlines": getattr(core, "check_deadlines", None),
+        }
+        legacy = [
+            name
+            for name, callback in callbacks.items()
+            if callable(callback) and not _accepts_keyword(callback, "goal_ids")
+        ]
+        if legacy:
+            raise ValueError(
+                "a core with active goals spanning multiple source keys requires source-scoped "
+                f"callbacks accepting goal_ids; legacy callbacks {legacy!r} could spend or mutate "
+                "wrong-source state before delivery filtering. Use isolated workers/adapters."
+            )
+
     def _build_gate(prev_gate=None, prev_banks=None):
         """(Re)compile the WatchSpec → gate + detector banks + fovea coast from the core's CURRENT active
         goals. Called once at start, and again on a goal-registry revision change when
@@ -1387,6 +1412,7 @@ async def run(
         tier-0 gate). On a regate the new gate ADOPTS the prior gate's per-goal throttle + prev frame,
         and a surviving goal's detector bank is REUSED (its running rep-peak / refractory state must
         not reset mid-rep) — so arming one goal never disturbs the others."""
+        _require_source_scoped_callbacks()
         visual_active = _visual_goals()
         conditions = []
         runtime_bindings = getattr(core, "_watch_runtime_bindings", {})

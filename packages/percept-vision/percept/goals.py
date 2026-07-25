@@ -10,9 +10,6 @@ from dataclasses import asdict, dataclass, field
 from typing import Callable, Literal
 
 from .adapters import Goal, GoalOrigin
-from .observability import get_logger
-
-_log = get_logger("percept.goals")
 
 GoalStatus = Literal["active", "complete", "cancelled"]
 
@@ -37,12 +34,16 @@ class GoalRegistry:
         # tier-0 gate when a goal is armed/cancelled MID-RUN (e.g. by voice) — the gate's WatchSpec is
         # otherwise compiled once at run() start, so a voice-armed goal never reaches the gate. (PR 2.1.)
         self._revision = 0
-        # Revision-change subscribers — the AUTHORITATIVE mutation seam. Every mutation path
-        # (structured arm, language-authored create/update, complete/cancel, restore, same-id replace)
+        # Revision-change subscribers — the AUTHORITATIVE mutation seam. Every accepted mutation path
+        # (structured arm, language-authored create/safe-say-update, complete/cancel, restore)
         # routes through _bump(), so a subscriber fires on EVERY change — not just at RuntimeSession.arm,
         # which the rich `arm_from_language` path bypasses. Purpose: snapshot invalidation for consumers
         # (e.g. a voice grounding cache) that must never go stale on the language command path.
         self._subscribers: list[Callable[[int], None]] = []
+        # One owning runtime may bind a required pre-commit invariant hook. It is deliberately singular:
+        # multiple side-effecting pre-hooks could otherwise let an early hook mutate runtime state and a
+        # later failure abort the registry commit.
+        self._owner_mutation_hook: Callable[[tuple[GoalOp, ...]], None] | None = None
 
     @property
     def revision(self) -> int:
@@ -75,45 +76,76 @@ class GoalRegistry:
             except Exception:  # noqa: BLE001 - a revision subscriber must never break the mutation
                 pass
 
-    def apply(self, ops: list[GoalOp]) -> None:
+    def _bind_owner_mutation_hook(
+        self, cb: "Callable[[tuple[GoalOp, ...]], None]"
+    ) -> None:
+        """Bind the registry owner's required, no-fail pre-commit invariant hook exactly once."""
+        if self._owner_mutation_hook is not None:
+            raise RuntimeError("GoalRegistry already has an owner mutation hook")
+        self._owner_mutation_hook = cb
+
+    def validate(self, ops: list[GoalOp]) -> None:
+        """Validate a complete batch without mutation.
+
+        Goal ids are lifetime-unique inside a registry. Updates intentionally expose only ``say``:
+        condition/source/state/id/origin change executable meaning while leaving gate, episode,
+        detector, and runtime state behind.
+        """
+        known_ids = set(self._goals)
         for op in ops:
             if op.op == "create":
                 if op.goal is None:
                     raise ValueError("create op requires a goal")
-                self.create(op.goal)
+                if op.goal.id in known_ids:
+                    raise ValueError(
+                        f"goal id {op.goal.id!r} already exists; goal ids are lifetime-unique "
+                        "within a registry. Use a new goal id."
+                    )
+                known_ids.add(op.goal.id)
+                continue
+            if op.op not in ("update", "complete", "cancel"):
+                raise ValueError(f"unknown goal op {op.op!r}")
+            if op.goal_id is None or op.goal_id not in known_ids:
+                raise KeyError(f"no goal {op.goal_id!r}")
+            if op.op == "update":
+                unsupported = set(op.fields) - {"say"}
+                if unsupported:
+                    raise ValueError(
+                        "goal update supports only the non-executable 'say' field; "
+                        f"unsupported fields: {sorted(unsupported)!r}"
+                    )
+                if "say" in op.fields and not isinstance(op.fields["say"], str):
+                    raise TypeError("goal update field 'say' must be a string")
+
+    def apply(self, ops: list[GoalOp]) -> None:
+        # Validate the WHOLE batch first. A bad later operation must not leave an earlier mutation.
+        self.validate(ops)
+        frozen_ops = tuple(
+            GoalOp(op=op.op, goal=op.goal, goal_id=op.goal_id, fields=dict(op.fields))
+            for op in ops
+        )
+        if self._owner_mutation_hook is not None:
+            self._owner_mutation_hook(frozen_ops)
+        for op in ops:
+            if op.op == "create":
+                goal = op.goal
+                assert goal is not None  # validated above
+                self._goals[goal.id] = goal
+                self._status[goal.id] = "active"
+                self._bump()
             elif op.op == "update":
-                self._require(op.goal_id)
                 goal = self._goals[op.goal_id]  # type: ignore[index]
-                for k, v in op.fields.items():
-                    # `origin` is durable PROVENANCE stamped by the SDK entry point — never a caller-
-                    # settable field. A conductor update op cannot claim interrupt-trust by writing it.
-                    if k == "origin":
-                        continue
-                    setattr(goal, k, v)
+                if "say" in op.fields:
+                    goal.say = op.fields["say"]
                 self._bump()
             elif op.op == "complete":
                 self._set_status(op.goal_id, "complete")
             elif op.op == "cancel":
                 self._set_status(op.goal_id, "cancelled")
-            else:  # pragma: no cover — exhaustive over the Literal
-                raise ValueError(f"unknown goal op {op.op!r}")
 
     def create(self, goal: Goal) -> Goal:
-        # A bare dict write is last-writer-wins: re-using an id silently DROPS the prior goal (a lost
-        # watch instruction — e.g. two voice conditions that slugged to the same id). Report it loudly;
-        # never overwrite in silence. (The slug is now hash-suffixed, so a genuine collision here is
-        # a real re-arm/override — still worth surfacing so it's never invisible.)
-        prior = self._goals.get(goal.id)
-        if prior is not None and self._status.get(goal.id) == "active":
-            _log.warning(
-                "goal_overwritten: id %r is already armed (%r); replacing it last-writer-wins with %r. "
-                "If these are different watches, give them distinct ids — one instruction is being lost.",
-                goal.id, getattr(prior, "condition", ""), getattr(goal, "condition", ""),
-            )
-        self._goals[goal.id] = goal
-        self._status[goal.id] = "active"
-        self._bump()
-        return goal
+        self.apply([GoalOp(op="create", goal=goal)])
+        return self._goals[goal.id]
 
     def _require(self, goal_id: str | None) -> None:
         if goal_id is None or goal_id not in self._goals:

@@ -111,6 +111,12 @@ The cognition core is documented module-by-module in the CodeWiki at
 - **Quality & tooling** — [Observability](../../codewiki/Observability-and-Diagnostics.md),
   [Evaluation](../../codewiki/Evaluation.md), and [Harness](../../codewiki/Harness.md).
 
+OSS snapshots persist plain-goal cognition only. A core with an applied compiled Watch refuses
+`snapshot()`/`save_state()` with `CompiledWatchSnapshotUnsupportedError` rather than writing an
+artifact that cannot reconstruct its runtime, source-profile, judge, and episode state. Compiled Watch
+restart recovery is therefore unsupported in the OSS 1.0 runtime; durable recovery belongs to the
+hosted runtime contract.
+
 ## See also
 
 - [Core concepts](concepts.md) — the cognition/perception split, the gate, rising-edge firing, memory.

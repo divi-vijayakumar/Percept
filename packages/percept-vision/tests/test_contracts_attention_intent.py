@@ -257,8 +257,8 @@ class ProvenanceStampingTests(unittest.TestCase):
         from percept.goals import GoalOp
         core = _core()
         core.add_goal(_goal("g3"))  # STRUCTURED_TRUSTED
-        # Updates fail closed until every cognitive/compiled state owner can move atomically.
-        with self.assertRaisesRegex(ValueError, "goal updates are unsupported"):
+        # Origin is executable authority and is never part of the safe presentation-only update.
+        with self.assertRaisesRegex(ValueError, "only the non-executable 'say'"):
             core.apply_goal_ops([GoalOp(op="update", goal_id="g3",
                                         fields={"say": "new", "origin": GoalOrigin.RESTORED})])
         g = core.goals.get("g3")

@@ -333,14 +333,14 @@ class WatchPlanCompilationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "same-id replacement"):
             core.add_goal(Goal(id="g", condition="replacement", say="replacement"))
-        with self.assertRaisesRegex(ValueError, "same-id replacement"):
+        with self.assertRaisesRegex(ValueError, "lifetime-unique"):
             core.apply_goal_ops([
                 GoalOp(
                     op="create",
                     goal=Goal(id="g", condition="language replacement", say="replacement"),
                 )
             ])
-        with self.assertRaisesRegex(ValueError, "goal updates are unsupported"):
+        with self.assertRaisesRegex(ValueError, "only the non-executable 'say'"):
             core.apply_goal_ops([
                 GoalOp(op="update", goal_id="g", fields={"condition": "changed"})
             ])
@@ -494,10 +494,17 @@ class PerWatchRuntimeIsolationTests(unittest.TestCase):
                     expected_goals_revision=None,
                 ):
                     calls.append((frame, source, t, expected_goals_revision))
-                    return []
+                    return [
+                        FireEvent(
+                            "other",
+                            "fire",
+                            "not admitted",
+                            verdict=Verdict(True, 1.0, "legacy result"),
+                        )
+                    ]
 
                 core.perceive_judged = legacy_perceive
-                asyncio.run(
+                incidents = asyncio.run(
                     _collect(
                         core,
                         [
@@ -508,6 +515,7 @@ class PerWatchRuntimeIsolationTests(unittest.TestCase):
                     )
                 )
                 self.assertEqual(len(calls), 1)
+                self.assertEqual(incidents, [])
 
     def test_different_source_profiles_admit_only_the_matching_watch(self) -> None:
         for dispatch in ("inline", "async"):
@@ -610,7 +618,7 @@ class PerWatchRuntimeIsolationTests(unittest.TestCase):
         self.assertFalse(any(incident.goal_id == "b" for incident in incidents))
         self.assertEqual(other_ctx.process_log, [{"step": "camera b step"}])
 
-    def test_legacy_callbacks_cannot_emit_another_sources_events(self) -> None:
+    def test_multisource_legacy_callbacks_refuse_before_spend_or_mutation(self) -> None:
         for dispatch in ("inline", "async"):
             with self.subTest(dispatch=dispatch):
                 core = Percept.create(vision=RecordingVision(), discover_plugins=False)
@@ -626,14 +634,18 @@ class PerWatchRuntimeIsolationTests(unittest.TestCase):
                     "wrong source",
                     verdict=Verdict(True, 1.0, "malicious legacy callback"),
                 )
+                effects = []
 
                 async def legacy_boundary(*, t=None, inactivity_s=None):
+                    effects.append("boundary")
                     return [wrong]
 
                 def legacy_coverage(*, t=None, staleness_s=None):
+                    effects.append("coverage")
                     return [wrong]
 
                 def legacy_deadlines(*, t=None):
+                    effects.append("deadlines")
                     return [wrong]
 
                 async def legacy_perceive(
@@ -643,6 +655,7 @@ class PerWatchRuntimeIsolationTests(unittest.TestCase):
                     t=None,
                     expected_goals_revision=None,
                 ):
+                    effects.append("perceive")
                     return [wrong]
 
                 core.check_episode_boundary = legacy_boundary
@@ -650,18 +663,60 @@ class PerWatchRuntimeIsolationTests(unittest.TestCase):
                 core.check_deadlines = legacy_deadlines
                 core.perceive_judged = legacy_perceive
 
-                incidents = asyncio.run(
-                    _collect(
-                        core,
-                        [
-                            (0.0, STILL, "prime"),
-                            (1.0, gray_frame(W, H, 255), "changed"),
-                        ],
-                        gate_source="camera-a",
-                        judge_dispatch=dispatch,
+                with self.assertRaisesRegex(ValueError, "spanning multiple source keys"):
+                    asyncio.run(
+                        _collect(
+                            core,
+                            [
+                                (0.0, STILL, "prime"),
+                                (1.0, gray_frame(W, H, 255), "changed"),
+                            ],
+                            gate_source="camera-a",
+                            judge_dispatch=dispatch,
+                        )
                     )
+                self.assertEqual(effects, [])
+
+    def test_regate_rejects_new_multisource_legacy_topology_before_callbacks(self) -> None:
+        core = Percept.create(vision=RecordingVision(), discover_plugins=False)
+        core.add_goal(Goal(id="a", condition="camera a", say="a", source="camera-a"))
+        effects = []
+
+        async def legacy_perceive(
+            frame,
+            source="camera",
+            *,
+            t=None,
+            expected_goals_revision=None,
+        ):
+            effects.append("perceive")
+            return []
+
+        async def legacy_boundary(*, t=None, inactivity_s=None):
+            effects.append("boundary")
+            return []
+
+        core.perceive_judged = legacy_perceive
+        core.check_episode_boundary = legacy_boundary
+
+        async def changing_source():
+            yield (0.0, STILL, "prime")
+            effects.clear()
+            core.goals.create(
+                Goal(id="b", condition="camera b", say="b", source="camera-b")
+            )
+            yield (1.0, gray_frame(W, H, 255), "changed")
+
+        with self.assertRaisesRegex(ValueError, "spanning multiple source keys"):
+            asyncio.run(
+                _collect(
+                    core,
+                    changing_source(),
+                    gate_source="camera-a",
+                    judge_dispatch="inline",
                 )
-                self.assertEqual(incidents, [])
+            )
+        self.assertEqual(effects, [])
 
     def test_per_watch_coast_does_not_wake_a_sparser_watch(self) -> None:
         vision = RecordingVision()

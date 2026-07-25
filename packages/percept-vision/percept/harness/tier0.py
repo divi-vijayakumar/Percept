@@ -938,8 +938,6 @@ class GatedWatchLoop:
         self._settings = cfg
         self._source = source
         active = list(goals) if goals is not None else list(core.goals.active())
-        rebind_required = getattr(core, "_watch_rebind_required", set())
-        active = [goal for goal in active if goal.id not in rebind_required]
         thr = cfg.edge.motion_gate if threshold is None else threshold
         # edge_capabilities=None -> in-process edge runs the whole registry; a remote edge advertises a
         # subset and the brain selects within it (the capability handshake).

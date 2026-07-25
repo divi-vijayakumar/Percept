@@ -11,7 +11,6 @@ the duration of the call — exactly the module ``watchplan_apply`` lazily impor
 """
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import dataclasses
 import hashlib
@@ -27,10 +26,7 @@ from percept.agent import Percept
 from percept.contracts.watchplan import ResolvedJudgeSpec, WatchPlan
 from percept.deployment_judges import DeploymentJudges
 from percept.goals import GoalOp
-from percept.harness.tier0 import gray_frame
 from percept.resolver import ConfigResolver
-from percept.runtime.worker import RuntimeStats, run
-from percept.sourceprofile import SourceProfile
 from percept.watchplan_apply import apply_watch_plan
 
 
@@ -287,145 +283,132 @@ class AtomicApplyTests(unittest.TestCase):
         self.assertEqual(receipt.dropped_fields[0].code, "duplicate_goal_id_in_batch")
         self.assertEqual(core.goals.all(), [])
 
-    def test_goal_update_rejects_without_stranding_the_compiled_watch(self):
+    def test_safe_say_update_preserves_runtime_but_invalidates_apply_receipt(self):
         core = _core()
         plan = _plan("p1")
-        self.assertEqual(apply_watch_plan(core, plan).status, "applied")
+        resolver = JudgeInjectingResolver({"p1": _spec("judge@1")})
+        with installed_registry(lambda spec, cfg: SpyJudge()):
+            self.assertIn(
+                apply_watch_plan(core, plan, resolver=resolver).status,
+                ("applied", "applied_with_warnings"),
+            )
         binding = core._watch_runtime_bindings["p1"]
-        key = core._watch_runtime_keys["p1"]
-        ledger = dict(core._watchplan_applied_hashes)
+        judge_binding = core._judge_bindings["p1"]
 
-        with self.assertRaisesRegex(ValueError, "goal updates are unsupported"):
-            core.apply_goal_ops([
-                GoalOp(op="update", goal_id="p1", fields={"say": "updated notification"})
-            ])
+        core.goals.apply([
+            GoalOp(op="update", goal_id="p1", fields={"say": "updated notification"})
+        ])
 
         self.assertIs(core._watch_runtime_bindings["p1"], binding)
-        self.assertEqual(core._watch_runtime_keys["p1"], key)
-        self.assertEqual(core._watchplan_applied_hashes, ledger)
-        self.assertEqual(core.goals.get("p1").say, plan.condition)
-        self.assertEqual(apply_watch_plan(core, plan).status, "applied")
+        self.assertIs(core._judge_bindings["p1"], judge_binding)
+        self.assertIn("p1", core._judge_requesting_goal_ids)
+        self.assertNotIn("p1", core._watch_runtime_keys)
+        self.assertEqual(core._watchplan_applied_hashes, {})
+        self.assertEqual(core.goals.get("p1").say, "updated notification")
+        # The old plan cannot false-hit its stale receipt after presentation changed.
+        self.assertEqual(
+            apply_watch_plan(core, plan, resolver=resolver).status,
+            "rejected",
+        )
 
-    def test_restore_clears_session_local_compiled_and_apply_state(self):
+    def test_direct_registry_complete_and_cancel_release_runtime_and_judge(self):
+        for operation in ("complete", "cancel"):
+            with self.subTest(operation=operation):
+                core = _core()
+                plan = _plan("p1")
+                resolver = JudgeInjectingResolver({"p1": _spec("judge@1")})
+
+                with installed_registry(lambda spec, cfg: SpyJudge()):
+                    receipt = apply_watch_plan(core, plan, resolver=resolver)
+                self.assertIn(receipt.status, ("applied", "applied_with_warnings"))
+                self.assertIn("p1", core._watch_runtime_bindings)
+                self.assertIn("p1", core._judge_bindings)
+
+                core.goals.apply([GoalOp(op=operation, goal_id="p1")])
+
+                expected_status = "cancelled" if operation == "cancel" else "complete"
+                self.assertEqual(core.goals.status("p1"), expected_status)
+                self.assertNotIn("p1", core._watch_runtime_bindings)
+                self.assertNotIn("p1", core._watch_runtime_keys)
+                self.assertNotIn("p1", core._judge_bindings)
+                self.assertNotIn("p1", core._judge_requesting_goal_ids)
+                self.assertEqual(core._watchplan_applied_hashes, {})
+
+    def test_cached_receipt_requires_intact_live_executable_state(self):
+        def mismatch_runtime(core):
+            compiled, source_profile = core._watch_runtime_bindings["p1"]
+            core._watch_runtime_bindings["p1"] = (
+                dataclasses.replace(compiled, plan_mode="window"),
+                source_profile,
+            )
+
+        attacks = {
+            "missing runtime binding": lambda core: core._watch_runtime_bindings.pop("p1"),
+            "mismatched runtime executable": mismatch_runtime,
+            "missing runtime key": lambda core: core._watch_runtime_keys.pop("p1"),
+            "missing ledger": lambda core: core._watchplan_applied_hashes.clear(),
+            "changed say": lambda core: setattr(core.goals.get("p1"), "say", "tampered"),
+            "changed condition": lambda core: setattr(
+                core.goals.get("p1"), "condition", "tampered"
+            ),
+        }
+        for name, attack in attacks.items():
+            with self.subTest(name=name):
+                core = _core()
+                plan = _plan("p1")
+                self.assertEqual(apply_watch_plan(core, plan).status, "applied")
+                attack(core)
+
+                self.assertEqual(apply_watch_plan(core, plan).status, "rejected")
+
+    def test_cached_judged_receipt_requires_live_judge_binding(self):
+        core = _core()
+        plan = _plan("p1")
+        resolver = JudgeInjectingResolver({"p1": _spec("judge@1")})
+        with installed_registry(lambda spec, cfg: SpyJudge()):
+            self.assertIn(
+                apply_watch_plan(core, plan, resolver=resolver).status,
+                ("applied", "applied_with_warnings"),
+            )
+        core._judge_bindings.pop("p1")
+
+        self.assertEqual(
+            apply_watch_plan(core, plan, resolver=resolver).status,
+            "rejected",
+        )
+
+    def test_compiled_watch_snapshot_refuses_before_producing_an_artifact(self):
         core = _core()
         self.assertEqual(apply_watch_plan(core, _plan("p1")).status, "applied")
-        snap = core.snapshot()
+        from percept.agent import CompiledWatchSnapshotUnsupportedError
+
+        class RecordingPersistence:
+            def __init__(self):
+                self.saved = []
+
+            def save(self, key, value):
+                self.saved.append((key, value))
+
+        persistence = RecordingPersistence()
+        with self.assertRaisesRegex(
+            CompiledWatchSnapshotUnsupportedError, "do not support compiled Watches"
+        ):
+            core.save_state(persistence)
+
+        self.assertEqual(persistence.saved, [])
         self.assertIn("p1", core._watch_runtime_bindings)
-        self.assertTrue(core._watchplan_applied_hashes)
-
-        core.restore(snap)
-
         self.assertIsNotNone(core.goals.get("p1"))
-        self.assertEqual(core._watch_runtime_bindings, {})
-        self.assertEqual(core._watch_runtime_keys, {})
-        self.assertEqual(core._judge_bindings, {})
-        self.assertEqual(core._judge_requesting_goal_ids, set())
-        self.assertFalse(core._watchplan_applied_hashes)
 
-    def test_restore_can_rebind_the_exact_executable_without_replacing_restored_cognition(self):
+    def test_plain_goal_snapshot_restore_remains_supported(self):
         core = _core()
-        profile = SourceProfile(
-            name="restore-source",
-            modalities=frozenset({"video"}),
-            temporal_unit="frame",
-            admission_strategy="pixel-change",
-            evidence_strategy="frame",
-            identity_strategy="track_continuity",
-        )
-        plan = WatchPlan(
-            id="p1",
-            condition="a condition for p1",
-            consequence={"miss_cost": "severe"},
-            rearm="deadline",
-            explicit={
-                "Goal.state.deadline_after_s": 1.0,
-            },
-        )
-        resolver = JudgeInjectingResolver({"p1": _spec("judge@1")})
-        adapters = []
-
-        def factory(spec, cfg):
-            adapter = SpyJudge(f"adapter-{len(adapters)}")
-            adapters.append(adapter)
-            return adapter
-
-        with installed_registry(factory):
-            first = apply_watch_plan(
-                core, plan, resolver=resolver, source_profile=profile
-            )
-        self.assertIn(first.status, ("applied", "applied_with_warnings"))
-        core.goals.get("p1").state["count"] = 7
-        core.gate.evaluate(("p1", None), Verdict(False, 0.99, "restored no"))
+        core.add_goal(Goal(id="plain", condition="plain condition", say="plain"))
         snap = core.snapshot()
+        self.assertNotIn("watch_executable_identities", snap)
 
-        core.restore(snap)
-        restored_goal = core.goals.get("p1")
-        restored_gate = core.gate.snapshot()
-        self.assertEqual(restored_goal.state["count"], 7)
-        self.assertEqual(core._watch_runtime_bindings, {})
-        self.assertEqual(core._judge_bindings, {})
-        self.assertEqual(core._watch_rebind_required, {"p1"})
+        restored = _core().restore(snap)
 
-        # Restored compiled goals are active-but-quarantined until exact rebind. They cannot fall
-        # through to the core default judge, worker gate, or absence/boundary paths.
-        default_calls = core.vision.calls
-        self.assertEqual(
-            asyncio.run(core.perceive_judged("frame", "camera", t=100.0)),
-            [],
-        )
-        self.assertEqual(core.vision.calls, default_calls)
-        core.last_supported["p1"] = 0.0
-        overdue_t = restored_goal.state["deadline_at"] + 100.0
-        restored_goal.state["type"] = "process"
-        ctx = core.executor.ctx("p1")
-        ctx.process_log = [{"step": "restored"}]
-        ctx.last_step_at = 0.0
-        self.assertEqual(core.check_observability(t=overdue_t, staleness_s=1.0), [])
-        self.assertEqual(core.check_deadlines(t=overdue_t), [])
-        self.assertEqual(
-            asyncio.run(core.check_episode_boundary(t=overdue_t, inactivity_s=1.0)),
-            [],
-        )
-        restored_goal.state["type"] = "watch"
-
-        async def collect_restored():
-            stats = RuntimeStats()
-            frames = [
-                (0.0, gray_frame(8, 8, 0), "prime"),
-                (1.0, gray_frame(8, 8, 255), "changed"),
-            ]
-            incidents = [
-                incident
-                async for incident in run(
-                    core, source=frames, stats=stats, judge_dispatch="inline"
-                )
-            ]
-            return incidents, stats
-
-        incidents, stats = asyncio.run(collect_restored())
-        self.assertEqual(incidents, [])
-        self.assertEqual(stats.escalations, 0)
-        self.assertEqual(core.vision.calls, default_calls)
-
-        with installed_registry(factory):
-            rebound = apply_watch_plan(
-                core, plan, resolver=resolver, source_profile=profile
-            )
-
-        self.assertIn(rebound.status, ("applied", "applied_with_warnings"))
-        self.assertIs(core.goals.get("p1"), restored_goal)
-        self.assertEqual(restored_goal.state["count"], 7)
-        self.assertEqual(core.gate.snapshot(), restored_gate)
-        self.assertIs(core._watch_runtime_bindings["p1"][1], profile)
-        self.assertIs(core._judge_bindings["p1"].adapter, adapters[-1])
-        self.assertEqual(core._watch_rebind_required, set())
-        self.assertEqual(
-            core._watch_runtime_keys["p1"],
-            core._watch_executable_identities["p1"],
-        )
-        rebound_adapter = core._judge_bindings["p1"].adapter
-        asyncio.run(core.perceive_judged("frame", "camera", t=101.0))
-        self.assertEqual(rebound_adapter.calls, 1)
+        self.assertEqual(restored.goals.get("plain").condition, "plain condition")
+        self.assertEqual(restored.goals.status("plain"), "active")
 
     def test_cancelled_goal_id_is_not_reusable_even_for_the_same_watch(self):
         core = _core()

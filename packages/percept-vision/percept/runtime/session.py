@@ -207,8 +207,9 @@ class RuntimeSession:
         revision change — not at :meth:`arm`/:meth:`disarm`. That is the whole point: the rich command
         path ``core.arm_from_language`` / ``apply_goal_ops`` mutates the registry WITHOUT going through
         ``session.arm``, so a callback wired to ``arm`` would silently miss every voice-authored watch.
-        Binding to the registry catches all of it: structured arm, language-authored add/update/remove,
-        disarm, restore, and same-id replacement.
+        Binding to the registry catches all of it: structured arm, language-authored create, the safe
+        presentation-only ``say`` update, complete/cancel, disarm, and restore. Goal ids are
+        lifetime-unique; executable same-id replacement is rejected.
 
         Purpose is **snapshot invalidation** (mark a grounding cache dirty), NOT wire injection. The
         callback takes no arguments; callbacks are additive + ISOLATED — one raising subscriber can never

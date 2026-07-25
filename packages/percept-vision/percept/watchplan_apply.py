@@ -205,7 +205,6 @@ class _PreparedGoal:
     source_profile: Any | None
     application_key: str
     receipt: WatchReceipt
-    rebind_existing: bool = False
 
 
 _PER_WATCH_SETTINGS_SECTIONS: frozenset[str] = frozenset({"edge", "episodes"})
@@ -215,6 +214,48 @@ def _application_key(resolved: Any) -> str:
     """Stable identity of the portable plan plus the configuration it actually compiled against."""
     effective_hash = content_hash(dict(resolved.effective))
     return f"{resolved.plan_hash}:{effective_hash}:{resolved.component_snapshot_hash}"
+
+
+def _cached_runtime_intact(
+    percept: Any,
+    *,
+    goal_id: str,
+    application_key: str,
+    compiled: Any,
+    expected_goal: Any,
+    source_profile: Any,
+    resolved_judge: Any,
+) -> bool:
+    """Whether a prior receipt still describes the exact live executable state."""
+    current_goal = percept.goals.get(goal_id)
+    if current_goal is None or percept.goals.status(goal_id) != "active":
+        return False
+    if getattr(percept, "_watch_runtime_keys", {}).get(goal_id) != application_key:
+        return False
+    runtime = getattr(percept, "_watch_runtime_bindings", {}).get(goal_id)
+    if runtime is None or len(runtime) != 2:
+        return False
+    bound_compiled, bound_source_profile = runtime
+    if bound_compiled != compiled or bound_source_profile != source_profile:
+        return False
+    # These Goal fields are immutable executable/presentation inputs for an applied Watch. Runtime-
+    # owned counters and deadline stamps live in state and are intentionally not compared here.
+    static_fields = ("id", "condition", "say", "source", "modality", "expiry")
+    if any(
+        getattr(current_goal, name, None) != getattr(expected_goal, name, None)
+        for name in static_fields
+    ):
+        return False
+    judge_bindings = getattr(percept, "_judge_bindings", {})
+    judge_requesting = getattr(percept, "_judge_requesting_goal_ids", set())
+    bound_judge = judge_bindings.get(goal_id)
+    if resolved_judge is None:
+        return bound_judge is None and goal_id not in judge_requesting
+    return (
+        goal_id in judge_requesting
+        and bound_judge is not None
+        and getattr(bound_judge, "spec", None) == resolved_judge
+    )
 
 
 def _named_profile_candidates(name: str, watch_registry: Any) -> tuple[Any | None, tuple[Any, ...]]:
@@ -544,13 +585,10 @@ def _prepare_one(
 
     application_key = _application_key(resolved)
     cached = known.get(application_key)
-    if cached is not None:
-        # A historical ledger entry is an idempotent hit only while that exact executable still owns
-        # the goal id. Reconfiguring/replacing the same id invalidates the old hit. The third tuple
-        # element is the prepare-phase marker for an identical duplicate in this same batch.
-        current_key = getattr(percept, "_watch_runtime_keys", {}).get(cached[0])
-        if len(cached) > 2 or current_key == application_key:
-            return "cached", (cached[0], cached[1])
+    # The third tuple element is a prepare-only marker for an identical duplicate in this SAME batch.
+    # Its first copy is still being prepared and will commit atomically with it.
+    if cached is not None and len(cached) > 2:
+        return "cached", (cached[0], cached[1])
 
     try:
         compiled = runtime_compile(resolved)
@@ -569,37 +607,37 @@ def _prepare_one(
         return "rejected", WatchReceipt(status="rejected", dropped_fields=(unsupported,))
     state, coerced = _coerce_goal_state(compiled.goal.state, goal_id=compiled.goal.id)
     goal = replace(compiled.goal, state=state)
+    if cached is not None and _cached_runtime_intact(
+        percept,
+        goal_id=cached[0],
+        application_key=application_key,
+        compiled=compiled,
+        expected_goal=goal,
+        source_profile=selected_source_profile,
+        resolved_judge=getattr(resolved, "judge", None),
+    ):
+        return "cached", (cached[0], cached[1])
     existing = percept.goals.get(goal.id)
-    rebind_existing = False
     if existing is not None:
-        existing_identity = getattr(
-            percept, "_watch_executable_identities", {}
-        ).get(goal.id)
         existing_status = percept.goals.status(goal.id)
-        if existing_status == "active" and existing_identity == application_key:
-            # Snapshot/restore deliberately drops session-local compiled/judge bindings but preserves
-            # this durable executable identity with the Goal. Re-register those bindings without
-            # replacing the restored Goal or touching its gate/executor cognition.
-            rebind_existing = True
-        else:
-            status_note = (
-                f"existing lifecycle status is {existing_status!r}; " if existing_status != "active"
-                else ""
-            )
-            return "rejected", WatchReceipt(
-                status="rejected",
-                dropped_fields=(FieldDiagnostic(
-                    path="WatchPlan.id",
-                    code="active_goal_id_reconfiguration_unsupported",
-                    goal_id=goal.id,
-                    message=(
-                        f"goal id {goal.id!r} already exists. {status_note}Its durable executable "
-                        "identity does not match this Watch, and same-id replacement cannot safely "
-                        "reset gate, executor, episode, detector, and tier-0 state. Use a new goal id; "
-                        "completion or cancellation does not make the old id reusable."
-                    ),
-                ),),
-            )
+        status_note = (
+            f"existing lifecycle status is {existing_status!r}; " if existing_status != "active"
+            else ""
+        )
+        return "rejected", WatchReceipt(
+            status="rejected",
+            dropped_fields=(FieldDiagnostic(
+                path="WatchPlan.id",
+                code="active_goal_id_reconfiguration_unsupported",
+                goal_id=goal.id,
+                message=(
+                    f"goal id {goal.id!r} already exists. {status_note}The prior applied receipt is "
+                    "not an exact match for intact live runtime state, and same-id replacement cannot "
+                    "safely reset gate, executor, episode, detector, and tier-0 state. Use a new goal "
+                    "id; completion or cancellation does not make the old id reusable."
+                ),
+            ),),
+        )
     modality = program_of(goal).perception.modality
     if (
         selected_source_profile is not None
@@ -673,7 +711,6 @@ def _prepare_one(
         source_profile=selected_source_profile,
         application_key=application_key,
         receipt=receipt,
-        rebind_existing=rebind_existing,
     )
 
 
@@ -809,10 +846,6 @@ def apply_watch_plan(
         goals_before = percept.goals.snapshot()
         watch_bindings_before = dict(getattr(percept, "_watch_runtime_bindings", {}))
         watch_keys_before = dict(getattr(percept, "_watch_runtime_keys", {}))
-        watch_identities_before = dict(
-            getattr(percept, "_watch_executable_identities", {})
-        )
-        rebind_required_before = set(getattr(percept, "_watch_rebind_required", set()))
         judge_bindings_before = dict(getattr(percept, "_judge_bindings", {}))
         judge_requesting_before = set(getattr(percept, "_judge_requesting_goal_ids", set()))
         ledger_existed = hasattr(percept, _LEDGER_ATTR)
@@ -823,8 +856,7 @@ def apply_watch_plan(
                 real_ledger = {}
                 setattr(percept, _LEDGER_ATTR, real_ledger)
             for p in prepared:
-                if not p.rebind_existing:
-                    percept.add_goal(p.goal, _cache_preinvalidated=True)
+                percept.add_goal(p.goal, _cache_preinvalidated=True)
                 percept._register_watch_runtime(
                     p.goal.id,
                     p.compiled,
@@ -842,10 +874,6 @@ def apply_watch_plan(
             percept._watch_runtime_bindings.update(watch_bindings_before)
             percept._watch_runtime_keys.clear()
             percept._watch_runtime_keys.update(watch_keys_before)
-            percept._watch_executable_identities.clear()
-            percept._watch_executable_identities.update(watch_identities_before)
-            percept._watch_rebind_required.clear()
-            percept._watch_rebind_required.update(rebind_required_before)
             percept._judge_bindings.clear()
             percept._judge_bindings.update(judge_bindings_before)
             percept._judge_requesting_goal_ids.clear()
