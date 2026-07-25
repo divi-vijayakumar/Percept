@@ -5,8 +5,20 @@ Percept has two edge runtimes:
 - **Python**: `percept.edge` / `percept.harness`, used server-side and by the runtime worker.
 - **JavaScript**: `percept-edge`, used on device/browser/edge deployments.
 
-They are required to agree on the frozen wire contract and on the cheap detector outputs. The parity
-lane is the release evidence for v0.3.
+They are required to agree on the shared frozen wire contract and cheap detector outputs. That
+parity does not imply that every Python runtime policy is executable remotely.
+
+## Duration support boundary
+
+Sustained-duration Watches (`Goal.state.hold_s` with fixed per-goal cadence) currently require the
+in-process Python worker. Their correctness depends on ordered admission records that identify both
+the goal and whether its tick was admitted by fixed cadence or motion. The remote JavaScript edge
+contract does not carry that per-goal cause stream.
+
+The compiler therefore rejects a sustained-duration Watch routed through remote `percept-edge` with
+`UnsupportedDurationRouteError`, before pulling frames or invoking a provider. Use the Python
+`percept.run(...)` topology for this behavior. See
+[Sustained-duration Watches](sustained-duration-watches.md) for migration and restart limits.
 
 ## What Is Compared
 
@@ -29,10 +41,11 @@ The salience/ego arithmetic is intentionally integer-only (floor-of-product bloc
 per-block denominators, an integer nearest-rank percentile) so the two languages match as exact equality,
 not just within tolerance.
 
-Current local result:
+The command reports every check in the current fixture set and fails if either implementation
+diverges:
 
 ```text
-21 checks - ALL MATCH: the two routes are byte-for-byte equivalent
+ALL MATCH: the shared routes are byte-for-byte equivalent
 ```
 
 Latency is a local microbenchmark, not a hosted SLA claim. The release claim is byte-for-byte parity.
@@ -60,5 +73,6 @@ make test-js
 make parity
 ```
 
-A contract change must update both Python and JS tests, the `CONTRACT_VERSION`, and this doc if the
-handshake semantics change.
+A shared contract change must update both Python and JS tests, the `CONTRACT_VERSION`, and this doc
+if the handshake semantics change. A Python-only policy must be rejected explicitly at remote
+compilation; silently treating shared primitive parity as policy support is a release failure.

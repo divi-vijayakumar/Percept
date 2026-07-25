@@ -6,6 +6,7 @@ import asyncio
 import copy
 import math
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -494,3 +495,19 @@ def test_plan_hash_application_key_change_and_same_id_reconfiguration_preserves_
     assert second.status == "rejected"
     assert second.dropped_fields[0].code == "active_goal_id_reconfiguration_unsupported"
     assert core.goals.get("same-door").state == before
+
+
+def test_public_duration_contract_states_topology_migration_restart_and_qualification():
+    repo = Path(__file__).resolve().parents[3]
+    contract = (repo / "docs/reference/sustained-duration-watches.md").read_text()
+    edge = (repo / "docs/reference/edge-parity.md").read_text()
+    chooser = (repo / "docs/tutorials/choose-your-path.md").read_text()
+    scope = (repo / "docs/reference/v1-4-scope-and-persistence.md").read_text()
+
+    assert "in-process Python" in contract
+    assert "new ID" in contract
+    assert "CompiledWatchSnapshotUnsupportedError" in contract
+    assert "not quality-qualified" in contract
+    assert "remote JavaScript edge" in edge
+    assert "sustained-duration Watches" in chooser
+    assert "pending `hold_s` dwell starts again" in scope

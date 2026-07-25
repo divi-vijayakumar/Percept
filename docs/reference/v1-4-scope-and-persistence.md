@@ -45,13 +45,17 @@ generalise ahead of evidence.
 
 **Episodes are not persisted across restart.**
 
-`Percept.snapshot()` carries `goals`, `gate`, `entities` and `action_log`. It does **not** carry
-`Percept.episodes` — the per-goal `EpisodeLog` map — so `Percept.restore()` cannot bring it back.
+For a plain-goal core, `Percept.snapshot()` carries `goals`, `gate`, `entities` and `action_log`. It
+does **not** carry `Percept.episodes` — the per-goal `EpisodeLog` map — so `Percept.restore()` cannot
+bring it back. A core with an applied compiled Watch refuses `snapshot()`/`save_state()` with
+`CompiledWatchSnapshotUnsupportedError`; the OSS runtime does not create a partial recovery artifact
+for session-local runtime, profile, judge, or episode bindings.
 
 What that means concretely:
 
 - after a restart, every counting goal starts again at **zero episodes**;
 - a subject last seen before the restart is a **new** episode afterwards;
+- pending `hold_s` dwell starts again; `Gate.restore()` drops its pre-restart clock stamp;
 - `EpisodeLog`'s `window_s` / `max_episodes` bounds are a **memory** story (a long-running process
   does not grow without limit). They are **not** a durability story.
 

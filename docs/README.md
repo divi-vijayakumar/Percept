@@ -39,6 +39,8 @@ per-module reference is the generated [CodeWiki](../codewiki/) (source of truth 
 - [Registration](reference/registration.md) — detector / concern / enricher registries.
 - [Wake policy](reference/edge-policy.md) — the on-device "should we spend a VLM call?" layer.
 - [Edge parity](reference/edge-parity.md) — JS ↔ Python edge conformance.
+- [Sustained-duration Watches](reference/sustained-duration-watches.md) — Python support boundary,
+  corrected door semantics, migration, and restart behavior.
 - [Audio modality](reference/audio-modality.md) — fused vision + audio judging.
 - [Command seam](reference/command-seam.md) — drive a running watch: arm by voice, ask, pause/mute.
 - [Operating frontier](reference/operating-frontier.md) — the recall / false-fire trade-off surface.

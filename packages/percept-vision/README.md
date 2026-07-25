@@ -155,6 +155,12 @@ backends and the edge packages are wired behind their seams. No benchmark number
 Issues and contributions welcome:
 [github.com/divi-vijayakumar/Percept](https://github.com/divi-vijayakumar/Percept).
 
+Sustained-duration Watches are supported by the in-process Python runtime only. They are
+session-scoped, remote `percept-edge` compilation fails closed, and
+`facility_observation@1/door_left_open` carries no quality claim until a matched duration evaluation
+ships. See the public
+[release contract and migration note](https://github.com/divi-vijayakumar/Percept/blob/main/docs/reference/sustained-duration-watches.md).
+
 ## License
 
 Apache-2.0.

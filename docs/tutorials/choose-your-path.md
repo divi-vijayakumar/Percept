@@ -8,6 +8,7 @@ until you need it.
 |---|---|---|---|
 | Build a simple watcher (no keys) | [quickstart](quickstart.md) (`mode="offline"`), or the `percept-agent` skill in Claude Code | `pip install percept-vision` | edge, harness, benchmarks |
 | Watch a webcam / video / RTSP | **`percept.run(source="webcam:0", goals=["..."])`** — [runtime how-to](../how-to/runtime.md) | `[runtime]` + a backend (`[gemini]`/`[claude]`) | JS edge, rhythm |
+| Fire only after a condition stays true for a duration | Build a `hold_s` Watch and use the [in-process Python duration route](../reference/sustained-duration-watches.md) | `[runtime]` + a backend | remote JS edge, restart continuity |
 | Watch **and listen** (fused audio) | `run(source="webcam:0", goals=["..."], audio_source="mic:0")` — [audio modality](../reference/audio-modality.md) | `[runtime,mic]` + a backend | JS edge, rhythm |
 | Drive a live watch (arm/ask/pause by voice or code) | [Command seam](../reference/command-seam.md) — `RuntimeSession` | `[runtime]` + a backend | — |
 | Watch my screen | [Screenshare how-to](../how-to/screenshare.md) | `[runtime]` (+ `[screen]`) | camera/benchmark internals |
@@ -16,7 +17,7 @@ until you need it.
 | Author a profile for my use case | [Custom configuration how-to](../how-to/custom-configuration.md) | `pip install percept-vision` | edge, harness |
 | Tune the eye for my content | [Tuning admission how-to](../how-to/tune-admission.md) | `pip install percept-vision` | edge, harness |
 | Configure env vars / thresholds | [Configuration reference](../configuration.md) | core | — |
-| Run on-device edge gating | [Edge parity reference](../reference/edge-parity.md) | `npm install percept-edge` | process-QA, benchmark methodology |
+| Run on-device edge gating | [Edge parity reference](../reference/edge-parity.md) | `npm install percept-edge` | sustained-duration Watches, process-QA, benchmark methodology |
 | Evaluate / optimize / benchmark | [Eval](../how-to/eval.md) · [Optimize](../how-to/optimize.md) · [Benchmarks](../how-to/benchmarks.md) | `[bench]` | runtime internals |
 | Look up a CLI command | [Command-line reference](../reference/cli.md) | core | — |
 

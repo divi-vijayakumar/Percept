@@ -296,6 +296,11 @@ backends (Gemini, Claude, OpenRouter, Deepgram) and the edge packages are wired 
 benchmark numbers are published yet (see [Benchmark status](#benchmark-status)). Issues and
 contributions welcome ([CONTRIBUTING.md](CONTRIBUTING.md)).
 
+Sustained-duration Watches are supported by the in-process Python runtime only. They are
+session-scoped, remote `percept-edge` compilation fails closed, and
+`facility_observation@1/door_left_open` carries no quality claim until a matched duration evaluation
+ships. Read the [release contract and migration note](docs/reference/sustained-duration-watches.md).
+
 ## License
 
 Apache-2.0.

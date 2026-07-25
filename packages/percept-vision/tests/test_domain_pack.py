@@ -449,6 +449,16 @@ class TestFacilityObservationPack(unittest.TestCase):
         self.assertTrue(FACILITY_OBSERVATION_V1.fixtures)
         self.assertTrue(FACILITY_OBSERVATION_V1.quality_bars)
 
+    def test_unmatched_duration_template_has_no_quality_claim(self) -> None:
+        self.assertNotIn(
+            "facility_observation/door_left_open",
+            FACILITY_OBSERVATION_V1.fixtures,
+        )
+        self.assertFalse(
+            any(key.startswith("door_left_open.") for key in FACILITY_OBSERVATION_V1.quality_bars)
+        )
+        self.assertIn("not quality-qualified", FACILITY_OBSERVATION_V1.notes)
+
     def test_search_space_paths_are_safe_to_optimize(self) -> None:
         from percept.tunables import REGISTRY
 

@@ -190,11 +190,15 @@ requesting the next `WatchEvent`. Concretely:
 - No idempotency ledger for `watch()`. Unlike `run()`'s `IdempotentSink`/`IdempotencyLedger`
   (`worker.py:1160-1171`), a `WatchEvent` carries no `id` and there is no persisted
   delivery-attempt record. The only de-dup mechanism is the in-memory gate edge state, itself
-  bounded by `Gate`'s TTL/LRU eviction (`_DEFAULT_MAX_KEYS=10_000`, `_DEFAULT_KEY_TTL_S=3600.0`,
-  `gate.py:73-74`) and **not persisted** by `watch()` itself — `Percept.snapshot()`/`restore()`
-  exist and round-trip `self.gate.snapshot()` (`agent.py:2031,2077`, `Gate.snapshot`/`restore`,
-  `gate.py:523-557`), but `watch()` never calls them. Across an unmanaged process restart with no
-  persistence explicitly wired by the caller, a still-true condition can re-fire.
+  bounded by `Gate`'s TTL/LRU eviction (`_DEFAULT_MAX_KEYS=10_000`,
+  `_DEFAULT_KEY_TTL_S=3600.0`, `gate.py`) and **not persisted** by `watch()` itself. A plain-goal
+  core can explicitly use `Percept.snapshot()`/`restore()` to round-trip armed edge state, but
+  `watch()` never calls them. A core with an applied compiled Watch refuses snapshot/save with
+  `CompiledWatchSnapshotUnsupportedError` because its runtime bindings are session-local.
+  Furthermore, `Gate.restore()` deliberately drops pending positive dwell: the pre-restart clock
+  cannot prove continuous support in the new process. Across an unmanaged restart, a still-true
+  plain goal can re-fire; a duration Watch must begin its pending interval again in a fresh
+  supported session.
 - No wall-clock delivery-latency SLA — how quickly the consumer's `async for` loop resumes after a
   `yield` is entirely a function of the consumer's own code, not bounded by `watch()`.
 

@@ -141,20 +141,20 @@ _COMPONENTS = (
 _DIRECT_JUDGE_ROUTES = (DirectRouting(condition_namespace="facility_observation."),)
 
 # ---------------------------------------------------------------------------
-# Fixtures + quality bars — plain data declarations. These NAMES are not required to resolve to
-# packaged files yet (percept/fixtures/ ships only "kettle_boils.json" today); qualifying this pack
-# against real clips is a later eval-harness card's concern, per the pack contract's own framing.
+# Fixtures + quality bars — plain data declarations. A template appears here only when the pack has
+# a matching evaluation route for the behavior it executes. ``door_left_open`` deliberately does
+# not: the sustained-duration runtime is executable, but a still-open interval cannot be scored by
+# the opening-action MEVA labels and no matched duration corpus ships in this release. Consequently
+# the SDK makes no accuracy or efficiency claim for that template.
 # ---------------------------------------------------------------------------
 
 _FIXTURES = (
-    "facility_observation/door_left_open",
     "facility_observation/package_appeared",
     "facility_observation/standing_water",
     "facility_observation/zone_occupied",
 )
 
 _QUALITY_BARS = {
-    "door_left_open.recall_min": 0.60,
     "package_appeared.recall_min": 0.60,
     "standing_water.recall_min": 0.55,
     "zone_occupied.recall_min": 0.60,
@@ -182,9 +182,10 @@ FACILITY_OBSERVATION_V1 = DomainPack(
     quality_bars=_QUALITY_BARS,
     search_space=_SEARCH_SPACE,
     notes=(
-        "unattended-facility observation: door left open, package appeared, standing water, zone "
-        "occupied — built from existing transition and Watch behavior. No security@1 "
-        "pack ships here (deferred until identity/tracking calibration lands)."
+        "Physical-scene Watch templates for a door left open, package appearance, standing water, "
+        "and zone occupancy. door_left_open is executable but not quality-qualified: it has no "
+        "fixture or quality bar until a matched sustained-duration evaluation ships. No security@1 "
+        "pack ships because the SDK does not provide identity/tracking calibration."
     ),
 )
 
