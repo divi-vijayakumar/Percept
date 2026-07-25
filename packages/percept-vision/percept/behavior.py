@@ -280,8 +280,11 @@ class Fired:
     # The frozen ADR-001 §1 record of THIS decision, when the caller threaded the funnel's
     # stamps in (``fire_judged(..., timing=...)``). Appended LAST with a ``None`` default so every
     # existing positional ``Fired(...)`` construction, and every consumer that ignores it, is
-    # byte-for-byte unchanged. ``None`` means "this firing path did not carry judgment timing"
-    # (episode/transition/absence fires, a bare executor test) — NEVER a fabricated timing.
+    # byte-for-byte unchanged. ``None`` means the caller did not carry judgment timing: for example
+    # episode/rhythm/boundary/absence paths, a bare executor test, or a legacy direct
+    # ``transition_decide`` call without ``timing``. The live ``Percept._perceive_transition`` caller
+    # supplies timing and evidence sequencing, so its fired transition carries a JudgmentEvent marked
+    # ``evidence_origin="transition"``. A missing event is NEVER replaced with fabricated timing.
     judgment: JudgmentEvent | None = None
     # Enriched judgment envelope (reason/modality/roi/provenance) + the provisional/superseding
     # link (revision_id/supersedes). All OPTIONAL, defaulted None, appended last: every existing

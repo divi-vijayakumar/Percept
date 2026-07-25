@@ -95,13 +95,15 @@ STAGE_SHADOW_FOLD = "shadow.fold"          # ADVISORY — the subject + EpisodeF
 #: on THEIR data can hand back a ``.ptrace`` (media OFF) that carries what the fold proposed, gradeable
 #: against their ground truth. A consumer that ignores it sees byte-for-byte today's behaviour.
 STAGE_JUDGMENT_EVENT = "judgment.event"    # the frozen percept.contracts.JudgmentEvent for one decision,
-#: projected into the trace stream. Emitted alongside ``gate.classified`` whenever a fire carried a
-#: JudgmentEvent (the judged watch path only — episode/rhythm/boundary/transition/absence fires take no
-#: judge-funnel stamps and emit nothing here). ``data["evidence_seq"]`` is stamped by the RECORDER, not
-#: the caller: the ``seq`` of the ``source.frame`` TraceRecord for this SAME ``trace_id`` — i.e. the
-#: literal evidence that fed this judgment, resolvable within the same ``.ptrace``. ``data["dispatch_seq"]``
-#: carries the JudgmentEvent's OWN ``evidence_seq`` (the per-key ADR-001 §8 dispatch sequence, a distinct
-#: number) so neither meaning is lost. Purely additive observability — governs nothing.
+#: projected into the trace stream whenever a fire carried one: alongside ``gate.classified`` for a
+#: judged Watch, or alongside ``transition.decision`` for a fired live transition (marked
+#: ``evidence_origin="transition"``). Episode/rhythm/boundary/absence fires and legacy direct
+#: transition-executor calls without timing emit no row. ``data["evidence_seq"]`` is stamped by the
+#: RECORDER, not the caller: the ``seq`` of the ``source.frame`` TraceRecord for this SAME
+#: ``trace_id`` — i.e. the literal evidence that fed this judgment, resolvable within the same
+#: ``.ptrace``. ``data["dispatch_seq"]`` carries the JudgmentEvent's OWN ``evidence_seq`` (the
+#: per-key ADR-001 §8 dispatch sequence, a distinct number) so neither meaning is lost. Purely
+#: additive observability — governs nothing.
 STAGE_TRANSITION_DECISION = "transition.decision"  # EVERY tick of an A→B transition goal (fire or not),
 #: so the transition state machine is observable from the .ptrace without the frame. ``data`` carries
 #: ``goal_id``, ``entity_id`` (the LATCH key this tick was scoped by — the declared-identity-derived

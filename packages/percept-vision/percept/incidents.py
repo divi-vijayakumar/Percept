@@ -53,9 +53,10 @@ def make_incident(
     if entity_id is None:
         entity_id = getattr(fire, "entity_id", None)
     # The fire's JudgmentEvent (when the fire carried one) is the source of truth for evidence_seq — the
-    # per-key ADR-001 §8 dispatch sequence. A fire from a path that takes no judge-funnel stamps
-    # (episode/rhythm/boundary/transition/absence) carries no ``.judgment``, so this stays None rather
-    # than a fabricated number.
+    # per-key ADR-001 §8 dispatch sequence. Episode/rhythm/boundary/absence fires, and legacy direct
+    # transition-executor calls made without timing, carry no ``.judgment``, so this stays None rather
+    # than a fabricated number. A live ``Percept._perceive_transition`` fire does carry the sequenced
+    # transition JudgmentEvent.
     judgment = getattr(fire, "judgment", None)
     evidence_seq = getattr(judgment, "evidence_seq", None) if judgment is not None else None
     # The 1.9 evidence LINK a client audit resolves against. ``judgment_event_id`` is the OPAQUE,

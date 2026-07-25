@@ -1429,10 +1429,11 @@ class Incident:
     provenance: "JudgmentProvenance | None" = None
     # 1.7 — the per-key ADR-001 §8 dispatch sequence this fire's :class:`JudgmentEvent` carried
     # (``JudgmentEvent.evidence_seq``), copied off the fire so a delivered Incident carries the SAME
-    # correlation handle a ``.ptrace`` judgment record does. ``None`` when the fire carried no
-    # JudgmentEvent (episode/rhythm/boundary/transition/absence fires take no judge-funnel stamps) or
-    # for a pre-1.7 Incident — an absent link, never a fabricated one. Appended LAST: every existing
-    # positional ``Incident(...)`` construction keeps its meaning.
+    # correlation handle a ``.ptrace`` judgment record does. Live transition fires carry this
+    # sequence too (with ``evidence_origin="transition"``); ``None`` when the fire carried no
+    # JudgmentEvent (episode/rhythm/boundary/absence, or a legacy direct transition-executor call
+    # without timing) or for a pre-1.7 Incident — an absent link, never a fabricated one. Appended
+    # LAST: every existing positional ``Incident(...)`` construction keeps its meaning.
     evidence_seq: int | None = None
     # 1.8 — the episode-owned provisional/superseding link, ON THE WIRE: a claim-mode correction
     # (a later turn the mutation channel classifies replace/retract on the same episode) fires a

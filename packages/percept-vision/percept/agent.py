@@ -72,14 +72,16 @@ class FireEvent:
     verdict: Verdict | None = None
     # The frozen :class:`percept.contracts.JudgmentEvent` for this decision (ADR-001 §1): the
     # gate key, the evidence sequence, the action, and the five-stamp two-domain timing the funnel
-    # actually took. Populated on the judged watch path (``perceive_judged`` → ``_fire_concern``);
-    # ``None`` on every other firing path (episode/rhythm/boundary/transition/absence/process-QA),
-    # which take no judge-funnel stamps — an absent event, never an invented one. Appended LAST with
-    # a ``None`` default: existing positional constructions and consumers are unchanged.
+    # actually took. Populated on the judged watch path (``perceive_judged`` → ``_fire_concern``)
+    # and on a fired live transition (``_perceive_transition``), whose event is marked
+    # ``evidence_origin="transition"``. ``None`` on episode/rhythm/boundary/absence/process-QA paths
+    # and on legacy direct transition-executor calls that supply no timing — an absent event, never
+    # an invented one. Appended LAST with a ``None`` default: existing positional constructions and
+    # consumers are unchanged.
     judgment: JudgmentEvent | None = None
     # The enriched judgment envelope carried from the executor's ``Fired`` so it survives to the
     # delivered Incident (``make_incident`` reads these off the fire). All OPTIONAL/defaulted: an
-    # episode/rhythm/boundary/transition/absence fire that sets none of them is byte-for-byte unchanged.
+    # episode/rhythm/boundary/absence fire that sets none of them is byte-for-byte unchanged.
     reason: str | None = None
     modality: str | None = None
     roi: object | None = None
@@ -2079,8 +2081,9 @@ class Percept:
                 # behavior.py:_judgment) into the trace stream so the SAME evidence this decision
                 # judged is resolvable from the .ptrace. Only when THIS tick's fire actually carried
                 # one (the judged watch path only — a degraded tick never reaches here, and
-                # episode/rhythm/boundary/transition/absence fires take no judge-funnel stamps and
-                # build no JudgmentEvent at all). The RECORDER (not this caller) stamps
+                # episode/rhythm/boundary/absence fires take no judge-funnel stamps and build no
+                # JudgmentEvent at all; live transition fires emit their row in
+                # ``_perceive_transition``). The RECORDER (not this caller) stamps
                 # ``data["evidence_seq"]`` as the seq of this SAME trace_id's ``source.frame``
                 # record; ``dispatch_seq`` carries the JudgmentEvent's OWN ADR-001 §8 per-key dispatch
                 # sequence, a distinct number, so neither meaning is lost (see
