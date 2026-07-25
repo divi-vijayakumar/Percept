@@ -156,6 +156,90 @@ def test_missing_event_window_is_separate_from_missing_execution(manifest, rows)
     assert any("event_missing_rate" in failure for failure in point.policy_failures)
 
 
+def test_zero_call_conditional_rates_are_undefined_and_policy_fails_closed(
+    manifest,
+    rows,
+):
+    for case_id in ("state-01", "state-02"):
+        row = _row(rows, case_id, "sparse", "adaptive")
+        row["judge_calls"] = 0
+        row["decisions"] = {"fire": 0, "ask": 0, "silent": 0, "missing": 0}
+        row["fire_event_ids"] = []
+        for event in row["event_windows"]:
+            event["outcome"] = "silent"
+
+    point = evaluate_viability_frontier(manifest, rows).archetype(
+        "state_change"
+    ).operating_points[1]
+
+    assert point.adaptive.decision_abstention_rate.to_dict() == {
+        "numerator": 0,
+        "denominator": 0,
+        "value": None,
+        "defined": False,
+    }
+    assert point.adaptive.execution_missing_rate.to_dict() == {
+        "numerator": 4,
+        "denominator": 4,
+        "value": 1.0,
+        "defined": True,
+    }
+    assert point.clears_policy is False
+    assert any(
+        failure == "decision_abstention_rate is undefined (0/0)"
+        for failure in point.policy_failures
+    )
+
+
+def test_zero_admission_missing_rate_is_undefined_not_zero(manifest, rows):
+    for case_id in ("state-01", "state-02"):
+        row = _row(rows, case_id, "sparse", "adaptive")
+        row["candidate_windows_admitted"] = 0
+        row["judge_calls"] = 0
+        row["decisions"] = {"fire": 0, "ask": 0, "silent": 0, "missing": 0}
+        row["fire_event_ids"] = []
+        for event in row["event_windows"]:
+            event["admitted_candidates"] = 0
+            event["outcome"] = "silent"
+
+    report = evaluate_viability_frontier(manifest, rows)
+    point = report.archetype("state_change").operating_points[1]
+
+    assert point.adaptive.execution_missing_rate.to_dict() == {
+        "numerator": 0,
+        "denominator": 0,
+        "value": None,
+        "defined": False,
+    }
+    assert point.adaptive.decision_abstention_rate.to_dict() == {
+        "numerator": 0,
+        "denominator": 0,
+        "value": None,
+        "defined": False,
+    }
+    assert point.clears_policy is False
+    assert "execution_missing=undefined (0/0)" in render_text(report)
+    assert "decision_abstention=undefined (0/0)" in render_text(report)
+    payload = json.loads(report.to_json())
+    adaptive = payload["archetypes"][0]["operating_points"][1]["adaptive"]
+    assert adaptive["execution_missing_rate"] == {
+        "numerator": 0,
+        "denominator": 0,
+        "value": None,
+        "defined": False,
+    }
+    assert adaptive["decision_abstention_rate"] == {
+        "numerator": 0,
+        "denominator": 0,
+        "value": None,
+        "defined": False,
+    }
+    assert any(
+        failure == "execution_missing_rate is undefined (0/0)"
+        for failure in point.policy_failures
+    )
+
+
 def test_synthetic_can_clear_policy_but_never_qualify_launch(manifest, rows):
     report = evaluate_viability_frontier(manifest, rows)
     assert report.policy_cleared is True

@@ -27,6 +27,7 @@ __all__ = [
     "REQUIRED_MEASURED_ADAPTER",
     "ViabilityInputError",
     "Ratio",
+    "ConditionalRatio",
     "Precision",
     "CallReduction",
     "ArchetypePolicy",
@@ -181,11 +182,11 @@ class Ratio:
 
 
 @dataclass(frozen=True)
-class Precision:
-    """Exact true-positive FIRE decisions over all FIRE decisions.
+class ConditionalRatio:
+    """An exact ratio whose natural denominator can be zero.
 
-    With no FIRE decisions, precision is undefined. ``value`` is conservatively zero for policy
-    evaluation, while ``defined`` and the exact ``0/0`` denominator remain visible in reports.
+    Undefined rates preserve their exact ``0/0`` shape, expose ``defined=False``, and serialize
+    their value as ``null``. Policy code must check ``defined`` rather than treating them as zero.
     """
 
     numerator: int
@@ -194,7 +195,7 @@ class Precision:
     def __post_init__(self) -> None:
         if self.numerator < 0 or self.denominator < 0 or self.numerator > self.denominator:
             raise ViabilityInputError(
-                f"invalid precision {self.numerator}/{self.denominator}; require "
+                f"invalid conditional ratio {self.numerator}/{self.denominator}; require "
                 "0 <= numerator <= denominator"
             )
 
@@ -203,16 +204,20 @@ class Precision:
         return self.denominator > 0
 
     @property
-    def value(self) -> float:
-        return self.numerator / self.denominator if self.defined else 0.0
+    def value(self) -> float | None:
+        return self.numerator / self.denominator if self.defined else None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "numerator": self.numerator,
             "denominator": self.denominator,
-            "value": self.value if self.defined else None,
+            "value": self.value,
             "defined": self.defined,
         }
+
+
+# Backwards-compatible descriptive name for the most familiar conditional ratio.
+Precision = ConditionalRatio
 
 
 @dataclass(frozen=True)
@@ -461,14 +466,14 @@ class ArmMetrics:
     case_count: int
     candidate_recall: Ratio
     event_recall: Ratio
-    precision: Precision
+    precision: ConditionalRatio
     false_positive_rate: Ratio
     admitted_rate: Ratio
     judge_call_rate: Ratio
-    decision_abstention_rate: Ratio
+    decision_abstention_rate: ConditionalRatio
     event_abstention_rate: Ratio
     event_missing_rate: Ratio
-    execution_missing_rate: Ratio
+    execution_missing_rate: ConditionalRatio
     candidate_windows: int
     admitted_candidates: int
     judge_calls: int
@@ -526,25 +531,21 @@ def _aggregate(rows: Sequence[_ArmRow]) -> ArmMetrics:
     missing_units = sum(row.candidate_windows_admitted - row.judge_calls for row in rows)
     missing_units += decisions["missing"]
 
-    # A zero-call arm still has a complete decision-abstention denominator: zero abstentions over
-    # its exact candidate-window denominator. This avoids manufacturing a 0/0 rate.
-    decision_abstention_denominator = calls if calls else candidate_windows
-    missing_denominator = admitted if admitted else candidate_windows
     return ArmMetrics(
         case_count=len(rows),
         candidate_recall=Ratio(admitted_event_candidates, event_candidates),
         event_recall=Ratio(event_fires, len(event_windows)),
-        precision=Precision(true_positive_fires, len(fire_decisions)),
+        precision=ConditionalRatio(true_positive_fires, len(fire_decisions)),
         false_positive_rate=Ratio(false_positive_fires, non_event_candidates),
         admitted_rate=Ratio(admitted, candidate_windows),
         judge_call_rate=Ratio(calls, candidate_windows),
-        decision_abstention_rate=Ratio(
+        decision_abstention_rate=ConditionalRatio(
             decisions["ask"] + decisions["silent"],
-            decision_abstention_denominator,
+            calls,
         ),
         event_abstention_rate=Ratio(event_abstentions, len(event_windows)),
         event_missing_rate=Ratio(event_missing, len(event_windows)),
-        execution_missing_rate=Ratio(missing_units, missing_denominator),
+        execution_missing_rate=ConditionalRatio(missing_units, admitted),
         candidate_windows=candidate_windows,
         admitted_candidates=admitted,
         judge_calls=calls,
@@ -864,6 +865,15 @@ def _policy_failures(
     call_reduction: CallReduction,
 ) -> tuple[str, ...]:
     failures: list[str] = []
+    conditional_metrics = (
+        ("precision", adaptive.precision),
+        ("decision_abstention_rate", adaptive.decision_abstention_rate),
+        ("execution_missing_rate", adaptive.execution_missing_rate),
+    )
+    for name, metric in conditional_metrics:
+        if not metric.defined:
+            failures.append(f"{name} is undefined ({metric.numerator}/{metric.denominator})")
+
     checks = (
         (
             adaptive.candidate_recall.value >= policy.min_candidate_recall,
@@ -878,14 +888,6 @@ def _policy_failures(
             adaptive.event_recall.value,
             ">=",
             policy.min_event_recall,
-        ),
-        (
-            adaptive.precision.defined
-            and adaptive.precision.value >= policy.min_precision,
-            "precision",
-            adaptive.precision.value,
-            ">=",
-            policy.min_precision,
         ),
         (
             call_reduction.value >= policy.min_call_reduction,
@@ -908,17 +910,25 @@ def _policy_failures(
             "<=",
             policy.max_missing_rate,
         ),
-        (
-            adaptive.execution_missing_rate.value <= policy.max_missing_rate,
-            "execution_missing_rate",
-            adaptive.execution_missing_rate.value,
-            "<=",
-            policy.max_missing_rate,
-        ),
     )
     for passed, name, value, operator, threshold in checks:
         if not passed:
             failures.append(f"{name}={value:.6g} must be {operator} {threshold:.6g}")
+    if adaptive.precision.defined:
+        precision = adaptive.precision.value
+        assert precision is not None
+        if precision < policy.min_precision:
+            failures.append(
+                f"precision={precision:.6g} must be >= {policy.min_precision:.6g}"
+            )
+    if adaptive.execution_missing_rate.defined:
+        execution_missing = adaptive.execution_missing_rate.value
+        assert execution_missing is not None
+        if execution_missing > policy.max_missing_rate:
+            failures.append(
+                f"execution_missing_rate={execution_missing:.6g} must be "
+                f"<= {policy.max_missing_rate:.6g}"
+            )
     return tuple(failures)
 
 
@@ -1138,10 +1148,12 @@ def evaluate_viability_files(
     )
 
 
-def _ratio_text(ratio: Ratio | Precision | CallReduction) -> str:
-    if isinstance(ratio, Precision) and not ratio.defined:
+def _ratio_text(ratio: Ratio | ConditionalRatio | CallReduction) -> str:
+    if isinstance(ratio, ConditionalRatio) and not ratio.defined:
         return f"undefined ({ratio.numerator}/{ratio.denominator})"
-    return f"{ratio.value:.3f} ({ratio.numerator}/{ratio.denominator})"
+    value = ratio.value
+    assert value is not None
+    return f"{value:.3f} ({ratio.numerator}/{ratio.denominator})"
 
 
 def render_text(report: ViabilityFrontierReport) -> str:
