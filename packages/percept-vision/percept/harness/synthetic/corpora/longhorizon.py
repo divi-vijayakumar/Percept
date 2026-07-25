@@ -1,13 +1,14 @@
-"""Corpus 7 — LONG HORIZON: episode memory over a 15-minute SYNTHETIC stream.
+"""Corpus 7 — LONG HORIZON: EpisodeLog semantics over a 15-minute SYNTHETIC stream.
 
 READ THIS BEFORE USING THE CORPUS.
 
-This is a **CAPABILITY fixture, not a quality benchmark**. It proves the MECHANISM can link
-occurrence 1 (minute ~2) to occurrence 3 (minute ~14) across two long absences — that the memory
-survives the horizon and the subject key is still the same key twelve minutes later. It proves
-NOTHING about real-world accuracy: no real footage, no appearance drift, no lighting change, no
-occlusion, no look-alike person walking through. A green run here means "the plumbing reaches
-minute 14", never "we re-identify people over 15 minutes".
+This is a **CAPABILITY fixture, not a quality benchmark**. It feeds exact timestamps and a supplied
+subject key through one in-process EpisodeLog and proves that its recurrence/boundary rules produce
+the expected episodes through minute 14. It does not exercise processing-window handoff, worker
+restart, persistence, or subject recognition. It proves NOTHING about real-world accuracy: no real
+footage, no appearance drift, no lighting change, no occlusion, no look-alike person walking
+through. A green run means "one EpisodeLog handled these scripted timestamps", never "we
+re-identify people over 15 minutes".
 
 Real long-horizon accuracy belongs in the end-to-end release benchmark on real footage. (See also
 the standing note that episode memory should not be evaluated on short clips — it is for
@@ -30,6 +31,12 @@ SUBJECT = "person:badge-7741"
 
 #: The three occurrences, at roughly minutes 2, 7 and 14.
 OCCURRENCES: list[tuple[float, float]] = [(120.0, 150.0), (420.0, 450.0), (840.0, 870.0)]
+
+# A separate boundedness case uses distinct, scripted subjects throughout one session. The values are
+# fixture inputs, not release-suite counts: the release track reads the cases from its manifest and
+# derives its coverage from whatever the corpus contains.
+BOUNDED_TIMES_S: tuple[float, ...] = (0.0, 150.0, 300.0, 450.0, 600.0, 750.0, 900.0)
+BOUNDED_MAX_EPISODES = 3
 
 
 def build() -> tuple[dict, dict]:
@@ -62,6 +69,22 @@ def build() -> tuple[dict, dict]:
             )
         )
 
+    bounded_steps = [
+        frame_step(
+            t,
+            f"bounded-subject-{i}@{t:g}",
+            observations=[obs("person", content_key=f"bounded-{i}", confidence=0.95)],
+            verdict={
+                "satisfied": True,
+                "confidence": 0.95,
+                "evidence": f"scripted: distinct subject {i} at t={t:g}",
+                "subject_key": f"person:bounded-{i}",
+                "binding": "resolved",
+            },
+        )
+        for i, t in enumerate(BOUNDED_TIMES_S)
+    ]
+
     cases = [
         {
             "id": "same_subject_recurs_at_minutes_2_7_and_14",
@@ -72,9 +95,20 @@ def build() -> tuple[dict, dict]:
             ),
             "synthetic_note": "Generated, not recorded. Capability fixture only.",
             "steps": steps,
-        }
+        },
+        {
+            "id": "bounded_episode_log_over_long_session",
+            "description": (
+                f"A {DURATION_S / 60:g}-minute SYNTHETIC session presents one distinct scripted "
+                f"subject at each labelled time while EpisodeLog is capped at "
+                f"{BOUNDED_MAX_EPISODES} retained episodes."
+            ),
+            "synthetic_note": "Generated, not recorded. Bounded-state mechanism fixture only.",
+            "steps": bounded_steps,
+        },
     ]
 
+    bounded_boundaries = [[t, t] for t in BOUNDED_TIMES_S]
     labels = [
         {
             "id": "same_subject_recurs_at_minutes_2_7_and_14",
@@ -84,15 +118,12 @@ def build() -> tuple[dict, dict]:
                 "duration_s": DURATION_S,
                 "capability_fixture": True,
                 "subject": SUBJECT,
-                "same_subject_key_all_occurrences": True,
                 "continuity_gap_s": CONTINUITY_GAP_S,
                 "separations_s": [
                     round(OCCURRENCES[1][0] - OCCURRENCES[0][1], 6),
                     round(OCCURRENCES[2][0] - OCCURRENCES[1][1], 6),
                 ],
                 "occurrence_step_indices": present_indices,
-                "links_first_to_last": {"from_t": OCCURRENCES[0][0], "to_t": OCCURRENCES[2][0],
-                                        "span_s": OCCURRENCES[2][0] - OCCURRENCES[0][0]},
                 "wrong_answers": [
                     {"episode_count": 1, "why": "durable key with no gap bound — three visits collapse to one"},
                     {"episode_count": 61, "why": "counting ticks"},
@@ -101,15 +132,41 @@ def build() -> tuple[dict, dict]:
                 ],
             },
             "proves": (
-                "THE MECHANISM ONLY: episode memory retains the subject across a >=10-minute horizon and "
-                "links occurrence 1 to occurrence 3 with the same durable key, producing exactly 3 episodes."
+                "ONE IN-PROCESS EPISODELOG ONLY: exact timestamps and a supplied subject key recur "
+                "through minute 14 and produce the expected 3 episode boundaries."
             ),
             "does_not_prove": (
-                "ANY real-world accuracy. This is a generated stream with a perfect scripted judge — no "
-                "appearance drift, occlusion, lighting change or look-alikes. It is NOT a quality "
-                "benchmark and must never be cited as long-horizon re-identification performance."
+                "Processing-window handoff, worker restart, persistence, or ANY real-world accuracy. "
+                "This is a generated stream with a perfect scripted judge — no appearance drift, "
+                "occlusion, lighting change or look-alikes. It is NOT a quality benchmark and must "
+                "never be cited as long-horizon re-identification performance."
             ),
-        }
+        },
+        {
+            "id": "bounded_episode_log_over_long_session",
+            "expect": {
+                "episode_count": len(BOUNDED_TIMES_S),
+                "boundaries": bounded_boundaries,
+                "duration_s": DURATION_S,
+                "capability_fixture": True,
+                "max_episodes": BOUNDED_MAX_EPISODES,
+                "retained_episode_count": BOUNDED_MAX_EPISODES,
+                "dropped_episode_count": len(BOUNDED_TIMES_S) - BOUNDED_MAX_EPISODES,
+                "drop_reason": "max_episodes",
+                "retained_subjects": [
+                    f"person:bounded-{i}"
+                    for i in range(len(BOUNDED_TIMES_S) - BOUNDED_MAX_EPISODES, len(BOUNDED_TIMES_S))
+                ],
+            },
+            "proves": (
+                "Within one process session, the episode log enforces its authored count bound, "
+                "retains the newest episodes, and reports each capacity eviction."
+            ),
+            "does_not_prove": (
+                "Restart durability, storage RPO/RTO, real subject identification, or that this "
+                "fixture's cap is appropriate for any production Watch."
+            ),
+        },
     ]
 
     return (

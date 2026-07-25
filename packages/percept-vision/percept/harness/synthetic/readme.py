@@ -148,17 +148,17 @@ reason, not as continued truth and not as a confident negative.
 **Does NOT prove:** what actually happened during the gap — that is unknowable from the stream,
 which is the point — nor how the runtime should recover afterwards.
 
-## 6. `idempotency/` — one happening, one incident
+## 6. `idempotency/` — episode-owned incident/action suppression
 
 | case | expects |
 |---|---|
-| `unchanged_confirmation_does_not_reincident` | 1 incident from 3 satisfied ticks |
-| `key_ttl_expiry_while_episode_open_does_not_refire` | 1 incident across a {ttl:g}s gate-key TTL sweep |
+| `unchanged_confirmation_does_not_reincident` | 1 generated fire action from 3 satisfied ticks |
+| `key_ttl_expiry_while_episode_open_does_not_refire` | 1 generated fire action across a {ttl:g}s gate-key TTL sweep |
 
 **Proves:** re-confirmation is not news, and a memory-bound eviction is bookkeeping that must never
-surface as a user-visible event while the episode is still open.
-**Does NOT prove:** that the TTL/max-keys bounds are correctly sized for a 24/7 stream — that is a
-soak question.
+generate a second incident/fire action while the episode is still open.
+**Does NOT prove:** notification-sink delivery or retry deduplication, or that the TTL/max-keys
+bounds are correctly sized for a 24/7 stream — that is a soak question.
 
 ## 7. `longhorizon/` — READ THIS ONE CAREFULLY
 
@@ -166,9 +166,14 @@ A **{mins:g}-minute SYNTHETIC stream** ({steps} steps at {sample:g}s cadence) in
 subject recurs at roughly minutes 2, 7 and 14. Expected: **3 episodes**, boundaries
 {bounds}, same durable subject key throughout.
 
-**This is a CAPABILITY fixture, NOT a quality benchmark.** It proves the MECHANISM links occurrence
-1 to occurrence 3 across a >=10-minute horizon — that memory survives the horizon and the key is
-still the same key twelve minutes later.
+**This is a CAPABILITY fixture, NOT a quality benchmark.** It feeds exact timestamps and a supplied
+subject key through one in-process EpisodeLog, producing the expected boundaries through minute 14.
+It does not exercise processing-window handoff, worker restart, persistence, or subject recognition.
+
+The second case presents {bounded_subjects} distinct scripted subjects over the same duration with
+an episode-log cap of {bounded_cap}. It expects the newest {bounded_cap} episodes to remain and every
+capacity eviction to be reported. This proves only the count bound and observable-eviction mechanism
+inside one process session.
 
 **It proves NOTHING about real-world accuracy.** The stream is generated and the judge is perfect:
 no appearance drift, no occlusion, no lighting change, no look-alikes, no missed detections. It must
@@ -203,4 +208,6 @@ def render() -> str:
         steps=int(_lh.DURATION_S / _lh.SAMPLE_S) + 1,
         sample=_lh.SAMPLE_S,
         bounds=", ".join(f"[{a:g}, {b:g}]s" for a, b in _lh.OCCURRENCES),
+        bounded_subjects=len(_lh.BOUNDED_TIMES_S),
+        bounded_cap=_lh.BOUNDED_MAX_EPISODES,
     )

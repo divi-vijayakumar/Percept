@@ -1,0 +1,113 @@
+{
+  "schema_version": "1",
+  "track": "session_long_horizon_state_machine",
+  "layer": "deterministic_state_machine",
+  "synthetic": true,
+  "session_scope": true,
+  "quality_claim": false,
+  "required_semantic_capabilities": [
+    "within_session_episode_boundaries",
+    "episode_counting",
+    "timestamped_within_session_episode_recurrence",
+    "subject_content_association",
+    "identity_abstention",
+    "claim_reducer_value_history",
+    "claim_reducer_authority_policy",
+    "claim_reducer_revision_chain",
+    "episode_owned_incident_action_suppression",
+    "bounded_episode_log_state",
+    "observable_episode_log_eviction",
+    "restart_continuity",
+    "person_reidentification_accuracy",
+    "speaker_diarization_accuracy"
+  ],
+  "cases": [
+    {
+      "id": "episode_boundaries_and_counting",
+      "requirements": [
+        "within_session_episode_boundaries",
+        "episode_counting"
+      ],
+      "expected_status": "implemented",
+      "handler": "episode_boundaries",
+      "corpus": "episode_counting",
+      "case_selector": "all"
+    },
+    {
+      "id": "timestamped_within_session_recurrence",
+      "requirements": [
+        "timestamped_within_session_episode_recurrence"
+      ],
+      "expected_status": "implemented",
+      "handler": "timestamped_session_recurrence",
+      "corpus": "longhorizon",
+      "case_ids": [
+        "same_subject_recurs_at_minutes_2_7_and_14"
+      ]
+    },
+    {
+      "id": "subject_content_association_and_abstention",
+      "requirements": [
+        "subject_content_association",
+        "identity_abstention"
+      ],
+      "expected_status": "implemented",
+      "handler": "subject_association",
+      "corpus": "subject_identity",
+      "case_selector": "all"
+    },
+    {
+      "id": "claim_reducer_revision_and_authority",
+      "requirements": [
+        "claim_reducer_value_history",
+        "claim_reducer_authority_policy",
+        "claim_reducer_revision_chain"
+      ],
+      "expected_status": "implemented",
+      "handler": "claim_reducer_semantics",
+      "corpus": "mutation",
+      "case_selector": "all",
+      "claim_id": "budget"
+    },
+    {
+      "id": "episode_owned_incident_action_suppression",
+      "requirements": [
+        "episode_owned_incident_action_suppression"
+      ],
+      "expected_status": "implemented",
+      "handler": "episode_owned_incident_action_suppression",
+      "corpus": "idempotency",
+      "case_selector": "all"
+    },
+    {
+      "id": "bounded_episode_log_state",
+      "requirements": [
+        "bounded_episode_log_state",
+        "observable_episode_log_eviction"
+      ],
+      "expected_status": "implemented",
+      "handler": "bounded_episode_log_state",
+      "corpus": "longhorizon",
+      "case_ids": [
+        "bounded_episode_log_over_long_session"
+      ]
+    },
+    {
+      "id": "continuity_across_worker_restart",
+      "requirements": [
+        "restart_continuity"
+      ],
+      "expected_status": "unsupported",
+      "reason": "EpisodeLog is process-lifetime state and is not restored by Percept.restore()."
+    },
+    {
+      "id": "real_person_and_speaker_accuracy",
+      "requirements": [
+        "person_reidentification_accuracy",
+        "speaker_diarization_accuracy"
+      ],
+      "expected_status": "unsupported",
+      "reason": "Scripted synthetic fixtures validate downstream state-machine semantics, not model, person, or speaker accuracy."
+    }
+  ]
+}

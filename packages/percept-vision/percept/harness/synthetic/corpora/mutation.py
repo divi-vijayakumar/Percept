@@ -79,6 +79,11 @@ def build() -> tuple[dict, dict]:
                 "utterances_containing_value": [1, 2, 3, 4],
                 "utterances_mutating_value": [4],
                 "authorized": [True, True, True, True, True],
+                "claim_id": "budget",
+                "revision_chain": [
+                    {"turn_index": 0, "revision_id": "budget#r1", "supersedes": None},
+                    {"turn_index": 4, "revision_id": "budget#r2", "supersedes": "budget#r1"},
+                ],
                 "wrong_answer": {
                     "final_value": "$25K after turn 1",
                     "why": "value extracted by pattern-match on the utterance, with no speech act",
@@ -103,6 +108,11 @@ def build() -> tuple[dict, dict]:
                 "value_after": ["$40K", None],
                 "final_value": None,
                 "authorized": [True, True],
+                "claim_id": "budget",
+                "revision_chain": [
+                    {"turn_index": 0, "revision_id": "budget#r1", "supersedes": None},
+                    {"turn_index": 1, "revision_id": None, "supersedes": "budget#r1"},
+                ],
                 "retraction_is_valueless": True,
                 "wrong_answer": {
                     "final_value": "$40K",
@@ -124,6 +134,10 @@ def build() -> tuple[dict, dict]:
                 "authority_required": "buyer",
                 "authorized": [True, False],
                 "blocked_by_authority": [False, True],
+                "claim_id": "budget",
+                "revision_chain": [
+                    {"turn_index": 0, "revision_id": "budget#r1", "supersedes": None},
+                ],
                 "wrong_answer": {
                     "final_value": "$25K",
                     "why": "the utterance IS a replace; without a speaker-authority check the state machine "

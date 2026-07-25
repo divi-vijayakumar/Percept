@@ -85,7 +85,7 @@ REQUIRED_EXPECT_KEYS: dict[str, tuple[str, ...]] = {
     "episode_counting": ("count", "boundaries"),
     # Which spans are genuinely covered, and which are GAPS that must not be forward-filled.
     "intervals": ("intervals", "gaps", "forward_fill_forbidden"),
-    # How many user-visible incidents the stream may produce.
+    # How many incident/fire actions the behavior layer may generate.
     "idempotency": ("incident_count", "actions"),
     # Long-horizon episode linkage, on a synthetic stream.
     "longhorizon": ("episode_count", "boundaries", "duration_s"),
@@ -260,6 +260,22 @@ def _validate_expect(name: str, cid: str, steps: list, expect: Mapping[str, Any]
             prev = v
         _req(expect["final_value"] == (values[-1] if values else None),
              f"{name}/{cid}: final_value disagrees with the last value_after")
+        chain = expect.get("revision_chain")
+        if chain is not None:
+            _req(isinstance(chain, list) and chain,
+                 f"{name}/{cid}: revision_chain must be a non-empty list")
+            prior_index = -1
+            for revision in chain:
+                index = revision.get("turn_index")
+                _req(isinstance(index, int) and 0 <= index < n,
+                     f"{name}/{cid}: revision turn_index is out of range")
+                _req(index > prior_index,
+                     f"{name}/{cid}: revision_chain turn indices must be strictly increasing")
+                prior_index = index
+                for key in ("revision_id", "supersedes"):
+                    value = revision.get(key)
+                    _req(value is None or (isinstance(value, str) and value),
+                         f"{name}/{cid}: {key} must be a non-empty string or null")
 
     elif name == "episode_counting":
         b = expect["boundaries"]
