@@ -23,6 +23,7 @@ from percept import Percept, build_info
 from percept._safe_json import SafeInputReceipt, SafeJSONInputError, load_json_file
 from percept.adapters import Verdict
 from percept.config import Settings
+from percept.contracts.watchplan import WatchPlan
 from percept.domain_pack import watch_template
 from percept.harness.tier0 import gray_frame
 from percept.packs_default import FACILITY_OBSERVATION_V1
@@ -38,7 +39,9 @@ __all__ = [
     "CandidateReceipt",
     "ArmReceipt",
     "MatchedWatchReceipt",
+    "LoadedMatchedWatchReceipt",
     "load_matched_watch_manifest",
+    "load_matched_watch_receipt",
     "run_matched_watch",
     "run_matched_watch_async",
     "validate_matched_arms",
@@ -89,6 +92,232 @@ _EVENT_KEYS = {
 _MEDIA_KEYS = {"schema", "width", "height", "frames"}
 _FRAME_KEYS = {"t", "fill", "token", "from", "to"}
 _VERDICT_KEYS = {"satisfied", "confidence", "evidence", "error"}
+_SAFE_INPUT_RECEIPT_KEYS = {
+    "path",
+    "canonical_path",
+    "byte_count",
+    "sha256",
+    "device",
+    "inode",
+    "modified_time_ns",
+}
+_PERSISTED_RECEIPT_KEYS = {
+    "schema",
+    "manifest",
+    "manifest_input_receipt",
+    "media_input_receipt",
+    "watch_plan",
+    "watch_plan_sha256",
+    "judge_identity",
+    "event_windows",
+    "evidence_classification",
+    "package_version",
+    "build_provenance",
+    "baseline",
+    "adaptive",
+    "comparable",
+    "comparability_blockers",
+    "launch_qualified",
+    "qualification_reason",
+    "content_sha256",
+    "evidence_sha256",
+    "origin_evidence_sha256",
+    "run_timestamp",
+}
+_ARM_RECEIPT_KEYS = {
+    "arm",
+    "source_profile",
+    "resolved_watch",
+    "apply_receipt",
+    "compiled_binding",
+    "judge_identity",
+    "media_identity",
+    "replay_identity",
+    "configuration_sha256",
+    "candidate_timestamps",
+    "candidates",
+    "incidents",
+    "asks",
+    "traces",
+    "health",
+    "runtime_stats",
+    "runtime_dispatches",
+    "provider_call_attempts",
+    "provider_call_successes",
+    "provider_call_failures",
+    "valid",
+    "blockers",
+}
+_CANDIDATE_RECEIPT_KEYS = {
+    "index",
+    "t",
+    "edge_decision",
+    "admitted",
+    "runtime_dispatched",
+    "provider_calls",
+    "decision",
+    "transition_outcome",
+    "incident_ids",
+}
+_PROVIDER_CALL_RECEIPT_KEYS = {
+    "sequence",
+    "candidate_index",
+    "candidate_t",
+    "predicate",
+    "condition_sha256",
+    "status",
+    "satisfied",
+    "confidence",
+    "evidence",
+    "error",
+}
+_SOURCE_PROFILE_KEYS = {
+    "name",
+    "modalities",
+    "temporal_unit",
+    "admission_strategy",
+    "evidence_strategy",
+    "identity_strategy",
+    "default_timebase",
+    "parameters",
+    "stability",
+    "notes",
+}
+_RESOLVED_WATCH_KEYS = {
+    "plan",
+    "plan_hash",
+    "source_profile",
+    "domain_pack",
+    "components",
+    "effective",
+    "provenance",
+    "execution_policy",
+    "optimization_lock_hash",
+    "component_snapshot_hash",
+}
+_APPLY_RECEIPT_KEYS = {
+    "status",
+    "watch_ids",
+    "accepted_fields",
+    "coerced_fields",
+    "dropped_fields",
+    "warnings",
+    "fallback_used",
+    "judge_requested",
+    "judge_resolved",
+    "judge_context_ref",
+    "judge_context_sha256",
+    "plan_revision",
+}
+_COMPILED_BINDING_KEYS = {
+    "goal_id",
+    "timebase",
+    "coverage_floor",
+    "watchspec_kwargs",
+    "components",
+}
+_JUDGE_IDENTITY_KEYS = {"adapter", "model", "prompt_sha256"}
+_MEDIA_IDENTITY_KEYS = {"sha256", "byte_count", "schema", "width", "height"}
+_INCIDENT_RECEIPT_KEYS = {
+    "id",
+    "concern_id",
+    "ts",
+    "message",
+    "entity_id",
+    "reason",
+    "watchplan_id",
+    "judgment_event_id",
+    "evidence_origin",
+}
+_ASK_RECEIPT_KEYS = {"goal_id", "action", "text"}
+_TRACE_RECEIPT_KEYS = {"trace_id", "stage", "t", "goal_id", "data"}
+_HEALTH_RECEIPT_KEYS = {"kind", "ts", "data"}
+_EDGE_DECISION_KEYS = {
+    "threshold",
+    "motion",
+    "structural",
+    "semantic",
+    "escalate",
+    "coast_admit",
+    "goal_ids",
+    "admission_causes",
+}
+_TRACE_DATA_KEYS = {
+    "edge.decision": _EDGE_DECISION_KEYS,
+    "source.frame": set(),
+    "transition.decision": {
+        "armed",
+        "enriched",
+        "entity_id",
+        "fired_latch",
+        "focus_entity_id",
+        "from_confidence",
+        "from_evidence",
+        "from_truth",
+        "identity_policy",
+        "latch_key",
+        "latch_key_source",
+        "outcome",
+        "strip_len",
+        "to_confidence",
+        "to_evidence",
+        "to_truth",
+    },
+    "judgment.event": {
+        "action",
+        "dispatch_seq",
+        "entity_id",
+        "evidence_origin",
+        "judgment_event_id",
+    },
+    "incident.created": {
+        "entity_id",
+        "evidence_origin",
+        "from_boundary",
+        "incident_id",
+        "judgment_event_id",
+    },
+}
+_HEALTH_DATA_KEYS = {
+    "runtime_started": {"candidate_count", "media", "replay", "source_kind"},
+    "judge_dispatch": {"mode"},
+    "effective_config": {"coast_enabled", "fps", "video_timebase"},
+    "escalation": {"cause", "source"},
+    "incident": {"entity_id", "goal_id", "incident_id"},
+}
+_RUNTIME_ENDED_DATA_KEYS = {
+    "admission_by_cause",
+    "admission_by_goal",
+    "admitted",
+    "audio_wakes",
+    "coast_admits",
+    "fixed_admits",
+    "fixed_opportunities",
+    "frames_seen",
+    "goal_admissions",
+    "incidents",
+    "judge_calls",
+    "perceive_dispatches",
+    "signal_admits",
+    "source_coverage",
+}
+_HEALTH_DATA_KEYS["runtime_ended"] = _RUNTIME_ENDED_DATA_KEYS
+_HEALTH_DATA_KEYS["zero_admission_coverage"] = _RUNTIME_ENDED_DATA_KEYS | {
+    "threshold",
+    "stat",
+    "coverage_floor",
+    "floor_unmet",
+}
+_BUILD_PROVENANCE_KEYS = {
+    "package_version",
+    "git_commit",
+    "contract_version",
+    "build_timestamp",
+}
+_QUALIFICATION_REASON = (
+    "L1 scripted/admission evidence proves execution mechanics only; "
+    "provider-measured release qualification is unavailable"
+)
 
 
 class MatchedWatchInputError(ValueError):
@@ -379,10 +608,7 @@ class MatchedWatchReceipt:
             "comparable": self.comparable,
             "comparability_blockers": list(self.comparability_blockers),
             "launch_qualified": False,
-            "qualification_reason": (
-                "L1 scripted/admission evidence proves execution mechanics only; "
-                "provider-measured release qualification is unavailable"
-            ),
+            "qualification_reason": _QUALIFICATION_REASON,
         }
 
     def hash_content_dict(self) -> dict[str, Any]:
@@ -432,6 +658,377 @@ class MatchedWatchReceipt:
 
     def to_json(self, *, indent: int = 2) -> str:
         return json.dumps(self.to_dict(), indent=indent, sort_keys=True)
+
+
+@dataclass(frozen=True)
+class LoadedMatchedWatchReceipt:
+    """One safely snapshotted receipt and its independently reconstructed projections."""
+
+    receipt: MatchedWatchReceipt
+    input_receipt: SafeInputReceipt
+    viability_rows: tuple[Mapping[str, Any], Mapping[str, Any]]
+
+
+def _strict_int(value: Any, context: str, *, minimum: int = 0) -> int:
+    _require(
+        isinstance(value, int) and not isinstance(value, bool),
+        f"{context} must be an exact integer",
+    )
+    _require(value >= minimum, f"{context} must be >= {minimum}")
+    return value
+
+
+def _strict_float(value: Any, context: str) -> float:
+    _require(isinstance(value, float), f"{context} must be an exact JSON floating-point number")
+    _require(math.isfinite(value), f"{context} must be finite")
+    return value
+
+
+def _strict_bool(value: Any, context: str) -> bool:
+    _require(isinstance(value, bool), f"{context} must be boolean")
+    return value
+
+
+def _strict_string(value: Any, context: str, *, allow_empty: bool = False) -> str:
+    _require(isinstance(value, str), f"{context} must be text")
+    _require(allow_empty or bool(value), f"{context} must be non-empty text")
+    return value
+
+
+def _strict_json(value: Any, context: str) -> Any:
+    """Freeze an exact JSON value while refusing values outside the persisted wire model."""
+
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        _require(math.isfinite(value), f"{context} must not contain non-finite numbers")
+        return value
+    if isinstance(value, list):
+        return tuple(_strict_json(item, f"{context}[{index}]") for index, item in enumerate(value))
+    if isinstance(value, dict):
+        return MappingProxyType(
+            {
+                key: _strict_json(item, f"{context}.{key}")
+                for key, item in value.items()
+            }
+        )
+    _fail(f"{context} contains a non-JSON value")
+
+
+def _strict_object(value: Any, context: str, *, keys: set[str] | None = None) -> Mapping[str, Any]:
+    _require(isinstance(value, dict), f"{context} must be an object")
+    if keys is not None:
+        _exact(value, keys, context)
+    result = _strict_json(value, context)
+    assert isinstance(result, Mapping)
+    return result
+
+
+def _strict_object_tuple(
+    value: Any,
+    context: str,
+    *,
+    keys: set[str] | None = None,
+) -> tuple[Mapping[str, Any], ...]:
+    _require(isinstance(value, list), f"{context} must be a list")
+    return tuple(
+        _strict_object(item, f"{context}[{index}]", keys=keys)
+        for index, item in enumerate(value)
+    )
+
+
+def _parse_safe_input_receipt_mapping(value: Any, context: str) -> Mapping[str, Any]:
+    doc = _object(value, context)
+    _exact(doc, _SAFE_INPUT_RECEIPT_KEYS, context)
+    _strict_string(doc["path"], f"{context}.path")
+    _strict_string(doc["canonical_path"], f"{context}.canonical_path")
+    _sha(doc["sha256"], f"{context}.sha256")
+    _strict_int(doc["byte_count"], f"{context}.byte_count", minimum=1)
+    _strict_int(doc["device"], f"{context}.device")
+    _strict_int(doc["inode"], f"{context}.inode")
+    _strict_int(doc["modified_time_ns"], f"{context}.modified_time_ns")
+    return _strict_object(doc, context, keys=_SAFE_INPUT_RECEIPT_KEYS)
+
+
+def _parse_provider_call_receipt(value: Any, context: str) -> ProviderCallReceipt:
+    doc = _object(value, context)
+    _exact(doc, _PROVIDER_CALL_RECEIPT_KEYS, context)
+    sequence = _strict_int(doc["sequence"], f"{context}.sequence", minimum=1)
+    candidate_index = _strict_int(doc["candidate_index"], f"{context}.candidate_index")
+    candidate_t = _strict_float(doc["candidate_t"], f"{context}.candidate_t")
+    predicate = _strict_string(doc["predicate"], f"{context}.predicate")
+    _require(predicate in {"from", "to"}, f"{context}.predicate must be 'from' or 'to'")
+    condition_sha256 = _sha(doc["condition_sha256"], f"{context}.condition_sha256")
+    status = _strict_string(doc["status"], f"{context}.status")
+    _require(status in {"success", "error"}, f"{context}.status must be 'success' or 'error'")
+    satisfied = doc["satisfied"]
+    confidence = doc["confidence"]
+    evidence = doc["evidence"]
+    error = doc["error"]
+    _require(satisfied is None or isinstance(satisfied, bool), f"{context}.satisfied must be boolean or null")
+    if confidence is not None:
+        _strict_float(confidence, f"{context}.confidence")
+        _require(0.0 <= confidence <= 1.0, f"{context}.confidence must be in [0, 1]")
+    _require(evidence is None or isinstance(evidence, str), f"{context}.evidence must be text or null")
+    _require(error is None or isinstance(error, str), f"{context}.error must be text or null")
+    if status == "success":
+        _require(
+            satisfied is not None and confidence is not None and evidence is not None and error is None,
+            f"{context} successful call has inconsistent result fields",
+        )
+    else:
+        _require(
+            satisfied is None and confidence is None and evidence is None and bool(error),
+            f"{context} failed call has inconsistent result fields",
+        )
+    return ProviderCallReceipt(
+        sequence,
+        candidate_index,
+        candidate_t,
+        predicate,
+        condition_sha256,
+        status,
+        satisfied,
+        confidence,
+        evidence,
+        error,
+    )
+
+
+def _parse_candidate_receipt(value: Any, context: str) -> CandidateReceipt:
+    doc = _object(value, context)
+    _exact(doc, _CANDIDATE_RECEIPT_KEYS, context)
+    index = _strict_int(doc["index"], f"{context}.index")
+    t = _strict_float(doc["t"], f"{context}.t")
+    raw_edge = _object(doc["edge_decision"], f"{context}.edge_decision")
+    _exact(raw_edge, _EDGE_DECISION_KEYS, f"{context}.edge_decision")
+    for key in ("threshold", "motion", "structural", "semantic"):
+        _strict_float(raw_edge[key], f"{context}.edge_decision.{key}")
+    for key in ("escalate", "coast_admit"):
+        _strict_bool(raw_edge[key], f"{context}.edge_decision.{key}")
+    for key in ("goal_ids", "admission_causes"):
+        _require(isinstance(raw_edge[key], list), f"{context}.edge_decision.{key} must be a list")
+        for item_index, item in enumerate(raw_edge[key]):
+            _strict_string(item, f"{context}.edge_decision.{key}[{item_index}]")
+    edge = _strict_object(raw_edge, f"{context}.edge_decision", keys=_EDGE_DECISION_KEYS)
+    admitted = _strict_bool(doc["admitted"], f"{context}.admitted")
+    dispatched = _strict_bool(doc["runtime_dispatched"], f"{context}.runtime_dispatched")
+    _require(isinstance(doc["provider_calls"], list), f"{context}.provider_calls must be a list")
+    calls = tuple(
+        _parse_provider_call_receipt(item, f"{context}.provider_calls[{call_index}]")
+        for call_index, item in enumerate(doc["provider_calls"])
+    )
+    decision = doc["decision"]
+    _require(
+        decision is None or decision in {"fire", "ask", "silent", "missing"},
+        f"{context}.decision is unsupported",
+    )
+    transition = doc["transition_outcome"]
+    _require(
+        transition is None or isinstance(transition, str),
+        f"{context}.transition_outcome must be text or null",
+    )
+    raw_ids = doc["incident_ids"]
+    _require(isinstance(raw_ids, list), f"{context}.incident_ids must be a list")
+    incident_ids = tuple(
+        _strict_string(item, f"{context}.incident_ids[{item_index}]")
+        for item_index, item in enumerate(raw_ids)
+    )
+    _require(len(incident_ids) == len(set(incident_ids)), f"{context}.incident_ids contains duplicates")
+    _require(dispatched == (decision is not None), f"{context} dispatch and decision fields disagree")
+    return CandidateReceipt(
+        index,
+        t,
+        edge,
+        admitted,
+        dispatched,
+        calls,
+        decision,
+        transition,
+        incident_ids,
+    )
+
+
+def _parse_arm_receipt(value: Any, context: str, expected_arm: str) -> ArmReceipt:
+    doc = _object(value, context)
+    _exact(doc, _ARM_RECEIPT_KEYS, context)
+    _require(doc["arm"] == expected_arm, f"{context}.arm must be {expected_arm!r}")
+    source_profile = _strict_object(
+        doc["source_profile"], f"{context}.source_profile", keys=_SOURCE_PROFILE_KEYS
+    )
+    resolved_watch = _strict_object(
+        doc["resolved_watch"], f"{context}.resolved_watch", keys=_RESOLVED_WATCH_KEYS
+    )
+    apply_receipt = _strict_object(
+        doc["apply_receipt"], f"{context}.apply_receipt", keys=_APPLY_RECEIPT_KEYS
+    )
+    compiled_binding = _strict_object(
+        doc["compiled_binding"], f"{context}.compiled_binding", keys=_COMPILED_BINDING_KEYS
+    )
+    judge_identity = _strict_object(
+        doc["judge_identity"], f"{context}.judge_identity", keys=_JUDGE_IDENTITY_KEYS
+    )
+    media_identity = _strict_object(
+        doc["media_identity"], f"{context}.media_identity", keys=_MEDIA_IDENTITY_KEYS
+    )
+    replay_identity = _strict_object(
+        doc["replay_identity"], f"{context}.replay_identity", keys=_REPLAY_KEYS
+    )
+    configuration_sha256 = _sha(doc["configuration_sha256"], f"{context}.configuration_sha256")
+    raw_timestamps = doc["candidate_timestamps"]
+    _require(isinstance(raw_timestamps, list), f"{context}.candidate_timestamps must be a list")
+    timestamps = tuple(
+        _strict_float(item, f"{context}.candidate_timestamps[{index}]")
+        for index, item in enumerate(raw_timestamps)
+    )
+    _require(isinstance(doc["candidates"], list), f"{context}.candidates must be a list")
+    candidates = tuple(
+        _parse_candidate_receipt(item, f"{context}.candidates[{index}]")
+        for index, item in enumerate(doc["candidates"])
+    )
+    incidents = _strict_object_tuple(
+        doc["incidents"], f"{context}.incidents", keys=_INCIDENT_RECEIPT_KEYS
+    )
+    for index, incident in enumerate(incidents):
+        _strict_float(incident["ts"], f"{context}.incidents[{index}].ts")
+    asks = _strict_object_tuple(doc["asks"], f"{context}.asks", keys=_ASK_RECEIPT_KEYS)
+    traces = _strict_object_tuple(doc["traces"], f"{context}.traces", keys=_TRACE_RECEIPT_KEYS)
+    for index, trace in enumerate(traces):
+        stage = trace["stage"]
+        _require(
+            isinstance(stage, str) and stage in _TRACE_DATA_KEYS,
+            f"{context}.traces[{index}].stage is unsupported",
+        )
+        trace_data = _object(trace["data"], f"{context}.traces[{index}].data")
+        _exact(trace_data, _TRACE_DATA_KEYS[stage], f"{context}.traces[{index}].data")
+        _require(
+            trace["t"] is None or isinstance(trace["t"], float),
+            f"{context}.traces[{index}].t must be an exact JSON floating-point number or null",
+        )
+    health = _strict_object_tuple(doc["health"], f"{context}.health", keys=_HEALTH_RECEIPT_KEYS)
+    for index, item in enumerate(health):
+        kind = item["kind"]
+        _require(
+            isinstance(kind, str) and kind in _HEALTH_DATA_KEYS,
+            f"{context}.health[{index}].kind is unsupported",
+        )
+        health_data = _object(item["data"], f"{context}.health[{index}].data")
+        _exact(health_data, _HEALTH_DATA_KEYS[kind], f"{context}.health[{index}].data")
+        _require(
+            item["ts"] is None or isinstance(item["ts"], float),
+            f"{context}.health[{index}].ts must be an exact JSON floating-point number or null",
+        )
+    runtime_stats = _strict_object(
+        doc["runtime_stats"],
+        f"{context}.runtime_stats",
+        keys=set(asdict(RuntimeStats())),
+    )
+    for key, item in runtime_stats.items():
+        stat_context = f"{context}.runtime_stats.{key}"
+        if key in {"effective_config", "admission_by_goal", "admission_by_cause"}:
+            _require(isinstance(item, Mapping), f"{stat_context} must be an object")
+            continue
+        if key in {"last_media_t", "last_wall_t"}:
+            _require(
+                item is None or isinstance(item, float),
+                f"{stat_context} must be an exact JSON floating-point number or null",
+            )
+            continue
+        _strict_int(item, stat_context)
+    count_fields = (
+        "runtime_dispatches",
+        "provider_call_attempts",
+        "provider_call_successes",
+        "provider_call_failures",
+    )
+    counts = {
+        key: _strict_int(doc[key], f"{context}.{key}")
+        for key in count_fields
+    }
+    valid = _strict_bool(doc["valid"], f"{context}.valid")
+    raw_blockers = doc["blockers"]
+    _require(isinstance(raw_blockers, list), f"{context}.blockers must be a list")
+    blockers = tuple(
+        _strict_string(item, f"{context}.blockers[{index}]")
+        for index, item in enumerate(raw_blockers)
+    )
+    return ArmReceipt(
+        expected_arm,
+        source_profile,
+        resolved_watch,
+        apply_receipt,
+        compiled_binding,
+        judge_identity,
+        media_identity,
+        replay_identity,
+        configuration_sha256,
+        timestamps,
+        candidates,
+        incidents,
+        asks,
+        traces,
+        health,
+        runtime_stats,
+        counts["runtime_dispatches"],
+        counts["provider_call_attempts"],
+        counts["provider_call_successes"],
+        counts["provider_call_failures"],
+        valid,
+        blockers,
+    )
+
+
+def _parse_persisted_manifest(value: Any) -> Mapping[str, Any]:
+    context = "receipt.manifest"
+    doc = _object(value, context)
+    _exact(doc, _MANIFEST_KEYS, context)
+    _require(doc["schema"] == _SCHEMA, f"{context}.schema must be {_SCHEMA!r}")
+    _strict_string(doc["case_id"], f"{context}.case_id")
+    _require(doc["archetype"] == _ARCHETYPE, f"{context}.archetype must be {_ARCHETYPE!r}")
+    _strict_string(doc["split"], f"{context}.split")
+    media = _object(doc["media"], f"{context}.media")
+    _exact(media, _MEDIA_REF_KEYS, f"{context}.media")
+    _strict_string(media["path"], f"{context}.media.path")
+    _sha(media["sha256"], f"{context}.media.sha256")
+    replay = _object(doc["replay"], f"{context}.replay")
+    _exact(replay, _REPLAY_KEYS, f"{context}.replay")
+    _strict_float(replay["fps"], f"{context}.replay.fps")
+    _require(replay["timebase"] == "media", f"{context}.replay.timebase must be 'media'")
+    _strict_string(replay["source_id"], f"{context}.replay.source_id")
+    watch = _object(doc["watch"], f"{context}.watch")
+    _exact(watch, _WATCH_KEYS, f"{context}.watch")
+    _require(watch["template_ref"] == _TEMPLATE, f"{context}.watch.template_ref mismatch")
+    _require(watch["domain_pack"] == _PACK, f"{context}.watch.domain_pack mismatch")
+    _strict_object(watch["parameters"], f"{context}.watch.parameters")
+    judge = _object(doc["judge"], f"{context}.judge")
+    _exact(judge, _JUDGE_KEYS, f"{context}.judge")
+    for key in ("adapter", "model"):
+        _strict_string(judge[key], f"{context}.judge.{key}")
+    _sha(judge["prompt_sha256"], f"{context}.judge.prompt_sha256")
+    adaptive = _object(doc["adaptive"], f"{context}.adaptive")
+    _exact(adaptive, _ADAPTIVE_KEYS, f"{context}.adaptive")
+    _strict_string(adaptive["operating_point"], f"{context}.adaptive.operating_point")
+    _require(
+        adaptive["salience_stat"] in {"mean", "block_max", "p95"},
+        f"{context}.adaptive.salience_stat is unsupported",
+    )
+    _strict_float(adaptive["threshold"], f"{context}.adaptive.threshold")
+    raw_events = doc["events"]
+    _require(isinstance(raw_events, list) and raw_events, f"{context}.events must be a non-empty list")
+    for index, raw_event in enumerate(raw_events):
+        event_context = f"{context}.events[{index}]"
+        event = _object(raw_event, event_context)
+        _exact(event, _EVENT_KEYS, event_context)
+        for key in ("id", "review_authority"):
+            _strict_string(event[key], f"{event_context}.{key}")
+        for key in ("eligible_at_s", "window_start_s", "window_end_s"):
+            _strict_float(event[key], f"{event_context}.{key}")
+        _sha(event["label_digest"], f"{event_context}.label_digest")
+    _require(
+        doc["evidence_classification"] in _EVIDENCE_CLASSES,
+        f"{context}.evidence_classification is unsupported",
+    )
+    return _strict_object(doc, context, keys=_MANIFEST_KEYS)
 
 
 def _parse_verdict(value: Any, context: str) -> _VerdictSpec:
@@ -762,9 +1359,22 @@ async def _run_arm(manifest: _Manifest, plan: Any, arm: str) -> ArmReceipt:
     from_condition = str(plan.explicit["Goal.state.from"])
     to_condition = str(plan.explicit["Goal.state.to"])
     adapter = _RecordingTransitionJudge(manifest.frames, from_condition, to_condition)
+    base_settings = Settings()
+    edge_updates: dict[str, Any] = {"salience_stat": manifest.salience_stat}
+    edge_updates[
+        {
+            "mean": "motion_gate",
+            "block_max": "motion_gate_block_max",
+            "p95": "motion_gate_p95",
+        }[manifest.salience_stat]
+    ] = threshold
+    runner_settings = replace(
+        base_settings,
+        edge=replace(base_settings.edge, **edge_updates),
+    )
     core = Percept.create(
         vision=adapter,
-        settings=Settings(),
+        settings=runner_settings,
         discover_plugins=False,
         mode="offline",
     )
@@ -1253,6 +1863,10 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
             f"sha256:{arm.resolved_watch['plan_hash']}" == receipt.watch_plan_sha256,
             "arm resolved plan hash mismatch",
         )
+        _require(
+            _thaw(arm.resolved_watch["plan"]) == _thaw(receipt.watch_plan),
+            "arm resolved WatchPlan does not exactly match the receipt WatchPlan",
+        )
         candidates = arm.candidates
         _require(
             [item.index for item in candidates] == list(range(len(candidates))),
@@ -1370,6 +1984,61 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
             and ended_data["incidents"] == arm.runtime_stats["incidents"],
             "runtime_ended health disagrees with RuntimeStats",
         )
+        zero_admission = [
+            item for item in arm.health if item["kind"] == "zero_admission_coverage"
+        ]
+        expects_zero_admission = (
+            arm.runtime_stats["frames"] > 0 and arm.runtime_stats["escalations"] == 0
+        )
+        _require(
+            len(zero_admission) == int(expects_zero_admission),
+            "zero_admission_coverage cardinality disagrees with observed admission counts",
+        )
+        if zero_admission:
+            kinds = [item["kind"] for item in arm.health]
+            zero_index = kinds.index("zero_admission_coverage")
+            ended_index = kinds.index("runtime_ended")
+            _require(
+                zero_index + 1 == ended_index,
+                "zero_admission_coverage must immediately precede runtime_ended",
+            )
+            zero_data = _thaw(zero_admission[0]["data"])
+            shared = {
+                key: zero_data[key]
+                for key in _RUNTIME_ENDED_DATA_KEYS
+            }
+            _require(
+                shared == _thaw(ended_data),
+                "zero_admission_coverage counters/source coverage disagree with runtime_ended",
+            )
+            expected_threshold = float(
+                arm.source_profile["parameters"]["salience_threshold"]
+            )
+            expected_stat = arm.source_profile["parameters"]["salience_stat"]
+            compiled_threshold = arm.compiled_binding["watchspec_kwargs"]["stat_thresholds"][
+                expected_stat
+            ]
+            _require(
+                float(zero_data["threshold"]) == expected_threshold
+                == float(compiled_threshold)
+                and zero_data["stat"] == expected_stat,
+                "zero_admission_coverage threshold/stat disagree with the effective "
+                "SourceProfile/compiled binding",
+            )
+            coverage_floor = arm.compiled_binding["coverage_floor"]
+            _require(
+                zero_data["coverage_floor"] == coverage_floor,
+                "zero_admission_coverage floor disagrees with the compiled binding",
+            )
+            _require(
+                isinstance(zero_data["floor_unmet"], bool)
+                and zero_data["floor_unmet"]
+                == (
+                    coverage_floor is not None
+                    and arm.runtime_stats["escalations"] < coverage_floor
+                ),
+                "zero_admission_coverage floor state is inconsistent",
+            )
         _require(
             len([item for item in arm.health if item["kind"] == "escalation"])
             == sum(item.admitted for item in candidates),
@@ -1558,6 +2227,142 @@ def derive_viability_rows(receipt: MatchedWatchReceipt) -> tuple[dict[str, Any],
         "receipt evidence origin seal mismatch",
     )
     return baseline, adaptive
+
+
+def load_matched_watch_receipt(path: str | Path) -> LoadedMatchedWatchReceipt:
+    """Safely reconstruct and revalidate one persisted matched-Watch receipt.
+
+    The receipt file's descriptor-backed snapshot is retained independently from the provenance
+    embedded by the runner. No cached row, validity, comparability, or hash field is trusted.
+    """
+
+    try:
+        loaded = load_json_file(path)
+    except SafeJSONInputError as exc:
+        raise MatchedWatchInputError(f"unsafe persisted matched-Watch receipt: {exc}") from exc
+    try:
+        doc = _object(loaded.value, "receipt")
+        _exact(doc, _PERSISTED_RECEIPT_KEYS, "receipt")
+        _require(doc["schema"] == _RECEIPT_SCHEMA, f"receipt.schema must be {_RECEIPT_SCHEMA!r}")
+        manifest = _parse_persisted_manifest(doc["manifest"])
+        manifest_input = _parse_safe_input_receipt_mapping(
+            doc["manifest_input_receipt"], "receipt.manifest_input_receipt"
+        )
+        media_input = _parse_safe_input_receipt_mapping(
+            doc["media_input_receipt"], "receipt.media_input_receipt"
+        )
+        raw_watch_plan = _object(doc["watch_plan"], "receipt.watch_plan")
+        try:
+            canonical_watch_plan = WatchPlan.from_dict(raw_watch_plan).to_dict()
+        except (TypeError, ValueError) as exc:
+            raise MatchedWatchInputError(
+                f"receipt.watch_plan is not a valid WatchPlan wire document: {exc}"
+            ) from exc
+        _require(
+            canonical_watch_plan == raw_watch_plan,
+            "receipt.watch_plan is not the exact canonical WatchPlan wire form",
+        )
+        watch_plan = _strict_object(canonical_watch_plan, "receipt.watch_plan")
+        watch_plan_sha256 = _sha(doc["watch_plan_sha256"], "receipt.watch_plan_sha256")
+        judge_identity = _strict_object(
+            doc["judge_identity"], "receipt.judge_identity", keys=_JUDGE_IDENTITY_KEYS
+        )
+        event_windows = _strict_object_tuple(
+            doc["event_windows"], "receipt.event_windows", keys=_EVENT_KEYS
+        )
+        evidence_classification = _strict_string(
+            doc["evidence_classification"], "receipt.evidence_classification"
+        )
+        _require(
+            evidence_classification in _EVIDENCE_CLASSES,
+            "receipt.evidence_classification is unsupported",
+        )
+        package_version = _strict_string(doc["package_version"], "receipt.package_version")
+        build_provenance = _strict_object(
+            doc["build_provenance"],
+            "receipt.build_provenance",
+            keys=_BUILD_PROVENANCE_KEYS,
+        )
+        baseline = _parse_arm_receipt(doc["baseline"], "receipt.baseline", "baseline")
+        adaptive = _parse_arm_receipt(doc["adaptive"], "receipt.adaptive", "adaptive")
+        comparable = _strict_bool(doc["comparable"], "receipt.comparable")
+        raw_blockers = doc["comparability_blockers"]
+        _require(
+            isinstance(raw_blockers, list),
+            "receipt.comparability_blockers must be a list",
+        )
+        comparability_blockers = tuple(
+            _strict_string(item, f"receipt.comparability_blockers[{index}]")
+            for index, item in enumerate(raw_blockers)
+        )
+        _require(doc["launch_qualified"] is False, "receipt.launch_qualified must be false")
+        _require(
+            doc["qualification_reason"] == _QUALIFICATION_REASON,
+            "receipt.qualification_reason does not match the fail-closed contract",
+        )
+        cached_content_sha256 = _sha(doc["content_sha256"], "receipt.content_sha256")
+        cached_evidence_sha256 = _sha(doc["evidence_sha256"], "receipt.evidence_sha256")
+        origin_evidence_sha256 = _sha(
+            doc["origin_evidence_sha256"], "receipt.origin_evidence_sha256"
+        )
+        run_timestamp = _strict_string(doc["run_timestamp"], "receipt.run_timestamp")
+        try:
+            parsed_timestamp = datetime.fromisoformat(run_timestamp)
+        except ValueError as exc:
+            raise MatchedWatchInputError("receipt.run_timestamp must be ISO-8601") from exc
+        _require(
+            parsed_timestamp.tzinfo is not None,
+            "receipt.run_timestamp must include an explicit timezone",
+        )
+        receipt = MatchedWatchReceipt(
+            manifest,
+            manifest_input,
+            media_input,
+            watch_plan,
+            watch_plan_sha256,
+            judge_identity,
+            event_windows,
+            evidence_classification,
+            package_version,
+            build_provenance,
+            baseline,
+            adaptive,
+            comparable,
+            comparability_blockers,
+            run_timestamp,
+            origin_evidence_sha256,
+        )
+        _require(
+            cached_content_sha256 == receipt.content_sha256,
+            "receipt cached content hash disagrees with reconstruction",
+        )
+        _require(
+            cached_evidence_sha256 == receipt.evidence_sha256,
+            "receipt cached evidence hash disagrees with reconstruction",
+        )
+        _require(
+            origin_evidence_sha256 == cached_evidence_sha256,
+            "receipt evidence origin seal mismatch",
+        )
+        rows = derive_viability_rows(receipt)
+        _require(
+            receipt.to_dict() == doc,
+            "receipt wire document does not exactly match reconstructed DTOs",
+        )
+    except MatchedWatchInputError:
+        raise
+    except (AssertionError, KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise MatchedWatchInputError(
+            f"persisted matched-Watch receipt reconstruction failed: {exc}"
+        ) from exc
+    return LoadedMatchedWatchReceipt(
+        receipt,
+        loaded.receipt,
+        (
+            _freeze(rows[0]),
+            _freeze(rows[1]),
+        ),
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
