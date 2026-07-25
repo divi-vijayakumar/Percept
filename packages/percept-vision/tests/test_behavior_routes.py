@@ -250,6 +250,57 @@ class RouteClassifierTests(unittest.TestCase):
         self.assertEqual(behavior_route(hostile_predicate), BehaviorRoute.UNSUPPORTED)
         self.assertNotIn("type", coerce_authored_behavior(hostile_predicate))
 
+    def test_raw_nested_transition_is_prepare_only_and_every_runtime_seam_fails_closed(self):
+        raw_state = {
+            "type": "watch",
+            "behavior": {"type": "transition", "from": "closed", "to": "open"},
+        }
+        raw_goal = Goal("raw", "door changes", "changed", state=raw_state)
+
+        # WatchPlan preparation must still be able to validate the raw compiler shape.
+        self.assertEqual(behavior_route(raw_state), BehaviorRoute.FRAME_TRANSITION)
+        # Runtime consumers accept only the canonical flat state produced by apply-time coercion.
+        self.assertEqual(goal_behavior_route(raw_goal), BehaviorRoute.UNSUPPORTED)
+        self.assertEqual(
+            compile_watchspec([raw_goal], threshold=0.1).conditions,
+            [],
+        )
+
+        gated_vision = _RouteVision({})
+        gated_core = Percept.create(vision=gated_vision, discover_plugins=False)
+        with self.assertRaises(UnsupportedBehaviorRouteError):
+            GatedWatchLoop(gated_core, goals=[raw_goal])
+        self.assertEqual(gated_vision.detect_calls, 0)
+        self.assertEqual(gated_vision.judge_calls, [])
+
+        worker_vision = _RouteVision({})
+        worker_core = Percept.create(vision=worker_vision, discover_plugins=False)
+        worker_core.add_goal(raw_goal)
+        source = WorkerPreflightTests.PullSpy()
+        with self.assertRaises(UnsupportedBehaviorRouteError):
+            asyncio.run(_collect(worker_core, source))
+        self.assertEqual(source.pulls, 0)
+        self.assertEqual(worker_vision.detect_calls, 0)
+        self.assertEqual(worker_vision.judge_calls, [])
+
+        direct_vision = _RouteVision({})
+        direct_core = Percept.create(vision=direct_vision, discover_plugins=False)
+        direct_core.add_goal(raw_goal)
+        with self.assertRaises(UnsupportedBehaviorRouteError):
+            asyncio.run(direct_core.perceive_judged("frame", source="camera", t=1.0))
+        self.assertEqual(direct_vision.detect_calls, 0)
+        self.assertEqual(direct_vision.judge_calls, [])
+
+    def test_direct_perception_still_skips_external_routes_for_dedicated_apis(self):
+        vision = _RouteVision({})
+        core = Percept.create(vision=vision, discover_plugins=False)
+        core.add_goal(Goal("count", "count", "count", state={"type": "count"}))
+        self.assertEqual(
+            asyncio.run(core.perceive_judged("frame", source="camera", t=1.0)),
+            [],
+        )
+        self.assertEqual(vision.judge_calls, [])
+
 
 class StructuredApplyRouteTests(unittest.TestCase):
     def test_explicit_watch_and_process_arm_without_route_coercion(self):

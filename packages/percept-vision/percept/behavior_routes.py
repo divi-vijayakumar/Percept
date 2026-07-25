@@ -147,9 +147,17 @@ def behavior_route(state: Any) -> BehaviorRoute:
 
 
 def goal_behavior_route(goal: Any) -> BehaviorRoute:
-    """Return the closed execution route for a Goal-shaped object."""
+    """Return the route for a canonical, apply-coerced Goal-shaped object.
 
-    return behavior_route(getattr(goal, "state", None))
+    Nested ``state["behavior"]`` is the pre-coercion WatchPlan compiler shape, never valid armed
+    Goal state. Keep :func:`behavior_route` able to validate that raw preparation shape while making
+    every runtime consumer fail closed if it escapes the apply boundary.
+    """
+
+    state = getattr(goal, "state", None)
+    if isinstance(state, Mapping) and "behavior" in state:
+        return BehaviorRoute.UNSUPPORTED
+    return behavior_route(state)
 
 
 def needs_watch_condition(route: BehaviorRoute) -> bool:

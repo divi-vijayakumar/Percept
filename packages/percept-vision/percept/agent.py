@@ -17,7 +17,7 @@ from typing import Any, Callable, Hashable
 from . import registry
 from .adapters import AudioFrame, Box, Decision, Goal, GoalOrigin, TurnResult, Verdict
 from .behavior import BehaviorExecutor, EpisodeFoldResult, ShadowObservation, program_of
-from .behavior_routes import BehaviorRoute, goal_behavior_route
+from .behavior_routes import BehaviorRoute, goal_behavior_route, require_worker_routes
 from .cache import CacheCascade, CacheKey, FrameHashLayer
 from .concern import attention_weight, consequence_of, requires_verification, resolution_ready
 from .config import ModeError, Settings, load_settings, missing_credential, resolve_mode
@@ -1799,6 +1799,16 @@ class Percept:
         if goal_ids is not None:
             selected = frozenset(goal_ids)
             active_goals = [goal for goal in active_goals if goal.id in selected]
+        unsupported_goals = [
+            goal
+            for goal in active_goals
+            if goal_behavior_route(goal) is BehaviorRoute.UNSUPPORTED
+        ]
+        if unsupported_goals:
+            # External event/boundary/rhythm/scheduler Goals are intentionally skipped below and
+            # remain driven by their dedicated APIs. A malformed/non-canonical armed Goal has no
+            # legitimate driver, so refuse before frame buffering, detection, or provider calls.
+            require_worker_routes(unsupported_goals, driver="Percept.perceive_judged")
 
         def _stale() -> bool:
             return (
