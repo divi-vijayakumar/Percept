@@ -20,7 +20,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable
 
-from percept.events import AudioBoundary, FrameWindow, frame_nbytes
+from percept.events import AudioBoundary, AudioUnit, FrameWindow, frame_nbytes
 from percept.gate import FIRE, ASK
 from percept.incidents import make_incident, snippet_from_window
 from percept.observability import get_logger
@@ -28,6 +28,7 @@ from percept.runtime.envelope import (
     SourceEnvelope,
     SourceInspection,
     SourceTracker,
+    audio_unit_envelope,
     legacy_audio_envelope,
     legacy_video_envelope,
 )
@@ -828,23 +829,38 @@ async def _aiter(source: Any, fps: float, **source_kwargs) -> AsyncIterator[Sour
             await asyncio.sleep(0)  # cooperate with the event loop
 
 
-async def _audio_aiter(source: Any, **source_kwargs) -> AsyncIterator[SourceEnvelope]:
-    """Normalize captured and pushed audio inputs to the versioned source envelope."""
+@dataclass(frozen=True)
+class _AudioIngress:
+    envelope: SourceEnvelope
+    unit: AudioUnit | None = None
+
+
+async def _audio_aiter(source: Any, **source_kwargs) -> AsyncIterator[_AudioIngress]:
+    """Normalize audio inputs to an envelope plus any explicitly ordered unit."""
     sequence = 0
 
-    def normalize(item: Any) -> SourceEnvelope:
+    def normalize(item: Any) -> _AudioIngress:
         nonlocal sequence
         if isinstance(item, SourceEnvelope):
-            return item
-        result = legacy_audio_envelope(
+            return _AudioIngress(item)
+        timebase = "observed" if source_kwargs.get("timebase") == "wall" else "source"
+        if isinstance(item, AudioUnit):
+            envelope = audio_unit_envelope(
+                item,
+                source_id="audio",
+                observed_time=time.monotonic(),
+                timebase=timebase,
+            )
+            return _AudioIngress(envelope, item)
+        envelope = legacy_audio_envelope(
             item,
             source_id="audio",
             sequence=sequence,
             observed_time=time.monotonic(),
-            timebase="observed" if source_kwargs.get("timebase") == "wall" else "source",
+            timebase=timebase,
         )
         sequence += 1
-        return result
+        return _AudioIngress(envelope)
 
     if isinstance(source, str):
         from percept.runtime.audio import open_audio_source
@@ -2102,7 +2118,8 @@ async def run(
             async def _pump_audio():
                 # Pump every chunk into the AudioWindow (un-strands modality="fused"/"audio") and track
                 # energy + onsets. Never lets a bad audio chunk kill the run — the watch survives a mic drop.
-                async for envelope in _audio_aiter(audio_source, **audio_kwargs):
+                async for ingress in _audio_aiter(audio_source, **audio_kwargs):
+                    envelope = ingress.envelope
                     require_source_time = audio_tb is not None and audio_tb.resolved == "media"
                     if envelope.modality in ("video", "audio") and envelope.modality != "audio":
                         # Reject a valid envelope routed to the wrong lane before it can create tracker
@@ -2154,9 +2171,22 @@ async def run(
                             "wake": False,
                             "wake_at": None,
                         })
-                    from percept.runtime.audio import normalize_audio_unit
+                    from percept.runtime.audio import normalize_audio_envelope
 
-                    unit = normalize_audio_unit((at, chunk, energy), seq=envelope.sequence)
+                    direction = audio_kwargs.get("direction")
+                    if (
+                        direction is None
+                        and isinstance(audio_source, str)
+                        and audio_source.startswith("mic")
+                    ):
+                        direction = "input"
+                    unit = normalize_audio_envelope(
+                        envelope,
+                        event_t=at,
+                        unit=ingress.unit,
+                        direction=direction,
+                        participant_id=audio_kwargs.get("participant_id"),
+                    )
                     # Hold a FILE/CONTAINER chunk back until the video loop's judged media time has
                     # (almost) reached it — never busy-wait, park on the Event the frame loop sets every
                     # tick. `_audio_paced` is False for a live mic (byte-for-byte unchanged: this loop

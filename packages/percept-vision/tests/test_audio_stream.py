@@ -18,7 +18,14 @@ from percept.contracts import AudioFrame
 from percept.edge.tier0 import gray_frame
 from percept.events import AudioBoundary, AudioUnit, AudioWindow
 from percept.runtime import run
-from percept.runtime.audio import _put_latest, normalize_audio_unit, open_audio_source, pcm_energy
+from percept.runtime.audio import (
+    _put_latest,
+    normalize_audio_envelope,
+    normalize_audio_unit,
+    open_audio_source,
+    pcm_energy,
+)
+from percept.runtime.envelope import SourceEnvelope, SourceFormat, audio_unit_envelope
 
 FIXTURE = json.loads(
     (
@@ -245,6 +252,62 @@ def test_audio_unit_preserves_legacy_tuple_protocol() -> None:
     assert unit[-1] == 0.25
 
 
+def test_audio_envelope_normalization_preserves_exact_unit_metadata_and_owned_bytes() -> None:
+    mutable = bytearray(b"\x01\x00")
+    submitted = AudioUnit(
+        7,
+        2.0,
+        2.25,
+        AudioFrame(pcm=mutable, sample_rate=16_000),
+        event_t=50.0,
+        energy=0.25,
+        direction="input",
+        participant_id="speaker",
+        boundaries=(AudioBoundary("onset", 2.0),),
+    )
+    envelope = audio_unit_envelope(
+        submitted,
+        source_id="audio:push",
+        observed_time=50.0,
+    )
+    mutable[0] = 9
+    normalized = normalize_audio_envelope(envelope, event_t=2.25, unit=submitted)
+
+    assert normalized.seq == 7
+    assert (normalized.t_start, normalized.t_end, normalized.event_t) == (2.0, 2.25, 2.25)
+    assert normalized.chunk.pcm == b"\x01\x00"
+    assert normalized.energy == 0.25
+    assert normalized.direction == "input"
+    assert normalized.participant_id == "speaker"
+    assert normalized.boundaries == (AudioBoundary("onset", 2.0),)
+
+
+def test_plain_audio_envelope_derives_duration_and_format_for_ordered_window() -> None:
+    frame = AudioFrame(pcm=b"\x00\x20" * 160, sample_rate=16_000, channels=1)
+    envelope = SourceEnvelope(
+        source_id="audio:capture",
+        modality="audio",
+        epoch=3,
+        sequence=4,
+        observed_time=100.0,
+        source_time=3.0,
+        format=SourceFormat(
+            media_type="audio/pcm",
+            sample_rate=16_000,
+            channels=1,
+            sample_format="s16le",
+        ),
+        payload=frame,
+        signal=None,
+    )
+    unit = normalize_audio_envelope(envelope, event_t=3.0)
+
+    assert unit.seq == 4
+    assert (unit.t_start, unit.t_end) == pytest.approx((2.99, 3.0))
+    assert (unit.sample_rate, unit.channels, unit.sample_format) == (16_000, 1, "s16le")
+    assert unit.energy == pytest.approx(0.0625)
+
+
 def test_legacy_push_normalizes_to_typed_unit_with_known_format() -> None:
     frame = AudioFrame(pcm=b"\x00\x20" * 160, sample_rate=16_000, channels=1)
     unit = normalize_audio_unit((3.0, frame, None), seq=7)
@@ -400,7 +463,9 @@ def test_duplicate_overlap_and_reorder_never_replay_through_live_onset(case: str
 
 
 @pytest.mark.parametrize("discontinuity", ["gap", "format"])
-def test_gap_and_format_change_reset_in_progress_vad(discontinuity: str) -> None:
+def test_source_gap_and_format_change_reset_window_and_in_progress_vad(
+    discontinuity: str,
+) -> None:
     first = AudioUnit(
         0,
         0.0,
@@ -429,14 +494,27 @@ def test_gap_and_format_change_reset_in_progress_vad(discontinuity: str) -> None
             energy=0.0,
         )
     utterances = []
-    core, _, _ = _run_audio_units(
+    core, _, health = _run_audio_units(
         [first, second],
         on_utterance=lambda clip, at: utterances.append((clip, at)),
         utterance_hangover_frames=1,
         utterance_min_speech_frames=1,
     )
     assert utterances == []
-    assert [boundary.kind for boundary in core._audio_window("camera").boundaries()] == ["vad_start"]
+    # Source continuity is authoritative: the old boundary and media are discarded before the first
+    # unit in the new continuity span enters the ordered audio window.
+    assert core._audio_window("camera").boundaries() == []
+    assert [unit.seq for unit in core._audio_window("camera").units()] == [second.seq]
+    expected = "source_gap" if discontinuity == "gap" else "source_format_change"
+    assert expected in [event.kind for event in health]
+    assert core.source_continuity_generation("camera") == 1
+    ended = next(event for event in health if event.kind == "runtime_ended")
+    assert ended.data["source_coverage"]["audio"] == {
+        "observed": 2,
+        "excluded": 0,
+        "discontinuities": 1,
+        "missing_sequences": 1 if discontinuity == "gap" else 0,
+    }
 
 
 def test_public_amplitude_thresholds_preserve_pre_mean_square_sensitivity() -> None:

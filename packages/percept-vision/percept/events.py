@@ -676,7 +676,11 @@ class AudioWindow:
 
     def clear(self) -> None:
         """Drop retained chunks at a source discontinuity."""
-        self._chunks.clear()
+        self._units.clear()
+        self._bytes = 0
+        self._max_seq = None
+        self._seen_order.clear()
+        self._seen_seq.clear()
 
     def __len__(self) -> int:
         return len(self._units)

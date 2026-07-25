@@ -541,6 +541,44 @@ def legacy_audio_envelope(
     )
 
 
+def audio_unit_envelope(
+    unit: Any,
+    *,
+    source_id: str,
+    observed_time: float,
+    timebase: Literal["source", "observed"] = "source",
+) -> SourceEnvelope:
+    """Wrap an ordered audio unit without flattening its source interval or sequence."""
+    from percept.events import AudioUnit
+
+    if not isinstance(unit, AudioUnit):
+        raise TypeError("audio unit envelope input must be an AudioUnit")
+    frame = unit.chunk
+    pcm = getattr(frame, "pcm", None)
+    if isinstance(pcm, (bytes, bytearray, memoryview)) and pcm:
+        source_format = SourceFormat(
+            media_type="audio/pcm",
+            sample_rate=getattr(frame, "sample_rate", unit.sample_rate),
+            channels=getattr(frame, "channels", unit.channels),
+            sample_format=getattr(frame, "sample_format", unit.sample_format),
+        )
+    else:
+        source_format = SourceFormat(media_type="application/x-percept-opaque")
+    return SourceEnvelope(
+        source_id=source_id,
+        modality="audio",
+        epoch=0,
+        sequence=unit.seq,
+        observed_time=unit.t if timebase == "observed" else observed_time,
+        # ``t_end`` is the intrinsic source position. ``event_t`` may instead be a wall/receipt clock.
+        source_time=None if timebase == "observed" else unit.t_end,
+        format=source_format,
+        payload=frame,
+        signal=unit.energy,
+        legacy_timebase=timebase,
+    )
+
+
 __all__ = [
     "SOURCE_ENVELOPE_VERSION",
     "SourceCoverage",
@@ -549,6 +587,7 @@ __all__ = [
     "SourceFormat",
     "SourceInspection",
     "SourceTracker",
+    "audio_unit_envelope",
     "legacy_audio_envelope",
     "legacy_video_envelope",
 ]

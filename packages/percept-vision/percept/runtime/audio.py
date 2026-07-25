@@ -27,7 +27,7 @@ import sys
 import threading
 import time
 import wave
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import AsyncIterator, Callable, Literal
 
 from percept.contracts import AudioFrame
@@ -193,6 +193,46 @@ def normalize_audio_unit(
         channels=channels,
         sample_format=sample_format,
     )
+
+
+def normalize_audio_envelope(
+    envelope: SourceEnvelope,
+    *,
+    event_t: float,
+    unit: AudioUnit | None = None,
+    direction: AudioDirection | None = None,
+    participant_id: str | None = None,
+) -> AudioUnit:
+    """Convert one accepted source envelope into the ordered unit consumed by ``AudioWindow``.
+
+    A caller-supplied ``AudioUnit`` keeps its exact interval and annotations. Captured and legacy
+    envelopes derive an interval from their owned frame bytes. In both cases, source sequence,
+    approved media bytes, event clock, and energy come from the envelope that passed tracking.
+    """
+    if not isinstance(envelope, SourceEnvelope) or envelope.modality != "audio":
+        raise TypeError("audio normalization requires an audio SourceEnvelope")
+    if unit is None:
+        normalized = normalize_audio_unit(
+            (event_t, envelope.payload, envelope.signal),
+            seq=envelope.sequence,
+        )
+    else:
+        normalized = replace(
+            unit,
+            seq=envelope.sequence,
+            chunk=envelope.payload,
+            event_t=event_t,
+            energy=envelope.signal,
+        )
+    if direction is not None or participant_id is not None:
+        normalized = replace(
+            normalized,
+            direction=direction or normalized.direction,
+            participant_id=(
+                normalized.participant_id if participant_id is None else participant_id
+            ),
+        )
+    return normalized
 
 
 _POLL = object()  # sentinel: "queue was empty this poll, try again" (distinct from the None end-sentinel)
@@ -554,6 +594,7 @@ __all__ = [
     "AudioSourceConfig",
     "AudioUnit",
     "open_audio_source",
+    "normalize_audio_envelope",
     "normalize_audio_unit",
     "pcm_energy",
     "FFmpegNotFoundError",
