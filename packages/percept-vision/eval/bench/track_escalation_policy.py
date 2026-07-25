@@ -233,6 +233,7 @@ def _unavailable(exc: Exception | None = None) -> TrackResult:
         headline={"escalation policy ablation": "n/a (local golden media unavailable)"},
         excluded=["escalation: local golden media unavailable"],
         notes=f"offline measurement unavailable{suffix}",
+        status="skipped",
     )
 
 

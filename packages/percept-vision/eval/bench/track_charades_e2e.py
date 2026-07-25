@@ -442,6 +442,7 @@ def _unavailable(reason: str) -> TrackResult:
         headline={"Charades notification E2E": "n/a"},
         excluded=[f"{TRACK}: {reason}"],
         notes=reason,
+        status="skipped",
     )
 
 
@@ -523,6 +524,7 @@ def score(*, live: bool, n: int) -> TrackResult:
         ],
         modeled=["dense-modeled:dense_goal_frame_calls"],
         calls=e2e_calls,
+        qualifying_events=sum(len(r.fires) for r in runs),
         coverage=[{
             "dataset": "charades/test-selection",
             "expected": len(rows),

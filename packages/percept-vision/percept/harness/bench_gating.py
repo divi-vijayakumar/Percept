@@ -55,7 +55,9 @@ def _demo_goals() -> list[Goal]:
 
 
 async def _run() -> dict:
-    core = Percept.create()  # offline fakes; no keys, deterministic
+    # Explicit mode is part of the benchmark contract. This gate proves deterministic
+    # programmable-Watch execution and must never inherit a caller's live/default mode.
+    core = Percept.create(mode="offline", discover_plugins=False)
     goals = _demo_goals()
     for g in goals:
         core.add_goal(g)
@@ -69,7 +71,7 @@ async def _run() -> dict:
     }
 
 
-def main() -> dict:
+def run_benchmark() -> dict:
     info = asyncio.run(_run())
     report = info["report"]
     ungated = report.ungated_calls
@@ -88,5 +90,31 @@ def main() -> dict:
     return info
 
 
+def main() -> int:
+    info = run_benchmark()
+    report = info["report"]
+    failures: list[str] = []
+    if report.frames <= 0:
+        failures.append("no frames executed")
+    if report.ungated_calls <= 0:
+        failures.append("ungated reference made no calls")
+    if report.vision_calls >= report.ungated_calls:
+        failures.append(
+            f"no measurable call reduction ({report.ungated_calls} -> {report.vision_calls})"
+        )
+    if report.escalations <= 0 or not report.signals:
+        failures.append("the deterministic stream produced no salience escalation")
+    if failures:
+        print("CALL-REDUCTION DIAGNOSTIC: FAIL — " + "; ".join(failures))
+        return 1
+    print(
+        "CALL-REDUCTION DIAGNOSTIC: PASS — deterministic programmable Watches executed offline; "
+        f"vision calls reduced {report.ungated_calls} -> {report.vision_calls}. "
+        "This is not a matched-quality/same-archetype comparison and does not qualify launch "
+        "quality, provider pricing, or Cloud cost."
+    )
+    return 0
+
+
 if __name__ == "__main__":  # pragma: no cover - runnable demo entrypoint
-    main()
+    raise SystemExit(main())

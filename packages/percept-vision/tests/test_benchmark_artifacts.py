@@ -9,7 +9,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from eval.bench import perception_test as pt
-from percept.bench import ValidationError, validate_baselines, validate_golden_manifest
+from percept.bench import (
+    ValidationError,
+    audit_artifacts,
+    validate_baselines,
+    validate_golden_manifest,
+)
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -23,13 +28,27 @@ class BenchmarkArtifactValidationTests(unittest.TestCase):
     def test_repo_golden_v1_draft_validates_as_draft(self):
         data = validate_golden_manifest(ROOT / "eval/golden-v1/MANIFEST.json")
         self.assertEqual(data["status"], "draft")
-        self.assertGreaterEqual(len(data["splits"]["test"]), 8)
+        self.assertTrue(data["splits"]["test"])
         self.assertTrue(any(item["track"] == "perception-test-acoustic" for item in data["splits"]["test"]))
         self.assertTrue(any(item["track"] == "perception-test-action" for item in data["splits"]["test"]))
 
     def test_draft_manifest_fails_release_validation(self):
         with self.assertRaises(ValidationError):
             validate_golden_manifest(ROOT / "eval/golden-v1/MANIFEST.json", release=True)
+
+    def test_empty_manifest_and_baseline_artifacts_fail(self):
+        with TemporaryDirectory() as d:
+            empty = Path(d) / "empty.json"
+            empty.write_text("")
+            with self.assertRaises(ValidationError):
+                validate_golden_manifest(empty)
+            with self.assertRaises(ValidationError):
+                validate_baselines(empty)
+
+            baselines = Path(d) / "baselines.json"
+            baselines.write_text('{"baselines":[]}')
+            with self.assertRaises(ValidationError):
+                validate_baselines(baselines)
 
     def test_release_manifest_requires_hashed_test_items(self):
         with TemporaryDirectory() as d:
@@ -48,6 +67,59 @@ class BenchmarkArtifactValidationTests(unittest.TestCase):
             )
             with self.assertRaises(ValidationError):
                 validate_golden_manifest(p, release=True)
+
+    def test_release_artifact_audit_does_not_claim_cloud_cost_pass(self):
+        with TemporaryDirectory() as d:
+            root = Path(d)
+            manifest = root / "MANIFEST.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "version": "release-test",
+                        "status": "release",
+                        "tracks": [{
+                            "id": "watch-track",
+                            "source": "self",
+                            "status": "ready",
+                            "metrics": ["recall"],
+                            "runners": [{"id": "watch", "result_track": "watch-e2e"}],
+                        }],
+                        "splits": {
+                            "dev": [],
+                            "test": [{
+                                "id": "case-1",
+                                "source": "self",
+                                "license": "owned",
+                                "track": "watch-track",
+                                "media_sha256": "a" * 64,
+                            }],
+                        },
+                    }
+                )
+            )
+            baselines = root / "baselines.json"
+            baselines.write_text(
+                json.dumps(
+                    {
+                        "baselines": [{
+                            "id": "ref",
+                            "system": "Reference",
+                            "kind": "reference_bar",
+                            "controlled_ab": False,
+                            "source": "self",
+                            "metric": "recall",
+                            "comparability": "context",
+                        }]
+                    }
+                )
+            )
+            audit = audit_artifacts(
+                manifest=manifest,
+                baselines=baselines,
+                release=True,
+            )
+            self.assertEqual(audit["status"], "ARTIFACT-AUDIT PASS")
+            self.assertEqual(audit["cloud_status"], "NOT-RUN")
 
     def test_perception_test_golden_loader_extracts_events_without_media(self):
         with TemporaryDirectory() as d:

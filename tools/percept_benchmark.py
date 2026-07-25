@@ -50,7 +50,7 @@ SAFE_LIVE_TRACKS = ("pt-action-e2e", "edge", "escalation", "counting", "cuespeak
 LEGACY_MEDIA_DENSE_TRACKS = ("relational", "acoustic", "timeliness")
 DERIVED_ARTIFACT_TRACKS = ("cuespeak", "timespeak")
 ALIASES = {
-    "all": SAFE_LIVE_TRACKS,
+    "all": tuple(TRACK_MODULES),
     "safe-live": SAFE_LIVE_TRACKS,
     "no-counting": tuple(k for k in SAFE_LIVE_TRACKS if k != "counting"),
     "stable": SAFE_LIVE_TRACKS,
@@ -239,6 +239,16 @@ def _guard_live_tracks(tracks: list[str]) -> None:
             + ", ".join(blocked)
             + ". Use E2E/edge tracks, or set PERCEPT_ALLOW_RAW_LIVE=1 for an explicit legacy diagnostic."
         )
+
+
+def _guard_live_prerequisites(*, manifest: str | None, release: bool) -> None:
+    """Fail before starting workers when provider spend/media prerequisites are absent."""
+    sys.path[:0] = [str(SDK)]
+    from eval.bench.run import _live_prerequisite_blockers
+
+    blockers = _live_prerequisite_blockers(manifest=manifest, release=release)
+    if blockers:
+        raise SystemExit("BENCHMARK LIVE GATE: BLOCKED — " + "; ".join(blockers))
 
 
 def _write_event(run_dir: Path, event: dict[str, Any]) -> None:
@@ -695,6 +705,7 @@ def cmd_run_track(args: argparse.Namespace) -> int:
     _load_dotenv()
     if args.live:
         _guard_live_tracks([args.track])
+        _guard_live_prerequisites(manifest=None, release=False)
     module = importlib.import_module(TRACK_MODULES[args.track])
     result = module.score(live=args.live, n=args.n)
     payload = _json_safe_result(result)
@@ -710,8 +721,8 @@ def _existing_result_ok(path: Path) -> bool:
     if not path.exists() or path.stat().st_size == 0:
         return False
     try:
-        _track_result_from_json(json.loads(path.read_text()))
-        return True
+        result = _track_result_from_json(json.loads(path.read_text()))
+        return bool(result.cells) and any(value is not None for value in result.cells.values())
     except Exception:
         return False
 
@@ -834,15 +845,19 @@ def _background_cmd(args: argparse.Namespace, run_id: str) -> list[str]:
 
 def cmd_run(args: argparse.Namespace) -> int:
     paths = _bench_paths()
+    tracks = _order_tracks_for_dependencies(_resolve_tracks(args.tracks, args.exclude))
+    if args.live:
+        _guard_live_tracks(tracks)
+        _guard_live_prerequisites(
+            manifest=args.manifest,
+            release=args.mode == "full",
+        )
     paths["runs_dir"].mkdir(parents=True, exist_ok=True)
     run_id = args.run_id or _now()
     run_dir = paths["runs_dir"] / run_id
     (run_dir / "logs").mkdir(parents=True, exist_ok=True)
     (run_dir / "results").mkdir(parents=True, exist_ok=True)
 
-    tracks = _order_tracks_for_dependencies(_resolve_tracks(args.tracks, args.exclude))
-    if args.live:
-        _guard_live_tracks(tracks)
     if args.background and os.environ.get("PERCEPT_BENCH_BACKGROUND_CHILD") != "1":
         log_path = run_dir / "benchmark.log"
         cmd = _background_cmd(args, run_id)
@@ -887,6 +902,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         "data_dir": _display_path(paths["data_dir"]),
         "cache_dir": _display_path(paths["cache_dir"]),
         "manifest": _display_path(Path(args.manifest).resolve()) if args.manifest else None,
+        "mode": args.mode,
+        "device": args.device,
+        "fps": args.fps,
+        "seeds": args.seeds,
         "commit": _commit(),
     }
     (run_dir / "run.json").write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n")
@@ -947,6 +966,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         fps=args.fps,
         seeds=args.seeds,
         require_release=False,
+        allow_partial=False,
     )
     rc = cmd_collect(collect_args)
     failed = [o["track"] for o in outcomes if not o["ok"]]
@@ -964,14 +984,129 @@ def cmd_collect(args: argparse.Namespace) -> int:
 
     sys.path[:0] = [str(SDK)]
     from eval.bench import card
+    from eval.bench.validate import (
+        ValidationError,
+        manifest_runner_map,
+        validate_golden_manifest,
+    )
 
-    results = []
+    manifest = Path(args.manifest).resolve() if args.manifest else DEFAULT_MANIFEST
+    try:
+        manifest_data = validate_golden_manifest(manifest, release=args.require_release)
+    except ValidationError as exc:
+        raise SystemExit(f"benchmark collection manifest audit failed: {exc}") from exc
+    runner_map = manifest_runner_map(manifest_data)
+    if not runner_map:
+        raise SystemExit(
+            "pinned manifest has no explicit runners mapping; collection qualification is BLOCKED"
+        )
+    declared_tracks = {str(row["id"]) for row in manifest_data["tracks"]}
+    required_tracks = {
+        str(row["id"]) for row in manifest_data["tracks"] if row.get("required") is True
+    }
+    manifest_cases = {
+        track: {
+            str(item["id"])
+            for item in manifest_data["splits"]["test"]
+            if item["track"] == track
+        }
+        for track in declared_tracks
+    }
+
+    results_by_runner = {}
     for path in sorted(result_dir.glob("*.json")):
-        results.append(_track_result_from_json(json.loads(path.read_text())))
+        runner = path.stem
+        try:
+            results_by_runner[runner] = _track_result_from_json(json.loads(path.read_text()))
+        except Exception as exc:
+            raise SystemExit(f"invalid track result {path}: {exc}") from exc
+    results = list(results_by_runner.values())
     if not results:
         raise SystemExit(f"no track results found in {result_dir}")
 
-    manifest = Path(args.manifest).resolve() if args.manifest else DEFAULT_MANIFEST
+    meta = _run_meta(run_dir)
+    expected_runners = meta.get("tracks")
+    if not isinstance(expected_runners, list) or not expected_runners:
+        raise SystemExit(f"run metadata has no non-empty tracks list: {run_dir / 'run.json'}")
+    expected_runners = [str(runner) for runner in expected_runners]
+    undeclared_selected = sorted(set(expected_runners) - set(runner_map))
+    if undeclared_selected:
+        raise SystemExit(
+            "run selected runner(s) not declared by pinned manifest mapping: "
+            + ", ".join(undeclared_selected)
+        )
+    selected_logical_tracks = {
+        runner_map[runner]["manifest_track"] for runner in expected_runners
+    }
+    missing_required = sorted(required_tracks - selected_logical_tracks)
+    if missing_required:
+        raise SystemExit(
+            "run selection omits required pinned-manifest track(s): "
+            + ", ".join(missing_required)
+        )
+    actual_runners = list(results_by_runner)
+    missing_tracks = sorted(set(expected_runners) - set(actual_runners))
+    unexpected_tracks = sorted(set(actual_runners) - set(expected_runners))
+    incomplete = []
+    if missing_tracks:
+        incomplete.append("missing=" + ",".join(missing_tracks))
+    if unexpected_tracks:
+        incomplete.append("unexpected=" + ",".join(unexpected_tracks))
+    outcomes_path = run_dir / "outcomes.json"
+    if outcomes_path.exists():
+        outcomes = json.loads(outcomes_path.read_text())
+        failed = sorted(str(row.get("track")) for row in outcomes if not row.get("ok"))
+        if failed:
+            incomplete.append("failed=" + ",".join(failed))
+    if incomplete and (args.require_release or not getattr(args, "allow_partial", False)):
+        raise SystemExit("benchmark collection incomplete: " + "; ".join(incomplete))
+    execution_blockers = card.execution_blockers(results)
+    if execution_blockers:
+        raise SystemExit("benchmark collection has no usable result artifacts: " + "; ".join(execution_blockers))
+
+    coverage_errors: list[str] = []
+    for runner, result in results_by_runner.items():
+        mapping = runner_map.get(runner)
+        if mapping is None:
+            coverage_errors.append(f"{runner}: result artifact runner is not manifest-declared")
+            continue
+        if result.track != mapping["result_track"]:
+            coverage_errors.append(
+                f"{runner}: TrackResult identity {result.track!r} does not match pinned "
+                f"result_track {mapping['result_track']!r}"
+            )
+        logical_track = mapping["manifest_track"]
+        expected_case_ids = manifest_cases[logical_track]
+        coverage = result.normalized_coverage()
+        actual_case_ids = [case_id for item in coverage for case_id in item.case_ids]
+        expected_count = sum(item.expected for item in coverage)
+        if not expected_case_ids:
+            coverage_errors.append(
+                f"{runner}/{logical_track}: selected runner has no pinned test cases"
+            )
+        if expected_count != len(expected_case_ids):
+            coverage_errors.append(
+                f"{runner}/{logical_track}: coverage expected={expected_count}, "
+                f"pinned-manifest cases={len(expected_case_ids)}"
+            )
+        if len(actual_case_ids) != len(set(actual_case_ids)):
+            coverage_errors.append(f"{runner}/{logical_track}: duplicate coverage case IDs")
+        missing_cases = sorted(expected_case_ids - set(actual_case_ids))
+        extra_cases = sorted(set(actual_case_ids) - expected_case_ids)
+        if missing_cases:
+            coverage_errors.append(
+                f"{runner}/{logical_track}: coverage missing manifest case IDs={missing_cases}"
+            )
+        if extra_cases:
+            coverage_errors.append(
+                f"{runner}/{logical_track}: coverage has undeclared case IDs={extra_cases}"
+            )
+    if coverage_errors:
+        raise SystemExit(
+            "benchmark collection coverage does not match pinned manifest: "
+            + "; ".join(coverage_errors)
+        )
+
     manifest_ref = _manifest_ref(manifest)
     backend = _backend_label(bool(_run_meta(run_dir).get("live")))
     auroc = next((r.cells.get(("core-replay", "auroc")) for r in results if r.track == "relational"), None)
@@ -979,7 +1114,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
         results,
         mode=args.mode,
         backend=backend,
-        commit=_run_meta(run_dir).get("commit", _commit()),
+        commit=meta.get("commit", _commit()),
         manifest=manifest_ref,
         fps=args.fps,
         device=args.device,
@@ -988,9 +1123,19 @@ def cmd_collect(args: argparse.Namespace) -> int:
     )
     out = Path(args.out) if args.out else run_dir / "scorecard.txt"
     out.write_text(rendered)
+    if not out.exists() or out.stat().st_size == 0:
+        raise SystemExit(f"scorecard artifact is missing or empty: {out}")
     print(rendered)
     print(f"scorecard written -> {_display_path(out)}")
+    if incomplete:
+        print("COLLECTION STATUS: INCOMPLETE (explicit --allow-partial) — " + "; ".join(incomplete))
+    else:
+        print(
+            f"COLLECTION STATUS: PASS — {len(results)} selected track artifact(s) audited "
+            "against pinned manifest tracks and case IDs"
+        )
     if args.require_release and card.stamp_of(args.mode, results, manifest_ref) != "RELEASE":
+        print("COLLECTION RELEASE GATE: BLOCKED — scorecard is DRAFT")
         return 1
     return 0
 
@@ -1041,8 +1186,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--n", type=int, default=8, help="sample size per track")
     run.add_argument(
         "--tracks",
-        default="all",
-        help="comma list or alias: all/safe-live, stable, no-counting, legacy-all (offline or explicit override)",
+        default="safe-live",
+        help="comma list or alias: all, safe-live, stable, no-counting, legacy-all",
     )
     run.add_argument("--exclude", default="", help="comma list of tracks to skip")
     run.add_argument("--workers", type=int, default=2, help="parallel track subprocesses")
@@ -1084,6 +1229,11 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--fps", default="1")
     collect.add_argument("--seeds", type=int, default=1)
     collect.add_argument("--require-release", action="store_true")
+    collect.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="render an explicitly INCOMPLETE draft when selected track artifacts are missing",
+    )
     collect.set_defaults(func=cmd_collect)
 
     internal = sub.add_parser("_run-track")

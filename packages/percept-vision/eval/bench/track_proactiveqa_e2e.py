@@ -308,6 +308,7 @@ def _unavailable(reason: str) -> TrackResult:
         headline={"ProactiveQA E2E": "n/a"},
         excluded=[f"{TRACK}: {reason}"],
         notes=reason,
+        status="skipped",
     )
 
 
@@ -399,6 +400,7 @@ def score(*, live: bool, n: int) -> TrackResult:
         excluded=["proactiveqa-e2e: PAUC uses token-overlap proxy; independent answer judge not wired"],
         reference={"pauc@0.5_proxy": {"value": TML_PAUC, "by": "TML ProactiveVideoQA PAUC@0.5 reference"}},
         calls=e2e_calls,
+        qualifying_events=interruptions,
         coverage=[{
             "dataset": "proactiveqa/ego-subset",
             "expected": len(rows),

@@ -27,9 +27,28 @@ def stamp_of(mode: str, results: list[TrackResult], manifest: str) -> str:
 
 
 def release_blockers(results: list[TrackResult]) -> list[str]:
+    if not results:
+        return ["no benchmark track results"]
     blockers: list[str] = []
     for result in results:
         blockers.extend(result.invalid_reasons())
+    return blockers
+
+
+def execution_blockers(results: list[TrackResult]) -> list[str]:
+    """Minimum truthfulness bar for writing any scorecard, including an OSS DRAFT."""
+    if not results:
+        return ["no benchmark track results"]
+    names = [result.track for result in results]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    blockers = [f"duplicate track result: {name}" for name in duplicates]
+    blockers.extend(
+        f"{result.track}: status={result.status}"
+        for result in results
+        if result.status in {"blocked", "failed"}
+    )
+    if not any(any(value is not None for value in result.cells.values()) for result in results):
+        blockers.append("all benchmark result cells are empty/incomplete")
     return blockers
 
 
@@ -83,13 +102,15 @@ def render_card(results: list[TrackResult], *, mode: str = "sampled", backend: s
     measured = sorted({m for r in results for m in r.measured})
     modeled = sorted({m for r in results for m in r.modeled})
     excluded = [e for r in results for e in r.excluded]
+    statuses = [f"{r.track}:{r.status}" for r in results]
     coverage = []
     for r in results:
         for c in r.normalized_coverage():
             status = "pass" if c.passed else "fail"
             coverage.append(
                 f"{r.track}:{c.dataset} {status} expected={c.expected} observed={c.observed} "
-                f"failed={c.failed} skipped={c.skipped}" + (f" ({c.notes})" if c.notes else "")
+                f"failed={c.failed} skipped={c.skipped} case_ids={len(c.case_ids)}"
+                + (f" ({c.notes})" if c.notes else "")
             )
     blockers = release_blockers(results)
     L += [
@@ -97,6 +118,7 @@ def render_card(results: list[TrackResult], *, mode: str = "sampled", backend: s
         f"  measured : {measured}",
         f"  modeled  : {modeled}   # non-dense modeled cells block RELEASE; dense-modeled is cost reference only",
         f"  excluded : {excluded}",
+        f"  track-status : {statuses}",
         f"  coverage : {coverage}",
         f"  release-blockers : {blockers}",
         "", "## References",

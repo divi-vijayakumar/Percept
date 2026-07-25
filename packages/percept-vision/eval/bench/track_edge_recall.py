@@ -178,6 +178,7 @@ def _unavailable(exc: Exception | None = None) -> TrackResult:
         modeled=[],
         excluded=["edge-recall: local golden media unavailable"],
         notes=f"offline stub; golden local measurement unavailable{suffix}",
+        status="skipped",
     )
 
 

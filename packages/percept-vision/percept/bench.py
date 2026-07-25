@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from pathlib import Path
 
 _HARNESS_MISSING = (
     "percept-bench: the benchmark harness ships with the source repo, not the installed wheel.\n"
@@ -84,6 +85,53 @@ def _audit_main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _reproduce_main(argv: list[str] | None = None) -> int:
+    """Audit the inputs, execute the offline scorecard, and require its artifact."""
+    import argparse
+
+    ap = argparse.ArgumentParser(
+        prog="percept-bench reproduce",
+        description="Reproduce the keyless OSS scorecard artifact (Cloud qualification is separate).",
+    )
+    ap.add_argument("--manifest", default="eval/golden-v1/MANIFEST.json")
+    ap.add_argument("--baselines", default="packages/percept-vision/eval/baselines.json")
+    ap.add_argument("--out", default="scorecard.txt")
+    args = ap.parse_args(argv)
+
+    audit_rc = _audit_main(["--manifest", args.manifest, "--baselines", args.baselines])
+    if audit_rc:
+        return audit_rc
+    from eval.bench.run import main as _scorecard_main
+
+    scorecard_rc = _scorecard_main(
+        ["--manifest", args.manifest, "--out", args.out, "--offline"]
+    )
+    if scorecard_rc:
+        return scorecard_rc
+    artifact = Path(args.out)
+    if not artifact.exists() or artifact.stat().st_size == 0:
+        print(f"REPRODUCE FAILED: required scorecard artifact is missing or empty: {artifact}")
+        return 1
+    from percept.harness.bench_gating import main as _call_reduction_main
+
+    reduction_rc = _call_reduction_main()
+    if reduction_rc:
+        return reduction_rc
+    print(
+        "REPRODUCTION: PASS — artifact audit, offline DRAFT scorecard, and call-reduction "
+        "diagnostic executed."
+    )
+    print(
+        "OSS LAUNCH QUALIFICATION: BLOCKED — the card is DRAFT with modeled/incomplete cells, "
+        "missing coverage, and skipped tracks; call reduction is not matched-quality/same-archetype."
+    )
+    print(
+        "Cloud provider cost qualification: BLOCKED — validated budget declaration is not hard "
+        "spend enforcement."
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the public benchmark CLI.
 
@@ -99,6 +147,8 @@ def main(argv: list[str] | None = None) -> int:
             from eval.bench.run import main as _scorecard_main  # lazy: repo-only harness
 
             return _scorecard_main(argv[1:])
+        if argv and argv[0] == "reproduce":
+            return _reproduce_main(argv[1:])
         from eval.benchmark import main as _benchmark_main  # lazy: repo-only harness
 
         return _benchmark_main(argv)
@@ -134,6 +184,10 @@ def scorecard_main(argv: list[str] | None = None) -> int:
     from eval.bench.run import main as _scorecard_main  # lazy: repo-only harness
 
     return _scorecard_main(argv)
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised through subprocess tests
+    raise SystemExit(main())
 
 
 __all__ = [

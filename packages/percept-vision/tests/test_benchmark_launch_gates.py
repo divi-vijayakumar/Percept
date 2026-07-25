@@ -1,0 +1,285 @@
+"""Subprocess truthfulness checks for the OSS and live benchmark launch gates."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+
+ROOT = Path(__file__).resolve().parents[3]
+SDK = ROOT / "packages/percept-vision"
+
+
+def _env(**updates: str) -> dict[str, str]:
+    env = {**os.environ, "PYTHONPATH": str(SDK)}
+    env.update(updates)
+    return env
+
+
+def _budget_plan_json() -> str:
+    return json.dumps(
+        {
+            "version": 1,
+            "provider": "gemini",
+            "model": "gemini-test",
+            "region": "us",
+            "price_snapshot": {
+                "as_of": "2026-07-25",
+                "currency": "USD",
+                "source": "provider price sheet snapshot",
+                "input_usd_per_million_tokens": 1.0,
+                "output_usd_per_million_tokens": 2.0,
+                "media_usd_per_minute": 0.1,
+            },
+            "caps": {
+                "usd": 1.0,
+                "requests": 10,
+                "tokens": 10000,
+                "media_minutes": 5,
+                "wall_clock_seconds": 300,
+                "concurrency": 1,
+                "request_timeout_seconds": 30,
+            },
+            "design": {
+                "arms": ["gated", "matched-ungated"],
+                "seeds": [1],
+                "retries": 0,
+                "cache": {"enabled": False, "policy": "disabled"},
+            },
+            "stages": [{"name": "smoke", "caps": {"requests": 2, "usd": 0.2}}],
+            "early_stop": {
+                "stop_on_cap": True,
+                "max_error_rate": 0.1,
+                "min_successful_cases": 1,
+            },
+            "approval": {
+                "approved": True,
+                "approved_by": "benchmark-owner",
+                "approved_at": "2026-07-25T00:00:00Z",
+                "scope": "test-only plan; no provider construction",
+            },
+        }
+    )
+
+
+class BenchmarkLaunchGateTests(unittest.TestCase):
+    def test_budget_plan_validates_but_cannot_substitute_for_hard_enforcement(self):
+        from eval.bench.budget import live_budget_blockers, validate_budget_plan
+
+        plan = validate_budget_plan(
+            _budget_plan_json(),
+            provider="gemini",
+            model="gemini-test",
+        )
+        self.assertEqual(plan["caps"]["requests"], 10)
+        blockers = live_budget_blockers(
+            provider="gemini",
+            model="gemini-test",
+            raw=_budget_plan_json(),
+        )
+        self.assertEqual(len(blockers), 1)
+        self.assertIn("hard spend enforcement is not implemented", blockers[0])
+
+    def test_budget_plan_rejects_non_positive_caps(self):
+        from eval.bench.budget import BudgetPlanError, validate_budget_plan
+
+        raw = json.loads(_budget_plan_json())
+        raw["caps"]["usd"] = 0
+        with self.assertRaises(BudgetPlanError):
+            validate_budget_plan(
+                json.dumps(raw),
+                provider="gemini",
+                model="gemini-test",
+            )
+
+    def test_budget_plan_can_be_loaded_from_file(self):
+        from eval.bench.budget import validate_budget_plan
+
+        with TemporaryDirectory() as d:
+            path = Path(d) / "budget-plan.json"
+            path.write_text(_budget_plan_json())
+            plan = validate_budget_plan(
+                str(path),
+                provider="gemini",
+                model="gemini-test",
+            )
+            self.assertEqual(plan["approval"]["approved"], True)
+
+    def test_offline_gating_benchmark_executes_and_measures_reduction(self):
+        run = subprocess.run(
+            [sys.executable, "-m", "percept.harness.bench_gating"],
+            cwd=ROOT,
+            env=_env(PERCEPT_MODE="live"),
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertIn("CALL-REDUCTION DIAGNOSTIC: PASS", run.stdout)
+        self.assertIn("not a matched-quality/same-archetype comparison", run.stdout)
+        self.assertIn("vision calls (gated)", run.stdout)
+        self.assertIn("vision calls (ungated)", run.stdout)
+
+    def test_scorecard_and_reproduce_write_nonempty_artifacts(self):
+        with TemporaryDirectory() as d:
+            scorecard = Path(d) / "scorecard.txt"
+            args = [
+                "--manifest",
+                str(ROOT / "eval/golden-v1/MANIFEST.json"),
+                "--out",
+                str(scorecard),
+            ]
+            run = subprocess.run(
+                [sys.executable, "-m", "percept.bench", "scorecard", "--offline", *args],
+                cwd=ROOT,
+                env=_env(PERCEPT_MODE="offline"),
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertGreater(scorecard.stat().st_size, 0)
+            self.assertIn("Cloud provider cost gate: BLOCKED", run.stdout)
+
+            reproduced = Path(d) / "reproduced.txt"
+            run = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "percept.bench",
+                    "reproduce",
+                    "--manifest",
+                    str(ROOT / "eval/golden-v1/MANIFEST.json"),
+                    "--baselines",
+                    str(ROOT / "packages/percept-vision/eval/baselines.json"),
+                    "--out",
+                    str(reproduced),
+                ],
+                cwd=ROOT,
+                env=_env(PERCEPT_MODE="offline"),
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertGreater(reproduced.stat().st_size, 0)
+            self.assertIn("REPRODUCTION: PASS", run.stdout)
+            self.assertIn("OSS LAUNCH QUALIFICATION: BLOCKED", run.stdout)
+
+    def test_live_scorecard_blocks_before_provider_call_without_key_or_budget(self):
+        env = _env(
+            PERCEPT_VISION_BACKEND="gemini",
+            GEMINI_API_KEY="",
+            GOOGLE_API_KEY="",
+            GOOGLE_AISTUDIO_API_KEY="",
+            PERCEPT_BENCH_BUDGET_PLAN="",
+        )
+        run = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "percept.bench",
+                "scorecard",
+                "--live",
+                "--manifest",
+                str(ROOT / "eval/golden-v1/MANIFEST.json"),
+            ],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(run.returncode, 2, run.stdout + run.stderr)
+        self.assertIn("BENCHMARK LIVE GATE: BLOCKED", run.stdout)
+        self.assertIn("credential missing", run.stdout)
+        self.assertIn("budget plan invalid", run.stdout)
+        self.assertIn("hard spend enforcement is not implemented", run.stdout)
+
+    def test_release_scorecard_blocks_on_absent_media_before_provider_call(self):
+        with TemporaryDirectory() as d:
+            manifest = Path(d) / "MANIFEST.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "version": "release-test",
+                        "status": "release",
+                        "tracks": [
+                            {
+                                "id": "x",
+                                "source": "self",
+                                "status": "ready",
+                                "metrics": ["recall"],
+                                "runners": [{"id": "watch", "result_track": "watch-e2e"}],
+                            }
+                        ],
+                        "splits": {
+                            "dev": [],
+                            "test": [
+                                {
+                                    "id": "case",
+                                    "source": "self-recorded",
+                                    "license": "owned",
+                                    "track": "x",
+                                    "media_path": str(Path(d) / "missing.mp4"),
+                                    "media_sha256": "a" * 64,
+                                }
+                            ],
+                        },
+                    }
+                )
+            )
+            run = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "percept.bench",
+                    "scorecard",
+                    "--live",
+                    "--require-release",
+                    "--mode",
+                    "full",
+                    "--manifest",
+                    str(manifest),
+                ],
+                cwd=ROOT,
+                env=_env(
+                    PERCEPT_VISION_BACKEND="gemini",
+                    GEMINI_API_KEY="test-only-not-used",
+                    PERCEPT_VISION_MODEL="gemini-test",
+                    PERCEPT_BENCH_BUDGET_PLAN=_budget_plan_json(),
+                ),
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(run.returncode, 2, run.stdout + run.stderr)
+            self.assertIn("BENCHMARK LIVE GATE: BLOCKED", run.stdout)
+            self.assertIn("release media missing/empty", run.stdout)
+            self.assertIn("hard spend enforcement is not implemented", run.stdout)
+
+    def test_eval_live_writes_blocked_status_without_prerequisites(self):
+        with TemporaryDirectory() as d:
+            artifact = Path(d) / "results.json"
+            run = subprocess.run(
+                [sys.executable, "-m", "eval.run"],
+                cwd=ROOT,
+                env=_env(
+                    PERCEPT_LIVE="1",
+                    PERCEPT_VISION_BACKEND="gemini",
+                    GEMINI_API_KEY="",
+                    GOOGLE_API_KEY="",
+                    GOOGLE_AISTUDIO_API_KEY="",
+                    PERCEPT_BENCH_BUDGET_PLAN="",
+                    PERCEPT_EVAL_OUT=str(artifact),
+                ),
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(run.returncode, 2, run.stdout + run.stderr)
+            self.assertEqual(json.loads(artifact.read_text())["status"], "BLOCKED")
+            self.assertIn("L2 STATUS: BLOCKED", run.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()

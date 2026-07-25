@@ -108,6 +108,10 @@ class GateReport:
 def check_gates(metrics: ReplayMetrics, false_serve: int, false_serve_bound: int) -> GateReport:
     """Enforce the hard CI gates: false-fire == 0 and false-serve <= bound."""
     reasons: list[str] = []
+    if metrics.n_edges <= 0:
+        reasons.append("no labelled rising edges were evaluated")
+    if metrics.n_edges > 0 and metrics.n_fires <= 0:
+        reasons.append(f"no fires observed for {metrics.n_edges} labelled rising edges")
     if metrics.false_fire != 0:
         reasons.append(f"false-fire == {metrics.false_fire} (gate requires 0)")
     if false_serve > false_serve_bound:
@@ -166,16 +170,51 @@ def main(argv: list[str] | None = None) -> int:
 
     if not live:
         print(
-            "L2 replay skipped: set PERCEPT_LIVE=1 (+ a vision key) for the live scorecard. "
+            "L2 STATUS: SKIPPED — set PERCEPT_LIVE=1 (+ provider key and budget) for live qualification. "
             "Running the offline gate self-check instead."
         )
         metrics, false_serve = _selfcheck_metrics()
         mode = "selfcheck"
+        status = "SKIPPED"
     else:
+        from percept.config import missing_credential
+
+        backend = settings.models.vision or "gemini"
+        blockers: list[str] = []
+        missing = missing_credential(backend)
+        if missing:
+            blockers.append(f"{backend} credential missing (set one of: {', '.join(missing)})")
+        from eval.bench.budget import live_budget_blockers
+
+        configured_model = os.environ.get("PERCEPT_VISION_MODEL")
+        if not configured_model:
+            blockers.append("PERCEPT_VISION_MODEL must explicitly pin the budgeted provider model")
+        blockers.extend(
+            live_budget_blockers(
+                provider=backend,
+                model=configured_model,
+                raw=os.environ.get("PERCEPT_BENCH_BUDGET_PLAN"),
+            )
+        )
         root = find_golden_root()
         if root is None:
-            print("no golden fixtures found; nothing to replay.", file=sys.stderr)
+            blockers.append("golden fixture labels are missing")
+        else:
+            media = [
+                path
+                for path in root.rglob("*")
+                if path.is_file() and path.suffix.lower() in {".mp4", ".mov", ".mkv", ".webm"}
+            ]
+            if not media:
+                blockers.append("golden fixture media is missing; labels alone cannot qualify live perception")
+        if blockers:
+            report = {"status": "BLOCKED", "mode": "live", "blockers": blockers}
+            out_path.write_text(json.dumps(report, indent=2))
+            print("L2 STATUS: BLOCKED", file=sys.stderr)
+            for blocker in blockers:
+                print(f"  - {blocker}", file=sys.stderr)
             return 2
+        assert root is not None
         golden = load_golden(root)
         # NOTE: a real frame extractor is wired here in the live build; until then the live path
         # scores the held-out test split's label-derived edges to exercise alignment + gates.
@@ -187,11 +226,13 @@ def main(argv: list[str] | None = None) -> int:
         metrics = score([], edges, _omega())
         false_serve = 0
         mode = "live"
+        status = "PASS"
 
     bound = _false_serve_bound()
     gates = check_gates(metrics, false_serve, bound)
 
     report = {
+        "status": status if gates.passed else "FAILED",
         "mode": mode,
         "omega": metrics.omega,
         "metrics": metrics.as_dict(),
@@ -213,8 +254,10 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(report, indent=2))
 
     if not gates.passed:
-        print("CI GATES FAILED: " + "; ".join(gates.reasons), file=sys.stderr)
+        print("L2 STATUS: FAILED — " + "; ".join(gates.reasons), file=sys.stderr)
         return 1
+    if live:
+        print("L2 STATUS: PASS")
     return 0
 
 

@@ -53,10 +53,18 @@ class Coverage:
     failed: int = 0
     skipped: int = 0
     notes: str = ""
+    case_ids: list[str] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
-        return self.expected > 0 and self.observed >= self.expected and self.failed == 0 and self.skipped == 0
+        return (
+            self.expected > 0
+            and self.observed >= self.expected
+            and self.failed == 0
+            and self.skipped == 0
+            and len(self.case_ids) == self.expected
+            and len(set(self.case_ids)) == len(self.case_ids)
+        )
 
 
 @dataclass
@@ -73,6 +81,8 @@ class TrackResult:
     notes: str = ""
     coverage: list[Coverage | dict] = field(default_factory=list)
     diagnostic: bool = False
+    status: str = "pass"  # pass | skipped | blocked | failed
+    qualifying_events: int | None = None  # fires/answers that make an E2E result non-vacuous
 
     def metrics(self) -> list[str]:
         """Distinct metric names in cell-insertion order."""
@@ -93,10 +103,38 @@ class TrackResult:
 
     def invalid_reasons(self) -> list[str]:
         reasons: list[str] = []
+        if self.status != "pass":
+            reasons.append(f"{self.track}: status={self.status}")
         if self.diagnostic:
             reasons.append(f"{self.track}: diagnostic-only")
+        if not self.cells:
+            reasons.append(f"{self.track}: no result cells")
+        if not self.measured:
+            reasons.append(f"{self.track}: no measured cells")
+        if not self.coverage:
+            reasons.append(f"{self.track}: no coverage evidence")
+        event_metric = any(
+            lane == "e2e" and metric in {"notification_recall", "interruptions"}
+            for lane, metric in self.cells
+        )
+        if event_metric and self.qualifying_events is None:
+            reasons.append(f"{self.track}: qualifying E2E event count not recorded")
+        if self.qualifying_events == 0:
+            reasons.append(f"{self.track}: no qualifying E2E events")
         reasons.extend(str(e) for e in self.excluded)
         reasons.extend(f"{self.track}: modeled {m}" for m in self.modeled if not str(m).startswith("dense-modeled:"))
+        measured = set(str(item) for item in self.measured)
+        modeled = set(str(item) for item in self.modeled)
+        for (lane, metric), value in self.cells.items():
+            label = f"{lane}:{metric}"
+            if value is None:
+                reasons.append(f"{self.track}: incomplete cell {label}")
+            elif label not in measured and label not in modeled:
+                reasons.append(f"{self.track}: cell lacks measured/modeled provenance {label}")
+        known = {f"{lane}:{metric}" for lane, metric in self.cells}
+        for label in measured | modeled:
+            if label not in known:
+                reasons.append(f"{self.track}: provenance references missing cell {label}")
         for item in self.normalized_coverage():
             if not item.passed:
                 reasons.append(

@@ -152,6 +152,12 @@ class TestGates(unittest.TestCase):
         rep = check_gates(m, false_serve=1, false_serve_bound=2)
         self.assertTrue(rep.passed)
 
+    def test_empty_fire_list_cannot_pass_live_gate(self):
+        m = score([], [Edge("g1", 10.0)], omega=1.0)
+        rep = check_gates(m, false_serve=0, false_serve_bound=0)
+        self.assertFalse(rep.passed)
+        self.assertTrue(any("no fires observed" in reason for reason in rep.reasons))
+
 
 if __name__ == "__main__":
     unittest.main()

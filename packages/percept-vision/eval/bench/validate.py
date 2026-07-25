@@ -11,12 +11,64 @@ class ValidationError(ValueError):
     """Raised when a benchmark artifact is malformed or not release-ready."""
 
 
+def manifest_runner_map(
+    data: dict[str, Any],
+    *,
+    require_all_tracks: bool = False,
+) -> dict[str, dict[str, str]]:
+    """Build the explicit runner -> logical track/result identity mapping."""
+    out: dict[str, dict[str, str]] = {}
+    result_tracks: set[str] = set()
+    for track in data.get("tracks", []):
+        runners = track.get("runners")
+        if runners is None:
+            if require_all_tracks:
+                raise ValidationError(f"track {track['id']} missing non-empty runners mapping")
+            continue
+        if not isinstance(runners, list) or not runners:
+            raise ValidationError(f"track {track['id']} runners must be a non-empty list")
+        for row in runners:
+            if not isinstance(row, dict):
+                raise ValidationError(f"track {track['id']} runner mapping must be an object")
+            runner = row.get("id")
+            result_track = row.get("result_track")
+            if not isinstance(runner, str) or not runner:
+                raise ValidationError(f"track {track['id']} runner mapping missing non-empty id")
+            if not isinstance(result_track, str) or not result_track:
+                raise ValidationError(
+                    f"track {track['id']} runner {runner!r} missing non-empty result_track"
+                )
+            if runner in out:
+                raise ValidationError(f"duplicate manifest runner id: {runner}")
+            if result_track in result_tracks:
+                raise ValidationError(f"duplicate manifest result_track: {result_track}")
+            result_tracks.add(result_track)
+            out[runner] = {
+                "manifest_track": str(track["id"]),
+                "result_track": result_track,
+            }
+    return out
+
+
 def _load(path: str | Path) -> dict[str, Any]:
-    return json.loads(Path(path).read_text())
+    artifact = Path(path)
+    if not artifact.exists():
+        raise ValidationError(f"required artifact does not exist: {artifact}")
+    if artifact.stat().st_size == 0:
+        raise ValidationError(f"required artifact is empty: {artifact}")
+    try:
+        data = json.loads(artifact.read_text())
+    except json.JSONDecodeError as exc:
+        raise ValidationError(f"invalid JSON in {artifact}: {exc}") from exc
+    if not isinstance(data, dict) or not data:
+        raise ValidationError(f"required artifact must be a non-empty JSON object: {artifact}")
+    return data
 
 
 def validate_baselines(path: str | Path) -> dict[str, Any]:
     data = _load(path)
+    if not isinstance(data.get("baselines"), list):
+        raise ValidationError("baseline registry needs a baselines list")
     ids: set[str] = set()
     for row in data.get("baselines", []):
         for key in ("id", "system", "kind", "controlled_ab", "source", "metric", "comparability"):
@@ -39,6 +91,8 @@ def validate_golden_manifest(path: str | Path, *, release: bool = False) -> dict
     for key in ("version", "status", "tracks", "splits"):
         if key not in data:
             raise ValidationError(f"golden manifest missing {key}")
+    if not isinstance(data["tracks"], list) or not data["tracks"]:
+        raise ValidationError("golden manifest needs at least one benchmark track")
     track_ids: set[str] = set()
     for track in data["tracks"]:
         for key in ("id", "source", "status", "metrics"):
@@ -47,8 +101,9 @@ def validate_golden_manifest(path: str | Path, *, release: bool = False) -> dict
         if track["id"] in track_ids:
             raise ValidationError(f"duplicate track id: {track['id']}")
         track_ids.add(track["id"])
-        if not track["metrics"]:
+        if not isinstance(track["metrics"], list) or not track["metrics"]:
             raise ValidationError(f"track {track['id']} has no metrics")
+    manifest_runner_map(data, require_all_tracks=release)
 
     splits = data["splits"]
     if not isinstance(splits, dict):
@@ -56,18 +111,34 @@ def validate_golden_manifest(path: str | Path, *, release: bool = False) -> dict
     for split in ("dev", "test"):
         if split not in splits:
             raise ValidationError(f"splits missing {split}")
+        if not isinstance(splits[split], list):
+            raise ValidationError(f"splits.{split} must be a list")
+
+    # The OSS artifact gate is allowed to audit a draft corpus, but not an empty placeholder.
+    # At least one labelled scenario must connect a declared track to an auditable source.
+    if not splits["test"]:
+        raise ValidationError("benchmark manifest needs a non-empty test split")
+    ids: set[str] = set()
+    for item in splits["test"]:
+        for key in ("id", "source", "track"):
+            if not item.get(key):
+                raise ValidationError(f"test item missing non-empty {key}")
+        if item["id"] in ids:
+            raise ValidationError(f"duplicate test item id: {item['id']}")
+        ids.add(item["id"])
+        if item["track"] not in track_ids:
+            raise ValidationError(f"test item {item['id']} references unknown track {item['track']}")
 
     if release:
         if data.get("status") != "release":
             raise ValidationError("release validation requires status='release'")
-        if not splits.get("test"):
-            raise ValidationError("release manifest needs non-empty test split")
         for item in splits["test"]:
-            for key in ("id", "source", "license", "media_sha256", "track"):
-                if key not in item:
-                    raise ValidationError(f"release test item missing {key}")
-            if item["track"] not in track_ids:
-                raise ValidationError(f"test item {item['id']} references unknown track {item['track']}")
+            for key in ("license", "media_sha256"):
+                if not item.get(key):
+                    raise ValidationError(f"release test item {item['id']} missing non-empty {key}")
+            digest = str(item["media_sha256"])
+            if len(digest) != 64 or any(ch not in "0123456789abcdefABCDEF" for ch in digest):
+                raise ValidationError(f"release test item {item['id']} has invalid media_sha256")
     return data
 
 
@@ -85,9 +156,11 @@ def audit_artifacts(
     """
     golden = validate_golden_manifest(manifest, release=release)
     baseline_data = validate_baselines(baselines)
-    status = "release-ready" if release else "draft-ok"
+    status = "ARTIFACT-AUDIT PASS"
+    cloud_status = "NOT-RUN"
     return {
         "status": status,
+        "cloud_status": cloud_status,
         "release": release,
         "manifest": {
             "version": golden["version"],
@@ -113,6 +186,8 @@ def format_audit(audit: dict[str, Any]) -> str:
         "  PERCEPT BENCHMARK ARTIFACT AUDIT",
         "=" * 72,
         f"  status       : {audit['status']}",
+        f"  artifact audit : PASS (non-empty manifest + baseline registry)",
+        f"  Cloud cost gate : {audit['cloud_status']} (artifact validation is not economics)",
         f"  release mode : {audit['release']}",
         f"  manifest     : {manifest['version']} ({manifest['status']})",
         f"  tracks       : {manifest['tracks']}",
@@ -128,6 +203,7 @@ __all__ = [
     "ValidationError",
     "audit_artifacts",
     "format_audit",
+    "manifest_runner_map",
     "validate_baselines",
     "validate_golden_manifest",
 ]

@@ -15,10 +15,10 @@ help:
 	@echo "test-capability-gate  L1 capability gate — Y16 task-level suite (CAPABILITY asserts, no keys, no stat bars)"
 	@echo "test-js    L1 unit — percept-edge (vitest; needs npm install)"
 	@echo "test-all   test + test-js"
-	@echo "eval-live  L2 live eval (needs keys; skips without PERCEPT_LIVE=1)"
+	@echo "eval-live  L2 live eval (needs keys + validated budget plan; skips without PERCEPT_LIVE=1)"
 	@echo "eval-benchmark  per-concern P/R on a labelled-clip manifest (offline; MANIFEST=path)"
 	@echo "e2e        L3 e2e — live smoke (needs keys; skips cleanly)"
-	@echo "bench      gating cost reduction (gated vs ungated vision calls)"
+	@echo "bench      deterministic offline execution + measured call reduction (not provider cost)"
 	@echo "audit-benchmark  validate golden manifest + baseline registry artifacts"
 	@echo "benchmark-prepare  create ignored local benchmark folders + inventory"
 	@echo "benchmark-fetch  pre-cache benchmark media (VIDEOS=12 REPCOUNT=12)"
@@ -87,7 +87,7 @@ parity:  ## Edge<->harness conformance — JS percept-edge vs Python percept.har
 
 eval-live:
 	@if [ "$$PERCEPT_LIVE" != "1" ]; then \
-		echo "L2 skipped: set PERCEPT_LIVE=1 and provide backend keys to run live eval."; \
+		echo "L2 STATUS: SKIPPED — set PERCEPT_LIVE=1 and provide provider key, local media, and PERCEPT_BENCH_BUDGET_PLAN."; \
 	else \
 		cd $(SDK) && PYTHONPATH=. $(PY) -m eval.run; \
 	fi
@@ -102,13 +102,14 @@ e2e:
 	cd $(SDK) && PYTHONPATH=. $(PY) -m e2e.live_smoke
 
 bench:
-	PYTHONPATH=$(SDK) $(PY) -m percept.harness.bench_gating
+	PYTHONPATH=$(SDK) PERCEPT_MODE=offline $(PY) -m percept.harness.bench_gating
 
 audit-benchmark:
 	PYTHONPATH=$(SDK) $(PY) -m percept.bench audit --manifest eval/golden-v1/MANIFEST.json --baselines packages/percept-vision/eval/baselines.json
 
 scorecard:
-	PYTHONPATH=$(SDK) $(PY) -m percept.bench scorecard --manifest eval/golden-v1/MANIFEST.json --out scorecard.txt
+	PYTHONPATH=$(SDK) $(PY) -m percept.bench scorecard --offline --manifest eval/golden-v1/MANIFEST.json --out scorecard.txt
+	@test -s scorecard.txt || (echo "SCORECARD FAILED: scorecard.txt is missing or empty"; exit 1)
 
 benchmark-prepare:
 	$(PY) tools/percept_benchmark.py prepare
@@ -173,7 +174,8 @@ architecture-check:  ## CI gate: fail if the committed diagram is stale vs code/
 	git diff --exit-code architecture.html docs/architecture.svg
 
 reproduce:
-	PYTHONPATH=$(SDK) $(PY) -m percept.bench scorecard --manifest eval/golden-v1/MANIFEST.json --out scorecard.txt
+	PYTHONPATH=$(SDK) $(PY) -m percept.bench reproduce --manifest eval/golden-v1/MANIFEST.json --baselines packages/percept-vision/eval/baselines.json --out scorecard.txt
+	@test -s scorecard.txt || (echo "REPRODUCE FAILED: scorecard.txt is missing or empty"; exit 1)
 
 prevalence-pt:  ## Perception Test prevalence (needs PERCEPT_LIVE + opencv-python-headless + downloaded sample)
 	cd $(SDK) && PYTHONPATH=. $(PY) -m eval.exp_perception_test

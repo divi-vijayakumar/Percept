@@ -271,6 +271,7 @@ def _unavailable(reason: str) -> TrackResult:
         headline={"Perception Test action E2E": "n/a"},
         excluded=[f"{TRACK}: {reason}"],
         notes=reason,
+        status="skipped",
     )
 
 
@@ -364,6 +365,7 @@ def score(*, live: bool, n: int) -> TrackResult:
         ],
         modeled=["dense-modeled:dense_frame_calls"],
         calls=e2e_calls,
+        qualifying_events=len(all_fires),
         coverage=[{
             "dataset": "perception-test/action",
             "expected": len(events),
