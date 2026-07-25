@@ -68,13 +68,13 @@ def test_manifest_derived_frontier_has_exact_denominators(manifest, rows):
         "value": 0.5,
     }
     assert conservative.adaptive.judge_call_intensity.to_dict() == {
-        "numerator": 8,
+        "numerator": 16,
         "denominator": 16,
-        "value": 0.5,
+        "value": 1.0,
     }
     assert conservative.call_reduction.to_dict() == {
-        "numerator": 8,
-        "denominator": 16,
+        "numerator": 16,
+        "denominator": 32,
         "value": 0.5,
     }
     assert conservative.adaptive.precision.to_dict() == {
@@ -133,7 +133,7 @@ def test_pareto_frontier_marks_a_dominated_point(manifest, rows):
         row = _row(mutated, case_id, "conservative", "adaptive")
         row["candidate_windows_admitted"] = 6
         row["runtime_dispatches"] = 6
-        row["judge_calls"] = 6
+        row["judge_calls"] = 12
         row["decisions"] = {"fire": 2, "ask": 0, "silent": 4, "missing": 0}
     state_02 = _row(mutated, "state-02", "conservative", "adaptive")
     state_02["decisions"] = {"fire": 1, "ask": 0, "silent": 5, "missing": 0}
@@ -426,6 +426,26 @@ def test_missing_denominator_field_fails_closed(manifest, rows):
         evaluate_viability_frontier(manifest, rows)
 
 
+def test_v2_manifest_is_rejected_after_dispatch_call_contract_bump(manifest, rows):
+    manifest["schema_version"] = "2"
+    with pytest.raises(ViabilityInputError, match="schema_version must be '3'"):
+        evaluate_viability_frontier(manifest, rows)
+
+
+def test_completed_dispatches_with_zero_provider_calls_fail_closed(manifest, rows):
+    row = _row(rows, "state-01", "conservative", "adaptive")
+    row["judge_calls"] = 0
+    with pytest.raises(ViabilityInputError, match="provider-call cardinality"):
+        evaluate_viability_frontier(manifest, rows)
+
+
+def test_underspent_transition_baseline_fails_closed(manifest, rows):
+    row = _row(rows, "state-01", "conservative", "baseline")
+    row["judge_calls"] = 15
+    with pytest.raises(ViabilityInputError, match="provider-call cardinality"):
+        evaluate_viability_frontier(manifest, rows)
+
+
 def test_measured_evidence_cannot_infer_runtime_dispatches(manifest, rows):
     manifest["evidence_kind"] = "measured"
     for row in rows:
@@ -621,7 +641,7 @@ def test_non_exhaustive_baseline_fails_closed(manifest, rows):
     baseline = _row(rows, "state-01", "conservative", "baseline")
     baseline["candidate_windows_admitted"] = 7
     baseline["runtime_dispatches"] = 7
-    baseline["judge_calls"] = 7
+    baseline["judge_calls"] = 14
     baseline["decisions"]["silent"] -= 1
     with pytest.raises(ViabilityInputError, match="baseline must be exhaustive"):
         evaluate_viability_frontier(manifest, rows)

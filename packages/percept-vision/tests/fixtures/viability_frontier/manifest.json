@@ -7,6 +7,11 @@
   "archetypes": [
     {
       "id": "state_change",
+      "provider_call_contract": {
+        "completed_dispatch_calls": 2,
+        "missing_dispatch_min_calls": 1,
+        "missing_dispatch_max_calls": 2
+      },
       "cases": [
         {
           "id": "state-01",
@@ -48,6 +53,11 @@
     },
     {
       "id": "brief_action",
+      "provider_call_contract": {
+        "completed_dispatch_calls": 1,
+        "missing_dispatch_min_calls": 0,
+        "missing_dispatch_max_calls": 1
+      },
       "cases": [
         {
           "id": "brief-01",

@@ -61,7 +61,12 @@ _MANIFEST_KEYS = {
     "preregistered",
     "archetypes",
 }
-_ARCHETYPE_KEYS = {"id", "cases", "operating_points", "policy"}
+_ARCHETYPE_KEYS = {"id", "cases", "operating_points", "policy", "provider_call_contract"}
+_PROVIDER_CALL_CONTRACT_KEYS = {
+    "completed_dispatch_calls",
+    "missing_dispatch_min_calls",
+    "missing_dispatch_max_calls",
+}
 _CASE_KEYS = {"id", "candidate_windows_total", "events"}
 _MANIFEST_EVENT_KEYS = {"id", "candidate_windows"}
 _OPERATING_POINT_KEYS = {"id", "configuration", "configuration_sha256"}
@@ -308,6 +313,48 @@ class ArchetypePolicy:
             "max_event_abstention_rate": self.max_event_abstention_rate,
             "max_missing_rate": self.max_missing_rate,
         }
+
+
+@dataclass(frozen=True)
+class _ProviderCallContract:
+    completed_dispatch_calls: int
+    missing_dispatch_min_calls: int
+    missing_dispatch_max_calls: int
+
+    @classmethod
+    def from_mapping(cls, value: Any, context: str) -> "_ProviderCallContract":
+        doc = _object(value, context)
+        _exact_keys(doc, _PROVIDER_CALL_CONTRACT_KEYS, context)
+        completed = _count(
+            doc["completed_dispatch_calls"],
+            f"{context}.completed_dispatch_calls",
+            positive=True,
+        )
+        minimum = _count(
+            doc["missing_dispatch_min_calls"],
+            f"{context}.missing_dispatch_min_calls",
+        )
+        maximum = _count(
+            doc["missing_dispatch_max_calls"],
+            f"{context}.missing_dispatch_max_calls",
+        )
+        _require(minimum <= maximum, f"{context}: missing call minimum exceeds maximum")
+        _require(
+            maximum <= completed,
+            f"{context}: missing dispatch cannot spend more than a completed dispatch",
+        )
+        return cls(completed, minimum, maximum)
+
+    def validate(self, row: "_ArmRow", context: str) -> None:
+        missing = row.decisions["missing"]
+        completed = row.runtime_dispatches - missing
+        minimum = completed * self.completed_dispatch_calls + missing * self.missing_dispatch_min_calls
+        maximum = completed * self.completed_dispatch_calls + missing * self.missing_dispatch_max_calls
+        _require(
+            minimum <= row.judge_calls <= maximum,
+            f"{context}: judge_calls={row.judge_calls} violates provider-call cardinality "
+            f"[{minimum}, {maximum}] for {completed} completed and {missing} missing dispatches",
+        )
 
 
 @dataclass(frozen=True)
@@ -732,6 +779,7 @@ class _ArchetypeSpec:
     cases: tuple[_CaseSpec, ...]
     operating_points: tuple[_OperatingPointSpec, ...]
     policy: ArchetypePolicy
+    provider_call_contract: _ProviderCallContract
 
 
 @dataclass(frozen=True)
@@ -858,8 +906,18 @@ def _validate_manifest(value: Any) -> _Manifest:
             point_fingerprints.add(fingerprint)
             operating_points.append(_OperatingPointSpec(point_id, fingerprint))
         policy = ArchetypePolicy.from_mapping(archetype["policy"], f"{context}.policy")
+        provider_call_contract = _ProviderCallContract.from_mapping(
+            archetype["provider_call_contract"],
+            f"{context}.provider_call_contract",
+        )
         archetypes.append(
-            _ArchetypeSpec(archetype_id, tuple(cases), tuple(operating_points), policy)
+            _ArchetypeSpec(
+                archetype_id,
+                tuple(cases),
+                tuple(operating_points),
+                policy,
+                provider_call_contract,
+            )
         )
     return _Manifest(
         track="viability_frontier",
@@ -1039,6 +1097,7 @@ def evaluate_viability_frontier(
     expected: set[tuple[str, str, str]] = set()
     case_owner: dict[str, str] = {}
     case_specs: dict[str, _CaseSpec] = {}
+    archetype_specs = {archetype.id: archetype for archetype in spec.archetypes}
     point_fingerprints: dict[tuple[str, str], str] = {}
     for archetype in spec.archetypes:
         for point in archetype.operating_points:
@@ -1076,6 +1135,10 @@ def evaluate_viability_frontier(
             row.match_signature() == anchored_case.match_signature(),
             f"{row.archetype}/{row.operating_point}/{row.case_id}: evidence does not match "
             "manifest-anchored exact case/event/candidate denominators",
+        )
+        archetype_specs[owner].provider_call_contract.validate(
+            row,
+            f"{row.archetype}/{row.operating_point}/{row.case_id}/{row.arm}",
         )
 
     archetype_results: list[ArchetypeResult] = []

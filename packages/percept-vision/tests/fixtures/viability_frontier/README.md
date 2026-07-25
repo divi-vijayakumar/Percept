@@ -19,7 +19,10 @@ matched evidence. Relabeling this fixture as `measured` cannot bypass that block
 
 The manifest is schema v3. V3 intentionally requires the explicit `runtime_dispatches` field and
 renames the unbounded output metric to `judge_call_intensity`; v2 evidence is rejected rather than
-silently inferring dispatches from provider calls.
+silently inferring dispatches from provider calls. Each archetype also preregisters provider-call
+cardinality: the transition fixture requires two calls per completed dispatch (and one-to-two for a
+missing partial dispatch), while the brief-action fixture requires one. This prevents complete
+decisions with zero recorded provider cost from false-greening call reduction.
 
 Run:
 
