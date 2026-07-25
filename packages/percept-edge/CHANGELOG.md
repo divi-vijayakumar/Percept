@@ -2,7 +2,7 @@
 
 Notable changes to the `percept-edge` npm package. From **1.0.0** the public surface follows semantic
 versioning. The package version (this file) moves independently of the wire `CONTRACT_VERSION` in
-`src/contract.js` (currently `1.9.0`, additive-compatible with the Python `percept.contracts` wire),
+`src/contract.js` (currently `1.10.0`, additive-compatible with the Python `percept.contracts` wire),
 which changes only on wire-shape changes.
 
 ## 1.0.0 — first stable release

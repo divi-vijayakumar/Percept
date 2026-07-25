@@ -318,8 +318,8 @@ describe("topology-B wire messages — EdgeCapabilities + BoundaryReport", () =>
 });
 
 describe("CONTRACT_VERSION", () => {
-  it("is the semver twin of the Python contract version (1.9.0: the evidence-link batch — Incident.judgment_event_id + Incident.evidence_origin + judgmentEventId())", () => {
-    expect(CONTRACT_VERSION).toBe("1.9.0");
+  it("is the semver twin of the Python contract version", () => {
+    expect(CONTRACT_VERSION).toBe("1.10.0");
   });
 });
 

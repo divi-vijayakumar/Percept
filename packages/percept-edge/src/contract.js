@@ -26,13 +26,14 @@
  * `percept.contracts.CONTRACT_VERSION`. Same major == wire-compatible. This is DISTINCT from
  * `WatchSpec.version` (the wire integer, defaults to 1) which stays for payload compat.
  */
-export const CONTRACT_VERSION = "1.9.0"; // JS twin of Python 1.9.0 — the evidence-link batch:
+export const CONTRACT_VERSION = "1.10.0"; // JS twin of Python 1.10.0.
+// 1.10 adds judge context and provenance to the Python WatchPlan contract. 1.9 added
 // Incident.judgment_event_id (the OPAQUE, INJECTIVE handle joining an Incident to the judgment.event
 // that produced it — see judgmentEventId()) + Incident.evidence_origin ("judged"|"transition"|null,
-// which firing path produced the evidence). Both ADDITIVE/OPTIONAL, so a pre-1.9 payload parses to null
-// unchanged. 1.8 covered WatchPlan/SettingOrigin/ResolvedWatch/WatchReceipt/FieldDiagnostic (Python-only
-// config-provenance DTOs) + Incident.revision_id/Incident.supersedes; 1.7 Incident.evidence_seq +
-// SubjectRef 'provisional' resolution state / provisionalSubject().
+// which firing path produced the evidence). Both are ADDITIVE/OPTIONAL, so a pre-1.9 payload parses to
+// null unchanged. 1.8 covered WatchPlan/SettingOrigin/ResolvedWatch/WatchReceipt/FieldDiagnostic
+// (Python-only config-provenance DTOs) + Incident.revision_id/Incident.supersedes; 1.7
+// Incident.evidence_seq + SubjectRef 'provisional' resolution state / provisionalSubject().
 // This constant names the PYTHON contract version these shapes are a twin of. The JS side implements a
 // SUBSET of the Python DTOs (the shapes defined below); the version tracks the wire contract, not the
 // coverage. 1.0.0: initial public wire contract (launch).

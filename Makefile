@@ -32,16 +32,16 @@ help:
 	@echo "reproduce  reproduce a published scorecard row"
 
 # PERCEPT_MODE=offline: the suite is offline BY CONSTRUCTION (one declared property — RFC-offline-scripted-mode).
-# pytest declares it in tests/conftest.py; unittest discovery loads no conftest, so declare it here. Without it,
-# voice tests that unskip once pipecat is installed hit live-mode ModeError.
+# Importlib mode keeps test modules path-scoped, so helper loaders never see a second module identity
+# for the same test file. Pytest also collects the function-style tests that unittest omits.
 test:
-	cd $(SDK) && PYTHONPATH=. PERCEPT_MODE=offline $(PY) -m unittest discover -s tests
+	cd $(SDK) && PYTHONPATH=. PERCEPT_MODE=offline $(PY) -m pytest --import-mode=importlib -q
 	$(MAKE) test-templates
 
 # templates/ = copyable reference applications; each ships its own tests. Keyless: pipecat-dependent
 # tests skipUnless the template's deps are installed; everything else runs on the bare SDK checkout.
 test-templates:
-	cd templates/realtime_voice_watch_agent && PYTHONPATH=.:$(abspath $(SDK)) PERCEPT_NO_BANNER=1 $(PY) -m unittest discover -s tests -t .
+	cd templates/realtime_voice_watch_agent && PYTHONPATH=.:$(abspath $(SDK)) PERCEPT_MODE=offline PERCEPT_NO_BANNER=1 $(PY) -m unittest discover -s tests -t .
 
 test-js:
 	cd $(EDGE) && npm test
@@ -67,24 +67,14 @@ test-all: test test-js
 # (and any XPASS) print in the summary instead of collapsing into the dot count, so a fixed defect
 # whose assertion should be promoted out of expectedFailure is flagged loudly, not silently lost.
 #
-# DESELECTED, NOT FIXED (card Z9, owned elsewhere): tests/test_p_lat_actionable.py and
-# tests/test_p_qual.py fail at COLLECTION — `ModuleNotFoundError: core_archetypes` — because they
-# import a gitignored viability fixture that is not part of every checkout. That import failure is
-# pre-existing and unrelated to capability regressions; --ignore both explicitly so this gate's
-# result depends only on the capabilities it exists to assert, never on an unrelated collection
-# error. (On a base that already has [Z9]'s importorskip guard, both files skip cleanly instead of
-# erroring and these --ignore flags become redundant, not wrong — leave them; they still document
-# the exclusion.)
-#
 # PRE-REGISTRATION DISCIPLINE, PRESERVED: a profile/behavior change still ships with its own frozen
 # statistical run wherever that discipline already applies (percept/slo.py, eval/benchmark_ci_gate) —
 # this target does not touch that machinery and adds none of its own; it only asserts the fixed,
 # labelled capability contract.
 # --------------------------------------------------------------------------------------------------
 test-capability-gate:
-	cd $(SDK) && PYTHONPATH=. $(PY) -m pytest \
+	cd $(SDK) && PYTHONPATH=. PERCEPT_MODE=offline $(PY) -m pytest --import-mode=importlib \
 		tests/test_y16_capability_suite.py tests/test_synthetic_fixtures.py \
-		--ignore=tests/test_p_lat_actionable.py --ignore=tests/test_p_qual.py \
 		-rxX -q
 
 clean:  ## remove build + tooling artifacts (leaves out/ — that's intentional local run output)
