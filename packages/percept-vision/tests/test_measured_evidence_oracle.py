@@ -939,22 +939,27 @@ def test_zero_admission_is_preserved_as_zero_not_dropped_or_inferred(
     executed_matrix: _ExecutedMatrix,
     tmp_path: Path,
 ):
-    zero = _write_cell(
-        tmp_path / "genuine-zero-admission",
-        case_number=1,
-        point_id="observe",
-        threshold=0.25,
-        still=True,
-        case_id="independent-package-01",
-    )
-    _, independently_derived = derive_viability_rows(zero.receipt)
+    zero_cells = {
+        point_id: _write_cell(
+            tmp_path / f"genuine-zero-admission-{point_id}",
+            case_number=1,
+            point_id=point_id,
+            threshold=threshold,
+            still=True,
+            case_id="independent-package-01",
+        )
+        for point_id, threshold in (("observe", 0.25), ("sparse", 0.75))
+    }
+    _, independently_derived = derive_viability_rows(zero_cells["observe"].receipt)
     assert independently_derived["candidate_windows_admitted"] == 0
     assert independently_derived["runtime_dispatches"] == 0
     assert independently_derived["judge_calls"] == 0
 
     paths = tuple(
-        zero.receipt_path if index == 0 else path
-        for index, path in enumerate(executed_matrix.receipt_paths)
+        zero_cells[cell.point_id].receipt_path
+        if cell.case_id == "independent-package-01"
+        else cell.receipt_path
+        for cell in executed_matrix.cells
     )
     report = _derive_bundle(executed_matrix, receipt_paths=paths)
     row = next(
