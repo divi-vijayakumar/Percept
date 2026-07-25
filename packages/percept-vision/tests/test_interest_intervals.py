@@ -489,30 +489,30 @@ class Tier0InterestIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNone(interest.engine)
 
-    async def test_equal_motion_different_frame_evidence_cannot_collide(self) -> None:
-        async def _one(changed_pixels: tuple[int, ...]):
+    async def test_equal_motion_same_current_different_previous_pair_cannot_collide(self) -> None:
+        async def _one(previous_pixels: tuple[int, ...]):
             interest = Tier0MotionInterest(
                 source="camera:front",
-                config=InterestIntervalConfig(enter_threshold=0.2, exit_threshold=0.1),
+                config=InterestIntervalConfig(enter_threshold=0.4, exit_threshold=0.1),
             )
             loop = GatedWatchLoop(
                 _Core(),
                 [Goal(id="watch", condition="something changes", say="changed")],
-                threshold=0.2,
+                threshold=0.4,
                 source="camera:front",
                 interest=interest,
             )
             return await loop.run(
                 [
-                    (0.0, gray_frame(2, 2, 0)),
-                    (1.0, (2, 2, changed_pixels)),
+                    (0.0, (2, 1, previous_pixels)),
+                    (1.0, (2, 1, (128, 128))),
                 ],
                 interest_stream_epoch="same-explicit-epoch",
                 interest_observed_times=(100.0, 101.0),
             )
 
-        first = await _one((255, 0, 0, 0))
-        second = await _one((0, 255, 0, 0))
+        first = await _one((0, 255))
+        second = await _one((255, 0))
         self.assertEqual(first.signals[-1].motion, second.signals[-1].motion)
         self.assertNotEqual(
             first.interest_events[0].evidence_id,
@@ -522,6 +522,33 @@ class Tier0InterestIntegrationTests(unittest.IsolatedAsyncioTestCase):
             first.interest_events[0].interval_id,
             second.interest_events[0].interval_id,
         )
+
+    async def test_successful_epochs_reset_gate_before_new_first_frame(self) -> None:
+        interest = Tier0MotionInterest(
+            source="camera:front",
+            config=InterestIntervalConfig(enter_threshold=0.7, exit_threshold=0.2),
+        )
+        loop = GatedWatchLoop(
+            _Core(),
+            [Goal(id="watch", condition="something changes", say="changed")],
+            threshold=0.7,
+            source="camera:front",
+            interest=interest,
+        )
+        black = await loop.run(
+            [(0.0, gray_frame(2, 2, 0))],
+            interest_stream_epoch="successful-black",
+            interest_observed_times=(10.0,),
+        )
+        new_white = await loop.run(
+            [(0.0, gray_frame(2, 2, 255))],
+            interest_stream_epoch="new-white",
+            interest_observed_times=(20.0,),
+        )
+        self.assertEqual([signal.motion for signal in black.signals], [0.0])
+        self.assertEqual([signal.motion for signal in new_white.signals], [0.0])
+        self.assertEqual(black.interest_events, [])
+        self.assertEqual(new_white.interest_events, [])
 
     async def test_successive_chunks_are_independent_reusable_epochs(self) -> None:
         interest = Tier0MotionInterest(
@@ -599,8 +626,8 @@ class Tier0InterestIntegrationTests(unittest.IsolatedAsyncioTestCase):
         # with ENTER, not an orphan EXIT from failed-epoch, and the adapter is not terminal.
         recovered = await loop.run(
             [
-                (0.0, gray_frame(2, 2, 255)),
-                (1.0, gray_frame(2, 2, 0)),
+                (0.0, gray_frame(2, 2, 0)),
+                (1.0, gray_frame(2, 2, 255)),
             ],
             interest_stream_epoch="recovered-epoch",
             interest_observed_times=(20.0, 21.0),
@@ -609,6 +636,10 @@ class Tier0InterestIntegrationTests(unittest.IsolatedAsyncioTestCase):
             [event.kind for event in recovered.interest_events],
             [INTEREST_ENTERED, INTEREST_EXITED],
         )
+        # Failed epoch ended on white; recovery starts on black. A carried predecessor would make
+        # recovery's first frame motion=1.0. The reset makes it a fresh 0.0, while black->white
+        # within the recovery epoch remains the exact 1.0 transition.
+        self.assertEqual([signal.motion for signal in recovered.signals], [0.0, 1.0])
         self.assertEqual(
             {event.stream_epoch for event in recovered.interest_events},
             {"recovered-epoch"},

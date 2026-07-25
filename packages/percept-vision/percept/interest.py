@@ -133,10 +133,11 @@ class InterestIntervalConfig:
 class InterestSample:
     """One interest observation on both the source and observer clocks.
 
-    ``evidence_id`` is the producer's stable identity for the exact evidence item (the replay
-    adapter uses a content hash of the coarse frame). ``confidence=None`` means the producer has no
-    calibrated confidence signal; the engine never manufactures one from a salience score.
-    ``coverage`` describes this observation's usable source coverage, not correctness.
+    ``evidence_id`` is the producer's stable identity for the exact causal evidence item (the replay
+    motion adapter hashes the ordered ``previous,current`` coarse-frame pair). ``confidence=None``
+    means the producer has no calibrated confidence signal; the engine never manufactures one from
+    a salience score. ``coverage`` describes this observation's usable source coverage, not
+    correctness.
     """
 
     source_at: float

@@ -915,11 +915,18 @@ def _normalize_stream(stream: Iterable[Any], *, clock_start: float, dt: float) -
     return items
 
 
-def _frame_evidence_id(obj: Any) -> str:
-    """Content identity for the exact coarse frame that produced a replay interest sample."""
-    frame = _as_frame(obj)
+def _motion_evidence_id(previous: Frame | None, current: Frame) -> str:
+    """Content identity for the exact ordered frame pair that caused one motion sample."""
+
+    def _payload(frame: Frame) -> dict[str, Any]:
+        return {"w": frame.w, "h": frame.h, "pixels": frame.pixels}
+
     payload = json.dumps(
-        {"version": 1, "w": frame.w, "h": frame.h, "pixels": frame.pixels},
+        {
+            "version": 2,
+            "previous": None if previous is None else _payload(previous),
+            "current": _payload(current),
+        },
         sort_keys=True,
         separators=(",", ":"),
         allow_nan=False,
@@ -1032,6 +1039,7 @@ class GatedWatchLoop:
         """
         report = LoopReport()
         items = _normalize_stream(stream, clock_start=clock_start, dt=dt)
+        epoch_started = False
         if self._interest is not None:
             if interest_stream_epoch is None:
                 raise ValueError("interest_stream_epoch is required for an interest replay")
@@ -1041,22 +1049,36 @@ class GatedWatchLoop:
                 raise ValueError(
                     "interest_observed_times must contain exactly one timestamp per frame"
                 )
-            self._interest.begin_epoch(interest_stream_epoch)
+        previous_interest_frame: Frame | None = None
         try:
+            if self._interest is not None:
+                self._interest.begin_epoch(interest_stream_epoch)
+                epoch_started = True
+                # Each declared replay epoch is an independent stream. The tier-0 eye must cold-start
+                # too: carrying the prior epoch's final frame would manufacture cross-epoch motion.
+                self._gate.reset()
             for i, item in enumerate(items):
                 energy = energies[i] if energies is not None and i < len(energies) else None
                 extra = cheap_signals[i] if cheap_signals is not None and i < len(cheap_signals) else None
+                current_interest_frame = (
+                    _as_frame(item.frame) if self._interest is not None else None
+                )
                 decision = self._gate.evaluate(item.frame, ts=item.ts, energy=energy, signals=extra)
                 report.frames += 1
                 report.signals.append(decision.signal)  # report Tier0Signal UP every frame
                 if self._interest is not None:
+                    assert current_interest_frame is not None
                     report.interest_events.extend(
                         self._interest.observe(
                             decision,
                             observed_at=interest_observed_times[i],
-                            evidence_id=_frame_evidence_id(item.frame),
+                            evidence_id=_motion_evidence_id(
+                                previous_interest_frame,
+                                current_interest_frame,
+                            ),
                         )
                     )
+                    previous_interest_frame = current_interest_frame
                 if self._funnel is not None:
                     self._funnel.seen(camera=self._source)  # the ungated baseline: a frame was observed
                 # Edge detectors run on the cheap motion/energy signals at native fps — the count/boundaries
@@ -1106,9 +1128,14 @@ class GatedWatchLoop:
                     self._interest.end_of_stream(observed_at=eos_at)
                 )
         except BaseException:
-            if self._interest is not None:
+            if self._interest is not None and epoch_started:
                 self._interest.abort_epoch()
             raise
+        finally:
+            if epoch_started:
+                # Success and failure both end the independent epoch with a cold eye. Reset is
+                # idempotent and only drops the perceptual predecessor; cadence policy remains.
+                self._gate.reset()
         return report
 
 
