@@ -186,7 +186,7 @@ def format_audit(audit: dict[str, Any]) -> str:
         "  PERCEPT BENCHMARK ARTIFACT AUDIT",
         "=" * 72,
         f"  status       : {audit['status']}",
-        f"  artifact audit : PASS (non-empty manifest + baseline registry)",
+        "  artifact audit : PASS (non-empty manifest + baseline registry)",
         f"  Cloud cost gate : {audit['cloud_status']} (artifact validation is not economics)",
         f"  release mode : {audit['release']}",
         f"  manifest     : {manifest['version']} ({manifest['status']})",

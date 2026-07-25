@@ -59,7 +59,7 @@ def render_card(results: list[TrackResult], *, mode: str = "sampled", backend: s
     auroc_s = f"{auroc:.2f}" if isinstance(auroc, (int, float)) else "?"
     L = [
         "=" * 84,
-        f"# Percept Benchmark Snapshot",
+        "# Percept Benchmark Snapshot",
         f"spec: {SPEC_VERSION} · mode: {mode} · stamp: {stamp}",
         f"commit: {commit} · data-manifest: {manifest or '(none — DRAFT)'}",
         f"backbone: {backend}   ceiling: {ceiling}",
