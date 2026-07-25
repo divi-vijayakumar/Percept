@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
+import stat
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -23,6 +26,7 @@ from percept.eval.measured_evidence import (
     derive_measured_evidence_bundle,
     write_measured_evidence_bundle,
 )
+import percept.eval.measured_evidence as measured_evidence_module
 from percept.eval.viability_frontier import evaluate_viability_frontier
 from percept.tracing import content_hash
 
@@ -84,6 +88,7 @@ def _write_case(
     case_id="physical-package-001",
     events=None,
     operating_point="block-max-0.5",
+    source_id="camera",
 ):
     media_doc = media or _documents()
     media_bytes = json.dumps(media_doc, sort_keys=True, separators=(",", ":")).encode()
@@ -98,7 +103,7 @@ def _write_case(
             "path": "media.json",
             "sha256": media_sha or _sha(media_bytes),
         },
-        "replay": {"fps": 4.0, "timebase": "media", "source_id": "camera"},
+        "replay": {"fps": 4.0, "timebase": "media", "source_id": source_id},
         "watch": {
             "template_ref": "facility_observation@1/package_appeared",
             "parameters": {"zone_name": "doorstep"},
@@ -615,7 +620,98 @@ def test_persisted_receipt_rejects_extra_fields_and_cached_hash_drift(tmp_path):
             load_matched_watch_receipt(path)
 
 
-def _write_measured_bundle(tmp_path):
+def test_persisted_receipt_rejects_noncanonical_resolved_provenance(tmp_path):
+    receipt = run_matched_watch(_write_case(tmp_path))
+    mutations = ("extra_only", "mirrored_unknown", "missing", "wrong_type", "value_drift")
+    for mutation in mutations:
+        baseline = receipt.baseline.to_dict()
+        resolved = baseline["resolved_watch"]
+        provenance = resolved["provenance"]
+        effective = resolved["effective"]
+        known_path = next(iter(provenance))
+        if mutation == "extra_only":
+            provenance["oracle_unsupported_nested_key"] = {"caller": True}
+        elif mutation == "mirrored_unknown":
+            effective["oracle_unsupported_nested_key"] = True
+            provenance["oracle_unsupported_nested_key"] = {
+                "value": True,
+                "owner_layer": "SDK",
+                "source_id": "caller",
+                "reason": "caller",
+                "validated_by": None,
+            }
+        elif mutation == "missing":
+            provenance[known_path].pop("reason")
+        elif mutation == "wrong_type":
+            provenance[known_path]["owner_layer"] = True
+        else:
+            provenance[known_path]["value"] = "caller-drift"
+        forged_arm = replace(receipt.baseline, resolved_watch=resolved)
+        forged = replace(
+            receipt,
+            baseline=forged_arm,
+            origin_evidence_sha256="",
+        )
+        sealed = replace(forged, origin_evidence_sha256=forged.evidence_sha256)
+        path = tmp_path / f"resolved-{mutation}.json"
+        path.write_text(sealed.to_json(), encoding="utf-8")
+
+        with pytest.raises(MatchedWatchInputError, match="resolved_watch|provenance"):
+            load_matched_watch_receipt(path)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    [
+        ("source_parameters", "source_profile.parameters"),
+        ("compiled_kwargs", "compiled_binding.watchspec_kwargs"),
+        ("compiled_components", "compiled_binding.components"),
+        ("apply_receipt", "apply_receipt"),
+        ("domain_values", "domain_pack.values"),
+        ("resolved_providers", "components.providers"),
+    ],
+)
+def test_persisted_receipt_rejects_extra_fields_in_closed_nested_maps(
+    tmp_path,
+    mutation,
+    expected,
+):
+    case_dir = tmp_path / mutation
+    case_dir.mkdir()
+    receipt = run_matched_watch(_write_case(case_dir))
+    arm = receipt.baseline.to_dict()
+    if mutation == "source_parameters":
+        arm["source_profile"]["parameters"]["oracle_extra"] = True
+    elif mutation == "compiled_kwargs":
+        arm["compiled_binding"]["watchspec_kwargs"]["oracle_extra"] = True
+    elif mutation == "compiled_components":
+        arm["compiled_binding"]["components"]["oracle_extra"] = None
+    elif mutation == "apply_receipt":
+        arm["apply_receipt"]["oracle_extra"] = True
+    elif mutation == "domain_values":
+        arm["resolved_watch"]["domain_pack"]["values"]["oracle_extra"] = True
+    else:
+        arm["resolved_watch"]["components"]["providers"]["oracle_extra"] = None
+    forged = replace(
+        receipt,
+        baseline=replace(
+            receipt.baseline,
+            source_profile=arm["source_profile"],
+            resolved_watch=arm["resolved_watch"],
+            apply_receipt=arm["apply_receipt"],
+            compiled_binding=arm["compiled_binding"],
+        ),
+        origin_evidence_sha256="",
+    )
+    sealed = replace(forged, origin_evidence_sha256=forged.evidence_sha256)
+    path = tmp_path / f"closed-map-{mutation}.json"
+    path.write_text(sealed.to_json(), encoding="utf-8")
+
+    with pytest.raises(MatchedWatchInputError, match=expected):
+        load_matched_watch_receipt(path)
+
+
+def _write_measured_bundle(tmp_path, *, duplicate_source_cases=False):
     tmp_path.mkdir(parents=True, exist_ok=True)
     policy = {
         "min_candidate_recall": 0.0,
@@ -661,16 +757,25 @@ def _write_measured_bundle(tmp_path):
         for point, threshold in (("block-max-0.25", 0.25), ("block-max-0.75", 0.75)):
             case_dir = tmp_path / f"{case_id}-{point}"
             case_dir.mkdir()
+            case_fill = 0 if duplicate_source_cases else case_index
             manifest = _write_case(
                 case_dir,
                 media=_documents(
-                    fills=(0, 255, 0, 255, 0, 0),
+                    fills=(
+                        case_fill,
+                        255 - case_fill,
+                        case_fill,
+                        255 - case_fill,
+                        case_fill,
+                        case_fill,
+                    ),
                     states=(False, False, True, False, True, True),
                 ),
                 threshold=threshold,
                 case_id=case_id,
                 events=events,
                 operating_point=point,
+                source_id="camera",
             )
             receipt = run_matched_watch(manifest)
             receipt_path = case_dir / "receipt.json"
@@ -735,12 +840,192 @@ def test_measured_bundle_derives_exact_rows_and_keeps_authority_fail_closed(tmp_
         replace(report, launch_qualified=True)
     with pytest.raises(TypeError):
         replace(report, method="caller-approved")
+    with pytest.raises(MeasuredEvidenceInputError):
+        replace(report, artifacts=())
+    with pytest.raises(MeasuredEvidenceInputError):
+        replace(report, artifacts=tuple(reversed(report.artifacts)))
+    with pytest.raises(MeasuredEvidenceInputError):
+        replace(report, coverage=())
+    with pytest.raises(MeasuredEvidenceInputError):
+        replace(report, coverage=tuple(reversed(report.coverage)))
+    with pytest.raises(MeasuredEvidenceInputError):
+        replace(report, derived_rows=(), derived_row_sha256=())
+    with pytest.raises(MeasuredEvidenceInputError):
+        replace(report, derived_rows=tuple(reversed(report.derived_rows)))
+    with pytest.raises(MeasuredEvidenceInputError):
+        replace(
+            report,
+            derived_row_sha256=(
+                "sha256:" + "0" * 64,
+                *report.derived_row_sha256[1:],
+            ),
+        )
+    with pytest.raises(MeasuredEvidenceInputError):
+        replace(report, receipt_evidence_seals=())
+    with pytest.raises(MeasuredEvidenceInputError):
+        replace(report, receipt_evidence_seals=tuple(reversed(report.receipt_evidence_seals)))
+    changed_manifest = report.content_dict()["viability_manifest"]
+    changed_manifest["scope"] = "caller-expanded scope"
+    with pytest.raises(MeasuredEvidenceInputError):
+        replace(report, viability_manifest=changed_manifest)
+    with pytest.raises(MeasuredEvidenceInputError):
+        replace(report, build_provenance={"package_version": "caller-only"})
+    changed_judge = dict(report.judge_identity)
+    changed_judge["prompt_sha256"] = "sha256:" + "0" * 64
+    # Structurally valid caller changes remain blocked by the descriptor re-derivation at write.
+    structurally_valid_tamper = replace(report, judge_identity=changed_judge)
+    with pytest.raises(MeasuredEvidenceInputError, match="exactly matches"):
+        write_measured_evidence_bundle(
+            structurally_valid_tamper,
+            tmp_path / "tampered-report.json",
+        )
+    changed_coverage = replace(
+        report.coverage[0],
+        configuration_sha256="sha256:" + "0" * 64,
+    )
+    with pytest.raises(MeasuredEvidenceInputError):
+        replace(report, coverage=(changed_coverage, *report.coverage[1:]))
+    forged_frontier = replace(
+        report.frontier,
+        qualification_reason="caller-approved",
+    )
+    with pytest.raises(MeasuredEvidenceInputError):
+        replace(report, frontier=forged_frontier)
     output = tmp_path / "measured-evidence.json"
     write_measured_evidence_bundle(report, output)
     original = output.read_bytes()
+    output_info = os.lstat(output)
+    assert stat.S_ISREG(output_info.st_mode)
+    assert output_info.st_nlink == 1
     with pytest.raises(MeasuredEvidenceInputError, match="already exists"):
         write_measured_evidence_bundle(report, output)
     assert output.read_bytes() == original
+
+
+def test_measured_bundle_rejects_relabelled_duplicate_underlying_cases(tmp_path):
+    manifest_path, receipt_paths = _write_measured_bundle(
+        tmp_path,
+        duplicate_source_cases=True,
+    )
+
+    with pytest.raises(MeasuredEvidenceInputError, match="duplicate underlying case evidence"):
+        derive_measured_evidence_bundle(
+            viability_manifest_path=manifest_path,
+            receipt_paths=receipt_paths,
+        )
+
+
+def test_writer_reloads_descriptor_backed_inputs_before_creation(tmp_path):
+    manifest_path, receipt_paths = _write_measured_bundle(tmp_path / "source")
+    report = derive_measured_evidence_bundle(
+        viability_manifest_path=manifest_path,
+        receipt_paths=receipt_paths,
+    )
+    receipt_paths[0].write_text(
+        receipt_paths[0].read_text(encoding="utf-8") + "\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "must-not-exist.json"
+
+    with pytest.raises(MeasuredEvidenceInputError, match="exactly matches"):
+        write_measured_evidence_bundle(report, output)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("failure", ["partial_write", "fsync", "directory_fsync", "link"])
+def test_writer_failures_leave_no_partial_destination(tmp_path, monkeypatch, failure):
+    manifest_path, receipt_paths = _write_measured_bundle(tmp_path / "source")
+    report = derive_measured_evidence_bundle(
+        viability_manifest_path=manifest_path,
+        receipt_paths=receipt_paths,
+    )
+    output = tmp_path / f"failed-{failure}.json"
+    if failure == "partial_write":
+        real_write = os.write
+        calls = 0
+
+        def fail_after_partial(fd, payload):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return real_write(fd, payload[:37])
+            raise OSError("simulated partial stream failure")
+
+        monkeypatch.setattr(measured_evidence_module.os, "write", fail_after_partial)
+    elif failure == "fsync":
+        monkeypatch.setattr(
+            measured_evidence_module.os,
+            "fsync",
+            lambda _fd: (_ for _ in ()).throw(OSError("simulated fsync failure")),
+        )
+    elif failure == "directory_fsync":
+        real_fsync = os.fsync
+        calls = 0
+
+        def fail_directory_fsync(fd):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("simulated directory fsync failure")
+            return real_fsync(fd)
+
+        monkeypatch.setattr(measured_evidence_module.os, "fsync", fail_directory_fsync)
+    else:
+        monkeypatch.setattr(
+            measured_evidence_module.os,
+            "link",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                OSError("simulated link failure")
+            ),
+        )
+
+    with pytest.raises(MeasuredEvidenceInputError, match="atomically"):
+        write_measured_evidence_bundle(report, output)
+    assert not output.exists()
+    assert not list(tmp_path.glob(f".{output.name}.*.tmp"))
+
+
+def test_writer_path_swap_cleanup_preserves_external_target(tmp_path, monkeypatch):
+    manifest_path, receipt_paths = _write_measured_bundle(tmp_path / "source")
+    report = derive_measured_evidence_bundle(
+        viability_manifest_path=manifest_path,
+        receipt_paths=receipt_paths,
+    )
+    output = tmp_path / "externally-swapped.json"
+    real_link = os.link
+
+    def swap_after_link(source, destination, **kwargs):
+        real_link(source, destination, **kwargs)
+        os.unlink(destination)
+        destination_path = Path(destination)
+        destination_path.write_bytes(b"external replacement")
+
+    monkeypatch.setattr(measured_evidence_module.os, "link", swap_after_link)
+
+    with pytest.raises(MeasuredEvidenceInputError, match="identity changed"):
+        write_measured_evidence_bundle(report, output)
+    assert output.read_bytes() == b"external replacement"
+    assert not list(tmp_path.glob(f".{output.name}.*.tmp"))
+
+
+def test_writer_rejects_symlink_and_non_regular_targets(tmp_path):
+    manifest_path, receipt_paths = _write_measured_bundle(tmp_path / "source")
+    report = derive_measured_evidence_bundle(
+        viability_manifest_path=manifest_path,
+        receipt_paths=receipt_paths,
+    )
+    existing = tmp_path / "existing.json"
+    existing.write_text("untouched", encoding="utf-8")
+    symlink = tmp_path / "output-link.json"
+    symlink.symlink_to(existing)
+    directory = tmp_path / "output-directory"
+    directory.mkdir()
+
+    with pytest.raises(MeasuredEvidenceInputError, match="symlink"):
+        write_measured_evidence_bundle(report, symlink)
+    with pytest.raises(MeasuredEvidenceInputError, match="not a regular file"):
+        write_measured_evidence_bundle(report, directory)
+    assert existing.read_text(encoding="utf-8") == "untouched"
 
 
 def test_measured_bundle_is_path_neutral_but_evidence_binds_descriptors(tmp_path):

@@ -31,6 +31,7 @@ from percept.resolver import ConfigResolver
 from percept.runtime.worker import RuntimeHealthEvent, RuntimeStats, run
 from percept.sourceprofile import SourceProfile
 from percept.tracing import content_hash
+from percept.tunables import REGISTRY
 from percept.watchplan_apply import apply_watch_plan
 
 __all__ = [
@@ -195,6 +196,21 @@ _RESOLVED_WATCH_KEYS = {
     "optimization_lock_hash",
     "component_snapshot_hash",
 }
+_SETTING_ORIGIN_KEYS = {"value", "owner_layer", "source_id", "reason", "validated_by"}
+_REGISTERED_TUNABLE_PATHS = frozenset(spec.path for spec in REGISTRY)
+_RESOLVED_SOURCE_PROFILE_KEYS = {
+    "SourceProfile.name",
+    "SourceProfile.modalities",
+    "SourceProfile.temporal_unit",
+    "SourceProfile.admission_strategy",
+    "SourceProfile.evidence_strategy",
+    "SourceProfile.identity_strategy",
+    "SourceProfile.default_timebase",
+    "SourceProfile.stability",
+    "SourceProfile.notes",
+}
+_RESOLVED_COMPONENT_KEYS = {"providers", "catalog_component_hash"}
+_RESOLVED_PROVIDER_KEYS = {"vision", "conductor", "specialist", "stt", "tts"}
 _APPLY_RECEIPT_KEYS = {
     "status",
     "watch_ids",
@@ -849,21 +865,252 @@ def _parse_candidate_receipt(value: Any, context: str) -> CandidateReceipt:
     )
 
 
+def _same_json_value(left: Any, right: Any) -> bool:
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return set(left) == set(right) and all(
+            _same_json_value(left[key], right[key]) for key in left
+        )
+    if isinstance(left, list):
+        return len(left) == len(right) and all(
+            _same_json_value(a, b) for a, b in zip(left, right)
+        )
+    return bool(left == right)
+
+
+def _parse_resolved_watch(value: Any, context: str) -> Mapping[str, Any]:
+    doc = _object(value, context)
+    _exact(doc, _RESOLVED_WATCH_KEYS, context)
+    raw_plan = _object(doc["plan"], f"{context}.plan")
+    try:
+        canonical_plan = WatchPlan.from_dict(raw_plan).to_dict()
+    except (TypeError, ValueError) as exc:
+        raise MatchedWatchInputError(f"{context}.plan is not a valid WatchPlan: {exc}") from exc
+    _require(canonical_plan == raw_plan, f"{context}.plan is not canonical")
+    source_profile = _object(doc["source_profile"], f"{context}.source_profile")
+    _exact(source_profile, _RESOLVED_SOURCE_PROFILE_KEYS, f"{context}.source_profile")
+    domain_pack = _object(doc["domain_pack"], f"{context}.domain_pack")
+    _exact(
+        domain_pack,
+        {"id", "version", "values", "components", "policy_clamps"},
+        f"{context}.domain_pack",
+    )
+    _strict_string(domain_pack["id"], f"{context}.domain_pack.id")
+    _strict_string(domain_pack["version"], f"{context}.domain_pack.version")
+    domain_values = _object(domain_pack["values"], f"{context}.domain_pack.values")
+    unknown_domain_paths = sorted(set(domain_values) - _REGISTERED_TUNABLE_PATHS)
+    _require(
+        not unknown_domain_paths,
+        f"{context}.domain_pack.values contains unregistered paths {unknown_domain_paths!r}",
+    )
+    raw_components = domain_pack["components"]
+    _require(isinstance(raw_components, list), f"{context}.domain_pack.components must be a list")
+    for index, raw_component in enumerate(raw_components):
+        component_context = f"{context}.domain_pack.components[{index}]"
+        component = _object(raw_component, component_context)
+        _exact(component, {"ref", "strength", "reason"}, component_context)
+        for key in ("ref", "strength", "reason"):
+            _strict_string(component[key], f"{component_context}.{key}")
+    clamps = _object(domain_pack["policy_clamps"], f"{context}.domain_pack.policy_clamps")
+    unsupported_clamps = sorted(
+        set(clamps) - {"false_negative_cost_min", "retention_max_days"}
+    )
+    _require(
+        not unsupported_clamps,
+        f"{context}.domain_pack.policy_clamps has unsupported fields {unsupported_clamps!r}",
+    )
+    _require(doc["execution_policy"] is None, f"{context}.execution_policy must be null")
+    components = _object(doc["components"], f"{context}.components")
+    _exact(components, _RESOLVED_COMPONENT_KEYS, f"{context}.components")
+    providers = _object(components["providers"], f"{context}.components.providers")
+    _exact(providers, _RESOLVED_PROVIDER_KEYS, f"{context}.components.providers")
+    for name, identity in providers.items():
+        _require(
+            identity is None or isinstance(identity, str),
+            f"{context}.components.providers[{name!r}] must be text or null",
+        )
+    _strict_string(
+        components["catalog_component_hash"],
+        f"{context}.components.catalog_component_hash",
+    )
+    effective = _object(doc["effective"], f"{context}.effective")
+    provenance = _object(doc["provenance"], f"{context}.provenance")
+    _require(
+        set(effective) == set(provenance),
+        f"{context}.effective and provenance must have exactly the same paths",
+    )
+    unknown_paths = sorted(set(effective) - _REGISTERED_TUNABLE_PATHS)
+    _require(not unknown_paths, f"{context} contains unregistered tunable paths {unknown_paths!r}")
+    for path, raw_origin in provenance.items():
+        origin_context = f"{context}.provenance[{path!r}]"
+        origin = _object(raw_origin, origin_context)
+        _exact(origin, _SETTING_ORIGIN_KEYS, origin_context)
+        _strict_string(origin["owner_layer"], f"{origin_context}.owner_layer")
+        _strict_string(origin["source_id"], f"{origin_context}.source_id")
+        _require(isinstance(origin["reason"], str), f"{origin_context}.reason must be text")
+        _require(
+            origin["validated_by"] is None or isinstance(origin["validated_by"], str),
+            f"{origin_context}.validated_by must be text or null",
+        )
+        _require(
+            _same_json_value(origin["value"], effective[path]),
+            f"{origin_context}.value disagrees with effective[{path!r}]",
+        )
+    _strict_string(doc["plan_hash"], f"{context}.plan_hash")
+    _strict_string(doc["component_snapshot_hash"], f"{context}.component_snapshot_hash")
+    _require(
+        doc["optimization_lock_hash"] is None
+        or isinstance(doc["optimization_lock_hash"], str),
+        f"{context}.optimization_lock_hash must be text or null",
+    )
+    return _strict_object(doc, context, keys=_RESOLVED_WATCH_KEYS)
+
+
+def _parse_source_profile_receipt(value: Any, context: str) -> Mapping[str, Any]:
+    doc = _object(value, context)
+    _exact(doc, _SOURCE_PROFILE_KEYS, context)
+    for key in (
+        "name",
+        "temporal_unit",
+        "admission_strategy",
+        "evidence_strategy",
+        "identity_strategy",
+        "default_timebase",
+        "stability",
+        "notes",
+    ):
+        _require(isinstance(doc[key], str), f"{context}.{key} must be text")
+    _require(
+        isinstance(doc["modalities"], list)
+        and all(isinstance(item, str) and item for item in doc["modalities"]),
+        f"{context}.modalities must be a list of non-empty strings",
+    )
+    parameters = _object(doc["parameters"], f"{context}.parameters")
+    _exact(
+        parameters,
+        {"salience_stat", "salience_threshold"},
+        f"{context}.parameters",
+    )
+    _require(
+        parameters["salience_stat"] in {"mean", "block_max", "p95"},
+        f"{context}.parameters.salience_stat is unsupported",
+    )
+    _strict_float(parameters["salience_threshold"], f"{context}.parameters.salience_threshold")
+    return _strict_object(doc, context, keys=_SOURCE_PROFILE_KEYS)
+
+
+def _parse_apply_receipt(value: Any, context: str) -> Mapping[str, Any]:
+    doc = _object(value, context)
+    _exact(doc, _APPLY_RECEIPT_KEYS, context)
+    _require(
+        doc["status"] in {"applied", "applied_with_warnings"},
+        f"{context}.status is unsupported for a valid matched receipt",
+    )
+    for key in ("watch_ids", "accepted_fields"):
+        _require(isinstance(doc[key], list), f"{context}.{key} must be a list")
+        for index, item in enumerate(doc[key]):
+            _strict_string(item, f"{context}.{key}[{index}]")
+    for key in ("dropped_fields", "coerced_fields", "warnings"):
+        _require(isinstance(doc[key], list), f"{context}.{key} must be a list")
+        for index, raw_item in enumerate(doc[key]):
+            item_context = f"{context}.{key}[{index}]"
+            item = _object(raw_item, item_context)
+            _exact(item, {"path", "code", "goal_id", "message"}, item_context)
+            for field in ("path", "code", "message"):
+                _strict_string(item[field], f"{item_context}.{field}")
+            _require(
+                item["goal_id"] is None or isinstance(item["goal_id"], str),
+                f"{item_context}.goal_id must be text or null",
+            )
+    _require(
+        doc["plan_revision"] is None
+        or (isinstance(doc["plan_revision"], int) and not isinstance(doc["plan_revision"], bool)),
+        f"{context}.plan_revision must be an integer or null",
+    )
+    for key in (
+        "judge_requested",
+        "judge_resolved",
+        "judge_context_ref",
+        "judge_context_sha256",
+    ):
+        _require(
+            doc[key] is None or isinstance(doc[key], str),
+            f"{context}.{key} must be text or null",
+        )
+    _strict_bool(doc["fallback_used"], f"{context}.fallback_used")
+    return _strict_object(doc, context, keys=_APPLY_RECEIPT_KEYS)
+
+
+def _parse_compiled_binding(value: Any, context: str) -> Mapping[str, Any]:
+    doc = _object(value, context)
+    _exact(doc, _COMPILED_BINDING_KEYS, context)
+    _strict_string(doc["goal_id"], f"{context}.goal_id")
+    _strict_string(doc["timebase"], f"{context}.timebase")
+    _require(
+        doc["coverage_floor"] is None
+        or (
+            isinstance(doc["coverage_floor"], (int, float))
+            and not isinstance(doc["coverage_floor"], bool)
+            and math.isfinite(float(doc["coverage_floor"]))
+        ),
+        f"{context}.coverage_floor must be a finite number or null",
+    )
+    kwargs = _object(doc["watchspec_kwargs"], f"{context}.watchspec_kwargs")
+    _exact(
+        kwargs,
+        {"threshold", "salience_stat", "ego_compensate", "stat_thresholds"},
+        f"{context}.watchspec_kwargs",
+    )
+    _strict_float(kwargs["threshold"], f"{context}.watchspec_kwargs.threshold")
+    _require(
+        kwargs["salience_stat"] in {"mean", "block_max", "p95"},
+        f"{context}.watchspec_kwargs.salience_stat is unsupported",
+    )
+    _strict_bool(kwargs["ego_compensate"], f"{context}.watchspec_kwargs.ego_compensate")
+    thresholds = _object(
+        kwargs["stat_thresholds"],
+        f"{context}.watchspec_kwargs.stat_thresholds",
+    )
+    _exact(
+        thresholds,
+        {"mean", "block_max", "p95"},
+        f"{context}.watchspec_kwargs.stat_thresholds",
+    )
+    for stat_name, threshold in thresholds.items():
+        _strict_float(
+            threshold,
+            f"{context}.watchspec_kwargs.stat_thresholds.{stat_name}",
+        )
+    components = _object(doc["components"], f"{context}.components")
+    _exact(components, _RESOLVED_PROVIDER_KEYS, f"{context}.components")
+    for name, identity in components.items():
+        _require(
+            identity is None or isinstance(identity, str),
+            f"{context}.components[{name!r}] must be text or null",
+        )
+    return _strict_object(doc, context, keys=_COMPILED_BINDING_KEYS)
+
+
 def _parse_arm_receipt(value: Any, context: str, expected_arm: str) -> ArmReceipt:
     doc = _object(value, context)
     _exact(doc, _ARM_RECEIPT_KEYS, context)
     _require(doc["arm"] == expected_arm, f"{context}.arm must be {expected_arm!r}")
-    source_profile = _strict_object(
-        doc["source_profile"], f"{context}.source_profile", keys=_SOURCE_PROFILE_KEYS
+    source_profile = _parse_source_profile_receipt(
+        doc["source_profile"],
+        f"{context}.source_profile",
     )
-    resolved_watch = _strict_object(
-        doc["resolved_watch"], f"{context}.resolved_watch", keys=_RESOLVED_WATCH_KEYS
+    resolved_watch = _parse_resolved_watch(
+        doc["resolved_watch"],
+        f"{context}.resolved_watch",
     )
-    apply_receipt = _strict_object(
-        doc["apply_receipt"], f"{context}.apply_receipt", keys=_APPLY_RECEIPT_KEYS
+    apply_receipt = _parse_apply_receipt(
+        doc["apply_receipt"],
+        f"{context}.apply_receipt",
     )
-    compiled_binding = _strict_object(
-        doc["compiled_binding"], f"{context}.compiled_binding", keys=_COMPILED_BINDING_KEYS
+    compiled_binding = _parse_compiled_binding(
+        doc["compiled_binding"],
+        f"{context}.compiled_binding",
     )
     judge_identity = _strict_object(
         doc["judge_identity"], f"{context}.judge_identity", keys=_JUDGE_IDENTITY_KEYS
@@ -1858,6 +2105,27 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
             content_hash(_thaw(arm.resolved_watch["components"]))
             == arm.resolved_watch["component_snapshot_hash"],
             "arm component snapshot hash mismatch",
+        )
+        expected_resolved_source = {
+            path: _thaw(arm.source_profile[path.removeprefix("SourceProfile.")])
+            for path in _RESOLVED_SOURCE_PROFILE_KEYS
+        }
+        _require(
+            _thaw(arm.resolved_watch["source_profile"]) == expected_resolved_source,
+            "arm resolved SourceProfile snapshot mismatch",
+        )
+        expected_domain_pack = {
+            "id": FACILITY_OBSERVATION_V1.id,
+            "version": FACILITY_OBSERVATION_V1.version,
+            "values": dict(FACILITY_OBSERVATION_V1.values),
+            "components": [
+                component.to_dict() for component in FACILITY_OBSERVATION_V1.components
+            ],
+            "policy_clamps": dict(FACILITY_OBSERVATION_V1.policy_clamps),
+        }
+        _require(
+            _thaw(arm.resolved_watch["domain_pack"]) == expected_domain_pack,
+            "arm resolved DomainPack snapshot mismatch",
         )
         _require(
             f"sha256:{arm.resolved_watch['plan_hash']}" == receipt.watch_plan_sha256,
