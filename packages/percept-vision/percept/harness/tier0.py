@@ -937,7 +937,8 @@ def _motion_evidence_id(previous: Frame | None, current: Frame) -> str:
 class GatedWatchLoop:
     """The wired WatchSpec↓ / Tier0Signal↑ loop against a live :class:`~percept.agent.Percept`.
 
-    Construction compiles the core's **active goals** down to a :class:`WatchSpec` and arms a
+    Construction compiles either the caller's explicitly-selected ``goals`` or the core's
+    **active goals for this source** down to a :class:`WatchSpec` and arms a
     :class:`MotionGate` with it. :meth:`run` replays a frame stream: per frame it gates, reports a
     :class:`Tier0Signal` up, and calls ``core.perceive_judged`` **only on escalation** — the
     cloud call is spent exactly when salience clears threshold. Returns a :class:`LoopReport` with
@@ -964,7 +965,18 @@ class GatedWatchLoop:
         cfg = settings or getattr(core, "settings", None) or load_settings()
         self._settings = cfg
         self._source = source
-        active = list(goals) if goals is not None else list(core.goals.active())
+        # An explicit list is already a caller selection (and historically supports logical source
+        # aliases such as a default-"camera" Goal on a "camera:front" loop). Only the implicit
+        # registry-discovery path owns source selection and must filter before route preflight.
+        active = (
+            list(goals)
+            if goals is not None
+            else [
+                goal
+                for goal in core.goals.active()
+                if getattr(goal, "source", "camera") == source
+            ]
+        )
         require_worker_routes(active, driver="GatedWatchLoop")
         thr = cfg.edge.motion_gate if threshold is None else threshold
         # edge_capabilities=None -> in-process edge runs the whole registry; a remote edge advertises a

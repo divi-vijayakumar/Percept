@@ -28,6 +28,11 @@ non-field-loss diagnostic — e.g. env overriding an explicitly-selected profile
 dropped/coerced, while at least one goal did arm), ``"rejected"`` (every plan in the batch was
 rejected — nothing armed at all).
 
+Ordinary per-plan resolution or field-support rejections remain independent and may therefore
+produce a ``"partial"`` batch receipt. Prepare invariants that would make an armed plan unsafe are
+batch-atomic instead: an unavailable/invalid judge binding or an unsupported runtime behavior route
+aborts preparation and arms **none** of the batch.
+
 **Idempotency by executable identity**: a plan whose :attr:`ResolvedWatch.plan_hash` AND
 :attr:`ResolvedWatch.component_snapshot_hash` were already applied to THIS ``percept`` core re-arms
 nothing and returns the SAME receipt as the first application — a no-op, not a re-arm, not a second
@@ -53,7 +58,7 @@ from .behavior import (
     program_of,
 )
 from .behavior_routes import (
-    authored_behavior_type,
+    authored_behavior_type_display,
     behavior_route,
     worker_can_drive,
 )
@@ -218,7 +223,7 @@ def _runtime_route_diagnostic(state: Any, *, goal_id: str | None) -> FieldDiagno
     route = behavior_route(state)
     if worker_can_drive(route):
         return None
-    authored_type = authored_behavior_type(state)
+    authored_type = authored_behavior_type_display(state)
     guidance = (
         " Use the matching direct event, boundary, rhythm, or scheduler primitive."
         if route.value != "unsupported"
@@ -229,7 +234,7 @@ def _runtime_route_diagnostic(state: Any, *, goal_id: str | None) -> FieldDiagno
         code="unsupported_runtime_route",
         goal_id=goal_id,
         message=(
-            f"behavior type {authored_type!r} resolves to route {route.value!r}, which "
+            f"behavior type {authored_type} resolves to route {route.value!r}, which "
             f"percept.run cannot execute; no Watch was armed.{guidance}"
         ),
     )
@@ -839,9 +844,12 @@ def apply_watch_plan(
     **Prepared apply with bounded rollback**: the batch is PREPARED in full first — every plan
     resolved, compiled, coerced, and (for a plan that requested a judge) its adapter constructed and
     any static context verified — with NO runtime mutation. Cache invalidation is then preflighted
-    before any goal is armed. A judge/cache PREPARE failure arms nothing. An unexpected COMMIT failure
-    restores the goal registry plus Watch/judge bindings and apply ledger; cache eviction and revision
-    notifications are intentionally not claimed transactional. ``deployment_judges`` (a
+    before any goal is armed. An unavailable/invalid judge binding, unsupported runtime behavior
+    route, or cache PREPARE failure aborts the batch atomically and arms nothing. Ordinary per-plan
+    resolution and field-support rejections remain independent, so a batch may still return
+    ``"partial"`` when at least one other plan arms. An unexpected COMMIT failure restores the goal
+    registry plus Watch/judge bindings and apply ledger; cache eviction and revision notifications
+    are intentionally not claimed transactional. ``deployment_judges`` (a
     :class:`~percept.deployment_judges.DeploymentJudges`) supplies the ``context_store_root`` a bound
     static context resolves against; ``None`` defers to :func:`percept.deployment_judges.load_deployment_judges`
     and is only consulted when a plan actually binds a context.

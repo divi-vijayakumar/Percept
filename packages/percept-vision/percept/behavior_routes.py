@@ -55,10 +55,41 @@ def authored_behavior_type(state: Any) -> Any:
     return authored.get("type", state.get("type", "watch"))
 
 
+def _safe_type_repr(value: Any) -> str:
+    """Bounded, side-effect-free display for an authored route token."""
+
+    if type(value) is str:
+        return repr(value)
+    return f"<{type(value).__name__}>"
+
+
+def authored_behavior_type_display(state: Any) -> str:
+    """Describe flat/nested authored route tokens without invoking hostile ``repr`` methods."""
+
+    if not isinstance(state, Mapping):
+        return f"<{type(state).__name__}>"
+    authored = state.get("behavior", _MISSING)
+    flat_present = "type" in state
+    flat = state.get("type", "watch")
+    if not isinstance(authored, Mapping) or "type" not in authored:
+        return _safe_type_repr(flat if flat_present else authored_behavior_type(state))
+    nested = authored.get("type")
+    if (
+        flat_present
+        and type(flat) is str
+        and type(nested) is str
+        and flat != "watch"
+        and nested != "watch"
+        and flat != nested
+    ):
+        return f"flat={_safe_type_repr(flat)}, nested={_safe_type_repr(nested)}"
+    return _safe_type_repr(nested)
+
+
 def is_known_behavior_type(value: Any) -> bool:
     """Whether ``value`` names one of the closed behavior routes."""
 
-    return isinstance(value, str) and value in _TYPE_ROUTES
+    return type(value) is str and value in _TYPE_ROUTES
 
 
 def behavior_route(state: Any) -> BehaviorRoute:
@@ -73,26 +104,42 @@ def behavior_route(state: Any) -> BehaviorRoute:
     if not isinstance(state, Mapping):
         return BehaviorRoute.UNSUPPORTED
     authored = state.get("behavior", _MISSING)
-    if authored is _MISSING:
-        route_state = state
-    elif isinstance(authored, Mapping):
-        route_state = authored
-    else:
+    flat_present = "type" in state
+    flat_type = state.get("type", "watch")
+    if flat_present and type(flat_type) is not str:
         return BehaviorRoute.UNSUPPORTED
 
-    behavior_type = authored_behavior_type(state)
-    route = (
-        _TYPE_ROUTES.get(behavior_type, BehaviorRoute.UNSUPPORTED)
-        if isinstance(behavior_type, str)
-        else BehaviorRoute.UNSUPPORTED
-    )
+    if authored is _MISSING:
+        route_state = state
+        behavior_type = flat_type
+    elif not isinstance(authored, Mapping):
+        return BehaviorRoute.UNSUPPORTED
+    else:
+        nested_present = "type" in authored
+        nested_type = authored.get("type", flat_type)
+        if nested_present and type(nested_type) is not str:
+            return BehaviorRoute.UNSUPPORTED
+        flat_nondefault = flat_present and flat_type != "watch"
+        nested_nondefault = nested_present and nested_type != "watch"
+        if flat_nondefault and nested_nondefault and flat_type != nested_type:
+            return BehaviorRoute.UNSUPPORTED
+        if nested_nondefault:
+            behavior_type = nested_type
+            route_state = authored
+        else:
+            behavior_type = flat_type
+            route_state = state
+
+    if type(behavior_type) is not str:
+        return BehaviorRoute.UNSUPPORTED
+    route = _TYPE_ROUTES.get(behavior_type, BehaviorRoute.UNSUPPORTED)
     if route is BehaviorRoute.FRAME_TRANSITION:
-        before = route_state.get("from")
-        after = route_state.get("to")
+        before = route_state.get("from", state.get("from"))
+        after = route_state.get("to", state.get("to"))
         if (
-            not isinstance(before, str)
+            type(before) is not str
             or not before.strip()
-            or not isinstance(after, str)
+            or type(after) is not str
             or not after.strip()
         ):
             return BehaviorRoute.UNSUPPORTED
@@ -124,6 +171,7 @@ class UnsupportedBehavior:
     goal_id: str
     route: BehaviorRoute
     authored_type: Any
+    authored_type_display: str
 
 
 class UnsupportedBehaviorRouteError(ValueError):
@@ -133,7 +181,7 @@ class UnsupportedBehaviorRouteError(ValueError):
         self.unsupported = tuple(unsupported)
         self.driver = driver
         rendered = ", ".join(
-            f"{item.goal_id!r} (type={item.authored_type!r}, route={item.route.value})"
+            f"{item.goal_id!r} (type={item.authored_type_display}, route={item.route.value})"
             for item in self.unsupported
         )
         external = all(item.route is not BehaviorRoute.UNSUPPORTED for item in self.unsupported)
@@ -157,6 +205,9 @@ def require_worker_routes(goals: Iterable[Any], *, driver: str) -> None:
                     goal_id=str(getattr(goal, "id", "<unknown>")),
                     route=route,
                     authored_type=authored_behavior_type(getattr(goal, "state", None)),
+                    authored_type_display=authored_behavior_type_display(
+                        getattr(goal, "state", None)
+                    ),
                 )
             )
     if unsupported:
@@ -169,6 +220,7 @@ __all__ = [
     "UnsupportedBehavior",
     "UnsupportedBehaviorRouteError",
     "authored_behavior_type",
+    "authored_behavior_type_display",
     "behavior_route",
     "goal_behavior_route",
     "is_known_behavior_type",

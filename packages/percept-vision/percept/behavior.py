@@ -1185,16 +1185,18 @@ def coerce_authored_behavior(raw) -> dict:
     out: dict = {}
     # Execution route. Preserve every closed-vocabulary route so a later worker boundary can either
     # execute it or reject it loudly; an explicit route must never be laundered into the default Watch.
+    route_type = raw.get("type")
     if (
-        raw.get("type") == "transition"
-        and isinstance(raw.get("from"), str)
+        type(route_type) is str
+        and route_type == "transition"
+        and type(raw.get("from")) is str
         and raw["from"].strip()
-        and isinstance(raw.get("to"), str)
+        and type(raw.get("to")) is str
         and raw["to"].strip()
     ):
         out.update(type="transition", **{"from": raw["from"], "to": raw["to"]})
-    elif raw.get("type") != "transition" and is_known_behavior_type(raw.get("type")):
-        out["type"] = raw["type"]
+    elif type(route_type) is str and route_type != "transition" and is_known_behavior_type(route_type):
+        out["type"] = route_type
     # re-arm (interval needs a positive cadence; deadline needs a non-negative deadline)
     rearm = raw.get("rearm")
     if rearm in {"never", "each_event"}:

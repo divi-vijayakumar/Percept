@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from dataclasses import replace
 
 from percept import Goal, Percept
 from percept.adapters import Verdict
@@ -14,11 +15,18 @@ from percept.behavior_routes import (
     behavior_route,
     goal_behavior_route,
 )
+from percept.config import GateSettings, Settings
 from percept.contracts.watchplan import WatchPlan
 from percept.domain_pack import watch_template
-from percept.edge.tier0 import GatedWatchLoop, compile_watchspec, gray_frame, watchspec_unsupported
-from percept.packs_default import FACILITY_OBSERVATION_V1
+from percept.edge.tier0 import (
+    CivilTime,
+    GatedWatchLoop,
+    compile_watchspec,
+    gray_frame,
+    watchspec_unsupported,
+)
 from percept.observability import funnel_key
+from percept.packs_default import FACILITY_OBSERVATION_V1
 from percept.runtime import RuntimeStats, run
 from percept.watchplan_apply import apply_watch_plan
 
@@ -55,8 +63,12 @@ class _RouteVision:
         return []
 
 
-def _transition_core(template_name: str, tokens: list[str]):
-    plan = watch_template(f"facility_observation@1/{template_name}")
+def _transition_plan_core(
+    plan: WatchPlan,
+    tokens: list[str],
+    *,
+    settings: Settings | None = None,
+):
     before = plan.explicit["Goal.state.from"]
     after = plan.explicit["Goal.state.to"]
     script: dict[tuple[str, str], Verdict] = {}
@@ -68,11 +80,21 @@ def _transition_core(template_name: str, tokens: list[str]):
             satisfied=token == "to", confidence=0.95, evidence=f"{after}: {token}"
         )
     vision = _RouteVision(script)
-    core = Percept.create(vision=vision, discover_plugins=False)
+    core = Percept.create(vision=vision, settings=settings, discover_plugins=False)
     receipt = apply_watch_plan(core, plan, domain_pack=FACILITY_OBSERVATION_V1)
     if receipt.status not in ("applied", "applied_with_warnings"):
         raise AssertionError(receipt)
     return core, vision, receipt.watch_ids[0]
+
+
+def _transition_core(
+    template_name: str,
+    tokens: list[str],
+    *,
+    settings: Settings | None = None,
+):
+    plan = watch_template(f"facility_observation@1/{template_name}")
+    return _transition_plan_core(plan, tokens, settings=settings)
 
 
 def _motion_source(tokens: list[str]):
@@ -81,6 +103,21 @@ def _motion_source(tokens: list[str]):
 
 
 class RouteClassifierTests(unittest.TestCase):
+    class _UnhashableStr(str):
+        __hash__ = None
+
+    class _HostileStr(str):
+        __hash__ = None
+
+        def __eq__(self, _other):
+            raise AssertionError("hostile equality must not run")
+
+        def __repr__(self):
+            raise AssertionError("hostile repr must not run")
+
+        def strip(self, _chars=None):
+            raise AssertionError("hostile strip must not run")
+
     def test_closed_route_table_and_condition_eligibility_share_one_classifier(self):
         goals = [
             Goal(
@@ -161,6 +198,57 @@ class RouteClassifierTests(unittest.TestCase):
         blank = {"type": "watch", "behavior": {"type": "transition", "from": " ", "to": "ready"}}
         self.assertEqual(behavior_route(blank), BehaviorRoute.UNSUPPORTED)
         self.assertNotIn("type", coerce_authored_behavior(blank["behavior"]))
+
+    def test_flat_and_nested_route_representations_have_closed_conflict_rules(self):
+        self.assertEqual(
+            behavior_route(
+                {
+                    "type": "watch",
+                    "behavior": {"type": "transition", "from": "closed", "to": "open"},
+                }
+            ),
+            BehaviorRoute.FRAME_TRANSITION,
+        )
+        self.assertEqual(
+            behavior_route({"type": "process", "behavior": {"type": "process"}}),
+            BehaviorRoute.FRAME_PROCESS,
+        )
+        self.assertEqual(
+            behavior_route({"type": "watch", "behavior": {"type": "count"}}),
+            BehaviorRoute.EXTERNAL_BOUNDARY,
+        )
+        for flat, nested in (("process", "transition"), ("event", "count"), ("count", "rhythm")):
+            with self.subTest(flat=flat, nested=nested):
+                self.assertEqual(
+                    behavior_route(
+                        {
+                            "type": flat,
+                            "behavior": {"type": nested, "from": "a", "to": "b"},
+                        }
+                    ),
+                    BehaviorRoute.UNSUPPORTED,
+                )
+
+    def test_hostile_string_subclasses_fail_closed_without_invoking_user_methods(self):
+        for value in (self._UnhashableStr("count"), self._HostileStr("transition")):
+            with self.subTest(type=type(value).__name__):
+                state = {"type": value}
+                self.assertEqual(behavior_route(state), BehaviorRoute.UNSUPPORTED)
+                goal = Goal("hostile", "hostile", "hostile", state=state)
+                with self.assertRaises(UnsupportedBehaviorRouteError) as caught:
+                    GatedWatchLoop(
+                        Percept.create(vision=_RouteVision({}), discover_plugins=False),
+                        goals=[goal],
+                    )
+                self.assertIn(f"<{type(value).__name__}>", str(caught.exception))
+
+        hostile_predicate = {
+            "type": "transition",
+            "from": self._HostileStr("a"),
+            "to": "b",
+        }
+        self.assertEqual(behavior_route(hostile_predicate), BehaviorRoute.UNSUPPORTED)
+        self.assertNotIn("type", coerce_authored_behavior(hostile_predicate))
 
 
 class StructuredApplyRouteTests(unittest.TestCase):
@@ -277,6 +365,15 @@ class WorkerPreflightTests(unittest.TestCase):
         with self.assertRaises(UnsupportedBehaviorRouteError):
             GatedWatchLoop(core)
 
+    def test_gated_loop_filters_source_before_route_preflight_and_compilation(self):
+        core = Percept.create(vision=_RouteVision({}), discover_plugins=False)
+        core.add_goal(Goal("camera", "camera", "camera", source="camera"))
+        core.add_goal(
+            Goal("foreign", "foreign", "foreign", source="other", state={"type": "count"})
+        )
+        loop = GatedWatchLoop(core, source="camera")
+        self.assertEqual([condition.goal_id for condition in loop.spec.conditions], ["camera"])
+
     def test_mid_run_external_route_fails_before_detect_or_judge(self):
         vision = _RouteVision({})
         core = Percept.create(vision=vision, discover_plugins=False)
@@ -293,6 +390,32 @@ class WorkerPreflightTests(unittest.TestCase):
         with self.assertRaises(UnsupportedBehaviorRouteError):
             asyncio.run(_collect(core, source()))
         self.assertEqual(pulled, [1, 2])
+        self.assertEqual(vision.detect_calls, 0)
+        self.assertEqual(vision.judge_calls, [])
+
+    def test_stale_source_generation_aborts_before_detect_or_route_dispatch(self):
+        vision = _RouteVision({})
+        core = Percept.create(vision=vision, discover_plugins=False)
+        core.add_goal(
+            Goal(
+                "transition",
+                "transition",
+                "transition",
+                state={"type": "transition", "from": "a", "to": "b"},
+            )
+        )
+        admitted_generation = core.source_continuity_generation("camera")
+        core.advance_source_continuity("camera")
+        events = asyncio.run(
+            core.perceive_judged(
+                "frame",
+                source="camera",
+                t=1.0,
+                expected_source_generation=admitted_generation,
+                goal_ids=("transition",),
+            )
+        )
+        self.assertEqual(events, [])
         self.assertEqual(vision.detect_calls, 0)
         self.assertEqual(vision.judge_calls, [])
 
@@ -339,6 +462,90 @@ class FacilityTransitionRuntimeTests(unittest.TestCase):
         self.assertEqual(incidents, [])
         self.assertEqual(len(vision.judge_calls), (len(tokens) - 1) * 2)
 
+    def test_async_dispatch_executes_transition_with_launch_and_provider_accounting(self):
+        tokens = ["prime", "from", "to", "to"]
+        core, vision, goal_id = _transition_core("package_appeared", tokens)
+        stats = RuntimeStats()
+
+        async def paced_source():
+            for item in _motion_source(tokens):
+                yield item
+                await asyncio.sleep(0.01)
+
+        incidents = asyncio.run(
+            _collect(core, paced_source(), judge_dispatch="async", stats=stats)
+        )
+        self.assertEqual([incident.concern_id for incident in incidents], [goal_id])
+        admitted_frames = len(tokens) - 1
+        self.assertEqual(stats.judge_calls, admitted_frames)
+        self.assertEqual(len(vision.judge_calls), admitted_frames * 2)
+        self.assertEqual(
+            core.metrics.get(funnel_key("judged", concern=goal_id)),
+            admitted_frames * 2,
+        )
+
+    def test_low_confidence_transition_endpoint_does_not_fire(self):
+        tokens = ["prime", "from", "uncertain"]
+        core, vision, goal_id = _transition_core("package_appeared", tokens)
+        goal = core.goals.get(goal_id)
+        vision.script[(goal.state["from"], "uncertain")] = Verdict(
+            satisfied=False, confidence=0.95, evidence="not before"
+        )
+        vision.script[(goal.state["to"], "uncertain")] = Verdict(
+            satisfied=True, confidence=0.2, evidence="unclear"
+        )
+        incidents = asyncio.run(
+            _collect(core, _motion_source(tokens), judge_dispatch="inline")
+        )
+        self.assertEqual(incidents, [])
+        self.assertEqual(len(vision.judge_calls), (len(tokens) - 1) * 2)
+
+    def test_transition_schedule_blocks_admission_before_provider_calls(self):
+        tokens = ["prime", "from", "to"]
+        plan = replace(
+            watch_template("facility_observation@1/package_appeared"),
+            schedule={"windows": [[0, 60]], "days": [1]},
+        )
+        core, vision, _goal_id = _transition_plan_core(plan, tokens)
+        stats = RuntimeStats()
+        incidents = asyncio.run(
+            _collect(
+                core,
+                _motion_source(tokens),
+                clock=lambda: CivilTime(weekday=1, minute_of_day=120),
+                judge_dispatch="inline",
+                stats=stats,
+            )
+        )
+        self.assertEqual(incidents, [])
+        self.assertEqual(stats.judge_calls, 0)
+        self.assertEqual(vision.judge_calls, [])
+
+    def test_transition_worker_only_judges_goals_for_its_source(self):
+        tokens = ["prime", "from", "to"]
+        plan = watch_template("facility_observation@1/package_appeared")
+        camera_plan = replace(plan, id="camera-transition", source="camera")
+        core, vision, camera_id = _transition_plan_core(camera_plan, tokens)
+        foreign_plan = replace(plan, id="foreign-transition", source="other")
+        foreign_receipt = apply_watch_plan(
+            core, foreign_plan, domain_pack=FACILITY_OBSERVATION_V1
+        )
+        self.assertEqual(foreign_receipt.status, "applied")
+        incidents = asyncio.run(
+            _collect(
+                core,
+                _motion_source(tokens),
+                gate_source="camera",
+                judge_dispatch="inline",
+            )
+        )
+        self.assertEqual([incident.concern_id for incident in incidents], [camera_id])
+        self.assertEqual(
+            core.metrics.get(funnel_key("judged", concern="foreign-transition")),
+            0,
+        )
+        self.assertEqual(len(vision.judge_calls), (len(tokens) - 1) * 2)
+
     def test_compiled_transition_retains_bound_threshold(self):
         core, _vision, goal_id = _transition_core("package_appeared", ["prime", "from"])
         compiled = core._watch_runtime_bindings[goal_id][0]
@@ -351,10 +558,14 @@ class FacilityTransitionRuntimeTests(unittest.TestCase):
 
 class FacilityOccupancyRuntimeTests(unittest.TestCase):
     @staticmethod
-    def _core(script: dict[str, Verdict]):
+    def _core(script: dict[str, Verdict], *, settings: Settings | None = None):
         from percept.backends.fake import FakeVision
 
-        core = Percept.create(vision=FakeVision(script=script), discover_plugins=False)
+        core = Percept.create(
+            vision=FakeVision(script=script),
+            settings=settings,
+            discover_plugins=False,
+        )
         plan = watch_template("facility_observation@1/zone_occupied")
         receipt = apply_watch_plan(core, plan, domain_pack=FACILITY_OBSERVATION_V1)
         if receipt.status != "applied":
@@ -393,6 +604,19 @@ class FacilityOccupancyRuntimeTests(unittest.TestCase):
         }
         core, goal_id = self._core(script)
         tokens = ["prime", "empty", "occupied", "unknown", "occupied"]
+        incidents = asyncio.run(
+            _collect(core, _motion_source(tokens), judge_dispatch="inline")
+        )
+        self.assertEqual([incident.concern_id for incident in incidents], [goal_id])
+
+    def test_require_false_first_suppresses_join_then_rearms_after_observed_false(self):
+        script = {
+            "empty": Verdict(False, 0.95, "the zone is empty"),
+            "occupied": Verdict(True, 0.95, "a person is present"),
+        }
+        settings = Settings(gate=GateSettings(require_false_first=True))
+        core, goal_id = self._core(script, settings=settings)
+        tokens = ["prime", "occupied", "empty", "occupied"]
         incidents = asyncio.run(
             _collect(core, _motion_source(tokens), judge_dispatch="inline")
         )
