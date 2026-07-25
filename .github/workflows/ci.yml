@@ -99,10 +99,12 @@ jobs:
           set -euo pipefail
           python -m venv /tmp/wheelsmoke
           /tmp/wheelsmoke/bin/pip install -q packages/percept-vision/dist/percept_vision-*.whl
-          # import the public surface with NO extras and NO repo on sys.path (run from /tmp)
+          # Run outside the checkout with no import-path or provider-credential inheritance.
           cd /tmp
-          /tmp/wheelsmoke/bin/python -c "import percept; import percept.contracts; from percept.harness import tier0; print('import ok', percept.__version__, percept.contracts.CONTRACT_VERSION)"
-          /tmp/wheelsmoke/bin/percept-schema
+          env -u PYTHONPATH \
+            -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u GOOGLE_API_KEY -u GOOGLE_AISTUDIO_API_KEY \
+            -u OPENROUTER_API_KEY -u OPENROUTER_KEY -u DEEPGRAM_API_KEY \
+            /tmp/wheelsmoke/bin/python -P "$GITHUB_WORKSPACE/packages/percept-vision/e2e/installed_wheel_smoke.py"
           # the golden set is repo data, not packaged — percept-bench must fail with a usable message, not a traceback
           out="$(/tmp/wheelsmoke/bin/percept-bench audit 2>&1 || true)"
           echo "$out"
