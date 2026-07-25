@@ -1,9 +1,12 @@
-"""Deterministic video-interest intervals for programmable Watches over live multimodal streams.
+"""Deterministic video-interest intervals for finite tier-0 replay traces.
 
 This module turns a scalar, timestamped interest signal into a small typed event stream:
 ``interest.entered`` -> zero or more ``interest.updated`` -> exactly one ``interest.exited``.
 It is deliberately below semantic judgment.  A tier-0 motion score can describe *where the
 admission signal was active*; it cannot claim that a Watch's plain-language condition was true.
+The optional :class:`Tier0MotionInterest` integration is confined to
+:class:`percept.harness.tier0.GatedWatchLoop`, which replays finite in-memory frame iterables.  It is
+not wired into :func:`percept.run` and makes no live-runtime lifecycle claim.
 
 The engine is stdlib-only, replay deterministic, and fail closed:
 
@@ -38,10 +41,9 @@ INTEREST_EXITED: InterestEventKind = "interest.exited"
 
 
 def _finite(name: str, value: Any) -> float:
-    try:
-        result = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be a finite number") from exc
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be an int or float")
+    result = float(value)
     if not math.isfinite(result):
         raise ValueError(f"{name} must be a finite number")
     return 0.0 if result == 0.0 else result
@@ -106,6 +108,8 @@ class InterestIntervalConfig:
         exit_ = _unit("exit_threshold", self.exit_threshold)
         if exit_ >= enter:
             raise ValueError("exit_threshold must be lower than enter_threshold")
+        object.__setattr__(self, "enter_threshold", enter)
+        object.__setattr__(self, "exit_threshold", exit_)
         if (
             not isinstance(self.enter_debounce, int)
             or isinstance(self.enter_debounce, bool)
@@ -118,23 +122,28 @@ class InterestIntervalConfig:
             or self.exit_debounce < 1
         ):
             raise ValueError("exit_debounce must be an integer >= 1")
-        if self.expiry_s is not None and _finite("expiry_s", self.expiry_s) <= 0.0:
-            raise ValueError("expiry_s must be > 0 when set")
+        if self.expiry_s is not None:
+            expiry = _finite("expiry_s", self.expiry_s)
+            if expiry <= 0.0:
+                raise ValueError("expiry_s must be > 0 when set")
+            object.__setattr__(self, "expiry_s", expiry)
 
 
 @dataclass(frozen=True)
 class InterestSample:
     """One interest observation on both the source and observer clocks.
 
-    ``confidence=None`` means the producer has no calibrated confidence signal; the engine never
-    manufactures one from a salience score.  ``coverage`` describes this observation's usable
-    source coverage, not correctness.
+    ``evidence_id`` is the producer's stable identity for the exact evidence item (the replay
+    adapter uses a content hash of the coarse frame). ``confidence=None`` means the producer has no
+    calibrated confidence signal; the engine never manufactures one from a salience score.
+    ``coverage`` describes this observation's usable source coverage, not correctness.
     """
 
     source_at: float
     observed_at: float
     score: float
     reason: str
+    evidence_id: str
     confidence: float | None = None
     coverage: float = 1.0
     regions: tuple[Box, ...] = ()
@@ -145,6 +154,7 @@ class InterestSample:
         object.__setattr__(self, "observed_at", _finite("observed_at", self.observed_at))
         object.__setattr__(self, "score", _unit("score", self.score))
         object.__setattr__(self, "reason", _identity("reason", self.reason))
+        object.__setattr__(self, "evidence_id", _identity("evidence_id", self.evidence_id))
         if self.confidence is not None:
             object.__setattr__(self, "confidence", _unit("confidence", self.confidence))
         object.__setattr__(self, "coverage", _unit("coverage", self.coverage))
@@ -156,20 +166,23 @@ class InterestSample:
 class InterestIntervalEvent:
     """A typed, immutable interval lifecycle event.
 
-    Bounds are conservative observed evidence bounds.  ``event_observed_at`` is when the state
+    ``stream_epoch`` is caller-owned and ``evidence_id`` identifies the sample that triggered this
+    event. Bounds are conservative observed evidence bounds. ``event_observed_at`` is when the state
     transition became known, which can be later than ``observed_end`` after exit debounce, expiry,
-    reconnect or EOS.  ``source_end`` is never extrapolated when the source is disconnected.
+    reconnect or EOS. ``source_end`` is never extrapolated when the source is disconnected.
     """
 
     kind: InterestEventKind
     interval_id: str
     source: str
+    stream_epoch: str
     source_start: float
     source_end: float
     observed_start: float
     observed_end: float
     event_observed_at: float
     reason: str
+    evidence_id: str
     score: float
     confidence: float | None
     coverage: float
@@ -183,6 +196,7 @@ class InterestIntervalEvent:
             raise ValueError(f"unknown interest event kind {self.kind!r}")
         object.__setattr__(self, "interval_id", _identity("interval_id", self.interval_id))
         object.__setattr__(self, "source", _identity("source", self.source))
+        object.__setattr__(self, "stream_epoch", _identity("stream_epoch", self.stream_epoch))
         for name in (
             "source_start",
             "source_end",
@@ -198,6 +212,7 @@ class InterestIntervalEvent:
         if self.event_observed_at < self.observed_end:
             raise ValueError("event_observed_at must be >= observed_end")
         object.__setattr__(self, "reason", _identity("reason", self.reason))
+        object.__setattr__(self, "evidence_id", _identity("evidence_id", self.evidence_id))
         object.__setattr__(self, "score", _unit("score", self.score))
         if self.confidence is not None:
             object.__setattr__(self, "confidence", _unit("confidence", self.confidence))
@@ -218,12 +233,14 @@ class InterestIntervalEvent:
             "kind": self.kind,
             "interval_id": self.interval_id,
             "source": self.source,
+            "stream_epoch": self.stream_epoch,
             "source_start": self.source_start,
             "source_end": self.source_end,
             "observed_start": self.observed_start,
             "observed_end": self.observed_end,
             "event_observed_at": self.event_observed_at,
             "reason": self.reason,
+            "evidence_id": self.evidence_id,
             "score": self.score,
             "confidence": self.confidence,
             "coverage": self.coverage,
@@ -252,20 +269,23 @@ class _OpenInterval:
 class InterestIntervalEngine:
     """One-source deterministic hysteresis/debounce state machine.
 
-    An engine is pinned to one ``(source, admission_id, detector_id)`` identity.  Construct one per
-    scalar signal.  ``observe`` may emit an expiry exit followed by a new enter on the same call;
-    that is the explicit split policy when a gap reaches ``expiry_s``.  Shorter gaps merge.
+    An engine is pinned to one ``(source, stream_epoch, admission_id, detector_id)`` identity.
+    Construct one per scalar signal epoch. ``observe`` may emit an expiry exit followed by a new
+    enter on the same call; that is the explicit split policy when a gap reaches ``expiry_s``.
+    Shorter gaps merge.
     """
 
     def __init__(
         self,
         *,
         source: str,
+        stream_epoch: str,
         admission_id: str,
         detector_id: str,
         config: InterestIntervalConfig,
     ) -> None:
         self.source = _identity("source", source)
+        self.stream_epoch = _identity("stream_epoch", stream_epoch)
         self.admission_id = _identity("admission_id", admission_id)
         self.detector_id = _identity("detector_id", detector_id)
         if not isinstance(config, InterestIntervalConfig):
@@ -342,14 +362,19 @@ class InterestIntervalEngine:
     def reconnect(
         self,
         *,
+        stream_epoch: str,
         observed_at: float,
         source_at: float | None = None,
     ) -> list[InterestIntervalEvent]:
         """Close the current interval as ``reconnect`` and start a new source-time epoch.
 
-        Reconnect is an explicit split: even an immediately recurring signal receives a new stable
-        interval id.  Observer time must remain monotonic; source time may restart afterwards.
+        Reconnect is an explicit split and requires a NEW caller-owned epoch: even an immediately
+        recurring signal receives a new stable interval id. Observer time remains monotonic; source
+        time may restart afterwards.
         """
+        next_epoch = _identity("stream_epoch", stream_epoch)
+        if next_epoch == self.stream_epoch:
+            raise ValueError("reconnect stream_epoch must differ from the current epoch")
         now = _finite("observed_at", observed_at)
         self._validate_control_time(now)
         events = self._close_control("reconnect", now, source_at)
@@ -358,6 +383,8 @@ class InterestIntervalEngine:
         self._last_sample_observed_at = None
         self._last_source_at = None
         self._ended = False
+        self._ordinal = 0
+        self.stream_epoch = next_epoch
         return events
 
     def end_of_stream(
@@ -423,7 +450,7 @@ class InterestIntervalEngine:
             events.append(
                 self._exit(
                     reason="expired",
-                    event_observed_at=deadline,
+                    event_observed_at=observed_at,
                     closing_sample=None,
                 )
             )
@@ -519,12 +546,14 @@ class InterestIntervalEngine:
             kind=kind,
             interval_id=self._open.interval_id,
             source=self.source,
+            stream_epoch=self.stream_epoch,
             source_start=self._open.source_start,
             source_end=self._open.source_end,
             observed_start=self._open.observed_start,
             observed_end=self._open.observed_end,
             event_observed_at=event_observed_at,
             reason=reason,
+            evidence_id=sample.evidence_id,
             score=sample.score,
             confidence=sample.confidence,
             coverage=sample.coverage,
@@ -538,13 +567,15 @@ class InterestIntervalEngine:
         self._ordinal += 1
         payload = json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "source": self.source,
+                "stream_epoch": self.stream_epoch,
                 "admission_id": self.admission_id,
                 "detector_id": self.detector_id,
                 "ordinal": self._ordinal,
                 "source_start": first.source_at,
-                "observed_start": first.observed_at,
+                "reason": first.reason,
+                "evidence_id": first.evidence_id,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -558,12 +589,14 @@ class InterestIntervalEngine:
 
 
 class Tier0MotionInterest:
-    """Opt-in adapter from a ``GateDecision``'s reported mean-motion gauge to intervals.
+    """Replay adapter from a ``GateDecision``'s reported mean-motion gauge to intervals.
 
     This adapter intentionally reads ``decision.signal.motion`` rather than ``decision.escalate``.
     The latter may be driven by a localized, structural, semantic, audio or fused signal that is not
     present in ``GateDecision`` with enough detail to reconstruct a truthful interval.  Confidence
-    remains ``None`` because frame-diff salience is not a calibrated confidence.
+    remains ``None`` because frame-diff salience is not a calibrated confidence.  Each finite
+    :class:`~percept.harness.tier0.GatedWatchLoop.run` supplies an explicit ``stream_epoch`` and
+    independent ``observed_times``; this adapter owns no live capture or reconnect integration.
     """
 
     def __init__(
@@ -574,30 +607,55 @@ class Tier0MotionInterest:
         admission_id: str = "tier0.signal.motion",
         detector_id: str = "motion_score.mean",
     ) -> None:
-        self.engine = InterestIntervalEngine(
-            source=source,
-            admission_id=admission_id,
-            detector_id=detector_id,
-            config=config,
+        self.source = _identity("source", source)
+        self.admission_id = _identity("admission_id", admission_id)
+        self.detector_id = _identity("detector_id", detector_id)
+        if not isinstance(config, InterestIntervalConfig):
+            raise TypeError("config must be an InterestIntervalConfig")
+        self.config = config
+        self._engine: InterestIntervalEngine | None = None
+
+    def begin_epoch(self, stream_epoch: str) -> None:
+        """Begin one finite replay epoch; an unfinished prior epoch is a lifecycle error."""
+        if self._engine is not None:
+            raise RuntimeError("an interest replay epoch is already active")
+        self._engine = InterestIntervalEngine(
+            source=self.source,
+            stream_epoch=stream_epoch,
+            admission_id=self.admission_id,
+            detector_id=self.detector_id,
+            config=self.config,
         )
+
+    @property
+    def engine(self) -> InterestIntervalEngine | None:
+        return self._engine
 
     def observe(
         self,
         decision: Any,
         *,
+        observed_at: float,
+        evidence_id: str,
         regions: Sequence[Box] = (),
         track_ids: Sequence[str] = (),
     ) -> list[InterestIntervalEvent]:
         signal = getattr(decision, "signal", None)
         if signal is None:
             raise TypeError("decision must expose a tier-0 signal")
-        ts = _finite("decision.signal.ts", getattr(signal, "ts", None))
-        return self.engine.observe(
+        if self._engine is None:
+            raise RuntimeError("begin_epoch() must be called before observe()")
+        source_at = _finite("decision.signal.ts", getattr(signal, "ts", None))
+        observed = _finite("observed_at", observed_at)
+        motion = _unit("decision.signal.motion", getattr(signal, "motion", None))
+        evidence = _identity("evidence_id", evidence_id)
+        return self._engine.observe(
             InterestSample(
-                source_at=ts,
-                observed_at=ts,
-                score=getattr(signal, "motion", None),
+                source_at=source_at,
+                observed_at=observed,
+                score=motion,
                 reason="tier0_motion",
+                evidence_id=evidence,
                 confidence=None,
                 coverage=1.0,
                 regions=tuple(regions),
@@ -605,8 +663,19 @@ class Tier0MotionInterest:
             )
         )
 
-    def end_of_stream(self) -> list[InterestIntervalEvent]:
-        return self.engine.end_of_stream()
+    def end_of_stream(self, *, observed_at: float | None = None) -> list[InterestIntervalEvent]:
+        """Finish the current finite replay epoch and become ready for the next one."""
+        if self._engine is None:
+            return []
+        engine = self._engine
+        try:
+            return engine.end_of_stream(observed_at=observed_at)
+        finally:
+            self._engine = None
+
+    def abort_epoch(self) -> None:
+        """Discard an unreturned replay report after failure, emitting no orphan lifecycle event."""
+        self._engine = None
 
 
 __all__ = [

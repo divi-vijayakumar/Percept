@@ -21,7 +21,9 @@ back up — even motion-only.
 
 from __future__ import annotations
 
+import hashlib
 import inspect
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Sequence
@@ -913,6 +915,18 @@ def _normalize_stream(stream: Iterable[Any], *, clock_start: float, dt: float) -
     return items
 
 
+def _frame_evidence_id(obj: Any) -> str:
+    """Content identity for the exact coarse frame that produced a replay interest sample."""
+    frame = _as_frame(obj)
+    payload = json.dumps(
+        {"version": 1, "w": frame.w, "h": frame.h, "pixels": frame.pixels},
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return "frame_" + hashlib.sha256(payload).hexdigest()
+
+
 class GatedWatchLoop:
     """The wired WatchSpec↓ / Tier0Signal↑ loop against a live :class:`~percept.agent.Percept`.
 
@@ -960,10 +974,10 @@ class GatedWatchLoop:
         self._banks = {
             c.goal_id: DetectorBank(c.detectors) for c in self._spec.conditions if c.detectors
         }
-        if interest is not None and interest.engine.source != source:
+        if interest is not None and interest.source != source:
             raise ValueError(
                 "tier-0 interest source must match the GatedWatchLoop source "
-                f"({interest.engine.source!r} != {source!r})"
+                f"({interest.source!r} != {source!r})"
             )
         self._interest = interest
 
@@ -998,6 +1012,8 @@ class GatedWatchLoop:
         self, stream: Iterable[Any], *, clock_start: float = 0.0, dt: float = 1.0,
         energies: Sequence[float] | None = None,
         cheap_signals: Sequence[dict[str, float]] | None = None,
+        interest_stream_epoch: str | None = None,
+        interest_observed_times: Sequence[float] | None = None,
     ) -> LoopReport:
         """Drive the loop over a frame stream; gate, report up, perceive only on escalation.
 
@@ -1006,59 +1022,93 @@ class GatedWatchLoop:
         (one float per frame, same order) feeding energy-backed detectors like acoustic-onset — the audio
         analog of the motion channel, the same energy already computed off the mic/STT stream. Returns
         the :class:`LoopReport`.
+
+        When ``interest=`` was configured, this is explicitly a FINITE REPLAY epoch:
+        ``interest_stream_epoch`` and one independent observer-clock timestamp per frame in
+        ``interest_observed_times`` are required. Successful completion closes the interval as
+        ``end_of_stream`` and leaves the adapter ready for another run/epoch. Any exception aborts
+        and discards the unreturned lifecycle report; it emits no exit that could later be exposed
+        without its enter.
         """
         report = LoopReport()
         items = _normalize_stream(stream, clock_start=clock_start, dt=dt)
-        for i, item in enumerate(items):
-            energy = energies[i] if energies is not None and i < len(energies) else None
-            extra = cheap_signals[i] if cheap_signals is not None and i < len(cheap_signals) else None
-            decision = self._gate.evaluate(item.frame, ts=item.ts, energy=energy, signals=extra)
-            report.frames += 1
-            report.signals.append(decision.signal)  # report Tier0Signal UP every frame
-            if self._interest is not None:
-                report.interest_events.extend(self._interest.observe(decision))
-            if self._funnel is not None:
-                self._funnel.seen(camera=self._source)  # the ungated baseline: a frame was observed
-            # Edge detectors run on the cheap motion/energy signals at native fps — the count/boundaries
-            # come from here, decoupled from the (sparse, motion-gated) vision calls below. Each boundary
-            # is fed to the brain as a distinct occurrence (edge proposes · brain counts), firing per the
-            # goal's accumulate.fire_when without spending a vision call.
-            count_boundary = getattr(self._core, "perceive_boundary", None)
-            for goal_id, bank in self._banks.items():
-                # feed every channel the loop has: motion (always) + the raw frame (for frame-backed
-                # detectors like pose) + audio energy (for acoustic-onset).
-                for b in bank.push(item.ts, motion=decision.signal.motion, frame=item.frame, energy=energy):
-                    report.boundaries.append((goal_id, b))
-                    if count_boundary is not None:
-                        fired = count_boundary(goal_id, t=b.t)
-                        if fired is not None:
-                            report.fire_events.append(fired)
-            if decision.escalate:
-                report.escalations += 1
-                report.vision_calls += 1
-                if self._funnel is not None:
-                    self._funnel.gated(camera=self._source)  # the gate spent a cloud call this frame
-                kwargs = {"t": item.ts}
-                accepts_goal_ids = _accepts_keyword(
-                    self._core.perceive_judged, "goal_ids"
-                )
-                if accepts_goal_ids:
-                    kwargs["goal_ids"] = decision.goal_ids
-                fired = await self._core.perceive_judged(
-                    item.frame, self._source, **kwargs
-                )
-                if not accepts_goal_ids:
-                    admitted = frozenset(decision.goal_ids)
-                    fired = [
-                        event
-                        for event in (fired or ())
-                        if getattr(event, "goal_id", None) in admitted
-                    ]
-                report.fire_events.extend(fired or [])
         if self._interest is not None:
-            # ``run`` consumes a finite iterable, so reaching its end has unambiguous EOS semantics.
-            # The adapter preserves the last positive evidence bound and stamps EOS separately.
-            report.interest_events.extend(self._interest.end_of_stream())
+            if interest_stream_epoch is None:
+                raise ValueError("interest_stream_epoch is required for an interest replay")
+            if interest_observed_times is None:
+                raise ValueError("interest_observed_times is required for an interest replay")
+            if len(interest_observed_times) != len(items):
+                raise ValueError(
+                    "interest_observed_times must contain exactly one timestamp per frame"
+                )
+            self._interest.begin_epoch(interest_stream_epoch)
+        try:
+            for i, item in enumerate(items):
+                energy = energies[i] if energies is not None and i < len(energies) else None
+                extra = cheap_signals[i] if cheap_signals is not None and i < len(cheap_signals) else None
+                decision = self._gate.evaluate(item.frame, ts=item.ts, energy=energy, signals=extra)
+                report.frames += 1
+                report.signals.append(decision.signal)  # report Tier0Signal UP every frame
+                if self._interest is not None:
+                    report.interest_events.extend(
+                        self._interest.observe(
+                            decision,
+                            observed_at=interest_observed_times[i],
+                            evidence_id=_frame_evidence_id(item.frame),
+                        )
+                    )
+                if self._funnel is not None:
+                    self._funnel.seen(camera=self._source)  # the ungated baseline: a frame was observed
+                # Edge detectors run on the cheap motion/energy signals at native fps — the count/boundaries
+                # come from here, decoupled from the (sparse, motion-gated) vision calls below. Each boundary
+                # is fed to the brain as a distinct occurrence (edge proposes · brain counts), firing per the
+                # goal's accumulate.fire_when without spending a vision call.
+                count_boundary = getattr(self._core, "perceive_boundary", None)
+                for goal_id, bank in self._banks.items():
+                    # feed every channel the loop has: motion (always) + the raw frame (for frame-backed
+                    # detectors like pose) + audio energy (for acoustic-onset).
+                    for b in bank.push(
+                        item.ts,
+                        motion=decision.signal.motion,
+                        frame=item.frame,
+                        energy=energy,
+                    ):
+                        report.boundaries.append((goal_id, b))
+                        if count_boundary is not None:
+                            fired = count_boundary(goal_id, t=b.t)
+                            if fired is not None:
+                                report.fire_events.append(fired)
+                if decision.escalate:
+                    report.escalations += 1
+                    report.vision_calls += 1
+                    if self._funnel is not None:
+                        self._funnel.gated(camera=self._source)  # the gate spent a cloud call this frame
+                    kwargs = {"t": item.ts}
+                    accepts_goal_ids = _accepts_keyword(
+                        self._core.perceive_judged, "goal_ids"
+                    )
+                    if accepts_goal_ids:
+                        kwargs["goal_ids"] = decision.goal_ids
+                    fired = await self._core.perceive_judged(
+                        item.frame, self._source, **kwargs
+                    )
+                    if not accepts_goal_ids:
+                        admitted = frozenset(decision.goal_ids)
+                        fired = [
+                            event
+                            for event in (fired or ())
+                            if getattr(event, "goal_id", None) in admitted
+                        ]
+                    report.fire_events.extend(fired or [])
+            if self._interest is not None:
+                eos_at = interest_observed_times[-1] if interest_observed_times else None
+                report.interest_events.extend(
+                    self._interest.end_of_stream(observed_at=eos_at)
+                )
+        except BaseException:
+            if self._interest is not None:
+                self._interest.abort_epoch()
+            raise
         return report
 
 
@@ -1076,6 +1126,8 @@ async def run_gated_watch(
     settings: Settings | None = None,
     wake_policy: WakePolicy | dict[str, Any] | None = None,
     interest: Tier0MotionInterest | None = None,
+    interest_stream_epoch: str | None = None,
+    interest_observed_times: Sequence[float] | None = None,
 ) -> LoopReport:
     """One-call entrypoint for the wired loop (the cross-package e2e drives this).
 
@@ -1093,7 +1145,13 @@ async def run_gated_watch(
         interest=interest,
     )
     return await loop.run(
-        stream, clock_start=clock_start, dt=dt, energies=energies, cheap_signals=cheap_signals
+        stream,
+        clock_start=clock_start,
+        dt=dt,
+        energies=energies,
+        cheap_signals=cheap_signals,
+        interest_stream_epoch=interest_stream_epoch,
+        interest_observed_times=interest_observed_times,
     )
 
 

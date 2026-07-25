@@ -249,7 +249,7 @@ __all__ = [
     "watch",
     "WATCH_VERSION",
     "WatchEvent",
-    # deterministic video-interest interval lifecycle (admission signal, not semantic judgment)
+    # deterministic finite-replay interest lifecycle (admission signal, not semantic judgment)
     "INTEREST_ENTERED",
     "INTEREST_UPDATED",
     "INTEREST_EXITED",
