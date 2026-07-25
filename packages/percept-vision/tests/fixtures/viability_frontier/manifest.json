@@ -1,0 +1,45 @@
+{
+  "schema_version": "1",
+  "track": "viability_frontier",
+  "scope": "programmable Watches over live multimodal streams",
+  "evidence_kind": "synthetic",
+  "preregistered": true,
+  "archetypes": [
+    {
+      "id": "state_change",
+      "cases": [
+        "state-01",
+        "state-02"
+      ],
+      "operating_points": [
+        "conservative",
+        "sparse"
+      ],
+      "policy": {
+        "min_candidate_recall": 0.5,
+        "min_event_recall": 0.75,
+        "min_call_reduction": 0.65,
+        "max_event_abstention_rate": 0.25,
+        "max_missing_rate": 0.0
+      }
+    },
+    {
+      "id": "brief_action",
+      "cases": [
+        "brief-01",
+        "brief-02"
+      ],
+      "operating_points": [
+        "conservative",
+        "sparse"
+      ],
+      "policy": {
+        "min_candidate_recall": 0.75,
+        "min_event_recall": 1.0,
+        "min_call_reduction": 0.5,
+        "max_event_abstention_rate": 0.0,
+        "max_missing_rate": 0.0
+      }
+    }
+  ]
+}

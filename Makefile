@@ -7,12 +7,13 @@ EDGE      := packages/percept-edge
 PY        := python3
 # absolute path to the zero-dep contract pkg (vision runs from inside $(SDK), so it needs this)
 
-.PHONY: help test test-harness test-js test-all test-templates test-capability-gate parity eval-live eval-benchmark e2e bench audit-benchmark scorecard benchmark-prepare benchmark-fetch benchmark-fetch-charades benchmark-fetch-proactiveqa benchmark-index-proactiveqa benchmark-manifest benchmark-run benchmark-collect check lint lint-all check-skills-sync reproduce clean architecture architecture-check
+.PHONY: help test test-harness test-js test-all test-templates test-capability-gate viability-frontier-contract parity eval-live eval-benchmark e2e bench audit-benchmark scorecard benchmark-prepare benchmark-fetch benchmark-fetch-charades benchmark-fetch-proactiveqa benchmark-index-proactiveqa benchmark-manifest benchmark-run benchmark-collect check lint lint-all check-skills-sync reproduce clean architecture architecture-check
 
 help:
 	@echo "test       L1 unit — percept-vision (incl. percept.harness + percept.contracts; fakes, no keys, fast) + template lane"
 	@echo "test-templates  L1 unit — templates/ reference apps (keyless; pipecat-dependent tests skip cleanly)"
 	@echo "test-capability-gate  L1 capability gate — Y16 task-level suite (CAPABILITY asserts, no keys, no stat bars)"
+	@echo "viability-frontier-contract  validate matched frontier mechanics on synthetic data (never launch-qualifying)"
 	@echo "test-js    L1 unit — percept-edge (vitest; needs npm install)"
 	@echo "test-all   test + test-js"
 	@echo "eval-live  L2 live eval (needs keys + validated budget plan; skips without PERCEPT_LIVE=1)"
@@ -78,6 +79,15 @@ test-capability-gate:
 	cd $(SDK) && PYTHONPATH=. PERCEPT_MODE=offline $(PY) -m pytest --import-mode=importlib \
 		tests/test_y16_capability_suite.py tests/test_synthetic_fixtures.py \
 		-rxX -q
+
+# Deterministic schema/evaluator contract only. The committed evidence is explicitly synthetic:
+# this target validates matched arms, exact denominators, policy evaluation, and Pareto selection,
+# and the report must state LAUNCH QUALIFIED: FALSE. A measured launch gate must supply its own
+# preregistered manifest and matched evidence, then use --require-launch-qualification.
+viability-frontier-contract:
+	PYTHONPATH=$(SDK) PERCEPT_MODE=offline $(PY) -m percept.eval.viability_frontier \
+		--manifest $(SDK)/tests/fixtures/viability_frontier/manifest.json \
+		--evidence $(SDK)/tests/fixtures/viability_frontier/observations.jsonl
 
 clean:  ## remove build + tooling artifacts (leaves out/ — that's intentional local run output)
 	rm -rf packages/*/build packages/*/dist packages/*/*.egg-info
