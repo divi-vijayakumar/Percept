@@ -99,7 +99,8 @@ The cognition core is documented module-by-module in the CodeWiki at
   [Profiles & Configuration](../../codewiki/Profiles-and-Configuration.md) (the env-driven settings tree
   and layered resolver).
 - **Planning** — [WatchPlan & Goals](../../codewiki/WatchPlan-and-Goals.md) (the frozen `watch()` seam,
-  natural-language goal desugaring, plan compilation, two-phase atomic apply).
+  natural-language goal desugaring, plan compilation, prepared apply with cache preflight and bounded
+  rollback of goal/binding/ledger state; cache eviction and revision notifications are not transactional).
 - **Cognition core** — [Core & Agent](../../codewiki/Core-and-Agent.md),
   [Routing](../../codewiki/Routing.md), [Cache](../../codewiki/Cache.md),
   [Judges](../../codewiki/Judges.md), [Backends](../../codewiki/Backends.md),

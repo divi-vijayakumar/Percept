@@ -938,6 +938,8 @@ class GatedWatchLoop:
         self._settings = cfg
         self._source = source
         active = list(goals) if goals is not None else list(core.goals.active())
+        rebind_required = getattr(core, "_watch_rebind_required", set())
+        active = [goal for goal in active if goal.id not in rebind_required]
         thr = cfg.edge.motion_gate if threshold is None else threshold
         # edge_capabilities=None -> in-process edge runs the whole registry; a remote edge advertises a
         # subset and the brain selects within it (the capability handshake).
@@ -1025,11 +1027,21 @@ class GatedWatchLoop:
                 if self._funnel is not None:
                     self._funnel.gated(camera=self._source)  # the gate spent a cloud call this frame
                 kwargs = {"t": item.ts}
-                if _accepts_keyword(self._core.perceive_judged, "goal_ids"):
+                accepts_goal_ids = _accepts_keyword(
+                    self._core.perceive_judged, "goal_ids"
+                )
+                if accepts_goal_ids:
                     kwargs["goal_ids"] = decision.goal_ids
                 fired = await self._core.perceive_judged(
                     item.frame, self._source, **kwargs
                 )
+                if not accepts_goal_ids:
+                    admitted = frozenset(decision.goal_ids)
+                    fired = [
+                        event
+                        for event in (fired or ())
+                        if getattr(event, "goal_id", None) in admitted
+                    ]
                 report.fire_events.extend(fired or [])
         return report
 

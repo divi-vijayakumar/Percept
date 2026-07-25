@@ -205,6 +205,7 @@ class _PreparedGoal:
     source_profile: Any | None
     application_key: str
     receipt: WatchReceipt
+    rebind_existing: bool = False
 
 
 _PER_WATCH_SETTINGS_SECTIONS: frozenset[str] = frozenset({"edge", "episodes"})
@@ -415,6 +416,10 @@ def _prepare_one(
             plan.profile, plan_resolve_kwargs.get("registry")
         )
         selected_name = getattr(selected_source_profile, "name", None)
+        source_selection_explicit = bool(
+            selected_source_profile is not None
+            and plan_resolve_kwargs.get("source_profile_explicit")
+        )
         if selected_source_profile is not None and selected_name != plan.profile:
             return "rejected", WatchReceipt(
                 status="rejected",
@@ -429,7 +434,11 @@ def _prepare_one(
                     ),
                 ),),
             )
-        if selected_source_profile is None and source_candidate is not None and watch_candidates:
+        if (
+            not source_selection_explicit
+            and source_candidate is not None
+            and watch_candidates
+        ):
             return "rejected", WatchReceipt(
                 status="rejected",
                 dropped_fields=(FieldDiagnostic(
@@ -443,7 +452,7 @@ def _prepare_one(
                     ),
                 ),),
             )
-        if selected_source_profile is None and watch_candidates:
+        if not source_selection_explicit and watch_candidates:
             return "rejected", WatchReceipt(
                 status="rejected",
                 dropped_fields=(FieldDiagnostic(
@@ -456,7 +465,7 @@ def _prepare_one(
                     ),
                 ),),
             )
-        if source_candidate is None and selected_source_profile is None:
+        if source_candidate is None and not source_selection_explicit:
             return "rejected", WatchReceipt(
                 status="rejected",
                 dropped_fields=(FieldDiagnostic(
@@ -469,7 +478,23 @@ def _prepare_one(
                     ),
                 ),),
             )
-        if selected_source_profile is None:
+        if not source_selection_explicit:
+            if (
+                selected_source_profile is not None
+                and selected_source_profile != source_candidate
+            ):
+                return "rejected", WatchReceipt(
+                    status="rejected",
+                    dropped_fields=(FieldDiagnostic(
+                        path="WatchPlan.profile",
+                        code="profile_kind_or_selection_conflict",
+                        goal_id=plan.id,
+                        message=(
+                            f"WatchPlan.profile={plan.profile!r} resolves to a SourceProfile that "
+                            "differs from the same-named SourceProfile inherited from the core."
+                        ),
+                    ),),
+                )
             selected_source_profile = source_candidate
             plan_resolve_kwargs["source_profile"] = selected_source_profile
             plan_resolve_kwargs["source_profile_explicit"] = True
@@ -539,26 +564,42 @@ def _prepare_one(
                 message=str(exc),
             ),),
         )
-    existing = percept.goals.get(compiled.goal.id)
-    if existing is not None:
-        return "rejected", WatchReceipt(
-            status="rejected",
-            dropped_fields=(FieldDiagnostic(
-                path="WatchPlan.id",
-                code="active_goal_id_reconfiguration_unsupported",
-                goal_id=compiled.goal.id,
-                message=(
-                    f"goal id {compiled.goal.id!r} already exists. In-place executable replacement "
-                    "cannot safely migrate gate, executor, episode, detector, or tier-0 throttle "
-                    "state; end the old goal and arm the changed Watch under a new id."
-                ),
-            ),),
-        )
     unsupported = _unsupported_core_setting(percept, compiled, goal_id=compiled.goal.id)
     if unsupported is not None:
         return "rejected", WatchReceipt(status="rejected", dropped_fields=(unsupported,))
     state, coerced = _coerce_goal_state(compiled.goal.state, goal_id=compiled.goal.id)
     goal = replace(compiled.goal, state=state)
+    existing = percept.goals.get(goal.id)
+    rebind_existing = False
+    if existing is not None:
+        existing_identity = getattr(
+            percept, "_watch_executable_identities", {}
+        ).get(goal.id)
+        existing_status = percept.goals.status(goal.id)
+        if existing_status == "active" and existing_identity == application_key:
+            # Snapshot/restore deliberately drops session-local compiled/judge bindings but preserves
+            # this durable executable identity with the Goal. Re-register those bindings without
+            # replacing the restored Goal or touching its gate/executor cognition.
+            rebind_existing = True
+        else:
+            status_note = (
+                f"existing lifecycle status is {existing_status!r}; " if existing_status != "active"
+                else ""
+            )
+            return "rejected", WatchReceipt(
+                status="rejected",
+                dropped_fields=(FieldDiagnostic(
+                    path="WatchPlan.id",
+                    code="active_goal_id_reconfiguration_unsupported",
+                    goal_id=goal.id,
+                    message=(
+                        f"goal id {goal.id!r} already exists. {status_note}Its durable executable "
+                        "identity does not match this Watch, and same-id replacement cannot safely "
+                        "reset gate, executor, episode, detector, and tier-0 state. Use a new goal id; "
+                        "completion or cancellation does not make the old id reusable."
+                    ),
+                ),),
+            )
     modality = program_of(goal).perception.modality
     if (
         selected_source_profile is not None
@@ -632,6 +673,7 @@ def _prepare_one(
         source_profile=selected_source_profile,
         application_key=application_key,
         receipt=receipt,
+        rebind_existing=rebind_existing,
     )
 
 
@@ -767,6 +809,10 @@ def apply_watch_plan(
         goals_before = percept.goals.snapshot()
         watch_bindings_before = dict(getattr(percept, "_watch_runtime_bindings", {}))
         watch_keys_before = dict(getattr(percept, "_watch_runtime_keys", {}))
+        watch_identities_before = dict(
+            getattr(percept, "_watch_executable_identities", {})
+        )
+        rebind_required_before = set(getattr(percept, "_watch_rebind_required", set()))
         judge_bindings_before = dict(getattr(percept, "_judge_bindings", {}))
         judge_requesting_before = set(getattr(percept, "_judge_requesting_goal_ids", set()))
         ledger_existed = hasattr(percept, _LEDGER_ATTR)
@@ -777,7 +823,8 @@ def apply_watch_plan(
                 real_ledger = {}
                 setattr(percept, _LEDGER_ATTR, real_ledger)
             for p in prepared:
-                percept.add_goal(p.goal, _cache_preinvalidated=True)
+                if not p.rebind_existing:
+                    percept.add_goal(p.goal, _cache_preinvalidated=True)
                 percept._register_watch_runtime(
                     p.goal.id,
                     p.compiled,
@@ -795,6 +842,10 @@ def apply_watch_plan(
             percept._watch_runtime_bindings.update(watch_bindings_before)
             percept._watch_runtime_keys.clear()
             percept._watch_runtime_keys.update(watch_keys_before)
+            percept._watch_executable_identities.clear()
+            percept._watch_executable_identities.update(watch_identities_before)
+            percept._watch_rebind_required.clear()
+            percept._watch_rebind_required.update(rebind_required_before)
             percept._judge_bindings.clear()
             percept._judge_bindings.update(judge_bindings_before)
             percept._judge_requesting_goal_ids.clear()

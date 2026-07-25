@@ -11,6 +11,7 @@ the duration of the call — exactly the module ``watchplan_apply`` lazily impor
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import dataclasses
 import hashlib
@@ -21,12 +22,15 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Callable
 
-from percept.adapters import Verdict
+from percept.adapters import Goal, Verdict
 from percept.agent import Percept
 from percept.contracts.watchplan import ResolvedJudgeSpec, WatchPlan
 from percept.deployment_judges import DeploymentJudges
 from percept.goals import GoalOp
+from percept.harness.tier0 import gray_frame
 from percept.resolver import ConfigResolver
+from percept.runtime.worker import RuntimeStats, run
+from percept.sourceprofile import SourceProfile
 from percept.watchplan_apply import apply_watch_plan
 
 
@@ -37,8 +41,10 @@ class SpyJudge:
 
     def __init__(self, name: str = "spy") -> None:
         self.name = name
+        self.calls = 0
 
     async def judge(self, condition, frame, **kw) -> Verdict:  # pragma: no cover - not driven here
+        self.calls += 1
         return Verdict(True, 0.9, "spy")
 
     async def detect(self, frame, goals) -> list:
@@ -281,25 +287,24 @@ class AtomicApplyTests(unittest.TestCase):
         self.assertEqual(receipt.dropped_fields[0].code, "duplicate_goal_id_in_batch")
         self.assertEqual(core.goals.all(), [])
 
-    def test_goal_update_clears_compiled_binding_key_and_apply_ledger_hit(self):
+    def test_goal_update_rejects_without_stranding_the_compiled_watch(self):
         core = _core()
         plan = _plan("p1")
         self.assertEqual(apply_watch_plan(core, plan).status, "applied")
-        self.assertTrue(core._watchplan_applied_hashes)
+        binding = core._watch_runtime_bindings["p1"]
+        key = core._watch_runtime_keys["p1"]
+        ledger = dict(core._watchplan_applied_hashes)
 
-        core.apply_goal_ops([
-            GoalOp(op="update", goal_id="p1", fields={"condition": "updated condition"})
-        ])
+        with self.assertRaisesRegex(ValueError, "goal updates are unsupported"):
+            core.apply_goal_ops([
+                GoalOp(op="update", goal_id="p1", fields={"say": "updated notification"})
+            ])
 
-        self.assertNotIn("p1", core._watch_runtime_bindings)
-        self.assertNotIn("p1", core._watch_runtime_keys)
-        self.assertFalse(core._watchplan_applied_hashes)
-        replay = apply_watch_plan(core, plan)
-        self.assertEqual(replay.status, "rejected")
-        self.assertEqual(
-            replay.dropped_fields[0].code,
-            "active_goal_id_reconfiguration_unsupported",
-        )
+        self.assertIs(core._watch_runtime_bindings["p1"], binding)
+        self.assertEqual(core._watch_runtime_keys["p1"], key)
+        self.assertEqual(core._watchplan_applied_hashes, ledger)
+        self.assertEqual(core.goals.get("p1").say, plan.condition)
+        self.assertEqual(apply_watch_plan(core, plan).status, "applied")
 
     def test_restore_clears_session_local_compiled_and_apply_state(self):
         core = _core()
@@ -316,6 +321,142 @@ class AtomicApplyTests(unittest.TestCase):
         self.assertEqual(core._judge_bindings, {})
         self.assertEqual(core._judge_requesting_goal_ids, set())
         self.assertFalse(core._watchplan_applied_hashes)
+
+    def test_restore_can_rebind_the_exact_executable_without_replacing_restored_cognition(self):
+        core = _core()
+        profile = SourceProfile(
+            name="restore-source",
+            modalities=frozenset({"video"}),
+            temporal_unit="frame",
+            admission_strategy="pixel-change",
+            evidence_strategy="frame",
+            identity_strategy="track_continuity",
+        )
+        plan = WatchPlan(
+            id="p1",
+            condition="a condition for p1",
+            consequence={"miss_cost": "severe"},
+            rearm="deadline",
+            explicit={
+                "Goal.state.deadline_after_s": 1.0,
+            },
+        )
+        resolver = JudgeInjectingResolver({"p1": _spec("judge@1")})
+        adapters = []
+
+        def factory(spec, cfg):
+            adapter = SpyJudge(f"adapter-{len(adapters)}")
+            adapters.append(adapter)
+            return adapter
+
+        with installed_registry(factory):
+            first = apply_watch_plan(
+                core, plan, resolver=resolver, source_profile=profile
+            )
+        self.assertIn(first.status, ("applied", "applied_with_warnings"))
+        core.goals.get("p1").state["count"] = 7
+        core.gate.evaluate(("p1", None), Verdict(False, 0.99, "restored no"))
+        snap = core.snapshot()
+
+        core.restore(snap)
+        restored_goal = core.goals.get("p1")
+        restored_gate = core.gate.snapshot()
+        self.assertEqual(restored_goal.state["count"], 7)
+        self.assertEqual(core._watch_runtime_bindings, {})
+        self.assertEqual(core._judge_bindings, {})
+        self.assertEqual(core._watch_rebind_required, {"p1"})
+
+        # Restored compiled goals are active-but-quarantined until exact rebind. They cannot fall
+        # through to the core default judge, worker gate, or absence/boundary paths.
+        default_calls = core.vision.calls
+        self.assertEqual(
+            asyncio.run(core.perceive_judged("frame", "camera", t=100.0)),
+            [],
+        )
+        self.assertEqual(core.vision.calls, default_calls)
+        core.last_supported["p1"] = 0.0
+        overdue_t = restored_goal.state["deadline_at"] + 100.0
+        restored_goal.state["type"] = "process"
+        ctx = core.executor.ctx("p1")
+        ctx.process_log = [{"step": "restored"}]
+        ctx.last_step_at = 0.0
+        self.assertEqual(core.check_observability(t=overdue_t, staleness_s=1.0), [])
+        self.assertEqual(core.check_deadlines(t=overdue_t), [])
+        self.assertEqual(
+            asyncio.run(core.check_episode_boundary(t=overdue_t, inactivity_s=1.0)),
+            [],
+        )
+        restored_goal.state["type"] = "watch"
+
+        async def collect_restored():
+            stats = RuntimeStats()
+            frames = [
+                (0.0, gray_frame(8, 8, 0), "prime"),
+                (1.0, gray_frame(8, 8, 255), "changed"),
+            ]
+            incidents = [
+                incident
+                async for incident in run(
+                    core, source=frames, stats=stats, judge_dispatch="inline"
+                )
+            ]
+            return incidents, stats
+
+        incidents, stats = asyncio.run(collect_restored())
+        self.assertEqual(incidents, [])
+        self.assertEqual(stats.escalations, 0)
+        self.assertEqual(core.vision.calls, default_calls)
+
+        with installed_registry(factory):
+            rebound = apply_watch_plan(
+                core, plan, resolver=resolver, source_profile=profile
+            )
+
+        self.assertIn(rebound.status, ("applied", "applied_with_warnings"))
+        self.assertIs(core.goals.get("p1"), restored_goal)
+        self.assertEqual(restored_goal.state["count"], 7)
+        self.assertEqual(core.gate.snapshot(), restored_gate)
+        self.assertIs(core._watch_runtime_bindings["p1"][1], profile)
+        self.assertIs(core._judge_bindings["p1"].adapter, adapters[-1])
+        self.assertEqual(core._watch_rebind_required, set())
+        self.assertEqual(
+            core._watch_runtime_keys["p1"],
+            core._watch_executable_identities["p1"],
+        )
+        rebound_adapter = core._judge_bindings["p1"].adapter
+        asyncio.run(core.perceive_judged("frame", "camera", t=101.0))
+        self.assertEqual(rebound_adapter.calls, 1)
+
+    def test_cancelled_goal_id_is_not_reusable_even_for_the_same_watch(self):
+        core = _core()
+        plan = _plan("p1")
+        self.assertEqual(apply_watch_plan(core, plan).status, "applied")
+        core.apply_goal_ops([GoalOp(op="cancel", goal_id="p1")])
+
+        receipt = apply_watch_plan(core, plan)
+
+        self.assertEqual(receipt.status, "rejected")
+        self.assertEqual(
+            receipt.dropped_fields[0].code,
+            "active_goal_id_reconfiguration_unsupported",
+        )
+        self.assertIn(
+            "completion or cancellation does not make the old id reusable",
+            receipt.dropped_fields[0].message,
+        )
+
+    def test_mixed_goal_op_batch_is_prevalidated_before_an_earlier_update_mutates(self):
+        core = _core()
+        core.add_goal(Goal(id="p1", condition="original", say="original"))
+
+        with self.assertRaisesRegex(KeyError, "missing"):
+            core.apply_goal_ops([
+                GoalOp(op="update", goal_id="p1", fields={"say": "mutated"}),
+                GoalOp(op="complete", goal_id="missing"),
+            ])
+
+        self.assertEqual(core.goals.get("p1").say, "original")
+        self.assertEqual(core.goals.status("p1"), "active")
 
 
 if __name__ == "__main__":  # pragma: no cover

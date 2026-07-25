@@ -46,30 +46,30 @@ class D3aCacheKeyConditionTests(unittest.TestCase):
 
 
 class D3aAddGoalInvalidatesTests(unittest.TestCase):
-    """Integration: ``add_goal`` (the arm() path) must invalidate the cache for that id."""
+    """Integration: rejected same-id replacement must not mutate the goal or cache."""
 
     def _core(self):
         cfg = dataclasses.replace(load_settings(), cache=CacheSettings(enabled=True, ttl_s=100.0, tau_bits=6))
         vision = FakeVision()
         return percept.Percept.create(vision=vision, settings=cfg, discover_plugins=False)
 
-    def test_rearming_an_id_with_a_new_condition_forces_a_fresh_judge(self):
+    def test_same_id_rearm_is_rejected_before_goal_or_cache_mutation(self):
         async def go():
             core = self._core()
             core.add_goal(Goal(id="g", condition="the door is open", say="!"))
             await core.perceive_judged(FRAME, "camera", t=0.0)   # cold -> judge + store
             await core.perceive_judged(FRAME, "camera", t=1.0)   # warm -> HIT (cache works)
             hits_before = core.metrics.get("cache.hit")
-            # Re-arm the SAME id with a DIFFERENT condition (voice re-arm). Must drop the stale entry.
-            core.add_goal(Goal(id="g", condition="the door is closed", say="!"))
-            await core.perceive_judged(FRAME, "camera", t=2.0)   # must be a FRESH read, not a HIT
+            with self.assertRaisesRegex(ValueError, "same-id replacement"):
+                core.add_goal(Goal(id="g", condition="the door is closed", say="!"))
+            await core.perceive_judged(FRAME, "camera", t=2.0)  # original goal/cache remain valid
             hits_after = core.metrics.get("cache.hit")
-            return hits_before, hits_after
+            return hits_before, hits_after, core.goals.get("g").condition
 
-        hits_before, hits_after = asyncio.run(go())
+        hits_before, hits_after, condition = asyncio.run(go())
         self.assertGreaterEqual(hits_before, 1, "sanity: the cache must actually be serving hits when enabled")
-        self.assertEqual(hits_after, hits_before,
-                         "re-arming with a new condition must NOT serve a cached verdict from the old one")
+        self.assertGreater(hits_after, hits_before)
+        self.assertEqual(condition, "the door is open")
 
 
 if __name__ == "__main__":

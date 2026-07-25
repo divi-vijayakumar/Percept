@@ -257,11 +257,12 @@ class ProvenanceStampingTests(unittest.TestCase):
         from percept.goals import GoalOp
         core = _core()
         core.add_goal(_goal("g3"))  # STRUCTURED_TRUSTED
-        # an update op that tries to smuggle trust-downgrade (or upgrade) is ignored for `origin`
-        core.apply_goal_ops([GoalOp(op="update", goal_id="g3",
-                                    fields={"say": "new", "origin": GoalOrigin.RESTORED})])
+        # Updates fail closed until every cognitive/compiled state owner can move atomically.
+        with self.assertRaisesRegex(ValueError, "goal updates are unsupported"):
+            core.apply_goal_ops([GoalOp(op="update", goal_id="g3",
+                                        fields={"say": "new", "origin": GoalOrigin.RESTORED})])
         g = core.goals.get("g3")
-        self.assertEqual(g.say, "new")                       # other fields still update
+        self.assertNotEqual(g.say, "new")
         self.assertEqual(g.origin, GoalOrigin.STRUCTURED_TRUSTED)  # origin is immutable via ops
 
     def test_arm_from_language_stamps_language_authored(self):
@@ -368,15 +369,16 @@ class OnGoalChangeTests(unittest.TestCase):
             self.assertEqual(len(hits), 1)
         asyncio.run(go())
 
-    def test_fires_on_same_id_replacement(self):
+    def test_same_id_replacement_is_rejected_without_change_notification(self):
         async def go():
             core = _core()
             sess = RuntimeSession(core)
             await sess.arm(_goal("g1", state_extra={"v": 1}))
             hits = []
             sess.on_goal_change(lambda: hits.append(1))
-            await sess.arm(_goal("g1", state_extra={"v": 2}))  # same id, replaced last-writer-wins
-            self.assertEqual(len(hits), 1)
+            with self.assertRaisesRegex(ValueError, "same-id replacement"):
+                await sess.arm(_goal("g1", state_extra={"v": 2}))
+            self.assertEqual(hits, [])
         asyncio.run(go())
 
     def test_unsubscribe_stops_callbacks(self):

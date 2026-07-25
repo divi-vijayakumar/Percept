@@ -532,6 +532,11 @@ class Percept:
     # before treating an old receipt as an idempotent hit, so replacing goal ``g`` with a different
     # compiled Watch does not make a later re-apply of the first plan a false no-op.
     _watch_runtime_keys: dict = field(default_factory=dict)
+    # Durable executable identity is persisted separately from Goal.state so a legacy WatchPlan remains
+    # goal-state equivalent. After restore, identities populate ``_watch_rebind_required``: such goals
+    # stay fail-closed until apply_watch_plan reconstructs their compiled/source/judge bindings.
+    _watch_executable_identities: dict = field(default_factory=dict)
+    _watch_rebind_required: set = field(default_factory=set)
     # -- consequence-gate GA: the SAME queue-here / drain-in-worker pattern for GATE SUPPRESSION.
     # ``Gate`` calls ``_note_gate_suppressed`` for every decision whose reason is in
     # ``percept.gate.SUPPRESSION_REASONS`` (start_anchored / refractory) -- i.e. a fire the baseline
@@ -827,6 +832,12 @@ class Percept:
 
     # -- goal authoring ------------------------------------------------------
     def add_goal(self, goal: Goal, *, _cache_preinvalidated: bool = False) -> Goal:
+        if self.goals.get(goal.id) is not None:
+            raise ValueError(
+                f"goal id {goal.id!r} already exists; same-id replacement is unsupported because "
+                "gate, executor, episode, detector, and tier-0 state cannot yet be reset as one unit. "
+                "Use a new goal id."
+            )
         # PROVENANCE: the STRUCTURED entry point stamps STRUCTURED_TRUSTED, OVERWRITING
         # whatever the caller supplied — a caller cannot claim interrupt-trust by pre-filling ``origin``.
         # ``replace`` (not in-place set) so this is correct even if Goal is later frozen.
@@ -874,11 +885,15 @@ class Percept:
         self._watch_runtime_bindings[goal_id] = (compiled, source_profile)
         if application_key is not None:
             self._watch_runtime_keys[goal_id] = application_key
+            self._watch_executable_identities[goal_id] = application_key
+        self._watch_rebind_required.discard(goal_id)
 
     def _release_watch_runtime(self, goal_id: str) -> None:
         """Release an applied Watch's compiled binding and invalidate its apply-ledger hits."""
         self._watch_runtime_bindings.pop(goal_id, None)
         self._watch_runtime_keys.pop(goal_id, None)
+        self._watch_executable_identities.pop(goal_id, None)
+        self._watch_rebind_required.discard(goal_id)
         ledger = getattr(self, "_watchplan_applied_hashes", None)
         if isinstance(ledger, dict):
             for key, value in list(ledger.items()):
@@ -917,6 +932,11 @@ class Percept:
         propagates rather than degrading to ASK/SILENT like a live judge fault.
         """
         goal_id = getattr(goal, "id", None)
+        if goal_id in self._watch_rebind_required:
+            raise JudgeBindingInvariantError(
+                f"compiled Watch {goal_id!r} was restored without its session-local runtime/judge "
+                "bindings; re-apply the exact WatchPlan before perception"
+            )
         bound = self._judge_bindings.get(goal_id)
         if bound is not None:
             return bound.adapter, bound
@@ -1129,6 +1149,33 @@ class Percept:
         return out
 
     def apply_goal_ops(self, ops: list[GoalOp]) -> None:
+        # PREVALIDATE the whole batch before the registry, cache, or binding maps move. In particular,
+        # a valid first op followed by a missing-goal op must not leave the first mutation behind.
+        known_ids = {goal.id for goal in self.goals.all()}
+        for op in ops:
+            if op.op == "create":
+                if op.goal is None:
+                    raise ValueError("create op requires a goal")
+                if op.goal.id in known_ids:
+                    raise ValueError(
+                        f"goal id {op.goal.id!r} already exists; language-authored same-id "
+                        "replacement is unsupported until all cognitive state owners can reset."
+                    )
+                known_ids.add(op.goal.id)
+                continue
+            if op.goal_id is None or op.goal_id not in known_ids:
+                raise KeyError(f"no goal {op.goal_id!r}")
+            if op.op not in ("update", "complete", "cancel"):
+                raise ValueError(f"unknown goal op {op.op!r}")
+        # Do this only AFTER structural validation of every member, so a later missing-goal error is
+        # reported before any earlier update is considered. No update field is currently proven safe
+        # for a compiled Watch: even ``say`` would diverge from its durable executable identity.
+        if any(op.op == "update" for op in ops):
+            raise ValueError(
+                "goal updates are unsupported until gate, executor, episode, detector, tier-0, "
+                "and compiled Watch identity can be updated or reset as one unit"
+            )
+
         # PROVENANCE: goal ops arrive from the CONDUCTOR (the language-authoring seam —
         # arm_from_language / _apply_decision), an UNTRUSTED author. Stamp every created goal
         # LANGUAGE_AUTHORED, OVERWRITING whatever it supplied, so its interrupt requests are clamped
@@ -1136,25 +1183,62 @@ class Percept:
         for op in ops:
             if op.op == "create" and op.goal is not None:
                 op.goal = replace(op.goal, origin=GoalOrigin.LANGUAGE_AUTHORED)
-        self.goals.apply(ops)
+
+        # Cache invalidation may be client-supplied and fallible. Preflight it before registry mutation;
+        # already-evicted cache entries are harmless if a later preflight fails.
         for op in ops:
-            gid = op.goal.id if op.op == "create" and op.goal is not None else op.goal_id
-            # Resolve an authored deadline duration to an absolute stamp at ARM time — a goal armed
-            # mid-run (voice) must get its deadline_at on the live clock, not silently stay a duration.
-            if op.op in ("create", "update") and gid is not None:
-                g = self.goals.get(gid)
-                if g is not None:
-                    self._arm_deadline(g)
-            # cache invalidation — goal-change (1st in the order): a goal whose condition/lifecycle
-            # changed must not be served from a verdict cached under its old meaning.
-            if op.op in ("update", "complete", "cancel") and gid is not None:
-                self.invalidate_cache(gid)
-            # Every lifecycle mutation invalidates compiled/judge identity. An update can change the
-            # condition, source, schedule or modality just as decisively as a cancel/re-arm; a create
-            # may replace an existing id. Neither may retain a stale binding or apply-ledger hit.
-            if op.op in ("create", "update", "complete", "cancel") and gid is not None:
-                self._release_judge_binding(gid)
-                self._release_watch_runtime(gid)
+            if op.op in ("update", "complete", "cancel") and op.goal_id is not None:
+                self.invalidate_cache(op.goal_id)
+
+        goals_before = self.goals.snapshot()
+        watch_bindings_before = dict(self._watch_runtime_bindings)
+        watch_keys_before = dict(self._watch_runtime_keys)
+        watch_identities_before = dict(self._watch_executable_identities)
+        rebind_required_before = set(self._watch_rebind_required)
+        judge_bindings_before = dict(self._judge_bindings)
+        judge_requesting_before = set(self._judge_requesting_goal_ids)
+        ledger = getattr(self, "_watchplan_applied_hashes", None)
+        ledger_existed = isinstance(ledger, dict)
+        ledger_before = dict(ledger) if ledger_existed else {}
+        try:
+            self.goals.apply(ops)
+            for op in ops:
+                gid = op.goal.id if op.op == "create" and op.goal is not None else op.goal_id
+                # Resolve an authored deadline duration to an absolute stamp at ARM time — a goal
+                # armed mid-run (voice) must get its deadline_at on the live clock.
+                if op.op == "create" and gid is not None:
+                    g = self.goals.get(gid)
+                    if g is not None:
+                        self._arm_deadline(g)
+                if op.op in ("create", "update", "complete", "cancel") and gid is not None:
+                    self._release_judge_binding(gid)
+                    self._release_watch_runtime(gid)
+        except Exception:
+            # Bounded rollback of every state owner this method mutates. Goal revision notifications
+            # and cache evictions are not claimed transactional.
+            self.goals.restore(goals_before)
+            self._watch_runtime_bindings.clear()
+            self._watch_runtime_bindings.update(watch_bindings_before)
+            self._watch_runtime_keys.clear()
+            self._watch_runtime_keys.update(watch_keys_before)
+            self._watch_executable_identities.clear()
+            self._watch_executable_identities.update(watch_identities_before)
+            self._watch_rebind_required.clear()
+            self._watch_rebind_required.update(rebind_required_before)
+            self._judge_bindings.clear()
+            self._judge_bindings.update(judge_bindings_before)
+            self._judge_requesting_goal_ids.clear()
+            self._judge_requesting_goal_ids.update(judge_requesting_before)
+            current_ledger = getattr(self, "_watchplan_applied_hashes", None)
+            if ledger_existed:
+                if not isinstance(current_ledger, dict):
+                    current_ledger = {}
+                    setattr(self, "_watchplan_applied_hashes", current_ledger)
+                current_ledger.clear()
+                current_ledger.update(ledger_before)
+            elif isinstance(current_ledger, dict):
+                delattr(self, "_watchplan_applied_hashes")
+            raise
 
     # -- unified firing via the general executor ----------------------------
     @property
@@ -1240,7 +1324,7 @@ class Percept:
         per-frame VLM call. Fires per the goal's ``accumulate.fire_when`` (e.g. "n == 10"), or on every
         boundary when none is authored — counting reps without spending a single vision token."""
         goal = self.goals.get(goal_id)
-        if goal is None:
+        if goal is None or goal_id in self._watch_rebind_required:
             return None
         n = self.edge_counts.get(goal_id, 0) + 1
         self.edge_counts[goal_id] = n
@@ -1283,7 +1367,7 @@ class Percept:
         goal's reported count is the performer's. ``None`` (the default) is the legacy single-subject stream
         the benchmark/runtime read directly; behaviour there is unchanged."""
         goal = self.goals.get(goal_id)
-        if goal is None or not channels:
+        if goal is None or not channels or goal_id in self._watch_rebind_required:
             return None
         if entity_id is None:  # legacy single-subject stream — unchanged
             tracker = self.rhythm.get(goal_id)
@@ -1340,6 +1424,8 @@ class Percept:
         for goal in self.goals.active():
             if selected is not None and goal.id not in selected:
                 continue
+            if goal.id in self._watch_rebind_required:
+                continue
             if goal.state.get("miss_cost", "mild") != "severe":
                 continue
             last = self.last_supported.get(goal.id)
@@ -1388,6 +1474,8 @@ class Percept:
         for goal in self.goals.active():
             if selected is not None and goal.id not in selected:
                 continue
+            if goal.id in self._watch_rebind_required:
+                continue
             if goal.state.get("rearm") != "deadline":
                 continue
             # absence firing (synthetic overdue verdict on the __overdue__ key) lives in the executor;
@@ -1422,6 +1510,8 @@ class Percept:
         selected = None if goal_ids is None else frozenset(goal_ids)
         for goal in self.goals.active():
             if selected is not None and goal.id not in selected:
+                continue
+            if goal.id in self._watch_rebind_required:
                 continue
             gtype = goal.state.get("type")
             ctx = self.executor.ctx(goal.id)
@@ -1710,6 +1800,9 @@ class Percept:
         """
         now = self.clock() if t is None else t
         active_goals = list(self.goals.active())
+        active_goals = [
+            goal for goal in active_goals if goal.id not in self._watch_rebind_required
+        ]
         if goal_ids is not None:
             selected = frozenset(goal_ids)
             active_goals = [goal for goal in active_goals if goal.id in selected]
@@ -3036,6 +3129,7 @@ class Percept:
             "version": 2,
             "clock_anchor": [now_epoch, now_mono],
             "goals": goals,
+            "watch_executable_identities": dict(self._watch_executable_identities),
             "gate": self.gate.snapshot(),
             "entities": self.graph.snapshot(),
             "action_log": [asdict(r) for r in self.action_log.entries()],
@@ -3052,18 +3146,26 @@ class Percept:
         duration-from-restore-now so the concern still fires."""
         # v1 vs v2 is detected structurally (a v2 goal carries deadline_at_epoch; a v1 goal a legacy
         # deadline_s), so a missing/renumbered version field can never silently mis-route a deadline.
-        # Compiled Watch and judge bindings are session-local and are not serialized in this snapshot.
-        # Clear them (and every apply-ledger hit) before restoring goals; retaining one would attach
-        # pre-restart configuration or an adapter to a newly deserialized goal solely because its id
-        # matched.
+        # Compiled Watch and judge bindings are session-local and are not serialized. Only their
+        # explicit executable identities are durable. Restored compiled goals enter a fail-closed
+        # rebind-required set until apply_watch_plan reconstructs bindings for an identity match.
         self._watch_runtime_bindings.clear()
         self._watch_runtime_keys.clear()
+        self._watch_executable_identities.clear()
+        self._watch_rebind_required.clear()
         self._judge_bindings.clear()
         self._judge_requesting_goal_ids.clear()
         ledger = getattr(self, "_watchplan_applied_hashes", None)
         if isinstance(ledger, dict):
             ledger.clear()
         self.goals.restore(snap.get("goals", []))
+        restored_identities = {
+            str(goal_id): str(identity)
+            for goal_id, identity in snap.get("watch_executable_identities", {}).items()
+            if self.goals.get(str(goal_id)) is not None
+        }
+        self._watch_executable_identities.update(restored_identities)
+        self._watch_rebind_required.update(restored_identities)
         self.graph.restore(snap.get("entities", []))
         self.action_log = ActionLog()
         for rd in snap.get("action_log", []):

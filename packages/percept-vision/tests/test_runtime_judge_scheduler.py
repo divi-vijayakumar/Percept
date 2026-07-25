@@ -220,20 +220,24 @@ class RevisionAbortTests(unittest.TestCase):
 
         asyncio.run(main())
 
-    def test_same_id_replacement_mid_flight_aborts_too(self):
+    def test_same_id_replacement_mid_flight_is_rejected_before_revision_moves(self):
         async def main():
             vision = GatedVision()
             core = _core(vision, _watch_goal("g"))
             rev = core.goals.revision
+            original_condition = core.goals.get("g").condition
             task = asyncio.create_task(
                 core.perceive_judged("frame-1", "camera", t=1.0, expected_goals_revision=rev))
             for _ in range(5):
                 await asyncio.sleep(0)
-            # same-ID replace: the id survives but MEANS something else now — the in-flight verdict
-            # judged the OLD condition and must not latch/fire the new goal.
-            core.add_goal(Goal(id="g", condition="the door was left open", say="door!"))
+            with self.assertRaisesRegex(ValueError, "same-id replacement"):
+                core.add_goal(Goal(id="g", condition="the door was left open", say="door!"))
+            self.assertEqual(core.goals.revision, rev)
+            self.assertEqual(core.goals.get("g").condition, original_condition)
             vision.release.set()
-            self._assert_untouched(core, await task)
+            fires = await task
+            self.assertEqual(len(fires), 1)
+            self.assertEqual(fires[0].goal_id, "g")
 
         asyncio.run(main())
 

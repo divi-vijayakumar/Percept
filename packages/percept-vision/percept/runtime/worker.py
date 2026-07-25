@@ -43,6 +43,16 @@ def _accepts_keyword(callable_obj: Any, name: str) -> bool:
     )
 
 
+def _filter_goal_events(events: Any, allowed_goal_ids: tuple[str, ...]) -> list:
+    """Fail closed at a legacy callback boundary that cannot accept ``goal_ids`` itself."""
+    allowed = frozenset(allowed_goal_ids)
+    return [
+        event
+        for event in (events or ())
+        if getattr(event, "goal_id", None) in allowed
+    ]
+
+
 # The vocabulary of REASONS a run's effective fps can differ from the requested one.
 # Closed set on purpose: a client reading a manifest at 2am must be able to map the value to a
 # sentence, not guess. "profile-default" means nothing overrode the request.
@@ -287,6 +297,7 @@ class _JudgeScheduler:
         self._consec_supersede = 0          # supersessions in a row with no intervening completion
         self._backpressure_reported = False  # latched: "judge_scheduler_backpressure" already fired
         self._perceive_accepts_goal_ids = _accepts_keyword(core.perceive_judged, "goal_ids")
+        self._active_filter_goal_ids: tuple[str, ...] | None = None
 
     def _mc_now(self, fallback: float) -> float:
         """"Now" for a MetricsCollector stamp: the core's own clock when available (real elapsed time
@@ -416,6 +427,11 @@ class _JudgeScheduler:
         kwargs = {"t": t, "expected_goals_revision": revision}
         if goal_ids is not None and self._perceive_accepts_goal_ids:
             kwargs["goal_ids"] = goal_ids
+        self._active_filter_goal_ids = (
+            goal_ids
+            if goal_ids is not None and not self._perceive_accepts_goal_ids
+            else None
+        )
         self._active = asyncio.create_task(
             self._core.perceive_judged(frame, self._source, **kwargs)
         )
@@ -456,6 +472,7 @@ class _JudgeScheduler:
         if task.cancelled():
             self._mc_resolve(self._active_t)  # no longer pending, whether or not it truly judged
             self._active = None
+            self._active_filter_goal_ids = None
             return
         exc = task.exception()
         if exc is not None:
@@ -465,9 +482,14 @@ class _JudgeScheduler:
                 self._mc_resolve(self._pending[0])
             self._pending = None
             self._active = None
+            self._active_filter_goal_ids = None
             return
         self._mc_resolve(self._active_t)
-        self._results.append((self._active_t, task.result()))
+        result = task.result()
+        if self._active_filter_goal_ids is not None:
+            result = _filter_goal_events(result, self._active_filter_goal_ids)
+        self._results.append((self._active_t, result))
+        self._active_filter_goal_ids = None
         self._active = None
         # A judgment completing WITHOUT raising is the same "reachable again" proof the agent level
         # (_note_judge_ok) uses — clear both latches and, only if one was actually
@@ -1233,6 +1255,7 @@ async def run(
             goal
             for goal in core.goals.active()
             if getattr(goal, "source", "camera") == gate_source
+            and goal.id not in getattr(core, "_watch_rebind_required", set())
         ]
 
     def _visual_goals() -> list:
@@ -2131,8 +2154,11 @@ async def run(
                 boundary_kwargs = {"t": t, "inactivity_s": episode_inactivity_s}
                 if boundary_accepts_goal_ids:
                     boundary_kwargs["goal_ids"] = source_goal_ids
+                boundary_fires = await check_boundary(**boundary_kwargs)
+                if not boundary_accepts_goal_ids:
+                    boundary_fires = _filter_goal_events(boundary_fires, source_goal_ids)
                 async for incident in _emit_fires(
-                    await check_boundary(**boundary_kwargs), at=t, from_boundary=True
+                    boundary_fires, at=t, from_boundary=True
                 ):
                     yield incident
             # Absence-native fires — coverage loss ("I can't see the baby") + overdue deadlines.
@@ -2142,16 +2168,22 @@ async def run(
                 coverage_kwargs = {"t": t, "staleness_s": coverage_staleness_s}
                 if coverage_accepts_goal_ids:
                     coverage_kwargs["goal_ids"] = source_goal_ids
+                coverage_fires = check_coverage(**coverage_kwargs)
+                if not coverage_accepts_goal_ids:
+                    coverage_fires = _filter_goal_events(coverage_fires, source_goal_ids)
                 async for incident in _emit_fires(
-                    check_coverage(**coverage_kwargs), at=t, from_boundary=True
+                    coverage_fires, at=t, from_boundary=True
                 ):
                     yield incident
             if check_deadlines is not None:
                 deadline_kwargs = {"t": t}
                 if deadlines_accepts_goal_ids:
                     deadline_kwargs["goal_ids"] = source_goal_ids
+                deadline_fires = check_deadlines(**deadline_kwargs)
+                if not deadlines_accepts_goal_ids:
+                    deadline_fires = _filter_goal_events(deadline_fires, source_goal_ids)
                 async for incident in _emit_fires(
-                    check_deadlines(**deadline_kwargs), at=t, from_boundary=True
+                    deadline_fires, at=t, from_boundary=True
                 ):
                     yield incident
 
@@ -2305,6 +2337,8 @@ async def run(
                 fires = await core.perceive_judged(
                     judge_frame, gate_source, **perceive_kwargs
                 )
+                if not perceive_accepts_goal_ids:
+                    fires = _filter_goal_events(fires, tuple(admitted_goal_ids))
                 async for incident in _emit_fires(fires, at=t):
                     yield incident
         # Source exhausted (finite file / test stream): a judgment may still be IN FLIGHT and one more
