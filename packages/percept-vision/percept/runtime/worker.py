@@ -257,6 +257,56 @@ class _UnsafeMixedTopologyError(ValueError):
         )
 
 
+@dataclass(frozen=True)
+class _OwnerCommand:
+    """One immutable item in the runtime cognition owner's total order."""
+
+    ordinal: int
+    kind: str
+    payload: Any
+
+
+class _OwnerCommandQueue:
+    """Bounded synchronous owner queue with explicit overflow semantics.
+
+    Publication authors one global monotonic ``ordinal``. The queue never
+    silently evicts an older command: reaching ``maxsize`` increments the
+    observable ``overflow_count`` and raises :class:`OverflowError` before an
+    ordinal is consumed. The one event-loop owner drains the ordered batch
+    synchronously before any subscriber callback can run.
+    """
+
+    def __init__(self, *, maxsize: int) -> None:
+        if type(maxsize) is not int or maxsize < 1:
+            raise ValueError("owner queue maxsize must be a positive integer")
+        self.maxsize = maxsize
+        self.overflow_count = 0
+        self._next_ordinal = 1
+        self._items: deque[_OwnerCommand] = deque()
+
+    def publish(self, kind: str, payload: Any) -> _OwnerCommand:
+        """Synchronously append one item or fail loudly without mutation."""
+        if type(kind) is not str or not kind:
+            raise ValueError("owner command kind must be non-empty text")
+        if len(self._items) >= self.maxsize:
+            self.overflow_count += 1
+            raise OverflowError("runtime owner command queue overflow")
+        row = _OwnerCommand(
+            ordinal=self._next_ordinal,
+            kind=kind,
+            payload=payload,
+        )
+        self._next_ordinal += 1
+        self._items.append(row)
+        return row
+
+    def drain(self) -> tuple[_OwnerCommand, ...]:
+        """Transfer the current ordered batch to the sole runtime owner."""
+        rows = tuple(self._items)
+        self._items.clear()
+        return rows
+
+
 class _LegacyJudgeScheduler:
     """Off-loop judge dispatch (``run(judge_dispatch="async")``): the capture loop never awaits a
     network judgment.
@@ -806,7 +856,13 @@ class _JudgeScheduler:
         self._trace: list[tuple[str, dict]] = []
         self._fatal: BaseException | None = None
         self._closing = False
-        self._completion_ordinal = 0
+        # A core can be driven by more than one finite run over its lifetime.
+        # Seed the transport coordinate from the cognition owner's accepted
+        # high-water so a fresh scheduler cannot replay ordinal 1 after a
+        # prior run already accounted for it.
+        self._completion_ordinal = int(
+            getattr(core, "_provider_completion_high_water", 0)
+        )
         self._split_protocol = callable(
             getattr(core, "launch_judgments", None)
         ) and callable(getattr(core, "dispatch_judgment", None))

@@ -34,7 +34,11 @@ from percept import Goal, Percept
 from percept.adapters import Verdict
 from percept.goals import GoalOp
 from percept.harness.tier0 import Frame, gray_frame
-from percept.runtime.worker import RuntimeStats, _JudgeScheduler
+from percept.runtime.worker import (
+    RuntimeStats,
+    _JudgeScheduler,
+    _OwnerCommandQueue,
+)
 from percept.runtime.worker import run as worker_run
 
 W = H = 8
@@ -538,6 +542,23 @@ class AbsenceInterleavingTests(unittest.TestCase):
         self.assertEqual(len(overdue), 1, "the __overdue__ key fires once across the in-flight window")
         self.assertEqual(len(judged), 1, "the flushed q1 judgment still fires its own key")
         self.assertEqual(judged[0].ts, 1.0, "incident.ts stays the ADMISSION time, not completion")
+
+
+class OwnerCommandQueueTests(unittest.TestCase):
+    def test_bounded_queue_preserves_publication_order_and_fails_loudly(self):
+        queue = _OwnerCommandQueue(maxsize=2)
+        first = queue.publish("judgment_ready", {"route": "ordinary"})
+        second = queue.publish("audio_ready", {"route": "audio"})
+        self.assertEqual((first.ordinal, second.ordinal), (1, 2))
+
+        with self.assertRaises(OverflowError):
+            queue.publish("fused_ready", {"route": "fused"})
+        self.assertEqual(queue.overflow_count, 1)
+        self.assertEqual(queue.drain(), (first, second))
+
+        third = queue.publish("fused_ready", {"route": "fused"})
+        self.assertEqual(third.ordinal, 3)
+        self.assertEqual(queue.drain(), (third,))
 
 
 if __name__ == "__main__":

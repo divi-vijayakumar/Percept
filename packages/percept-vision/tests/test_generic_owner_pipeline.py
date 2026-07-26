@@ -940,3 +940,57 @@ def test_routed_provider_failure_is_redacted_and_semantically_inert(route):
             assert core.executor.ctx(route).process_log == []
 
     asyncio.run(drive())
+
+
+def test_provider_spend_uses_exact_completion_ordinal_high_water_and_gaps():
+    class UsageVision:
+        async def detect(self, frame, goals):
+            return []
+
+        async def judge(self, condition, frame, **kwargs):
+            return Verdict(
+                False,
+                0.99,
+                "not satisfied",
+                usage={"input_tokens": 1, "cost_usd": 0.001},
+            )
+
+    async def base_completion():
+        core = _core(UsageVision())
+        reduction = await _reduce_observation_for(
+            core, "receipt", "ordinary", t=1.0
+        )
+        job = core.prepare_judgment(reduction, goal_id="ordinary")
+        assert job is not None
+        launched = core.launch_judgments((job,))
+        assert len(launched) == 1
+        return core, await core.dispatch_judgment(launched[0])
+
+    core, base = asyncio.run(base_completion())
+    order = tuple(range(1, 1025)) + tuple(range(1026, 1030)) + (1025,)
+    completions = {}
+    for ordinal in order:
+        token = replace(
+            base.job.token,
+            admission_id=f"provider-receipt:{ordinal}",
+            evidence_seq=ordinal,
+        )
+        completion = replace(
+            base,
+            job=replace(base.job, token=token),
+            completion_ordinal=ordinal,
+        )
+        completions[ordinal] = completion
+        assert core.reduce_judgment_completion(completion) == []
+
+    assert core.metrics.get("funnel.judged") == 1029
+    assert core.metrics.get("judge.tokens.input") == 1029
+    assert core.metrics.get("judge.cost.usd") == pytest.approx(1.029)
+    assert core._provider_completion_high_water == 1029
+    assert core._provider_completion_gap_ranges == ()
+
+    assert core.reduce_judgment_completion(completions[1]) == []
+    assert core.reduce_judgment_completion(completions[1025]) == []
+    assert core.metrics.get("funnel.judged") == 1029
+    assert core.metrics.get("judge.tokens.input") == 1029
+    assert core.metrics.get("judge.cost.usd") == pytest.approx(1.029)

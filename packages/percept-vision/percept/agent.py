@@ -71,6 +71,7 @@ from .tracing import STAGE_JUDGMENT_EVENT, STAGE_SHADOW_FOLD, STAGE_TRANSITION_D
 #: LRU ceiling on the judgment evidence-sequencer's per-key counters. Matches the gate's own
 #: default ``max_keys`` so the observability map can never outgrow the gate state it mirrors.
 _SEQ_MAX_KEYS = 10_000
+_PROVIDER_ACCOUNTING_FALLBACK_MAX = 1_024
 
 
 @dataclass
@@ -3213,21 +3214,27 @@ class Percept:
 
         A completion proves the provider call was launched and spent. Semantic
         token invalidation may make its verdict inert, but cannot erase that
-        cost. A bounded recent-admission ledger prevents ordinary callback
-        replay; the global owner scheduler's completion-ordinal firewall is
-        still required for reconstruction-grade replay rejection after ledger
-        churn.
+        cost. Runtime-owned completions use a monotonic completion ordinal with
+        an exact high-water/gap ledger. Direct/manual completions without that
+        runtime coordinate retain a bounded admission-id compatibility ledger.
         """
-        accounted = getattr(self, "_judgment_accounted_admissions", None)
-        if accounted is None:
-            accounted = {}
-            self._judgment_accounted_admissions = accounted
-        admission_id = completion.job.token.admission_id
-        if admission_id in accounted:
-            return False
-        accounted[admission_id] = True
-        while len(accounted) > _FUSED_ADMISSION_LEDGER_MAX:
-            accounted.pop(next(iter(accounted)), None)
+        completion_ordinal = completion.completion_ordinal
+        if completion_ordinal is not None:
+            if not self._accept_provider_completion_ordinal(completion_ordinal):
+                return False
+        else:
+            accounted = getattr(
+                self, "_judgment_accounted_admissions", None
+            )
+            if accounted is None:
+                accounted = {}
+                self._judgment_accounted_admissions = accounted
+            admission_id = completion.job.token.admission_id
+            if admission_id in accounted:
+                return False
+            accounted[admission_id] = True
+            while len(accounted) > _PROVIDER_ACCOUNTING_FALLBACK_MAX:
+                accounted.pop(next(iter(accounted)), None)
         token = completion.job.token
         binding = (
             token.judge_binding_token
@@ -3260,6 +3267,44 @@ class Percept:
                         **_judge_binding_trace(binding),
                     )
         return True
+
+    def _accept_provider_completion_ordinal(self, ordinal: int) -> bool:
+        """Accept one global provider receipt coordinate exactly once.
+
+        ``high_water`` records the largest observed ordinal. Missing lower
+        ordinals are retained as compact disjoint intervals, so reverse
+        completion and a late gap fill remain valid while replay of either an
+        old receipt or the filled gap remains inert forever. Interval storage
+        avoids allocating ``O(ordinal)`` memory for a large coordinate jump.
+        """
+        if type(ordinal) is not int or ordinal < 1:
+            return False
+        high_water = int(
+            getattr(self, "_provider_completion_high_water", 0)
+        )
+        gaps = list(
+            getattr(self, "_provider_completion_gap_ranges", ())
+        )
+        if ordinal > high_water:
+            if ordinal > high_water + 1:
+                gaps.append((high_water + 1, ordinal - 1))
+            self._provider_completion_high_water = ordinal
+            self._provider_completion_gap_ranges = tuple(gaps)
+            return True
+        for index, (start, end) in enumerate(gaps):
+            if ordinal < start:
+                return False
+            if ordinal > end:
+                continue
+            replacement = []
+            if start < ordinal:
+                replacement.append((start, ordinal - 1))
+            if ordinal < end:
+                replacement.append((ordinal + 1, end))
+            gaps[index : index + 1] = replacement
+            self._provider_completion_gap_ranges = tuple(gaps)
+            return True
+        return False
 
     def _reduce_transition_completion(
         self,
