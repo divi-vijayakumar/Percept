@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import os
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -27,6 +28,7 @@ from eval.bench.track_perception_test_e2e import (
     ACTION_TEMPORAL_SAMPLING,
     ACTION_TEMPORAL_WINDOW_S,
     EventRun,
+    ReplayClockAnchor,
     _action_goal_state,
     _action_watch_plan,
     _call_reductions,
@@ -35,6 +37,7 @@ from eval.bench.track_perception_test_e2e import (
     _fire_records,
     _median,
     _precision,
+    _timely_occurrence_recall,
     admission_cause,
 )
 from percept.adapters import Verdict
@@ -784,7 +787,11 @@ class FixtureReplayCoverageTests(unittest.TestCase):
             self.assertTrue(ok)
             encoded.append(("image/jpeg", payload.tobytes()))
 
-        async def source(*_args, **_kwargs):
+        async def source(*_args, **kwargs):
+            kwargs["result"].replay_anchor = ReplayClockAnchor(
+                media_ts=0.0,
+                monotonic_ts=time.monotonic(),
+            )
             for index, gate_frame in enumerate((still, motion, still)):
                 yield index * 0.2, gate_frame, encoded[index]
                 await asyncio.sleep(0)
@@ -1122,7 +1129,16 @@ class LatencySemanticsTests(unittest.TestCase):
     def test_even_latency_sample_uses_conventional_median(self):
         self.assertEqual(_median([1.0, 3.0]), 2.0)
 
-    def test_action_to_fire_adds_source_delay_but_judge_latency_stays_separate(self):
+    def test_timely_recall_denominator_includes_late_and_missed_occurrences(self):
+        self.assertAlmostEqual(
+            _timely_occurrence_recall(
+                [0.8, 2.5],
+                positive_events=3,
+            ),
+            1.0 / 3.0,
+        )
+
+    def test_action_to_incident_uses_replay_anchor_not_provider_event_end(self):
         run = EventRun(
             case_id="case-a",
             video_id="video-a",
@@ -1130,26 +1146,40 @@ class LatencySemanticsTests(unittest.TestCase):
             goal="a",
             onset_s=10.0,
             end_s=12.0,
+            replay_anchor=ReplayClockAnchor(
+                media_ts=0.0,
+                monotonic_ts=100.0,
+            ),
         )
         timing = JudgmentTiming(
-            ingest_observed_ts=100.0,
-            admitted_ts=100.05,
-            judge_started_ts=100.1,
-            judge_completed_ts=100.35,
-            decision_emitted_ts=100.4,
+            ingest_observed_ts=110.0,
+            admitted_ts=110.05,
+            judge_started_ts=110.1,
+            judge_completed_ts=110.35,
+            decision_emitted_ts=110.4,
             source_media_ts=10.5,
         )
         observation = _decision_observation(
             NS(judgment=NS(timing=timing)),
             run,
+            incident_observed_ts=110.9,
         )
         self.assertIsNotNone(observation)
         assert observation is not None
-        self.assertAlmostEqual(observation.observed_to_fire_s, 0.4)
+        run.fires.append(observation)
+        run.reconcile_fire_windows()
+        self.assertAlmostEqual(observation.ingest_to_decision_s, 0.4)
         self.assertAlmostEqual(observation.judge_latency_s, 0.25)
-        self.assertAlmostEqual(observation.action_onset_to_fire_s, 0.9)
+        self.assertAlmostEqual(observation.admitted_to_incident_s, 0.85)
+        self.assertAlmostEqual(observation.decision_to_incident_s, 0.5)
+        self.assertAlmostEqual(observation.source_detection_latency_s, 0.5)
+        self.assertAlmostEqual(observation.action_onset_to_incident_s, 0.9)
+        self.assertAlmostEqual(
+            observation.evidence_available_to_incident_s,
+            -1.1,
+        )
         self.assertNotEqual(
-            observation.action_onset_to_fire_s,
+            observation.action_onset_to_incident_s,
             observation.judge_latency_s,
         )
 
@@ -1162,22 +1192,29 @@ class LatencySemanticsTests(unittest.TestCase):
             onset_s=1.0,
             end_s=2.0,
             positive_windows=[(1.0, 2.0), (10.0, 12.0)],
+            replay_anchor=ReplayClockAnchor(
+                media_ts=0.0,
+                monotonic_ts=100.0,
+            ),
         )
         timing = JudgmentTiming(
-            ingest_observed_ts=100.0,
-            admitted_ts=100.05,
-            judge_started_ts=100.1,
-            judge_completed_ts=100.35,
-            decision_emitted_ts=100.4,
+            ingest_observed_ts=110.0,
+            admitted_ts=110.05,
+            judge_started_ts=110.1,
+            judge_completed_ts=110.35,
+            decision_emitted_ts=110.4,
             source_media_ts=10.5,
         )
         observation = _decision_observation(
             NS(judgment=NS(timing=timing)),
             run,
+            incident_observed_ts=110.9,
         )
         self.assertIsNotNone(observation)
         assert observation is not None
-        self.assertAlmostEqual(observation.action_onset_to_fire_s, 0.9)
+        run.fires.append(observation)
+        run.reconcile_fire_windows()
+        self.assertAlmostEqual(observation.action_onset_to_incident_s, 0.9)
 
     def test_overlapping_window_details_use_aggregate_one_to_one_assignment(self):
         run = EventRun(
@@ -1188,37 +1225,42 @@ class LatencySemanticsTests(unittest.TestCase):
             onset_s=0.0,
             end_s=5.0,
             positive_windows=[(0.0, 5.0), (4.0, 6.0)],
+            replay_anchor=ReplayClockAnchor(
+                media_ts=0.0,
+                monotonic_ts=100.0,
+            ),
         )
 
-        def observation(source_media_ts: float, observed_s: float):
+        def observation(source_media_ts: float, incident_observed_ts: float):
             timing = JudgmentTiming(
-                ingest_observed_ts=100.0,
-                admitted_ts=100.01,
-                judge_started_ts=100.02,
-                judge_completed_ts=100.05,
-                decision_emitted_ts=100.0 + observed_s,
+                ingest_observed_ts=incident_observed_ts - 0.3,
+                admitted_ts=incident_observed_ts - 0.25,
+                judge_started_ts=incident_observed_ts - 0.2,
+                judge_completed_ts=incident_observed_ts - 0.1,
+                decision_emitted_ts=incident_observed_ts - 0.05,
                 source_media_ts=source_media_ts,
             )
             value = _decision_observation(
                 NS(judgment=NS(timing=timing)),
                 run,
+                incident_observed_ts=incident_observed_ts,
             )
             assert value is not None
             return value
 
         run.fires.extend(
             [
-                observation(4.2, 0.1),
-                observation(4.3, 0.2),
+                observation(4.2, 104.3),
+                observation(4.3, 104.5),
             ]
         )
         run.reconcile_fire_windows()
         records = _fire_records(run)
         self.assertEqual(run.fire_hits, 2)
         self.assertAlmostEqual(records[0]["source_detection_latency_s"], 4.2)
-        self.assertAlmostEqual(records[0]["action_onset_to_fire_s"], 4.3)
+        self.assertAlmostEqual(records[0]["action_onset_to_incident_s"], 4.3)
         self.assertAlmostEqual(records[1]["source_detection_latency_s"], 0.3)
-        self.assertAlmostEqual(records[1]["action_onset_to_fire_s"], 0.5)
+        self.assertAlmostEqual(records[1]["action_onset_to_incident_s"], 0.5)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ parallel E2E adapters rather than reusing the legacy dense VLM loops.
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import re
 import time
@@ -137,11 +138,27 @@ class DecisionObservation:
     case_id: str
     video_id: str
     source_media_ts: float
-    observed_to_fire_s: float
+    incident_observed_ts: float
+    ingest_to_decision_s: float
     judge_latency_s: float
-    action_onset_to_fire_s: float | None
+    admitted_to_incident_s: float
+    decision_to_incident_s: float
     timing: JudgmentTiming
+    source_detection_latency_s: float | None = None
+    action_onset_to_incident_s: float | None = None
+    evidence_available_to_incident_s: float | None = None
     revision_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ReplayClockAnchor:
+    """One explicit mapping between fixture media time and replay monotonic time."""
+
+    media_ts: float
+    monotonic_ts: float
+
+    def monotonic_for(self, media_ts: float) -> float:
+        return self.monotonic_ts + (float(media_ts) - self.media_ts)
 
 
 def _matched_event_pairs(
@@ -188,6 +205,7 @@ class EventRun:
     interest_events: list[dict[str, Any]] = field(default_factory=list)
     judge_receipts: list[dict[str, Any]] = field(default_factory=list)
     configuration: dict[str, Any] = field(default_factory=dict)
+    replay_anchor: ReplayClockAnchor | None = None
     error: str | None = None
 
     @property
@@ -241,11 +259,20 @@ class EventRun:
     def reconcile_fire_windows(self) -> None:
         """Bind each FIRE to the same one-to-one window used by aggregate metrics."""
         for fire in self.fires:
-            fire.action_onset_to_fire_s = None
+            fire.source_detection_latency_s = None
+            fire.action_onset_to_incident_s = None
+            fire.evidence_available_to_incident_s = None
         for fire, window in self.matched_fire_events:
-            fire.action_onset_to_fire_s = (
-                fire.source_media_ts - window[0]
-            ) + fire.observed_to_fire_s
+            fire.source_detection_latency_s = fire.source_media_ts - window[0]
+            if self.replay_anchor is not None:
+                fire.action_onset_to_incident_s = (
+                    fire.incident_observed_ts
+                    - self.replay_anchor.monotonic_for(window[0])
+                )
+                fire.evidence_available_to_incident_s = (
+                    fire.incident_observed_ts
+                    - self.replay_anchor.monotonic_for(window[1])
+                )
 
 
 def _action_goal(label: str) -> str:
@@ -426,6 +453,8 @@ def _silent_reason(verdict: dict[str, Any] | None, threshold: float) -> str:
 def _decision_observation(
     fire: Any,
     run: EventRun,
+    *,
+    incident_observed_ts: float | None = None,
 ) -> DecisionObservation | None:
     """Materialize one timing-bearing decision without mixing clock domains."""
     judgment = getattr(fire, "judgment", None) or incident_judgment(fire)
@@ -433,20 +462,24 @@ def _decision_observation(
     if timing is None or timing.source_media_ts is None:
         return None
     source_media_ts = float(timing.source_media_ts)
-    observed_to_fire_s = timing.ingest_to_decision_s()
-    matched = _matched_event_pairs([source_media_ts], run.windows)
-    action_onset = run.windows[matched[0][1]][0] if matched else None
+    incident_ts = (
+        time.monotonic()
+        if incident_observed_ts is None
+        else float(incident_observed_ts)
+    )
+    if incident_ts < timing.decision_emitted_ts:
+        raise ValueError(
+            "Incident observation precedes decision emission on the monotonic clock"
+        )
     return DecisionObservation(
         case_id=run.case_id,
         video_id=run.video_id,
         source_media_ts=source_media_ts,
-        observed_to_fire_s=observed_to_fire_s,
+        incident_observed_ts=incident_ts,
+        ingest_to_decision_s=timing.ingest_to_decision_s(),
         judge_latency_s=timing.judge_duration_s(),
-        action_onset_to_fire_s=(
-            (source_media_ts - action_onset) + observed_to_fire_s
-            if action_onset is not None
-            else None
-        ),
+        admitted_to_incident_s=incident_ts - timing.admitted_ts,
+        decision_to_incident_s=incident_ts - timing.decision_emitted_ts,
         timing=timing,
         revision_id=getattr(fire, "revision_id", None),
     )
@@ -460,7 +493,7 @@ async def _paced_fixture_source(
     dropped: list[int],
 ):
     """Replay a finite file at its media cadence while preserving envelopes."""
-    started_wall = time.monotonic()
+    started_wall: float | None = None
     first_media: float | None = None
     async for envelope in open_source(
         path,
@@ -477,6 +510,12 @@ async def _paced_fixture_source(
         media_t = float(envelope.source_time)
         if first_media is None:
             first_media = media_t
+            started_wall = time.monotonic()
+            result.replay_anchor = ReplayClockAnchor(
+                media_ts=media_t,
+                monotonic_ts=started_wall,
+            )
+        assert started_wall is not None
         target = started_wall + (media_t - first_media)
         remaining = target - time.monotonic()
         if remaining > 0:
@@ -697,7 +736,11 @@ async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
         interest_task = asyncio.create_task(collect_interest())
         try:
             async for incident in runtime:
-                observation = _decision_observation(incident, result)
+                observation = _decision_observation(
+                    incident,
+                    result,
+                    incident_observed_ts=time.monotonic(),
+                )
                 if observation is None:
                     result.error = (
                         "Incident omitted runtime-local JudgmentTiming/source_media_ts; "
@@ -718,6 +761,11 @@ async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
             "benchmark coverage is invalid"
         )
     result.reconcile_fire_windows()
+    if result.fires and result.replay_anchor is None and result.error is None:
+        result.error = (
+            "fixture replay omitted its media-to-monotonic clock anchor; "
+            "onset-to-Incident latency cannot be qualified"
+        )
     result.judge_calls = provider.calls
     result.configuration["runtime_stats"] = {
         "frames": stats.frames,
@@ -741,6 +789,32 @@ def _mean(xs: list[float]) -> float | None:
 
 def _median(values: list[float]) -> float | None:
     return float(median(values)) if values else None
+
+
+def _percentile(values: list[float], quantile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(float(value) for value in values)
+    index = max(
+        0,
+        min(len(ordered) - 1, math.ceil(len(ordered) * quantile) - 1),
+    )
+    return ordered[index]
+
+
+def _timely_occurrence_recall(
+    latencies: list[float],
+    *,
+    positive_events: int,
+    threshold_s: float = 2.0,
+) -> float | None:
+    """Timely true positives divided by every positive occurrence, including misses."""
+    if positive_events <= 0:
+        return None
+    return (
+        sum(float(latency) <= threshold_s for latency in latencies)
+        / positive_events
+    )
 
 
 def _precision(samples: list[tuple[str, float]], runs: list[EventRun]) -> float | None:
@@ -768,24 +842,38 @@ def _fire_records(run: EventRun) -> list[dict[str, Any]]:
     """Serialize FIRE details from the reconciled one-to-one event assignment."""
     records: list[dict[str, Any]] = []
     for fire in run.fires:
-        source_latency = (
-            fire.action_onset_to_fire_s - fire.observed_to_fire_s
-            if fire.action_onset_to_fire_s is not None
-            else None
-        )
         records.append(
             {
                 "source_media_ts": round(fire.source_media_ts, 3),
                 "source_detection_latency_s": (
-                    round(source_latency, 6) if source_latency is not None else None
+                    round(fire.source_detection_latency_s, 6)
+                    if fire.source_detection_latency_s is not None
+                    else None
                 ),
-                "observed_to_fire_s": round(fire.observed_to_fire_s, 6),
-                "action_onset_to_fire_s": (
-                    round(fire.action_onset_to_fire_s, 6)
-                    if fire.action_onset_to_fire_s is not None
+                "ingest_to_decision_s": round(fire.ingest_to_decision_s, 6),
+                "admitted_to_incident_s": round(
+                    fire.admitted_to_incident_s,
+                    6,
+                ),
+                "decision_to_incident_s": round(
+                    fire.decision_to_incident_s,
+                    6,
+                ),
+                "action_onset_to_incident_s": (
+                    round(fire.action_onset_to_incident_s, 6)
+                    if fire.action_onset_to_incident_s is not None
+                    else None
+                ),
+                "evidence_available_to_incident_s": (
+                    round(fire.evidence_available_to_incident_s, 6)
+                    if fire.evidence_available_to_incident_s is not None
                     else None
                 ),
                 "judge_latency_s": round(fire.judge_latency_s, 6),
+                "incident_observed_ts": round(
+                    fire.incident_observed_ts,
+                    6,
+                ),
                 "decision_emitted_ts": round(
                     fire.timing.decision_emitted_ts,
                     6,
@@ -820,8 +908,12 @@ def _unavailable(reason: str) -> TrackResult:
             ("edge", "candidate_precision_proxy"): None,
             ("e2e", "notification_precision"): None,
             ("e2e", "median_source_detection_latency_s"): None,
-            ("e2e", "median_observed_to_fire_s"): None,
-            ("e2e", "median_action_onset_to_fire_s"): None,
+            ("e2e", "median_ingest_to_decision_s"): None,
+            ("e2e", "median_action_onset_to_incident_s"): None,
+            ("e2e", "p95_action_onset_to_incident_s"): None,
+            ("e2e", "max_action_onset_to_incident_s"): None,
+            ("e2e", "median_evidence_available_to_incident_s"): None,
+            ("e2e", "timely_occurrence_recall_at_2s"): None,
             ("e2e", "median_judge_latency_s"): None,
             ("e2e", "call_reduction"): None,
             ("e2e", "positive_events"): None,
@@ -853,8 +945,12 @@ def _failed_run(
         ("edge", "candidate_precision_proxy"): None,
         ("e2e", "notification_precision"): None,
         ("e2e", "median_source_detection_latency_s"): None,
-        ("e2e", "median_observed_to_fire_s"): None,
-        ("e2e", "median_action_onset_to_fire_s"): None,
+        ("e2e", "median_ingest_to_decision_s"): None,
+        ("e2e", "median_action_onset_to_incident_s"): None,
+        ("e2e", "p95_action_onset_to_incident_s"): None,
+        ("e2e", "max_action_onset_to_incident_s"): None,
+        ("e2e", "median_evidence_available_to_incident_s"): None,
+        ("e2e", "timely_occurrence_recall_at_2s"): None,
         ("e2e", "median_judge_latency_s"): None,
         ("e2e", "call_reduction"): None,
         ("e2e", "logical_admission_reduction"): None,
@@ -980,13 +1076,22 @@ def score(*, live: bool, n: int) -> TrackResult:
     source_latencies = [
         fire.source_media_ts - window[0] for run in runs for fire, window in run.matched_fire_events
     ]
-    observed_latencies = [
-        fire.observed_to_fire_s for run in runs for fire, _window in run.matched_fire_events
-    ]
-    action_latencies = [
-        (fire.source_media_ts - window[0]) + fire.observed_to_fire_s
+    ingest_to_decision_latencies = [
+        fire.ingest_to_decision_s
         for run in runs
-        for fire, window in run.matched_fire_events
+        for fire, _window in run.matched_fire_events
+    ]
+    action_to_incident_latencies = [
+        fire.action_onset_to_incident_s
+        for run in runs
+        for fire, _window in run.matched_fire_events
+        if fire.action_onset_to_incident_s is not None
+    ]
+    evidence_to_incident_latencies = [
+        fire.evidence_available_to_incident_s
+        for run in runs
+        for fire, _window in run.matched_fire_events
+        if fire.evidence_available_to_incident_s is not None
     ]
     judge_latencies = [
         fire.judge_latency_s for run in runs for fire, _window in run.matched_fire_events
@@ -1008,8 +1113,28 @@ def score(*, live: bool, n: int) -> TrackResult:
         ("edge", "candidate_precision_proxy"): candidate_precision,
         ("e2e", "notification_precision"): notification_precision,
         ("e2e", "median_source_detection_latency_s"): _median(source_latencies),
-        ("e2e", "median_observed_to_fire_s"): _median(observed_latencies),
-        ("e2e", "median_action_onset_to_fire_s"): _median(action_latencies),
+        ("e2e", "median_ingest_to_decision_s"): _median(
+            ingest_to_decision_latencies
+        ),
+        ("e2e", "median_action_onset_to_incident_s"): _median(
+            action_to_incident_latencies
+        ),
+        ("e2e", "p95_action_onset_to_incident_s"): _percentile(
+            action_to_incident_latencies,
+            0.95,
+        ),
+        ("e2e", "max_action_onset_to_incident_s"): (
+            max(action_to_incident_latencies)
+            if action_to_incident_latencies
+            else None
+        ),
+        ("e2e", "median_evidence_available_to_incident_s"): _median(
+            evidence_to_incident_latencies
+        ),
+        ("e2e", "timely_occurrence_recall_at_2s"): _timely_occurrence_recall(
+            action_to_incident_latencies,
+            positive_events=positive_events,
+        ),
         ("e2e", "median_judge_latency_s"): _median(judge_latencies),
         ("e2e", "call_reduction"): call_reduction,
         ("e2e", "logical_admission_reduction"): logical_admission_reduction,
@@ -1063,8 +1188,12 @@ def score(*, live: bool, n: int) -> TrackResult:
             "candidate_precision_proxy": "{:.2f}",
             "notification_precision": "{:.2f}",
             "median_source_detection_latency_s": "{:.3f}",
-            "median_observed_to_fire_s": "{:.3f}",
-            "median_action_onset_to_fire_s": "{:.3f}",
+            "median_ingest_to_decision_s": "{:.3f}",
+            "median_action_onset_to_incident_s": "{:.3f}",
+            "p95_action_onset_to_incident_s": "{:.3f}",
+            "max_action_onset_to_incident_s": "{:.3f}",
+            "median_evidence_available_to_incident_s": "{:.3f}",
+            "timely_occurrence_recall_at_2s": "{:.2f}",
             "median_judge_latency_s": "{:.3f}",
             "call_reduction": "{:.2f}",
             "logical_admission_reduction": "{:.2f}",
@@ -1097,8 +1226,12 @@ def score(*, live: bool, n: int) -> TrackResult:
             "edge:candidate_precision_proxy",
             "e2e:notification_precision",
             "e2e:median_source_detection_latency_s",
-            "e2e:median_observed_to_fire_s",
-            "e2e:median_action_onset_to_fire_s",
+            "e2e:median_ingest_to_decision_s",
+            "e2e:median_action_onset_to_incident_s",
+            "e2e:p95_action_onset_to_incident_s",
+            "e2e:max_action_onset_to_incident_s",
+            "e2e:median_evidence_available_to_incident_s",
+            "e2e:timely_occurrence_recall_at_2s",
             "e2e:median_judge_latency_s",
             "e2e:call_reduction",
             "e2e:logical_admission_reduction",
@@ -1183,6 +1316,13 @@ def score(*, live: bool, n: int) -> TrackResult:
                 "positive_unit": "same-label occurrence window",
                 "matching": "greedy_one_to_one_earliest_end",
                 "late_fire_pad_s": WINDOW_PAD_S,
+                "latency_clock": (
+                    "annotation media time anchored to monotonic replay start; "
+                    "measured through local Incident observation"
+                ),
+                "timely_recall_threshold_s": 2.0,
+                "timely_recall_denominator": "all positive occurrences",
+                "evidence_available_time": "annotation occurrence end",
             },
             "budget_plan": request_budget.plan,
         },
