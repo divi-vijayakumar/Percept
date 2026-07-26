@@ -178,8 +178,8 @@ class FusedPureOrderingTests(unittest.TestCase):
         candidates = (
             unit("video", 1, 1.0, 1.1),
             unit("video", 2, 1.8, 1.9),
-            unit("audio", 4, 0.9, 1.4),
-            unit("audio", 5, 1.4, 2.0),
+            unit("audio", 4, -0.1, 1.0),
+            unit("audio", 5, 1.0, 2.0),
         )
         interleavings = tuple(
             permutation
@@ -215,7 +215,7 @@ class FusedPureOrderingTests(unittest.TestCase):
             )
         self.assertEqual(
             observed,
-            {((1, 2), (4, 5), (1.0, 1.9), (0.9, 2.0))},
+            {((1, 2), (4, 5), (1.0, 1.9), (-0.1, 2.0))},
         )
 
     def test_skew_limit_is_closed_and_one_microsecond_past_is_uncertain(self) -> None:
@@ -324,8 +324,8 @@ class FusedPureOrderingTests(unittest.TestCase):
                 unit(
                     "audio",
                     0,
-                    0.0,
-                    2.0,
+                    -1.0,
+                    1.0,
                     payload=b"abcdefgh",
                     source_watermark=3.0,
                 )
@@ -338,14 +338,14 @@ class FusedPureOrderingTests(unittest.TestCase):
         self.assertTrue(
             two_chunks.accept(
                 unit(
-                    "audio", 0, 0.0, 1.0, payload=b"abcd", source_watermark=1.0
+                    "audio", 0, -1.0, 0.0, payload=b"abcd", source_watermark=1.0
                 )
             )
         )
         self.assertTrue(
             two_chunks.accept(
                 unit(
-                    "audio", 1, 1.0, 2.0, payload=b"efgh", source_watermark=3.0
+                    "audio", 1, 0.0, 1.0, payload=b"efgh", source_watermark=3.0
                 )
             )
         )
@@ -354,10 +354,62 @@ class FusedPureOrderingTests(unittest.TestCase):
         self.assertTrue(first.complete and second.complete)
         first_bytes = b"".join(media_bytes(item) for item in first.audio_units)
         second_bytes = b"".join(media_bytes(item) for item in second.audio_units)
-        self.assertEqual(first_bytes, b"abcdef")
-        self.assertEqual(second_bytes, b"abcdef")
+        self.assertEqual(first_bytes, b"abcdefgh")
+        self.assertEqual(second_bytes, b"abcdefgh")
         self.assertEqual(first.audio_event_interval, second.audio_event_interval)
         self.assertEqual(first.actual_skew_s, second.actual_skew_s)
+
+    def test_late_first_audio_cannot_waive_configured_leading_window(self) -> None:
+        sync = synchronizer(
+            window_s=1.0,
+            allowed_lateness_s=0.0,
+            max_skew_s=0.0,
+        )
+        first_anchor = unit(
+            "video",
+            0,
+            1.0,
+            source_watermark=2.0,
+        )
+        late_audio = unit(
+            "audio",
+            0,
+            0.9,
+            1.0,
+            payload=b"aa",
+            source_watermark=2.0,
+        )
+        self.assertTrue(sync.accept(first_anchor))
+        self.assertTrue(sync.accept(late_audio))
+        first = sync.bundle_for(first_anchor)
+        self.assertFalse(first.complete)
+        self.assertIn(
+            _FusedCoverageUncertainty.MISSING_AUDIO,
+            first.coverage_reasons,
+        )
+
+        full_audio = unit(
+            "audio",
+            1,
+            1.0,
+            2.0,
+            payload=b"abcd",
+            source_watermark=3.0,
+        )
+        recovered_anchor = unit(
+            "video",
+            1,
+            2.0,
+            source_watermark=3.0,
+        )
+        self.assertTrue(sync.accept(full_audio))
+        self.assertTrue(sync.accept(recovered_anchor))
+        recovered = sync.bundle_for(recovered_anchor)
+        self.assertTrue(recovered.complete)
+        self.assertNotIn(
+            _FusedCoverageUncertainty.MISSING_AUDIO,
+            recovered.coverage_reasons,
+        )
 
 
 class FusedPureContinuityTests(unittest.TestCase):
@@ -366,7 +418,7 @@ class FusedPureContinuityTests(unittest.TestCase):
         before_video = unit("video", 0, 1.0, source_watermark=2.0)
         self.assertTrue(sync.accept(before_video))
         self.assertTrue(
-            sync.accept(unit("audio", 0, 1.0, source_watermark=2.0))
+            sync.accept(unit("audio", 0, -1.0, 1.0, source_watermark=2.0))
         )
         self.assertTrue(sync.bundle_for(before_video).complete)
 
@@ -394,6 +446,7 @@ class FusedPureContinuityTests(unittest.TestCase):
         audio = unit(
             "audio",
             0,
+            0.0,
             2.0,
             source_epoch=4,
             generation=1,
@@ -507,6 +560,7 @@ class FusedPureContinuityTests(unittest.TestCase):
             unit(
                 "audio",
                 0,
+                -1.0,
                 1.0,
                 source_id="mic-a",
                 source_epoch=1,
@@ -736,6 +790,48 @@ class FusedPureBoundsAndIdentityTests(unittest.TestCase):
             36,
         )
         self.assertTrue(all(uncertainty_codes(bundle) for bundle in pending))
+
+    def test_every_bounds_loss_is_a_bundle_or_compact_typed_receipt(self) -> None:
+        sync = synchronizer(
+            window_s=100.0,
+            allowed_lateness_s=100.0,
+            max_units_per_modality=3,
+            max_bytes_per_modality=12,
+        )
+        admitted = 8
+        for seq in range(admitted):
+            anchor = unit(
+                "video",
+                seq,
+                float(seq),
+                payload=b"vvvv",
+                byte_size=4,
+            )
+            self.assertTrue(sync.accept(anchor))
+            sync.bundle_for(anchor)
+
+        delivered = sync.close()
+        receipts = sync.drain_bound_drops()
+        dropped = sum(receipt.dropped_count for receipt in receipts)
+        self.assertEqual(len(delivered) + dropped, admitted)
+        self.assertTrue(
+            all(
+                _FusedCoverageUncertainty.BOUNDS_EXCEEDED
+                in bundle.coverage_reasons
+                or _FusedCoverageUncertainty.EOS_INCOMPLETE
+                in bundle.coverage_reasons
+                for bundle in delivered
+            )
+        )
+        self.assertTrue(receipts)
+        self.assertTrue(
+            all(
+                receipt.reason is _FusedCoverageUncertainty.BOUNDS_EXCEEDED
+                and len(receipt.latest_anchor_identity) == 4
+                for receipt in receipts
+            )
+        )
+        self.assertEqual(sync.drain_bound_drops(), ())
 
     def test_many_emitted_anchors_have_unique_bounded_explicit_identity(self) -> None:
         sync = synchronizer(
