@@ -100,7 +100,19 @@ class TestPublicBenchShim(unittest.TestCase):
                 "case_ids": ["case-1"],
             }],
             schema_version=TRACK_RESULT_SCHEMA_V2,
-            contract={"path": "compiled-runtime"},
+            contract={
+                "runtime_path": "compiled-runtime",
+                "qualification_scope": "owned",
+                "plan_hashes": ["plan"],
+                "component_snapshot_hashes": ["components"],
+                "evidence": "native clip",
+                "decision_output": "Incident",
+                "dense_baseline": {
+                    "unit": "watch opportunities",
+                    "capture_fps": 2.0,
+                    "active_watches": 1,
+                },
+            },
             measurements={
                 "candidate_calls": Measurement(
                     value=10,
@@ -109,10 +121,50 @@ class TestPublicBenchShim(unittest.TestCase):
                     denominator=1,
                 ),
             },
-            reconciliation={"final_inflight": 0},
+            reconciliation={
+                "checks": {"balanced": True},
+                "source_dropped_frames": 0,
+                "forbidden_evidence_fallbacks": 0,
+                "superseded_before_launch": 0,
+                "revision_dropped_before_launch": 0,
+                "deadline_dropped_before_launch": 0,
+                "deadline_expired_after_launch": 0,
+                "final_provider_inflight": 0,
+                "final_pool_inflight": 0,
+            },
             quality_gates=[{"id": "fixture", "status": "pass"}],
         )
         self.assertEqual(snapshot.stamp_of("full", [result], "manifest sha256:abc"), "RELEASE")
+
+    def test_release_rejects_v1_even_for_non_pt_tracks(self):
+        result = TrackResult(
+            track="custom-runtime",
+            cells={("e2e", "notification_recall"): 1.0},
+            measured=["e2e:notification_recall"],
+            coverage=[{
+                "dataset": "owned",
+                "expected": 1,
+                "observed": 1,
+                "case_ids": ["case-1"],
+            }],
+            qualifying_events=1,
+        )
+
+        self.assertEqual(
+            snapshot.stamp_of(
+                "full",
+                [result],
+                "manifest sha256:abc",
+            ),
+            "DRAFT",
+        )
+        self.assertTrue(
+            any(
+                "release requires percept.benchmark.track_result/2"
+                in reason
+                for reason in snapshot.release_blockers([result])
+            )
+        )
 
     def test_pt_release_requires_versioned_qualification_envelope(self):
         legacy = TrackResult(

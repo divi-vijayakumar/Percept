@@ -249,6 +249,92 @@ class TrackResult:
                 reasons.append(f"{self.track}: unsupported lane {lane!r} for metric {metric!r}")
         return reasons
 
+    def release_contract_reasons(self) -> list[str]:
+        """Strict v2 runtime proof required for an OSS release stamp."""
+        if self.schema_version != TRACK_RESULT_SCHEMA_V2:
+            return [
+                f"{self.track}: release requires {TRACK_RESULT_SCHEMA_V2}"
+            ]
+        reasons: list[str] = []
+        required_contract = (
+            "runtime_path",
+            "qualification_scope",
+            "plan_hashes",
+            "component_snapshot_hashes",
+            "evidence",
+            "decision_output",
+            "dense_baseline",
+        )
+        for key in required_contract:
+            if not self.contract.get(key):
+                reasons.append(
+                    f"{self.track}: release contract missing {key}"
+                )
+        if self.contract.get("decision_output") != "Incident":
+            reasons.append(
+                f"{self.track}: release contract decision_output must be Incident"
+            )
+        for key in ("plan_hashes", "component_snapshot_hashes"):
+            hashes = self.contract.get(key)
+            if (
+                not isinstance(hashes, list)
+                or not hashes
+                or any(
+                    not isinstance(value, str)
+                    or not value
+                    or value == "None"
+                    for value in hashes
+                )
+            ):
+                reasons.append(
+                    f"{self.track}: release contract has invalid {key}"
+                )
+        dense = self.contract.get("dense_baseline")
+        if not isinstance(dense, dict):
+            reasons.append(
+                f"{self.track}: release contract dense_baseline must be an object"
+            )
+        else:
+            if dense.get("unit") != "watch opportunities":
+                reasons.append(
+                    f"{self.track}: dense baseline unit must be watch opportunities"
+                )
+            for key in ("capture_fps", "active_watches"):
+                value = dense.get(key)
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or value <= 0
+                ):
+                    reasons.append(
+                        f"{self.track}: dense baseline {key} must be positive"
+                    )
+        checks = self.reconciliation.get("checks")
+        if not isinstance(checks, dict) or not checks:
+            reasons.append(
+                f"{self.track}: release reconciliation checks are missing"
+            )
+        elif not all(value is True for value in checks.values()):
+            reasons.append(
+                f"{self.track}: release reconciliation check failed"
+            )
+        zero_fields = (
+            "source_dropped_frames",
+            "forbidden_evidence_fallbacks",
+            "superseded_before_launch",
+            "revision_dropped_before_launch",
+            "deadline_dropped_before_launch",
+            "deadline_expired_after_launch",
+            "final_provider_inflight",
+            "final_pool_inflight",
+        )
+        for key in zero_fields:
+            if self.reconciliation.get(key) != 0:
+                reasons.append(
+                    f"{self.track}: release reconciliation requires {key}=0"
+                )
+        return reasons
+
 
 def apply_acceptance_gates(
     result: TrackResult,

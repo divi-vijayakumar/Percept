@@ -32,6 +32,7 @@ def release_blockers(results: list[TrackResult]) -> list[str]:
     blockers: list[str] = []
     for result in results:
         blockers.extend(result.invalid_reasons())
+        blockers.extend(result.release_contract_reasons())
     return blockers
 
 
