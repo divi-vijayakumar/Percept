@@ -94,6 +94,32 @@ class TestPromptCachePrefix(unittest.TestCase):
         user_content = client.calls[0]["messages"][0]["content"]
         self.assertTrue(any("is the user drinking?" in str(b) for b in user_content))
 
+    def test_event_chain_prompt_round_trips_phase_and_hides_control_keys(self):
+        response = _resp(
+            '{"satisfied": true, "confidence": 0.93, "evidence": "visible change", '
+            '"action_present": true, "phase": "during"}'
+        )
+        client = _FakeClient(response=response)
+        verdict = asyncio.run(
+            AnthropicVision(client=client).judge(
+                "one discrete pointing occurrence",
+                b"current",
+                frames=[b"before"],
+                context={
+                    "event_chain": True,
+                    "_percept_frames_are_earlier": True,
+                },
+            )
+        )
+        self.assertEqual((verdict.phase, verdict.action_present), ("during", True))
+        user_content = client.calls[0]["messages"][0]["content"]
+        prompt = " ".join(
+            block["text"] for block in user_content if block.get("type") == "text"
+        )
+        self.assertIn("pre (not begun)", prompt)
+        self.assertIn('"action_present", "phase"', prompt)
+        self.assertNotIn("_percept_frames_are_earlier", prompt)
+
 
 class TestTimeoutApplied(unittest.TestCase):
     def test_explicit_timeout_passed_through_with_options(self):

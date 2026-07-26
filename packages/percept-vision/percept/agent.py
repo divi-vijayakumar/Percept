@@ -27,7 +27,13 @@ from .adapters import (
     TurnResult,
     Verdict,
 )
-from .behavior import BehaviorExecutor, EpisodeFoldResult, ShadowObservation, program_of
+from .behavior import (
+    BehaviorExecutor,
+    EpisodeFoldResult,
+    ShadowObservation,
+    normalize_event_chain_verdict,
+    program_of,
+)
 from .behavior_routes import BehaviorRoute, goal_behavior_route, require_worker_routes
 from .duration_routes import duration_policy, require_duration_routes
 from .cache import CacheCascade, CacheKey, FrameHashLayer
@@ -1391,6 +1397,15 @@ class Percept:
                 "gate, executor, episode, detector, and tier-0 state cannot yet be reset as one unit. "
                 "Use a new goal id."
             )
+        declared_identity = identity_policy_of(goal)
+        if (
+            goal.state.get("rearm") == "each_event"
+            and declared_identity in {"content_key", "claim_slot"}
+        ):
+            raise ValueError(
+                "rearm='each_event' owns occurrence episode identity and cannot be combined "
+                f"with explicit identity_policy={declared_identity!r}"
+            )
         # PROVENANCE: the STRUCTURED entry point stamps STRUCTURED_TRUSTED, OVERWRITING
         # whatever the caller supplied — a caller cannot claim interrupt-trust by pre-filling ``origin``.
         # ``replace`` (not in-place set) so this is correct even if Goal is later frozen.
@@ -2121,6 +2136,41 @@ class Percept:
             None, subject=subject_ref, operation=operation, unknown=unknown
         )
 
+    def _event_chain_advisory(
+        self,
+        goal: Goal,
+        entity_id: Hashable,
+        verdict: Verdict,
+    ) -> dict[str, Any]:
+        """Inspectable occurrence state for an explicit ``each_event`` Watch."""
+        if goal.state.get("rearm") != "each_event":
+            return {}
+        state = self.executor.ctx(goal.id).occurrences.get(entity_id)
+        return {
+            "event_phase": getattr(verdict, "phase", "") or None,
+            "event_action_present": getattr(verdict, "action_present", None),
+            "event_episode_id": state.episode_id if state is not None else None,
+            "event_occurrence_sequence": state.sequence if state is not None else 0,
+            "event_episode_emitted": state.emitted if state is not None else False,
+        }
+
+    @staticmethod
+    def _event_chain_provider_advisory(
+        goal: Goal,
+        verdict: Verdict,
+    ) -> dict[str, Any]:
+        """Raw structured provider tuple, present only for explicit event Watches.
+
+        Ordinary Watch traces remain byte-for-byte unchanged; the matched-watch reconstruction
+        contract intentionally treats extra judge fields as a different receipt.
+        """
+        if goal.state.get("rearm") != "each_event":
+            return {}
+        return {
+            "phase": getattr(verdict, "phase", "") or None,
+            "action_present": getattr(verdict, "action_present", None),
+        }
+
     def _document_episode_fold(
         self, goal: Goal, verdict: Verdict, t: float
     ) -> "EpisodeFoldResult | None":
@@ -2157,6 +2207,11 @@ class Percept:
           path (``None``) — the same safe answer an undeclared concern always gets — and is counted
           (``episode.document.out_of_order_skipped``), never silently swallowed.
         """
+        # An event-chain Watch owns occurrence identity. A source-profile default such as
+        # screen_document/content_key must not silently add a second, incompatible episode fold.
+        # Explicit content_key + each_event is rejected at arm time in add_goal().
+        if goal.state.get("rearm") == "each_event":
+            return None
         if self._resolved_identity_policy(goal) != "content_key":
             return None
         subject = getattr(verdict, "subject", None)
@@ -2231,6 +2286,8 @@ class Percept:
         degrades the tick to gate-only (counted, ``episode.claim.out_of_order_skipped``, never silently
         swallowed) rather than risk rewinding the log's high-water mark.
         """
+        if goal.state.get("rearm") == "each_event":
+            return None
         if self._resolved_identity_policy(goal) != "claim_slot":
             return None
         hwm = self._claim_hwm.get(goal.id)
@@ -2616,6 +2673,8 @@ class Percept:
             context[JUDGE_STATIC_CONTEXT_KEY] = bound.static_context.decoded_text
         if self._resolved_identity_policy(goal) == "claim_slot":
             context["claim_mode"] = True
+        if goal.state.get("rearm") == "each_event":
+            context["event_chain"] = True
         base_key = (
             goal.id,
             watch_reducer_entity_id(goal, focus.id if focus else None),
@@ -3585,6 +3644,9 @@ class Percept:
                 verdict,
                 verdict.confidence,
             )
+        provider_verdict = verdict
+        if goal.state.get("rearm") == "each_event":
+            verdict = normalize_event_chain_verdict(verdict)
         self._note_judge_ok(base_key)
         timing = JudgmentTimingBuilder(clock=self.clock)
         timing.mark_ingest_observed(at=job.ingest_observed_ts)
@@ -3655,8 +3717,9 @@ class Percept:
             job,
             "judge.finished",
             goal_id=goal.id,
-            satisfied=verdict.satisfied,
-            confidence=verdict.confidence,
+            satisfied=provider_verdict.satisfied,
+            confidence=provider_verdict.confidence,
+            **self._event_chain_provider_advisory(goal, provider_verdict),
             **dict(job.trace_provenance),
         )
         self._queue_judgment_trace(
@@ -3672,6 +3735,9 @@ class Percept:
             confidence=verdict.confidence,
             freshness=freshness,
             hold_s=program_of(goal).hold_s,
+            **self._event_chain_advisory(
+                goal, job.reducer.reducer_entity_id, verdict
+            ),
         )
         if fire is not None and fire.judgment is not None:
             self._queue_judgment_trace(
@@ -3994,6 +4060,11 @@ class Percept:
             # _claim_episode_fold — this only lets a LIVE reply reach it.
             if self._resolved_identity_policy(goal) == "claim_slot":
                 judge_context = {**(judge_context or {}), "claim_mode": True}
+            # ``rearm=each_event`` is a temporal event-chain contract, not a level poll. The
+            # backend must return structured pre/during/post metadata; BehaviorExecutor consumes
+            # that metadata to own one session-local episode per distinct occurrence.
+            if goal.state.get("rearm") == "each_event":
+                judge_context = {**(judge_context or {}), "event_chain": True}
             # Computed BEFORE the judge call (not just on success) so cache, degradation, sequencing,
             # gate, evidence and trace all use ONE effective reducer entity. Only a concern-declared
             # identity_policy="scene" opts out of volatile focus identity; undeclared/profile-only
@@ -4065,6 +4136,9 @@ class Percept:
                 continue  # next goal this SAME frame; the watch loop (and run) continues either way
             if _stale():
                 break  # source/goal generation moved while the judge was in flight: commit nothing
+            provider_verdict = verdict
+            if goal.state.get("rearm") == "each_event":
+                verdict = normalize_event_chain_verdict(verdict)
             self._note_judge_ok(base_key)  # a well-formed verdict resets this key's degrade streak
             resolved: FireEvent | None = None
             if process_ctx is not None and getattr(verdict, "running_answer", ""):
@@ -4123,8 +4197,11 @@ class Percept:
                     now,
                     "judge.finished",
                     goal_id=goal.id,
-                    satisfied=getattr(verdict, "satisfied", None),
-                    confidence=getattr(verdict, "confidence", None),
+                    satisfied=getattr(provider_verdict, "satisfied", None),
+                    confidence=getattr(provider_verdict, "confidence", None),
+                    **self._event_chain_provider_advisory(
+                        goal, provider_verdict
+                    ),
                     **judge_prov,
                 )
                 # AFTER both fire paths: label a FIRE whenever an incident was actually emitted this tick
@@ -4152,7 +4229,10 @@ class Percept:
                                        satisfied=getattr(verdict, "satisfied", None),
                                        confidence=getattr(verdict, "confidence", None),
                                        freshness=freshness,
-                                       hold_s=program_of(goal).hold_s)
+                                       hold_s=program_of(goal).hold_s,
+                                       **self._event_chain_advisory(
+                                           goal, reducer_entity_id, verdict
+                                       ))
                 # Project the frozen JudgmentEvent (the one production construction site,
                 # behavior.py:_judgment) into the trace stream so the SAME evidence this decision
                 # judged is resolvable from the .ptrace. Only when THIS tick's fire actually carried
@@ -4297,6 +4377,13 @@ class Percept:
             else None
         )
         exemplar = copy.deepcopy(goal.state.get("exemplar"))
+        provider_context: dict[str, Any] = {
+            "_percept_frames_are_earlier": True
+        }
+        if self._resolved_identity_policy(goal) == "claim_slot":
+            provider_context["claim_mode"] = True
+        if goal.state.get("rearm") == "each_event":
+            provider_context["event_chain"] = True
         frozen_source_t = float(source_t)
         ingest_observed_ts = max(observed) if observed else self.clock()
         admitted_ts = self.clock()
@@ -4363,7 +4450,7 @@ class Percept:
                 roi=None,
                 exemplar=exemplar,
                 corrections=(),
-                context=MappingProxyType({"_percept_frames_are_earlier": True}),
+                context=MappingProxyType(provider_context),
                 include_frames=True,
                 include_audio=True,
                 include_context=True,
@@ -4767,6 +4854,9 @@ class Percept:
                     ]
                 )
             return []
+        provider_verdict = verdict
+        if goal.state.get("rearm") == "each_event":
+            verdict = normalize_event_chain_verdict(verdict)
         if bundle.complete:
             self._note_judge_ok(base_key)
         truth = classify(
@@ -4837,9 +4927,12 @@ class Percept:
                         "judge.finished",
                         {
                             "goal_id": goal.id,
-                            "satisfied": verdict.satisfied,
-                            "confidence": verdict.confidence,
+                            "satisfied": provider_verdict.satisfied,
+                            "confidence": provider_verdict.confidence,
                             "fused": True,
+                            **self._event_chain_provider_advisory(
+                                goal, provider_verdict
+                            ),
                         },
                     ),
                     (
@@ -4857,6 +4950,9 @@ class Percept:
                             "confidence": verdict.confidence,
                             "freshness": 1.0,
                             "hold_s": program_of(goal).hold_s,
+                            **self._event_chain_advisory(
+                                goal, None, verdict
+                            ),
                         },
                     ),
                 ]
@@ -5553,11 +5649,12 @@ class Percept:
         # ``context`` so ``context["claim_mode"]`` reaches the backend. A non-claim goal has no such key,
         # so claim_mode stays False and the path below is byte-for-byte the pre-1.5 cache path.
         claim_mode = bool(context and context.get("claim_mode"))
+        event_mode = bool(context and context.get("event_chain"))
         # PR 1.5: a per-goal reference image ("is this THE mug <exemplar>?") — deictic/individuation
         # grounding the backends already implement but the watch path never supplied. Stable per goal
         # (set in goal.state), so it rides the goal's cache scope; None (the default) is byte-for-byte.
         exemplar = goal.state.get("exemplar")
-        if frames or audio or process_mode or claim_mode or force_context:
+        if frames or audio or process_mode or claim_mode or event_mode or force_context:
             # The strip/audio (escalation) path is rare-by-design and multi-frame; bypass the
             # single-frame cache (its key dHashes ONE frame) so a strip verdict never pollutes — nor is
             # served from — a single-frame slot. The cache stays single-frame-pure. A process-QA judge
@@ -5570,7 +5667,9 @@ class Percept:
             # ``force_context`` also forwards ``context`` here so an injected static context reaches the
             # adapter on a plain single-frame binding (no process/claim/strip). With no binding this is
             # exactly the unbound rule (context only on process/claim).
-            extra = {"context": context} if (process_mode or claim_mode or force_context) else {}
+            extra = {
+                "context": context
+            } if (process_mode or claim_mode or event_mode or force_context) else {}
             # The strip/audio/process-QA judge is on the live watch path (perceive_judged /
             # _observe_and_log) — a malformed/timeout/partial response here must degrade the tick,
             # never crash it, so this goes through the fail-closed boundary (may raise
@@ -6138,17 +6237,24 @@ class Percept:
         # health event whenever we restored active counting goals into an empty episode map, so the amnesia
         # is observable. Queue-only — worker.py drains it into on_health (Percept never calls on_health).
         counting = [g for g in self.goals.all() if g.state.get("type") == "count"]
-        if counting and not self.episodes:
+        occurrence_watches = [
+            g for g in self.goals.all() if g.state.get("rearm") == "each_event"
+        ]
+        if (counting or occurrence_watches) and not self.episodes:
             self._restore_health_log.append(
                 (
                     "episode_memory_reset",
                     {
                         "reason": "session_only_v1.4",
                         "counting_goals": len(counting),
-                        "goal_ids": [g.id for g in counting],
+                        "occurrence_goals": len(occurrence_watches),
+                        "goal_ids": [
+                            g.id for g in (*counting, *occurrence_watches)
+                        ],
                         "detail": (
-                            "episodes are session-only (ADR-006): counting/episode memory was "
-                            "NOT restored; these goals restart at zero and may under-count until re-observed."
+                            "episodes are session-only (ADR-006): counting/occurrence memory was "
+                            "NOT restored; these goals restart their episode lifecycle and may "
+                            "under-count or repeat an occurrence after recovery."
                         ),
                     },
                 )

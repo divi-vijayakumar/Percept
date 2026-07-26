@@ -89,6 +89,9 @@ class TrackResult:
     reference: dict = field(default_factory=dict)  # {metric: {"value": v, "by": "TransRAC CVPR'22"}} SOTA ref
     calls: int = 0  # live vision calls spent (cost)
     notes: str = ""
+    # Exact effective knobs needed to reconstruct the track.  Unlike ``notes`` this stays structured
+    # in the saved JSON, so a result never has to infer launch-critical defaults from a source commit.
+    configuration: dict = field(default_factory=dict)
     coverage: list[Coverage | dict] = field(default_factory=list)
     diagnostic: bool = False
     status: str = "pass"  # pass | skipped | blocked | failed

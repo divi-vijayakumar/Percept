@@ -84,6 +84,10 @@ class KeySpec:
     by: tuple[KeyBy, ...] = ("entity",)
     bucket_s: float | None = None  # time_bucket: fold floor(t/bucket_s) -> a new bucket is a fresh edge
     suppress_false: bool = False  # the never-contract: a confident-false never reaches the gate
+    # ``rearm=each_event``: the judge must supply a temporal phase and the executor owns the
+    # per-entity occurrence lifecycle.  This is deliberately distinct from ``on_false``: a noisy
+    # one-frame false is not an event boundary, and a later pre/during/post chain is.
+    each_event: bool = False
 
 
 @dataclass(frozen=True)
@@ -267,6 +271,49 @@ class ConcernContext:
     # absent it, the ``n`` discriminator is used exactly as before (byte-for-byte).
     last_episode_id: str | None = None
     last_resolved_answer: str | None = None  # process-QA: the last resolved running-answer text
+    # ``rearm=each_event`` occurrence state, isolated per reducer entity.  It is episode memory,
+    # not a gate bit: the gate continues to own only the mechanical armed/disarmed edge.
+    occurrences: dict[Hashable, "OccurrenceState"] = field(default_factory=dict)
+
+
+@dataclass
+class OccurrenceState:
+    """Session-local lifecycle for one entity's temporal event chain."""
+
+    sequence: int = 0
+    phase: str = "pre"
+    episode_id: str | None = None
+    emitted: bool = False
+
+
+def normalize_event_chain_verdict(verdict: Verdict) -> Verdict:
+    """Validate the provider's temporal event contract before cognition state observes it.
+
+    The redundant fields are intentional: ``phase`` names lifecycle position,
+    ``action_present`` says whether the action is currently visible, and ``satisfied`` says whether
+    this clip grounds an occurrence. A disagreement is an abstention, never a guessed boundary.
+    """
+    phase = str(getattr(verdict, "phase", "") or "").strip().lower()
+    action_present = getattr(verdict, "action_present", None)
+    expected_present = phase == "during"
+    expected_satisfied = phase in {"during", "post"}
+    valid = (
+        phase in {"pre", "during", "post"}
+        and isinstance(action_present, bool)
+        and action_present is expected_present
+        and bool(verdict.satisfied) is expected_satisfied
+    )
+    if not valid:
+        return replace(
+            verdict,
+            satisfied=False,
+            confidence=0.0,
+            evidence=(
+                "event-chain abstention: judge did not return a consistent "
+                "satisfied/action_present/pre-during-post tuple"
+            ),
+        )
+    return replace(verdict, phase=phase)
 
 
 @dataclass
@@ -796,6 +843,73 @@ class BehaviorExecutor:
             self.gate.rearm(key)  # bucket rolled over -> fresh armed edge (was: a brand-new key)
         ctx.last_bucket = bucket
 
+    def _event_chain_fold(
+        self,
+        goal,
+        verdict: Verdict,
+        base_key: tuple,
+        *,
+        freshness: float,
+        metric: str,
+    ) -> "tuple[Verdict, EpisodeFoldResult | None, OccurrenceState | None]":
+        """Map a structured temporal verdict to one occurrence-owned episode.
+
+        Without ``phase`` there is no defensible way to distinguish fifty observations of one
+        occurrence from fifty occurrences, so explicit ``each_event`` Watches refuse that read.
+        Low-confidence/stale reads remain ordinary ASK decisions and do not advance the lifecycle.
+        """
+        normalized = normalize_event_chain_verdict(verdict)
+        if normalized.confidence == 0.0 and verdict.confidence != 0.0:
+            self.metrics.incr(f"{metric}.event_chain_missing")
+        verdict = normalized
+        truth = classify(verdict, freshness, self.gate.threshold, self.gate.fresh_min)
+        if truth == "unknown":
+            return verdict, None, None
+
+        phase = str(getattr(verdict, "phase", "") or "").strip().lower()
+
+        entity = base_key[-1]
+        state = self.ctx(goal.id).occurrences.setdefault(entity, OccurrenceState())
+        if phase == "pre":
+            state.phase = "pre"
+            state.episode_id = None
+            state.emitted = False
+            self.metrics.incr(f"{metric}.event_chain_pre")
+            return replace(verdict, satisfied=False), None, None
+
+        new_occurrence = (
+            state.episode_id is None
+            or (phase == "during" and state.phase in {"pre", "post"})
+            or (phase == "post" and state.phase == "pre")
+        )
+        if new_occurrence:
+            state.sequence += 1
+            state.episode_id = f"{goal.id}:event:{entity}:{state.sequence}"
+            state.emitted = False
+            fold = EpisodeFoldResult(
+                episode_id=state.episode_id,
+                match="new",
+                mutation="none",
+                should_rearm=True,
+                should_evaluate_gate=True,
+            )
+            self.metrics.incr(f"{metric}.event_chain_opened")
+        else:
+            fold = EpisodeFoldResult(
+                episode_id=state.episode_id,
+                match="continuation",
+                mutation="confirmed",
+                should_rearm=False,
+                should_evaluate_gate=not state.emitted,
+            )
+            if state.emitted:
+                self.metrics.incr(f"{metric}.event_chain_continuation_suppressed")
+
+        state.phase = phase
+        # ``post`` can recover a short occurrence whose during phase fell between samples. The
+        # episode fold makes subsequent overlapping post windows idempotent.
+        return replace(verdict, satisfied=True), fold, state
+
     # -- judge / event sense: replicates agent._fire_concern byte-for-byte ----------------------
     def fire_judged(
         self,
@@ -836,8 +950,22 @@ class BehaviorExecutor:
         typed outcome from this method's sole gate evaluation. It never causes a second evaluation.
         """
         ctx = self.ctx(goal.id)
+        occurrence_state: OccurrenceState | None = None
+        if program.key.each_event:
+            if fold is not None:
+                raise ValueError(
+                    "rearm=each_event cannot combine with a content/claim episode fold"
+                )
+            verdict, event_fold, occurrence_state = self._event_chain_fold(
+                goal, verdict, base_key, freshness=freshness, metric=metric
+            )
+            if event_fold is not None:
+                fold = event_fold
         truth = classify(verdict, freshness, self.gate.threshold, self.gate.fresh_min)
         ctx.confusion.record(verdict, truth)  # constraint 2: additive, pre-gate, no trace effect
+        if program.key.each_event and truth == "no":
+            # A confident pre phase closes the occurrence above. It is not a subscriber decision.
+            return None
         if program.key.suppress_false and truth == "no":
             return None  # never-contract: a confident-false must not reach the gate
         key = base_key  # the key is ONLY (goal, entity) now — the interval bucket moved to ctx
@@ -903,6 +1031,8 @@ class BehaviorExecutor:
             if fold is not None and fold.episode_id is not None:
                 revision = self._incidents.record(fold.episode_id)
                 supersedes = fold.supersedes
+            if occurrence_state is not None:
+                occurrence_state.emitted = True
             if supersedes is not None:
                 self.metrics.incr(f"{metric}.superseding_revision")
             if is_hard_quadrant(consequence_of(goal)):  # a hard-quadrant consequence escalates to ASK
@@ -1112,9 +1242,14 @@ _PERCEPTION_FIELDS = {"modality", "temporal", "n_frames", "roi", "sampling", "au
 _SENSE_PERCEPTION_PRESET: dict[str, PerceptionSpec] = {}
 
 
-def _perception_for(sense: Sense, authored: object) -> PerceptionSpec:
+def _perception_for(
+    sense: Sense,
+    authored: object,
+    *,
+    base: "PerceptionSpec | None" = None,
+) -> PerceptionSpec:
     """The sense-preset default with any validated authored fields overlaid (authored wins)."""
-    base = _SENSE_PERCEPTION_PRESET.get(sense, PerceptionSpec())
+    base = base if base is not None else _SENSE_PERCEPTION_PRESET.get(sense, PerceptionSpec())
     if not isinstance(authored, dict):
         return base
     fields = {k: authored[k] for k in _PERCEPTION_FIELDS if k in authored}
@@ -1146,6 +1281,21 @@ def program_of(goal) -> BehaviorProgram:
         prog = BehaviorProgram(sense="absence", predicate=goal.condition, deadline_at=s.get("deadline_at"))
     elif rearm == "never":
         prog = BehaviorProgram(sense="judge", predicate=goal.condition, key=KeySpec(suppress_false=True))
+    elif rearm == "each_event":
+        # Event Watches require change-over-time evidence. Five uniformly sampled frames keep the
+        # call bounded while exposing a pre/during/post chain; an authored perception block may
+        # override any part of this default below.
+        prog = BehaviorProgram(
+            sense="judge",
+            predicate=goal.condition,
+            key=KeySpec(each_event=True),
+            perception=PerceptionSpec(
+                temporal="strip",
+                n_frames=5,
+                sampling="uniform",
+                window_s=2.0,
+            ),
+        )
     elif rearm == "interval":
         prog = BehaviorProgram(
             sense="judge",
@@ -1163,7 +1313,15 @@ def program_of(goal) -> BehaviorProgram:
     # cadence_s). Absent -> None -> byte-for-byte the rising-edge gate. Public runtime entry points
     # validate authored duration state before this internal defensive conversion.
     hold = _coerce_hold_s(s.get("hold_s"))
-    return replace(prog, perception=_perception_for(prog.sense, s.get("perception")), hold_s=hold)
+    return replace(
+        prog,
+        perception=_perception_for(
+            prog.sense,
+            s.get("perception"),
+            base=prog.perception,
+        ),
+        hold_s=hold,
+    )
 
 
 def _coerce_hold_s(v: object) -> float | None:
@@ -1449,6 +1607,8 @@ __all__ = [
     "compile_fire_when",
     "ConfusionSignal",
     "ConcernContext",
+    "OccurrenceState",
+    "normalize_event_chain_verdict",
     "Fired",
     "TransitionTick",
     "EpisodeMatch",

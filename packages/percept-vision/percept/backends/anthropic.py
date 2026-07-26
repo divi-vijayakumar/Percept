@@ -254,6 +254,14 @@ class AnthropicVision:
                 f'Looking only at the region of interest, and comparing to the reference '
                 f'exemplar: is this true — "{condition}" — about THIS specific object? '
             )
+        elif context and context.get("event_chain"):
+            question = (
+                f'These {len(strip) + 1} region images are consecutive moments in TIME ORDER '
+                f'(oldest first). Track one discrete occurrence of "{condition}". Classify the '
+                "LATEST moment as pre (not begun), during (visibly in progress), or post (just "
+                "completed within this clip). Do not infer the action from a static pose; require "
+                "visible change across the ordered images. "
+            )
         elif strip:
             question = (
                 f'These {len(strip) + 1} region images are consecutive moments in TIME ORDER (oldest '
@@ -273,13 +281,25 @@ class AnthropicVision:
             )
         if context:
             # ``claim_mode`` is a RESERVED control key (not a specialist fact) — never surface it as one.
-            spec_facts = "; ".join(f"{k}={v}" for k, v in context.items() if k != "claim_mode")
+            spec_facts = "; ".join(
+                f"{k}={v}"
+                for k, v in context.items()
+                if k not in ("claim_mode", "event_chain")
+                and not k.startswith("_percept_")
+            )
             if spec_facts:
                 question += (
                     f"A specialist model has reported these structured facts (trust them over your own "
                     f"read): {spec_facts}. "
                 )
-        question += 'Answer as STRICT JSON {"satisfied", "confidence", "evidence"}.'
+        if context and context.get("event_chain"):
+            question += (
+                'Answer as STRICT JSON {"satisfied", "confidence", "evidence", '
+                '"action_present", "phase"}. Set action_present=true only for "during". '
+                "Use satisfied=true for a grounded during or just-completed post occurrence."
+            )
+        else:
+            question += 'Answer as STRICT JSON {"satisfied", "confidence", "evidence"}.'
         if claim_mode:
             question += _CLAIM_MODE_CONTRACT
         content.append({"type": "text", "text": question})

@@ -376,6 +376,7 @@ class OpenRouterVision:
         claim_mode: bool = False,
     ) -> list:
         strip = [f for f in (frames or []) if f is not frame]  # earlier context, oldest->newest
+        event_chain = bool((context or {}).get("event_chain"))
         content: list = [_image_block(f) for f in strip]
         content.append(_image_block(frame))
         if exemplar is not None:
@@ -383,6 +384,14 @@ class OpenRouterVision:
             question = (
                 f'Looking only at the region of interest, and comparing to the reference exemplar: is this '
                 f'true — "{condition}" — about THIS specific object? '
+            )
+        elif event_chain:
+            question = (
+                f'These {len(strip) + 1} images are consecutive moments in TIME ORDER '
+                f'(oldest first). Track one discrete occurrence of "{condition}". Classify the '
+                "LATEST moment as pre (the occurrence has not begun), during (it is visibly in "
+                "progress), or post (it just completed within this clip). Do not infer an action "
+                "from a static hand/object pose; require visible change across the ordered images. "
             )
         elif strip:
             question = (
@@ -397,10 +406,23 @@ class OpenRouterVision:
             question += f"Trust these authoritative facts over your own read: {facts}. "
         if context and isinstance(context, dict):
             # ``process_qa``/``claim_mode`` are RESERVED control keys, never surfaced as specialist facts.
-            spec = "; ".join(f"{k}={v}" for k, v in context.items() if k not in ("process_qa", "claim_mode"))
+            spec = "; ".join(
+                f"{k}={v}"
+                for k, v in context.items()
+                if k not in ("process_qa", "claim_mode", "event_chain")
+                and not k.startswith("_percept_")
+            )
             if spec:
                 question += f"A specialist model reported these structured facts (trust them): {spec}. "
-        question += 'Answer as STRICT JSON {"satisfied", "confidence", "evidence"}.'
+        if event_chain:
+            question += (
+                'Answer as STRICT JSON {"satisfied", "confidence", "evidence", '
+                '"action_present", "phase"}. Set action_present=true only for "during". '
+                "Use satisfied=true when this clip grounds a during or just-completed post "
+                "occurrence; otherwise false."
+            )
+        else:
+            question += 'Answer as STRICT JSON {"satisfied", "confidence", "evidence"}.'
         if claim_mode:
             question += _CLAIM_MODE_CONTRACT  # advertise the OPTIONAL correction fields (byte-for-byte off)
         content.append({"type": "text", "text": question})

@@ -66,6 +66,38 @@ class OpenRouterBackendTests(unittest.TestCase):
         self.assertEqual(len(imgs), 2)  # earlier-context frame + current frame (current last)
         self.assertTrue(any(m["role"] == "system" for m in sent["messages"]))
 
+    def test_event_chain_prompt_and_structured_phase_round_trip(self):
+        content = json.dumps(
+            {
+                "satisfied": True,
+                "confidence": 0.93,
+                "evidence": "hand and object visibly move through the action",
+                "action_present": True,
+                "phase": "during",
+            }
+        )
+        client = _FakeClient(content)
+        verdict = asyncio.run(
+            OpenRouterVision(_settings(), client=client).judge(
+                "one discrete putting occurrence",
+                b"current",
+                frames=[b"before"],
+                context={"event_chain": True},
+            )
+        )
+        self.assertEqual((verdict.phase, verdict.action_present), ("during", True))
+        user = next(
+            message
+            for message in client.chat.completions.calls[0]["messages"]
+            if message["role"] == "user"
+        )
+        prompt = " ".join(
+            block["text"] for block in user["content"] if block.get("type") == "text"
+        )
+        self.assertIn("pre (the occurrence has not begun)", prompt)
+        self.assertIn("Do not infer an action from a static", prompt)
+        self.assertIn('"action_present", "phase"', prompt)
+
     def test_bad_reply_degrades_to_low_confidence_unknown(self):
         v = OpenRouterVision(_settings(), client=_FakeClient("not json at all"))
         verdict = asyncio.run(v.judge("x?", b"jpeg"))

@@ -113,6 +113,33 @@ class TestPublicBenchShim(unittest.TestCase):
 
         self.assertEqual(coverage[0].positive_events, 2)
 
+    def test_result_json_round_trip_preserves_resolved_configuration(self):
+        from tools.percept_benchmark import _json_safe_result, _track_result_from_json
+
+        result = TrackResult(
+            track="pt-action-e2e",
+            cells={("e2e", "notification_recall"): 1.0},
+            configuration={
+                "provider": "openrouter",
+                "watch": {
+                    "rearm": "each_event",
+                    "perception": {
+                        "temporal": "strip",
+                        "n_frames": 5,
+                        "sampling": "uniform",
+                        "window_s": 2.0,
+                    },
+                },
+            },
+        )
+
+        restored = _track_result_from_json(
+            json.loads(json.dumps(_json_safe_result(result)))
+        )
+
+        self.assertEqual(restored.configuration, result.configuration)
+        self.assertEqual(restored.cells, result.cells)
+
     def test_release_gate_rejects_diagnostics_and_legacy_lanes(self):
         diagnostic = TrackResult(
             track="counting",

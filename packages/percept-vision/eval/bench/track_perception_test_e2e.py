@@ -23,10 +23,11 @@ from typing import Any
 
 from percept import Goal, Percept
 from percept.adapters import Goal as ContractGoal
+from percept.behavior import program_of
 from percept.config import load_settings
 from percept.contracts import JudgmentTiming
 from percept.edge.tier0 import MotionGate, compile_watchspec
-from percept.gate import FIRE
+from percept.gate import FIRE, Gate
 from percept.runtime.source import open_source
 from percept.sampling import SamplingController, SensePolicy
 from percept.sensorplan import sensor_plan_for
@@ -38,6 +39,14 @@ from .types import TrackResult, bench_vision
 TRACK = "pt-action-e2e"
 FPS = 2.0  # legacy coarse capture floor — the SensorPlan's sensitive cadence raises the EFFECTIVE rate
 WINDOW_PAD_S = 0.5
+# Preregistered PRODUCT configuration, not a value read from the benchmark annotation.  The former
+# adapter copied each ground-truth interval's duration into the Watch's sensing prior, which leaks
+# scoring data into runtime admission.  A client configuring a general action Watch does not know the
+# future occurrence duration, so every PT case now gets this same conservative one-second prior.
+ACTION_BRIEF_WINDOW_S = 1.0
+ACTION_TEMPORAL_WINDOW_S = 2.0
+ACTION_TEMPORAL_FRAMES = 5
+ACTION_TEMPORAL_SAMPLING = "uniform"
 # Headroom so the capture stream itself isn't the bottleneck: decode at least this dense when the goal's
 # SensorPlan asks for a sensitive above-Nyquist cadence (the controller still subsamples to the plan's fps).
 _CAPTURE_HEADROOM_FPS = 8.0
@@ -115,6 +124,7 @@ class DecisionObservation:
     judge_latency_s: float
     action_onset_to_fire_s: float | None
     timing: JudgmentTiming
+    revision_id: str | None = None
 
 
 def _matched_event_pairs(
@@ -157,6 +167,7 @@ class EventRun:
     asks: list[float] = field(default_factory=list)
     escalations: list[float] = field(default_factory=list)
     trace: list[dict[str, Any]] = field(default_factory=list)
+    configuration: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
 
     @property
@@ -222,7 +233,23 @@ def _action_goal(label: str) -> str:
     words = re.sub(r"[_-]+", " ", raw).strip().lower()
     if not words:
         words = "the annotated action"
-    return f"someone is {words}"
+    return f"someone performs one discrete occurrence of {words}"
+
+
+def _action_goal_state() -> dict[str, Any]:
+    """The fixed, annotation-independent action Watch used by every benchmark case."""
+    return {
+        "type": "watch",
+        "count": 0,
+        "rearm": "each_event",
+        "sense": {"brief_window_s": ACTION_BRIEF_WINDOW_S},
+        "perception": {
+            "temporal": "strip",
+            "n_frames": ACTION_TEMPORAL_FRAMES,
+            "sampling": ACTION_TEMPORAL_SAMPLING,
+            "window_s": ACTION_TEMPORAL_WINDOW_S,
+        },
+    }
 
 
 class RecordingVision:
@@ -257,6 +284,9 @@ class RecordingVision:
             "satisfied": bool(verdict.satisfied),
             "confidence": float(verdict.confidence),
             "evidence": str(getattr(verdict, "evidence", "") or "")[:240],
+            "phase": str(getattr(verdict, "phase", "") or "") or None,
+            "action_present": getattr(verdict, "action_present", None),
+            "events": list(getattr(verdict, "events", []) or []),
             "usage": dict(getattr(verdict, "usage", {}) or {}),
         }
         return verdict
@@ -297,6 +327,7 @@ def _decision_observation(
             else None
         ),
         timing=timing,
+        revision_id=getattr(fire, "revision_id", None),
     )
 
 
@@ -331,16 +362,11 @@ async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
         discover_plugins=False,
     )
     goal_id = f"pt-{event['video_id']}"
-    # The pt-action notification goal IS a "tell me when X briefly happens" goal: the GT window's duration
-    # is the goal's brief-window PRIOR (data the goal-setter has — not a per-activity constant). It compiles
-    # the judge sense to a SENSITIVE above-Nyquist cadence so a sub-second action is covered. A non-brief
-    # goal carries no such prior and is byte-for-byte the legacy cadence.
-    brief_window_s = max(0.0, float(event["end_s"]) - float(event["onset_s"]))
     goal = Goal(
         id=goal_id,
         condition=goal_text,
         say=f"Perception Test action detected: {goal_text}",
-        state={"type": "watch", "count": 0, "sense": {"brief_window_s": brief_window_s}},
+        state=_action_goal_state(),
     )
     core.add_goal(goal)
     plan = sensor_plan_for(goal)
@@ -349,6 +375,19 @@ async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
     ctrl = SamplingController(policy)
     spec = compile_watchspec(list(core.goals.active()), threshold=settings.edge.motion_gate)
     gate = MotionGate(spec, settings=settings)
+    program = program_of(goal)
+    result.configuration = {
+        "goal_state": dict(goal.state),
+        "resolved_perception": {
+            "modality": program.perception.modality,
+            "temporal": program.perception.temporal,
+            "n_frames": program.perception.n_frames,
+            "sampling": program.perception.sampling,
+            "window_s": program.perception.window_s,
+        },
+        "resolved_cadence": dict(cadence),
+        "capture_fps": capture_fps(cadence),
+    }
     dropped_frames = [0]
 
     try:
@@ -421,6 +460,8 @@ async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
                         if verdict
                         else None,
                         "evidence": str(verdict.get("evidence", "") if verdict else "")[:240],
+                        "phase": verdict.get("phase") if verdict else None,
+                        "action_present": verdict.get("action_present") if verdict else None,
                     },
                     "core_gate_action": action,
                     "reason": f"{action}: emitted"
@@ -499,6 +540,7 @@ def _fire_records(run: EventRun) -> list[dict[str, Any]]:
                     fire.timing.decision_emitted_ts,
                     6,
                 ),
+                "revision_id": fire.revision_id,
             }
         )
     return records
@@ -645,6 +687,7 @@ def score(*, live: bool, n: int) -> TrackResult:
 
     backend = os.environ.get("PERCEPT_VISION_BACKEND", "gemini")
     model = os.environ.get("PERCEPT_VISION_MODEL")
+    settings = load_settings()
     request_budget = build_budget_enforcer(
         os.environ.get("PERCEPT_BENCH_BUDGET_PLAN", ""),
         provider=backend,
@@ -753,6 +796,7 @@ def score(*, live: bool, n: int) -> TrackResult:
             "fires": _fire_records(r),
             "escalations": [round(t, 3) for t in r.escalations[:20]],
             "trace": r.trace,
+            "configuration": r.configuration,
             "error": r.error,
         }
         for r in runs
@@ -837,7 +881,50 @@ def score(*, live: bool, n: int) -> TrackResult:
         ],
         notes=(
             f"manifest={manifest}; pinned_cases={[event['row_id'] for event in events]}; "
-            f"capture_floor_fps={FPS}; cadence=sensorplan-sensitive(brief_window); "
+            f"capture_floor_fps={FPS}; cadence=sensorplan-sensitive(fixed_product_prior); "
             f"budget={budget}; per_event={per_event}"
         ),
+        configuration={
+            "provider": backend,
+            "model": model,
+            "watch": _action_goal_state(),
+            "evidence_contract": {
+                "ordered_frames": True,
+                "event_chain": True,
+                "required_phase_vocabulary": ["pre", "during", "post"],
+                "required_action_present": True,
+                "occurrence_rearm": "each_event",
+            },
+            "admission": {
+                "rule": "motion_gate_or_sensitive_cadence",
+                "capture_floor_fps": FPS,
+                "capture_headroom_fps": _CAPTURE_HEADROOM_FPS,
+                "fixture_queue_size": _FIXTURE_QUEUE_SIZE,
+                "fixture_queue_policy": "block",
+                "motion_gate": settings.edge.motion_gate,
+                "salience_stat": settings.edge.salience_stat,
+                "cadence_formula": {
+                    "base_fps": f"2/{ACTION_BRIEF_WINDOW_S}",
+                    "max_fps": "3*base_fps",
+                    "escalate_threshold": 0.05,
+                },
+            },
+            "decision": {
+                "confidence_threshold": settings.gate.threshold,
+                "freshness_min": Gate().fresh_min,
+                "require_false_first": settings.gate.require_false_first,
+                "refractory_s": settings.gate.refractory_s,
+            },
+            "cache": {
+                "enabled": settings.cache.enabled,
+                "threshold": settings.cache.threshold,
+                "ttl_s": settings.cache.ttl_s,
+            },
+            "scoring": {
+                "positive_unit": "same-label occurrence window",
+                "matching": "greedy_one_to_one_earliest_end",
+                "late_fire_pad_s": WINDOW_PAD_S,
+            },
+            "budget_plan": request_budget.plan,
+        },
     )

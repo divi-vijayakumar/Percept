@@ -22,7 +22,12 @@ from eval.bench.budget import (
     validate_budget_plan,
 )
 from eval.bench.track_perception_test_e2e import (
+    ACTION_BRIEF_WINDOW_S,
+    ACTION_TEMPORAL_FRAMES,
+    ACTION_TEMPORAL_SAMPLING,
+    ACTION_TEMPORAL_WINDOW_S,
     EventRun,
+    _action_goal_state,
     _call_reductions,
     _decision_observation,
     _event_precision,
@@ -108,6 +113,26 @@ def _enforcer(**kwargs):
         provider="openrouter",
         model="qwen/qwen3-vl-32b-instruct",
     )
+
+
+class ActionBenchmarkConfigurationTests(unittest.TestCase):
+    def test_action_watch_is_temporal_occurrence_aware_and_annotation_independent(self):
+        # The helper deliberately accepts no event/annotation argument. Every selected case gets
+        # exactly this preregistered product configuration; ground-truth interval duration is scoring
+        # data only and cannot leak into admission or temporal-window width.
+        state = _action_goal_state()
+        self.assertEqual(state["rearm"], "each_event")
+        self.assertEqual(state["sense"]["brief_window_s"], ACTION_BRIEF_WINDOW_S)
+        self.assertEqual(
+            state["perception"],
+            {
+                "temporal": "strip",
+                "n_frames": ACTION_TEMPORAL_FRAMES,
+                "sampling": ACTION_TEMPORAL_SAMPLING,
+                "window_s": ACTION_TEMPORAL_WINDOW_S,
+            },
+        )
+        self.assertGreaterEqual(ACTION_TEMPORAL_FRAMES, 3)
 
 
 class BudgetAdmissionTests(unittest.TestCase):
