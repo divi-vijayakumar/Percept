@@ -2152,6 +2152,10 @@ class Percept:
             "event_episode_id": state.episode_id if state is not None else None,
             "event_occurrence_sequence": state.sequence if state is not None else 0,
             "event_episode_emitted": state.emitted if state is not None else False,
+            "event_pre_since": state.pre_since if state is not None else None,
+            "event_close_quiet_s": float(
+                program_of(goal).perception.window_s or 0.0
+            ),
         }
 
     @staticmethod

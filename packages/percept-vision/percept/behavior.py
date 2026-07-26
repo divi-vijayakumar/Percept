@@ -284,6 +284,7 @@ class OccurrenceState:
     phase: str = "pre"
     episode_id: str | None = None
     emitted: bool = False
+    pre_since: float | None = None
 
 
 def normalize_event_chain_verdict(verdict: Verdict) -> Verdict:
@@ -851,6 +852,8 @@ class BehaviorExecutor:
         *,
         freshness: float,
         metric: str,
+        t: float,
+        quiet_s: float,
     ) -> "tuple[Verdict, EpisodeFoldResult | None, OccurrenceState | None]":
         """Map a structured temporal verdict to one occurrence-owned episode.
 
@@ -872,21 +875,34 @@ class BehaviorExecutor:
         state = self.ctx(goal.id).occurrences.setdefault(entity, OccurrenceState())
         if phase == "pre":
             state.phase = "pre"
-            state.episode_id = None
-            state.emitted = False
+            if state.episode_id is None:
+                state.pre_since = t
+            else:
+                if state.pre_since is None:
+                    state.pre_since = t
+                if t - state.pre_since >= quiet_s:
+                    state.episode_id = None
+                    state.emitted = False
+                    state.pre_since = None
+                    self.metrics.incr(f"{metric}.event_chain_closed")
+                else:
+                    self.metrics.incr(f"{metric}.event_chain_pre_pending")
             self.metrics.incr(f"{metric}.event_chain_pre")
-            return replace(verdict, satisfied=False), None, None
+            return replace(verdict, satisfied=False), None, state
 
         # Sliding temporal windows can legitimately disagree at an occurrence boundary: an
         # overlapping window may call the latest moment ``post`` and the next one ``during`` for
-        # the SAME physical action.  Once an occurrence is open, only a confident ``pre`` read
-        # above closes it (by clearing ``episode_id``); phase regression alone must never mint a
-        # second episode.  This deliberately prefers one missed back-to-back event over a duplicate
-        # notification when no observable pre-event separator exists.
+        # the SAME physical action.  Once an occurrence is open, only a confident ``pre`` interval
+        # spanning the Watch's evidence horizon closes it (by clearing ``episode_id``); neither
+        # phase regression nor a one-sample pre blip may mint a second episode.  This deliberately
+        # prefers one missed back-to-back event over a duplicate notification when no defensible
+        # quiet separator exists.
+        state.pre_since = None
         new_occurrence = state.episode_id is None
         if new_occurrence:
             state.sequence += 1
-            state.episode_id = f"{goal.id}:event:{entity}:{state.sequence}"
+            episode_entity = "scene" if entity is None else entity
+            state.episode_id = f"{goal.id}:event:{episode_entity}:{state.sequence}"
             state.emitted = False
             fold = EpisodeFoldResult(
                 episode_id=state.episode_id,
@@ -958,8 +974,15 @@ class BehaviorExecutor:
                 raise ValueError(
                     "rearm=each_event cannot combine with a content/claim episode fold"
                 )
+            quiet_s = max(float(program.perception.window_s or 0.0), 0.0)
             verdict, event_fold, occurrence_state = self._event_chain_fold(
-                goal, verdict, base_key, freshness=freshness, metric=metric
+                goal,
+                verdict,
+                base_key,
+                freshness=freshness,
+                metric=metric,
+                t=t,
+                quiet_s=quiet_s,
             )
             if event_fold is not None:
                 fold = event_fold

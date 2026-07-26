@@ -157,6 +157,8 @@ class EachEventProductPathTests(unittest.TestCase):
             "post",
             "post",
             "pre",
+            "pre",
+            "pre",
             "during",
             "during",
             "post",
@@ -173,6 +175,12 @@ class EachEventProductPathTests(unittest.TestCase):
     def test_overlapping_window_post_to_during_regression_does_not_refire(self):
         _core, _vision, emitted = asyncio.run(
             _run(["pre", "post", "during", "post", "during"])
+        )
+        self.assertEqual([event.action for event in emitted], ["fire"])
+
+    def test_brief_pre_gap_inside_evidence_horizon_does_not_refire(self):
+        _core, _vision, emitted = asyncio.run(
+            _run(["pre", "during", "pre", "during", "post"])
         )
         self.assertEqual([event.action for event in emitted], ["fire"])
 
@@ -238,6 +246,8 @@ class EachEventProductPathTests(unittest.TestCase):
         self.assertEqual(classified.data["event_occurrence_sequence"], 1)
         self.assertTrue(classified.data["event_episode_id"].startswith("action:event:"))
         self.assertIs(classified.data["event_episode_emitted"], True)
+        self.assertIsNone(classified.data["event_pre_since"])
+        self.assertEqual(classified.data["event_close_quiet_s"], 2.0)
         self.assertEqual(emitted[0].revision_id, classified.data["event_episode_id"] + "#r1")
 
     def test_trace_exposes_provider_claim_before_fail_closed_normalization(self):
@@ -263,7 +273,16 @@ class EachEventProductPathTests(unittest.TestCase):
         self.assertEqual(classified.data["truth"], "unknown")
 
     def test_split_phase_owner_path_preserves_occurrence_semantics(self):
-        phases = ["pre", "during", "during", "post", "pre", "during"]
+        phases = [
+            "pre",
+            "during",
+            "during",
+            "post",
+            "pre",
+            "pre",
+            "pre",
+            "during",
+        ]
         vision = _PhaseVision(
             {f"f{i}": _verdict(phase) for i, phase in enumerate(phases)}
         )
@@ -323,7 +342,16 @@ class EachEventFusedProductPathTests(unittest.TestCase):
         from tests.test_fused_sync import _audio, _video
         from tests.test_watchplan_runtime_binding import _profile
 
-        phases = ["pre", "during", "during", "post", "pre", "during"]
+        phases = [
+            "pre",
+            "during",
+            "during",
+            "post",
+            "pre",
+            "pre",
+            "pre",
+            "during",
+        ]
 
         from percept.backends.fake import FakeVision
 
@@ -408,7 +436,7 @@ class EachEventFusedProductPathTests(unittest.TestCase):
         classified = [data for _trace, _t, stage, data in records if stage == "gate.classified"]
         self.assertEqual(
             [row["event_occurrence_sequence"] for row in classified],
-            [0, 1, 1, 1, 1, 2],
+            [0, 1, 1, 1, 1, 1, 1, 2],
         )
 
 

@@ -894,6 +894,7 @@ def score(*, live: bool, n: int) -> TrackResult:
                 "required_phase_vocabulary": ["pre", "during", "post"],
                 "required_action_present": True,
                 "occurrence_rearm": "each_event",
+                "occurrence_close_quiet_s": ACTION_TEMPORAL_WINDOW_S,
             },
             "admission": {
                 "rule": "motion_gate_or_sensitive_cadence",
