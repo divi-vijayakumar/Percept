@@ -3,6 +3,7 @@ import-safe with no key and no API calls (the client is lazy; construction never
 """
 
 import asyncio
+import importlib.machinery
 import types
 import unittest
 from unittest.mock import patch
@@ -16,6 +17,7 @@ from percept.backends.gemini import (
     GeminiVision,
     _image_part,
     _model_for,
+    _provider_http_options,
 )
 
 
@@ -40,6 +42,15 @@ class TestProtocolConformance(unittest.TestCase):
         self.assertTrue(callable(getattr(GeminiConductor(), "run")))
         self.assertTrue(callable(getattr(GeminiSpecialist(), "stream")))
 
+    def test_injected_client_still_initializes_request_budget_state(self):
+        client = object()
+        without_budget = GeminiVision(client=client)
+        budget = object()
+        with_budget = GeminiVision(client=client, request_budget=budget)
+
+        self.assertIsNone(without_budget._request_budget)
+        self.assertIs(with_budget._request_budget, budget)
+
 
 class TestModelResolution(unittest.TestCase):
     def test_gemini_pin_kept_claude_pin_falls_back(self):
@@ -54,6 +65,53 @@ class TestModelResolution(unittest.TestCase):
                 vision_model = "claude-haiku-4-5"
 
         self.assertEqual(_model_for(ClaudePinned, "vision_model"), GEMINI_DEFAULT)
+
+
+class TestProviderHttpOptions(unittest.TestCase):
+    def test_real_sdk_shape_pins_exactly_one_transport_attempt(self):
+        captured = {}
+
+        class HttpRetryOptions:
+            def __init__(self, **kwargs):
+                captured["retry"] = kwargs
+
+        class HttpOptions:
+            def __init__(self, **kwargs):
+                captured["http"] = kwargs
+
+        provider_types = types.ModuleType("google.genai.types")
+        provider_types.__spec__ = importlib.machinery.ModuleSpec(
+            "google.genai.types",
+            loader=None,
+        )
+        provider_types.HttpRetryOptions = HttpRetryOptions
+        provider_types.HttpOptions = HttpOptions
+
+        _provider_http_options(provider_types)
+
+        self.assertEqual(captured["retry"], {"attempts": 1})
+        self.assertEqual(captured["http"]["timeout"], 120_000)
+        self.assertIsInstance(captured["http"]["retry_options"], HttpRetryOptions)
+
+    def test_real_sdk_without_retry_control_fails_closed(self):
+        provider_types = types.ModuleType("google.genai.types")
+        provider_types.__spec__ = importlib.machinery.ModuleSpec(
+            "google.genai.types",
+            loader=None,
+        )
+        provider_types.HttpOptions = lambda **kwargs: kwargs
+
+        with self.assertRaisesRegex(RuntimeError, "cannot pin provider retries"):
+            _provider_http_options(provider_types)
+
+    def test_import_double_without_retry_control_remains_supported(self):
+        provider_types = types.ModuleType("google.genai.types")
+        provider_types.HttpOptions = lambda **kwargs: kwargs
+
+        self.assertEqual(
+            _provider_http_options(provider_types),
+            {"timeout": 120_000},
+        )
 
 
 class TestImagePart(unittest.TestCase):

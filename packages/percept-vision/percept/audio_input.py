@@ -702,12 +702,15 @@ _TRUSTED_GEMINI_METHODS = {
     "judge": _SdkGeminiVision.__dict__["judge"],
     "_judge_process_qa": _SdkGeminiVision.__dict__["_judge_process_qa"],
     "_observe_step": _SdkGeminiVision.__dict__["_observe_step"],
+    "_budget_usage": _SdkGeminiVision.__dict__["_budget_usage"],
+    "_metered_completion": _SdkGeminiVision.__dict__["_metered_completion"],
 }
 _TRUSTED_GEMINI_HELPERS = {
     name: _gemini_backend.__dict__[name]
     for name in (
         "_require_genai",
         "_gemini_key",
+        "_provider_http_options",
         "_image_part",
         "_wrap_wav",
         "_audio_part",
@@ -726,6 +729,7 @@ class _SharedGeminiDispatchState:
     settings: Any
     model: Any
     breaker: Any
+    request_budget: Any
     expected_client: Any
     captured_provider: Any = None
     lock: Any = field(default_factory=threading.RLock, repr=False)
@@ -767,6 +771,7 @@ def _shared_gemini_state(adapter: Any) -> _SharedGeminiDispatchState:
     settings = getattr(adapter, "_settings", None)
     model = getattr(adapter, "_model", None)
     breaker = getattr(adapter, "_breaker", None)
+    request_budget = getattr(adapter, "_request_budget", None)
     client = getattr(adapter, "_client", None)
     with _GEMINI_STATE_LOCK:
         state = _GEMINI_STATES.get(adapter)
@@ -775,6 +780,7 @@ def _shared_gemini_state(adapter: Any) -> _SharedGeminiDispatchState:
                 settings=settings,
                 model=model,
                 breaker=breaker,
+                request_budget=request_budget,
                 expected_client=client,
             )
             if client is not None:
@@ -788,6 +794,7 @@ def _shared_gemini_state(adapter: Any) -> _SharedGeminiDispatchState:
             state.settings is not settings
             or state.model != model
             or state.breaker is not breaker
+            or state.request_budget is not request_budget
             or state.expected_client is not client
         ):
             if state.has_live_bindings():
@@ -800,6 +807,7 @@ def _shared_gemini_state(adapter: Any) -> _SharedGeminiDispatchState:
                 settings=settings,
                 model=model,
                 breaker=breaker,
+                request_budget=request_budget,
                 expected_client=client,
             )
             if client is not None:
@@ -817,11 +825,15 @@ def _assert_trusted_gemini_dispatch(
     settings: Any,
     model: Any,
     breaker: Any,
+    request_budget: Any,
     client: Any,
 ) -> None:
     """Fail closed if any dependency that can steer a captured Gemini call changed."""
     instance_dict = getattr(adapter, "__dict__", {})
-    if "judge" in instance_dict or "_ensure_client" in instance_dict:
+    if any(
+        name in instance_dict
+        for name in ("judge", "_ensure_client", "_budget_usage", "_metered_completion")
+    ):
         raise RuntimeError("compiled Gemini audio dispatch dependency was mutated")
     if _GEMINI_BASE.__dict__.get("_ensure_client") is not _TRUSTED_GEMINI_ENSURE_CLIENT:
         raise RuntimeError("compiled Gemini audio dispatch dependency was mutated")
@@ -835,6 +847,7 @@ def _assert_trusted_gemini_dispatch(
         getattr(adapter, "_settings", None) is not settings
         or getattr(adapter, "_model", None) != model
         or getattr(adapter, "_breaker", None) is not breaker
+        or getattr(adapter, "_request_budget", None) is not request_budget
         or getattr(adapter, "_client", None) is not client
     ):
         raise RuntimeError("compiled Gemini audio adapter state was mutated")
@@ -851,6 +864,7 @@ def _prepare_gemini_dispatch(
     settings = state.settings
     model = state.model
     breaker = state.breaker
+    request_budget = state.request_budget
 
     # Validate before returning a binding as well as at call time. The sentinel client argument is
     # the current value here; after a trusted lazy initialization the closure advances it exactly
@@ -860,6 +874,7 @@ def _prepare_gemini_dispatch(
         settings=settings,
         model=model,
         breaker=breaker,
+        request_budget=request_budget,
         client=state.expected_client,
     )
 
@@ -881,10 +896,16 @@ def _prepare_gemini_dispatch(
     snapshot._settings = settings
     snapshot._model = model
     snapshot._breaker = copy.copy(breaker)
+    snapshot._request_budget = request_budget
     snapshot._client = None
     frozen_ensure = freeze_function(_TRUSTED_GEMINI_ENSURE_CLIENT)
     snapshot._ensure_client = types.MethodType(frozen_ensure, snapshot)
-    for name in ("_judge_process_qa", "_observe_step"):
+    for name in (
+        "_judge_process_qa",
+        "_observe_step",
+        "_budget_usage",
+        "_metered_completion",
+    ):
         setattr(
             snapshot,
             name,
@@ -904,6 +925,7 @@ def _prepare_gemini_dispatch(
                 settings=settings,
                 model=model,
                 breaker=breaker,
+                request_budget=request_budget,
                 client=state.expected_client,
             )
             if state.expected_client is None:
@@ -927,6 +949,7 @@ def _prepare_gemini_dispatch(
                 settings=settings,
                 model=model,
                 breaker=breaker,
+                request_budget=request_budget,
                 client=state.expected_client,
             )
         return result

@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+from types import ModuleType
 from typing import Any, AsyncIterator
 
 from ..adapters import AudioFrame, Box, Decision, Goal, Observation, Verdict
@@ -206,6 +207,36 @@ def _usage_of(resp: Any) -> dict:
 _REQUEST_TIMEOUT_MS = 120_000
 
 
+def _provider_http_options(provider_types: Any) -> Any:
+    """Build timeout options with provider-SDK retries pinned to one attempt.
+
+    ``google-genai`` versions used in production expose ``HttpRetryOptions``.
+    Small import doubles used by the offline suite intentionally implement only
+    ``HttpOptions``; those modules have neither an import spec nor a file and
+    cannot perform hidden transport retries. A real SDK missing the retry
+    control fails closed instead of silently invalidating the request ledger.
+    """
+    http_options = getattr(provider_types, "HttpOptions", None)
+    if not callable(http_options):
+        raise RuntimeError("google-genai does not expose HttpOptions")
+    retry_options = getattr(provider_types, "HttpRetryOptions", None)
+    if callable(retry_options):
+        return http_options(
+            timeout=_REQUEST_TIMEOUT_MS,
+            retry_options=retry_options(attempts=1),
+        )
+    if (
+        isinstance(provider_types, ModuleType)
+        and getattr(provider_types, "__spec__", None) is None
+        and getattr(provider_types, "__file__", None) is None
+    ):
+        return http_options(timeout=_REQUEST_TIMEOUT_MS)
+    raise RuntimeError(
+        "installed google-genai cannot pin provider retries; upgrade to a version "
+        "that exposes google.genai.types.HttpRetryOptions"
+    )
+
+
 class _BudgetTerminalError(Exception):
     """Prevent budget admission/reconciliation failures from being retried."""
 
@@ -225,10 +256,7 @@ class _GeminiBase:
             genai, types = _require_genai()
             self._client = genai.Client(
                 api_key=_gemini_key(),
-                http_options=types.HttpOptions(
-                    timeout=_REQUEST_TIMEOUT_MS,
-                    retry_options=types.HttpRetryOptions(attempts=1),
-                ),
+                http_options=_provider_http_options(types),
             )
         return self._client
 
