@@ -1419,6 +1419,8 @@ class _JudgeScheduler(_ProviderScheduler):
 
     Supplying the historical ``perceive=`` callback selects the legacy
     transport adapter; normal runtime construction remains provider-only.
+    Both transports preserve the bounded single-flight, one latest-pending
+    admission contract.
     """
 
     def __init__(self, core: Any, source: str, stats: RuntimeStats | None, *, perceive: Any = None, **kwargs: Any) -> None:
