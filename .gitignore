@@ -195,3 +195,6 @@ client-preview/*.whl
 # stage-validation corpus artifacts (media-derived, rebuildable via build_corpus.py)
 eval/stage-validation/corpus.json
 eval/local-benchmark/
+eval/stage-validation/long_sources/
+eval/stage-validation/long_sources.json
+eval/stage-validation/results/
