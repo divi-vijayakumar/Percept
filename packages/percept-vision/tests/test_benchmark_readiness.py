@@ -43,7 +43,7 @@ from eval.bench.track_perception_test_e2e import (
 from percept.adapters import Verdict
 from percept.backends import openrouter
 from percept.backends.openrouter import OpenRouterVision
-from percept.contracts import JudgmentTiming
+from percept.contracts import ClipEvent, JudgmentTiming
 from percept.harness.tier0 import Frame, gray_frame
 
 
@@ -770,6 +770,10 @@ class FixtureReplayCoverageTests(unittest.TestCase):
                     evidence="one complete occurrence",
                     phase="post",
                     action_present=False,
+                    events=[
+                        ClipEvent(0.05, 0.1, "first occurrence"),
+                        ClipEvent(0.25, 0.3, "second occurrence"),
+                    ],
                 )
 
         vision = VideoVision()
@@ -897,6 +901,75 @@ class FixtureReplayCoverageTests(unittest.TestCase):
             all(
                 event["source_id"] and event["event_observed_at"] >= 0
                 for event in run.interest_events
+            )
+        )
+        provider_calls = run.configuration["provider_calls"]
+        self.assertGreaterEqual(len(provider_calls), 1)
+        self.assertTrue(
+            all(
+                call["input_media_type"] == "video/mp4"
+                and call["input_bytes"] > 0
+                and call["input_frames_is_none"]
+                and call["evidence_shape"] == "video_clip"
+                and call["clip_frame_count"] >= 2
+                and call["clip_fps"] > 0
+                and call["temporal_span_s"] > 0
+                for call in provider_calls
+            )
+        )
+        reconciliation = run.configuration["reconciliation"]
+        self.assertEqual(reconciliation["reported_provider_events"], 2)
+        self.assertEqual(reconciliation["considered_provider_events"], 2)
+        self.assertEqual(reconciliation["truncated_provider_events"], 0)
+        self.assertEqual(reconciliation["invalid_provider_events"], 0)
+        self.assertEqual(reconciliation["overlap_suppressed_events"], 0)
+        self.assertEqual(reconciliation["other_event_suppressions"], 0)
+        self.assertEqual(reconciliation["occurrence_fires"], 2)
+        self.assertEqual(reconciliation["forbidden_evidence_fallbacks"], 0)
+        self.assertEqual(
+            reconciliation["pool_outcomes"],
+            {"decisive": 1, "uncertain": 1},
+        )
+        self.assertEqual(
+            reconciliation["provider_call_outcomes"],
+            {"completed": len(provider_calls)},
+        )
+        self.assertEqual(reconciliation["fires"], 2)
+        self.assertEqual(reconciliation["incidents"], 2)
+        self.assertEqual(reconciliation["linked_incidents"], 2)
+        self.assertEqual(reconciliation["asks"], len(run.asks))
+        self.assertEqual(runtime_stats["asks"], len(run.asks))
+        self.assertEqual(runtime_stats["fires"], len(run.fires))
+        self.assertEqual(runtime_stats["incidents"], len(run.fires))
+        self.assertEqual(
+            len({fire.occurrence_id for fire in run.fires}),
+            2,
+        )
+        self.assertTrue(
+            all(
+                fire.incident_id
+                and fire.judgment_event_id
+                and fire.evidence_seq is not None
+                for fire in run.fires
+            )
+        )
+        self.assertEqual(
+            {
+                receipt["outcome"]
+                for receipt in run.judge_receipts
+            },
+            {"decisive", "uncertain"},
+        )
+        self.assertEqual(
+            run.configuration["provider_attempts"]["final_inflight"],
+            0,
+        )
+        self.assertTrue(
+            all(
+                route["inflight"] == 0
+                for route in run.configuration["judge_pool_final"][
+                    "routes"
+                ].values()
             )
         )
 

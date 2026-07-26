@@ -18,6 +18,7 @@ import math
 import os
 import re
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import median
@@ -32,7 +33,7 @@ from percept.backends.judge_pool import (
 )
 from percept.behavior import program_of
 from percept.config import load_settings
-from percept.contracts import JudgmentTiming
+from percept.contracts import JudgmentTiming, judgment_event_id
 from percept.contracts.watchplan import ResolvedWatch, WatchPlan
 from percept.gate import Gate
 from percept.incidents import incident_judgment
@@ -148,6 +149,10 @@ class DecisionObservation:
     action_onset_to_incident_s: float | None = None
     evidence_available_to_incident_s: float | None = None
     revision_id: str | None = None
+    incident_id: str | None = None
+    judgment_event_id: str | None = None
+    evidence_seq: int | None = None
+    occurrence_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -198,7 +203,7 @@ class EventRun:
     dropped_frames: int = 0
     judge_calls: int = 0
     fires: list[DecisionObservation] = field(default_factory=list)
-    asks: list[float] = field(default_factory=list)
+    asks: list[dict[str, Any]] = field(default_factory=list)
     escalations: list[float] = field(default_factory=list)
     trace: list[dict[str, Any]] = field(default_factory=list)
     health: list[dict[str, Any]] = field(default_factory=list)
@@ -406,6 +411,7 @@ class RecordingVision:
             getattr(inner, "SUPPORTS_NATIVE_VIDEO_TRANSPORT", False)
         )
         self.calls = 0
+        self.call_records: list[dict[str, Any]] = []
         self.last_verdict: dict[str, Any] | None = None
         self.last_error: Exception | None = None
 
@@ -419,6 +425,31 @@ class RecordingVision:
         self.calls += 1
         self.last_verdict = None
         self.last_error = None
+        context = dict(kwargs.get("context") or {})
+        record: dict[str, Any] = {
+            "sequence": self.calls,
+            "condition": condition,
+            "input_media_type": (
+                frame[0]
+                if isinstance(frame, tuple)
+                and len(frame) == 2
+                and isinstance(frame[0], str)
+                else None
+            ),
+            "input_bytes": (
+                len(frame[1])
+                if isinstance(frame, tuple)
+                and len(frame) == 2
+                and isinstance(frame[1], (bytes, bytearray))
+                else None
+            ),
+            "input_frames_is_none": kwargs.get("frames") is None,
+            "evidence_shape": context.get("_percept_evidence_shape"),
+            "clip_frame_count": context.get("_percept_clip_frame_count"),
+            "clip_fps": context.get("_percept_clip_fps"),
+            "temporal_span_s": context.get("_percept_temporal_span_s"),
+            "outcome": "provider_error",
+        }
         try:
             verdict = await self.inner.judge(condition, frame, **kwargs)
         except Exception as exc:
@@ -426,7 +457,19 @@ class RecordingVision:
             # original exception so a paid benchmark can terminate instead of scoring a
             # partial run as if degradation were a model judgment.
             self.last_error = exc
+            record["exception_type"] = type(exc).__name__
+            self.call_records.append(record)
             raise
+        events = [
+            {
+                "t_start": float(event.t_start),
+                "t_end": (
+                    float(event.t_end) if event.t_end is not None else None
+                ),
+                "label": str(event.label),
+            }
+            for event in (getattr(verdict, "events", []) or [])
+        ]
         self.last_verdict = {
             "condition": condition,
             "satisfied": bool(verdict.satisfied),
@@ -434,9 +477,21 @@ class RecordingVision:
             "evidence": str(getattr(verdict, "evidence", "") or "")[:240],
             "phase": str(getattr(verdict, "phase", "") or "") or None,
             "action_present": getattr(verdict, "action_present", None),
-            "events": list(getattr(verdict, "events", []) or []),
+            "events": events,
             "usage": dict(getattr(verdict, "usage", {}) or {}),
         }
+        record.update(
+            {
+                "outcome": "completed",
+                "satisfied": bool(verdict.satisfied),
+                "confidence": float(verdict.confidence),
+                "phase": str(getattr(verdict, "phase", "") or "") or None,
+                "action_present": getattr(verdict, "action_present", None),
+                "reported_events": events,
+                "usage": dict(getattr(verdict, "usage", {}) or {}),
+            }
+        )
+        self.call_records.append(record)
         return verdict
 
 
@@ -482,6 +537,10 @@ def _decision_observation(
         decision_to_incident_s=incident_ts - timing.decision_emitted_ts,
         timing=timing,
         revision_id=getattr(fire, "revision_id", None),
+        incident_id=getattr(fire, "id", None),
+        judgment_event_id=getattr(fire, "judgment_event_id", None),
+        evidence_seq=getattr(fire, "evidence_seq", None),
+        occurrence_id=getattr(judgment, "occurrence_id", None),
     )
 
 
@@ -556,6 +615,7 @@ async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
     )
     settings = load_settings()
     goal_id = f"pt-{event['video_id']}"
+    budget_before = request_budget.snapshot()
     provider = RecordingVision(
         bench_vision(settings, request_budget=request_budget)
     )
@@ -706,6 +766,42 @@ async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
             }
         )
 
+    def on_ask(fire: Any) -> None:
+        judgment = getattr(fire, "judgment", None)
+        timing = getattr(judgment, "timing", None)
+        evidence_seq = (
+            getattr(judgment, "evidence_seq", None)
+            if judgment is not None
+            else None
+        )
+        occurrence_id = (
+            getattr(judgment, "occurrence_id", None)
+            if judgment is not None
+            else None
+        )
+        result.asks.append(
+            {
+                "goal_id": getattr(fire, "goal_id", None),
+                "text": getattr(fire, "text", None),
+                "source_media_ts": (
+                    timing.source_media_ts if timing is not None else None
+                ),
+                "judgment_event_id": (
+                    judgment_event_id(
+                        getattr(fire, "goal_id", ""),
+                        getattr(fire, "entity_id", None),
+                        evidence_seq,
+                        occurrence_id,
+                    )
+                    if evidence_seq is not None
+                    else None
+                ),
+                "evidence_seq": evidence_seq,
+                "occurrence_id": occurrence_id,
+                "observed_at": time.monotonic(),
+            }
+        )
+
     try:
         paced_source = _paced_fixture_source(
             str(event["path"]),
@@ -725,6 +821,7 @@ async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
             timebase="media",
             on_trace=on_trace,
             on_health=on_health,
+            on_ask=on_ask,
             interest_subscription=interest_subscription,
             interest_session_id=f"pt:{result.case_id}",
         )
@@ -778,7 +875,117 @@ async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
         "goal_admissions": stats.goal_admissions,
         "admission_by_goal": dict(stats.admission_by_goal),
         "admission_by_cause": dict(stats.admission_by_cause),
+        "perceive_dispatches": stats.perceive_dispatches,
+        "asks": stats.asks,
+        "fires": stats.fires,
         "incidents": stats.incidents,
+    }
+    budget_after = request_budget.snapshot()
+    delta_fields = (
+        "physical_attempts",
+        "metered_attempts",
+        "failed_attempts",
+        "committed_tokens",
+        "input_tokens",
+        "output_tokens",
+        "committed_usd",
+        "billed_usd",
+    )
+    result.configuration["provider_attempts"] = {
+        key: budget_after[key] - budget_before[key]
+        for key in delta_fields
+    }
+    result.configuration["provider_attempts"]["final_inflight"] = budget_after[
+        "inflight_attempts"
+    ]
+    result.configuration["provider_calls"] = provider.call_records
+    result.configuration["judge_pool_final"] = vision.snapshot()
+    judgment_rows = [
+        row for row in result.trace if row["stage"] == "judgment.event"
+    ]
+    incident_rows = [
+        row for row in result.trace if row["stage"] == "incident.created"
+    ]
+    reported_events = sum(
+        len(call.get("reported_events") or [])
+        for call in provider.call_records
+    )
+    considered_events = sum(
+        min(len(call.get("reported_events") or []), 64)
+        for call in provider.call_records
+    )
+    truncated_events = reported_events - considered_events
+    core_metrics = core.metrics.snapshot()
+    invalid_events = int(
+        core_metrics.get("gate.event_chain_event_invalid", 0)
+    )
+    overlap_suppressed = int(
+        core_metrics.get("gate.event_chain_overlap_suppressed", 0)
+    )
+    occurrence_fires = sum(
+        fire.occurrence_id is not None for fire in result.fires
+    )
+    other_event_suppressions = max(
+        0,
+        considered_events
+        - invalid_events
+        - overlap_suppressed
+        - occurrence_fires,
+    )
+    linked_fires = sum(
+        bool(fire.judgment_event_id and fire.evidence_seq is not None)
+        for fire in result.fires
+    )
+    pool_outcomes = dict(
+        sorted(
+            Counter(
+                receipt["outcome"] for receipt in result.judge_receipts
+            ).items()
+        )
+    )
+    provider_outcomes = dict(
+        sorted(
+            Counter(
+                call["outcome"] for call in provider.call_records
+            ).items()
+        )
+    )
+    forbidden_fallbacks = sum(
+        call.get("evidence_shape") != "video_clip"
+        or call.get("input_media_type") != "video/mp4"
+        or not call.get("input_frames_is_none")
+        for call in provider.call_records
+    )
+    result.configuration["reconciliation"] = {
+        "source_frames": result.frames,
+        "goal_admissions": stats.goal_admissions,
+        "perceive_dispatches": stats.perceive_dispatches,
+        "launched_judge_calls": stats.judge_calls,
+        "logical_provider_calls": provider.calls,
+        "physical_provider_attempts": result.configuration[
+            "provider_attempts"
+        ]["physical_attempts"],
+        "pool_receipts": len(result.judge_receipts),
+        "pool_outcomes": pool_outcomes,
+        "provider_call_outcomes": provider_outcomes,
+        "forbidden_evidence_fallbacks": forbidden_fallbacks,
+        "reported_provider_events": reported_events,
+        "considered_provider_events": considered_events,
+        "truncated_provider_events": truncated_events,
+        "invalid_provider_events": invalid_events,
+        "overlap_suppressed_events": overlap_suppressed,
+        "other_event_suppressions": other_event_suppressions,
+        "occurrence_fires": occurrence_fires,
+        "judgment_events": len(judgment_rows),
+        "asks": len(result.asks),
+        "fires": len(result.fires),
+        "incident_trace_rows": len(incident_rows),
+        "incidents": stats.incidents,
+        "linked_incidents": linked_fires,
+        "superseded_before_launch": stats.judge_superseded,
+        "revision_dropped_before_launch": stats.judge_revision_dropped,
+        "deadline_dropped_before_launch": stats.judge_deadline_dropped,
+        "deadline_expired_after_launch": stats.judge_deadline_expired,
     }
     return result
 
@@ -879,6 +1086,10 @@ def _fire_records(run: EventRun) -> list[dict[str, Any]]:
                     6,
                 ),
                 "revision_id": fire.revision_id,
+                "incident_id": fire.incident_id,
+                "judgment_event_id": fire.judgment_event_id,
+                "evidence_seq": fire.evidence_seq,
+                "occurrence_id": fire.occurrence_id,
             }
         )
     return records
@@ -1169,6 +1380,7 @@ def score(*, live: bool, n: int) -> TrackResult:
             "edge_hit": r.edge_hit,
             "fire_hit": r.fire_hit,
             "fires": _fire_records(r),
+            "asks": r.asks,
             "escalations": [round(t, 3) for t in r.escalations[:20]],
             "trace": r.trace,
             "health": r.health,
