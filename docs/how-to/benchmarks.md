@@ -101,6 +101,12 @@ make benchmark-collect RUN_DIR=eval/local-benchmark/runs/<run-id>   # re-render 
 `benchmark-run` writes a run directory under `eval/local-benchmark/runs/`; pass it to
 `benchmark-collect` to (re-)render the benchmark card from the collected results.
 
+The OSS scorecard is deliberately capability-scoped. The PT action/runtime-v2 lane is the only
+provider-quality candidate. Physical Scene and Ego Motion starter packs are available with
+mechanics/conformance coverage but no pack-specific accuracy, latency, or cost claim. Audio and
+fused Watches are preview APIs with bounded deterministic runtime coverage; the legacy acoustic
+direct-judge experiment is diagnostic and cannot qualify them.
+
 ## Results (pending final run)
 
 The reproducible model-sweep above is a **separate, later phase**, and **no Percept accuracy numbers

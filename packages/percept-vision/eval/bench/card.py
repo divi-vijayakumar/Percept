@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from .types import CONFIGS, TrackResult
 
-SPEC_VERSION = "v1.0"
+SPEC_VERSION = "v2.0"
 
 
 def _references() -> list[str]:
@@ -53,9 +53,48 @@ def execution_blockers(results: list[TrackResult]) -> list[str]:
     return blockers
 
 
-def render_card(results: list[TrackResult], *, mode: str = "sampled", backend: str = "?", commit: str = "?",
-                manifest: str = "", fps: str = "?", device: str = "?", seeds: int = 1,
-                ceiling: str = "none", auroc=None, budget_plan: str = "") -> str:
+def _oss_qualification_matrix(stamp: str) -> list[str]:
+    video_status = (
+        "provider-qualified"
+        if stamp == "RELEASE"
+        else "candidate — requires a RELEASE PT action/runtime-v2 scorecard"
+    )
+    return [
+        f"  video / PT action          : {video_status}",
+        (
+            "  Physical Scene starter    : available; mechanics-conformance only; "
+            "no pack-specific quality/latency/cost claim"
+        ),
+        (
+            "  Ego Motion starter        : available; mechanics-conformance only; "
+            "no pack-specific quality/latency/cost claim"
+        ),
+        (
+            "  audio Watch API           : preview; bounded runtime-conformance only; "
+            "no provider quality/latency/cost claim"
+        ),
+        (
+            "  fused Watch API           : preview; bounded runtime-conformance only; "
+            "no provider quality/latency/cost claim"
+        ),
+    ]
+
+
+def render_card(
+    results: list[TrackResult],
+    *,
+    mode: str = "sampled",
+    backend: str = "?",
+    commit: str = "?",
+    manifest: str = "",
+    fps: str = "?",
+    device: str = "?",
+    seeds: int = 1,
+    ceiling: str = "none",
+    auroc=None,
+    budget_plan: str = "",
+    sdk_artifact: str = "",
+) -> str:
     stamp = stamp_of(mode, results, manifest)
     auroc_s = f"{auroc:.2f}" if isinstance(auroc, (int, float)) else "?"
     L = [
@@ -65,9 +104,19 @@ def render_card(results: list[TrackResult], *, mode: str = "sampled", backend: s
         f"commit: {commit} · data-manifest: {manifest or '(none — DRAFT)'}",
         f"backbone: {backend}   ceiling: {ceiling}",
         f"budget-plan: {budget_plan or '(not recorded)'}",
+        f"sdk-artifact: {sdk_artifact or '(not recorded — cannot qualify)'}",
         f"fps: {fps} · device: {device} · seeds: {seeds}",
         f"gates: G3 OFF (no world model) · consequence-model OFF (R3: AUROC {auroc_s} vs 0.5)",
         "=" * 84,
+    ]
+    L += [
+        "",
+        "## OSS qualification matrix",
+        *_oss_qualification_matrix(stamp),
+        (
+            "  interpretation             : execution status is not quality status; "
+            "every preregistered quality gate must pass independently"
+        ),
         "",
         "## Headline (vector — no composite)",
     ]

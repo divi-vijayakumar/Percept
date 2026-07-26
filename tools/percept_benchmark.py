@@ -615,6 +615,36 @@ def _collected_provenance(meta: dict[str, Any]) -> tuple[str, str]:
     )
 
 
+def _collected_sdk_artifact(meta: dict[str, Any]) -> str:
+    """Render the verified wheel identity recorded at run start."""
+    artifact = meta.get("sdk_artifact")
+    if artifact is None:
+        return ""
+    if not isinstance(artifact, dict) or artifact.get("kind") != "wheel":
+        raise SystemExit("run metadata has invalid sdk_artifact provenance")
+    required = {
+        "sha256": 64,
+        "git_commit": 40,
+        "package_version": 1,
+        "contract_version": 1,
+    }
+    for key, minimum in required.items():
+        value = artifact.get(key)
+        if not isinstance(value, str) or len(value) < minimum:
+            raise SystemExit(
+                f"run metadata has invalid sdk_artifact.{key} provenance"
+            )
+    digest = artifact["sha256"]
+    commit = artifact["git_commit"]
+    if any(char not in "0123456789abcdef" for char in digest + commit):
+        raise SystemExit("run metadata has non-canonical sdk_artifact hashes")
+    return (
+        f"percept-vision {artifact['package_version']} wheel "
+        f"sha256:{digest} build:{commit} "
+        f"contract:{artifact['contract_version']}"
+    )
+
+
 def _manifest_ref(path: Path | None) -> str:
     if not path or not path.exists():
         return ""
@@ -1866,6 +1896,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
 
     manifest_ref = _manifest_ref(manifest)
     backend, budget_plan = _collected_provenance(meta)
+    sdk_artifact = _collected_sdk_artifact(meta)
     auroc = next((r.cells.get(("core-replay", "auroc")) for r in results if r.track == "relational"), None)
     rendered = card.render_card(
         results,
@@ -1874,6 +1905,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
         commit=meta.get("commit", _commit()),
         manifest=manifest_ref,
         budget_plan=budget_plan,
+        sdk_artifact=sdk_artifact,
         fps=collection_fps,
         device=collection_device,
         seeds=collection_seeds,

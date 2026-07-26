@@ -373,6 +373,34 @@ class BenchmarkRunnerTruthTests(unittest.TestCase):
             )
             self.assertNotIn("ambient-model-must-not-appear", rendered)
 
+    def test_scorecard_artifact_label_uses_recorded_exact_wheel(self):
+        namespace = runpy.run_path(
+            str(TOOL),
+            run_name="benchmark_scorecard_wheel_label_test",
+        )
+        artifact = {
+            "kind": "wheel",
+            "sha256": "a" * 64,
+            "git_commit": "b" * 40,
+            "package_version": "1.0.0",
+            "contract_version": "1.10.0",
+        }
+        label = namespace["_collected_sdk_artifact"](
+            {"sdk_artifact": artifact}
+        )
+        self.assertEqual(
+            label,
+            "percept-vision 1.0.0 wheel "
+            f"sha256:{'a' * 64} build:{'b' * 40} contract:1.10.0",
+        )
+        with self.assertRaisesRegex(
+            SystemExit,
+            "sdk_artifact.sha256",
+        ):
+            namespace["_collected_sdk_artifact"](
+                {"sdk_artifact": {**artifact, "sha256": "short"}}
+            )
+
     def test_collect_labels_legacy_live_provenance_unknown_instead_of_guessing(self):
         with TemporaryDirectory() as d:
             root = Path(d)

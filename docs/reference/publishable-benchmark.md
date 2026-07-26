@@ -159,11 +159,16 @@ percept-bench scorecard --mode full --require-release \
 
 Allowed:
 
-- Percept E2E quality/cost over declared rows.
+- Percept video/PT-action E2E quality and measured cost over the exact declared rows and installed
+  wheel.
 - dense modeled call counts from fps/window/goal schedules.
 - call reduction, fire deduplication, no-nag behavior, ASK/refuse discipline.
 - edge wake recall/precision tradeoff with explicit policy.
 - comparison to published reference bars with citations.
+
+Physical Scene and Ego Motion starter-pack mechanics, plus audio/fused runtime availability, must
+remain separate from provider-quality claims until each has a dedicated runtime-v2 track and
+preregistered acceptance rules.
 
 Avoid:
 

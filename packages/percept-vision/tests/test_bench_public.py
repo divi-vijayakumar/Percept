@@ -312,7 +312,13 @@ class TestPublicBenchShim(unittest.TestCase):
             quality_gates=[{"id": "reconciliation", "status": "pass"}],
         )
 
-        text = snapshot.render_card([result])
+        text = snapshot.render_card(
+            [result],
+            sdk_artifact=(
+                "percept-vision 1.0.0 wheel "
+                f"sha256:{'a' * 64} build:{'b' * 40} contract:1.10.0"
+            ),
+        )
 
         self.assertIn(
             "watch-e2e:percept.benchmark.track_result/2",
@@ -324,6 +330,26 @@ class TestPublicBenchShim(unittest.TestCase):
             text,
         )
         self.assertIn("watch-e2e:reconciliation=pass", text)
+        self.assertIn("sdk-artifact: percept-vision 1.0.0 wheel", text)
+        self.assertIn(
+            "video / PT action          : candidate",
+            text,
+        )
+        self.assertIn(
+            "audio Watch API           : preview; bounded runtime-conformance only",
+            text,
+        )
+        self.assertIn(
+            "execution status is not quality status",
+            text,
+        )
+
+    def test_release_matrix_does_not_overclaim_free_pack_accuracy(self):
+        matrix = "\n".join(snapshot._oss_qualification_matrix("RELEASE"))
+        self.assertIn("video / PT action          : provider-qualified", matrix)
+        self.assertIn("Physical Scene starter    : available; mechanics-conformance only", matrix)
+        self.assertIn("Ego Motion starter        : available; mechanics-conformance only", matrix)
+        self.assertIn("no pack-specific quality/latency/cost claim", matrix)
 
     def test_audit_subcommand_accepts_draft_artifacts(self):
         with TemporaryDirectory() as d:
