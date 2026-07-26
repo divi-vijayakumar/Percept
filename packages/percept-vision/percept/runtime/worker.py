@@ -106,6 +106,22 @@ def _release_core_run(lease: _CoreRunLease | None) -> None:
             del _ACTIVE_CORE_RUNS[lease.identity]
 
 
+def _runtime_exit_is_cancelled(exc: BaseException) -> bool:
+    """Classify cancellation without interpreter-private Task APIs.
+
+    Explicit async-generator close is a consumer cancellation boundary.
+    Interest lifecycle finalization can wrap the original cancellation
+    together with a delivery failure, so preserve and inspect that primary
+    worker error instead of losing the boundary behind the wrapper type.
+    """
+    if isinstance(exc, (asyncio.CancelledError, GeneratorExit)):
+        return True
+    return (
+        isinstance(exc, InterestRunError)
+        and _runtime_exit_is_cancelled(exc.worker_error)
+    )
+
+
 def _exclusive_core_runtime(func):
     """Guard an async-generator runtime before any wrapped-body work can execute."""
     @functools.wraps(func)
@@ -132,12 +148,14 @@ def _exclusive_core_runtime(func):
             try:
                 async for item in stream:
                     yield item
-            except asyncio.CancelledError:
+            except BaseException as exc:  # noqa: BLE001 - classify, then preserve exact exit
                 # Exception identity is the portable cancellation seam on
                 # every supported interpreter, including Python 3.10 where
-                # Task.cancelling() does not exist.
-                cancelled = True
-                advance_cancelled_continuity_once()
+                # Task.cancelling() does not exist. GeneratorExit is the
+                # truthful signal for explicit consumer aclose().
+                if _runtime_exit_is_cancelled(exc):
+                    cancelled = True
+                    advance_cancelled_continuity_once()
                 raise
         finally:
             # ``async for`` cancellation does not promise to close a nested
@@ -148,9 +166,10 @@ def _exclusive_core_runtime(func):
                 if stream is not None:
                     try:
                         await stream.aclose()
-                    except asyncio.CancelledError:
-                        cancelled = True
-                        advance_cancelled_continuity_once()
+                    except BaseException as exc:  # noqa: BLE001 - preserve exact close failure
+                        if _runtime_exit_is_cancelled(exc):
+                            cancelled = True
+                            advance_cancelled_continuity_once()
                         raise
             finally:
                 try:
@@ -6082,7 +6101,7 @@ async def _run_worker(
                         scheduler=_judge_sched,
                     ):
                         yield incident
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):
             # A cancellation-resistant provider lane must not hold completed
             # reflex lanes or end-of-stream delivery hostage.
             closed_schedulers = set()

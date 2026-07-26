@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 import percept.runtime.worker as worker
-from percept.interest import InterestSubscription
+from percept.interest import InterestRunError, InterestSubscription
 
 
 class _Core:
@@ -229,3 +229,88 @@ def test_production_interest_run_owns_one_cancellation_boundary(
         assert core.advanced == ["production-source"]
 
     asyncio.run(drive())
+
+
+def test_production_interest_cancel_with_delivery_failure_advances_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core = _Core()
+
+    async def drive() -> None:
+        started = asyncio.Event()
+
+        async def blocked_worker(**_kwargs: Any) -> AsyncIterator[Any]:
+            started.set()
+            await asyncio.Event().wait()
+            if False:
+                yield None
+
+        delivery_error = RuntimeError("interest close failed")
+
+        def fail_finish(
+            _subscription: InterestSubscription,
+            _events: Any,
+        ) -> None:
+            raise delivery_error
+
+        monkeypatch.setattr(worker, "_run_worker", blocked_worker)
+        monkeypatch.setattr(InterestSubscription, "_finish", fail_finish)
+        task = asyncio.create_task(
+            _collect(
+                worker.run(
+                    core,
+                    source=(),
+                    interest_subscription=InterestSubscription(),
+                    gate_source="nested-cancel",
+                )
+            )
+        )
+        await started.wait()
+        task.cancel()
+        with pytest.raises(InterestRunError) as caught:
+            await task
+        assert isinstance(caught.value.worker_error, asyncio.CancelledError)
+        assert caught.value.delivery_error is delivery_error
+        assert core.advanced == ["nested-cancel"]
+
+    asyncio.run(drive())
+
+
+def test_explicit_production_run_close_is_one_cancelled_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core = _Core()
+    terminal_reasons: list[str] = []
+    original_close_all = worker.LiveInterestTracker.close_all
+
+    def observed_close_all(
+        tracker: Any,
+        reason: str,
+    ) -> Any:
+        terminal_reasons.append(reason)
+        return original_close_all(tracker, reason)
+
+    async def yielded_worker(**_kwargs: Any) -> AsyncIterator[Any]:
+        yield "incident"
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(worker, "_run_worker", yielded_worker)
+    monkeypatch.setattr(
+        worker.LiveInterestTracker,
+        "close_all",
+        observed_close_all,
+    )
+
+    async def drive() -> None:
+        run_stream = worker.run(
+            core,
+            source=(),
+            interest_subscription=InterestSubscription(),
+            gate_source="consumer-close",
+        )
+        assert await anext(run_stream) == "incident"
+        await run_stream.aclose()
+
+    asyncio.run(drive())
+    assert terminal_reasons == ["cancelled"]
+    assert core.advanced == ["consumer-close"]
