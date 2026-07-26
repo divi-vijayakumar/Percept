@@ -24,6 +24,12 @@ sys.modules[spec.name] = authority
 spec.loader.exec_module(authority)
 
 
+def _reset_authority_signal_state() -> None:
+    authority._authority_signal_latch = authority.threading.Lock()
+    authority._first_authority_interruption = None
+    authority._owned_command_active = False
+
+
 def _identity(path: Path, *, socket: bool = False) -> object:
     return authority.FileIdentity(
         path=str(path),
@@ -424,6 +430,71 @@ def test_timeout_terminates_and_joins_entire_process_group(tmp_path: Path) -> No
     assert not marker.exists()
 
 
+def test_signal_between_process_creation_and_popen_return_is_deferred_and_joined(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_popen = subprocess.Popen
+    captured: list[subprocess.Popen[bytes]] = []
+
+    def boundary_popen(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        captured.append(process)
+        os.kill(os.getpid(), signal.SIGTERM)
+        os.kill(os.getpid(), signal.SIGHUP)
+        return process
+
+    previous_term = signal.getsignal(signal.SIGTERM)
+    previous_hup = signal.getsignal(signal.SIGHUP)
+    fallback_leader_cleanup = False
+    fallback_group_cleanup = False
+    _reset_authority_signal_state()
+    monkeypatch.setattr(authority.subprocess, "Popen", boundary_popen)
+    try:
+        signal.signal(signal.SIGTERM, authority._signal_handler)
+        signal.signal(signal.SIGHUP, authority._signal_handler)
+        with pytest.raises(authority.AuthorityInterrupted) as interrupted:
+            authority.run_command(
+                authority.Command(
+                    (sys.executable, "-c", "import time; time.sleep(60)"),
+                    timeout_s=5.0,
+                ),
+                cwd=tmp_path,
+                env=os.environ,
+            )
+    finally:
+        signal.signal(signal.SIGTERM, previous_term)
+        signal.signal(signal.SIGHUP, previous_hup)
+        if captured:
+            process = captured[0]
+            fallback_leader_cleanup = process.poll() is None
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                pass
+            else:
+                fallback_group_cleanup = True
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            if process.poll() is None:
+                process.wait()
+        _reset_authority_signal_state()
+
+    assert interrupted.value.args == (
+        f"authority interrupted by signal {signal.SIGTERM}",
+    )
+    assert len(captured) == 1
+    process = captured[0]
+    assert not fallback_leader_cleanup
+    assert not fallback_group_cleanup
+    assert process.poll() is not None
+    assert process.stdout is not None and process.stdout.closed
+    assert process.stderr is not None and process.stderr.closed
+    with pytest.raises(ProcessLookupError):
+        os.killpg(process.pid, 0)
+
+
 def test_catchable_signal_joins_real_leader_and_descendant_and_preserves_error(
     tmp_path: Path,
 ) -> None:
@@ -481,6 +552,7 @@ def test_catchable_signal_joins_real_leader_and_descendant_and_preserves_error(
     ]
     fallback_leader_cleanup = False
     fallback_group_cleanup = False
+    _reset_authority_signal_state()
     try:
         signal.signal(signal.SIGTERM, authority._signal_handler)
         with pytest.raises(authority.AuthorityInterrupted) as interrupted:
@@ -504,6 +576,7 @@ def test_catchable_signal_joins_real_leader_and_descendant_and_preserves_error(
                 pass
         if process.poll() is None:
             process.wait()
+        _reset_authority_signal_state()
 
     assert interrupted.value.args == (
         f"authority interrupted by signal {signal.SIGTERM}",

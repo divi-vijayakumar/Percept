@@ -27,6 +27,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from typing import Any, Mapping, Sequence
 
@@ -135,6 +136,16 @@ class QualificationUnavailable(RuntimeError):
 
 class AuthorityInterrupted(BaseException):
     """A catchable process signal interrupted qualification."""
+
+
+_authority_signal_latch = threading.Lock()
+_first_authority_interruption: AuthorityInterrupted | None = None
+_owned_command_active = False
+
+
+def _raise_first_authority_interruption() -> None:
+    if _first_authority_interruption is not None:
+        raise _first_authority_interruption
 
 
 @dataclass(frozen=True)
@@ -459,16 +470,19 @@ def _read_streams_bounded(
     deadline = time.monotonic() + command.timeout_s
     failed = False
     try:
+        _raise_first_authority_interruption()
         if process.stdout is None or process.stderr is None:
             raise QualificationUnavailable("protected command pipes are unavailable")
         selector = selectors.DefaultSelector()
         selector.register(process.stdout, selectors.EVENT_READ, "stdout")
         selector.register(process.stderr, selectors.EVENT_READ, "stderr")
         while selector.get_map():
+            _raise_first_authority_interruption()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise QualificationUnavailable("protected command timed out")
             events = selector.select(min(remaining, 0.25))
+            _raise_first_authority_interruption()
             if not events and process.poll() is not None:
                 events = [
                     (key, selectors.EVENT_READ)
@@ -484,32 +498,19 @@ def _read_streams_bounded(
                 if len(target) > command.max_output:
                     raise QualificationRejected("protected command output exceeded cap")
         returncode = process.wait(timeout=max(0.1, deadline - time.monotonic()))
+        _raise_first_authority_interruption()
     except BaseException:
         failed = True
-        previous_mask: set[signal.Signals] | None = None
-        if hasattr(signal, "pthread_sigmask"):
-            previous_mask = signal.pthread_sigmask(
-                signal.SIG_BLOCK,
-                {signal.SIGINT, signal.SIGTERM, signal.SIGHUP},
-            )
         quiescence_error: BaseException | None = None
         try:
             _terminate_process_group(process)
         except BaseException as exc:
             quiescence_error = exc
-        finally:
-            if previous_mask is not None:
-                try:
-                    signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
-                except BaseException:
-                    # A repeated pending authority signal may run its handler
-                    # while the old mask is restored. Preserve the first
-                    # interruption after the owned process group is joined.
-                    pass
         if quiescence_error is not None:
             raise QualificationUnavailable(
                 "owned protected command quiescence could not be proven"
             ) from quiescence_error
+        _raise_first_authority_interruption()
         raise
     finally:
         close_error: BaseException | None = None
@@ -537,17 +538,48 @@ def run_command(
     cwd: Path,
     env: Mapping[str, str],
 ) -> Completed:
-    process = subprocess.Popen(
-        command.argv,
-        cwd=str(cwd),
-        env=dict(env),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-        close_fds=True,
-    )
-    return _read_streams_bounded(process, command)
+    global _owned_command_active
+
+    if _owned_command_active:
+        raise QualificationUnavailable("protected command boundary is already active")
+    _owned_command_active = True
+    process: subprocess.Popen[bytes] | None = None
+    completed: Completed | None = None
+    command_error: BaseException | None = None
+    quiescence_error: BaseException | None = None
+    try:
+        _raise_first_authority_interruption()
+        process = subprocess.Popen(
+            command.argv,
+            cwd=str(cwd),
+            env=dict(env),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+            close_fds=True,
+        )
+        completed = _read_streams_bounded(process, command)
+    except BaseException as exc:
+        command_error = exc
+    finally:
+        if process is not None:
+            try:
+                _terminate_process_group(process)
+            except BaseException as exc:
+                quiescence_error = exc
+        _owned_command_active = False
+
+    if quiescence_error is not None:
+        raise QualificationUnavailable(
+            "owned protected command quiescence could not be proven"
+        ) from quiescence_error
+    _raise_first_authority_interruption()
+    if command_error is not None:
+        raise command_error
+    if completed is None:
+        raise QualificationUnavailable("protected command produced no result")
+    return completed
 
 
 def _git(
@@ -1317,7 +1349,15 @@ def qualify() -> dict[str, Any]:
 
 
 def _signal_handler(signum: int, _frame: Any) -> None:
-    raise AuthorityInterrupted(f"authority interrupted by signal {signum}")
+    global _first_authority_interruption
+
+    if not _authority_signal_latch.acquire(blocking=False):
+        return
+    _first_authority_interruption = AuthorityInterrupted(
+        f"authority interrupted by signal {signum}"
+    )
+    if not _owned_command_active:
+        raise _first_authority_interruption
 
 
 def main() -> int:
