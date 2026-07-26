@@ -1,4 +1,4 @@
-"""Card Y4 — the OPERATIONAL semantics of an ``'unknown'`` subject inside the episode fold.
+"""— the OPERATIONAL semantics of an ``'unknown'`` subject inside the episode fold.
 
 Y5 (merged) already settled the TYPE and the episode-log default: ``_subject_key_of`` returns ``None``
 for an ``'unknown'`` ref, so the log MINTS a fresh episode per unknown and two unknowns NEVER collapse

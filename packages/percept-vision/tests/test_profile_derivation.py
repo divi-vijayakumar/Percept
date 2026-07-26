@@ -1,4 +1,4 @@
-"""Card L1 — the profile-derivation job (fixtures, bars) -> provenance-stamped WatchProfile.
+"""— the profile-derivation job (fixtures, bars) -> provenance-stamped WatchProfile.
 
 The properties under test are the card's own promises:
 
@@ -253,7 +253,7 @@ def test_derived_profile_is_a_stamped_roundtrippable_versioned_profile(tmp_path:
     assert vp.content_hash == content_hash(WINDOW_RUNG)
     assert vp.provenance.eval_run_id == "run-42"
     assert vp.provenance.harness_version  # the harness that measured it
-    # Card P4 round-trip through the wire format, checksum verified on load.
+    # the implementation round-trip through the wire format, checksum verified on load.
     assert VersionedProfile.from_dict(vp.to_dict()).profile == WINDOW_RUNG
 
     payload = json.loads(derived.to_json())
@@ -396,7 +396,7 @@ def test_a_non_camera_source_derives_without_touching_the_camera_axis(tmp_path: 
     )
     assert report.derived.source_profile.name == "screen_document"
     assert report.derived.watch_profile.profile.environment == "fixed_camera"
-    # the scorecard tells the 2am reader WHICH admission signal is active for this source (card C2:
+    # the scorecard tells the 2am reader WHICH admission signal is active for this source (the implementation:
     # screen_document ships a tuned localized default, not UNTUNED, but the scorecard still names it).
     assert "admission via 'tier0_localized_salience_or_coast'" in render_scorecard(report)
 

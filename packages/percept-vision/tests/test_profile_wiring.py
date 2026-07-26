@@ -1,4 +1,4 @@
-"""Card M2 — the runtime reads its knobs from a resolved WatchProfile, not env vars.
+"""— the runtime reads its knobs from a resolved WatchProfile, not env vars.
 
 Proves ``percept.profile_wiring.resolve_watch_profile`` really binds a ``WatchProfile`` onto the real
 settings objects (``EdgeSettings``, ``GateSettings``, ``SensePolicy``, ``plan_mode``) with ZERO env vars

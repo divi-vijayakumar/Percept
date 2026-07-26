@@ -1,11 +1,11 @@
-"""Card D7 / ADR-005 — SourceProfile: an OPEN registry that must not touch gate semantics.
+"""the implementation / ADR-005 — SourceProfile: an OPEN registry that must not touch gate semantics.
 
 The three things these tests exist to protect:
 
 1. The registry is OPEN — a third party adds ``industrial_line`` without editing a percept literal.
 2. A source profile CANNOT change FIRE/ASK/SILENT, the rising edge, refractory or dwell. There is
    one Gate and one incident truth on every source.
-3. ``screen_document`` ships a TUNED @1 localized admission default (card C2) — the SAME
+3. ``screen_document`` ships a TUNED @1 localized admission default — the SAME
    ``block_max``/0.20 cutoff ``physical_scene`` carries, never lowered — with a mandatory coast
    floor underneath it for the page-scale content that eye still cannot resolve, and doctor
    reports which regime is active.
@@ -202,7 +202,7 @@ def test_timebase_and_stability_are_closed_but_the_strategies_are_not():
 
 
 def test_screen_document_is_tuned_at_the_same_cutoff_as_physical_scene():
-    """Card C2 promotion: a real, named admission signal — never UNTUNED — and never a lowered cutoff."""
+    """the implementation promotion: a real, named admission signal — never UNTUNED — and never a lowered cutoff."""
     assert SCREEN_DOCUMENT.parameters["change_signal"] != UNTUNED
     assert SCREEN_DOCUMENT.admission_strategy != UNTUNED
     assert SCREEN_DOCUMENT.admission_tuned is True
@@ -292,7 +292,7 @@ def test_physical_scene_is_the_only_calibrated_class_and_the_default():
 
 
 # ---------------------------------------------------------------------------
-# 5. doctor reports the active source profile (card D7 item 6)
+# 5. doctor reports the active source profile (the implementation item 6)
 # ---------------------------------------------------------------------------
 
 
@@ -304,7 +304,7 @@ def test_doctor_defaults_to_physical_scene_and_labels_it_defaulted():
 
 
 def test_doctor_says_the_screen_profile_carries_a_tuned_localized_default():
-    """Card C2: screen_document no longer reports ADMISSION_SIGNAL_UNTUNED — it ships a tuned
+    """the implementation: screen_document no longer reports ADMISSION_SIGNAL_UNTUNED — it ships a tuned
     localized default (block_max@0.20) with a coast floor underneath it, not coast alone."""
     report = run_doctor(
         frames=_quiet_frames(), goals=["the document being edited changes"],

@@ -19,7 +19,7 @@ Three profiles ship. Two are stable; one is explicitly EXPERIMENTAL and says so 
 Why SCREEN_DOCUMENT still carries a coast floor, in numbers
 -------------------------------------------------------------
 
-``percept-doctor`` on the real client fixture ``probes/01-screen-walkthrough/data/clean.mp4``
+``percept-doctor`` on the measured screen fixture ``probes/01-screen-walkthrough/data/clean.mp4``
 — a 36s accounting screen recording, 180 frames, 1920x1080, containing a HARD CUT between two
 different documents:
 

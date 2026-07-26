@@ -1,9 +1,9 @@
-"""PROBE SCAFFOLD — P-LAT-ACTIONABLE-1 (Viability §7, board card A27, gate G3-B).
+"""PROBE SCAFFOLD — P-LAT-ACTIONABLE-1 (the release criteria, gate G3-B).
 
 **Scaffold only — gated on bars-locked, no for-record run.** This proves the WIRING a future
 for-record P-LAT-ACTIONABLE-1 run needs, not a real latency verdict about Percept itself.
 
-**What G3-B measures, and why it exists alongside G3-A.** ``P-LAT-RUNTIME-1`` (card A26, G3-A)
+**What G3-B measures, and why it exists alongside G3-A.** ``P-LAT-RUNTIME-1`` (G3-A)
 measures ``admitted_ts -> decision_emitted_ts`` (``JudgmentTiming.admitted_to_decision_s``) — the
 judge-funnel leg ONLY. It is blind to how long tier-0 took to *admit* the episode in the first
 place. This probe measures the ACTIONABLE latency instead: ``decision_eligible_ts ->
@@ -14,19 +14,19 @@ deterministic rubric) could confidently judge the condition. Actionable latency 
 admission delay (how long tier-0 took to catch up to eligibility and admit) + evidence assembly, on
 top of the judge-funnel leg G3-A already covers. A slow tier-0 that admits well after eligibility is
 INVISIBLE to G3-A (which only starts its clock at ``admitted_ts``) but is caught by G3-B. Per
-Viability §7, Reflex requires BOTH G3-A (< 2s) AND G3-B (< 2s) — a fast judge funnel is not enough
+the release criteria, Reflex requires BOTH G3-A (< 2s) AND G3-B (< 2s) — a fast judge funnel is not enough
 if tier-0 itself is slow to admit.
 
 **Reuse only — no source edits.** This file imports, unmodified:
   * ``eval/viability/fixtures/core_archetypes.py`` (``build_core_archetype_fixtures``) — the six
-    CORE gating archetypes' deterministic clips + by-construction :class:`GroundTruth`, card A16.
+    CORE gating archetypes' deterministic clips + by-construction :class:`GroundTruth`.
   * ``eval/viability/ground_truth.py`` (``CORE_ARCHETYPE_ELIGIBLE_AFTER_S``) — the documented
     per-archetype eligibility offsets those fixtures' ``GroundTruth.decision_eligible_ts`` values
     are built from (cards A6/A16), used here only to hand-verify expected numbers, never
     recomputed independently.
-  * ``percept.contracts.JudgmentTiming`` — the production timing record (card A5).
-  * ``percept.harness.metrics.MetricsCollector`` / ``PercentileSummary`` (card A13).
-  * ``percept.clock.FakeClock`` (card A1).
+  * ``percept.contracts.JudgmentTiming`` — the production timing record.
+  * ``percept.harness.metrics.MetricsCollector`` / ``PercentileSummary``.
+  * ``percept.clock.FakeClock``.
 
 ``eval/viability`` is not (yet) an installed package (same as
 ``eval/viability/fixtures/test_core_archetypes.py``) — this file makes its directory importable the
@@ -94,14 +94,14 @@ from percept.contracts import JudgmentTiming  # noqa: E402
 from percept.harness.metrics import MetricsCollector, PercentileSummary, percentile  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# Combined Reflex gate — Viability §7: BOTH G3-A and G3-B must be < 2s.
+# Combined Reflex gate — the release criteria: BOTH G3-A and G3-B must be < 2s.
 # ---------------------------------------------------------------------------
 
 REFLEX_THRESHOLD_S = 2.0
 
 
 def reflex_eligible(runtime_p95_s: float, actionable_p95_s: float) -> bool:
-    """Viability §7 combined Reflex gate: G3-A (runtime, admitted->decision) AND G3-B (actionable,
+    """the release criteria combined Reflex gate: G3-A (runtime, admitted->decision) AND G3-B (actionable,
     decision_eligible->decision_emitted) must BOTH be strictly under 2s."""
     return runtime_p95_s < REFLEX_THRESHOLD_S and actionable_p95_s < REFLEX_THRESHOLD_S
 
@@ -164,7 +164,7 @@ class TestActionableLatencyHandVerifiedSyntheticSet(unittest.TestCase):
         self.assertEqual(report.ingest_to_decision.n, 5)
 
     def test_combined_reflex_gate_on_synthetic_inputs(self):
-        """The Viability §7 combined gate: BOTH G3-A and G3-B must be < 2s for Reflex."""
+        """The the release criteria combined gate: BOTH G3-A and G3-B must be < 2s for Reflex."""
         # both comfortably under 2s -> Reflex eligible
         self.assertTrue(reflex_eligible(runtime_p95_s=0.4, actionable_p95_s=1.1))
         # boundary: exactly 2.0s on either side fails (strict "< 2s", matching P-LAT-RUNTIME-1's
@@ -260,7 +260,7 @@ class TestLateAdmissionDemonstration(unittest.TestCase):
 
 class TestActionableLatencyOverCoreArchetypeFixtures(unittest.TestCase):
     """Exercises the SAME reuse (core_archetypes.py + ground_truth.py's by-construction GroundTruth)
-    the card names, over the real neutral fixture set (card A16) rather than hand-authored numbers
+    the card names, over the real neutral fixture set rather than hand-authored numbers
     alone — proving the wiring works against the actual fixtures a for-record run will use."""
 
     def test_actionable_latency_matches_hand_computed_ground_truth_offset(self):

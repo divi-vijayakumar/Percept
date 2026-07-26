@@ -1,4 +1,4 @@
-"""Card Y11 — the SHADOW per-probe report over BOTH probes, driven by ScriptedJudge + the committed
+"""— the SHADOW per-probe report over BOTH probes, driven by ScriptedJudge + the committed
 synthetic corpora (no API spend, no gitignored tree required).
 
 What these tests pin:

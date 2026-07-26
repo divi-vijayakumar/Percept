@@ -1,4 +1,4 @@
-"""Card Z5 — ADR-004's normative replay is REACHABLE from shipped commands.
+"""— ADR-004's normative replay is REACHABLE from shipped commands.
 
 ``percept.replay.replay_cognition`` was good code consuming an artifact no user could produce:
 ``Percept.on_trace`` defaults to ``None``, ``percept-watch`` had no trace flag at all, and
@@ -63,7 +63,7 @@ class TestWatchTraceRoundTrip(unittest.TestCase):
         _manifest, records, _summary = load_trace(self.trace.read_text(encoding="utf-8"))
         gate_records = [r for r in records if r.stage == STAGE_GATE_CLASSIFIED]
         self.assertTrue(gate_records, "no gate.classified records — replay_inputs would see nothing")
-        # and they carry the INPUTS, not just the outputs (card D8b)
+        # and they carry the INPUTS, not just the outputs
         self.assertTrue(any(isinstance(r.data.get("confidence"), (int, float)) for r in gate_records))
 
     def test_the_manifest_records_the_gate_config_so_the_replay_is_of_this_run(self):

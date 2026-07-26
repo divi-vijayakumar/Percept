@@ -1,6 +1,6 @@
 # ADR-005: Source profiles — one gate, many worlds
 
-- **Status:** Accepted (card D7; ships code, docs and tests — additive, no contract change)
+- **Status:** Accepted (the implementation; ships code, docs and tests — additive, no contract change)
 - **Depends on:** ADR-001 (the Gate/judgment contract — `Verdict -> GateDecision -> JudgmentEvent`,
   **unchanged** by this ADR, and deliberately so: §Decision 2 is entirely about not changing it);
   `percept/watch.py` (the frozen public entrypoint, `WATCH_VERSION = "1.0.0"` — untouched).
@@ -10,7 +10,7 @@
   class packages; ADR-003's retention/`evidence_ref` rules are proposed, not shipped, and would apply to all of them);
   ADR-006 (Incident relations — §5 shows percept's identity model is a *physical-object* model; this
   ADR is the mechanism by which a non-physical source class can say so, via `identity_strategy`).
-- **Constrains:** **card L1** — see §Consequences. The existing `WatchProfile` ontology is
+- **Constrains:** **the implementation** — see §Consequences. The existing `WatchProfile` ontology is
   camera-shaped and cannot express a non-camera source; L1 must not be built on it.
 - **Source (read for this ADR):** `percept/watchprofile.py` (the `(environment, goal_type, state)`
   key `:194-197`, the camera-shaped `environment` axis `:141`), `percept/profiles_default.py`
@@ -19,21 +19,21 @@
   (`GATE_REASONS`, `Gate.decide`, refractory/dwell), `percept/runtime/source.py`
   (`GATE_W, GATE_H = 48, 36`), `percept/harness/tier0.py` (the 8x6 `block_max` grid),
   `percept/runtime/worker.py` (`_capture_plan` `:730`, the `coast_admit` branch `:1774-1808`,
-  `bank.push(t, motion=..., frame=judge_frame, ...)` `:1764`), `percept/doctor.py` (card D1),
-  `percept/eval/differential.py` (card D3), `percept/edge/detectors.py` (`register_detector` —
+  `bank.push(t, motion=..., frame=judge_frame, ...)` `:1764`), `percept/doctor.py`,
+  `percept/eval/differential.py`, `percept/edge/detectors.py` (`register_detector` —
   the PUBLIC path, the one `percept/contracts/__init__.py:1227` documents; it is a re-export shim
   over the implementation in `percept/harness/detectors.py:472`).
 
 ## Context
 
-Two paying client teams ran domain probes against percept 0.7.0 and both returned **not viable**.
-Neither failed on perception: their judges scored recall 1.00 on documents and handled retractions,
+Domain probes against percept 0.7.0 returned **not viable**.
+They did not fail on perception: the judges scored recall 1.00 on documents and handled retractions,
 counterfactuals and speaker attribution correctly. They failed because the SDK was **silent, blind or
 unobservable** on a class of content it was never calibrated for and never said so.
 
 ### What was measured
 
-`percept-doctor` (card D1) on the real client fixture
+`percept-doctor` on the measured screen fixture
 `probes/01-screen-walkthrough/data/clean.mp4` — a 36 s accounting screen recording, 180 frames,
 1920x1080, containing a **hard cut between two entirely different documents**:
 
@@ -195,14 +195,14 @@ Its defaults were chosen against the measurement above, not against making a fix
 a tuned eye, using the tools that now exist — `percept-doctor` (the per-stat table, and which rule
 suppressed each non-admit, for zero judge spend), `percept.edge.detectors.register_detector` (the client's own phash/OCR model
 as an **admission** detector, running at native fps on the **full-resolution judge frame**, emitting
-boundaries with no cloud judge call), and `percept eval` (card D3 — a paired A/B of their detector
+boundaries with no cloud judge call), and `percept eval` (the implementation — a paired A/B of their detector
 against baseline on **their** fixtures with **their** bars, on a held-out split). The `clean.mp4`
 numbers above are its worked example of reading a doctor report correctly, including the explicit
 instruction *not* to lower the threshold.
 
 ### 6. Doctor reports the active source profile
 
-The slot that used to read *"not available — card D7 not present in this build"* now carries the real
+The slot that used to read *"not available — the implementation not present in this build"* now carries the real
 profile: name, origin (`explicit` / `default`), stability, modalities, temporal unit, all four
 strategies, coast and timebase, plus the full `SourceProfile.to_dict()` under
 `plan.source_profile.profile` in `--json`. Two new findings: `ADMISSION_SIGNAL_UNTUNED` (warn) and
@@ -210,8 +210,8 @@ strategies, coast and timebase, plus the full `SourceProfile.to_dict()` under
 
 ## Honesty statement
 
-Stated plainly, here and in the how-to, because papering over it is what cost two client teams their
-evaluation:
+Stated plainly, here and in the how-to, because papering over it causes avoidable deployment
+debugging:
 
 > **Percept's stock eye does not admit on screen/document content**, and the reason is that the tier-0
 > gate frame is 48x36 greyscale — the eye is under-resolved for this class, not mis-tuned. Percept ships
@@ -245,7 +245,7 @@ evaluation:
 - `conversation` will disappoint anyone who reads the name without the `stability` field. That is why
   the field is typed and why doctor emits `SOURCE_PROFILE_EXPERIMENTAL`.
 
-**This ADR constrains card L1.**
+**This ADR constrains the implementation.**
 
 L1 must **not** be built on the `WatchProfile` ontology. That ontology is camera-shaped: its
 `environment` axis is a camera mount (`fixed_camera` | `handheld` | `wearable`), and its three axes are

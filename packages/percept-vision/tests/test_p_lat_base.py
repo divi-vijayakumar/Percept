@@ -1,4 +1,4 @@
-"""Probe P-LAT-BASE-1 — single-call baseline latency (Viability §7, board card A25).
+"""Probe P-LAT-BASE-1 — single-call baseline latency (the release criteria).
 
 **What this measures.** Each judge's raw, isolated single-frame call latency: N independent
 ``FakeJudge.judge()`` calls, no stream, no queueing, no concurrent load, no admission funnel. This
@@ -16,9 +16,9 @@ below, which encodes that reasoning as an executable assertion.
 
 **Reuse only — no source edits.** This file imports, unmodified:
   * ``percept.backends.fake_judge.FakeJudge`` / ``LatencyProfile`` — seeded, key-free judge double
-    with configurable per-call latency (Viability §4/§6, card A12).
+    with configurable per-call latency (the latency measurement contract/§6).
   * ``percept.harness.metrics.MetricsCollector`` / ``PercentileSummary`` — nearest-rank p50/p95/p99
-    aggregation (Viability §6, card A13).
+    aggregation (the benchmark metrics contract).
   * ``percept.clock.FakeClock`` — deterministic clock (unused for latency math itself here, since
     ``JudgmentTiming`` stamps are built directly from ``FakeJudge``'s recorded per-call latencies,
     but threaded through ``MetricsCollector`` per its constructor contract).

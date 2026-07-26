@@ -100,7 +100,7 @@ The scorecard prints **every rung, including the losers** — a void is not data
 Per rung: mean recall/precision/false-fires/cost on the held-out split, the paired delta vs the
 baseline rung with its 95% bootstrap CI, and each bar's observed value and PASS/FAIL.
 
-`derived.json` is a `VersionedProfile` (card P4) next to its `SourceProfile`. It verifies its own
+`derived.json` is a `VersionedProfile` next to its `SourceProfile`. It verifies its own
 content hash on load, so a hand-edited knob cannot masquerade under the old address, and it diffs
 against the shipped registry:
 

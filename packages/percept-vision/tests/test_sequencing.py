@@ -1,4 +1,4 @@
-"""Card A8: evidence_seq + serialized decision reducer + result_policy (ADR-001 §8).
+"""the implementation: evidence_seq + serialized decision reducer + result_policy (ADR-001 §8).
 
 Proves the mechanism a future worker pool needs, per ADR-001 §8: ``evidence_seq < last_applied``
 alone is insufficient (an older in-flight job can still complete after a newer one is admitted). The

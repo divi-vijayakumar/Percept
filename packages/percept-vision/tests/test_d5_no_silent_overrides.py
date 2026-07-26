@@ -1,4 +1,4 @@
-"""Card D5 — three silent behaviours in ``run()``, each of which cost a client team runs.
+"""— three silent behaviours in ``run()``, each of which cost a client team runs.
 
   (a) ``run(core=…, goals=…, vision=…)`` silently DISCARDED goals/vision when a core was given: the
       watch ran byte-identically and simply never armed the caller's goals. It must RAISE — a warning

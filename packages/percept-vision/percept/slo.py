@@ -188,9 +188,8 @@ def price_usage_or_none(
     :func:`price_usage` is the *offline harness* rule — it falls back to :data:`DEFAULT_PRICE` so a
     CI budget assertion fails conservative on an un-catalogued model. That fallback is exactly wrong
     on the reporting path: a DEFAULT_PRICE-derived figure printed as a run's ``cost_usd`` is a
-    fabricated price, indistinguishable from a real one, and a client with a ``cost_usd`` bar would
-    be judging their deployment against our guess (one such client computed ~$16/stream-hour this way
-    and correctly refused to report it).
+    fabricated price, indistinguishable from a real one, and an operator with a ``cost_usd`` bar would
+    be judging their deployment against a guess. Such estimates must not be reported as measured cost.
 
     So here:
 

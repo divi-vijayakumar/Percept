@@ -1,4 +1,4 @@
-"""The v0.6 SDK voice diet, pinned (PCPT-029).
+"""The v0.6 SDK voice diet, pinned (the documented regression).
 
 The voice embodiment moved app-side into ``templates/realtime_voice_watch_agent``. This locks the three
 promises that make the move real:

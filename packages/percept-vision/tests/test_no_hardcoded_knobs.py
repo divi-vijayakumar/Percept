@@ -1,4 +1,4 @@
-"""Card M2's architectural rule, enforced mechanically: "the runtime reads its behavior from a profile;
+"""the implementation's architectural rule, enforced mechanically: "the runtime reads its behavior from a profile;
 the harness writes profiles. No knob is hardcoded in firing logic."
 
 A grep-style guard over the M2 seam this card owns (``percept/agent.py``, ``percept/watch.py``,
@@ -8,7 +8,7 @@ sanctioned resolution table in ``profile_wiring.py`` (which necessarily names th
 vocabulary to bind it onto ``EdgeSettings`` — that IS the wiring, not a hardcoded knob used to decide a
 firing outcome). Every real knob value must instead be read off a ``Settings``/``WatchProfile`` object.
 
-This is deliberately scoped to the files card M2 owns — it is the regression guard for THIS wiring, not a
+This is deliberately scoped to the files the implementation owns — it is the regression guard for THIS wiring, not a
 codebase-wide sweep (a broader sweep over ``gate.py`` / ``harness/tier0.py`` is a natural follow-up card;
 those files are not built or reviewed here).
 """

@@ -5,7 +5,7 @@ it, and nothing else in the codebase may decide to notify a human. This page is 
 reference for that decision model: the actions, the reason codes, the rising-edge and refractory
 rules, and what an integrator is and is not allowed to depend on.
 
-Everything on this page is **stable surface** (card O2). Reason codes are never renamed or
+Everything on this page is **stable surface**. Reason codes are never renamed or
 repurposed; a new decision path adds a new code.
 
 ## The three actions

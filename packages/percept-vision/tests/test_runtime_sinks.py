@@ -124,7 +124,7 @@ class WebhookSinkTests(unittest.TestCase):
             self.assertNotIn(leaked, rec["reason"])
 
     def test_max_attempt_age_terminates_delivery_before_retries_exhausted(self):
-        # ADR-001 §9 / card A9: "delivery attempts" bound. A wall-clock cap independent of the retry
+        # ADR-001 §9 / the implementation: "delivery attempts" bound. A wall-clock cap independent of the retry
         # COUNT — even with retries left in the budget, exceeding max_attempt_age_s is a TERMINAL
         # failure (dead-lettered with an explicit, distinct reason), not silently swallowed.
         dead = []
@@ -149,7 +149,7 @@ class WebhookSinkTests(unittest.TestCase):
         self.assertEqual(dead[0]["reason"], "max_attempt_age_exceeded")
 
     def test_bounded_dead_letter_queue_drops_oldest_with_traced_reason_on_count_overflow(self):
-        # ADR-001 §9 / card A9: "delivery queue (count + bytes) -> dead-letter/drop-with-reason". A
+        # ADR-001 §9 / the implementation: "delivery queue (count + bytes) -> dead-letter/drop-with-reason". A
         # plain list dead_letter grows without bound; BoundedDeadLetterQueue caps it and TRACES every
         # eviction — never silent.
         dropped = []

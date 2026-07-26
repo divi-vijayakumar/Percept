@@ -1,4 +1,4 @@
-"""Card O2 — consequence gate GA: FIRE/ASK/SILENT + rising-edge/refractory as a STABLE surface.
+"""— consequence gate GA: FIRE/ASK/SILENT + rising-edge/refractory as a STABLE surface.
 
 The decision model already worked; this card productizes it. Three things are asserted here, and they
 are the three things "GA" has to mean for a decision surface an integrator builds on:

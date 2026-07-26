@@ -76,7 +76,7 @@ class VideoTee:
         self._queue: asyncio.Queue = asyncio.Queue(maxsize=maxsize)
         self._clock = clock
         # C1 event capsule ON by default: the judge frame is a montage of the recent window so a brief
-        # event survives the single-flight judge scheduler (PCPT-031/032). Set capsule=False for the
+        # event survives the single-flight judge scheduler. Set capsule=False for the
         # legacy single-frame judge frame.
         self._capsule = None
         if capsule:

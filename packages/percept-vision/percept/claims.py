@@ -1,6 +1,6 @@
 """Claim-mode state machine — a value DIFFERENCE is not a REPLACEMENT.
 
-The two paying client teams that ran percept 0.7.0 could PERCEIVE correctly — their judges scored
+Domain probes against percept 0.7.0 could PERCEIVE correctly — the judges scored
 recall 1.00 on documents, handled retractions and counterfactuals — but the SDK gave the executor no
 safe way to turn a stream of value-bearing findings into a single authoritative value. So the
 executor was left to parse values out of free-text ``evidence`` (unstable, vendor-dependent) and,

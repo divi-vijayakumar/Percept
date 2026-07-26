@@ -1,8 +1,8 @@
-"""Card Y9 — the v1.4 scope and persistence decisions must stay stated, and stay TRUE.
+"""The v1.4 scope and persistence decisions must stay stated, and stay true.
 
-Two paying client teams read percept 0.7.0 as promising more than it does. Card Y9 wrote the founder
-decisions down in the three places a reader actually looks: ADR-006's Consequences, the module
-docstrings of ``percept.sourceprofile`` / ``percept.episodes``, and a client-facing reference doc.
+The supported persistence boundary is documented in the three places an adopter is likely to look:
+ADR-006's Consequences, the module docstrings of ``percept.sourceprofile`` / ``percept.episodes``,
+and the public reference documentation.
 
 These are DRIFT GUARDS, not prose review. Two kinds of check:
 

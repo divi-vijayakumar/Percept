@@ -1,4 +1,4 @@
-"""Card M3R — degrade-loud + backpressure INSIDE the async ``_JudgeScheduler``.
+"""— degrade-loud + backpressure INSIDE the async ``_JudgeScheduler``.
 
 An earlier attempt (M3) planted an inline guard at the ``perceive_judged`` admit site. That is the
 WRONG seam: with ``run(judge_dispatch="async")`` (the default) the admit site never awaits the judge
@@ -9,7 +9,7 @@ tracked ``_trace`` that ``drain_trace()`` turns into ``RuntimeHealthEvent``s.
 
 Failure modes covered, each through the real ``worker.run(judge_dispatch="async")`` loop:
 
-  * **judge raises** — already fail-closed at the ``Percept`` boundary (card A30); pinned HERE too,
+  * **judge raises** — already fail-closed at the ``Percept`` boundary; pinned HERE too,
     at the scheduler level, so a regression that let it reach the scheduler's task would be caught by
     the existing fail-loud ``_fatal``/``runtime_error`` path, not silently swallowed.
   * **judge hangs** (never resolves) — the NEW stall watchdog: ``"judge_scheduler_stalled"`` fires

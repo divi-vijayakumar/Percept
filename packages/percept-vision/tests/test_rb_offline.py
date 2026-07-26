@@ -1,4 +1,4 @@
-"""Card RB-OFFLINE — fixture-bound offline mode; no implicit fake judge.
+"""— fixture-bound offline mode; no implicit fake judge.
 
 Two contracts, tested against the real runtime (no mocks of our own code):
 

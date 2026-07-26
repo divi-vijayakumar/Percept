@@ -1,4 +1,4 @@
-"""Card Y15 — revision coalescing; a 24/7 confirm heartbeat must not be an unbounded log.
+"""— revision coalescing; a 24/7 confirm heartbeat must not be an unbounded log.
 
 The stress-test defect (found by the seven-domain eval, not either domain probe): a long-running
 watch confirms the SAME finding on every confident tick, and the naive episode timeline appended a

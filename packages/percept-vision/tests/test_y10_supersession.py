@@ -1,4 +1,4 @@
-"""Card Y10 — provisional incident + superseding revision (not a wide settle window).
+"""— provisional incident + superseding revision (not a wide settle window).
 
 For a correction arriving 21-34s after the original claim, Percept emits the finding PROVISIONALLY on
 the rising edge and, when the Y2 mutation channel classifies a later turn as replace/retract on the

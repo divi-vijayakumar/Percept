@@ -1,4 +1,4 @@
-"""Card Y20 — the provisional/superseding link reaches LIVE delivery, not just the executor.
+"""— the provisional/superseding link reaches LIVE delivery, not just the executor.
 
 The pre-existing gap: ``behavior.Fired`` carries ``revision_id``/``supersedes`` (exercised at the
 executor level, see ``test_y10_supersession.py``), but ``agent.FireEvent`` and ``_fire_concern``'s

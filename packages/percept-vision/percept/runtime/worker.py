@@ -1400,8 +1400,8 @@ async def _run_worker(
     # here and arm each goal, so the one-line quickstart is real. Passing an explicit `core` (the
     # canonical form) takes precedence — and supplying `goals`/`vision` ALONGSIDE a core is
     # now a hard ValueError, not a silent discard. The old behaviour ("ignored when core is given") ran
-    # a byte-identical watch that simply never armed the caller's goals: the exact silent failure that
-    # cost two client teams a full debugging cycle. A warning would still permit that run, so this
+    # a byte-identical watch that simply never armed the caller's goals: a silent failure that
+    # consumes an avoidable debugging cycle. A warning would still permit that run, so this
     # refuses to start instead. Nothing publishes before 1.0 — this is the moment to make it loud.
     if core is not None and (goals or vision is not None):
         raise ValueError(
@@ -1823,7 +1823,7 @@ async def _run_worker(
     except Exception:  # noqa: BLE001 - a duck-typed/slotted core must never break the run over telemetry
         pass
     # The incident snippet's rolling pre-roll buffer — the SDK's largest resident structure, and the
-    # one profiling named as the whole of the "runaway memory" two client teams measured. It is
+    # one profiling identified as the source of the observed "runaway memory" plateau. It is
     # bounded by COUNT (`snippet_size`, 48) and by BYTES: the count alone does not bound memory, since
     # the same 48 frames cost ~0.4 MB of 8x8 test frames and ~300 MB of 1080p RGB. A byte-bound
     # eviction is REPORTED (`preroll_capped` health event + `stats.preroll_frames_dropped`), never a

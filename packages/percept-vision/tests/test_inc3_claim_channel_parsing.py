@@ -1,4 +1,4 @@
-"""Card INC3 — the claim-mode correction channel in the three REAL judge backends.
+"""— the claim-mode correction channel in the three REAL judge backends.
 
 The gap this closes (client audit P05-SDK-004): the claim/supersession machinery (Y13/Y20) is fully
 built and wired unconditionally in ``agent.perceive_judged`` — it reads ``verdict.operation``/``value``

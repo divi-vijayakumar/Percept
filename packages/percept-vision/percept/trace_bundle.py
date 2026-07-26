@@ -20,7 +20,7 @@ modes, and the mode is always written into the artifact so nobody has to guess w
     `-- evidence/          (ONLY in portable mode: frame-001.jpg, capsule-007.json, ...)
 
 **Media inclusion is opt-in and defaults OFF, and that is a security decision, not a convenience
-one.** The first client workload is accounting screens. A bundle that ships pixels by default is an
+one.** Screen recordings may contain sensitive data. A bundle that ships pixels by default is an
 exfiltration vector wearing a support-ticket costume: the person who runs ``export_bug_report()`` at
 2am is not the person who decides what may leave the building. So :class:`BundlePolicy` starts at
 ``include_media=False``; evidence handed to a local-mode bundle is DROPPED (not written, not

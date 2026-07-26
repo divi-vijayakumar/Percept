@@ -1,4 +1,4 @@
-"""Card D8b — COGNITION REPLAY is deterministic, and only claims what it can deliver.
+"""— COGNITION REPLAY is deterministic, and only claims what it can deliver.
 
 The contract under test: recorded normalized verdicts + timestamps, fed back through the Gate and
 the incident logic, produce BYTE-IDENTICAL decisions. Not "similar", not "the same actions modulo

@@ -1,4 +1,4 @@
-"""Card C2F — the honest gap left by C2 (``test_c2_profile_wiring.py``): C2 wired a resolved
+"""— the honest gap left by C2 (``test_c2_profile_wiring.py``): C2 wired a resolved
 SourceProfile into ADMISSION (``Settings.edge.*``) end-to-end through the compile path, but the
 IDENTITY/EPISODE seams ``percept.identity_policy.select_identity_policy`` and
 ``SourceProfile.default_episode_policy`` stayed built, tested in isolation, and never actually

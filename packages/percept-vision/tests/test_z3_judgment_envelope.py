@@ -1,9 +1,10 @@
-"""Card Z3 — the judgment envelope is ENRICHED and survives to the delivered Incident.
+"""The judgment envelope is enriched and survives to the delivered Incident.
 
-Two paying client teams found percept perceived correctly but was UNOBSERVABLE: of the reference
-envelope only ~5 of 11 fields reached a delivered ``Incident``. The gate reason (why a fire was taken
+Previously, only about 5 of the reference envelope's 11 fields reached a delivered ``Incident``.
+The gate reason (why a fire was taken
 or withheld), the plan the judgment ran under, and the region/modality/provenance of the evidence all
-existed internally yet none reached the durable record a client reads at 2am. Z3 carries them, ADDITIVELY.
+existed internally yet none reached the durable record an operator inspects. The enriched contract
+carries them additively.
 
 The invariants these tests pin:
 

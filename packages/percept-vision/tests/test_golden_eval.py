@@ -1,11 +1,11 @@
-"""Card A14: probe-harness ``golden_eval`` (Viability §5a event-level matching rule).
+"""the implementation: probe-harness ``golden_eval`` (the event-level matching contract event-level matching rule).
 
 Proves that :mod:`percept.harness.golden_eval`:
 
   * matches a predicted event to AT MOST ONE ground-truth episode, requiring BOTH
     ``str(event.key) == episode_id`` AND
     ``decision_emitted_ts in [decision_eligible_ts, episode_end_ts + allowed_lateness]``.
-  * (card X1) is KEY-AWARE on multi-goal streams: a fire of goal A landing inside goal B's
+  * is KEY-AWARE on multi-goal streams: a fire of goal A landing inside goal B's
     overlapping window is a FALSE FIRE and leaves B a MISS — it is never credited as a match.
   * scores a fire that lands before ``decision_eligible_ts`` or after
     ``episode_end_ts + allowed_lateness`` as unmatched (a miss for the episode, a false fire for
@@ -175,7 +175,7 @@ class TestUnmatchedGroundTruthIsMiss(unittest.TestCase):
 
 
 class TestMatchingIsKeyAware(unittest.TestCase):
-    """Card X1 regression — ``score`` used to be KEY-BLIND.
+    """the implementation regression — ``score`` used to be KEY-BLIND.
 
     It selected a claimant episode purely by ``ep.contains(ts)`` and never compared
     ``JudgmentEvent.key`` to ``GroundTruthEpisode.episode_id``, so on a MULTI-GOAL stream a fire of

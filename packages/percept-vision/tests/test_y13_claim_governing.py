@@ -1,4 +1,4 @@
-"""Card Y13 — CLAIM MODE rollout: structured mutation, authority policy, supersession go LIVE for
+"""— CLAIM MODE rollout: structured mutation, authority policy, supersession go LIVE for
 claim-slot concerns.
 
 Y12 flipped episode grouping + idempotency to GOVERNING for concerns that SELECT the content-key
@@ -11,18 +11,18 @@ SELECT the claim-slot resolver (``identity_policy == 'claim_slot'``) via the new
 
 Three landed pieces go live for claim-slot concerns:
 
-1. **The mutation channel (card Y2, ``percept.claims``)** — only an explicit ``replace`` speech act
+1. **The mutation channel (``percept.claims``)** — only an explicit ``replace`` speech act
    supersedes; a question/attribution/negation (all classified ``mention``) never moves the value. The
    frozen ``mutation`` synthetic corpus (``percept.harness.synthetic.corpora.mutation``) pins this.
 2. **Per-concern authority at fold time (``ConcernAuthority``)** — a mutating op from an asserter this
    concern's authority (``goal.state['authority']``, :func:`percept.claims.concern_authority_of`) does
    not permit is DOWNGRADED to a non-mutating ``mention`` before it ever reaches the episode fold.
-3. **Supersession + provisional-incident delivery (card Y10, landed)** — an applied correction re-arms
+3. **Supersession + provisional-incident delivery (landed)** — an applied correction re-arms
    and fires a superseding revision (``fold.supersedes`` / ``<metric>.superseding_revision``), never a
    silent overwrite; the ORIGINAL and the CORRECTION both land, linked, exactly like a content-key
    concern's ``updated``/``retracted`` continuation.
 
-The acceptance properties below (card Y13):
+The acceptance properties below:
 
 * Probe 02's 3 mutation-corpus cases resolve LIVE exactly as the fixture says, and
   ``episode_current`` surfaces the corrected value WITH its revision chain.

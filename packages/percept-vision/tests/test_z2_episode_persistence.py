@@ -1,9 +1,8 @@
-"""Card Z2 — episode persistence is SESSION-ONLY for v1.4, and that decision is ENFORCED + OBSERVABLE.
+"""Episode persistence is SESSION-ONLY for v1.4, and that boundary is enforced and observable.
 
-The founder decision (card Y9, merged) is that episode/counting memory does NOT survive a restart:
+Episode/counting memory does NOT survive a restart:
 ``Percept.snapshot()`` carries goals/gate/entities/action_log and deliberately NOT the ``episodes``
-map. Documented is not enough — two paying client teams read percept 0.7.0 as silent/unobservable.
-This card makes the decision hold in CODE:
+map. Documentation alone is insufficient, so these tests make the boundary hold in code:
 
 (a) ``snapshot()`` must not carry ``episodes`` — a future accidental add TRIPS a test, forcing the
     policy to be revisited deliberately rather than flipped by accident.

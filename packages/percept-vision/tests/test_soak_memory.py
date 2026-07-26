@@ -1,4 +1,4 @@
-"""SOAK: the runtime's resident frame retention is BOUNDED, and the bound is loud (card Z1).
+"""SOAK: the runtime's resident frame retention is BOUNDED, and the bound is loud.
 
 Two client teams measured RSS 92 -> 342 MB on a 36-second clip and read it as a leak that made every
 24/7 deployment impossible. Profiling `percept.runtime.worker.run` offline with a scripted judge

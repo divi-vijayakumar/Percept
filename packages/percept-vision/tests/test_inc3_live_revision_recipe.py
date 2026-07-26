@@ -1,4 +1,4 @@
-"""Card INC3 — the PUBLIC recipe: a claim_slot plan + live model-reply JSON forms a revision chain.
+"""— the PUBLIC recipe: a claim_slot plan + live model-reply JSON forms a revision chain.
 
 This is the end-to-end proof that closes P05-SDK-004. Unlike ``test_y20_live_supersession_delivery.py``
 (which hands the fold PRE-BUILT ``Verdict(operation="replace", ...)`` objects), here the scripted vision

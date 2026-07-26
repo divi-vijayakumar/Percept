@@ -8,7 +8,7 @@ fixture's labelled answer. No API spend: the driver is :class:`~percept.harness.
 over the committed corpus generators, so the report runs in a worktree that does not carry the
 gitignored generated tree.
 
-TWO probes, mirroring the two client collapses:
+TWO probes, mirroring the two observed failure modes:
 
 * **probe 01** (screen/document) — ``subject_identity`` + ``continuation``. Would the proposed
   identity + continuation matching have been right? A FALSE-BIND here is binding two things the fixture

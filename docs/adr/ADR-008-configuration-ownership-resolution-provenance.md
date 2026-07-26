@@ -1,12 +1,12 @@
 # ADR-008: Configuration ownership, resolution, and provenance
 
 - **Status:** Accepted for the ownership/precedence model and the tunable inventory it is grounded
-  in (card C0 — ships `percept/tunables.py`, the generated `tunables.json` artifact, and
+  in (the implementation — ships `percept/tunables.py`, the generated `tunables.json` artifact, and
   `tests/test_tunables.py`). The two-step binder this ADR specifies — `ConfigResolver` /
   `RuntimeCompiler` — and four of the six declared objects (`DomainPack`, `ExecutionPolicy`,
   `DeploymentConfig`, `WatchPlan`, `OptimizationLock`) do **not exist in code yet**; they ship in
   follow-on cards against the contract this document fixes. `SourceProfile` and `WatchProfile`
-  already exist (ADR-005, card P1/M2) and are extended, not replaced.
+  already exist (ADR-005/M2) and are extended, not replaced.
 - **Depends on:** ADR-005 (Source profiles — the `FORBIDDEN_FIELDS` / structural-enforcement
   precedent this ADR reuses for ownership gating); ADR-002 (Runtime health & coverage — the
   "degraded is diagnostic, not automatic" rule §Corrections(b) restates for configuration);
@@ -36,7 +36,7 @@ declaration) and each is internally coherent. None of them says, in code, **who 
 which field when two of them disagree**, or **why a value ended up what it did** when a client asks
 "where did this threshold come from?" at 2am.
 
-Card C0 first did the accounting: `percept/tunables.py` enumerates every one of these knobs as a
+the implementation first did the accounting: `percept/tunables.py` enumerates every one of these knobs as a
 typed `TunableSpec` and emits `tunables.json`, a generated artifact a CI parity test pins against
 the schemas that produced it (`tests/test_tunables.py`). That inventory is this ADR's evidence base
 — every claim below about what exists, what owns what, and what is missing is checked against it,
@@ -185,7 +185,7 @@ Four points where existing prose or intuition disagrees with what the code actua
 follows the code.
 
 **(a) Window, not sprite, for screen evidence defaults.** `percept/sprite.py` is **deprecated in the
-plan path** (card J2): an ordered frame *window* beat a sprite montage unconditionally on the H0
+plan path**: an ordered frame *window* beat a sprite montage unconditionally on the H0
 dynamic-goal set — recall 0.68 → 0.73 (0.90 with gate-relax) — and `percept/profile_resolution.py`
 can never select `plan_mode="sprite"`; a spec/profile that still names it is normalized to
 `"window"` with a `DeprecationWarning` (`percept.agent._normalize_plan_mode`). Any configuration
@@ -267,7 +267,7 @@ regression, whatever it resolves to:
 
 **Good**
 
-- `tunables.json` (card C0) gives every subsequent card a single, CI-checked place to look up "does
+- `tunables.json` gives every subsequent card a single, CI-checked place to look up "does
   this field exist, who owns it, is it safe to automate" instead of grepping six modules.
 - Ownership-gated precedence makes "who set this" answerable in code, not folklore — the same
   upgrade ADR-005 made for gate semantics, applied to configuration broadly.

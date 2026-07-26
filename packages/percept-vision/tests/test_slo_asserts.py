@@ -110,7 +110,7 @@ class TestDollarsPerStreamHour(unittest.TestCase):
             dph,
             DOLLARS_PER_STREAM_HOUR_CEILING_USD,
             f"${dph:.4f}/stream-hour exceeds the ${DOLLARS_PER_STREAM_HOUR_CEILING_USD:.2f}/"
-            f"stream-hour ceiling (tests/test_p_econ.py's Viability §7 placeholder, reused here).",
+            f"stream-hour ceiling (tests/test_p_econ.py's the release criteria placeholder, reused here).",
         )
 
     def test_price_usage_prefers_backend_reported_cost_over_token_estimate(self):

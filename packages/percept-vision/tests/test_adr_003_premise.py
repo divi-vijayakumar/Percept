@@ -1,4 +1,4 @@
-"""Drift guard for ADR-003's premise (card X6).
+"""Drift guard for ADR-003's premise.
 
 ADR-003 previously declared ``Depends on: ADR-001 §4 (defines evidence.frame_ref as a field on the
 judgment contract)``. Neither half of that resolved: ADR-001 §4 is *Dwell and refractory*, and no
@@ -49,7 +49,7 @@ def test_verdict_evidence_is_plain_text_not_a_handle() -> None:
 def test_judgment_event_carries_no_evidence_pointer() -> None:
     """``JudgmentEvent`` has no evidence payload; ``evidence_seq`` is an ordering int, not a ref."""
     names = _fields(JudgmentEvent)
-    # Card Z3 enriched the envelope with scalar OBSERVABILITY metadata (reason/watchplan_id/roi/
+    # the implementation enriched the envelope with scalar OBSERVABILITY metadata (reason/watchplan_id/roi/
     # modality/provenance); INC1 (contract 1.9) adds evidence_origin — a closed judged/transition
     # vocabulary naming WHICH path produced the evidence. None of it is a handle to the raw evidence
     # BYTES — which is the premise this test guards: evidence_seq stays an ordering int, no field is a

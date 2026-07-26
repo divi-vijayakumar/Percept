@@ -28,7 +28,7 @@ The per-stat counterfactual
 "Nothing fired" is a dead end; "here is the knob" is a fix. Every trace that carries the three
 salience statistics per frame (``mean`` / ``block_max`` / ``p95`` — what ``percept doctor`` records)
 gets a panel showing, for each statistic, its distribution over the run against **its own**
-threshold and how many frames it WOULD have admitted. On the real client screen fixture every stat
+threshold and how many frames it WOULD have admitted. On the measured screen fixture every stat
 sat under half its own cutoff, and seeing that at a glance is the whole point. Thresholds are read
 from ``manifest.labels["stat_thresholds"]``; when a trace does not carry them the panel says so
 rather than inventing a cutoff.
@@ -50,9 +50,9 @@ markup.
   pre-rendered as escaped HTML; the inline script is a fixed constant that only toggles visibility.
   There is no JSON payload to break out of.
 * All text is escaped with :func:`esc` (HTML-escaped, control characters stripped, length-capped).
-* **Media embedding is opt-in and defaults OFF** (``VizOptions.include_media``). The first client
-  workload is accounting screens; "standalone" must not mean "silently bundle the customer's
-  accounting video". A source URI is printed as TEXT and never placed in an attribute, so nothing
+* **Media embedding is opt-in and defaults OFF** (``VizOptions.include_media``). Screen recordings
+  may contain sensitive data; "standalone" must not mean "silently bundle the operator's video".
+  A source URI is printed as TEXT and never placed in an attribute, so nothing
   is ever auto-fetched.
 * No external scripts, fonts, styles or assets — everything is inlined and the page carries a strict
   CSP (``default-src 'none'``, the script pinned by ``sha256``). It opens from ``file://`` with zero

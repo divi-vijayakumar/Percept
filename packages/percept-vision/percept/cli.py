@@ -82,7 +82,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if command == "eval" and rest and rest[0] == "ingest-trace":
         # NOT a delegate: percept.eval.differential.main() parses `eval`'s OWN argv shape
         # (--baseline/--candidate/...) and would reject "ingest-trace" as an unknown positional.
-        # This is a second, independent job under the same verb — card L2's telemetry -> fixtures
+        # This is a second, independent job under the same verb — the implementation's telemetry -> fixtures
         # pipeline — so it is routed to its own module before the delegate table is consulted.
         mod = importlib.import_module("percept.eval.telemetry_fixtures")
         return int(mod.main(rest[1:]))

@@ -69,7 +69,7 @@ def _sprite_goal():
 
 
 class SpriteDeprecatedInThePlanPathTests(unittest.TestCase):
-    """Card J2: the plan path no longer builds a montage for ANY concern. An authored
+    """the implementation: the plan path no longer builds a montage for ANY concern. An authored
     ``temporal="sprite"`` is shimmed to an ordered window (strictly better: H0 0.68 -> 0.73)."""
 
     def _last_call(self, frames):

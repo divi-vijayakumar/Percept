@@ -221,7 +221,7 @@ class RuntimeWorkerTests(unittest.TestCase):
         self.assertNotIn("zero_admission_coverage", DEGRADED_HEALTH_KINDS)
 
     def test_zero_admission_still_camera_stays_non_alarming_with_no_declared_floor(self):
-        # Regression (card C2): still-camera, motion-gated, admitting 0 — with NO coverage_floor
+        # Regression: still-camera, motion-gated, admitting 0 — with NO coverage_floor
         # passed to run() (the default) — must stay byte-for-byte the pre-existing diagnostic-only
         # reading: floor_unmet is False and coverage_floor is None in the payload.
         still_only = [(float(i), STILL, "clear") for i in range(5)]

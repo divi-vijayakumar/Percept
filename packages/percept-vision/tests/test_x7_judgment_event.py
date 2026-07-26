@@ -1,4 +1,4 @@
-"""Card X7 — the live path CONSTRUCTS the contract's centre.
+"""— the live path CONSTRUCTS the contract's centre.
 
 ``percept.contracts.JudgmentEvent`` is ADR-001 §1's frozen output of one pass through the judge
 funnel, and until X7 nothing on the hot path ever built one: the runtime went

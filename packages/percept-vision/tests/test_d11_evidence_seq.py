@@ -1,4 +1,4 @@
-"""Card D11 — Incident.evidence_seq + the recorder-side ``judgment.event`` trace linkage.
+"""— Incident.evidence_seq + the recorder-side ``judgment.event`` trace linkage.
 
 Two bars:
 

@@ -1,4 +1,4 @@
-"""Card C2 — exit-criteria proof: SourceProfile wired into the runtime via the two-step binder
+"""— exit-criteria proof: SourceProfile wired into the runtime via the two-step binder
 (``percept.resolver.ConfigResolver`` -> ``percept.runtime_compiler.runtime_compile``).
 
 The failure this card exists to kill: a screen-watch deployment silently admits nothing until

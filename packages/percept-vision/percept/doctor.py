@@ -1,6 +1,6 @@
 """``percept doctor`` — a plan-aware tier-0 dry run that spends ZERO judge calls.
 
-Two paying client teams returned "not viable" on percept 0.7.0 — not because perception failed, but
+Domain probes returned "not viable" on percept 0.7.0 — not because perception failed, but
 because when the SDK stayed silent there was no way to find out why. This module is the answer to
 that, and it is deliberately answerable at 2am with no API key and no access to us::
 

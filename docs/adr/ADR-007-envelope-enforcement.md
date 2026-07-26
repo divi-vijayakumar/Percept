@@ -1,6 +1,6 @@
 # ADR-007: Envelope enforcement in config, not prose — the three OUT verdicts
 
-- **Status:** Accepted (card Z7; ships code, docs and tests — additive, no contract change)
+- **Status:** Accepted (the implementation; ships code, docs and tests — additive, no contract change)
 - **Depends on:** ADR-005 (Source profiles — the `FORBIDDEN_FIELDS` precedent: structural
   enforcement over convention, and the `UNTUNED` pattern: a typed field a tool reads and reports,
   never a paragraph in a README); ADR-001 (the Gate/judgment contract — **ASK is a first-class

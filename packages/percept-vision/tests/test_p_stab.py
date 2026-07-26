@@ -1,4 +1,4 @@
-"""PROBE SCAFFOLD — P-STAB-1 (Viability §7, board card A20, gate G1 endurance/soak).
+"""PROBE SCAFFOLD — P-STAB-1 (the release criteria, gate G1 endurance/soak).
 
 **Scaffold only — gated on bars-locked, no for-record run.** This proves the pass/fail WIRING a
 future for-record P-STAB-1 run needs, not a real endurance verdict about Percept itself:
@@ -6,7 +6,7 @@ future for-record P-STAB-1 run needs, not a real endurance verdict about Percept
 (including this probe's three tolerances, under ``numeric_bars``) as a ``TODO`` placeholder at the
 time this scaffold was written.
 
-Property under test (Viability §7): over a long run the runtime survives without leaks/drift/crash.
+Property under test (the release criteria): over a long run the runtime survives without leaks/drift/crash.
 The HONEST claim a soak can support is bounded, not absolute — a soak run of any finite length
 cannot prove "indefinitely" stable, only that OVER THE SAMPLED HORIZON:
 
@@ -22,13 +22,12 @@ cannot prove "indefinitely" stable, only that OVER THE SAMPLED HORIZON:
 This probe therefore asserts SLOPES AND TOLERANCES, never permanence.
 
 Reuses (imported, never edited — no source file in this repo is touched by this test):
-  * ``percept.harness.soak_runner.{SoakConfig, SoakRunner, compute_trend, assert_clean_recovery}``
-    (card A15) — the hourly-snapshot soak driver and its hour-N-vs-hour-1 trend/recovery helpers.
+  * ``percept.harness.soak_runner.{SoakConfig, SoakRunner, compute_trend, assert_clean_recovery}`` — the hourly-snapshot soak driver and its hour-N-vs-hour-1 trend/recovery helpers.
     This probe adds ONLY the tolerance-comparison (pass/fail) layer on top; it does not reimplement
     any of the driving, snapshotting, or trend math.
-  * ``percept.harness.load_driver.LoadProfile`` (card A11) — the N/M/E/F load shape passed into
+  * ``percept.harness.load_driver.LoadProfile`` — the N/M/E/F load shape passed into
     ``SoakConfig``.
-  * ``percept.backends.fake_judge.{LatencyProfile, ErrorInjectionConfig}`` (card A12) — per-hour
+  * ``percept.backends.fake_judge.{LatencyProfile, ErrorInjectionConfig}`` — per-hour
     latency/error injection, via ``SoakConfig.latency_fn`` / ``errors_fn``.
   * ``percept.harness.metrics`` — reached only indirectly, through ``SoakRunner``/``compute_trend``.
   * ``percept.clock.FakeClock`` — the sole time source; every scenario below runs under a fresh
@@ -118,7 +117,7 @@ def _run_soak(config: SoakConfig) -> list[HourSnapshot]:
 
 
 # ---------------------------------------------------------------------------
-# Pass/fail decision — Viability §7 P-STAB-1 pass condition, evaluated over one soak run.
+# Pass/fail decision — the release criteria P-STAB-1 pass condition, evaluated over one soak run.
 # ---------------------------------------------------------------------------
 
 
@@ -151,7 +150,7 @@ def evaluate_p_stab_1(
     memory_slope_tolerance_mb_per_hour: float = PLACEHOLDER_MEMORY_SLOPE_TOLERANCE_MB_PER_HOUR,
     latency_drift_tolerance_ms_p95: float = PLACEHOLDER_LATENCY_DRIFT_TOLERANCE_MS_P95,
 ) -> StabGateResult:
-    """The Viability §7 P-STAB-1 pass condition over a whole soak run:
+    """The the release criteria P-STAB-1 pass condition over a whole soak run:
 
         no positive queue-age slope beyond ε_age, no material memory slope beyond ε_mem, no p95
         latency drift beyond tolerance (hour-N vs hour-1, all via ``compute_trend``), AND clean

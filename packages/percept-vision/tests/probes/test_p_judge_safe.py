@@ -1,4 +1,4 @@
-"""P-JUDGE-SAFE-1 (ADR-001 §10 invariant 4; Viability §7, board card A23) — SCAFFOLD PROBE.
+"""P-JUDGE-SAFE-1 (ADR-001 §10 invariant 4; the release criteria) — SCAFFOLD PROBE.
 
 Property under test: **no malformed / truncated / timed-out / partial judge response may ever
 cause a FIRE.** Every such response must resolve to ASK, SILENT, or a provider-failure
@@ -22,10 +22,10 @@ Two things this module asserts, kept deliberately SEPARATE:
    RELEASE-BLOCKING (a fail-open bug) and must be reported prominently, not papered over.
 2. ``TestJudgeSafeOutcomeClassification`` — asserts *how* each mode resolves: gracefully, in-loop,
    with the run continuing (never an uncaught crash). Originally this class only documented a gap
-   (see the HISTORY note below); card A30 closed that gap, so it now asserts the FIXED behavior and
+   (see the HISTORY note below); the implementation closed that gap, so it now asserts the FIXED behavior and
    will fail loudly again if a regression reopens it.
 
-HISTORY (card A30, now fixed — kept for context): before A30, the judge->gate path neither caught
+HISTORY (now fixed — kept for context): before A30, the judge->gate path neither caught
 a raised judge-call exception (timeout / provider error) nor validated the shape of a returned
 verdict (malformed / partial) before handing it to ``percept.gate.classify``. ``timeout`` /
 ``provider_error`` raised a designed, typed exception (``asyncio.TimeoutError`` / ``ProviderError``)
@@ -66,7 +66,7 @@ from percept.backends.fake_judge import ErrorInjectionConfig, FakeJudge, Latency
 FAILURE_MODES: tuple[str, ...] = ("timeout", "provider_error", "malformed", "partial")
 
 # Exception types a REAL judge call may raise (timeout / provider error) that
-# `Percept._safe_timed_judge` (agent.py, card A30) catches and normalizes to the internal
+# `Percept._safe_timed_judge` (agent.py) catches and normalizes to the internal
 # `_JudgeDegraded` signal before `perceive_judged` ever sees them -- retained here (and exercised
 # indirectly through FakeJudge) so this probe still documents which raised shapes the boundary is
 # proven to catch. Mirrors the raise-after-retries contract real backends already use
@@ -179,7 +179,7 @@ class TestJudgeSafeNeverFires(unittest.TestCase):
 class TestJudgeSafeOutcomeClassification(unittest.TestCase):
     """Asserts *how* (not just *whether*) each mode resolves: gracefully, in-loop, with the run
     continuing -- not the hard "never FIRE" invariant (see ``TestJudgeSafeNeverFires`` for that).
-    Card A30 (the fail-closed judge->classify boundary, ``Percept._safe_timed_judge`` /
+    the implementation (the fail-closed judge->classify boundary, ``Percept._safe_timed_judge`` /
     ``_JudgeDegraded`` in agent.py) landed, so EVERY mode -- raised (timeout/provider_error) or a
     malformed/partial *return* alike -- must now resolve to a graceful ASK/SILENT/provider-failure
     abstention: ``perceive_judged`` returns its normal (possibly-empty) ``list[FireEvent]``, never
@@ -196,7 +196,7 @@ class TestJudgeSafeOutcomeClassification(unittest.TestCase):
                 events, exc = asyncio.run(_drive_one_frame(agent))
                 self.assertIsNone(
                     exc,
-                    f"REGRESSION (card A30): {mode!r} escaped perceive_judged as an uncaught "
+                    f"REGRESSION: {mode!r} escaped perceive_judged as an uncaught "
                     f"exception ({exc!r}) instead of degrading the tick gracefully -- this is the "
                     f"exact fail-closed-boundary gap A30 fixed; the watch run must continue, never "
                     f"crash, on a malformed/timed-out/partial/erroring judge response.",
@@ -213,7 +213,7 @@ class TestJudgeSafeOutcomeClassification(unittest.TestCase):
         """Documentary: FakeJudge's ``timeout``/``provider_error`` injection raises the SAME typed,
         documented exceptions a real backend's retry-then-raise contract would
         (``asyncio.TimeoutError`` / ``ProviderError`` -- ``KNOWN_PROVIDER_FAILURE_EXCEPTIONS``).
-        ``Percept._safe_timed_judge`` (agent.py, card A30) catches ANY exception generically -- it
+        ``Percept._safe_timed_judge`` (agent.py) catches ANY exception generically -- it
         does not need to special-case these two types -- but this pins the specific raised shape the
         probe drives through that boundary, at the source (``FakeJudge.judge`` itself, bypassing
         ``Percept``), so a future change to FakeJudge's injection surface is caught here too."""

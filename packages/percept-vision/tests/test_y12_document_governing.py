@@ -1,17 +1,17 @@
-"""Card Y12 — DOCUMENT MODE rollout: episode grouping + EpisodeFoldResult-owned idempotency go
+"""— DOCUMENT MODE rollout: episode grouping + EpisodeFoldResult-owned idempotency go
 GOVERNING, scoped to screen_document / content-key concerns ONLY.
 
 Y11 (shadow mode, landed) proved the mechanism — subject resolution + the episode fold — would have
 been RIGHT on synthetic ground truth, but changed nothing: ``_shadow_observe`` always folds
 ``decision=None`` (unbound) and the answer only lands in the ``shadow.fold`` trace stage. Y12 flips
 the switch for exactly one scope: a concern that SELECTS the content-key resolver
-(``goal.state['identity_policy'] == 'content_key'``, card Y6) now gets a REAL per-goal
+(``goal.state['identity_policy'] == 'content_key'``) now gets a REAL per-goal
 :class:`~percept.episodes.EpisodeLog` threaded into the firing path via ``_fire_concern(fold=...)``
 (``Percept._document_episode_fold``, ``percept/agent.py``). Every other concern — including a
 claim-slot / conversational (mutation) goal — is untouched: it still gets ``fold=None`` and stays
 shadow-only.
 
-The four acceptance properties below (card Y12):
+The four acceptance properties below:
 
 1. Probe 01's clean walkthrough (the ``subject_identity`` + ``continuation`` synthetic corpora,
    ``percept.eval.shadow_report``) produces ZERO fabricated divergences — including from an

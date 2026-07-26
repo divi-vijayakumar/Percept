@@ -1,4 +1,4 @@
-"""Card Y1 — subject / continuation / mutation are THREE decisions, not one.
+"""— subject / continuation / mutation are THREE decisions, not one.
 
 The acceptance criteria come from the external review's decisive example: PO-4471 is the same
 SUBJECT every time it appears; it is NOT necessarily the same EPISODE. Exact subject equality is
@@ -144,7 +144,7 @@ class TestThreeDecisionsAreSeparate(unittest.TestCase):
         self.assertTrue(late.denied)
 
     def test_mutation_seam_can_refuse_continuation(self):
-        # Decision (3)'s seam (card Y2 owns the channel). A finding that contradicts the episode
+        # Decision (3)'s seam (the implementation owns the channel). A finding that contradicts the episode
         # must open a new one rather than silently mutating the old one.
         log = EpisodeLog("g", policy=EpisodePolicy(continuity_gap_s=10.0))
         log.observe_decision(0.0, {"total": 100}, subject_key="INV-1")

@@ -1,4 +1,4 @@
-"""Card D9 — the native visualizer.
+"""— the native visualizer.
 
 What these tests hold to:
 

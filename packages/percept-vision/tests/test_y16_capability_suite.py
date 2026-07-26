@@ -1,4 +1,4 @@
-"""Card Y16 — the task-level capability suite: the deterministic UNIT layer for cognition.
+"""— the task-level capability suite: the deterministic UNIT layer for cognition.
 
 Nine capabilities, one assertion each, driven off the synthetic corpora
 (``percept.harness.synthetic.corpora``) through :class:`~percept.harness.scripted.ScriptedJudge` — no
@@ -7,7 +7,7 @@ corpus's own labelled ground truth, replayed in order); what is under test is th
 runtime that consumes its output: :class:`~percept.episodes.EpisodeLog`, :mod:`percept.claims`,
 :func:`~percept.episodes.interval_coverage`, :class:`~percept.gate.Gate` and
 :class:`~percept.behavior.BehaviorExecutor`. None of these are test doubles — they are the shipped
-mechanisms Y1–Y15 built; this module is their acceptance gate (card L4 wires it into CI next).
+mechanisms Y1–Y15 built; this module is their acceptance gate (the implementation wires it into CI next).
 
 Where a capability genuinely fails against the real runtime, the test is
 ``@unittest.expectedFailure`` with the exact defect in its docstring — never a weakened assertion.
@@ -351,7 +351,7 @@ class Capability07CupProblem(unittest.TestCase):
 
 
 class Capability07BoundaryOffByOne(unittest.TestCase):
-    """Card Y19 — fixed. The fixture's documented rule is inclusive: "separation >= boundary_gap_s
+    """— fixed. The fixture's documented rule is inclusive: "separation >= boundary_gap_s
     starts a NEW episode". ``EpisodeLog.continuation_reason`` now compares with ``>=`` (formerly a
     strict ``>``) in the ``gap_exceeded`` branch: ``(t - episode.last_seen) >= policy.continuity_gap_s``.
     At a separation of EXACTLY the gap, a new episode opens (matching the corpus), not a continuation."""

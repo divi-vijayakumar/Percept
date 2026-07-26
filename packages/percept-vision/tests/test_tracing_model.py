@@ -1,4 +1,4 @@
-"""Card D8a — the diagnostic data model + recorder.
+"""— the diagnostic data model + recorder.
 
 The bars this file holds (one test class each):
 
@@ -429,7 +429,7 @@ class TestManifestAndRoundTrip(unittest.TestCase):
         self.assertNotEqual(PlanIdentity.from_goals(g1).plan_hash, PlanIdentity.from_goals(g3).plan_hash)
         self.assertEqual(PlanIdentity.from_goals(g1).goal_ids, ("g1",))
 
-    # -- Card X3: the identity covers the RESOLVED policy, not only the goals ------------
+    # -- the implementation: the identity covers the RESOLVED policy, not only the goals ------------
     def test_plan_hash_separates_arms_that_differ_only_in_a_threshold(self):
         """A threshold A/B has identical goals by construction; the hash must still tell them apart."""
         goals = [Goal(id="g1", condition="the milk is boiling over", say="boiling!")]

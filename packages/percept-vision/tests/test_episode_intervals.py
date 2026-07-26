@@ -1,4 +1,4 @@
-"""Card Y7 — state consistency + intervals that do NOT silently forward-fill.
+"""— state consistency + intervals that do NOT silently forward-fill.
 
 Two things land here, both from the client-viability review:
 

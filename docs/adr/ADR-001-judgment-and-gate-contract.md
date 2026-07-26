@@ -157,7 +157,7 @@ underlying gate never touched.
 > **Implementation status — HALF wired; the sequence is reserved, the rule is not enforced.** The
 > two halves of `percept/sequencing.py` have diverged and this note pins the split.
 >
-> **Reserved (live).** `EvidenceSequencer` IS in the production path as of card X7:
+> **Reserved (live).** `EvidenceSequencer` IS in the production path as of the implementation:
 > `Percept._admit_evidence` (`percept/agent.py`) calls `sequencer.admit(key)` at judge-DISPATCH time
 > so the `JudgmentEvent` this core emits carries a real, dispatch-ordered `evidence_seq` instead of a
 > placeholder — which is what lets it correlate with the `GateDecision` a future worker-pool reducer

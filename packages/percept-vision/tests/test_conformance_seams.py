@@ -1,6 +1,6 @@
-"""L1: conformance WIDENED past the Vision seam (card D2).
+"""L1: conformance WIDENED past the Vision seam.
 
-Card D6 settled which extension seams survive; this suite covers the two that are not the cloud
+the implementation settled which extension seams survive; this suite covers the two that are not the cloud
 judge, in the SAME reporting shape:
 
 * ``check_detector`` — the bring-your-own ADMISSION detector (``register_detector`` + a

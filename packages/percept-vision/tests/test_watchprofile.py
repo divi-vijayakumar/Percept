@@ -1,4 +1,4 @@
-"""WatchProfile — schema validation + registry lookup (card P1, impl plan epic E2).
+"""WatchProfile — schema validation + registry lookup (impl plan epic E2).
 
 Pure dataclass + dict-of-tuples logic: no model, no I/O. Covers (1) the schema rejects out-of-vocabulary /
 out-of-range knobs, matching the real settings they mirror (percept.config.EdgeSettings/GateSettings,
@@ -112,7 +112,7 @@ class GateProfileTests(unittest.TestCase):
 
 class GoalDensityGuidanceTests(unittest.TestCase):
     def test_default_matches_h0_operating_point(self):
-        # H0's full-stack operating point held <=3 distinct goals (impl plan §1 ablation table).
+        # H0's full-stack operating point held <=3 distinct goals (the documented implementation evidence ablation table).
         self.assertEqual(GoalDensityGuidance().max_recommended_goals, 3)
 
     def test_none_is_allowed_no_guidance(self):
@@ -182,7 +182,7 @@ class WatchProfileTests(unittest.TestCase):
             _profile(gate=GateProfile(refractory_s=-5.0))
 
     def test_matches_h0_fixed_cam_localized_finding(self):
-        # The H0 ablation win: fixed camera + localized action -> block_max @ 0.20 (impl plan §1/§2).
+        # The H0 ablation win: fixed camera + localized action -> block_max @ 0.20 (the documented implementation evidence).
         p = _profile()
         self.assertEqual(p.salience_stat, "block_max")
         self.assertEqual(p.stat_thresholds["block_max"], 0.20)

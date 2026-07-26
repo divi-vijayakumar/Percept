@@ -1,4 +1,4 @@
-"""ADR-001 must not drift back into claiming things the runtime does not do (card X8).
+"""ADR-001 must not drift back into claiming things the runtime does not do.
 
 Three claims in ADR-001 were false against the shipped code: §1 named ``GateDecision`` as the gate's
 output (it is ``GateOutcome``), §8 described a per-key evidence-sequencing rule with zero production
@@ -91,7 +91,7 @@ def test_adr_section_1_names_the_shipped_symbol(adr_text: str) -> None:
 def test_sequencing_primitives_have_zero_production_call_sites() -> None:
     """§8's HALVES have diverged, and the ADR says so.
 
-    Card X7 wired ``EvidenceSequencer`` into ``agent._admit_evidence`` so a JudgmentEvent carries a
+    the implementation wired ``EvidenceSequencer`` into ``agent._admit_evidence`` so a JudgmentEvent carries a
     real dispatch-reserved ``evidence_seq`` rather than a placeholder. ``SerializedDecisionReducer``
     — the half that would actually enforce the stale-completion RULE — is still unused, because the
     live path is single-flight and never races. This test pins that split so the ADR cannot silently

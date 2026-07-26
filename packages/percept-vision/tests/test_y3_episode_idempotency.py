@@ -1,4 +1,4 @@
-"""Card Y3 — episode-owned idempotency; the gate bit must not be accidental per-episode memory.
+"""— episode-owned idempotency; the gate bit must not be accidental per-episode memory.
 
 The failure Y3 fixes: the gate is ONE BIT PER KEY, but "have I already reported THIS episode?" is a
 property of the EPISODE. The A->B->A trace only worked because B happened to leave the shared gate key
@@ -36,7 +36,7 @@ def _goal(**state):
 
 
 # --------------------------------------------------------------------------------------------------
-# The pure fold — the record card Y11 recomputes in shadow. Side-effect free, closed vocabularies.
+# The pure fold — the record the implementation recomputes in shadow. Side-effect free, closed vocabularies.
 # --------------------------------------------------------------------------------------------------
 
 

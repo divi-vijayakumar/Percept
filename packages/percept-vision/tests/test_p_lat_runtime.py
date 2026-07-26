@@ -1,4 +1,4 @@
-"""PROBE SCAFFOLD — P-LAT-RUNTIME-1 (Viability §7, board card A26, gate G3-A).
+"""PROBE SCAFFOLD — P-LAT-RUNTIME-1 (the release criteria, gate G3-A).
 
 **Scaffold only — gated on bars-locked, no for-record run.** This proves the WIRING a future
 for-record P-LAT-RUNTIME-1 run needs, not a real latency verdict about Percept itself:
@@ -7,7 +7,7 @@ for-record P-LAT-RUNTIME-1 run needs, not a real latency verdict about Percept i
   ADR-001 §5's G3-A number) can be measured both AT REST (a single light stream/watch) and UNDER
   LOAD (the full N/M/E/F profile via :mod:`percept.harness.load_driver`), aggregated through
   :class:`~percept.harness.metrics.MetricsCollector`, and its p95 computed deterministically.
-* that p95 classifies correctly into the Viability §7 band: GREEN ``< 2s`` / YELLOW ``2-3s`` /
+* that p95 classifies correctly into the the release criteria band: GREEN ``< 2s`` / YELLOW ``2-3s`` /
   RED ``>= 3s``.
 
 Reuses, never edits, the already-landed harness pieces named in the card: ``load_driver.py``
@@ -30,7 +30,7 @@ time; the observed call latencies are then folded into synthetic (but load-drive
 
 Both scenarios (rest, load) use a single-instant admission funnel with zero judge-wait
 (``judge_started_ts == admitted_ts``) — this scaffold isolates the *judge/model* leg of G3-A;
-queueing/backpressure under contention is P-BOUND-1's concern (card A11's own docstring), not
+queueing/backpressure under contention is P-BOUND-1's concern (the implementation's own docstring), not
 duplicated here.
 """
 
@@ -47,7 +47,7 @@ from percept.harness.metrics import MetricsCollector
 from percept.harness.stream_gen import parametric_motion_clip
 
 # ---------------------------------------------------------------------------
-# Viability §7 G3-A band thresholds — GREEN < 2s, YELLOW 2-3s, RED >= 3s.
+# the release criteria G3-A band thresholds — GREEN < 2s, YELLOW 2-3s, RED >= 3s.
 # ---------------------------------------------------------------------------
 
 GREEN_MAX_S = 2.0  # exclusive upper bound of GREEN
@@ -60,7 +60,7 @@ _DECISION_OVERHEAD_S = 0.05
 
 
 def classify_latency_band(p95_s: float) -> str:
-    """Viability §7 G3-A banding: GREEN < 2s, YELLOW 2s<=x<3s, RED >= 3s."""
+    """the release criteria G3-A banding: GREEN < 2s, YELLOW 2s<=x<3s, RED >= 3s."""
     if p95_s < GREEN_MAX_S:
         return "GREEN"
     if p95_s < YELLOW_MAX_S:

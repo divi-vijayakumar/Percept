@@ -183,7 +183,7 @@ class ScriptedJudgeTests(unittest.TestCase):
     def test_tolerates_verdict_fields_that_do_not_exist_yet(self):
         """Forward-compat: a fixture may label a field before it becomes a real ``Verdict`` field.
 
-        ``operation`` has now landed (card Y2) — so it flows through the constructor to ``v.operation``
+        ``operation`` has now landed — so it flows through the constructor to ``v.operation``
         and is NO LONGER a scripted extra — while ``subject_key``/``binding`` are still labelled ahead
         of any real field and remain extras. This proves both halves of the seam."""
         v = verdict_from_spec(

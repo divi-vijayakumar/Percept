@@ -1,4 +1,4 @@
-"""PCPT-026 — AttentionIntent + GoalOrigin provenance + the session goal-change/list seams.
+"""the documented regression — AttentionIntent + GoalOrigin provenance + the session goal-change/list seams.
 
 Stdlib + scripted backends only (no keys, no network). Three pillars:
 
@@ -424,7 +424,7 @@ class ListGoalsTests(unittest.TestCase):
             self.assertEqual(rows[0]["id"], "g1")
             self.assertEqual(rows[0]["condition"], "a person is here")
             self.assertEqual(rows[0]["status"], "active")
-            # PCPT-029 enrichment: durable origin (wire string, structured via session.arm) + the parsed
+            # the documented regression enrichment: durable origin (wire string, structured via session.arm) + the parsed
             # requested delivery (defaults when the goal declares none).
             self.assertEqual(rows[0]["origin"], "structured_trusted")
             self.assertEqual(rows[0]["delivery"], {"preempt": "queue", "ttl_s": None, "verbatim": False})

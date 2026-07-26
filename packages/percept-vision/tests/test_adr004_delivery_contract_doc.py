@@ -1,4 +1,4 @@
-"""Card X5 — ADR-004 §1 must not lie about what ``watch()`` resolves.
+"""— ADR-004 §1 must not lie about what ``watch()`` resolves.
 
 ADR-004 (`docs/adr/ADR-004-delivery-flow-replay.md`) shipped a "NOT guaranteed" bullet claiming
 ``profile`` is *not resolved yet* and that ``_settings_from_profile`` is a minimal pass-through. That

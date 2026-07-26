@@ -1,4 +1,4 @@
-"""PCPT-025 — off-loop judge dispatch: ``run(judge_dispatch="async")`` + ``_JudgeScheduler``.
+"""the documented regression — off-loop judge dispatch: ``run(judge_dispatch="async")`` + ``_JudgeScheduler``.
 
 The inline loop awaited ``perceive_judged`` at the admit site, so one slow VLM turn stalled capture,
 the gate, and every absence check (the 47s-stall class of bugs). These tests pin the scheduler's whole
@@ -163,7 +163,7 @@ class NonBlockingCaptureTests(unittest.TestCase):
         self.assertEqual(vision.judged[-1], f"f{int(admitted_ts[-1])}")
 
     def test_superseded_pending_drop_is_traced_with_reason(self):
-        # ADR-001 §9 / card A9: the pending slot (bound P=1) supersedes rather than growing — but that
+        # ADR-001 §9 / the implementation: the pending slot (bound P=1) supersedes rather than growing — but that
         # replacement must be TRACED (an explicit reason), never just a silent counter bump.
         vision = GatedVision()
         core = _core(vision, _watch_goal())
@@ -291,7 +291,7 @@ class PendingRevisionDropTests(unittest.TestCase):
         )
 
     def test_revision_dropped_pending_is_traced_with_reason(self):
-        # ADR-001 §9 / card A9: the revision-drop path must also be TRACED, not just counted.
+        # ADR-001 §9 / the implementation: the revision-drop path must also be TRACED, not just counted.
         vision = GatedVision(script={"f2": _NO})
         core = _core(vision, _watch_goal("g"))
         stats = RuntimeStats()
@@ -334,7 +334,7 @@ class ExplodingVision(GatedVision):
 
 class FatalJudgeTests(unittest.TestCase):
     def test_judge_exception_degrades_and_continues(self):
-        """Card A30 (founder decision): a judge that THROWS no longer halts the watch. The exception is
+        """A judge that THROWS no longer halts the watch. The exception is
         caught at the ``_safe_timed_judge`` boundary inside ``perceive_judged`` (before it can reach the
         scheduler's fatal/re-raise backstop), the tick degrades to ASK/SILENT, a ``judge_degraded``
         health event is emitted, and the run CONTINUES to completion — never a crash, never a FIRE."""
@@ -369,7 +369,7 @@ class FatalJudgeTests(unittest.TestCase):
                          "a single judge exception no longer fail-loud-halts the run")
 
     def test_consecutive_degrade_breaker_escalates_once(self):
-        """Card A30: the consecutive-degradation breaker. K (=CONSECUTIVE_DEGRADE_ESCALATE) consecutive
+        """the implementation: the consecutive-degradation breaker. K (=CONSECUTIVE_DEGRADE_ESCALATE) consecutive
         degraded ticks on the SAME key emit a distinct one-time ``judge_persistent_failure`` escalation
         so a dead-but-running watch surfaces instead of degrading silently forever."""
         from percept.agent import CONSECUTIVE_DEGRADE_ESCALATE as K
@@ -386,7 +386,7 @@ class FatalJudgeTests(unittest.TestCase):
         self.assertEqual(kinds.count("judge_persistent_failure"), 1, "escalation is one-time")
 
     def test_degrade_streak_resets_on_good_verdict(self):
-        """Card A30: any well-formed verdict proves the judge is reachable and resets the streak, so
+        """the implementation: any well-formed verdict proves the judge is reachable and resets the streak, so
         intermittent failures below the threshold never escalate."""
         from percept.agent import CONSECUTIVE_DEGRADE_ESCALATE as K
         core = _core(GatedVision(), _watch_goal("g"))

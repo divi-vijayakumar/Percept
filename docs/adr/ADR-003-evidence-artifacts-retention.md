@@ -180,7 +180,7 @@ guard against for the current media pointers. A sink MAY opt in to carrying the 
 `WebhookSink(include_media=True)` opt-in shape) — that is a separate, narrower decision than whether
 the sink may **dereference** the handle to embedded media bytes, addressed in §5.
 
-## 5. Retention matrix — priced for the founder
+## 5. Retention cost matrix
 
 Four evidence classes, priced against public cloud object-storage list pricing (S3-class tiers,
 USD/GB-month, order-of-magnitude and re-checkable at build time — not a quote): **Standard** ≈
@@ -215,8 +215,8 @@ numbers — rescale to the actual capsule size and fleet volume at build time.
   artifact). Actual bytes may live on local disk or object storage keyed by `ref`, independent of
   process lifetime. On restart, a reconciliation sweep clears anything past its expiry that a crash
   prevented from being evicted on schedule.
-- **Does labelling extend retention?** **Yes, bounded.** A `record_label()`'d incident (the flywheel's
-  raw material, §14 gate elsewhere) has its evidence retention extended past its class default, since
+- **Does labelling extend retention?** **Yes, bounded.** A `record_label()`'d incident (an evaluation
+  and calibration input, §14 gate elsewhere) has its evidence retention extended past its class default, since
   a human already spent attention confirming it — but to a fixed labelled-retention ceiling (not
   indefinitely), so an active labelling program cannot turn "labelled" into unbounded accumulation.
 - **May webhook delivery dereference media?** **No, by default** — a webhook sink resolves nothing;

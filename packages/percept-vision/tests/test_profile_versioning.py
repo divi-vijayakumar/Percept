@@ -1,4 +1,4 @@
-"""Card P4 — profile versioning + provenance: content-addressed, auditable, reversible.
+"""— profile versioning + provenance: content-addressed, auditable, reversible.
 
 Three properties are load-bearing and each is asserted directly here:
 

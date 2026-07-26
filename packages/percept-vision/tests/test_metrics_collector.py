@@ -1,4 +1,4 @@
-"""Card A13: probe-harness ``metrics_collector`` (Viability §6 metrics catalog).
+"""the implementation: probe-harness ``metrics_collector`` (the benchmark metrics contract metrics catalog).
 
 Proves, deterministically (a :class:`~percept.clock.FakeClock` throughout, no wall-clock, no
 randomness), that :class:`~percept.harness.metrics.MetricsCollector` correctly aggregates:

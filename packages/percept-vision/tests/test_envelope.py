@@ -1,4 +1,4 @@
-"""Card Z7 / ADR-007 — the envelope is enforced in CONFIG, so these tests check the CONFIG.
+"""the implementation / ADR-007 — the envelope is enforced in CONFIG, so these tests check the CONFIG.
 
 Three domains came back OUT of the seven-domain evaluation. Prose does not stop a client wiring
 something, so each refusal has to fail here rather than in review:
@@ -309,7 +309,7 @@ def test_the_policy_surface_really_only_clamps_interrupt_authority():
 
 
 def test_adr007_citations_match_the_code():
-    """ADR-007 is a map of this code (the ADR-005 / card Z6 rule): its load-bearing line cites and
+    """ADR-007 is a map of this code (the ADR-005 / the implementation rule): its load-bearing line cites and
     its actuation vocabulary must be checkable, not trusted."""
     import inspect
     from pathlib import Path
@@ -325,7 +325,7 @@ def test_adr007_citations_match_the_code():
     text = adr.read_text()
 
     # Assert the SYMBOL EXISTS, not the line it sits on. A line-number citation is broken by any
-    # edit above it: this test failed the moment card Y9 added a scope paragraph to
+    # edit above it: this test failed the moment the implementation added a scope paragraph to
     # sourceprofile.py's module docstring, even though both cards were individually correct.
     # A citation test should pin what is cited, not where it happens to be today.
     def defines(mod, symbol: str) -> bool:

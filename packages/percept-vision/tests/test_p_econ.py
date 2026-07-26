@@ -1,4 +1,4 @@
-"""Probe P-ECON-1 scaffold (Viability §7, board card A24) — G2 gate economy at held recall.
+"""Probe P-ECON-1 scaffold (the release criteria) — G2 gate economy at held recall.
 
 SCAFFOLD-ONLY: wires the probe's own sweep + pass/fail logic against fakes/synthetic fixtures and
 asserts it. Does NOT run a for-record benchmark (that is gated on `bars-locked` —
@@ -7,15 +7,15 @@ as a ``TODO`` placeholder at the time this scaffold was written). Property under
 (VID) cut judge volume enough to clear the cost ceiling WHILE HOLDING RECALL?
 
 Reuses (imported, never edited):
-  * ``percept.harness.golden_eval.{GroundTruthEpisode, build_golden_timeline, score}`` (card A14) —
+  * ``percept.harness.golden_eval.{GroundTruthEpisode, build_golden_timeline, score}`` —
     answers the RECALL half of the sweep: at a given admit policy, which ground-truth episodes get
     a predicted ``JudgmentEvent`` at all (an episode tier-0 filters out below its admit threshold
     never gets one -> a miss), scored via the frozen §5a event-level matching rule.
-  * ``percept.harness.metrics.{MetricsCollector, CostSample}`` (card A13) — answers the COST/VOLUME
+  * ``percept.harness.metrics.{MetricsCollector, CostSample}`` — answers the COST/VOLUME
     half: ``cost_summary()`` for judgments-per-hour + $/stream-hour, ``fanout_summary()`` for the
     observed fan-out ``F`` per admission.
-  * ``percept.harness.load_driver.{LoadDriver, LoadProfile, RampSchedule}`` (card A11) +
-    ``percept.backends.fake_judge.FakeJudge`` (card A12) — drive the admit-policy sweep's judge-call
+  * ``percept.harness.load_driver.{LoadDriver, LoadProfile, RampSchedule}`` +
+    ``percept.backends.fake_judge.FakeJudge`` — drive the admit-policy sweep's judge-call
     VOLUME deterministically: at each swept admit threshold, the number of candidates that clear the
     threshold becomes that policy point's admitted-episodes-per-stream-minute (``E``), and
     ``LoadDriver`` issues exactly ``F`` judge calls per admission through ``FakeJudge`` so
@@ -33,7 +33,7 @@ cheaper, but risks dropping a true-event candidate whose salience falls below it
 proving the SWEEP MECHANICS and the PASS/FAIL DECISION LOGIC, never a claim about real VID recall.
 
 **Bars-locked inputs — where they plug in.** ``recall_min`` / ``cost_ceiling_usd_per_stream_hour`` /
-``naive_vlm_baseline_fps`` are Viability §2 numbers that come from
+``naive_vlm_baseline_fps`` are the baseline declaration numbers that come from
 ``eval/viability/reference_config.yaml``'s ``numeric_bars`` ONLY once ``bars_locked: true`` is set
 (committed BEFORE results are inspected — CURRENT_PHASE's run-validity gate). They are NOT invented
 here. ``evaluate_p_econ_1`` below takes them as keyword parameters defaulted to clearly-named
@@ -216,7 +216,7 @@ def sweep_admit_policy(
         )
         total_admitted = len(admitted)
 
-        # -- recall (golden_eval, card A14) --------------------------------------------------
+        # -- recall (golden_eval) --------------------------------------------------
         predicted_events = (
             build_golden_timeline(admitted_true_episodes) if admitted_true_episodes else ()
         )
@@ -269,7 +269,7 @@ def sweep_admit_policy(
 
 
 # ---------------------------------------------------------------------------
-# Pass/fail decision — Viability §7 P-ECON-1 pass condition, evaluated at ONE sweep point.
+# Pass/fail decision — the release criteria P-ECON-1 pass condition, evaluated at ONE sweep point.
 # ---------------------------------------------------------------------------
 
 
@@ -306,7 +306,7 @@ def evaluate_p_econ_1(
     ),
     cost_per_judge_call_usd: float = SYNTHETIC_COST_PER_JUDGE_CALL_USD,
 ) -> EconGateResult:
-    """The Viability §7 P-ECON-1 pass condition at one admit-policy sweep point:
+    """The the release criteria P-ECON-1 pass condition at one admit-policy sweep point:
 
         at recall_min: $/stream-hour <= ceiling AND admitted rate keeps latency within budget
         AND cheaper than the naive-VLM baseline (the whole point of tier-0 cutting judge volume).
@@ -348,7 +348,7 @@ def cheapest_point_holding_recall(
 
 
 class TestPEcon1Sweep(unittest.TestCase):
-    """P-ECON-1 (Viability §7, G2): the sweep mechanics over a deterministic synthetic dataset."""
+    """P-ECON-1 (the release criteria, G2): the sweep mechanics over a deterministic synthetic dataset."""
 
     THRESHOLDS = [0.0, 0.3, 0.5, 0.55, 0.65, 0.75, 0.85, 0.95, 1.01]
 
@@ -409,7 +409,7 @@ class TestPEcon1Sweep(unittest.TestCase):
 
 
 class TestPEcon1PassFailDecision(unittest.TestCase):
-    """P-ECON-1 pass/fail logic (Viability §7 pass condition), asserted deterministically against
+    """P-ECON-1 pass/fail logic (the release criteria pass condition), asserted deterministically against
     the synthetic sweep — NOT a real bars-locked verdict (see module docstring)."""
 
     THRESHOLDS = [0.0, 0.3, 0.5, 0.55, 0.65, 0.75, 0.85, 0.95, 1.01]
@@ -480,7 +480,7 @@ class TestPEcon1PassFailDecision(unittest.TestCase):
 
     def test_gate_fails_when_naive_baseline_is_cheaper_than_the_admit_policy(self):
         """Even a recall-holding, under-ceiling point must fail if it is NOT actually cheaper than
-        the naive-VLM baseline — the entire premise of Viability §7/G2 is "does tier-0 gating beat
+        the naive-VLM baseline — the entire premise of the release criteria/G2 is "does tier-0 gating beat
         naive sampling", not just "is it under some absolute ceiling"."""
         chosen = cheapest_point_holding_recall(self.points, recall_min=self.recall_min)
         assert chosen is not None

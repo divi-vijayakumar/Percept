@@ -3,12 +3,12 @@
 Why: the SDK's single-flight judge scheduler (active + one latest-pending) judges the *freshest*
 admitted frame and supersedes older ones. A brief event (a sip, a hand-raise, a sugar pour ~1–2 s)
 is shorter than one request/response judge (~3–5 s), so the salient frame is dropped before it is
-ever judged — the watch never fires (see PCPT-031).
+ever judged, so the watch never fires.
 
 Fix (coverage, not latency): make every judge frame a montage of the recent window — {first,
 peak-salience, last}. Whatever frame the scheduler happens to judge now *carries the event inside
 it*, so the pour can't be superseded away. One image's token cost via ``percept.sprite.make_sprite``.
-Latency stays the request/response floor (~3–5 s); that is the accepted trade (PCPT-032).
+Latency stays at the request/response floor (~3–5 s); that is the accepted trade.
 
 Pure numpy + PIL + the SDK's ``make_sprite`` — deliberately NO pipecat/cv2 import, so both the live
 ``media.VideoTee`` and the headless (cv2-based) video test can use it without the libav clash.

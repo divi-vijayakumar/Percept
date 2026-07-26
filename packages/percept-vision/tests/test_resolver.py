@@ -189,7 +189,7 @@ class TestOwnershipConfigError(unittest.TestCase):
     def test_unclassified_field_is_permissive(self) -> None:
         """A field genuinely still unclassified in the tunables registry — nothing gates against it.
         (SourceProfile.parameters.coverage_floor, ADR-008's own worked unresolved-ownership example,
-        is resolved to owner='SourceProfile' by card C2 -- see TestCoverageFloorOwnership below --
+        is resolved to owner='SourceProfile' by the implementation -- see TestCoverageFloorOwnership below --
         so this test now exercises a DIFFERENT still-open field.)"""
         resolver = ConfigResolver()
         pack = DomainPack(
@@ -304,7 +304,7 @@ class TestSituationResolverProvenanceStamped(unittest.TestCase):
         self.assertEqual(resolved.effective["WatchProfile.plan_mode"], "window")
 
     def test_situation_alone_does_not_touch_salience_stat(self) -> None:
-        """ADR-008 ownership transfer (card C2): situation axes no longer carry salience_stat — a
+        """ADR-008 ownership transfer: situation axes no longer carry salience_stat — a
         caller must ALSO resolve a SourceProfile (or set it explicitly) to get a tuned statistic.
         The SDK-default layer still contributes the field (every Settings.* path always does), but
         its owner stays SDK and its value stays the legacy default."""
@@ -437,7 +437,7 @@ class TestOptimizationLock(unittest.TestCase):
         self.assertNotIn("deployment_overrides_locked_field", codes)
 
     def test_lock_graduated_provenance_fields_round_trip(self) -> None:
-        """Card C5: base_plan_hash / catalog_component_hash / fixture_hash / held_out_metrics /
+        """the implementation: base_plan_hash / catalog_component_hash / fixture_hash / held_out_metrics /
         created_at graduate the placeholder's id/version/values/locked_hash shape — round-trips
         through to_dict/from_dict, schema_version stamped."""
         lock = OptimizationLock(

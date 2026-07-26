@@ -1,4 +1,4 @@
-"""Probe-harness ``soak_runner`` (Viability §6, P-STAB-1, board card A15).
+"""Probe-harness ``soak_runner`` (the benchmark metrics contract, P-STAB-1).
 
 Proves, under a :class:`~percept.clock.FakeClock` only (no real wall-clock waits anywhere), that
 :class:`~percept.harness.soak_runner.SoakRunner`:

@@ -1,4 +1,4 @@
-"""Card Y6 — resolver choice belongs to the CONCERN, not only the source profile.
+"""— resolver choice belongs to the CONCERN, not only the source profile.
 
 The source profile DECLARES a default identity policy (its ``identity_strategy``); a concern SELECTS
 one via ``goal.state['identity_policy']``. Concern wins; a concern that declares nothing inherits the

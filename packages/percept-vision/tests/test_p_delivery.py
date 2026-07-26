@@ -1,4 +1,4 @@
-"""P-DELIVERY-1 (Viability §7; ADR-001 §6; board card A21) — SCAFFOLD PROBE.
+"""P-DELIVERY-1 (the release criteria; ADR-001 §6; board the implementation) — SCAFFOLD PROBE.
 
 Property under test: a slow / intermittently-failing / unavailable notification SINK stays
 ISOLATED from capture+judging (a dead sink must never block or corrupt the perception pipeline);
@@ -12,7 +12,7 @@ This is a probe/test harness, not a for-record benchmark, and it changes no prod
 It drives already-landed, unedited production code:
 
 * ``percept.runtime.sinks.WebhookSink`` / ``BoundedDeadLetterQueue`` — the bounded-retry,
-  bounded-queue delivery primitive (card A9). ``retries`` bounds the ATTEMPT COUNT,
+  bounded-queue delivery primitive. ``retries`` bounds the ATTEMPT COUNT,
   ``max_attempt_age_s`` bounds elapsed WALL-CLOCK retry time; either bound tripping is TERMINAL
   and dead-letters with an explicit ``reason`` (``"retries_exhausted"`` /
   ``"max_attempt_age_exceeded"``). ``BoundedDeadLetterQueue`` caps the dead-letter QUEUE itself by
@@ -21,7 +21,7 @@ It drives already-landed, unedited production code:
   stable, durable handle the rest of the system references (see its docstring: feedback /
   dashboards / redaction all key off it) — this probe treats it as the delivery layer's
   idempotency key ("event_id"), since no separate ``event_id`` field exists on the wire today.
-* ``percept.harness.metrics.MetricsCollector`` (card A13) — reused, NOT reimplemented, as the
+* ``percept.harness.metrics.MetricsCollector`` — reused, NOT reimplemented, as the
   delivery-queue-depth instrument: its generic ``record_admitted`` / ``record_admission_resolved``
   admit/resolve tracker (designed for the judge admission funnel) doubles cleanly as a "delivery
   enqueued -> delivery terminal (success or dead-lettered)" tracker keyed by ``event_id``, giving
@@ -37,7 +37,7 @@ this card — this file only observes those existing seams. This is a standalone
 response, a fake flaky ``_send``) is defined locally, mirroring how ``tests/probes/test_p_judge_safe.py``
 keeps its own ``_ProbeVision`` self-contained.
 
-**Idempotency ledger (card A31 — tightened from the original A21 scaffold):** the original A21 probe
+**Idempotency ledger (the implementation — tightened from the original A21 scaffold):** the original A21 probe
 stood in a MINIMAL local dict-based ledger here because no production "delivery ledger" keyed by
 ``event_id`` existed yet — a real redelivery-after-restart would call ``WebhookSink.__call__`` again
 with the same (persisted/replayed) ``Incident`` object and nothing downstream deduped on ``.id``
@@ -189,7 +189,7 @@ class TestBoundedDeliveryQueueAndRetryAge(unittest.TestCase):
         self.assertEqual(dead[0]["reason"], "max_attempt_age_exceeded")
 
     def test_delivery_queue_depth_and_oldest_pending_age_stay_bounded_via_metrics_collector(self) -> None:
-        # Reuses percept.harness.metrics.MetricsCollector's generic admit/resolve tracker (card A13)
+        # Reuses percept.harness.metrics.MetricsCollector's generic admit/resolve tracker
         # as the delivery-queue-depth instrument: record_admitted(event_id) when a delivery is
         # enqueued, record_admission_resolved(event_id) the moment it goes terminal (delivered OR
         # dead-lettered) — a delivery is never left "pending" forever.
@@ -235,7 +235,7 @@ class TestIdempotentRedeliveryAcrossRestart(unittest.TestCase):
     ``percept/incidents.py``: "the ``id`` is the stable handle the rest of the system references
     later"). A duplicate delivery ATTEMPT for the SAME logical fire — e.g. redelivered after a
     process restart — must reuse that ``event_id`` and must NOT create a second logical Incident nor
-    re-deliver it as a new logical event. Card A31: this now drives the REAL production ledger
+    re-deliver it as a new logical event. the implementation: this now drives the REAL production ledger
     (``percept.runtime.sinks.IdempotencyLedger`` + ``IdempotentSink``) instead of a local test
     double — ``IdempotentSink`` is the exact wrapper ``percept.runtime.worker.run()`` installs around
     ``on_incident``, and ``IdempotencyLedger.snapshot()``/``.restore()`` are the exact hooks ``run()``
@@ -295,7 +295,7 @@ class TestIdempotentRedeliveryAcrossRestart(unittest.TestCase):
         )
 
     def test_ledger_survives_a_simulated_restart_via_snapshot_restore(self) -> None:
-        # Card A31's restart-durability requirement: the SAME redelivery-dedupe decision holds across
+        # the implementation's restart-durability requirement: the SAME redelivery-dedupe decision holds across
         # a process restart, exercised through the exact snapshot()/restore() hooks
         # percept.runtime.worker.run() wires through its `persistence` autosave/restore path — no
         # secrets, no raw media, just [[event_id, ts], ...] (ADR-001 §1 lifecycle).
@@ -373,7 +373,7 @@ class TestTerminalFailureSurfacedExplicitly(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Card A31 (closed): the production idempotency ledger keyed by Incident.id now lives in
+# the implementation (closed): the production idempotency ledger keyed by Incident.id now lives in
 # percept/runtime/sinks.py (IdempotencyLedger + IdempotentSink) and is wired into the delivery path
 # in percept/runtime/worker.py (run() wraps on_incident in an IdempotentSink and threads the ledger's
 # snapshot()/restore() through the existing `persistence`/`restore`/`autosave_every_s` knobs).

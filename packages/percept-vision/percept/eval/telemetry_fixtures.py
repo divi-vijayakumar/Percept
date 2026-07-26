@@ -1,4 +1,4 @@
-"""``percept eval ingest-trace`` — the telemetry -> fixtures closed loop (card L2).
+"""``percept eval ingest-trace`` — the telemetry -> fixtures closed loop.
 
 A production ``.ptrace`` bundle (:mod:`percept.trace_bundle` + :mod:`percept.tracing`) already
 carries every decision a run made: which frames were admitted, what the judge said, what the Gate
@@ -370,7 +370,7 @@ def write_fixture_cases(
                     "episodes": episodes,
                     # Extra top-level key — percept.eval.differential.load_fixtures reads only
                     # "goal_shape"/"episodes" and ignores the rest, so this rides along harmlessly
-                    # and is exactly the provenance a regression case must carry (card L2 §1).
+                    # and is exactly the provenance a regression case must carry (the implementation §1).
                     "provenance": {
                         "source": "telemetry",
                         "source_run_id": manifest.run_id,

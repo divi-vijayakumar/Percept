@@ -559,7 +559,7 @@ describe("Incident / IncidentSnippet", () => {
   });
 });
 
-describe("SubjectRef (contract 1.4, card Y5)", () => {
+describe("SubjectRef (contract 1.4)", () => {
   it("builds a bound ref; confidence defaults to null (NOT 1.0)", () => {
     const s = makeSubjectRef({
       scheme: "content",
@@ -634,7 +634,7 @@ describe("SubjectRef (contract 1.4, card Y5)", () => {
   });
 });
 
-describe("SubjectRef 'provisional' resolution state (contract 1.7, card Z10)", () => {
+describe("SubjectRef 'provisional' resolution state (contract 1.7)", () => {
   it("provisionalSubject(episode_id) mints a session-scoped UN_<episode_id> handle", () => {
     const s = provisionalSubject("ep-42");
     expect(s).toEqual({
@@ -713,7 +713,7 @@ describe("SubjectRef 'provisional' resolution state (contract 1.7, card Z10)", (
   });
 });
 
-describe("SubjectRef <-> SubjectRef.schema.json parity (card Z10)", () => {
+describe("SubjectRef <-> SubjectRef.schema.json parity", () => {
   const SCHEMA_PATH = join(
     __dirname,
     "..",

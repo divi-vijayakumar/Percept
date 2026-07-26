@@ -1,4 +1,4 @@
-"""Card Y5 — SubjectRef: namespace, tri-state resolution, resolver precedence, conflict as a
+"""— SubjectRef: namespace, tri-state resolution, resolver precedence, conflict as a
 first-class outcome, and the ``Verdict.subject`` -> ``episodes._subject_match`` wiring.
 
 Stdlib only, no backends, no keys. These assert the CONTRACT INVARIANTS the card enumerates — not a

@@ -194,8 +194,8 @@ PROVISIONAL_KEY_PREFIX = "UN_"
 class SubjectRef:
     """A namespaced reference to WHAT a judgment is about — the subject identity, resolved or not.
 
-    This lands the identity contract that an earlier revision left a seam for. The collapse it fixes: two paying client teams
-    could perceive a document/entity correctly but the SDK could not *say which one* — a ``PO-4471``
+    This lands the identity contract that an earlier revision left a seam for. The failure it fixes:
+    a document/entity could be perceived correctly while the SDK could not *say which one* — a ``PO-4471``
     on one ERP is not the same subject as ``PO-4471`` on another, and an unreadable key is neither a
     fabricated identity nor a missing subject. This DTO makes all three expressible, distinctly.
 
@@ -1416,8 +1416,8 @@ class Incident:
     # positional construction of Incident(...) keeps its meaning.
     entity_id: str | None = None
     # 1.6 — the enriched judgment envelope, carried THROUGH the emission boundary onto the
-    # durable record a client actually receives. Two paying client teams found percept perceived
-    # correctly but was UNOBSERVABLE: the reason a fire was withheld, the plan it ran under, the region/
+    # durable record a client actually receives. Domain probes found percept perceived correctly
+    # but was UNOBSERVABLE: the reason a fire was withheld, the plan it ran under, the region/
     # modality/provenance of the evidence — all existed internally yet none reached a delivered Incident.
     # These do. All additive, defaulted, appended LAST (positional constructions unchanged), and a
     # consumer that ignores them sees byte-for-byte today's Incident. See :class:`JudgmentEvent` for the

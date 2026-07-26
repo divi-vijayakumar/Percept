@@ -1,4 +1,4 @@
-"""Seeded, H0-derived default WatchProfiles (card P3, impl plan §2/§3).
+"""Seeded, H0-derived default WatchProfiles (the documented implementation evidence).
 
 Verifies: importing ``percept.profiles_default`` seeds ``percept.watchprofile.DEFAULT_REGISTRY`` with the
 three named H0-derived profiles plus a WILDCARD fallback; each profile's knobs match the H0-measured
@@ -93,7 +93,7 @@ class HandheldTests(unittest.TestCase):
         self.assertEqual(p.gate.refractory_s, 15.0)
 
     def test_ego_compensation_is_documented(self):
-        # No typed ego_compensate field on WatchProfile yet (card P1 scope) -- the binding is the note.
+        # No typed ego_compensate field on WatchProfile yet (the implementation scope) -- the binding is the note.
         notes = profiles_default.HANDHELD.notes
         self.assertIn("ego_compensate", notes)
         self.assertIn("98%", notes)

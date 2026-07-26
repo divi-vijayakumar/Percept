@@ -1,4 +1,4 @@
-"""L1: episodes retain evidence HANDLES, never decoded pixels (card Y14).
+"""L1: episodes retain evidence HANDLES, never decoded pixels.
 
 Z1 proved a count-bounded buffer is not byte-bounded: the SAME ``max_episodes`` costs kilobytes of
 8x8 test frames and hundreds of MB of 1080p frames. ``max_episodes`` bounds the COUNT of episodes,

@@ -118,7 +118,7 @@ does not give you:
   `audio_stale`, `timebase_skew` (`worker.py:520-537`), `escalation`, `runtime_error`,
   `state_saved`. A quiet-but-healthy run is silent between them. The per-frame hook is `on_frame`
   (`worker.py:864, 1716-1718`), not `on_health`.
-- It **now closes every run with a coverage figure** (card X4): `RuntimeHealthEvent("runtime_ended")`
+- It **now closes every run with a coverage figure**: `RuntimeHealthEvent("runtime_ended")`
   carries the run's admission coverage instead of the empty payload it used to carry, and a run
   that saw frames but admitted none of them emits
   `RuntimeHealthEvent("zero_admission_coverage")` immediately (`worker.py:1866-1885`, documented at
@@ -208,7 +208,7 @@ That was false as shipped and is retracted here.) Whenever `watch()` builds its 
 whenever `percept=` is NOT passed — `_build_core(profile)` (`watch.py:77-90`) branches on the
 argument's type:
 
-- A real `percept.watchprofile.WatchProfile` **is resolved for real** (card M2) by
+- A real `percept.watchprofile.WatchProfile` **is resolved for real** by
   `percept.profile_wiring.resolve_watch_profile(profile)` (imported at `watch.py:47`, applied at
   `watch.py:83-89`), and the result is applied at CORE CONSTRUCTION time — never as a mid-run
   mutation: `Percept.create(settings=resolved.settings, sense_policy=resolved.sense_policy,
@@ -318,7 +318,7 @@ guarantee this system cannot deliver.
   guarantees pinned in §1 (in particular: `watch()` staying a thin, unqueued wrapper is a stated
   design choice, `watch.py:5-6`, not an oversight to "fix" by silently adding a queue).
 
-## Open questions — deferred to a founder decision
+## Open questions — explicit API-scope decisions
 
 1. **Is there a first-class "recorded-judge" replay backend, or is `FakeVision`/`FakeJudge`
    (hand-scripted) the only sanctioned fixed judge?** I read `percept/backends/` in full for this
@@ -338,19 +338,19 @@ guarantee this system cannot deliver.
    `run()`'s guarantees) **without becoming `run()`,** or should a caller who needs those guarantees
    simply be told to use `run()` instead? Not resolved here — `watch()`'s current thin-wrapper shape
    is stated as deliberate (`watch.py:5-6`) and this ADR does not recommend changing it, but the
-   question of whether that remains true as `watch()` gets more production traffic is a founder
-   call, not an engineering default to slip in quietly.
+   question of whether that remains true under broader production use requires an explicit
+   API-scope decision, not an engineering default to slip in quietly.
 4. **Reconciling `WatchEvent` with the `Incident`/`DeliveryAttempt` chain ADR-003 forward-referenced.**
    `Incident` exists (`contracts/__init__.py:1228`) and is what `run()` yields; `DeliveryAttempt` does
    not exist as a type anywhere in `percept/contracts/__init__.py` today. Whether `watch()` should
    ever emit `Incident`/gain a `DeliveryAttempt` ledger, or whether that chain is scoped to `run()`
-   only and `watch()` stays the deliberately thinner contract, is unresolved and left to a founder
-   decision — inventing an answer here would be exactly the kind of premature contract-freezing
+   only and `watch()` stays the deliberately thinner contract, is unresolved and left as an explicit
+   API-scope decision — inventing an answer here would be exactly the kind of premature contract-freezing
    ADR-003 §"the contract is frozen" warns against.
 
 ---
 
-Founder sign-off required on: all four open questions above, plus whether this ADR's "fixed judge,
+Decision required on: all four open questions above, plus whether this ADR's "fixed judge,
 pinned clock" normative-replay bar should become a documented, first-class testing mode (e.g. a
 `percept.testing`/`replay` helper) or remain an implication callers must assemble themselves from
 `Percept.create(vision=FakeVision(...), clock=...)`.

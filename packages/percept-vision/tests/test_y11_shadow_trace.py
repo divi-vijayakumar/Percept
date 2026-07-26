@@ -1,4 +1,4 @@
-"""Card Y11 — SHADOW MODE: the subject + EpisodeFoldResult must LAND IN THE TRACE and survive a
+"""— SHADOW MODE: the subject + EpisodeFoldResult must LAND IN THE TRACE and survive a
 media-OFF ``.ptrace`` round-trip.
 
 A founder handoff depends on this: a client runs the wheel on THEIR data and sends back a ``.ptrace``

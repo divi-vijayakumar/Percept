@@ -1,4 +1,4 @@
-"""ExecutionPolicy (percept/execution_policy.py, percept/execution_policies_default.py) — card C4a.
+"""ExecutionPolicy (percept/execution_policy.py, percept/execution_policies_default.py) — the implementation.
 
 Covers, per the card's own exit criteria: each of the shipped policies (balanced@1, burst@1,
 low_cost@1, privacy_edge@1, strict_admission@1) resolves through ConfigResolver AND compiles through

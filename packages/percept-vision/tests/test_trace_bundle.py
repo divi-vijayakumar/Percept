@@ -1,4 +1,4 @@
-"""Card D8b — the portable trace bundle: two explicit modes, media OFF by default, hashes verified.
+"""— the portable trace bundle: two explicit modes, media OFF by default, hashes verified.
 
 The bar these tests hold: a bundle exported by someone debugging accounting screens at 2am must not
 carry pixels unless a human explicitly said so, must say plainly which mode it is in, and must be

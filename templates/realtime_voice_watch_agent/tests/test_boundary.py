@@ -34,7 +34,7 @@ ALLOWED_FROM_IMPORTS: dict[str, set[str]] = {
     # video into tier-0 gate frames itself, and `percept.edge.tier0` is the documented public shim
     # for that (`pip install "percept-vision[edge]"`). No other edge symbol is granted.
     "percept.edge.tier0": {"Frame"},
-    # C1 event capsule folds the recent window into one montage judge frame (PCPT-032); make_sprite
+    # The event capsule folds the recent window into one montage judge frame; make_sprite
     # is the SDK's public montage primitive (VLM token-budget temporal context).
     "percept.sprite": {"make_sprite"},
 }

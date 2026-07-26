@@ -286,7 +286,7 @@ class TestIncident(unittest.TestCase):
 
 
 class TestLabelRecord(unittest.TestCase):
-    """L-1: the flywheel keystone — schema, round-trip, and the media-free egress guarantee."""
+    """Label-record schema, round-trip, and media-free egress guarantee."""
 
     def _rec(self, **over):
         base = dict(
@@ -553,7 +553,7 @@ class TestJudgmentTiming(unittest.TestCase):
 
 
 class TestGroundTruth(unittest.TestCase):
-    """A6 — the evaluation-only ground-truth record (Viability §3b/§5a; ADR-001 §5).
+    """A6 — the evaluation-only ground-truth record (the ground-truth contract/§5a; ADR-001 §5).
 
     ``GroundTruth`` is a DISTINCT type from ``JudgmentTiming``/``JudgmentEvent``: a live event built
     from real production traffic must never carry ``event_start_ts``/``decision_eligible_ts`` —
@@ -740,7 +740,7 @@ class TestVersionNegotiation(unittest.TestCase):
         # same batch. 1.6.0: additive judgment-envelope enrichment — JudgmentEvent + Incident gain
         # reason/watchplan_id/roi/modality/provenance (Z3). 1.5.0: Verdict claim-mode channel +
         # ConcernAuthority (Y2); 1.4.0 SubjectRef + Verdict.subject (Y5); 1.3.0 Incident.entity_id (D4);
-        # 1.2.0 WatchAction/WatchEvent (M1); 1.1.0 AttentionIntent/GoalOrigin (PCPT-026).
+        # 1.2.0 WatchAction/WatchEvent (M1); 1.1.0 AttentionIntent/GoalOrigin (the documented regression).
         self.assertEqual(CONTRACT_VERSION, "1.10.0")
         parts = CONTRACT_VERSION.split(".")
         self.assertEqual(len(parts), 3)

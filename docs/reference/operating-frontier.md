@@ -14,7 +14,7 @@ percept-eval --baseline base.json --candidate cand.json --fixtures ./fixtures \
              --frontier --frontier-bars frontier-bars.json [--frontier-json out.json]
 ```
 
-`--frontier` appends the §3.2 report to the paired-differential report from card D3.
+`--frontier` appends the §3.2 report to the paired-differential report from the implementation.
 `--frontier-arm` (default `candidate`) picks which arm the frontier describes. Exit code is `1`
 when a declared operating bar is not supported by the evidence, `2` on a refusal.
 

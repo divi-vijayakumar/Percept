@@ -47,7 +47,7 @@ class TestEpisodeLog(unittest.TestCase):
         self.assertEqual(log.count(), 2)
 
     def test_max_episodes_drop_is_traced_with_reason(self):
-        # ADR-001 §9 / card A9: the episode buffer's count bound must never drop silently.
+        # ADR-001 §9 / the implementation: the episode buffer's count bound must never drop silently.
         dropped = []
         log = EpisodeLog("g1", max_episodes=2, on_drop=lambda ep, reason: dropped.append((ep.id, reason)))
         for t in range(4):

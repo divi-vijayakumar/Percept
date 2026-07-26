@@ -1,4 +1,4 @@
-"""Card C5 — the optimizer: a typed SearchSpace over declared-safe tunables, scored through the
+"""— the optimizer: a typed SearchSpace over declared-safe tunables, scored through the
 same ladder discipline percept.eval.derivation already runs, emitting an OptimizationLock.
 
 The properties under test are the card's own promises:

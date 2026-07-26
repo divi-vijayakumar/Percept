@@ -1,4 +1,4 @@
-"""Card L2 — the telemetry -> fixtures closed loop.
+"""— the telemetry -> fixtures closed loop.
 
 A synthetic ``.ptrace`` is built in-process (zero spend, via the real :class:`TraceRecorder` —
 the exact same recorder production runs use) and round-tripped through

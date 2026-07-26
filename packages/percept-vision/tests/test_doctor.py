@@ -1,4 +1,4 @@
-"""Card D1 — ``percept doctor``: a plan-aware tier-0 dry run that spends ZERO judge calls.
+"""— ``percept doctor``: a plan-aware tier-0 dry run that spends ZERO judge calls.
 
 The bars these tests hold:
 
@@ -215,7 +215,7 @@ def test_plan_panel_answers_what_was_compiled():
     assert report.plan.goal_ids == ("g0", "g1")
     assert report.plan.plan_hash and len(report.plan.plan_hash) == 64
     assert len(report.plan.conditions) == 2
-    # Card D7 landed: doctor names the SOURCE profile, and says whether it was chosen or defaulted.
+    # the implementation landed: doctor names the SOURCE profile, and says whether it was chosen or defaulted.
     assert report.plan.source_profile == "physical_scene"
     assert report.plan.source_profile_origin == "default"
     assert report.plan.source_profile_detail["admission_tuned"] is True
@@ -390,7 +390,7 @@ def test_console_entry_point_is_declared():
 
 
 # ---------------------------------------------------------------------------
-# Card X3 — the doctor's trace manifest quotes an identity that includes the cutoffs.
+# — the doctor's trace manifest quotes an identity that includes the cutoffs.
 #
 # A dry run at motion_gate=0.10 and one at 0.20 are two different configurations. If both stamped
 # the same plan_hash, a client comparing two doctor traces at 2am could not prove which one they

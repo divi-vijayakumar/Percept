@@ -23,7 +23,7 @@
 
 ### Added
 - **`percept-watch --trace PATH` + a `percept-replay` command — ADR-004's normative replay is now
-  REACHABLE (card Z5).** `percept.replay.replay_cognition` was good, tested code consuming an
+  REACHABLE.** `percept.replay.replay_cognition` was good, tested code consuming an
   artifact **no user of the SDK could produce**: `Percept.on_trace` defaults to `None`,
   `percept.run(on_trace=None)`, `percept-watch` contained no trace reference at all, and
   `percept-doctor` builds a `TraceRecorder` that records only the tier-0 observation/admission
@@ -53,9 +53,8 @@
   behind the existing `percept=` / `on_trace` seams.
 
 ### Fixed
-- **The "~7 MB/s memory leak" is a BOUNDED plateau, and the bound is now in BYTES and loud (card
-  Z1).** Two client teams measured RSS 92 → 342 MB (and 405 MB on a second clip, at HALF the judge
-  calls) on 36-second clips and concluded percept could not run for an hour. Profiled, not reasoned
+- **The "~7 MB/s memory leak" is a BOUNDED plateau, and the bound is now in BYTES and loud.** Short-clip runs measured RSS 92 → 342 MB (and 405 MB on a second clip, at HALF the judge
+  calls), which looked incompatible with hour-long operation. Profiled, not reasoned
   about: `percept.runtime.worker.run` driven offline with a scripted judge over 8,000 frames, RSS +
   `tracemalloc` + a weakref census of live decoded frames. Result: the Python heap is **flat** at
   46.3 MB from frame ~200 to frame 8,000 and RSS **plateaus** (282.8 MB, unchanged over the last
@@ -64,7 +63,7 @@
   `percept/runtime/worker.py` `clips = FrameWindow(size=snippet_size)` (48 decoded frames, the
   incident snippet's pre-roll) and `percept/agent.py:635` `FrameWindow(settings.events.window)`
   (12 frames). They hold the SAME objects, so steady state is `max(48, 12) + ~2 in flight` ≈ 50
-  decoded frames — at 1080p RGB, ~300 MB. That is the clients' number, and it explains why the
+  decoded frames — at 1080p RGB, ~300 MB. That matches the observed plateau and explains why the
   second clip cost MORE at half the judge calls: the plateau scales with frame SIZE, not with spend.
   The measurement error was reading a fixed high-water mark on a clip that ended before the plateau.
   The real defect it exposed: **a count bound is not a memory bound.** `FrameWindow` now takes an
@@ -79,8 +78,7 @@
   guess. `tests/test_soak_memory.py` is the fence: it fails if per-frame retention grows across a
   run, if the budget stops bounding, or if an eviction goes unreported (verified to bite by
   injecting a real per-frame leak).
-- **`golden_eval.score` was KEY-BLIND — every multi-goal recall/precision number is over-credited
-  (card X1).** The one-to-one greedy §5a matcher selected a claimant episode purely by
+- **`golden_eval.score` was KEY-BLIND — every multi-goal recall/precision number is over-credited.** The one-to-one greedy §5a matcher selected a claimant episode purely by
   `ep.contains(decision_emitted_ts)` and never compared the prediction's `JudgmentEvent.key` to
   `GroundTruthEpisode.episode_id` — the correspondence its own docstring asserted. On a MULTI-GOAL
   stream a fire of the WRONG goal landing inside another goal's window was therefore scored as a
@@ -95,7 +93,7 @@
   `goal_id` (a ground-truth `episode_id` must be the `goal_id` of the goal it labels) and says so
   in the lane note when no fired goal id intersects any episode id, instead of silently reading
   `recall 0.00`.
-- **Cost was a structural FALSE ZERO — a traced run now reports what it actually spent (card X2).**
+- **Cost was a structural FALSE ZERO — a traced run now reports what it actually spent.**
   `TraceSummary` reported `{"input_tokens": 0.0, "output_tokens": 0.0, "usd": 0.0,
   "usage_reported_calls": 0}` for **every** run, including one that measurably spent 134,946 input +
   5,231 output tokens across 108 judge calls: the token counts existed in the Funnel
@@ -113,7 +111,7 @@
   `DEFAULT_PRICE`-derived guess presented as a real price. The one licensed zero is a run that made
   no judge call (`percept doctor`, a fully gated stream), where `$0` is measured. `— (unknown)` is
   safe; `0.0` is a wrong number that a bar can pass. See `tests/test_trace_cost.py`.
-- **`plan_hash` now covers the RESOLVED thresholds and policy, not just the goals (card X3).**
+- **`plan_hash` now covers the RESOLVED thresholds and policy, not just the goals.**
   A threshold A/B — the commonest paired eval on this harness — declares the *same goals* in both
   arms by construction, so both arms printed the **same** `plan_hash` in the "quote these identities"
   block. That defeated the hash's only job: letting a reader prove which configuration produced which
@@ -131,7 +129,7 @@
   and `RunTraceManifest.create` a `plan_policy=` pass-through. `percept.watch` is untouched.
 
 ### Added
-- **A live run now says what it covered — and says it out loud when it admitted nothing (card X4).**
+- **A live run now says what it covered — and says it out loud when it admitted nothing.**
   `RuntimeHealthEvent("runtime_ended")` used to carry an EMPTY payload, so a session that admitted
   **zero** frames was byte-for-byte indistinguishable from a healthy quiet one on the live path —
   `percept doctor` could report `ZERO_ADMITS_ON_FIXTURE`, but doctor is a DRY RUN. `runtime_ended`
@@ -144,7 +142,7 @@
   never latches an unhealthy interval, and records as `state="info"`. Read it the way doctor frames
   `ZERO_ADMITS_ON_FIXTURE`: diagnostic. If the scene was not quiet, the eye is mis-selected, and
   `percept doctor` will name the statistic that would have admitted. No public signature changed.
-- **The runtime now constructs `JudgmentEvent` — ADR-001's centre governs a live object (card X7).**
+- **The runtime now constructs `JudgmentEvent` — ADR-001's centre governs a live object.**
   `contracts.JudgmentEvent` was the "frozen output of one pass through the judge funnel" that the hot
   path never built: the live route was `Verdict -> GateOutcome -> Fired -> FireEvent`, and every
   construction site was rendering/eval-side. `BehaviorExecutor.fire_judged` now freezes one alongside
@@ -180,11 +178,11 @@
   netted out of nothing. Zero labeled episodes reports `NO_EVIDENCE`, never a vacuous recall of 1.0.
   **Nothing is reinvented**: every match/miss/false-FIRE/duplicate count comes from
   `percept.harness.golden_eval.score`, every funnel/degraded/unresolved figure from
-  `percept.tracing.TraceSummary` (card D8a), and the whole thing hangs off the **existing**
+  `percept.tracing.TraceSummary`, and the whole thing hangs off the **existing**
   `percept eval` entry point (`--frontier`, `--frontier-bars`, `--frontier-arm`, `--frontier-json`)
   — no second CLI, no second entry-point family. See `docs/reference/operating-frontier.md`.
 
-- **The native visualizer — WHERE a decision died, not just that nothing happened (card D9).**
+- **The native visualizer — WHERE a decision died, not just that nothing happened.**
   `percept.visualize` renders a **standalone, single-file HTML page** over the artifacts that
   already exist: `percept.tracing` (`RunTraceManifest` / `TraceRecord` / `TraceSummary`), the
   portable `.ptrace` bundle, and `percept.harness.golden_eval.score` for the drift lane. **Nothing
@@ -199,7 +197,7 @@
   Click a gate decision (or use ← / → / Home / End) for the **decision chain**: tier-0 → sense →
   VLM (model, latency, tokens, cost, evidence, confidence) → gate, each with the **per-stat
   counterfactual** — what `mean` / `block_max` / `p95` would each have decided **against its own
-  threshold**. On the real client screen fixture every statistic sat under half its own cutoff, and
+  threshold**. On the measured screen fixture every statistic sat under half its own cutoff, and
   the panel says so in one line ("never close — peak is 20% of its own cutoff"): that is what turns
   "nothing fired" into "here is the knob". `percept-doctor` now stamps `stat_thresholds` and
   `salience_stat` into the trace manifest so the counterfactual is READ, never invented; a trace
@@ -208,20 +206,20 @@
   provider-generated and a model can emit markup, so every trace-derived string is escaped, and
   **no trace text ever reaches JavaScript**: each panel is pre-rendered server-side and the single
   inline script is a fixed, data-free constant pinned in the CSP by `sha256`. **Media embedding is
-  opt-in and OFF by default** (the first client workload is accounting screens — "standalone" must
-  not mean "silently bundle the customer's video"); a source URI is printed as text and never
+  opt-in and OFF by default** (screen recordings may contain sensitive data — "standalone" must
+  not mean "silently bundle the operator's video"); a source URI is printed as text and never
   placed in an attribute, so nothing is auto-fetched. `default-src 'none'`, no external script,
   style, font or asset, size limits on every axis, and the page opens from `file://` with **zero
   network requests** (asserted in the tests).
   Rich relations stay **deferred to ADR-006**: episode supersession, document semantic identity,
   speaker attribution and finding settlement are deliberately not drawn — the context lane carries
-  only what the trace actually has (`entity_id` correlation from card D4, goal-revision drops).
+  only what the trace actually has (`entity_id` correlation from goal-revision drops).
   Shipped as flags on the existing entry point, not a new console-script family:
   `percept-doctor --visualize-out page.html`, `--visualize-from run.ptrace` (render an existing
   trace or bundle, opening no source), `--visualize-media` (the explicit media opt-in) and
   `--golden gt.json`.
 - **`SourceProfile` — an OPEN registry of source classes, and the client-tunes-it admission loop
-  (card D7, ADR-005).** `percept.sourceprofile` adds the axis `WatchProfile` cannot express:
+  (ADR-005).** `percept.sourceprofile` adds the axis `WatchProfile` cannot express:
   `WatchProfile`'s `environment` is a camera mount (`fixed_camera` / `handheld` / `wearable`), so
   "this stream is a screen recording" was unsayable. A `SourceProfile` names the source class and
   selects **admission strategy, sampling, evidence packaging, identity strategy, episode
@@ -239,7 +237,7 @@
   typed field — speaker identity is off-contract (no diarization behind `speaker_label`) and goals
   judge serially at ~24 s/turn measured.
   **`screen_document` declares its admission signal UNTUNED, on purpose.** Measured with
-  `percept-doctor` on the real client fixture `probes/01-screen-walkthrough/data/clean.mp4` (36 s,
+  `percept-doctor` on the measured screen fixture `probes/01-screen-walkthrough/data/clean.mp4` (36 s,
   180 frames, 1920x1080, containing a hard cut between two documents): `mean` max 0.0163 / thr 0.100,
   `block_max` max 0.0919 / thr 0.200, `p95` max 0.0743 / thr 0.150 — **zero admits on every
   statistic**. `block_max` amplifies the localized signal 5.6x as designed and still lands under HALF
@@ -264,9 +262,9 @@
   ADR-005: percept's stock eye does not admit on this class of content, percept ships no OCR model
   and no calibrated screen threshold, and **the client supplies and tunes the admission signal**.
 - **`docs/adr/ADR-005-source-profiles.md`** — the decision, the measurement, the gate-invariance
-  argument, and an explicit constraint on card L1: the `WatchProfile` ontology is camera-shaped and
+  argument, and an explicit constraint on the implementation: the `WatchProfile` ontology is camera-shaped and
   L1 must not be built on it.
-- **`percept check` widened past the Vision seam — conformance for the seams D6 kept (card D2).**
+- **`percept check` widened past the Vision seam — conformance for the seams D6 kept.**
   `percept.conformance` (suite `1.1.0`) now covers all three surviving extension points through ONE
   reporting shape (`CheckResult` / `ConformanceReport`) and one severity vocabulary
   (`REQUIRED`/`ADVISORY`), and one CLI (`python -m percept.conformance TARGET --role …`):
@@ -283,16 +281,16 @@
     report reads `PARTIALLY CHECKED`) unless the caller supplies `samples=` — there is no universal
     probe frame and a fabricated one would prove nothing.
   - **`check_tier0_adapter(...)` — the `structural_adapter` / `semantic_adapter` callables `run()`
-    now accepts (card D6a).** Bounded normalized score (a non-number, NaN or out-of-`[0,1]` value
+    now accepts.** Bounded normalized score (a non-number, NaN or out-of-`[0,1]` value
     silently pins or mutes admission), survival of a degenerate frame (1×1, uniform black/white), and
     a real `MotionGate` gated on that channel driven over a frame stream **without crashing the
     gate**, with the adapter's value asserted to be the one reported on `Tier0Signal`.
   - **The honest scope disclaimer is now PRINTED on every report, for every role** (vision included).
     This suite proves a plug-in is WELL-FORMED — that percept can call it, route it and read what it
     returns. It is **not** a measure of the model's intelligence or quality, and a green report does
-    **not** mean "my OCR model is good". That question is `percept eval`'s (card D3): a paired A/B on
+    **not** mean "my OCR model is good". That question is `percept eval`'s: a paired A/B on
     the client's fixtures against the client's pre-registered bars.
-- **`percept-doctor` — a plan-aware tier-0 dry run that spends ZERO judge calls (card D1).** A new
+- **`percept-doctor` — a plan-aware tier-0 dry run that spends ZERO judge calls.** A new
   console entry point (alongside `percept-watch` / `percept-bench` / `percept-schema`) that answers,
   without an API key and at no cost: did the source open, did frames arrive, what timebase was
   resolved (through the runtime's own resolver), what plan compiled, which profile was active, which
@@ -300,7 +298,7 @@
   rule suppressed every non-admit** (`no_predecessor_frame` / `out_of_schedule` /
   `cadence_not_elapsed` / `signal_unavailable` / `below_threshold`). Admissions come from replaying
   the REAL `MotionGate`, so a doctor number cannot drift from what the runtime would have done, and
-  the funnel panel is read straight off `percept.tracing.TraceSummary` (card D8a) so doctor, eval and
+  the funnel panel is read straight off `percept.tracing.TraceSummary` so doctor, eval and
   the visualizer cannot invent three definitions of it. `--json` emits the whole report; exit codes
   are `0` completed / `2` zero semantic coverage / `3` source failure / `4` plan unobservable under
   the selected profile / `5` invalid configuration.
@@ -313,7 +311,7 @@
   per-block score list is computed once (`_block_scores`) and `mean` / `block_max` / `p95` are pure
   selectors over it, each bit-identical to `motion_score(..., stat=…)` (test-enforced). This is what
   makes doctor's counterfactual table cheap and what guarantees it agrees with the live gate.
-- **`percept eval` — paired differential A/B on client fixtures (card D3).** New
+- **`percept eval` — paired differential A/B on client fixtures.** New
   `percept.eval.differential` (+ the `percept-eval` console script) answers the question a client
   with a new model actually has — *does my OCR detector actually help?* — as a PAIRED comparison,
   not two independent runs printed side by side:
@@ -323,8 +321,8 @@
   **paired deltas**, a **percentile-bootstrap confidence interval** on each delta (seeded from the
   registration hash, so two runs give the same interval), **cost deltas**, the **exact held-out
   split**, and the threshold/policy values selected before the run. Matching is NOT reimplemented —
-  every recall/precision number comes from `percept.harness.golden_eval.score` (the Viability §5a
-  one-to-one greedy matcher) and every cost/funnel number from card D8a's
+  every recall/precision number comes from `percept.harness.golden_eval.score` (the the event-level matching contract
+  one-to-one greedy matcher) and every cost/funnel number from the implementation's
   `percept.tracing.TraceSummary`, so eval cannot disagree with `doctor` or the visualizer.
   - **Bars are client-supplied.** With no `--bars`, eval reports the numbers and returns
     `NOT_ASSESSED`; it never invents a pass/fail threshold on a client's behalf.
@@ -339,19 +337,19 @@
     `speaker_attributed_claim` and `document_identity_change` are UNSUPPORTED — those relations do
     not exist in the contract yet, so eval reports them rather than scoring a richer interaction
     with the wrong yardstick. An unknown shape is unsupported, never optimistically supported.
-- **Portable trace bundle + deterministic cognition replay (card D8b).** A media *reference* is not
+- **Portable trace bundle + deterministic cognition replay.** A media *reference* is not
   self-contained, so `percept.trace_bundle` ships two explicit, self-describing modes: `local`
   (manifest + `events.jsonl` + `summary.json` + media **references**, uri + sha256 — the media stays
   on the client's machine) and `portable` (the same plus selected media **bytes**, packed as a
   `run-123.ptrace` directory or a single `run-123.ptrace.zip` a client attaches to a ticket).
-  **Media inclusion is opt-in and defaults OFF** — the first client workload is accounting screens,
+  **Media inclusion is opt-in and defaults OFF** — screen recordings may contain sensitive data,
   and a default-on bundle is an exfiltration vector, not a convenience; evidence offered to a
   local-mode bundle is dropped and the omission is *counted* into the bundle manifest rather than
   being silent. Every file is content-hashed (`sha256` per file plus a `payload_sha256` over the
   ordered file list), every bundle carries a retention stamp (`retention_days`, default 30 d, and an
   `expires_wall_ts`), and `TraceBundle.verify_path()` catches a truncated or edited attachment
   instead of replaying half a run. `export_bug_report(recorder, path)` is the one-call client path.
-- **`percept.replay` — COGNITION REPLAY, defined honestly (card D8b, ADR-004 §2).** Recorded
+- **`percept.replay` — COGNITION REPLAY, defined honestly (ADR-004 §2).** Recorded
   normalized verdicts + timestamps are re-fed through the `Gate` and the incident rule, offline, with
   no model call and no wall clock: same trace in → **byte-identical** decisions out, asserted as a
   content-hash `digest` in `tests/test_cognition_replay.py`. MEDIA REEVALUATION (recorded media sent
@@ -366,20 +364,20 @@
   `gate.classified` trace records additionally carry the gate's INPUTS
   (`satisfied`/`confidence`/`freshness`/`entity_id`/`hold_s`) — additive trace data, no behaviour
   branches on it.
-- **The tier-0 extension seam is reachable from `run()` (card D6a).** `percept.runtime.run()` now takes
+- **The tier-0 extension seam is reachable from `run()`.** `percept.runtime.run()` now takes
   `structural_adapter` / `semantic_adapter` — `(frame) -> 0..1` callables that fill the `structural` /
   `semantic` channels of the reported `Tier0Signal`, exactly as `MotionGate` has always accepted them.
   Previously the only way to supplement tier 0 with a cheap local model (a CLIP drift score, a pose or
   privacy classifier, an OCR "the document changed" score) was to bypass `run()` and drive
   `GatedWatchLoop` yourself. A goal gated on `structural`/`semantic` (or a `wake_policy`) turns that
   score into admission. Both default `None` → the motion-only path is byte-for-byte unchanged.
-- **`examples/byo_admission_detector.py` + "Admission is not extraction" (card D6b).**
+- **`examples/byo_admission_detector.py` + "Admission is not extraction".**
   `register_detector` is now documented in the user-facing reference as what it actually is: the
   bring-your-own **admission detector** path (OCR-driven admission included). It is **not** a complete
   "bring your own OCR specialist" path — a boundary such as `document_changed at t=8.2` decides *when to
   look closely*; it does not deliver `invoice_number = "INV-2291"` to the semantic judge. Facts reach the
   judge only when the caller passes `Vision.judge(context={...})`. The example runs offline with no keys.
-- **Effective run configuration is RECORDED, never silently substituted (card D5b/c).**
+- **Effective run configuration is RECORDED, never silently substituted (the implementation/c).**
   `percept.runtime.run()` now retains what it was ASKED for alongside what it actually opened with:
   `stats.effective_config` (an `EffectiveConfig` of `EffectiveFps` + `EffectiveTimebase`), the same
   record mirrored on `core.effective_config`, and one informational
@@ -390,7 +388,7 @@
   overrode the request). Capture behaviour is unchanged; an override is no longer *invisible*. An
   override on its own is not a warning — the loud channel stays reserved for a coverage requirement
   that is actually unmet (`capture_plan_unmet`).
-- **`run(timebase="auto")` — media time for recorded sources, wall time for live ones (card D5c).**
+- **`run(timebase="auto")` — media time for recorded sources, wall time for live ones.**
   Every `str` source used to be stamped on the wall clock, so a 36 s clip decoded in 0.72 s gave every
   `incident.ts` the decode instant and the timestamps were useless as audit evidence. `"auto"` (the new
   default) resolves to `"media"` for recorded media (a file path/URI with a media suffix) and `"wall"`
@@ -400,27 +398,27 @@
   frame regardless (`stats.last_media_t` / `stats.last_wall_t`).
 
 ### Removed / Breaking
-- **The enricher registry is REMOVED (card D6c).** `register_enricher` / `enrich_signal` /
+- **The enricher registry is REMOVED.** `register_enricher` / `enrich_signal` /
   `enricher_for` / `Enrichment` / `NullEnricher` / `FakeEnricher` and the modules
   `percept.harness.enrichers` + `percept.edge.enrichers` are gone. They were documented as "add an OCR
   specialist without editing core" and had **zero callers** anywhere outside their own module: nothing
   in the runtime ever ran a registered enricher, so registering one changed nothing about any watch — a
-  client went looking for the OCR seam, found this one, and correctly concluded it was dead. The
+  integrator could reasonably find this seam and conclude it was active, even though it was dead. The
   screen/document workload needs OCR for **admission** (`register_detector` / the tier-0 adapters above
   already cover that), not for semantics — the client's judge read 7 px document text correctly with no
   OCR at all. The `percept.Enricher` protocol is retained as a DEPRECATED name for one contract MAJOR
   (nothing consumes it) and will be removed in the next MAJOR. `Vision.judge(context=...)` — the live
   way to hand the judge structured facts — is untouched.
-- **`run(core=…, goals=…)` / `run(core=…, vision=…)` now raises `ValueError` (card D5a).** Supplying
+- **`run(core=…, goals=…)` / `run(core=…, vision=…)` now raises `ValueError`.** Supplying
   `goals=`/`vision=` alongside an explicit `core` used to silently DISCARD them: the watch ran
-  byte-identically and simply never armed the caller's goals — a silent failure that cost two client
-  teams a debugging cycle. A warning would still permit that run, so the call is refused before the
+  byte-identically and simply never armed the caller's goals — a silent failure that consumed an
+  avoidable debugging cycle. A warning would still permit that run, so the call is refused before the
   first frame is consumed: *"goals= and vision= cannot be supplied when core= is provided; apply goals
   to the core or omit core."* Both single-argument forms (`run(core, source=…)` and
   `run(source=…, goals=[…])`) are unchanged.
 
 
-- **Consequence gate GA (card O2)** — the FIRE/ASK/SILENT decision model is now a documented, stable
+- **Consequence gate GA** — the FIRE/ASK/SILENT decision model is now a documented, stable
   surface: `docs/reference/consequence-gate.md`.
   - `Gate.decide(...) -> GateOutcome` — the typed outcome (action **plus** a reason code) alongside the
     unchanged `Gate.evaluate(...) -> GateAction`. `evaluate` is exactly `decide(...).action`.
@@ -444,7 +442,7 @@
   `WATCH_VERSION`, or `CONTRACT_VERSION`.
 
 ### Changed
-- **Ordered window is the LIVE judge plan for dynamic goals (card J2).** A resolved `WatchProfile`'s
+- **Ordered window is the LIVE judge plan for dynamic goals.** A resolved `WatchProfile`'s
   `plan_mode` is no longer inert: `plan_mode="window"` now floors every concern's `PerceptionSpec` on the
   judging path, so the judge receives an ordered frame window (`judge(frames=[...])`, oldest→newest, the
   anchor frame passed separately) instead of one still frame. The seeded default profiles already carry

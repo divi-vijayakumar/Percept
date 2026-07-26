@@ -1,4 +1,4 @@
-"""Card X2 — cost must be a MEASURED number on a real run, or ``—``, but never a false zero.
+"""— cost must be a MEASURED number on a real run, or ``—``, but never a false zero.
 
 The failure this file exists to stop: a client run that provably spent 134,946 input + 5,231 output
 tokens across 108 judge calls reported ``{"input_tokens": 0.0, "output_tokens": 0.0, "usd": 0.0,

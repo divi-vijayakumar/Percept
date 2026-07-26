@@ -1,4 +1,4 @@
-"""Probe P-BOUND-1 scaffold (Viability §7, board card A18) — G1 continuous overload / backlog.
+"""Probe P-BOUND-1 scaffold (the release criteria) — G1 continuous overload / backlog.
 
 SCAFFOLD-ONLY: wires the probe's own logic against fakes and asserts it. Does NOT run a for-record
 benchmark (that is gated on bars-locked). Property under test: with input arriving FASTER than the
@@ -57,7 +57,7 @@ from percept.sequencing import EvidenceSequencer, GateDecision
 def _slow_judge(seed: int = 7) -> FakeJudge:
     """A deliberately SLOW judge double: fixed 3.0s latency, far above the inter-admission
     interval the high-E ``LoadProfile`` below produces — this IS the "input faster than the judge"
-    condition Viability §7/G1 asks the probe to exercise. ``simulate_sleep=False`` keeps this test
+    condition the release criteria/G1 asks the probe to exercise. ``simulate_sleep=False`` keeps this test
     fast and deterministic (latency is sampled, never actually slept)."""
     return FakeJudge(
         seed=seed,
@@ -114,7 +114,7 @@ class _BoundedFunnelSim:
         prior_seq = self._pending_seq.get(key)
         if prior_seq is not None:
             # A newer admission arrived for this key before the prior one resolved: the prior is
-            # superseded — dropped, never applied, with a named reason (Viability §7: "every drop
+            # superseded — dropped, never applied, with a named reason (the release criteria: "every drop
             # accounted with a reason").
             decision = GateDecision(
                 key=key,
@@ -167,7 +167,7 @@ def _run_scenario(*, steady_s: float = 20.0, step_s: float = 0.5, num_keys: int 
 
 
 class TestPBound1QueueStaysBounded(unittest.TestCase):
-    """P-BOUND-1 (Viability §7, G1): continuous overload does not grow the funnel unboundedly."""
+    """P-BOUND-1 (the release criteria, G1): continuous overload does not grow the funnel unboundedly."""
 
     NUM_KEYS = 4
 

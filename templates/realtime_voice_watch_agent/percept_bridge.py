@@ -269,7 +269,7 @@ class PerceptBridge:
         language-authored goal — which never passed through :meth:`arm` — is resolved through the SDK's
         public ``session.goal_view`` seam and reconstructed into a minimal :class:`Goal`. Either way the
         policy STILL clamps effective ``preempt`` by ``origin``: a ``LANGUAGE_AUTHORED`` interrupt request
-        is clamped to ``queue`` even though its ttl/verbatim now flow through (PCPT-029, Part B)."""
+        is clamped to ``queue`` even though its ttl/verbatim now flow through."""
         goal_id = getattr(incident, "concern_id", "") or ""
         print(f"[incident] goal={goal_id!r} message={getattr(incident, 'message', '')!r}",
               file=sys.stderr)

@@ -18,7 +18,7 @@
   flow & replay — §1 pins the at-most-once-per-episode rising-edge guarantee this ADR shows is
   insufficient for claim-bearing subjects, and its Open Question 4 explicitly leaves the
   `Incident`/`DeliveryAttempt` chain unresolved; this ADR does not resolve it either).
-- **Feeds:** the still-open **"public object" founder decision**. This ADR deliberately stops at
+- **Feeds:** the still-open **"public object" design decision**. This ADR deliberately stops at
   options and trade-offs. Anything that would pre-empt that decision is marked deferred.
 - **Source (read for this ADR):** `percept/contracts/__init__.py` (`Observation` `:94-101`,
   `Subject` `:262-267`, `JudgmentEvent` `:514`, `IncidentSnippet` `:809`, `Incident` `:888`,
@@ -34,10 +34,10 @@
 
 ## Context
 
-Two paying client teams ran independent domain probes against percept 0.7.0 and both returned
-not-viable. Neither failure was a perception failure — their judges scored recall 1.00 on documents
+Independent domain probes against percept 0.7.0 returned not-viable.
+The failures were not perception failures — the judges scored recall 1.00 on documents
 and handled retractions, counterfactuals and speaker attribution correctly. Four separate critical
-findings came back, and a client's own cross-probe analysis proposed that all four are one gap.
+findings emerged, and cross-probe analysis proposed that all four are one gap.
 Reading the code confirms it:
 
 **Percept models the WORLD well and does not model ITS OWN FINDINGS at all.**
@@ -56,7 +56,7 @@ The findings side has none of that. An `Incident` (`contracts/__init__.py:888`) 
 id: str; concern_id: str; verdict: Verdict; ts: float
 label: str | None = None; snippet: IncidentSnippet | None = None
 message: str = ""; label_url: str | None = None
-entity_id: str | None = None          # 1.3 (card D4) — a correlation handle, not a relation
+entity_id: str | None = None          # 1.3 — a correlation handle, not a relation
 ```
 
 There is no field on `Incident` that references any other `Incident`. `entity_id` shipped in
@@ -71,8 +71,8 @@ one last-fire stamp
 *between* the things it fired. So percept emits an unordered bag of point records and asks the
 consumer to reconstruct the relations itself.
 
-Each of the four client findings is one missing relation. They are set out below as four problems,
-because — critically — **they are not one fix**. The client's falsifiable prediction on the
+Each of the four probe findings is one missing relation. They are set out below as four problems,
+because — critically — **they are not one fix**. The falsifiable prediction on the
 settle/supersede pair (§2) is the clearest evidence of that, and this ADR takes it seriously rather
 than collapsing the four into a single tidy feature.
 
@@ -145,7 +145,7 @@ back. Their trigger conditions are different even where their timers look simila
 correction *linked to* the finding it replaces, so the consumer can resolve "which value is
 current" without guessing.
 
-**Why both are required — the client's falsifiable prediction, restated as this ADR's own claim:**
+**Why both are required — the falsifiable prediction, restated as this ADR's own claim:**
 a settle window with any sane bound covers the two immediate retractions (at 21.6 s and 22.6 s in
 the probe) and **cannot** cover the late one (34.0 s). Making the settle window long enough to
 catch a 34-second-late retraction means every finding is withheld for >34 s, which destroys the
@@ -277,7 +277,7 @@ change is a regenerate-and-review step, not a silent one. `percept/watch.py`'s p
 
 - A new optional, defaulted field on `Incident` — e.g. a `supersedes: str | None = None` /
   `relations: list[...] = field(default_factory=list)`. **This route is already proven in-tree:**
-  card D4 shipped exactly this shape as `Incident.entity_id: str | None = None`
+  the implementation shipped exactly this shape as `Incident.entity_id: str | None = None`
   (`contracts/__init__.py:926`), which is what took `CONTRACT_VERSION` from `1.2.0` to `1.3.0`.
   `Incident` is a plain `@dataclass` (not frozen), all optional fields already carry defaults, and
   `incident_payload` serializes generically via `_jsonable` (`sinks.py:167-178`, called at
@@ -313,7 +313,7 @@ change is a regenerate-and-review step, not a silent one. `percept/watch.py`'s p
 - Anything that changes `watch()`'s signature or `WATCH_VERSION`. If a future relation design
   appears to require it, that is a blocker to raise, not a change to make.
 
-### 7. `Incident.entity_id` (card D4, SHIPPED in 1.3.0) does not preclude a richer subject reference later
+### 7. `Incident.entity_id` (SHIPPED in 1.3.0) does not preclude a richer subject reference later
 
 **Status: shipped, not prospective.** `Incident.entity_id: str | None = None` exists today
 (`contracts/__init__.py:926`), is populated by `make_incident` off the fire's own `entity_id`
@@ -354,7 +354,7 @@ correlation key ONLY" carrying "no claim about *who* or *which document* the sub
 
 ## Consequences
 
-- The four client findings become one named architectural gap with four distinguishable
+- The four probe findings become one named architectural gap with four distinguishable
   sub-problems, in a stated dependency order (§5 before §2/§3 — an identity collapse cannot be
   repaired downstream), rather than four independent bug reports that would attract four
   incompatible partial fixes.
@@ -367,13 +367,13 @@ correlation key ONLY" carrying "no claim about *who* or *which document* the sub
   never a fourth `GateAction`/`WatchAction` value (§6).
 - This ADR authorizes **no implementation**. In particular it does not decide whether relations
   live on `Incident`, on a new object, or only in a store — that is the public-object decision.
-  (`Incident.entity_id` shipped under card D4, not under this ADR; §7 only established that it
+  (`Incident.entity_id` shipped under not under this ADR; §7 only established that it
   does not foreclose the decision.)
 - Nothing here weakens ADR-004 §1's delivery guarantees; §2 argues that guarantee is *correct for
   state-bearing subjects and insufficient for claim-bearing ones*, which is a scope statement about
   ADR-004, not a contradiction of it.
 
-### Founder scope decisions taken for contract v1.4 (card Y9)
+### Scope decisions taken for contract v1.4
 
 These three decisions are **taken**. They are recorded here — and mirrored in the module docstrings a
 reader actually opens (`percept/sourceprofile.py`, `percept/episodes.py`) and in
@@ -433,7 +433,7 @@ SLO-bounded knob — and it means Open Questions 1 and 5 are answered *for the d
 window, where used at all, is a delivery concept with a declared bound, not a gate concept and not a
 default.
 
-## Options and trade-offs — input to the "public object" founder decision
+## Options and trade-offs — input to the "public object" design decision
 
 Presented as options with trade-offs. **This ADR does not choose.**
 
@@ -444,8 +444,8 @@ Add `supersedes: str | None`, and/or `relations: list[IncidentRelation]`, direct
 - **For:** smallest possible change; strictly additive (§6); flows through `incident_payload`
   automatically; a consumer reading one JSON object sees the link without a second lookup.
 - **Against:** grows the one object every consumer already depends on, and bakes the relation
-  vocabulary into the frozen contract at a moment when we have exactly one client's worth of
-  evidence about what relations are needed. `supersedes` is easy; `corroborates`, `contradicts`,
+  vocabulary into the frozen contract with only a limited evidence base about what relations are
+  needed. `supersedes` is easy; `corroborates`, `contradicts`,
   `refines`, `derived_from` are all plausible and none is validated. ADR-003's warning applies
   directly: a frozen field with an implicit narrow meaning is worse than no field.
 
@@ -484,9 +484,9 @@ Settle (§2 Fix A) trades **latency for correctness** on every finding; supersed
 be exposed and defaulted independently. A design that offers only one, or couples them behind one
 setting, will fail the 21.6 s / 22.6 s / 34.0 s test in §2.
 
-## Open questions — deferred to the "public object" founder decision
+## Open questions — deferred to the "public object" design decision
 
-> **Partially closed by card Y9** (see §Consequences → "Founder scope decisions taken for contract
+> **Partially closed by the implementation** (see §Consequences → "Scope decisions taken for contract
 > v1.4"): decision (c) settles the *delivery* half of Q1 and Q5 — provisional incident plus
 > superseding revision, with any delay concern-specific and SLO-bounded, in delivery rather than in
 > the gate. The *shape of the public object* (Q1's other half), Q2, Q3, Q4 and Q6 remain open.
@@ -521,6 +521,6 @@ setting, will fail the 21.6 s / 22.6 s / 34.0 s test in §2.
 
 ---
 
-Founder sign-off required on: all six open questions above, and specifically on the ordering claim
+Decision required on: all six open questions above, and specifically on the ordering claim
 in §5 (identity before relations) — because if that ordering is accepted, the document-identity
-work in §5/Q4 gates the relation work, and the board should be sequenced accordingly.
+work in §5/Q4 gates the relation work, and implementation should be sequenced accordingly.

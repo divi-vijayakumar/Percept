@@ -1,4 +1,4 @@
-"""Card Y2 — the claim-mode / speech-act channel: a value DIFFERENCE is not a REPLACEMENT.
+"""— the claim-mode / speech-act channel: a value DIFFERENCE is not a REPLACEMENT.
 
 Two layers:
 

@@ -1,4 +1,4 @@
-"""Card J3 (E3): the episode/entity-memory judge mode — a per-goal running answer threaded across
+"""the implementation (E3): the episode/entity-memory judge mode — a per-goal running answer threaded across
 successive judged frames, integrating evidence over time (the next lever after the ordered window).
 
 All offline against a fake ``Vision`` adapter — wiring, not intelligence (no live model needed in the

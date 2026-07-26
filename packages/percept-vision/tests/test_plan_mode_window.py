@@ -1,4 +1,4 @@
-"""Card J2 — the resolved WatchProfile.plan_mode is LIVE: "window" makes the judge see an ORDERED
+"""— the resolved WatchProfile.plan_mode is LIVE: "window" makes the judge see an ORDERED
 FRAME WINDOW (``judge(frames=[...])``), not one still frame.
 
 M2 carried ``plan_mode`` onto the core and nothing read it. These tests pin the wiring end-to-end with a

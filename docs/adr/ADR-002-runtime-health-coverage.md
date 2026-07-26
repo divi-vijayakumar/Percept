@@ -237,7 +237,7 @@ loosening a closed set is a compatible change, tightening an open one is not.
 
 ---
 
-Founder sign-off required on: the closed-vs-open `reasons` question above, plus whether this ADR's
+Decision required on: the closed-vs-open `reasons` question above, plus whether this ADR's
 staged-vector shape should also govern PRD §14 gate 6 (canonical concurrency model for `on_health`
 delivery — sync iterator, async iterator, or background worker), since the transport section here
 assumes a background-worker-style bounded queue.

@@ -1,4 +1,4 @@
-"""L-1 integration: run(label_store=, disposition_log=) wires the flywheel rail into the live worker.
+"""The live worker wires label and disposition feedback stores into ``run()``.
 
 Reuses the offline iterable-source + FakeVision fixtures (no cv2, no camera, no key, no network): the
 worker binds each yielded incident to the local LabelStore and appends every gate FIRE/ASK to the

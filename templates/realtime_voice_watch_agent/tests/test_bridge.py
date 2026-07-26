@@ -265,7 +265,7 @@ class FireDeliveryTests(unittest.TestCase):
         asyncio.run(go())
 
     def test_language_authored_ttl_reaches_the_floor_while_interrupt_still_clamps(self):
-        # PCPT-029 Part B: the reported seam gap — a language-authored goal (never through session.arm)
+        # Regression: a language-authored goal (never through session.arm)
         # is now resolved via session.goal_view, so its AUTHORED ttl_s reaches the effective intent,
         # while the policy STILL clamps its requested interrupt to queue by origin.
         async def go():

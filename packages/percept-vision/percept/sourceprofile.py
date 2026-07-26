@@ -56,8 +56,8 @@ ship these and does not partially ship them; ``identity_strategy`` being free te
 as a step toward them.
 
 The resolver interface stays open so a future scheme can be REGISTERED rather than merged into this
-file — but v1.4 deliberately does not generalise ahead of evidence. Two client probes are the
-evidence we have, and the two kinds above are exactly what they established.
+file — but v1.4 deliberately does not generalise ahead of evidence. The available domain probes
+establish exactly the two kinds above.
 
 Identifier stability is not restart-safety
 ------------------------------------------

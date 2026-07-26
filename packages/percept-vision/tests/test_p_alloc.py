@@ -1,11 +1,10 @@
-"""P-ALLOC-1 (Viability §7; ADR-001 §8, board card A19) — SCAFFOLD PROBE.
+"""P-ALLOC-1 (the release criteria; ADR-001 §8) — SCAFFOLD PROBE.
 
 Property under test: allocation + stale-completion safety under an N-WORKER POOL. With multiple
 concurrent judge jobs in flight for the SAME key, out-of-order completion must NOT corrupt gate
 state:
 
-  * every job carries a monotonic per-key ``evidence_seq`` (``percept.sequencing.EvidenceSequencer``,
-    card A8) reserved at DISPATCH time, in dispatch order — never completion order;
+  * every job carries a monotonic per-key ``evidence_seq`` (``percept.sequencing.EvidenceSequencer``) reserved at DISPATCH time, in dispatch order — never completion order;
   * the decision reducer (``percept.sequencing.SerializedDecisionReducer``) serializes application
     per ``(source_id, plan_id, episode_or_entity_key)`` key via a per-key ``asyncio.Lock``;
   * a result whose sequence is behind ``latest_admitted_sequence`` is dropped as a TRACED stale
@@ -21,14 +20,13 @@ completion order is decided by actual awaited time, not by program call order) �
 timeline. No source file is edited by this card; this is the only file it creates.
 
 Reuses (imported, never edited):
-  * ``percept.sequencing.{EvidenceSequencer, GateDecision, ResultPolicy, SerializedDecisionReducer}``
-    (card A8) — the sequencing + serialized-reducer mechanism under test.
-  * ``percept.backends.fake_judge.{FakeJudge, LatencyProfile}`` (card A12) — a deterministic, seeded
+  * ``percept.sequencing.{EvidenceSequencer, GateDecision, ResultPolicy, SerializedDecisionReducer}`` — the sequencing + serialized-reducer mechanism under test.
+  * ``percept.backends.fake_judge.{FakeJudge, LatencyProfile}`` — a deterministic, seeded
     judge double; two instances with a large (15x) fixed-latency gap give the OLD/slow job a real
     per-call delay so it completes AFTER the NEW/fast job under genuine asyncio concurrency. Its own
     scripted verdict CONTENT is irrelevant here — each job's ``submit()`` verdict is supplied
     explicitly by the test so the gate-mutation outcome is fully controlled and asserted on.
-  * ``percept.harness.metrics.MetricsCollector`` (card A13) — ``record_gate_decision`` /
+  * ``percept.harness.metrics.MetricsCollector`` — ``record_gate_decision`` /
     ``drop_counts`` / ``total_drops`` for the stale-completion drop-count assertions.
   * ``percept.clock.FakeClock`` — the collector's injected time source (no wall-clock reads).
   * ``percept.gate.{Gate, FIRE, SILENT}`` — the underlying three-state gate the reducer wraps.
@@ -170,7 +168,7 @@ class TestClassicOutOfOrderRace(unittest.TestCase):
 
 
 class TestResultPolicyUnderConcurrency(unittest.TestCase):
-    """latest_only vs episode_ordered (``ResultPolicy``, card A8) exercised through the SAME real
+    """latest_only vs episode_ordered (``ResultPolicy``) exercised through the SAME real
     async worker-pool race this probe is built around -- not just direct sequential calls."""
 
     KEY: Hashable = ("src-2", "plan-rev-3", "entity-42")

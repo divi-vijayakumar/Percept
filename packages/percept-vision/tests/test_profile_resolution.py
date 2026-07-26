@@ -1,4 +1,4 @@
-"""Tests for percept.profile_resolution (card P2): situation -> WatchProfile registry key + overrides.
+"""Tests for percept.profile_resolution: situation -> WatchProfile registry key + overrides.
 
 Covers each axis independently, the full 2x4x2 combination matrix, wildcard/unknown-axis fallbacks, purity
 (determinism + no env-var leakage), the "never sprite" invariant, and resolve_profile's interaction with a
@@ -122,7 +122,7 @@ def test_unknown_start_state_falls_back_to_wildcard_and_conservative_gate() -> N
 
 
 # ---------------------------------------------------------------------------
-# salience_stat: NOT a situation axis (ADR-008 ownership transfer, card C2) — it belongs to the
+# salience_stat: NOT a situation axis (ADR-008 ownership transfer) — it belongs to the
 # profile/source layer, so resolve_situation() never emits it, for any input.
 # ---------------------------------------------------------------------------
 

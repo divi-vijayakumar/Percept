@@ -1,4 +1,4 @@
-"""Card D3 — `percept eval`, the paired differential A/B over client fixtures.
+"""— `percept eval`, the paired differential A/B over client fixtures.
 
 The properties under test are the card's own promises: paired (not two independent runs), honest
 about scope (ADR-006 shapes), silent about pass/fail without client bars, and refusing to score a
@@ -296,7 +296,7 @@ def test_single_pair_gets_no_interval_and_says_so(tmp_path, arms):
 
 
 def test_scoring_uses_the_shared_5a_matcher_semantics(tmp_path, arms):
-    """A duplicate fire inside one episode is a false fire, not extra recall (Viability §5a)."""
+    """A duplicate fire inside one episode is a false fire, not extra recall (the event-level matching contract)."""
     root = tmp_path / "fx"
     root.mkdir()
     for name in ("f1", "f2"):
@@ -575,7 +575,7 @@ def test_cli_exits_two_when_it_refuses(tree, arms, capsys):
 
 
 # ---------------------------------------------------------------------------
-# Card X3 — plan_hash covers the RESOLVED thresholds and policy, not just goals.
+# — plan_hash covers the RESOLVED thresholds and policy, not just goals.
 #
 # The commonest paired eval on this harness is a threshold A/B: both arms declare the same goals by
 # construction and differ only in a cutoff. A plan hash blind to the cutoffs printed the SAME identity

@@ -1,4 +1,4 @@
-"""Card Z6 — the ADRs are a map of the code, so the map must be checkable.
+"""— the ADRs are a map of the code, so the map must be checkable.
 
 Four stale-citation classes shipped in the ADR set and misled readers who trusted them:
 

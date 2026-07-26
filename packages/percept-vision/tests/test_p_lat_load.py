@@ -1,4 +1,4 @@
-"""PROBE SCAFFOLD — P-LAT-LOAD-1 (Viability §7, board card A28, the real G3 gate — DUAL, under load).
+"""PROBE SCAFFOLD — P-LAT-LOAD-1 (the release criteria, the real G3 gate — DUAL, under load).
 
 **Scaffold only — gated on bars-locked, no for-record run.** This proves the WIRING a future
 for-record P-LAT-LOAD-1 run needs, not a real latency verdict about Percept itself: as the
@@ -9,7 +9,7 @@ each load level, combine them into a single DUAL band, find the load level where
 degrades off GREEN (the "knee"), and confirm a fixed-load run shows no p95 drift between its first
 and second half?
 
-Per Viability §7, Reflex requires BOTH G3-A and G3-B < 2s (GREEN); 2-3s on either leg is YELLOW
+Per the release criteria, Reflex requires BOTH G3-A and G3-B < 2s (GREEN); 2-3s on either leg is YELLOW
 (CONDITIONAL-GO / Reflex beta); >= 3s on either leg is RED (NO-GO for the Reflex claim, not for
 Percept as a whole).
 
@@ -54,7 +54,7 @@ from percept.harness.metrics import LatencyReport, MetricsCollector
 from percept.harness.stream_gen import parametric_motion_clip
 
 # ---------------------------------------------------------------------------
-# Viability §7 per-leg band thresholds (same GREEN/YELLOW/RED convention as P-LAT-RUNTIME-1 /
+# the release criteria per-leg band thresholds (same GREEN/YELLOW/RED convention as P-LAT-RUNTIME-1 /
 # P-LAT-ACTIONABLE-1) + the DUAL combined gate this probe adds on top of them.
 # ---------------------------------------------------------------------------
 
@@ -68,7 +68,7 @@ _DECISION_OVERHEAD_S = 0.05
 
 
 def classify_latency_band(p95_s: float) -> str:
-    """Viability §7 single-leg banding: GREEN < 2s, YELLOW 2s<=x<3s, RED >= 3s."""
+    """the release criteria single-leg banding: GREEN < 2s, YELLOW 2s<=x<3s, RED >= 3s."""
     if p95_s < GREEN_MAX_S:
         return "GREEN"
     if p95_s < YELLOW_MAX_S:
@@ -102,7 +102,7 @@ def find_knee(levels_with_bands: list[tuple[str, str]]) -> str | None:
 def latency_drift_within_tolerance(
     first_half_p95_s: float, second_half_p95_s: float, *, tolerance_s: float = 0.2
 ) -> bool:
-    """Viability §7 'no time-drift at fixed load': True iff a fixed-load run's second-half p95 is
+    """the release criteria 'no time-drift at fixed load': True iff a fixed-load run's second-half p95 is
     within ``tolerance_s`` of its first-half p95, in either direction."""
     return abs(second_half_p95_s - first_half_p95_s) <= tolerance_s
 
@@ -257,7 +257,7 @@ class TestLoadScalingDualGate(unittest.TestCase):
     """Runs LoadDriver at each LOAD_LEVELS point, computes BOTH G3-A and G3-B p95 through the real
     MetricsCollector aggregation path, and confirms each lands in its hand-computed combined band —
     walking GREEN -> GREEN -> YELLOW -> RED as N/M/E/F (and the layered latency PARAMETERS) scale
-    up, exactly the property Viability §7 asks P-LAT-LOAD-1 to probe."""
+    up, exactly the property the release criteria asks P-LAT-LOAD-1 to probe."""
 
     # name -> (expected G3-A p95, expected G3-B p95, expected combined band), hand-computed from
     # each LoadLevel's judge_latency_s / admission_delay_s / _DECISION_OVERHEAD_S:
