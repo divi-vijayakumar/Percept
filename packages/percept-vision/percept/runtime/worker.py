@@ -58,34 +58,52 @@ class ConcurrentCoreRunError(RuntimeError):
     """The same cognition core is already owned by another active runtime."""
 
 
+class _CoreRunLease:
+    """Opaque acquisition handle; its token distinguishes sequential leases of one live core."""
+
+    __slots__ = ("identity", "core", "token")
+
+    def __init__(self, identity: int, core: Any) -> None:
+        self.identity = identity
+        self.core = core
+        self.token = object()
+
+
 _ACTIVE_CORE_RUNS_LOCK = threading.Lock()
-_ACTIVE_CORE_RUNS: dict[int, Any] = {}
+_ACTIVE_CORE_RUNS: dict[int, tuple[Any, object]] = {}
 
 
-def _acquire_core_run(core: Any) -> tuple[int, Any] | None:
+def _acquire_core_run(core: Any) -> _CoreRunLease | None:
     """Acquire a process-local, thread-safe lease without requiring a hashable/weakref core."""
     if core is None:
         return None
     identity = id(core)
+    lease = _CoreRunLease(identity, core)
     with _ACTIVE_CORE_RUNS_LOCK:
         active = _ACTIVE_CORE_RUNS.get(identity)
-        if active is core:
+        if active is not None:
             raise ConcurrentCoreRunError(
                 "percept.run already has an active runtime for this core; "
                 "wait for it to finish before reusing the same core"
             )
-        # Keeping the active object itself prevents id reuse and retains only active cores.
-        _ACTIVE_CORE_RUNS[identity] = core
-    return identity, core
+        # Retaining the active core prevents id reuse while its lease is live.
+        # The per-acquisition token prevents an ABA stale release after the
+        # same core has been released and acquired again.
+        _ACTIVE_CORE_RUNS[identity] = (core, lease.token)
+    return lease
 
 
-def _release_core_run(lease: tuple[int, Any] | None) -> None:
+def _release_core_run(lease: _CoreRunLease | None) -> None:
     if lease is None:
         return
-    identity, core = lease
     with _ACTIVE_CORE_RUNS_LOCK:
-        if _ACTIVE_CORE_RUNS.get(identity) is core:
-            del _ACTIVE_CORE_RUNS[identity]
+        active = _ACTIVE_CORE_RUNS.get(lease.identity)
+        if (
+            active is not None
+            and active[0] is lease.core
+            and active[1] is lease.token
+        ):
+            del _ACTIVE_CORE_RUNS[lease.identity]
 
 
 def _exclusive_core_runtime(func):

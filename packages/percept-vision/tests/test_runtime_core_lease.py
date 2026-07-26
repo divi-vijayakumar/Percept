@@ -82,10 +82,10 @@ def test_close_error_is_truthful_and_never_strands_the_core_lease(
     core = _Core()
     close_error = RuntimeError("inner close failed")
     broken = _Stream(close_error=close_error)
-    releases: list[tuple[int, Any] | None] = []
+    releases: list[Any] = []
     original_release = worker._release_core_run
 
-    def observed_release(lease: tuple[int, Any] | None) -> None:
+    def observed_release(lease: Any) -> None:
         releases.append(lease)
         original_release(lease)
 
@@ -111,10 +111,10 @@ def test_synchronous_stream_construction_failure_releases_exactly_once(
 ) -> None:
     core = _Core()
     construction_error = RuntimeError("stream construction failed")
-    releases: list[tuple[int, Any] | None] = []
+    releases: list[Any] = []
     original_release = worker._release_core_run
 
-    def observed_release(lease: tuple[int, Any] | None) -> None:
+    def observed_release(lease: Any) -> None:
         releases.append(lease)
         original_release(lease)
 
@@ -131,6 +131,22 @@ def test_synchronous_stream_construction_failure_releases_exactly_once(
         assert len(releases) == 2
 
     asyncio.run(drive())
+
+
+def test_stale_release_cannot_delete_a_newer_same_core_lease() -> None:
+    core = _Core()
+    first = worker._acquire_core_run(core)
+    worker._release_core_run(first)
+    second = worker._acquire_core_run(core)
+    try:
+        worker._release_core_run(first)
+        with pytest.raises(worker.ConcurrentCoreRunError):
+            worker._acquire_core_run(core)
+    finally:
+        worker._release_core_run(second)
+
+    third = worker._acquire_core_run(core)
+    worker._release_core_run(third)
 
 
 def test_normal_finalization_does_not_advance_source_continuity() -> None:
