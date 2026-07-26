@@ -896,8 +896,11 @@ class LiveInterestEvent:
             "score": self.score,
             "threshold": self.threshold,
             "confidence": None,
-            "regions": [],
-            "track_ids": [],
+            "regions": [
+                {"x": box.x, "y": box.y, "w": box.w, "h": box.h}
+                for box in self.regions
+            ],
+            "track_ids": list(self.track_ids),
             "admission_id": self.admission_id,
             "detector_id": self.detector_id,
             "coverage": self.coverage,

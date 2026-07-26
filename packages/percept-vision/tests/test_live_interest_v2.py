@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from dataclasses import replace
 
 import pytest
 
 from percept import Goal, InterestIntervalConfig, Tier0MotionInterest
-from percept.adapters import Verdict
+from percept.adapters import Box, Verdict
 from percept.backends.fake import FakeVision
 from percept.edge.tier0 import CivilTime, GatedWatchLoop, gray_frame
 from percept.goals import GoalOp
@@ -16,6 +17,7 @@ from percept.harness import tier0 as tier0_module
 from percept.runtime import (
     InterestBackpressureError,
     InterestCallbackUnsupportedError,
+    InterestRunError,
     InterestSubscription,
     SourceEnvelope,
     SourceFormat,
@@ -111,6 +113,27 @@ async def test_run_emits_exact_per_watch_lifecycle_with_source_and_observer_cloc
     assert exited.source_end == 12.0
     assert exited.observed_end == 102.0
     assert subscription.closed is True
+
+
+@pytest.mark.asyncio
+async def test_live_event_dict_preserves_validated_regions_and_tracks() -> None:
+    event = (
+        await _collect([_envelope(0, BLACK), _envelope(1, WHITE), _envelope(2, BLACK)])
+    )[0]
+    enriched = replace(
+        event,
+        regions=(Box(x=0.1, y=0.2, w=0.3, h=0.4),),
+        track_ids=("track-1",),
+    )
+
+    expected_regions = [{"x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4}]
+    first = enriched.as_dict()
+    second = enriched.as_dict()
+    assert enriched.regions == (Box(x=0.1, y=0.2, w=0.3, h=0.4),)
+    assert enriched.track_ids == ("track-1",)
+    assert first["regions"] == expected_regions
+    assert first["track_ids"] == ["track-1"]
+    assert first == second
 
 
 async def _collect(source, *watch_ids: str, session_id: str = "test-session"):
@@ -565,6 +588,38 @@ async def test_terminal_coordinate_uses_last_admitted_unit_after_hook_failure() 
     assert events[-1].sequence_end == 1
     assert events[-1].event_sequence == 2
     assert events[-1].event_source_time == 12.0
+
+
+@pytest.mark.asyncio
+async def test_reserved_terminal_re_raises_original_worker_error_when_queue_is_full() -> None:
+    subscription = InterestSubscription(max_batches=1)
+    original = RuntimeError("unrelated hook failure")
+
+    def fail_after_enter(t, _frame) -> None:
+        if t == 12.0:
+            raise original
+
+    with pytest.raises(RuntimeError, match="unrelated hook failure") as caught:
+        async for _ in run(
+            _core("watch"),
+            source=[_envelope(0, BLACK), _envelope(1, WHITE), _envelope(2, BLACK)],
+            on_frame=fail_after_enter,
+            interest_subscription=subscription,
+            judge_dispatch="inline",
+        ):
+            pass
+
+    events = [event async for event in subscription]
+    assert caught.value is original
+    assert not isinstance(caught.value, InterestRunError)
+    assert subscription.closed is True
+    assert [event.kind for event in events] == [
+        "interest.entered",
+        "interest.exited",
+    ]
+    assert events[-1].reason == "worker_error"
+    assert events[-1].sequence_end == 1
+    _assert_balanced_lifecycle(events)
 
 
 @pytest.mark.asyncio
