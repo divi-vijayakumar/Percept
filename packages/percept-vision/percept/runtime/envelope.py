@@ -84,15 +84,6 @@ class SourceEnvelope:
         approve one byte sequence and the judge could later consume another.  Normalize the media
         carriers we understand at construction time.  Opaque objects remain caller-owned by design.
         """
-        # A single versioned source stream is a clock domain in its own right.
-        # Keep the explicit adapter claim when one is supplied, but give the
-        # envelope-only compatibility form a stable, per-source claim.  This
-        # lets paired async SourceEnvelope iterators establish their shared
-        # domain at ingress instead of requiring the runtime to consume an
-        # iterable during preflight merely to discover its first envelope.
-        if self.clock_authority is None and self.clock_confidence is None:
-            object.__setattr__(self, "clock_authority", self.source_id)
-            object.__setattr__(self, "clock_confidence", 1.0)
         if (self.clock_authority is None) != (self.clock_confidence is None):
             raise ValueError(
                 "clock_authority and clock_confidence must be supplied together"

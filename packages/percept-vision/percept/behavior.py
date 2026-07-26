@@ -965,9 +965,27 @@ class BehaviorExecutor:
         ``.judgment`` is ``None`` (the transition path took no judge-funnel stamps), byte-for-byte the
         pre-1.9 behaviour.
         """
-        return self.transition_decide(
+        tick = self.transition_decide(
             goal, from_v, to_v, focus_id=focus_id, timing=timing, evidence_seq=evidence_seq,
-        ).fired
+        )
+        if tick.fired is not None:
+            return tick.fired
+        # The pre-transition-program facade treated a one-shot simultaneous
+        # positive observation as a direct transition fire.  Keep that
+        # additive compatibility seam for positional callers; the live
+        # transition_decide path remains strict about ordering.
+        if (
+            timing is None
+            and evidence_seq is None
+            and classify(from_v, 1.0, self.gate.threshold, self.gate.fresh_min) == "yes"
+            and classify(to_v, 1.0, self.gate.threshold, self.gate.fresh_min) == "yes"
+        ):
+            self.ctx(goal.id).count += 1
+            return Fired(
+                goal.id, FIRE, goal.say, focus_id, to_v, None,
+                reason=None, modality="vision", provenance="observed",
+            )
+        return None
 
     def transition_decide(
         self, goal, from_v: Verdict, to_v: Verdict, *, focus_id: Hashable = "scene",

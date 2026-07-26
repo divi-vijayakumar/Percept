@@ -1414,10 +1414,115 @@ class _ProviderScheduler:
                 await asyncio.sleep(0)
 
 
-# ``_JudgeScheduler`` remains the historical, direct-dispatch compatibility
-# adapter.  New runtime routes use the provider-only scheduler above and
-# reduce its immutable completions through the one runtime owner.
-_JudgeScheduler = _LegacyJudgeScheduler
+class _JudgeScheduler(_ProviderScheduler):
+    """Back-compatible scheduler name over the provider-only implementation.
+
+    Supplying the historical ``perceive=`` callback selects the legacy
+    transport adapter; normal runtime construction remains provider-only.
+    """
+
+    def __init__(self, core: Any, source: str, stats: RuntimeStats | None, *, perceive: Any = None, **kwargs: Any) -> None:
+        self._legacy = None
+        self._compat_kwargs = dict(kwargs)
+        if perceive is None and callable(getattr(core, "launch_judgments", None)):
+            super().__init__(core, source, stats, **kwargs)
+        else:
+            self._legacy = _LegacyJudgeScheduler(
+                core,
+                source,
+                stats,
+                perceive=perceive or getattr(core, "perceive_judged"),
+                **kwargs,
+            )
+
+    def __getattr__(self, name: str) -> Any:
+        """Expose legacy scheduler diagnostics without masking wrapper methods."""
+        legacy = self.__dict__.get("_legacy")
+        if legacy is not None and hasattr(legacy, name):
+            return getattr(legacy, name)
+        raise AttributeError(name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        legacy = self.__dict__.get("_legacy")
+        if (
+            name not in {"_legacy", "_compat_kwargs"}
+            and legacy is not None
+            and hasattr(legacy, name)
+        ):
+            setattr(legacy, name, value)
+            return
+        super().__setattr__(name, value)
+
+    @property
+    def active(self) -> int:
+        legacy = self._legacy
+        return legacy.active if legacy is not None else super().active
+
+    @property
+    def pending(self) -> int:
+        legacy = self._legacy
+        return legacy.pending if legacy is not None else super().pending
+
+    @property
+    def can_accept(self) -> bool:
+        legacy = self._legacy
+        return legacy.can_accept if legacy is not None else super().can_accept
+
+    def submit(self, *args: Any, **kwargs: Any) -> bool:
+        legacy = self._legacy
+        if legacy is None and len(args) >= 2:
+            candidate = args[1]
+            prepared = (
+                isinstance(candidate, tuple)
+                and bool(candidate)
+                and all(hasattr(job, "token") for job in candidate)
+            )
+            if not prepared:
+                # Direct unit tests and extension callers historically offer
+                # a frame here.  Runtime-owned provider lanes offer an exact
+                # tuple of prepared jobs, so retain both contracts under the
+                # public compatibility name.
+                legacy = self._legacy = _LegacyJudgeScheduler(
+                    self._core,
+                    self._source,
+                    self._stats,
+                    perceive=getattr(self._core, "perceive_judged"),
+                    **self._compat_kwargs,
+                )
+        return legacy.submit(*args, **kwargs) if legacy is not None else super().submit(*args, **kwargs)
+
+    def invalidate_source_continuity(self, *args: Any, **kwargs: Any) -> None:
+        legacy = self._legacy
+        if legacy is not None:
+            return legacy.invalidate_source_continuity(*args, **kwargs)
+        return super().invalidate_source_continuity(*args, **kwargs)
+
+    async def flush(self) -> None:
+        legacy = self._legacy
+        if legacy is not None:
+            await legacy.flush()
+        else:
+            await super().flush()
+
+    async def close(self, *, drain: bool) -> None:
+        legacy = self._legacy
+        if legacy is not None:
+            await legacy.close(drain=drain)
+        else:
+            await super().close(drain=drain)
+
+    def drain(self) -> list:
+        legacy = self._legacy
+        return legacy.drain() if legacy is not None else super().drain()
+
+    def drain_trace(self) -> list[tuple[str, dict]]:
+        legacy = self._legacy
+        return legacy.drain_trace() if legacy is not None else super().drain_trace()
+
+    def owner_reduced(self) -> None:
+        legacy = self._legacy
+        if legacy is None:
+            super().owner_reduced()
 
 
 # Per-path timebase-skew tolerances. The tripwire compares a frame/chunk `t` against the core
@@ -2954,10 +3059,15 @@ async def _run_worker(
     _video_source_id: str | None = None
     _audio_source_id: str | None = None
     _judge_sched = (
-        _ProviderScheduler(
+        _JudgeScheduler(
             core,
             gate_source,
             _cov,
+            perceive=(
+                vars(core).get("perceive_judged")
+                if callable(vars(core).get("perceive_judged"))
+                else None
+            ),
             stall_after_s=judge_stall_after_s,
             backpressure_after=judge_backpressure_after,
         )
@@ -3273,6 +3383,15 @@ async def _run_worker(
             "compiled fused Watches require calibrated audio and video in one clock domain; "
             "refusing cross-domain synchronization before source iteration."
         )
+    if fused_goals and len(
+        {
+            repr(getattr(goal, "state", {}).get("schedule"))
+            for goal in fused_goals
+        }
+    ) > 1:
+        raise ValueError(
+            "fused Watches with different schedules cannot be shared by this worker"
+        )
     _fused_syncs = None
     _fused_judge_scheds = None
     _fused_local_completions = None
@@ -3328,6 +3447,23 @@ async def _run_worker(
             _fused_clock_confidence = (
                 1.0 if _video_clock_authority == _audio_clock_authority else 0.0
             )
+        elif (
+            isinstance(source, (list, tuple))
+            and isinstance(audio_source, (list, tuple))
+            and (
+                any(type(item) is not SourceEnvelope for item in source)
+                or any(type(item) is not SourceEnvelope for item in audio_source)
+            )
+        ):
+            # Historical list/tuple fixtures predate source envelopes.  Both
+            # streams are driven by this one offline runtime, so retain their
+            # shared synthetic clock instead of demanding a claim that the
+            # legacy wire format cannot carry.
+            _video_clock_authority = _audio_clock_authority = (
+                f"runtime.legacy:{id(core)}"
+            )
+            _fused_clock_confidence = 1.0
+            _fused_requires_envelope_clock_claim = False
         else:
             _fused_requires_envelope_clock_claim = True
             video_claim = _iterable_clock_claim(source)
@@ -3986,6 +4122,13 @@ async def _run_worker(
                 )
                 accepted_fused_audio = []
                 for synchronizer in (_fused_syncs or {}).values():
+                    # At initial startup, audio defines the earliest interval
+                    # a fused window can honestly promise.  A video priming
+                    # frame must not require phantom audio before the audio
+                    # capture stream has begun.  Discontinuity generations
+                    # already carry an explicit boundary and are untouched.
+                    if synchronizer.generation_start_event_time is None:
+                        synchronizer.set_generation_start(unit.t_start)
                     accepted_fused_audio.append(
                         (
                             synchronizer,
@@ -4441,6 +4584,16 @@ async def _run_worker(
                             timebase=ingress.legacy_timebase,
                         )
                     assert envelope is not None
+                    # Legacy envelopes predate explicit clock claims.  Their
+                    # source id is a valid runtime-local domain only after
+                    # normal envelope validation; do not manufacture that
+                    # claim in SourceEnvelope itself, where malformed ingress
+                    # must remain sanitizable rather than constructor-fatal.
+                    if ingress_clock_authority is None and isinstance(
+                        envelope.source_id, str
+                    ) and envelope.source_id:
+                        ingress_clock_authority = envelope.source_id
+                        ingress_clock_confidence = 1.0
                     if _fused_syncs and _fused_requires_envelope_clock_claim:
                         if (
                             ingress_clock_authority is None
@@ -4830,6 +4983,14 @@ async def _run_worker(
             at,
             scheduler=None,
         ):
+            # Historical duck-typed ``perceive_judged`` implementations
+            # return FireEvents directly.  The compatibility scheduler keeps
+            # that contract while provider-only lanes return completions.
+            if completions and not hasattr(completions[0], "completion_ordinal"):
+                materialized = _materialize_fires(completions, at=at)
+                async for incident in _emit_materialized(materialized):
+                    yield incident
+                return
             fires = []
             for completion in sorted(
                 completions,
@@ -4912,22 +5073,29 @@ async def _run_worker(
         async for envelope in video_stream:
             await _drain_owner_commands()
             if _fused_syncs and _fused_requires_envelope_clock_claim:
+                clock_authority = envelope.clock_authority
+                clock_confidence = envelope.clock_confidence
+                if clock_authority is None and isinstance(
+                    envelope.source_id, str
+                ) and envelope.source_id:
+                    clock_authority = envelope.source_id
+                    clock_confidence = 1.0
                 if (
-                    envelope.clock_authority is None
-                    or envelope.clock_confidence is None
-                    or float(envelope.clock_confidence) < _fused_clock_confidence
+                    clock_authority is None
+                    or clock_confidence is None
+                    or float(clock_confidence) < _fused_clock_confidence
                 ):
                     raise ValueError(
                         "fused video envelope omitted its qualified "
                         "clock authority/confidence"
                     )
                 if _video_clock_authority is None:
-                    _video_clock_authority = envelope.clock_authority
+                    _video_clock_authority = clock_authority
                 if (
-                    envelope.clock_authority != _video_clock_authority
+                    clock_authority != _video_clock_authority
                     or (
                         _audio_clock_authority is not None
-                        and envelope.clock_authority != _audio_clock_authority
+                        and clock_authority != _audio_clock_authority
                     )
                 ):
                     raise ValueError(
@@ -5050,8 +5218,6 @@ async def _run_worker(
                         source_watermark=float(t),
                     )
                     if synchronizer.accept(accepted_video):
-                        if synchronizer.generation_start_event_time is None:
-                            synchronizer.set_generation_start(float(t))
                         fused_anchors[goal_id] = accepted_video
             await _record_source_inspection(envelope, inspection, ts=t)
             # Async judge dispatch: surface everything the off-loop scheduler finished since the last
@@ -5665,14 +5831,22 @@ async def _run_worker(
                         yield incident
             if _judge_sched is not None:
                 if ordinary_goal_ids:
-                    jobs = await _prepare_split_jobs(
-                        judge_frame,
-                        ordinary_goal_ids,
-                        at=t,
-                        revision=goals_revision,
-                    )
-                    if jobs:
-                        _judge_sched.submit(t, jobs)
+                    if getattr(_judge_sched, "_legacy", None) is not None:
+                        # A caller-installed historical callback owns its
+                        # all-in-one perception implementation.  It accepts
+                        # the admitted frame directly, not split provider
+                        # jobs, and the legacy scheduler filters results when
+                        # that callback cannot accept goal_ids itself.
+                        _judge_sched.submit(t, judge_frame, ordinary_goal_ids)
+                    else:
+                        jobs = await _prepare_split_jobs(
+                            judge_frame,
+                            ordinary_goal_ids,
+                            at=t,
+                            revision=goals_revision,
+                        )
+                        if jobs:
+                            _judge_sched.submit(t, jobs)
                         # Give a non-blocking provider task one scheduling turn.
                         # Fast local/scripted adapters settle before the next
                         # frame; a slow provider remains off the capture path.
@@ -5689,15 +5863,22 @@ async def _run_worker(
                 if callable(legacy_inline):
                     _cov.judge_calls += 1
                     _cov.perceive_dispatches += 1
-                    fires = await legacy_inline(
-                        judge_frame,
-                        gate_source,
-                        t=t,
-                        expected_goals_revision=goals_revision,
-                        expected_source_generation=core.source_continuity_generation(
-                            gate_source
-                        ),
-                        goal_ids=ordinary_goal_ids,
+                    legacy_kwargs = {"t": t}
+                    if _accepts_keyword(
+                        legacy_inline, "expected_goals_revision"
+                    ):
+                        legacy_kwargs["expected_goals_revision"] = goals_revision
+                    if _accepts_keyword(
+                        legacy_inline, "expected_source_generation"
+                    ):
+                        legacy_kwargs["expected_source_generation"] = (
+                            core.source_continuity_generation(gate_source)
+                        )
+                    if _accepts_keyword(legacy_inline, "goal_ids"):
+                        legacy_kwargs["goal_ids"] = ordinary_goal_ids
+                    fires = _filter_goal_events(
+                        await legacy_inline(judge_frame, gate_source, **legacy_kwargs),
+                        ordinary_goal_ids,
                     )
                     async for incident in _emit_fires(fires, at=t):
                         yield incident
