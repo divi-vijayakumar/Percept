@@ -181,8 +181,25 @@ class FusedPureOrderingTests(unittest.TestCase):
             unit("audio", 4, 0.9, 1.4),
             unit("audio", 5, 1.4, 2.0),
         )
+        interleavings = tuple(
+            permutation
+            for permutation in itertools.permutations(candidates)
+            if tuple(
+                item.source_sequence
+                for item in permutation
+                if item.modality == "video"
+            )
+            == (1, 2)
+            and tuple(
+                item.source_sequence
+                for item in permutation
+                if item.modality == "audio"
+            )
+            == (4, 5)
+        )
+        self.assertEqual(len(interleavings), 6)
         observed = set()
-        for permutation in itertools.permutations(candidates):
+        for permutation in interleavings:
             sync = synchronizer(allowed_lateness_s=100.0)
             self.assertTrue(all(sync.accept(item) for item in permutation))
             sync.bundle_for(candidates[1])
@@ -227,7 +244,7 @@ class FusedPureOrderingTests(unittest.TestCase):
             sync.accept(
                 unit(
                     "audio",
-                    2,
+                    0,
                     9.9,
                     10.0,
                     observed_start=1.0,
@@ -252,7 +269,7 @@ class FusedPureOrderingTests(unittest.TestCase):
             sync.accept(
                 unit(
                     "audio",
-                    0,
+                    2,
                     9.7,
                     9.749999,
                     observed_start=1000.0,
@@ -669,7 +686,7 @@ class FusedPureBoundsAndIdentityTests(unittest.TestCase):
             "video", 1, 10.0, payload=b"v", source_watermark=11.0
         )
         fresh_audio = unit(
-            "audio", 3, 10.0, payload=b"aa", source_watermark=11.0
+            "audio", 3, 9.0, 10.0, payload=b"abcdefgh", source_watermark=11.0
         )
         sync.accept(fresh_video)
         sync.accept(fresh_audio)
