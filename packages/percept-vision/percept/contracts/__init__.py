@@ -803,17 +803,24 @@ EvidenceOrigin = Literal["judged", "transition"]
 
 
 def judgment_event_id(
-    goal_id: str, entity_id: "str | None", dispatch_seq: int
+    goal_id: str,
+    entity_id: "str | None",
+    dispatch_seq: int,
+    occurrence_id: "str | None" = None,
 ) -> str:
     """The OPAQUE, INJECTIVE handle joining a ``judgment.event`` trace row to the :class:`Incident`
-    it produced: ``"{goal}#{entity}#{seq}"``, each component percent-escaped before joining.
+    it produced: ``"{goal}#{entity}#{seq}"`` for an ordinary decision and
+    ``"{goal}#{entity}#{seq}#{occurrence}"`` when one provider dispatch reports multiple temporal
+    occurrences. Each component is percent-escaped before joining.
 
     OPAQUE to consumers: **equality-compare it, never parse it.** The escaping — ``%`` → ``%25``
     then ``#`` → ``%23``, applied IN EACH COMPONENT before the ``#`` separators are inserted —
-    guarantees injectivity: distinct ``(goal_id, entity_id, dispatch_seq)`` triples always map to
-    distinct ids, even when a raw ``goal_id``/``entity_id`` itself contains a ``#`` or ``%``. A
-    ``entity_id`` of ``None`` is treated as the empty string (a scene-scoped / non-entity fire), so a
-    ``None`` entity and an ``""`` entity share one handle by design.
+    guarantees injectivity, even when a raw component contains ``#`` or ``%``. ``occurrence_id=None``
+    preserves the original three-component identifier byte-for-byte. A non-``None`` occurrence id is
+    an honest discriminator for several decisions derived from one dispatch; it does not fabricate
+    additional dispatch sequence numbers. An ``entity_id`` of ``None`` is treated as the empty string
+    (a scene-scoped / non-entity fire), so a ``None`` entity and an ``""`` entity share one handle by
+    design.
     """
     def _esc(part: str) -> str:
         # ``%`` FIRST so the ``%23`` this step's ``#`` rule emits is never itself re-escaped.
@@ -822,7 +829,10 @@ def judgment_event_id(
     goal = _esc(str(goal_id))
     entity = _esc("" if entity_id is None else str(entity_id))
     seq = _esc(str(dispatch_seq))
-    return f"{goal}#{entity}#{seq}"
+    base = f"{goal}#{entity}#{seq}"
+    if occurrence_id is None:
+        return base
+    return f"{base}#{_esc(str(occurrence_id))}"
 
 
 @dataclass(frozen=True)
@@ -1020,6 +1030,11 @@ class JudgmentEvent:
     # (key's goal/entity, ``evidence_seq``) via :func:`judgment_event_id`, so storing it would carry zero
     # information; it lives on the delivered :class:`Incident`, the record a client actually correlates.
     evidence_origin: "EvidenceOrigin | None" = None
+    # One provider dispatch may report several bounded temporal occurrences. Those are distinct
+    # decisions over shared evidence, not pretend provider dispatches, so they retain one
+    # ``evidence_seq`` and carry this optional discriminator to keep their evidence links injective.
+    # ``None`` preserves the ordinary one-dispatch/one-decision contract byte-for-byte.
+    occurrence_id: str | None = None
 
 
 # ---------------------------------------------------------------------------

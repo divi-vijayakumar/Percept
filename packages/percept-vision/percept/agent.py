@@ -13,6 +13,7 @@ import inspect
 import math
 import time
 import warnings
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Callable, Hashable
 
@@ -421,7 +422,6 @@ def _readonly_provider_value(value: Any) -> Any:
 def _provider_input_copy(value: Any) -> Any:
     """Give one provider call a detached mutable view of frozen request data."""
     import copy
-    from collections.abc import Mapping
 
     if value is None or type(value) in (bool, int, float, str, bytes):
         return value
@@ -1887,10 +1887,71 @@ class Percept:
         )
         if fired is None:
             return None
+        return self._fire_event_from_executor(fired)
+
+    @staticmethod
+    def _fire_event_from_executor(fired: Any) -> FireEvent:
         return FireEvent(fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict,
                          fired.judgment, reason=fired.reason, modality=fired.modality,
                          roi=fired.roi, provenance=fired.provenance,
                          revision_id=fired.revision_id, supersedes=fired.supersedes)
+
+    def _fire_clip_occurrences(
+        self,
+        goal: Goal,
+        verdict: Verdict,
+        base_key: tuple,
+        *,
+        source_t: float,
+        context: Any,
+        freshness: float,
+        timing: JudgmentTimingBuilder | None,
+        evidence_seq: int,
+        outcome_sink: "Callable[[GateOutcome], None] | None" = None,
+    ) -> list[FireEvent]:
+        """Govern a provider's bounded clip-relative occurrence list."""
+        if not verdict.events:
+            return []
+        if not isinstance(context, Mapping):
+            return []
+        span_s = context.get("_percept_temporal_span_s")
+        if (
+            isinstance(span_s, bool)
+            or not isinstance(span_s, (int, float))
+            or not math.isfinite(float(span_s))
+            or float(span_s) <= 0.0
+        ):
+            return []
+        clip_end_t = float(source_t)
+        clip_start_t = clip_end_t - float(span_s)
+
+        def timing_for_source(event_source_t: float):
+            if timing is None:
+                return None
+            return JudgmentTimingBuilder(
+                clock=timing.clock,
+                ingest_observed_ts=timing.ingest_observed_ts,
+                admitted_ts=timing.admitted_ts,
+                judge_started_ts=timing.judge_started_ts,
+                judge_completed_ts=timing.judge_completed_ts,
+                source_media_ts=event_source_t,
+            )
+
+        return [
+            self._fire_event_from_executor(fired)
+            for fired in self.executor.fire_clip_events(
+                goal,
+                verdict,
+                base_key,
+                program_of(goal),
+                clip_start_t=clip_start_t,
+                clip_end_t=clip_end_t,
+                freshness=freshness,
+                timing_for_source=timing_for_source,
+                evidence_seq=evidence_seq,
+                outcome_sink=outcome_sink,
+            )
+        ]
 
     def perceive_boundary(self, goal_id: str, *, t: float = 0.0) -> FireEvent | None:
         """Consume one EDGE boundary (a detector's timed event — a rep peak, an audio onset) as a
@@ -3685,7 +3746,14 @@ class Percept:
                 verdict.confidence,
             )
         provider_verdict = verdict
-        if goal.state.get("rearm") == "each_event":
+        clip_events_present = bool(
+            goal.state.get("rearm") == "each_event"
+            and verdict.events
+        )
+        if (
+            goal.state.get("rearm") == "each_event"
+            and not clip_events_present
+        ):
             verdict = normalize_event_chain_verdict(verdict)
         self._note_judge_ok(base_key)
         timing = JudgmentTimingBuilder(clock=self.clock)
@@ -3707,7 +3775,7 @@ class Percept:
         else:
             self.last_supported[goal.id] = job.source_t
             ctx.perception_level = 0
-        if truth == "yes":
+        if truth == "yes" or clip_events_present:
             self.last_satisfied[goal.id] = job.source_t
         resolved: FireEvent | None = None
         if route_inputs.process_qa and verdict.running_answer:
@@ -3724,20 +3792,35 @@ class Percept:
         doc_fold = self._document_episode_fold(goal, verdict, job.source_t)
         claim_fold = self._claim_episode_fold(goal, verdict, job.source_t)
         gate_outcomes: list[GateOutcome] = []
-        fire = self._fire_concern(
-            goal,
-            verdict,
-            base_key,
-            freshness=freshness,
-            t=job.source_t,
-            timing=timing,
-            evidence_seq=token.evidence_seq,
-            fold=doc_fold if doc_fold is not None else claim_fold,
-            outcome_sink=gate_outcomes.append,
-        )
-        events = [] if fire is None else [fire]
-        if fire is not None:
-            if fire.action == FIRE:
+        if clip_events_present:
+            clip_fires = self._fire_clip_occurrences(
+                goal,
+                verdict,
+                base_key,
+                source_t=job.source_t,
+                context=job.context,
+                freshness=freshness,
+                timing=timing,
+                evidence_seq=token.evidence_seq,
+                outcome_sink=gate_outcomes.append,
+            )
+            fire = clip_fires[-1] if clip_fires else None
+            events = list(clip_fires)
+        else:
+            fire = self._fire_concern(
+                goal,
+                verdict,
+                base_key,
+                freshness=freshness,
+                t=job.source_t,
+                timing=timing,
+                evidence_seq=token.evidence_seq,
+                fold=doc_fold if doc_fold is not None else claim_fold,
+                outcome_sink=gate_outcomes.append,
+            )
+            events = [] if fire is None else [fire]
+        for emitted in events:
+            if emitted.action == FIRE:
                 self.funnel.fired(concern=goal.id, camera=token.source_id)
             else:
                 self.funnel.refused(concern=goal.id, camera=token.source_id)
@@ -3779,20 +3862,35 @@ class Percept:
                 goal, job.reducer.reducer_entity_id, verdict
             ),
         )
-        if fire is not None and fire.judgment is not None:
+        for emitted in events:
+            if emitted.judgment is None:
+                continue
             self._queue_judgment_trace(
                 job,
                 STAGE_JUDGMENT_EVENT,
                 goal_id=goal.id,
-                action=fire.judgment.action,
-                dispatch_seq=fire.judgment.evidence_seq,
+                action=emitted.judgment.action,
+                dispatch_seq=emitted.judgment.evidence_seq,
                 entity_id=job.reducer.reducer_entity_id,
                 judgment_event_id=judgment_event_id(
                     goal.id,
                     job.reducer.reducer_entity_id,
-                    fire.judgment.evidence_seq,
+                    emitted.judgment.evidence_seq,
+                    emitted.judgment.occurrence_id,
                 ),
-                evidence_origin=fire.judgment.evidence_origin or "judged",
+                evidence_origin=(
+                    emitted.judgment.evidence_origin or "judged"
+                ),
+                **(
+                    {
+                        "occurrence_revision_id": emitted.revision_id,
+                        "occurrence_source_t": (
+                            emitted.judgment.timing.source_media_ts
+                        ),
+                    }
+                    if clip_events_present
+                    else {}
+                ),
             )
         self._queue_judgment_trace(
             job,
@@ -4180,7 +4278,14 @@ class Percept:
             if _stale():
                 break  # source/goal generation moved while the judge was in flight: commit nothing
             provider_verdict = verdict
-            if goal.state.get("rearm") == "each_event":
+            clip_events_present = bool(
+                goal.state.get("rearm") == "each_event"
+                and verdict.events
+            )
+            if (
+                goal.state.get("rearm") == "each_event"
+                and not clip_events_present
+            ):
                 verdict = normalize_event_chain_verdict(verdict)
             self._note_judge_ok(base_key)  # a well-formed verdict resets this key's degrade streak
             resolved: FireEvent | None = None
@@ -4206,7 +4311,7 @@ class Percept:
             else:
                 self.last_supported[goal.id] = now  # a confident read = perceptual coverage
                 ctx.perception_level = 0  # decay: the (escalated) look resolved → back to the cheap default
-            if truth == "yes":
+            if truth == "yes" or clip_events_present:
                 self.last_satisfied[goal.id] = now  # deadline: the expected event happened
             # base_key computed earlier (before the judge call) — reused here unchanged.
             # GOVERNING for content-key AND claim-slot concerns only; every other concern gets
@@ -4215,18 +4320,33 @@ class Percept:
             doc_fold = self._document_episode_fold(goal, verdict, now)
             claim_fold = self._claim_episode_fold(goal, verdict, now)
             gate_outcomes: list[GateOutcome] = []
-            ev_fire = self._fire_concern(
-                goal, verdict, base_key, freshness=freshness, t=now,
-                timing=judgment_timing, evidence_seq=evidence_seq,
-                fold=doc_fold if doc_fold is not None else claim_fold,
-                outcome_sink=gate_outcomes.append,
-            )
-            if ev_fire is not None:
+            if clip_events_present:
+                clip_fires = self._fire_clip_occurrences(
+                    goal,
+                    verdict,
+                    base_key,
+                    source_t=now,
+                    context=judge_context,
+                    freshness=freshness,
+                    timing=judgment_timing,
+                    evidence_seq=evidence_seq,
+                    outcome_sink=gate_outcomes.append,
+                )
+                ev_fire = clip_fires[-1] if clip_fires else None
+            else:
+                ev_fire = self._fire_concern(
+                    goal, verdict, base_key, freshness=freshness, t=now,
+                    timing=judgment_timing, evidence_seq=evidence_seq,
+                    fold=doc_fold if doc_fold is not None else claim_fold,
+                    outcome_sink=gate_outcomes.append,
+                )
+                clip_fires = [] if ev_fire is None else [ev_fire]
+            for emitted in clip_fires:
                 if audio_only:
-                    ev_fire.audio_units = evidence_units
-                if ev_fire.action == FIRE:
+                    emitted.audio_units = evidence_units
+                if emitted.action == FIRE:
                     self.funnel.fired(concern=goal.id, camera=source)  # a rising-edge fire emitted
-                events.append(ev_fire)
+                events.append(emitted)
             if resolved is not None:  # the process-QA running answer crossed the bar this tick
                 self.funnel.fired(concern=goal.id, camera=source)
                 events.append(resolved)
@@ -4287,20 +4407,37 @@ class Percept:
                 # record; ``dispatch_seq`` carries the JudgmentEvent's OWN ADR-001 §8 per-key dispatch
                 # sequence, a distinct number, so neither meaning is lost (see
                 # tracing.STAGE_JUDGMENT_EVENT). Purely additive observability — governs nothing.
-                if ev_fire is not None and ev_fire.judgment is not None:
+                for emitted in clip_fires:
+                    if emitted.judgment is None:
+                        continue
                     await self._emit_trace(
                         trace_id, now, STAGE_JUDGMENT_EVENT, goal_id=goal.id,
-                        action=ev_fire.judgment.action,
-                        dispatch_seq=ev_fire.judgment.evidence_seq,
+                        action=emitted.judgment.action,
+                        dispatch_seq=emitted.judgment.evidence_seq,
                         entity_id=reducer_entity_id,
                         # The OPAQUE, INJECTIVE evidence link a client audit resolves: the SAME handle the
                         # delivered Incident carries (make_incident derives it from the same goal/entity/
                         # seq), so exactly one judgment.event row answers each incident.created. A None
                         # evidence_origin on the judged path reads as "judged" — stamp it explicitly here.
                         judgment_event_id=judgment_event_id(
-                            goal.id, reducer_entity_id, ev_fire.judgment.evidence_seq,
+                            goal.id,
+                            reducer_entity_id,
+                            emitted.judgment.evidence_seq,
+                            emitted.judgment.occurrence_id,
                         ),
-                        evidence_origin=ev_fire.judgment.evidence_origin or "judged",
+                        evidence_origin=(
+                            emitted.judgment.evidence_origin or "judged"
+                        ),
+                        **(
+                            {
+                                "occurrence_revision_id": emitted.revision_id,
+                                "occurrence_source_t": (
+                                    emitted.judgment.timing.source_media_ts
+                                ),
+                            }
+                            if clip_events_present
+                            else {}
+                        ),
                     )
                 # SHADOW — emit the subject + the fold the model WOULD have proposed, as ADVISORY
                 # trace data. It changes NOTHING (computed after the gate already classified, governs
@@ -6105,12 +6242,18 @@ class Percept:
         for ev in events:
             if getattr(ev, "_action_materialized", False):
                 continue
+            event_t = t
+            if (
+                ev.judgment is not None
+                and ev.judgment.timing.source_media_ts is not None
+            ):
+                event_t = ev.judgment.timing.source_media_ts
             self.action_log.record(
                 ActionRecord(
                     kind=ev.action,
                     goal_id=ev.goal_id,
                     detail={"text": ev.text, "entity_id": ev.entity_id},
-                    t=t,
+                    t=event_t,
                 )
             )
             ev._action_materialized = True

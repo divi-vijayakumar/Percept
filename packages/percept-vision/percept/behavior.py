@@ -32,6 +32,7 @@ byte-for-byte equivalence with the legacy per-sense firing paths it replaced.
 from __future__ import annotations
 
 import ast
+import math
 from dataclasses import dataclass, field, replace
 from typing import Callable, Hashable, Literal
 
@@ -40,6 +41,7 @@ from .behavior_routes import is_known_behavior_type
 from .concern import consequence_of, is_hard_quadrant
 from .contracts import (
     Box,
+    ClipEvent,
     EvidenceModality,
     JudgmentEvent,
     JudgmentProvenance,
@@ -285,6 +287,17 @@ class OccurrenceState:
     episode_id: str | None = None
     emitted: bool = False
     pre_since: float | None = None
+    recent_events: list["OccurrenceInterval"] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class OccurrenceInterval:
+    """One source-aligned occurrence already governed for deduplication."""
+
+    source_start_t: float
+    source_end_t: float
+    episode_id: str
+    label: str = ""
 
 
 def normalize_event_chain_verdict(verdict: Verdict) -> Verdict:
@@ -928,6 +941,183 @@ class BehaviorExecutor:
         # episode fold makes subsequent overlapping post windows idempotent.
         return replace(verdict, satisfied=True), fold, state
 
+    @staticmethod
+    def _same_clip_occurrence(
+        prior: OccurrenceInterval,
+        start_t: float,
+        end_t: float,
+    ) -> bool:
+        """Match a restated event from an overlapping sliding window.
+
+        Exact event chains must preserve rapid adjacent occurrences, so a mere
+        small gap is never a match. Non-zero intervals match only by temporal
+        overlap; instantaneous events use a narrow timestamp tolerance.
+        """
+        prior_duration = max(0.0, prior.source_end_t - prior.source_start_t)
+        duration = max(0.0, end_t - start_t)
+        if prior_duration == 0.0 and duration == 0.0:
+            return abs(prior.source_start_t - start_t) <= 0.04
+        overlap = max(
+            0.0,
+            min(prior.source_end_t, end_t)
+            - max(prior.source_start_t, start_t),
+        )
+        shorter = min(prior_duration, duration)
+        return shorter > 0.0 and overlap / shorter >= 0.5
+
+    def fire_clip_events(
+        self,
+        goal,
+        verdict: Verdict,
+        base_key: tuple,
+        program: BehaviorProgram,
+        *,
+        clip_start_t: float,
+        clip_end_t: float,
+        freshness: float = 1.0,
+        metric: str = "gate",
+        timing_for_source: (
+            Callable[[float], JudgmentTimingBuilder | None] | None
+        ) = None,
+        evidence_seq: int = 0,
+        outcome_sink: "Callable[[GateOutcome], None] | None" = None,
+    ) -> list[Fired]:
+        """Govern every distinct clip-relative event in one provider verdict.
+
+        ``Verdict.events`` is authoritative when present: one temporal window
+        may contain several completed/visible occurrences. Events are aligned
+        to source time, deduplicated against overlapping prior windows, and
+        each novel occurrence owns one episode/revision and one rising edge.
+        """
+        if not verdict.events or clip_end_t < clip_start_t:
+            return []
+        if classify(
+            verdict,
+            freshness,
+            self.gate.threshold,
+            self.gate.fresh_min,
+        ) == "unknown":
+            return []
+        span_s = clip_end_t - clip_start_t
+        entity = base_key[-1]
+        ctx = self.ctx(goal.id)
+        if entity not in ctx.occurrences and len(ctx.occurrences) >= 256:
+            ctx.occurrences.pop(next(iter(ctx.occurrences)))
+            self.metrics.incr(f"{metric}.event_chain_entity_evicted")
+        state = ctx.occurrences.setdefault(entity, OccurrenceState())
+        retain_after = clip_start_t - max(
+            float(program.perception.window_s or 0.0),
+            0.25,
+        )
+        state.recent_events[:] = [
+            item
+            for item in state.recent_events
+            if item.source_end_t >= retain_after
+        ]
+
+        aligned: list[tuple[ClipEvent, float, float]] = []
+        for event in verdict.events[:64]:
+            start = float(event.t_start)
+            raw_end = event.t_end
+            end = start if raw_end is None else float(raw_end)
+            if (
+                not math.isfinite(start)
+                or not math.isfinite(end)
+                or start < 0.0
+                or end < start
+                or start > span_s
+            ):
+                self.metrics.incr(f"{metric}.event_chain_event_invalid")
+                continue
+            end = min(end, span_s)
+            aligned.append(
+                (
+                    event,
+                    clip_start_t + start,
+                    clip_start_t + end,
+                )
+            )
+        aligned.sort(key=lambda item: (item[1], item[2], item[0].label))
+
+        fired_events: list[Fired] = []
+        non_chain_program = replace(
+            program,
+            key=replace(program.key, each_event=False),
+        )
+        for event, source_start_t, source_end_t in aligned:
+            if any(
+                self._same_clip_occurrence(
+                    prior,
+                    source_start_t,
+                    source_end_t,
+                )
+                for prior in state.recent_events
+            ):
+                self.metrics.incr(
+                    f"{metric}.event_chain_overlap_suppressed"
+                )
+                continue
+            state.sequence += 1
+            episode_entity = "scene" if entity is None else entity
+            episode_id = (
+                f"{goal.id}:event:{episode_entity}:{state.sequence}"
+            )
+            state.recent_events.append(
+                OccurrenceInterval(
+                    source_start_t=source_start_t,
+                    source_end_t=source_end_t,
+                    episode_id=episode_id,
+                    label=event.label,
+                )
+            )
+            if len(state.recent_events) > 64:
+                del state.recent_events[: len(state.recent_events) - 64]
+                self.metrics.incr(
+                    f"{metric}.event_chain_interval_evicted"
+                )
+            state.episode_id = episode_id
+            state.phase = "post"
+            state.pre_since = None
+            state.emitted = False
+            event_verdict = replace(
+                verdict,
+                satisfied=True,
+                phase="post",
+                action_present=False,
+                events=[event],
+            )
+            fold = EpisodeFoldResult(
+                episode_id=episode_id,
+                match="new",
+                mutation="none",
+                should_rearm=True,
+                should_evaluate_gate=True,
+            )
+            timing = (
+                timing_for_source(source_end_t)
+                if timing_for_source is not None
+                else None
+            )
+            fired = self.fire_judged(
+                goal,
+                event_verdict,
+                base_key,
+                non_chain_program,
+                freshness=freshness,
+                t=source_end_t,
+                metric=metric,
+                timing=timing,
+                evidence_seq=evidence_seq,
+                fold=fold,
+                occurrence_id=episode_id,
+                outcome_sink=outcome_sink,
+            )
+            if fired is not None:
+                state.emitted = True
+                fired_events.append(fired)
+            self.metrics.incr(f"{metric}.event_chain_interval_opened")
+        return fired_events
+
     # -- judge / event sense: replicates agent._fire_concern byte-for-byte ----------------------
     def fire_judged(
         self,
@@ -942,6 +1132,7 @@ class BehaviorExecutor:
         timing: JudgmentTimingBuilder | None = None,
         evidence_seq: int = 0,
         fold: "EpisodeFoldResult | None" = None,
+        occurrence_id: str | None = None,
         outcome_sink: "Callable[[GateOutcome], None] | None" = None,
     ) -> Fired | None:
         """Run one judged concern through the (unchanged) gate and return the firing, if any.
@@ -1063,20 +1254,42 @@ class BehaviorExecutor:
             if is_hard_quadrant(consequence_of(goal)):  # a hard-quadrant consequence escalates to ASK
                 self.metrics.incr("consequence.escalate")
                 return Fired(goal.id, ASK, escalate_text(goal), base_key[-1], verdict,
-                             self._judgment(key, evidence_seq, ASK, timing, env),
+                             self._judgment(
+                                 key,
+                                 evidence_seq,
+                                 ASK,
+                                 timing,
+                                 env,
+                                 occurrence_id=occurrence_id,
+                             ),
                              revision_id=revision, supersedes=supersedes, **env)
             return Fired(goal.id, FIRE, goal.say, base_key[-1], verdict,
-                         self._judgment(key, evidence_seq, FIRE, timing, env),
+                         self._judgment(
+                             key,
+                             evidence_seq,
+                             FIRE,
+                             timing,
+                             env,
+                             occurrence_id=occurrence_id,
+                         ),
                          revision_id=revision, supersedes=supersedes, **env)
         if action == ASK:
             return Fired(goal.id, ASK, ask_text(goal), base_key[-1], verdict,
-                         self._judgment(key, evidence_seq, ASK, timing, env), **env)
+                         self._judgment(
+                             key,
+                             evidence_seq,
+                             ASK,
+                             timing,
+                             env,
+                             occurrence_id=occurrence_id,
+                         ), **env)
         return None
 
     # -- The ONE production construction site of the contract's centre ----------------------
     def _judgment(
         self, key: tuple, evidence_seq: int, action: str,
         timing: JudgmentTimingBuilder | None, env: dict | None = None,
+        *, occurrence_id: str | None = None,
     ) -> JudgmentEvent | None:
         """Freeze this decision into a :class:`~percept.contracts.JudgmentEvent`, or ``None``.
 
@@ -1098,6 +1311,7 @@ class BehaviorExecutor:
                 reason=env.get("reason"), roi=env.get("roi"),
                 modality=env.get("modality"), provenance=env.get("provenance"),
                 evidence_origin=env.get("evidence_origin"),
+                occurrence_id=occurrence_id,
             )
         except Exception as exc:  # never let an observability record perturb the firing path
             self.metrics.incr("judgment.build_failed")

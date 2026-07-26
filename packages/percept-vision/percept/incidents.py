@@ -65,7 +65,21 @@ def make_incident(
     # each delivered Incident. Derived only when the fire carried a JudgmentEvent (evidence_seq is not
     # None); ``None`` otherwise, never a fabricated link. ``evidence_origin`` is copied straight off the
     # fire's JudgmentEvent (``judged`` vs ``transition``); ``None`` reads as ``judged``.
-    jid = judgment_event_id(goal_id, entity_id, evidence_seq) if evidence_seq is not None else None
+    occurrence_id = (
+        getattr(judgment, "occurrence_id", None)
+        if judgment is not None
+        else None
+    )
+    jid = (
+        judgment_event_id(
+            goal_id,
+            entity_id,
+            evidence_seq,
+            occurrence_id,
+        )
+        if evidence_seq is not None
+        else None
+    )
     evidence_origin = getattr(judgment, "evidence_origin", None) if judgment is not None else None
     # The episode-owned provisional/superseding link, read once off the fire and used for BOTH the
     # 1.8 wire fields below and the runtime-local mirror further down.
