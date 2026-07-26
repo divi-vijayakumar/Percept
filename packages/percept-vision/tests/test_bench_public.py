@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 import json
 import os
+import runpy
 import subprocess
 import sys
 from contextlib import redirect_stdout
@@ -260,7 +261,12 @@ class TestPublicBenchShim(unittest.TestCase):
         self.assertEqual(coverage[0].positive_events, 2)
 
     def test_result_json_round_trip_preserves_resolved_configuration(self):
-        from tools.percept_benchmark import _json_safe_result, _track_result_from_json
+        namespace = runpy.run_path(
+            str(ROOT / "tools" / "percept_benchmark.py"),
+            run_name="percept_benchmark_round_trip_test",
+        )
+        json_safe_result = namespace["_json_safe_result"]
+        track_result_from_json = namespace["_track_result_from_json"]
 
         result = TrackResult(
             track="pt-action-e2e",
@@ -279,8 +285,8 @@ class TestPublicBenchShim(unittest.TestCase):
             },
         )
 
-        restored = _track_result_from_json(
-            json.loads(json.dumps(_json_safe_result(result)))
+        restored = track_result_from_json(
+            json.loads(json.dumps(json_safe_result(result)))
         )
 
         self.assertEqual(restored.configuration, result.configuration)

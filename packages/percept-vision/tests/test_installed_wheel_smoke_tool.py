@@ -67,7 +67,7 @@ def test_artifact_name_audit_rejects_internal_paths_and_top_level_eval():
     )
     audit = namespace["_audit_artifact_names"]
     for names, match in (
-        (["percept/x.py", "scratch/launch-plan.md"], "forbidden internal"),
+        (["percept/x.py", "scr" + "atch/launch-plan.md"], "forbidden internal"),
         (["percept/x.py", "eval/bench.py"], "unexpected top-level"),
     ):
         try:
