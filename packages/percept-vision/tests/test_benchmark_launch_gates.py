@@ -370,7 +370,7 @@ class BenchmarkLaunchGateTests(unittest.TestCase):
             )
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertGreater(scorecard.stat().st_size, 0)
-            self.assertIn("Cloud provider cost gate: BLOCKED", run.stdout)
+            self.assertIn("provider qualification: BLOCKED", run.stdout)
 
             reproduced = Path(d) / "reproduced.txt"
             run = subprocess.run(
@@ -396,7 +396,7 @@ class BenchmarkLaunchGateTests(unittest.TestCase):
             self.assertIn("REPRODUCTION: PASS", run.stdout)
             self.assertIn("OSS LAUNCH QUALIFICATION: BLOCKED", run.stdout)
 
-    def test_live_scorecard_blocks_before_provider_call_without_key_or_budget(self):
+    def test_legacy_live_scorecard_migrates_before_provider_call(self):
         env = _env(
             PERCEPT_VISION_BACKEND="gemini",
             GEMINI_API_KEY="",
@@ -420,11 +420,10 @@ class BenchmarkLaunchGateTests(unittest.TestCase):
             text=True,
         )
         self.assertEqual(run.returncode, 2, run.stdout + run.stderr)
-        self.assertIn("BENCHMARK LIVE GATE: BLOCKED", run.stdout)
-        self.assertIn("credential missing", run.stdout)
-        self.assertIn("budget plan invalid", run.stdout)
+        self.assertIn("SCORECARD LIVE PATH REMOVED", run.stdout)
+        self.assertIn("--sdk-wheel", run.stdout)
 
-    def test_release_scorecard_blocks_on_absent_media_before_provider_call(self):
+    def test_legacy_release_scorecard_migrates_before_provider_call(self):
         with TemporaryDirectory() as d:
             manifest = Path(d) / "MANIFEST.json"
             manifest.write_text(
@@ -489,9 +488,8 @@ class BenchmarkLaunchGateTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(run.returncode, 2, run.stdout + run.stderr)
-            self.assertIn("BENCHMARK LIVE GATE: BLOCKED", run.stdout)
-            self.assertIn("release media missing/empty", run.stdout)
-            self.assertIn("hard spend enforcement is unavailable", run.stdout)
+            self.assertIn("SCORECARD LIVE PATH REMOVED", run.stdout)
+            self.assertIn("--sdk-wheel", run.stdout)
 
     def test_qwen_n20_preflight_reports_pinned_capacity_without_provider_call(self):
         model = "qwen/qwen3-vl-32b-instruct"

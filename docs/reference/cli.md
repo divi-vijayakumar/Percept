@@ -183,7 +183,7 @@ Per-concern precision/recall over a labelled-clip manifest, plus `scorecard` and
 | Invocation | Effect |
 |---|---|
 | `percept-bench <manifest.json>` | per-concern P/R over the clips in the manifest |
-| `percept-bench scorecard [--manifest ... --out ... --mode full --require-release]` | multi-track snapshot card |
+| `percept-bench scorecard [--manifest ... --out ...]` | offline diagnostic snapshot; live qualification uses the installed-wheel runner |
 | `percept-bench audit [--manifest ... --baselines ... --release]` | validate golden manifest + baseline artifacts |
 
 The real harness lives in the top-level `eval` package, which ships with the **source repo, not the

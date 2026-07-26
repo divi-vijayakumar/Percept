@@ -7,7 +7,7 @@ The public names are re-exported **lazily** (PEP 562 ``__getattr__``), and the C
 "run from a checkout" note instead of crashing at import on a bare wheel install.
 
     percept-bench eval/benchmark_ci_gate/manifest.json  # per-concern P/R
-    percept-bench scorecard --manifest <path>          # multi-track benchmark card
+    percept-bench scorecard --manifest <path>          # offline diagnostic snapshot
     percept-bench audit                                # validate golden artifacts
 """
 
@@ -91,7 +91,7 @@ def _reproduce_main(argv: list[str] | None = None) -> int:
 
     ap = argparse.ArgumentParser(
         prog="percept-bench reproduce",
-        description="Reproduce the keyless OSS scorecard artifact (Cloud qualification is separate).",
+        description="Reproduce the keyless OSS diagnostic scorecard artifact.",
     )
     ap.add_argument("--manifest", default="eval/golden-v1/MANIFEST.json")
     ap.add_argument("--baselines", default="packages/percept-vision/eval/baselines.json")
@@ -126,7 +126,7 @@ def _reproduce_main(argv: list[str] | None = None) -> int:
         "missing coverage, and skipped tracks; call reduction is not matched-quality/same-archetype."
     )
     print(
-        "Cloud provider cost qualification: BLOCKED — validated budget declaration is not hard "
+        "Provider cost qualification: BLOCKED — validated budget declaration is not hard "
         "spend enforcement."
     )
     return 0
@@ -136,7 +136,8 @@ def main(argv: list[str] | None = None) -> int:
     """Run the public benchmark CLI.
 
     ``percept-bench manifest.json`` runs the per-concern P/R harness.
-    ``percept-bench scorecard`` emits the multi-track snapshot card.
+    ``percept-bench scorecard`` emits the offline diagnostic snapshot card. Live
+    qualification uses the repository's installed-wheel runtime-v2 runner.
     """
     if argv is None:
         argv = sys.argv[1:]
@@ -180,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def scorecard_main(argv: list[str] | None = None) -> int:
-    """Emit the public multi-track benchmark snapshot card."""
+    """Emit the public offline diagnostic benchmark snapshot card."""
     from eval.bench.run import main as _scorecard_main  # lazy: repo-only harness
 
     return _scorecard_main(argv)

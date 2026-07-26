@@ -82,6 +82,25 @@ class TestPublicBenchShim(unittest.TestCase):
             self.assertIn("RELEASE GATE: BLOCKED", buf.getvalue())
             self.assertFalse(out.exists())
 
+    def test_legacy_scorecard_live_path_refuses_provider_spend(self):
+        with TemporaryDirectory() as d:
+            manifest = Path(d) / "MANIFEST.json"
+            _write_manifest(manifest)
+            buf = StringIO()
+            with redirect_stdout(buf):
+                rc = bench.main(
+                    [
+                        "scorecard",
+                        "--live",
+                        "--manifest",
+                        str(manifest),
+                    ]
+                )
+            self.assertEqual(rc, 2)
+            text = buf.getvalue()
+            self.assertIn("SCORECARD LIVE PATH REMOVED", text)
+            self.assertIn("--sdk-wheel", text)
+
     def test_release_gate_allows_dense_modeled_cost_reference(self):
         result = TrackResult(
             track="pt-action-e2e",

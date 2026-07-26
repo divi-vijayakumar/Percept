@@ -1,12 +1,11 @@
-"""Phase-A v0.5 runner — score the tracks and emit the DRAFT Snapshot Card.
+"""Legacy offline snapshot renderer.
 
 Offline smoke (no API, renders the benchmark card with stub cells):
     PYTHONPATH=packages/percept-vision python3.12 -m eval.bench.run
-Live sampled:
-    PERCEPT_LIVE=1 PYTHONPATH=... python3.12 -m eval.bench.run --live --n 20
 
-Live mode intentionally skips legacy dense/raw media-bearing tracks. Publishable benchmark runs should
-use edge/E2E candidate calls only; dense call counts are modeled from the sampling schedule.
+The historical ``--live`` flag is retained only to return a migration error. Provider qualification
+must use ``tools/percept_benchmark.py run --live --sdk-wheel ...`` so it executes the installed
+compiled runtime, pins the exact artifact, and emits the v2 accounting contract.
 """
 
 from __future__ import annotations
@@ -23,12 +22,10 @@ from . import (
     track_counting,
     track_cuespeak,
     track_edge_recall,
-    track_perception_test_e2e,
     track_relational,
     track_timeliness,
     track_timespeak,
 )
-from .types import apply_acceptance_gates
 
 
 def _commit() -> str:
@@ -46,10 +43,8 @@ def _manifest_ref(path: str | None) -> str:
     return f"{p.as_posix()} sha256:{digest}"
 
 
-def _backend_label(live: bool) -> str:
-    if not live:
-        return "fake (offline stub)"
-    return os.environ.get("PERCEPT_VISION_MODEL") or os.environ.get("PERCEPT_GEMINI_MODEL") or "gemini"
+def _backend_label() -> str:
+    return "fake (offline stub)"
 
 
 def _live_prerequisite_blockers(
@@ -180,7 +175,11 @@ def _live_prerequisite_blockers(
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     mode = ap.add_mutually_exclusive_group()
-    mode.add_argument("--live", action="store_true", help="run a real configured provider")
+    mode.add_argument(
+        "--live",
+        action="store_true",
+        help="unsupported legacy flag; use tools/percept_benchmark.py with --sdk-wheel",
+    )
     mode.add_argument(
         "--offline",
         action="store_true",
@@ -200,13 +199,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
 
+    if args.live:
+        print(
+            "SCORECARD LIVE PATH REMOVED — use the installed-wheel runtime-v2 runner:\n"
+            "  <wheel-venv>/bin/python tools/percept_benchmark.py run --live "
+            "--sdk-wheel <exact.whl> --tracks pt-action-e2e --n 1"
+        )
+        return 2
     if not args.manifest:
         print("SCORECARD EXECUTION FAILED: a non-empty benchmark manifest is required")
         return 1
     try:
         from .validate import ValidationError, validate_golden_manifest
 
-        manifest_data = validate_golden_manifest(
+        validate_golden_manifest(
             args.manifest,
             release=False,
         )
@@ -214,38 +220,27 @@ def main(argv: list[str] | None = None) -> int:
         print(f"SCORECARD EXECUTION FAILED: manifest audit failed: {exc}")
         return 1
 
-    if args.live:
-        from eval._dotenv import load_dotenv
-        load_dotenv()
-        blockers = _live_prerequisite_blockers(
-            manifest=args.manifest,
-            release=args.require_release,
-            n=args.n,
-            tracks=["pt-action-e2e"],
+    if args.require_release:
+        print(
+            "BENCHMARK RELEASE GATE: BLOCKED — the offline diagnostic cannot "
+            "qualify; use tools/percept_benchmark.py with --live --sdk-wheel"
         )
-        if blockers:
-            print("BENCHMARK LIVE GATE: BLOCKED")
-            for blocker in blockers:
-                print(f"  - {blocker}")
-            return 2
-    elif args.require_release:
-        print("BENCHMARK RELEASE GATE: BLOCKED — release qualification requires --live")
         return 2
 
     results = []
-    if args.live:
-        # OSS launch qualification has one canonical live lane. The other
-        # modules remain directly runnable diagnostics until they are migrated
-        # to the compiled runtime-v2 result contract.
-        tracks = (track_perception_test_e2e,)
-    else:
-        tracks = (track_relational, track_counting, track_acoustic_pt, track_timeliness, track_edge_recall,
-                  track_cuespeak, track_timespeak)
+    tracks = (
+        track_relational,
+        track_counting,
+        track_acoustic_pt,
+        track_timeliness,
+        track_edge_recall,
+        track_cuespeak,
+        track_timespeak,
+    )
     previous_mode = os.environ.get("PERCEPT_MODE")
     previous_manifest = os.environ.get("PERCEPT_BENCH_MANIFEST")
     os.environ["PERCEPT_BENCH_MANIFEST"] = str(Path(args.manifest).resolve())
-    if not args.live:
-        os.environ["PERCEPT_MODE"] = "offline"
+    os.environ["PERCEPT_MODE"] = "offline"
     try:
         for mod in tracks:
             try:
@@ -257,48 +252,21 @@ def main(argv: list[str] | None = None) -> int:
                                            excluded=[f"{getattr(mod, 'TRACK', '?')}: {exc}"],
                                            status="failed"))
     finally:
-        if not args.live:
-            if previous_mode is None:
-                os.environ.pop("PERCEPT_MODE", None)
-            else:
-                os.environ["PERCEPT_MODE"] = previous_mode
+        if previous_mode is None:
+            os.environ.pop("PERCEPT_MODE", None)
+        else:
+            os.environ["PERCEPT_MODE"] = previous_mode
         if previous_manifest is None:
             os.environ.pop("PERCEPT_BENCH_MANIFEST", None)
         else:
             os.environ["PERCEPT_BENCH_MANIFEST"] = previous_manifest
-
-    if args.require_release:
-        from .validate import manifest_runner_map
-
-        mappings = list(
-            manifest_runner_map(
-                manifest_data,
-                require_all_tracks=True,
-            ).values()
-        )
-        for result in results:
-            mapping = next(
-                (
-                    item
-                    for item in mappings
-                    if item["result_track"] == result.track
-                ),
-                None,
-            )
-            acceptance = (
-                mapping.get("acceptance")
-                if mapping is not None
-                else None
-            )
-            if isinstance(acceptance, dict) and acceptance:
-                apply_acceptance_gates(result, acceptance)
 
     execution_blockers = card.execution_blockers(results)
     if execution_blockers:
         print("SCORECARD EXECUTION FAILED: " + "; ".join(execution_blockers))
         return 1
 
-    backend = _backend_label(args.live)
+    backend = _backend_label()
     auroc = next((r.cells.get(("core-replay", "auroc")) for r in results if r.track == "relational"), None)
     manifest_ref = _manifest_ref(args.manifest)
     stamp = card.stamp_of(args.mode, results, manifest_ref)
@@ -324,13 +292,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.require_release and stamp != "RELEASE":
         print("SCORECARD RELEASE GATE: BLOCKED — rendered benchmark card is DRAFT")
         return 1
-    if args.live:
-        print(f"BENCHMARK LIVE GATE: {'PASS' if stamp == 'RELEASE' else 'DRAFT'}")
-    else:
-        print(
-            "OFFLINE REPRODUCTION: PASS — deterministic/keyless scorecard executed; "
-            "Cloud provider cost gate: BLOCKED (not run)"
-        )
+    print(
+        "OFFLINE REPRODUCTION: PASS — deterministic/keyless scorecard executed; "
+        "provider qualification: BLOCKED (not run)"
+    )
     return 0
 
 

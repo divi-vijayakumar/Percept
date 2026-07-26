@@ -40,15 +40,16 @@ proves SDK mechanics, not provider perception quality.
 
 ## Snapshot scorecard
 
-The scorecard renders a multi-track benchmark card. Offline it fills cells with deterministic stubs; real
-numbers need `--live` and provider keys.
+The public `percept-bench scorecard` command renders an offline multi-track diagnostic with
+deterministic stubs. It does not make provider claims.
 
 ```bash
 PYTHONPATH=packages/percept-vision python3 -m percept.bench scorecard \
     --manifest eval/golden-v1/MANIFEST.json --out scorecard.txt
 ```
 
-This is exactly what `make scorecard` runs. Add `--live` (plus keys) to score real cells.
+This is exactly what `make scorecard` runs. The old direct `--live` path is disabled because it did
+not pin or execute an exact installed wheel; use `make benchmark-run` for provider evidence.
 
 The benchmark card carries a **stamp**. It is `DRAFT` unless the run is `mode=full`, points at a pinned release
 manifest, has no modeled cells, and passes coverage — only then is it `RELEASE`. Pass

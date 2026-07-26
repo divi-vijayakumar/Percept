@@ -137,7 +137,8 @@ make benchmark-run LIVE=1 TRACKS=pt-action-e2e N=20 WORKERS=1 ATTEMPTS=1 \
   BENCH_PY=.benchmark-venv/bin/python \
   SDK_WHEEL=dist/percept_vision-1.0.0-py3-none-any.whl
 
-# Direct lower-level experiment lanes remain available:
+# Direct lower-level experiment lanes remain available as diagnostics only.
+# They cannot produce the installed-wheel runtime-v2 release stamp:
 PERCEPT_LIVE=1 make e2e-bench
 PERCEPT_LIVE=1 make charades-bench
 PERCEPT_LIVE=1 PYTHONPATH=packages/percept-vision python3 -m eval.exp_charades_miou
