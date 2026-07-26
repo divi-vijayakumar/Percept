@@ -39,8 +39,8 @@ _DEFAULT_TIMEOUT_S = 120.0  # generous headroom for a slow open-weight model; a 
 # ``vendor/model`` id (see ``_resolve_model``). Keeps a shared cross-backend setting from silently
 # leaking a Claude/Gemini model id (e.g. "claude-opus-4-8") into an OpenRouter call, which then fails.
 _DEFAULT_MODEL = "qwen/qwen3-vl-32b-instruct"
-# OpenRouter's opt-in usage-accounting extension: without it, ``usage`` (and the ``cost`` it carries) is
-# absent from the response and the token/cost funnel silently reads 0 forever (see ``_usage_of``).
+# OpenRouter now includes usage/cost automatically. Keep the former include request for compatibility
+# with older gateways; current OpenRouter treats it as a deprecated no-op.
 _USAGE_EXTRA_BODY = {"usage": {"include": True}}
 
 
@@ -121,13 +121,12 @@ def _image_block(frame: Any) -> dict:
 
 
 def _usage_of(resp: Any) -> dict:
-    """Pull token usage (+ cost, when OpenRouter's usage-accounting extension is on) off an
+    """Pull token usage and billed cost off an
     OpenAI/OpenRouter chat completion for ``Verdict.usage`` (read by ``observability.judge_usage`` →
     the cost/token funnel). Defensive: no ``usage`` → ``{}`` — the metering hook stays a no-op.
 
-    ``cost`` only appears when the request set ``extra_body={"usage": {"include": True}}``
-    (:data:`_USAGE_EXTRA_BODY`, sent on every judge call below); without it OpenRouter omits ``usage``
-    entirely and this always degrades to ``{}`` — the bug this reconciles.
+    Current OpenRouter responses include this accounting automatically. We still send
+    :data:`_USAGE_EXTRA_BODY` for compatibility with older gateways.
     """
     usage = getattr(resp, "usage", None)
     if usage is None and isinstance(resp, dict):
@@ -310,7 +309,7 @@ class OpenRouterVision:
             model=self._model,
             messages=messages,
             max_tokens=1024,  # headroom: a thinking/open model can spend tokens before the JSON verdict
-            extra_body=_USAGE_EXTRA_BODY,  # ask OpenRouter to include usage/cost on the response
+            extra_body=_USAGE_EXTRA_BODY,  # compatibility with older OpenRouter gateways
         )
         verdict = _parse_verdict(_text_of(resp), claim_mode=claim_mode)
         verdict.usage = _usage_of(resp)  # 1.3 metering: token/cost funnel (was always {})
