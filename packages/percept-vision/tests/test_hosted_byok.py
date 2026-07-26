@@ -115,13 +115,21 @@ def _write_production_transport_fakes(
             import asyncio
             import os
             from pathlib import Path
+            import socket
+            import subprocess
             import sys
+            import threading
             import time
 
             BLOCKED = {sorted(_HOSTILE_STARTUP_ENV_KEYS)!r}
             BEHAVIOR = {behavior!r}
             EFFECT_PATH = Path({str(effect_path)!r})
             CALL_PATH = Path({str(call_path)!r})
+
+            def late_effect():
+                delay = 2.25 if BEHAVIOR in {{"timeout", "slow-close"}} else 0.25
+                time.sleep(delay)
+                EFFECT_PATH.write_text("late-thread-or-detached-effect")
 
             def verify_and_attempt_detached(secret, trust_env):
                 if secret in "\\0".join(sys.argv):
@@ -133,22 +141,46 @@ def _write_production_transport_fakes(
                 if trust_env is not False:
                     raise RuntimeError("transport still trusts process environment")
                 CALL_PATH.write_text("provider-called")
+                threading.Thread(target=late_effect, daemon=False).start()
                 try:
                     pid = os.fork()
                 except OSError:
-                    return
-                if pid == 0:
+                    pid = None
+                if pid is not None:
+                    if pid == 0:
+                        try:
+                            os.setsid()
+                        except OSError:
+                            pass
+                        late_effect()
+                        os._exit(0)
+                    raise RuntimeError("detached child creation was not contained")
+                try:
+                    escaped = subprocess.Popen(["/bin/true"])
+                except OSError:
+                    escaped = None
+                if escaped is not None:
+                    escaped.kill()
+                    escaped.wait()
+                    raise RuntimeError("subprocess creation was not contained")
+                if sys.platform.startswith("linux"):
                     try:
-                        os.setsid()
+                        os.execve("/bin/true", ["true"], {{}})
                     except OSError:
                         pass
-                    time.sleep(0.25)
-                    EFFECT_PATH.write_text("late-detached-effect")
-                    os._exit(0)
-                raise RuntimeError("detached child creation was not contained")
+                    else:
+                        raise RuntimeError("exec was not contained")
+
+            async def exercise_required_thread_paths():
+                loop = asyncio.get_running_loop()
+                addresses = await loop.run_in_executor(
+                    None, socket.getaddrinfo, "localhost", 443
+                )
+                if not addresses:
+                    raise RuntimeError("default-executor DNS path failed")
 
             async def maybe_wait():
-                if BEHAVIOR == "wait":
+                if BEHAVIOR in {{"timeout", "cancel"}}:
                     await asyncio.sleep(60)
 
             async def maybe_close():
@@ -176,7 +208,12 @@ def _write_production_transport_fakes(
             """
             import json
             from types import SimpleNamespace
-            from fake_transport_common import maybe_close, maybe_wait, verify_and_attempt_detached
+            from fake_transport_common import (
+                exercise_required_thread_paths,
+                maybe_close,
+                maybe_wait,
+                verify_and_attempt_detached,
+            )
 
             class _Completions:
                 def __init__(self, owner):
@@ -184,6 +221,7 @@ def _write_production_transport_fakes(
 
                 async def create(self, **kwargs):
                     del kwargs
+                    await exercise_required_thread_paths()
                     verify_and_attempt_detached(
                         self._owner._secret, self._owner._http_client._trust_env
                     )
@@ -239,7 +277,12 @@ def _write_production_transport_fakes(
             import json
             from types import SimpleNamespace
             from . import types
-            from fake_transport_common import maybe_close, maybe_wait, verify_and_attempt_detached
+            from fake_transport_common import (
+                exercise_required_thread_paths,
+                maybe_close,
+                maybe_wait,
+                verify_and_attempt_detached,
+            )
 
             class _Models:
                 def __init__(self, owner):
@@ -247,6 +290,7 @@ def _write_production_transport_fakes(
 
                 async def generate_content(self, **kwargs):
                     del kwargs
+                    await exercise_required_thread_paths()
                     trust_env = self._owner._http_options.async_client_args.get("trust_env")
                     verify_and_attempt_detached(self._owner._secret, trust_env)
                     await maybe_wait()
@@ -284,7 +328,7 @@ def _run_production_composition_harness(
     _write_production_transport_fakes(
         root,
         behavior=(
-            "wait"
+            scenario
             if scenario in {"timeout", "cancel"}
             else ("slow-close" if scenario == "teardown" else "success")
         ),
@@ -1298,6 +1342,34 @@ def test_public_production_composition_contains_detached_descendants_and_environ
     }
 
 
+@pytest.mark.skipif(
+    not (
+        sys.platform.startswith("linux")
+        and hasattr(os, "uname")
+        and os.uname().machine.lower() in {"x86_64", "amd64"}
+    ),
+    reason="requires the genuine Linux/AMD64 seccomp boundary",
+)
+@pytest.mark.parametrize("provider", ["gemini", "openrouter"])
+@pytest.mark.parametrize(
+    "scenario,expected",
+    [("success", "success"), ("timeout", "deadline"), ("cancel", "cancelled")],
+)
+def test_linux_amd64_public_composition_allows_thread_dns_and_contains_late_effects(
+    tmp_path, provider, scenario, expected
+):
+    result = _run_production_composition_harness(
+        tmp_path,
+        provider=provider,
+        scenario=scenario,
+    )
+    assert result == {
+        "outcome": expected,
+        "provider_called": True,
+        "late_effect": False,
+    }
+
+
 @pytest.mark.parametrize("provider", ["gemini", "openrouter"])
 def test_entry_deadline_rejects_large_context_before_production_provider(tmp_path, provider):
     result = _run_production_composition_harness(
@@ -1471,7 +1543,7 @@ def test_exact_subprocess_supervisor_and_factory_configuration_are_immutable():
     supervisor = HostedByokSubprocessSupervisor()
     factory = HostedByokAdapterFactory(process_supervisor=supervisor)
     assert factory.transport_safety(_request()).production_ready
-    assert factory.transport_safety(_request()).process_isolation_version == "2.0.0"
+    assert factory.transport_safety(_request()).process_isolation_version == "2.1.0"
     with pytest.raises(AttributeError, match="immutable"):
         supervisor._poll_interval_s = 99
     with pytest.raises(AttributeError, match="immutable"):
@@ -1486,6 +1558,26 @@ def test_production_supervisor_rejects_virtual_clock_seams():
         HostedByokAdapterFactory(process_supervisor=supervisor, monotonic_fn=lambda: 1.0)
     with pytest.raises(HostedByokContractError, match="exact system"):
         HostedByokAdapterFactory(process_supervisor=supervisor, time_fn=lambda: 1.0)
+
+
+def test_platform_containment_capability_selection_is_exact_and_fails_closed():
+    from percept.hosted_byok import _select_containment_capability
+
+    assert _select_containment_capability(
+        system="linux", machine="x86_64"
+    ) == ("linux_seccomp_amd64_no_descendants", [])
+    assert _select_containment_capability(
+        system="linux", machine="AMD64"
+    ) == ("linux_seccomp_amd64_no_descendants", [])
+    for system, machine in (
+        ("linux", "aarch64"),
+        ("linux", "riscv64"),
+        ("linux2", "x86_64"),
+        ("win32", "AMD64"),
+        ("freebsd", "x86_64"),
+    ):
+        with pytest.raises(HostedByokContractError, match="exact platform"):
+            _select_containment_capability(system=system, machine=machine)
 
 
 def test_factory_uses_frozen_supervisor_dispatch_after_class_poison(monkeypatch):

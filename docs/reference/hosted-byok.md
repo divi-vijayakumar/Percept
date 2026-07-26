@@ -96,10 +96,12 @@ sending the credential-bearing payload. On success, failure, cancellation, or ti
 waits for the worker before releasing the outcome. A provider cannot escape with `fork`, `posix_spawn`,
 `setsid`, or a reparented descendant because the boundary permits no descendant to be created; clean
 `Context` tasks, deferred event-loop Handles, close workers, and threads die with the waited worker.
-The process-isolation contract version is `HOSTED_BYOK_PROCESS_ISOLATION_VERSION` (`"2.0.0"`).
-The v2 supervisor currently requires a validated root-owned Darwin `sandbox-exec` or Linux `prlimit`
-boundary plus a successful no-fork attestation; unsupported or ineffective hosts fail closed before
-the credential payload is sent.
+The process-isolation contract version is `HOSTED_BYOK_PROCESS_ISOLATION_VERSION` (`"2.1.0"`).
+The v2.1 supervisor uses validated root-owned Darwin `sandbox-exec`, or an authenticated Linux/AMD64
+seccomp filter that allows `CLONE_THREAD` while denying process-form `clone`, `fork`, `vfork`, `clone3`,
+`execve`, and `execveat`. Linux provider DNS, default-executor, AnyIO, and HTTP worker threads therefore
+remain available without permitting a child process. Unsupported or ineffective platform capabilities
+fail closed before the credential payload is sent.
 Request and Verdict IPC are bounded to 32 MiB;
 the wire is canonical tagged JSON over `send_bytes`/`recv_bytes`, never pickle. Exact recursive carrier
 validation rejects hostile subclasses, duplicate keys, non-finite values, unsupported DTOs, malformed

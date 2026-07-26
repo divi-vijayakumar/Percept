@@ -21,11 +21,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextvars
+import ctypes
+import errno
 import hmac
 import inspect
 import json
 import math
 import os
+import platform
 import secrets
 import signal
 import site
@@ -46,7 +49,7 @@ from .config import Settings
 from .contracts import Box, ClipEvent, SubjectRef
 
 HOSTED_BYOK_CONTRACT_VERSION = "1.0.0"
-HOSTED_BYOK_PROCESS_ISOLATION_VERSION = "2.0.0"
+HOSTED_BYOK_PROCESS_ISOLATION_VERSION = "2.1.0"
 HOSTED_BYOK_CAPABILITIES: Mapping[str, frozenset[str]] = {
     "gemini": frozenset({"vision.judge", "vision.judge.fused"}),
     "openrouter": frozenset({"vision.judge"}),
@@ -60,7 +63,7 @@ _CHILD_BOOTSTRAP = (
     "import json,sys;"
     "sys.path[:0]=json.loads(sys.argv[1]);"
     "from percept.hosted_byok import _hosted_byok_clean_child_main;"
-    "_hosted_byok_clean_child_main(int(sys.argv[2]),sys.argv[3])"
+    "_hosted_byok_clean_child_main(int(sys.argv[2]),sys.argv[3],sys.argv[4])"
 )
 _PROVIDER_ENV_KEYS = frozenset(
     {
@@ -513,9 +516,9 @@ class HostedByokSubprocessSupervisor:
             or float(poll_interval_s) <= 0
         ):
             raise HostedByokContractError("poll_interval_s must be a finite positive number.")
-        _trusted_boundary_executable()
+        boundary_kind, _ = _select_containment_capability()
         object.__setattr__(self, "_poll_interval_s", float(poll_interval_s))
-        object.__setattr__(self, "_boundary_kind", "clean_spawn_no_descendants")
+        object.__setattr__(self, "_boundary_kind", boundary_kind)
         implementation = HostedByokSubprocessSupervisor.__dict__["execute"]
         frozen = FunctionType(
             implementation.__code__,
@@ -592,7 +595,7 @@ class HostedByokSubprocessSupervisor:
             raise HostedByokDeadlineExceeded(
                 "hosted BYOK invocation exceeded its effective deadline."
             )
-        process, connection, challenge = _launch_contained_worker()
+        process, connection, challenge = _launch_contained_worker(self._boundary_kind)
         outcome: Any = None
         try:
             ready = None
@@ -616,11 +619,12 @@ class HostedByokSubprocessSupervisor:
                 await asyncio.sleep(self._poll_interval_s)
             if (
                 type(ready) is not tuple
-                or len(ready) != 3
+                or len(ready) != 4
                 or ready[0] != "ready"
                 or ready[1] != HOSTED_BYOK_PROCESS_ISOLATION_VERSION
                 or type(ready[2]) is not bytes
                 or not hmac.compare_digest(ready[2], challenge)
+                or ready[3] != self._boundary_kind
             ):
                 raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
             await asyncio.sleep(0)
@@ -1513,32 +1517,36 @@ class HostedByokVision:
         )
 
 
-def _trusted_boundary_executable() -> tuple[str, list[str]]:
-    if sys.platform == "darwin":
+def _select_containment_capability(
+    *,
+    system: str | None = None,
+    machine: str | None = None,
+) -> tuple[str, list[str]]:
+    selected_system = sys.platform if system is None else system
+    selected_machine = platform.machine().lower() if machine is None else machine.lower()
+    if selected_system == "darwin":
         path = "/usr/bin/sandbox-exec"
         prefix = [path, "-p", _BOUNDARY_PROFILE]
-    elif sys.platform.startswith("linux"):
-        path = "/usr/bin/prlimit"
-        prefix = [path, "--nproc=0:0", "--"]
-    else:
-        raise HostedByokContractError(
-            "hosted BYOK process containment is unavailable on this operating system."
-        )
-    try:
-        metadata = os.stat(path, follow_symlinks=False)
-    except OSError:
-        raise HostedByokContractError(
-            "hosted BYOK trusted process-containment executable is unavailable."
-        ) from None
-    if (
-        not stat.S_ISREG(metadata.st_mode)
-        or metadata.st_uid != 0
-        or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
-    ):
-        raise HostedByokContractError(
-            "hosted BYOK process-containment executable failed ownership validation."
-        )
-    return path, prefix
+        try:
+            metadata = os.stat(path, follow_symlinks=False)
+        except OSError:
+            raise HostedByokContractError(
+                "hosted BYOK trusted process-containment executable is unavailable."
+            ) from None
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != 0
+            or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+        ):
+            raise HostedByokContractError(
+                "hosted BYOK process-containment executable failed ownership validation."
+            )
+        return "darwin_sandbox_no_descendants", prefix
+    if selected_system == "linux" and selected_machine in {"x86_64", "amd64"}:
+        return "linux_seccomp_amd64_no_descendants", []
+    raise HostedByokContractError(
+        "hosted BYOK process containment is unavailable for this exact platform capability."
+    )
 
 
 def _clean_child_environment() -> dict[str, str]:
@@ -1566,8 +1574,14 @@ def _clean_child_import_roots() -> list[str]:
     return roots
 
 
-def _launch_contained_worker() -> tuple[subprocess.Popen[bytes], Connection, bytes]:
-    _, prefix = _trusted_boundary_executable()
+def _launch_contained_worker(
+    boundary_kind: str,
+) -> tuple[subprocess.Popen[bytes], Connection, bytes]:
+    selected_kind, prefix = _select_containment_capability()
+    if boundary_kind != selected_kind:
+        raise HostedByokContractError(
+            "hosted BYOK process-containment capability changed after supervisor construction."
+        )
     challenge = secrets.token_bytes(32)
     parent_socket, child_socket = socket.socketpair()
     child_fd = child_socket.fileno()
@@ -1582,6 +1596,7 @@ def _launch_contained_worker() -> tuple[subprocess.Popen[bytes], Connection, byt
         json.dumps(_clean_child_import_roots(), separators=(",", ":")),
         str(child_fd),
         challenge.hex(),
+        boundary_kind,
     ]
     try:
         process = subprocess.Popen(
@@ -1623,21 +1638,96 @@ def _scrub_provider_environment() -> None:
         os.environ.pop(key, None)
 
 
-def _establish_no_descendant_boundary() -> None:
-    """Layer an irreversible process limit and prove a detached descendant cannot be created."""
+def _install_linux_seccomp_amd64() -> None:
+    class SockFilter(ctypes.Structure):
+        _fields_ = [
+            ("code", ctypes.c_ushort),
+            ("jt", ctypes.c_ubyte),
+            ("jf", ctypes.c_ubyte),
+            ("k", ctypes.c_uint),
+        ]
 
-    try:
-        import resource
+    class SockFprog(ctypes.Structure):
+        _fields_ = [
+            ("length", ctypes.c_ushort),
+            ("filters", ctypes.POINTER(SockFilter)),
+        ]
 
-        resource.setrlimit(resource.RLIMIT_NPROC, (0, 0))
-        if resource.getrlimit(resource.RLIMIT_NPROC) != (0, 0):
-            raise RuntimeError
-    except Exception:
-        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
+    audit_arch_x86_64 = 0xC000003E
+    seccomp_ret_kill_process = 0x80000000
+    seccomp_ret_allow = 0x7FFF0000
+    seccomp_ret_errno = 0x00050000
+    clone_thread = 0x00010000
+    filter_specs = [
+        (0x20, 0, 0, 4),  # load seccomp_data.arch
+        (0x15, 1, 0, audit_arch_x86_64),
+        (0x06, 0, 0, seccomp_ret_kill_process),
+        (0x20, 0, 0, 0),  # load seccomp_data.nr
+        (0x35, 0, 1, 0x40000000),  # x32 ABI syscalls must not bypass the x86_64 table
+        (0x06, 0, 0, seccomp_ret_errno | errno.ENOSYS),
+        (0x15, 0, 5, 56),  # clone: inspect flags; non-clone skips the block
+        (0x20, 0, 0, 16),  # low 32 bits of clone flags
+        (0x54, 0, 0, clone_thread),
+        (0x15, 0, 1, 0),
+        (0x06, 0, 0, seccomp_ret_errno | errno.EPERM),
+        (0x06, 0, 0, seccomp_ret_allow),  # CLONE_THREAD remains permitted
+        (0x15, 0, 1, 57),  # fork
+        (0x06, 0, 0, seccomp_ret_errno | errno.EPERM),
+        (0x15, 0, 1, 58),  # vfork
+        (0x06, 0, 0, seccomp_ret_errno | errno.EPERM),
+        (0x15, 0, 1, 435),  # clone3; ENOSYS makes pthreads fall back to clone
+        (0x06, 0, 0, seccomp_ret_errno | errno.ENOSYS),
+        (0x15, 0, 1, 59),  # execve
+        (0x06, 0, 0, seccomp_ret_errno | errno.EPERM),
+        (0x15, 0, 1, 322),  # execveat
+        (0x06, 0, 0, seccomp_ret_errno | errno.EPERM),
+        (0x06, 0, 0, seccomp_ret_allow),
+    ]
+    filters = (SockFilter * len(filter_specs))(
+        *(SockFilter(*spec) for spec in filter_specs)
+    )
+    program = SockFprog(
+        length=len(filter_specs),
+        filters=ctypes.cast(filters, ctypes.POINTER(SockFilter)),
+    )
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(38, 1, 0, 0, 0) != 0:  # PR_SET_NO_NEW_PRIVS
+        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+    libc.syscall.restype = ctypes.c_long
+    if libc.syscall(317, 1, 1, ctypes.byref(program)) != 0:  # seccomp FILTER + TSYNC
+        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+
+
+def _establish_no_descendant_boundary(boundary_kind: str) -> None:
+    """Install the exact platform boundary, prove fork denial, and prove threads remain usable."""
+
+    if boundary_kind == "darwin_sandbox_no_descendants":
+        try:
+            import resource
+
+            resource.setrlimit(resource.RLIMIT_NPROC, (0, 0))
+            if resource.getrlimit(resource.RLIMIT_NPROC) != (0, 0):
+                raise RuntimeError
+        except Exception:
+            raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
+    elif boundary_kind == "linux_seccomp_amd64_no_descendants":
+        _install_linux_seccomp_amd64()
+    else:
+        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
     try:
         pid = os.fork()
     except OSError:
-        return
+        pid = None
+    if pid is None:
+        import threading
+
+        completed: list[bool] = []
+        thread = threading.Thread(target=lambda: completed.append(True))
+        thread.start()
+        thread.join()
+        if completed == [True]:
+            return
+        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
     if pid == 0:
         os._exit(91)
     try:
@@ -1647,7 +1737,11 @@ def _establish_no_descendant_boundary() -> None:
         raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
 
 
-def _hosted_byok_clean_child_main(connection_fd: int, challenge_hex: str) -> None:
+def _hosted_byok_clean_child_main(
+    connection_fd: int,
+    challenge_hex: str,
+    boundary_kind: str,
+) -> None:
     """Clean-start child: attest containment before receiving the credential-bearing request."""
 
     connection = Connection(connection_fd)
@@ -1658,9 +1752,16 @@ def _hosted_byok_clean_child_main(connection_fd: int, challenge_hex: str) -> Non
         if len(challenge) != 32:
             raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
         _scrub_provider_environment()
-        _establish_no_descendant_boundary()
+        _establish_no_descendant_boundary(boundary_kind)
         connection.send_bytes(
-            _wire_dumps(("ready", HOSTED_BYOK_PROCESS_ISOLATION_VERSION, challenge))
+            _wire_dumps(
+                (
+                    "ready",
+                    HOSTED_BYOK_PROCESS_ISOLATION_VERSION,
+                    challenge,
+                    boundary_kind,
+                )
+            )
         )
         worker_payload = connection.recv_bytes(maxlength=_MAX_PROCESS_IPC_BYTES + 1)
 
