@@ -94,20 +94,38 @@ def _exclusive_core_runtime(func):
     async def leased(core: Any = None, *args: Any, **kwargs: Any):
         lease = _acquire_core_run(core)
         stream = func(core, *args, **kwargs)
+        cancelled = False
         try:
             async for item in stream:
                 yield item
+        except asyncio.CancelledError:
+            # Exception identity is the portable cancellation seam on every
+            # supported interpreter, including Python 3.10 where
+            # Task.cancelling() does not exist.
+            cancelled = True
+            raise
         finally:
             # ``async for`` cancellation does not promise to close a nested
             # async generator before this wrapper releases the core lease.
             # Explicitly close it so run() can contain its worker/provider
             # tasks and no stale callback survives into the next lease.
-            await stream.aclose()
-            if asyncio.current_task().cancelling():
-                advance = getattr(core, "advance_source_continuity", None)
-                if callable(advance):
-                    advance(kwargs.get("gate_source", "camera"))
-            _release_core_run(lease)
+            try:
+                try:
+                    await stream.aclose()
+                except asyncio.CancelledError:
+                    cancelled = True
+                    raise
+            finally:
+                try:
+                    if cancelled:
+                        advance = getattr(core, "advance_source_continuity", None)
+                        if callable(advance):
+                            advance(kwargs.get("gate_source", "camera"))
+                finally:
+                    # This is the outermost lifecycle guarantee: close and
+                    # continuity failures must preserve their own exception
+                    # while the process-local lease is released exactly once.
+                    _release_core_run(lease)
 
     return leased
 
