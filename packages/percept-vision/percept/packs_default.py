@@ -244,7 +244,7 @@ _EGO_TEMPLATES = {
 # Component recommendations — all "preferred": this pack recommends, it never requires.
 # ---------------------------------------------------------------------------
 
-_COMPONENTS = (
+_LEGACY_COMPONENTS = (
     ComponentRecommendation(
         ref="sense:physical_scene",
         strength="preferred",
@@ -256,6 +256,22 @@ _COMPONENTS = (
         reason=(
             "facility observation is typically a sparse-event, fixed-camera deployment: a "
             "quieter cadence + the cache cascade save real spend without missing the rare event."
+        ),
+    ),
+)
+
+_PHYSICAL_COMPONENTS = (
+    ComponentRecommendation(
+        ref="sense:physical_scene",
+        strength="preferred",
+        reason="a facility camera is a fixed physical scene, not a screen or a conversation.",
+    ),
+    ComponentRecommendation(
+        ref="execution_policy:low_cost@1",
+        strength="preferred",
+        reason=(
+            "low_cost@1 is an optional sparse-event starting posture; applications must validate "
+            "its cadence and admission behavior on their own labeled deployment media."
         ),
     ),
 )
@@ -323,7 +339,7 @@ FACILITY_OBSERVATION_V1 = DomainPack(
     id="facility_observation",
     version="1",
     templates=_TEMPLATES,
-    components=_COMPONENTS,
+    components=_LEGACY_COMPONENTS,
     policy_clamps={"false_negative_cost_min": "mild", "retention_max_days": 30.0},
     direct_judge_routes=_DIRECT_JUDGE_ROUTES,
     fixtures=_LEGACY_FIXTURES,
@@ -342,7 +358,7 @@ PHYSICAL_SCENE_STARTER_V1 = DomainPack(
     id="physical_scene_starter",
     version="1",
     templates=_TEMPLATES,
-    components=_COMPONENTS,
+    components=_PHYSICAL_COMPONENTS,
     policy_clamps={"false_negative_cost_min": "mild"},
     fixtures=_UNQUALIFIED_FIXTURES,
     quality_bars=_UNQUALIFIED_QUALITY_BARS,
@@ -383,17 +399,17 @@ for _pack in (
 
 def register_entrypoint_pack(register: "callable") -> None:
     """Register the legacy ``facility_observation@1`` entry-point target."""
-    register(FACILITY_OBSERVATION_V1, overwrite=True)
+    register(FACILITY_OBSERVATION_V1)
 
 
 def register_physical_scene_entrypoint_pack(register: "callable") -> None:
     """Register the official ``physical_scene_starter@1`` entry-point target."""
-    register(PHYSICAL_SCENE_STARTER_V1, overwrite=True)
+    register(PHYSICAL_SCENE_STARTER_V1)
 
 
 def register_ego_motion_entrypoint_pack(register: "callable") -> None:
     """Register the official ``ego_motion_starter@1`` entry-point target."""
-    register(EGO_MOTION_STARTER_V1, overwrite=True)
+    register(EGO_MOTION_STARTER_V1)
 
 
 __all__ = [

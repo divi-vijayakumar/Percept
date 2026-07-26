@@ -12,6 +12,7 @@ No runtime execution beyond the offline scripted seam (percept.agent.Percept.cre
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest import mock
 
@@ -323,6 +324,14 @@ class TestDomainPackRegistry(unittest.TestCase):
         with self.assertRaises(DomainPackError):
             reg.register(DomainPack(id="x", notes="different"))
 
+    def test_equivalent_register_is_a_true_no_op(self) -> None:
+        reg = DomainPackRegistry()
+        first = DomainPack(id="x", notes="same")
+        equivalent = DomainPack(id="x", notes="same")
+        reg.register(first)
+        reg.register(equivalent)
+        self.assertIs(reg.resolve("x@v1"), first)
+
     def test_duplicate_register_overwrite_allowed(self) -> None:
         reg = DomainPackRegistry()
         reg.register(DomainPack(id="x", notes="a"))
@@ -365,6 +374,76 @@ class TestEntryPointDiscovery(unittest.TestCase):
             reg.names(),
             ["ego_motion_starter@1", "physical_scene_starter@1"],
         )
+
+    def test_builtin_entrypoints_are_idempotent_but_reject_conflicts(self) -> None:
+        cases = (
+            (FACILITY_OBSERVATION_V1, register_entrypoint_pack),
+            (PHYSICAL_SCENE_STARTER_V1, register_physical_scene_entrypoint_pack),
+            (EGO_MOTION_STARTER_V1, register_ego_motion_entrypoint_pack),
+        )
+        for pack, target in cases:
+            with self.subTest(pack=pack.qualified_name, case="exact"):
+                reg = DomainPackRegistry()
+                target(reg.register)
+                first = reg.resolve(pack.qualified_name)
+                target(reg.register)
+                self.assertIs(reg.resolve(pack.qualified_name), first)
+            with self.subTest(pack=pack.qualified_name, case="equivalent"):
+                reg = DomainPackRegistry()
+                equivalent = replace(pack)
+                reg.register(equivalent)
+                target(reg.register)
+                self.assertIs(reg.resolve(pack.qualified_name), equivalent)
+            with self.subTest(pack=pack.qualified_name, case="conflict"):
+                reg = DomainPackRegistry()
+                conflict = DomainPack(
+                    id=pack.id,
+                    version=pack.version,
+                    notes="third-party collision sentinel",
+                )
+                reg.register(conflict)
+                with self.assertRaises(DomainPackError):
+                    target(reg.register)
+                self.assertIs(reg.resolve(pack.qualified_name), conflict)
+
+    def test_discovery_preserves_first_registration_in_both_orders(self) -> None:
+        official = PHYSICAL_SCENE_STARTER_V1
+        equivalent = replace(official)
+        conflict = DomainPack(
+            id=official.id,
+            version=official.version,
+            notes="third-party collision sentinel",
+        )
+
+        def plugin_for(pack):
+            return lambda register: register(pack)
+
+        for challenger, label in ((equivalent, "equivalent"), (conflict, "conflict")):
+            for callbacks, expected in (
+                (
+                    (register_physical_scene_entrypoint_pack, plugin_for(challenger)),
+                    official,
+                ),
+                (
+                    (plugin_for(challenger), register_physical_scene_entrypoint_pack),
+                    challenger,
+                ),
+            ):
+                with self.subTest(kind=label, first=expected.notes):
+                    reg = DomainPackRegistry()
+                    entry_points = [
+                        SimpleNamespace(load=lambda callback=callback: callback)
+                        for callback in callbacks
+                    ]
+                    with (
+                        mock.patch.object(domain_pack_mod, "register_domain_pack", reg.register),
+                        mock.patch(
+                            "importlib.metadata.entry_points",
+                            return_value=entry_points,
+                        ),
+                    ):
+                        discover_domain_pack_entrypoints()
+                    self.assertIs(reg.resolve(official.qualified_name), expected)
 
     def test_discover_domain_pack_entrypoints_loads_mocked_plugin(self) -> None:
         fake_pack = DomainPack(id="third_party")

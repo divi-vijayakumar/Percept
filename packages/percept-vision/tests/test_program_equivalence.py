@@ -102,6 +102,44 @@ class TestTransitionEquivalence(unittest.TestCase):
         out = [ex.fire_transition(g, NO, YES) for _ in range(5)]  # always in B, never saw A
         self.assertEqual([f for f in out], [None] * 5)
 
+    def test_both_true_is_not_an_ordering_edge_and_preserves_latches(self):
+        _, ex = _ex()
+        g = Goal(id="wake", condition="awake", say="up")
+
+        first = ex.transition_decide(g, YES, YES)
+        self.assertIsNone(first.fired)
+        self.assertEqual((first.armed, first.fired_latch, first.outcome), (False, False, "idle"))
+
+        arm = ex.transition_decide(g, YES, NO)
+        self.assertEqual((arm.armed, arm.fired_latch, arm.outcome), (True, False, "armed"))
+        fire = ex.transition_decide(g, NO, YES)
+        self.assertIsNotNone(fire.fired)
+
+        contradictory_after_fire = ex.transition_decide(g, YES, YES)
+        self.assertIsNone(contradictory_after_fire.fired)
+        self.assertEqual(
+            (
+                contradictory_after_fire.armed,
+                contradictory_after_fire.fired_latch,
+                contradictory_after_fire.outcome,
+            ),
+            (True, True, "suppressed_latched"),
+        )
+        self.assertIsNone(ex.fire_transition(g, NO, YES))
+
+        rearm = ex.transition_decide(g, YES, NO)
+        self.assertEqual((rearm.armed, rearm.fired_latch, rearm.outcome), (True, False, "rearmed"))
+        self.assertIsNotNone(ex.fire_transition(g, NO, YES))
+
+    def test_transition_ambiguity_does_not_invent_state_order(self):
+        _, ex = _ex()
+        g = Goal(id="wake", condition="awake", say="up")
+
+        self.assertIsNone(ex.fire_transition(g, UNSURE, YES))
+        armed = ex.transition_decide(g, YES, UNSURE)
+        self.assertEqual((armed.armed, armed.fired_latch, armed.outcome), (True, False, "armed"))
+        self.assertIsNotNone(ex.fire_transition(g, UNSURE, YES))
+
 
 # --------------------------------------------------------------------------------------------------
 # 3. absence sense reproduces check_deadlines (overdue fires once)

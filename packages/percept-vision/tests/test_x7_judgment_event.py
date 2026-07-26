@@ -237,7 +237,8 @@ class AdditiveOnlyTests(unittest.TestCase):
         ep = ex.fire_episode(goal, program_of(goal), n=1, is_new=True)
         self.assertIsNotNone(ep)
         self.assertIsNone(ep.judgment)
-        tr = ex.fire_transition(goal, YES, YES)
+        self.assertIsNone(ex.fire_transition(goal, YES, NO))
+        tr = ex.fire_transition(goal, NO, YES)
         self.assertIsNotNone(tr)
         self.assertIsNone(tr.judgment)
 

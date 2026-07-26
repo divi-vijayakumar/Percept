@@ -304,11 +304,12 @@ class TransitionTick:
     ``transition.decision`` trace needs, so the agent never reaches into the executor's isolated ctx.
 
     ``from_truth``/``to_truth`` are the :func:`~percept.gate.classify` outputs for this tick; ``armed``
-    is the post-tick ``seen_from`` latch (the goal has witnessed its ``from`` state and is waiting for
-    ``to``); ``fired_latch`` is the post-tick ``fired`` latch (this focus already fired and will not
-    re-fire until re-armed); ``outcome`` is the typed WHY, one of ``fire`` / ``armed`` / ``rearmed`` /
-    ``suppressed_latched`` / ``idle``. ``fired`` is the historical ``Fired | None`` the legacy
-    :meth:`BehaviorExecutor.fire_transition` facade returns directly."""
+    is the post-tick ``seen_from`` latch (the goal has witnessed its ``from`` state on an earlier,
+    non-contradictory tick and is waiting for ``to``); ``fired_latch`` is the post-tick ``fired``
+    latch (this focus already fired and will not re-fire until re-armed); ``outcome`` is the typed
+    WHY, one of ``fire`` / ``armed`` / ``rearmed`` / ``suppressed_latched`` / ``idle``. ``fired`` is
+    the historical ``Fired | None`` the legacy :meth:`BehaviorExecutor.fire_transition` facade
+    returns directly."""
 
     fired: Fired | None
     from_truth: str
@@ -974,10 +975,11 @@ class BehaviorExecutor:
     ) -> "TransitionTick":
         """Run one A→B transition tick and return BOTH the fire (if any) and the tick facts.
 
-        The state machine is byte-for-byte the historical ``fire_transition``: observing a confident
-        ``from`` state arms (and re-arms) the goal; a confident ``to`` state AFTER ``from`` was seen
-        fires once. What is new is purely additive observability: when the caller threads the funnel's
-        ``timing``/``evidence_seq`` in (the live watch loop does), a fired tick builds a frozen
+        Observing a confident, non-contradictory ``from`` state arms (and re-arms) the goal; a
+        confident ``to`` state on a strictly later tick fires once. A tick that confidently matches
+        both states is contradictory evidence: it cannot establish ordering, so it changes neither
+        latch and never fires. When the caller threads the funnel's ``timing``/``evidence_seq`` in
+        (the live watch loop does), a fired tick builds a frozen
         :class:`~percept.contracts.JudgmentEvent` through the ONE construction site (:meth:`_judgment`)
         with ``evidence_origin="transition"`` — so the transition path, which historically emitted no
         judgment record at all, now correlates to a delivered Incident exactly like the judged path.
@@ -995,10 +997,16 @@ class BehaviorExecutor:
         to_truth = classify(to_v, 1.0, thr, fresh_min)
         prior_seen, prior_fired = st["seen_from"], st["fired"]
         ctx.confusion.record(to_v, to_truth)
-        if from_truth == "yes":
+        contradictory = from_truth == "yes" and to_truth == "yes"
+        if from_truth == "yes" and not contradictory:
             st["seen_from"], st["fired"] = True, False  # in 'from' -> arm (and re-arm)
         fired: Fired | None = None
-        if st["seen_from"] and not st["fired"] and to_truth == "yes":
+        if (
+            not contradictory
+            and prior_seen
+            and not prior_fired
+            and to_truth == "yes"
+        ):
             st["fired"] = True
             ctx.count += 1
             # env: the transition path is a DIRECT visual observation, but the gate never ran — reason
@@ -1013,6 +1021,10 @@ class BehaviorExecutor:
         # to==yes while the latch is spent is a suppressed re-fire; else idle.
         if fired is not None:
             outcome = "fire"
+        elif contradictory:
+            # Contradictory evidence is not an ordering edge. Preserve an existing latch exactly;
+            # in particular, a spent latch must stay spent so repeated contradictions cannot refire.
+            outcome = "suppressed_latched" if prior_seen and prior_fired else "idle"
         elif from_truth == "yes":
             outcome = "rearmed" if (prior_seen or prior_fired) else "armed"
         elif st["seen_from"] and st["fired"] and to_truth == "yes":

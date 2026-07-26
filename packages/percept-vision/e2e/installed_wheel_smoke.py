@@ -65,7 +65,13 @@ def _assert_declared_entry_points(distribution: importlib.metadata.Distribution)
 
 
 def _assert_free_pack_surface(distribution: importlib.metadata.Distribution) -> None:
-    from percept.domain_pack import DomainPackRegistry, get_domain_pack, watch_template
+    from percept.domain_pack import (
+        DomainPack,
+        DomainPackError,
+        DomainPackRegistry,
+        get_domain_pack,
+        watch_template,
+    )
 
     official = {
         "physical_scene_starter@1": {
@@ -103,12 +109,85 @@ def _assert_free_pack_surface(distribution: importlib.metadata.Distribution) -> 
         if entry_point.group != "percept.packs":
             continue
         registry = DomainPackRegistry()
-        entry_point.load()(registry.register)
+        target = entry_point.load()
+        target(registry.register)
+        target(registry.register)
         discovered.update(registry.names())
+
+        installed = registry.all()[0]
+        conflict_registry = DomainPackRegistry()
+        conflict = DomainPack(
+            id=installed.id,
+            version=installed.version,
+            notes="installed-wheel collision sentinel",
+        )
+        conflict_registry.register(conflict)
+        try:
+            target(conflict_registry.register)
+        except DomainPackError:
+            pass
+        else:
+            raise AssertionError(
+                f"installed percept.packs entry point silently replaced {installed.qualified_name}"
+            )
+        if conflict_registry.resolve(installed.qualified_name) is not conflict:
+            raise AssertionError(
+                f"installed percept.packs entry point changed {installed.qualified_name} on conflict"
+            )
     expected = {*official, "facility_observation@1"}
     if not expected.issubset(discovered):
         raise AssertionError(
             f"installed percept.packs entry points missing {sorted(expected - discovered)}"
+        )
+
+
+async def _assert_transition_ordering(percept: object) -> None:
+    from percept.adapters import Verdict
+    from percept.domain_pack import get_domain_pack, watch_template
+    from percept.watchplan_apply import apply_watch_plan
+
+    plan = watch_template("ego_motion_starter@1/scene_transition")
+    before = plan.explicit["Goal.state.from"]
+    after = plan.explicit["Goal.state.to"]
+
+    class ConditionVision:
+        async def judge(self, condition, frame, **_kwargs):
+            token = str(frame)
+            if token == "both":
+                return Verdict(True, 0.99, "both predicates true on one observation")
+            if condition == before:
+                return Verdict(token == "from", 0.99, f"from={token == 'from'}")
+            if condition == after:
+                return Verdict(token == "to", 0.99, f"to={token == 'to'}")
+            raise AssertionError(f"unexpected condition: {condition!r}")
+
+        async def detect(self, frame, goals):
+            return []
+
+        async def detect_events(self, frames, goals):
+            return []
+
+    core = percept.Percept.create(vision=ConditionVision(), discover_plugins=False)
+    receipt = apply_watch_plan(
+        core,
+        plan,
+        domain_pack=get_domain_pack("ego_motion_starter@1"),
+    )
+    if receipt.status not in {"applied", "applied_with_warnings"}:
+        raise AssertionError(f"installed transition Watch did not apply: {receipt.status}")
+
+    actions: list[str] = []
+    for index, token in enumerate(
+        ("both", "to", "from", "to", "both", "to", "from", "to"),
+        start=1,
+    ):
+        actions.extend(
+            event.action for event in await core.perceive_judged(token, t=float(index))
+        )
+    if actions != ["fire", "fire"]:
+        raise AssertionError(
+            "installed transition did not require a later exclusive observation: "
+            f"{actions}"
         )
 
 
@@ -149,6 +228,7 @@ def main() -> int:
         raise AssertionError(
             "the repository-only eval package is selectable from the installed wheel"
         )
+    asyncio.run(_assert_transition_ordering(percept))
     asyncio.run(_watch_fixture(percept))
     print(f"installed public perception runtime OK: {percept.__version__}")
     return 0

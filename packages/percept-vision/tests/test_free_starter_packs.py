@@ -24,7 +24,12 @@ from percept.replay import gate_config_of, replay_cognition
 from percept.resolver import ConfigResolver
 from percept.runtime import RuntimeStats, run
 from percept.runtime_compiler import runtime_compile
-from percept.tracing import RunTraceManifest, TracePolicy, TraceRecorder
+from percept.tracing import (
+    STAGE_TRANSITION_DECISION,
+    RunTraceManifest,
+    TracePolicy,
+    TraceRecorder,
+)
 from percept.watchplan_apply import apply_watch_plan
 
 
@@ -101,6 +106,20 @@ class TestOfficialPackSurface(unittest.TestCase):
                 self.assertIn("Availability is not qualification", pack.notes)
                 self.assertIn("no accuracy, latency, or cost claim", pack.notes)
                 self.assertEqual(pack.direct_judge_routes, ())
+
+    def test_official_physical_components_make_no_unqualified_cost_or_recall_claim(self) -> None:
+        official_text = " ".join(
+            recommendation.reason for recommendation in PHYSICAL_SCENE_STARTER_V1.components
+        )
+        self.assertNotIn("save real spend", official_text)
+        self.assertNotIn("without missing", official_text)
+        self.assertIn("must validate", official_text)
+        self.assertIn("own labeled deployment media", official_text)
+
+        legacy_text = " ".join(
+            recommendation.reason for recommendation in FACILITY_OBSERVATION_V1.components
+        )
+        self.assertIn("save real spend without missing", legacy_text)
 
     def test_restricted_claim_tokens_are_not_template_names(self) -> None:
         names = set(EGO_MOTION_STARTER_V1.templates)
@@ -233,6 +252,100 @@ class TestEgoStarterStateMachines(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(goal.state["count"], 2)
                 self.assertEqual(len(vision.judge_calls), 12)
 
+    async def test_each_transition_rejects_both_true_without_arming_or_rearming(self) -> None:
+        for name in ("scene_transition", "object_focus_gained", "task_step_reached"):
+            with self.subTest(template=name):
+                plan = watch_template(f"ego_motion_starter@1/{name}")
+                before = plan.explicit["Goal.state.from"]
+                after = plan.explicit["Goal.state.to"]
+                script = {
+                    (before, "both"): Verdict(True, 0.95, "scripted before: both"),
+                    (after, "both"): Verdict(True, 0.95, "scripted after: both"),
+                    (before, "from"): Verdict(True, 0.95, "scripted before: from"),
+                    (after, "from"): Verdict(False, 0.95, "scripted after: from"),
+                    (before, "to"): Verdict(False, 0.95, "scripted before: to"),
+                    (after, "to"): Verdict(True, 0.95, "scripted after: to"),
+                    (before, "from-unclear"): Verdict(
+                        True, 0.95, "scripted before: from"
+                    ),
+                    (after, "from-unclear"): Verdict(
+                        True, 0.20, "scripted after: unclear"
+                    ),
+                    (before, "to-from-unclear"): Verdict(
+                        True, 0.20, "scripted before: unclear"
+                    ),
+                    (after, "to-from-unclear"): Verdict(
+                        True, 0.95, "scripted after: to"
+                    ),
+                }
+                vision = _ConditionVision(script)
+                core = Percept.create(vision=vision, discover_plugins=False)
+                _plan, goal = _apply(core, f"ego_motion_starter@1/{name}")
+                recorder = TraceRecorder(
+                    RunTraceManifest.create(
+                        source="camera",
+                        driver="perceive_judged",
+                        run_id=f"ego-pack-{name}-ordering",
+                        goals=[goal],
+                        policy=TracePolicy(level="full"),
+                        gate_config=gate_config_of(core.gate),
+                    )
+                )
+                core.on_trace = recorder.tracer()
+
+                first_both = await core.perceive_judged("both", t=1.0)
+                joined_in_to = await core.perceive_judged("to", t=2.0)
+                ambiguous_arm = await core.perceive_judged("from-unclear", t=3.0)
+                later_to = await core.perceive_judged("to-from-unclear", t=4.0)
+                post_fire_both = await core.perceive_judged("both", t=5.0)
+                spent_to = await core.perceive_judged("to", t=6.0)
+                rearm = await core.perceive_judged("from", t=7.0)
+                second_fire = await core.perceive_judged("to", t=8.0)
+
+                self.assertEqual(first_both, [])
+                self.assertEqual(joined_in_to, [])
+                self.assertEqual(ambiguous_arm, [])
+                self.assertEqual([event.action for event in later_to], [FIRE])
+                self.assertEqual(post_fire_both, [])
+                self.assertEqual(spent_to, [])
+                self.assertEqual(rearm, [])
+                self.assertEqual([event.action for event in second_fire], [FIRE])
+                self.assertEqual(goal.state["count"], 2)
+                decisions = [
+                    record
+                    for record in recorder.records
+                    if record.stage == STAGE_TRANSITION_DECISION
+                ]
+                self.assertEqual(
+                    [record.data["outcome"] for record in decisions],
+                    [
+                        "idle",
+                        "idle",
+                        "armed",
+                        "fire",
+                        "suppressed_latched",
+                        "suppressed_latched",
+                        "rearmed",
+                        "fire",
+                    ],
+                )
+                self.assertEqual(
+                    [
+                        (record.data["armed"], record.data["fired_latch"])
+                        for record in decisions
+                    ],
+                    [
+                        (False, False),
+                        (False, False),
+                        (True, False),
+                        (True, True),
+                        (True, True),
+                        (True, True),
+                        (True, False),
+                        (True, True),
+                    ],
+                )
+
     async def test_live_ordinary_trace_replays_byte_identically(self) -> None:
         vision = FakeVision(
             script={
@@ -284,11 +397,19 @@ class TestEgoStarterStateMachines(unittest.IsolatedAsyncioTestCase):
         )
         before = plan.explicit["Goal.state.from"]
         after = plan.explicit["Goal.state.to"]
-        tokens = ("from", "to", "to", "from", "to")
+        tokens = ("both", "to", "from", "to", "both", "to", "from", "to")
         script: dict[tuple[str, str], Verdict] = {}
         for token in tokens:
-            script[(before, token)] = Verdict(token == "from", 0.95, f"scripted before: {token}")
-            script[(after, token)] = Verdict(token == "to", 0.95, f"scripted after: {token}")
+            script[(before, token)] = Verdict(
+                token in {"both", "from"},
+                0.95,
+                f"scripted before: {token}",
+            )
+            script[(after, token)] = Verdict(
+                token in {"both", "to"},
+                0.95,
+                f"scripted after: {token}",
+            )
         vision = _ConditionVision(script)
         core = Percept.create(vision=vision, discover_plugins=False)
         receipt = apply_watch_plan(core, plan, domain_pack=EGO_MOTION_STARTER_V1)
