@@ -14,7 +14,11 @@ from tempfile import TemporaryDirectory
 
 from percept import bench
 from eval.bench import card
-from eval.bench.types import TrackResult
+from eval.bench.types import (
+    TRACK_RESULT_SCHEMA_V2,
+    Measurement,
+    TrackResult,
+)
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -95,8 +99,75 @@ class TestPublicBenchShim(unittest.TestCase):
                 "skipped": 0,
                 "case_ids": ["case-1"],
             }],
+            schema_version=TRACK_RESULT_SCHEMA_V2,
+            contract={"path": "compiled-runtime"},
+            measurements={
+                "candidate_calls": Measurement(
+                    value=10,
+                    unit="logical_calls",
+                    conditioning="one pinned case",
+                    denominator=1,
+                ),
+            },
+            reconciliation={"final_inflight": 0},
+            quality_gates=[{"id": "fixture", "status": "pass"}],
         )
         self.assertEqual(card.stamp_of("full", [result], "manifest sha256:abc"), "RELEASE")
+
+    def test_pt_release_requires_versioned_qualification_envelope(self):
+        legacy = TrackResult(
+            track="pt-action-e2e",
+            cells={("e2e", "notification_recall"): 1.0},
+            measured=["e2e:notification_recall"],
+            coverage=[{
+                "dataset": "pt",
+                "expected": 1,
+                "observed": 1,
+                "case_ids": ["case-1"],
+            }],
+            qualifying_events=1,
+        )
+        self.assertEqual(
+            card.stamp_of("full", [legacy], "manifest sha256:abc"),
+            "DRAFT",
+        )
+        self.assertTrue(
+            any(
+                "track_result/2" in reason
+                for reason in card.release_blockers([legacy])
+            )
+        )
+
+    def test_v2_measurement_denominator_and_gate_fail_closed(self):
+        result = TrackResult(
+            track="watch-e2e",
+            cells={("e2e", "notification_recall"): 1.0},
+            measured=["e2e:notification_recall"],
+            coverage=[{
+                "dataset": "owned",
+                "expected": 1,
+                "observed": 1,
+                "case_ids": ["case-1"],
+            }],
+            schema_version=TRACK_RESULT_SCHEMA_V2,
+            contract={"path": "compiled-runtime"},
+            measurements={
+                "notification_recall": {
+                    "value": 1.0,
+                    "unit": "ratio",
+                    "conditioning": "all positive occurrences",
+                    "numerator": 1,
+                    "denominator": 0,
+                },
+            },
+            reconciliation={"final_inflight": 0},
+            quality_gates=[{"id": "boundedness", "status": "blocked"}],
+        )
+
+        blockers = card.release_blockers([result])
+
+        self.assertTrue(any("denominator must be positive" in item for item in blockers))
+        self.assertTrue(any("boundedness=blocked" in item for item in blockers))
 
     def test_coverage_preserves_event_recall_denominator(self):
         result = TrackResult(

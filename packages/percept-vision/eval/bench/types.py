@@ -28,8 +28,12 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from typing import Any
 
 CONFIGS = ("dense-modeled", "edge", "e2e", "core-replay")
+TRACK_RESULT_SCHEMA_V1 = "percept.benchmark.track_result/1"
+TRACK_RESULT_SCHEMA_V2 = "percept.benchmark.track_result/2"
+TRACK_RESULT_SCHEMAS = (TRACK_RESULT_SCHEMA_V1, TRACK_RESULT_SCHEMA_V2)
 
 
 def bench_vision(settings=None, *, request_budget=None):
@@ -77,6 +81,41 @@ class Coverage:
         )
 
 
+@dataclass(frozen=True)
+class Measurement:
+    """One typed benchmark measurement with its denominator and provenance.
+
+    ``TrackResult.cells`` remains the compact rendering interface.  Version-2
+    qualification artifacts additionally carry these records so values cannot be
+    separated from their units, conditioning population, or measurement source.
+    """
+
+    value: int | float | str | None
+    unit: str
+    conditioning: str
+    source: str = "measured"  # measured | modeled
+    numerator: int | float | None = None
+    denominator: int | float | None = None
+    provenance: dict[str, Any] = field(default_factory=dict)
+    valid: bool = True
+
+    def invalid_reasons(self, label: str) -> list[str]:
+        reasons: list[str] = []
+        if self.value is None:
+            reasons.append(f"{label}: value is missing")
+        if not self.unit.strip():
+            reasons.append(f"{label}: unit is missing")
+        if not self.conditioning.strip():
+            reasons.append(f"{label}: conditioning population is missing")
+        if self.source not in {"measured", "modeled"}:
+            reasons.append(f"{label}: unsupported source {self.source!r}")
+        if self.denominator is not None and self.denominator <= 0:
+            reasons.append(f"{label}: denominator must be positive")
+        if not self.valid:
+            reasons.append(f"{label}: measurement is marked invalid")
+        return reasons
+
+
 @dataclass
 class TrackResult:
     track: str  # "relational" | "counting" | "acoustic" | ...
@@ -96,6 +135,13 @@ class TrackResult:
     diagnostic: bool = False
     status: str = "pass"  # pass | skipped | blocked | failed
     qualifying_events: int | None = None  # fires/answers that make an E2E result non-vacuous
+    schema_version: str = TRACK_RESULT_SCHEMA_V1
+    # Version-2 qualification envelope.  Legacy diagnostic tracks intentionally
+    # remain readable as v1 until they are migrated to the compiled runtime path.
+    contract: dict[str, Any] = field(default_factory=dict)
+    measurements: dict[str, Measurement | dict[str, Any]] = field(default_factory=dict)
+    reconciliation: dict[str, Any] = field(default_factory=dict)
+    quality_gates: list[dict[str, Any]] = field(default_factory=list)
 
     def metrics(self) -> list[str]:
         """Distinct metric names in cell-insertion order."""
@@ -114,8 +160,52 @@ class TrackResult:
             out.append(item if isinstance(item, Coverage) else Coverage(**item))
         return out
 
+    def normalized_measurements(self) -> dict[str, Measurement]:
+        return {
+            label: (
+                item
+                if isinstance(item, Measurement)
+                else Measurement(**item)
+            )
+            for label, item in self.measurements.items()
+        }
+
     def invalid_reasons(self) -> list[str]:
         reasons: list[str] = []
+        if self.schema_version not in TRACK_RESULT_SCHEMAS:
+            reasons.append(
+                f"{self.track}: unsupported result schema {self.schema_version!r}"
+            )
+        if self.track == "pt-action-e2e" and self.schema_version != TRACK_RESULT_SCHEMA_V2:
+            reasons.append(
+                f"{self.track}: OSS qualification requires {TRACK_RESULT_SCHEMA_V2}"
+            )
+        if self.schema_version == TRACK_RESULT_SCHEMA_V2:
+            if not self.contract:
+                reasons.append(f"{self.track}: v2 contract is missing")
+            if not self.measurements:
+                reasons.append(f"{self.track}: v2 measurements are missing")
+            if not self.reconciliation:
+                reasons.append(f"{self.track}: v2 reconciliation is missing")
+            if not self.quality_gates:
+                reasons.append(f"{self.track}: v2 quality gates are missing")
+            for label, item in self.normalized_measurements().items():
+                reasons.extend(
+                    f"{self.track}: {reason}"
+                    for reason in item.invalid_reasons(label)
+                )
+            for gate in self.quality_gates:
+                gate_id = str(gate.get("id") or "(unnamed)")
+                gate_status = gate.get("status")
+                if gate_status not in {"pass", "fail", "blocked"}:
+                    reasons.append(
+                        f"{self.track}: quality gate {gate_id} has invalid status "
+                        f"{gate_status!r}"
+                    )
+                elif gate_status != "pass":
+                    reasons.append(
+                        f"{self.track}: quality gate {gate_id}={gate_status}"
+                    )
         if self.status != "pass":
             reasons.append(f"{self.track}: status={self.status}")
         if self.diagnostic:
