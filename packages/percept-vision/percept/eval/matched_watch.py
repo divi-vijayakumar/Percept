@@ -36,6 +36,7 @@ from percept.adapters import Verdict
 from percept.config import Settings
 from percept.contracts.watchplan import WatchPlan
 from percept.domain_pack import DomainPack, get_domain_pack, watch_template
+from percept.gate import Gate, classify
 from percept.harness.tier0 import gray_frame
 from percept.packs_default import FACILITY_OBSERVATION_V1
 from percept.resolver import ConfigResolver
@@ -832,12 +833,8 @@ def _private_decoder_snapshot(
             os.close(snapshot_fd)
 
 
-def _assert_recorded_artifact_identity(
-    path: Path,
-    *,
-    expected: Mapping[str, Any],
-) -> None:
-    """Check path and opened inode identity without rehashing a large media file."""
+def _recorded_artifact_guard(path: Path) -> tuple[int, ...]:
+    """Snapshot file and parent-directory metadata that cannot be restored by a pathname swap."""
 
     normalized = _normalize_platform_root_alias(path)
     fd = _open_artifact_no_symlinks(normalized)
@@ -846,6 +843,7 @@ def _assert_recorded_artifact_identity(
         lexical = os.lstat(normalized)
         canonical = normalized.resolve(strict=True)
         canonical_info = os.lstat(canonical)
+        parent = os.lstat(normalized.parent)
     except OSError as exc:
         raise MatchedWatchInputError(
             f"media artifact identity cannot be inspected: {exc}"
@@ -855,33 +853,26 @@ def _assert_recorded_artifact_identity(
     _require(
         stat.S_ISREG(opened.st_mode)
         and opened.st_nlink == 1
-        and (opened.st_dev, opened.st_ino)
-        == (int(expected["device"]), int(expected["inode"]))
-        == (lexical.st_dev, lexical.st_ino)
+        and stat.S_ISDIR(parent.st_mode)
+        and (opened.st_dev, opened.st_ino) == (lexical.st_dev, lexical.st_ino)
         == (canonical_info.st_dev, canonical_info.st_ino)
-        and opened.st_size == int(expected["byte_count"])
-        and opened.st_mtime_ns == int(expected["modified_time_ns"])
-        and str(canonical) == str(expected["canonical_path"]),
-        "media artifact identity changed while the immutable snapshot was decoded",
+        and str(canonical) == str(normalized.resolve(strict=True)),
+        "media artifact guard cannot bind one stable regular file",
     )
-
-
-async def _monitor_recorded_media(
-    path: Path,
-    *,
-    expected: Mapping[str, Any],
-    stop: asyncio.Event,
-    violation: list[BaseException],
-) -> None:
-    """Observe the recorded path while OpenCV consumes its immutable private snapshot."""
-
-    while not stop.is_set() and not violation:
-        try:
-            _assert_recorded_artifact_identity(path, expected=expected)
-        except BaseException as exc:  # noqa: BLE001 - preserve the exact fail-closed cause
-            violation.append(exc)
-            return
-        await asyncio.sleep(0)
+    return (
+        opened.st_dev,
+        opened.st_ino,
+        opened.st_mode,
+        opened.st_size,
+        opened.st_mtime_ns,
+        opened.st_ctime_ns,
+        opened.st_nlink,
+        parent.st_dev,
+        parent.st_ino,
+        parent.st_mode,
+        parent.st_mtime_ns,
+        parent.st_ctime_ns,
+    )
 
 
 @dataclass(frozen=True)
@@ -2298,12 +2289,21 @@ def load_matched_watch_manifest(path: str | Path) -> _Manifest:
     """Load and freeze a strict manifest plus its safely snapshotted synthetic media."""
 
     try:
-        loaded = _load_json_snapshot(Path(path))
-    except (SafeJSONInputError, MatchedWatchInputError) as exc:
+        loaded = load_json_file(path)
+    except SafeJSONInputError as exc:
         raise MatchedWatchInputError(f"unsafe matched-Watch manifest: {exc}") from exc
     doc = _object(loaded.value, "manifest")
     if doc.get("schema") == _REAL_SCHEMA:
-        return _load_real_manifest(loaded, doc)
+        try:
+            real_loaded = _load_json_snapshot(Path(path))
+        except (SafeJSONInputError, MatchedWatchInputError) as exc:
+            raise MatchedWatchInputError(f"unsafe matched-Watch manifest: {exc}") from exc
+        real_doc = _object(real_loaded.value, "manifest")
+        _require(
+            real_doc.get("schema") == _REAL_SCHEMA,
+            "real-video manifest schema changed during descriptor-safe reload",
+        )
+        return _load_real_manifest(real_loaded, real_doc)
     _exact(doc, _MANIFEST_KEYS, "manifest")
     _require(doc["schema"] == _SCHEMA, f"manifest.schema must be {_SCHEMA!r}")
     case_id = _text(doc["case_id"], "manifest.case_id")
@@ -2709,70 +2709,53 @@ async def _real_video_source(
         ) from exc
     expected = manifest.oracle_frames
     count = 0
+    artifact_guard = _recorded_artifact_guard(media_path)
     try:
         with _private_decoder_snapshot(media_path, expected=media_artifact) as decoder_path:
-            monitor_stop = asyncio.Event()
-            monitor_violations: list[BaseException] = []
-            monitor_task = asyncio.create_task(
-                _monitor_recorded_media(
-                    media_path,
-                    expected=media_artifact,
-                    stop=monitor_stop,
-                    violation=monitor_violations,
+            async for envelope in open_source(
+                decoder_path,
+                fps=manifest.fps,
+                # The shipped capture adapter is bounded/latest-wins. Keep its production-sized queue
+                # instead of buffering an entire corpus case in JPEG memory; any overflow becomes an
+                # observable source-sequence gap and this lossless evaluator fails the arm closed.
+                maxsize=64,
+                reconnects=0,
+                timebase="media",
+            ):
+                _require(
+                    isinstance(envelope, SourceEnvelope),
+                    "runtime decoder returned a non-envelope",
                 )
-            )
-            try:
-                async for envelope in open_source(
-                    decoder_path,
-                    fps=manifest.fps,
-                    # The shipped capture adapter is bounded/latest-wins. Keep its production-sized queue
-                    # instead of buffering an entire corpus case in JPEG memory; any overflow becomes an
-                    # observable source-sequence gap and this lossless evaluator fails the arm closed.
-                    maxsize=64,
-                    reconnects=0,
-                    timebase="media",
-                ):
-                    if monitor_violations:
-                        raise monitor_violations[0]
-                    _require(
-                        isinstance(envelope, SourceEnvelope),
-                        "runtime decoder returned a non-envelope",
-                    )
-                    _require(
-                        envelope.modality == "video",
-                        "runtime decoder returned non-video evidence",
-                    )
-                    _require(
-                        count < len(expected),
-                        "runtime decoder produced more candidates than the oracle",
-                    )
-                    spec = expected[count]
-                    _require(
-                        envelope.sequence == spec.index,
-                        "runtime decoder source sequence disagrees with the oracle",
-                    )
-                    decoded_t = envelope.event_time
-                    _require(
-                        math.isclose(decoded_t, spec.t, rel_tol=0.0, abs_tol=1e-6),
-                        "runtime decoder source timestamp disagrees with the oracle",
-                    )
-                    frame_sha = _decoded_frame_sha256(envelope.payload)
-                    _require(
-                        frame_sha == spec.frame_sha256,
-                        "runtime decoder frame digest disagrees with the oracle",
-                    )
-                    tracker.bind(
-                        _DecodedCoordinate(envelope.sequence, decoded_t, frame_sha),
-                        envelope,
-                    )
-                    count += 1
-                    # The canonical SourceEnvelope and both gate/judge payloads pass through unchanged.
-                    yield envelope
-            finally:
-                monitor_stop.set()
-                await monitor_task
-            if monitor_violations:
-                raise monitor_violations[0]
+                _require(
+                    envelope.modality == "video",
+                    "runtime decoder returned non-video evidence",
+                )
+                _require(
+                    count < len(expected),
+                    "runtime decoder produced more candidates than the oracle",
+                )
+                spec = expected[count]
+                _require(
+                    envelope.sequence == spec.index,
+                    "runtime decoder source sequence disagrees with the oracle",
+                )
+                decoded_t = envelope.event_time
+                _require(
+                    math.isclose(decoded_t, spec.t, rel_tol=0.0, abs_tol=1e-6),
+                    "runtime decoder source timestamp disagrees with the oracle",
+                )
+                frame_sha = _decoded_frame_sha256(envelope.payload)
+                _require(
+                    frame_sha == spec.frame_sha256,
+                    "runtime decoder frame digest disagrees with the oracle",
+                )
+                tracker.bind(
+                    _DecodedCoordinate(envelope.sequence, decoded_t, frame_sha),
+                    envelope,
+                )
+                count += 1
+                # The canonical SourceEnvelope and both gate/judge payloads pass through unchanged.
+                yield envelope
     except ModuleNotFoundError as exc:
         if exc.name == "cv2":
             raise MatchedWatchInputError(
@@ -2781,6 +2764,10 @@ async def _real_video_source(
             ) from exc
         raise
     _require(count == len(expected), "runtime decoder produced fewer candidates than the oracle")
+    _require(
+        _recorded_artifact_guard(media_path) == artifact_guard,
+        "media artifact or its closed directory changed during matched execution",
+    )
     after = _snapshot_binary(media_path)
     _require(
         after.sha256 == manifest.media_receipt.sha256
@@ -3475,6 +3462,8 @@ def _validate_v2_arm_reconstruction(
     admitted = [candidate for candidate in candidates if candidate.admitted]
     goal_id = str(arm.compiled_binding["goal_id"])
     source_id = str(manifest["replay"]["source_id"])
+    plan = _thaw(receipt.watch_plan)
+    effective = _thaw(arm.resolved_watch["effective"])
 
     expected_admission_by_goal: dict[str, int] = {}
     expected_admission_by_cause: dict[str, int] = {}
@@ -3605,33 +3594,171 @@ def _validate_v2_arm_reconstruction(
             for item in arm.traces
             if item["stage"] == "transition.decision"
         }
+        armed = False
+        fired_latch = False
         for candidate in dispatched:
-            trace_data = _thaw(transition_by_t[candidate.t]["data"])
+            trace = _thaw(transition_by_t[candidate.t])
+            trace_data = trace["data"]
+            _require(
+                trace["trace_id"] == f"{source_id}@{candidate.t}"
+                and trace["stage"] == "transition.decision"
+                and trace["t"] == candidate.t
+                and trace["goal_id"] == goal_id,
+                f"{arm.arm} transition trace identity does not reconstruct from dispatch",
+            )
             if any(call.status != "success" for call in candidate.provider_calls):
                 _require(
-                    all(
-                        trace_data[key] is None
-                        for key in (
-                            "from_confidence",
-                            "from_evidence",
-                            "from_truth",
-                            "to_confidence",
-                            "to_evidence",
-                            "to_truth",
-                        )
-                    ),
-                    f"{arm.arm} degraded transition trace retained an unexecuted verdict claim",
+                    trace_data
+                    == {
+                        "entity_id": "scene",
+                        "from_truth": None,
+                        "to_truth": None,
+                        "armed": None,
+                        "fired_latch": None,
+                        "outcome": "judge_degraded",
+                        "strip_len": 0,
+                        "enriched": False,
+                        "identity_policy": plan["explicit"].get(
+                            "Goal.state.identity_policy"
+                        ),
+                        "latch_key": "scene",
+                        "latch_key_source": "default_scene",
+                        "focus_entity_id": None,
+                        "from_confidence": None,
+                        "to_confidence": None,
+                        "from_evidence": None,
+                        "to_evidence": None,
+                    },
+                    f"{arm.arm} degraded transition trace retained an unexecuted claim",
                 )
                 continue
-            for call in candidate.provider_calls:
-                _require(
-                    trace_data[f"{call.predicate}_confidence"] == call.confidence
-                    and trace_data[f"{call.predicate}_evidence"] == call.evidence
-                    and trace_data[f"{call.predicate}_truth"]
-                    == ("yes" if call.satisfied else "no"),
-                    f"{arm.arm} transition trace verdict does not reconstruct "
-                    "from offline-oracle calls",
-                )
+            calls = {call.predicate: call for call in candidate.provider_calls}
+            from_call = calls["from"]
+            to_call = calls["to"]
+            threshold = float(effective["Settings.gate.threshold"])
+            from_truth = classify(
+                Verdict(
+                    bool(from_call.satisfied),
+                    float(from_call.confidence),
+                    str(from_call.evidence),
+                ),
+                1.0,
+                threshold,
+                0.5,
+            )
+            to_truth = classify(
+                Verdict(
+                    bool(to_call.satisfied),
+                    float(to_call.confidence),
+                    str(to_call.evidence),
+                ),
+                1.0,
+                threshold,
+                0.5,
+            )
+            prior_armed, prior_fired = armed, fired_latch
+            if from_truth == "yes":
+                armed, fired_latch = True, False
+            did_fire = armed and not fired_latch and to_truth == "yes"
+            if did_fire:
+                fired_latch = True
+                outcome = "fire"
+            elif from_truth == "yes":
+                outcome = "rearmed" if (prior_armed or prior_fired) else "armed"
+            elif armed and fired_latch and to_truth == "yes":
+                outcome = "suppressed_latched"
+            else:
+                outcome = "idle"
+            _require(
+                trace_data
+                == {
+                    "entity_id": "scene",
+                    "from_truth": from_truth,
+                    "to_truth": to_truth,
+                    "armed": armed,
+                    "fired_latch": fired_latch,
+                    "outcome": outcome,
+                    "strip_len": 0,
+                    "enriched": False,
+                    "identity_policy": plan["explicit"].get(
+                        "Goal.state.identity_policy"
+                    ),
+                    "latch_key": "scene",
+                    "latch_key_source": "default_scene",
+                    "focus_entity_id": None,
+                    "from_confidence": from_call.confidence,
+                    "to_confidence": to_call.confidence,
+                    "from_evidence": from_call.evidence,
+                    "to_evidence": to_call.evidence,
+                },
+                f"{arm.arm} transition trace does not reconstruct from oracle/state",
+            )
+    else:
+        gate = Gate(
+            threshold=float(effective["Settings.gate.threshold"]),
+            max_keys=None,
+            key_ttl_s=None,
+            require_false_first=bool(
+                effective["Settings.gate.require_false_first"]
+            ),
+            refractory_s=float(effective["Settings.gate.refractory_s"]),
+        )
+        gate_by_t = {
+            float(item["t"]): item
+            for item in arm.traces
+            if item["stage"] == "gate.classified"
+        }
+        hold_value = plan["explicit"].get("Goal.state.hold_s")
+        hold_s = float(hold_value) if hold_value is not None else None
+        for candidate in dispatched:
+            if any(call.status != "success" for call in candidate.provider_calls):
+                continue
+            call = candidate.provider_calls[0]
+            verdict = Verdict(
+                bool(call.satisfied),
+                float(call.confidence),
+                str(call.evidence),
+            )
+            outcome = gate.decide(
+                (goal_id, None),
+                verdict,
+                freshness=1.0,
+                hold_s=hold_s,
+                now=candidate.t,
+            )
+            truth = classify(
+                verdict,
+                1.0,
+                gate.threshold,
+                gate.fresh_min,
+            )
+            trace_reason = (
+                "verdict_not_satisfied"
+                if outcome.reason == "not_satisfied"
+                else outcome.reason
+            )
+            trace = _thaw(gate_by_t[candidate.t])
+            _require(
+                trace
+                == {
+                    "trace_id": f"{source_id}@{candidate.t}",
+                    "stage": "gate.classified",
+                    "t": candidate.t,
+                    "goal_id": goal_id,
+                    "data": {
+                        "truth": truth,
+                        "action": outcome.action,
+                        "reason": f"{outcome.action}: {trace_reason}",
+                        "gate_reason": outcome.reason,
+                        "entity_id": None,
+                        "satisfied": call.satisfied,
+                        "confidence": call.confidence,
+                        "freshness": 1.0,
+                        "hold_s": hold_s,
+                    },
+                },
+                f"{arm.arm} ordinary gate trace does not reconstruct from oracle/state",
+            )
 
     expected_effective_config = {
         "fps": {
@@ -3661,7 +3788,6 @@ def _validate_v2_arm_reconstruction(
         f"{arm.arm} effective runtime configuration does not reconstruct from the compiled replay",
     )
 
-    plan = _thaw(receipt.watch_plan)
     expected_plan_id = PlanIdentity.from_goals(
         [Goal(id=goal_id, condition=str(plan["condition"]), say=str(plan["condition"]))],
         revision=1,
@@ -4201,6 +4327,16 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
         and receipt.comparable == (not recomputed_blockers),
         "cached receipt comparable state disagrees with recomputed blockers",
     )
+    if is_v2:
+        manifest_artifact = next(
+            item for item in receipt.input_artifacts if item["role"] == "manifest"
+        )
+        reconstructed_execution = run_matched_watch(manifest_artifact["path"])
+        _require(
+            reconstructed_execution.content_sha256 == receipt.content_sha256,
+            "v2 receipt deterministic execution claims do not reconstruct "
+            "from the closed inputs",
+        )
 
 
 def derive_viability_rows(receipt: MatchedWatchReceipt) -> tuple[dict[str, Any], dict[str, Any]]:

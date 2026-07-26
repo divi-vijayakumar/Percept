@@ -350,6 +350,20 @@ def test_v1_synthetic_validation_never_imports_the_optional_decoder(tmp_path, mo
     assert receipt.receipt_schema == "percept.eval.matched_watch.receipt/v1"
 
 
+def test_v1_synthetic_manifest_remains_portable_without_dir_fd_open(
+    tmp_path,
+    monkeypatch,
+):
+    from tests.test_matched_watch import _write_case
+
+    manifest_path = _write_case(tmp_path)
+    monkeypatch.setattr(matched_watch_module.os, "supports_dir_fd", set())
+
+    loaded = load_matched_watch_manifest(manifest_path)
+
+    assert loaded.schema == "percept.eval.matched_watch/v1"
+
+
 @pytest.mark.parametrize(
     "attack",
     ["duplicate_media", "group_leakage", "path_escape", "oracle_tamper", "media_symlink", "media_hardlink"],
@@ -843,6 +857,84 @@ def test_v2_transition_verdict_trace_must_reconstruct_from_oracle_call(
     )
 
     with pytest.raises(MatchedWatchInputError, match="transition trace verdict|oracle"):
+        derive_viability_rows(forged)
+
+
+def test_v2_transition_trace_identity_must_reconstruct_from_dispatch(tmp_path):
+    receipt = run_matched_watch(_write_real_case(tmp_path))
+    traces = list(receipt.baseline.traces)
+    index = next(
+        index
+        for index, trace in enumerate(traces)
+        if trace["stage"] == "transition.decision"
+    )
+    traces[index] = {
+        **traces[index],
+        "trace_id": "caller-forged-transition-coordinate",
+        "goal_id": "caller-forged-goal",
+    }
+    forged = _reseal(
+        receipt,
+        baseline=replace(receipt.baseline, traces=tuple(traces)),
+    )
+
+    with pytest.raises(MatchedWatchInputError, match="transition trace identity"):
+        derive_viability_rows(forged)
+
+
+def test_v2_transition_latch_state_must_reconstruct_from_oracle_sequence(tmp_path):
+    receipt = run_matched_watch(_write_real_case(tmp_path))
+    traces = list(receipt.baseline.traces)
+    index = next(
+        index
+        for index, trace in enumerate(traces)
+        if trace["stage"] == "transition.decision"
+    )
+    traces[index] = {
+        **traces[index],
+        "data": {
+            **traces[index]["data"],
+            "armed": False,
+            "fired_latch": True,
+        },
+    }
+    forged = _reseal(
+        receipt,
+        baseline=replace(receipt.baseline, traces=tuple(traces)),
+    )
+
+    with pytest.raises(MatchedWatchInputError, match="transition trace"):
+        derive_viability_rows(forged)
+
+
+def test_v2_ordinary_gate_trace_must_reconstruct_from_oracle_and_gate(tmp_path):
+    receipt = run_matched_watch(
+        _write_real_case(
+            tmp_path,
+            template_ref="facility_observation@1/zone_occupied",
+            archetype="physical_scene/zone_occupied",
+        )
+    )
+    traces = list(receipt.baseline.traces)
+    index = next(
+        index
+        for index, trace in enumerate(traces)
+        if trace["stage"] == "gate.classified"
+    )
+    traces[index] = {
+        **traces[index],
+        "data": {
+            **traces[index]["data"],
+            "satisfied": True,
+            "confidence": 0.01,
+        },
+    }
+    forged = _reseal(
+        receipt,
+        baseline=replace(receipt.baseline, traces=tuple(traces)),
+    )
+
+    with pytest.raises(MatchedWatchInputError, match="ordinary gate trace"):
         derive_viability_rows(forged)
 
 
