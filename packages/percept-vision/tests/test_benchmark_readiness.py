@@ -973,6 +973,148 @@ class FixtureReplayCoverageTests(unittest.TestCase):
             )
         )
 
+    def test_score_emits_v2_runtime_measurements_and_balanced_ledger(self):
+        event = self._event()
+        timing = JudgmentTiming(
+            ingest_observed_ts=10.0,
+            admitted_ts=10.05,
+            judge_started_ts=10.1,
+            judge_completed_ts=10.3,
+            decision_emitted_ts=10.35,
+            source_media_ts=0.2,
+        )
+        fire = NS(
+            source_media_ts=0.2,
+            source_detection_latency_s=0.2,
+            ingest_to_decision_s=0.35,
+            admitted_to_incident_s=0.35,
+            decision_to_incident_s=0.05,
+            action_onset_to_incident_s=0.4,
+            evidence_available_to_incident_s=0.1,
+            judge_latency_s=0.2,
+            incident_observed_ts=10.4,
+            timing=timing,
+            revision_id="rev-1",
+            incident_id="incident-1",
+            judgment_event_id="judgment-1",
+            evidence_seq=1,
+            occurrence_id="occurrence-1",
+        )
+        run = EventRun(
+            case_id=event["row_id"],
+            video_id=event["video_id"],
+            label=event["label"],
+            goal="the action occurs",
+            onset_s=0.0,
+            end_s=1.0,
+            positive_windows=[(0.0, 1.0)],
+            frames=10,
+            escalations=[0.1],
+            fires=[fire],
+            judge_calls=1,
+            configuration={
+                "architecture": (
+                    "WatchPlan -> ConfigResolver -> ResolvedWatch -> "
+                    "RuntimeCompiler -> async worker"
+                ),
+                "watch_receipt": {"status": "applied"},
+                "resolved_watch": {
+                    "plan_hash": "plan-hash",
+                    "component_snapshot_hash": "component-hash",
+                },
+                "capture_fps": 6.0,
+                "reconciliation": {
+                    "goal_admissions": 2,
+                    "perceive_dispatches": 2,
+                    "launched_judge_calls": 1,
+                    "logical_provider_calls": 1,
+                    "pool_receipts": 1,
+                    "pool_outcomes": {"decisive": 1},
+                    "provider_call_outcomes": {"completed": 1},
+                    "reported_provider_events": 1,
+                    "considered_provider_events": 1,
+                    "truncated_provider_events": 0,
+                    "invalid_provider_events": 0,
+                    "overlap_suppressed_events": 0,
+                    "other_event_suppressions": 0,
+                    "occurrence_fires": 1,
+                    "judgment_events": 1,
+                    "asks": 0,
+                    "fires": 1,
+                    "incidents": 1,
+                    "linked_incidents": 1,
+                    "forbidden_evidence_fallbacks": 0,
+                    "superseded_before_launch": 0,
+                    "revision_dropped_before_launch": 0,
+                    "deadline_dropped_before_launch": 0,
+                    "deadline_expired_after_launch": 0,
+                },
+                "judge_pool_final": {
+                    "routes": {"native": {"inflight": 0}}
+                },
+            },
+        )
+
+        async def score_all(_events, request_budget):
+            reservation = request_budget.begin_attempt()
+            request_budget.complete_attempt(
+                reservation,
+                {
+                    "input_tokens": 20,
+                    "output_tokens": 10,
+                    "cost_usd": 0.01,
+                },
+            )
+            return [run]
+
+        env = {
+            "PERCEPT_VISION_BACKEND": "openrouter",
+            "PERCEPT_VISION_MODEL": "qwen/qwen3-vl-32b-instruct",
+            "PERCEPT_BENCH_BUDGET_PLAN": _plan(),
+        }
+        with (
+            patch.dict(os.environ, env, clear=False),
+            patch.object(
+                pt_track.pt,
+                "select_golden_action_events",
+                return_value=[event],
+            ),
+            patch.object(
+                pt_track.pt,
+                "action_media_minutes",
+                return_value=0.1,
+            ),
+            patch.object(pt_track, "_score_all", side_effect=score_all),
+        ):
+            result = pt_track.score(live=True, n=1)
+
+        self.assertEqual(
+            result.schema_version,
+            "percept.benchmark.track_result/2",
+        )
+        self.assertEqual(
+            result.cells[("dense-modeled", "dense_watch_opportunities")],
+            36,
+        )
+        self.assertEqual(result.cells[("e2e", "source_frames")], 10)
+        self.assertEqual(result.cells[("e2e", "goal_admissions")], 2)
+        self.assertEqual(
+            result.measurements["occurrence_recall"].denominator,
+            1,
+        )
+        self.assertEqual(
+            result.measurements["physical_call_reduction"].denominator,
+            36,
+        )
+        self.assertTrue(
+            all(result.reconciliation["checks"].values()),
+        )
+        self.assertEqual(
+            {gate["status"] for gate in result.quality_gates},
+            {"pass"},
+        )
+        self.assertEqual(result.invalid_reasons(), [])
+
 
 class PinnedCaseTests(unittest.TestCase):
     @staticmethod

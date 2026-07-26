@@ -48,7 +48,12 @@ from percept.watchplan_apply import apply_watch_plan
 
 from . import perception_test as pt
 from .budget import BudgetEnforcer, build_budget_enforcer
-from .types import TrackResult, bench_vision
+from .types import (
+    TRACK_RESULT_SCHEMA_V2,
+    Measurement,
+    TrackResult,
+    bench_vision,
+)
 
 TRACK = "pt-action-e2e"
 FPS = 2.0  # legacy coarse capture floor — the SensorPlan's sensitive cadence raises the EFFECTIVE rate
@@ -1110,6 +1115,216 @@ def _call_reductions(
     )
 
 
+def _sum_run_counter(
+    runs: list[EventRun],
+    section: str,
+) -> dict[str, int]:
+    total: Counter[str] = Counter()
+    for run in runs:
+        total.update(
+            {
+                str(key): int(value)
+                for key, value in (
+                    run.configuration.get("reconciliation", {})
+                    .get(section, {})
+                    .items()
+                )
+            }
+        )
+    return dict(sorted(total.items()))
+
+
+def _qualification_reconciliation(
+    runs: list[EventRun],
+    *,
+    dense_opportunities: int,
+    physical_attempts: int,
+    final_provider_inflight: int,
+) -> dict[str, Any]:
+    """Roll each runtime receipt into one loss/retry/occurrence ledger."""
+
+    def summed(key: str) -> int:
+        return sum(
+            int(
+                run.configuration.get("reconciliation", {}).get(key, 0)
+            )
+            for run in runs
+        )
+
+    pool_final_inflight = sum(
+        int(route.get("inflight", 0))
+        for run in runs
+        for route in (
+            run.configuration.get("judge_pool_final", {})
+            .get("routes", {})
+            .values()
+        )
+    )
+    source_frames = sum(run.frames for run in runs)
+    reconciliation = {
+        "source_frames": source_frames,
+        "dense_watch_opportunities": dense_opportunities,
+        "goal_admissions": summed("goal_admissions"),
+        "perceive_dispatches": summed("perceive_dispatches"),
+        "launched_judge_calls": summed("launched_judge_calls"),
+        "logical_provider_calls": summed("logical_provider_calls"),
+        "physical_provider_attempts": physical_attempts,
+        "pool_receipts": summed("pool_receipts"),
+        "pool_outcomes": _sum_run_counter(runs, "pool_outcomes"),
+        "provider_call_outcomes": _sum_run_counter(
+            runs,
+            "provider_call_outcomes",
+        ),
+        "reported_provider_events": summed("reported_provider_events"),
+        "considered_provider_events": summed("considered_provider_events"),
+        "truncated_provider_events": summed("truncated_provider_events"),
+        "invalid_provider_events": summed("invalid_provider_events"),
+        "overlap_suppressed_events": summed(
+            "overlap_suppressed_events"
+        ),
+        "other_event_suppressions": summed("other_event_suppressions"),
+        "occurrence_fires": summed("occurrence_fires"),
+        "judgment_events": summed("judgment_events"),
+        "asks": summed("asks"),
+        "fires": summed("fires"),
+        "incidents": summed("incidents"),
+        "linked_incidents": summed("linked_incidents"),
+        "forbidden_evidence_fallbacks": summed(
+            "forbidden_evidence_fallbacks"
+        ),
+        "source_dropped_frames": sum(run.dropped_frames for run in runs),
+        "superseded_before_launch": summed("superseded_before_launch"),
+        "revision_dropped_before_launch": summed(
+            "revision_dropped_before_launch"
+        ),
+        "deadline_dropped_before_launch": summed(
+            "deadline_dropped_before_launch"
+        ),
+        "deadline_expired_after_launch": summed(
+            "deadline_expired_after_launch"
+        ),
+        "final_provider_inflight": final_provider_inflight,
+        "final_pool_inflight": pool_final_inflight,
+    }
+    reconciliation["checks"] = {
+        "provider_event_balance": (
+            reconciliation["reported_provider_events"]
+            == reconciliation["considered_provider_events"]
+            + reconciliation["truncated_provider_events"]
+        ),
+        "considered_event_balance": (
+            reconciliation["considered_provider_events"]
+            == reconciliation["invalid_provider_events"]
+            + reconciliation["overlap_suppressed_events"]
+            + reconciliation["other_event_suppressions"]
+            + reconciliation["occurrence_fires"]
+        ),
+        "judge_receipt_balance": (
+            reconciliation["launched_judge_calls"]
+            == reconciliation["pool_receipts"]
+        ),
+        "provider_call_balance": (
+            reconciliation["logical_provider_calls"]
+            == sum(reconciliation["provider_call_outcomes"].values())
+        ),
+        "attempt_balance": (
+            reconciliation["physical_provider_attempts"]
+            >= reconciliation["logical_provider_calls"]
+        ),
+        "incident_link_balance": (
+            reconciliation["fires"]
+            == reconciliation["incidents"]
+            == reconciliation["linked_incidents"]
+        ),
+    }
+    return reconciliation
+
+
+def _quality_gates(
+    runs: list[EventRun],
+    reconciliation: dict[str, Any],
+    *,
+    matched_fire_events: int,
+    max_action_latency_s: float | None,
+) -> list[dict[str, Any]]:
+    exact_path = (
+        "WatchPlan -> ConfigResolver -> ResolvedWatch -> "
+        "RuntimeCompiler -> async worker"
+    )
+    architecture_ok = bool(runs) and all(
+        run.configuration.get("architecture") == exact_path
+        and run.configuration.get("watch_receipt", {}).get("status")
+        == "applied"
+        and bool(
+            run.configuration.get("resolved_watch", {}).get("plan_hash")
+        )
+        and bool(
+            run.configuration.get("resolved_watch", {}).get(
+                "component_snapshot_hash"
+            )
+        )
+        for run in runs
+    )
+    loss_fields = (
+        "source_dropped_frames",
+        "superseded_before_launch",
+        "revision_dropped_before_launch",
+        "deadline_dropped_before_launch",
+        "deadline_expired_after_launch",
+    )
+    no_hidden_loss = all(reconciliation[key] == 0 for key in loss_fields)
+    bounded = (
+        reconciliation["final_provider_inflight"] == 0
+        and reconciliation["final_pool_inflight"] == 0
+        and set(reconciliation["provider_call_outcomes"]) <= {"completed"}
+    )
+    native_video = (
+        reconciliation["logical_provider_calls"] > 0
+        and reconciliation["forbidden_evidence_fallbacks"] == 0
+    )
+    reconciled = all(reconciliation["checks"].values())
+    reflex = (
+        matched_fire_events > 0
+        and max_action_latency_s is not None
+        and 0.0 <= max_action_latency_s <= 2.0
+    )
+    return [
+        {
+            "id": "compiled_runtime_path",
+            "status": "pass" if architecture_ok else "fail",
+        },
+        {
+            "id": "native_temporal_evidence",
+            "status": "pass" if native_video else "fail",
+        },
+        {
+            "id": "lossless_fixture_replay",
+            "status": "pass" if no_hidden_loss else "fail",
+            "observed": {key: reconciliation[key] for key in loss_fields},
+        },
+        {
+            "id": "lifecycle_reconciliation",
+            "status": "pass" if reconciled else "fail",
+            "observed": reconciliation["checks"],
+        },
+        {
+            "id": "bounded_completion",
+            "status": "pass" if bounded else "fail",
+            "final_provider_inflight": reconciliation[
+                "final_provider_inflight"
+            ],
+            "final_pool_inflight": reconciliation["final_pool_inflight"],
+        },
+        {
+            "id": "reflex_action_to_incident",
+            "status": "pass" if reflex else "fail",
+            "threshold_s": 2.0,
+            "observed_max_s": max_action_latency_s,
+            "conditioning": "matched positive occurrences",
+        },
+    ]
+
+
 def _unavailable(reason: str) -> TrackResult:
     return TrackResult(
         track=TRACK,
@@ -1135,6 +1350,7 @@ def _unavailable(reason: str) -> TrackResult:
         excluded=[f"{TRACK}: {reason}"],
         notes=reason,
         status="skipped",
+        schema_version=TRACK_RESULT_SCHEMA_V2,
     )
 
 
@@ -1210,6 +1426,25 @@ def _failed_run(
         ],
         notes=f"budget={budget}; attempted_cases={[run.case_id for run in runs]}",
         status="failed",
+        schema_version=TRACK_RESULT_SCHEMA_V2,
+        contract={
+            "runtime_path": (
+                "WatchPlan -> ConfigResolver -> ResolvedWatch -> "
+                "RuntimeCompiler -> async worker -> JudgePool -> Incident"
+            ),
+            "qualification_scope": "perception-test/action",
+        },
+        reconciliation={
+            "physical_provider_attempts": physical_attempts,
+            "final_provider_inflight": budget["inflight_attempts"],
+        },
+        quality_gates=[
+            {
+                "id": "terminal_execution",
+                "status": "fail",
+                "reason": reason,
+            }
+        ],
     )
 
 
@@ -1308,14 +1543,46 @@ def score(*, live: bool, n: int) -> TrackResult:
         fire.judge_latency_s for run in runs for fire, _window in run.matched_fire_events
     ]
 
-    dense_calls = sum(r.frames for r in runs)
+    source_frames = sum(r.frames for r in runs)
+    dense_baseline_fps = max(
+        (
+            float(run.configuration.get("capture_fps", 0.0))
+            for run in runs
+        ),
+        default=0.0,
+    )
+    dense_opportunities = (
+        math.ceil(
+            selected_media_minutes
+            * 60.0
+            * dense_baseline_fps
+            # One active Watch is compiled for every selected case.
+            * 1
+        )
+        if dense_baseline_fps > 0
+        else 0
+    )
     logical_calls = sum(r.judge_calls for r in runs)
     budget = request_budget.snapshot()
     physical_attempts = int(budget["physical_attempts"])
     call_reduction, logical_admission_reduction = _call_reductions(
-        dense_calls=dense_calls,
+        dense_calls=dense_opportunities,
         logical_calls=logical_calls,
         physical_attempts=physical_attempts,
+    )
+    reconciliation = _qualification_reconciliation(
+        runs,
+        dense_opportunities=dense_opportunities,
+        physical_attempts=physical_attempts,
+        final_provider_inflight=int(budget["inflight_attempts"]),
+    )
+    max_action_latency_s = (
+        max(action_to_incident_latencies)
+        if action_to_incident_latencies
+        else None
+    )
+    timely_occurrences = sum(
+        latency <= 2.0 for latency in action_to_incident_latencies
     )
 
     cells = {
@@ -1352,7 +1619,9 @@ def score(*, live: bool, n: int) -> TrackResult:
         ("e2e", "positive_events"): positive_events,
         ("e2e", "matched_fire_events"): matched_fire_events,
         ("e2e", "total_fire_predictions"): total_fire_predictions,
-        ("dense-modeled", "dense_frame_calls"): dense_calls,
+        ("dense-modeled", "dense_watch_opportunities"): dense_opportunities,
+        ("e2e", "source_frames"): source_frames,
+        ("e2e", "goal_admissions"): reconciliation["goal_admissions"],
         ("e2e", "logical_judge_calls"): logical_calls,
         ("e2e", "physical_provider_attempts"): physical_attempts,
         ("e2e", "input_tokens"): budget["input_tokens"],
@@ -1412,7 +1681,9 @@ def score(*, live: bool, n: int) -> TrackResult:
             "positive_events": "{:.0f}",
             "matched_fire_events": "{:.0f}",
             "total_fire_predictions": "{:.0f}",
-            "dense_frame_calls": "{:.0f}",
+            "dense_watch_opportunities": "{:.0f}",
+            "source_frames": "{:.0f}",
+            "goal_admissions": "{:.0f}",
             "logical_judge_calls": "{:.0f}",
             "physical_provider_attempts": "{:.0f}",
             "input_tokens": "{:.0f}",
@@ -1429,7 +1700,8 @@ def score(*, live: bool, n: int) -> TrackResult:
                 else "n/a"
             ),
             "PT action calls dense-modeled -> logical -> physical": (
-                f"{dense_calls} -> {logical_calls} -> {physical_attempts}"
+                f"{dense_opportunities} -> {logical_calls} -> "
+                f"{physical_attempts}"
             ),
         },
         measured=[
@@ -1458,8 +1730,10 @@ def score(*, live: bool, n: int) -> TrackResult:
             "e2e:committed_budget_usd",
             "e2e:selected_media_minutes",
             "e2e:source_dropped_frames",
+            "e2e:source_frames",
+            "e2e:goal_admissions",
         ],
-        modeled=["dense-modeled:dense_frame_calls"],
+        modeled=["dense-modeled:dense_watch_opportunities"],
         calls=physical_attempts,
         qualifying_events=matched_fire_events,
         coverage=[
@@ -1538,4 +1812,129 @@ def score(*, live: bool, n: int) -> TrackResult:
             },
             "budget_plan": request_budget.plan,
         },
+        schema_version=TRACK_RESULT_SCHEMA_V2,
+        contract={
+            "runtime_path": (
+                "WatchPlan -> ConfigResolver -> ResolvedWatch -> "
+                "RuntimeCompiler -> async worker -> JudgePool -> Incident"
+            ),
+            "qualification_scope": "perception-test/action",
+            "source_profile": "physical_scene",
+            "active_watches_per_case": 1,
+            "plan_hashes": sorted(
+                {
+                    str(
+                        run.configuration.get("resolved_watch", {}).get(
+                            "plan_hash"
+                        )
+                    )
+                    for run in runs
+                }
+            ),
+            "component_snapshot_hashes": sorted(
+                {
+                    str(
+                        run.configuration.get("resolved_watch", {}).get(
+                            "component_snapshot_hash"
+                        )
+                    )
+                    for run in runs
+                }
+            ),
+            "evidence": "native video/mp4 clip with ClipEvent occurrences",
+            "decision_output": "Incident",
+            "dense_baseline": {
+                "unit": "watch opportunities",
+                "formula": (
+                    "verified media duration * preregistered capture fps * "
+                    "active Watches"
+                ),
+                "capture_fps": dense_baseline_fps,
+                "active_watches": 1,
+            },
+        },
+        measurements={
+            "occurrence_recall": Measurement(
+                value=notification_recall,
+                unit="ratio",
+                conditioning="all annotated positive occurrences",
+                numerator=matched_fire_events,
+                denominator=positive_events,
+                provenance={"matching": "one-to-one occurrence windows"},
+            ),
+            "notification_precision": Measurement(
+                value=notification_precision,
+                unit="ratio",
+                conditioning="all emitted FIRE Incidents",
+                numerator=matched_fire_events,
+                denominator=total_fire_predictions,
+                provenance={"matching": "one-to-one occurrence windows"},
+            ),
+            "timely_occurrence_recall_at_2s": Measurement(
+                value=_timely_occurrence_recall(
+                    action_to_incident_latencies,
+                    positive_events=positive_events,
+                ),
+                unit="ratio",
+                conditioning="all annotated positive occurrences",
+                numerator=timely_occurrences,
+                denominator=positive_events,
+                provenance={
+                    "clock": "annotation onset anchored to monotonic replay"
+                },
+            ),
+            "p95_action_onset_to_incident": Measurement(
+                value=_percentile(action_to_incident_latencies, 0.95),
+                unit="seconds",
+                conditioning="matched positive occurrences",
+                denominator=len(action_to_incident_latencies),
+                provenance={"terminal": "local Incident observation"},
+            ),
+            "max_action_onset_to_incident": Measurement(
+                value=max_action_latency_s,
+                unit="seconds",
+                conditioning="matched positive occurrences",
+                denominator=len(action_to_incident_latencies),
+                provenance={"terminal": "local Incident observation"},
+            ),
+            "physical_call_reduction": Measurement(
+                value=call_reduction,
+                unit="ratio",
+                conditioning="verified media duration and one active Watch",
+                numerator=dense_opportunities - physical_attempts,
+                denominator=dense_opportunities,
+                provenance={
+                    "baseline": "dense_watch_opportunities",
+                    "cost_unit": "physical provider attempts",
+                },
+            ),
+            "logical_admission_reduction": Measurement(
+                value=logical_admission_reduction,
+                unit="ratio",
+                conditioning="verified media duration and one active Watch",
+                numerator=dense_opportunities - logical_calls,
+                denominator=dense_opportunities,
+                provenance={
+                    "baseline": "dense_watch_opportunities",
+                    "cost_unit": "logical provider calls",
+                },
+            ),
+            "billed_cost": Measurement(
+                value=budget["billed_usd"],
+                unit="USD",
+                conditioning="all physical attempts in selected cases",
+                provenance={
+                    "provider": backend,
+                    "model": model,
+                    "budget_plan": request_budget.plan,
+                },
+            ),
+        },
+        reconciliation=reconciliation,
+        quality_gates=_quality_gates(
+            runs,
+            reconciliation,
+            matched_fire_events=matched_fire_events,
+            max_action_latency_s=max_action_latency_s,
+        ),
     )
