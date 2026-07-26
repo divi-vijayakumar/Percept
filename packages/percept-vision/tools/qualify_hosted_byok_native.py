@@ -410,39 +410,63 @@ def _same_identity(actual: FileIdentity, expected: FileIdentity, name: str) -> N
 
 
 def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
+    def group_exists() -> bool:
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+    def joined() -> bool:
+        return process.poll() is not None and not group_exists()
+
+    def wait_joined(timeout_s: float) -> bool:
+        deadline = time.monotonic() + timeout_s
+        while not joined():
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.01)
+        process.wait()
+        return True
+
+    if joined():
         process.wait()
         return
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
         pass
-    try:
-        process.wait(timeout=1.0)
+    if wait_joined(1.0):
         return
-    except subprocess.TimeoutExpired:
-        pass
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
-    process.wait()
+    if not wait_joined(1.0):
+        raise QualificationUnavailable(
+            "owned protected command process group could not be joined"
+        )
 
 
 def _read_streams_bounded(
     process: subprocess.Popen[bytes], command: Command
 ) -> Completed:
-    assert process.stdout is not None and process.stderr is not None
-    selector = selectors.DefaultSelector()
-    selector.register(process.stdout, selectors.EVENT_READ, "stdout")
-    selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+    selector: selectors.BaseSelector | None = None
+    streams = (process.stdout, process.stderr)
     buffers = {"stdout": bytearray(), "stderr": bytearray()}
     deadline = time.monotonic() + command.timeout_s
+    failed = False
     try:
+        if process.stdout is None or process.stderr is None:
+            raise QualificationUnavailable("protected command pipes are unavailable")
+        selector = selectors.DefaultSelector()
+        selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+        selector.register(process.stderr, selectors.EVENT_READ, "stderr")
         while selector.get_map():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                _terminate_process_group(process)
                 raise QualificationUnavailable("protected command timed out")
             events = selector.select(min(remaining, 0.25))
             if not events and process.poll() is not None:
@@ -458,11 +482,52 @@ def _read_streams_bounded(
                 target = buffers[key.data]
                 target.extend(chunk)
                 if len(target) > command.max_output:
-                    _terminate_process_group(process)
                     raise QualificationRejected("protected command output exceeded cap")
         returncode = process.wait(timeout=max(0.1, deadline - time.monotonic()))
+    except BaseException:
+        failed = True
+        previous_mask: set[signal.Signals] | None = None
+        if hasattr(signal, "pthread_sigmask"):
+            previous_mask = signal.pthread_sigmask(
+                signal.SIG_BLOCK,
+                {signal.SIGINT, signal.SIGTERM, signal.SIGHUP},
+            )
+        quiescence_error: BaseException | None = None
+        try:
+            _terminate_process_group(process)
+        except BaseException as exc:
+            quiescence_error = exc
+        finally:
+            if previous_mask is not None:
+                try:
+                    signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+                except BaseException:
+                    # A repeated pending authority signal may run its handler
+                    # while the old mask is restored. Preserve the first
+                    # interruption after the owned process group is joined.
+                    pass
+        if quiescence_error is not None:
+            raise QualificationUnavailable(
+                "owned protected command quiescence could not be proven"
+            ) from quiescence_error
+        raise
     finally:
-        selector.close()
+        close_error: BaseException | None = None
+        if selector is not None:
+            try:
+                selector.close()
+            except BaseException as exc:
+                close_error = exc
+        for stream in streams:
+            if stream is None:
+                continue
+            try:
+                stream.close()
+            except BaseException as exc:
+                if close_error is None:
+                    close_error = exc
+        if close_error is not None and not failed:
+            raise close_error
     return Completed(returncode, bytes(buffers["stdout"]), bytes(buffers["stderr"]))
 
 

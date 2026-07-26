@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import time
@@ -421,6 +422,110 @@ def test_timeout_terminates_and_joins_entire_process_group(tmp_path: Path) -> No
     time.sleep(0.7)
     assert process.poll() is not None
     assert not marker.exists()
+
+
+def test_catchable_signal_joins_real_leader_and_descendant_and_preserves_error(
+    tmp_path: Path,
+) -> None:
+    descendant_pid_path = tmp_path / "descendant-pid"
+    late_marker = tmp_path / "late-descendant"
+    descendant = (
+        "import signal,time\n"
+        "from pathlib import Path\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "time.sleep(2.5)\n"
+        f"Path({str(late_marker)!r}).write_text('survived')\n"
+        "time.sleep(60)\n"
+    )
+    leader = (
+        "import signal,subprocess,sys,time\n"
+        "from pathlib import Path\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        f"child=subprocess.Popen([sys.executable,'-c',{descendant!r}])\n"
+        f"Path({str(descendant_pid_path)!r}).write_text(str(child.pid))\n"
+        "time.sleep(60)\n"
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", leader],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + 2.0
+    while not descendant_pid_path.exists():
+        if time.monotonic() >= deadline:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+            raise AssertionError("real descendant did not start")
+        time.sleep(0.01)
+    descendant_pid = int(descendant_pid_path.read_text(encoding="ascii"))
+
+    previous = signal.getsignal(signal.SIGTERM)
+    senders = [
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import os,signal,time;"
+                    f"time.sleep({delay!r});"
+                    f"os.kill({os.getpid()},signal.SIGTERM)"
+                ),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        for delay in (0.05, 0.1)
+    ]
+    fallback_leader_cleanup = False
+    fallback_group_cleanup = False
+    try:
+        signal.signal(signal.SIGTERM, authority._signal_handler)
+        with pytest.raises(authority.AuthorityInterrupted) as interrupted:
+            authority._read_streams_bounded(
+                process, authority.Command(tuple(), timeout_s=5.0)
+            )
+    finally:
+        for sender in senders:
+            sender.wait(timeout=2)
+        signal.signal(signal.SIGTERM, previous)
+        fallback_leader_cleanup = process.poll() is None
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            pass
+        else:
+            fallback_group_cleanup = True
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if process.poll() is None:
+            process.wait()
+
+    assert interrupted.value.args == (
+        f"authority interrupted by signal {signal.SIGTERM}",
+    )
+    assert not fallback_leader_cleanup
+    assert not fallback_group_cleanup
+    assert process.poll() is not None
+    assert process.stdout is not None and process.stdout.closed
+    assert process.stderr is not None and process.stderr.closed
+    with pytest.raises(ProcessLookupError):
+        os.killpg(process.pid, 0)
+
+    deadline = time.monotonic() + 1.0
+    while True:
+        try:
+            os.kill(descendant_pid, 0)
+        except ProcessLookupError:
+            break
+        if time.monotonic() >= deadline:
+            raise AssertionError("real descendant survived process-group join")
+        time.sleep(0.01)
+    assert not late_marker.exists()
 
 
 class _FakeDocker:
