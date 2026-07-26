@@ -85,7 +85,7 @@ describe("the registry — register + compose by name", () => {
   });
 });
 
-describe("sense categories (B2) — acoustic-onset is the first-class AUDIO sense", () => {
+describe("sense categories — acoustic-onset is the first-class AUDIO sense", () => {
   it("marks each built-in with its modality category", () => {
     expect(manifestOf("acoustic-onset").category).toBe(CATEGORY_AUDIO);
     expect(manifestOf("motion-periodicity").category).toBe(CATEGORY_MOTION);

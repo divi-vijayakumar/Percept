@@ -142,7 +142,7 @@ class CadenceChangesSensePolicyBehaviorTests(unittest.TestCase):
 
 
 class PerceptCreateAppliesProfileAtCreationTests(unittest.TestCase):
-    """M2: cadence/plan_mode are applied at CORE CREATION time, never a mid-run mutation."""
+    """Cadence and plan_mode apply at core creation time, never by mid-run mutation."""
 
     def setUp(self):
         _no_env_vars_set()

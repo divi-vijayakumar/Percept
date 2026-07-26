@@ -95,7 +95,7 @@ class TestRegistryAndManifest(unittest.TestCase):
 
 
 class TestSenseCategory(unittest.TestCase):
-    """B2 — acoustic-onset is the first-class AUDIO sense; audio detectors are discoverable as a class."""
+    """Acoustic-onset is first-class AUDIO; audio detectors are discoverable as a class."""
 
     def test_acoustic_onset_marked_audio(self):
         self.assertEqual(manifest_of("acoustic-onset").category, CATEGORY_AUDIO)

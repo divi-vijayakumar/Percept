@@ -11,7 +11,7 @@ Offline: reads ``calibration_capture.json`` (the per-frame ``(satisfied, confide
 only on **silent** scenes (every frame should be *unsatisfied*), so the per-frame reliability set is
 those frames — a clean mix of correct rejections and confident false-fires, which is exactly the trust
 question. ``fire``/``ask`` scenes lack a per-frame rising edge in the capture, so they're summarized at
-the scene level as context (per the S3 design's honest-reduction note), not over-claimed as frame labels.
+the scene level as context under the honest-reduction rule, not over-claimed as frame labels.
 
 The metric math here (``ece``/``auroc``/``discrimination``/``reliability_bins``) is pure and
 L1-testable on synthetic pairs — no golden set required. ``main()`` does the IO.

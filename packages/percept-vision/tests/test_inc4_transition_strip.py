@@ -1,9 +1,9 @@
-"""INC4: the A->B transition path judges from/to over the SAME temporal strip the watch path uses.
+"""The A->B transition path judges from/to over the SAME temporal strip the watch path uses.
 
 The motivating client repro (keyboard-submitted approval): the status flip "lands between 4fps
 samples or renders a frame late", so NO single sampled frame cleanly shows the completed 'to' state
 — the change is only recognizable ACROSS frames (a pre-flip frame + the latest post-flip frame in
-one clip). The pre-INC4 transition path judged BARE single frames (``vision.judge(to, frame)`` with
+one clip). The legacy transition path judged BARE single frames (``vision.judge(to, frame)`` with
 no ``frames=``), so it missed the flip and the armed goal never fired.
 
 This module pins the regression as a strip-vs-single A/B on the SAME frames / SAME judge:
@@ -11,7 +11,7 @@ This module pins the regression as a strip-vs-single A/B on the SAME frames / SA
 * ``plan_mode='single'`` -> ``strip is None`` -> the judge sees only the anchor frame -> MISS (0 fires)
 * ``plan_mode='strip'``  -> the judge sees the 3-frame clip (before + ... + after) -> FIRE exactly once
 
-Plus: 10/10 negatives stay quiet under the new strip path, the fire still satisfies INC1's evidence
+Plus: 10/10 negatives stay quiet under the new strip path, the fire still satisfies the evidence-link
 rules (``verify_evidence_links`` resolves it, ``evidence_seq`` / ``judgment_event_id`` present), and
 the extractor seam threads facts into BOTH judge calls exactly like ``perceive_judged``. The five
 byte-for-byte single-frame variants live in ``tests/test_transition.py`` (unchanged).
@@ -180,7 +180,7 @@ class TestNegativesQuiet(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# The strip fire still satisfies INC1's evidence rules
+# The strip fire still satisfies the evidence-link rules
 # ---------------------------------------------------------------------------
 def _recorder(level="full", source="camera"):
     manifest = RunTraceManifest.create(
@@ -208,7 +208,7 @@ class TestStripFireEvidenceLinks(unittest.TestCase):
                         fire = e
             self.assertIsNotNone(fire)
 
-            # A REAL JudgmentEvent, transition-origin, with a non-null evidence_seq (INC1's rules).
+            # A REAL JudgmentEvent, transition-origin, with a non-null evidence_seq.
             self.assertIsNotNone(fire.judgment)
             self.assertEqual(fire.judgment.evidence_origin, "transition")
             self.assertIsNotNone(fire.judgment.evidence_seq)

@@ -564,7 +564,7 @@ confidence: —</pre>
   }
   // [DEMO4 Finding 4] which frame fired vs stayed silent-but-admitted, in one chronological strip.
   // A fired frame is the one a judgment.event's evidence_seq points at on a gate.classified fire
-  // (the SAME D11 correlation renderJudgments already resolves for the evidence-frame anchor).
+  // (the SAME evidence-sequence correlation renderJudgments resolves for the evidence-frame anchor).
   function firedSeqSet(recs){
     const gates=recs.filter(r=>r.stage==='gate.classified');
     const judgments=recs.filter(r=>r.stage==='judgment.event');
@@ -673,7 +673,7 @@ confidence: —</pre>
     $('#ledgerVersion').textContent=`revision · ${folds.length}`;
     if(lastFold&&lastFold.data){ const su=lastFold.data.subject, fo=lastFold.data.fold||{};
       const unwired=!su&&(!fo.episode_id);
-      $('#entityLedger').textContent=su?`subject: ${su.key||'—'}\nresolution: ${su.resolution||'—'}\nstrategy: ${su.strategy||'—'}`:`subject: null\nresolution: unbound\n(no resolver wired — Y5/Y12)`;
+      $('#entityLedger').textContent=su?`subject: ${su.key||'—'}\nresolution: ${su.resolution||'—'}\nstrategy: ${su.strategy||'—'}`:`subject: null\nresolution: unbound\n(no subject or document resolver wired)`;
       $('#episodeLedger').textContent=`episode: ${fo.episode_id||'null'}\nmatch: ${fo.match||'—'}\nmutation: ${fo.mutation||'—'}`;
       $('#entityRev').textContent=$('#episodeRev').textContent=unwired?'shadow · not wired':'shadow · advisory'; }
     if(lastGate&&lastGate.data){ const gd=lastGate.data;
@@ -681,7 +681,7 @@ confidence: —</pre>
       $('#contextRev').textContent=gd.action||'—'; }
   }
   // Every judgment (fire AND silent/ask) with its judgment reference — the "show the work" view.
-  // D11: a fire's judgment.event record (same trace_id + goal_id as its gate.classified) carries
+  // Evidence-sequence correlation: a fire's judgment.event record (same trace_id + goal_id as its gate.classified) carries
   // data.evidence_seq — the RECORDER-stamped seq of the SAME trace's source.frame record, i.e. the
   // literal evidence that fed this judgment. When resolvable, render it as a clickable anchor.
   // [DEMO3] a fired Incident may also carry revision_id/supersedes (the episode-owned

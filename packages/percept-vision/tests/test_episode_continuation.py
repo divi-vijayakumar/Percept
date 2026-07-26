@@ -186,7 +186,7 @@ class TestThreeDecisionsAreSeparate(unittest.TestCase):
         self.assertTrue(seen <= set(CONTINUATION_REASONS))
 
     def test_subject_key_short_circuits_the_judge(self):
-        # The Y5/Z3 seam: with a judge-emitted subject key the judge is not consulted at all.
+        # At the subject/judgment seam, a judge-emitted subject key bypasses the episode judge.
         calls = []
 
         def judge(summaries, exemplar):
@@ -209,7 +209,7 @@ class TestThreeDecisionsAreSeparate(unittest.TestCase):
         self.assertEqual(log.count(), 2)
 
     def test_representative_is_live_on_continuation(self):
-        # Was a dead field before Y1: set once at open and never updated.
+        # This was a dead field: set once at open and never updated.
         log = EpisodeLog("g", policy=EpisodePolicy(continuity_gap_s=10.0))
         log.observe_decision(0.0, "frame-1", subject_key="s")
         d = log.observe_decision(1.0, "frame-2", subject_key="s")

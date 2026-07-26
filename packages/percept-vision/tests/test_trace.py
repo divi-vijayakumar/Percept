@@ -20,7 +20,7 @@ def _agent(on_trace=None):
     return agent
 
 
-# O1 fixture (mirrors tests/test_runtime.py): (t, gate_frame, judge_frame) — a gray Frame drives the
+# Runtime fixture: (t, gate_frame, judge_frame) — a gray Frame drives the
 # motion gate, a token string is what FakeVision judges. Still->moved escalates and FIREs on the
 # rising edge; moved->still escalates and stays SILENT (confident-false re-arms).
 _W, _H = 8, 8
@@ -139,7 +139,7 @@ class TraceEventTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_trace_captures_a_fire_and_a_silent_with_reason(self):
         """End-to-end through ``run()``: the trace captures the edge decision, the judge verdict, the
         gate action AND a human-readable reason for both a FIRE (rising edge) and a SILENT
-        (confident-false) tick — the H0 forensic trace shape, on the production runtime path."""
+        (confident-false) tick — the forensic trace shape on the production runtime path."""
         events: list[TraceEvent] = []
         core = _zone_core()
         incidents = [inc async for inc in run(core, source=_RUN_SOURCE, on_trace=collect_trace(events))]

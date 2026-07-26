@@ -1,4 +1,4 @@
-"""B3 — reliability/ECE metric core, L1 on synthetic pairs (no golden set, no models).
+"""Reliability/ECE metric core, L1 on synthetic pairs (no golden set and no models).
 
 Pins the math AND the diagnostic: the overconfident-constant case (all confidence ~0.95, accuracy
 < 1) must report ECE = the overconfidence gap, AUROC ≈ 0.5, and discriminative=False — i.e. it

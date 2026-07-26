@@ -2,7 +2,8 @@
 
 ADR-004 (`docs/adr/ADR-004-delivery-flow-replay.md`) shipped a "NOT guaranteed" bullet claiming
 ``profile`` is *not resolved yet* and that ``_settings_from_profile`` is a minimal pass-through. That
-described a pre-M2 ``watch.py``: as shipped, ``_build_core`` resolves a real ``WatchProfile`` through
+described an older ``watch.py`` before profile resolution: as shipped, ``_build_core`` resolves a real
+``WatchProfile`` through
 ``resolve_watch_profile`` and applies ``settings``/``sense_policy``/``plan_mode`` at construction. An
 integrator trusting the old text and passing a ``WatchProfile`` got silently changed gate semantics.
 
@@ -71,7 +72,7 @@ class AdrDoesNotDenyProfileResolutionTests(unittest.TestCase):
         ):
             self.assertNotIn(
                 lie, text,
-                f"ADR-004 still contains the retracted pre-M2 claim {lie!r}; watch.py resolves "
+                f"ADR-004 still contains the retracted pre-resolution claim {lie!r}; watch.py resolves "
                 "a WatchProfile for real (see percept/watch.py:_build_core).",
             )
 

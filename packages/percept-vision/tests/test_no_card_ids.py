@@ -89,6 +89,56 @@ _PUBLIC_CONTEXT_PATTERNS = tuple(
     )
 )
 _GITIGNORE_LOCAL_RULES = {"scr" + "atch/", "/" + "Spec" + "/"}
+_COMPACT_REFERENCE_ALLOWLIST = _ALLOWLIST | frozenset(
+    {
+        # Standard integration and modality abbreviations.
+        "E2E", "A2V", "V2V",
+        # Public metric / release-gate names used and defined in benchmark documents.
+        "F1", "G1", "G2", "G3",
+        # Locally defined requirement and question labels, not cross-document work items.
+        "R1", "R2", "R2b", "R3", "R4", "R6", "R7", "R15",
+        "Q1", "Q2", "Q3", "Q4", "Q5", "Q6",
+        # Declared sample-size and pose-channel names.
+        "N8", "N10", "PC1",
+        # Literal synthetic event/entity ids used as test data.
+        "T000", "B000", "CUP1", "CUP2",
+    }
+)
+
+# Compact work-item references need context: the same token shape is also used by public benchmark
+# tracks, codecs, locally defined requirement labels, and dataset-native ids. Keep the tokens
+# assembled so this policy remains clean itself.
+_OPAQUE_ID = r"(?-i:[A-Z]{1,3})\d{1,3}[A-Za-z]{0,2}"
+_OPAQUE_ID_LIST = _OPAQUE_ID + r"(?:\s*(?:/|,|–|—|\bto\b)\s*" + _OPAQUE_ID + r")*"
+_COMPACT_CONTEXT_PATTERNS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"\b[Cc]ards?\s+(?:" + _OPAQUE_ID_LIST + r")",
+        r"\bpre-(?:" + _OPAQUE_ID + r")\b",
+        r"\b(?:" + _OPAQUE_ID + r")(?:/(?:" + _OPAQUE_ID + r"))+\b",
+        r"\bADR-\d{3}/(?:" + _OPAQUE_ID + r")\b",
+        r"\((?:" + _OPAQUE_ID + r")\)",
+        r"(?m)^\s*(?:(?://|#|\*)\s*)?(?:[\"']{3})?(?:"
+        + _OPAQUE_ID
+        + r")\s*(?::|—|-)\s+",
+        r"\b(?:" + _OPAQUE_ID + r")(?:['’]s)\b",
+        r"\b(?:the|per)\s+(?:" + _OPAQUE_ID + r")\b",
+        r"\b(?:before|after|until|from)\s+(?:" + _OPAQUE_ID + r")\b",
+        r"\b(?:"
+        + _OPAQUE_ID
+        + r")\s+(?:frozen|claim|judgment|shadow|correlation|resolver|clip|tier-0|"
+        r"calibration|declaration|channel|contract|envelope|mode|behavior|behaviour|"
+        r"entrypoint|trace|change|fix|implementation|path|seam|rules?|boundary|fixture|"
+        r"default|ablation|set|brief|scope|fields?|window|identity|evidence|episode|fold|"
+        r"refactor|failure|tracker|assertion|note|wiring|profiles?|corpus)\b",
+        r"\b(?:"
+        + _OPAQUE_ID
+        + r")\s+(?:lands?|landed|ships?|shipped|owns?|wired|left|collapsed|adds?|"
+        r"makes?|keeps?|classifies|minted|builds?|recomputes|carries|resolves?|fixes?|"
+        r"proved|flips?|bumped|refuses?|closed|predating|derived|carried|touched|settled|"
+        r"reuses?)\b",
+    )
+)
 
 
 def _iter_source_files() -> list[Path]:
@@ -150,6 +200,17 @@ def _context_hits(path: Path) -> list[tuple[int, str]]:
                 if line in _GITIGNORE_LOCAL_RULES:
                     continue
             out.append((line_no, match.group(0)))
+    for pattern in _COMPACT_CONTEXT_PATTERNS:
+        for match in pattern.finditer(text):
+            tokens = [
+                token
+                for token in _CARD_ID_RE.findall(match.group(0))
+                if token not in _COMPACT_REFERENCE_ALLOWLIST
+            ]
+            if not tokens:
+                continue
+            line_no = text.count("\n", 0, match.start()) + 1
+            out.append((line_no, match.group(0)))
     return out
 
 
@@ -176,6 +237,39 @@ def test_public_tree_scope_is_the_git_index():
         _REPO_ROOT / "tools" / "build_architecture.py",
         _REPO_ROOT / "packages" / "percept-vision" / "eval" / "BENCHMARKS.md",
     } <= scanned
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "Cards " + "Y" + "2–" + "Y" + "15 govern this.",
+        "A pre-" + "D" + "11 record remains readable.",
+        "The " + "Y" + "5/" + "Z" + "3 path is additive.",
+        "(M" + "1) froze the entrypoint.",
+        "the " + "Z" + "3 judgment envelope",
+        "ADR-005/" + "M" + "2",
+        "// " + "D" + "11: correlation handle",
+    ),
+)
+def test_compact_internal_reference_forms_are_rejected(text: str, tmp_path: Path):
+    path = tmp_path / "public.md"
+    path.write_text(text, encoding="utf-8")
+    assert _context_hits(path), text
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "F1 score and G3 latency gate",
+        "Run the E2E benchmark over A2V/V2V inputs.",
+        "R1/R2 are locally defined requirements.",
+        "Dataset sample G330 uses pose channel PC1.",
+    ),
+)
+def test_legitimate_compact_technical_identifiers_are_allowed(text: str, tmp_path: Path):
+    path = tmp_path / "public.md"
+    path.write_text(text, encoding="utf-8")
+    assert not _context_hits(path), text
 
 
 def test_source_files_were_discovered():

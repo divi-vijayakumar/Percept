@@ -125,7 +125,7 @@ class EpisodeLogProvisionalIdentityTests(unittest.TestCase):
 
     def test_single_focus_bound_attach_unaffected_by_provisional_episodes(self) -> None:
         # A provisional (UN_-prefixed) episode must never be mistaken for "the one bound thing in
-        # focus" by the Y4 single-focus attach.
+        # focus" by the single-focus attach.
         pol = EpisodePolicy(unknown_attaches_to_active_bound=True)
         log = EpisodeLog("g1", policy=pol)
 
@@ -169,7 +169,7 @@ class SourceProfileUnknownContinuityTests(unittest.TestCase):
         self.assertGreater(pol.unknown_continuity_gap_s, 0)
 
     def test_other_shipped_profiles_default_off(self) -> None:
-        # Byte-for-byte the Y5 default for sources where "probably the same unidentified thing" is
+        # Preserve the default for sources where "probably the same unidentified thing" is
         # not a defensible read (a physical scene can hold many distinct fast-moving unknowns).
         self.assertIsNone(PHYSICAL_SCENE.default_episode_policy.unknown_continuity_gap_s)
         self.assertIsNone(CONVERSATION.default_episode_policy.unknown_continuity_gap_s)

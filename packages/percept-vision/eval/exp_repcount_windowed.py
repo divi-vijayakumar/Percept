@@ -279,7 +279,7 @@ async def main():
         return sum(errs) / len(errs) if errs else 0.0
 
     print("\n" + "=" * 74)
-    print("  RepCount-A off-by-one — WINDOWED perception (S1) vs single-frame baseline")
+    print("  RepCount-A off-by-one — WINDOWED perception vs single-frame baseline")
     print(f"  {len(caps)} videos · OBO = % within +/-1 of GT count · model={model}")
     print("=" * 74)
     print(f"  {'system':<28}{'OBO x100':>10}{'MAE':>9}")

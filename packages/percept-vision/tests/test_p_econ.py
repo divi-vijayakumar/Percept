@@ -223,7 +223,7 @@ def sweep_admit_policy(
         result = score(all_true_episodes, predicted_events)
         recall = result.recall
 
-        # -- cost / volume (load_driver + fake_judge + metrics, cards A11/A12/A13) ------------
+        # -- cost / volume (load driver + fake judge + metrics) -------------------------------
         clock = FakeClock()
         collector = MetricsCollector(clock)
         if total_admitted > 0:

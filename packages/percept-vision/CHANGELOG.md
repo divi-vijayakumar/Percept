@@ -87,7 +87,7 @@
   duplicate / false-fire branches are otherwise untouched, and single-goal scoring is byte-for-byte
   unchanged. This instrument sits under `percept eval`, the L1 derivation ladder, RB-FRONTIER and
   the visualizer's drift lane, so **every previously reported multi-goal recall/precision figure
-  must be re-measured** — including the internal H0 ablation numbers, which were measured on
+  must be re-measured** — including prior admission-ablation numbers, which were measured on
   multi-goal streams with goal density as an ablation axis.
   Consequences of the fix: the visualizer's drift lane now keys predictions by the trace record's
   `goal_id` (a ground-truth `episode_id` must be the `goal_id` of the goal it labels) and says so
@@ -192,7 +192,7 @@
   Lanes are **pipeline stages on one shared media-time (`source_ts`) axis** — source/media, health,
   admission (admitted vs dropped, with the motion trace and the threshold rule that decided each
   frame), judge calls (bar width = wall latency; tokens and cost in the detail), gate decisions
-  (`FIRE`/`ASK`/`SILENT` with the O2 reason code), incidents, ground-truth drift when supplied, a
+  (`FIRE`/`ASK`/`SILENT` with the gate reason code), incidents, ground-truth drift when supplied, a
   context lane, and cost. **An empty lane is drawn, not omitted** — the gap IS the diagnosis.
   Click a gate decision (or use ← / → / Home / End) for the **decision chain**: tier-0 → sense →
   VLM (model, latency, tokens, cost, evidence, confidence) → gate, each with the **per-stat
@@ -446,7 +446,7 @@
   `plan_mode` is no longer inert: `plan_mode="window"` now floors every concern's `PerceptionSpec` on the
   judging path, so the judge receives an ordered frame window (`judge(frames=[...])`, oldest→newest, the
   anchor frame passed separately) instead of one still frame. The seeded default profiles already carry
-  `plan_mode="window"` for dynamic goals (recall 0.68 → 0.73; 0.90 with gate-relax on the H0 set). The
+  `plan_mode="window"` for dynamic goals (recall 0.68 → 0.73; 0.90 with gate-relax on the measured set). The
   profile's plan mode is a FLOOR — a concern that authored a richer `perception` block keeps it.
 
 ### Deprecated
@@ -481,7 +481,7 @@ notification once per event.
 - **OpenRouter judge backend** (`vision="openrouter"`, extra `[openrouter]`) — cheap, fast, hosted VLMs
   (default `qwen/qwen3-vl-32b-instruct`).
 - **Localized salience** `PERCEPT_SALIENCE_STAT=block_max` — catches low-motion actions (holding, sitting)
-  a global-mean motion gate misses (nearly doubled recall on the H0 charades set).
+  a global-mean motion gate misses (nearly doubled recall on the measured Charades set).
 - **Ego-motion compensation** `PERCEPT_EGO_COMPENSATE=true` — subtract global camera/head motion before
   gating; makes a **moving camera** (smart glasses / body-cam) viable (measured ~98% → ~30% escalation).
 - **Gate time-refractory** `PERCEPT_GATE_REFRACTORY_S` — suppress duplicate notifications of the same goal;

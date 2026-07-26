@@ -1,4 +1,4 @@
-"""INC2 — signal-only admission via the strict_admission ExecutionPolicy.
+"""Signal-only admission via the strict_admission ExecutionPolicy.
 
 The nine checks the card declares, one class per concern:
 

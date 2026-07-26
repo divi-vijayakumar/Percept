@@ -122,7 +122,7 @@ class RecordingVision:
         self.sprite_judgments = 0  # telemetry: how many judgments actually used a folded sprite
         self.window_judgments = 0  # telemetry: how many judgments used an ordered frame window
         # episode-memory state (PERCEPT_BENCH_MATCHED_PLAN=episode): per-goal running answer threaded across
-        # frames via J3's judge_episode_memory. Store is per-video (recorder is rebuilt per _score_one).
+        # frames via judge_episode_memory. Store is per-video (recorder is rebuilt per _score_one).
         self.episode_store = EpisodeMemoryStore()
         self.condition_to_goal_id: dict[str, str] = {}
         self.episode_judgments = 0
@@ -140,7 +140,7 @@ class RecordingVision:
         # time from image order, which benchmarks favor over a tile. Stative goals / off keep the single frame.
         dynamic = MATCHED_PLAN and self.dynamic_by_condition.get(condition) and len(self.frame_buf) >= 2
         if dynamic and _PLAN_MODE == "episode":
-            # thread a per-goal running answer across frames (J3). satisfied integrates accumulated
+            # Thread a per-goal running answer across frames. `satisfied` integrates accumulated
             # evidence over time, not a single frame. Routes through the inner judge's process-QA seam.
             gid = self.condition_to_goal_id.get(condition, condition)
             goal = SimpleNamespace(id=gid, condition=condition, state={})

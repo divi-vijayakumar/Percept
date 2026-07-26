@@ -1,4 +1,4 @@
-"""FallbackVision (J1R) — wrap a primary Vision backend with an optional secondary, fail-closed.
+"""FallbackVision wraps a primary Vision backend with an optional secondary, fail-closed.
 
 The judge seam must NEVER raise: a primary outage (including a tripped CircuitBreaker's
 ``CircuitOpen``) hands off to an optional fallback backend, and if both are unavailable the seam

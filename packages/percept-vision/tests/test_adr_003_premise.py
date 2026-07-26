@@ -125,7 +125,7 @@ def test_adr_003_cites_the_label_record_precedent_by_line() -> None:
     src = (Path(__file__).resolve().parents[1] / "percept" / "contracts" / "__init__.py").read_text()
     for needle in ("class LabelRecord", "frame_ref", "EGRESS_FIELDS"):
         # assert the SYMBOL EXISTS, not the line it sits on — additive contract edits (SubjectRef,
-        # the Y2 mutation channel) shift every line below and must not break a citation test.
+        # the claim-mutation channel) shift every line below and must not break a citation test.
         assert needle in src, f"ADR-003 premise: {needle!r} vanished from contracts source"
 
 

@@ -8,7 +8,7 @@ measures ``admitted_ts -> decision_emitted_ts`` (``JudgmentTiming.admitted_to_de
 judge-funnel leg ONLY. It is blind to how long tier-0 took to *admit* the episode in the first
 place. This probe measures the ACTIONABLE latency instead: ``decision_eligible_ts ->
 decision_emitted_ts``, where ``decision_eligible_ts`` is the labeled/synthetic-eligibility instant
-(``percept.contracts.GroundTruth.decision_eligible_ts``, by construction — cards A16/A6/A27's own
+(``percept.contracts.GroundTruth.decision_eligible_ts``, by construction — the fixture's own
 ``eval/viability/ground_truth.py``) — i.e. the first instant a competent human (or the fixture's own
 deterministic rubric) could confidently judge the condition. Actionable latency therefore INCLUDES
 admission delay (how long tier-0 took to catch up to eligibility and admit) + evidence assembly, on
@@ -22,7 +22,7 @@ if tier-0 itself is slow to admit.
     CORE gating archetypes' deterministic clips + by-construction :class:`GroundTruth`.
   * ``eval/viability/ground_truth.py`` (``CORE_ARCHETYPE_ELIGIBLE_AFTER_S``) — the documented
     per-archetype eligibility offsets those fixtures' ``GroundTruth.decision_eligible_ts`` values
-    are built from (cards A6/A16), used here only to hand-verify expected numbers, never
+    are built from, used here only to hand-verify expected numbers, never
     recomputed independently.
   * ``percept.contracts.JudgmentTiming`` — the production timing record.
   * ``percept.harness.metrics.MetricsCollector`` / ``PercentileSummary``.
@@ -306,8 +306,8 @@ class TestActionableLatencyOverCoreArchetypeFixtures(unittest.TestCase):
         self.assertEqual(report.ingest_to_decision.n, len(positive))
 
     def test_late_admission_over_real_fixtures_blows_the_actionable_budget(self):
-        """Same G3-B demonstration as TestLateAdmissionDemonstration, but driven off the real A16
-        fixture set's GroundTruth values instead of hand-authored eligibility timestamps."""
+        """Same G3-B demonstration as TestLateAdmissionDemonstration, driven by the real archetype
+        fixtures instead of hand-authored eligibility timestamps."""
         fixtures = build_core_archetype_fixtures()
         positive = [f for f in fixtures if f.positive]
 

@@ -51,7 +51,7 @@ class ContractVersionParityTests(unittest.TestCase):
         )
 
 class IncidentTwinParityTests(unittest.TestCase):
-    """D4: ``contract.js`` is an explicit twin of ``percept.contracts.Incident``. A field added on the
+    """``contract.js`` explicitly mirrors ``percept.contracts.Incident``. A field added on the
     Python side and not on the JS side is a silent parity break — this catches it at the source level."""
 
     def test_js_incident_twin_declares_entity_id(self) -> None:
@@ -75,7 +75,7 @@ class IncidentTwinParityTests(unittest.TestCase):
 
 
 class SubjectRefTwinParityTests(unittest.TestCase):
-    """Y5: ``contract.js`` is an explicit twin of ``percept.contracts.SubjectRef``. A field added on
+    """``contract.js`` explicitly mirrors ``percept.contracts.SubjectRef``. A field added on
     the Python side and not mirrored in the JS ``makeSubjectRef`` is a silent parity break."""
 
     def test_js_subjectref_twin_declares_every_python_field(self) -> None:

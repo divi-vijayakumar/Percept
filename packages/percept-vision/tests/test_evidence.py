@@ -90,7 +90,7 @@ class TestResolveHandleForms(unittest.TestCase):
         self.assertEqual(resolve_evidence(art.ref, store=s).ref, art.ref)
 
     def test_resolves_reused_y14_evidence_handle(self):
-        # ADR-003: reuse Y14's EvidenceHandle shape, do not fork it. resolve_evidence must accept it.
+        # ADR-003: reuse the episode EvidenceHandle shape; resolve_evidence must accept it.
         s = EvidenceStore()
         art = s.put(b"x", kind="frame", media_type="image/jpeg", capture_start_ts=1.0)
         handle = EvidenceHandle(ref=art.ref)

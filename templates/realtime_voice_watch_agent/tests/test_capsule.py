@@ -1,4 +1,4 @@
-"""CapsuleBuilder — the C1 event capsule that folds the recent window into one montage judge frame."""
+"""CapsuleBuilder folds the recent window into one montage judge frame."""
 from __future__ import annotations
 
 import io

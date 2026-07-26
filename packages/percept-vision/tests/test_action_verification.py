@@ -1,9 +1,9 @@
 """A4 action+verification & A5 per-source consent (L1).
 
-A4: a world-changing action under the spec's safety contract (§7) — consent-gated via act(), and for
-a high-false-fire-cost concern it instantiates a VERIFICATION concern (reusing A1's deadline/absence
+World-changing actions under the safety contract are consent-gated via act(), and for
+a high-false-fire-cost concern it instantiates a VERIFICATION concern (reusing the deadline/absence
 machinery: confirm the effect by a deadline, else fire "couldn't confirm").
-A5: consent is per-source — allowed_sources scopes acting to specific source_ids (the no-cross-node bind).
+Consent is per-source: allowed_sources scopes acting to specific source_ids.
 """
 
 import unittest

@@ -1,4 +1,4 @@
-"""L1: the consumer-facing per-concern benchmark — no models, no keys (D2).
+"""L1: the consumer-facing per-concern benchmark — no models and no keys.
 
 Two surfaces:
 

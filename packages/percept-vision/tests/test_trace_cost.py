@@ -33,7 +33,7 @@ _W, _H = 8, 8
 _STILL = gray_frame(_W, _H, 0)
 _MOVED = gray_frame(_W, _H, 255)
 
-# (t, gate_frame, judge_frame) — the same O1 fixture the rest of the trace tests drive: the motion
+# (t, gate_frame, judge_frame) — the same fixture the rest of the trace tests drive: the motion
 # gate escalates on still->moved and moved->still, so this stream really spends judge calls.
 _SOURCE = [
     (0.0, _STILL, "clear"),

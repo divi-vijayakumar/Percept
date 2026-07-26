@@ -65,7 +65,7 @@ is to make that **pluggable and measurable**, not to guess it.
 
 ### Why `WatchProfile` cannot express this
 
-`WatchProfile` (cards P1/P3/M2) is the existing answer to "what tuning does this deployment need?" and
+`WatchProfile` is the existing answer to "what tuning does this deployment need?" and
 it is **camera-shaped by construction**. Its registry key is
 `(environment, goal_type, state)`, where:
 
@@ -151,7 +151,7 @@ coverage) on a screen source exactly as on a camera.
 | `conversation` | **experimental** | `utterance_boundary` | `speaker_label` | `wall` | turn |
 
 `physical_scene` is the honest default when a caller names no profile — it is the one class the stock
-eye is calibrated on (H0's block_max @ 0.20 ladder), so a client on screen content is running the wrong
+eye is calibrated on (the measured `block_max = 0.20` ladder), so a client on screen content is running the wrong
 profile until they say otherwise, and doctor labels the choice `[default]` so they can see it.
 
 `conversation` ships **experimental** — `stability="experimental"`, not merely a caveat in prose,

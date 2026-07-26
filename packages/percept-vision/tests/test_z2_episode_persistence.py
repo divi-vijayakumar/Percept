@@ -7,7 +7,7 @@ map. Documentation alone is insufficient, so these tests make the boundary hold 
 (a) ``snapshot()`` must not carry ``episodes`` — a future accidental add TRIPS a test, forcing the
     policy to be revisited deliberately rather than flipped by accident.
 (b) ``restore()`` with any active counting goal must emit ONE loud ``episode_memory_reset`` health
-    event (the named Y9 failure mode: an operator under-counts after a redeploy with nothing saying
+    event (the named failure mode: an operator under-counts after a redeploy with nothing saying
     why). Percept queues; ``percept.runtime.run`` drains it into ``on_health``, once, at startup.
 (c) ``Episode.to_dict`` / ``Episode.from_dict`` exist as the forward seam a later phase turns ON —
     but are NOT wired for v1.4 (snapshot/restore never call them).

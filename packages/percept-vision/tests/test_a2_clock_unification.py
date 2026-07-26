@@ -1,7 +1,7 @@
 """A2 clock-unification acceptance (PR-A2, the SHIP-BLOCKER slice).
 
 Every bug closed here shares one shape: a default or path that runs, looks correct, and silently does
-nothing. Each test below fails on the pre-A2 tree for the stated reason:
+nothing. Each test below fails on the legacy tree for the stated reason:
 
   * A-1 — a live source ran on the MEDIA timebase, so a verification deadline stamped on the agent's
     (wall) clock could never be reached by a media-stamped frame ``t``: the verification concern never

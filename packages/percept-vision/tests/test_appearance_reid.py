@@ -53,7 +53,7 @@ class AppearanceReidTests(unittest.TestCase):
         self.assertEqual(out[0].id, a_id)  # re-acquired the SAME identity across the gap
 
     def test_continuity_alone_loses_identity_across_the_jump(self):
-        g = EntityGraph(identity=ContinuityIdentity())  # the V0 default — the drifting tracker
+        g = EntityGraph(identity=ContinuityIdentity())  # The continuity-only default drifts here.
         b1, b3 = Box(0.05, 0.1, 0.2, 0.4), Box(0.4, 0.5, 0.2, 0.4)
         a_id = g.ingest([Observation("person", b1, 0.9)], t=0.0)[0].id
         moved = g.ingest([Observation("person", b3, 0.9)], t=1.0)[0].id

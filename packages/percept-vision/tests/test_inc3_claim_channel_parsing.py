@@ -1,6 +1,6 @@
 """— the claim-mode correction channel in the three REAL judge backends.
 
-The gap this closes (client audit P05-SDK-004): the claim/supersession machinery (Y13/Y20) is fully
+The gap this closes: the claim/supersession machinery is fully
 built and wired unconditionally in ``agent.perceive_judged`` — it reads ``verdict.operation``/``value``
 — but NO shipping judge backend ever emitted those fields, so a live correction never mutated a claim
 and no revision chain formed. This module proves the backend half:

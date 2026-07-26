@@ -1,4 +1,4 @@
-"""A3 — consequence's three CALIBRATION-FREE jobs + protected_floor (L1).
+"""Consequence's three calibration-free jobs and protected_floor (L1).
 
 These are how a coarse consequence earns its keep today while the threshold job stays inert (R3):
 attention allocation, hard-quadrant escalation, verification-required — none needs a calibrated

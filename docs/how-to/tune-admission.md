@@ -86,7 +86,7 @@ percept-doctor --source probes/01-screen-walkthrough/data/clean.mp4 \
 ```
 
 ```
-  source profile (D7)     screen_document   [explicit]
+  source profile          screen_document   [explicit]
     stability             stable
     modalities/unit       text, video / page
     admission strategy    page_change_signal_or_coast   ** UNTUNED **

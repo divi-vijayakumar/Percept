@@ -260,7 +260,7 @@ def test_resolve_profile_overrides_a_custom_registered_profile() -> None:
     # C2) -- the registered profile's own declared "mean" passes through untouched.
     assert profile.salience_stat == "mean"
     assert profile.gate.require_false_first is False  # overridden from the registered True
-    assert profile.gate.refractory_s == 3.0  # NOT overridden -- P2's axes don't touch refractory_s
+    assert profile.gate.refractory_s == 3.0  # NOT overridden; rule axes do not touch refractory_s
     assert overrides["ego_compensate"] is False
     # name/environment/goal_type/state are passed through from whichever profile the registry matched.
     assert profile.name == "test-fixed-stative-start"
@@ -296,7 +296,7 @@ def test_resolve_profile_against_the_shipped_h0_defaults() -> None:
     profiles_default.seed(registry, overwrite=True)
 
     # Exact match onto percept.profiles_default.DYNAMIC_ACTION (fixed_camera, dynamic, transition). Its
-    # shipped gate.require_false_first is False (schema default, not overridden by P3); P2's transition
+    # shipped gate.require_false_first is False (schema default); the transition
     # rule overrides it to True, proving the override is applied rather than passed through untouched.
     profile, overrides = resolve_profile("dynamic", "fixed", "transition", registry=registry)
     assert profile.name == "dynamic-action"
@@ -304,7 +304,7 @@ def test_resolve_profile_against_the_shipped_h0_defaults() -> None:
     assert overrides["gate"]["require_false_first"] is True
 
     # Exact match onto FIXED_CAM_LOCALIZED (fixed_camera, stative, start_anchored). Its shipped plan_mode
-    # is "window"; P2's stative rule overrides it to "single".
+    # is "window"; the stative rule overrides it to "single".
     profile2, _ = resolve_profile("stative", "fixed", "start_anchored", registry=registry)
     assert profile2.name == "fixed-cam-localized"
     assert profile2.plan_mode == "single"

@@ -81,7 +81,7 @@ def _core(replies: dict[str, str]):
     return core, receipt.watch_ids[0]
 
 
-# The STILL->MOVED motion edges are the rising edges the gate escalates on (mirrors Y20's harness): one
+# The STILL->MOVED motion edges are the rising edges the gate escalates on: one
 # for the original claim, one (after a re-arm back to STILL) for the later correction/question/retract.
 def _source(first_token: str, second_token: str):
     return [

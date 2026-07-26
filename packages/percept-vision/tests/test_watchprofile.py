@@ -112,7 +112,7 @@ class GateProfileTests(unittest.TestCase):
 
 class GoalDensityGuidanceTests(unittest.TestCase):
     def test_default_matches_h0_operating_point(self):
-        # H0's full-stack operating point held <=3 distinct goals (the documented implementation evidence ablation table).
+        # The measured full-stack operating point held <=3 distinct goals.
         self.assertEqual(GoalDensityGuidance().max_recommended_goals, 3)
 
     def test_none_is_allowed_no_guidance(self):
@@ -182,7 +182,7 @@ class WatchProfileTests(unittest.TestCase):
             _profile(gate=GateProfile(refractory_s=-5.0))
 
     def test_matches_h0_fixed_cam_localized_finding(self):
-        # The H0 ablation win: fixed camera + localized action -> block_max @ 0.20 (the documented implementation evidence).
+        # Measured ablation win: fixed camera + localized action -> block_max @ 0.20.
         p = _profile()
         self.assertEqual(p.salience_stat, "block_max")
         self.assertEqual(p.stat_thresholds["block_max"], 0.20)

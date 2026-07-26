@@ -179,7 +179,7 @@ class TestStillCameraRegressionThroughTheCompilePath:
         resolved = resolver.resolve(plan, source_profile=PHYSICAL_SCENE, source_profile_explicit=True)
         compiled = runtime_compile(resolved)
 
-        # physical_scene's own tuned default (block_max@0.20) is wired, same as pre-C2 env-set behavior.
+        # physical_scene's tuned default is wired, matching the legacy environment-set behavior.
         assert compiled.settings.edge.salience_stat == "block_max"
 
         report = run_doctor(

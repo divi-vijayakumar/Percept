@@ -4,7 +4,7 @@ claim-slot concerns.
 Y12 flipped episode grouping + idempotency to GOVERNING for concerns that SELECT the content-key
 resolver (``goal.state['identity_policy'] == 'content_key'``) via ``Percept._document_episode_fold``;
 a claim-slot / conversational concern still got ``fold=None`` (shadow-only), pinned by
-``test_y12_document_governing.py::TestClaimSlotStaysShadow``. Y13 flips the SAME seam for concerns that
+``test_y12_document_governing.py::TestClaimSlotStaysShadow``. Claim governance flips the SAME seam for concerns that
 SELECT the claim-slot resolver (``identity_policy == 'claim_slot'``) via the new twin method
 ``Percept._claim_episode_fold``, wired into ``perceive_judged`` ALONGSIDE (never replacing)
 ``_document_episode_fold`` — a goal is never both types, so the two are mutually exclusive.
@@ -28,9 +28,9 @@ The acceptance properties below:
   ``episode_current`` surfaces the corrected value WITH its revision chain.
 * ZERO fabricated retractions/updates on a 32s digression control (unrelated turns must never move
   the value or append a spurious revision).
-* Y12's 12 document-governing tests pass UNTOUCHED (verified by running that module unmodified).
+* The 12 document-governing tests pass UNTOUCHED (verified by running that module unmodified).
 * The gate is mechanically unchanged — governing is entirely a pre-gate ``fold=`` decision, exactly
-  the Y3/Y10 contract document mode already exercises.
+  as document mode already exercises.
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ CONDITION_TEXT = "a BUYER-side speaker states the approved budget"
 
 
 # --------------------------------------------------------------------------------------------------
-# 1 — claim-slot concerns now GOVERN (the Y12 seam, flipped for the claim-slot policy).
+# 1 — claim-slot concerns now GOVERN through the document-mode seam, flipped for this policy.
 # --------------------------------------------------------------------------------------------------
 
 
@@ -77,13 +77,13 @@ class TestClaimSlotGoesGoverning(unittest.TestCase):
         goal = a.goals.get("g1")
         v = Verdict(True, 0.9, "The budget is $40K", operation="assert", value="$40K", asserted_by="buyer")
         fold = a._claim_episode_fold(goal, v, 0.0)
-        self.assertIsNotNone(fold, "a claim-slot concern must now get a governing fold (Y13)")
+        self.assertIsNotNone(fold, "a claim-slot concern must now get a governing fold")
         self.assertEqual(fold.match, "new")
         self.assertIn("g1", a.episodes)
 
     def test_document_mode_fold_is_still_none_for_claim_slot(self):
-        # The scope fence: _document_episode_fold (Y12) is UNCHANGED — claim-slot never governs
-        # through THAT seam. Y13 adds a second, parallel one instead of widening Y12's.
+        # The scope fence: _document_episode_fold is UNCHANGED — claim-slot never governs
+        # through THAT seam. A second, parallel seam avoids widening document governance.
         a = _build()
         goal = a.goals.get("g1")
         v = Verdict(True, 0.9, "The budget is $40K", operation="assert", value="$40K", asserted_by="buyer")
@@ -170,8 +170,8 @@ class TestMutationCorpusResolvesLiveExactlyAsFixtured(unittest.TestCase):
         self.assertEqual([r.kind for r in episode.revisions], ["opened"])
 
     def test_probe_02_shadow_prediction_is_clean_and_matches_the_live_run(self):
-        # Y11's shadow report predicted this corpus would fold cleanly; confirm that prediction is
-        # STILL accurate now that claim-slot concerns govern live (Y13 changed nothing about the pure
+        # The shadow report predicted this corpus would fold cleanly; confirm that prediction is
+        # STILL accurate now that claim-slot concerns govern live (governance changed nothing about the pure
         # claims.fold_verdicts machinery the shadow probe itself exercises).
         report = run_probe_02_mutation()
         self.assertEqual(report.disagreements, ())
@@ -233,7 +233,7 @@ class TestAuthorityEnforcedAtFoldTime(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------------------------------
-# 4 — supersession + provisional-incident delivery (Y10) reaches the claim-slot fire path, and
+# 4 — supersession + provisional-incident delivery reaches the claim-slot fire path, and
 #     episode_current surfaces the corrected value WITH its revision chain.
 # --------------------------------------------------------------------------------------------------
 
@@ -243,7 +243,7 @@ class TestSupersessionAndRevisionChainGoLive(unittest.TestCase):
         a = _build()
         a.vision = FakeVision(script={
             "f0": Verdict(True, 0.9, "The budget is $40K", operation="assert", value="$40K", asserted_by="buyer"),
-            # A 25s-later correction — inside the 21-34s window Y10's own docstring calls out.
+            # A 25s-later correction — inside the documented 21-34s window.
             "f1": Verdict(True, 0.9, "Actually the approved budget is $25K", operation="replace",
                           value="$25K", asserted_by="buyer"),
         })

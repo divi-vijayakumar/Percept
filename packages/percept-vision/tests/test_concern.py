@@ -1,4 +1,4 @@
-"""A0 — Concern DTOs + Goal compat shim + the upstream adapters (L1, no backends, no API keys).
+"""Concern DTOs, Goal compatibility shim, and upstream adapters (L1, no backends or API keys).
 
 Guards the surviving A0 invariants: the Goal->Concern shim reproduces today's defaults byte-for-byte
 (consequence mild, tracking watch/on_false) and ``threshold_for`` is pinned to the gate's 0.7 (R15).

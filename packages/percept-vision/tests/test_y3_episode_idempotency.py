@@ -1,6 +1,6 @@
 """— episode-owned idempotency; the gate bit must not be accidental per-episode memory.
 
-The failure Y3 fixes: the gate is ONE BIT PER KEY, but "have I already reported THIS episode?" is a
+The failure this suite fixes: the gate is ONE BIT PER KEY, but "have I already reported THIS episode?" is a
 property of the EPISODE. The A->B->A trace only worked because B happened to leave the shared gate key
 in a fired state — if B re-arms the key and then never fires (dwell/ASK), A's unchanged revisit rides
 the wrongly-armed edge and fires a second time. And the same coupling makes a *housekeeping* event —
@@ -287,7 +287,7 @@ class TestAbaContinuationFixture(unittest.TestCase):
         key = (goal.id, "scene")
         actions = []
         for t, subject, verdict in self._STREAM:
-            # Emulate the pre-Y3 executor: the episode boundary reached the gate only as a rearm on a
+            # Emulate the legacy executor: the episode boundary reached the gate only as a rearm on a
             # NEW episode, with no episode-owned idempotency guard.
             if subject == "B":
                 gate.rearm(key)
@@ -310,7 +310,7 @@ class TestAbaContinuationFixture(unittest.TestCase):
 
 class TestByteForByteWhenNoFold(unittest.TestCase):
     def test_fold_none_is_the_legacy_path(self):
-        # The additive guarantee: with no fold, fire_judged is exactly the pre-Y3 gate-only behaviour.
+        # The additive guarantee: with no fold, fire_judged is exactly the legacy gate-only behaviour.
         gate = Gate()
         ex = BehaviorExecutor(gate)
         goal, prog = _goal(), BehaviorProgram(sense="judge")

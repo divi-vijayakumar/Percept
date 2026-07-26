@@ -1,7 +1,7 @@
 """the implementation's architectural rule, enforced mechanically: "the runtime reads its behavior from a profile;
 the harness writes profiles. No knob is hardcoded in firing logic."
 
-A grep-style guard over the M2 seam this card owns (``percept/agent.py``, ``percept/watch.py``,
+A grep-style guard over the profile-resolution seam (``percept/agent.py``, ``percept/watch.py``,
 ``percept/profile_wiring.py``): none of them may contain a bare salience-stat literal
 (``"block_max"`` / ``"p95"``) or a bare non-zero threshold-shaped float (``0.NN``) OUTSIDE the one
 sanctioned resolution table in ``profile_wiring.py`` (which necessarily names the ``WatchProfile``
@@ -37,7 +37,7 @@ _RESOLUTION_FILE = "profile_wiring.py"
 # ``motion_gate*`` / ``threshold`` docstrings). This deliberately does NOT flag 0.0/1.0 (the codebase's
 # boolean-ish sentinels, e.g. confidence-as-0.0-or-1.0) or values >= 1 (fps/seconds constants like
 # ``perception_cooldown_s`` are a different knob family, out of THIS card's scope) -- narrow enough to
-# have zero false positives against the pre-M2 baseline, wide enough to catch a hardcoded salience/gate
+# have zero false positives against the pre-resolution baseline, wide enough to catch a hardcoded salience/gate
 # threshold like "0.20" or "0.7" landing directly in firing logic instead of coming off Settings/Profile.
 _THRESHOLD_FLOAT_RE = re.compile(r"(?<![\w.])0\.\d+(?![\w.])")
 

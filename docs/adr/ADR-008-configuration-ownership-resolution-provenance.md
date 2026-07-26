@@ -5,8 +5,8 @@
   `tests/test_tunables.py`). The two-step binder this ADR specifies — `ConfigResolver` /
   `RuntimeCompiler` — and four of the six declared objects (`DomainPack`, `ExecutionPolicy`,
   `DeploymentConfig`, `WatchPlan`, `OptimizationLock`) do **not exist in code yet**; they ship in
-  follow-on cards against the contract this document fixes. `SourceProfile` and `WatchProfile`
-  already exist (ADR-005/M2) and are extended, not replaced.
+  follow-on changes against the contract this document fixes. `SourceProfile` and `WatchProfile`
+  already exist (ADR-005) and are extended, not replaced.
 - **Depends on:** ADR-005 (Source profiles — the `FORBIDDEN_FIELDS` / structural-enforcement
   precedent this ADR reuses for ownership gating); ADR-002 (Runtime health & coverage — the
   "degraded is diagnostic, not automatic" rule §Corrections(b) restates for configuration);
@@ -31,7 +31,7 @@ The SDK has accumulated **six independent places a behavior-affecting value can 
 `PERCEPT_*`-overridable `Settings` tree (`load_settings()`), keyword arguments to `watch()` /
 `Percept.create()`, keys inside a `Goal`'s free-form `state` dict, a `WatchProfile`'s tuning fields,
 a `SourceProfile`'s strategy fields, and a detector's registered `DetectorManifest`. Each was added
-by a card solving one problem (H0's tier-0 calibration, ADR-005's source-class axis, the B1 clip
+to solve one problem (tier-0 calibration, ADR-005's source-class axis, and clip-window
 declaration) and each is internally coherent. None of them says, in code, **who is allowed to set
 which field when two of them disagree**, or **why a value ended up what it did** when a client asks
 "where did this threshold come from?" at 2am.
@@ -185,7 +185,7 @@ Four points where existing prose or intuition disagrees with what the code actua
 follows the code.
 
 **(a) Window, not sprite, for screen evidence defaults.** `percept/sprite.py` is **deprecated in the
-plan path**: an ordered frame *window* beat a sprite montage unconditionally on the H0
+plan path**: an ordered frame *window* beat a sprite montage unconditionally on the measured
 dynamic-goal set — recall 0.68 → 0.73 (0.90 with gate-relax) — and `percept/profile_resolution.py`
 can never select `plan_mode="sprite"`; a spec/profile that still names it is normalized to
 `"window"` with a `DeprecationWarning` (`percept.agent._normalize_plan_mode`). Any configuration

@@ -29,7 +29,7 @@ The detailed additive changes that accumulated on the pre-1.0 development line a
 ### Contract — wire version 1.2.0 → 1.3.0 (additive; same MAJOR, wire-compatible)
 
 ### Contract — wire version 1.2.0 → 1.3.0 (additive; same MAJOR, wire-compatible)
-- **`Incident.entity_id`** (D4) — the gated subject's correlation handle now SURVIVES the emission
+- **`Incident.entity_id`** — the gated subject's correlation handle now SURVIVES the emission
   boundary. The rising-edge gate has always keyed on `(goal.id, focus.id)` and `FireEvent.entity_id`
   has always carried it, but `make_incident()` never read it: identity was computed upstream and
   dropped at emission. Downstream, two independent subjects tripping the same concern were
@@ -39,7 +39,7 @@ The detailed additive changes that accumulated on the pre-1.0 development line a
     positional `Incident(...)` build keeps its meaning. `None` = not entity-scoped (single-subject
     streams, boundary fires) — the back-compatible default.
   - `make_incident(fire, ...)` reads `fire.entity_id` (duck-typed, like every other field it reads);
-    an explicit `entity_id=` kwarg overrides. A pre-D4 fire with no such attribute yields `None`.
+    an explicit `entity_id=` kwarg overrides. A legacy fire with no such attribute yields `None`.
   - Flows through the existing generic serializers unchanged: `incident_payload()` / the webhook sink
     emit `entity_id`. The `incident` health event and the `incident.created` trace now carry it too,
     and `percept watch` prints `entity=<id>` when the fire was entity-scoped.

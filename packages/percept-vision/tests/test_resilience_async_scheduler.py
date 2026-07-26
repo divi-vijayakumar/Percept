@@ -1,6 +1,6 @@
 """— degrade-loud + backpressure INSIDE the async ``_JudgeScheduler``.
 
-An earlier attempt (M3) planted an inline guard at the ``perceive_judged`` admit site. That is the
+An earlier attempt planted an inline guard at the ``perceive_judged`` admit site. That is the
 WRONG seam: with ``run(judge_dispatch="async")`` (the default) the admit site never awaits the judge
 at all — it hands the frame to :class:`~percept.runtime.worker._JudgeScheduler` and moves on — so an
 inline guard simply sits on a path a slow/wedged/overloaded judge never takes. These tests pin the
@@ -73,7 +73,7 @@ class GatedVision:
 
 
 class ExplodingVision(GatedVision):
-    """Raises INSIDE the fail-closed boundary — the existing A30 path must swallow it before it ever
+    """Raises INSIDE the fail-closed boundary; the safe-judge path must swallow it before it ever
     reaches the scheduler's task (this is what makes async dispatch safe for a flaky real backend)."""
 
     async def judge(self, condition, frame, **kwargs):
@@ -101,7 +101,7 @@ def _invariant_ok(test: unittest.TestCase, sched: _JudgeScheduler) -> None:
 
 class JudgeRaisesTests(unittest.TestCase):
     def test_raising_judge_stays_fail_closed_and_never_trips_the_new_latches(self):
-        """The pre-existing A30 boundary catches the raise before the scheduler's task ever sees an
+        """The pre-existing safe-judge boundary catches the raise before the scheduler's task sees an
         exception -- so this run must complete cleanly, WITHOUT a stall or backpressure event (those
         are for a judge that is slow/stuck, not one that fails fast and closed), and the invariant
         must hold throughout."""
@@ -134,9 +134,9 @@ class JudgeRaisesTests(unittest.TestCase):
                           "a fast raise-and-degrade is not sustained overwrite")
 
     def test_exception_escaping_the_task_still_hits_the_scheduler_fail_loud_backstop(self):
-        """A failure OUTSIDE the A30 boundary (e.g. a bug in vision.detect) still reaches the
+        """A failure OUTSIDE the fail-closed judgment boundary (e.g. a bug in vision.detect) reaches the
         scheduler's task and must still fail loud via the pre-existing ``_fatal``/``drain()``
-        re-raise -- M3R adds degrade-loud for slow/stuck judges, it must not soften this backstop."""
+        re-raise; degrade-loud handling for slow/stuck judges must not soften this backstop."""
 
         class ExplodingDetect(GatedVision):
             async def detect(self, frame, goals):

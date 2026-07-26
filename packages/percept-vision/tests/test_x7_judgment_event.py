@@ -1,7 +1,7 @@
 """— the live path CONSTRUCTS the contract's centre.
 
 ``percept.contracts.JudgmentEvent`` is ADR-001 §1's frozen output of one pass through the judge
-funnel, and until X7 nothing on the hot path ever built one: the runtime went
+funnel, and until judgment-event wiring nothing on the hot path ever built one: the runtime went
 ``Verdict -> GateOutcome -> Fired -> FireEvent`` and the contract governed an object it never made.
 These tests pin the fix and, just as importantly, its ADDITIVE-ONLY constraint:
 
@@ -242,7 +242,7 @@ class AdditiveOnlyTests(unittest.TestCase):
         self.assertIsNone(tr.judgment)
 
     def test_fire_event_default_keeps_existing_positional_construction(self):
-        ev = FireEvent("g", FIRE, "text", "e", YES)  # every pre-X7 call site
+        ev = FireEvent("g", FIRE, "text", "e", YES)  # every legacy positional call site
         self.assertIsNone(ev.judgment)
 
     def test_an_unfreezable_timing_still_fires(self):
@@ -267,7 +267,7 @@ class AdditiveOnlyTests(unittest.TestCase):
         self.assertIn("judgment.build_failed", metrics.seen)
 
     def test_a_degraded_judge_tick_emits_no_judgment(self):
-        """A fail-closed judge (A30) never produced a decision, so it never freezes one."""
+        """A fail-closed judge never produced a decision, so it never freezes one."""
 
         class Exploding(ScriptedVision):
             async def judge(self, *a, **kw):

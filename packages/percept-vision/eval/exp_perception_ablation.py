@@ -5,7 +5,7 @@ fire/ask/silent two ways —
     single : judge each frame alone (today)
     +strip : judge each frame WITH its preceding frames as temporal context (one multimodal call)
 — and compares both to the human-labeled ``expected_verdict``. GO iff +strip raises agreement with the
-labels without a control regression (the S1 discipline: prove the lift; don't assume it).
+labels without a control regression (prove the lift; do not assume it).
 
 Vision-only: the golden corpus is frames (no audio), so this de-risks the **strip** lever. The acoustic
 (`fuse`) lever needs audio data — record a few clips + use ``make_probe_clip`` for that one.

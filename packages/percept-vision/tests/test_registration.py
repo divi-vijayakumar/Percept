@@ -1,4 +1,4 @@
-"""A2 — the stable detector + concern REGISTRATION API.
+"""The stable detector and concern registration API.
 
 Deterministic stdlib tests (no model, no keys):
   * register_detector façade — the ergonomic twin of register(); manifest derived or supplied.

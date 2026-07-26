@@ -1,9 +1,9 @@
 """Seeded, H0-derived default WatchProfiles (the documented implementation evidence).
 
 Verifies: importing ``percept.profiles_default`` seeds ``percept.watchprofile.DEFAULT_REGISTRY`` with the
-three named H0-derived profiles plus a WILDCARD fallback; each profile's knobs match the H0-measured
+three measured profiles plus a WILDCARD fallback; each profile's knobs match the measured
 values verbatim; ``resolve()`` reaches every profile -- including an unrecognized context, via the
-wildcard; and every profile carries a provenance note tying it to the H0 charades-e2e ablation ladder.
+wildcard; and every profile carries a provenance note tying it to the Charades E2E ablation ladder.
 """
 
 from __future__ import annotations

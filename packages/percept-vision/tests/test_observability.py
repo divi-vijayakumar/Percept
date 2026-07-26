@@ -1,4 +1,4 @@
-"""A2 — observability: losing perceptual coverage of a high-consequence concern fires (L1).
+"""Observability: losing perceptual coverage of a high-consequence concern fires (L1).
 
 "Absence of evidence is not evidence of absence." A concern whose last confident observation has
 gone stale has gone blind; for a high-miss-cost concern that loss INHERITS its consequence and fires

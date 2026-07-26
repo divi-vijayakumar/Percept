@@ -25,7 +25,7 @@ Two things this module asserts, kept deliberately SEPARATE:
    (see the HISTORY note below); the implementation closed that gap, so it now asserts the FIXED behavior and
    will fail loudly again if a regression reopens it.
 
-HISTORY (now fixed — kept for context): before A30, the judge->gate path neither caught
+HISTORY (now fixed — kept for context): before fail-closed judgment, the judge->gate path neither caught
 a raised judge-call exception (timeout / provider error) nor validated the shape of a returned
 verdict (malformed / partial) before handing it to ``percept.gate.classify``. ``timeout`` /
 ``provider_error`` raised a designed, typed exception (``asyncio.TimeoutError`` / ``ProviderError``)
@@ -188,7 +188,8 @@ class TestJudgeSafeOutcomeClassification(unittest.TestCase):
     def test_every_failure_mode_resolves_gracefully_and_the_run_continues(self) -> None:
         """THE fixed behavior this class exists to pin down: no injected failure mode may ever
         escape ``perceive_judged`` as an uncaught exception (that is what used to end the whole
-        watch run pre-A30) -- every one degrades THAT TICK to ASK/SILENT/provider-failure and lets
+        watch run before fail-closed judgment) -- every one degrades THAT TICK to
+        ASK/SILENT/provider-failure and lets
         the watch continue onto the next frame, never a FIRE."""
         for mode in FAILURE_MODES:
             with self.subTest(mode=mode):

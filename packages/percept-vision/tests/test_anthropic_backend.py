@@ -1,4 +1,4 @@
-"""Hardened Claude vision judge (E1) — resilience + prompt-cache contract, L1 with a fake client.
+"""Hardened Claude vision judge — resilience + prompt-cache contract, L1 with a fake client.
 
 No real key, no real SDK: an injected fake ``client`` stands in for ``anthropic.Anthropic`` and
 records what was sent. These pin the production-judge hardening:

@@ -3,7 +3,7 @@ GOVERNING, scoped to screen_document / content-key concerns ONLY.
 
 Y11 (shadow mode, landed) proved the mechanism — subject resolution + the episode fold — would have
 been RIGHT on synthetic ground truth, but changed nothing: ``_shadow_observe`` always folds
-``decision=None`` (unbound) and the answer only lands in the ``shadow.fold`` trace stage. Y12 flips
+``decision=None`` (unbound) and the answer only lands in the ``shadow.fold`` trace stage. This suite flips
 the switch for exactly one scope: a concern that SELECTS the content-key resolver
 (``goal.state['identity_policy'] == 'content_key'``) now gets a REAL per-goal
 :class:`~percept.episodes.EpisodeLog` threaded into the firing path via ``_fire_concern(fold=...)``
@@ -19,9 +19,9 @@ The four acceptance properties below:
    ``last_seen`` (``TestOutOfOrderGuard``).
 2. Every fire carries a stable content key or an explicit ``unknown`` — never a fabricated one
    (``TestNeverFabricatesAContentKey``).
-3. Y11's shadow measurement PREDICTED this outcome: the shadow report agrees with the live governing
+3. The shadow measurement PREDICTED this outcome: the shadow report agrees with the live governing
    run on the same fixture (``TestShadowAgreesWithGoverning``).
-4. Claim-slot concerns stay in shadow until Y13 — verified still advisory
+4. Claim-slot concerns stay in shadow until claim governance is enabled — verified still advisory
    (``TestClaimSlotStaysShadow``).
 """
 
@@ -68,12 +68,12 @@ def _recorder() -> TraceRecorder:
 
 
 # --------------------------------------------------------------------------------------------------
-# 1 + 3 — the live GOVERNING run reproduces exactly what Y11's shadow report predicted, on the SAME
+# 1 + 3 — the live GOVERNING run reproduces exactly what the shadow report predicted, on the SAME
 # subject shape the ``continuation`` corpus's ``interleaved_a_b_a_continues_a`` case pins: a subject
 # (A) fires, a DIFFERENT subject (B) fires next, and A's return is a SILENT continuation — never a
 # spurious third fire. A screen/document concern's watch tick has no per-entity focus, so every
-# observation shares ONE gate key ((goal_id, None)): this is exactly the shared-key collision Y3's
-# episode-owned idempotency exists to fix, and the control test below shows the pre-Y12 (fold=None)
+# observation shares ONE gate key ((goal_id, None)): this is exactly the shared-key collision that
+# episode-owned idempotency fixes, and the control test below shows the legacy (fold=None)
 # path actually losing B's fire to it.
 # --------------------------------------------------------------------------------------------------
 
@@ -98,8 +98,8 @@ class TestGoverningFixesTheSharedKeyCollision(unittest.TestCase):
 
     def test_non_content_key_concern_loses_the_second_subjects_fire(self):
         # THE CONTROL: without a declared content-key policy, _document_episode_fold returns None
-        # (byte-for-byte pre-Y12) and both subjects share the SAME disarmed gate key -- B's fire is
-        # silently lost. This is what Y12 fixes for content-key concerns and leaves UNCHANGED for
+        # (the byte-for-byte legacy path) and both subjects share the SAME disarmed gate key -- B's fire is
+        # silently lost. This is what content-key governance fixes and leaves UNCHANGED for
         # every other concern (the scope fence is real, not just documented).
         a = _build(identity_policy=None)
         a.vision = FakeVision(script=self._script())
@@ -185,7 +185,7 @@ class TestOutOfOrderGuard(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------------------------------
-# 3 — Y11's shadow measurement predicted a clean run: assert the shadow report AGREES with the
+# 3 — the shadow measurement predicted a clean run: assert the shadow report AGREES with the
 # governing behavior exercised above, on the same fixture shape (probe 01's corpora).
 # --------------------------------------------------------------------------------------------------
 
@@ -205,7 +205,7 @@ class TestShadowAgreesWithGoverning(unittest.TestCase):
         # The corpus case this mirrors: continuation/interleaved_a_b_a_continues_a expects
         # actions=["fire", "fire", "silent"], fire_count=2, spurious_third_fire_forbidden=True.
         # TestGoverningFixesTheSharedKeyCollision.test_content_key_concern_fires_for_every_distinct_subject
-        # reproduces exactly that sequence through the LIVE watch path; here we confirm Y11's shadow
+        # reproduces exactly that sequence through the LIVE watch path; here we confirm the shadow
         # report never flagged this shape as a disagreement (it predicted zero, and the live run above
         # delivers zero).
         report = run_probe_01_identity_continuation()
@@ -214,7 +214,7 @@ class TestShadowAgreesWithGoverning(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------------------------------
-# 4 — claim-slot concerns stay in shadow (advisory) until Y13.
+# 4 — claim-slot concerns stay in shadow until claim governance is enabled.
 # --------------------------------------------------------------------------------------------------
 
 
@@ -224,7 +224,7 @@ class TestClaimSlotStaysShadow(unittest.TestCase):
         goal = a.goals.get("g1")
         verdict = Verdict(True, 0.9, "asserted", subject=_content_ref("slot-1"))
         fold = a._document_episode_fold(goal, verdict, 0.0)
-        self.assertIsNone(fold, "a claim-slot concern must never get a governing fold (Y13 scope)")
+        self.assertIsNone(fold, "a claim-slot concern must never get a document-governing fold")
         self.assertNotIn("g1", a.episodes)
 
     def test_undeclared_identity_policy_never_governs(self):
@@ -235,7 +235,7 @@ class TestClaimSlotStaysShadow(unittest.TestCase):
         self.assertIsNone(fold)
 
     def test_claim_slot_concern_still_emits_the_advisory_shadow_trace(self):
-        # Governance is off for this concern, but Y11's shadow.fold advisory must still be observing
+        # Governance is off for this concern, but the shadow.fold advisory must still be observing
         # (untouched) -- proving Y12 narrowed WHO governs without narrowing WHO is shadow-observed.
         a = _build(identity_policy="claim_slot")
         a.vision = FakeVision(script={
@@ -249,7 +249,7 @@ class TestClaimSlotStaysShadow(unittest.TestCase):
         self.assertEqual(len(shadow_recs), 1)
         back = ShadowObservation.from_advisory(shadow_recs[0].data)
         self.assertEqual(back.subject.key, "slot-1")
-        # Shadow's OWN fold is still the Y11 "unbound" advisory (decision=None) -- it does not know
+        # Shadow's OWN fold is still the "unbound" advisory (decision=None) -- it does not know
         # about the real governing log at all, exactly as designed.
         self.assertEqual(back.fold.match, "unbound")
 

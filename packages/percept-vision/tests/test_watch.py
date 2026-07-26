@@ -1,4 +1,4 @@
-"""M1 — the public ``watch()`` entrypoint + ``WatchEvent`` contract.
+"""The public ``watch()`` entrypoint and ``WatchEvent`` contract.
 
 L1: offline, FakeVision, no keys. Proves the SEAM (signature, streaming semantics, event mapping,
 version markers) wires to the EXISTING cognition core (``Percept.create`` + ``perceive_judged``)
@@ -103,7 +103,7 @@ class WatchEntrypointTests(unittest.TestCase):
 
 
 class WatchProfileThreadingTests(unittest.TestCase):
-    """``profile`` is opaque today (P1 owns real resolution) — only documented pass-throughs exist."""
+    """``profile`` is opaque here; profile resolution owns the documented pass-throughs."""
 
     def test_none_profile_resolves_to_none(self):
         self.assertIsNone(_settings_from_profile(None))

@@ -1,4 +1,4 @@
-"""— the honest gap left by C2 (``test_c2_profile_wiring.py``): C2 wired a resolved
+"""The honest gap left by source-profile admission wiring: a resolved
 SourceProfile into ADMISSION (``Settings.edge.*``) end-to-end through the compile path, but the
 IDENTITY/EPISODE seams ``percept.identity_policy.select_identity_policy`` and
 ``SourceProfile.default_episode_policy`` stayed built, tested in isolation, and never actually
@@ -16,7 +16,7 @@ The precedence, proven below:
 1. explicit ``goal.state`` authoring ALWAYS wins (never touched by this card);
 2. absent that, a RESOLVED ``source_profile`` supplies its own default (identity_strategy /
    default_episode_policy) — this is the new behavior;
-3. absent BOTH, the pre-C2F byte-for-byte default (the hardcoded ``EPISODE_POLICIES[...]`` per call
+3. absent BOTH, the byte-for-byte legacy default (the hardcoded ``EPISODE_POLICIES[...]`` per call
    site; ``identity_policy_of`` returning ``None`` and gate-only ``fold=None``).
 """
 
@@ -56,7 +56,7 @@ def _build(*, source_profile=None, state: "dict | None" = None) -> Percept:
 
 
 # ----------------------------------------------------------------------------------------------
-# 1. screen_document's default episode policy (incl. the Y17 unknown-continuity gap) flows into a
+# 1. screen_document's default episode policy (including the unknown-continuity gap) flows into a
 #    document-mode goal that declares nothing on identity_policy / episode.
 # ----------------------------------------------------------------------------------------------
 
@@ -85,7 +85,7 @@ class TestProfileDefaultFlowsIntoAnUndeclaredGoal(unittest.TestCase):
     def test_unknown_continuity_gap_actually_governs_two_illegible_sightings(self):
         # The behavioral proof, not just a policy-value assertion: two UNKNOWN (unreadable content
         # key) sightings a coast-tick apart fold into the SAME provisional episode instead of
-        # minting a rival -- exactly the Y17 capability SCREEN_DOCUMENT declares.
+        # minting a rival -- exactly the capability SCREEN_DOCUMENT declares.
         a = _build(source_profile=SCREEN_DOCUMENT)
         goal = a.goals.get("g1")
         v_unknown = Verdict(True, 0.4, "an illegible document", subject=_content_ref(None, resolution="unknown"))

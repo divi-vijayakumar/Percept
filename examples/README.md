@@ -24,7 +24,7 @@ percept-watch --source clip.mp4 \
 `--vision` (`openrouter`/`gemini`/`claude`) · `--model` · `--fps` (default 1.0) · `--refractory` (seconds,
 default 15) · `--egomotion` (moving camera).
 
-**What it bakes in (the H0-winning config):**
+**What it bakes in (the measured best configuration):**
 - `block_max` localized salience — catches low-motion actions (holding, sitting) a global motion gate misses.
 - a per-episode **time-refractory** — one notification per event, not a stream of duplicates.
 

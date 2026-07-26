@@ -1,4 +1,4 @@
-"""E2 — the standard telemetry funnel (seen→gated→judged→refused→fired) + judge latency/cost + OTel.
+"""Standard telemetry funnel (seen→gated→judged→refused→fired) plus judge latency/cost and OTel.
 
 L1, fakes only, no keys, deterministic. Covers:
   * :class:`Funnel`        — the five stages bump the run total + per-concern + per-camera slices.

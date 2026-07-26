@@ -9,7 +9,7 @@ What these tests pin:
   is the de-risking result the card exists to produce, and a regression in the fold breaks it here;
 * the report is NOT vacuously green — a genuinely wrong proposal is caught as a false bind and, past
   the hard ceiling, rejected;
-* the FALSE-BIND > miss asymmetry (Y8) is what drives acceptance — swapping a miss for a false bind
+* the FALSE-BIND > miss asymmetry is what drives acceptance — swapping a miss for a false bind
   strictly WORSENS the harm score;
 * ``distinct_subject_count`` is computed by ONE formula (the E-1 IdentityLedger oracle itself, fed
   the same proposed verdicts) rather than a fixture-side count kept in sync with the oracle by hand;
@@ -101,7 +101,7 @@ class TestReportIsNotVacuouslyGreen(unittest.TestCase):
 
     def test_false_bind_is_weighted_worse_than_a_miss(self):
         # Swap ONE abstention/miss for ONE false bind at equal n: harm must strictly increase — the
-        # load-bearing asymmetry the whole card leans on (Y8).
+        # load-bearing asymmetry the acceptance metric requires.
         base = [BindOutcome.EXACT] * 8 + [BindOutcome.ABSTAINED_WHEN_LEGIBLE, BindOutcome.EXACT]
         swapped = [BindOutcome.EXACT] * 8 + [BindOutcome.WRONG_KEY_FALSE_BIND, BindOutcome.EXACT]
         h_miss = SHADOW_ACCEPTANCE_POLICY.harm_score(compute_e1_metrics(base))

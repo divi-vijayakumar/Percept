@@ -7,7 +7,7 @@ silently does nothing. These tests pin the two dangerous defaults in ``Percept.c
   * scripted conductor behind a REAL vision backend. A scripted conductor's default
     ``Decision(route="ignore")`` discards every standing-goal request, so a voice-authored
     "watch X" never arms. Must warn + report it in ``health()["scripted"]`` (RFC §4/§5 vocabulary).
-  * E5 — ``regate_on_goal_change=False``. A goal armed mid-run bumps the registry revision but
+  * ``regate_on_goal_change=False``. A goal armed mid-run bumps the registry revision but
     the compiled-once gate never re-arms → no rising edge → no fire, silently, for the whole
     session (the shipped realtime-demo bug). The default is now True; when it IS off and goals
     move, the runtime must say so out loud.
@@ -69,7 +69,7 @@ class _CaptureWarnings:
 
 
 # ------------------------------------------------------------- scripted-conductor announce (§4/§5) --
-# (Was E3's "degraded stub conductor". The offline/scripted RFC §6 RE-KEYS this to one consistent
+# (This was called "degraded stub conductor". The offline/scripted RFC §6 rekeys it to one consistent
 # vocabulary: health() reports {"mode","scripted":[...]} and the event is "scripted_conductor". The
 # mechanism is unchanged — object-check the CONSTRUCTED class, announce loudly at create() — only the
 # words and the payload shape changed, so these assertions were updated to the new contract.)
@@ -149,7 +149,7 @@ async def _run_arming_midflight(*, pass_regate, regate_value=None, on_health=Non
 class RegateDefaultTests(unittest.TestCase):
     def test_regate_default_is_true(self):
         default = inspect.signature(run).parameters["regate_on_goal_change"].default
-        self.assertIs(default, True, "regate_on_goal_change must default to True (E5)")
+        self.assertIs(default, True, "regate_on_goal_change must default to True")
 
     def test_default_run_rearms_and_fires(self):
         # With the flipped default, run(core) with NO regate arg must re-arm on a mid-run goal and fire.

@@ -62,7 +62,7 @@ class TestGate(unittest.TestCase):
 
 
 class TestGateActionMembers(unittest.TestCase):
-    """PIN reality (E2): the gate is a THREE-verdict system today, not the five-verdict design.
+    """PIN reality: the gate is a THREE-verdict system today, not the five-verdict design.
 
     OBSERVE and LOG do NOT exist. This test fails the moment ``GateAction`` diverges from
     {fire, ask, silent}, forcing any future five-verdict build (or any external doc claiming one) to

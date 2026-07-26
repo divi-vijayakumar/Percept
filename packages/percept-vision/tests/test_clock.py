@@ -1,8 +1,8 @@
 """Clock primitive (L1, v3 §9) — the injectable clock drives run-time cognition deterministically.
 
 Proves the replay/determinism premise without wall-clock waits: inject a FakeClock, advance it, and a
-deadline/absence fire happens at exactly the modelled time. This is the seam the timeline-replay harness
-(P5) will drive."""
+deadline/absence fire happens at exactly the modelled time. This is the seam the timeline-replay
+harness drives."""
 import unittest
 
 from percept.adapters import Goal

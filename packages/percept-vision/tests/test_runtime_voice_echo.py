@@ -7,7 +7,7 @@ instant it returns — Percept endpoints its own spoken reply and loops. These t
   * R1 — the handler runs OFF the pump, so capture never stalls (and ``muted()`` is evaluated live).
   * R2/R3 — ``deaf_until`` suppresses endpointing for a window and RESETS the VAD on exit, so the tail
     of our own speech can't be endpointed and a half-built utterance can't straddle the window.
-  * E4 — ``mute()`` set during a slow handler actually suppresses the muted-window chunks (only true
+  * ``mute()`` set during a slow handler suppresses muted-window chunks (only true
     once the pump is live, i.e. post-R1).
   * A raising handler no longer kills the pump.
 """
@@ -131,7 +131,7 @@ class OffPumpTests(unittest.TestCase):
 
 class MuteDuringHandlerTests(unittest.TestCase):
     def test_mute_during_slow_handler_suppresses_endpointing(self):
-        """E4 closed: mute set while a slow handler runs suppresses the muted-window chunks — only true
+        """Mute set while a slow handler runs suppresses muted-window chunks — only true
         because the pump keeps running (R1). Pre-R1 the backlog drained after unmute -> a 2nd endpoint."""
         core = _core()
         muted = [False]
@@ -293,7 +293,7 @@ class StaleAudioTests(unittest.TestCase):
 
 
 class UtteranceTruncationTests(unittest.TestCase):
-    """B1: a long turn is handed WHOLE from the endpointer's OWN buffer, not sliced from the shared
+    """A long turn is handed WHOLE from the endpointer's OWN buffer, not sliced from the shared
     (fused-judge) AudioWindow whose size is the small fused default. Slicing that rolling window
     silently truncated any utterance longer than ``audio_window_s`` to its last N seconds."""
 
@@ -376,7 +376,7 @@ class PumpWatchdogTests(unittest.TestCase):
 
 
 class EnergyFreshnessTests(unittest.TestCase):
-    """B2/R7: a dead/stalled mic leaves ``audio['energy']`` pinned at its last (speech-level) value. A
+    """A dead/stalled mic leaves ``audio['energy']`` pinned at its last (speech-level) value. A
     WakePolicy that fuses that channel would then keep escalating on phantom audio forever. The frame
     loop must read energy only while FRESH; a stale reading degrades the gate to VIDEO-ONLY."""
 

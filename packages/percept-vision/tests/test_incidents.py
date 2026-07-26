@@ -44,7 +44,7 @@ class MakeIncidentTests(unittest.TestCase):
 
 
 class IncidentEntityIdTests(unittest.TestCase):
-    """D4 — the gate key is (goal_id, entity_id); identity must survive the emission boundary."""
+    """The gate key is (goal_id, entity_id); identity must survive the emission boundary."""
 
     def test_entity_id_carries_from_the_fire(self):
         inc = make_incident(_Fire("caffeine", "stay off caffeine", None, entity_id="cup2"), ts=3.0)
@@ -61,7 +61,7 @@ class IncidentEntityIdTests(unittest.TestCase):
         self.assertNotEqual(a.entity_id, b.entity_id)  # ...different subject
 
     def test_absent_entity_id_defaults_to_none(self):
-        class _Legacy:  # a pre-D4 duck-typed fire with NO entity_id attribute at all
+        class _Legacy:  # a legacy duck-typed fire with NO entity_id attribute at all
             goal_id, text, verdict = "g", "hi", None
 
         self.assertIsNone(make_incident(_Legacy(), ts=1.0).entity_id)

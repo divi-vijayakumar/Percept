@@ -84,7 +84,7 @@ def _run_watch(verdicts, *, ts=(0.0,)):
 
 
 class _Fire:
-    """Duck-typed fire with an optional Z3 envelope (mirrors FireEvent's attribute surface)."""
+    """Duck-typed fire with an optional judgment envelope (mirrors FireEvent's attributes)."""
 
     def __init__(self, goal_id="g", text="hi", verdict=None, **env):
         self.goal_id = goal_id
@@ -120,7 +120,7 @@ class LivePathStampsTheEnvelope(unittest.TestCase):
         _, fires = _run_watch([UNSURE])
         self.assertEqual([f.action for f in fires], [ASK])
         fe = fires[0]
-        self.assertEqual(fe.reason, "low_confidence")  # the O2 split of "unknown": not stale, low conf
+        self.assertEqual(fe.reason, "low_confidence")  # "unknown" is low confidence, not stale.
         self.assertEqual(fe.judgment.reason, "low_confidence")
         self.assertEqual(fe.judgment.action, "ask")
 

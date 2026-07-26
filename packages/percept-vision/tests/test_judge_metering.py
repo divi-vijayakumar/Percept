@@ -1,10 +1,10 @@
-"""Judge metering reconciliation (J1R) — the OpenRouter seam of the existing metering path.
+"""Judge metering reconciliation — the OpenRouter seam of the existing metering path.
 
 HEAD already wires metering end-to-end: ``Verdict.usage`` is a real dataclass FIELD (default
 ``{}``, never a dynamically-added attribute — do NOT ``hasattr`` it away), and
 ``observability.judge_usage`` + ``Funnel.record_judge`` read it (covered by
 ``tests/test_judge_usage_metering.py``, not duplicated here). This file covers what a prior attempt
-(J1) got wrong and this card fixes for real:
+got wrong and this suite fixes for real:
 
 1. an OpenRouter judge call now REQUESTS the vendor's opt-in usage-accounting extension
    (``extra_body={"usage": {"include": True}}``) — without it OpenRouter never returns ``usage`` at
@@ -55,7 +55,7 @@ class VerdictUsageIsAFieldTests(unittest.TestCase):
 
     def test_usage_is_a_real_field_present_on_every_verdict(self):
         v = Verdict(satisfied=True, confidence=0.5)
-        self.assertTrue(hasattr(v, "usage"))  # deliberately the OPPOSITE of the stale J1 assertion
+        self.assertTrue(hasattr(v, "usage"))  # deliberately opposite the stale assertion
         self.assertIn("usage", Verdict.__dataclass_fields__)
 
     def test_default_usage_is_empty_and_falsy(self):

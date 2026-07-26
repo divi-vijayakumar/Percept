@@ -39,7 +39,7 @@ def _unknown(*, scheme: str = "content", ns: str = "acme-erp",
 
 class ContractVersionTests(unittest.TestCase):
     def test_contract_at_least_1_4_0(self) -> None:
-        # Y5 bumped to 1.4.0; later additive cards (e.g. Y2 → 1.5.0) move it forward. The Y5 floor
+        # SubjectRef bumped the contract to 1.4.0; later additive changes move it forward. That floor
         # is what matters here: SubjectRef + Verdict.subject must be present at or above 1.4.0.
         major, minor, _patch = (int(p) for p in CONTRACT_VERSION.split("."))
         self.assertEqual(major, 1)
@@ -208,7 +208,7 @@ class EpisodeSubjectWiringTests(unittest.TestCase):
         ep2, new2 = log.observe(1.0, v1b)
         self.assertFalse(new2)
         self.assertEqual(ep1.id, ep2.id)
-        # a DIFFERENT bound subject in the same region -> a distinct episode (the Y5 collapse fix)
+        # A different bound subject in the same region creates a distinct episode.
         v2 = Verdict(True, 0.9, subject=_bound("INV-2294"))
         ep3, new3 = log.observe(2.0, v2)
         self.assertTrue(new3)

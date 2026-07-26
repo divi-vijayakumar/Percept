@@ -268,7 +268,7 @@ def test_timebase_is_reported_for_an_in_memory_stream():
 
 
 # ---------------------------------------------------------------------------
-# 6. the funnel comes from D8a — not recounted here
+# 6. The funnel comes from the tracing summary and is not recounted here.
 # ---------------------------------------------------------------------------
 
 

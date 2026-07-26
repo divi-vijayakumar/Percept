@@ -115,7 +115,7 @@ def test_sequencing_primitives_have_zero_production_call_sites() -> None:
 
 
 def test_only_harness_metrics_imports_the_sequencing_module() -> None:
-    """agent.py joined harness/metrics.py as an importer when X7 landed (see the test above)."""
+    """agent.py joined harness/metrics.py when judgment-event sequencing landed (see above)."""
     assert _importers_of("sequencing") == {Path("harness/metrics.py"), Path("agent.py")}
 
 

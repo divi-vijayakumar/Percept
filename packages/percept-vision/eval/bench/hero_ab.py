@@ -41,7 +41,7 @@ MANIFEST = [
 VLM_PRIOR = {"bench_pressing": "limb-vertical", "front_raise": "limb-vertical",
              "jump_jack": "ankle-spread", "others": "hip-vertical", "pommelhorse": "ankle-spread"}
 # expected_rom in each channel's NATIVE (torso-normalized) units, per-CHANNEL not per-clip, from the
-# committed test (limb-vertical 0.18) + design-note O6/O8 (jack ankle ≈ 0.35). Held identical across arms,
+# committed test (limb-vertical 0.18) + measured jack ankle range (≈ 0.35). Held identical across arms,
 # so even an imperfect value can't bias A-vs-B-vs-C — it only sets the absolute amplitude (fidget) gate.
 EXPECTED_ROM = {"limb-vertical": 0.18, "ankle-spread": 0.35, "hip-vertical": 0.20}
 

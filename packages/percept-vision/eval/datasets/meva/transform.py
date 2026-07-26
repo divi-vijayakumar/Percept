@@ -80,7 +80,7 @@ MEVA_ANNOTATION_VERSION = "meva-kpf-1"
 #: headroom). A documented default, overridable per run; it never moves the BEGIN fire anchor.
 DEFAULT_ALLOWED_LATENESS_S = 2.0
 
-#: The acceptance bars for a MEVA ``facility_observation`` differential (DS1 brief §3). Client-style
+#: Acceptance bars for a MEVA ``facility_observation`` differential. Client-style
 #: bars: candidate recall must clear 0.80; the paired recall improvement must be >= 0.05 AND its CI
 #: must exclude zero (a point estimate is not enough); and the candidate must add NO false fires.
 DEFAULT_BARS = BarsDocument(
@@ -132,7 +132,7 @@ def activity_to_episode(
 
     The activity BEGIN (``begin_frame / fps``) becomes BOTH ``event_start_ts`` and
     ``decision_eligible_ts`` — the earliest instant a correct fire may legally land, i.e. the fire
-    timestamp the DS1 brief pins to the activity begin. The activity END becomes ``episode_end_ts``.
+    timestamp the dataset contract pins to the activity begin. The activity END becomes ``episode_end_ts``.
     """
     begin_ts = activity.begin_ts(fps)
     end_ts = activity.end_ts(fps)

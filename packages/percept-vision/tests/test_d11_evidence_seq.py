@@ -7,7 +7,7 @@ Two bars:
    ``.ptrace`` — and that link survives a JSON write/reload cycle.
 2. BACKWARD-COMPAT: a pre-1.7 ``Incident`` construction (positional, no ``evidence_seq``) and a fire
    with no ``.judgment`` at all both still parse/construct fine, with ``evidence_seq=None`` — never a
-   fabricated number. A pre-D11 trace record dict (no ``judgment.event`` stage, no ``evidence_seq`` key
+   fabricated number. A legacy trace record dict (no ``judgment.event`` stage, no ``evidence_seq`` key
    anywhere) still loads and derives cleanly.
 """
 
@@ -146,7 +146,7 @@ class _NoJudgmentFire:
 
 
 class TestBackwardCompat(unittest.TestCase):
-    """Bar 2 — nothing pre-D11 breaks, and nothing pre-D11 is silently upgraded into a fabricated
+    """Bar 2 — no legacy input breaks, and no legacy input is silently upgraded into a fabricated
     number. ``None`` stays ``None``."""
 
     def test_incident_positional_construction_without_evidence_seq_still_works(self):
@@ -193,7 +193,7 @@ class TestBackwardCompat(unittest.TestCase):
         self.assertEqual(loaded_manifest.run_id, "pre-d11-run")
         self.assertEqual(len(records), 2)
         self.assertEqual(summary.gate_outcomes["fire"], 1)
-        # No judgment.event stage in this pre-D11 stream at all — never fabricated on reload.
+        # No judgment.event stage in this legacy stream at all — never fabricated on reload.
         self.assertFalse(any(r.stage == STAGE_JUDGMENT_EVENT for r in records))
 
 

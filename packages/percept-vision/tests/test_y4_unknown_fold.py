@@ -1,11 +1,11 @@
 """— the OPERATIONAL semantics of an ``'unknown'`` subject inside the episode fold.
 
-Y5 (merged) already settled the TYPE and the episode-log default: ``_subject_key_of`` returns ``None``
+The merged subject contract already settled the TYPE and episode-log default: ``_subject_key_of`` returns ``None``
 for an ``'unknown'`` ref, so the log MINTS a fresh episode per unknown and two unknowns NEVER collapse
-(they are NaN-like). That is re-pinned here, not re-litigated. Y4 adds only the two things Y5 left open:
+(they are NaN-like). That is re-pinned here, not re-litigated. This suite adds only the two open rules:
 
   1. The FOLD's gate governance — a visible abstention must never REARM the gate (no wrong suppression)
-     and is never granted episode-owned idempotency, EVEN THOUGH Y5 minted an episode for it.
+     and is never granted episode-owned idempotency, EVEN THOUGH the subject resolver minted an episode for it.
   2. The OPT-IN single-focus provisional attach — a narrowly-scoped source MAY continue the sole open
      bound episode with an unknown sighting, RECORDED (never a silent merge).
 
@@ -76,7 +76,7 @@ class FoldGateGovernanceTests(unittest.TestCase):
         # ``new`` and REARM. Y4 forces ``unknown`` + no rearm.
         log = self._log()
         d = log.observe_decision(0.0, Verdict(True, 0.4, subject=_unknown()))
-        self.assertTrue(d.is_new)  # Y5 minted a fresh episode
+        self.assertTrue(d.is_new)  # The subject resolver minted a fresh episode.
         f = episode_fold(d, emitted=0, unknown=True)
         self.assertEqual(f.match, "unknown")
         self.assertEqual(f.mutation, "none")
@@ -92,7 +92,7 @@ class FoldGateGovernanceTests(unittest.TestCase):
         self.assertTrue(f.should_evaluate_gate)
 
     def test_bound_new_still_rearms_only_the_unknown_case_changed(self) -> None:
-        # Contrast: a BOUND new episode rearms exactly as before — Y4 touched only the unknown path.
+        # Contrast: a BOUND new episode rearms exactly as before; only the unknown path changed.
         log = self._log()
         d = log.observe_decision(0.0, Verdict(True, 0.9, subject=_bound("INV-1")))
         f = episode_fold(d, emitted=0)  # unknown defaults False
@@ -111,7 +111,7 @@ class FoldGateGovernanceTests(unittest.TestCase):
 
 
 class MintAndCollapseTests(unittest.TestCase):
-    """Question 1: mint or attach to nothing. Re-pins the Y5 default (do not re-litigate)."""
+    """Question 1: mint or attach to nothing. Re-pins the existing default."""
 
     def test_two_unknowns_never_collapse_default(self) -> None:
         log = EpisodeLog("g", policy=EpisodePolicy(continuity_gap_s=30.0))
@@ -230,7 +230,7 @@ class FoldGateIntegrationTests(unittest.TestCase):
     def test_unknown_after_a_bound_fire_does_not_refire_shared_key(self) -> None:
         # A bound subject fires and disarms the shared (goal, entity) key. An unknown on the SAME key
         # then folds ``unknown`` -> should_rearm=False, so it consults the disarmed gate and stays
-        # SILENT. If the unknown had rearmed (the pre-Y4 ``new`` reading) it would refire — the exact
+        # SILENT. If the unknown had rearmed (the legacy ``new`` reading) it would refire — the exact
         # wrong suppression the card forbids.
         from percept.adapters import Goal
         from percept.behavior import BehaviorProgram, program_of

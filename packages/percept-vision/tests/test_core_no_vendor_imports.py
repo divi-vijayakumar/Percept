@@ -3,7 +3,7 @@
 The "model-agnostic core" promise is only real if the cognition modules physically cannot drag a vendor SDK
 into the import graph. This locks it: in a FRESH interpreter (so another test's backend import can't pollute
 sys.modules), import only the core and assert no vendor module appeared. Backends lazy-import their SDK
-inside methods, so this stays true — and pre-stages the percept-core package split (P1)."""
+inside methods, so this stays true — and pre-stages the percept-core package split."""
 import subprocess
 import sys
 import unittest

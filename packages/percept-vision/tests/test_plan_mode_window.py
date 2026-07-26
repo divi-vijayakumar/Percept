@@ -1,11 +1,11 @@
 """— the resolved WatchProfile.plan_mode is LIVE: "window" makes the judge see an ORDERED
 FRAME WINDOW (``judge(frames=[...])``), not one still frame.
 
-M2 carried ``plan_mode`` onto the core and nothing read it. These tests pin the wiring end-to-end with a
+The first profile resolver carried ``plan_mode`` onto the core and nothing read it. These tests pin the wiring end-to-end with a
 recording vision stub (no model intelligence, no keys):
 
   1. ``_planned_perception`` — the pure overlay: a profile's plan_mode is a FLOOR (it raises a cheaper
-     spec, never downgrades a richer authored one), ``None`` is byte-for-byte pre-J2, an unknown mode is
+     spec, never downgrades a richer authored one), ``None`` is byte-for-byte legacy behavior, an unknown mode is
      ignored, and the deprecated ``sprite`` normalizes to ``window`` with a DeprecationWarning.
   2. the agent path — ``Percept.create(plan_mode="window")`` sends the ordered earlier frames with the
      current frame as the anchor; ``plan_mode=None`` still sends ``frames=None``.

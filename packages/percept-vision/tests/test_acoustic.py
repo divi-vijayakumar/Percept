@@ -79,7 +79,7 @@ class TestFusedAssembly(unittest.TestCase):
 
 
 class TestTypedAudioFrame(unittest.TestCase):
-    """B2 — a typed ``AudioFrame`` flows through ``judge(audio=...)`` (the typed-but-flexible param)."""
+    """A typed ``AudioFrame`` flows through ``judge(audio=...)``."""
 
     def test_audioframe_defaults_and_as_pair(self):
         af = AudioFrame(pcm=b"\x01\x02\x03\x04", sample_rate=16000, channels=1)

@@ -182,7 +182,7 @@ def test_the_health_channel_adr004_now_points_at_is_real():
     assert "on_health" in inspect.signature(run).parameters
     assert "on_frame" in inspect.signature(run).parameters
 
-    # X4's coverage signal — the thing that makes this channel worth routing an integrator to.
+    # The terminal coverage signal makes this channel worth routing an integrator to.
     worker_src = (PKG / "runtime" / "worker.py").read_text()
     assert 'RuntimeHealthEvent("runtime_ended"' in worker_src
     assert 'RuntimeHealthEvent("zero_admission_coverage"' in worker_src

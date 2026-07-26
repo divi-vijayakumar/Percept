@@ -7,7 +7,7 @@ be produced WITHOUT touching ``Gate.evaluate`` / ``classify`` — i.e. purely by
       lands on the gate's default-armed edge (``self._armed.get(key, True)``), and/or
   (b) calling the EXISTING ``gate.rearm(key)`` / ``gate.reset_goal(goal_id)`` at the right moment.
 
-The linchpin invariant for the A1 refactor: gate.py stays LITERALLY unchanged. These tests are the
+The linchpin invariant for the rearm refactor: gate.py stays LITERALLY unchanged. These tests are the
 proof. Each test scripts a Verdict sequence, drives the real ``Gate``, and asserts the
 key-synthesis/rearm action trace EQUALS the intended FIRE/ASK/SILENT trace for that ``R``.
 

@@ -169,7 +169,7 @@ class TestConcernFromGoal(unittest.TestCase):
         self.assertEqual(b.observations, [])  # default_factory, not shared
 
     def test_clip_declaration_defaults_off(self):
-        # B1: the clip/window_s fields default off, so an un-declared concern is single-frame unchanged.
+        # Clip/window fields default off, so an undeclared concern remains single-frame.
         c = Concern.from_goal(Goal(id="g", condition="x", say="y"))
         self.assertFalse(c.clip)
         self.assertIsNone(c.window_s)
@@ -404,7 +404,7 @@ class TestIncidentLabeling(unittest.TestCase):
 
 
 class TestJudgmentTiming(unittest.TestCase):
-    """A5 — the production timestamp contract: two time domains (ADR-001 §5).
+    """The production timestamp contract has two time domains (ADR-001 §5).
 
     Monotonic domain (ingest_observed_ts .. decision_emitted_ts) is what ALL latency math reads;
     source_media_ts is optional/untrusted and is never touched by the latency helpers.
@@ -531,7 +531,7 @@ class TestJudgmentTiming(unittest.TestCase):
 
         event = JudgmentEvent(key="goal-1:entity-7", evidence_seq=3, action="fire", timing=timing)
 
-        # A8's fields survive, additively, on the frozen event.
+        # Sequencing fields survive, additively, on the frozen event.
         self.assertEqual(event.key, "goal-1:entity-7")
         self.assertEqual(event.evidence_seq, 3)
         self.assertEqual(event.action, "fire")
@@ -553,7 +553,7 @@ class TestJudgmentTiming(unittest.TestCase):
 
 
 class TestGroundTruth(unittest.TestCase):
-    """A6 — the evaluation-only ground-truth record (the ground-truth contract/§5a; ADR-001 §5).
+    """The evaluation-only ground-truth record (the ground-truth contract/§5a; ADR-001 §5).
 
     ``GroundTruth`` is a DISTINCT type from ``JudgmentTiming``/``JudgmentEvent``: a live event built
     from real production traffic must never carry ``event_start_ts``/``decision_eligible_ts`` —
@@ -669,7 +669,7 @@ class TestGroundTruth(unittest.TestCase):
         self.assertIn(ANNOTATION_RUBRIC_VERSION, ANNOTATION_RUBRIC)
         self.assertIn("decision_eligible_ts", ANNOTATION_RUBRIC)
 class TestWatchEvent(unittest.TestCase):
-    """M1 — the event ``percept.watch()`` streams: defaults, all three actions, not frozen."""
+    """The event ``percept.watch()`` streams: defaults, all three actions, not frozen."""
 
     def test_minimal_defaults(self):
         ev = WatchEvent(goal_id="zone", action="fire", t=1.0)
@@ -697,7 +697,7 @@ class TestWatchEvent(unittest.TestCase):
 
 
 class TestAudioFrame(unittest.TestCase):
-    """B2 — the typed first-class audio signal: defaults, render-to-pair, duration, frozen."""
+    """The typed first-class audio signal: defaults, render-to-pair, duration, frozen."""
 
     def test_defaults(self):
         af = AudioFrame()
@@ -738,9 +738,9 @@ class TestVersionNegotiation(unittest.TestCase):
         # 1.7.0: additive Incident.evidence_seq (the JudgmentEvent evidence_seq copied through to the
         # delivered record) + additive SubjectRef 'provisional' resolution state (UN_<episode_id>),
         # same batch. 1.6.0: additive judgment-envelope enrichment — JudgmentEvent + Incident gain
-        # reason/watchplan_id/roi/modality/provenance (Z3). 1.5.0: Verdict claim-mode channel +
-        # ConcernAuthority (Y2); 1.4.0 SubjectRef + Verdict.subject (Y5); 1.3.0 Incident.entity_id (D4);
-        # 1.2.0 WatchAction/WatchEvent (M1); 1.1.0 AttentionIntent/GoalOrigin (the documented regression).
+        # reason/watchplan_id/roi/modality/provenance. 1.5.0: Verdict claim-mode channel +
+        # ConcernAuthority; 1.4.0 SubjectRef + Verdict.subject; 1.3.0 Incident.entity_id;
+        # 1.2.0 WatchAction/WatchEvent; 1.1.0 AttentionIntent/GoalOrigin (the documented regression).
         self.assertEqual(CONTRACT_VERSION, "1.10.0")
         parts = CONTRACT_VERSION.split(".")
         self.assertEqual(len(parts), 3)
@@ -817,7 +817,7 @@ class TestJsonSchema(unittest.TestCase):
         from percept.contracts import jsonschema as js
 
         defs = js.generate_all()["$defs"]
-        self.assertIn("Schedule", defs)  # the C1 schedule DTO is exported
+        self.assertIn("Schedule", defs)  # The schedule DTO is exported.
         wc = defs["WatchCondition"]
         # schedule is Optional[Schedule] -> anyOf containing the $ref + null, and NOT required
         any_of = wc["properties"]["schedule"]["anyOf"]

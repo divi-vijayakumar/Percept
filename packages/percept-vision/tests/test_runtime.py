@@ -63,7 +63,7 @@ class RuntimeWorkerTests(unittest.TestCase):
         self.assertTrue(all(i.message == "Alert: person in zone" for i in incidents))
         self.assertTrue(all(i.verdict.satisfied for i in incidents))
         self.assertTrue(all(i.snippet is not None and i.snippet.kind == "frame" for i in incidents))
-        # D4: a non-entity-scoped stream stays entity_id=None (the back-compatible default) and the
+        # A non-entity-scoped stream stays entity_id=None (the back-compatible default) and the
         # field is present on the wire payload rather than missing.
         self.assertTrue(all(i.entity_id is None for i in incidents))
         self.assertIn("entity_id", incident_payload(incidents[0]))
@@ -138,7 +138,7 @@ class RuntimeWorkerTests(unittest.TestCase):
         self.assertTrue(all(isinstance(e, RuntimeHealthEvent) for e in events))
 
     def test_runtime_ended_carries_this_run_s_coverage_counters(self):
-        # X4: `runtime_ended` used to carry an EMPTY payload, so a consumer that had not kept its own
+        # `runtime_ended` used to carry an EMPTY payload, so a consumer that had not kept its own
         # counters could not tell what the run actually did. It now states the run's coverage.
         events = []
         stats = RuntimeStats()

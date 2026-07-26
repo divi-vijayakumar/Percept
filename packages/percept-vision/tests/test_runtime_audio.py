@@ -68,7 +68,7 @@ class OpenAudioSourceTests(unittest.TestCase):
 
 
 class AudioPumpDeadlockTests(unittest.TestCase):
-    """M0/A2 regression guard: cancelling the consumer while the capture thread is stalled (never
+    """Audio-pump regression guard: cancelling the consumer while the capture thread is stalled (never
     puts another item, never notices ``stop``) must NOT hang. Before the fix, the consumer awaited a
     bare ``q.get()`` via ``asyncio.to_thread`` with no timeout — once that thread pool worker started
     blocking, cancelling the awaiting task could not stop it, so a torn-down consumer against a

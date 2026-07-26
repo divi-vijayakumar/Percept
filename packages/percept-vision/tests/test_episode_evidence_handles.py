@@ -1,6 +1,6 @@
 """L1: episodes retain evidence HANDLES, never decoded pixels.
 
-Z1 proved a count-bounded buffer is not byte-bounded: the SAME ``max_episodes`` costs kilobytes of
+The frame-window soak proved a count-bounded buffer is not byte-bounded: the SAME ``max_episodes`` costs kilobytes of
 8x8 test frames and hundreds of MB of 1080p frames. ``max_episodes`` bounds the COUNT of episodes,
 not their BYTES — so an episode that pins a decoded frame makes the log's memory scale with source
 resolution and, unchecked, with the number of observations. These tests assert the fix: a decoded
@@ -46,7 +46,7 @@ class TestEvidenceHandleConversion(unittest.TestCase):
         log = EpisodeLog("g")
         ep_tok, _ = log.observe(1.0, "cup", ALWAYS_NEW)
         ep_dict, _ = log.observe(2.0, {"total": 3}, ALWAYS_NEW)
-        # a subject token and a small dict are cheap — retained AS-IS (pre-Y14 behaviour)
+        # A subject token and a small dict are cheap, so legacy pass-through behaviour remains.
         self.assertEqual(ep_tok.exemplar, "cup")
         self.assertEqual(ep_dict.exemplar, {"total": 3})
         self.assertNotIsInstance(ep_tok.exemplar, EvidenceHandle)

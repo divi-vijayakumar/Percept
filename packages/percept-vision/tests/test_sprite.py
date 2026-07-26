@@ -108,7 +108,7 @@ class SpriteDeprecatedInThePlanPathTests(unittest.TestCase):
 
         original = sprite_mod.make_sprite
         sprite_mod.make_sprite = lambda *a, **k: (_ for _ in ()).throw(
-            AssertionError("the plan path must not montage frames (J2)")
+            AssertionError("the plan path must not montage frames")
         )
         try:
             last, _ = self._last_call(["f0", "f1", "f2", "f3"])

@@ -1,6 +1,6 @@
 """Probe-harness ``stream_gen`` (Viability A10) — determinism + fan-out, L1 no-key.
 
-Two things this proves, both required before A11's ``load_driver`` (and downstream Phase-A
+Two things this proves, both required before ``load_driver`` (and downstream
 probes) can trust this generator:
 
   * replay driven by an injected clock is fully deterministic — the same timeline + the same

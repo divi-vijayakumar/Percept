@@ -342,12 +342,12 @@ class MotionGateTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# C1 — schedule enforcement (out-of-schedule frames don't escalate)
+# Schedule enforcement (out-of-schedule frames do not escalate)
 # ---------------------------------------------------------------------------
 
 
 def one_condition_spec(*, threshold=0.2, region_hint=None, schedule=None) -> WatchSpec:
-    """A single-condition WatchSpec with an optional region_hint / schedule (the C1 opt-ins)."""
+    """A single-condition WatchSpec with optional region_hint and schedule."""
     return WatchSpec(
         conditions=[
             WatchCondition(
@@ -359,7 +359,7 @@ def one_condition_spec(*, threshold=0.2, region_hint=None, schedule=None) -> Wat
 
 
 class CadenceGateTests(unittest.TestCase):
-    """C2: per-goal temporal cadence — how OFTEN to look, distinct from PerceptionSpec (how deep)."""
+    """Per-goal temporal cadence: how OFTEN to look, distinct from perception depth."""
 
     def setUp(self):
         self.cfg = load_settings()
@@ -471,7 +471,7 @@ class ScheduleGateTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# C1 — watch-out zones (region_hint masks the gate's motion to a rectangle)
+# Watch-out zones (region_hint masks the gate's motion to a rectangle)
 # ---------------------------------------------------------------------------
 
 
@@ -575,7 +575,7 @@ class WiredLoopTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# E2 — the standard telemetry funnel over the wired loop (seen→gated→judged→…→fired)
+# Standard telemetry funnel over the wired loop (seen→gated→judged→…→fired)
 # ---------------------------------------------------------------------------
 
 

@@ -1,4 +1,4 @@
-"""C0: percept.tunables — registry integrity, generated-artifact parity, and Settings completeness.
+"""percept.tunables registry integrity, generated-artifact parity, and Settings completeness.
 
 Three things this file pins:
 
@@ -28,7 +28,7 @@ from percept.config import Settings
 
 #: Settings fields deliberately NOT represented as a ``Settings.*`` tunable path, each with a reason.
 #: Empty today — every Settings field maps 1:1 to a registry path. Add an entry here (never silently
-#: skip a field) if a future Settings field is genuinely not owner-classifiable at C0's boundary.
+#: skip a field) if a future Settings field is genuinely not owner-classifiable.
 _EXCLUDED_SETTINGS_FIELDS: dict[str, str] = {}
 
 

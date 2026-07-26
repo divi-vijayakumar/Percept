@@ -1,9 +1,9 @@
-"""A1 — unified (C, R) firing: per-concern re-arm via key-synthesis + the never-contract (L1).
+"""Unified (C, R) firing: per-concern re-arm via key synthesis and the never-contract (L1).
 
 Drives ``Percept._fire_concern`` directly against the REAL gate (no perception machinery), proving:
   * on_false (default)  reproduces today — a confident-false re-arms, then a later YES re-fires;
-  * never (one-shot)    fires exactly once and never re-arms, even across false->true->true (the S2
-                        contract: a confident-false must not reach the gate);
+  * never (one-shot)    fires exactly once and never re-arms, even across false->true->true (a
+                        confident-false must not reach the gate);
   * interval            re-fires once per cadence time-bucket (key-synthesis folds floor(t/cadence)).
 The full existing suite is the byte-for-byte tripwire for the watch/event re-route through the helper.
 """

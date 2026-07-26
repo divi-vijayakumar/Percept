@@ -67,7 +67,7 @@ import {
 // Package-root re-export surface. A consumer doing `import { X } from "percept-edge"`
 // (which resolves to src/index.js) must be able to reach every symbol the package
 // advertises as public — including the SubjectRef surface, which historically was
-// exported from contract.js but never re-exported at the package root (Z11).
+// exported from contract.js but historically not re-exported at the package root.
 describe("package root exports (src/index.js)", () => {
   it("re-exports the SubjectRef surface", () => {
     expect(typeof makeSubjectRef).toBe("function");

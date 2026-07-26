@@ -369,7 +369,7 @@ describe("Incident / IncidentSnippet", () => {
       entity_id: null,
       message: "", // Incident.message (Python str default "")
       label_url: null, // Incident.label_url (Python str|None)
-      // Z3 (contract 1.6) enriched envelope — all default null on a minimal build.
+      // Contract 1.6 enriched judgment envelope — all default null on a minimal build.
       reason: null,
       watchplan_id: null,
       roi: null,
@@ -412,7 +412,7 @@ describe("Incident / IncidentSnippet", () => {
       entity_id: null, // absent on a pre-1.3 payload -> null, never a parse failure
       message: "", // absent on a pre-1.6 payload -> "" (Python str default)
       label_url: null, // absent -> null
-      // Z3 (contract 1.6) envelope absent on a pre-1.6 payload -> null, never a parse failure.
+      // Contract 1.6 envelope absent on a pre-1.6 payload -> null, never a parse failure.
       reason: null,
       watchplan_id: null,
       roi: null,
@@ -473,7 +473,7 @@ describe("Incident / IncidentSnippet", () => {
     ).toBe("person-7");
   });
 
-  it("carries the Z3 judgment envelope through build + round-trip (contract 1.6)", () => {
+  it("carries the judgment envelope through build + round-trip (contract 1.6)", () => {
     const inc = makeIncident({
       id: "inc-z3",
       concern_id: "c-door-open",

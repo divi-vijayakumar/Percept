@@ -1,8 +1,8 @@
 """— provisional incident + superseding revision (not a wide settle window).
 
 For a correction arriving 21-34s after the original claim, Percept emits the finding PROVISIONALLY on
-the rising edge and, when the Y2 mutation channel classifies a later turn as replace/retract on the
-SAME episode (Y3 ``EpisodeFoldResult.supersedes``), emits a SUPERSEDING revision that carries the link
+the rising edge and, when the mutation channel classifies a later turn as replace/retract on the
+SAME episode (``EpisodeFoldResult.supersedes``), emits a SUPERSEDING revision that carries the link
 back to the prior incident — so the consumer sees BOTH the original and the correction with the
 relation between them, instead of a coequal unlinked peer. It does NOT withhold every incident for a
 settle window wide enough to catch a 34s retraction (that would destroy latency for every claim).
@@ -95,7 +95,7 @@ class TestFireCarriesSupersession(unittest.TestCase):
         self.assertIn("gate.superseding_revision", metrics.seen)
 
     def test_fold_none_fire_carries_no_link_byte_for_byte(self):
-        # The additive guarantee: a fire with no episode fold is the pre-Y10 shape (both None).
+        # The additive guarantee: a fire with no episode fold has the legacy shape (both None).
         gate = Gate()
         ex = BehaviorExecutor(gate)
         goal, prog = _goal(), BehaviorProgram(sense="judge")
@@ -105,7 +105,7 @@ class TestFireCarriesSupersession(unittest.TestCase):
         self.assertIsNone(fired.revision_id)
 
     def test_unchanged_confirmation_is_not_a_superseding_revision(self):
-        # A re-statement is idempotently suppressed (Y3), so it never becomes a correction.
+        # A re-statement is idempotently suppressed, so it never becomes a correction.
         gate = Gate()
         metrics = _CountingMetrics()
         ex = BehaviorExecutor(gate, metrics=metrics)
@@ -268,7 +268,7 @@ class TestSettleWindow(unittest.TestCase):
         SettleWindow(seconds=SETTLE_WINDOW_MAX_S)  # exactly at the ceiling is allowed
 
     def test_wide_window_to_catch_a_late_retraction_is_rejected(self):
-        # A 34s late-retraction window is exactly what Y10 refuses — a loud error, not a silent
+        # A 34s late-retraction window is explicitly refused — a loud error, not a silent
         # latency regression on every claim.
         with self.assertRaises(ValueError):
             SettleWindow(seconds=34.0)

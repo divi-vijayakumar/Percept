@@ -96,7 +96,7 @@ class TestDeferIsStructural(unittest.TestCase):
 
     def test_raising_threshold_turns_a_hit_into_a_defer(self):
         # Same utterance, higher bar -> defer. Proves the threshold (config), not the regex,
-        # is what decides; this is the seam the V0.1 LearnedRouteLayer reuses.
+        # is what decides; this is the seam the learned route layer reuses.
         utterance = "do you know the time?"  # direct_question @ 0.8
         self.assertIsNotNone(RouteEngine.default(threshold=0.6).route(utterance))
         self.assertIsNone(RouteEngine.default(threshold=0.95).route(utterance))

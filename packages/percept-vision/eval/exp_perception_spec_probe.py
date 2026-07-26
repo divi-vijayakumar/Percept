@@ -1,6 +1,6 @@
 """Phase-0 de-risk probe — does a strip / audio actually change a verdict a single frame gets wrong?
 
-This is the GO/NO-GO gate the plan puts BEFORE trusting strip/audio (the S1 discipline — naive windowing
+This is the GO/NO-GO gate before trusting strip/audio (naive windowing
 was a NO-GO for RepCount; nothing is assumed to help). For each hand-recorded clip it issues the SAME
 condition to Gemini four ways at the ambiguous moment:
 

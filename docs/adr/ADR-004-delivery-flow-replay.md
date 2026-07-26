@@ -2,7 +2,7 @@
 
 - **Status:** Proposed
 - **Depends on:** ADR-001 (the Gate/judgment contract — `Verdict -> GateDecision/GateAction ->
-  JudgmentEvent`, unchanged by this ADR); `percept.watch` (the M1 frozen public entrypoint,
+  JudgmentEvent`, unchanged by this ADR); `percept.watch` (the frozen public entrypoint,
   `packages/percept-vision/percept/watch.py`).
 - **Related:** ADR-002 (Runtime health & coverage — health is a separate, parallel channel; this
   ADR does not fold health into `WatchEvent` delivery, consistent with ADR-002 §3. **Note ADR-002
@@ -31,7 +31,7 @@ watch(stream, goals, profile=None, *, percept=None, source="camera") -> AsyncIte
 
 `WATCH_VERSION = "1.0.0"` (`watch.py:55`) versions this function's signature and streaming
 semantics; `CONTRACT_VERSION` in `percept/contracts/__init__.py:33` (currently `"1.6.0"` — grew
-additively through `WatchAction`/`WatchEvent`, `SubjectRef` (Y5), the Y2 claim channel, and the Z3
+additively through `WatchAction`/`WatchEvent`, `SubjectRef`, the claim-mutation channel, and the
 judgment envelope) separately versions the DTO wire shapes it returns. This ADR pins
 the delivery contract for what is actually implemented — `watch()` and `WatchEvent` — rather than
 inventing behavior for the `Incident`/`DeliveryAttempt` chain ADR-003 gestured at. Reconciling
@@ -47,7 +47,7 @@ Two questions have been asked repeatedly by early integrators and have no writte
 Percept has two independent implementations that turn a judged verdict into an outward
 notification, and this ADR must be honest that they are not the same:
 
-- `percept.watch()` (`watch.py`) — the M1 frozen public contract. A bare async generator with **no
+- `percept.watch()` (`watch.py`) — the frozen public contract. A bare async generator with **no
   internal queue**: `async for frame in _aiter(stream): now = core.clock(); fired = await
   core.perceive_judged(frame, source=source, t=now); for ev in fired: yield
   _as_watch_event(ev, t=now)` (`watch.py:193-197`). It is deliberately "a thin wrapper, not a new
@@ -203,7 +203,8 @@ requesting the next `WatchEvent`. Concretely:
   `yield` is entirely a function of the consumer's own code, not bounded by `watch()`.
 
 **`profile` IS resolved — and it changes the numbers §1 is stated against.** (Correction: an earlier
-draft of this ADR listed profile resolution under "NOT guaranteed," describing a pre-M2 `watch.py`.
+draft of this ADR listed profile resolution under "NOT guaranteed," describing an older `watch.py`
+before profile resolution was wired.
 That was false as shipped and is retracted here.) Whenever `watch()` builds its own core — i.e.
 whenever `percept=` is NOT passed — `_build_core(profile)` (`watch.py:77-90`) branches on the
 argument's type:

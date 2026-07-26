@@ -70,7 +70,7 @@ class D1CoverageParityTests(unittest.TestCase):
 
         self.assertGreater(stats_a.judge_calls, 1, "sanity: the t0 brief goal must coast-judge the window")
         self.assertGreater(stats_b.judge_calls, 0,
-                           "a brief goal armed mid-run must get a coast (it got NONE before D1a)")
+                           "a brief goal armed mid-run must get a coast (legacy behavior got NONE)")
         self.assertLessEqual(abs(stats_a.judge_calls - stats_b.judge_calls), 1,
                              f"mid-run coverage must match t0 within a frame: A={stats_a.judge_calls} "
                              f"B={stats_b.judge_calls}")
