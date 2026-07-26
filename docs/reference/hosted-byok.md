@@ -96,17 +96,22 @@ sending the credential-bearing payload. On success, failure, cancellation, or ti
 waits for the worker before releasing the outcome. A provider cannot escape with `fork`, `posix_spawn`,
 `setsid`, or a reparented descendant because the boundary permits no descendant to be created; clean
 `Context` tasks, deferred event-loop Handles, close workers, and threads die with the waited worker.
-The process-isolation contract version is `HOSTED_BYOK_PROCESS_ISOLATION_VERSION` (`"2.1.0"`).
-The v2.1 supervisor uses validated root-owned Darwin `sandbox-exec`, or an authenticated Linux/AMD64
+The process-isolation contract version is `HOSTED_BYOK_PROCESS_ISOLATION_VERSION` (`"2.2.0"`).
+The v2.2 supervisor uses validated root-owned Darwin `sandbox-exec`, or an authenticated Linux/AMD64
 seccomp filter that allows `CLONE_THREAD` while denying process-form `clone`, `fork`, `vfork`, `clone3`,
 `execve`, and `execveat`. Linux provider DNS, default-executor, AnyIO, and HTTP worker threads therefore
 remain available without permitting a child process. Unsupported or ineffective platform capabilities
-fail closed before the credential payload is sent.
+fail closed before the credential payload is sent. The child independently attests its clean environment,
+absolute interpreter identity, native platform/ELF architecture, emulation exclusions, and active
+`no_new_privs`/seccomp/fork/exec/thread state. Parent IPC uses a bounded four-byte network-order frame
+header with nonblocking incremental send/receive, so partial frames remain deadline- and
+cancellation-responsive.
 Request and Verdict IPC are bounded to 32 MiB;
-the wire is canonical tagged JSON over `send_bytes`/`recv_bytes`, never pickle. Exact recursive carrier
-validation rejects hostile subclasses, duplicate keys, non-finite values, unsupported DTOs, malformed
-or oversized payloads before construction/unmarshal. Every non-credential input is also rejected if it
-contains the credential. The credential crosses only the private inherited pipe: it is never placed in
+the wire is canonical tagged JSON inside authenticated socket frames, never pickle.
+Exact recursive carrier validation rejects hostile subclasses, duplicate keys, non-finite values,
+unsupported DTOs, malformed or oversized payloads before construction/unmarshal. Every non-credential
+input is also rejected if it
+contains the credential. The credential crosses only the private inherited socket: it is never placed in
 the worker's argv or environment. The allowlisted child environment is installed by the parent before
 the interpreter, `sitecustomize`, or SDK starts, excluding provider configuration, proxies, custom CA
 paths, TLS key logging, dynamic-loader controls, and other inherited transport routing. Hosted Gemini

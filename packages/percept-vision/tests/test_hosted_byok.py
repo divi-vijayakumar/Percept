@@ -6,6 +6,8 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import socket
+import struct
 import subprocess
 import sys
 import textwrap
@@ -320,6 +322,7 @@ def _run_production_composition_harness(
     scenario: str,
     python_executable: str = sys.executable,
     large_context: bool = False,
+    poison_launch_globals: bool = False,
 ) -> dict:
     root = tmp_path / f"{provider}-{scenario}-root"
     root.mkdir()
@@ -367,9 +370,41 @@ def _run_production_composition_harness(
                 timeout_s=timeout_s,
                 cancellation=cancellation,
             )
+            supervisor = HostedByokSubprocessSupervisor()
             vision = HostedByokAdapterFactory(
-                process_supervisor=HostedByokSubprocessSupervisor()
+                process_supervisor=supervisor
             ).bind(request)
+            if {poison_launch_globals!r}:
+                import percept.hosted_byok as hosted_module
+
+                def poison(*args, **kwargs):
+                    del args, kwargs
+                    raise AssertionError("live mutable launch global was used")
+
+                hosted_module._select_containment_capability = poison
+                hosted_module._clean_child_environment = poison
+                hosted_module._clean_child_import_roots = poison
+                hosted_module._launch_contained_worker = poison
+                hosted_module._terminate_and_wait_contained_worker = poison
+                hosted_module._make_private_supervisor_dispatch = poison
+                hosted_module._make_worker_exchange = poison
+                hosted_module._make_private_wire_codec = poison
+                hosted_module._wire_value = poison
+                hosted_module._wire_unvalue = poison
+                hosted_module._reject_duplicate_json_pairs = poison
+                hosted_module._wire_dumps = poison
+                hosted_module._wire_loads = poison
+                hosted_module._positive_duration = poison
+                hosted_module._verdict_is_credential_free = poison
+                hosted_module.subprocess.Popen = poison
+                hosted_module.socket.socketpair = poison
+                hosted_module.platform.machine = poison
+                hosted_module.hmac.compare_digest = poison
+                hosted_module.os.urandom = poison
+                hosted_module.sys.executable = "/poisoned/interpreter"
+                hosted_module.os.defpath = "/poisoned/path"
+                hosted_module.os.environ["OPENAI_API_KEY"] = "poisoned-after-snapshot"
+                hosted_module._CHILD_BOOTSTRAP = "raise SystemExit(97)"
             core = Percept.create(
                 vision=vision,
                 settings=Settings(),
@@ -1342,6 +1377,23 @@ def test_public_production_composition_contains_detached_descendants_and_environ
     }
 
 
+@pytest.mark.parametrize("provider", ["gemini", "openrouter"])
+def test_public_composition_uses_sealed_launch_snapshot_after_global_poison(
+    tmp_path, provider
+):
+    result = _run_production_composition_harness(
+        tmp_path,
+        provider=provider,
+        scenario="success",
+        poison_launch_globals=True,
+    )
+    assert result == {
+        "outcome": "success",
+        "provider_called": True,
+        "late_effect": False,
+    }
+
+
 @pytest.mark.skipif(
     not (
         sys.platform.startswith("linux")
@@ -1480,6 +1532,251 @@ def test_wire_rejects_oversized_payload_before_json_decode():
         _wire_loads(b"x" * (32 * 1024 * 1024 + 1))
 
 
+class _FramedPeerProcess:
+    def __init__(self):
+        self.returncode = None
+        self.killed = False
+        self.waited = False
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+    def wait(self):
+        self.waited = True
+        if self.returncode is None:
+            self.returncode = 0
+        return self.returncode
+
+
+def _framed_exchange_for_test(parent_socket, process):
+    from percept.hosted_byok import (
+        _MAX_PROCESS_IPC_BYTES,
+        _make_worker_exchange,
+    )
+
+    parent_socket.setblocking(False)
+
+    def launch():
+        return process, parent_socket, b"c" * 32
+
+    def terminate(target):
+        if target.poll() is None:
+            target.kill()
+        target.wait()
+
+    return _make_worker_exchange(
+        launch=launch,
+        terminate=terminate,
+        verify_ready=lambda ready, challenge: ready == b"ready" and challenge == b"c" * 32,
+        wire_loads=lambda payload: payload,
+        sleep=asyncio.sleep,
+        monotonic=time.monotonic,
+        poll_interval_s=0.001,
+        max_payload_bytes=_MAX_PROCESS_IPC_BYTES,
+        invocation_error=HostedByokInvocationError,
+        deadline_error=HostedByokDeadlineExceeded,
+        cancellation_error=HostedByokCancelled,
+        failure_code="hosted_byok_provider_failure",
+    )
+
+
+@pytest.mark.parametrize(
+    ("wire_bytes", "close_writer", "expected_error", "needs_heartbeat"),
+    [
+        (b"", False, HostedByokDeadlineExceeded, True),
+        (b"\x00\x00", False, HostedByokDeadlineExceeded, True),
+        (struct.pack("!I", 32) + b"partial", False, HostedByokDeadlineExceeded, True),
+        (
+            struct.pack("!I", 32 * 1024 * 1024 + 1),
+            False,
+            HostedByokInvocationError,
+            False,
+        ),
+        (b"\x00\x00", True, HostedByokInvocationError, False),
+        (
+            struct.pack("!I", 32) + b"partial",
+            True,
+            HostedByokInvocationError,
+            False,
+        ),
+    ],
+    ids=[
+        "stall",
+        "partial-header",
+        "partial-body",
+        "oversize-header",
+        "eof-header",
+        "eof-body",
+    ],
+)
+def test_nonblocking_framed_ready_rejects_stalls_oversize_and_eof(
+    wire_bytes,
+    close_writer,
+    expected_error,
+    needs_heartbeat,
+):
+    async def exercise():
+        parent_socket, writer = socket.socketpair()
+        process = _FramedPeerProcess()
+        exchange = _framed_exchange_for_test(parent_socket, process)
+        ticks = 0
+        stopped = False
+
+        async def heartbeat():
+            nonlocal ticks
+            while not stopped:
+                ticks += 1
+                await asyncio.sleep(0.001)
+
+        heartbeat_task = asyncio.create_task(heartbeat())
+        try:
+            if wire_bytes:
+                writer.sendall(wire_bytes)
+            if close_writer:
+                writer.close()
+            with pytest.raises(expected_error):
+                await exchange(b"request", None, time.monotonic() + 0.04)
+        finally:
+            stopped = True
+            await heartbeat_task
+            writer.close()
+        assert process.killed
+        assert process.waited
+        if needs_heartbeat:
+            assert ticks >= 3
+
+    asyncio.run(exercise())
+
+
+def test_partial_framed_body_honors_cancellation_and_joins_worker():
+    async def exercise():
+        parent_socket, writer = socket.socketpair()
+        process = _FramedPeerProcess()
+        exchange = _framed_exchange_for_test(parent_socket, process)
+        cancellation = asyncio.Event()
+        writer.sendall(struct.pack("!I", 64) + b"partial")
+
+        async def cancel_soon():
+            await asyncio.sleep(0.02)
+            cancellation.set()
+
+        cancellation_task = asyncio.create_task(cancel_soon())
+        try:
+            with pytest.raises(HostedByokCancelled):
+                await exchange(
+                    b"request",
+                    cancellation,
+                    time.monotonic() + 1.0,
+                )
+        finally:
+            await cancellation_task
+            writer.close()
+        assert process.killed
+        assert process.waited
+
+    asyncio.run(exercise())
+
+
+def test_partial_framed_body_honors_task_cancellation_and_joins_worker():
+    async def exercise():
+        parent_socket, writer = socket.socketpair()
+        process = _FramedPeerProcess()
+        exchange = _framed_exchange_for_test(parent_socket, process)
+        writer.sendall(struct.pack("!I", 64) + b"partial")
+        task = asyncio.create_task(
+            exchange(b"request", None, time.monotonic() + 1.0)
+        )
+        await asyncio.sleep(0.02)
+        task.cancel()
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            writer.close()
+        assert process.killed
+        assert process.waited
+
+    asyncio.run(exercise())
+
+
+def test_partial_outcome_body_cannot_block_deadline_or_worker_join():
+    async def exercise():
+        parent_socket, writer = socket.socketpair()
+        writer.setblocking(False)
+        process = _FramedPeerProcess()
+        exchange = _framed_exchange_for_test(parent_socket, process)
+        request_seen = asyncio.Event()
+
+        async def receive_exact(size):
+            result = bytearray()
+            loop = asyncio.get_running_loop()
+            while len(result) < size:
+                chunk = await loop.sock_recv(writer, size - len(result))
+                if not chunk:
+                    raise AssertionError("parent closed before sending the request")
+                result.extend(chunk)
+            return bytes(result)
+
+        async def adversary():
+            loop = asyncio.get_running_loop()
+            await loop.sock_sendall(writer, struct.pack("!I", 5) + b"ready")
+            request_size = struct.unpack("!I", await receive_exact(4))[0]
+            assert await receive_exact(request_size) == b"request"
+            request_seen.set()
+            await loop.sock_sendall(writer, struct.pack("!I", 64) + b"partial")
+
+        adversary_task = asyncio.create_task(adversary())
+        try:
+            with pytest.raises(HostedByokDeadlineExceeded):
+                await exchange(b"request", None, time.monotonic() + 0.05)
+            assert request_seen.is_set()
+        finally:
+            await adversary_task
+            writer.close()
+        assert process.killed
+        assert process.waited
+
+    asyncio.run(exercise())
+
+
+def test_nonreading_worker_cannot_block_framed_request_send_or_deadline():
+    async def exercise():
+        parent_socket, writer = socket.socketpair()
+        process = _FramedPeerProcess()
+        exchange = _framed_exchange_for_test(parent_socket, process)
+        writer.sendall(struct.pack("!I", 5) + b"ready")
+        ticks = 0
+        stopped = False
+
+        async def heartbeat():
+            nonlocal ticks
+            while not stopped:
+                ticks += 1
+                await asyncio.sleep(0.001)
+
+        heartbeat_task = asyncio.create_task(heartbeat())
+        try:
+            with pytest.raises(HostedByokDeadlineExceeded):
+                await exchange(
+                    b"x" * (4 * 1024 * 1024),
+                    None,
+                    time.monotonic() + 0.05,
+                )
+        finally:
+            stopped = True
+            await heartbeat_task
+            writer.close()
+        assert ticks >= 3
+        assert process.killed
+        assert process.waited
+
+    asyncio.run(exercise())
+
+
 def test_credential_tainted_or_malicious_inputs_spend_zero_constructions():
     constructions = 0
 
@@ -1543,9 +1840,11 @@ def test_exact_subprocess_supervisor_and_factory_configuration_are_immutable():
     supervisor = HostedByokSubprocessSupervisor()
     factory = HostedByokAdapterFactory(process_supervisor=supervisor)
     assert factory.transport_safety(_request()).production_ready
-    assert factory.transport_safety(_request()).process_isolation_version == "2.1.0"
+    assert factory.transport_safety(_request()).process_isolation_version == "2.2.0"
     with pytest.raises(AttributeError, match="immutable"):
         supervisor._poll_interval_s = 99
+    with pytest.raises(FrozenInstanceError):
+        supervisor._dispatch.exchange = lambda *args: None
     with pytest.raises(AttributeError, match="immutable"):
         factory._process_supervisor = None
     with pytest.raises(TypeError, match="sealed"):
@@ -1578,6 +1877,18 @@ def test_platform_containment_capability_selection_is_exact_and_fails_closed():
     ):
         with pytest.raises(HostedByokContractError, match="exact platform"):
             _select_containment_capability(system=system, machine=machine)
+
+
+def test_child_boundary_attestation_does_not_trust_parent_argv():
+    from percept.hosted_byok import _establish_no_descendant_boundary
+
+    forged_kind = (
+        "linux_seccomp_amd64_no_descendants"
+        if sys.platform == "darwin"
+        else "darwin_sandbox_no_descendants"
+    )
+    with pytest.raises(HostedByokInvocationError):
+        _establish_no_descendant_boundary(forged_kind)
 
 
 def test_factory_uses_frozen_supervisor_dispatch_after_class_poison(monkeypatch):

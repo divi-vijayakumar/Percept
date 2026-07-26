@@ -29,18 +29,17 @@ import json
 import math
 import os
 import platform
-import secrets
 import signal
 import site
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import time
 import weakref
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, fields as dataclass_fields, replace
-from multiprocessing.connection import Connection
 from types import FunctionType, MappingProxyType, MethodType
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
@@ -49,7 +48,7 @@ from .config import Settings
 from .contracts import Box, ClipEvent, SubjectRef
 
 HOSTED_BYOK_CONTRACT_VERSION = "1.0.0"
-HOSTED_BYOK_PROCESS_ISOLATION_VERSION = "2.1.0"
+HOSTED_BYOK_PROCESS_ISOLATION_VERSION = "2.2.0"
 HOSTED_BYOK_CAPABILITIES: Mapping[str, frozenset[str]] = {
     "gemini": frozenset({"vision.judge", "vision.judge.fused"}),
     "openrouter": frozenset({"vision.judge"}),
@@ -504,10 +503,100 @@ def _wire_loads(encoded: bytes) -> Any:
     return decoded
 
 
+@dataclass(frozen=True, slots=True)
+class _JsonAuthority:
+    dumps: Callable[..., str]
+    loads: Callable[..., Any]
+
+
+@dataclass(frozen=True, slots=True)
+class _Base64Authority:
+    b64encode: Callable[..., bytes]
+    b64decode: Callable[..., bytes]
+
+
+@dataclass(frozen=True, slots=True)
+class _MathAuthority:
+    isfinite: Callable[[float], bool]
+
+
+def _make_private_wire_codec() -> tuple[Callable[[Any], bytes], Callable[[bytes], Any]]:
+    """Recursively freeze the canonical codec instead of retaining live module globals."""
+
+    json_authority = _JsonAuthority(json.dumps, json.loads)
+    base64_authority = _Base64Authority(base64.b64encode, base64.b64decode)
+    math_authority = _MathAuthority(math.isfinite)
+
+    def clone(
+        implementation: Callable[..., Any],
+        globals_snapshot: dict[str, Any],
+    ) -> Callable[..., Any]:
+        frozen = FunctionType(
+            implementation.__code__,
+            globals_snapshot,
+            name=implementation.__name__,
+            argdefs=implementation.__defaults__,
+            closure=implementation.__closure__,
+        )
+        frozen.__kwdefaults__ = implementation.__kwdefaults__
+        return frozen
+
+    value_globals = dict(_wire_value.__globals__)
+    value_globals.update(
+        {
+            "json": json_authority,
+            "base64": base64_authority,
+            "math": math_authority,
+        }
+    )
+    frozen_value = clone(_wire_value, value_globals)
+    value_globals["_wire_value"] = frozen_value
+
+    reject_globals = dict(_reject_duplicate_json_pairs.__globals__)
+    frozen_reject = clone(_reject_duplicate_json_pairs, reject_globals)
+
+    dumps_globals = dict(_wire_dumps.__globals__)
+    dumps_globals.update(
+        {
+            "json": json_authority,
+            "_wire_value": frozen_value,
+        }
+    )
+    frozen_dumps = clone(_wire_dumps, dumps_globals)
+
+    unvalue_globals = dict(_wire_unvalue.__globals__)
+    unvalue_globals.update(
+        {
+            "base64": base64_authority,
+            "_wire_dumps": frozen_dumps,
+        }
+    )
+    frozen_unvalue = clone(_wire_unvalue, unvalue_globals)
+    unvalue_globals["_wire_unvalue"] = frozen_unvalue
+
+    loads_globals = dict(_wire_loads.__globals__)
+    loads_globals.update(
+        {
+            "json": json_authority,
+            "_reject_duplicate_json_pairs": frozen_reject,
+            "_wire_unvalue": frozen_unvalue,
+            "_wire_dumps": frozen_dumps,
+        }
+    )
+    frozen_loads = clone(_wire_loads, loads_globals)
+    return frozen_dumps, frozen_loads
+
+
 class HostedByokSubprocessSupervisor:
     """Exact, immutable authenticated no-descendant supervisor for production Hosted BYOK calls."""
 
-    __slots__ = ("_poll_interval_s", "_boundary_kind", "_execute_impl", "_locked")
+    __slots__ = (
+        "_poll_interval_s",
+        "_boundary_kind",
+        "_dispatch",
+        "_execute_impl",
+        "_locked",
+    )
 
     def __init__(self, *, poll_interval_s: float = 0.002) -> None:
         if (
@@ -516,9 +605,10 @@ class HostedByokSubprocessSupervisor:
             or float(poll_interval_s) <= 0
         ):
             raise HostedByokContractError("poll_interval_s must be a finite positive number.")
-        boundary_kind, _ = _select_containment_capability()
+        dispatch = _make_private_supervisor_dispatch(float(poll_interval_s))
         object.__setattr__(self, "_poll_interval_s", float(poll_interval_s))
-        object.__setattr__(self, "_boundary_kind", boundary_kind)
+        object.__setattr__(self, "_boundary_kind", dispatch.boundary_kind)
+        object.__setattr__(self, "_dispatch", dispatch)
         implementation = HostedByokSubprocessSupervisor.__dict__["execute"]
         frozen = FunctionType(
             implementation.__code__,
@@ -555,8 +645,11 @@ class HostedByokSubprocessSupervisor:
     ) -> Verdict:
         if type(self) is not HostedByokSubprocessSupervisor:
             raise HostedByokContractError("process supervisor must be the exact SDK implementation.")
-        deadline_monotonic = _positive_duration("deadline_monotonic", deadline_monotonic)
-        _validate_hosted_call_inputs(
+        dispatch = self._dispatch
+        deadline_monotonic = dispatch.positive_duration(
+            "deadline_monotonic", deadline_monotonic
+        )
+        dispatch.validate_inputs(
             request,
             condition=condition,
             frame=frame,
@@ -568,10 +661,10 @@ class HostedByokSubprocessSupervisor:
             context=context,
         )
         # Deliver an already-queued caller cancellation before any credential-bearing child exists.
-        await asyncio.sleep(0)
+        await dispatch.sleep(0)
         if request.cancellation is not None and request.cancellation.is_set():
             raise HostedByokCancelled()
-        if time.monotonic() >= deadline_monotonic:
+        if dispatch.monotonic() >= deadline_monotonic:
             raise HostedByokDeadlineExceeded(
                 "hosted BYOK invocation exceeded its effective deadline."
             )
@@ -587,81 +680,22 @@ class HostedByokSubprocessSupervisor:
             context,
             deadline_monotonic,
         )
-        worker_payload = _wire_dumps(worker_values)
-        await asyncio.sleep(0)
+        worker_payload = dispatch.wire_dumps(worker_values)
+        await dispatch.sleep(0)
         if request.cancellation is not None and request.cancellation.is_set():
             raise HostedByokCancelled()
-        if time.monotonic() >= deadline_monotonic:
+        if dispatch.monotonic() >= deadline_monotonic:
             raise HostedByokDeadlineExceeded(
                 "hosted BYOK invocation exceeded its effective deadline."
             )
-        process, connection, challenge = _launch_contained_worker(self._boundary_kind)
-        outcome: Any = None
-        try:
-            ready = None
-            while True:
-                if request.cancellation is not None and request.cancellation.is_set():
-                    raise HostedByokCancelled()
-                if connection.poll():
-                    try:
-                        ready = _wire_loads(
-                            connection.recv_bytes(maxlength=_MAX_PROCESS_IPC_BYTES + 1)
-                        )
-                    except (EOFError, OSError):
-                        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
-                    break
-                if process.poll() is not None:
-                    raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
-                if time.monotonic() >= deadline_monotonic:
-                    raise HostedByokDeadlineExceeded(
-                        "hosted BYOK invocation exceeded its effective deadline."
-                    )
-                await asyncio.sleep(self._poll_interval_s)
-            if (
-                type(ready) is not tuple
-                or len(ready) != 4
-                or ready[0] != "ready"
-                or ready[1] != HOSTED_BYOK_PROCESS_ISOLATION_VERSION
-                or type(ready[2]) is not bytes
-                or not hmac.compare_digest(ready[2], challenge)
-                or ready[3] != self._boundary_kind
-            ):
-                raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
-            await asyncio.sleep(0)
-            if request.cancellation is not None and request.cancellation.is_set():
-                raise HostedByokCancelled()
-            if time.monotonic() >= deadline_monotonic:
-                raise HostedByokDeadlineExceeded(
-                    "hosted BYOK invocation exceeded its effective deadline."
-                )
-            try:
-                connection.send_bytes(worker_payload)
-            except (OSError, ValueError):
-                raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
-            while True:
-                if request.cancellation is not None and request.cancellation.is_set():
-                    raise HostedByokCancelled()
-                if connection.poll():
-                    try:
-                        outcome = _wire_loads(
-                            connection.recv_bytes(maxlength=_MAX_PROCESS_IPC_BYTES + 1)
-                        )
-                    except (EOFError, OSError):
-                        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
-                    break
-                if process.poll() is not None:
-                    raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
-                if time.monotonic() >= deadline_monotonic:
-                    raise HostedByokDeadlineExceeded(
-                        "hosted BYOK invocation exceeded its effective deadline."
-                    )
-                await asyncio.sleep(self._poll_interval_s)
-        finally:
-            connection.close()
-            _terminate_and_wait_contained_worker(process)
+        outcome = await dispatch.exchange(
+            worker_payload,
+            request.cancellation,
+            deadline_monotonic,
+        )
         if request.cancellation is not None and request.cancellation.is_set():
             raise HostedByokCancelled()
-        if time.monotonic() >= deadline_monotonic:
+        if dispatch.monotonic() >= deadline_monotonic:
             raise HostedByokDeadlineExceeded(
                 "hosted BYOK invocation exceeded its effective deadline."
             )
@@ -671,7 +705,7 @@ class HostedByokSubprocessSupervisor:
         if type(kind) is not str:
             raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
         if kind == "ok" and type(payload) is Verdict:
-            if not _verdict_is_credential_free(payload, request.credential):
+            if not dispatch.verdict_is_credential_free(payload, request.credential):
                 raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
             return payload
         if type(payload) is not str or request.credential in payload:
@@ -1574,68 +1608,487 @@ def _clean_child_import_roots() -> list[str]:
     return roots
 
 
-def _launch_contained_worker(
-    boundary_kind: str,
-) -> tuple[subprocess.Popen[bytes], Connection, bytes]:
-    selected_kind, prefix = _select_containment_capability()
-    if boundary_kind != selected_kind:
-        raise HostedByokContractError(
-            "hosted BYOK process-containment capability changed after supervisor construction."
-        )
-    challenge = secrets.token_bytes(32)
-    parent_socket, child_socket = socket.socketpair()
-    child_fd = child_socket.fileno()
-    command = [
-        *prefix,
-        sys.executable,
-        "-I",
-        "-S",
-        "-B",
-        "-c",
-        _CHILD_BOOTSTRAP,
-        json.dumps(_clean_child_import_roots(), separators=(",", ":")),
-        str(child_fd),
-        challenge.hex(),
-        boundary_kind,
-    ]
-    try:
-        process = subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-            pass_fds=(child_fd,),
-            cwd="/",
-            env=_clean_child_environment(),
-        )
-    except Exception:
-        parent_socket.close()
-        child_socket.close()
-        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
-    child_socket.close()
-    return process, Connection(parent_socket.detach()), challenge
+@dataclass(frozen=True, slots=True)
+class _PrivateSupervisorDispatch:
+    """Per-supervisor launch and I/O authority captured before caller code can poison globals."""
+
+    boundary_kind: str
+    exchange: Callable[[bytes, asyncio.Event | None, float], Any]
+    wire_dumps: Callable[[Any], bytes]
+    positive_duration: Callable[[str, float], float]
+    validate_inputs: Callable[..., None]
+    verdict_is_credential_free: Callable[[Verdict, str], bool]
+    sleep: Callable[[float], Any]
+    monotonic: Callable[[], float]
 
 
-def _terminate_and_wait_contained_worker(process: subprocess.Popen[bytes]) -> None:
-    """Establish the terminal worker state; the authenticated boundary proves descendants are absent."""
+def _make_worker_exchange(
+    *,
+    launch: Callable[[], tuple[Any, socket.socket, bytes]],
+    terminate: Callable[[Any], None],
+    verify_ready: Callable[[Any, bytes], bool],
+    wire_loads: Callable[[bytes], Any],
+    sleep: Callable[[float], Any],
+    monotonic: Callable[[], float],
+    poll_interval_s: float,
+    max_payload_bytes: int,
+    invocation_error: type[HostedByokInvocationError],
+    deadline_error: type[HostedByokDeadlineExceeded],
+    cancellation_error: type[HostedByokCancelled],
+    failure_code: str,
+) -> Callable[[bytes, asyncio.Event | None, float], Any]:
+    """Seal one nonblocking framed exchange; every exit closes and joins the worker."""
 
-    try:
-        if process.poll() is None:
+    header = struct.Struct("!I")
+
+    def fail() -> None:
+        raise invocation_error(failure_code)
+
+    async def checkpoint(
+        cancellation: asyncio.Event | None,
+        deadline_monotonic: float,
+    ) -> None:
+        if cancellation is not None and cancellation.is_set():
+            raise cancellation_error()
+        if monotonic() >= deadline_monotonic:
+            raise deadline_error(
+                "hosted BYOK invocation exceeded its effective deadline."
+            )
+
+    async def receive_frame(
+        peer: socket.socket,
+        process: Any,
+        cancellation: asyncio.Event | None,
+        deadline_monotonic: float,
+    ) -> bytes:
+        header_bytes = bytearray()
+        body = bytearray()
+        expected_size: int | None = None
+        while True:
+            await checkpoint(cancellation, deadline_monotonic)
+            target = header_bytes if expected_size is None else body
+            remaining = (
+                header.size - len(header_bytes)
+                if expected_size is None
+                else expected_size - len(body)
+            )
+            if remaining == 0:
+                if expected_size is None:
+                    expected_size = header.unpack(bytes(header_bytes))[0]
+                    if expected_size > max_payload_bytes:
+                        fail()
+                    if expected_size == 0:
+                        return b""
+                    continue
+                return bytes(body)
             try:
-                process.kill()
-            except ProcessLookupError:
-                pass
-        process.wait()
-    except Exception:
-        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
-    if process.poll() is None:
-        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+                chunk = peer.recv(remaining)
+            except BlockingIOError:
+                chunk = None
+            except (InterruptedError, OSError):
+                fail()
+            if chunk is None:
+                if process.poll() is not None:
+                    fail()
+                await sleep(poll_interval_s)
+                continue
+            if not chunk:
+                fail()
+            target.extend(chunk)
+
+    async def send_frame(
+        peer: socket.socket,
+        process: Any,
+        payload: bytes,
+        cancellation: asyncio.Event | None,
+        deadline_monotonic: float,
+    ) -> None:
+        if type(payload) is not bytes or len(payload) > max_payload_bytes:
+            fail()
+        framed = header.pack(len(payload)) + payload
+        view = memoryview(framed)
+        sent = 0
+        while sent < len(view):
+            await checkpoint(cancellation, deadline_monotonic)
+            try:
+                count = peer.send(view[sent:])
+            except BlockingIOError:
+                count = None
+            except (InterruptedError, OSError):
+                fail()
+            if count is None:
+                if process.poll() is not None:
+                    fail()
+                await sleep(poll_interval_s)
+                continue
+            if count <= 0:
+                fail()
+            sent += count
+
+    async def exchange(
+        worker_payload: bytes,
+        cancellation: asyncio.Event | None,
+        deadline_monotonic: float,
+    ) -> Any:
+        process, peer, challenge = launch()
+        try:
+            ready = wire_loads(
+                await receive_frame(
+                    peer,
+                    process,
+                    cancellation,
+                    deadline_monotonic,
+                )
+            )
+            if not verify_ready(ready, challenge):
+                fail()
+            await checkpoint(cancellation, deadline_monotonic)
+            await sleep(0)
+            await checkpoint(cancellation, deadline_monotonic)
+            await send_frame(
+                peer,
+                process,
+                worker_payload,
+                cancellation,
+                deadline_monotonic,
+            )
+            return wire_loads(
+                await receive_frame(
+                    peer,
+                    process,
+                    cancellation,
+                    deadline_monotonic,
+                )
+            )
+        finally:
+            try:
+                peer.close()
+            finally:
+                terminate(process)
+
+    return exchange
+
+
+def _make_private_supervisor_dispatch(poll_interval_s: float) -> _PrivateSupervisorDispatch:
+    """Capture an absolute launch authority and all mutable module seams exactly once."""
+
+    boundary_kind, selected_prefix = _select_containment_capability()
+    prefix = tuple(selected_prefix)
+    environment_items = tuple(sorted(_clean_child_environment().items()))
+    import_roots_json = json.dumps(
+        _clean_child_import_roots(),
+        separators=(",", ":"),
+    )
+    selected_machine = platform.machine().lower()
+    popen_type = subprocess.Popen
+    socketpair = socket.socketpair
+    urandom = os.urandom
+    stat_file = os.stat
+    realpath = os.path.realpath
+    is_absolute = os.path.isabs
+    is_regular = stat.S_ISREG
+    mode_world_write = stat.S_IWOTH
+    mode_group_write = stat.S_IWGRP
+    mode_execute = stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+    interpreter_path = realpath(sys.executable)
+    child_bootstrap = _CHILD_BOOTSTRAP
+    devnull = subprocess.DEVNULL
+    failure_code = _PROVIDER_FAILURE_CODE
+    isolation_version = HOSTED_BYOK_PROCESS_ISOLATION_VERSION
+    compare_digest = hmac.compare_digest
+    invocation_error = HostedByokInvocationError
+    contract_error = HostedByokContractError
+    wire_dumps, wire_loads = _make_private_wire_codec()
+
+    def file_attestation(path: str, *, trusted_tool: bool) -> tuple[Any, ...]:
+        resolved = realpath(path)
+        try:
+            metadata = stat_file(resolved, follow_symlinks=False)
+        except OSError:
+            raise contract_error(
+                "hosted BYOK trusted process executable is unavailable."
+            ) from None
+        if (
+            not is_absolute(resolved)
+            or not is_regular(metadata.st_mode)
+            or metadata.st_mode & mode_world_write
+            or not metadata.st_mode & mode_execute
+            or (
+                trusted_tool
+                and (
+                    metadata.st_uid != 0
+                    or metadata.st_mode & (mode_group_write | mode_world_write)
+                )
+            )
+        ):
+            raise contract_error(
+                "hosted BYOK trusted process executable failed identity validation."
+            )
+        return (
+            "executable-v1",
+            resolved,
+            int(metadata.st_dev),
+            int(metadata.st_ino),
+            int(metadata.st_size),
+            int(metadata.st_uid),
+            int(metadata.st_mode & 0o7777),
+        )
+
+    interpreter_attestation = file_attestation(interpreter_path, trusted_tool=False)
+    tool_attestations = tuple(
+        file_attestation(item, trusted_tool=True)
+        for item in prefix
+        if item.startswith("/")
+    )
+
+    def attest_files_unchanged() -> None:
+        if file_attestation(interpreter_path, trusted_tool=False) != interpreter_attestation:
+            raise contract_error(
+                "hosted BYOK interpreter identity changed after supervisor construction."
+            )
+        current_tools = tuple(
+            file_attestation(item, trusted_tool=True)
+            for item in prefix
+            if item.startswith("/")
+        )
+        if current_tools != tool_attestations:
+            raise contract_error(
+                "hosted BYOK containment tool identity changed after supervisor construction."
+            )
+
+    def launch() -> tuple[Any, socket.socket, bytes]:
+        attest_files_unchanged()
+        challenge = urandom(32)
+        if type(challenge) is not bytes or len(challenge) != 32:
+            raise invocation_error(failure_code)
+        parent_socket, child_socket = socketpair()
+        child_fd = child_socket.fileno()
+        command = [
+            *prefix,
+            interpreter_path,
+            "-I",
+            "-S",
+            "-B",
+            "-c",
+            child_bootstrap,
+            import_roots_json,
+            str(child_fd),
+            challenge.hex(),
+            boundary_kind,
+        ]
+        try:
+            process = popen_type(
+                command,
+                stdin=devnull,
+                stdout=devnull,
+                stderr=devnull,
+                close_fds=True,
+                pass_fds=(child_fd,),
+                cwd="/",
+                env=dict(environment_items),
+            )
+            parent_socket.setblocking(False)
+        except Exception:
+            parent_socket.close()
+            child_socket.close()
+            raise invocation_error(failure_code) from None
+        child_socket.close()
+        return process, parent_socket, challenge
+
+    def terminate(process: Any) -> None:
+        try:
+            if process.poll() is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+            process.wait()
+        except Exception:
+            raise invocation_error(failure_code) from None
+        if process.poll() is None:
+            raise invocation_error(failure_code)
+
+    required_environment = tuple(sorted(environment_items))
+
+    def verify_ready(ready: Any, challenge: bytes) -> bool:
+        if (
+            type(ready) is not tuple
+            or len(ready) != 7
+            or ready[0] != "ready"
+            or ready[1] != isolation_version
+            or type(ready[2]) is not bytes
+            or not compare_digest(ready[2], challenge)
+            or ready[3] != boundary_kind
+            or ready[4] != interpreter_attestation
+            or type(ready[5]) is not tuple
+            or type(ready[6]) is not tuple
+        ):
+            return False
+        environment_attestation = ready[6]
+        if (
+            len(environment_attestation) != 3
+            or environment_attestation[0] != "environment-v1"
+            or environment_attestation[1] != required_environment
+            or type(environment_attestation[2]) is not bool
+            or (boundary_kind != "darwin_sandbox_no_descendants" and environment_attestation[2])
+        ):
+            return False
+        containment = ready[5]
+        if boundary_kind == "darwin_sandbox_no_descendants":
+            return containment == (
+                "darwin-no-descendants-v1",
+                "darwin",
+                selected_machine,
+                "rlimit-nproc-zero",
+                "fork-denied",
+                "thread-ok",
+            )
+        return (
+            len(containment) == 10
+            and containment[:7]
+            == (
+                "linux-seccomp-amd64-v1",
+                "linux",
+                "x86_64",
+                "elf64-x86-64",
+                1,
+                2,
+                "fork-eperm",
+            )
+            and containment[7:9] == ("exec-eperm", "thread-ok")
+            and type(containment[9]) is int
+            and containment[9] >= 1
+        )
+
+    exchange = _make_worker_exchange(
+        launch=launch,
+        terminate=terminate,
+        verify_ready=verify_ready,
+        wire_loads=wire_loads,
+        sleep=asyncio.sleep,
+        monotonic=time.monotonic,
+        poll_interval_s=poll_interval_s,
+        max_payload_bytes=_MAX_PROCESS_IPC_BYTES,
+        invocation_error=HostedByokInvocationError,
+        deadline_error=HostedByokDeadlineExceeded,
+        cancellation_error=HostedByokCancelled,
+        failure_code=failure_code,
+    )
+    return _PrivateSupervisorDispatch(
+        boundary_kind=boundary_kind,
+        exchange=exchange,
+        wire_dumps=wire_dumps,
+        positive_duration=_positive_duration,
+        validate_inputs=_validate_hosted_call_inputs,
+        verdict_is_credential_free=_verdict_is_credential_free,
+        sleep=asyncio.sleep,
+        monotonic=time.monotonic,
+    )
 
 
 def _scrub_provider_environment() -> None:
     for key in _PROVIDER_ENV_KEYS:
         os.environ.pop(key, None)
+
+
+def _current_executable_attestation() -> tuple[Any, ...]:
+    path = os.path.realpath(sys.executable)
+    try:
+        metadata = os.stat(path, follow_symlinks=False)
+    except OSError:
+        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
+    if (
+        not os.path.isabs(path)
+        or not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_mode & stat.S_IWOTH
+        or not metadata.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    ):
+        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+    return (
+        "executable-v1",
+        path,
+        int(metadata.st_dev),
+        int(metadata.st_ino),
+        int(metadata.st_size),
+        int(metadata.st_uid),
+        int(metadata.st_mode & 0o7777),
+    )
+
+
+def _attest_clean_child_environment() -> tuple[Any, ...]:
+    required = {
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PATH": os.defpath,
+    }
+    actual = dict(os.environ)
+    darwin_text_encoding = actual.pop("__CF_USER_TEXT_ENCODING", None)
+    if actual != required:
+        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+    has_darwin_text_encoding = darwin_text_encoding is not None
+    if has_darwin_text_encoding:
+        if sys.platform != "darwin":
+            raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+        pieces = darwin_text_encoding.split(":")
+        try:
+            valid = (
+                len(pieces) == 3
+                and all(piece.startswith("0x") for piece in pieces)
+                and all(int(piece, 16) >= 0 for piece in pieces)
+            )
+        except (TypeError, ValueError):
+            valid = False
+        if not valid:
+            raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+    return (
+        "environment-v1",
+        tuple(sorted(required.items())),
+        has_darwin_text_encoding,
+    )
+
+
+def _linux_status_values() -> tuple[int, int, int]:
+    try:
+        with open("/proc/self/status", encoding="ascii") as status_file:
+            values = {}
+            for line in status_file:
+                if ":" in line:
+                    key, raw_value = line.split(":", 1)
+                    if key in {"NoNewPrivs", "Seccomp", "Seccomp_filters"}:
+                        values[key] = int(raw_value.strip())
+    except (OSError, UnicodeError, ValueError):
+        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
+    if set(values) != {"NoNewPrivs", "Seccomp", "Seccomp_filters"}:
+        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+    return values["NoNewPrivs"], values["Seccomp"], values["Seccomp_filters"]
+
+
+def _attest_native_linux_amd64() -> tuple[int, int, int]:
+    try:
+        uname = os.uname()
+        with open("/proc/self/exe", "rb") as executable:
+            elf_header = executable.read(20)
+        with open("/proc/cpuinfo", encoding="ascii", errors="strict") as cpuinfo_file:
+            cpuinfo = cpuinfo_file.read(1024 * 1024).lower()
+    except (AttributeError, OSError, UnicodeError):
+        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
+    emulation_markers = ("virtualapple", "rosetta", "qemu", "tcg")
+    if (
+        sys.platform != "linux"
+        or uname.sysname != "Linux"
+        or uname.machine.lower() != "x86_64"
+        or sys.byteorder != "little"
+        or struct.calcsize("P") != 8
+        or len(elf_header) != 20
+        or elf_header[:6] != b"\x7fELF\x02\x01"
+        or int.from_bytes(elf_header[18:20], "little") != 62
+        or "vendor_id" not in cpuinfo
+        or "flags" not in cpuinfo
+        or " lm " not in f" {cpuinfo.replace(chr(10), ' ')} "
+        or any(marker in cpuinfo for marker in emulation_markers)
+    ):
+        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+    return _linux_status_values()
 
 
 def _install_linux_seccomp_amd64() -> None:
@@ -1698,10 +2151,21 @@ def _install_linux_seccomp_amd64() -> None:
         raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
 
 
-def _establish_no_descendant_boundary(boundary_kind: str) -> None:
-    """Install the exact platform boundary, prove fork denial, and prove threads remain usable."""
+def _establish_no_descendant_boundary(boundary_kind: str) -> tuple[Any, ...]:
+    """Independently select, install, and attest the exact child-side platform boundary."""
 
-    if boundary_kind == "darwin_sandbox_no_descendants":
+    pre_linux_status: tuple[int, int, int] | None = None
+    if sys.platform == "darwin":
+        actual_boundary_kind = "darwin_sandbox_no_descendants"
+    elif sys.platform == "linux":
+        pre_linux_status = _attest_native_linux_amd64()
+        actual_boundary_kind = "linux_seccomp_amd64_no_descendants"
+    else:
+        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+    if boundary_kind != actual_boundary_kind:
+        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+
+    if actual_boundary_kind == "darwin_sandbox_no_descendants":
         try:
             import resource
 
@@ -1710,13 +2174,12 @@ def _establish_no_descendant_boundary(boundary_kind: str) -> None:
                 raise RuntimeError
         except Exception:
             raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
-    elif boundary_kind == "linux_seccomp_amd64_no_descendants":
-        _install_linux_seccomp_amd64()
     else:
-        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+        _install_linux_seccomp_amd64()
     try:
         pid = os.fork()
-    except OSError:
+    except OSError as exc:
+        fork_errno = exc.errno
         pid = None
     if pid is None:
         import threading
@@ -1725,9 +2188,48 @@ def _establish_no_descendant_boundary(boundary_kind: str) -> None:
         thread = threading.Thread(target=lambda: completed.append(True))
         thread.start()
         thread.join()
-        if completed == [True]:
-            return
-        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+        if completed != [True]:
+            raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+        if actual_boundary_kind == "darwin_sandbox_no_descendants":
+            return (
+                "darwin-no-descendants-v1",
+                "darwin",
+                platform.machine().lower(),
+                "rlimit-nproc-zero",
+                "fork-denied",
+                "thread-ok",
+            )
+        if fork_errno != errno.EPERM or pre_linux_status is None:
+            raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+        try:
+            os.execve("/hosted-byok-exec-probe-does-not-exist", ["probe"], {})
+        except OSError as exc:
+            if exc.errno != errno.EPERM:
+                raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
+        else:
+            raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+        no_new_privs, seccomp_mode, seccomp_filters = _linux_status_values()
+        libc = ctypes.CDLL(None, use_errno=True)
+        if (
+            libc.prctl(39, 0, 0, 0, 0) != 1  # PR_GET_NO_NEW_PRIVS
+            or libc.prctl(21, 0, 0, 0, 0) != 2  # PR_GET_SECCOMP
+            or no_new_privs != 1
+            or seccomp_mode != 2
+            or seccomp_filters != pre_linux_status[2] + 1
+        ):
+            raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+        return (
+            "linux-seccomp-amd64-v1",
+            "linux",
+            "x86_64",
+            "elf64-x86-64",
+            no_new_privs,
+            seccomp_mode,
+            "fork-eperm",
+            "exec-eperm",
+            "thread-ok",
+            seccomp_filters,
+        )
     if pid == 0:
         os._exit(91)
     try:
@@ -1737,6 +2239,28 @@ def _establish_no_descendant_boundary(boundary_kind: str) -> None:
         raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
 
 
+def _send_framed_blocking(peer: socket.socket, payload: bytes) -> None:
+    if type(payload) is not bytes or len(payload) > _MAX_PROCESS_IPC_BYTES:
+        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+    peer.sendall(struct.pack("!I", len(payload)) + payload)
+
+
+def _receive_framed_blocking(peer: socket.socket) -> bytes:
+    def receive_exact(size: int) -> bytes:
+        result = bytearray()
+        while len(result) < size:
+            chunk = peer.recv(size - len(result))
+            if not chunk:
+                raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+            result.extend(chunk)
+        return bytes(result)
+
+    size = struct.unpack("!I", receive_exact(4))[0]
+    if size > _MAX_PROCESS_IPC_BYTES:
+        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+    return receive_exact(size)
+
+
 def _hosted_byok_clean_child_main(
     connection_fd: int,
     challenge_hex: str,
@@ -1744,26 +2268,32 @@ def _hosted_byok_clean_child_main(
 ) -> None:
     """Clean-start child: attest containment before receiving the credential-bearing request."""
 
-    connection = Connection(connection_fd)
+    connection = socket.socket(fileno=connection_fd)
     try:
         if type(challenge_hex) is not str:
             raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
         challenge = bytes.fromhex(challenge_hex)
         if len(challenge) != 32:
             raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+        environment_attestation = _attest_clean_child_environment()
+        interpreter_attestation = _current_executable_attestation()
         _scrub_provider_environment()
-        _establish_no_descendant_boundary(boundary_kind)
-        connection.send_bytes(
+        containment_attestation = _establish_no_descendant_boundary(boundary_kind)
+        _send_framed_blocking(
+            connection,
             _wire_dumps(
                 (
                     "ready",
                     HOSTED_BYOK_PROCESS_ISOLATION_VERSION,
                     challenge,
                     boundary_kind,
+                    interpreter_attestation,
+                    containment_attestation,
+                    environment_attestation,
                 )
-            )
+            ),
         )
-        worker_payload = connection.recv_bytes(maxlength=_MAX_PROCESS_IPC_BYTES + 1)
+        worker_payload = _receive_framed_blocking(connection)
 
         async def run() -> Verdict:
             values = _wire_loads(worker_payload)
@@ -1796,17 +2326,20 @@ def _hosted_byok_clean_child_main(
 
         try:
             result = asyncio.run(run())
-            connection.send_bytes(_wire_dumps(("ok", result)))
+            _send_framed_blocking(connection, _wire_dumps(("ok", result)))
         except HostedByokDeadlineExceeded as exc:
-            connection.send_bytes(_wire_dumps(("deadline", str(exc))))
+            _send_framed_blocking(connection, _wire_dumps(("deadline", str(exc))))
         except HostedByokCancelled:
-            connection.send_bytes(_wire_dumps(("cancelled", "")))
+            _send_framed_blocking(connection, _wire_dumps(("cancelled", "")))
         except HostedByokUnsupportedError as exc:
-            connection.send_bytes(_wire_dumps(("unsupported", str(exc))))
+            _send_framed_blocking(connection, _wire_dumps(("unsupported", str(exc))))
         except HostedByokContractError as exc:
-            connection.send_bytes(_wire_dumps(("contract", str(exc))))
+            _send_framed_blocking(connection, _wire_dumps(("contract", str(exc))))
         except BaseException:
-            connection.send_bytes(_wire_dumps(("failure", _PROVIDER_FAILURE_CODE)))
+            _send_framed_blocking(
+                connection,
+                _wire_dumps(("failure", _PROVIDER_FAILURE_CODE)),
+            )
     except BaseException:
         pass
     finally:
