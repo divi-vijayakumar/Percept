@@ -318,38 +318,44 @@ class FusedPureOrderingTests(unittest.TestCase):
             "video", 0, 1.0, payload=b"frame", source_watermark=3.0
         )
         one_chunk = synchronizer()
-        one_chunk.accept(video)
-        one_chunk.accept(
-            unit(
-                "audio",
-                0,
-                0.0,
-                2.0,
-                payload=b"abcdefgh",
-                source_watermark=3.0,
+        self.assertTrue(one_chunk.accept(video))
+        self.assertTrue(
+            one_chunk.accept(
+                unit(
+                    "audio",
+                    0,
+                    0.0,
+                    2.0,
+                    payload=b"abcdefgh",
+                    source_watermark=3.0,
+                )
             )
         )
         first = one_chunk.bundle_for(video)
 
         two_chunks = synchronizer()
-        two_chunks.accept(video)
-        two_chunks.accept(
-            unit(
-                "audio", 0, 0.0, 1.0, payload=b"abcd", source_watermark=3.0
+        self.assertTrue(two_chunks.accept(video))
+        self.assertTrue(
+            two_chunks.accept(
+                unit(
+                    "audio", 0, 0.0, 1.0, payload=b"abcd", source_watermark=1.0
+                )
             )
         )
-        two_chunks.accept(
-            unit(
-                "audio", 1, 1.0, 2.0, payload=b"efgh", source_watermark=3.0
+        self.assertTrue(
+            two_chunks.accept(
+                unit(
+                    "audio", 1, 1.0, 2.0, payload=b"efgh", source_watermark=3.0
+                )
             )
         )
         second = two_chunks.bundle_for(video)
 
         self.assertTrue(first.complete and second.complete)
-        self.assertEqual(
-            b"".join(media_bytes(item) for item in first.audio_units),
-            b"".join(media_bytes(item) for item in second.audio_units),
-        )
+        first_bytes = b"".join(media_bytes(item) for item in first.audio_units)
+        second_bytes = b"".join(media_bytes(item) for item in second.audio_units)
+        self.assertEqual(first_bytes, b"abcdef")
+        self.assertEqual(second_bytes, b"abcdef")
         self.assertEqual(first.audio_event_interval, second.audio_event_interval)
         self.assertEqual(first.actual_skew_s, second.actual_skew_s)
 

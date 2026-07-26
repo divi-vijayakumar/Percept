@@ -355,8 +355,8 @@ def provider_bytes(value, *, _seen=None):
     if isinstance(value, dict):
         return [
             blob
-            for key, item in value.items()
-            for blob in provider_bytes((key, item), _seen=seen)
+            for item in value.values()
+            for blob in provider_bytes(item, _seen=seen)
         ]
     if isinstance(value, (tuple, list)):
         return [
@@ -1013,6 +1013,34 @@ class FusedRealWorkerContinuityTests(unittest.TestCase):
 
 
 class FusedPublicEvidenceIdentityTests(unittest.TestCase):
+    def test_provider_byte_walker_reaches_actual_trusted_request_parts(self):
+        video_payload = ("image/jpeg", b"\xff\xd8byte-walker-video\xff\xd9")
+        audio_payload = AudioFrame(
+            pcm=struct.pack("<hhhh", 11, 12, 13, 14),
+            sample_rate=4,
+            channels=1,
+            sample_format="s16le",
+            t_start=0.0,
+            t_end=1.0,
+        )
+        core, models = trusted_core(
+            answers={"byte walker": Verdict(True, 0.99, "both present")}
+        )
+
+        verdict = asyncio.run(
+            core.vision.judge(
+                "byte walker",
+                video_payload,
+                frames=[video_payload],
+                audio=audio_payload,
+            )
+        )
+
+        self.assertTrue(verdict.satisfied)
+        blobs = provider_bytes(models.calls[0])
+        self.assertIn(video_payload[1], blobs)
+        self.assertTrue(any(audio_payload.pcm in blob for blob in blobs))
+
     def test_exact_provider_payload_event_incident_and_trace_share_identity(self):
         video_payload = ("image/jpeg", b"\xff\xd8exact-video\xff\xd9")
         audio_payload = AudioFrame(
