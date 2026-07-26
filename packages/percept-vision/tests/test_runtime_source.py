@@ -14,6 +14,7 @@ from percept.runtime.source import (
     SourceConfig,
     _capture,
     _open_capture,
+    _put_blocking,
     _put_latest,
     _put_terminal,
 )
@@ -112,6 +113,83 @@ class RuntimeSourceTests(unittest.TestCase):
         _put_latest(q, "new", dropped)  # full -> discard "old", bump the counter
         self.assertEqual(dropped[0], 1)
         self.assertEqual(q.get_nowait(), "new")
+
+    def test_put_blocking_backpressures_without_dropping(self):
+        q = queue.Queue(maxsize=1)
+        q.put_nowait("first")
+        stop = threading.Event()
+        done = threading.Event()
+        published = []
+
+        def publish():
+            published.append(_put_blocking(q, "second", stop))
+            done.set()
+
+        thread = threading.Thread(target=publish, daemon=True)
+        thread.start()
+        self.assertFalse(done.wait(0.15))
+        self.assertEqual(q.get_nowait(), "first")
+        self.assertTrue(done.wait(1.0))
+        self.assertEqual(published, [True])
+        self.assertEqual(q.get_nowait(), "second")
+
+    def test_blocking_capture_preserves_every_selected_frame_in_bounded_queue(self):
+        frame_count = 24
+        cap = _FakeCap(
+            reads=[(True, object()) for _ in range(frame_count)] + [(False, None)],
+            fps=8.0,
+        )
+        cv2 = _FakeCv2(cap)
+        q = queue.Queue(maxsize=2)
+        dropped = [0]
+        stop = threading.Event()
+
+        with patch.dict(sys.modules, {"cv2": cv2}):
+            thread = threading.Thread(
+                target=_capture,
+                args=(
+                    "fixture.mp4",
+                    SourceConfig(
+                        fps=8.0,
+                        queue_size=2,
+                        queue_policy="block",
+                    ),
+                    q,
+                    stop,
+                    dropped,
+                ),
+                daemon=True,
+            )
+            thread.start()
+            sequences = []
+            while True:
+                item = q.get(timeout=2.0)
+                if item is None:
+                    break
+                sequences.append(item.sequence)
+                # Keep the consumer slower than the synthetic decoder so the queue reaches capacity.
+                threading.Event().wait(0.01)
+            thread.join(timeout=2.0)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(sequences, list(range(frame_count)))
+        self.assertEqual(dropped, [0])
+
+    def test_blocking_put_stops_when_consumer_cancels(self):
+        q = queue.Queue(maxsize=1)
+        q.put_nowait("first")
+        stop = threading.Event()
+        outcome = []
+        thread = threading.Thread(
+            target=lambda: outcome.append(_put_blocking(q, "second", stop)),
+            daemon=True,
+        )
+        thread.start()
+        self.assertTrue(thread.is_alive())
+        stop.set()
+        thread.join(timeout=1.0)
+        self.assertEqual(outcome, [False])
+        self.assertEqual(q.get_nowait(), "first")
 
     def test_terminal_waits_behind_full_evidence_and_stops_on_cancel(self):
         q = queue.Queue(maxsize=1)

@@ -10,6 +10,7 @@ cv2 (``opencv-python-headless``) is the ``[runtime]``/``[rtsp]`` extra — impor
 The hardened transport (rtsp-tcp, reconnect/backoff, avfoundation ``-video_size``, ONVIF) is the ``[rtsp]``
 follow-up; v1 reuses the deterministic decode pattern from ``eval/count_video.py``.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -29,9 +30,9 @@ GATE_W, GATE_H = 48, 36  # tier-0 downsample (still vs moved; full res not neede
 # every Nth frame at half the intended rate — the gate/fovea-coast Nyquist guarantee silently halves.
 # Only evaluated once ``>= _FPS_MIN_EVAL_S`` of wall time has actually elapsed, so an offline/instant
 # fixture (span ~0) can never false-fire.
-_FPS_WINDOW_S = 2.0      # rolling window the delivered rate is measured over
-_FPS_MIN_EVAL_S = 1.0    # minimum elapsed wall time before we trust a measurement
-_FPS_TOL = 0.25          # relative gap (|measured-reported|/reported) that counts as a misreport
+_FPS_WINDOW_S = 2.0  # rolling window the delivered rate is measured over
+_FPS_MIN_EVAL_S = 1.0  # minimum elapsed wall time before we trust a measurement
+_FPS_TOL = 0.25  # relative gap (|measured-reported|/reported) that counts as a misreport
 _POLL = object()
 
 
@@ -47,6 +48,9 @@ class SourceConfig:
     # Clock selected by the transitional tuple view.  Every envelope carries observed monotonic time
     # independently and carries decoder source time only when the decoder actually provides it.
     timebase: Literal["media", "wall"] = "media"
+    # Live streams prefer fresh evidence over stale backlog. Deterministic file replays may instead
+    # apply bounded producer backpressure so an evaluator observes every selected decoded frame.
+    queue_policy: Literal["latest", "block"] = "latest"
 
 
 def _normalize_uri(uri: str):
@@ -79,6 +83,36 @@ def _put_latest(q: "queue.Queue", item, dropped: "list[int] | None" = None) -> N
         except queue.Empty:
             pass
         q.put(item, timeout=0.1)
+
+
+def _put_blocking(q: "queue.Queue", item, stop: threading.Event) -> bool:
+    """Put into a bounded queue without dropping evidence.
+
+    This policy is for finite, deterministic fixture replay. It deliberately backpressures the
+    decoder, but still polls ``stop`` so cancelling a consumer cannot strand the capture thread.
+    """
+    while not stop.is_set():
+        try:
+            q.put(item, timeout=0.1)
+            return True
+        except queue.Full:
+            continue
+    return False
+
+
+def _put_frame(
+    q: "queue.Queue",
+    item,
+    config: SourceConfig,
+    stop: threading.Event,
+    dropped: "list[int] | None" = None,
+) -> bool:
+    if config.queue_policy == "latest":
+        _put_latest(q, item, dropped)
+        return True
+    if config.queue_policy == "block":
+        return _put_blocking(q, item, stop)
+    raise ValueError(f"unknown source queue policy: {config.queue_policy!r}")
 
 
 def _put_terminal(q: "queue.Queue", item, stop: threading.Event) -> None:
@@ -143,9 +177,16 @@ def _video_format(bgr) -> SourceFormat:
     return SourceFormat(media_type="image/jpeg", width=width, height=height)
 
 
-def _capture(uri: str, config: SourceConfig, q: "queue.Queue", stop: threading.Event,
-             dropped: "list[int] | None" = None, *, now: "Callable[[], float] | None" = None,
-             health: "list | None" = None) -> None:
+def _capture(
+    uri: str,
+    config: SourceConfig,
+    q: "queue.Queue",
+    stop: threading.Event,
+    dropped: "list[int] | None" = None,
+    *,
+    now: "Callable[[], float] | None" = None,
+    health: "list | None" = None,
+) -> None:
     """Blocking capture loop, run on a daemon thread; pushes frames into ``q`` until stopped/EOF.
 
     ``now`` is the observation clock stamped on every envelope and used by the delivered-fps measure
@@ -171,8 +212,8 @@ def _capture(uri: str, config: SourceConfig, q: "queue.Queue", stop: threading.E
             i = 0
             sequence = 0
             previous_source_time: float | None = None
-            read_ts: "list[float]" = []   # wall times of recent raw reads (A-4 delivered-fps window)
-            fps_reported = False           # emit the misreport at most once per open
+            read_ts: "list[float]" = []  # wall times of recent raw reads (A-4 delivered-fps window)
+            fps_reported = False  # emit the misreport at most once per open
             try:
                 while not stop.is_set():
                     ok, bgr = cap.read()
@@ -191,8 +232,9 @@ def _capture(uri: str, config: SourceConfig, q: "queue.Queue", stop: threading.E
                         if span >= _FPS_MIN_EVAL_S and len(read_ts) >= 2:
                             measured = (len(read_ts) - 1) / span
                             if abs(measured - src_fps) > _FPS_TOL * src_fps:
-                                health.append(("fps_misreported",
-                                               {"reported": src_fps, "measured": measured}))
+                                health.append(
+                                    ("fps_misreported", {"reported": src_fps, "measured": measured})
+                                )
                                 fps_reported = True
                     if i % step == 0:
                         observed_time = now()
@@ -207,10 +249,12 @@ def _capture(uri: str, config: SourceConfig, q: "queue.Queue", stop: threading.E
                             previous_source_time = source_time
                         gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
                         g = cv2.resize(gray, (GATE_W, GATE_H))
-                        gate_frame = Frame(w=GATE_W, h=GATE_H, pixels=tuple(int(p) for p in g.flatten()))
+                        gate_frame = Frame(
+                            w=GATE_W, h=GATE_H, pixels=tuple(int(p) for p in g.flatten())
+                        )
                         encoded, buf = cv2.imencode(".jpg", bgr)
                         jpeg = buf.tobytes() if encoded and buf is not None else b""
-                        _put_latest(
+                        published = _put_frame(
                             q,
                             SourceEnvelope(
                                 source_id=f"video:{uri}",
@@ -222,10 +266,16 @@ def _capture(uri: str, config: SourceConfig, q: "queue.Queue", stop: threading.E
                                 format=_video_format(bgr),
                                 payload=("image/jpeg", jpeg),
                                 signal=gate_frame,
-                                legacy_timebase="observed" if config.timebase == "wall" else "source",
+                                legacy_timebase="observed"
+                                if config.timebase == "wall"
+                                else "source",
                             ),
+                            config,
+                            stop,
                             dropped,
                         )
+                        if not published:
+                            break
                         sequence += 1
                     i += 1
             finally:
@@ -249,6 +299,7 @@ async def open_source(
     reconnects: int = 0,
     reconnect_backoff_s: float = 0.5,
     rtsp_tcp: bool = True,
+    queue_policy: "Literal['latest', 'block']" = "latest",
     timebase: "Literal['media', 'wall']" = "media",
     dropped: "list[int] | None" = None,
     health: "list | None" = None,
@@ -259,19 +310,29 @@ async def open_source(
 
     The envelope always preserves observation time and source time independently.  ``timebase`` only
     selects the transitional tuple view; source time remains ``None`` when the decoder supplied none.
+    ``queue_policy="latest"`` keeps live capture fresh by evicting stale queued frames (the default).
+    ``queue_policy="block"`` is a bounded, lossless mode for deterministic finite-file evaluation.
     ``health`` is an optional shared list the capture thread appends A-4 ``fps_misreported`` events to."""
+    if queue_policy not in ("latest", "block"):
+        raise ValueError(f"unknown source queue policy: {queue_policy!r}")
+    if queue_policy == "block" and maxsize <= 0:
+        raise ValueError("queue_policy='block' requires a positive bounded maxsize")
     config = SourceConfig(
         fps=fps,
         queue_size=maxsize,
         reconnects=reconnects,
         reconnect_backoff_s=reconnect_backoff_s,
         rtsp_tcp=rtsp_tcp,
+        queue_policy=queue_policy,
         timebase=timebase,
     )
     q: "queue.Queue" = queue.Queue(maxsize=config.queue_size)
     stop = threading.Event()
     thread = threading.Thread(
-        target=_capture, args=(uri, config, q, stop, dropped), kwargs={"health": health}, daemon=True
+        target=_capture,
+        args=(uri, config, q, stop, dropped),
+        kwargs={"health": health},
+        daemon=True,
     )
     thread.start()
     try:

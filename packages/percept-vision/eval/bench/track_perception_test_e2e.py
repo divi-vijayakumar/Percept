@@ -41,6 +41,10 @@ WINDOW_PAD_S = 0.5
 # Headroom so the capture stream itself isn't the bottleneck: decode at least this dense when the goal's
 # SensorPlan asks for a sensitive above-Nyquist cadence (the controller still subsamples to the plan's fps).
 _CAPTURE_HEADROOM_FPS = 8.0
+# A finite fixture must be lossless, but an unbounded decoded-frame backlog would turn provider
+# latency into an uncontrolled memory spike. A small blocking queue bounds memory and backpressures
+# only the benchmark decoder; ``open_source`` retains latest-frame semantics everywhere else.
+_FIXTURE_QUEUE_SIZE = 8
 
 
 def cadence_policy(cadence: dict) -> SensePolicy:
@@ -53,7 +57,9 @@ def cadence_policy(cadence: dict) -> SensePolicy:
         base_fps=cadence.get("base_fps") or d.base_fps,
         max_fps=cadence.get("max_fps") or d.max_fps,
         escalate_threshold=(
-            cadence["escalate_threshold"] if cadence.get("escalate_threshold") is not None else d.escalate_threshold
+            cadence["escalate_threshold"]
+            if cadence.get("escalate_threshold") is not None
+            else d.escalate_threshold
         ),
         hold_s=d.hold_s,
     )
@@ -85,6 +91,17 @@ def judged_timestamps(
         if ctrl.should_process("judge", t, motion) or t in esc:
             out.append(t)
     return out
+
+
+def admission_cause(*, gate: bool, cadence: bool) -> str:
+    """Name why a frame reached the judge without conflating the two admission paths."""
+    if gate and cadence:
+        return "gate+cadence"
+    if gate:
+        return "gate"
+    if cadence:
+        return "cadence"
+    return "none"
 
 
 @dataclass
@@ -134,6 +151,7 @@ class EventRun:
     end_s: float
     positive_windows: list[tuple[float, float]] = field(default_factory=list)
     frames: int = 0
+    dropped_frames: int = 0
     judge_calls: int = 0
     fires: list[DecisionObservation] = field(default_factory=list)
     asks: list[float] = field(default_factory=list)
@@ -154,10 +172,7 @@ class EventRun:
         return self.positive_windows or [(self.onset_s, self.end_s)]
 
     def contains(self, timestamp: float) -> bool:
-        return any(
-            onset <= timestamp <= end + WINDOW_PAD_S
-            for onset, end in self.windows
-        )
+        return any(onset <= timestamp <= end + WINDOW_PAD_S for onset, end in self.windows)
 
     @property
     def edge_hit(self) -> bool:
@@ -173,10 +188,12 @@ class EventRun:
 
     @property
     def fire_hits(self) -> int:
-        return len(_matched_event_pairs(
-            [fire.source_media_ts for fire in self.fires],
-            self.windows,
-        ))
+        return len(
+            _matched_event_pairs(
+                [fire.source_media_ts for fire in self.fires],
+                self.windows,
+            )
+        )
 
     @property
     def matched_fire_events(
@@ -301,10 +318,18 @@ async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
         ],
     )
     settings = load_settings()
-    vision = RecordingVision(
-        bench_vision(settings, request_budget=request_budget)
+    vision = RecordingVision(bench_vision(settings, request_budget=request_budget))
+    # This benchmark arms its goal in code and only exercises the supplied live vision adapter.
+    # Explicit scripted values isolate unused language/specialist seams from ambient deployment env.
+    core = Percept.create(
+        vision=vision,
+        specialist="scripted",
+        conductor="scripted-conductor",
+        stt="fake",
+        tts="fake",
+        settings=settings,
+        discover_plugins=False,
     )
-    core = Percept.create(vision=vision, settings=settings, discover_plugins=False)
     goal_id = f"pt-{event['video_id']}"
     # The pt-action notification goal IS a "tell me when X briefly happens" goal: the GT window's duration
     # is the goal's brief-window PRIOR (data the goal-setter has — not a per-activity constant). It compiles
@@ -324,9 +349,16 @@ async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
     ctrl = SamplingController(policy)
     spec = compile_watchspec(list(core.goals.active()), threshold=settings.edge.motion_gate)
     gate = MotionGate(spec, settings=settings)
+    dropped_frames = [0]
 
     try:
-        async for t, gate_frame, judge_frame in open_source(str(event["path"]), fps=capture_fps(cadence)):
+        async for t, gate_frame, judge_frame in open_source(
+            str(event["path"]),
+            fps=capture_fps(cadence),
+            maxsize=_FIXTURE_QUEUE_SIZE,
+            queue_policy="block",
+            dropped=dropped_frames,
+        ):
             result.frames += 1
             decision = gate.evaluate(gate_frame, ts=float(t))
             # JUDGE on EITHER the motion gate's escalation (legacy firing logic — UNCHANGED) OR the fovea's
@@ -335,20 +367,30 @@ async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
             coast = ctrl.should_process("judge", float(t), float(decision.signal.motion))
             if not (decision.escalate or coast):
                 continue
+            cause = admission_cause(gate=bool(decision.escalate), cadence=coast)
+            edge_trace = {
+                "decision": "escalate" if decision.escalate else "suppress",
+                "motion": round(float(decision.signal.motion), 4),
+                "structural": round(float(decision.signal.structural), 4),
+                "semantic": round(float(decision.signal.semantic), 4),
+                "threshold": round(float(decision.threshold), 4),
+            }
             result.escalations.append(float(t))
             vision.last_verdict = None
             events = await core.perceive_judged(judge_frame, "pt-action", t=float(t))
             if vision.last_error is not None:
-                result.error = (
-                    f"{type(vision.last_error).__name__}: {vision.last_error}"
+                result.error = f"{type(vision.last_error).__name__}: {vision.last_error}"
+                result.trace.append(
+                    {
+                        "ts": round(float(t), 3),
+                        "case_id": result.case_id,
+                        "goal_id": goal_id,
+                        "edge": edge_trace,
+                        "admission_cause": cause,
+                        "core_gate_action": "invalid",
+                        "reason": f"backend failure: {result.error}",
+                    }
                 )
-                result.trace.append({
-                    "ts": round(float(t), 3),
-                    "case_id": result.case_id,
-                    "goal_id": goal_id,
-                    "core_gate_action": "invalid",
-                    "reason": f"backend failure: {result.error}",
-                })
                 break
             action = "silent"
             for fire in events or []:
@@ -365,31 +407,38 @@ async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
                 else:
                     result.asks.append(float(t))
             verdict = vision.last_verdict
-            result.trace.append({
-                "ts": round(float(t), 3),
-                "edge": {
-                    "decision": "escalate",
-                    "motion": round(float(decision.signal.motion), 4),
-                    "structural": round(float(decision.signal.structural), 4),
-                    "semantic": round(float(decision.signal.semantic), 4),
-                    "threshold": round(float(decision.threshold), 4),
-                },
-                "goal_id": goal_id,
-                "case_id": result.case_id,
-                "goal": goal_text,
-                "judge_verdict": {
-                    "satisfied": bool(verdict.get("satisfied")) if verdict else None,
-                    "confidence": round(float(verdict.get("confidence") or 0.0), 3) if verdict else None,
-                    "evidence": str(verdict.get("evidence", "") if verdict else "")[:240],
-                },
-                "core_gate_action": action,
-                "reason": f"{action}: emitted" if action != "silent" else _silent_reason(verdict, settings.gate.threshold),
-            })
+            result.trace.append(
+                {
+                    "ts": round(float(t), 3),
+                    "edge": edge_trace,
+                    "admission_cause": cause,
+                    "goal_id": goal_id,
+                    "case_id": result.case_id,
+                    "goal": goal_text,
+                    "judge_verdict": {
+                        "satisfied": bool(verdict.get("satisfied")) if verdict else None,
+                        "confidence": round(float(verdict.get("confidence") or 0.0), 3)
+                        if verdict
+                        else None,
+                        "evidence": str(verdict.get("evidence", "") if verdict else "")[:240],
+                    },
+                    "core_gate_action": action,
+                    "reason": f"{action}: emitted"
+                    if action != "silent"
+                    else _silent_reason(verdict, settings.gate.threshold),
+                }
+            )
             if result.error:
                 break
     except Exception as exc:
         result.error = f"{type(exc).__name__}: {exc}"
 
+    result.dropped_frames = dropped_frames[0]
+    if result.dropped_frames and result.error is None:
+        result.error = (
+            f"fixture replay dropped {result.dropped_frames} decoded frame(s); "
+            "benchmark coverage is invalid"
+        )
     result.reconcile_fire_windows()
     result.judge_calls = vision.calls
     return result
@@ -433,25 +482,25 @@ def _fire_records(run: EventRun) -> list[dict[str, Any]]:
             if fire.action_onset_to_fire_s is not None
             else None
         )
-        records.append({
-            "source_media_ts": round(fire.source_media_ts, 3),
-            "source_detection_latency_s": (
-                round(source_latency, 6)
-                if source_latency is not None
-                else None
-            ),
-            "observed_to_fire_s": round(fire.observed_to_fire_s, 6),
-            "action_onset_to_fire_s": (
-                round(fire.action_onset_to_fire_s, 6)
-                if fire.action_onset_to_fire_s is not None
-                else None
-            ),
-            "judge_latency_s": round(fire.judge_latency_s, 6),
-            "decision_emitted_ts": round(
-                fire.timing.decision_emitted_ts,
-                6,
-            ),
-        })
+        records.append(
+            {
+                "source_media_ts": round(fire.source_media_ts, 3),
+                "source_detection_latency_s": (
+                    round(source_latency, 6) if source_latency is not None else None
+                ),
+                "observed_to_fire_s": round(fire.observed_to_fire_s, 6),
+                "action_onset_to_fire_s": (
+                    round(fire.action_onset_to_fire_s, 6)
+                    if fire.action_onset_to_fire_s is not None
+                    else None
+                ),
+                "judge_latency_s": round(fire.judge_latency_s, 6),
+                "decision_emitted_ts": round(
+                    fire.timing.decision_emitted_ts,
+                    6,
+                ),
+            }
+        )
     return records
 
 
@@ -501,7 +550,7 @@ def _failed_run(
     request_budget: BudgetEnforcer,
     selected_media_minutes: float,
 ) -> TrackResult:
-    """Return ledger-only evidence for a terminal backend failure; no partial score."""
+    """Return ledger-only evidence for a terminal benchmark failure; no partial score."""
     budget = request_budget.snapshot()
     physical_attempts = int(budget["physical_attempts"])
     failures = [run for run in runs if run.error]
@@ -528,12 +577,9 @@ def _failed_run(
         ("e2e", "billed_usd"): budget["billed_usd"],
         ("e2e", "committed_budget_usd"): budget["committed_usd"],
         ("e2e", "selected_media_minutes"): selected_media_minutes,
+        ("e2e", "source_dropped_frames"): sum(run.dropped_frames for run in runs),
     }
-    measured = [
-        f"{lane}:{metric}"
-        for lane, metric in cells
-        if cells[(lane, metric)] is not None
-    ]
+    measured = [f"{lane}:{metric}" for lane, metric in cells if cells[(lane, metric)] is not None]
     return TrackResult(
         track=TRACK,
         cells=cells,
@@ -545,21 +591,24 @@ def _failed_run(
             "billed_usd": "${:.6f}",
             "committed_budget_usd": "${:.6f}",
             "selected_media_minutes": "{:.6f}",
+            "source_dropped_frames": "{:.0f}",
         },
-        headline={"Perception Test action E2E": "INVALID — terminal backend failure"},
+        headline={"Perception Test action E2E": "INVALID — terminal benchmark failure"},
         measured=measured,
-        excluded=[f"{TRACK}: terminal backend failure: {reason}"],
+        excluded=[f"{TRACK}: terminal benchmark failure: {reason}"],
         calls=physical_attempts,
         qualifying_events=0,
-        coverage=[{
-            "dataset": "perception-test/action",
-            "expected": len(events),
-            "observed": sum(1 for run in runs if not run.error),
-            "failed": len(failures),
-            "skipped": max(0, len(events) - len(runs)),
-            "case_ids": [event["row_id"] for event in events],
-            "notes": "terminal backend failure stopped the current case and all later cases",
-        }],
+        coverage=[
+            {
+                "dataset": "perception-test/action",
+                "expected": len(events),
+                "observed": sum(1 for run in runs if not run.error),
+                "failed": len(failures),
+                "skipped": max(0, len(events) - len(runs)),
+                "case_ids": [event["row_id"] for event in events],
+                "notes": "terminal benchmark failure stopped the current case and all later cases",
+            }
+        ],
         notes=f"budget={budget}; attempted_cases={[run.case_id for run in runs]}",
         status="failed",
     )
@@ -582,9 +631,7 @@ def score(*, live: bool, n: int) -> TrackResult:
     if not live:
         return _unavailable("live backend required; offline fake cannot assert visual acuity")
 
-    manifest = Path(
-        os.environ.get("PERCEPT_BENCH_MANIFEST", str(pt.GOLDEN_MANIFEST))
-    )
+    manifest = Path(os.environ.get("PERCEPT_BENCH_MANIFEST", str(pt.GOLDEN_MANIFEST)))
     try:
         events = pt.select_golden_action_events(
             n,
@@ -632,28 +679,16 @@ def score(*, live: bool, n: int) -> TrackResult:
     positive_events = sum(len(run.windows) for run in runs)
     matched_fire_events = sum(run.fire_hits for run in runs)
     total_fire_predictions = sum(len(run.fires) for run in runs)
-    edge_recall = (
-        sum(run.edge_hits for run in runs) / positive_events
-        if positive_events
-        else None
-    )
-    notification_recall = (
-        matched_fire_events / positive_events
-        if positive_events
-        else None
-    )
+    edge_recall = sum(run.edge_hits for run in runs) / positive_events if positive_events else None
+    notification_recall = matched_fire_events / positive_events if positive_events else None
     all_candidates = [(r.case_id, t) for r in runs for t in r.escalations]
     candidate_precision = _precision(all_candidates, runs)
     notification_precision = _event_precision(runs)
     source_latencies = [
-        fire.source_media_ts - window[0]
-        for run in runs
-        for fire, window in run.matched_fire_events
+        fire.source_media_ts - window[0] for run in runs for fire, window in run.matched_fire_events
     ]
     observed_latencies = [
-        fire.observed_to_fire_s
-        for run in runs
-        for fire, _window in run.matched_fire_events
+        fire.observed_to_fire_s for run in runs for fire, _window in run.matched_fire_events
     ]
     action_latencies = [
         (fire.source_media_ts - window[0]) + fire.observed_to_fire_s
@@ -661,9 +696,7 @@ def score(*, live: bool, n: int) -> TrackResult:
         for fire, window in run.matched_fire_events
     ]
     judge_latencies = [
-        fire.judge_latency_s
-        for run in runs
-        for fire, _window in run.matched_fire_events
+        fire.judge_latency_s for run in runs for fire, _window in run.matched_fire_events
     ]
 
     dense_calls = sum(r.frames for r in runs)
@@ -698,6 +731,7 @@ def score(*, live: bool, n: int) -> TrackResult:
         ("e2e", "billed_usd"): budget["billed_usd"],
         ("e2e", "committed_budget_usd"): budget["committed_usd"],
         ("e2e", "selected_media_minutes"): selected_media_minutes,
+        ("e2e", "source_dropped_frames"): sum(run.dropped_frames for run in runs),
     }
     per_event = [
         {
@@ -706,13 +740,13 @@ def score(*, live: bool, n: int) -> TrackResult:
             "label": r.label,
             "goal": r.goal,
             "positive_windows": [
-                [round(onset, 3), round(end + WINDOW_PAD_S, 3)]
-                for onset, end in r.windows
+                [round(onset, 3), round(end + WINDOW_PAD_S, 3)] for onset, end in r.windows
             ],
             "positive_event_count": len(r.windows),
             "edge_hits": r.edge_hits,
             "fire_hits": r.fire_hits,
             "frames": r.frames,
+            "source_dropped_frames": r.dropped_frames,
             "judge_calls": r.judge_calls,
             "edge_hit": r.edge_hit,
             "fire_hit": r.fire_hit,
@@ -748,6 +782,7 @@ def score(*, live: bool, n: int) -> TrackResult:
             "billed_usd": "${:.6f}",
             "committed_budget_usd": "${:.6f}",
             "selected_media_minutes": "{:.6f}",
+            "source_dropped_frames": "{:.0f}",
         },
         headline={
             "PT action E2E recall / edge recall": (
@@ -780,23 +815,26 @@ def score(*, live: bool, n: int) -> TrackResult:
             "e2e:billed_usd",
             "e2e:committed_budget_usd",
             "e2e:selected_media_minutes",
+            "e2e:source_dropped_frames",
         ],
         modeled=["dense-modeled:dense_frame_calls"],
         calls=physical_attempts,
         qualifying_events=matched_fire_events,
-        coverage=[{
-            "dataset": "perception-test/action",
-            "expected": len(events),
-            "observed": observed,
-            "failed": len(failed),
-            "skipped": 0,
-            "case_ids": [event["row_id"] for event in events],
-            "positive_events": positive_events,
-            "notes": (
-                "runtime E2E path over exact pinned PT action manifest rows; "
-                "recall denominator is every same-label positive window"
-            ),
-        }],
+        coverage=[
+            {
+                "dataset": "perception-test/action",
+                "expected": len(events),
+                "observed": observed,
+                "failed": len(failed),
+                "skipped": 0,
+                "case_ids": [event["row_id"] for event in events],
+                "positive_events": positive_events,
+                "notes": (
+                    "runtime E2E path over exact pinned PT action manifest rows; "
+                    "recall denominator is every same-label positive window"
+                ),
+            }
+        ],
         notes=(
             f"manifest={manifest}; pinned_cases={[event['row_id'] for event in events]}; "
             f"capture_floor_fps={FPS}; cadence=sensorplan-sensitive(brief_window); "

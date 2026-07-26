@@ -29,7 +29,9 @@ from eval.bench.track_perception_test_e2e import (
     _fire_records,
     _median,
     _precision,
+    admission_cause,
 )
+from percept.adapters import Verdict
 from percept.backends import openrouter
 from percept.backends.openrouter import OpenRouterVision
 from percept.contracts import JudgmentTiming
@@ -307,11 +309,7 @@ class BudgetAdmissionTests(unittest.TestCase):
     def test_unmetered_response_is_not_accepted(self):
         response = NS(
             choices=[
-                NS(
-                    message=NS(
-                        content='{"satisfied": true, "confidence": 0.9, "evidence": "seen"}'
-                    )
-                )
+                NS(message=NS(content='{"satisfied": true, "confidence": 0.9, "evidence": "seen"}'))
             ]
         )
         calls = 0
@@ -476,8 +474,8 @@ class TerminalBenchmarkFailureTests(unittest.TestCase):
         self.assertTrue(result.invalid_reasons())
 
     def test_swallowed_budget_exhaustion_stops_frames_cases_and_metrics(self):
-        result, transport_calls, source_starts, decoded_frames = (
-            self._run_terminal_failure(requests=1, retries=1)
+        result, transport_calls, source_starts, decoded_frames = self._run_terminal_failure(
+            requests=1, retries=1
         )
         self.assertEqual(transport_calls, 1)
         self.assertEqual(source_starts, 1)
@@ -486,8 +484,8 @@ class TerminalBenchmarkFailureTests(unittest.TestCase):
         self._assert_terminal_result(result, physical_attempts=1)
 
     def test_exhausted_retry_stops_frames_cases_and_metrics(self):
-        result, transport_calls, source_starts, decoded_frames = (
-            self._run_terminal_failure(requests=4, retries=1)
+        result, transport_calls, source_starts, decoded_frames = self._run_terminal_failure(
+            requests=4, retries=1
         )
         self.assertEqual(transport_calls, 2)
         self.assertEqual(source_starts, 1)
@@ -496,18 +494,173 @@ class TerminalBenchmarkFailureTests(unittest.TestCase):
         self._assert_terminal_result(result, physical_attempts=2)
 
     def test_swallowed_usage_reconciliation_failure_stops_the_run(self):
-        result, transport_calls, source_starts, decoded_frames = (
-            self._run_terminal_failure(
-                requests=4,
-                retries=1,
-                unmetered_response=True,
-            )
+        result, transport_calls, source_starts, decoded_frames = self._run_terminal_failure(
+            requests=4,
+            retries=1,
+            unmetered_response=True,
         )
         self.assertEqual(transport_calls, 1)
         self.assertEqual(source_starts, 1)
         self.assertEqual(decoded_frames, 1)
         self.assertIn("omitted enforceable", result.excluded[0])
         self._assert_terminal_result(result, physical_attempts=1)
+
+
+class FixtureReplayCoverageTests(unittest.TestCase):
+    @staticmethod
+    def _event() -> dict:
+        return {
+            "row_id": "case-1",
+            "video_id": "video-1",
+            "label": "Turning something on",
+            "onset_s": 0.0,
+            "end_s": 1.0,
+            "positive_windows": [[0.0, 1.0]],
+            "path": Path("/offline/video-1.mp4"),
+        }
+
+    def test_pt_fixture_uses_bounded_lossless_replay(self):
+        captured: dict = {}
+
+        class NoCallVision:
+            async def judge(self, *_args, **_kwargs):
+                raise AssertionError("empty fixture replay must not call a provider")
+
+        def source(*_args, **kwargs):
+            captured.update(kwargs)
+
+            async def frames():
+                if False:
+                    yield None
+
+            return frames()
+
+        with (
+            patch.object(pt_track, "bench_vision", return_value=NoCallVision()),
+            patch.object(pt_track, "open_source", side_effect=source),
+        ):
+            run = asyncio.run(pt_track._score_one(self._event(), _enforcer()))
+
+        self.assertIsNone(run.error)
+        self.assertEqual(run.dropped_frames, 0)
+        self.assertEqual(captured["maxsize"], pt_track._FIXTURE_QUEUE_SIZE)
+        self.assertGreater(captured["maxsize"], 0)
+        self.assertEqual(captured["queue_policy"], "block")
+        self.assertEqual(captured["dropped"], [0])
+
+    def test_any_fixture_drop_fails_closed_and_invalidates_coverage(self):
+        class NoCallVision:
+            async def judge(self, *_args, **_kwargs):
+                raise AssertionError("empty fixture replay must not call a provider")
+
+        def source(*_args, **kwargs):
+            async def frames():
+                kwargs["dropped"][0] += 3
+                if False:
+                    yield None
+
+            return frames()
+
+        event = self._event()
+        env = {
+            "PERCEPT_VISION_BACKEND": "openrouter",
+            "PERCEPT_VISION_MODEL": "qwen/qwen3-vl-32b-instruct",
+            "PERCEPT_BENCH_BUDGET_PLAN": _plan(),
+        }
+        with (
+            patch.dict(os.environ, env, clear=False),
+            patch.object(
+                pt_track.pt,
+                "select_golden_action_events",
+                return_value=[event],
+            ),
+            patch.object(
+                pt_track.pt,
+                "action_media_minutes",
+                return_value=0.25,
+            ),
+            patch.object(pt_track, "bench_vision", return_value=NoCallVision()),
+            patch.object(pt_track, "open_source", side_effect=source),
+        ):
+            result = pt_track.score(live=True, n=1)
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.cells[("e2e", "source_dropped_frames")], 3)
+        self.assertIsNone(result.cells[("e2e", "notification_recall")])
+        self.assertEqual(result.coverage[0]["expected"], 1)
+        self.assertEqual(result.coverage[0]["observed"], 0)
+        self.assertEqual(result.coverage[0]["failed"], 1)
+        self.assertIn("fixture replay dropped 3 decoded frame", result.excluded[0])
+
+    def test_ambient_language_seams_cannot_hijack_code_armed_track(self):
+        class NoCallVision:
+            async def judge(self, *_args, **_kwargs):
+                raise AssertionError("empty fixture replay must not call a provider")
+
+        async def source(*_args, **_kwargs):
+            if False:
+                yield None
+
+        hostile = {
+            "PERCEPT_MODE": "live",
+            "PERCEPT_CONDUCTOR_BACKEND": "hostile-unregistered-conductor",
+            "PERCEPT_SPECIALIST_BACKEND": "hostile-unregistered-specialist",
+        }
+        with (
+            patch.dict(os.environ, hostile, clear=False),
+            patch.object(pt_track, "bench_vision", return_value=NoCallVision()),
+            patch.object(pt_track, "open_source", side_effect=source),
+        ):
+            run = asyncio.run(pt_track._score_one(self._event(), _enforcer()))
+
+        self.assertIsNone(run.error)
+        self.assertEqual(run.frames, 0)
+        self.assertEqual(run.judge_calls, 0)
+
+    def test_trace_distinguishes_gate_cadence_and_union_admission(self):
+        self.assertEqual(admission_cause(gate=True, cadence=False), "gate")
+        self.assertEqual(admission_cause(gate=False, cadence=True), "cadence")
+        self.assertEqual(admission_cause(gate=True, cadence=True), "gate+cadence")
+        self.assertEqual(admission_cause(gate=False, cadence=False), "none")
+
+        class FalseVision:
+            async def judge(self, *_args, **_kwargs):
+                return Verdict(
+                    satisfied=False,
+                    confidence=0.9,
+                    evidence="not yet",
+                )
+
+        class SuppressedGate:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def evaluate(self, _frame, *, ts):
+                return NS(
+                    escalate=False,
+                    signal=NS(
+                        motion=0.0,
+                        structural=0.0,
+                        semantic=0.0,
+                    ),
+                    threshold=0.1,
+                    ts=ts,
+                )
+
+        async def source(*_args, **_kwargs):
+            yield 0.0, object(), b"frame"
+
+        with (
+            patch.object(pt_track, "bench_vision", return_value=FalseVision()),
+            patch.object(pt_track, "open_source", side_effect=source),
+            patch.object(pt_track, "MotionGate", SuppressedGate),
+        ):
+            run = asyncio.run(pt_track._score_one(self._event(), _enforcer()))
+
+        self.assertIsNone(run.error)
+        self.assertEqual(len(run.trace), 1)
+        self.assertEqual(run.trace[0]["edge"]["decision"], "suppress")
+        self.assertEqual(run.trace[0]["admission_cause"], "cadence")
 
 
 class PinnedCaseTests(unittest.TestCase):
@@ -621,8 +774,14 @@ class PinnedCaseTests(unittest.TestCase):
                             "metadata": {"video_id": "video-a", "frame_rate": 30},
                             "action_localisation": [
                                 {"label": "Other", "timestamps": [1_000_000, 2_000_000]},
-                                {"label": "Turning something on", "timestamps": [3_000_000, 4_000_000]},
-                                {"label": "Turning something on", "timestamps": [6_000_000, 7_000_000]},
+                                {
+                                    "label": "Turning something on",
+                                    "timestamps": [3_000_000, 4_000_000],
+                                },
+                                {
+                                    "label": "Turning something on",
+                                    "timestamps": [6_000_000, 7_000_000],
+                                },
                             ],
                         }
                     }
@@ -816,10 +975,12 @@ class LatencySemanticsTests(unittest.TestCase):
             assert value is not None
             return value
 
-        run.fires.extend([
-            observation(4.2, 0.1),
-            observation(4.3, 0.2),
-        ])
+        run.fires.extend(
+            [
+                observation(4.2, 0.1),
+                observation(4.3, 0.2),
+            ]
+        )
         run.reconcile_fire_windows()
         records = _fire_records(run)
         self.assertEqual(run.fire_hits, 2)
