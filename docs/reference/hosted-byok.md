@@ -15,9 +15,15 @@ Create one immutable request for one provider call, then call the factory's `jud
 import asyncio
 import time
 
-from percept import HostedByokAdapterFactory, HostedByokRequest
+from percept import (
+    HostedByokAdapterFactory,
+    HostedByokRequest,
+    HostedByokSubprocessSupervisor,
+)
 
-hosted_byok = HostedByokAdapterFactory()
+hosted_byok = HostedByokAdapterFactory(
+    process_supervisor=HostedByokSubprocessSupervisor()
+)
 
 async def judge_for_request(
     *,
@@ -80,33 +86,29 @@ OpenRouter request cannot declare fused capability.
 
 `timeout_s` is relative to entry into `judge`; `deadline_unix_s` is an absolute UNIX timestamp. If
 both are supplied, the earlier limit wins. Omitting both uses the contract's 120-second safety ceiling.
-`asyncio.Event` implements the public cancellation protocol. Cancelling the calling task also cancels
-the provider task. The deadline bounds result acceptance and cancellation initiation, not cleanup
-latency. The SDK installs a ref-counted, context-scoped asyncio task recorder for the complete call:
-provider/client/close descendant tasks are cancelled and joined before any accepted, cancelled, or
-timeout outcome is released. A close getter, non-callable close, or close exception produces the fixed
-fail-closed provider error only after this task scope has drained. Concurrent Hosted BYOK calls use
-separate scopes; the loop's original task factory is restored after the last scope exits. If the host
-already installed a task factory, Hosted BYOK refuses before provider construction rather than replacing
-it and claiming containment.
+`asyncio.Event` implements the public cancellation protocol. Production calls require an exact,
+immutable `HostedByokSubprocessSupervisor`; there is no boolean or virtual health hook that can waive
+this requirement. Gemini and OpenRouter are both classified `production_process_isolated` because their
+HTTP stacks may use DNS threads, AnyIO worker threads, or implementation-dependent background work.
+The parent validates the request, spawns a fresh process/session, and on success, failure, cancellation,
+or timeout kills the entire process group and joins the worker before releasing the outcome. Clean
+`Context` tasks, deferred event-loop Handles, close workers, threads, and child processes therefore
+cannot survive a terminal parent outcome. The process-isolation contract version is
+`HOSTED_BYOK_PROCESS_ISOLATION_VERSION` (`"1.0.0"`). Request and Verdict IPC are bounded to 32 MiB;
+the wire is canonical tagged JSON over `send_bytes`/`recv_bytes`, never pickle. Exact recursive carrier
+validation rejects hostile subclasses, duplicate keys, non-finite values, unsupported DTOs, malformed
+or oversized payloads before construction/unmarshal. Every non-credential input is also rejected if it
+contains the credential. The credential crosses only the private inherited pipe: it is never placed in
+the worker's argv or environment, and inherited provider credential variables are removed before any
+factory, backend, or provider construction.
 
-This is **asyncio-task containment**, not a general thread/process kill switch. The reviewed production
-Gemini/OpenRouter async transports must not start unmanaged threads, executors, subprocesses, or raw
-background work for a Hosted BYOK invocation. The injected client/backend callbacks are deterministic
-test/review seams, not a supported Cloud isolation mechanism; a Cloud deployment using a transport that
-can create such work must run the whole credential-bearing call in a separately supervised process and
-terminate/join that process before releasing its lease. The SDK deliberately makes no promise that it
-can stop arbitrary foreign threads in-process. Callers that protect a credential lease or rotation with
-a lifecycle guard must hold (and, where applicable, renew) that guard for the complete `await`.
-
-Cloud can enforce that rule mechanically. `factory.transport_safety(request)` returns the immutable
-`HostedByokTransportSafety`: built-in routes are classified `sdk_async_allowlist`; any injected backend
-or client route is classified `injected_foreign_work` and sets `requires_process_supervisor=True`.
-Construct a Cloud factory with `require_process_supervisor_for_foreign_work=True` and a
-`HostedByokProcessSupervisor` whose `is_available()` reports the external supervisor's live status.
-The SDK then rejects an unsafe route before any provider/client construction when that supervisor is
-absent or unavailable. This check is deliberately a Cloud policy gate; it does not pretend an arbitrary
-in-process callback can be force-killed.
+`factory.transport_safety(request)` exposes this machine-readable classification. Every built-in route
+sets `requires_process_supervisor=True`; a factory without the exact SDK supervisor fails before provider
+construction. Factory routing/configuration is immutable, subclasses and instance method shadows are
+rejected, and the permission path uses a private non-virtual classifier. Injected backend/client seams
+are classified `test_only_in_process`, cannot be combined with a production supervisor, and remain only
+for deterministic SDK conformance tests. Callers protecting a credential lease or rotation with a
+lifecycle guard must hold it for the complete `await`.
 
 Provider construction is synchronous and included in the monotonic deadline accounting: an
 over-budget construction is rejected when it returns, before any provider task is scheduled.
@@ -131,9 +133,10 @@ The explicit path:
   any approved public carrier containing the opaque credential;
 - records a client as soon as construction acquires it, including partial backend construction;
 - completes invocation-local client/backend closure after success, failure, timeout, or cancellation;
-- leaves no tracked provider, cancellation-watcher, close task, or asyncio descendant worker running
-  after `judge` returns (see the process-isolation requirement above for foreign work); and
-- never serializes or persists the request or credential.
+- kills and joins the production worker process group before `judge` returns, leaving no provider,
+  deferred callback, thread, or child process from that invocation alive; and
+- never writes the request or credential to argv, environment variables, logs, tracebacks, or temporary
+  storage; the bounded private IPC payload exists only for the isolated invocation.
 
 Principal and lease ids are non-secret isolation/audit identities; the provider credential is not.
 Do not put the request in an application artifact or log even though its SDK repr is redacted.

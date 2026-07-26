@@ -709,6 +709,7 @@ _TRUSTED_HOSTED_BYOK_FACTORY_METHODS = {
         "_claim_injected",
         "transport_safety",
         "_assert_transport_permitted",
+        "_judge_in_process",
         "_settle_task",
         "_close_invocation",
         "seal_fused_dispatch",

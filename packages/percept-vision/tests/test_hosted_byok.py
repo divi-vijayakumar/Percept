@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import multiprocessing
+import os
+import sys
+import threading
 import time
 from dataclasses import FrozenInstanceError
 from types import SimpleNamespace
@@ -22,6 +26,7 @@ from percept import (
     HostedByokInvocationError,
     HostedByokTransportSafety,
     HostedByokRequest,
+    HostedByokSubprocessSupervisor,
     HostedByokUnsupportedError,
     Goal,
     Percept,
@@ -40,12 +45,88 @@ _HOSTED_ENV_KEYS = {
     "GEMINI_API_KEY",
     "GOOGLE_API_KEY",
     "GOOGLE_AISTUDIO_API_KEY",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_GENAI_USE_VERTEXAI",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_LOCATION",
     "OPENROUTER_API_KEY",
     "OPENROUTER_KEY",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENAI_ORG_ID",
+    "OPENAI_PROJECT_ID",
     "PERCEPT_VISION_MODEL",
     "PERCEPT_VISION_TIMEOUT_S",
     "PERCEPT_STRIP_PROMPT",
 }
+
+
+def _spawn_adversarial_effect_worker(send, effect, grandchild_pid):
+    """Spawn target proving process kill contains clean-context tasks, Handles, threads, and forks."""
+
+    if hasattr(os, "setsid"):
+        os.setsid()
+
+    def delayed_thread():
+        time.sleep(0.2)
+        effect.value |= 1
+
+    threading.Thread(target=delayed_thread, daemon=False).start()
+
+    async def run():
+        loop = asyncio.get_running_loop()
+        loop.call_later(0.2, lambda: setattr(effect, "value", effect.value | 2))
+
+        async def clean_context_task():
+            await asyncio.sleep(0.2)
+            effect.value |= 4
+
+        __import__("contextvars").Context().run(asyncio.create_task, clean_context_task())
+        if hasattr(os, "fork"):
+            pid = os.fork()
+            if pid == 0:
+                time.sleep(0.2)
+                effect.value |= 8
+                os._exit(0)
+            grandchild_pid.value = pid
+        send.send(("accepted", os.getpid()))
+        await asyncio.sleep(60)
+
+    asyncio.run(run())
+
+
+def _spawn_large_ipc_worker(send, size):
+    if hasattr(os, "setsid"):
+        os.setsid()
+    send.send(("ok", b"x" * size))
+    time.sleep(60)
+
+
+def _spawn_exiting_leader_worker(send):
+    if hasattr(os, "setsid"):
+        os.setsid()
+    pid = os.fork()
+    if pid == 0:
+        time.sleep(60)
+        os._exit(0)
+    send.send(pid)
+    send.close()
+    os._exit(0)
+
+
+def _spawn_secret_visibility_worker(send, secret):
+    argv_leak = secret in "\0".join(sys.argv)
+    env_leak = any(secret in key or secret in value for key, value in os.environ.items())
+    send.send((argv_leak, env_leak))
+    time.sleep(60)
+
+
+def _spawn_environment_scrub_worker(send):
+    from percept.hosted_byok import _scrub_provider_environment
+
+    _scrub_provider_environment()
+    send.send({key: os.environ.get(key) for key in _HOSTED_ENV_KEYS})
+    time.sleep(60)
 
 
 def _request(
@@ -526,10 +607,12 @@ def test_provider_construction_time_counts_against_monotonic_deadline():
 
 def test_invocation_cancellation_signal_cancels_provider_work():
     cancellation = asyncio.Event()
+    provider_started = asyncio.Event()
     provider_cancelled = asyncio.Event()
 
     class SlowBackend:
         async def judge(self, condition, frame, **kwargs):
+            provider_started.set()
             try:
                 await asyncio.sleep(60)
             finally:
@@ -542,7 +625,7 @@ def test_invocation_cancellation_signal_cancels_provider_work():
         task = asyncio.create_task(
             hosted.judge(_request(cancellation=cancellation), "condition", b"frame")
         )
-        await asyncio.sleep(0)
+        await provider_started.wait()
         cancellation.set()
         await task
 
@@ -925,50 +1008,328 @@ def test_existing_loop_task_factory_is_not_clobbered_and_fails_before_constructi
 
 
 def test_cloud_foreign_transport_supervisor_gate_is_machine_checkable_before_construction():
-    constructed = False
-
-    class Supervisor:
-        def __init__(self, available):
-            self.available = available
-
-        def is_available(self):
-            return self.available
-
-    def factory(request, timeout):
-        nonlocal constructed
-        constructed = True
-        return _Backend()
-
     request = _request()
     assert HostedByokAdapterFactory().transport_safety(request) == HostedByokTransportSafety(
         provider="openrouter",
-        transport_class="sdk_async_allowlist",
+        transport_class="production_process_isolated",
+        asyncio_task_contained=False,
+        requires_process_supervisor=True,
+    )
+    with pytest.raises(HostedByokContractError, match="subprocess supervisor"):
+        asyncio.run(HostedByokAdapterFactory().judge(request, "condition", b"frame"))
+
+    injected = HostedByokAdapterFactory(
+        backend_factories={"openrouter": lambda request, timeout: _Backend()}
+    )
+    safety = injected.transport_safety(request)
+    assert safety == HostedByokTransportSafety(
+        provider="openrouter",
+        transport_class="test_only_in_process",
         asyncio_task_contained=True,
         requires_process_supervisor=False,
     )
-    strict = HostedByokAdapterFactory(
-        backend_factories={"openrouter": factory},
-        require_process_supervisor_for_foreign_work=True,
-        process_supervisor=Supervisor(False),
-    )
-    safety = strict.transport_safety(request)
-    assert safety == HostedByokTransportSafety(
-        provider="openrouter",
-        transport_class="injected_foreign_work",
-        asyncio_task_contained=True,
-        requires_process_supervisor=True,
-    )
-    with pytest.raises(HostedByokContractError, match="process supervisor"):
-        asyncio.run(strict.judge(request, "condition", b"frame"))
-    assert not constructed
+    assert asyncio.run(injected.judge(request, "condition", b"frame")).satisfied
+    with pytest.raises(AttributeError, match="immutable"):
+        injected.transport_safety = lambda request: HostedByokTransportSafety(
+            request.provider, "forged", False, False
+        )
 
-    permitted = HostedByokAdapterFactory(
-        backend_factories={"openrouter": factory},
-        require_process_supervisor_for_foreign_work=True,
-        process_supervisor=Supervisor(True),
+
+def test_spawn_process_kill_and_join_contains_clean_context_handle_thread_and_grandchild():
+    from percept.hosted_byok import _kill_and_join_process
+
+    mp_context = multiprocessing.get_context("spawn")
+    receive, send = mp_context.Pipe(duplex=False)
+    effect = mp_context.Value("i", 0)
+    grandchild_pid = mp_context.Value("i", 0)
+    process = mp_context.Process(
+        target=_spawn_adversarial_effect_worker,
+        args=(send, effect, grandchild_pid),
     )
-    assert asyncio.run(permitted.judge(request, "condition", b"frame")).satisfied
-    assert constructed
+    process.start()
+    send.close()
+    assert receive.poll(5.0)
+    assert receive.recv()[0] == "accepted"
+    _kill_and_join_process(process)
+    assert not process.is_alive()
+    assert process.exitcode is not None
+    time.sleep(0.35)
+    assert effect.value == 0
+    if grandchild_pid.value:
+        with pytest.raises(ProcessLookupError):
+            os.kill(grandchild_pid.value, 0)
+    receive.close()
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX process groups")
+def test_process_group_is_killed_even_when_worker_leader_already_exited():
+    from percept.hosted_byok import _kill_and_join_process
+
+    mp_context = multiprocessing.get_context("spawn")
+    receive, send = mp_context.Pipe(duplex=False)
+    process = mp_context.Process(target=_spawn_exiting_leader_worker, args=(send,))
+    process.start()
+    send.close()
+    assert receive.poll(5.0)
+    grandchild_pid = receive.recv()
+    time.sleep(0.1)
+
+    _kill_and_join_process(process)
+
+    assert not process.is_alive()
+    for _ in range(100):
+        try:
+            os.kill(grandchild_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail("worker grandchild survived leader exit and group cleanup")
+    receive.close()
+
+
+def test_spawn_large_ipc_is_drained_before_kill_without_process_or_fd_leak():
+    from percept.hosted_byok import _kill_and_join_process
+
+    mp_context = multiprocessing.get_context("spawn")
+    active_before = {child.pid for child in multiprocessing.active_children()}
+    fd_before = len(os.listdir("/dev/fd")) if os.path.isdir("/dev/fd") else None
+    for _ in range(3):
+        receive, send = mp_context.Pipe(duplex=False)
+        process = mp_context.Process(
+            target=_spawn_large_ipc_worker,
+            args=(send, 4 * 1024 * 1024),
+        )
+        process.start()
+        send.close()
+        assert receive.poll(5.0)
+        kind, payload = receive.recv()
+        assert kind == "ok"
+        assert len(payload) == 4 * 1024 * 1024
+        _kill_and_join_process(process)
+        receive.close()
+    assert {child.pid for child in multiprocessing.active_children()} == active_before
+    if fd_before is not None:
+        assert len(os.listdir("/dev/fd")) <= fd_before + 2
+
+
+def test_spawned_credential_is_absent_from_child_argv_and_environment():
+    from percept.hosted_byok import _kill_and_join_process
+
+    mp_context = multiprocessing.get_context("spawn")
+    receive, send = mp_context.Pipe(duplex=False)
+    process = mp_context.Process(
+        target=_spawn_secret_visibility_worker,
+        args=(send, SECRET_A),
+    )
+    process.start()
+    send.close()
+    assert receive.poll(5.0)
+    assert receive.recv() == (False, False)
+    _kill_and_join_process(process)
+    receive.close()
+
+
+def test_spawned_worker_scrubs_all_inherited_provider_environment(monkeypatch):
+    from percept.hosted_byok import _kill_and_join_process
+
+    for key in _HOSTED_ENV_KEYS:
+        monkeypatch.setenv(key, "poisoned-parent-value")
+    mp_context = multiprocessing.get_context("spawn")
+    receive, send = mp_context.Pipe(duplex=False)
+    process = mp_context.Process(target=_spawn_environment_scrub_worker, args=(send,))
+    process.start()
+    send.close()
+    assert receive.poll(5.0)
+    assert set(receive.recv().values()) == {None}
+    _kill_and_join_process(process)
+    assert all(os.environ.get(key) == "poisoned-parent-value" for key in _HOSTED_ENV_KEYS)
+    receive.close()
+
+
+def test_non_executable_wire_rejects_reduce_bombs_both_directions():
+    from percept.hosted_byok import _wire_dumps, _wire_loads
+
+    reduce_calls = 0
+
+    class ReduceBomb:
+        def __reduce__(self):
+            nonlocal reduce_calls
+            reduce_calls += 1
+            return (str, ("executed",))
+
+    with pytest.raises(HostedByokContractError, match="unsupported carrier"):
+        _wire_dumps({"bomb": ReduceBomb()})
+    assert reduce_calls == 0
+    poisoned = b'{"t":"dto:Verdict","v":{"__reduce__":{"t":"str","v":"boom"}}}'
+    with pytest.raises(HostedByokInvocationError):
+        _wire_loads(poisoned)
+    assert reduce_calls == 0
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("provider", f"openrouter-{SECRET_A}"),
+        ("model", f"vendor/{SECRET_A}"),
+        ("credential_lease_id", f"lease-{SECRET_A}"),
+        ("principal_id", f"principal-{SECRET_A}"),
+        ("capability", f"vision.judge-{SECRET_A}"),
+        ("contract_version", f"1.0.0-{SECRET_A}"),
+    ],
+)
+def test_request_visible_metadata_cannot_alias_the_credential(field, value):
+    values = {
+        "provider": "openrouter",
+        "model": "qwen/qwen3-vl-32b-instruct",
+        "credential": SECRET_A,
+        "credential_lease_id": "lease-a",
+        "principal_id": "principal-a",
+    }
+    values[field] = value
+    with pytest.raises(HostedByokContractError, match="must not contain the credential"):
+        HostedByokRequest(**values)
+
+
+def test_wire_round_trips_exact_request_media_audio_roi_and_verdict_dtos():
+    from percept.hosted_byok import _wire_dumps, _wire_loads
+
+    request = _request(
+        provider="gemini",
+        model="gemini-3.5-flash",
+        capability="vision.judge.fused",
+    )
+    values = (
+        request,
+        "condition",
+        ("image/jpeg", b"jpeg"),
+        percept.Box(0.1, 0.2, 0.3, 0.4),
+        AudioFrame(pcm=b"\x01\x00", sample_rate=16_000),
+        Verdict(True, 0.9, "safe", usage={"input_tokens": 3}),
+    )
+    decoded = _wire_loads(_wire_dumps(values))
+    assert type(decoded) is tuple
+    assert type(decoded[0]) is HostedByokRequest
+    assert decoded[0].credential == SECRET_A
+    assert decoded[2] == ("image/jpeg", b"jpeg")
+    assert type(decoded[3]) is percept.Box
+    assert type(decoded[4]) is AudioFrame
+    assert type(decoded[5]) is Verdict
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'{"t":"str","t":"int","v":"x"}',
+        b'{"t":"str","v":"unterminated"',
+        b'{"t":"float","v":NaN}',
+        b'{"v":"x","t":"str"}',
+        b'{"t":"dict","v":[[{"t":"str","v":"x"},{"t":"int","v":1}],'
+        b'[{"t":"str","v":"x"},{"t":"int","v":2}]]}',
+    ],
+)
+def test_wire_rejects_duplicate_truncated_nonfinite_and_schema_poison(payload):
+    from percept.hosted_byok import _wire_loads
+
+    with pytest.raises(HostedByokInvocationError):
+        _wire_loads(payload)
+
+
+def test_wire_rejects_oversized_payload_before_json_decode():
+    from percept.hosted_byok import _wire_loads
+
+    with pytest.raises(HostedByokInvocationError):
+        _wire_loads(b"x" * (32 * 1024 * 1024 + 1))
+
+
+def test_credential_tainted_or_malicious_inputs_spend_zero_constructions():
+    constructions = 0
+
+    class Malicious:
+        def __reduce__(self):
+            raise AssertionError("reduce must never run")
+
+    def factory(request, timeout):
+        nonlocal constructions
+        constructions += 1
+        return _Backend()
+
+    hosted = HostedByokAdapterFactory(backend_factories={"openrouter": factory})
+    attempts = (
+        {"condition": SECRET_A, "frame": b"frame"},
+        {"condition": "condition", "frame": SECRET_A.encode()},
+        {"condition": "condition", "frame": b"frame", "context": {"safe": SECRET_A}},
+        {"condition": "condition", "frame": b"frame", "corrections": {"safe": SECRET_A}},
+        {"condition": "condition", "frame": b"frame", "roi": percept.Box(SECRET_A, 0, 1, 1)},
+        {"condition": "condition", "frame": b"frame", "context": {"bomb": Malicious()}},
+    )
+    for attempt in attempts:
+        call = dict(attempt)
+        condition = call.pop("condition")
+        frame = call.pop("frame")
+        with pytest.raises(HostedByokContractError):
+            asyncio.run(hosted.judge(_request(), condition, frame, **call))
+    assert constructions == 0
+
+
+def test_request_rejects_hostile_primitive_subclasses_before_serialization():
+    reduce_calls = 0
+
+    class HostileStr(str):
+        def __reduce__(self):
+            nonlocal reduce_calls
+            reduce_calls += 1
+            return (str, ("forged",))
+
+    with pytest.raises(HostedByokContractError, match="provider"):
+        _request(provider=HostileStr("openrouter"))
+    assert reduce_calls == 0
+
+
+def test_private_transport_classifier_ignores_public_method_poison(monkeypatch):
+    factory = HostedByokAdapterFactory()
+    monkeypatch.setattr(
+        HostedByokAdapterFactory,
+        "transport_safety",
+        lambda self, request: HostedByokTransportSafety(
+            request.provider, "forged", False, False
+        ),
+    )
+    with pytest.raises(HostedByokContractError, match="subprocess supervisor"):
+        asyncio.run(factory.judge(_request(), "condition", b"frame"))
+    with pytest.raises(TypeError, match="sealed"):
+        type("ForgedFactory", (HostedByokAdapterFactory,), {})
+
+
+def test_exact_subprocess_supervisor_and_factory_configuration_are_immutable():
+    supervisor = HostedByokSubprocessSupervisor()
+    factory = HostedByokAdapterFactory(process_supervisor=supervisor)
+    assert factory.transport_safety(_request()).production_ready
+    assert factory.transport_safety(_request()).process_isolation_version == "1.0.0"
+    with pytest.raises(AttributeError, match="immutable"):
+        supervisor._poll_interval_s = 99
+    with pytest.raises(AttributeError, match="immutable"):
+        factory._process_supervisor = None
+    with pytest.raises(TypeError, match="sealed"):
+        type("ForgedSupervisor", (HostedByokSubprocessSupervisor,), {})
+
+
+def test_factory_uses_frozen_supervisor_dispatch_after_class_poison(monkeypatch):
+    supervisor = HostedByokSubprocessSupervisor()
+    factory = HostedByokAdapterFactory(process_supervisor=supervisor)
+
+    async def poison(*args, **kwargs):
+        raise AssertionError("mutable public supervisor dispatch was used")
+
+    monkeypatch.setattr(HostedByokSubprocessSupervisor, "execute", poison)
+    with pytest.raises(HostedByokDeadlineExceeded):
+        asyncio.run(
+            factory.judge(
+                _request(timeout_s=0.001),
+                "condition",
+                b"frame",
+            )
+        )
 
 
 @pytest.mark.parametrize("provider", ["gemini", "openrouter"])
@@ -1596,10 +1957,10 @@ def test_compiled_fused_binding_captures_factory_route_before_poison_mutation(mo
         mode="fused",
         application_key="compiled-test",
     )
-    hosted._backend_factories["gemini"] = lambda request, timeout: (_ for _ in ()).throw(
-        AssertionError("poisoned route")
-    )
-    hosted._build_invocation = lambda *args: (_ for _ in ()).throw(AssertionError("poisoned helper"))
+    with pytest.raises(TypeError):
+        hosted._backend_factories["gemini"] = lambda request, timeout: _Backend()
+    with pytest.raises(AttributeError, match="immutable"):
+        hosted._build_invocation = lambda *args: _Backend()
     monkeypatch.setattr(
         HostedByokAdapterFactory,
         "_build_invocation",
@@ -1617,15 +1978,57 @@ def test_compiled_fused_binding_captures_factory_route_before_poison_mutation(mo
     assert routed == ["accepted"]
 
 
+def test_compiled_fused_binding_captures_exact_gemini_class_before_module_replacement(monkeypatch):
+    import percept.backends.gemini as gemini_module
+
+    clients = []
+
+    def client_factory(request, timeout):
+        client = _GeminiClient()
+        clients.append(client)
+        return HostedByokGeminiClient(client, _GeminiTypes)
+
+    hosted = HostedByokAdapterFactory(gemini_client_factory=client_factory)
+    vision = hosted.bind(
+        _request(
+            provider="gemini",
+            model="gemini-3.5-flash",
+            capability="vision.judge.fused",
+        )
+    )
+    binding = prepare_audio_judge_binding(
+        vision,
+        mode="fused",
+        application_key="sealed-gemini-class",
+    )
+
+    class PoisonGemini:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("live GeminiVision import was used")
+
+    monkeypatch.setattr(gemini_module, "GeminiVision", PoisonGemini)
+    verdict = asyncio.run(
+        binding.dispatch(
+            "condition",
+            b"frame",
+            audio=AudioFrame(pcm=b"\x01\x00", sample_rate=16_000),
+        )
+    )
+    assert not verdict.satisfied
+    assert len(clients) == 1
+
+
 def test_public_exports_are_cloud_usable():
     expected = {
         "HOSTED_BYOK_CONTRACT_VERSION",
+        "HOSTED_BYOK_PROCESS_ISOLATION_VERSION",
         "HostedByokRequest",
         "HostedByokAdapterFactory",
         "HostedByokVision",
         "HostedByokCancelled",
         "HostedByokDeadlineExceeded",
         "HostedByokProcessSupervisor",
+        "HostedByokSubprocessSupervisor",
         "HostedByokTransportSafety",
         "HostedByokUnsupportedError",
     }

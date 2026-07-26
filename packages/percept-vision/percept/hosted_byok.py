@@ -19,9 +19,14 @@ request-bound ``Vision`` adapter. It contains no provider resources or result ca
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextvars
 import inspect
+import json
 import math
+import multiprocessing
+import os
+import signal
 import time
 import weakref
 from collections.abc import Callable, Mapping
@@ -31,9 +36,10 @@ from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from .adapters import AudioFrame, Verdict
 from .config import Settings
-from .contracts import ClipEvent, SubjectRef
+from .contracts import Box, ClipEvent, SubjectRef
 
 HOSTED_BYOK_CONTRACT_VERSION = "1.0.0"
+HOSTED_BYOK_PROCESS_ISOLATION_VERSION = "1.0.0"
 HOSTED_BYOK_CAPABILITIES: Mapping[str, frozenset[str]] = {
     "gemini": frozenset({"vision.judge", "vision.judge.fused"}),
     "openrouter": frozenset({"vision.judge"}),
@@ -41,6 +47,27 @@ HOSTED_BYOK_CAPABILITIES: Mapping[str, frozenset[str]] = {
 _DEFAULT_TIMEOUT_S = 120.0
 _PROVIDER_FAILURE_CODE = "hosted_byok_provider_failure"
 _INJECTED_REUSE_CODE = "hosted_byok_injected_component_reused"
+_MAX_PROCESS_IPC_BYTES = 32 * 1024 * 1024
+_PROVIDER_ENV_KEYS = frozenset(
+    {
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GOOGLE_AISTUDIO_API_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "GOOGLE_GENAI_USE_VERTEXAI",
+        "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_CLOUD_LOCATION",
+        "OPENROUTER_API_KEY",
+        "OPENROUTER_KEY",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "OPENAI_ORG_ID",
+        "OPENAI_PROJECT_ID",
+        "PERCEPT_VISION_MODEL",
+        "PERCEPT_VISION_TIMEOUT_S",
+        "PERCEPT_STRIP_PROMPT",
+    }
+)
 _RESERVED_CONTEXT_KEYS = frozenset(
     {
         "process_qa",
@@ -51,21 +78,6 @@ _RESERVED_CONTEXT_KEYS = frozenset(
         "judge_static_context",
     }
 )
-
-
-def _task_cancellation_count(task: asyncio.Task[Any] | None) -> int:
-    """Return cancellation requests on every supported Python, without requiring 3.11 APIs."""
-
-    if task is None:
-        return 0
-    cancelling = getattr(task, "cancelling", None)
-    if not callable(cancelling):
-        return 0
-    try:
-        value = cancelling()
-    except Exception:
-        return 0
-    return value if type(value) is int and value >= 0 else 0
 
 
 _ACTIVE_INVOCATION_SCOPE: contextvars.ContextVar["_InvocationTaskScope | None"] = (
@@ -143,16 +155,16 @@ class _InvocationTaskScope:
     async def settle(self) -> bool:
         """Cancel and join every descendant task, including cancellation-suppressing workers."""
 
-        owner = asyncio.current_task()
-        cancelling_before = _task_cancellation_count(owner)
+        interrupted = False
         while True:
+            owner = asyncio.current_task()
             pending = [task for task in tuple(self.tasks) if task is not owner and not task.done()]
             if not pending:
-                return _task_cancellation_count(owner) > cancelling_before
+                return interrupted
             for task in pending:
                 task.cancel()
             for task in pending:
-                await _settle_owned_task(task, cancel=False)
+                interrupted |= await _settle_owned_task(task, cancel=False)
 
     def exit(self) -> None:
         if self._loop is not None and self._installation is not None:
@@ -183,7 +195,7 @@ class HostedByokDeadlineExceeded(HostedByokError, TimeoutError):
     """The invocation timeout or absolute deadline elapsed."""
 
 
-class HostedByokCancelled(asyncio.CancelledError):
+class HostedByokCancelled(HostedByokError):
     """The request's invocation-scoped cancellation signal fired."""
 
 
@@ -228,14 +240,33 @@ class HostedByokRequest:
     __hash__ = None
 
     def __post_init__(self) -> None:
-        for name in ("provider", "model", "credential_lease_id", "principal_id", "capability"):
+        for name in (
+            "provider",
+            "model",
+            "credential_lease_id",
+            "principal_id",
+            "capability",
+            "contract_version",
+        ):
             value = getattr(self, name)
-            if not isinstance(value, str) or not value or value != value.strip():
+            if type(value) is not str or not value or value != value.strip():
                 raise HostedByokContractError(
                     f"{name} must be a non-empty, whitespace-trimmed string."
                 )
-        if not isinstance(self.credential, str) or not self.credential:
+        if type(self.credential) is not str or not self.credential:
             raise HostedByokContractError("credential must be a non-empty opaque string.")
+        visible_fields = (
+            self.provider,
+            self.model,
+            self.credential_lease_id,
+            self.principal_id,
+            self.capability,
+            self.contract_version,
+        )
+        if any(self.credential in value for value in visible_fields):
+            raise HostedByokContractError(
+                "hosted BYOK routing and identity fields must not contain the credential."
+            )
         if self.contract_version != HOSTED_BYOK_CONTRACT_VERSION:
             raise HostedByokContractError(
                 f"unsupported hosted BYOK contract version {self.contract_version!r}; "
@@ -244,17 +275,14 @@ class HostedByokRequest:
         for name in ("timeout_s", "deadline_unix_s"):
             value = getattr(self, name)
             if value is not None and (
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
+                type(value) not in (int, float)
                 or not math.isfinite(float(value))
                 or float(value) <= 0
             ):
                 raise HostedByokContractError(f"{name} must be a finite positive number when set.")
-        if self.cancellation is not None and not isinstance(
-            self.cancellation, HostedByokCancellationSignal
-        ):
+        if self.cancellation is not None and type(self.cancellation) is not asyncio.Event:
             raise HostedByokContractError(
-                "cancellation must implement is_set() and async wait() (asyncio.Event is supported)."
+                "cancellation must be an exact asyncio.Event."
             )
 
     def __repr__(self) -> str:
@@ -286,9 +314,9 @@ HostedByokOpenRouterClientFactory = Callable[[HostedByokRequest, float], Any]
 
 @runtime_checkable
 class HostedByokProcessSupervisor(Protocol):
-    """Cloud-owned process-isolation supervisor for transports with foreign-work capability."""
+    """Typing protocol implemented by the exact SDK subprocess supervisor."""
 
-    def is_available(self) -> bool: ...
+    async def execute(self, *args: Any, **kwargs: Any) -> Verdict: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,6 +327,331 @@ class HostedByokTransportSafety:
     transport_class: str
     asyncio_task_contained: bool
     requires_process_supervisor: bool
+    process_isolation_version: str = HOSTED_BYOK_PROCESS_ISOLATION_VERSION
+    production_ready: bool = False
+
+
+def _wire_value(value: Any) -> dict[str, Any]:
+    """Encode exact approved carriers into a non-executable tagged JSON value."""
+
+    value_type = type(value)
+    if value is None:
+        return {"t": "none", "v": None}
+    if value_type is bool:
+        return {"t": "bool", "v": value}
+    if value_type is int:
+        return {"t": "int", "v": value}
+    if value_type is float and math.isfinite(value):
+        return {"t": "float", "v": value}
+    if value_type is str:
+        return {"t": "str", "v": value}
+    if value_type in (bytes, bytearray, memoryview):
+        return {
+            "t": {bytes: "bytes", bytearray: "bytearray", memoryview: "memoryview"}[value_type],
+            "v": base64.b64encode(bytes(value)).decode("ascii"),
+        }
+    if value_type in (list, tuple, set, frozenset):
+        encoded = [_wire_value(item) for item in value]
+        if value_type in (set, frozenset):
+            encoded.sort(key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")))
+        return {"t": value_type.__name__, "v": encoded}
+    if value_type is dict:
+        pairs = [[_wire_value(key), _wire_value(item)] for key, item in value.items()]
+        pairs.sort(key=lambda pair: json.dumps(pair[0], sort_keys=True, separators=(",", ":")))
+        return {"t": "dict", "v": pairs}
+    dto_types = (HostedByokRequest, AudioFrame, Box, ClipEvent, SubjectRef, Verdict)
+    if value_type in dto_types:
+        values = {
+            item.name: _wire_value(getattr(value, item.name))
+            for item in dataclass_fields(value_type)
+            if not (value_type is HostedByokRequest and item.name == "cancellation")
+        }
+        return {"t": f"dto:{value_type.__name__}", "v": values}
+    raise HostedByokContractError("hosted BYOK IPC contains an unsupported carrier.")
+
+
+def _wire_unvalue(value: Any) -> Any:
+    if type(value) is not dict or set(value) != {"t", "v"} or type(value["t"]) is not str:
+        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+    tag, payload = value["t"], value["v"]
+    if tag == "none" and payload is None:
+        return None
+    if tag == "bool" and type(payload) is bool:
+        return payload
+    if tag == "int" and type(payload) is int:
+        return payload
+    if tag == "float" and type(payload) is float and math.isfinite(payload):
+        return payload
+    if tag == "str" and type(payload) is str:
+        return payload
+    if tag in ("bytes", "bytearray", "memoryview") and type(payload) is str:
+        try:
+            raw = base64.b64decode(payload, validate=True)
+        except Exception:
+            raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
+        return {"bytes": raw, "bytearray": bytearray(raw), "memoryview": memoryview(raw)}[tag]
+    if tag in ("list", "tuple", "set", "frozenset") and type(payload) is list:
+        decoded = [_wire_unvalue(item) for item in payload]
+        if tag == "list":
+            return decoded
+        if tag == "tuple":
+            return tuple(decoded)
+        try:
+            unique = set(decoded)
+        except TypeError:
+            raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
+        if len(unique) != len(decoded):
+            raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+        return unique if tag == "set" else frozenset(unique)
+    if tag == "dict" and type(payload) is list:
+        decoded_dict = {}
+        for pair in payload:
+            if type(pair) is not list or len(pair) != 2:
+                raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+            key, item = _wire_unvalue(pair[0]), _wire_unvalue(pair[1])
+            try:
+                if key in decoded_dict:
+                    raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+                decoded_dict[key] = item
+            except TypeError:
+                raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
+        return decoded_dict
+    dto_map = {
+        "dto:HostedByokRequest": HostedByokRequest,
+        "dto:AudioFrame": AudioFrame,
+        "dto:Box": Box,
+        "dto:ClipEvent": ClipEvent,
+        "dto:SubjectRef": SubjectRef,
+        "dto:Verdict": Verdict,
+    }
+    dto_type = dto_map.get(tag)
+    if dto_type is not None and type(payload) is dict:
+        allowed = {item.name for item in dataclass_fields(dto_type)}
+        if dto_type is HostedByokRequest:
+            allowed.remove("cancellation")
+        if set(payload) != allowed:
+            raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+        kwargs = {name: _wire_unvalue(item) for name, item in payload.items()}
+        try:
+            return dto_type(**kwargs)
+        except Exception:
+            raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
+    raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+
+
+def _reject_duplicate_json_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+        result[key] = value
+    return result
+
+
+def _wire_dumps(value: Any) -> bytes:
+    try:
+        encoded = json.dumps(
+            _wire_value(value),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("ascii")
+    except HostedByokError:
+        raise
+    except Exception:
+        raise HostedByokContractError("hosted BYOK IPC encoding failed.") from None
+    if len(encoded) > _MAX_PROCESS_IPC_BYTES:
+        raise HostedByokContractError("hosted BYOK process payload exceeds the IPC limit.")
+    return encoded
+
+
+def _wire_loads(encoded: bytes) -> Any:
+    if type(encoded) is not bytes or len(encoded) > _MAX_PROCESS_IPC_BYTES:
+        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+    try:
+        parsed = json.loads(
+            encoded.decode("ascii"),
+            object_pairs_hook=_reject_duplicate_json_pairs,
+            parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()),
+        )
+    except Exception:
+        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
+    decoded = _wire_unvalue(parsed)
+    try:
+        canonical = _wire_dumps(decoded)
+    except HostedByokError:
+        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
+    if canonical != encoded:
+        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+    return decoded
+
+
+class HostedByokSubprocessSupervisor:
+    """Exact, immutable kill-and-join supervisor for production Hosted BYOK calls."""
+
+    __slots__ = ("_poll_interval_s", "_start_method", "_execute_impl", "_locked")
+
+    def __init__(self, *, poll_interval_s: float = 0.002) -> None:
+        if (
+            type(poll_interval_s) not in (int, float)
+            or not math.isfinite(float(poll_interval_s))
+            or float(poll_interval_s) <= 0
+        ):
+            raise HostedByokContractError("poll_interval_s must be a finite positive number.")
+        object.__setattr__(self, "_poll_interval_s", float(poll_interval_s))
+        object.__setattr__(self, "_start_method", "spawn")
+        implementation = HostedByokSubprocessSupervisor.__dict__["execute"]
+        frozen = FunctionType(
+            implementation.__code__,
+            dict(implementation.__globals__),
+            name=implementation.__name__,
+            argdefs=implementation.__defaults__,
+            closure=implementation.__closure__,
+        )
+        frozen.__kwdefaults__ = implementation.__kwdefaults__
+        object.__setattr__(self, "_execute_impl", MethodType(frozen, self))
+        object.__setattr__(self, "_locked", True)
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        raise TypeError("HostedByokSubprocessSupervisor is sealed.")
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if getattr(self, "_locked", False):
+            raise AttributeError("HostedByokSubprocessSupervisor is immutable.")
+        object.__setattr__(self, name, value)
+
+    async def execute(
+        self,
+        request: HostedByokRequest,
+        condition: str,
+        frame: Any,
+        *,
+        timeout_s: float,
+        roi: Any,
+        exemplar: Any,
+        corrections: dict | None,
+        frames: list | None,
+        audio: Any,
+        context: dict | None,
+    ) -> Verdict:
+        if type(self) is not HostedByokSubprocessSupervisor:
+            raise HostedByokContractError("process supervisor must be the exact SDK implementation.")
+        timeout_s = _positive_duration("timeout_s", timeout_s)
+        _validate_hosted_call_inputs(
+            request,
+            condition=condition,
+            frame=frame,
+            roi=roi,
+            exemplar=exemplar,
+            corrections=corrections,
+            frames=frames,
+            audio=audio,
+            context=context,
+        )
+        loop = asyncio.get_running_loop()
+        expires_at = loop.time() + timeout_s
+        # Deliver an already-queued caller cancellation before any credential-bearing child exists.
+        await asyncio.sleep(0)
+        if request.cancellation is not None and request.cancellation.is_set():
+            raise HostedByokCancelled()
+        if loop.time() >= expires_at:
+            raise HostedByokDeadlineExceeded(
+                "hosted BYOK invocation exceeded its effective deadline."
+            )
+        child_request = HostedByokRequest(
+            provider=request.provider,
+            model=request.model,
+            credential=request.credential,
+            credential_lease_id=request.credential_lease_id,
+            principal_id=request.principal_id,
+            capability=request.capability,
+            timeout_s=timeout_s,
+            deadline_unix_s=None,
+            cancellation=None,
+            contract_version=request.contract_version,
+        )
+        worker_values = (
+            child_request,
+            condition,
+            frame,
+            roi,
+            exemplar,
+            corrections,
+            frames,
+            audio,
+            context,
+        )
+        worker_payload = _wire_dumps(worker_values)
+        if request.cancellation is not None and request.cancellation.is_set():
+            raise HostedByokCancelled()
+        if loop.time() >= expires_at:
+            raise HostedByokDeadlineExceeded(
+                "hosted BYOK invocation exceeded its effective deadline."
+            )
+        mp_context = multiprocessing.get_context(self._start_method)
+        receive, send = mp_context.Pipe(duplex=False)
+        process = mp_context.Process(
+            target=_hosted_byok_process_entry,
+            args=(send, worker_payload),
+            daemon=False,
+        )
+        try:
+            process.start()
+        except Exception:
+            receive.close()
+            send.close()
+            raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
+        send.close()
+        try:
+            while True:
+                if request.cancellation is not None and request.cancellation.is_set():
+                    raise HostedByokCancelled()
+                if receive.poll():
+                    try:
+                        outcome = _wire_loads(
+                            receive.recv_bytes(maxlength=_MAX_PROCESS_IPC_BYTES + 1)
+                        )
+                    except (EOFError, OSError):
+                        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
+                    if request.cancellation is not None and request.cancellation.is_set():
+                        raise HostedByokCancelled()
+                    if loop.time() >= expires_at:
+                        raise HostedByokDeadlineExceeded(
+                            "hosted BYOK invocation exceeded its effective deadline."
+                        )
+                    if type(outcome) is not tuple or len(outcome) != 2:
+                        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+                    kind, payload = outcome
+                    if type(kind) is not str:
+                        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+                    if kind == "ok" and type(payload) is Verdict:
+                        if not _verdict_is_credential_free(payload, request.credential):
+                            raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+                        return payload
+                    if type(payload) is not str or request.credential in payload:
+                        raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+                    if kind == "deadline":
+                        raise HostedByokDeadlineExceeded(
+                            "hosted BYOK invocation exceeded its effective deadline."
+                        )
+                    if kind == "cancelled" and not payload:
+                        raise HostedByokCancelled()
+                    if kind == "unsupported":
+                        raise HostedByokUnsupportedError(payload)
+                    if kind == "contract":
+                        raise HostedByokContractError(payload)
+                    raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+                if not process.is_alive():
+                    raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+                if loop.time() >= expires_at:
+                    raise HostedByokDeadlineExceeded(
+                        "hosted BYOK invocation exceeded its effective deadline."
+                    )
+                await asyncio.sleep(self._poll_interval_s)
+        finally:
+            receive.close()
+            _kill_and_join_process(process)
 
 
 @dataclass(slots=True)
@@ -310,14 +663,15 @@ class _Invocation:
 async def _settle_owned_task(task: asyncio.Future[Any], *, cancel: bool) -> bool:
     """Optionally cancel one owned task and wait for its actual terminal state."""
 
-    owner = asyncio.current_task()
-    cancelling_before = _task_cancellation_count(owner)
+    interrupted = False
     if cancel and not task.done():
         task.cancel()
     while not task.done():
         try:
             await asyncio.shield(task)
         except asyncio.CancelledError:
+            if not task.done():
+                interrupted = True
             continue
         except Exception:
             break
@@ -327,7 +681,34 @@ async def _settle_owned_task(task: asyncio.Future[Any], *, cancel: bool) -> bool
         pass
     except Exception:
         pass
-    return _task_cancellation_count(owner) > cancelling_before
+    return interrupted
+
+
+def _classify_transport_safety(
+    factory: "HostedByokAdapterFactory", request: HostedByokRequest
+) -> HostedByokTransportSafety:
+    if type(factory) is not HostedByokAdapterFactory:
+        raise HostedByokContractError("factory must be the exact SDK HostedByokAdapterFactory.")
+    HostedByokAdapterFactory._validate_route(request)
+    injected = (
+        request.provider in factory._backend_factories
+        or (request.provider == "gemini" and factory._gemini_client_factory is not None)
+        or (request.provider == "openrouter" and factory._openrouter_client_factory is not None)
+    )
+    if injected:
+        return HostedByokTransportSafety(
+            provider=request.provider,
+            transport_class="test_only_in_process",
+            asyncio_task_contained=True,
+            requires_process_supervisor=False,
+        )
+    return HostedByokTransportSafety(
+        provider=request.provider,
+        transport_class="production_process_isolated",
+        asyncio_task_contained=False,
+        requires_process_supervisor=True,
+        production_ready=type(factory._process_supervisor) is HostedByokSubprocessSupervisor,
+    )
 
 
 class HostedByokAdapterFactory:
@@ -339,6 +720,14 @@ class HostedByokAdapterFactory:
     Client factories exercise the real Percept provider adapters while replacing only vendor transport.
     """
 
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        raise TypeError("HostedByokAdapterFactory is sealed.")
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if getattr(self, "_locked", False):
+            raise AttributeError("HostedByokAdapterFactory configuration is immutable.")
+        object.__setattr__(self, name, value)
+
     def __init__(
         self,
         *,
@@ -347,80 +736,50 @@ class HostedByokAdapterFactory:
         openrouter_client_factory: HostedByokOpenRouterClientFactory | None = None,
         time_fn: Callable[[], float] = time.time,
         monotonic_fn: Callable[[], float] = time.monotonic,
-        require_process_supervisor_for_foreign_work: bool = False,
         process_supervisor: HostedByokProcessSupervisor | None = None,
     ) -> None:
+        from .backends.gemini import GeminiVision, _require_genai
+        from .backends.openrouter import OpenRouterVision, _OPENROUTER_BASE_URL, _require_openai
+
         overrides = dict(backend_factories or {})
         unknown = sorted(set(overrides) - set(HOSTED_BYOK_CAPABILITIES))
         if unknown:
             raise HostedByokContractError(
                 f"unsupported hosted BYOK backend factory provider(s): {unknown!r}."
             )
-        self._backend_factories = overrides
+        self._backend_factories = MappingProxyType(overrides)
         self._gemini_client_factory = gemini_client_factory
         self._openrouter_client_factory = openrouter_client_factory
         self._time_fn = time_fn
         self._monotonic_fn = monotonic_fn
-        if type(require_process_supervisor_for_foreign_work) is not bool:
+        self._gemini_backend_class = GeminiVision
+        self._gemini_require_genai = _require_genai
+        self._openrouter_backend_class = OpenRouterVision
+        self._openrouter_require_openai = _require_openai
+        self._openrouter_base_url = _OPENROUTER_BASE_URL
+        if process_supervisor is not None and type(process_supervisor) is not HostedByokSubprocessSupervisor:
             raise HostedByokContractError(
-                "require_process_supervisor_for_foreign_work must be an exact bool."
+                "process_supervisor must be an exact HostedByokSubprocessSupervisor."
             )
-        if process_supervisor is not None and not isinstance(
-            process_supervisor, HostedByokProcessSupervisor
-        ):
-            raise HostedByokContractError(
-                "process_supervisor must implement is_available() when supplied."
-            )
-        self._require_process_supervisor_for_foreign_work = (
-            require_process_supervisor_for_foreign_work
-        )
         self._process_supervisor = process_supervisor
         # Weak identity claims enforce the fresh-object contract without retaining clients/backends
         # (and therefore without turning this factory into a resource cache).
         self._injected_claims: dict[int, weakref.ReferenceType[Any]] = {}
+        self._locked = True
 
     def transport_safety(self, request: HostedByokRequest) -> HostedByokTransportSafety:
         """Classify whether this route needs a Cloud process supervisor before it may execute."""
 
-        self._validate_route(request)
-        injected = (
-            request.provider in self._backend_factories
-            or (
-                request.provider == "gemini" and self._gemini_client_factory is not None
-            )
-            or (
-                request.provider == "openrouter" and self._openrouter_client_factory is not None
-            )
-        )
-        if injected:
-            return HostedByokTransportSafety(
-                provider=request.provider,
-                transport_class="injected_foreign_work",
-                asyncio_task_contained=True,
-                requires_process_supervisor=True,
-            )
-        return HostedByokTransportSafety(
-            provider=request.provider,
-            transport_class="sdk_async_allowlist",
-            asyncio_task_contained=True,
-            requires_process_supervisor=False,
-        )
+        return _classify_transport_safety(self, request)
 
     def _assert_transport_permitted(self, request: HostedByokRequest) -> None:
-        safety = self.transport_safety(request)
-        if not (
-            self._require_process_supervisor_for_foreign_work
-            and safety.requires_process_supervisor
-        ):
+        safety = _classify_transport_safety(self, request)
+        if not safety.requires_process_supervisor:
             return
         supervisor = self._process_supervisor
-        try:
-            available = supervisor is not None and supervisor.is_available()
-        except Exception:
-            available = False
-        if available is not True:
+        if type(supervisor) is not HostedByokSubprocessSupervisor:
             raise HostedByokContractError(
-                "hosted BYOK foreign-work transport requires an available Cloud process supervisor."
+                "hosted BYOK production transport requires an exact subprocess supervisor."
             )
 
     def bind(self, request: HostedByokRequest) -> "HostedByokVision":
@@ -456,6 +815,7 @@ class HostedByokAdapterFactory:
             "_claim_injected",
             "transport_safety",
             "_assert_transport_permitted",
+            "_judge_in_process",
         )
         static_names = ("_validate_route", "_settle_task", "_close_invocation")
         captured = {}
@@ -470,9 +830,11 @@ class HostedByokAdapterFactory:
         snapshot._openrouter_client_factory = self._openrouter_client_factory
         snapshot._time_fn = self._time_fn
         snapshot._monotonic_fn = self._monotonic_fn
-        snapshot._require_process_supervisor_for_foreign_work = (
-            self._require_process_supervisor_for_foreign_work
-        )
+        snapshot._gemini_backend_class = self._gemini_backend_class
+        snapshot._gemini_require_genai = self._gemini_require_genai
+        snapshot._openrouter_backend_class = self._openrouter_backend_class
+        snapshot._openrouter_require_openai = self._openrouter_require_openai
+        snapshot._openrouter_base_url = self._openrouter_base_url
         snapshot._process_supervisor = self._process_supervisor
         snapshot._injected_claims = {}
 
@@ -509,13 +871,13 @@ class HostedByokAdapterFactory:
         )
         setattr(frozen_class, "_close_invocation", staticmethod(frozen_static["_close_invocation"]))
         globals_extra = {
-            "HostedByokAdapterFactory": frozen_class,
             "_settings_for_model": frozen_settings,
         }
         for name in method_names:
             setattr(snapshot, name, MethodType(freeze(captured[name], globals_extra=globals_extra), snapshot))
         for name, implementation in frozen_static.items():
             setattr(snapshot, name, implementation)
+        snapshot._locked = True
 
         async def dispatch(*args: Any, **kwargs: Any) -> Verdict:
             return await snapshot.judge(request, *args, **kwargs)
@@ -523,6 +885,75 @@ class HostedByokAdapterFactory:
         return dispatch
 
     async def judge(
+        self,
+        request: HostedByokRequest,
+        condition: str,
+        frame: Any,
+        *,
+        roi: Any = None,
+        exemplar: Any = None,
+        corrections: dict | None = None,
+        frames: list | None = None,
+        audio: Any = None,
+        context: dict | None = None,
+    ) -> Verdict:
+        """Dispatch production routes only through the exact kill-and-join process supervisor."""
+
+        if type(self) is not HostedByokAdapterFactory:
+            raise HostedByokContractError("factory must be the exact SDK HostedByokAdapterFactory.")
+        _validate_hosted_call_inputs(
+            request,
+            condition=condition,
+            frame=frame,
+            roi=roi,
+            exemplar=exemplar,
+            corrections=corrections,
+            frames=frames,
+            audio=audio,
+            context=context,
+        )
+        timeout_s = self._preflight(
+            request,
+            frame=frame,
+            exemplar=exemplar,
+            frames=frames,
+            audio=audio,
+            context=context,
+        )
+        safety = _classify_transport_safety(self, request)
+        if safety.requires_process_supervisor:
+            self._assert_transport_permitted(request)
+            supervisor = self._process_supervisor
+            assert type(supervisor) is HostedByokSubprocessSupervisor
+            return await supervisor._execute_impl(
+                request,
+                condition,
+                frame,
+                timeout_s=timeout_s,
+                roi=roi,
+                exemplar=exemplar,
+                corrections=corrections,
+                frames=frames,
+                audio=audio,
+                context=context,
+            )
+        if self._process_supervisor is not None:
+            raise HostedByokContractError(
+                "injected Hosted BYOK transports are test-only and cannot enter production mode."
+            )
+        return await self._judge_in_process(
+            request,
+            condition,
+            frame,
+            roi=roi,
+            exemplar=exemplar,
+            corrections=corrections,
+            frames=frames,
+            audio=audio,
+            context=context,
+        )
+
+    async def _judge_in_process(
         self,
         request: HostedByokRequest,
         condition: str,
@@ -573,12 +1004,9 @@ class HostedByokAdapterFactory:
                 )
             if request.cancellation is not None and request.cancellation.is_set():
                 raise HostedByokCancelled()
-            current = asyncio.current_task()
-            if _task_cancellation_count(current):
-                # A caller cancellation requested while synchronous construction was running must
-                # spend zero provider calls. Raising explicitly reaches the same completion/teardown
-                # path without first yielding to a newly created provider task.
-                raise asyncio.CancelledError()
+            # Python 3.10 has no public pending-cancellation counter. Yield once after synchronous
+            # construction so a queued caller cancellation is delivered before provider dispatch.
+            await asyncio.sleep(0)
             judge = getattr(invocation.backend, "judge", None)
             if not callable(judge):
                 raise HostedByokUnsupportedError(
@@ -689,7 +1117,6 @@ class HostedByokAdapterFactory:
         context: dict | None,
     ) -> float:
         self._validate_route(request)
-        self._assert_transport_permitted(request)
         if not _is_hosted_image(frame):
             if request.capability == "vision.judge.fused":
                 raise HostedByokUnsupportedError(
@@ -803,8 +1230,6 @@ class HostedByokAdapterFactory:
         timeout_s: float,
         invocation: _Invocation,
     ) -> None:
-        from .backends.gemini import GeminiVision, _require_genai
-
         settings = _settings_for_model(request.model)
         if self._gemini_client_factory is not None:
             try:
@@ -816,7 +1241,7 @@ class HostedByokAdapterFactory:
                     "gemini_client_factory must return HostedByokGeminiClient."
                 )
         else:
-            genai, types = _require_genai()
+            genai, types = self._gemini_require_genai()
             client = genai.Client(
                 api_key=request.credential,
                 http_options=types.HttpOptions(timeout=max(1, int(timeout_s * 1000))),
@@ -825,7 +1250,7 @@ class HostedByokAdapterFactory:
         invocation.client = binding.client
         if self._gemini_client_factory is not None:
             self._claim_injected(binding.client)
-        backend = GeminiVision(
+        backend = self._gemini_backend_class(
             settings,
             client=binding.client,
             transport_types=binding.transport_types,
@@ -843,12 +1268,6 @@ class HostedByokAdapterFactory:
         timeout_s: float,
         invocation: _Invocation,
     ) -> None:
-        from .backends.openrouter import (
-            OpenRouterVision,
-            _OPENROUTER_BASE_URL,
-            _require_openai,
-        )
-
         settings = _settings_for_model(request.model)
         if self._openrouter_client_factory is not None:
             try:
@@ -856,9 +1275,9 @@ class HostedByokAdapterFactory:
             except Exception:
                 raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
         else:
-            AsyncOpenAI = _require_openai()
+            AsyncOpenAI = self._openrouter_require_openai()
             client = AsyncOpenAI(
-                base_url=_OPENROUTER_BASE_URL,
+                base_url=self._openrouter_base_url,
                 api_key=request.credential,
                 timeout=timeout_s,
                 default_headers={
@@ -869,7 +1288,7 @@ class HostedByokAdapterFactory:
         invocation.client = client
         if self._openrouter_client_factory is not None:
             self._claim_injected(client)
-        backend = OpenRouterVision(settings, client=client, timeout_s=timeout_s)
+        backend = self._openrouter_backend_class(settings, client=client, timeout_s=timeout_s)
         invocation.backend = backend
         if backend._model != request.model:
             raise HostedByokUnsupportedError(
@@ -913,8 +1332,6 @@ class HostedByokAdapterFactory:
     async def _close_invocation(invocation: _Invocation) -> tuple[bool, bool]:
         """Close every acquired component to actual completion, without threads or orphan tasks."""
 
-        owner = asyncio.current_task()
-        cancelling_before = _task_cancellation_count(owner)
         interrupted = False
         failed = False
         seen: set[int] = set()
@@ -960,7 +1377,7 @@ class HostedByokAdapterFactory:
                 failed = True
             except Exception:
                 failed = True
-        return interrupted or (_task_cancellation_count(owner) > cancelling_before), failed
+        return interrupted, failed
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -1015,6 +1432,86 @@ class HostedByokVision:
         )
 
 
+def _kill_and_join_process(process: multiprocessing.Process) -> None:
+    """Synchronously establish the worker's terminal OS state before an outcome is released."""
+
+    group_kill_failed = False
+    try:
+        group_killed = False
+        # Signal the worker's dedicated session even if its leader has just exited. A raw child
+        # process can outlive that leader, and consulting ``is_alive`` first would reap/skip the
+        # exact process group that still owns the descendant.
+        if process.pid is not None and hasattr(os, "killpg"):
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+                group_killed = True
+            except ProcessLookupError:
+                pass
+            except OSError:
+                group_kill_failed = True
+        if not group_killed and process.is_alive():
+            process.kill()
+        process.join()
+        if group_kill_failed or process.is_alive():
+            raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+    except (AssertionError, OSError, ValueError):
+        if process.is_alive():
+            process.kill()
+        process.join()
+
+
+def _scrub_provider_environment() -> None:
+    for key in _PROVIDER_ENV_KEYS:
+        os.environ.pop(key, None)
+
+
+def _hosted_byok_process_entry(
+    send: Any,
+    worker_payload: bytes,
+) -> None:
+    """Child entrypoint. The parent always kills and joins this process after receiving the outcome."""
+
+    if hasattr(os, "setsid"):
+        os.setsid()
+    _scrub_provider_environment()
+
+    async def run() -> Verdict:
+        values = _wire_loads(worker_payload)
+        if type(values) is not tuple or len(values) != 9:
+            raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+        request, condition, frame, roi, exemplar, corrections, frames, audio, context = values
+        if type(request) is not HostedByokRequest:
+            raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+        factory = HostedByokAdapterFactory()
+        return await factory._judge_in_process(
+            request,
+            condition,
+            frame,
+            roi=roi,
+            exemplar=exemplar,
+            corrections=corrections,
+            frames=frames,
+            audio=audio,
+            context=context,
+        )
+
+    try:
+        result = asyncio.run(run())
+        send.send_bytes(_wire_dumps(("ok", result)))
+    except HostedByokDeadlineExceeded as exc:
+        send.send_bytes(_wire_dumps(("deadline", str(exc))))
+    except HostedByokCancelled:
+        send.send_bytes(_wire_dumps(("cancelled", "")))
+    except HostedByokUnsupportedError as exc:
+        send.send_bytes(_wire_dumps(("unsupported", str(exc))))
+    except HostedByokContractError as exc:
+        send.send_bytes(_wire_dumps(("contract", str(exc))))
+    except BaseException:
+        send.send_bytes(_wire_dumps(("failure", _PROVIDER_FAILURE_CODE)))
+    finally:
+        send.close()
+
+
 def _settings_for_model(model: str) -> Settings:
     """Construct explicit defaults without calling the environment-backed ``load_settings``."""
 
@@ -1024,8 +1521,7 @@ def _settings_for_model(model: str) -> Settings:
 
 def _positive_duration(name: str, value: float) -> float:
     if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
+        type(value) not in (int, float)
         or not math.isfinite(float(value))
         or float(value) <= 0
     ):
@@ -1033,23 +1529,91 @@ def _positive_duration(name: str, value: float) -> float:
     return float(value)
 
 
+def _validate_hosted_call_inputs(
+    request: HostedByokRequest,
+    *,
+    condition: Any,
+    frame: Any,
+    roi: Any,
+    exemplar: Any,
+    corrections: Any,
+    frames: Any,
+    audio: Any,
+    context: Any,
+) -> None:
+    if type(request) is not HostedByokRequest:
+        raise HostedByokContractError(
+            "request must be an immutable HostedByokRequest; implicit configuration is unsupported."
+        )
+    if type(condition) is not str or not condition or condition != condition.strip():
+        raise HostedByokContractError("condition must be an exact non-empty trimmed string.")
+    if roi is not None and (
+        type(roi) is not Box
+        or any(
+            type(value) not in (int, float) or not math.isfinite(float(value))
+            for value in (roi.x, roi.y, roi.w, roi.h)
+        )
+    ):
+        raise HostedByokContractError("roi must be an exact finite Box when supplied.")
+    if corrections is not None and (
+        type(corrections) is not dict
+        or any(type(key) is not str or type(value) is not str for key, value in corrections.items())
+    ):
+        raise HostedByokContractError("corrections must be an exact string-to-string dict.")
+    if context is not None:
+        if type(context) is not dict or any(type(key) is not str for key in context):
+            raise HostedByokContractError("context must be an exact string-keyed dict.")
+        # Run the exact-carrier encoder before any child exists. It never calls repr/getters/reduce.
+        _wire_value(context)
+    checked = (condition, frame, roi, exemplar, corrections, frames, audio, context)
+    if any(_input_contains_credential(value, request.credential) for value in checked):
+        raise HostedByokContractError("hosted BYOK call inputs must not contain the credential.")
+
+
+def _input_contains_credential(value: Any, credential: str) -> bool:
+    credential_bytes = credential.encode("utf-8", errors="surrogatepass")
+    value_type = type(value)
+    if value is None or value_type in (bool, int, float):
+        return False
+    if value_type is str:
+        return credential in value
+    if value_type in (bytes, bytearray, memoryview):
+        return credential_bytes in bytes(value)
+    if value_type in (list, tuple, set, frozenset):
+        return any(_input_contains_credential(item, credential) for item in value)
+    if value_type is dict:
+        return any(
+            _input_contains_credential(key, credential)
+            or _input_contains_credential(item, credential)
+            for key, item in value.items()
+        )
+    if value_type in (AudioFrame, Box):
+        return any(
+            _input_contains_credential(getattr(value, item.name), credential)
+            for item in dataclass_fields(value_type)
+        )
+    return True
+
+
 def _is_hosted_image(value: Any) -> bool:
     """Whether ``value`` is one exact image carrier supported by both hosted adapters."""
 
-    if isinstance(value, (bytes, bytearray)):
+    if type(value) in (bytes, bytearray):
         return bool(value)
     if (
         type(value) is tuple
         and len(value) == 2
         and type(value[0]) is str
         and value[0].strip().lower().startswith("image/")
-        and isinstance(value[1], (bytes, bytearray))
+        and type(value[1]) in (bytes, bytearray)
     ):
         return bool(value[1])
-    if type(value) is dict and value.get("type") == "image":
+    if type(value) is dict and set(value) == {"type", "source"} and value.get("type") == "image":
         source = value.get("source")
         return (
             type(source) is dict
+            and set(source) == {"type", "media_type", "data"}
+            and source.get("type") == "base64"
             and type(source.get("media_type")) is str
             and source["media_type"].strip().lower().startswith("image/")
             and type(source.get("data")) is str
@@ -1113,7 +1677,7 @@ def _audio_bounds_are_valid(value: AudioFrame) -> bool:
 def _verdict_is_credential_free(verdict: Verdict, credential: str) -> bool:
     """Recursively inspect the complete public Verdict carrier without rendering attacker values."""
 
-    secret_bytes = credential.encode("utf-8")
+    secret_bytes = credential.encode("utf-8", errors="surrogatepass")
     seen: set[int] = set()
 
     def contains(value: Any) -> bool:
@@ -1149,10 +1713,12 @@ def _verdict_is_credential_free(verdict: Verdict, credential: str) -> bool:
 
 __all__ = [
     "HOSTED_BYOK_CONTRACT_VERSION",
+    "HOSTED_BYOK_PROCESS_ISOLATION_VERSION",
     "HOSTED_BYOK_CAPABILITIES",
     "HostedByokRequest",
     "HostedByokCancellationSignal",
     "HostedByokProcessSupervisor",
+    "HostedByokSubprocessSupervisor",
     "HostedByokTransportSafety",
     "HostedByokGeminiClient",
     "HostedByokAdapterFactory",

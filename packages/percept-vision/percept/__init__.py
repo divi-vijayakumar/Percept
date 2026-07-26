@@ -181,6 +181,7 @@ from .provider import (  # noqa: E402
 from .hosted_byok import (  # noqa: E402
     HOSTED_BYOK_CAPABILITIES,
     HOSTED_BYOK_CONTRACT_VERSION,
+    HOSTED_BYOK_PROCESS_ISOLATION_VERSION,
     HostedByokAdapterFactory,
     HostedByokCancellationSignal,
     HostedByokCancelled,
@@ -191,6 +192,7 @@ from .hosted_byok import (  # noqa: E402
     HostedByokInvocationError,
     HostedByokProcessSupervisor,
     HostedByokRequest,
+    HostedByokSubprocessSupervisor,
     HostedByokTransportSafety,
     HostedByokUnsupportedError,
     HostedByokVision,
@@ -300,6 +302,7 @@ __all__ = [
     "ProviderError",
     # explicit per-invocation hosted BYOK (never environment-backed)
     "HOSTED_BYOK_CONTRACT_VERSION",
+    "HOSTED_BYOK_PROCESS_ISOLATION_VERSION",
     "HOSTED_BYOK_CAPABILITIES",
     "HostedByokRequest",
     "HostedByokCancellationSignal",
@@ -313,6 +316,7 @@ __all__ = [
     "HostedByokCancelled",
     "HostedByokInvocationError",
     "HostedByokProcessSupervisor",
+    "HostedByokSubprocessSupervisor",
     "HostedByokTransportSafety",
     # DTOs
     "Box",
