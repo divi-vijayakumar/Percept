@@ -64,13 +64,36 @@ class SamplingControllerTests(unittest.TestCase):
         self.assertTrue(c.should_process("g", 0.2, 0.0))  # post-reset processes immediately
 
     def test_sense_firewall_keeps_valid_drops_garbage_and_clamps(self):
-        ok = coerce_authored_sense({"base_fps": 4, "max_fps": 15, "escalate_threshold": 0.2})
-        self.assertEqual(ok["sense"], {"base_fps": 4.0, "max_fps": 15.0, "escalate_threshold": 0.2})
+        ok = coerce_authored_sense(
+            {
+                "base_fps": 4,
+                "max_fps": 15,
+                "escalate_threshold": 0.2,
+                "brief_window_s": 1.0,
+            }
+        )
+        self.assertEqual(
+            ok["sense"],
+            {
+                "base_fps": 4.0,
+                "max_fps": 15.0,
+                "escalate_threshold": 0.2,
+                "brief_window_s": 1.0,
+            },
+        )
         # inverted envelope is repaired (max >= base), out-of-range threshold dropped, rates clamped to 60.
         fixed = coerce_authored_sense({"base_fps": 30, "max_fps": 2, "escalate_threshold": 5})
         self.assertGreaterEqual(fixed["sense"]["max_fps"], fixed["sense"]["base_fps"])
         self.assertNotIn("escalate_threshold", fixed["sense"])
         self.assertEqual(coerce_authored_sense({"base_fps": 999})["sense"]["base_fps"], 60.0)
+        self.assertEqual(
+            coerce_authored_sense({"brief_window_s": 0.001})["sense"]["brief_window_s"],
+            2.0 / 60.0,
+        )
+        self.assertEqual(
+            coerce_authored_sense({"brief_window_s": 999})["sense"]["brief_window_s"],
+            30.0,
+        )
         self.assertEqual(coerce_authored_sense("nope"), {})
         self.assertEqual(coerce_authored_sense({"base_fps": -1}), {})
 

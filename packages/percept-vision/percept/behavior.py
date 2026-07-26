@@ -1759,6 +1759,10 @@ def coerce_authored_episode(raw) -> dict:
 
 
 _MAX_SENSE_FPS = 60.0  # a per-concern processing rate can't exceed the capture ceiling / busy-loop the eye
+# ``sensorplan._sensitive_cadence`` asks for two samples inside a brief window. At the 60 fps
+# processing ceiling, anything shorter than 2/60 s cannot be represented safely; clamp instead of
+# allowing a tiny authored duration to manufacture an unbounded derived cadence.
+_MIN_BRIEF_WINDOW_S = 2.0 / _MAX_SENSE_FPS
 
 
 def coerce_authored_sense(raw) -> dict:
@@ -1783,6 +1787,12 @@ def coerce_authored_sense(raw) -> dict:
     thr = _num(raw.get("escalate_threshold"))
     if thr is not None and 0.0 <= thr <= 1.0:
         spec["escalate_threshold"] = thr
+    brief = _num(raw.get("brief_window_s"))
+    if brief is not None and brief > 0:
+        spec["brief_window_s"] = min(
+            _MAX_WINDOW_S,
+            max(_MIN_BRIEF_WINDOW_S, brief),
+        )
     return {"sense": spec} if spec else {}
 
 

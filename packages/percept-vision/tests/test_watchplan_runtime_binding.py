@@ -30,6 +30,7 @@ from percept.runtime.envelope import (
     legacy_audio_envelope,
     legacy_video_envelope,
 )
+from percept.sensorplan import sensor_plan_for
 from percept.sourceprofile import (
     DEFAULT_SOURCE_REGISTRY,
     SourceProfile,
@@ -155,6 +156,38 @@ async def _collect(core: Percept, source, **kwargs):
 
 
 class WatchPlanCompilationTests(unittest.TestCase):
+    def test_brief_window_compiles_through_the_public_watch_path(self) -> None:
+        core = Percept.create(vision=FakeVision(), discover_plugins=False)
+        receipt = apply_watch_plan(
+            core,
+            WatchPlan(
+                id="brief-action",
+                condition="someone performs one brief action",
+                sense="video",
+                rearm="each_event",
+                explicit={
+                    "Goal.state.sense.brief_window_s": 1.0,
+                    "Goal.state.perception.temporal": "strip",
+                    "Goal.state.perception.n_frames": 5,
+                    "Goal.state.perception.sampling": "uniform",
+                    "Goal.state.perception.window_s": 2.0,
+                    "WatchProfile.salience_stat": "block_max",
+                },
+            ),
+        )
+
+        self.assertEqual(receipt.status, "applied")
+        self.assertEqual(receipt.watch_ids, ("brief-action",))
+        goal = core.goals.get("brief-action")
+        self.assertEqual(goal.state["sense"]["brief_window_s"], 1.0)
+        self.assertEqual(goal.state["rearm"], "each_event")
+        self.assertEqual(sensor_plan_for(goal).cadence["brief_window_s"], 1.0)
+        perception = program_of(goal).perception
+        self.assertEqual(perception.temporal, "strip")
+        self.assertEqual(perception.n_frames, 5)
+        self.assertEqual(perception.sampling, "uniform")
+        self.assertEqual(perception.window_s, 2.0)
+
     def test_supported_media_senses_compile_into_the_existing_perception_program(self) -> None:
         core = Percept.create(vision=FakeVision(), discover_plugins=False)
         expected = {

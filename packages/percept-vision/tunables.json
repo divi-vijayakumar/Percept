@@ -815,6 +815,24 @@
     },
     {
       "bounds": [
+        0.03333333333333333,
+        30.0
+      ],
+      "choices": null,
+      "default": null,
+      "env_var": null,
+      "note": "expected duration of a brief event; derives a bounded above-Nyquist sensing cadence without reading benchmark annotations.",
+      "owner": "WatchPlan",
+      "path": "Goal.state.sense.brief_window_s",
+      "requires_recompile": false,
+      "requires_restart": false,
+      "risk": "medium",
+      "safe_to_optimize": false,
+      "value_type": "float",
+      "visibility": "public"
+    },
+    {
+      "bounds": [
         0.0,
         1.0
       ],

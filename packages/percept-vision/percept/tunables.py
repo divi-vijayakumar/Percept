@@ -670,6 +670,15 @@ _GOAL_STATE: tuple[TunableSpec, ...] = (
         safe_to_optimize=False, default=None, value_type="float", bounds=(0.0, 1.0), risk="low",
         note="motion level that triggers the per-concern saccade to max_fps.",
     ),
+    TunableSpec(
+        path="Goal.state.sense.brief_window_s", owner="WatchPlan", visibility="public",
+        safe_to_optimize=False, default=None, value_type="float",
+        bounds=(1.0 / 30.0, 30.0), risk="medium",
+        note=(
+            "expected duration of a brief event; derives a bounded above-Nyquist sensing cadence "
+            "without reading benchmark annotations."
+        ),
+    ),
     # -- goal.state["perception"] (coerce_authored_perception)
     TunableSpec(
         path="Goal.state.perception.modality", owner="WatchPlan", visibility="public",

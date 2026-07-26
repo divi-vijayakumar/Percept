@@ -277,9 +277,9 @@ class WatchPlan:
       ``percept.contracts.Schedule``, or ``None`` (always armed).
     - ``explicit`` — the field-level overrides this plan authors, keyed by the SAME dotted path
       vocabulary :class:`percept.tunables.TunableSpec.path` uses (e.g.
-      ``{"Settings.edge.salience_stat": "block_max"}``). This is the ADR's own worked example of
-      "explicit user intent" and is what :mod:`percept.resolver` reads to apply the
-      highest-precedence tier.
+      ``{"WatchProfile.salience_stat": "block_max"}``). This is explicit per-Watch intent and is
+      what :mod:`percept.resolver` reads to apply the highest-precedence tier; the corresponding
+      deployment runtime path remains SourceProfile-owned.
     - ``source`` — the frame-source key (``watch.source``'s own WatchPlan-ownership example).
     - ``profile`` — the ``WatchProfile``/``SourceProfile`` selection name a caller passes, or
       ``None``.
