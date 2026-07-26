@@ -52,7 +52,13 @@ def _backend_label(live: bool) -> str:
     return os.environ.get("PERCEPT_VISION_MODEL") or os.environ.get("PERCEPT_GEMINI_MODEL") or "gemini"
 
 
-def _live_prerequisite_blockers(*, manifest: str | None, release: bool) -> list[str]:
+def _live_prerequisite_blockers(
+    *,
+    manifest: str | None,
+    release: bool,
+    n: int | None = None,
+    tracks: tuple[str, ...] | list[str] = (),
+) -> list[str]:
     """Return blockers without initializing a provider or fetching benchmark media."""
     from percept.config import missing_credential
 
@@ -73,6 +79,26 @@ def _live_prerequisite_blockers(*, manifest: str | None, release: bool) -> list[
             raw=os.environ.get("PERCEPT_BENCH_BUDGET_PLAN"),
         )
     )
+    if manifest and n is not None and (not tracks or "pt-action-e2e" in tracks):
+        from .perception_test import golden_action_capacity
+
+        capacity = golden_action_capacity(manifest=manifest)
+        if release and n != capacity["licensed"]:
+            blockers.append(
+                f"full pt-action-e2e qualification requires N={capacity['licensed']} "
+                f"for every pinned licensed case; got N={n}"
+            )
+        elif n > capacity["licensed"]:
+            blockers.append(
+                f"pt-action-e2e requested N={n}, but the pinned manifest has only "
+                f"{capacity['licensed']} licensed action cases"
+            )
+        elif n > capacity["verified_local"]:
+            blockers.append(
+                f"pt-action-e2e requested N={n}, but only "
+                f"{capacity['verified_local']} of {capacity['licensed']} licensed pinned "
+                "cases have verified local annotations/media"
+            )
     if release:
         if not manifest:
             blockers.append("release qualification requires a pinned manifest")
@@ -140,7 +166,10 @@ def main(argv: list[str] | None = None) -> int:
         from eval._dotenv import load_dotenv
         load_dotenv()
         blockers = _live_prerequisite_blockers(
-            manifest=args.manifest, release=args.require_release
+            manifest=args.manifest,
+            release=args.require_release,
+            n=args.n,
+            tracks=["pt-action-e2e"],
         )
         if blockers:
             print("BENCHMARK LIVE GATE: BLOCKED")
@@ -165,6 +194,8 @@ def main(argv: list[str] | None = None) -> int:
         tracks = (track_relational, track_counting, track_acoustic_pt, track_timeliness, track_edge_recall,
                   track_cuespeak, track_timespeak)
     previous_mode = os.environ.get("PERCEPT_MODE")
+    previous_manifest = os.environ.get("PERCEPT_BENCH_MANIFEST")
+    os.environ["PERCEPT_BENCH_MANIFEST"] = str(Path(args.manifest).resolve())
     if not args.live:
         os.environ["PERCEPT_MODE"] = "offline"
     try:
@@ -183,6 +214,10 @@ def main(argv: list[str] | None = None) -> int:
                 os.environ.pop("PERCEPT_MODE", None)
             else:
                 os.environ["PERCEPT_MODE"] = previous_mode
+        if previous_manifest is None:
+            os.environ.pop("PERCEPT_BENCH_MANIFEST", None)
+        else:
+            os.environ["PERCEPT_BENCH_MANIFEST"] = previous_manifest
 
     execution_blockers = card.execution_blockers(results)
     if execution_blockers:

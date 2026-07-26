@@ -196,6 +196,11 @@ def main(argv: list[str] | None = None) -> int:
                 raw=os.environ.get("PERCEPT_BENCH_BUDGET_PLAN"),
             )
         )
+        if backend == "openrouter":
+            blockers.append(
+                "eval.run does not attach the OpenRouter request-budget controller; "
+                "use the pinned pt-action-e2e benchmark runner"
+            )
         root = find_golden_root()
         if root is None:
             blockers.append("golden fixture labels are missing")

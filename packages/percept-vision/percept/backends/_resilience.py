@@ -65,6 +65,7 @@ async def with_retry(
     base_delay_s: float = 0.2,
     breaker: CircuitBreaker | None = None,
     timeout_s: float | None = None,
+    non_retryable: tuple[type[BaseException], ...] = (),
 ) -> T:
     """Call ``call`` with exponential backoff; honor an optional circuit breaker.
 
@@ -86,6 +87,8 @@ async def with_retry(
             last_exc = exc
             if breaker is not None:
                 breaker.record_failure()
+            if isinstance(exc, non_retryable):
+                raise
             if i < attempts - 1:
                 await asyncio.sleep(base_delay_s * (2**i))
     assert last_exc is not None

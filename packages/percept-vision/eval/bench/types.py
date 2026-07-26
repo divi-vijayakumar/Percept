@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 CONFIGS = ("dense-modeled", "edge", "e2e", "core-replay")
 
 
-def bench_vision(settings=None):
+def bench_vision(settings=None, *, request_budget=None):
     """Build the judge backend for a live track from ``PERCEPT_VISION_BACKEND`` (default ``gemini``).
 
     Resolves through the registry, so one env var runs the same track on any registered vision backend
@@ -40,7 +40,16 @@ def bench_vision(settings=None):
     the hardcoded ``GeminiVision`` import in each adapter."""
     from percept import registry
 
-    return registry.make_vision(os.environ.get("PERCEPT_VISION_BACKEND", "gemini"), settings)
+    backend = os.environ.get("PERCEPT_VISION_BACKEND", "gemini")
+    vision = registry.make_vision(backend, settings)
+    if request_budget is not None:
+        configure = getattr(vision, "configure_request_budget", None)
+        if backend != "openrouter" or configure is None:
+            raise RuntimeError(
+                f"request-budget enforcement is not available for vision backend {backend!r}"
+            )
+        configure(request_budget)
+    return vision
 
 
 @dataclass

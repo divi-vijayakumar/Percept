@@ -18,9 +18,15 @@
     },
     {
       "id": "perception-test-action",
-      "source": "Perception Test CC-BY-4.0 sample split",
+      "source": "Perception Test CC-BY-4.0 sample/train and valid splits",
       "status": "candidate_public",
-      "metrics": ["event_recall", "p_pauc", "reaction_p50", "reaction_p90"]
+      "metrics": ["event_recall", "p_pauc", "reaction_p50", "reaction_p90"],
+      "runners": [
+        {
+          "id": "pt-action-e2e",
+          "result_track": "pt-action-e2e"
+        }
+      ]
     },
     {
       "id": "repcount-a",
@@ -41,6 +47,7 @@
       {
         "id": "pt-sample-video_10993",
         "source": "google-deepmind/perception_test sample_videos.zip",
+        "source_split": "sample/train",
         "license": "CC-BY-4.0",
         "track": "perception-test-action",
         "task": "action_localisation",
@@ -55,6 +62,7 @@
       {
         "id": "pt-sample-video_1580",
         "source": "google-deepmind/perception_test sample_videos.zip",
+        "source_split": "sample/train",
         "license": "CC-BY-4.0",
         "track": "perception-test-action",
         "task": "action_localisation",
@@ -69,6 +77,7 @@
       {
         "id": "pt-sample-video_2564",
         "source": "google-deepmind/perception_test sample_videos.zip",
+        "source_split": "sample/train",
         "license": "CC-BY-4.0",
         "track": "perception-test-action",
         "task": "action_localisation",
@@ -83,6 +92,7 @@
       {
         "id": "pt-sample-video_3501",
         "source": "google-deepmind/perception_test sample_videos.zip",
+        "source_split": "sample/train",
         "license": "CC-BY-4.0",
         "track": "perception-test-action",
         "task": "action_localisation",
@@ -97,6 +107,7 @@
       {
         "id": "pt-sample-video_6860",
         "source": "google-deepmind/perception_test sample_videos.zip",
+        "source_split": "sample/train",
         "license": "CC-BY-4.0",
         "track": "perception-test-action",
         "task": "action_localisation",
@@ -111,6 +122,7 @@
       {
         "id": "pt-sample-video_8241",
         "source": "google-deepmind/perception_test sample_videos.zip",
+        "source_split": "sample/train",
         "license": "CC-BY-4.0",
         "track": "perception-test-acoustic",
         "task": "sound_localisation",
@@ -125,6 +137,7 @@
       {
         "id": "pt-sample-video_874",
         "source": "google-deepmind/perception_test sample_videos.zip",
+        "source_split": "sample/train",
         "license": "CC-BY-4.0",
         "track": "perception-test-action",
         "task": "action_localisation",
@@ -139,6 +152,7 @@
       {
         "id": "pt-sample-video_9253",
         "source": "google-deepmind/perception_test sample_videos.zip",
+        "source_split": "sample/train",
         "license": "CC-BY-4.0",
         "track": "perception-test-acoustic",
         "task": "sound_localisation",
@@ -149,12 +163,223 @@
         "annotation_sha256": "8d67bceda5a21f0e32919dd4631f4142d85eabe2fc92c03df118f2ef8978a8ce",
         "action_segments": 5,
         "sound_segments": 9
+      },
+      {
+        "id": "pt-valid-video_10849",
+        "source": "google-deepmind/perception_test valid_videos.zip",
+        "source_split": "valid",
+        "license": "CC-BY-4.0",
+        "track": "perception-test-action",
+        "task": "action_localisation",
+        "video_id": "video_10849",
+        "media_path": "eval/bench-staging/perception_test/raw/videos/video_10849.mp4",
+        "media_sha256": "43222c246dc023f29499e98fcc2b13309153c8348dac5940d43120513dc6e550",
+        "annotation_path": "eval/bench-staging/perception_test/raw/challenge_action_localisation_valid_annotations.zip",
+        "annotation_sha256": "93235a985bc9f47aa9c6d4e6ae52332424e6a4514d49ffc9de7c0dde7a1b3d85",
+        "action_segments": 4,
+        "sound_segments": 0
+      },
+      {
+        "id": "pt-valid-video_6760",
+        "source": "google-deepmind/perception_test valid_videos.zip",
+        "source_split": "valid",
+        "license": "CC-BY-4.0",
+        "track": "perception-test-action",
+        "task": "action_localisation",
+        "video_id": "video_6760",
+        "media_path": "eval/bench-staging/perception_test/raw/videos/video_6760.mp4",
+        "media_sha256": "1e49242e791850441d2e108ce3bac0435fe20a2a64ca6e82178964a7dfaba6a2",
+        "annotation_path": "eval/bench-staging/perception_test/raw/challenge_action_localisation_valid_annotations.zip",
+        "annotation_sha256": "93235a985bc9f47aa9c6d4e6ae52332424e6a4514d49ffc9de7c0dde7a1b3d85",
+        "action_segments": 4,
+        "sound_segments": 0
+      },
+      {
+        "id": "pt-valid-video_3391",
+        "source": "google-deepmind/perception_test valid_videos.zip",
+        "source_split": "valid",
+        "license": "CC-BY-4.0",
+        "track": "perception-test-action",
+        "task": "action_localisation",
+        "video_id": "video_3391",
+        "media_path": "eval/bench-staging/perception_test/raw/videos/video_3391.mp4",
+        "media_sha256": "9fe6b87dec7d8c40f9d1d6413cc73947f86f5856177ae17a3d0edfd524966450",
+        "annotation_path": "eval/bench-staging/perception_test/raw/challenge_action_localisation_valid_annotations.zip",
+        "annotation_sha256": "93235a985bc9f47aa9c6d4e6ae52332424e6a4514d49ffc9de7c0dde7a1b3d85",
+        "action_segments": 9,
+        "sound_segments": 0
+      },
+      {
+        "id": "pt-valid-video_8222",
+        "source": "google-deepmind/perception_test valid_videos.zip",
+        "source_split": "valid",
+        "license": "CC-BY-4.0",
+        "track": "perception-test-action",
+        "task": "action_localisation",
+        "video_id": "video_8222",
+        "media_path": "eval/bench-staging/perception_test/raw/videos/video_8222.mp4",
+        "media_sha256": "6741cc5bfa9e434112ecfb1c1506eeccd4f36a6e0bb27316d922fa99b192d6e5",
+        "annotation_path": "eval/bench-staging/perception_test/raw/challenge_action_localisation_valid_annotations.zip",
+        "annotation_sha256": "93235a985bc9f47aa9c6d4e6ae52332424e6a4514d49ffc9de7c0dde7a1b3d85",
+        "action_segments": 3,
+        "sound_segments": 0
+      },
+      {
+        "id": "pt-valid-video_2314",
+        "source": "google-deepmind/perception_test valid_videos.zip",
+        "source_split": "valid",
+        "license": "CC-BY-4.0",
+        "track": "perception-test-action",
+        "task": "action_localisation",
+        "video_id": "video_2314",
+        "media_path": "eval/bench-staging/perception_test/raw/videos/video_2314.mp4",
+        "media_sha256": "7fe65e07625068da57d866b519ee2cdcceec6602a8c4e051dd8973382812c19d",
+        "annotation_path": "eval/bench-staging/perception_test/raw/challenge_action_localisation_valid_annotations.zip",
+        "annotation_sha256": "93235a985bc9f47aa9c6d4e6ae52332424e6a4514d49ffc9de7c0dde7a1b3d85",
+        "action_segments": 7,
+        "sound_segments": 0
+      },
+      {
+        "id": "pt-valid-video_5920",
+        "source": "google-deepmind/perception_test valid_videos.zip",
+        "source_split": "valid",
+        "license": "CC-BY-4.0",
+        "track": "perception-test-action",
+        "task": "action_localisation",
+        "video_id": "video_5920",
+        "media_path": "eval/bench-staging/perception_test/raw/videos/video_5920.mp4",
+        "media_sha256": "b656cf025e469ff8bbc5cba018991f88327a5de92fcd39cdc9c8d8192f7a96b4",
+        "annotation_path": "eval/bench-staging/perception_test/raw/challenge_action_localisation_valid_annotations.zip",
+        "annotation_sha256": "93235a985bc9f47aa9c6d4e6ae52332424e6a4514d49ffc9de7c0dde7a1b3d85",
+        "action_segments": 5,
+        "sound_segments": 0
+      },
+      {
+        "id": "pt-valid-video_10283",
+        "source": "google-deepmind/perception_test valid_videos.zip",
+        "source_split": "valid",
+        "license": "CC-BY-4.0",
+        "track": "perception-test-action",
+        "task": "action_localisation",
+        "video_id": "video_10283",
+        "media_path": "eval/bench-staging/perception_test/raw/videos/video_10283.mp4",
+        "media_sha256": "48d1fa0fbcd8da2326e6e995a183c73b50c7b69e251d1bc5c07ac574bb85e4f4",
+        "annotation_path": "eval/bench-staging/perception_test/raw/challenge_action_localisation_valid_annotations.zip",
+        "annotation_sha256": "93235a985bc9f47aa9c6d4e6ae52332424e6a4514d49ffc9de7c0dde7a1b3d85",
+        "action_segments": 3,
+        "sound_segments": 0
+      },
+      {
+        "id": "pt-valid-video_7201",
+        "source": "google-deepmind/perception_test valid_videos.zip",
+        "source_split": "valid",
+        "license": "CC-BY-4.0",
+        "track": "perception-test-action",
+        "task": "action_localisation",
+        "video_id": "video_7201",
+        "media_path": "eval/bench-staging/perception_test/raw/videos/video_7201.mp4",
+        "media_sha256": "09d7948613eca00ed7b9014e02a03e5c7ef14758280a2d3977eb715eb2066c55",
+        "annotation_path": "eval/bench-staging/perception_test/raw/challenge_action_localisation_valid_annotations.zip",
+        "annotation_sha256": "93235a985bc9f47aa9c6d4e6ae52332424e6a4514d49ffc9de7c0dde7a1b3d85",
+        "action_segments": 9,
+        "sound_segments": 0
+      },
+      {
+        "id": "pt-valid-video_482",
+        "source": "google-deepmind/perception_test valid_videos.zip",
+        "source_split": "valid",
+        "license": "CC-BY-4.0",
+        "track": "perception-test-action",
+        "task": "action_localisation",
+        "video_id": "video_482",
+        "media_path": "eval/bench-staging/perception_test/raw/videos/video_482.mp4",
+        "media_sha256": "899a348298f03481d3edb328c498bb52b70a3be2e05192445a5bb71ac17154b8",
+        "annotation_path": "eval/bench-staging/perception_test/raw/challenge_action_localisation_valid_annotations.zip",
+        "annotation_sha256": "93235a985bc9f47aa9c6d4e6ae52332424e6a4514d49ffc9de7c0dde7a1b3d85",
+        "action_segments": 8,
+        "sound_segments": 0
+      },
+      {
+        "id": "pt-valid-video_1915",
+        "source": "google-deepmind/perception_test valid_videos.zip",
+        "source_split": "valid",
+        "license": "CC-BY-4.0",
+        "track": "perception-test-action",
+        "task": "action_localisation",
+        "video_id": "video_1915",
+        "media_path": "eval/bench-staging/perception_test/raw/videos/video_1915.mp4",
+        "media_sha256": "fcaf6801635da10a1957929cc7406770d96c86f79c2901fa82513582cf73526c",
+        "annotation_path": "eval/bench-staging/perception_test/raw/challenge_action_localisation_valid_annotations.zip",
+        "annotation_sha256": "93235a985bc9f47aa9c6d4e6ae52332424e6a4514d49ffc9de7c0dde7a1b3d85",
+        "action_segments": 21,
+        "sound_segments": 0
+      },
+      {
+        "id": "pt-valid-video_5177",
+        "source": "google-deepmind/perception_test valid_videos.zip",
+        "source_split": "valid",
+        "license": "CC-BY-4.0",
+        "track": "perception-test-action",
+        "task": "action_localisation",
+        "video_id": "video_5177",
+        "media_path": "eval/bench-staging/perception_test/raw/videos/video_5177.mp4",
+        "media_sha256": "35cf9e278883c2498d2b5d63e7a0f70fe268245b484b6c73be2c547717930583",
+        "annotation_path": "eval/bench-staging/perception_test/raw/challenge_action_localisation_valid_annotations.zip",
+        "annotation_sha256": "93235a985bc9f47aa9c6d4e6ae52332424e6a4514d49ffc9de7c0dde7a1b3d85",
+        "action_segments": 8,
+        "sound_segments": 0
+      },
+      {
+        "id": "pt-valid-video_460",
+        "source": "google-deepmind/perception_test valid_videos.zip",
+        "source_split": "valid",
+        "license": "CC-BY-4.0",
+        "track": "perception-test-action",
+        "task": "action_localisation",
+        "video_id": "video_460",
+        "media_path": "eval/bench-staging/perception_test/raw/videos/video_460.mp4",
+        "media_sha256": "9fcbb800552cbc7bd290de050c28cbc005604905c6236ce09630cd4e184f1ea9",
+        "annotation_path": "eval/bench-staging/perception_test/raw/challenge_action_localisation_valid_annotations.zip",
+        "annotation_sha256": "93235a985bc9f47aa9c6d4e6ae52332424e6a4514d49ffc9de7c0dde7a1b3d85",
+        "action_segments": 7,
+        "sound_segments": 0
+      },
+      {
+        "id": "pt-valid-video_2335",
+        "source": "google-deepmind/perception_test valid_videos.zip",
+        "source_split": "valid",
+        "license": "CC-BY-4.0",
+        "track": "perception-test-action",
+        "task": "action_localisation",
+        "video_id": "video_2335",
+        "media_path": "eval/bench-staging/perception_test/raw/videos/video_2335.mp4",
+        "media_sha256": "ed267d416197bd3e6085089337fcf78531c6f9ba5ef18f7cf5b7cc98f70f373e",
+        "annotation_path": "eval/bench-staging/perception_test/raw/challenge_action_localisation_valid_annotations.zip",
+        "annotation_sha256": "93235a985bc9f47aa9c6d4e6ae52332424e6a4514d49ffc9de7c0dde7a1b3d85",
+        "action_segments": 8,
+        "sound_segments": 0
+      },
+      {
+        "id": "pt-valid-video_6518",
+        "source": "google-deepmind/perception_test valid_videos.zip",
+        "source_split": "valid",
+        "license": "CC-BY-4.0",
+        "track": "perception-test-action",
+        "task": "action_localisation",
+        "video_id": "video_6518",
+        "media_path": "eval/bench-staging/perception_test/raw/videos/video_6518.mp4",
+        "media_sha256": "14e80367cfa40d731e95e0699f576fcb604d5691b8c84e1be86de5c0f90ba11f",
+        "annotation_path": "eval/bench-staging/perception_test/raw/challenge_action_localisation_valid_annotations.zip",
+        "annotation_sha256": "93235a985bc9f47aa9c6d4e6ae52332424e6a4514d49ffc9de7c0dde7a1b3d85",
+        "action_segments": 9,
+        "sound_segments": 0
       }
     ]
   },
   "notes": [
     "Do not move private YouTube fixtures into this manifest.",
-    "Perception Test sample rows are public, content-hashed references. Do not vendor large media into the package.",
+    "Perception Test sample/valid rows are public, content-hashed references. Do not vendor large media into the package.",
+    "The action track is an exact disjoint 20-case set: six sample rows followed by fourteen deterministic hash-ranked valid-split rows.",
     "Every release test item must include source, license, split, task, and immutable media hash before v0.4 RELEASE."
   ]
 }

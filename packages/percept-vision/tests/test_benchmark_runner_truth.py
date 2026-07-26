@@ -132,6 +132,59 @@ class BenchmarkRunnerTruthTests(unittest.TestCase):
             self.assertIn("COLLECTION STATUS: PASS", run.stdout)
             self.assertIn("expected=37 observed=37", run.stdout)
 
+    def test_sampled_collect_uses_deterministic_manifest_prefix(self):
+        with TemporaryDirectory() as d:
+            root = Path(d)
+            run_dir = root / "run"
+            results = run_dir / "results"
+            results.mkdir(parents=True)
+            (run_dir / "run.json").write_text(
+                json.dumps(
+                    {
+                        "tracks": ["pt-action-e2e"],
+                        "live": True,
+                        "commit": "test",
+                        "n": 1,
+                    }
+                )
+            )
+            _result(
+                results / "pt-action-e2e.json",
+                "pt-action-e2e",
+                ["perception-test-action-case-0"],
+            )
+            manifest = root / "MANIFEST.json"
+            _manifest(
+                manifest,
+                {
+                    "pt-action-e2e": (
+                        "perception-test-action",
+                        "pt-action-e2e",
+                        3,
+                    )
+                },
+            )
+            run = subprocess.run(
+                [
+                    sys.executable,
+                    str(TOOL),
+                    "collect",
+                    "--run-dir",
+                    str(run_dir),
+                    "--manifest",
+                    str(manifest),
+                    "--mode",
+                    "sampled",
+                ],
+                cwd=ROOT,
+                env={**os.environ, "PYTHONPATH": str(ROOT / "packages/percept-vision")},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertIn("expected=1 observed=1", run.stdout)
+
     def test_collect_rejects_missing_selected_track_artifact(self):
         with TemporaryDirectory() as d:
             root = Path(d)

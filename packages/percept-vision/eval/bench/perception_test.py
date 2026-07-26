@@ -34,6 +34,11 @@ STAGE = (_STAGE_ROOT if _STAGE_ROOT.is_absolute() else REPO_ROOT / _STAGE_ROOT) 
 VIDEO_DIR = STAGE / "videos"
 GOLDEN_MANIFEST = REPO_ROOT / "eval" / "golden-v1" / "MANIFEST.json"
 SAMPLE_SEED = os.environ.get("PERCEPT_BENCH_SAMPLE_SEED", "percept-golden-v1")
+_NON_GROUNDED_ACTION_LABELS = {"", "other", "unknown", "none", "n/a"}
+
+
+class GoldenSetCapacityError(RuntimeError):
+    """The pinned licensed corpus cannot satisfy the requested benchmark size."""
 
 
 def _download(url: str, dest: Path) -> Path:
@@ -112,7 +117,16 @@ def label_phrase(label: str) -> str:
 def repo_path(path: str | Path) -> Path:
     """Resolve a manifest-relative path from the repository root."""
     p = Path(path)
-    return p if p.is_absolute() else REPO_ROOT / p
+    if p.is_absolute():
+        return p
+    if p.parts[:2] == ("eval", "bench-staging"):
+        configured = os.environ.get("PERCEPT_BENCH_DATA_DIR")
+        if configured:
+            root = Path(configured).expanduser()
+            if not root.is_absolute():
+                root = REPO_ROOT / root
+            return root.joinpath(*p.parts[2:])
+    return REPO_ROOT / p
 
 
 def sha256_file(path: str | Path) -> str:
@@ -162,7 +176,18 @@ def verified_rows(
 
 @lru_cache(maxsize=4)
 def load_sample_annotations(path: str | Path) -> dict[str, Any]:
-    return json.loads(repo_path(path).read_text())
+    annotation_path = repo_path(path)
+    if annotation_path.suffix == ".zip":
+        with zipfile.ZipFile(annotation_path) as archive:
+            json_members = sorted(
+                name for name in archive.namelist() if name.endswith(".json")
+            )
+            if len(json_members) != 1:
+                raise ValueError(
+                    f"annotation archive must contain exactly one JSON member: {annotation_path}"
+                )
+            return json.loads(archive.read(json_members[0]))
+    return json.loads(annotation_path.read_text())
 
 
 def _event_from_row(row: dict[str, Any], key: str) -> dict[str, Any] | None:
@@ -173,13 +198,33 @@ def _event_from_row(row: dict[str, Any], key: str) -> dict[str, Any] | None:
     segments = video.get(key, [])
     if not segments:
         return None
-    seg = segments[0]
+    if key == "action_localisation":
+        seg = next(
+            (
+                candidate
+                for candidate in segments
+                if str(candidate.get("label", "")).strip().casefold()
+                not in _NON_GROUNDED_ACTION_LABELS
+            ),
+            None,
+        )
+        if seg is None:
+            return None
+    else:
+        seg = segments[0]
     ts = seg["timestamps"]
+    label = seg["label"]
+    positive_windows = [
+        [same_label["timestamps"][0] / 1e6, same_label["timestamps"][1] / 1e6]
+        for same_label in segments
+        if same_label.get("label") == label
+    ]
     return {
         "video_id": row["video_id"],
-        "label": seg["label"],
+        "label": label,
         "onset_s": ts[0] / 1e6,
         "end_s": ts[1] / 1e6,
+        "positive_windows": positive_windows,
         "fps": video["metadata"]["frame_rate"],
         "is_visible": seg.get("is_visible"),
         "path": repo_path(row["media_path"]),
@@ -187,15 +232,75 @@ def _event_from_row(row: dict[str, Any], key: str) -> dict[str, Any] | None:
     }
 
 
-def golden_action_events(*, require_media: bool = True) -> list[dict[str, Any]]:
-    """One action onset per seeded Perception Test sample video."""
-    rows = [r for r in golden_rows() if r.get("action_segments", 0) > 0]
+def golden_action_rows(
+    *,
+    manifest: str | Path = GOLDEN_MANIFEST,
+) -> list[dict[str, Any]]:
+    """Licensed action rows in pinned-manifest order, with no sampling outside the manifest."""
+    return [
+        row
+        for row in golden_rows("perception-test-action", manifest=manifest)
+        if row.get("license") and row.get("action_segments", 0) > 0
+    ]
+
+
+def golden_action_capacity(
+    *,
+    manifest: str | Path = GOLDEN_MANIFEST,
+) -> dict[str, int]:
+    """Return declared licensed and locally verified action-case capacity."""
+    rows = golden_action_rows(manifest=manifest)
+    return {
+        "licensed": len(rows),
+        "verified_local": sum(verify_row(row, require_media=True) for row in rows),
+    }
+
+
+def golden_action_events(
+    *,
+    manifest: str | Path = GOLDEN_MANIFEST,
+    require_media: bool = True,
+) -> list[dict[str, Any]]:
+    """One stable action case per row, retaining every same-label positive window."""
+    rows = golden_action_rows(manifest=manifest)
     rows = [r for r in rows if verify_row(r, require_media=require_media)]
     return [ev for r in rows if (ev := _event_from_row(r, "action_localisation")) is not None]
 
 
-def golden_sound_events(*, require_media: bool = True) -> list[dict[str, Any]]:
+def select_golden_action_events(
+    n: int,
+    *,
+    manifest: str | Path = GOLDEN_MANIFEST,
+    require_media: bool = True,
+) -> list[dict[str, Any]]:
+    """Select exactly ``n`` pinned cases or explain why the corpus cannot supply them."""
+    if n <= 0:
+        raise GoldenSetCapacityError("pt-action-e2e requires N to be positive")
+    capacity = golden_action_capacity(manifest=manifest)
+    if n > capacity["licensed"]:
+        raise GoldenSetCapacityError(
+            f"pt-action-e2e requested N={n}, but the pinned manifest has only "
+            f"{capacity['licensed']} licensed action cases"
+        )
+    events = golden_action_events(manifest=manifest, require_media=require_media)
+    if n > len(events):
+        raise GoldenSetCapacityError(
+            f"pt-action-e2e requested N={n}, but only {len(events)} of "
+            f"{capacity['licensed']} licensed pinned cases have verified local annotations/media"
+        )
+    return events[:n]
+
+
+def golden_sound_events(
+    *,
+    manifest: str | Path = GOLDEN_MANIFEST,
+    require_media: bool = True,
+) -> list[dict[str, Any]]:
     """One sound onset per seeded Perception Test sample video with sound annotations."""
-    rows = [r for r in golden_rows("perception-test-acoustic") if r.get("sound_segments", 0) > 0]
+    rows = [
+        r
+        for r in golden_rows("perception-test-acoustic", manifest=manifest)
+        if r.get("sound_segments", 0) > 0
+    ]
     rows = [r for r in rows if verify_row(r, require_media=require_media)]
     return [ev for r in rows if (ev := _event_from_row(r, "sound_localisation")) is not None]

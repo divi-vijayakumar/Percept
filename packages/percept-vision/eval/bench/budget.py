@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 
 class BudgetPlanError(ValueError):
     """A live benchmark budget plan is absent, malformed, or does not match the provider."""
+
+
+class BudgetExceeded(RuntimeError):
+    """A request cannot enter the provider because its approved budget is exhausted."""
 
 
 def _object(value: Any, name: str) -> dict[str, Any]:
@@ -54,7 +61,7 @@ def _load(raw: str) -> dict[str, Any]:
 
 
 def validate_budget_plan(raw: str, *, provider: str, model: str | None = None) -> dict[str, Any]:
-    """Validate the complete declared plan; this does not enforce spend at runtime."""
+    """Validate the complete declared plan used by the live admission controller."""
     plan = _load(raw)
     if plan.get("version") != 1:
         raise BudgetPlanError("budget plan version must be 1")
@@ -135,26 +142,210 @@ def validate_budget_plan(raw: str, *, provider: str, model: str | None = None) -
         raise BudgetPlanError("approval.approved must be true")
     for key in ("approved_by", "approved_at", "scope"):
         _text(approval.get(key), f"approval.{key}")
+
+    enforcement = _object(plan.get("enforcement"), "enforcement")
+    if enforcement.get("mode") != "reserve_per_attempt":
+        raise BudgetPlanError("enforcement.mode must be 'reserve_per_attempt'")
+    enforcement_stage = _text(enforcement.get("stage"), "enforcement.stage")
+    stage_names = {stage["name"] for stage in stages}
+    if enforcement_stage not in stage_names:
+        raise BudgetPlanError(
+            f"enforcement.stage {enforcement_stage!r} does not name a configured stage"
+        )
+    reserved_tokens = _positive_int(
+        enforcement.get("tokens_per_attempt"),
+        "enforcement.tokens_per_attempt",
+    )
+    reserved_usd = _positive(
+        enforcement.get("usd_per_attempt"),
+        "enforcement.usd_per_attempt",
+    )
+    if reserved_tokens > caps["tokens"]:
+        raise BudgetPlanError("enforcement.tokens_per_attempt exceeds caps.tokens")
+    if reserved_usd > caps["usd"]:
+        raise BudgetPlanError("enforcement.usd_per_attempt exceeds caps.usd")
     return plan
+
+
+@dataclass
+class AttemptReservation:
+    """One pessimistic request admission, reconciled only from provider-reported usage."""
+
+    sequence: int
+    tokens: int
+    usd: float
+    closed: bool = False
+
+
+class BudgetEnforcer:
+    """Thread-safe, fail-closed admission controller for physical provider attempts.
+
+    Every physical attempt reserves its approved worst-case token and USD allowance before
+    transport starts. A successful response releases unused allowance only when it carries
+    input tokens, output tokens, and billed cost. Failed or unmetered attempts retain the full
+    reservation because their spend is unknown.
+    """
+
+    def __init__(self, plan: dict[str, Any], *, clock=time.monotonic) -> None:
+        self.plan = plan
+        self._clock = clock
+        self._started_at = clock()
+        self._lock = threading.Lock()
+        self._caps = dict(plan["caps"])
+        selected_stage = next(
+            stage
+            for stage in plan["stages"]
+            if stage["name"] == plan["enforcement"]["stage"]
+        )
+        for key, value in selected_stage["caps"].items():
+            if key in self._caps:
+                self._caps[key] = min(self._caps[key], value)
+        self._reservation = plan["enforcement"]
+        self._attempts = 0
+        self._inflight = 0
+        self._failed_attempts = 0
+        self._metered_attempts = 0
+        self._committed_tokens = 0
+        self._committed_usd = 0.0
+        self._input_tokens = 0
+        self._output_tokens = 0
+        self._billed_usd = 0.0
+
+    @property
+    def attempts_per_call(self) -> int:
+        return int(self.plan["design"]["retries"]) + 1
+
+    @property
+    def request_timeout_s(self) -> float:
+        return float(self._caps["request_timeout_seconds"])
+
+    def begin_attempt(self) -> AttemptReservation:
+        """Atomically reserve one request before the transport can be invoked."""
+        with self._lock:
+            elapsed = self._clock() - self._started_at
+            if elapsed >= float(self._caps["wall_clock_seconds"]):
+                raise BudgetExceeded("wall-clock budget exhausted before provider attempt")
+            if self._attempts + 1 > int(self._caps["requests"]):
+                raise BudgetExceeded("request budget exhausted before provider attempt")
+            if self._inflight + 1 > int(self._caps["concurrency"]):
+                raise BudgetExceeded("concurrency budget exhausted before provider attempt")
+
+            tokens = int(self._reservation["tokens_per_attempt"])
+            usd = float(self._reservation["usd_per_attempt"])
+            if self._committed_tokens + tokens > int(self._caps["tokens"]):
+                raise BudgetExceeded("token budget exhausted before provider attempt")
+            if self._committed_usd + usd > float(self._caps["usd"]) + 1e-12:
+                raise BudgetExceeded("USD budget exhausted before provider attempt")
+
+            self._attempts += 1
+            self._inflight += 1
+            self._committed_tokens += tokens
+            self._committed_usd += usd
+            return AttemptReservation(sequence=self._attempts, tokens=tokens, usd=usd)
+
+    def complete_attempt(self, reservation: AttemptReservation, usage: dict[str, Any]) -> None:
+        """Reconcile a successful request; missing/oversized usage fails closed."""
+        try:
+            input_tokens = int(usage["input_tokens"])
+            output_tokens = int(usage["output_tokens"])
+            billed_usd = float(usage["cost_usd"])
+        except (KeyError, TypeError, ValueError) as exc:
+            self.fail_attempt(reservation)
+            raise BudgetExceeded(
+                "provider response omitted enforceable input/output token or billed-cost usage"
+            ) from exc
+        actual_tokens = input_tokens + output_tokens
+        if input_tokens < 0 or output_tokens < 0 or billed_usd < 0:
+            self.fail_attempt(reservation)
+            raise BudgetExceeded("provider returned negative token or billed-cost usage")
+
+        with self._lock:
+            self._ensure_open(reservation)
+            reservation.closed = True
+            self._inflight -= 1
+            if actual_tokens > reservation.tokens or billed_usd > reservation.usd + 1e-12:
+                self._committed_tokens += actual_tokens - reservation.tokens
+                self._committed_usd += billed_usd - reservation.usd
+                self._input_tokens += input_tokens
+                self._output_tokens += output_tokens
+                self._billed_usd += billed_usd
+                self._failed_attempts += 1
+                raise BudgetExceeded(
+                    "provider usage exceeded the approved per-attempt token/USD reservation"
+                )
+            self._committed_tokens += actual_tokens - reservation.tokens
+            self._committed_usd += billed_usd - reservation.usd
+            self._input_tokens += input_tokens
+            self._output_tokens += output_tokens
+            self._billed_usd += billed_usd
+            self._metered_attempts += 1
+
+    def fail_attempt(self, reservation: AttemptReservation) -> None:
+        """Close a failed attempt while retaining its pessimistic token/USD reservation."""
+        with self._lock:
+            if reservation.closed:
+                return
+            reservation.closed = True
+            self._inflight -= 1
+            self._failed_attempts += 1
+
+    @staticmethod
+    def _ensure_open(reservation: AttemptReservation) -> None:
+        if reservation.closed:
+            raise RuntimeError(f"attempt reservation {reservation.sequence} already closed")
+
+    def snapshot(self) -> dict[str, int | float]:
+        with self._lock:
+            return {
+                "physical_attempts": self._attempts,
+                "metered_attempts": self._metered_attempts,
+                "failed_attempts": self._failed_attempts,
+                "inflight_attempts": self._inflight,
+                "committed_tokens": self._committed_tokens,
+                "input_tokens": self._input_tokens,
+                "output_tokens": self._output_tokens,
+                "committed_usd": self._committed_usd,
+                "billed_usd": self._billed_usd,
+            }
+
+
+def build_budget_enforcer(
+    raw: str,
+    *,
+    provider: str,
+    model: str | None = None,
+    clock=time.monotonic,
+) -> BudgetEnforcer:
+    """Validate a plan and construct its fresh per-process admission controller."""
+    return BudgetEnforcer(
+        validate_budget_plan(raw, provider=provider, model=model),
+        clock=clock,
+    )
 
 
 def live_budget_blockers(*, provider: str, model: str | None = None, raw: str | None) -> list[str]:
     """Return validation and enforcement blockers before any provider is constructed."""
-    blockers: list[str] = []
     try:
-        validate_budget_plan(raw or "", provider=provider, model=model)
+        plan = validate_budget_plan(raw or "", provider=provider, model=model)
     except BudgetPlanError as exc:
-        blockers.append(f"budget plan invalid: {exc}")
-    # Validation describes intended spend. Until every request updates and checks those caps
-    # atomically, it is not a spend control and cannot qualify live-stream economics.
-    blockers.append(
-        "hard spend enforcement is not implemented; Cloud provider cost qualification is BLOCKED"
-    )
-    return blockers
+        return [f"budget plan invalid: {exc}"]
+    if provider != "openrouter":
+        return [
+            (
+                f"hard spend enforcement is unavailable for provider {provider!r}; "
+                "live provider qualification is BLOCKED"
+            )
+        ]
+    BudgetEnforcer(plan)
+    return []
 
 
 __all__ = [
+    "AttemptReservation",
+    "BudgetEnforcer",
+    "BudgetExceeded",
     "BudgetPlanError",
+    "build_budget_enforcer",
     "live_budget_blockers",
     "validate_budget_plan",
 ]

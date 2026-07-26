@@ -241,12 +241,30 @@ def _guard_live_tracks(tracks: list[str]) -> None:
         )
 
 
-def _guard_live_prerequisites(*, manifest: str | None, release: bool) -> None:
+def _guard_live_prerequisites(
+    *,
+    manifest: str | None,
+    release: bool,
+    n: int | None = None,
+    tracks: list[str] | None = None,
+    workers: int = 1,
+    attempts: int = 1,
+) -> None:
     """Fail before starting workers when provider spend/media prerequisites are absent."""
     sys.path[:0] = [str(SDK)]
     from eval.bench.run import _live_prerequisite_blockers
 
-    blockers = _live_prerequisite_blockers(manifest=manifest, release=release)
+    blockers = _live_prerequisite_blockers(
+        manifest=manifest,
+        release=release,
+        n=n,
+        tracks=tracks or [],
+    )
+    if os.environ.get("PERCEPT_VISION_BACKEND", "gemini") == "openrouter":
+        if workers != 1:
+            blockers.append("OpenRouter live benchmark requires --workers 1 for one budget ledger")
+        if attempts != 1:
+            blockers.append("OpenRouter live benchmark requires --attempts 1; retries are budgeted per request")
     if blockers:
         raise SystemExit("BENCHMARK LIVE GATE: BLOCKED — " + "; ".join(blockers))
 
@@ -705,7 +723,14 @@ def cmd_run_track(args: argparse.Namespace) -> int:
     _load_dotenv()
     if args.live:
         _guard_live_tracks([args.track])
-        _guard_live_prerequisites(manifest=None, release=False)
+        _guard_live_prerequisites(
+            manifest=args.manifest,
+            release=False,
+            n=args.n,
+            tracks=[args.track],
+        )
+    if args.manifest:
+        os.environ["PERCEPT_BENCH_MANIFEST"] = str(Path(args.manifest).resolve())
     module = importlib.import_module(TRACK_MODULES[args.track])
     result = module.score(live=args.live, n=args.n)
     payload = _json_safe_result(result)
@@ -738,6 +763,7 @@ def _attempt_track(
     resume: bool,
     track_index: int,
     start_delay_s: float,
+    manifest: str,
 ) -> dict[str, Any]:
     result_path = run_dir / "results" / f"{track}.json"
     log_path = run_dir / "logs" / f"{track}.log"
@@ -755,6 +781,8 @@ def _attempt_track(
         str(n),
         "--out",
         str(result_path),
+        "--manifest",
+        manifest,
     ]
     if live:
         cmd.append("--live")
@@ -851,6 +879,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         _guard_live_prerequisites(
             manifest=args.manifest,
             release=args.mode == "full",
+            n=args.n,
+            tracks=tracks,
+            workers=args.workers,
+            attempts=args.attempts,
         )
     paths["runs_dir"].mkdir(parents=True, exist_ok=True)
     run_id = args.run_id or _now()
@@ -942,6 +974,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 resume=args.resume,
                 track_index=idx,
                 start_delay_s=args.start_delay_s,
+                manifest=args.manifest,
             ): track
             for idx, track in enumerate(tracks)
         }
@@ -1004,12 +1037,19 @@ def cmd_collect(args: argparse.Namespace) -> int:
     required_tracks = {
         str(row["id"]) for row in manifest_data["tracks"] if row.get("required") is True
     }
+    meta = _run_meta(run_dir)
+    sample_n = meta.get("n")
+    if args.mode == "sampled" and sample_n is not None and (
+        isinstance(sample_n, bool) or not isinstance(sample_n, int) or sample_n <= 0
+    ):
+        raise SystemExit(f"sampled run metadata has invalid n: {sample_n!r}")
+    sample_limit = sample_n if args.mode == "sampled" and sample_n is not None else None
     manifest_cases = {
-        track: {
+        track: [
             str(item["id"])
             for item in manifest_data["splits"]["test"]
             if item["track"] == track
-        }
+        ][:sample_limit]
         for track in declared_tracks
     }
 
@@ -1024,7 +1064,6 @@ def cmd_collect(args: argparse.Namespace) -> int:
     if not results:
         raise SystemExit(f"no track results found in {result_dir}")
 
-    meta = _run_meta(run_dir)
     expected_runners = meta.get("tracks")
     if not isinstance(expected_runners, list) or not expected_runners:
         raise SystemExit(f"run metadata has no non-empty tracks list: {run_dir / 'run.json'}")
@@ -1091,8 +1130,9 @@ def cmd_collect(args: argparse.Namespace) -> int:
             )
         if len(actual_case_ids) != len(set(actual_case_ids)):
             coverage_errors.append(f"{runner}/{logical_track}: duplicate coverage case IDs")
-        missing_cases = sorted(expected_case_ids - set(actual_case_ids))
-        extra_cases = sorted(set(actual_case_ids) - expected_case_ids)
+        expected_case_set = set(expected_case_ids)
+        missing_cases = sorted(expected_case_set - set(actual_case_ids))
+        extra_cases = sorted(set(actual_case_ids) - expected_case_set)
         if missing_cases:
             coverage_errors.append(
                 f"{runner}/{logical_track}: coverage missing manifest case IDs={missing_cases}"
@@ -1182,7 +1222,7 @@ def build_parser() -> argparse.ArgumentParser:
     posewarm.set_defaults(func=cmd_prefetch_pose)
 
     run = sub.add_parser("run", help="run benchmark tracks with retries and per-track logs")
-    run.add_argument("--live", action="store_true", help="use live Gemini-backed track scorers")
+    run.add_argument("--live", action="store_true", help="use the configured live vision backend")
     run.add_argument("--n", type=int, default=8, help="sample size per track")
     run.add_argument(
         "--tracks",
@@ -1190,8 +1230,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="comma list or alias: all, safe-live, stable, no-counting, legacy-all",
     )
     run.add_argument("--exclude", default="", help="comma list of tracks to skip")
-    run.add_argument("--workers", type=int, default=2, help="parallel track subprocesses")
-    run.add_argument("--attempts", type=int, default=2, help="attempts per track")
+    run.add_argument("--workers", type=int, default=1, help="parallel track subprocesses")
+    run.add_argument("--attempts", type=int, default=1, help="attempts per track")
     run.add_argument("--timeout-s", type=int, default=1800, help="timeout per track attempt; 0 disables")
     run.add_argument("--run-id", default=None, help="stable run id/folder name")
     run.add_argument("--manifest", default=str(DEFAULT_MANIFEST), help="manifest stamped on the scorecard")
@@ -1241,6 +1281,7 @@ def build_parser() -> argparse.ArgumentParser:
     internal.add_argument("--live", action="store_true")
     internal.add_argument("--n", type=int, required=True)
     internal.add_argument("--out", required=True)
+    internal.add_argument("--manifest", required=True)
     internal.set_defaults(func=cmd_run_track)
     return parser
 

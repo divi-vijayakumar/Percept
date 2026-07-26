@@ -21,12 +21,16 @@ def _env(**updates: str) -> dict[str, str]:
     return env
 
 
-def _budget_plan_json() -> str:
+def _budget_plan_json(
+    *,
+    provider: str = "gemini",
+    model: str = "gemini-test",
+) -> str:
     return json.dumps(
         {
             "version": 1,
-            "provider": "gemini",
-            "model": "gemini-test",
+            "provider": provider,
+            "model": model,
             "region": "us",
             "price_snapshot": {
                 "as_of": "2026-07-25",
@@ -63,27 +67,38 @@ def _budget_plan_json() -> str:
                 "approved_at": "2026-07-25T00:00:00Z",
                 "scope": "test-only plan; no provider construction",
             },
+            "enforcement": {
+                "mode": "reserve_per_attempt",
+                "stage": "smoke",
+                "tokens_per_attempt": 1000,
+                "usd_per_attempt": 0.1,
+            },
         }
     )
 
 
 class BenchmarkLaunchGateTests(unittest.TestCase):
-    def test_budget_plan_validates_but_cannot_substitute_for_hard_enforcement(self):
+    def test_openrouter_budget_plan_activates_hard_enforcement(self):
         from eval.bench.budget import live_budget_blockers, validate_budget_plan
 
         plan = validate_budget_plan(
-            _budget_plan_json(),
-            provider="gemini",
-            model="gemini-test",
+            _budget_plan_json(
+                provider="openrouter",
+                model="qwen/qwen3-vl-32b-instruct",
+            ),
+            provider="openrouter",
+            model="qwen/qwen3-vl-32b-instruct",
         )
         self.assertEqual(plan["caps"]["requests"], 10)
         blockers = live_budget_blockers(
-            provider="gemini",
-            model="gemini-test",
-            raw=_budget_plan_json(),
+            provider="openrouter",
+            model="qwen/qwen3-vl-32b-instruct",
+            raw=_budget_plan_json(
+                provider="openrouter",
+                model="qwen/qwen3-vl-32b-instruct",
+            ),
         )
-        self.assertEqual(len(blockers), 1)
-        self.assertIn("hard spend enforcement is not implemented", blockers[0])
+        self.assertEqual(blockers, [])
 
     def test_budget_plan_rejects_non_positive_caps(self):
         from eval.bench.budget import BudgetPlanError, validate_budget_plan
@@ -195,7 +210,6 @@ class BenchmarkLaunchGateTests(unittest.TestCase):
         self.assertIn("BENCHMARK LIVE GATE: BLOCKED", run.stdout)
         self.assertIn("credential missing", run.stdout)
         self.assertIn("budget plan invalid", run.stdout)
-        self.assertIn("hard spend enforcement is not implemented", run.stdout)
 
     def test_release_scorecard_blocks_on_absent_media_before_provider_call(self):
         with TemporaryDirectory() as d:
@@ -256,7 +270,52 @@ class BenchmarkLaunchGateTests(unittest.TestCase):
             self.assertEqual(run.returncode, 2, run.stdout + run.stderr)
             self.assertIn("BENCHMARK LIVE GATE: BLOCKED", run.stdout)
             self.assertIn("release media missing/empty", run.stdout)
-            self.assertIn("hard spend enforcement is not implemented", run.stdout)
+            self.assertIn("hard spend enforcement is unavailable", run.stdout)
+
+    def test_qwen_n20_preflight_reports_pinned_capacity_without_provider_call(self):
+        model = "qwen/qwen3-vl-32b-instruct"
+        run = subprocess.run(
+            [
+                sys.executable,
+                "tools/percept_benchmark.py",
+                "run",
+                "--live",
+                "--tracks",
+                "pt-action-e2e",
+                "--n",
+                "20",
+                "--workers",
+                "1",
+                "--attempts",
+                "1",
+                "--manifest",
+                str(ROOT / "eval/golden-v1/MANIFEST.json"),
+                "--no-prefetch-pose",
+            ],
+            cwd=ROOT,
+            env=_env(
+                PERCEPT_VISION_BACKEND="openrouter",
+                PERCEPT_VISION_MODEL=model,
+                OPENROUTER_API_KEY="offline-presence-check-only",
+                OPENROUTER_KEY="",
+                PERCEPT_BENCH_DATA_DIR=str(ROOT / ".missing-benchmark-test-cache"),
+                PERCEPT_BENCH_BUDGET_PLAN=_budget_plan_json(
+                    provider="openrouter",
+                    model=model,
+                ),
+            ),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(run.returncode, 0, run.stdout + run.stderr)
+        output = run.stdout + run.stderr
+        self.assertIn(
+            "requested N=20, but only 0 of 20 licensed pinned cases "
+            "have verified local annotations/media",
+            output,
+        )
+        self.assertNotIn("provider response", output)
 
     def test_eval_live_writes_blocked_status_without_prerequisites(self):
         with TemporaryDirectory() as d:

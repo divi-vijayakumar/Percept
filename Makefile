@@ -153,8 +153,8 @@ benchmark-manifest:
 
 TRACKS ?= stable
 N ?= 8
-WORKERS ?= 2
-ATTEMPTS ?= 2
+WORKERS ?= 1
+ATTEMPTS ?= 1
 LIVE ?= 0
 LIVE_FLAG := $(if $(filter 1,$(LIVE)),--live,)
 benchmark-run:
