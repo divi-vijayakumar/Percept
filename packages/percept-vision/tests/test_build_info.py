@@ -10,7 +10,11 @@ manifest.
 
 from __future__ import annotations
 
+import importlib.util
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import percept
 from percept._build import BuildInfo, build_info
@@ -84,6 +88,53 @@ class BuildInfoTests(unittest.TestCase):
         restored = RunTraceManifest.from_dict(payload)
         self.assertIsNone(restored.build_commit)
         self.assertIsNone(restored.build_timestamp)
+
+    def test_build_backend_restores_source_stamp_on_success_and_failure(self):
+        backend_path = Path(__file__).resolve().parents[1] / "_build_backend.py"
+        spec = importlib.util.spec_from_file_location(
+            "percept_test_build_backend",
+            backend_path,
+        )
+        assert spec is not None and spec.loader is not None
+        backend = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(backend)
+
+        with TemporaryDirectory() as directory:
+            stamp = Path(directory) / "_build_info.py"
+            stamp.write_text("source-stub", encoding="utf-8")
+
+            def write_stamp():
+                stamp.write_text("artifact-stamp", encoding="utf-8")
+
+            def successful_builder():
+                self.assertEqual(
+                    stamp.read_text(encoding="utf-8"),
+                    "artifact-stamp",
+                )
+                return "built"
+
+            with (
+                patch.object(backend, "_STAMP_PATH", stamp),
+                patch.object(backend, "_write_stamp", write_stamp),
+            ):
+                self.assertEqual(
+                    backend._build_with_stamp(successful_builder),
+                    "built",
+                )
+                self.assertEqual(
+                    stamp.read_text(encoding="utf-8"),
+                    "source-stub",
+                )
+
+                def failing_builder():
+                    raise RuntimeError("build failed")
+
+                with self.assertRaisesRegex(RuntimeError, "build failed"):
+                    backend._build_with_stamp(failing_builder)
+                self.assertEqual(
+                    stamp.read_text(encoding="utf-8"),
+                    "source-stub",
+                )
 
 
 if __name__ == "__main__":

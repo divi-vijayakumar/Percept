@@ -80,16 +80,42 @@ BUILD_TIMESTAMP = {build_timestamp!r}
     _STAMP_PATH.write_text(stamp, encoding="utf-8")
 
 
+def _build_with_stamp(builder, *args):
+    """Stamp artifact inputs without leaving the source checkout modified."""
+    existed = _STAMP_PATH.exists()
+    original = _STAMP_PATH.read_bytes() if existed else None
+    try:
+        _write_stamp()
+        return builder(*args)
+    finally:
+        if existed:
+            assert original is not None
+            _STAMP_PATH.write_bytes(original)
+        elif _STAMP_PATH.exists():
+            _STAMP_PATH.unlink()
+
+
 def build_sdist(sdist_directory, config_settings=None):
-    _write_stamp()
-    return _orig_build_sdist(sdist_directory, config_settings)
+    return _build_with_stamp(
+        _orig_build_sdist,
+        sdist_directory,
+        config_settings,
+    )
 
 
 def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
-    _write_stamp()
-    return _orig_build_wheel(wheel_directory, config_settings, metadata_directory)
+    return _build_with_stamp(
+        _orig_build_wheel,
+        wheel_directory,
+        config_settings,
+        metadata_directory,
+    )
 
 
 def build_editable(wheel_directory, config_settings=None, metadata_directory=None):
-    _write_stamp()
-    return _orig_build_editable(wheel_directory, config_settings, metadata_directory)
+    return _build_with_stamp(
+        _orig_build_editable,
+        wheel_directory,
+        config_settings,
+        metadata_directory,
+    )
