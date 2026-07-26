@@ -190,11 +190,13 @@ class _GeminiBase:
         client: Any = None,
         model_attr: str = "vision_model",
         api_key: str | None = None,
+        transport_types: Any = None,
     ) -> None:
         self._settings = _settings_of(settings)
         self._client = client
         self._api_key = api_key
         self._model = _model_for(self._settings, model_attr)
+        self._transport_types = transport_types
 
     def _ensure_client(self):
         if self._client is None:
@@ -224,13 +226,19 @@ class GeminiVision(_GeminiBase):
         *,
         client: Any = None,
         api_key: str | None = None,
+        transport_types: Any = None,
+        strip_prompt: str | None = None,
     ) -> None:
         super().__init__(
             settings,
             client=client,
             model_attr="vision_model",
             api_key=api_key,
+            transport_types=transport_types,
         )
+        # Explicit hosted calls pin this to "change", avoiding all process-environment reads.
+        # ``None`` keeps the existing direct-adapter ablation knob fully compatible.
+        self._strip_prompt = strip_prompt
         self._breaker = CircuitBreaker()  # transient-error resilience for batch captures
 
     async def judge(
@@ -255,7 +263,9 @@ class GeminiVision(_GeminiBase):
             # Item 4 logsum: report ONLY this clip's step delta (no memory shown). evidence=the step.
             return await self._observe_step(condition, frame, frames)
         claim_mode = bool(context and context.get("claim_mode"))  # claim-slot: parse the correction channel
-        _, types = _require_genai()
+        types = getattr(self, "_transport_types", None)
+        if types is None:
+            _, types = _require_genai()
         client = self._ensure_client()
         if frame is None and audio is None:
             raise TypeError("GeminiVision requires image evidence, audio evidence, or both")
@@ -283,7 +293,12 @@ class GeminiVision(_GeminiBase):
                 f'"{condition}" — about THIS specific object? '
             )
         elif strip:
-            if os.environ.get("PERCEPT_STRIP_PROMPT", "change") == "neutral":
+            strip_prompt = (
+                os.environ.get("PERCEPT_STRIP_PROMPT", "change")
+                if getattr(self, "_strip_prompt", None) is None
+                else self._strip_prompt
+            )
+            if strip_prompt == "neutral":
                 # ablation variant: do NOT invite the model to weigh the change — just judge the latest
                 # state, with the earlier frames as plain context (isolates the prompt-framing confound).
                 question = (
@@ -363,7 +378,9 @@ class GeminiVision(_GeminiBase):
         and rewrite the full ordered answer, and returns it on ``Verdict.running_answer`` (also mirrored
         to ``evidence``). On a parse miss the prior answer is preserved (never regress the accumulation).
         """
-        _, types = _require_genai()
+        types = getattr(self, "_transport_types", None)
+        if types is None:
+            _, types = _require_genai()
         client = self._ensure_client()
         strip = list(frames or [])
         if strip and strip[-1] is frame:
@@ -408,7 +425,9 @@ class GeminiVision(_GeminiBase):
         process goal never fires per-clip; the agent appends ``evidence`` to ``ConcernContext.process_log``
         and the ANSWER is produced later by :meth:`summarize_process` at the episode boundary / on demand.
         """
-        _, types = _require_genai()
+        types = getattr(self, "_transport_types", None)
+        if types is None:
+            _, types = _require_genai()
         client = self._ensure_client()
         strip = list(frames or [])
         if strip and strip[-1] is frame:
@@ -440,7 +459,9 @@ class GeminiVision(_GeminiBase):
         Text-only (no frames). Returns the consolidated answer; the caller stores it and wipes the log.
         ``max_output_tokens=4096`` — a thinking model summarizing a long log truncates at 1024 (validated).
         """
-        _, types = _require_genai()
+        types = getattr(self, "_transport_types", None)
+        if types is None:
+            _, types = _require_genai()
         if not log:
             return ""
         client = self._ensure_client()
@@ -464,7 +485,9 @@ class GeminiVision(_GeminiBase):
         return "; ".join(steps)
 
     async def detect(self, frame: Any, goals: list[Goal]) -> list[Observation]:
-        _, types = _require_genai()
+        types = getattr(self, "_transport_types", None)
+        if types is None:
+            _, types = _require_genai()
         client = self._ensure_client()
         labels = ", ".join(sorted({g.condition for g in goals})) or "any salient object"
         prompt = (

@@ -181,13 +181,14 @@ class OpenRouterVision:
         client: Any = None,
         request_budget: Any = None,
         api_key: str | None = None,
+        timeout_s: float | None = None,
     ) -> None:
         self._settings = _settings_of(settings)
         self._client = client  # injectable for L2 fixtures; built lazily otherwise
         self._api_key = api_key
         self._model = _resolve_model(self._settings)
         self._breaker = CircuitBreaker()
-        self._timeout_s = _timeout_s()
+        self._timeout_s = _timeout_s() if timeout_s is None else float(timeout_s)
         # Optional request admission/reconciliation seam used by paid benchmark runners.
         # It is deliberately duck-typed so this product adapter does not import evaluation code.
         self._request_budget = request_budget

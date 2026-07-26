@@ -175,6 +175,24 @@ from .provider import (  # noqa: E402
     ProviderSpec,
     resolve_vision,
 )
+# Hosted services must never route explicit caller credentials through the environment-configured
+# registry path above. This versioned, invocation-scoped boundary builds and discards one provider
+# adapter/client per request and is stdlib-pure until the selected provider is actually invoked.
+from .hosted_byok import (  # noqa: E402
+    HOSTED_BYOK_CAPABILITIES,
+    HOSTED_BYOK_CONTRACT_VERSION,
+    HostedByokAdapterFactory,
+    HostedByokCancellationSignal,
+    HostedByokCancelled,
+    HostedByokContractError,
+    HostedByokDeadlineExceeded,
+    HostedByokError,
+    HostedByokGeminiClient,
+    HostedByokInvocationError,
+    HostedByokRequest,
+    HostedByokUnsupportedError,
+    HostedByokVision,
+)
 
 # The runtime worker — the batteries-included "watch a source" front door. Surfaced at top level
 # (PR: Wave 0) so `percept.run` / `percept.RuntimeSession` are the FIRST thing a builder reaches,
@@ -278,6 +296,20 @@ __all__ = [
     "resolve_vision",
     "ProviderSpec",
     "ProviderError",
+    # explicit per-invocation hosted BYOK (never environment-backed)
+    "HOSTED_BYOK_CONTRACT_VERSION",
+    "HOSTED_BYOK_CAPABILITIES",
+    "HostedByokRequest",
+    "HostedByokCancellationSignal",
+    "HostedByokGeminiClient",
+    "HostedByokAdapterFactory",
+    "HostedByokVision",
+    "HostedByokError",
+    "HostedByokContractError",
+    "HostedByokUnsupportedError",
+    "HostedByokDeadlineExceeded",
+    "HostedByokCancelled",
+    "HostedByokInvocationError",
     # DTOs
     "Box",
     "Observation",

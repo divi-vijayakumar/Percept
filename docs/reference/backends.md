@@ -157,6 +157,11 @@ agent = percept.Percept.create(vision=vision)
 A model id is **never** an adapter name: `vision="qwen/qwen3-vl-32b-instruct"` does not fall through to
 some "qwen" backend — you name the provider (`openrouter`) and pass the model id as `model=`.
 
+Hosted multi-tenant services that receive a caller's provider credential must not use this
+environment-configured resolution path. Use the separate, versioned
+[Hosted BYOK invocation contract](hosted-byok.md), which pins provider/model/lease/principal and
+constructs a fresh client and adapter for each call.
+
 ---
 
 ## Available backends per seam
