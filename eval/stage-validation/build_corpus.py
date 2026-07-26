@@ -27,6 +27,7 @@ import argparse
 import hashlib
 import json
 import random
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,26 @@ def sha256_file(path: Path, *, chunk: int = 1 << 20) -> str:
 
 def _rel(path: Path) -> str:
     return str(path.relative_to(REPO_ROOT))
+
+
+def _media_fps(path: Path) -> float | None:
+    """Frame rate straight from the container, via ffprobe — no decode, no guessed constant.
+
+    RepCount annotates cycle bounds as frame indices, so a wrong fps silently shifts every
+    ground-truth interval rather than failing loudly.
+    """
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=r_frame_rate",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            capture_output=True, text=True, timeout=60, check=True,
+        ).stdout.strip()
+        num, _, den = out.partition("/")
+        fps = float(num) / float(den or 1)
+        return fps if fps > 0 else None
+    except (subprocess.SubprocessError, ValueError, ZeroDivisionError):
+        return None
 
 
 def _media_index(dataset: str, *, by_name: bool = False) -> dict[str, Path]:
@@ -172,11 +193,18 @@ def build_omnipro(limit: int) -> list[dict[str, Any]]:
         question = str(row.get("question") or "").strip()
         if not question:
             continue
-        # omnipro pins the moment the question becomes answerable rather than an interval. Treat
-        # that instant as the positive edge and let the harness apply its own tolerance, rather
-        # than inventing an interval width the annotation does not contain.
-        at = row.get("question_time_sec")
-        positives = [[round(float(at), 3), round(float(at), 3)]] if isinstance(at, (int, float)) else []
+        # `question_time_sec` is when the QUESTION is asked — it is 0 for every row in this subset
+        # and is NOT ground truth. The answerable moments live in `ground_truth[*].trigger_time_sec`,
+        # one entry per occurrence. Using the former yields a silent near-zero recall that reads as
+        # a runtime failure.
+        triggers = [
+            g.get("trigger_time_sec")
+            for g in (row.get("ground_truth") or [])
+            if isinstance(g.get("trigger_time_sec"), (int, float))
+        ]
+        positives = [[round(float(t), 3), round(float(t), 3)] for t in sorted(triggers)]
+        if not positives:
+            continue
         cases.append(
             {
                 "case_id": f"omnipro::{row['video_id']}::{row['id'].rsplit('::', 1)[-1]}",
@@ -326,6 +354,16 @@ def build_repcount(limit: int) -> list[dict[str, Any]]:
         except json.JSONDecodeError:
             bounds = []
         action = str(row.get("action_type") or "").strip()
+        # cycle_bounds are FRAME indices in flat (start, end) pairs. Convert here using the media's
+        # OWN fps — leaving `positives` empty makes every consumer read a flat-zero recall and
+        # blame the runtime, which is precisely the failure this corpus exists to rule out.
+        fps = _media_fps(path)
+        positives: list[list[float]] = []
+        if fps and len(bounds) >= 2:
+            for index in range(0, len(bounds) - 1, 2):
+                start_f, end_f = bounds[index], bounds[index + 1]
+                if isinstance(start_f, (int, float)) and isinstance(end_f, (int, float)) and end_f > start_f:
+                    positives.append([round(start_f / fps, 3), round(end_f / fps, 3)])
         cases.append(
             {
                 "case_id": f"repcount::{row['video_id']}::0",
@@ -334,9 +372,7 @@ def build_repcount(limit: int) -> list[dict[str, Any]]:
                 "duration_s": None,
                 "goal_text": _REPCOUNT_PHRASING.get(action, f"a person completes a {action}"),
                 "goal_kind": "count",
-                # cycle_bounds are FRAME indices, not seconds; the harness converts using the
-                # media's own fps rather than a guessed constant.
-                "positives": [],
+                "positives": positives,
                 "provenance": {
                     "action_type": action,
                     "expected_count": count,
