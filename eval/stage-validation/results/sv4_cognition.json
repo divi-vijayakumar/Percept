@@ -1,0 +1,97 @@
+{
+  "suite": "SV-4 COGNITION + DISPOSITION",
+  "generated_at": "2026-07-26T15:46:22-0700",
+  "runtime": {
+    "percept_version": "1.0.0",
+    "percept_path": "/private/tmp/percept-launch/oss-final-venv-bba572a/lib/python3.12/site-packages/percept",
+    "python": "3.12.8",
+    "executable": "/private/tmp/percept-launch/oss-final-venv-bba572a/bin/python",
+    "platform": "darwin"
+  },
+  "results": [
+    {
+      "id": "SV-4.6",
+      "title": "Media buffers (bounded retention, pre-admission window, no unbounded growth)",
+      "status": "PASS",
+      "error": null,
+      "checks": [
+        {
+          "name": "steady-state Python heap is FLAT (< 5% drift across the second half)",
+          "passed": true,
+          "detail": "drift +0.00% over the second half; slope +0.0 bytes/frame (projected +0.00 MB over 3000 frames); mean steady-state heap 0.00 MB",
+          "data": {
+            "drift_pct": 0.0,
+            "slope_bytes_per_frame": 0.0,
+            "r2": 0.0,
+            "mean_steady_bytes": 0.0
+          }
+        },
+        {
+          "name": "peak Python heap stays within a small multiple of the configured media budget",
+          "passed": true,
+          "detail": "peak 4.01 MB vs snippet byte budget 0.26 MB (bound: 40x)",
+          "data": {
+            "peak_bytes": 4009438
+          }
+        },
+        {
+          "name": "the pre-roll ring is bounded by BOTH the count and the byte budget",
+          "passed": true,
+          "detail": "max held 15 frames / 245760 bytes (bounds: 48 frames, 256000 bytes + one newest frame)",
+          "data": {
+            "max_held_frames": 15,
+            "max_held_bytes": 245760
+          }
+        },
+        {
+          "name": "every byte-budget eviction is announced (no silent drop)",
+          "passed": true,
+          "detail": "stats.preroll_frames_dropped=2985, preroll_capped health events=2985",
+          "data": {
+            "dropped": 2985,
+            "health_events": 2985
+          }
+        },
+        {
+          "name": "no snippet exceeds the retention policy",
+          "passed": true,
+          "detail": "max snippet 15 frames / 245760 bytes",
+          "data": {
+            "max_snippet_frames": 15,
+            "max_snippet_bytes": 245760
+          }
+        },
+        {
+          "name": "the PRE-ADMISSION window is retained (every incident carries lead-up frames)",
+          "passed": true,
+          "detail": "15/15 incidents carry pre-fire frames (0 without)",
+          "data": {
+            "with_preroll": 15,
+            "without_preroll": 0
+          }
+        }
+      ],
+      "measurements": {
+        "n_frames": 3000,
+        "frame_bytes": 16384,
+        "elapsed_s": 6.63,
+        "incidents": 15,
+        "snippet_size": 48,
+        "snippet_max_bytes": 256000,
+        "preroll_frames_dropped": 2985,
+        "preroll_capped_events": 2985,
+        "tracemalloc_current_end_bytes": 3679862,
+        "tracemalloc_peak_bytes": 4009438,
+        "rss_maxrss_bytes": 67665920,
+        "drift_pct_second_half": 0.0,
+        "slope_bytes_per_frame": 0.0,
+        "curve": []
+      },
+      "defects": []
+    }
+  ],
+  "summary": {
+    "SV-4.6": "PASS"
+  },
+  "release_blockers": []
+}

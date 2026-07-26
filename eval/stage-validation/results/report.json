@@ -1,0 +1,801 @@
+{
+  "corpus": {
+    "coverage": {
+      "charades": {
+        "built": 20,
+        "requested": 20,
+        "short_by": 0
+      },
+      "omnipro": {
+        "built": 20,
+        "requested": 20,
+        "short_by": 0
+      },
+      "perception_test": {
+        "built": 20,
+        "requested": 20,
+        "short_by": 0
+      },
+      "proactiveqa": {
+        "built": 20,
+        "requested": 20,
+        "short_by": 0
+      },
+      "repcount": {
+        "built": 20,
+        "requested": 20,
+        "short_by": 0
+      }
+    },
+    "n_cases": 100
+  },
+  "generated": "2026-07-26T22:44:51+00:00",
+  "long_sources": {
+    "n_sources": 6,
+    "sources": [
+      {
+        "duration_s": 225.867,
+        "expected_occurrences": 9,
+        "goal_key": "perception_test::showing_something_to_the_camera"
+      },
+      {
+        "duration_s": 97.0,
+        "expected_occurrences": 5,
+        "goal_key": "repcount::frontraise"
+      },
+      {
+        "duration_s": 170.0,
+        "expected_occurrences": 5,
+        "goal_key": "repcount::situp"
+      },
+      {
+        "duration_s": 60.933,
+        "expected_occurrences": 3,
+        "goal_key": "perception_test::launching_something"
+      },
+      {
+        "duration_s": 48.0,
+        "expected_occurrences": 3,
+        "goal_key": "repcount::jumpjack"
+      },
+      {
+        "duration_s": 60.667,
+        "expected_occurrences": 2,
+        "goal_key": "charades::someone_is_cooking_something"
+      }
+    ]
+  },
+  "stages": {
+    "STAGE 0": [
+      {
+        "counts": {
+          "PASS": 6
+        },
+        "status": "PASS",
+        "suite": "sv0_ingest",
+        "tests": [
+          {
+            "detail": "",
+            "id": "SV-0.1",
+            "measured": {},
+            "status": "PASS"
+          },
+          {
+            "detail": "",
+            "id": "SV-0.2",
+            "measured": {},
+            "status": "PASS"
+          },
+          {
+            "detail": "",
+            "id": "SV-0.3",
+            "measured": {},
+            "status": "PASS"
+          },
+          {
+            "detail": "",
+            "id": "SV-0.4",
+            "measured": {},
+            "status": "PASS"
+          },
+          {
+            "detail": "",
+            "id": "SV-0.5",
+            "measured": {},
+            "status": "PASS"
+          },
+          {
+            "detail": "",
+            "id": "SV-0.6",
+            "measured": {},
+            "status": "PASS"
+          }
+        ],
+        "title": "Ingest + normalize"
+      },
+      {
+        "counts": {
+          "FAIL": 4
+        },
+        "status": "FAIL",
+        "suite": "sv0_compile",
+        "tests": [
+          {
+            "detail": "",
+            "id": "SV-0.7",
+            "measured": {},
+            "status": "FAIL"
+          },
+          {
+            "detail": "",
+            "id": "SV-0.8",
+            "measured": {},
+            "status": "FAIL"
+          },
+          {
+            "detail": "",
+            "id": "SV-0.9",
+            "measured": {},
+            "status": "FAIL"
+          },
+          {
+            "detail": "",
+            "id": "SV-0.10",
+            "measured": {},
+            "status": "FAIL"
+          }
+        ],
+        "title": "Planner + compiler"
+      }
+    ],
+    "STAGE 1": [
+      {
+        "counts": {
+          "FAIL": 1,
+          "PASS": 3
+        },
+        "status": "FAIL",
+        "suite": "sv1_admission",
+        "tests": [
+          {
+            "detail": "",
+            "id": "Dwell correctness \u2014 hysteresis, debounce, expiry (exact)",
+            "measured": {},
+            "status": "PASS"
+          },
+          {
+            "detail": "",
+            "id": "Dwell under a monotonous signal \u2014 does the interval hold?",
+            "measured": {},
+            "status": "FAIL"
+          },
+          {
+            "detail": "",
+            "id": "Per-Watch attribution \u2014 N Watches, one source, zero cross-dispatch",
+            "measured": {},
+            "status": "PASS"
+          },
+          {
+            "detail": "",
+            "id": "State-transition table (suppress / accumulate / admit+dwell)",
+            "measured": {},
+            "status": "PASS"
+          }
+        ],
+        "title": "Admission (VID/VAD, dwell)"
+      }
+    ],
+    "STAGE 2": [
+      {
+        "counts": {
+          "PASS": 4
+        },
+        "status": "PASS",
+        "suite": "sv2_senses",
+        "tests": [
+          {
+            "detail": "",
+            "id": "?",
+            "measured": {},
+            "status": "PASS"
+          },
+          {
+            "detail": "",
+            "id": "?",
+            "measured": {},
+            "status": "PASS"
+          },
+          {
+            "detail": "",
+            "id": "?",
+            "measured": {},
+            "status": "PASS"
+          },
+          {
+            "detail": "",
+            "id": "?",
+            "measured": {},
+            "status": "PASS"
+          }
+        ],
+        "title": "Local perception (senses, reducers)"
+      }
+    ],
+    "STAGE 3": [
+      {
+        "counts": {
+          "FAIL": 1,
+          "PASS": 3
+        },
+        "status": "FAIL",
+        "suite": "sv3_pool",
+        "tests": [
+          {
+            "detail": "",
+            "id": "?",
+            "measured": {
+              "burst": {
+                "burst_size": 800,
+                "bursts": 10,
+                "capacity_receipts": 15970,
+                "completed_decisions_per_s": 35696.1,
+                "declared_max_inflight_per_route": {
+                  "route_a": 4,
+                  "route_b": 2
+                },
+                "exceptions": {},
+                "gap_s": 0.015,
+                "leak_call_route_tasks": 0,
+                "leak_live_provider_calls": 0,
+                "leak_pool_snapshot_inflight": 0,
+                "offered_decisions_per_s": 35696.1,
+                "outcomes": {
+                  "served": 20,
+                  "shed": 7980
+                },
+                "peak_concurrent_provider_calls_per_route": {
+                  "route_a": 4,
+                  "route_b": 2
+                },
+                "peak_live_call_route_tasks": 6,
+                "peak_pool_snapshot_inflight": 6,
+                "peak_queue_depth_outstanding_decisions": 1604,
+                "receipts_by_outcome": {
+                  "capacity": 15970,
+                  "decisive": 30
+                },
+                "residual_outstanding_after_each_gap": [
+                  800,
+                  804,
+                  800,
+                  804,
+                  800,
+                  804,
+                  800,
+                  804,
+                  800,
+                  804
+                ],
+                "residual_slope_per_burst": 0.1212,
+                "shed_fraction": 0.9975,
+                "unbounded_queue_would_have_reached": 8000,
+                "units_completed": 8000,
+                "units_dispatched": 8000,
+                "wall_s": 0.224
+              },
+              "sustained": {
+                "capacity_receipts": 7334,
+                "declared_max_inflight_per_route": {
+                  "route_a": 4,
+                  "route_b": 2
+                },
+                "declared_max_inflight_total": 6,
+                "exceptions": {},
+                "leak_call_route_tasks": 0,
+                "leak_live_provider_calls": 0,
+                "leak_pool_snapshot_inflight": 0,
+                "offered_decisions_per_s": 1761.0,
+                "outcomes": {
+                  "served": 444,
+                  "shed": 3556
+                },
+                "outstanding_quartile_means": [
+                  7.95,
+                  7.95,
+                  7.97,
+                  8.0
+                ],
+                "outstanding_slope_per_tick": 6e-05,
+                "peak_concurrent_provider_calls_per_route": {
+                  "route_a": 4,
+                  "route_b": 2
+                },
+                "peak_concurrent_provider_calls_total": 6,
+                "peak_live_call_route_tasks": 6,
+                "peak_pool_snapshot_inflight": 6,
+                "peak_queue_depth_outstanding_decisions": 8,
+                "receipt_limit": 256,
+                "receipts_by_outcome": {
+                  "capacity": 7334,
+                  "decisive": 666
+                },
+                "receipts_total_observed": 8000,
+                "retained_receipt_ring_len": 256,
+                "served_capacity_decisions_per_s": 200.0,
+                "shed_fraction": 0.889,
+                "units_completed": 4000,
+                "units_dispatched": 4000,
+                "wall_s": 2.271
+              }
+            },
+            "status": "PASS"
+          },
+          {
+            "detail": "",
+            "id": "?",
+            "measured": {
+              "A_slow_route": {
+                "actual_provider_latency_s": 1.5,
+                "deadline_s": 0.3,
+                "declared_latency_slo_s": 0.05,
+                "elapsed_s": 0.3013,
+                "provider_calls": 1,
+                "provider_cancellations": 1,
+                "receipts_by_outcome": {
+                  "cancelled": 1,
+                  "deadline": 1
+                },
+                "verdict_class": "deadline",
+                "verdict_confidence": 0.0,
+                "verdict_satisfied": false
+              },
+              "B_hostile_late_reply": {
+                "adapter_returned_late": 1,
+                "cancellation_swallowed_by_adapter": 1,
+                "capacity_receipts_while_occupied": 1,
+                "elapsed_s": 0.3014,
+                "late_verdict_would_have_been": {
+                  "confidence": 0.99,
+                  "satisfied": true
+                },
+                "provider_delay_s": 0.8999999999999999,
+                "receipt_outcomes_after_late_reply": {
+                  "cancelled": 1,
+                  "capacity": 1,
+                  "deadline": 1
+                },
+                "receipt_outcomes_at_return": {
+                  "cancelled": 1,
+                  "deadline": 1
+                },
+                "receipt_outcomes_before_late_reply": {
+                  "cancelled": 1,
+                  "capacity": 1,
+                  "deadline": 1
+                },
+                "route_inflight_after_late_reply": 0,
+                "route_inflight_at_return": 1,
+                "second_decision_elapsed_s": 0.0002,
+                "second_decision_while_occupied": "shed",
+                "verdict_class": "deadline"
+              },
+              "C_returned_object_aliasing": {
+                "control_decisive_path_after": [
+                  true,
+                  0.99
+                ],
+                "control_decisive_path_aliased": true,
+                "control_decisive_path_before": [
+                  false,
+                  0.95
+                ],
+                "control_sdk_FakeVision_aliases_its_script": true,
+                "decision_concluded_by_deadline": true,
+                "elapsed_s": 0.3007,
+                "pool_returned_the_provider_owned_object": true,
+                "receipts_by_outcome": {
+                  "cancelled": 1,
+                  "deadline": 1,
+                  "uncertain": 1
+                },
+                "scenario": "route A replies low-confidence before expiry; route B never replies; the pool concludes the decision by DEADLINE EXPIRY and hands back route A's object",
+                "verdict_after_provider_mutation": [
+                  true,
+                  0.99
+                ],
+                "verdict_before_provider_mutation": [
+                  false,
+                  0.4
+                ],
+                "verdict_class": "served",
+                "verdict_dataclass_is_frozen": false
+              },
+              "D_terminal_deadline": {
+                "elapsed_s": 0.151,
+                "latched_error": "TimeoutError",
+                "raised": "TimeoutError",
+                "receipts_by_outcome": {
+                  "cancelled": 1,
+                  "deadline": 1
+                },
+                "route_inflight_after": 0
+              }
+            },
+            "status": "FAIL"
+          },
+          {
+            "detail": "",
+            "id": "?",
+            "measured": {
+              "case_1_over_slo_reflex": {
+                "adapter_invocations": 0,
+                "deadline_s": 0.6,
+                "declared_latency_slo_s": 4.8,
+                "elapsed_s": 4e-05,
+                "evidence_shape": "single_image",
+                "receipt_route_field": [
+                  null
+                ],
+                "receipts_by_outcome": {
+                  "no_route": 1
+                },
+                "verdict_class": "no_route"
+              },
+              "case_2_in_slo_but_slow": {
+                "actual_provider_latency_s": 3.0,
+                "adapter_invocations": 1,
+                "declared_latency_slo_s": 0.3,
+                "elapsed_s": 0.6012,
+                "receipts_by_outcome": {
+                  "cancelled": 1,
+                  "deadline": 1
+                },
+                "verdict_class": "deadline"
+              },
+              "case_3_deliberate_admits_over_slo": {
+                "adapter_invocations": 1,
+                "declared_latency_slo_s": 4.8,
+                "mode": "deliberate",
+                "receipts_by_outcome": {
+                  "decisive": 1
+                },
+                "verdict_class": "served"
+              },
+              "case_4_mixed_pool": {
+                "in_slo_adapter_invocations": 1,
+                "over_slo_adapter_invocations": 0,
+                "receipts_by_route_outcome": {
+                  "good_in_slo": {
+                    "decisive": 1
+                  }
+                },
+                "verdict_class": "served"
+              },
+              "case_5_mode_gate": {
+                "adapter_invocations": 0,
+                "declared_latency_slo_s": 0.001,
+                "receipts_by_outcome": {
+                  "no_route": 1
+                },
+                "verdict_class": "no_route"
+              }
+            },
+            "status": "PASS"
+          },
+          {
+            "detail": "",
+            "id": "?",
+            "measured": {
+              "audio_judge_binding": {
+                "prepare_audio_judge_binding(FakeVision)": "accepted",
+                "prepare_audio_judge_binding(JudgePool)": "ValueError: compiled audio requires an exact SDK-owned FakeVision or GeminiVision adapter",
+                "trusted_adapters": [
+                  "percept.backends.fake.FakeVision",
+                  "percept.backends.gemini.GeminiVision"
+                ]
+              },
+              "invariant_matrix": {
+                "audio": {
+                  "bounded": true,
+                  "deadline": true,
+                  "no_leak": true,
+                  "queue_bounded": true,
+                  "reflex_reject": true,
+                  "sheds": true
+                },
+                "context_stream": {
+                  "bounded": true,
+                  "deadline": true,
+                  "no_leak": true,
+                  "queue_bounded": true,
+                  "reflex_reject": true,
+                  "sheds": true
+                },
+                "fused": {
+                  "bounded": true,
+                  "deadline": true,
+                  "no_leak": true,
+                  "queue_bounded": true,
+                  "reflex_reject": true,
+                  "sheds": true
+                },
+                "single_image": {
+                  "bounded": true,
+                  "deadline": true,
+                  "no_leak": true,
+                  "queue_bounded": true,
+                  "reflex_reject": true,
+                  "sheds": true
+                }
+              },
+              "per_shape": {
+                "audio": {
+                  "deadline": {
+                    "deadline_s": 0.25,
+                    "elapsed_s": 0.2512,
+                    "ok": true,
+                    "receipt_shape": [
+                      "audio"
+                    ],
+                    "receipts_by_outcome": {
+                      "cancelled": 1,
+                      "deadline": 1
+                    },
+                    "unknown_shaped": true,
+                    "verdict_class": "deadline",
+                    "within_deadline": true
+                  },
+                  "evidence_shape": "audio",
+                  "overload": {
+                    "all_terminated": true,
+                    "bounded": true,
+                    "capacity_receipts": 798,
+                    "completed": 900,
+                    "declared_max_inflight": 3,
+                    "leak_call_route_tasks": 0,
+                    "leak_live_provider_calls": 0,
+                    "leak_snapshot_inflight": 0,
+                    "no_leak": true,
+                    "outcomes": {
+                      "served": 102,
+                      "shed": 798
+                    },
+                    "outstanding_quartile_means": [
+                      5.68,
+                      5.68,
+                      5.68,
+                      5.8
+                    ],
+                    "peak_concurrent_provider_calls": 3,
+                    "peak_queue_depth_outstanding_decisions": 6,
+                    "queue_bounded": true,
+                    "shed": true,
+                    "units": 900
+                  },
+                  "reflex_rejection": {
+                    "adapter_invocations": 0,
+                    "elapsed_s": 4e-05,
+                    "ok": true,
+                    "receipts_by_outcome": {
+                      "no_route": 1
+                    },
+                    "verdict_class": "no_route"
+                  },
+                  "shape_exactness": {
+                    "expected_served": false,
+                    "ok": true,
+                    "single_image_only_route_invocations": 0,
+                    "verdict_class": "no_route"
+                  }
+                },
+                "context_stream": {
+                  "deadline": {
+                    "deadline_s": 0.25,
+                    "elapsed_s": 0.2513,
+                    "ok": true,
+                    "receipt_shape": [
+                      "context_stream"
+                    ],
+                    "receipts_by_outcome": {
+                      "cancelled": 1,
+                      "deadline": 1
+                    },
+                    "unknown_shaped": true,
+                    "verdict_class": "deadline",
+                    "within_deadline": true
+                  },
+                  "evidence_shape": "context_stream",
+                  "overload": {
+                    "all_terminated": true,
+                    "bounded": true,
+                    "capacity_receipts": 798,
+                    "completed": 900,
+                    "declared_max_inflight": 3,
+                    "leak_call_route_tasks": 0,
+                    "leak_live_provider_calls": 0,
+                    "leak_snapshot_inflight": 0,
+                    "no_leak": true,
+                    "outcomes": {
+                      "served": 102,
+                      "shed": 798
+                    },
+                    "outstanding_quartile_means": [
+                      5.84,
+                      5.96,
+                      5.72,
+                      5.8
+                    ],
+                    "peak_concurrent_provider_calls": 3,
+                    "peak_queue_depth_outstanding_decisions": 9,
+                    "queue_bounded": true,
+                    "shed": true,
+                    "units": 900
+                  },
+                  "reflex_rejection": {
+                    "adapter_invocations": 0,
+                    "elapsed_s": 2e-05,
+                    "ok": true,
+                    "receipts_by_outcome": {
+                      "no_route": 1
+                    },
+                    "verdict_class": "no_route"
+                  },
+                  "shape_exactness": {
+                    "expected_served": false,
+                    "ok": true,
+                    "single_image_only_route_invocations": 0,
+                    "verdict_class": "no_route"
+                  }
+                },
+                "fused": {
+                  "deadline": {
+                    "deadline_s": 0.25,
+                    "elapsed_s": 0.2512,
+                    "ok": true,
+                    "receipt_shape": [
+                      "fused"
+                    ],
+                    "receipts_by_outcome": {
+                      "cancelled": 1,
+                      "deadline": 1
+                    },
+                    "unknown_shaped": true,
+                    "verdict_class": "deadline",
+                    "within_deadline": true
+                  },
+                  "evidence_shape": "fused",
+                  "overload": {
+                    "all_terminated": true,
+                    "bounded": true,
+                    "capacity_receipts": 798,
+                    "completed": 900,
+                    "declared_max_inflight": 3,
+                    "leak_call_route_tasks": 0,
+                    "leak_live_provider_calls": 0,
+                    "leak_snapshot_inflight": 0,
+                    "no_leak": true,
+                    "outcomes": {
+                      "served": 102,
+                      "shed": 798
+                    },
+                    "outstanding_quartile_means": [
+                      5.76,
+                      5.76,
+                      5.96,
+                      5.88
+                    ],
+                    "peak_concurrent_provider_calls": 3,
+                    "peak_queue_depth_outstanding_decisions": 6,
+                    "queue_bounded": true,
+                    "shed": true,
+                    "units": 900
+                  },
+                  "reflex_rejection": {
+                    "adapter_invocations": 0,
+                    "elapsed_s": 2e-05,
+                    "ok": true,
+                    "receipts_by_outcome": {
+                      "no_route": 1
+                    },
+                    "verdict_class": "no_route"
+                  },
+                  "shape_exactness": {
+                    "expected_served": false,
+                    "ok": true,
+                    "single_image_only_route_invocations": 0,
+                    "verdict_class": "no_route"
+                  }
+                },
+                "single_image": {
+                  "deadline": {
+                    "deadline_s": 0.25,
+                    "elapsed_s": 0.2509,
+                    "ok": true,
+                    "receipt_shape": [
+                      "single_image"
+                    ],
+                    "receipts_by_outcome": {
+                      "cancelled": 1,
+                      "deadline": 1
+                    },
+                    "unknown_shaped": true,
+                    "verdict_class": "deadline",
+                    "within_deadline": true
+                  },
+                  "evidence_shape": "single_image",
+                  "overload": {
+                    "all_terminated": true,
+                    "bounded": true,
+                    "capacity_receipts": 798,
+                    "completed": 900,
+                    "declared_max_inflight": 3,
+                    "leak_call_route_tasks": 0,
+                    "leak_live_provider_calls": 0,
+                    "leak_snapshot_inflight": 0,
+                    "no_leak": true,
+                    "outcomes": {
+                      "served": 102,
+                      "shed": 798
+                    },
+                    "outstanding_quartile_means": [
+                      5.64,
+                      5.88,
+                      5.88,
+                      5.76
+                    ],
+                    "peak_concurrent_provider_calls": 3,
+                    "peak_queue_depth_outstanding_decisions": 6,
+                    "queue_bounded": true,
+                    "shed": true,
+                    "units": 900
+                  },
+                  "reflex_rejection": {
+                    "adapter_invocations": 0,
+                    "elapsed_s": 4e-05,
+                    "ok": true,
+                    "receipts_by_outcome": {
+                      "no_route": 1
+                    },
+                    "verdict_class": "no_route"
+                  },
+                  "shape_exactness": {
+                    "expected_served": true,
+                    "ok": true,
+                    "single_image_only_route_invocations": 1,
+                    "verdict_class": "served"
+                  }
+                }
+              }
+            },
+            "status": "PASS"
+          }
+        ],
+        "title": "Semantic judges (boundedness)"
+      }
+    ],
+    "STAGE 4": [
+      {
+        "counts": {
+          "FAIL": 1
+        },
+        "status": "FAIL",
+        "suite": "sv4_cognition",
+        "tests": [
+          {
+            "detail": "",
+            "id": "SV-4.7",
+            "measured": {},
+            "status": "FAIL"
+          }
+        ],
+        "title": "Cognition + disposition"
+      }
+    ]
+  },
+  "totals": {
+    "FAIL": 7,
+    "MISSING": 0,
+    "PASS": 16,
+    "UNKNOWN": 0
+  }
+}
