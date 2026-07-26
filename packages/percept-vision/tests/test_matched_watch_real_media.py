@@ -341,6 +341,16 @@ def test_real_ordinary_template_uses_one_executed_judgment_per_dispatch(tmp_path
         for candidate in receipt.baseline.candidates
         if candidate.runtime_dispatched
     )
+    started = [
+        trace
+        for trace in receipt.baseline.traces
+        if trace["stage"] == "judge.started"
+    ]
+    assert [dict(trace["data"]) for trace in started] == [
+        {"temporal": "single", "roi": False}
+        for candidate in receipt.baseline.candidates
+        if candidate.runtime_dispatched
+    ]
     assert len(receipt.baseline.incidents) == 1
 
 
@@ -958,6 +968,36 @@ def test_v2_ordinary_provider_failure_receipt_validates_before_not_comparable(
     receipt = run_matched_watch(manifest_path)
 
     matched_watch_module._validate_receipt(receipt)
+    degraded = [
+        trace
+        for trace in receipt.baseline.traces
+        if trace["stage"] == "judge.degraded"
+    ]
+    assert [(trace["t"], dict(trace["data"])) for trace in degraded] == [
+        (
+            receipt.baseline.candidates[0].t,
+            {"cause": "RuntimeError('judgment provider unavailable')"},
+        )
+    ]
+    degraded_health = [
+        event
+        for event in receipt.baseline.health
+        if event["kind"] == "judge_degraded"
+    ]
+    assert [(event["ts"], dict(event["data"])) for event in degraded_health] == [
+        (
+            receipt.baseline.candidates[0].t,
+            {
+                "key": repr(
+                    (
+                        receipt.baseline.compiled_binding["goal_id"],
+                        None,
+                    )
+                ),
+                "cause": repr("judgment provider unavailable"),
+            },
+        )
+    ]
     receipt_path = tmp_path / "ordinary-error-receipt.json"
     receipt_path.write_text(receipt.to_json(), encoding="utf-8")
 
@@ -965,6 +1005,38 @@ def test_v2_ordinary_provider_failure_receipt_validates_before_not_comparable(
         load_matched_watch_receipt(receipt_path)
     with pytest.raises(MatchedWatchInputError, match="not comparable"):
         derive_viability_rows(receipt)
+
+
+def test_v2_consecutive_provider_failures_reconstruct_health_at_each_completion(
+    tmp_path,
+):
+    manifest_path = _write_real_case(
+        tmp_path,
+        template_ref="facility_observation@1/zone_occupied",
+        archetype="physical_scene/zone_occupied",
+    )
+    for index in range(5):
+        _set_ordinary_oracle_error(manifest_path, index=index)
+
+    receipt = run_matched_watch(manifest_path)
+    matched_watch_module._validate_receipt(receipt)
+
+    degraded = [
+        (event["kind"], event["ts"])
+        for event in receipt.baseline.health
+        if event["kind"] in {
+            "judge_degraded",
+            "judge_persistent_failure",
+        }
+    ]
+    candidate_times = [
+        candidate.t for candidate in receipt.baseline.candidates[:5]
+    ]
+    assert degraded == [
+        *[("judge_degraded", candidate_t) for candidate_t in candidate_times[:4]],
+        ("judge_degraded", candidate_times[4]),
+        ("judge_persistent_failure", candidate_times[4]),
+    ]
 
 
 @pytest.mark.parametrize(

@@ -208,6 +208,9 @@ class _JudgmentJob:
     reducer: _ReducerInputs
     adapter: Any
     local_verdict: _VerdictSnapshot | None = None
+    trace_temporal: str | None = None
+    trace_roi: bool = False
+    trace_provenance: tuple[tuple[str, Any], ...] = ()
 
     @property
     def bundle(self) -> Any:
@@ -2715,6 +2718,9 @@ class Percept:
             ),
             adapter=adapter,
             local_verdict=local_verdict,
+            trace_temporal=spec.temporal,
+            trace_roi=roi is not None,
+            trace_provenance=tuple(_judge_binding_trace(bound).items()),
         )
 
     def _prepare_routed_frame_goal(
@@ -2806,6 +2812,7 @@ class Percept:
                 route_inputs=route_inputs,
             ),
             adapter=adapter,
+            trace_provenance=tuple(_judge_binding_trace(bound).items()),
         )
 
     def prepare_transition_judgment(
@@ -3092,6 +3099,9 @@ class Percept:
                     launched_job,
                     "judge.started",
                     goal_id=token.goal_id,
+                    temporal=job.trace_temporal,
+                    roi=job.trace_roi,
+                    **dict(job.trace_provenance),
                 )
             launched.append(launched_job)
         return tuple(launched)
@@ -3236,11 +3246,6 @@ class Percept:
             while len(accounted) > _PROVIDER_ACCOUNTING_FALLBACK_MAX:
                 accounted.pop(next(iter(accounted)), None)
         token = completion.job.token
-        binding = (
-            token.judge_binding_token
-            if hasattr(token.judge_binding_token, "spec")
-            else None
-        )
         for call in completion.calls:
             self.funnel.judged(
                 concern=token.goal_id,
@@ -3264,7 +3269,7 @@ class Percept:
                         "judge.usage",
                         model=self._judge_model(completion.job.adapter),
                         **dict(call.usage),
-                        **_judge_binding_trace(binding),
+                        **dict(completion.job.trace_provenance),
                     )
         return True
 
@@ -3558,6 +3563,21 @@ class Percept:
                 label="",
                 action="degrading this tick to ASK/SILENT",
             )
+            self._queue_judgment_trace(
+                job,
+                "judge.degraded",
+                goal_id=goal.id,
+                cause=repr(RuntimeError(completion.failure.safe_message)),
+            )
+            self._queue_judgment_trace(
+                job,
+                "gate.classified",
+                goal_id=goal.id,
+                truth="unknown",
+                action="ask",
+                entity_id=job.reducer.reducer_entity_id,
+                degraded=True,
+            )
             return []
         elif job.reducer.cache_store and job.reducer.cache_key is not None:
             self.cache.store(
@@ -3637,6 +3657,7 @@ class Percept:
             goal_id=goal.id,
             satisfied=verdict.satisfied,
             confidence=verdict.confidence,
+            **dict(job.trace_provenance),
         )
         self._queue_judgment_trace(
             job,
@@ -4355,6 +4376,8 @@ class Percept:
                 freshness=1.0,
             ),
             adapter=binding.adapter,
+            trace_temporal=program_of(goal).perception.temporal,
+            trace_roi=False,
         )
 
     async def _dispatch_provider_request(

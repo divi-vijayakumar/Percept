@@ -4664,9 +4664,8 @@ async def _run_worker(
                     f"unknown runtime owner command {command.kind!r}"
                 )
 
-        async def _emit_fires(fires, *, at, from_boundary=False):
-            """Materialize the whole owner reduction, then deliver it."""
-
+        def _materialize_fires(fires, *, at, from_boundary=False):
+            """Freeze one owner reduction and its counters without invoking callbacks."""
             def _snippet_for_fire(fire):
                 exact_audio_units = tuple(
                     getattr(fire, "audio_units", None) or ()
@@ -4702,6 +4701,9 @@ async def _run_worker(
                 stats.fires += sum(
                     item.action == FIRE for item in materialized.items
                 )
+            return materialized
+
+        async def _emit_materialized(materialized):
             delivered = await _deliver_materialized(
                 materialized,
                 core=core,
@@ -4715,6 +4717,16 @@ async def _run_worker(
             for incident in delivered:
                 yield incident
 
+        async def _emit_fires(fires, *, at, from_boundary=False):
+            """Materialize the whole owner reduction, then deliver it."""
+            materialized = _materialize_fires(
+                fires,
+                at=at,
+                from_boundary=from_boundary,
+            )
+            async for incident in _emit_materialized(materialized):
+                yield incident
+
         async def _emit_fused_completion(completion, *, at):
             token = completion.job.token
             synchronizer = (_fused_syncs or {}).get(token.goal_id)
@@ -4725,15 +4737,17 @@ async def _run_worker(
                 completion,
                 live_fused_generation=live_generation,
             )
-            # _emit_fires materializes the Incident synchronously before its
-            # first callback await, immediately following the owner commit.
-            async for incident in _emit_fires(fires, at=at):
-                yield incident
+            # Freeze the Incident before any callback, while retaining the
+            # causal trace order: cognition rows precede incident.created.
+            materialized = _materialize_fires(fires, at=at)
             drain_records = getattr(core, "drain_fused_trace_records", None)
             emit_trace = getattr(core, "_emit_trace", None)
             if callable(drain_records) and callable(emit_trace):
                 for trace_id, trace_t, stage, data in drain_records():
                     await emit_trace(trace_id, trace_t, stage, **data)
+            await _drain_judge_health(core, on_health, at)
+            async for incident in _emit_materialized(materialized):
+                yield incident
 
         async def _prepare_split_jobs(
             frame,
@@ -4801,13 +4815,18 @@ async def _run_worker(
                 fires.extend(core.reduce_judgment_completion(completion))
             if scheduler is not None:
                 scheduler.owner_reduced()
-            async for incident in _emit_fires(fires, at=at):
-                yield incident
+            # Reduction and Incident construction are synchronous owner work.
+            # Deliver their already-frozen trace rows in causal order before
+            # incident.created and subscriber callbacks.
+            materialized = _materialize_fires(fires, at=at)
             drain_rows = getattr(core, "drain_judgment_trace_rows", None)
             emit_trace = getattr(core, "_emit_trace", None)
             if callable(drain_rows) and callable(emit_trace):
                 for trace_id, trace_t, stage, data in drain_rows():
                     await emit_trace(trace_id, trace_t, stage, **data)
+            await _drain_judge_health(core, on_health, at)
+            async for incident in _emit_materialized(materialized):
+                yield incident
 
         async def _owner_driven_video():
             """Yield video while servicing owner commands during source stalls."""

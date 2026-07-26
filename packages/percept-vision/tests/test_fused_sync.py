@@ -335,6 +335,7 @@ def test_public_async_fused_watch_uses_split_provider_path():
     )
     assert receipt.status == "applied"
     admitted_jobs = []
+    traces = []
     original_prepare = core.prepare_fused_judgment
 
     def capture_prepared_job(*args, **kwargs):
@@ -347,6 +348,9 @@ def test_public_async_fused_watch_uses_split_provider_path():
                 unit.payload for unit in job.bundle.video_units[:-1]
             )
             assert job.frame is job.bundle.video_units[-1].payload
+            assert job.trace_temporal == "single"
+            assert job.trace_roi is False
+            assert job.trace_provenance == ()
         return job
 
     core.prepare_fused_judgment = capture_prepared_job
@@ -363,6 +367,7 @@ def test_public_async_fused_watch_uses_split_provider_path():
             ],
             audio_gate=None,
             judge_dispatch="async",
+            on_trace=traces.append,
         )
     )
     assert len(incidents) == 1
@@ -376,6 +381,8 @@ def test_public_async_fused_watch_uses_split_provider_path():
     ]
     assert len(matched) == 1
     assert matched[0].token.evidence_seq == incidents[0].evidence_seq
+    stages = [trace.stage for trace in traces]
+    assert stages.index("judgment.event") < stages.index("incident.created")
 
 
 def test_fused_provider_exception_payload_is_redacted_from_runtime_outputs():

@@ -24,6 +24,7 @@ from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
 from percept import Goal, Percept, build_info
+from percept.agent import CONSECUTIVE_DEGRADE_ESCALATE
 from percept._safe_json import (
     SAFE_JSON_MAX_BYTES,
     SafeInputReceipt,
@@ -380,6 +381,8 @@ _HEALTH_DATA_KEYS = {
     "judge_dispatch": {"mode"},
     "effective_config": {"coast_enabled", "fps", "video_timebase"},
     "escalation": {"cause", "source"},
+    "judge_degraded": {"cause", "key"},
+    "judge_persistent_failure": {"cause", "key"},
     "incident": {"entity_id", "goal_id", "incident_id"},
 }
 _RUNTIME_ENDED_DATA_KEYS = {
@@ -3773,7 +3776,6 @@ def _validate_v2_arm_reconstruction(
                 if call.status != "success"
             ]
             if failed:
-                failed_call = failed[0]
                 _require(
                     candidate.t not in finished_by_t
                     and candidate.t not in shadow_by_t
@@ -3782,7 +3784,9 @@ def _validate_v2_arm_reconstruction(
                         **coordinate,
                         "stage": "judge.degraded",
                         "data": {
-                            "cause": repr(RuntimeError(str(failed_call.error)))
+                            "cause": repr(
+                                RuntimeError("judgment provider unavailable")
+                            )
                         },
                     }
                     and _thaw(gate_by_t.get(candidate.t))
@@ -4045,8 +4049,23 @@ def _validate_v2_arm_reconstruction(
     incidents_by_candidate = {
         candidate.index: len(candidate.incident_ids) for candidate in candidates
     }
+    degrade_streak = 0
+    health_key = (
+        (goal_id, "scene")
+        if route == "transition"
+        else (goal_id, None)
+    )
     for candidate in admitted:
         expected_health_order.append(("escalation", candidate.t))
+        if any(call.status != "success" for call in candidate.provider_calls):
+            degrade_streak += 1
+            expected_health_order.append(("judge_degraded", candidate.t))
+            if degrade_streak == CONSECUTIVE_DEGRADE_ESCALATE:
+                expected_health_order.append(
+                    ("judge_persistent_failure", candidate.t)
+                )
+        else:
+            degrade_streak = 0
         expected_health_order.extend(
             ("incident", candidate.t) for _ in range(incidents_by_candidate[candidate.index])
         )
@@ -4063,6 +4082,47 @@ def _validate_v2_arm_reconstruction(
         ]
         == expected_health_order,
         f"{arm.arm} health append order does not reconstruct from execution",
+    )
+    expected_degraded_health = []
+    degrade_streak = 0
+    for candidate in admitted:
+        if any(call.status != "success" for call in candidate.provider_calls):
+            degrade_streak += 1
+            expected_degraded_health.append(
+                (
+                    "judge_degraded",
+                    candidate.t,
+                    {
+                        "key": repr(health_key),
+                        "cause": repr("judgment provider unavailable"),
+                    },
+                )
+            )
+            if degrade_streak == CONSECUTIVE_DEGRADE_ESCALATE:
+                expected_degraded_health.append(
+                    (
+                        "judge_persistent_failure",
+                        candidate.t,
+                        {
+                            "key": repr(health_key),
+                            "cause": repr("judgment provider unavailable"),
+                        },
+                    )
+                )
+        else:
+            degrade_streak = 0
+    observed_degraded_health = [
+        (
+            str(item["kind"]),
+            float(item["ts"]),
+            _thaw(item["data"]),
+        )
+        for item in arm.health
+        if item["kind"] in {"judge_degraded", "judge_persistent_failure"}
+    ]
+    _require(
+        observed_degraded_health == expected_degraded_health,
+        f"{arm.arm} judge-degradation health does not reconstruct from provider failure",
     )
     ended = [item for item in arm.health if item["kind"] == "runtime_ended"]
     _require(
