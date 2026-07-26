@@ -9,16 +9,23 @@ isolation, retries, progress logs, and scorecard collection from partial results
 from __future__ import annotations
 
 import argparse
+import ast
+import base64
 import concurrent.futures
 import csv
+import email.parser
+import email.policy
 import hashlib
 import importlib
+import importlib.metadata
 import json
 import os
+import platform
 import shlex
 import subprocess
 import sys
 import time
+import zipfile
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -63,6 +70,7 @@ SAMPLE_SEED = os.environ.get("PERCEPT_BENCH_SAMPLE_SEED", "percept-golden-v1")
 RUN_SCHEMA_V2 = "percept.benchmark.run/2"
 ARTIFACT_SCHEMA_V2 = "percept.benchmark.track_artifact/2"
 TRACK_RESULT_SCHEMA_V2 = "percept.benchmark.track_result/2"
+_RUNTIME_FROM_WHEEL = False
 
 # Front-load the pose checkpoint download (RTMO via MMPose) in a child that has the
 # benchmark PYTHONPATH + certifi TLS bundle, so the counting track never blocks on it.
@@ -120,12 +128,42 @@ def _bench_paths() -> dict[str, Path]:
     }
 
 
-def _pythonpath() -> str:
-    parts = [str(SDK)]
-    existing = os.environ.get("PYTHONPATH")
-    if existing:
-        parts.append(existing)
-    return os.pathsep.join(parts)
+def _configure_benchmark_imports(sdk_wheel: str | None = None) -> None:
+    """Expose source-only benchmark modules without shadowing a qualified wheel.
+
+    The benchmark harness intentionally remains outside the published wheel. For
+    development runs we preserve the old source-first behavior. A qualification
+    run moves the source package root behind site-packages so ``eval.bench`` comes
+    from the checkout while ``percept`` must come from the installed wheel.
+    """
+    global _RUNTIME_FROM_WHEEL
+    source = str(SDK)
+    source_resolved = SDK.resolve()
+    sys.path[:] = [
+        entry
+        for entry in sys.path
+        if not entry
+        or Path(entry).expanduser().resolve() != source_resolved
+    ]
+    if sdk_wheel:
+        _RUNTIME_FROM_WHEEL = True
+        sys.path.append(source)
+    elif _RUNTIME_FROM_WHEEL:
+        sys.path.append(source)
+    else:
+        sys.path.insert(0, source)
+
+
+def _pythonpath(*, source_runtime: bool = True) -> str:
+    source = str(SDK.resolve())
+    existing = [
+        entry
+        for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep)
+        if entry and str(Path(entry).expanduser().resolve()) != source
+    ]
+    if source_runtime:
+        existing.insert(0, str(SDK))
+    return os.pathsep.join(existing)
 
 
 def _ensure_tls_certs(env: dict[str, str]) -> dict[str, str]:
@@ -147,10 +185,14 @@ def _ensure_tls_certs(env: dict[str, str]) -> dict[str, str]:
     return env
 
 
-def _env() -> dict[str, str]:
+def _env(*, source_runtime: bool = True) -> dict[str, str]:
     _load_dotenv()
     env = os.environ.copy()
-    env["PYTHONPATH"] = _pythonpath()
+    pythonpath = _pythonpath(source_runtime=source_runtime)
+    if pythonpath:
+        env["PYTHONPATH"] = pythonpath
+    else:
+        env.pop("PYTHONPATH", None)
     if env.get("GOOGLE_AISTUDIO_API_KEY") and not env.get("GEMINI_API_KEY"):
         env["GEMINI_API_KEY"] = env["GOOGLE_AISTUDIO_API_KEY"]
     paths = _bench_paths()
@@ -159,6 +201,205 @@ def _env() -> dict[str, str]:
     env.setdefault("PERCEPT_BENCH_CACHE_DIR", _display_path(paths["cache_dir"]))
     _ensure_tls_certs(env)
     return env
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _urlsafe_sha256(path: Path) -> str:
+    digest = hashlib.sha256(path.read_bytes()).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _wheel_build_info(wheel: Path) -> tuple[dict[str, str], str, list[list[str]]]:
+    try:
+        with zipfile.ZipFile(wheel) as archive:
+            names = archive.namelist()
+            build_source = archive.read("percept/_build_info.py").decode("utf-8")
+            record_name = next(
+                name for name in names if name.endswith(".dist-info/RECORD")
+            )
+            metadata_name = next(
+                name for name in names if name.endswith(".dist-info/METADATA")
+            )
+            metadata = email.parser.BytesParser(
+                policy=email.policy.default
+            ).parsebytes(archive.read(metadata_name))
+            record_rows = list(
+                csv.reader(
+                    archive.read(record_name).decode("utf-8").splitlines()
+                )
+            )
+    except (OSError, KeyError, StopIteration, UnicodeDecodeError, zipfile.BadZipFile) as exc:
+        raise SystemExit(
+            f"BENCHMARK ARTIFACT GATE: BLOCKED — invalid percept wheel {wheel}: {exc}"
+        ) from exc
+
+    values: dict[str, str] = {}
+    try:
+        tree = ast.parse(build_source)
+        for node in tree.body:
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id
+                in {
+                    "PACKAGE_VERSION",
+                    "GIT_COMMIT",
+                    "CONTRACT_VERSION",
+                    "BUILD_TIMESTAMP",
+                }
+            ):
+                value = ast.literal_eval(node.value)
+                if isinstance(value, str):
+                    values[node.targets[0].id] = value
+    except (SyntaxError, ValueError) as exc:
+        raise SystemExit(
+            f"BENCHMARK ARTIFACT GATE: BLOCKED — invalid wheel build provenance: {exc}"
+        ) from exc
+    missing = sorted(
+        {
+            "PACKAGE_VERSION",
+            "GIT_COMMIT",
+            "CONTRACT_VERSION",
+            "BUILD_TIMESTAMP",
+        }
+        - values.keys()
+    )
+    if missing:
+        raise SystemExit(
+            "BENCHMARK ARTIFACT GATE: BLOCKED — wheel build provenance is "
+            "missing " + ", ".join(missing)
+        )
+    if (
+        metadata.get("Name") != "percept-vision"
+        or metadata.get("Version") != values["PACKAGE_VERSION"]
+    ):
+        raise SystemExit(
+            "BENCHMARK ARTIFACT GATE: BLOCKED — wheel METADATA identity "
+            "does not match percept-vision build provenance"
+        )
+    commit = values["GIT_COMMIT"]
+    if (
+        len(commit) != 40
+        or any(char not in "0123456789abcdef" for char in commit)
+        or not values["PACKAGE_VERSION"]
+        or not values["CONTRACT_VERSION"]
+        or not values["BUILD_TIMESTAMP"]
+    ):
+        raise SystemExit(
+            "BENCHMARK ARTIFACT GATE: BLOCKED — wheel build provenance is "
+            "unknown or non-canonical"
+        )
+    return values, record_name, record_rows
+
+
+def _installed_sdk_artifact(sdk_wheel: str | None, *, required: bool) -> dict[str, Any] | None:
+    """Verify the current interpreter against every hashed file in an exact wheel."""
+    if not sdk_wheel:
+        if required:
+            raise SystemExit(
+                "BENCHMARK LIVE GATE: BLOCKED — --sdk-wheel is required so "
+                "qualification executes a pinned installed artifact"
+            )
+        _configure_benchmark_imports()
+        return None
+
+    wheel = Path(sdk_wheel).expanduser().resolve()
+    if not wheel.is_file() or wheel.suffix != ".whl":
+        raise SystemExit(
+            f"BENCHMARK ARTIFACT GATE: BLOCKED — wheel is missing or invalid: {wheel}"
+        )
+    _configure_benchmark_imports(str(wheel))
+    values, record_name, record_rows = _wheel_build_info(wheel)
+
+    try:
+        percept = importlib.import_module("percept")
+        distribution = importlib.metadata.distribution("percept-vision")
+    except (ImportError, importlib.metadata.PackageNotFoundError) as exc:
+        raise SystemExit(
+            "BENCHMARK ARTIFACT GATE: BLOCKED — the selected interpreter does "
+            "not have percept-vision installed"
+        ) from exc
+
+    module_path = Path(percept.__file__ or "").resolve()
+    source_root = SDK.resolve()
+    if module_path == source_root or source_root in module_path.parents:
+        raise SystemExit(
+            "BENCHMARK ARTIFACT GATE: BLOCKED — percept resolved from the "
+            f"source tree ({module_path}), not the installed wheel"
+        )
+    installed_init = Path(
+        distribution.locate_file("percept/__init__.py")
+    ).resolve()
+    if module_path != installed_init:
+        raise SystemExit(
+            "BENCHMARK ARTIFACT GATE: BLOCKED — imported percept does not "
+            "match the installed percept-vision distribution"
+        )
+
+    verified_files = 0
+    mismatches: list[str] = []
+    for row in record_rows:
+        if len(row) < 3 or not row[1] or row[0] == record_name:
+            continue
+        algorithm, separator, expected = row[1].partition("=")
+        installed = Path(distribution.locate_file(row[0])).resolve()
+        if (
+            separator != "="
+            or algorithm != "sha256"
+            or not installed.is_file()
+            or _urlsafe_sha256(installed) != expected
+            or str(installed.stat().st_size) != row[2]
+        ):
+            mismatches.append(row[0])
+            continue
+        verified_files += 1
+    if mismatches:
+        sample = ", ".join(mismatches[:5])
+        suffix = "" if len(mismatches) <= 5 else f" (+{len(mismatches) - 5} more)"
+        raise SystemExit(
+            "BENCHMARK ARTIFACT GATE: BLOCKED — installed files differ from "
+            f"the selected wheel: {sample}{suffix}"
+        )
+    if verified_files == 0:
+        raise SystemExit(
+            "BENCHMARK ARTIFACT GATE: BLOCKED — wheel RECORD contains no "
+            "verifiable installed files"
+        )
+
+    build_info = percept.build_info()
+    installed_values = {
+        "PACKAGE_VERSION": build_info.package_version,
+        "GIT_COMMIT": build_info.git_commit,
+        "CONTRACT_VERSION": build_info.contract_version,
+        "BUILD_TIMESTAMP": build_info.build_timestamp,
+    }
+    if installed_values != values:
+        raise SystemExit(
+            "BENCHMARK ARTIFACT GATE: BLOCKED — installed build provenance "
+            "does not match the selected wheel"
+        )
+
+    return {
+        "kind": "wheel",
+        "sha256": _file_sha256(wheel),
+        "package_version": values["PACKAGE_VERSION"],
+        "git_commit": values["GIT_COMMIT"],
+        "contract_version": values["CONTRACT_VERSION"],
+        "build_timestamp": values["BUILD_TIMESTAMP"],
+        "verified_files": verified_files,
+        "python": {
+            "implementation": platform.python_implementation(),
+            "version": platform.python_version(),
+        },
+    }
 
 
 def _canonical_sha256(value: Any) -> str:
@@ -194,7 +435,7 @@ def _run_provenance(live: bool) -> dict[str, Any]:
             "before run provenance is recorded"
         )
     raw_budget = os.environ.get("PERCEPT_BENCH_BUDGET_PLAN", "")
-    sys.path[:0] = [str(SDK)]
+    _configure_benchmark_imports()
     from eval.bench.budget import BudgetPlanError, validate_budget_plan
 
     try:
@@ -276,6 +517,7 @@ def _qualification_identity(
     device: str,
     seeds: int,
     provenance: dict[str, Any],
+    sdk_artifact: dict[str, Any] | None,
 ) -> dict[str, Any]:
     manifest_path = Path(manifest).resolve()
     return {
@@ -294,6 +536,7 @@ def _qualification_identity(
         "seeds": seeds,
         "vision": provenance.get("vision"),
         "budget_plan": provenance.get("budget_plan"),
+        "sdk_artifact": sdk_artifact,
     }
 
 
@@ -465,6 +708,7 @@ def _validated_run_identity(
         "seeds": meta.get("seeds"),
         "vision": meta.get("vision"),
         "budget_plan": meta.get("budget_plan"),
+        "sdk_artifact": meta.get("sdk_artifact"),
     }
     mismatched = sorted(
         key for key, value in mirrored.items() if identity.get(key) != value
@@ -483,12 +727,16 @@ def _validated_run_identity(
         raise SystemExit(
             "release collection requires a clean recorded source tree"
         )
+    if require_release and not isinstance(identity.get("sdk_artifact"), dict):
+        raise SystemExit(
+            "release collection requires a verified installed SDK wheel"
+        )
     return str(digest)
 
 
 def _apply_acceptance_gates(result: Any, acceptance: dict[str, Any]) -> None:
     """Import lazily because this standalone script bootstraps its own SDK path."""
-    sys.path[:0] = [str(SDK)]
+    _configure_benchmark_imports()
     from eval.bench.types import apply_acceptance_gates
 
     apply_acceptance_gates(result, acceptance)
@@ -543,7 +791,7 @@ def _guard_live_prerequisites(
     attempts: int = 1,
 ) -> None:
     """Fail before starting workers when provider spend/media prerequisites are absent."""
-    sys.path[:0] = [str(SDK)]
+    _configure_benchmark_imports()
     from eval.bench.run import _live_prerequisite_blockers
 
     blockers = _live_prerequisite_blockers(
@@ -759,7 +1007,7 @@ def cmd_index_proactiveqa(_args: argparse.Namespace) -> int:
 
 
 def _pt_candidate_rows(*, action_n: int, sound_n: int) -> list[dict[str, Any]]:
-    sys.path[:0] = [str(SDK)]
+    _configure_benchmark_imports()
     from eval.bench import perception_test as pt
 
     rows: list[dict[str, Any]] = []
@@ -870,7 +1118,7 @@ def _proactiveqa_candidate_rows(n: int) -> list[dict[str, Any]]:
 
 
 def _repcount_candidate_rows(n: int) -> list[dict[str, Any]]:
-    sys.path[:0] = [str(SDK)]
+    _configure_benchmark_imports()
     from eval.bench import repcount as rc
 
     out = []
@@ -1013,6 +1261,25 @@ def cmd_prefetch_pose(_args: argparse.Namespace) -> int:
 
 def cmd_run_track(args: argparse.Namespace) -> int:
     _load_dotenv()
+    sdk_wheel = getattr(args, "sdk_wheel", None)
+    sdk_artifact = _installed_sdk_artifact(
+        sdk_wheel,
+        required=bool(args.live),
+    )
+    expected_artifact_identity = getattr(args, "sdk_artifact_identity", None)
+    if args.live and not expected_artifact_identity:
+        raise SystemExit(
+            "BENCHMARK ARTIFACT GATE: BLOCKED — live worker is missing its "
+            "parent-verified wheel identity"
+        )
+    if (
+        expected_artifact_identity
+        and _canonical_sha256(sdk_artifact) != expected_artifact_identity
+    ):
+        raise SystemExit(
+            "BENCHMARK ARTIFACT GATE: BLOCKED — worker wheel identity "
+            "changed after run preflight"
+        )
     if args.live:
         _guard_live_tracks([args.track])
         _guard_live_prerequisites(
@@ -1032,6 +1299,7 @@ def cmd_run_track(args: argparse.Namespace) -> int:
         "runner": args.track,
         "live": args.live,
         "n": args.n,
+        "sdk_artifact": sdk_artifact,
     }
     payload = _json_safe_result(result)
     out = Path(args.out)
@@ -1052,6 +1320,7 @@ def _existing_result_ok(
     *,
     run_identity: str | None = None,
     runner: str | None = None,
+    sdk_artifact: dict[str, Any] | None = None,
 ) -> bool:
     if not path.exists() or path.stat().st_size == 0:
         return False
@@ -1078,6 +1347,7 @@ def _existing_result_ok(
             and artifact.get("schema_version") == ARTIFACT_SCHEMA_V2
             and artifact.get("run_identity_sha256") == run_identity
             and (runner is None or artifact.get("runner") == runner)
+            and artifact.get("sdk_artifact") == sdk_artifact
         )
     except Exception:
         return False
@@ -1096,6 +1366,8 @@ def _attempt_track(
     start_delay_s: float,
     manifest: str,
     run_identity: str,
+    sdk_wheel: str | None,
+    sdk_artifact: dict[str, Any] | None,
 ) -> dict[str, Any]:
     result_path = run_dir / "results" / f"{track}.json"
     log_path = run_dir / "logs" / f"{track}.log"
@@ -1103,6 +1375,7 @@ def _attempt_track(
         result_path,
         run_identity=run_identity,
         runner=track,
+        sdk_artifact=sdk_artifact,
     ):
         _write_event(run_dir, {"event": "track_skip_existing", "track": track, "result": str(result_path)})
         return {"track": track, "ok": True, "attempts": 0, "elapsed_s": 0, "result": str(result_path), "skipped": True}
@@ -1122,6 +1395,15 @@ def _attempt_track(
         "--run-identity",
         run_identity,
     ]
+    if sdk_wheel:
+        cmd.extend(
+            [
+                "--sdk-wheel",
+                sdk_wheel,
+                "--sdk-artifact-identity",
+                _canonical_sha256(sdk_artifact),
+            ]
+        )
     if live:
         cmd.append("--live")
 
@@ -1134,7 +1416,7 @@ def _attempt_track(
         try:
             with log_path.open("a") as log:
                 log.write(f"\n### attempt {attempt} {datetime.now(timezone.utc).isoformat()}\n")
-                env = _env()
+                env = _env(source_runtime=not bool(sdk_wheel))
                 env["PERCEPT_BENCH_RUN_DIR"] = str(run_dir)
                 proc = subprocess.run(
                     cmd,
@@ -1202,6 +1484,9 @@ def _background_cmd(args: argparse.Namespace, run_id: str) -> list[str]:
     ]
     if args.live:
         cmd.append("--live")
+    sdk_wheel = getattr(args, "sdk_wheel", None)
+    if sdk_wheel:
+        cmd.extend(["--sdk-wheel", sdk_wheel])
     if args.exclude:
         cmd.extend(["--exclude", args.exclude])
     cmd.append("--resume" if args.resume else "--no-resume")
@@ -1212,6 +1497,12 @@ def _background_cmd(args: argparse.Namespace, run_id: str) -> list[str]:
 def cmd_run(args: argparse.Namespace) -> int:
     paths = _bench_paths()
     tracks = _order_tracks_for_dependencies(_resolve_tracks(args.tracks, args.exclude))
+    sdk_wheel = getattr(args, "sdk_wheel", None)
+    sdk_artifact = (
+        _installed_sdk_artifact(sdk_wheel, required=True)
+        if sdk_wheel
+        else None
+    )
     if args.live:
         _guard_live_tracks(tracks)
         _guard_live_prerequisites(
@@ -1222,6 +1513,8 @@ def cmd_run(args: argparse.Namespace) -> int:
             workers=args.workers,
             attempts=args.attempts,
         )
+        if sdk_artifact is None:
+            sdk_artifact = _installed_sdk_artifact(None, required=True)
     paths["runs_dir"].mkdir(parents=True, exist_ok=True)
     run_id = args.run_id or _now()
     run_dir = paths["runs_dir"] / run_id
@@ -1231,7 +1524,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.background and os.environ.get("PERCEPT_BENCH_BACKGROUND_CHILD") != "1":
         log_path = run_dir / "benchmark.log"
         cmd = _background_cmd(args, run_id)
-        env = _env()
+        env = _env(source_runtime=not bool(sdk_wheel))
         env["PERCEPT_BENCH_BACKGROUND_CHILD"] = "1"
         with log_path.open("ab") as log:
             proc = subprocess.Popen(
@@ -1270,7 +1563,18 @@ def cmd_run(args: argparse.Namespace) -> int:
         device=args.device,
         seeds=args.seeds,
         provenance=provenance,
+        sdk_artifact=sdk_artifact,
     )
+    if (
+        args.live
+        and sdk_artifact is not None
+        and sdk_artifact["git_commit"]
+        != qualification_identity["source"]["commit"]
+    ):
+        raise SystemExit(
+            "BENCHMARK ARTIFACT GATE: BLOCKED — wheel build commit does not "
+            "match the benchmark source commit"
+        )
     _assert_resume_identity(existing_meta, qualification_identity)
     qualification_identity_sha256 = _canonical_sha256(
         qualification_identity
@@ -1297,6 +1601,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         "commit": qualification_identity["source"]["commit"],
         "qualification_identity": qualification_identity,
         "qualification_identity_sha256": qualification_identity_sha256,
+        "sdk_artifact": sdk_artifact,
+        "sdk_wheel_path": str(Path(sdk_wheel).expanduser().resolve())
+        if sdk_wheel
+        else None,
         **provenance,
     }
     (run_dir / "run.json").write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n")
@@ -1335,6 +1643,8 @@ def cmd_run(args: argparse.Namespace) -> int:
                 start_delay_s=args.start_delay_s,
                 manifest=args.manifest,
                 run_identity=qualification_identity_sha256,
+                sdk_wheel=sdk_wheel,
+                sdk_artifact=sdk_artifact,
             ): track
             for idx, track in enumerate(tracks)
         }
@@ -1375,7 +1685,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
     if not result_dir.exists():
         raise SystemExit(f"missing result dir: {result_dir}")
 
-    sys.path[:0] = [str(SDK)]
+    _configure_benchmark_imports()
     from eval.bench import card
     from eval.bench.validate import (
         ValidationError,
@@ -1458,6 +1768,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
                 or artifact.get("runner") != runner
                 or artifact.get("live") is not meta.get("live")
                 or artifact.get("n") != meta.get("n")
+                or artifact.get("sdk_artifact") != meta.get("sdk_artifact")
             ):
                 raise SystemExit(
                     f"track result identity does not match run metadata: {path}"
@@ -1646,6 +1957,14 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--timeout-s", type=int, default=1800, help="timeout per track attempt; 0 disables")
     run.add_argument("--run-id", default=None, help="stable run id/folder name")
     run.add_argument("--manifest", default=str(DEFAULT_MANIFEST), help="manifest stamped on the scorecard")
+    run.add_argument(
+        "--sdk-wheel",
+        default=None,
+        help=(
+            "exact percept-vision wheel installed in this interpreter; required "
+            "for live qualification"
+        ),
+    )
     run.add_argument("--mode", default="sampled", choices=["sampled", "full"], help="scorecard mode")
     run.add_argument("--device", default="local", help="device/runtime descriptor for scorecard")
     run.add_argument("--fps", default="1", help="sampling/capture fps descriptor for scorecard")
@@ -1694,6 +2013,8 @@ def build_parser() -> argparse.ArgumentParser:
     internal.add_argument("--out", required=True)
     internal.add_argument("--manifest", required=True)
     internal.add_argument("--run-identity", required=True)
+    internal.add_argument("--sdk-wheel", default=None)
+    internal.add_argument("--sdk-artifact-identity", default=None)
     internal.set_defaults(func=cmd_run_track)
     return parser
 

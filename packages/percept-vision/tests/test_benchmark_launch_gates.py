@@ -150,7 +150,16 @@ class BenchmarkLaunchGateTests(unittest.TestCase):
                 fps="1",
                 seeds=1,
                 prefetch_pose=False,
+                sdk_wheel="/tmp/exact-percept.whl",
             )
+            source_commit = namespace["_source_identity"]()["commit"]
+            sdk_artifact = {
+                "kind": "wheel",
+                "sha256": "f" * 64,
+                "git_commit": source_commit,
+                "package_version": "1.0.0",
+                "contract_version": "1.10.0",
+            }
 
             def completed_track(**kwargs):
                 return {
@@ -177,6 +186,7 @@ class BenchmarkLaunchGateTests(unittest.TestCase):
                         "_bench_paths": lambda: paths,
                         "_guard_live_tracks": lambda _tracks: None,
                         "_guard_live_prerequisites": lambda **_kwargs: None,
+                        "_installed_sdk_artifact": lambda *_args, **_kwargs: sdk_artifact,
                         "_data_inventory": lambda _path: {},
                         "_attempt_track": completed_track,
                         "cmd_collect": lambda _args: 0,
@@ -195,6 +205,8 @@ class BenchmarkLaunchGateTests(unittest.TestCase):
             )
             self.assertEqual(event["vision"], meta["vision"])
             self.assertEqual(event["budget_plan"], meta["budget_plan"])
+            self.assertEqual(event["sdk_artifact"], sdk_artifact)
+            self.assertEqual(meta["sdk_artifact"], sdk_artifact)
             self.assertNotIn("must-not-be-persisted", json.dumps(meta))
             self.assertNotIn("must-not-be-persisted", json.dumps(event))
 

@@ -9,6 +9,7 @@ import runpy
 import subprocess
 import sys
 import unittest
+import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace as NS
@@ -103,6 +104,90 @@ class BenchmarkRunnerTruthTests(unittest.TestCase):
             namespace["_resolve_tracks"]("stable"),
             ["pt-action-e2e"],
         )
+
+    def test_live_runner_requires_an_exact_installed_wheel(self):
+        namespace = runpy.run_path(
+            str(TOOL),
+            run_name="benchmark_wheel_required_test",
+        )
+        args = namespace["build_parser"]().parse_args(["run", "--live"])
+        self.assertIsNone(args.sdk_wheel)
+        with self.assertRaisesRegex(
+            SystemExit,
+            "--sdk-wheel is required",
+        ):
+            namespace["_installed_sdk_artifact"](
+                args.sdk_wheel,
+                required=True,
+            )
+
+    def test_wheel_identity_reads_canonical_metadata_and_build_stamp(self):
+        namespace = runpy.run_path(
+            str(TOOL),
+            run_name="benchmark_wheel_metadata_test",
+        )
+        with TemporaryDirectory() as d:
+            wheel = Path(d) / "percept_vision-1.0.0-py3-none-any.whl"
+            build_info = "\n".join(
+                [
+                    "PACKAGE_VERSION = '1.0.0'",
+                    f"GIT_COMMIT = '{'a' * 40}'",
+                    "CONTRACT_VERSION = '1.10.0'",
+                    "BUILD_TIMESTAMP = '2026-07-26T00:00:00+00:00'",
+                ]
+            )
+            with zipfile.ZipFile(wheel, "w") as archive:
+                archive.writestr("percept/_build_info.py", build_info)
+                archive.writestr(
+                    "percept_vision-1.0.0.dist-info/METADATA",
+                    "Metadata-Version: 2.4\nName: percept-vision\nVersion: 1.0.0\n",
+                )
+                archive.writestr(
+                    "percept_vision-1.0.0.dist-info/RECORD",
+                    "percept_vision-1.0.0.dist-info/RECORD,,\n",
+                )
+
+            values, record_name, rows = namespace["_wheel_build_info"](wheel)
+
+        self.assertEqual(values["GIT_COMMIT"], "a" * 40)
+        self.assertEqual(values["PACKAGE_VERSION"], "1.0.0")
+        self.assertEqual(
+            record_name,
+            "percept_vision-1.0.0.dist-info/RECORD",
+        )
+        self.assertEqual(len(rows), 1)
+
+    def test_wheel_identity_rejects_metadata_build_version_mismatch(self):
+        namespace = runpy.run_path(
+            str(TOOL),
+            run_name="benchmark_wheel_metadata_mismatch_test",
+        )
+        with TemporaryDirectory() as d:
+            wheel = Path(d) / "percept_vision-1.0.0-py3-none-any.whl"
+            build_info = "\n".join(
+                [
+                    "PACKAGE_VERSION = '1.0.0'",
+                    f"GIT_COMMIT = '{'b' * 40}'",
+                    "CONTRACT_VERSION = '1.10.0'",
+                    "BUILD_TIMESTAMP = '2026-07-26T00:00:00+00:00'",
+                ]
+            )
+            with zipfile.ZipFile(wheel, "w") as archive:
+                archive.writestr("percept/_build_info.py", build_info)
+                archive.writestr(
+                    "percept_vision-1.0.0.dist-info/METADATA",
+                    "Metadata-Version: 2.4\nName: percept-vision\nVersion: 9.9.9\n",
+                )
+                archive.writestr(
+                    "percept_vision-1.0.0.dist-info/RECORD",
+                    "percept_vision-1.0.0.dist-info/RECORD,,\n",
+                )
+
+            with self.assertRaisesRegex(
+                SystemExit,
+                "METADATA identity",
+            ):
+                namespace["_wheel_build_info"](wheel)
 
     def test_all_alias_resolves_every_registered_track(self):
         namespace = runpy.run_path(str(TOOL), run_name="benchmark_tool_test")
@@ -370,6 +455,10 @@ class BenchmarkRunnerTruthTests(unittest.TestCase):
                     "runner": "edge",
                     "live": False,
                     "n": 1,
+                    "sdk_artifact": {
+                        "kind": "wheel",
+                        "sha256": "c" * 64,
+                    },
                 }
             }
             result_path.write_text(json.dumps(payload))
@@ -383,6 +472,10 @@ class BenchmarkRunnerTruthTests(unittest.TestCase):
                     result_path,
                     run_identity="a" * 64,
                     runner="edge",
+                    sdk_artifact={
+                        "kind": "wheel",
+                        "sha256": "c" * 64,
+                    },
                 )
             )
             self.assertFalse(
@@ -390,6 +483,21 @@ class BenchmarkRunnerTruthTests(unittest.TestCase):
                     result_path,
                     run_identity="b" * 64,
                     runner="edge",
+                    sdk_artifact={
+                        "kind": "wheel",
+                        "sha256": "c" * 64,
+                    },
+                )
+            )
+            self.assertFalse(
+                existing_result_ok(
+                    result_path,
+                    run_identity="a" * 64,
+                    runner="edge",
+                    sdk_artifact={
+                        "kind": "wheel",
+                        "sha256": "d" * 64,
+                    },
                 )
             )
             result_path.write_text(result_path.read_text() + "\n")
@@ -398,8 +506,60 @@ class BenchmarkRunnerTruthTests(unittest.TestCase):
                     result_path,
                     run_identity="a" * 64,
                     runner="edge",
+                    sdk_artifact={
+                        "kind": "wheel",
+                        "sha256": "c" * 64,
+                    },
                 )
             )
+
+    def test_track_worker_rejects_wheel_changed_after_parent_preflight(self):
+        namespace = runpy.run_path(
+            str(TOOL),
+            run_name="benchmark_worker_wheel_change_test",
+        )
+        with TemporaryDirectory() as d:
+            root = Path(d)
+            result_path = root / "result.json"
+            manifest = root / "manifest.json"
+            manifest.write_text("{}")
+            args = NS(
+                live=False,
+                track="edge",
+                manifest=str(manifest),
+                n=1,
+                out=str(result_path),
+                run_identity="a" * 64,
+                sdk_wheel=str(root / "candidate.whl"),
+                sdk_artifact_identity="b" * 64,
+            )
+            observed = {
+                "kind": "wheel",
+                "sha256": "c" * 64,
+            }
+            with patch.dict(
+                namespace["cmd_run_track"].__globals__,
+                {"_installed_sdk_artifact": lambda *_args, **_kwargs: observed},
+            ):
+                with self.assertRaisesRegex(
+                    SystemExit,
+                    "changed after run preflight",
+                ):
+                    namespace["cmd_run_track"](args)
+            self.assertFalse(result_path.exists())
+
+    def test_background_command_forwards_exact_wheel_path(self):
+        namespace = runpy.run_path(
+            str(TOOL),
+            run_name="benchmark_background_wheel_test",
+        )
+        wheel = "/private/tmp/percept/exact.whl"
+        args = namespace["build_parser"]().parse_args(
+            ["run", "--background", "--sdk-wheel", wheel]
+        )
+        command = namespace["_background_cmd"](args, "run-1")
+        index = command.index("--sdk-wheel")
+        self.assertEqual(command[index + 1], wheel)
 
     def test_run_track_returns_nonzero_for_blocked_result_and_writes_checksum(self):
         from eval.bench.types import TrackResult
@@ -481,6 +641,82 @@ class BenchmarkRunnerTruthTests(unittest.TestCase):
             "changed qualification identity: source",
         ):
             namespace["_assert_resume_identity"](existing, changed)
+
+    def test_release_identity_requires_and_reconciles_exact_sdk_artifact(self):
+        namespace = runpy.run_path(
+            str(TOOL),
+            run_name="benchmark_release_wheel_identity_test",
+        )
+        with TemporaryDirectory() as d:
+            manifest = Path(d) / "MANIFEST.json"
+            manifest.write_text("{}")
+            sdk_artifact = {
+                "kind": "wheel",
+                "sha256": "d" * 64,
+                "git_commit": "a" * 40,
+            }
+            identity = {
+                "schema_version": "percept.benchmark.run/2",
+                "source": {"commit": "a" * 40, "dirty": False},
+                "manifest": {
+                    "path": str(manifest.resolve()),
+                    "sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                },
+                "live": True,
+                "n": 1,
+                "tracks": ["pt-action-e2e"],
+                "mode": "sampled",
+                "fps": "1",
+                "device": "local",
+                "seeds": 1,
+                "vision": {
+                    "provider": "openrouter",
+                    "model": "qwen/test",
+                },
+                "budget_plan": {"identity": "test"},
+                "sdk_artifact": sdk_artifact,
+            }
+            meta = {
+                "schema_version": "percept.benchmark.run/2",
+                "commit": "a" * 40,
+                "live": True,
+                "n": 1,
+                "tracks": ["pt-action-e2e"],
+                "mode": "sampled",
+                "fps": "1",
+                "device": "local",
+                "seeds": 1,
+                "vision": identity["vision"],
+                "budget_plan": identity["budget_plan"],
+                "sdk_artifact": sdk_artifact,
+                "qualification_identity": identity,
+                "qualification_identity_sha256": namespace[
+                    "_canonical_sha256"
+                ](identity),
+            }
+
+            self.assertEqual(
+                namespace["_validated_run_identity"](
+                    meta,
+                    manifest=manifest,
+                    require_release=True,
+                ),
+                meta["qualification_identity_sha256"],
+            )
+            changed = dict(meta)
+            changed["sdk_artifact"] = {
+                **sdk_artifact,
+                "sha256": "e" * 64,
+            }
+            with self.assertRaisesRegex(
+                SystemExit,
+                "sdk_artifact",
+            ):
+                namespace["_validated_run_identity"](
+                    changed,
+                    manifest=manifest,
+                    require_release=True,
+                )
 
     def test_preregistered_acceptance_rules_use_typed_measurements(self):
         from eval.bench.types import Measurement, TrackResult
