@@ -63,6 +63,7 @@ class Coverage:
     skipped: int = 0
     notes: str = ""
     case_ids: list[str] = field(default_factory=list)
+    positive_events: int | None = None
 
     @property
     def passed(self) -> bool:

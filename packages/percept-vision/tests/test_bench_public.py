@@ -98,6 +98,21 @@ class TestPublicBenchShim(unittest.TestCase):
         )
         self.assertEqual(card.stamp_of("full", [result], "manifest sha256:abc"), "RELEASE")
 
+    def test_coverage_preserves_event_recall_denominator(self):
+        result = TrackResult(
+            track="pt-action-e2e",
+            coverage=[{
+                "dataset": "perception-test/action",
+                "expected": 1,
+                "observed": 1,
+                "positive_events": 2,
+            }],
+        )
+
+        coverage = result.normalized_coverage()
+
+        self.assertEqual(coverage[0].positive_events, 2)
+
     def test_release_gate_rejects_diagnostics_and_legacy_lanes(self):
         diagnostic = TrackResult(
             track="counting",
