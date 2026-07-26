@@ -229,9 +229,40 @@ class GeminiVision(_GeminiBase):
     # qualification result, never something inferred from this marker.
     SUPPORTS_NATIVE_VIDEO_TRANSPORT = True
 
-    def __init__(self, settings: Any = None, *, client: Any = None) -> None:
+    def __init__(self, settings: Any = None, *, client: Any = None, request_budget: Any = None) -> None:
         super().__init__(settings, client=client, model_attr="vision_model")
         self._breaker = CircuitBreaker()  # transient-error resilience for batch captures
+        self._request_budget = request_budget
+
+    def configure_request_budget(self, request_budget: Any) -> None:
+        self._request_budget = request_budget
+
+    def _budget_usage(self, response: Any) -> dict[str, Any]:
+        usage = _usage_of(response)
+        if self._request_budget is not None and "cost_usd" not in usage:
+            price = self._request_budget.plan["price_snapshot"]
+            usage["cost_usd"] = (
+                usage.get("input_tokens", 0) * float(price["input_usd_per_million_tokens"])
+                + usage.get("output_tokens", 0) * float(price["output_usd_per_million_tokens"])
+            ) / 1_000_000
+        return usage
+
+    async def _metered_completion(self, call):
+        async def attempt():
+            reservation = self._request_budget.begin_attempt() if self._request_budget is not None else None
+            try:
+                response = await call()
+            except BaseException:
+                if reservation is not None:
+                    self._request_budget.fail_attempt(reservation)
+                raise
+            if reservation is not None:
+                self._request_budget.complete_attempt(reservation, self._budget_usage(response))
+            return response
+
+        attempts = self._request_budget.attempts_per_call if self._request_budget is not None else 3
+        timeout_s = min(_REQUEST_TIMEOUT_MS / 1000, self._request_budget.request_timeout_s) if self._request_budget is not None else _REQUEST_TIMEOUT_MS / 1000
+        return await with_retry(attempt, attempts=attempts, breaker=self._breaker, timeout_s=timeout_s)
 
     async def judge(
         self,
@@ -391,9 +422,9 @@ class GeminiVision(_GeminiBase):
                 config=types.GenerateContentConfig(system_instruction=_JUDGE_SYSTEM, max_output_tokens=1024),
             )
 
-        resp = await with_retry(_call, breaker=self._breaker, timeout_s=_REQUEST_TIMEOUT_MS / 1000)  # survive transient resets in batch captures
+        resp = await self._metered_completion(_call)  # exact per-attempt admission/reconciliation
         verdict = _parse_verdict(resp.text or "", claim_mode=claim_mode)
-        verdict.usage = _usage_of(resp)  # 1.3 metering: light up the token/cost funnel (was always {})
+        verdict.usage = self._budget_usage(resp)  # 1.3 metering: light up the token/cost funnel (was always {})
         return verdict
 
     async def _judge_process_qa(
@@ -432,7 +463,7 @@ class GeminiVision(_GeminiBase):
                 ),
             )
 
-        resp = await with_retry(_call, breaker=self._breaker, timeout_s=_REQUEST_TIMEOUT_MS / 1000)
+        resp = await self._metered_completion(_call)
         try:
             data = json.loads(_extract_json(resp.text or ""))
         except Exception:
@@ -445,7 +476,7 @@ class GeminiVision(_GeminiBase):
             confidence=confidence,
             evidence=summary or "not enough evidence",
             running_answer=summary,
-            usage=_usage_of(resp),
+            usage=self._budget_usage(resp),
         )
 
     async def _observe_step(self, condition: str, frame: Any, frames: list | None) -> Verdict:
@@ -477,14 +508,14 @@ class GeminiVision(_GeminiBase):
                 config=types.GenerateContentConfig(system_instruction=_OBSERVE_STEP_SYSTEM, max_output_tokens=1024),
             )
 
-        resp = await with_retry(_call, breaker=self._breaker, timeout_s=_REQUEST_TIMEOUT_MS / 1000)
+        resp = await self._metered_completion(_call)
         try:
             data = json.loads(_extract_json(resp.text or ""))
         except Exception:
             data = {}
         step = str(data.get("step", "") or "").strip()
         confidence = float(data.get("confidence", 0.5) or 0.5)
-        return Verdict(satisfied=False, confidence=confidence, evidence=step, usage=_usage_of(resp))
+        return Verdict(satisfied=False, confidence=confidence, evidence=step, usage=self._budget_usage(resp))
 
     async def summarize_process(self, condition: str, log: list[str]) -> str:
         """Item 4: ONE consolidation pass over the whole per-concern log -> the ordered distinct steps.
@@ -507,7 +538,7 @@ class GeminiVision(_GeminiBase):
                 config=types.GenerateContentConfig(system_instruction=_SUMMARIZE_LOG_SYSTEM, max_output_tokens=4096),
             )
 
-        resp = await with_retry(_call, breaker=self._breaker, timeout_s=_REQUEST_TIMEOUT_MS / 1000)
+        resp = await self._metered_completion(_call)
         try:
             data = json.loads(_extract_json(resp.text or ""))
         except Exception:
@@ -531,7 +562,7 @@ class GeminiVision(_GeminiBase):
                 config=types.GenerateContentConfig(max_output_tokens=512),
             )
 
-        resp = await with_retry(_call, breaker=self._breaker, timeout_s=_REQUEST_TIMEOUT_MS / 1000)
+        resp = await self._metered_completion(_call)
         return _parse_observations(resp.text or "")
 
     async def detect_events(self, frames: list, goals: list[Goal]) -> list:

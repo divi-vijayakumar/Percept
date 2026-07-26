@@ -48,7 +48,7 @@ def bench_vision(settings=None, *, request_budget=None):
     vision = registry.make_vision(backend, settings)
     if request_budget is not None:
         configure = getattr(vision, "configure_request_budget", None)
-        if backend != "openrouter" or configure is None:
+        if not callable(configure):
             raise RuntimeError(
                 f"request-budget enforcement is not available for vision backend {backend!r}"
             )
