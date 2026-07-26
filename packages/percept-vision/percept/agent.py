@@ -8,6 +8,7 @@ episodes (Phase 4), events (Phase 5) — without editing the gate/graph contract
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import time
 import warnings
@@ -97,6 +98,9 @@ class FireEvent:
     # byte-for-byte today's shape.
     revision_id: str | None = None
     supersedes: str | None = None
+    # Exact immutable audio evidence submitted to the provider for this decision. Populated only by
+    # the compiled audio-only path; the worker builds the delivered snippet from this same tuple.
+    audio_units: tuple[AudioUnit, ...] | None = None
 
 
 # -- The resolved WatchProfile.plan_mode -> the concern's PerceptionSpec -----------------------
@@ -567,6 +571,11 @@ class Percept:
     _judge_bindings: dict = field(default_factory=dict)  # goal_id -> BoundJudge-shaped binding
     _judge_requesting_goal_ids: set = field(default_factory=set)  # goal ids that MUST have a binding
     _judge_binding_tokens: dict = field(default_factory=dict)  # goal_id -> identity of applied binding
+    # Exact compiled audio/fused dispatch. Unlike the general judge registry, these bindings retain
+    # the SDK-owned class function captured at Watch preparation and never dynamically re-read
+    # ``self.vision`` / ``adapter.judge`` after arming.
+    _audio_judge_bindings: dict = field(default_factory=dict)
+    _audio_judge_binding_tokens: dict = field(default_factory=dict)
     # RuntimeCompiler output bound per programmable Watch.  Values are ``(CompiledWatch,
     # SourceProfile | None)`` tuples registered atomically with the goal by ``apply_watch_plan``.
     # Keeping the already-compiled object keyed by goal lets a shared core execute different
@@ -893,6 +902,7 @@ class Percept:
         # Defensive cleanup for a fresh id; GoalRegistry itself enforces lifetime-unique ids, so this
         # never acts as a same-id replacement path.
         self._release_judge_binding(goal.id)
+        self._release_audio_judge_binding(goal.id)
         self._release_watch_runtime(goal.id)
         result = self.goals.create(goal)
         return result
@@ -918,6 +928,16 @@ class Percept:
         self._judge_bindings.pop(goal_id, None)
         self._judge_binding_tokens.pop(goal_id, None)
         self._judge_requesting_goal_ids.discard(goal_id)
+
+    def _register_audio_judge_binding(self, goal_id: str, bound: Any) -> None:
+        """Commit one immutable compiled audio/fused dispatch binding."""
+        self._audio_judge_bindings[goal_id] = bound
+        self._audio_judge_binding_tokens[goal_id] = bound.binding_token
+
+    def _release_audio_judge_binding(self, goal_id: str) -> None:
+        """Release a compiled audio dispatch token with its Watch lifecycle."""
+        self._audio_judge_bindings.pop(goal_id, None)
+        self._audio_judge_binding_tokens.pop(goal_id, None)
 
     def _register_watch_runtime(
         self,
@@ -957,6 +977,7 @@ class Percept:
                 self._invalidate_watch_application(goal_id)
             elif op.op in ("complete", "cancel"):
                 self._release_judge_binding(goal_id)
+                self._release_audio_judge_binding(goal_id)
                 self._release_watch_runtime(goal_id)
 
     def _watch_runtime_for(self, goal: "Goal | str") -> Any:
@@ -1000,6 +1021,25 @@ class Percept:
                 f"back to the deployment-default judge (fail-closed dispatch, ADR-009)"
             )
         return self.vision, None
+
+    def _audio_judge_binding_for(self, goal: Goal) -> Any:
+        """Return the intact immutable binding required by a compiled audio/fused Watch."""
+        binding = self._audio_judge_bindings.get(goal.id)
+        runtime = self._watch_runtime_for(goal)
+        modality = (
+            program_of(goal).perception.modality if runtime is not None else "vision"
+        )
+        if modality not in ("audio", "fused"):
+            return None
+        if (
+            binding is None
+            or self._audio_judge_binding_tokens.get(goal.id) is not binding.binding_token
+        ):
+            raise JudgeBindingInvariantError(
+                f"compiled {modality} Watch {goal.id!r} has no intact immutable audio judge "
+                "binding; refusing dynamic adapter fallback"
+            )
+        return binding
 
     def _arm_deadline(self, goal: Goal) -> None:
         """Resolve a ``deadline`` concern's authored DURATION into an absolute ``deadline_at`` on THIS
@@ -1760,6 +1800,7 @@ class Percept:
         expected_goals_revision: int | None = None,
         expected_source_generation: int | None = None,
         goal_ids: "tuple[str, ...] | None" = None,
+        _audio_units_by_goal: "dict[str, tuple[AudioUnit, ...]] | None" = None,
     ) -> list[FireEvent]:
         """Judge selected active *watch* goals against ``frame`` and emit rising-edge actions.
 
@@ -1804,10 +1845,17 @@ class Percept:
         ``None`` (the default) never checks — byte-for-byte the inline path.
         """
         now = self.clock() if t is None else t
+        audio_only = _audio_units_by_goal is not None
         active_goals = list(self.goals.active())
         if goal_ids is not None:
             selected = frozenset(goal_ids)
             active_goals = [goal for goal in active_goals if goal.id in selected]
+        if audio_only:
+            active_goals = [
+                goal
+                for goal in active_goals
+                if program_of(goal).perception.modality == "audio"
+            ]
         require_duration_routes(
             active_goals,
             driver="Percept.perceive_judged",
@@ -1852,24 +1900,84 @@ class Percept:
         # the honest thing this method knows. Capture-side stamps upstream of the core (a camera's own
         # capture time, the runtime worker's tier-0 admission) are NOT threaded through this seam, so
         # they are deliberately left out rather than approximated from a later read.
-        ingest_observed_at = self.clock()
+        observed_stamps = (
+            [
+                unit.observed_time
+                for units in (_audio_units_by_goal or {}).values()
+                for unit in units
+                if unit.observed_time is not None
+            ]
+            if audio_only else []
+        )
+        ingest_observed_at = max(observed_stamps) if observed_stamps else self.clock()
 
-        if tracing:
-            await self._emit_trace(trace_id, now, "source.frame")
-        self._window(source).push(now, frame)  # feed the rolling window for temporal perception
-        if _stale():
-            return []  # admitted under an old revision; spend nothing, apply nothing
-        observations = await self.vision.detect(frame, active_goals)
-        self.graph.ingest(observations, frame, source, t=now)  # goal-independent world-state: proceeds
-        focus = self.graph.in_focus()
-        if _stale():
-            return []  # revision moved during the detect call — nothing goal-conditioned applied yet
+        if audio_only:
+            if tracing:
+                from .audio_input import audio_frame_from_units
+
+                audio_payloads = {}
+                for goal in active_goals:
+                    units = tuple((_audio_units_by_goal or {}).get(goal.id, ()))
+                    if not units:
+                        continue
+                    binding = self._audio_judge_binding_for(goal)
+                    provider_audio = audio_frame_from_units(
+                        units, capability=binding.capability
+                    )
+                    mime, payload = provider_audio.as_pair()
+                    audio_payloads[goal.id] = {
+                        "sha256": hashlib.sha256(
+                            mime.lower().encode("ascii") + b"\0" + payload
+                        ).hexdigest(),
+                        "mime": mime,
+                        "bytes": len(payload),
+                        "t_start": provider_audio.t_start,
+                        "t_end": provider_audio.t_end,
+                    }
+                await self._emit_trace(
+                    trace_id,
+                    now,
+                    "source.audio",
+                    units={
+                        goal_id: tuple(
+                            (
+                                hashlib.sha256(unit.source_id.encode("utf-8")).hexdigest()[:16],
+                                unit.source_epoch,
+                                unit.source_sequence,
+                                unit.seq,
+                                unit.t_start,
+                                unit.t_end,
+                                unit.observed_time,
+                                unit.source_time,
+                            )
+                            for unit in units
+                        )
+                        for goal_id, units in (_audio_units_by_goal or {}).items()
+                    },
+                    provider_payloads=audio_payloads,
+                )
+            focus = None
+        else:
+            if tracing:
+                await self._emit_trace(trace_id, now, "source.frame")
+            self._window(source).push(now, frame)
+            if _stale():
+                return []
+            observations = await self.vision.detect(frame, active_goals)
+            self.graph.ingest(observations, frame, source, t=now)
+            focus = self.graph.in_focus()
+            if _stale():
+                return []
 
         events: list[FireEvent] = []
         for goal in active_goals:
             if _stale():
                 break  # revision moved during a prior goal's judge — stop before judging under it
             route = goal_behavior_route(goal)
+            if audio_only and route is not BehaviorRoute.FRAME_WATCH:
+                raise RuntimeError(
+                    f"audio-only execution supports watch goals; {goal.id!r} has route {route.value!r}"
+                )
             if route is BehaviorRoute.FRAME_TRANSITION:
                 ev = await self._perceive_transition(
                     goal, frame, focus, now=now, t=t, ingest_observed_at=ingest_observed_at,
@@ -1891,9 +1999,37 @@ class Percept:
             # (set in _deliberate_confused). Same resolution the transition path now shares via
             # _resolve_strip; strip is the temporal strip per the spec (None = single).
             spec, strip = self._resolve_strip(goal, source, perception_level=ctx.perception_level)
+            if audio_only:
+                strip = None
             roi = self._resolve_roi(goal, focus, spec)
             corrections = focus.asserted() if focus else {}
-            audio = self._audio_clip(source, spec)  # audio clip for a fused/audio spec; None otherwise
+            evidence_units = tuple((_audio_units_by_goal or {}).get(goal.id, ()))
+            if audio_only:
+                from .audio_input import audio_frame_from_units
+
+                binding = self._audio_judge_binding_for(goal)
+                audio = audio_frame_from_units(
+                    evidence_units, capability=binding.capability
+                )
+            elif (
+                self._watch_runtime_for(goal) is not None
+                and spec.modality == "fused"
+            ):
+                from .audio_input import audio_frame_from_units
+
+                binding = self._audio_judge_binding_for(goal)
+                evidence_units = self._audio_window(source).clip_units(
+                    spec.audio_s or self.settings.events.audio_window_s,
+                    now=now,
+                )
+                audio = (
+                    audio_frame_from_units(
+                        evidence_units, capability=binding.capability
+                    )
+                    if evidence_units else None
+                )
+            else:
+                audio = self._audio_clip(source, spec)
             if (
                 self._watch_runtime_for(goal) is not None
                 and spec.modality in ("audio", "fused")
@@ -1919,7 +2055,7 @@ class Percept:
             # the judge and, independently, to the trace (so "did the facts reach the judge" is
             # answerable from the .ptrace alone, not just from reading this call site).
             extractor_ctx = None
-            if self.extractor is not None:
+            if self.extractor is not None and not audio_only:
                 enrichment = self.extractor.extract(goal.condition, frame, roi)
                 if tracing:
                     await self._emit_trace(trace_id, now, "extractor.enriched", goal_id=goal.id,
@@ -1938,7 +2074,7 @@ class Percept:
             # judge call, so a direct rule's partial signal reaches the judge exactly like an
             # extractor's would.
             direct_result = None
-            if self.direct_judge is not None:
+            if self.direct_judge is not None and not audio_only:
                 direct_result = self.direct_judge.route(
                     goal.condition, frame, roi,
                     facts=(extractor_ctx or {}).get(EXTRACTOR_CONTEXT_KEY, {}).get("facts", {}),
@@ -1972,7 +2108,13 @@ class Percept:
             judgment_timing = JudgmentTimingBuilder(clock=self.clock)
             judgment_timing.mark_ingest_observed(at=ingest_observed_at)
             judgment_timing.mark_admitted()
-            judgment_timing.set_source_media_ts(t)
+            source_stamps = [
+                unit.source_time for unit in evidence_units
+                if unit.source_time is not None
+            ]
+            judgment_timing.set_source_media_ts(
+                max(source_stamps) if audio_only and source_stamps else t
+            )
             evidence_seq = self._admit_evidence(base_key)  # reserved at DISPATCH, per ADR-001 §8
             # Runtime-stamped judge provenance for this goal's trace events — additive keys
             # present ONLY when a per-goal binding exists (empty dict otherwise, so an unbound goal's
@@ -2066,6 +2208,8 @@ class Percept:
                 outcome_sink=gate_outcomes.append,
             )
             if ev_fire is not None:
+                if audio_only:
+                    ev_fire.audio_units = evidence_units
                 if ev_fire.action == FIRE:
                     self.funnel.fired(concern=goal.id, camera=source)  # a rising-edge fire emitted
                 events.append(ev_fire)
@@ -2135,8 +2279,63 @@ class Percept:
         self._log_fires(events, now)
         if _stale():
             return events  # aborted mid-loop: skip auto-refinement (it authors goal changes)
-        await self._deliberate_confused(now)  # Posture B: auto-refine recurrently-ambiguous concerns
+        if not audio_only:
+            await self._deliberate_confused(now)
         return events
+
+    async def perceive_audio_judged(
+        self,
+        audio_units_by_goal: "dict[str, tuple[AudioUnit, ...]]",
+        source: str = "camera",
+        *,
+        t: float | None = None,
+        expected_goals_revision: int | None = None,
+        expected_source_generation: int | None = None,
+        goal_ids: "tuple[str, ...] | None" = None,
+    ) -> list[FireEvent]:
+        """Judge exact frozen audio evidence without synthesizing a video frame."""
+        from .audio_input import canonicalize_audio_unit
+
+        frozen = {}
+        for goal_id, units in audio_units_by_goal.items():
+            goal = self.goals.get(goal_id)
+            if goal is None:
+                raise ValueError(f"audio evidence names unknown goal {goal_id!r}")
+            binding = self._audio_judge_binding_for(goal)
+            checked = []
+            for unit in tuple(units):
+                if (
+                    type(unit) is not AudioUnit
+                    or type(unit.source_id) is not str
+                    or not unit.source_id
+                    or unit.source_epoch is None
+                    or unit.source_sequence is None
+                    or unit.observed_time is None
+                ):
+                    raise ValueError("audio judgment requires provenance-complete exact AudioUnits")
+                checked.append(
+                    canonicalize_audio_unit(
+                        unit,
+                        capability=binding.capability,
+                        source_id=unit.source_id,
+                        source_epoch=unit.source_epoch,
+                        source_sequence=unit.source_sequence,
+                        observed_time=unit.observed_time,
+                        source_time=unit.source_time,
+                    )
+                )
+            if not checked:
+                raise ValueError(f"audio evidence for goal {goal_id!r} is empty")
+            frozen[goal_id] = tuple(checked)
+        return await self.perceive_judged(
+            None,
+            source,
+            t=t,
+            expected_goals_revision=expected_goals_revision,
+            expected_source_generation=expected_source_generation,
+            goal_ids=goal_ids,
+            _audio_units_by_goal=frozen,
+        )
 
     async def _perceive_transition(
         self, goal, frame, focus, *, now: float, t: float | None, ingest_observed_at: float,
@@ -2518,8 +2717,12 @@ class Percept:
         # None -> the call and its trace are byte-for-byte the unbound path.
         adapter = kwargs.pop("_adapter", None) or self.vision
         binding = kwargs.pop("_binding", None)
+        audio_dispatch = kwargs.pop("_audio_dispatch", None)
         t0 = self.clock()
-        verdict = await adapter.judge(*args, **kwargs)
+        if audio_dispatch is not None:
+            verdict = await audio_dispatch(*args, **kwargs)
+        else:
+            verdict = await adapter.judge(*args, **kwargs)
         usage = judge_usage(verdict)
         self.funnel.record_judge(latency_s=self.clock() - t0, **usage)
         if usage and self.on_trace is not None:
@@ -2527,13 +2730,13 @@ class Percept:
                 getattr(self, "_usage_trace_id", None) or f"judge@{t0}",
                 getattr(self, "_usage_source_ts", None) if getattr(self, "_usage_source_ts", None) is not None else t0,
                 "judge.usage",  # percept.tracing.STAGE_JUDGE_USAGE (string here to keep agent import-light)
-                model=self._judge_model(),
+                model=self._judge_model(adapter),
                 **usage,
                 **_judge_binding_trace(binding),  # additive provenance, ONLY when a binding exists
             )
         return verdict
 
-    def _judge_model(self) -> str | None:
+    def _judge_model(self, adapter: Any = None) -> str | None:
         """The model id the vision judge bills against, when the adapter exposes one.
 
         Read off the adapter (public ``model`` first, then the backends' ``_model``); ``None`` for a
@@ -2541,7 +2744,7 @@ class Percept:
         :func:`percept.slo.price_usage_or_none`. We never substitute a default price here: a guessed
         dollar figure printed as a run's cost is worse than no figure at all.
         """
-        v = self.vision
+        v = self.vision if adapter is None else adapter
         for attr in ("model", "_model"):
             m = getattr(v, attr, None)
             if isinstance(m, str) and m:
@@ -2669,7 +2872,22 @@ class Percept:
         # _safe_timed_judge boundary, so a marked-but-unbound goal raises JudgeBindingInvariantError here
         # (propagates; never degraded to ASK) and NO adapter is called. No binding => (self.vision, None):
         # the whole block below is byte-for-byte the unbound path.
-        adapter, bound = self._select_judge_adapter(goal)
+        audio_binding = self._audio_judge_binding_for(goal)
+        audio_dispatch = None
+        if audio_binding is not None:
+            bound = self._judge_bindings.get(goal.id)
+            if bound is not None and bound.adapter is not audio_binding.adapter:
+                raise JudgeBindingInvariantError(
+                    f"goal {goal.id!r} audio dispatch no longer matches its selected adapter"
+                )
+            if bound is None and goal.id in self._judge_requesting_goal_ids:
+                raise JudgeBindingInvariantError(
+                    f"goal {goal.id!r} requested a per-goal judge but its binding is missing"
+                )
+            adapter = audio_binding.adapter
+            audio_dispatch = audio_binding.dispatch
+        else:
+            adapter, bound = self._select_judge_adapter(goal)
         # Static-context injection at the dispatch site: only when the binding carries a verified static
         # context. A caller context already holding the reserved key is a bug (ReservedContextKeyError);
         # otherwise COPY the caller's dict (never mutate it) and inject the decoded text under the reserved
@@ -2718,7 +2936,8 @@ class Percept:
             # _JudgeDegraded, caught by every caller of _judge).
             return await self._safe_timed_judge(
                 goal.condition, frame, roi=roi, exemplar=exemplar, corrections=corrections or None,
-                frames=frames, audio=audio, _adapter=adapter, _binding=bound, **extra,
+                frames=frames, audio=audio, _adapter=adapter, _binding=bound,
+                _audio_dispatch=audio_dispatch, **extra,
             )
         # A structured key so the FrameHashLayer can ROI-crop + dHash the frame and scope its
         # entry to (goal, entity); the legacy stub cascade ignores the extra fields harmlessly.
@@ -2744,7 +2963,7 @@ class Percept:
         # raises _JudgeDegraded BEFORE `cache.store` is ever reached, so a failure is never cached.
         verdict = await self._safe_timed_judge(
             goal.condition, frame, roi=roi, exemplar=exemplar, corrections=corrections or None,
-            _adapter=adapter, _binding=bound,
+            _adapter=adapter, _binding=bound, _audio_dispatch=audio_dispatch,
         )
         if stale is None or not stale():
             self.cache.store(cache_key, verdict, verdict.confidence)
@@ -3232,6 +3451,8 @@ class Percept:
         self._judge_bindings.clear()
         self._judge_binding_tokens.clear()
         self._judge_requesting_goal_ids.clear()
+        self._audio_judge_bindings.clear()
+        self._audio_judge_binding_tokens.clear()
         ledger = getattr(self, "_watchplan_applied_hashes", None)
         if isinstance(ledger, dict):
             ledger.clear()

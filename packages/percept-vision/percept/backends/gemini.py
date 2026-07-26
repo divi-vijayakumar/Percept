@@ -236,13 +236,20 @@ class GeminiVision(_GeminiBase):
         claim_mode = bool(context and context.get("claim_mode"))  # claim-slot: parse the correction channel
         _, types = _require_genai()
         client = self._ensure_client()
+        if frame is None and audio is None:
+            raise TypeError("GeminiVision requires image evidence, audio evidence, or both")
+        if frame is None and (frames or exemplar is not None):
+            raise TypeError("audio-only Gemini judgment cannot carry image strip/exemplar inputs")
         # temporal strip: earlier context frames (oldest->newest), then the current frame last, so the
         # model reads time from Part order. A single multimodal call — Gemini's native modality is why
         # the strip + audio are token-cheap (one call, not N).
         strip = [f for f in (frames or []) if f is not frame]
         parts: list[Any] = [_image_part(types, f) for f in strip]
-        parts.append(_image_part(types, frame))
-        if exemplar is not None:
+        if frame is not None:
+            parts.append(_image_part(types, frame))
+        if frame is None:
+            question = f'Listening only to the attached audio: is this true right now — "{condition}"? '
+        elif exemplar is not None:
             parts.append(_image_part(types, exemplar))
             question = (
                 f'Looking only at the image (and comparing to the reference exemplar): is this true — '

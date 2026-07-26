@@ -75,6 +75,7 @@ TRACE_SCHEMA_VERSION = 1
 # Emitted by the runtime worker / perceive_judged today (percept.observability.TraceEvent.stage).
 STAGE_EDGE_DECISION = "edge.decision"      # EVERY frame: tier-0 motion/structural/semantic/threshold
 STAGE_SOURCE_FRAME = "source.frame"        # a frame ADMITTED into perceive_judged
+STAGE_SOURCE_AUDIO = "source.audio"        # exact retained AudioUnit tuple admitted to the judge
 STAGE_JUDGE_STARTED = "judge.started"
 STAGE_JUDGE_FINISHED = "judge.finished"
 STAGE_JUDGE_DEGRADED = "judge.degraded"
@@ -137,6 +138,7 @@ TRACE_STAGES: tuple[str, ...] = (
     STAGE_RUN_STARTED,
     STAGE_EDGE_DECISION,
     STAGE_SOURCE_FRAME,
+    STAGE_SOURCE_AUDIO,
     STAGE_JUDGE_STARTED,
     STAGE_JUDGE_FINISHED,
     STAGE_JUDGE_DEGRADED,
@@ -1313,7 +1315,7 @@ class TraceRecorder:
         self._drop_reasons: Counter[str] = Counter()
         self._bytes = 0
         self._observed_wall: dict[str, float] = {}   # trace_id -> when the runtime FIRST saw it
-        self._frame_seq: dict[str, int] = {}          # trace_id -> this trace's source.frame seq
+        self._frame_seq: dict[str, int] = {}          # trace_id -> this trace's source evidence seq
         self._first_source_ts: float | None = None
         self._last_source_ts: float | None = None
         self._incident_ts: list[float] = []          # incident/health anchors for the retention window
@@ -1389,7 +1391,7 @@ class TraceRecorder:
             goal_id=goal_id, source=source or self.manifest.source, data=dict(data),
         )
         self._seq += 1
-        if stage == STAGE_SOURCE_FRAME:
+        if stage in (STAGE_SOURCE_FRAME, STAGE_SOURCE_AUDIO):
             # Remember THIS trace_id's admitted-frame seq so a same-trace judgment.event
             # (emitted later, same tick) can resolve back to it. Bounded exactly like
             # ``_observed_wall`` — a correlation map must not leak on a 24/7 run.
@@ -1755,6 +1757,7 @@ __all__ = [
     "JUDGE_DROP_HEALTH_KINDS",
     "STAGE_EDGE_DECISION",
     "STAGE_SOURCE_FRAME",
+    "STAGE_SOURCE_AUDIO",
     "STAGE_JUDGE_STARTED",
     "STAGE_JUDGE_FINISHED",
     "STAGE_JUDGE_DEGRADED",

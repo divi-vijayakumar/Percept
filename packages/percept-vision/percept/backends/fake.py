@@ -70,7 +70,12 @@ class FakeVision:
         audio: Any = None,
         context: dict | None = None,
     ) -> Verdict:
-        token = str(frame)
+        if frame is None and audio is not None:
+            from ..audio_input import audio_script_token
+
+            token = audio_script_token(audio)
+        else:
+            token = str(frame)
         # Item 4 logsum: an observe-step call returns this clip's step delta (scripted via "<frame>|step").
         if context and context.get("observe_step"):
             return self._script.get(f"{token}|step", Verdict(satisfied=False, confidence=0.5, evidence=""))

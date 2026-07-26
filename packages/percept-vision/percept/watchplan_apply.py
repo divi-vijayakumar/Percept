@@ -62,6 +62,7 @@ from .behavior_routes import (
     behavior_route,
     worker_can_drive,
 )
+from .audio_input import prepare_audio_judge_binding
 from .contracts import GoalOrigin
 from .contracts.watchplan import FieldDiagnostic, ReceiptStatus, WatchPlan, WatchReceipt
 from .deployment_judges import load_deployment_judges
@@ -98,9 +99,8 @@ _LEDGER_ATTR = "_watchplan_applied_hashes"
 #: declare it; any other selected backend (incl. a client's custom one) cannot fold a live correction,
 #: so arming a ``claim_slot`` plan on it earns a (non-rejecting) receipt warning.
 _CLAIM_PARSING_MARKER = "PARSES_CLAIM_CHANNEL"
-_FUSED_AUDIO_INPUT_MARKER = "SUPPORTS_FUSED_AUDIO_INPUT"
 _RUNTIME_MUTABLE_GOAL_STATE_KEYS = frozenset(
-    {"count", "subject", "deadline_at", "deadline_at_epoch"}
+    {"count", "subject", "deadline_at", "deadline_at_epoch", "deadline_clock_domain"}
 )
 
 
@@ -269,6 +269,7 @@ class _PreparedGoal:
 
     goal: Any
     binding: Any | None  # a BoundJudge-shaped object (``.spec``/``.adapter``/``.static_context``), or None
+    audio_binding: Any | None
     compiled: Any
     source_profile: Any | None
     application_key: str
@@ -327,6 +328,26 @@ def _cached_runtime_intact(
         if key not in _RUNTIME_MUTABLE_GOAL_STATE_KEYS
     }
     if current_state != expected_state:
+        return False
+    modality = program_of(expected_goal).perception.modality
+    audio_binding = getattr(percept, "_audio_judge_bindings", {}).get(goal_id)
+    if modality in ("audio", "fused"):
+        selected_adapter = (
+            getattr(getattr(percept, "_judge_bindings", {}).get(goal_id), "adapter", None)
+            if resolved_judge is not None
+            else getattr(audio_binding, "adapter", None)
+        )
+        expected_mode = "audio_only" if modality == "audio" else "fused"
+        if (
+            audio_binding is None
+            or getattr(audio_binding, "adapter", None) is not selected_adapter
+            or getattr(audio_binding, "mode", None) != expected_mode
+            or getattr(audio_binding, "application_key", None) != application_key
+            or getattr(percept, "_audio_judge_binding_tokens", {}).get(goal_id)
+            is not getattr(audio_binding, "binding_token", None)
+        ):
+            return False
+    elif audio_binding is not None:
         return False
     judge_bindings = getattr(percept, "_judge_bindings", {})
     judge_requesting = getattr(percept, "_judge_requesting_goal_ids", set())
@@ -419,29 +440,6 @@ def _unsupported_plan_fields(plan: WatchPlan) -> tuple[FieldDiagnostic, ...]:
         )
         for name, value in values.items()
         if value not in (None, (), [])
-    )
-
-
-def _media_backend_diagnostic(
-    percept: Any, goal: Any, *, adapter: Any = None
-) -> FieldDiagnostic | None:
-    """Fail closed when a fused Watch selects an adapter that discards its audio evidence."""
-    modality = program_of(goal).perception.modality
-    if modality != "fused":
-        return None
-    selected = adapter if adapter is not None else getattr(percept, "vision", None)
-    if selected is not None and getattr(selected, _FUSED_AUDIO_INPUT_MARKER, False):
-        return None
-    return FieldDiagnostic(
-        path="WatchPlan.sense",
-        code="audio_input_backend_unsupported",
-        goal_id=goal.id,
-        message=(
-            "compiled fused perception requires a judge that consumes audio alongside frames, but "
-            f"{type(selected).__name__ if selected is not None else 'the selected backend'} does "
-            "not declare enforced fused-audio input support. Vision-only adapters are refused rather "
-            "than silently degrading."
-        ),
     )
 
 
@@ -793,9 +791,21 @@ def _prepare_one(
     if getattr(resolved, "judge", None) is not None:
         binding = _prepare_judge_binding(resolved.judge, percept, deployment_judges, goal_id=goal.id)
     selected_adapter = binding.adapter if binding is not None else getattr(percept, "vision", None)
-    media_error = _media_backend_diagnostic(percept, goal, adapter=selected_adapter)
-    if media_error is not None:
-        return "rejected", WatchReceipt(status="rejected", dropped_fields=(media_error,))
+    audio_binding = None
+    if modality in ("audio", "fused"):
+        try:
+            audio_binding = prepare_audio_judge_binding(
+                selected_adapter,
+                mode="audio_only" if modality == "audio" else "fused",
+                application_key=application_key,
+            )
+        except (TypeError, ValueError) as exc:
+            raise _JudgePrepareError(FieldDiagnostic(
+                path="WatchPlan.sense",
+                code="audio_input_backend_unsupported",
+                goal_id=goal.id,
+                message=f"compiled {modality} Watch cannot bind trusted audio input: {exc}",
+            )) from exc
 
     base = resolver.last_receipt  # the resolution-time WatchReceipt (accepted_fields + warnings)
     warnings = base.warnings if base is not None else ()
@@ -835,6 +845,7 @@ def _prepare_one(
     return "prepared", _PreparedGoal(
         goal=goal,
         binding=binding,
+        audio_binding=audio_binding,
         compiled=compiled,
         source_profile=selected_source_profile,
         application_key=application_key,
@@ -980,6 +991,8 @@ def apply_watch_plan(
         judge_bindings_before = dict(getattr(percept, "_judge_bindings", {}))
         judge_tokens_before = dict(getattr(percept, "_judge_binding_tokens", {}))
         judge_requesting_before = set(getattr(percept, "_judge_requesting_goal_ids", set()))
+        audio_bindings_before = dict(getattr(percept, "_audio_judge_bindings", {}))
+        audio_tokens_before = dict(getattr(percept, "_audio_judge_binding_tokens", {}))
         ledger_existed = hasattr(percept, _LEDGER_ATTR)
         ledger_before = dict(getattr(percept, _LEDGER_ATTR, {}) or {})
         try:
@@ -997,6 +1010,8 @@ def apply_watch_plan(
                 )
                 if p.binding is not None:
                     percept._register_judge_binding(p.goal.id, p.binding)
+                if p.audio_binding is not None:
+                    percept._register_audio_judge_binding(p.goal.id, p.audio_binding)
             # Publish idempotency only after every goal and binding landed.
             for p in prepared:
                 real_ledger[p.application_key] = (p.goal.id, p.receipt)
@@ -1012,6 +1027,10 @@ def apply_watch_plan(
             percept._judge_binding_tokens.update(judge_tokens_before)
             percept._judge_requesting_goal_ids.clear()
             percept._judge_requesting_goal_ids.update(judge_requesting_before)
+            percept._audio_judge_bindings.clear()
+            percept._audio_judge_bindings.update(audio_bindings_before)
+            percept._audio_judge_binding_tokens.clear()
+            percept._audio_judge_binding_tokens.update(audio_tokens_before)
             if ledger_existed:
                 restored_ledger = getattr(percept, _LEDGER_ATTR, None)
                 if not isinstance(restored_ledger, dict):

@@ -19,7 +19,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, AsyncIterator, Callable
 
 from percept.events import (
@@ -305,12 +305,16 @@ class _JudgeScheduler:
         source: str,
         stats: RuntimeStats | None,
         *,
+        perceive: Any = None,
+        include_payload: bool = False,
         metrics_collector: Any = None,
         stall_after_s: float = 20.0,
         backpressure_after: int = 3,
     ) -> None:
         self._core = core
         self._source = source
+        self._perceive = perceive or core.perceive_judged
+        self._include_payload = include_payload
         self._stats = stats
         # Optional percept.harness.metrics.MetricsCollector — when given, every admission
         # into this scheduler's active/pending slot is tracked via record_admitted/
@@ -320,6 +324,7 @@ class _JudgeScheduler:
         self._metrics = metrics_collector
         self._active: "asyncio.Task | None" = None
         self._active_t: float | None = None  # admission t of the in-flight judgment (rides the result)
+        self._active_payload: Any = None
         # (t, judge_frame, admission_revision, admitted_goal_ids). The ids are frozen at the same
         # instant as the revision so a queued frame cannot broaden into unrelated Watches later.
         self._pending: tuple[float, Any, Any, tuple[str, ...] | None] | None = None
@@ -338,9 +343,9 @@ class _JudgeScheduler:
         self._stall_reported = False        # latched: "judge_scheduler_stalled" already fired for it
         self._consec_supersede = 0          # supersessions in a row with no intervening completion
         self._backpressure_reported = False  # latched: "judge_scheduler_backpressure" already fired
-        self._perceive_accepts_goal_ids = _accepts_keyword(core.perceive_judged, "goal_ids")
+        self._perceive_accepts_goal_ids = _accepts_keyword(self._perceive, "goal_ids")
         self._perceive_accepts_source_generation = _accepts_keyword(
-            core.perceive_judged, "expected_source_generation"
+            self._perceive, "expected_source_generation"
         )
         self._active_filter_goal_ids: tuple[str, ...] | None = None
         self._active_invalidated = False
@@ -497,6 +502,8 @@ class _JudgeScheduler:
             self._stats.judge_calls += 1  # counted at launch — a superseded candidate spent nothing
             self._stats.perceive_dispatches += 1
         self._active_t = t
+        if self._include_payload:
+            self._active_payload = frame
         self._active_launch_wall = self._mc_now(t)  # this task's own clock, for stall detection
         self._stall_reported = False  # a fresh launch is unlatched — the stall window resets
         kwargs = {"t": t, "expected_goals_revision": revision}
@@ -511,9 +518,7 @@ class _JudgeScheduler:
             if goal_ids is not None and not self._perceive_accepts_goal_ids
             else None
         )
-        self._active = asyncio.create_task(
-            self._core.perceive_judged(frame, self._source, **kwargs)
-        )
+        self._active = asyncio.create_task(self._perceive(frame, self._source, **kwargs))
         self._active.add_done_callback(self._on_done)
 
     def _launch_pending(self) -> None:
@@ -568,6 +573,7 @@ class _JudgeScheduler:
                 if funnel is not None:
                     funnel.dropped(reason="source_discontinuity", camera=self._source)
             self._active = None
+            self._active_payload = None
             self._active_filter_goal_ids = None
             self._active_invalidated = False
             if invalidated and not self._closing:
@@ -581,6 +587,7 @@ class _JudgeScheduler:
                 self._mc_resolve(self._pending[0])
             self._pending = None
             self._active = None
+            self._active_payload = None
             self._active_filter_goal_ids = None
             self._active_invalidated = False
             return
@@ -605,8 +612,12 @@ class _JudgeScheduler:
             if funnel is not None:
                 funnel.dropped(reason="source_discontinuity", camera=self._source)
         else:
-            self._results.append((self._active_t, result))
+            self._results.append(
+                (self._active_t, result, self._active_payload)
+                if self._include_payload else (self._active_t, result)
+            )
         self._active_filter_goal_ids = None
+        self._active_payload = None
         self._active_invalidated = False
         self._active = None
         # A judgment completing WITHOUT raising is the same "reachable again" proof the agent level
@@ -668,23 +679,31 @@ class _JudgeScheduler:
                 pass
 
     async def close(self, *, drain: bool) -> None:
-        """Shut down. ``_closing`` is set FIRST so a completion racing this can't launch new work.
-        ``drain=True`` (finite files/tests): let the in-flight judgment finish and keep its result.
-        ``drain=False`` (live shutdown/cancellation): cancel it and swallow the CancelledError."""
-        self._closing = True
+        """Shut down.
+
+        ``drain=True`` (finite files/tests) first reaches quiescence, including the bounded pending
+        candidate, then closes submissions. ``drain=False`` (live cancellation) closes first and
+        cancels active work so no new provider call can launch during teardown.
+        """
         if drain:
             await self.flush()
+            self._closing = True
             return
+        self._closing = True
+        advance = getattr(self._core, "advance_source_continuity", None)
+        if callable(advance):
+            advance(self._source)
+        self.invalidate_source_continuity(("runtime_shutdown",))
         if self._pending is not None:
             self._mc_resolve(self._pending[0])  # a live shutdown drops the pending candidate outright
         self._pending = None
         task = self._active
         if task is not None:
             task.cancel()
-            try:
-                await task
-            except BaseException:  # noqa: BLE001 — expected: the cancel we just requested
-                pass
+            # A provider may suppress cancellation indefinitely. Its registered done callback owns
+            # eventual cleanup; live shutdown itself must remain bounded.
+            if task.done():
+                await asyncio.sleep(0)
 
 
 # Per-path timebase-skew tolerances. The tripwire compares a frame/chunk `t` against the core
@@ -863,7 +882,12 @@ class _AudioIngress:
     observed_time: float | None = None
 
 
-async def _audio_aiter(source: Any, **source_kwargs) -> AsyncIterator[_AudioIngress]:
+async def _audio_aiter(
+    source: Any,
+    *,
+    observed_clock: Callable[[], float] = time.monotonic,
+    **source_kwargs,
+) -> AsyncIterator[_AudioIngress]:
     """Normalize audio inputs to an envelope plus any explicitly ordered unit."""
 
     def normalize(item: Any) -> _AudioIngress:
@@ -872,12 +896,12 @@ async def _audio_aiter(source: Any, **source_kwargs) -> AsyncIterator[_AudioIngr
         if isinstance(item, AudioUnit):
             # AudioUnit sequence/interval authority belongs to AudioWindow. The worker creates a
             # separate observation-only carrier envelope only after transactional unit preflight.
-            return _AudioIngress(unit=item, observed_time=time.monotonic())
+            return _AudioIngress(unit=item, observed_time=observed_clock())
         timebase = "observed" if source_kwargs.get("timebase") == "wall" else "source"
         return _AudioIngress(
             legacy_item=item,
             legacy_timebase=timebase,
-            observed_time=time.monotonic(),
+            observed_time=observed_clock(),
         )
 
     if isinstance(source, str):
@@ -1132,6 +1156,596 @@ def _as_goal(g: Any, i: int) -> Any:
     raise TypeError(f"goals[{i}] must be a str, dict, or Goal, not {type(g).__name__}")
 
 
+async def _run_audio_only(
+    core: Any,
+    *,
+    audio_source: Any,
+    gate_source: str,
+    audio_gate: Any,
+    audio_wake: dict | None,
+    audio_settle_s: float,
+    audio_window_s: float | None,
+    judge_dispatch: str,
+    metrics_collector: Any,
+    judge_stall_after_s: float,
+    judge_backpressure_after: int,
+    timebase: str,
+    wall_clock: Callable[[], float],
+    clock: Callable | None,
+    paused: Callable | None,
+    muted: Callable | None,
+    on_incident: Callable | None,
+    on_ask: Callable | None,
+    on_health: Callable | None,
+    sink_errors: str,
+    stats: RuntimeStats | None,
+    episode_inactivity_s: float | None,
+    coverage_staleness_s: float | None,
+    regate_on_goal_change: bool,
+) -> AsyncIterator:
+    """Run exact compiled audio Watches without a synthetic video carrier."""
+    from percept.audio_input import (
+        audio_frame_from_units,
+        audio_snippet_from_units,
+        canonicalize_audio_ingress_frame,
+        canonicalize_audio_unit,
+    )
+    from percept.behavior import program_of
+    from percept.events import AudioWindow
+    from percept.harness.tier0 import compile_watchspec, schedule_active
+
+    if audio_source is None:
+        raise ValueError("source=None selects audio-only execution and requires audio_source=")
+    if judge_dispatch not in ("inline", "async"):
+        raise ValueError("judge_dispatch must be 'inline' or 'async'")
+    if timebase not in TIMEBASE_CHOICES:
+        raise ValueError(f"timebase must be one of {TIMEBASE_CHOICES!r}")
+    resolved_timebase = _resolve_timebase(audio_source, timebase).resolved
+    if (
+        not isinstance(audio_settle_s, (int, float))
+        or isinstance(audio_settle_s, bool)
+        or not math.isfinite(audio_settle_s)
+        or audio_settle_s < 0
+    ):
+        raise ValueError("audio_settle_s must be finite and non-negative")
+
+    def source_goals() -> list:
+        return [
+            goal for goal in core.goals.active()
+            if getattr(goal, "source", "camera") == gate_source
+        ]
+
+    def preflight() -> tuple[list, dict[str, Any]]:
+        goals = source_goals()
+        if not goals:
+            raise ValueError("audio-only execution requires at least one active Watch")
+        bindings: dict[str, Any] = {}
+        conditions = []
+        for goal in goals:
+            if goal.id not in getattr(core, "_watch_runtime_bindings", {}):
+                raise ValueError(
+                    f"audio-only execution requires a compiled Watch; {goal.id!r} is unbound"
+                )
+            program = program_of(goal)
+            if program.perception.modality != "audio" or goal.state.get("type", "watch") != "watch":
+                raise ValueError(
+                    f"audio-only execution supports compiled audio watch goals only; "
+                    f"{goal.id!r} resolved to {program.perception.modality!r}"
+                )
+            bindings[goal.id] = core._audio_judge_binding_for(goal)
+            compiled = core._watch_runtime_bindings[goal.id][0]
+            conditions.extend(
+                compile_watchspec([goal], **dict(compiled.watchspec_kwargs)).conditions
+            )
+        if audio_gate not in (None, "acoustic-onset"):
+            raise ValueError(
+                "compiled audio-only execution accepts audio_gate='acoustic-onset' or None"
+            )
+        if audio_gate is None and any(item.gate_on != "fixed" for item in conditions):
+            raise ValueError(
+                "audio_gate=None is executable only when every audio Watch uses fixed cadence"
+            )
+        return conditions, bindings
+
+    # No source read or runtime mutation occurs before this complete topology/trust preflight.
+    conditions, bindings = preflight()
+    capability = min(
+        (bound.capability for bound in bindings.values()),
+        key=lambda item: (item.max_input_bytes, item.max_provider_bytes),
+    )
+    window_seconds = float(
+        audio_window_s or getattr(core.settings.events, "audio_window_s", 4.0)
+    )
+    window = AudioWindow(window_seconds)
+    core.audio_windows[gate_source] = window
+    tracker = SourceTracker()
+    onset = None
+    if audio_gate == "acoustic-onset":
+        from percept.edge.detectors import AcousticOnset
+
+        opts = dict(audio_wake or {})
+        for key in ("high", "low"):
+            if key in opts:
+                opts[key] = _amplitude_threshold_to_energy(
+                    opts[key], name=f"audio_wake.{key}"
+                )
+        onset = AcousticOnset(**opts)
+    condition_by_goal = {item.goal_id: item for item in conditions}
+    last_admit: dict[str, float] = {}
+    wake_at: float | None = None
+    carrier_sequence = 0
+    goals_revision = getattr(core.goals, "revision", None)
+    deadline_bound: set[str] = set()
+    suppressed = False
+    cov = stats if stats is not None else RuntimeStats()
+    scheduler = (
+        _JudgeScheduler(
+            core,
+            gate_source,
+            cov,
+            perceive=core.perceive_audio_judged,
+            include_payload=True,
+            metrics_collector=metrics_collector,
+            stall_after_s=judge_stall_after_s,
+            backpressure_after=judge_backpressure_after,
+        )
+        if judge_dispatch == "async" else None
+    )
+
+    async def emit_fires(fires: Any, at: float) -> AsyncIterator:
+        for fire in fires or ():
+            if getattr(fire, "action", None) == ASK:
+                cov.asks += 1
+                if on_ask is not None:
+                    await _call_sink_with_policy(
+                        on_ask, fire, errors=sink_errors, stats=stats,
+                        on_health=on_health, health_kind="ask_sink_error",
+                    )
+                continue
+            if getattr(fire, "action", None) != FIRE:
+                continue
+            cov.fires += 1
+            units = tuple(getattr(fire, "audio_units", None) or ())
+            snippet = (
+                audio_snippet_from_units(
+                    units, capability=bindings[fire.goal_id].capability
+                )
+                if units else None
+            )
+            incident = make_incident(fire, ts=at, snippet=snippet)
+            emit_trace = getattr(core, "_emit_trace", None)
+            if getattr(core, "on_trace", None) is not None and callable(emit_trace):
+                await emit_trace(
+                    f"{gate_source}@{at}",
+                    at,
+                    "incident.created",
+                    goal_id=incident.concern_id,
+                    incident_id=incident.id,
+                    judgment_event_id=incident.judgment_event_id,
+                    evidence_origin=incident.evidence_origin,
+                )
+            if on_incident is not None:
+                await _call_sink_with_policy(
+                    on_incident, incident, errors=sink_errors, stats=stats,
+                    on_health=on_health, health_kind="incident_sink_error",
+                )
+            cov.incidents += 1
+            yield incident
+
+    async def drain_completed(at: float) -> AsyncIterator:
+        if scheduler is None:
+            return
+        completed = scheduler.drain()
+        for kind, data in scheduler.drain_trace():
+            if on_health is not None:
+                await _call_sink(on_health, RuntimeHealthEvent(kind, ts=at, data=data))
+        for admitted_t, fires, _evidence in completed:
+            async for incident in emit_fires(fires, admitted_t):
+                yield incident
+        await _drain_judge_health(core, on_health, at)
+
+    def coverage_data() -> dict[str, Any]:
+        return {
+            "source": gate_source,
+            "goal_ids": tuple(condition_by_goal),
+            "audio_chunks": cov.audio_chunks,
+            "admitted": cov.escalations,
+            "goal_admissions": cov.goal_admissions,
+            "perceive_dispatches": cov.perceive_dispatches,
+            "judge_calls": cov.judge_calls,
+            "incidents": cov.incidents,
+            "source_coverage": {"audio": tracker.coverage.as_dict()},
+        }
+
+    normal_completion = False
+    if on_health is not None:
+        await _call_sink(
+            on_health,
+            RuntimeHealthEvent(
+                "runtime_started",
+                data={
+                    "source": gate_source,
+                    "modality": "audio",
+                    "timebase": resolved_timebase,
+                    "goal_ids": tuple(condition_by_goal),
+                },
+            ),
+        )
+        await _call_sink(
+            on_health,
+            RuntimeHealthEvent("judge_dispatch", data={"mode": judge_dispatch}),
+        )
+    try:
+        async for ingress in _audio_aiter(
+            audio_source, timebase=timebase, observed_clock=wall_clock
+        ):
+            is_suppressed = bool(
+                (muted is not None and muted()) or (paused is not None and paused())
+            )
+            if is_suppressed != suppressed:
+                core.advance_source_continuity(gate_source)
+                if scheduler is not None:
+                    scheduler.invalidate_source_continuity(("audio_suppressed",))
+                window.clear()
+                last_admit.clear()
+                wake_at = None
+                reset = getattr(onset, "reset", None)
+                if callable(reset):
+                    reset()
+            if is_suppressed:
+                suppressed = True
+                continue
+            suppressed = False
+            event_t = None
+            candidate = ingress.unit
+            try:
+                submitted = ingress.unit
+                if submitted is not None:
+                    observed = (
+                        ingress.observed_time
+                        if ingress.observed_time is not None
+                        else time.monotonic()
+                    )
+                    event_t = (
+                        submitted.t_end
+                        if resolved_timebase == "media"
+                        else observed
+                    )
+                    source_time = submitted.t_end
+                    candidate = replace(submitted, event_t=float(event_t))
+                    canonical = canonicalize_audio_unit(
+                        candidate,
+                        capability=capability,
+                        source_id="audio",
+                        source_epoch=0,
+                        source_sequence=carrier_sequence,
+                        observed_time=observed,
+                        source_time=source_time,
+                    )
+                    envelope = audio_unit_envelope(
+                        canonical,
+                        source_id="audio",
+                        sequence=carrier_sequence,
+                        observed_time=observed,
+                    )
+                else:
+                    envelope = ingress.envelope
+                    if envelope is None:
+                        item = ingress.legacy_item
+                        if type(item) is not tuple or len(item) != 3:
+                            raise ValueError(
+                                "legacy audio input must be an exact (t, AudioFrame, energy) tuple"
+                            )
+                        item_t, raw_frame, energy = item
+                        observed = (
+                            ingress.observed_time
+                            if ingress.observed_time is not None
+                            else time.monotonic()
+                        )
+                        source_time = (
+                            float(item_t)
+                            if ingress.legacy_timebase == "source" else None
+                        )
+                        event_t = (
+                            source_time
+                            if resolved_timebase == "media" else
+                            float(item_t)
+                            if ingress.legacy_timebase == "observed" else observed
+                        )
+                        if resolved_timebase == "media" and source_time is None:
+                            raise ValueError("source_time_unknown")
+                        canonical = canonicalize_audio_ingress_frame(
+                            raw_frame,
+                            event_t=float(event_t),
+                            seq=carrier_sequence,
+                            energy=energy,
+                            capability=capability,
+                            source_id="audio",
+                            source_epoch=0,
+                            source_sequence=carrier_sequence,
+                            observed_time=observed,
+                            source_time=source_time,
+                        )
+                        envelope = SourceEnvelope(
+                            source_id="audio",
+                            modality="audio",
+                            epoch=0,
+                            sequence=carrier_sequence,
+                            observed_time=observed,
+                            source_time=source_time,
+                            format=SourceFormat(
+                                media_type="audio/pcm",
+                                sample_rate=canonical.sample_rate,
+                                channels=canonical.channels,
+                                sample_format=canonical.sample_format,
+                            ),
+                            payload=canonical.chunk,
+                            signal=canonical.energy,
+                            audio_direction=canonical.direction,
+                            participant_id=canonical.participant_id,
+                            legacy_timebase=ingress.legacy_timebase,
+                        )
+                    else:
+                        if type(envelope) is not SourceEnvelope:
+                            raise ValueError(
+                                "compiled audio ingress requires an exact SourceEnvelope"
+                            )
+                        if envelope.modality != "audio":
+                            raise ValueError("source_modality_mismatch")
+                        source_time = envelope.source_time
+                        if resolved_timebase == "media" and source_time is None:
+                            raise ValueError("source_time_unknown")
+                        event_t = (
+                            source_time
+                            if resolved_timebase == "media" else envelope.observed_time
+                        )
+                        canonical = canonicalize_audio_ingress_frame(
+                            envelope.payload,
+                            event_t=float(event_t),
+                            seq=envelope.sequence,
+                            energy=envelope.signal,
+                            capability=capability,
+                            source_id=envelope.source_id,
+                            source_epoch=envelope.epoch,
+                            source_sequence=envelope.sequence,
+                            observed_time=envelope.observed_time,
+                            source_time=source_time,
+                            direction=envelope.audio_direction or "unknown",
+                            participant_id=envelope.participant_id,
+                        )
+                        envelope = replace(
+                            envelope,
+                            payload=canonical.chunk,
+                            signal=canonical.energy,
+                            format=SourceFormat(
+                                media_type="audio/pcm",
+                                sample_rate=canonical.sample_rate,
+                                channels=canonical.channels,
+                                sample_format=canonical.sample_format,
+                            ),
+                        )
+                require_source_time = (
+                    resolved_timebase == "media" and submitted is None
+                )
+                source_preview = tracker.preview(
+                    envelope, require_source_time=require_source_time
+                )
+                if not source_preview.accepted:
+                    raise ValueError(f"audio carrier excluded: {source_preview.events!r}")
+                unit_preview = window.preview_unit(
+                    canonical, reset=source_preview.resets_continuity
+                )
+                if not unit_preview.accepted:
+                    raise ValueError(
+                        f"audio unit admission rejected: {unit_preview.as_dict()!r}"
+                    )
+            except Exception as exc:  # noqa: BLE001 - isolate one malformed carrier
+                if on_health is not None:
+                    await _call_sink(
+                        on_health,
+                        RuntimeHealthEvent(
+                            "audio_unit_rejected",
+                            ts=float(event_t) if isinstance(event_t, (int, float)) else None,
+                            data={"error": repr(exc), "seq": getattr(candidate, "seq", None)},
+                        ),
+                    )
+                continue
+
+            inspection = tracker.inspect(
+                envelope, require_source_time=require_source_time
+            )
+            continuity_reset = inspection.resets_continuity or unit_preview.discontinuous
+            if continuity_reset:
+                core.advance_source_continuity(gate_source)
+                if scheduler is not None:
+                    scheduler.invalidate_source_continuity(
+                        inspection.events or ("audio_unit_discontinuity",)
+                    )
+                window.clear()
+                last_admit.clear()
+                wake_at = None
+                reset = getattr(onset, "reset", None)
+                if callable(reset):
+                    reset()
+            pushed = window.push_unit(canonical)
+            if not pushed.accepted:
+                raise RuntimeError("audio preview/commit admission mismatch")
+            carrier_sequence += 1
+            cov.audio_chunks += 1
+            cov.last_media_t = canonical.source_time
+            cov.last_wall_t = canonical.observed_time
+            at = float(event_t)
+
+            async for incident in drain_completed(at):
+                yield incident
+            await _drain_gate_health(core, on_health, at)
+            current_revision = getattr(core.goals, "revision", goals_revision)
+            if current_revision != goals_revision:
+                if not regate_on_goal_change:
+                    raise ValueError(
+                        "audio-only goals changed while regate_on_goal_change=False"
+                    )
+                conditions, bindings = preflight()
+                condition_by_goal = {item.goal_id: item for item in conditions}
+                goals_revision = current_revision
+
+            goal_ids = tuple(
+                goal.id for goal in source_goals() if goal.id in condition_by_goal
+            )
+            for goal_id in goal_ids:
+                if goal_id in deadline_bound:
+                    continue
+                goal = core.goals.get(goal_id)
+                duration = goal.state.get("deadline_after_s") if goal is not None else None
+                if (
+                    goal is not None
+                    and goal.state.get("rearm") == "deadline"
+                    and isinstance(duration, (int, float))
+                    and not isinstance(duration, bool)
+                    and math.isfinite(duration)
+                    and duration >= 0
+                    and resolved_timebase == "media"
+                ):
+                    goal.state["deadline_at"] = at + float(duration)
+                    goal.state["deadline_clock_domain"] = "audio_event"
+                    deadline_bound.add(goal_id)
+            # Every accepted quiet or active unit advances carrier-independent cognition.
+            for callback, kwargs in (
+                (
+                    getattr(core, "check_episode_boundary", None),
+                    {"t": at, "inactivity_s": episode_inactivity_s, "goal_ids": goal_ids},
+                ),
+                (
+                    getattr(core, "check_observability", None),
+                    {"t": at, "staleness_s": coverage_staleness_s, "goal_ids": goal_ids},
+                ),
+                (
+                    getattr(core, "check_deadlines", None),
+                    {"t": at, "goal_ids": goal_ids},
+                ),
+            ):
+                if callback is None:
+                    continue
+                result = callback(**kwargs)
+                if inspect.isawaitable(result):
+                    result = await result
+                async for incident in emit_fires(result, at):
+                    yield incident
+
+            boundaries = onset.push(at, canonical.energy) if onset is not None else ()
+            if boundaries:
+                wake_at = at + float(audio_settle_s)
+            wake_due = wake_at is not None and at >= wake_at
+            if wake_due:
+                wake_at = None
+            civil = clock() if clock is not None else None
+            admitted: list[str] = []
+            for goal_id in goal_ids:
+                condition = condition_by_goal[goal_id]
+                if not schedule_active(condition.schedule, civil):
+                    continue
+                cadence_ready = (
+                    condition.cadence_s is None
+                    or at - last_admit.get(goal_id, float("-inf")) >= condition.cadence_s
+                )
+                if cadence_ready and (condition.gate_on == "fixed" or wake_due):
+                    admitted.append(goal_id)
+            if not admitted:
+                continue
+
+            by_id = {goal.id: goal for goal in source_goals()}
+            evidence: dict[str, tuple[AudioUnit, ...]] = {}
+            for goal_id in admitted:
+                seconds = program_of(by_id[goal_id]).perception.audio_s
+                units = window.clip_units(seconds or window_seconds, now=canonical.t_end)
+                if units:
+                    selected = tuple(units)
+                    provider_pcm_cap = bindings[goal_id].capability.max_provider_bytes - 44
+                    held = 0
+                    keep_from = len(selected)
+                    for index in range(len(selected) - 1, -1, -1):
+                        size = len(selected[index].chunk.pcm)
+                        if held + size > provider_pcm_cap:
+                            break
+                        held += size
+                        keep_from = index
+                    if keep_from:
+                        selected = selected[keep_from:]
+                        if on_health is not None:
+                            await _call_sink(
+                                on_health,
+                                RuntimeHealthEvent(
+                                    "audio_evidence_capped",
+                                    ts=at,
+                                    data={
+                                        "goal_id": goal_id,
+                                        "dropped_units": keep_from,
+                                        "provider_bytes_cap": bindings[
+                                            goal_id
+                                        ].capability.max_provider_bytes,
+                                    },
+                                ),
+                            )
+                    # Validate the complete aggregate provider payload before admission cadence,
+                    # spend counters, or scheduler state can be mutated.
+                    audio_frame_from_units(
+                        selected, capability=bindings[goal_id].capability
+                    )
+                    evidence[goal_id] = selected
+            admitted_ids = tuple(goal_id for goal_id in admitted if goal_id in evidence)
+            if not admitted_ids:
+                continue
+            for goal_id in admitted_ids:
+                last_admit[goal_id] = at
+            cov.escalations += 1
+            cov.goal_admissions += len(admitted_ids)
+            if scheduler is not None:
+                scheduler.submit(at, evidence, admitted_ids)
+            else:
+                cov.judge_calls += 1
+                cov.perceive_dispatches += 1
+                fires = await core.perceive_audio_judged(
+                    evidence,
+                    gate_source,
+                    t=at,
+                    expected_goals_revision=goals_revision,
+                    expected_source_generation=core.source_continuity_generation(gate_source),
+                    goal_ids=admitted_ids,
+                )
+                async for incident in emit_fires(fires, at):
+                    yield incident
+        normal_completion = True
+    except BaseException as exc:
+        if on_health is not None and not isinstance(
+            exc, (asyncio.CancelledError, GeneratorExit)
+        ):
+            await _call_sink(
+                on_health,
+                RuntimeHealthEvent("runtime_error", data={"error": repr(exc)}),
+            )
+        raise
+    finally:
+        if scheduler is not None:
+            await scheduler.close(drain=normal_completion)
+        if not normal_completion and on_health is not None:
+            await _call_sink(
+                on_health, RuntimeHealthEvent("runtime_ended", data=coverage_data())
+            )
+    if scheduler is not None:
+        async for incident in drain_completed(
+            cov.last_media_t if cov.last_media_t is not None else 0.0
+        ):
+            yield incident
+    if on_health is not None:
+        await _call_sink(
+            on_health,
+            RuntimeHealthEvent(
+                "runtime_ended",
+                data=coverage_data(),
+            ),
+        )
+
+
 async def _run_worker(
     core: Any = None,
     *,
@@ -1225,8 +1839,11 @@ async def _run_worker(
     - ``audio_source`` — optional mic/wav/video-container URI (``"mic:0"``, ``"clip.wav"``,
       ``"clip.mp4"``) **or** an (async) iterable of ``(t, chunk, energy)`` (see
       :func:`percept.runtime.audio.open_audio_source`). When set, the worker pumps each chunk into
-      ``core.push_audio`` — **filling the ``AudioWindow`` that ``modality="fused"/"audio"`` goals judge
-      over** (otherwise it stays empty and fused judges degrade to vision-only) — and feeds ``energy``
+      ``core.push_audio`` — **filling the ``AudioWindow`` that ``modality="fused"`` goals judge
+      over**. A compiled fused Watch with no exact retained audio fails closed; only legacy/manual
+      callers keep compatibility behavior. With ``source=None``, ``audio_source`` is the sole carrier
+      for compiled ``sense="audio"`` Watches: every accepted AudioUnit advances cognition, while its
+      onset/fixed policy admits exact retained evidence without a synthetic video frame. It also feeds ``energy``
       to the gate, so an off-camera sound (a cry, glass breaking) can escalate a frame the visual motion
       gate would skip. Default ``None`` → the video-only path is byte-for-byte, UNLESS ``source`` is
       itself a video container (``.mp4``/``.mov``/``.mkv``/``.webm``) AND an active goal's modality is
@@ -1426,6 +2043,73 @@ async def _run_worker(
         from percept.agent import _guard_live_language_path
 
         _guard_live_language_path(core, allow_scripted_brain=allow_scripted_brain)
+
+    if source is None:
+        unsupported_audio_only = [
+            name
+            for name, enabled in (
+                ("on_frame", on_frame is not None),
+                ("on_utterance", on_utterance is not None),
+                ("persistence", persistence is not None),
+                ("restore", bool(restore)),
+                ("autosave_every_s", autosave_every_s is not None),
+                ("vad", vad is not None),
+                ("deaf_until", deaf_until is not None),
+                ("stale_audio_s", stale_audio_s is not None),
+                ("structural_adapter", structural_adapter is not None),
+                ("semantic_adapter", semantic_adapter is not None),
+                ("energy_provider", energy_provider is not None),
+                ("wake_policy", wake_policy is not None),
+                ("coverage_floor", coverage_floor is not None),
+                ("disposition_log", disposition_log is not None),
+                ("label_store", label_store is not None),
+            )
+            if enabled
+        ]
+        if unsupported_audio_only:
+            raise ValueError(
+                "source=None audio-only execution does not support these video/voice/persistence "
+                f"options: {', '.join(unsupported_audio_only)}"
+            )
+        if _interest_subscription is not None or _interest_tracker is not None:
+            raise ValueError(
+                "InterestSubscription currently reports video VID admission only and is not "
+                "supported by source=None audio-only execution"
+            )
+        previous_trace = getattr(core, "on_trace", None)
+        if on_trace is not None:
+            core.on_trace = on_trace
+        try:
+            async for incident in _run_audio_only(
+                core,
+                audio_source=audio_source,
+                gate_source=gate_source,
+                audio_gate=audio_gate,
+                audio_wake=audio_wake,
+                audio_settle_s=audio_settle_s,
+                audio_window_s=audio_window_s,
+                judge_dispatch=judge_dispatch,
+                metrics_collector=metrics_collector,
+                judge_stall_after_s=judge_stall_after_s,
+                judge_backpressure_after=judge_backpressure_after,
+                timebase=timebase,
+                wall_clock=wall_clock,
+                clock=clock,
+                paused=paused,
+                muted=muted,
+                on_incident=on_incident,
+                on_ask=on_ask,
+                on_health=on_health,
+                sink_errors=sink_errors,
+                stats=stats,
+                episode_inactivity_s=episode_inactivity_s,
+                coverage_staleness_s=coverage_staleness_s,
+                regate_on_goal_change=regate_on_goal_change,
+            ):
+                yield incident
+        finally:
+            core.on_trace = previous_trace
+        return
 
     settings = getattr(core, "settings", None) or load_settings()
 
@@ -1755,6 +2439,16 @@ async def _run_worker(
         if goal.id in runtime_bindings
         and program_of(goal).perception.modality in ("audio", "fused")
     ]
+    compiled_audio_capability = None
+    if compiled_audio_goals:
+        bound_audio = [
+            core._audio_judge_binding_for(goal)
+            for goal in compiled_audio_goals
+        ]
+        compiled_audio_capability = min(
+            (bound.capability for bound in bound_audio),
+            key=lambda item: (item.max_input_bytes, item.max_provider_bytes),
+        )
     if compiled_audio_goals and audio_source is None:
         raise ValueError(
             "compiled audio/fused Watches require audio_source= (or a media container with an "
@@ -2069,7 +2763,7 @@ async def _run_worker(
                 advance(gate_source)
 
         def _compiled_audio_ready(goal_id: str) -> bool:
-            """True unless this is a compiled audio/fused Watch missing a real audio payload."""
+            """Preflight exact retained evidence without allocating a provider aggregate."""
             if goal_id not in getattr(core, "_watch_runtime_bindings", {}):
                 return True  # legacy goals retain their documented vision-only degradation
             goal = core.goals.get(goal_id)
@@ -2078,18 +2772,24 @@ async def _run_worker(
             perception = program_of(goal).perception
             if perception.modality not in ("audio", "fused"):
                 return True
-            clip_for = getattr(core, "_audio_clip", None)
-            clip = clip_for(gate_source, perception) if callable(clip_for) else None
-            if clip is None:
+            window_for = getattr(core, "_audio_window", None)
+            if not callable(window_for):
                 return False
-            encoded = getattr(clip, "encoded", None)
-            pcm = getattr(clip, "pcm", None)
-            if encoded is not None or pcm is not None:
-                return bool(encoded or pcm)
-            if isinstance(clip, tuple) and len(clip) == 2:
-                return bool(clip[1])
-            if isinstance(clip, (bytes, bytearray, memoryview)):
-                return bool(clip)
+            units = window_for(gate_source).clip_units(
+                perception.audio_s or settings.events.audio_window_s,
+                now=t,
+            )
+            if not units:
+                return False
+            try:
+                from percept.audio_input import validate_audio_units_for_provider
+
+                binding = core._audio_judge_binding_for(goal)
+                validate_audio_units_for_provider(
+                    tuple(units), capability=binding.capability
+                )
+            except (RuntimeError, ValueError, TypeError):
+                return False
             return True
 
         _prev_chunk_at: list = [None]  # last chunk's t — for the observed inter-chunk cadence (chunk_dt)
@@ -2196,8 +2896,11 @@ async def _run_worker(
                 synthetic_carrier_sequence = 0
 
                 async def _reject_unit(envelope, unit, at, exc) -> None:
-                    rejected = _audio_source_tracker.exclude("source_audio_unit_rejected")
-                    await _record_source_inspection(envelope, rejected, ts=at)
+                    if compiled_audio_capability is None:
+                        rejected = _audio_source_tracker.exclude(
+                            "source_audio_unit_rejected"
+                        )
+                        await _record_source_inspection(envelope, rejected, ts=at)
                     if on_health is not None:
                         await _call_sink(
                             on_health,
@@ -2215,7 +2918,147 @@ async def _run_worker(
                 async for ingress in _audio_aiter(audio_source, **audio_kwargs):
                     submitted_unit = ingress.unit
                     envelope = ingress.envelope
-                    if submitted_unit is not None:
+                    canonical_ingress_unit = None
+                    if compiled_audio_capability is not None:
+                        from percept.audio_input import (
+                            canonicalize_audio_ingress_frame,
+                            canonicalize_audio_unit,
+                        )
+
+                        observed_time = (
+                            ingress.observed_time
+                            if ingress.observed_time is not None
+                            else time.monotonic()
+                        )
+                        try:
+                            if submitted_unit is not None:
+                                at_hint = (
+                                    submitted_unit.t_end
+                                    if audio_tb is not None
+                                    and audio_tb.resolved == "media"
+                                    else observed_time
+                                )
+                                canonical_ingress_unit = canonicalize_audio_unit(
+                                    replace(submitted_unit, event_t=float(at_hint)),
+                                    capability=compiled_audio_capability,
+                                    source_id="audio",
+                                    source_epoch=0,
+                                    source_sequence=synthetic_carrier_sequence,
+                                    observed_time=observed_time,
+                                    source_time=submitted_unit.t_end,
+                                )
+                                envelope = audio_unit_envelope(
+                                    canonical_ingress_unit,
+                                    source_id="audio",
+                                    sequence=synthetic_carrier_sequence,
+                                    observed_time=observed_time,
+                                )
+                            elif envelope is None:
+                                item = ingress.legacy_item
+                                if type(item) is not tuple or len(item) != 3:
+                                    raise ValueError(
+                                        "legacy audio input must be an exact "
+                                        "(t, AudioFrame, energy) tuple"
+                                    )
+                                item_t, raw_frame, energy = item
+                                source_time = (
+                                    float(item_t)
+                                    if ingress.legacy_timebase == "source"
+                                    else None
+                                )
+                                at_hint = (
+                                    source_time
+                                    if audio_tb is not None
+                                    and audio_tb.resolved == "media"
+                                    else float(item_t)
+                                    if ingress.legacy_timebase == "observed"
+                                    else observed_time
+                                )
+                                canonical_ingress_unit = (
+                                    canonicalize_audio_ingress_frame(
+                                        raw_frame,
+                                        event_t=float(at_hint),
+                                        seq=synthetic_carrier_sequence,
+                                        energy=energy,
+                                        capability=compiled_audio_capability,
+                                        source_id="audio",
+                                        source_epoch=0,
+                                        source_sequence=synthetic_carrier_sequence,
+                                        observed_time=observed_time,
+                                        source_time=source_time,
+                                    )
+                                )
+                                envelope = SourceEnvelope(
+                                    source_id="audio",
+                                    modality="audio",
+                                    epoch=0,
+                                    sequence=synthetic_carrier_sequence,
+                                    observed_time=observed_time,
+                                    source_time=source_time,
+                                    format=SourceFormat(
+                                        media_type="audio/pcm",
+                                        sample_rate=canonical_ingress_unit.sample_rate,
+                                        channels=canonical_ingress_unit.channels,
+                                        sample_format=canonical_ingress_unit.sample_format,
+                                    ),
+                                    payload=canonical_ingress_unit.chunk,
+                                    signal=canonical_ingress_unit.energy,
+                                    audio_direction=canonical_ingress_unit.direction,
+                                    participant_id=canonical_ingress_unit.participant_id,
+                                    legacy_timebase=ingress.legacy_timebase,
+                                )
+                            else:
+                                if type(envelope) is not SourceEnvelope:
+                                    raise ValueError(
+                                        "compiled audio ingress requires an exact SourceEnvelope"
+                                    )
+                                if envelope.modality != "audio":
+                                    raise ValueError("source_modality_mismatch")
+                                require_media = (
+                                    audio_tb is not None
+                                    and audio_tb.resolved == "media"
+                                )
+                                if require_media and envelope.source_time is None:
+                                    raise ValueError("source_time_unknown")
+                                at_hint = (
+                                    envelope.source_time
+                                    if require_media
+                                    else envelope.observed_time
+                                )
+                                canonical_ingress_unit = (
+                                    canonicalize_audio_ingress_frame(
+                                        envelope.payload,
+                                        event_t=float(at_hint),
+                                        seq=envelope.sequence,
+                                        energy=envelope.signal,
+                                        capability=compiled_audio_capability,
+                                        source_id=envelope.source_id,
+                                        source_epoch=envelope.epoch,
+                                        source_sequence=envelope.sequence,
+                                        observed_time=envelope.observed_time,
+                                        source_time=envelope.source_time,
+                                        direction=envelope.audio_direction or "unknown",
+                                        participant_id=envelope.participant_id,
+                                    )
+                                )
+                                envelope = replace(
+                                    envelope,
+                                    payload=canonical_ingress_unit.chunk,
+                                    signal=canonical_ingress_unit.energy,
+                                    format=SourceFormat(
+                                        media_type="audio/pcm",
+                                        sample_rate=canonical_ingress_unit.sample_rate,
+                                        channels=canonical_ingress_unit.channels,
+                                        sample_format=canonical_ingress_unit.sample_format,
+                                    ),
+                                )
+                        except Exception as exc:
+                            await _reject_unit(
+                                envelope, submitted_unit, observed_time, exc
+                            )
+                            continue
+                        submitted_unit = canonical_ingress_unit
+                    elif submitted_unit is not None:
                         observed_time = (
                             ingress.observed_time
                             if ingress.observed_time is not None
@@ -2223,8 +3066,6 @@ async def _run_worker(
                         )
                         original_unit = submitted_unit
                         try:
-                            # Validate the caller's complete unit before the carrier envelope or
-                            # normalization can replace its event clock, payload, energy, or metadata.
                             submitted_unit = validate_audio_unit(original_unit)
                         except Exception as exc:  # noqa: BLE001 - one bad unit cannot kill the pump
                             rejected_envelope = SourceEnvelope(
@@ -2274,7 +3115,17 @@ async def _run_worker(
                     if envelope.modality in ("video", "audio") and envelope.modality != "audio":
                         # Reject a valid envelope routed to the wrong lane before it can create tracker
                         # state or reach a modality-specific gate/window.
-                        inspection = _audio_source_tracker.exclude("source_modality_mismatch")
+                        inspection = (
+                            SourceInspection(
+                                accepted=False,
+                                events=("source_modality_mismatch",),
+                                coverage_effect="excluded",
+                            )
+                            if compiled_audio_capability is not None
+                            else _audio_source_tracker.exclude(
+                                "source_modality_mismatch"
+                            )
+                        )
                         wrong_lane_ts = envelope.observed_time
                         if (
                             isinstance(wrong_lane_ts, bool)
@@ -2333,13 +3184,20 @@ async def _run_worker(
                         direction = "input"
                     candidate_unit = submitted_unit
                     try:
-                        unit = normalize_audio_envelope(
-                            envelope,
-                            event_t=at,
-                            unit=submitted_unit,
-                            direction=direction,
-                            participant_id=audio_kwargs.get("participant_id"),
-                        )
+                        if compiled_audio_capability is not None:
+                            if canonical_ingress_unit is None:
+                                raise RuntimeError(
+                                    "compiled audio ingress lost its canonical unit"
+                                )
+                            unit = canonical_ingress_unit
+                        else:
+                            unit = normalize_audio_envelope(
+                                envelope,
+                                event_t=at,
+                                unit=submitted_unit,
+                                direction=direction,
+                                participant_id=audio_kwargs.get("participant_id"),
+                            )
                         candidate_unit = unit
                         audio_window_for = getattr(core, "_audio_window", None)
                         if not callable(audio_window_for):
@@ -2358,26 +3216,7 @@ async def _run_worker(
                         await _reject_unit(envelope, candidate_unit, at, exc)
                         continue
 
-                    # Commit source sequence only after both source and prospective audio admission
-                    # previews succeed. No await separates preview from commit.
-                    inspection = _audio_source_tracker.inspect(
-                        envelope, require_source_time=require_source_time
-                    )
-                    if not inspection.accepted:  # defensive: must match the immediately prior preview
-                        await _record_source_inspection(envelope, inspection, ts=at)
-                        continue
-                    if inspection.resets_continuity:
-                        # Advance before the first await after inspection. A cancellation-resistant
-                        # pre-gap judge must see the new generation before it can commit stale state.
-                        _advance_source_continuity()
-                        if _judge_sched is not None:
-                            _judge_sched.invalidate_source_continuity(inspection.events)
-                    if submitted_unit is not None or ingress.legacy_item is not None:
-                        synthetic_carrier_sequence += 1
-                    await _record_source_inspection(envelope, inspection, ts=at)
                     chunk, energy = envelope.payload, envelope.signal
-                    if inspection.resets_continuity:
-                        _reset_audio_temporal_state(clear_window=True)
                     # Hold a FILE/CONTAINER chunk back until the video loop's judged media time has
                     # (almost) reached it — never busy-wait, park on the Event the frame loop sets every
                     # tick. `_audio_paced` is False for a live mic (byte-for-byte unchanged: this loop
@@ -2402,6 +3241,29 @@ async def _run_worker(
                     # signals freeze, without ending the session. Default (muted=None) is byte-for-byte.
                     if muted is not None and muted():
                         continue
+                    # The last pre-commit await is above. Commit carrier ordering and the exact
+                    # retained AudioUnit adjacently; cancellation/mute cannot leave one side ahead.
+                    inspection = _audio_source_tracker.inspect(
+                        envelope, require_source_time=require_source_time
+                    )
+                    if not inspection.accepted:
+                        await _record_source_inspection(envelope, inspection, ts=at)
+                        continue
+                    continuity_reset = (
+                        inspection.resets_continuity
+                        or (
+                            compiled_audio_capability is not None
+                            and unit_preview.discontinuous
+                        )
+                    )
+                    if continuity_reset:
+                        _advance_source_continuity()
+                        if _judge_sched is not None:
+                            reasons = inspection.events or (
+                                "audio_unit_discontinuity",
+                            )
+                            _judge_sched.invalidate_source_continuity(reasons)
+                        _reset_audio_temporal_state(clear_window=True)
                     try:
                         ingest = core.push_audio(unit, source=gate_source)
                     except Exception as exc:  # noqa: BLE001 - reject one malformed unit, keep capture alive
@@ -2419,6 +3281,9 @@ async def _run_worker(
                                 ),
                             )
                         continue
+                    if submitted_unit is not None or ingress.legacy_item is not None:
+                        synthetic_carrier_sequence += 1
+                    await _record_source_inspection(envelope, inspection, ts=at)
                     if (
                         ingest is not None
                         and getattr(ingest, "discontinuous", False)

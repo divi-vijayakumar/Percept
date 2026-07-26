@@ -151,6 +151,14 @@ class AudioUnit:
     direction: AudioDirection = "unknown"
     participant_id: str | None = None
     boundaries: tuple[AudioBoundary, ...] = ()
+    # Carrier provenance is retained on the immutable unit rather than inferred later from the
+    # rolling window. Defaults preserve manually-pushed/legacy units; compiled runtime ingestion
+    # fills every field before the unit can enter state.
+    source_id: str | None = None
+    source_epoch: int | None = None
+    source_sequence: int | None = None
+    observed_time: float | None = None
+    source_time: float | None = None
 
     @property
     def t(self) -> float:
@@ -712,6 +720,47 @@ class AudioWindow:
                 break
             contiguous.insert(0, unit)
         return [unit.chunk for unit in contiguous]
+
+    def clip_units(self, seconds: float, *, now: float | None = None) -> tuple[AudioUnit, ...]:
+        """The immutable units behind :meth:`clip`, retaining exact carrier provenance.
+
+        Compiled audio dispatch uses this instead of rebuilding evidence from the rolling window
+        after a provider call. The selected tuple is frozen into the judge job before dispatch.
+        """
+        if (
+            not isinstance(seconds, (int, float))
+            or isinstance(seconds, bool)
+            or not math.isfinite(seconds)
+            or seconds <= 0
+        ):
+            raise ValueError("audio clip seconds must be finite and positive")
+        if now is not None and (
+            not isinstance(now, (int, float))
+            or isinstance(now, bool)
+            or not math.isfinite(now)
+        ):
+            raise ValueError("audio clip now must be finite when known")
+        if not self._units:
+            return ()
+        end = max(unit.t_end for unit in self._units) if now is None else float(now)
+        candidates = self.window(end - seconds, math.nextafter(end, math.inf))
+        if not candidates:
+            return ()
+        contiguous = [candidates[-1]]
+        for unit in reversed(candidates[:-1]):
+            newer = contiguous[0]
+            if (
+                (unit.sample_rate, unit.channels, unit.sample_format)
+                != (newer.sample_rate, newer.channels, newer.sample_format)
+                or unit.source_id != newer.source_id
+                or unit.source_epoch != newer.source_epoch
+                or not math.isclose(
+                    unit.t_end, newer.t_start, rel_tol=0.0, abs_tol=1e-9
+                )
+            ):
+                break
+            contiguous.insert(0, unit)
+        return tuple(contiguous)
 
     def clear(self) -> None:
         """Drop retained chunks at a source discontinuity."""

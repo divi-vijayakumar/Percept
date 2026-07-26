@@ -109,10 +109,11 @@ async def _collect(core: Percept, source, **kwargs):
 
 class WatchPlanCompilationTests(unittest.TestCase):
     def test_supported_media_senses_compile_into_the_existing_perception_program(self) -> None:
-        core = Percept.create(vision=RecordingVision(), discover_plugins=False)
+        core = Percept.create(vision=FakeVision(), discover_plugins=False)
         expected = {
             "video": "vision",
             "vision": "vision",
+            "audio": "audio",
             "fused": "fused",
         }
         for index, (sense, modality) in enumerate(expected.items()):
@@ -174,16 +175,14 @@ class WatchPlanCompilationTests(unittest.TestCase):
             "source_profile_modality_mismatch",
         )
 
-    def test_audio_only_is_rejected_until_it_has_a_carrier_independent_loop(self) -> None:
-        core = Percept.create(vision=RecordingVision(), discover_plugins=False)
+    def test_audio_only_compiles_with_an_exact_trusted_backend(self) -> None:
+        core = Percept.create(vision=FakeVision(), discover_plugins=False)
         receipt = apply_watch_plan(
             core,
             WatchPlan(id="audio", condition="a sound matters", sense="audio"),
         )
-        self.assertEqual(receipt.status, "rejected")
-        self.assertEqual(receipt.dropped_fields[0].code, "unsupported_media_sense")
-        self.assertIn("carrier-independent audio", receipt.dropped_fields[0].message)
-        self.assertEqual(core.goals.all(), [])
+        self.assertEqual(receipt.status, "applied")
+        self.assertIn("audio", core._audio_judge_bindings)
 
     def test_fused_refuses_a_backend_that_discards_audio(self) -> None:
         for backend_type in (AnthropicVision, OpenRouterVision):
@@ -740,7 +739,7 @@ class PerWatchRuntimeIsolationTests(unittest.TestCase):
         self.assertEqual(calls.count("sparse"), 2)
 
     def test_compiled_fused_watch_delivers_audio_to_the_judge(self) -> None:
-        vision = RecordingVision()
+        vision = FakeVision(script={"changed|audio": Verdict(satisfied=True, confidence=0.99)})
         core = Percept.create(vision=vision, discover_plugins=False)
         receipt = apply_watch_plan(
             core,
@@ -752,25 +751,29 @@ class PerWatchRuntimeIsolationTests(unittest.TestCase):
             ),
         )
         self.assertEqual(receipt.status, "applied")
-        core.push_audio(
-            AudioFrame(pcm=b"\x01\x00" * 100, sample_rate=16_000),
-            t=0.5,
-        )
-        asyncio.run(
+        audio = [
+            (
+                0.5,
+                AudioFrame(pcm=b"\x01\x00" * 100, sample_rate=16_000),
+                0.5,
+            )
+        ]
+        incidents = asyncio.run(
             _collect(
                 core,
                 [(0.0, STILL, "prime"), (1.0, gray_frame(W, H, 255), "changed")],
-                audio_source=[],
+                audio_source=audio,
                 audio_gate=None,
                 judge_dispatch="inline",
             )
         )
-        self.assertEqual([row[0] for row in vision.judged], ["speaker points"])
-        self.assertIsInstance(vision.audio_payloads[0], AudioFrame)
-        self.assertTrue(vision.audio_payloads[0].pcm)
+        # This script has no plain "changed" verdict; a fire proves the exact audio-bearing route
+        # selected the "changed|audio" token without adding an always-on call log to FakeVision.
+        self.assertEqual(len(incidents), 1)
+        self.assertEqual(core.metrics.get("judge.latency.count"), 1)
 
     def test_compiled_fused_requires_an_audio_source(self) -> None:
-        core = Percept.create(vision=RecordingVision(), discover_plugins=False)
+        core = Percept.create(vision=FakeVision(), discover_plugins=False)
         self.assertEqual(
             apply_watch_plan(
                 core,
@@ -782,7 +785,7 @@ class PerWatchRuntimeIsolationTests(unittest.TestCase):
             asyncio.run(_collect(core, [], judge_dispatch="inline"))
 
     def test_compiled_fused_watch_skips_and_reports_an_empty_audio_window(self) -> None:
-        vision = RecordingVision()
+        vision = FakeVision()
         core = Percept.create(vision=vision, discover_plugins=False)
         self.assertEqual(
             apply_watch_plan(
@@ -802,13 +805,13 @@ class PerWatchRuntimeIsolationTests(unittest.TestCase):
                 judge_dispatch="inline",
             )
         )
-        self.assertEqual(vision.judged, [])
+        self.assertEqual(core.metrics.get("judge.latency.count"), 0)
         unavailable = [event for event in health if event.kind == "audio_evidence_unavailable"]
         self.assertEqual(len(unavailable), 1)
         self.assertEqual(unavailable[0].data["goal_id"], "fused")
 
     def test_wrong_day_audio_onset_cannot_admit_a_fused_watch(self) -> None:
-        vision = RecordingVision()
+        vision = FakeVision()
         core = Percept.create(vision=vision, discover_plugins=False)
         receipt = apply_watch_plan(
             core,
@@ -842,10 +845,10 @@ class PerWatchRuntimeIsolationTests(unittest.TestCase):
             )
         )
         self.assertEqual(stats.escalations, 0)
-        self.assertEqual(vision.judged, [])
+        self.assertEqual(core.metrics.get("judge.latency.count"), 0)
 
-    def test_audio_only_watch_never_arms_on_the_video_carrier(self) -> None:
-        core = Percept.create(vision=RecordingVision(), discover_plugins=False)
+    def test_audio_only_watch_arms_only_with_an_audio_source_profile(self) -> None:
+        core = Percept.create(vision=FakeVision(), discover_plugins=False)
         receipt = apply_watch_plan(
             core,
             WatchPlan(id="audio", condition="someone speaks", sense="audio"),
@@ -855,12 +858,14 @@ class PerWatchRuntimeIsolationTests(unittest.TestCase):
                 modalities=frozenset({"audio"}),
             ),
         )
-        self.assertEqual(receipt.status, "rejected")
-        self.assertEqual(receipt.dropped_fields[0].code, "unsupported_media_sense")
-        self.assertIsNone(core.goals.get("audio"))
+        self.assertEqual(receipt.status, "applied")
+        self.assertEqual(
+            program_of(core.goals.get("audio")).perception.modality,
+            "audio",
+        )
 
     def test_profile_identity_defaults_remain_bound_to_their_own_watch(self) -> None:
-        core = Percept.create(vision=RecordingVision(), discover_plugins=False)
+        core = Percept.create(vision=FakeVision(), discover_plugins=False)
         content = _profile("content-profile", identity="content_key")
         track = _profile("track-profile", identity="track_continuity")
         apply_watch_plan(
@@ -884,7 +889,7 @@ class PerWatchRuntimeIsolationTests(unittest.TestCase):
         )
 
     def test_compiled_source_timebase_is_used_and_conflicts_fail_closed(self) -> None:
-        core = Percept.create(vision=RecordingVision(), discover_plugins=False)
+        core = Percept.create(vision=FakeVision(), discover_plugins=False)
         receipt = apply_watch_plan(
             core,
             WatchPlan(id="wall", condition="a person enters", sense="video"),
@@ -909,7 +914,7 @@ class PerWatchRuntimeIsolationTests(unittest.TestCase):
             asyncio.run(_collect(conflict, [], judge_dispatch="inline"))
 
     def test_different_fused_schedules_fail_closed_on_one_shared_audio_worker(self) -> None:
-        core = Percept.create(vision=RecordingVision(), discover_plugins=False)
+        core = Percept.create(vision=FakeVision(), discover_plugins=False)
         apply_watch_plan(
             core,
             WatchPlan(

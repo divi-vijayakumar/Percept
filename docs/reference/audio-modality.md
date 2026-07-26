@@ -135,5 +135,34 @@ acoustic-onset boundary is what tells the gate *when* that escalation is worth a
 > the VLM confirms *what it means* (expensive) only at those boundaries. Audio gates the read; it
 > never becomes a second, ungated judge.
 
+### Compiled audio Watches
+
+A compiled `WatchPlan(..., sense="audio")` can run without a synthetic video stream:
+
+```python
+async for incident in percept.run(
+    core,
+    source=None,
+    audio_source="mic:0",
+):
+    handle(incident)
+```
+
+This runtime path accepts exact `AudioFrame`/`AudioUnit` carriers containing raw PCM or PCM WAV,
+validates byte caps and sample metadata before committing carrier state, and canonicalizes `s16le`,
+`u8`, or `f32le` input to bounded `s16le` evidence. The exact retained unit tuple supplies the
+provider WAV, the audio `IncidentSnippet`, and the opt-in trace content digest. Source/media interval,
+local-observed time, and civil schedule time remain separate.
+
+Compiled audio and fused Watches bind only the SDK-owned exact `FakeVision` or `GeminiVision`
+implementations when the plan is applied. An unsupported or mutated adapter fails closed; a compiled
+fused Watch missing valid retained audio is not silently judged as video-only. Manual
+`vision.judge(audio=...)` calls keep the flexible compatibility behavior described above.
+Exact cross-source fused snapshot synchronization and fused incident reconstruction are not part of
+this audio-only evidence contract; deployments that require them must qualify that separate join.
+
+The OSS worker is session-scoped: this path does not add durable restart state or acknowledged
+notification delivery. A hosted runtime must supply those layers around the SDK.
+
 See also: [`registration.md`](registration.md) (register your own detector + category),
 [`concepts.md`](../explanation/concepts.md) (the gate + the one perception seam).
