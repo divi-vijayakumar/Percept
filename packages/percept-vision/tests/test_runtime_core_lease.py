@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 import percept.runtime.worker as worker
+from percept.interest import InterestSubscription
 
 
 class _Core:
@@ -61,6 +62,16 @@ def _runtime(
     return stream
 
 
+@worker._exclusive_core_runtime
+def _construction_failure(
+    core: Any,
+    *,
+    error: BaseException,
+) -> AsyncIterator[Any]:
+    del core
+    raise error
+
+
 async def _collect(stream: AsyncIterator[Any]) -> list[Any]:
     return [item async for item in stream]
 
@@ -95,6 +106,33 @@ def test_close_error_is_truthful_and_never_strands_the_core_lease(
     asyncio.run(drive())
 
 
+def test_synchronous_stream_construction_failure_releases_exactly_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core = _Core()
+    construction_error = RuntimeError("stream construction failed")
+    releases: list[tuple[int, Any] | None] = []
+    original_release = worker._release_core_run
+
+    def observed_release(lease: tuple[int, Any] | None) -> None:
+        releases.append(lease)
+        original_release(lease)
+
+    monkeypatch.setattr(worker, "_release_core_run", observed_release)
+
+    async def drive() -> None:
+        with pytest.raises(RuntimeError, match="stream construction failed") as caught:
+            await _collect(_construction_failure(core, error=construction_error))
+        assert caught.value is construction_error
+        assert len(releases) == 1
+
+        healthy = _Stream(("next-run",))
+        assert await _collect(_runtime(core, stream=healthy)) == ["next-run"]
+        assert len(releases) == 2
+
+    asyncio.run(drive())
+
+
 def test_normal_finalization_does_not_advance_source_continuity() -> None:
     core = _Core()
     stream = _Stream(("done",))
@@ -124,5 +162,54 @@ def test_cancelled_finalization_advances_once_and_releases_for_reuse() -> None:
         assert await _collect(_runtime(core, stream=healthy)) == ["next-run"]
         assert healthy.close_calls == 1
         assert core.advanced == ["microphone"]
+
+    asyncio.run(drive())
+
+
+def test_production_interest_run_owns_one_cancellation_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core = _Core()
+
+    async def drive() -> None:
+        async def completed_worker(**_kwargs: Any) -> AsyncIterator[Any]:
+            if False:
+                yield None
+
+        monkeypatch.setattr(worker, "_run_worker", completed_worker)
+        assert await _collect(
+            worker.run(
+                core,
+                source=(),
+                interest_subscription=InterestSubscription(),
+                gate_source="production-source",
+            )
+        ) == []
+        assert core.advanced == []
+
+        started = asyncio.Event()
+
+        async def blocked_worker(**_kwargs: Any) -> AsyncIterator[Any]:
+            started.set()
+            await asyncio.Event().wait()
+            if False:
+                yield None
+
+        monkeypatch.setattr(worker, "_run_worker", blocked_worker)
+        task = asyncio.create_task(
+            _collect(
+                worker.run(
+                    core,
+                    source=(),
+                    interest_subscription=InterestSubscription(),
+                    gate_source="production-source",
+                )
+            )
+        )
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert core.advanced == ["production-source"]
 
     asyncio.run(drive())

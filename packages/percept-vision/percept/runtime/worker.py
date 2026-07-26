@@ -93,34 +93,51 @@ def _exclusive_core_runtime(func):
     @functools.wraps(func)
     async def leased(core: Any = None, *args: Any, **kwargs: Any):
         lease = _acquire_core_run(core)
-        stream = func(core, *args, **kwargs)
+        stream = None
         cancelled = False
+        continuity_advanced = False
+
+        def advance_cancelled_continuity_once() -> None:
+            nonlocal continuity_advanced
+            if continuity_advanced:
+                return
+            continuity_advanced = True
+            advance = getattr(core, "advance_source_continuity", None)
+            if callable(advance):
+                advance(kwargs.get("gate_source", "camera"))
+
         try:
-            async for item in stream:
-                yield item
-        except asyncio.CancelledError:
-            # Exception identity is the portable cancellation seam on every
-            # supported interpreter, including Python 3.10 where
-            # Task.cancelling() does not exist.
-            cancelled = True
-            raise
+            # Stream construction belongs to the lease just as iteration
+            # does.  A synchronous constructor failure must not strand the
+            # core before an async iterator even exists.
+            stream = func(core, *args, **kwargs)
+            try:
+                async for item in stream:
+                    yield item
+            except asyncio.CancelledError:
+                # Exception identity is the portable cancellation seam on
+                # every supported interpreter, including Python 3.10 where
+                # Task.cancelling() does not exist.
+                cancelled = True
+                advance_cancelled_continuity_once()
+                raise
         finally:
             # ``async for`` cancellation does not promise to close a nested
             # async generator before this wrapper releases the core lease.
             # Explicitly close it so run() can contain its worker/provider
             # tasks and no stale callback survives into the next lease.
             try:
-                try:
-                    await stream.aclose()
-                except asyncio.CancelledError:
-                    cancelled = True
-                    raise
+                if stream is not None:
+                    try:
+                        await stream.aclose()
+                    except asyncio.CancelledError:
+                        cancelled = True
+                        advance_cancelled_continuity_once()
+                        raise
             finally:
                 try:
                     if cancelled:
-                        advance = getattr(core, "advance_source_continuity", None)
-                        if callable(advance):
-                            advance(kwargs.get("gate_source", "camera"))
+                        advance_cancelled_continuity_once()
                 finally:
                     # This is the outermost lifecycle guarantee: close and
                     # continuity failures must preserve their own exception
@@ -6344,13 +6361,9 @@ async def run(
             yield incident
         terminal_reason = "end_of_stream"
     except asyncio.CancelledError as exc:
-        # The public run wrapper observes consumer cancellation even when an
-        # inner capture iterator is currently blocked.  Advance the owner
-        # generation here, before a cancellation-resistant legacy provider
-        # can resume, so its expected token is already stale.
-        advance = getattr(core, "advance_source_continuity", None)
-        if callable(advance):
-            advance(worker_args["gate_source"])
+        # The outer lease wrapper is the single source-continuity owner for
+        # cancellation.  This layer only retains the primary error while it
+        # closes the interest lifecycle.
         worker_error = exc
         terminal_reason = "cancelled"
     except GeneratorExit as exc:
