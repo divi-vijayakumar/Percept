@@ -686,7 +686,7 @@ class FusedPureBoundsAndIdentityTests(unittest.TestCase):
             "video", 1, 10.0, payload=b"v", source_watermark=11.0
         )
         fresh_audio = unit(
-            "audio", 3, 9.0, 10.0, payload=b"abcdefgh", source_watermark=11.0
+            "audio", 3, 9.0, 10.0, payload=b"abcd", source_watermark=11.0
         )
         sync.accept(fresh_video)
         sync.accept(fresh_audio)

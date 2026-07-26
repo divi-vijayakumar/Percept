@@ -574,14 +574,16 @@ class FusedPublicIsolationAndFailureTests(unittest.TestCase):
             include_audio=False,
         )
 
-        events = asyncio.run(
-            core.perceive_fused_judged(
+        async def drive():
+            completion = await core.perceive_fused_judged(
                 VIDEO_PAYLOAD,
                 t=1.0,
                 goal_ids=("fused",),
                 _fused_bundles_by_goal={"fused": bundle},
             )
-        )
+            return await core.reduce_fused_completion(completion)
+
+        events = asyncio.run(drive())
 
         self.assertFalse(any(event.action == "fire" for event in events))
         self.assertTrue(any(event.action == "ask" for event in events))
@@ -608,12 +610,13 @@ class FusedPublicIsolationAndFailureTests(unittest.TestCase):
                 t=1.0,
                 goal_ids=("visual",),
             )
-            fused = await core.perceive_fused_judged(
+            completion = await core.perceive_fused_judged(
                 VIDEO_PAYLOAD,
                 t=1.0,
                 goal_ids=("fused",),
                 _fused_bundles_by_goal={"fused": incomplete},
             )
+            fused = await core.reduce_fused_completion(completion)
             return visual + fused
 
         events = asyncio.run(drive())
@@ -640,14 +643,16 @@ class FusedPublicIsolationAndFailureTests(unittest.TestCase):
             application=application_for(core, "fused"),
         )
 
-        events = asyncio.run(
-            core.perceive_fused_judged(
+        async def drive():
+            completion = await core.perceive_fused_judged(
                 VIDEO_PAYLOAD,
                 t=1.0,
                 goal_ids=("fused",),
                 _fused_bundles_by_goal={"fused": bundle},
             )
-        )
+            return await core.reduce_fused_completion(completion)
+
+        events = asyncio.run(drive())
 
         self.assertFalse(any(event.action == "fire" for event in events))
         self.assertTrue(any(event.action == "ask" for event in events))
@@ -684,7 +689,7 @@ class FusedPublicIsolationAndFailureTests(unittest.TestCase):
                 )
             )
             await asyncio.wait_for(models.slow_started.wait(), timeout=0.25)
-            fast = await asyncio.wait_for(
+            fast_completion = await asyncio.wait_for(
                 core.perceive_fused_judged(
                     VIDEO_PAYLOAD,
                     t=1.0,
@@ -693,10 +698,12 @@ class FusedPublicIsolationAndFailureTests(unittest.TestCase):
                 ),
                 timeout=0.25,
             )
+            fast_events = await core.reduce_fused_completion(fast_completion)
             self.assertFalse(slow.done())
             models.slow_release.set()
-            await slow
-            return fast
+            slow_completion = await slow
+            await core.reduce_fused_completion(slow_completion)
+            return fast_events
 
         events = asyncio.run(bounded(drive()))
         self.assertTrue(any(event.goal_id == "reflex" for event in events))
@@ -713,12 +720,14 @@ class FusedPublicIsolationAndFailureTests(unittest.TestCase):
             apply(core, "watch-a", "watch-a", "fused")
             apply(core, "watch-b", "watch-b", "fused")
             revision = core.goals.revision
+            dispatch_order = ("watch-a", "watch-b")
+            reduction_order = ("watch-b", "watch-a")
             bundles = {
                 goal_id: fused_bundle(
                     watch_revision=revision,
                     application=application_for(core, goal_id),
                 )
-                for goal_id in ("watch-a", "watch-b")
+                for goal_id in dispatch_order
             }
             tasks = [
                 asyncio.create_task(
@@ -729,17 +738,25 @@ class FusedPublicIsolationAndFailureTests(unittest.TestCase):
                         _fused_bundles_by_goal={goal_id: bundles[goal_id]},
                     )
                 )
-                for goal_id in ("watch-a", "watch-b")
+                for goal_id in dispatch_order
             ]
             await asyncio.wait_for(models.all_started.wait(), timeout=0.25)
             self.assertTrue(all(not task.done() for task in tasks))
             models.slow_release.set()
-            results = await asyncio.gather(*tasks)
-            return core, [event for result in results for event in result]
+            completions = await asyncio.gather(*tasks)
+            completions_by_goal = {
+                completion.goal_id: completion for completion in completions
+            }
+            events = []
+            for goal_id in reduction_order:
+                events.extend(
+                    await core.reduce_fused_completion(completions_by_goal[goal_id])
+                )
+            return core, events, reduction_order
 
-        core, events = asyncio.run(bounded(drive()))
+        core, events, reduction_order = asyncio.run(bounded(drive()))
         fires = [event for event in events if event.action == "fire"]
-        self.assertEqual({event.goal_id for event in fires}, {"watch-a", "watch-b"})
+        self.assertEqual(tuple(event.goal_id for event in fires), reduction_order)
         self.assertEqual(
             {event.goal_id: event.judgment.evidence_seq for event in fires},
             {"watch-a": 1, "watch-b": 1},
@@ -769,14 +786,29 @@ class FusedPublicIsolationAndFailureTests(unittest.TestCase):
                 )
             )
             await asyncio.wait_for(models.slow_started.wait(), timeout=0.25)
+            models.slow_release.set()
+            completion = await task
             core.apply_goal_ops(
                 [GoalOp(op="update", goal_id="stale", fields={"say": "new text"})]
             )
-            models.slow_release.set()
-            return core, await task
+            state_before_reduce = core.gate.snapshot()
+            log_before_reduce = tuple(core.action_log.entries())
+            events = await core.reduce_fused_completion(completion)
+            return (
+                core,
+                events,
+                state_before_reduce,
+                core.gate.snapshot(),
+                log_before_reduce,
+                tuple(core.action_log.entries()),
+            )
 
-        core, events = asyncio.run(bounded(drive()))
+        core, events, state_before, state_after, log_before, log_after = asyncio.run(
+            bounded(drive())
+        )
         self.assertEqual(events, [])
+        self.assertEqual(state_after, state_before)
+        self.assertEqual(log_after, log_before)
         self.assertEqual(len(core.action_log), 0)
 
     def test_provider_completion_after_source_generation_cannot_emit_or_mutate(self):
@@ -802,12 +834,27 @@ class FusedPublicIsolationAndFailureTests(unittest.TestCase):
                 )
             )
             await asyncio.wait_for(models.slow_started.wait(), timeout=0.25)
-            core.advance_source_continuity("camera")
             models.slow_release.set()
-            return core, await task
+            completion = await task
+            core.advance_source_continuity("camera")
+            state_before_reduce = core.gate.snapshot()
+            log_before_reduce = tuple(core.action_log.entries())
+            events = await core.reduce_fused_completion(completion)
+            return (
+                core,
+                events,
+                state_before_reduce,
+                core.gate.snapshot(),
+                log_before_reduce,
+                tuple(core.action_log.entries()),
+            )
 
-        core, events = asyncio.run(bounded(drive()))
+        core, events, state_before, state_after, log_before, log_after = asyncio.run(
+            bounded(drive())
+        )
         self.assertEqual(events, [])
+        self.assertEqual(state_after, state_before)
+        self.assertEqual(log_after, log_before)
         self.assertEqual(len(core.action_log), 0)
 
 
@@ -989,14 +1036,16 @@ class FusedPublicEvidenceIdentityTests(unittest.TestCase):
             audio_payload=audio_payload,
         )
 
-        events = asyncio.run(
-            core.perceive_fused_judged(
+        async def drive():
+            completion = await core.perceive_fused_judged(
                 video_payload,
                 t=1.0,
                 goal_ids=("fused",),
                 _fused_bundles_by_goal={"fused": bundle},
             )
-        )
+            return await core.reduce_fused_completion(completion)
+
+        events = asyncio.run(drive())
         fire = next(event for event in events if event.action == "fire")
         incident = make_incident(fire, ts=1.0)
         attached = fire._fused_evidence_bundle
@@ -1048,14 +1097,16 @@ class FusedPublicEvidenceIdentityTests(unittest.TestCase):
                     application=application_for(core, "fused"),
                     include_audio=include_audio,
                 )
-                events = asyncio.run(
-                    core.perceive_fused_judged(
+                async def drive():
+                    completion = await core.perceive_fused_judged(
                         VIDEO_PAYLOAD,
                         t=1.0,
                         goal_ids=("fused",),
                         _fused_bundles_by_goal={"fused": bundle},
                     )
-                )
+                    return await core.reduce_fused_completion(completion)
+
+                events = asyncio.run(drive())
                 self.assertFalse(any(event.action == "fire" for event in events))
                 if name != "silent":
                     self.assertTrue(any(event.action == "ask" for event in events))
