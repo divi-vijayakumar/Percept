@@ -38,6 +38,46 @@ extra — handy for tests and offline replay.
 4. each `fire` → an **`Incident`** (with a pre-roll snippet) → `on_incident(...)` → yielded;
 5. each `ask` → `on_ask(...)` if provided, but not an Incident.
 
+### Subscribe to VID admission intervals
+
+An Incident says that cognition fired. A VID admission interval says when one Watch's cheap video
+gate was actively admitting evidence to judgment. Subscribe when another component needs the exact
+`interest.entered → interest.updated* → interest.exited` lifecycle without making another model call:
+
+```python
+import asyncio
+from percept.runtime import InterestSubscription, run
+
+interest = InterestSubscription(max_batches=256)
+
+async def consume_interest():
+    async for event in interest:
+        print(event.watch_id, event.kind, event.reason)
+
+consumer = asyncio.create_task(consume_interest())
+async for incident in run(
+    agent,
+    source="rtsp://door-cam/stream",
+    interest_subscription=interest,
+):
+    ...
+await consumer
+```
+
+Each immutable event keeps source and observer clocks separate and identifies the Watch, source
+epoch, admitted sequence range, admission cause, detector, score, and applied threshold. An exit's
+interval end is always the last admitted unit; its separate `event_*` coordinate names the later
+schedule/cadence/pause/discontinuity/EOS boundary that made the exit known. Source gaps, reconnects,
+format changes, capture overflow, pause, Watch removal, cancellation, and worker failure close open
+intervals explicitly.
+
+The subscription is a single-use bounded async stream. Capacity is measured in atomic per-frame
+batches, so a transition involving many Watches is never split. If the consumer falls behind, the
+run fails with `InterestBackpressureError` instead of silently dropping lifecycle events. Consume in
+a separate task: callbacks are deliberately unsupported, and the producer never runs subscriber
+code. With no `interest_subscription`, the runtime performs no lifecycle hashing or queue work and
+makes the same judgment calls as before.
+
 ### Build the core in the call — the convenience form
 
 You can hand `run()` a pre-built `agent`/core (as above) **or** let it build one for you: pass `goals=`
@@ -135,6 +175,10 @@ playback — is in [command-seam.md](../reference/command-seam.md).
 - `on_frame(t, frame)` — the live-feed hook; wire an MJPEG streamer here.
 - `on_health(event)` — structured lifecycle events: `runtime_started`, `escalation`, `ask`, `incident`, `incident_sink_error`, `runtime_error`, `runtime_ended`.
 - `on_trace(event)` — the per-frame **decision trace** (why a frame stayed silent — see below).
+- `interest_subscription` — an `InterestSubscription` yielding exact typed per-Watch VID admission
+  intervals. It is closed on EOS, cancellation, or worker failure.
+- `interest_session_id` — optional non-secret run identity bound into deterministic interval/evidence
+  ids. Omit it for a fresh isolated identity on each run.
 - `sink_errors` — `"raise"` or `"ignore"` when a sink throws.
 - `stats` — pass `RuntimeStats()` to collect frame, escalation, judge-call, fire, ask, incident, and sink-error counters.
 

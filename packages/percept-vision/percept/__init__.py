@@ -160,6 +160,9 @@ from .interest import (  # noqa: E402
     InterestIntervalEngine,
     InterestIntervalEvent,
     InterestSample,
+    LiveInterestAdmission,
+    LiveInterestEvent,
+    InterestSubscription,
     Tier0MotionInterest,
 )
 
@@ -258,6 +261,9 @@ __all__ = [
     "InterestIntervalEvent",
     "InterestIntervalEngine",
     "Tier0MotionInterest",
+    "LiveInterestAdmission",
+    "LiveInterestEvent",
+    "InterestSubscription",
     # string sugar for watch() goals (pass-through, never compilation)
     "desugar_goal",
     "desugar_goals",

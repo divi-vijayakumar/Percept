@@ -16,6 +16,7 @@ import asyncio
 import inspect
 import math
 import time
+import uuid
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -30,6 +31,13 @@ from percept.events import (
 )
 from percept.gate import FIRE, ASK
 from percept.incidents import make_incident, snippet_from_window
+from percept.interest import (
+    InterestCallbackUnsupportedError,
+    InterestRunError,
+    InterestSubscription,
+    LiveInterestAdmission,
+    LiveInterestTracker,
+)
 from percept.observability import get_logger
 from percept.runtime.envelope import (
     SourceEnvelope,
@@ -1124,7 +1132,7 @@ def _as_goal(g: Any, i: int) -> Any:
     raise TypeError(f"goals[{i}] must be a str, dict, or Goal, not {type(g).__name__}")
 
 
-async def run(
+async def _run_worker(
     core: Any = None,
     *,
     source: Any,
@@ -1183,6 +1191,8 @@ async def run(
     judge_backpressure_after: int = 3,
     timebase: str = "auto",
     coverage_floor: float | None = None,
+    _interest_tracker: LiveInterestTracker | None = None,
+    _interest_subscription: InterestSubscription | None = None,
 ) -> AsyncIterator:
     """Drive a live ``source`` through the gate + brain, yielding an :class:`Incident` on each rising edge.
 
@@ -1532,6 +1542,7 @@ async def run(
     _cov = stats if stats is not None else RuntimeStats()
     _video_source_tracker = SourceTracker()
     _audio_source_tracker = SourceTracker()
+    _video_source_id: str | None = None
     _judge_sched = (
         _JudgeScheduler(
             core, gate_source, _cov, metrics_collector=metrics_collector,
@@ -2615,6 +2626,25 @@ async def run(
                 inspection = _video_source_tracker.inspect(
                     envelope, require_source_time=require_source_time
                 )
+            if inspection.accepted:
+                if _video_source_id is None:
+                    _video_source_id = envelope.source_id
+                elif envelope.source_id != _video_source_id:
+                    raise ValueError(
+                        "one runtime worker accepts exactly one video source_id; "
+                        f"got {_video_source_id!r} then {envelope.source_id!r}"
+                    )
+                if _interest_tracker is not None:
+                    assert _interest_subscription is not None
+                    # Record immediately after SourceTracker acceptance: a later hook/gate failure is
+                    # closed at this accepted control coordinate, while interval_end remains the last
+                    # unit that was actually admitted.
+                    _interest_tracker.record_accepted(envelope)
+                    if inspection.resets_continuity:
+                        InterestSubscription._publish(
+                            _interest_subscription,
+                            _interest_tracker.discontinuity(envelope, inspection),
+                        )
             if inspection.resets_continuity:
                 # This must precede health-sink awaits and result draining: both yield control and can
                 # let a cancellation-resistant stale judge finish.
@@ -2786,6 +2816,18 @@ async def run(
                 # true. Pending dwell is invalidated on both boundaries without re-arming fired state.
                 if callable(clear_pending_dwell):
                     clear_pending_dwell(gate_source)
+                # Neither side of a pause may diff across the uninspected interval.
+                gate.reset()
+                for bank in banks.values():
+                    bank.reset()
+                for controller in coasts.values():
+                    controller.reset()
+                if is_paused and _interest_tracker is not None:
+                    assert _interest_subscription is not None
+                    InterestSubscription._publish(
+                        _interest_subscription,
+                        _interest_tracker.pause(envelope, inspection),
+                    )
                 _was_paused = is_paused
             if is_paused:
                 continue
@@ -2844,7 +2886,12 @@ async def run(
                     energy_now = float(ep) if ep is not None else None
                 except Exception:  # noqa: BLE001 - a bad energy provider must never crash the watch
                     energy_now = None
-            decision = gate.evaluate(gate_frame, ts=t, energy=energy_now)
+            decision = gate.evaluate(
+                gate_frame,
+                ts=t,
+                energy=energy_now,
+                include_evidence_id=_interest_tracker is not None,
+            )
 
             # Run edge detectors on the cheap motion/energy signals at native fps. Each emitted
             # boundary (a rep peak, an acoustic onset) is a distinct occurrence fed to the brain via
@@ -2927,6 +2974,67 @@ async def run(
                                 data={"goal_id": goal_id, "source": gate_source},
                             ),
                         )
+            if _interest_tracker is not None:
+                assert _interest_subscription is not None
+                if not decision.evidence_id:
+                    raise RuntimeError("live VID tracking requires gate evidence identity")
+                final_causes = dict(zip(admitted_goal_ids, admitted_causes))
+                live_admissions: list[LiveInterestAdmission] = []
+                for outcome in decision.outcomes:
+                    final_cause = final_causes.get(outcome.goal_id)
+                    if final_cause is None:
+                        non_admission_reason = (
+                            outcome.non_admission_reason
+                            if not outcome.admitted
+                            else "not_admitted"
+                        )
+                        live_admissions.append(
+                            LiveInterestAdmission(
+                                watch_id=outcome.goal_id,
+                                admitted=False,
+                                cause=None,
+                                non_admission_reason=non_admission_reason,
+                                score=outcome.score,
+                                threshold=outcome.threshold,
+                                evidence_id=decision.evidence_id,
+                                admission_id=outcome.admission_id,
+                                detector_id=outcome.detector_id,
+                            )
+                        )
+                        continue
+                    admission_id = (
+                        outcome.admission_id
+                        if final_cause in ("motion", "structural", "semantic", "fixed")
+                        else f"runtime.admission.{final_cause}"
+                    )
+                    detector_id = (
+                        outcome.detector_id
+                        if final_cause in ("motion", "structural", "semantic", "fixed")
+                        else f"runtime.{final_cause}"
+                    )
+                    live_admissions.append(
+                        LiveInterestAdmission(
+                            watch_id=outcome.goal_id,
+                            admitted=True,
+                            cause=final_cause,
+                            non_admission_reason=None,
+                            score=outcome.score,
+                            threshold=outcome.threshold,
+                            evidence_id=decision.evidence_id,
+                            admission_id=admission_id,
+                            detector_id=detector_id,
+                        )
+                    )
+                InterestSubscription._publish(
+                    _interest_subscription,
+                    _interest_tracker.observe(
+                        envelope,
+                        live_admissions,
+                        coverage_kind=inspection.coverage.kind,
+                        missing_sequences=inspection.coverage.missing_sequences,
+                        source_events=inspection.events,
+                    )
+                )
             emit_trace = getattr(core, "_emit_trace", None)
             if getattr(core, "on_trace", None) is not None and emit_trace is not None:
                 # The tier-0 edge decision — signal, threshold, exact ordered goal ids + aligned
@@ -3100,3 +3208,147 @@ async def run(
                 _zero["floor_unmet"] = coverage_floor is not None and _cov.escalations < coverage_floor
                 await _call_sink(on_health, RuntimeHealthEvent("zero_admission_coverage", data=_zero))
             await _call_sink(on_health, RuntimeHealthEvent("runtime_ended", data=_cov_data))
+
+
+async def run(
+    core: Any = None,
+    *,
+    source: Any,
+    goals: Any = None,
+    vision: Any = None,
+    on_incident: Callable | None = None,
+    on_ask: Callable | None = None,
+    on_frame: Callable | None = None,
+    on_health: Callable | None = None,
+    on_trace: Callable | None = None,
+    on_interest: Callable | None = None,
+    interest_subscription: InterestSubscription | None = None,
+    interest_session_id: str | None = None,
+    fps: float = 4.0,
+    source_queue_size: int = 64,
+    source_reconnects: int = 0,
+    source_reconnect_backoff_s: float = 0.5,
+    source_rtsp_tcp: bool = True,
+    snippet_pre_s: float = 5.0,
+    snippet_size: int = 48,
+    snippet_max_bytes: int | None = None,
+    snippet_kind: str = "frame",
+    sink_errors: str = "raise",
+    stats: RuntimeStats | None = None,
+    gate_source: str = "camera",
+    episode_inactivity_s: float | None = None,
+    coverage_staleness_s: float | None = None,
+    audio_source: Any = None,
+    audio_gate: Any = "acoustic-onset",
+    audio_wake: dict | None = None,
+    audio_settle_s: float = 1.5,
+    on_utterance: Callable | None = None,
+    allow_scripted_brain: bool = False,
+    vad: Any = None,
+    utterance_threshold: float = 0.01,
+    utterance_hangover_frames: int = 8,
+    utterance_min_speech_frames: int = 3,
+    utterance_max_s: float = 60.0,
+    audio_window_s: float | None = None,
+    deaf_until: Callable[[], float] | None = None,
+    stale_audio_s: float | None = None,
+    wall_clock: Callable[[], float] = time.monotonic,
+    wake_policy: Any = None,
+    structural_adapter: Callable | None = None,
+    semantic_adapter: Callable | None = None,
+    energy_provider: Callable | None = None,
+    regate_on_goal_change: bool = True,
+    paused: Callable | None = None,
+    muted: Callable | None = None,
+    clock: Callable | None = None,
+    persistence: Any = None,
+    restore: bool = False,
+    autosave_every_s: float | None = None,
+    label_store: Any = None,
+    disposition_log: Any = None,
+    judge_dispatch: str = "async",
+    metrics_collector: Any = None,
+    judge_stall_after_s: float = 20.0,
+    judge_backpressure_after: int = 3,
+    timebase: str = "auto",
+    coverage_floor: float | None = None,
+) -> AsyncIterator:
+    """Run programmable Watches over a live multimodal stream.
+
+    ``interest_subscription`` exposes the exact per-Watch VID admission lifecycle as immutable
+    entered/updated/exited events.  Consume it in a separate task; the producer never executes
+    subscriber callbacks.  The channel is bound before the worker's fallible preflight and closed in
+    this outermost ``finally`` on EOS, cancellation, or worker failure.
+
+    The implementation delegated below retains every shipped path: ``coast_admit``, ``audio_admit``,
+    ``check_episode_boundary``, ``check_observability``, ``check_deadlines``, ``paused``, ``muted``,
+    ``judge_dispatch``, and the unconditional ``_drain_gate_health(core, on_health, t)`` drain.
+    """
+    worker_args = locals().copy()
+    worker_args.pop("on_interest")
+    worker_args.pop("interest_subscription")
+    worker_args.pop("interest_session_id")
+
+    if interest_subscription is not None and type(interest_subscription) is not InterestSubscription:
+        raise TypeError("interest_subscription must be an exact InterestSubscription")
+
+    # The disabled path allocates no lifecycle queue/tracker, hashes no media, and changes no provider
+    # dispatch.  It is just the existing worker behind the public ownership wrapper.
+    if interest_subscription is None:
+        if on_interest is not None:
+            raise InterestCallbackUnsupportedError(
+                "on_interest callbacks are not supported; create InterestSubscription(...) and pass "
+                "interest_subscription=..., then consume it with async iteration"
+            )
+        async for incident in _run_worker(**worker_args):
+            yield incident
+        return
+
+    valid_session_id = (
+        isinstance(interest_session_id, str) and bool(interest_session_id.strip())
+    )
+    run_id = interest_session_id if valid_session_id else uuid.uuid4().hex
+    InterestSubscription._bind(interest_subscription, run_id)
+    tracker = LiveInterestTracker(run_id=run_id)
+    worker_error: BaseException | None = None
+    delivery_error: BaseException | None = None
+    terminal_reason = "cancelled"
+    try:
+        if interest_session_id is not None and not valid_session_id:
+            raise ValueError("interest_session_id must be a non-empty string when set")
+        if on_interest is not None:
+            raise InterestCallbackUnsupportedError(
+                "on_interest callbacks are not supported; create InterestSubscription(...) and pass "
+                "interest_subscription=..., then consume it with async iteration"
+            )
+        async for incident in _run_worker(
+            **worker_args,
+            _interest_tracker=tracker,
+            _interest_subscription=interest_subscription,
+        ):
+            yield incident
+        terminal_reason = "end_of_stream"
+    except asyncio.CancelledError as exc:
+        worker_error = exc
+        terminal_reason = "cancelled"
+    except GeneratorExit as exc:
+        worker_error = exc
+        terminal_reason = "cancelled"
+    except BaseException as exc:  # noqa: BLE001 - preserve worker and lifecycle failures together
+        worker_error = exc
+        terminal_reason = "worker_error"
+    finally:
+        try:
+            InterestSubscription._finish(
+                interest_subscription,
+                tracker.close_all(terminal_reason),
+            )
+        except BaseException as exc:  # noqa: BLE001 - delivery failure must not mask worker failure
+            delivery_error = exc
+
+    if worker_error is not None and delivery_error is not None:
+        raise InterestRunError(worker_error, delivery_error) from worker_error
+    if worker_error is not None:
+        raise worker_error
+    if delivery_error is not None:
+        raise delivery_error

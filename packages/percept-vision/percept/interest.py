@@ -1,12 +1,12 @@
-"""Deterministic video-interest intervals for finite tier-0 replay traces.
+"""Deterministic video-interest intervals for replay and live Watch admissions.
 
 This module turns a scalar, timestamped interest signal into a small typed event stream:
 ``interest.entered`` -> zero or more ``interest.updated`` -> exactly one ``interest.exited``.
 It is deliberately below semantic judgment.  A tier-0 motion score can describe *where the
 admission signal was active*; it cannot claim that a Watch's plain-language condition was true.
-The optional :class:`Tier0MotionInterest` integration is confined to
-:class:`percept.harness.tier0.GatedWatchLoop`, which replays finite in-memory frame iterables.  It is
-not wired into :func:`percept.run` and makes no live-runtime lifecycle claim.
+The optional :class:`Tier0MotionInterest` integration is confined to finite in-memory replay.
+:class:`LiveInterestTracker` separately records the exact typed, per-Watch admission outcomes already
+made by :func:`percept.run`; it does not reinterpret the replay adapter's scalar motion gauge.
 
 The engine is stdlib-only, replay deterministic, and fail closed:
 
@@ -20,11 +20,13 @@ The engine is stdlib-only, replay deterministic, and fail closed:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
+from collections import deque
 from dataclasses import dataclass
-from typing import Any, Literal, Sequence
+from typing import Any, Iterable, Literal, Sequence
 
 from .adapters import Box
 
@@ -34,6 +36,24 @@ InterestEventKind = Literal[
     "interest.exited",
 ]
 InterestExitReason = Literal["signal_lost", "expired", "reconnect", "end_of_stream"]
+LiveInterestExitReason = Literal[
+    "signal_lost",
+    "not_admitted",
+    "schedule_inactive",
+    "cadence_limited",
+    "fixed_cadence_unconfigured",
+    "admission_changed",
+    "watch_removed",
+    "source_gap",
+    "source_reconnect",
+    "source_epoch_gap",
+    "source_format_change",
+    "source_capture_overflow",
+    "end_of_stream",
+    "cancelled",
+    "worker_error",
+    "paused",
+]
 
 INTEREST_ENTERED: InterestEventKind = "interest.entered"
 INTEREST_UPDATED: InterestEventKind = "interest.updated"
@@ -679,6 +699,662 @@ class Tier0MotionInterest:
         self._engine = None
 
 
+# ---------------------------------------------------------------------------
+# Live per-Watch admission lifecycle
+# ---------------------------------------------------------------------------
+
+_LIVE_CAUSES = frozenset(("motion", "structural", "semantic", "fixed", "coast", "audio"))
+_LIVE_NON_ADMISSION_REASONS = frozenset(
+    (
+        "signal_below_threshold",
+        "schedule_inactive",
+        "cadence_limited",
+        "fixed_cadence_unconfigured",
+        "not_admitted",
+    )
+)
+_LIVE_EXIT_REASONS = frozenset(
+    (
+        "signal_lost",
+        "not_admitted",
+        "schedule_inactive",
+        "cadence_limited",
+        "fixed_cadence_unconfigured",
+        "admission_changed",
+        "watch_removed",
+        "source_gap",
+        "source_reconnect",
+        "source_epoch_gap",
+        "source_format_change",
+        "source_capture_overflow",
+        "end_of_stream",
+        "cancelled",
+        "worker_error",
+        "paused",
+    )
+)
+
+
+@dataclass(frozen=True)
+class LiveInterestAdmission:
+    """One Watch's exact typed admission outcome for an accepted video unit.
+
+    The live worker constructs this from the gate's per-Watch outcome after applying the worker-owned
+    coast/audio routes.  A tracker therefore records policy; it never re-runs schedule, cadence, or
+    threshold logic.
+    """
+
+    watch_id: str
+    admitted: bool
+    cause: str | None
+    non_admission_reason: str | None
+    score: float
+    threshold: float
+    evidence_id: str
+    admission_id: str
+    detector_id: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "watch_id", _identity("watch_id", self.watch_id))
+        object.__setattr__(self, "score", _unit("score", self.score))
+        object.__setattr__(self, "threshold", _unit("threshold", self.threshold))
+        object.__setattr__(self, "evidence_id", _identity("evidence_id", self.evidence_id))
+        object.__setattr__(self, "admission_id", _identity("admission_id", self.admission_id))
+        object.__setattr__(self, "detector_id", _identity("detector_id", self.detector_id))
+        if not isinstance(self.admitted, bool):
+            raise TypeError("admitted must be a bool")
+        if self.admitted:
+            if self.cause not in _LIVE_CAUSES or self.non_admission_reason is not None:
+                raise ValueError("an admitted outcome needs one cause and no non-admission reason")
+        elif self.cause is not None or self.non_admission_reason not in _LIVE_NON_ADMISSION_REASONS:
+            raise ValueError("a non-admitted outcome needs one reason and no admission cause")
+
+
+@dataclass(frozen=True)
+class LiveInterestEvent:
+    """Immutable live VID lifecycle event for one Watch and one admitted interval.
+
+    ``source_*`` and ``observed_*`` retain independent clocks.  Interval ends always name the last
+    admitted unit; ``event_*`` names the later unit/control boundary that made an exit known.
+    """
+
+    kind: InterestEventKind
+    interval_id: str
+    watch_id: str
+    source_id: str
+    source_epoch: int
+    sequence_start: int
+    sequence_end: int
+    source_start: float | None
+    source_end: float | None
+    observed_start: float
+    observed_end: float
+    event_source_epoch: int
+    event_sequence: int
+    event_source_time: float | None
+    event_observed_at: float
+    reason: str
+    evidence_id: str
+    score: float
+    threshold: float
+    confidence: None
+    regions: tuple[Box, ...]
+    track_ids: tuple[str, ...]
+    admission_id: str
+    detector_id: str
+    coverage_kind: str
+    missing_sequences: int
+    source_events: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.kind not in (INTEREST_ENTERED, INTEREST_UPDATED, INTEREST_EXITED):
+            raise ValueError(f"unknown live interest event kind {self.kind!r}")
+        for name in ("interval_id", "watch_id", "source_id", "reason", "evidence_id"):
+            object.__setattr__(self, name, _identity(name, getattr(self, name)))
+        if self.kind == INTEREST_EXITED and self.reason not in _LIVE_EXIT_REASONS:
+            raise ValueError(f"unknown live interest exit reason {self.reason!r}")
+        for name in (
+            "source_epoch",
+            "sequence_start",
+            "sequence_end",
+            "event_source_epoch",
+            "event_sequence",
+            "missing_sequences",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"{name} must be an integer >= 0")
+        if self.sequence_end < self.sequence_start:
+            raise ValueError("sequence_end must be >= sequence_start")
+        for name in ("source_start", "source_end", "event_source_time"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _finite(name, value))
+        if (
+            self.source_start is not None
+            and self.source_end is not None
+            and self.source_end < self.source_start
+        ):
+            raise ValueError("source_end must be >= source_start")
+        for name in ("observed_start", "observed_end", "event_observed_at"):
+            object.__setattr__(self, name, _finite(name, getattr(self, name)))
+        if self.observed_end < self.observed_start:
+            raise ValueError("observed_end must be >= observed_start")
+        if self.event_observed_at < self.observed_end:
+            raise ValueError("event_observed_at must be >= observed_end")
+        object.__setattr__(self, "score", _unit("score", self.score))
+        object.__setattr__(self, "threshold", _unit("threshold", self.threshold))
+        if self.confidence is not None:
+            raise ValueError("tier-0 admission confidence must be None")
+        object.__setattr__(self, "regions", _validated_regions(self.regions))
+        object.__setattr__(self, "track_ids", _validated_tracks(self.track_ids))
+        object.__setattr__(self, "admission_id", _identity("admission_id", self.admission_id))
+        object.__setattr__(self, "detector_id", _identity("detector_id", self.detector_id))
+        if self.coverage_kind not in ("observed", "observed_after_discontinuity"):
+            raise ValueError("coverage_kind must describe an accepted source unit")
+        object.__setattr__(
+            self,
+            "source_events",
+            tuple(_identity(f"source_events[{i}]", event) for i, event in enumerate(self.source_events)),
+        )
+
+    @property
+    def stream_epoch(self) -> str:
+        return f"{self.source_id}:{self.source_epoch}"
+
+    @property
+    def coverage(self) -> float:
+        return 1.0
+
+    @property
+    def duration(self) -> float:
+        return self.observed_end - self.observed_start
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "interval_id": self.interval_id,
+            "watch_id": self.watch_id,
+            "source_id": self.source_id,
+            "source_epoch": self.source_epoch,
+            "sequence_start": self.sequence_start,
+            "sequence_end": self.sequence_end,
+            "source_start": self.source_start,
+            "source_end": self.source_end,
+            "observed_start": self.observed_start,
+            "observed_end": self.observed_end,
+            "event_source_epoch": self.event_source_epoch,
+            "event_sequence": self.event_sequence,
+            "event_source_time": self.event_source_time,
+            "event_observed_at": self.event_observed_at,
+            "reason": self.reason,
+            "evidence_id": self.evidence_id,
+            "score": self.score,
+            "threshold": self.threshold,
+            "confidence": None,
+            "regions": [],
+            "track_ids": [],
+            "admission_id": self.admission_id,
+            "detector_id": self.detector_id,
+            "coverage": self.coverage,
+            "coverage_kind": self.coverage_kind,
+            "missing_sequences": self.missing_sequences,
+            "source_events": list(self.source_events),
+        }
+
+
+class InterestBackpressureError(RuntimeError):
+    """The bounded lifecycle channel could not accept one whole producer batch."""
+
+
+class InterestCallbackUnsupportedError(TypeError):
+    """Callbacks are intentionally not a live lifecycle transport."""
+
+
+class InterestRunError(RuntimeError):
+    """Both the worker and lifecycle delivery failed during the same run."""
+
+    def __init__(self, worker_error: BaseException, delivery_error: BaseException) -> None:
+        self.worker_error = worker_error
+        self.delivery_error = delivery_error
+        super().__init__(
+            f"runtime failed with {worker_error!r}; interest delivery also failed with "
+            f"{delivery_error!r}"
+        )
+
+
+class InterestSubscription:
+    """Single-use, bounded async subscription owned by the SDK producer.
+
+    The producer only appends immutable atomic batches and signals the consumer task; it never calls
+    subscriber code.  Capacity is measured in batches, so a single frame's multi-Watch transitions
+    cannot be split.  One additional terminal batch is reserved to close already-published intervals
+    even when regular capacity is exhausted.
+    """
+
+    __slots__ = (
+        "_max_batches",
+        "_batches",
+        "_current",
+        "_ready",
+        "_loop",
+        "_run_id",
+        "_iterated",
+        "_closed",
+    )
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        raise TypeError("InterestSubscription is a final SDK type and cannot be subclassed")
+
+    def __init__(self, *, max_batches: int = 256) -> None:
+        if (
+            not isinstance(max_batches, int)
+            or isinstance(max_batches, bool)
+            or max_batches < 1
+        ):
+            raise ValueError("max_batches must be an integer >= 1")
+        self._max_batches = max_batches
+        self._batches: deque[tuple[LiveInterestEvent, ...]] = deque()
+        self._current: deque[LiveInterestEvent] = deque()
+        self._ready = asyncio.Event()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._run_id: str | None = None
+        self._iterated = False
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def __aiter__(self) -> "InterestSubscription":
+        if self._iterated:
+            raise RuntimeError("InterestSubscription supports exactly one async iterator")
+        self._iterated = True
+        self._claim_loop()
+        return self
+
+    async def __anext__(self) -> LiveInterestEvent:
+        self._claim_loop()
+        while True:
+            if self._current:
+                return self._current.popleft()
+            if self._batches:
+                self._current.extend(self._batches.popleft())
+                continue
+            if self._closed:
+                raise StopAsyncIteration
+            self._ready.clear()
+            if self._batches or self._closed:
+                continue
+            await self._ready.wait()
+
+    def _claim_loop(self) -> None:
+        loop = asyncio.get_running_loop()
+        if self._loop is None:
+            self._loop = loop
+        elif self._loop is not loop:
+            raise RuntimeError("InterestSubscription cannot cross event loops")
+
+    def _bind(self, run_id: str) -> None:
+        self._claim_loop()
+        if self._run_id is not None:
+            raise RuntimeError("InterestSubscription is single-use and is already bound")
+        if self._closed:
+            raise RuntimeError("InterestSubscription is already closed")
+        self._run_id = _identity("interest_session_id", run_id)
+
+    def _publish(self, events: Iterable[LiveInterestEvent]) -> None:
+        if self._run_id is None or self._closed:
+            raise RuntimeError("InterestSubscription is not open for publication")
+        batch = self._validated_batch(events)
+        if not batch:
+            return
+        if len(self._batches) >= self._max_batches:
+            raise InterestBackpressureError(
+                f"interest subscription capacity ({self._max_batches} batches) was exhausted"
+            )
+        self._batches.append(batch)
+        self._ready.set()
+
+    def _finish(self, events: Iterable[LiveInterestEvent]) -> None:
+        if self._run_id is None:
+            raise RuntimeError("InterestSubscription was not bound")
+        if self._closed:
+            return
+        batch = self._validated_batch(events)
+        # One terminal batch is reserved and remains bounded independently of regular publication.
+        if batch:
+            self._batches.append(batch)
+        self._closed = True
+        self._ready.set()
+
+    @staticmethod
+    def _validated_batch(events: Iterable[LiveInterestEvent]) -> tuple[LiveInterestEvent, ...]:
+        batch = tuple(events)
+        if any(type(event) is not LiveInterestEvent for event in batch):
+            raise TypeError("interest batches must contain exact LiveInterestEvent values")
+        return batch
+
+
+@dataclass(frozen=True)
+class _LiveSourceUnit:
+    raw_source_id: str
+    source_epoch: int
+    sequence: int
+    source_time: float | None
+    observed_time: float
+
+    @classmethod
+    def from_envelope(cls, envelope: Any) -> "_LiveSourceUnit":
+        return cls(
+            raw_source_id=_identity("source_id", envelope.source_id),
+            source_epoch=envelope.epoch,
+            sequence=envelope.sequence,
+            source_time=envelope.source_time,
+            observed_time=envelope.observed_time,
+        )
+
+
+@dataclass
+class _LiveOpenInterval:
+    interval_id: str
+    admission: LiveInterestAdmission
+    first: _LiveSourceUnit
+    last: _LiveSourceUnit
+
+
+def _digest(prefix: str, payload: dict[str, Any], *, width: int = 32) -> str:
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), allow_nan=False
+    ).encode("utf-8")
+    return prefix + hashlib.sha256(encoded).hexdigest()[:width]
+
+
+def _public_source_id(run_id: str, raw_source_id: str) -> str:
+    return _digest("source_", {"version": 1, "run_id": run_id, "source": raw_source_id}, width=20)
+
+
+class LiveInterestTracker:
+    """Run-local state machine over typed per-Watch outcomes and accepted source units."""
+
+    def __init__(self, *, run_id: str) -> None:
+        self._run_id = _identity("run_id", run_id)
+        self._open: dict[tuple[str, str], _LiveOpenInterval] = {}
+        self._latest: dict[str, _LiveSourceUnit] = {}
+
+    @property
+    def active(self) -> tuple[tuple[str, str], ...]:
+        return tuple(sorted(self._open))
+
+    def record_accepted(self, envelope: Any) -> None:
+        unit = _LiveSourceUnit.from_envelope(envelope)
+        self._latest[unit.raw_source_id] = unit
+
+    def observe(
+        self,
+        envelope: Any,
+        admissions: Iterable[LiveInterestAdmission],
+        *,
+        coverage_kind: str = "observed",
+        missing_sequences: int = 0,
+        source_events: Sequence[str] = (),
+    ) -> list[LiveInterestEvent]:
+        unit = _LiveSourceUnit.from_envelope(envelope)
+        by_watch: dict[str, LiveInterestAdmission] = {}
+        for admission in admissions:
+            if type(admission) is not LiveInterestAdmission:
+                raise TypeError("admissions must contain exact LiveInterestAdmission values")
+            if admission.watch_id in by_watch:
+                raise ValueError(f"duplicate Watch outcome {admission.watch_id!r}")
+            by_watch[admission.watch_id] = admission
+
+        events: list[LiveInterestEvent] = []
+        raw_source = unit.raw_source_id
+        live_watch_ids = set(by_watch)
+        for source_id, watch_id in sorted(self._open):
+            if source_id == raw_source and watch_id not in live_watch_ids:
+                events.append(
+                    self._close(
+                        (source_id, watch_id),
+                        reason="watch_removed",
+                        event_unit=unit,
+                        coverage_kind=coverage_kind,
+                        missing_sequences=missing_sequences,
+                        source_events=tuple(source_events),
+                    )
+                )
+
+        for watch_id in sorted(by_watch):
+            admission = by_watch[watch_id]
+            key = (raw_source, watch_id)
+            opened = self._open.get(key)
+            if not admission.admitted:
+                if opened is not None:
+                    events.append(
+                        self._close(
+                            key,
+                            reason=_live_non_admission_reason(admission.non_admission_reason),
+                            event_unit=unit,
+                            coverage_kind=coverage_kind,
+                            missing_sequences=missing_sequences,
+                            source_events=tuple(source_events),
+                        )
+                    )
+                continue
+            if opened is not None and (
+                opened.admission.cause != admission.cause
+                or opened.admission.admission_id != admission.admission_id
+                or opened.admission.detector_id != admission.detector_id
+            ):
+                events.append(
+                    self._close(
+                        key,
+                        reason="admission_changed",
+                        event_unit=unit,
+                        coverage_kind=coverage_kind,
+                        missing_sequences=missing_sequences,
+                        source_events=tuple(source_events),
+                    )
+                )
+                opened = None
+            if opened is None:
+                interval_id = _digest(
+                    "intv_",
+                    {
+                        "version": 1,
+                        "run_id": self._run_id,
+                        "source": raw_source,
+                        "epoch": unit.source_epoch,
+                        "sequence": unit.sequence,
+                        "watch_id": watch_id,
+                        "evidence_id": admission.evidence_id,
+                    },
+                    width=24,
+                )
+                opened = _LiveOpenInterval(interval_id, admission, unit, unit)
+                self._open[key] = opened
+                kind: InterestEventKind = INTEREST_ENTERED
+            else:
+                opened.last = unit
+                opened.admission = admission
+                kind = INTEREST_UPDATED
+            events.append(
+                self._event(
+                    opened,
+                    kind=kind,
+                    reason=admission.cause or "not_admitted",
+                    event_unit=unit,
+                    coverage_kind=coverage_kind,
+                    missing_sequences=missing_sequences,
+                    source_events=tuple(source_events),
+                )
+            )
+        self._latest[raw_source] = unit
+        return events
+
+    def discontinuity(self, envelope: Any, inspection: Any) -> list[LiveInterestEvent]:
+        unit = _LiveSourceUnit.from_envelope(envelope)
+        reason = _discontinuity_reason(inspection.events)
+        return self._close_source(
+            unit.raw_source_id,
+            reason=reason,
+            event_unit=unit,
+            coverage_kind=inspection.coverage.kind,
+            missing_sequences=inspection.coverage.missing_sequences,
+            source_events=inspection.events,
+        )
+
+    def pause(self, envelope: Any, inspection: Any) -> list[LiveInterestEvent]:
+        unit = _LiveSourceUnit.from_envelope(envelope)
+        return self._close_source(
+            unit.raw_source_id,
+            reason="paused",
+            event_unit=unit,
+            coverage_kind=inspection.coverage.kind,
+            missing_sequences=inspection.coverage.missing_sequences,
+            source_events=inspection.events,
+        )
+
+    def close_all(self, reason: LiveInterestExitReason) -> list[LiveInterestEvent]:
+        if reason not in _LIVE_EXIT_REASONS:
+            raise ValueError(f"unknown terminal reason {reason!r}")
+        events: list[LiveInterestEvent] = []
+        for key in sorted(tuple(self._open)):
+            opened = self._open[key]
+            event_unit = self._latest.get(key[0], opened.last)
+            events.append(
+                self._close(
+                    key,
+                    reason=reason,
+                    event_unit=event_unit,
+                    coverage_kind="observed",
+                    missing_sequences=0,
+                    source_events=(),
+                )
+            )
+        return events
+
+    def _close_source(
+        self,
+        raw_source_id: str,
+        *,
+        reason: LiveInterestExitReason,
+        event_unit: _LiveSourceUnit,
+        coverage_kind: str,
+        missing_sequences: int,
+        source_events: tuple[str, ...],
+    ) -> list[LiveInterestEvent]:
+        return [
+            self._close(
+                key,
+                reason=reason,
+                event_unit=event_unit,
+                coverage_kind=coverage_kind,
+                missing_sequences=missing_sequences,
+                source_events=source_events,
+            )
+            for key in sorted(tuple(self._open))
+            if key[0] == raw_source_id
+        ]
+
+    def _close(
+        self,
+        key: tuple[str, str],
+        *,
+        reason: LiveInterestExitReason,
+        event_unit: _LiveSourceUnit,
+        coverage_kind: str,
+        missing_sequences: int,
+        source_events: tuple[str, ...],
+    ) -> LiveInterestEvent:
+        opened = self._open.pop(key)
+        return self._event(
+            opened,
+            kind=INTEREST_EXITED,
+            reason=reason,
+            event_unit=event_unit,
+            coverage_kind=coverage_kind,
+            missing_sequences=missing_sequences,
+            source_events=source_events,
+        )
+
+    def _event(
+        self,
+        opened: _LiveOpenInterval,
+        *,
+        kind: InterestEventKind,
+        reason: str,
+        event_unit: _LiveSourceUnit,
+        coverage_kind: str,
+        missing_sequences: int,
+        source_events: tuple[str, ...],
+    ) -> LiveInterestEvent:
+        admission = opened.admission
+        evidence_id = _digest(
+            "evidence_",
+            {
+                "version": 1,
+                "run_id": self._run_id,
+                "source": opened.first.raw_source_id,
+                "epoch": event_unit.source_epoch,
+                "sequence": event_unit.sequence,
+                "watch_id": admission.watch_id,
+                "gate_evidence_id": admission.evidence_id,
+                "kind": kind,
+            },
+        )
+        return LiveInterestEvent(
+            kind=kind,
+            interval_id=opened.interval_id,
+            watch_id=admission.watch_id,
+            source_id=_public_source_id(self._run_id, opened.first.raw_source_id),
+            source_epoch=opened.first.source_epoch,
+            sequence_start=opened.first.sequence,
+            sequence_end=opened.last.sequence,
+            source_start=opened.first.source_time,
+            source_end=opened.last.source_time,
+            observed_start=opened.first.observed_time,
+            observed_end=opened.last.observed_time,
+            event_source_epoch=event_unit.source_epoch,
+            event_sequence=event_unit.sequence,
+            event_source_time=event_unit.source_time,
+            event_observed_at=event_unit.observed_time,
+            reason=reason,
+            evidence_id=evidence_id,
+            score=admission.score,
+            threshold=admission.threshold,
+            confidence=None,
+            regions=(),
+            track_ids=(),
+            admission_id=admission.admission_id,
+            detector_id=admission.detector_id,
+            coverage_kind=coverage_kind,
+            missing_sequences=missing_sequences,
+            source_events=source_events,
+        )
+
+
+def _live_non_admission_reason(reason: str | None) -> LiveInterestExitReason:
+    if reason == "signal_below_threshold":
+        return "signal_lost"
+    if reason in _LIVE_EXIT_REASONS:
+        return reason  # type: ignore[return-value]
+    return "not_admitted"
+
+
+def _discontinuity_reason(events: Sequence[str]) -> LiveInterestExitReason:
+    for reason in (
+        "source_capture_overflow",
+        "source_reconnect",
+        "source_epoch_gap",
+        "source_format_change",
+        "source_gap",
+    ):
+        if reason in events:
+            return reason  # type: ignore[return-value]
+    raise ValueError("accepted discontinuity did not carry a recognized source event")
+
+
 __all__ = [
     "INTEREST_ENTERED",
     "INTEREST_UPDATED",
@@ -690,4 +1366,12 @@ __all__ = [
     "InterestIntervalEvent",
     "InterestIntervalEngine",
     "Tier0MotionInterest",
+    "LiveInterestExitReason",
+    "LiveInterestAdmission",
+    "LiveInterestEvent",
+    "InterestBackpressureError",
+    "InterestCallbackUnsupportedError",
+    "InterestRunError",
+    "InterestSubscription",
+    "LiveInterestTracker",
 ]

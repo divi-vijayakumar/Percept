@@ -475,6 +475,18 @@ AdmissionCause = Literal["motion", "structural", "semantic", "fixed"]
 ADMISSION_CAUSES: tuple[AdmissionCause, ...] = (
     "motion", "structural", "semantic", "fixed",
 )
+NonAdmissionReason = Literal[
+    "signal_below_threshold",
+    "schedule_inactive",
+    "cadence_limited",
+    "fixed_cadence_unconfigured",
+]
+NON_ADMISSION_REASONS: tuple[NonAdmissionReason, ...] = (
+    "signal_below_threshold",
+    "schedule_inactive",
+    "cadence_limited",
+    "fixed_cadence_unconfigured",
+)
 
 
 def compile_watchspec(
@@ -655,6 +667,43 @@ def _condition_motion(
 
 
 @dataclass(frozen=True)
+class WatchAdmissionOutcome:
+    """The gate's complete policy outcome for one Watch on one accepted unit.
+
+    Live lifecycle consumers use this typed result instead of re-running schedule, cadence, signal,
+    or fixed-cadence policy outside :class:`MotionGate`.
+    """
+
+    goal_id: str
+    admitted: bool
+    cause: AdmissionCause | None
+    non_admission_reason: NonAdmissionReason | None
+    score: float
+    threshold: float
+    admission_id: str
+    detector_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.goal_id, str) or not self.goal_id:
+            raise ValueError("WatchAdmissionOutcome goal_id must be a non-empty string")
+        if not isinstance(self.admitted, bool):
+            raise TypeError("WatchAdmissionOutcome admitted must be a bool")
+        if not 0.0 <= float(self.score) <= 1.0:
+            raise ValueError("WatchAdmissionOutcome score must be in [0, 1]")
+        if not 0.0 <= float(self.threshold) <= 1.0:
+            raise ValueError("WatchAdmissionOutcome threshold must be in [0, 1]")
+        if self.admitted:
+            if self.cause not in ADMISSION_CAUSES or self.non_admission_reason is not None:
+                raise ValueError("an admitted outcome needs one cause and no non-admission reason")
+        elif self.cause is not None or self.non_admission_reason not in NON_ADMISSION_REASONS:
+            raise ValueError("a non-admitted outcome needs one reason and no admission cause")
+        for name in ("admission_id", "detector_id"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"WatchAdmissionOutcome {name} must be a non-empty string")
+
+
+@dataclass(frozen=True)
 class GateDecision:
     """One gate decision: the reported :class:`Tier0Signal` + whether to escalate.
 
@@ -672,6 +721,11 @@ class GateDecision:
     # Ordered 1:1 with ``goal_ids``. A fixed cadence is reported as ``"fixed"`` and never relabelled
     # as motion salience.
     admission_causes: tuple[AdmissionCause, ...] = ()
+    # One typed outcome for every condition in the gate, admitted or not. Empty on legacy manually
+    # constructed decisions; MotionGate.evaluate always populates it.
+    outcomes: tuple[WatchAdmissionOutcome, ...] = ()
+    # Content identity of the exact causal frame pair, computed only when explicitly requested.
+    evidence_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.goal_ids and not self.admission_causes:
@@ -689,6 +743,21 @@ class GateDecision:
         invalid = [cause for cause in self.admission_causes if cause not in ADMISSION_CAUSES]
         if invalid:
             raise ValueError(f"GateDecision admission cause(s) outside closed vocabulary: {invalid!r}")
+        if self.outcomes:
+            outcome_ids = tuple(outcome.goal_id for outcome in self.outcomes)
+            if len(set(outcome_ids)) != len(outcome_ids):
+                raise ValueError("GateDecision must carry one outcome per Watch")
+            admitted = tuple(
+                (outcome.goal_id, outcome.cause)
+                for outcome in self.outcomes
+                if outcome.admitted
+            )
+            if admitted != tuple(zip(self.goal_ids, self.admission_causes)):
+                raise ValueError("GateDecision outcomes must align with admitted goal ids and causes")
+        if self.evidence_id is not None and (
+            not isinstance(self.evidence_id, str) or not self.evidence_id
+        ):
+            raise ValueError("GateDecision evidence_id must be a non-empty string or None")
 
 
 class MotionGate:
@@ -811,6 +880,7 @@ class MotionGate:
         now: CivilTime | None = None,
         energy: float | None = None,
         signals: dict[str, float] | None = None,
+        include_evidence_id: bool = False,
     ) -> GateDecision:
         """Score one frame against the prior, report a ``Tier0Signal``, decide escalate-vs-skip.
 
@@ -846,32 +916,103 @@ class MotionGate:
         fused = wake_score(cheap_signals, self._wake_policy) if self._wake_policy is not None else None
         when = now if now is not None else (self._clock() if self._clock is not None else None)
         # Armed = in-schedule conditions only; an out-of-schedule goal cannot escalate or set the cutoff.
-        armed = [c for c in self._spec.conditions if schedule_active(c.schedule, when)]
         escalate = False
         admitted_goal_ids: list[str] = []
         admission_causes: list[AdmissionCause] = []
-        for c in armed:
+        outcomes: list[WatchAdmissionOutcome] = []
+        armed: list[WatchCondition] = []
+        for c in self._spec.conditions:
+            detector_id = (
+                f"motion_score.{c.salience_stat}"
+                if c.gate_on == "motion"
+                else (
+                    "cadence.fixed"
+                    if c.gate_on == "fixed"
+                    else f"tier0.signal.{c.gate_on}"
+                )
+            )
+            admission_id = f"tier0.signal.{c.gate_on}"
+            if not schedule_active(c.schedule, when):
+                outcomes.append(
+                    WatchAdmissionOutcome(
+                        c.goal_id,
+                        False,
+                        None,
+                        "schedule_inactive",
+                        0.0,
+                        c.threshold,
+                        admission_id,
+                        detector_id,
+                    )
+                )
+                continue
+            armed.append(c)
             # Cadence: a goal can't escalate more than once per cadence_s. For gate_on="fixed" this
             # cadence IS the escalation trigger (a floor — look every cadence_s even with no pixel motion,
             # so content events like a screenshare aren't silently under-sampled by the motion gate).
             if c.cadence_s is not None and ts - self._last_escalate.get(c.goal_id, float("-inf")) < c.cadence_s:
+                outcomes.append(
+                    WatchAdmissionOutcome(
+                        c.goal_id,
+                        False,
+                        None,
+                        "cadence_limited",
+                        0.0,
+                        c.threshold,
+                        admission_id,
+                        detector_id,
+                    )
+                )
                 continue
             if c.gate_on == "fixed":
+                score = 1.0 if c.cadence_s is not None else 0.0
                 fired = c.cadence_s is not None  # cadence elapsed (checked above) -> escalate regardless of motion
             elif fused is not None:
+                score = fused
                 fired = fused >= c.threshold
             elif c.gate_on == "structural":
+                score = structural
                 fired = structural >= c.threshold
             elif c.gate_on == "semantic":
+                score = semantic
                 fired = semantic >= c.threshold
             else:  # "motion" (default) — full-frame, or the goal's localized / ego-compensated statistic
-                m = _condition_motion(prev, f, c, motion)
-                fired = m >= c.threshold
+                score = _condition_motion(prev, f, c, motion)
+                fired = score >= c.threshold
             if fired:
                 escalate = True
                 admitted_goal_ids.append(c.goal_id)
                 admission_causes.append(c.gate_on)
                 self._last_escalate[c.goal_id] = ts
+                outcomes.append(
+                    WatchAdmissionOutcome(
+                        c.goal_id,
+                        True,
+                        c.gate_on,
+                        None,
+                        score,
+                        c.threshold,
+                        admission_id,
+                        detector_id,
+                    )
+                )
+            else:
+                outcomes.append(
+                    WatchAdmissionOutcome(
+                        c.goal_id,
+                        False,
+                        None,
+                        (
+                            "fixed_cadence_unconfigured"
+                            if c.gate_on == "fixed"
+                            else "signal_below_threshold"
+                        ),
+                        score,
+                        c.threshold,
+                        admission_id,
+                        detector_id,
+                    )
+                )
         self._prev = f
         # Reported cutoff = the most-sensitive ARMED goal's threshold (default when none is armed).
         thr = min((c.threshold for c in armed), default=self._default)
@@ -884,6 +1025,8 @@ class MotionGate:
             threshold=thr,
             goal_ids=tuple(admitted_goal_ids),
             admission_causes=tuple(admission_causes),
+            outcomes=tuple(outcomes),
+            evidence_id=_motion_evidence_id(prev, f) if include_evidence_id else None,
         )
 
 
@@ -1357,6 +1500,9 @@ __all__ = [
     "EGO_COMPENSATE_KEY",
     "MotionGate",
     "GateDecision",
+    "WatchAdmissionOutcome",
+    "NonAdmissionReason",
+    "NON_ADMISSION_REASONS",
     "GatedWatchLoop",
     "LoopReport",
     "run_gated_watch",

@@ -20,6 +20,14 @@ from percept.runtime.envelope import (
     SourceTracker,
 )
 from percept.runtime.audio import pcm_energy
+from percept.interest import (
+    InterestBackpressureError,
+    InterestCallbackUnsupportedError,
+    InterestRunError,
+    InterestSubscription,
+    LiveInterestAdmission,
+    LiveInterestEvent,
+)
 from percept.runtime.session import RuntimeSession, start
 from percept.runtime.sinks import BoundedDeadLetterQueue, FileDeadLetterQueue, WebhookSink, incident_payload, webhook
 from percept.runtime.worker import (
@@ -55,6 +63,12 @@ __all__ = [
     "SourceFormat",
     "SourceInspection",
     "SourceTracker",
+    "LiveInterestAdmission",
+    "LiveInterestEvent",
+    "InterestSubscription",
+    "InterestBackpressureError",
+    "InterestCallbackUnsupportedError",
+    "InterestRunError",
     "WebhookSink",
     "FileDeadLetterQueue",
     "BoundedDeadLetterQueue",
