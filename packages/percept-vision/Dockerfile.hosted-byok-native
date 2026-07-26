@@ -1,0 +1,31 @@
+# Linux/amd64 Hosted BYOK qualification image only.
+#
+# A separately protected release authority authenticates this exact recipe and
+# the Git blobs copied below before invoking Docker. There are no installers,
+# mutable tags, build-time network consumers, or shell entrypoints.
+FROM --platform=linux/amd64 python:3.12-slim@sha256:cab2dbf575e971934a81e4622f5aba17aa7929719bd7e31033a3a83b97fd0464
+
+ARG SOURCE_SHA
+ARG SOURCE_TREE
+ARG PRODUCTION_SHA
+ARG PRODUCTION_TREE
+ARG CONTEXT_SHA256
+ARG RECIPE_SHA256
+LABEL org.percept.hosted-byok.source-sha="${SOURCE_SHA}" \
+      org.percept.hosted-byok.source-tree="${SOURCE_TREE}" \
+      org.percept.hosted-byok.production-sha="${PRODUCTION_SHA}" \
+      org.percept.hosted-byok.production-tree="${PRODUCTION_TREE}" \
+      org.percept.hosted-byok.context-sha256="${CONTEXT_SHA256}" \
+      org.percept.hosted-byok.recipe-sha256="${RECIPE_SHA256}" \
+      org.percept.hosted-byok.base-digest="sha256:cab2dbf575e971934a81e4622f5aba17aa7929719bd7e31033a3a83b97fd0464" \
+      org.percept.hosted-byok.platform="linux/amd64"
+
+WORKDIR /qualification
+COPY percept /qualification/percept
+COPY tests/test_hosted_byok.py /qualification/tests/test_hosted_byok.py
+COPY tools/hosted_byok_native_matrix.py /qualification/hosted_byok_native_matrix.py
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUTF8=1
+
+ENTRYPOINT ["/usr/local/bin/python", "-I", "/qualification/hosted_byok_native_matrix.py"]
