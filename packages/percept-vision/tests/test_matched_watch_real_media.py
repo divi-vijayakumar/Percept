@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import json
 import os
+import shutil
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -47,6 +48,11 @@ def _verdict(satisfied: bool, evidence: str) -> dict[str, object]:
         "evidence": evidence,
         "error": None,
     }
+
+
+def _reseal(receipt, **changes):
+    changed = replace(receipt, origin_evidence_sha256="", **changes)
+    return replace(changed, origin_evidence_sha256=changed.evidence_sha256)
 
 
 def _write_mp4(
@@ -610,6 +616,165 @@ def test_v2_provider_answer_must_reconstruct_from_the_frozen_oracle(tmp_path):
     forged = replace(receipt, baseline=forged_baseline)
 
     with pytest.raises(MatchedWatchInputError, match="provider calls disagree"):
+        derive_viability_rows(forged)
+
+
+def test_run_fails_if_oracle_changes_between_independent_arms(tmp_path, monkeypatch):
+    manifest_path = _write_real_case(tmp_path)
+    original = matched_watch_module._run_arm
+
+    async def mutate_after_baseline(manifest, plan, arm):
+        result = await original(manifest, plan, arm)
+        if arm == "baseline":
+            oracle = next(
+                Path(item["path"])
+                for item in manifest.input_artifacts
+                if item["role"] == "oracle"
+            )
+            oracle.write_bytes(oracle.read_bytes() + b"\n")
+        return result
+
+    monkeypatch.setattr(matched_watch_module, "_run_arm", mutate_after_baseline)
+
+    with pytest.raises(MatchedWatchInputError, match="artifact|oracle|snapshot|changed"):
+        run_matched_watch(manifest_path)
+
+
+def test_directory_swap_to_symlink_between_containment_check_and_open_fails(
+    tmp_path,
+    monkeypatch,
+):
+    case_root = tmp_path / "case"
+    manifest_path = _write_real_case(case_root)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assets = case_root / "assets"
+    assets.mkdir()
+    (case_root / "case.mp4").rename(assets / "case.mp4")
+    manifest["media"]["path"] = "assets/case.mp4"
+    manifest_path.write_bytes(_json_bytes(manifest))
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    shutil.copy2(assets / "case.mp4", outside / "case.mp4")
+    saved_assets = case_root / "assets-before-race"
+    original = matched_watch_module._resolve_contained_path
+    swapped = False
+
+    def swap_after_check(raw, *, root, context):
+        nonlocal swapped
+        result = original(raw, root=root, context=context)
+        if context == "manifest.media.path" and not swapped:
+            swapped = True
+            assets.rename(saved_assets)
+            assets.symlink_to(outside, target_is_directory=True)
+        return result
+
+    monkeypatch.setattr(
+        matched_watch_module,
+        "_resolve_contained_path",
+        swap_after_check,
+    )
+
+    with pytest.raises(MatchedWatchInputError, match="symlink|escape|changed|unsafe"):
+        load_matched_watch_manifest(manifest_path)
+
+
+def test_duplicate_oracle_digest_across_corpus_splits_fails_closed(tmp_path):
+    manifest_path = _write_real_case(tmp_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    corpus_path = tmp_path / "corpus.json"
+    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+    second = dict(corpus["cases"][0])
+    second.update(
+        {
+            "case_id": "real-case-other-split",
+            "split": "held-out",
+            "source_group_id": "different-source-group",
+            "media_sha256": "sha256:" + "1" * 64,
+        }
+    )
+    corpus["cases"].append(second)
+    corpus_path.write_bytes(_json_bytes(corpus))
+    manifest["corpus"]["sha256"] = _sha(corpus_path.read_bytes())
+    manifest_path.write_bytes(_json_bytes(manifest))
+
+    with pytest.raises(MatchedWatchInputError, match="oracle|split|duplicate|leak"):
+        load_matched_watch_manifest(manifest_path)
+
+
+@pytest.mark.parametrize(
+    ("target", "field", "value", "message"),
+    [
+        ("baseline", "source_missing_sequences", 1, "counter|source|gap|stats"),
+        ("adaptive", "frames_dropped", 1, "drop|counter|stats"),
+    ],
+)
+def test_v2_runtime_counters_must_reconstruct_from_candidates(
+    tmp_path,
+    target,
+    field,
+    value,
+    message,
+):
+    receipt = run_matched_watch(_write_real_case(tmp_path))
+    arm = getattr(receipt, target)
+    runtime_stats = {**arm.runtime_stats, field: value}
+    forged = _reseal(receipt, **{target: replace(arm, runtime_stats=runtime_stats)})
+
+    with pytest.raises(MatchedWatchInputError, match=message):
+        derive_viability_rows(forged)
+
+
+def test_v2_judgment_action_must_reconstruct_from_fire_candidate(tmp_path):
+    receipt = run_matched_watch(_write_real_case(tmp_path))
+    traces = list(receipt.baseline.traces)
+    index = next(
+        index
+        for index, trace in enumerate(traces)
+        if trace["stage"] == "judgment.event"
+    )
+    traces[index] = {
+        **traces[index],
+        "data": {**traces[index]["data"], "action": "ask"},
+    }
+    forged = _reseal(
+        receipt,
+        baseline=replace(receipt.baseline, traces=tuple(traces)),
+    )
+
+    with pytest.raises(MatchedWatchInputError, match="trace|action|judgment"):
+        derive_viability_rows(forged)
+
+
+def test_v2_escalation_health_must_reconstruct_from_edge_admission(tmp_path):
+    receipt = run_matched_watch(_write_real_case(tmp_path))
+    health = list(receipt.baseline.health)
+    index = next(
+        index for index, event in enumerate(health) if event["kind"] == "escalation"
+    )
+    health[index] = {
+        **health[index],
+        "data": {**health[index]["data"], "cause": "forged-cause"},
+    }
+    forged = _reseal(
+        receipt,
+        baseline=replace(receipt.baseline, health=tuple(health)),
+    )
+
+    with pytest.raises(MatchedWatchInputError, match="health|escalation|cause"):
+        derive_viability_rows(forged)
+
+
+def test_v2_incident_message_must_reconstruct_from_compiled_watch(tmp_path):
+    receipt = run_matched_watch(_write_real_case(tmp_path))
+    incidents = list(receipt.baseline.incidents)
+    incidents[0] = {**incidents[0], "message": "caller-forged incident message"}
+    forged = _reseal(
+        receipt,
+        baseline=replace(receipt.baseline, incidents=tuple(incidents)),
+    )
+
+    with pytest.raises(MatchedWatchInputError, match="Incident|message|Watch"):
         derive_viability_rows(forged)
 
 

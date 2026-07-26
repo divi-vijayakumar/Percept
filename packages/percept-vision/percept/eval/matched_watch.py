@@ -1,10 +1,8 @@
-"""Preregistered L1 matched-Watch execution receipts.
+"""Matched-Watch execution receipts over synthetic fixtures or frozen real video.
 
-This module is deliberately narrow.  It executes the shipped
-``facility_observation@1/package_appeared`` transition Watch through the real resolver/compiler and
-runtime worker for an exhaustive sampled baseline and one adaptive operating point.  The bundled
-judge is scripted and proves contract mechanics only; no receipt produced here is provider-measured
-or launch-qualifying.
+Both arms execute the shipped resolver/compiler/runtime path.  Real-video manifests bind a closed
+MP4, corpus index, and offline oracle to exact decoded evidence coordinates; the oracle proves
+mechanics only.  No receipt produced here is provider-measured or launch-qualifying.
 """
 
 from __future__ import annotations
@@ -22,8 +20,16 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
-from percept import Percept, build_info
-from percept._safe_json import SafeInputReceipt, SafeJSONInputError, load_json_file
+from percept import Goal, Percept, build_info
+from percept._safe_json import (
+    SAFE_JSON_MAX_BYTES,
+    SafeInputReceipt,
+    SafeJSONInputError,
+    SafeJSONResult,
+    _decode_utf8,
+    _parse_json,
+    load_json_file,
+)
 from percept.adapters import Verdict
 from percept.config import Settings
 from percept.contracts.watchplan import WatchPlan
@@ -34,7 +40,8 @@ from percept.resolver import ConfigResolver
 from percept.runtime.envelope import SourceEnvelope
 from percept.runtime.worker import RuntimeHealthEvent, RuntimeStats, run
 from percept.sourceprofile import SourceProfile
-from percept.tracing import content_hash
+from percept.contracts import judgment_event_id
+from percept.tracing import PlanIdentity, content_hash
 from percept.tunables import REGISTRY
 from percept.watchplan_apply import apply_watch_plan
 
@@ -502,6 +509,10 @@ def _resolve_contained_path(raw: Any, *, root: Path, context: str) -> Path:
     text = _text(raw, context)
     candidate = Path(text)
     _require(not candidate.is_absolute(), f"{context} must be relative to its manifest")
+    _require(
+        all(part not in {"", ".", ".."} for part in candidate.parts),
+        f"{context} must use a normalized relative path",
+    )
     try:
         canonical_root = root.resolve(strict=True)
         lexical = canonical_root / candidate
@@ -517,62 +528,161 @@ def _resolve_contained_path(raw: Any, *, root: Path, context: str) -> Path:
     except (OSError, ValueError) as exc:
         raise MatchedWatchInputError(f"{context} cannot be safely resolved: {exc}") from exc
     _require(contained, f"{context} escapes its manifest directory")
-    return lexical
+    # Carry the already-inspected canonical location forward.  If an attacker renames one of the
+    # lexical parents and replaces it with a symlink after this check, subsequent descriptor opens
+    # still target this canonical location (which will either remain the same file or fail closed).
+    return Path(canonical)
 
 
-def _snapshot_binary(path: Path, *, max_bytes: int = 64 * 1024 * 1024 * 1024) -> SafeInputReceipt:
-    """Hash one stable regular-file snapshot without materializing media in memory."""
+def _open_artifact_no_symlinks(path: Path) -> int:
+    """Open every path component by descriptor so a directory swap cannot escape containment."""
 
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    parts = absolute.parts
+    _require(
+        absolute.is_absolute()
+        and len(parts) >= 2
+        and all(part not in {"", ".", ".."} for part in parts[1:]),
+        "unsafe binary artifact: path must be normalized and absolute",
+    )
+    _require(
+        os.open in getattr(os, "supports_dir_fd", set())
+        and bool(getattr(os, "O_NOFOLLOW", 0))
+        and bool(getattr(os, "O_DIRECTORY", 0)),
+        "unsafe binary artifact: platform lacks descriptor-relative no-symlink open",
+    )
+    directory_flags = (
+        os.O_RDONLY
+        | int(getattr(os, "O_CLOEXEC", 0))
+        | int(getattr(os, "O_NOFOLLOW", 0))
+        | int(getattr(os, "O_DIRECTORY", 0))
+    )
+    file_flags = (
+        os.O_RDONLY
+        | int(getattr(os, "O_CLOEXEC", 0))
+        | int(getattr(os, "O_NOFOLLOW", 0))
+    )
+    directory_fd = -1
     try:
-        before_path = os.lstat(path)
+        directory_fd = os.open(parts[0], directory_flags)
+        for part in parts[1:-1]:
+            next_fd = os.open(part, directory_flags, dir_fd=directory_fd)
+            os.close(directory_fd)
+            directory_fd = next_fd
+        return os.open(parts[-1], file_flags, dir_fd=directory_fd)
     except OSError as exc:
-        raise MatchedWatchInputError(f"unsafe binary artifact: initial inspection failed: {exc}") from exc
-    _require(stat.S_ISREG(before_path.st_mode), "unsafe binary artifact: input is not a regular file")
-    _require(before_path.st_nlink == 1, "unsafe binary artifact: input must have exactly one hard link")
-    _require(0 < before_path.st_size <= max_bytes, "unsafe binary artifact: invalid or excessive byte size")
-    flags = os.O_RDONLY
-    for name in ("O_CLOEXEC", "O_NOFOLLOW"):
-        flags |= int(getattr(os, name, 0))
+        raise MatchedWatchInputError(
+            f"unsafe binary artifact: symlink-safe open failed: {exc}"
+        ) from exc
+    finally:
+        if directory_fd >= 0:
+            try:
+                os.close(directory_fd)
+            except OSError:
+                pass
+
+
+def _normalize_platform_root_alias(path: Path) -> Path:
+    """Normalize only operating-system root aliases before the no-symlink descriptor walk."""
+
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    for alias_text in ("/var", "/tmp", "/etc"):
+        alias = Path(alias_text)
+        try:
+            if not alias.is_symlink():
+                continue
+            relative = absolute.relative_to(alias)
+            return alias.resolve(strict=True) / relative
+        except (OSError, ValueError):
+            continue
+    return absolute
+
+
+def _read_artifact_snapshot(
+    path: Path,
+    *,
+    max_bytes: int,
+    capture: bool,
+) -> tuple[bytes | None, SafeInputReceipt]:
+    """Read one stable file through a symlink-safe descriptor walk."""
+
+    _require(
+        isinstance(max_bytes, int)
+        and not isinstance(max_bytes, bool)
+        and max_bytes > 0,
+        "unsafe binary artifact: max_bytes must be positive",
+    )
+    display_path = str(path)
+    normalized_path = _normalize_platform_root_alias(path)
     try:
-        fd = os.open(path, flags)
+        initial_canonical = str(normalized_path.resolve(strict=True))
     except OSError as exc:
-        raise MatchedWatchInputError(f"unsafe binary artifact: open failed: {exc}") from exc
+        raise MatchedWatchInputError(
+            f"unsafe binary artifact: initial canonical inspection failed: {exc}"
+        ) from exc
+    # macOS exposes ordinary paths such as /var through /private/var. Only that operating-system
+    # root alias is normalized; every caller-controlled component remains subject to O_NOFOLLOW.
+    fd = _open_artifact_no_symlinks(normalized_path)
     try:
-        opened = os.fstat(fd)
+        try:
+            opened = os.fstat(fd)
+        except OSError as exc:
+            raise MatchedWatchInputError(
+                f"unsafe binary artifact: opened inspection failed: {exc}"
+            ) from exc
         _require(
-            stat.S_ISREG(opened.st_mode)
-            and opened.st_nlink == 1
-            and (opened.st_dev, opened.st_ino) == (before_path.st_dev, before_path.st_ino),
-            "unsafe binary artifact: path changed while opening",
+            stat.S_ISREG(opened.st_mode) and opened.st_nlink == 1,
+            "unsafe binary artifact: input is not a single-link regular file",
+        )
+        _require(
+            0 < opened.st_size <= max_bytes,
+            "unsafe binary artifact: invalid or excessive byte size",
         )
         before_snapshot = (
             opened.st_dev,
             opened.st_ino,
+            opened.st_mode,
             opened.st_size,
             opened.st_mtime_ns,
             opened.st_ctime_ns,
             opened.st_nlink,
         )
         digest = hashlib.sha256()
+        payload = bytearray() if capture else None
         byte_count = 0
         while True:
-            chunk = os.read(fd, 1024 * 1024)
+            try:
+                chunk = os.read(fd, min(1024 * 1024, max_bytes + 1 - byte_count))
+            except OSError as exc:
+                raise MatchedWatchInputError(
+                    f"unsafe binary artifact: read failed: {exc}"
+                ) from exc
             if not chunk:
                 break
             byte_count += len(chunk)
             _require(byte_count <= max_bytes, "unsafe binary artifact exceeds byte limit")
             digest.update(chunk)
-        after = os.fstat(fd)
+            if payload is not None:
+                payload.extend(chunk)
+        try:
+            after = os.fstat(fd)
+        except OSError as exc:
+            raise MatchedWatchInputError(
+                f"unsafe binary artifact: post-read inspection failed: {exc}"
+            ) from exc
         after_snapshot = (
             after.st_dev,
             after.st_ino,
+            after.st_mode,
             after.st_size,
             after.st_mtime_ns,
             after.st_ctime_ns,
             after.st_nlink,
         )
         try:
-            final_path = os.lstat(path)
+            final_path = os.lstat(normalized_path)
+            final_canonical = str(normalized_path.resolve(strict=True))
+            canonical_info = os.lstat(final_canonical)
         except OSError as exc:
             raise MatchedWatchInputError(
                 f"unsafe binary artifact: post-read inspection failed: {exc}"
@@ -580,21 +690,62 @@ def _snapshot_binary(path: Path, *, max_bytes: int = 64 * 1024 * 1024 * 1024) ->
         _require(
             before_snapshot == after_snapshot
             and (final_path.st_dev, final_path.st_ino) == (after.st_dev, after.st_ino)
+            and (canonical_info.st_dev, canonical_info.st_ino)
+            == (after.st_dev, after.st_ino)
+            and initial_canonical == final_canonical
             and final_path.st_nlink == 1
             and final_path.st_size == byte_count,
             "unsafe binary artifact changed while it was being read",
         )
     finally:
         os.close(fd)
-    return SafeInputReceipt(
-        path=str(path),
-        canonical_path=str(path.resolve(strict=True)),
-        byte_count=byte_count,
-        sha256=f"sha256:{digest.hexdigest()}",
-        device=after.st_dev,
-        inode=after.st_ino,
-        modified_time_ns=after.st_mtime_ns,
+    return (
+        bytes(payload) if payload is not None else None,
+        SafeInputReceipt(
+            path=display_path,
+            canonical_path=final_canonical,
+            byte_count=byte_count,
+            sha256=f"sha256:{digest.hexdigest()}",
+            device=after.st_dev,
+            inode=after.st_ino,
+            modified_time_ns=after.st_mtime_ns,
+        ),
     )
+
+
+def _snapshot_binary(
+    path: Path,
+    *,
+    max_bytes: int = 64 * 1024 * 1024 * 1024,
+) -> SafeInputReceipt:
+    """Hash one stable regular-file snapshot without materializing media in memory."""
+
+    _payload, receipt = _read_artifact_snapshot(
+        path,
+        max_bytes=max_bytes,
+        capture=False,
+    )
+    return receipt
+
+
+def _load_json_snapshot(
+    path: Path,
+    *,
+    max_bytes: int = SAFE_JSON_MAX_BYTES,
+) -> SafeJSONResult:
+    """Parse strict JSON from the same descriptor-backed, symlink-safe snapshot."""
+
+    payload, receipt = _read_artifact_snapshot(
+        path,
+        max_bytes=max_bytes,
+        capture=True,
+    )
+    assert payload is not None
+    try:
+        value = _parse_json(_decode_utf8(payload), context="document")
+    except SafeJSONInputError:
+        raise
+    return SafeJSONResult(value, receipt)
 
 
 @dataclass(frozen=True)
@@ -1704,7 +1855,7 @@ def _load_real_manifest(
         context="manifest.corpus.path",
     )
     try:
-        corpus_loaded = load_json_file(corpus_path)
+        corpus_loaded = _load_json_snapshot(corpus_path)
     except SafeJSONInputError as exc:
         raise MatchedWatchInputError(f"unsafe matched-Watch corpus index: {exc}") from exc
     _require(
@@ -1720,6 +1871,7 @@ def _load_real_manifest(
     _require(isinstance(raw_cases, list) and raw_cases, "corpus.cases must be non-empty")
     case_ids: set[str] = set()
     media_owners: dict[str, str] = {}
+    oracle_owners: dict[str, str] = {}
     group_splits: dict[str, str] = {}
     active_case: Mapping[str, Any] | None = None
     for index, raw_case in enumerate(raw_cases):
@@ -1737,6 +1889,12 @@ def _load_real_manifest(
         _require(
             owner == indexed_case_id,
             f"duplicate media digest is assigned to cases {owner!r} and {indexed_case_id!r}",
+        )
+        oracle_owner = oracle_owners.setdefault(oracle_sha, indexed_case_id)
+        _require(
+            oracle_owner == indexed_case_id,
+            "duplicate offline-oracle digest is assigned to cases "
+            f"{oracle_owner!r} and {indexed_case_id!r}; case/split evidence must be independent",
         )
         prior_split = group_splits.setdefault(group, indexed_split)
         _require(
@@ -1792,7 +1950,7 @@ def _load_real_manifest(
         context="manifest.oracle.path",
     )
     try:
-        oracle_loaded = load_json_file(oracle_path)
+        oracle_loaded = _load_json_snapshot(oracle_path)
     except SafeJSONInputError as exc:
         raise MatchedWatchInputError(f"unsafe matched-Watch offline oracle: {exc}") from exc
     expected_oracle_sha = _sha(oracle_ref["sha256"], "manifest.oracle.sha256")
@@ -2471,6 +2629,31 @@ async def _real_video_source(
     )
 
 
+def _revalidate_manifest_artifacts(manifest: _Manifest, *, phase: str) -> None:
+    """Require every closed v2 input to retain its descriptor/content identity."""
+
+    if manifest.schema != _REAL_SCHEMA:
+        return
+    for recorded in manifest.input_artifacts:
+        role = str(recorded["role"])
+        max_bytes = (
+            64 * 1024 * 1024 * 1024
+            if role == "media"
+            else 64 * 1024 * 1024
+            if role.startswith("authority:")
+            else SAFE_JSON_MAX_BYTES
+        )
+        observed = _snapshot_binary(
+            Path(str(recorded["path"])),
+            max_bytes=max_bytes,
+        )
+        expected = {key: recorded[key] for key in _SAFE_INPUT_RECEIPT_KEYS}
+        _require(
+            _safe_receipt_dict(observed) == expected,
+            f"{phase}: input artifact {role!r} changed after its frozen snapshot",
+        )
+
+
 def _profile(arm: str, stat: str, threshold: float) -> SourceProfile:
     return SourceProfile(
         name=f"matched-watch-{stat}",
@@ -2994,6 +3177,7 @@ def validate_matched_arms(
 
 async def run_matched_watch_async(path: str | Path) -> MatchedWatchReceipt:
     manifest = load_matched_watch_manifest(path)
+    _revalidate_manifest_artifacts(manifest, phase="before baseline")
     canonical_plan = watch_template(manifest.template_ref, manifest.watch_parameters)
     # Fresh render + core per arm. Sequential replay keeps append order deterministic and prevents
     # any shallow nested state in a future WatchPlan field from becoming a cross-arm channel.
@@ -3002,11 +3186,13 @@ async def run_matched_watch_async(path: str | Path) -> MatchedWatchReceipt:
         watch_template(manifest.template_ref, manifest.watch_parameters),
         "baseline",
     )
+    _revalidate_manifest_artifacts(manifest, phase="between matched arms")
     adaptive = await _run_arm(
         manifest,
         watch_template(manifest.template_ref, manifest.watch_parameters),
         "adaptive",
     )
+    _revalidate_manifest_artifacts(manifest, phase="after adaptive")
     plan_dict = canonical_plan.to_dict()
     plan_sha = _canonical_sha(plan_dict)
     blockers = validate_matched_arms(
@@ -3110,6 +3296,232 @@ def _event_rows(receipt: MatchedWatchReceipt, arm: ArmReceipt) -> tuple[list[dic
         if incident_id not in aligned_incidents:
             fire_ids.append(incident_id)
     return events, fire_ids
+
+
+def _validate_v2_arm_reconstruction(
+    receipt: MatchedWatchReceipt,
+    arm: ArmReceipt,
+    *,
+    manifest: Mapping[str, Any],
+    route: str,
+) -> None:
+    """Reconstruct deterministic runtime claims from the closed real-video evidence."""
+
+    candidates = arm.candidates
+    dispatched = [candidate for candidate in candidates if candidate.runtime_dispatched]
+    admitted = [candidate for candidate in candidates if candidate.admitted]
+    goal_id = str(arm.compiled_binding["goal_id"])
+    source_id = str(manifest["replay"]["source_id"])
+
+    expected_admission_by_goal: dict[str, int] = {}
+    expected_admission_by_cause: dict[str, int] = {}
+    expected_escalations: list[tuple[float, dict[str, Any]]] = []
+    signal_admits = 0
+    fixed_admits = 0
+    coast_admits = 0
+    fixed_opportunities = 0
+    goal_admissions = 0
+    for candidate in candidates:
+        decision = _thaw(candidate.edge_decision)
+        candidate_goal_ids = tuple(str(item) for item in decision["goal_ids"])
+        causes = tuple(str(item) for item in decision["admission_causes"])
+        _require(
+            len(candidate_goal_ids) == len(causes)
+            and candidate.admitted == (goal_id in candidate_goal_ids)
+            and candidate.runtime_dispatched == candidate.admitted,
+            f"{arm.arm} candidate admission/dispatch state is not reconstructable",
+        )
+        if not candidate.admitted:
+            continue
+        goal_admissions += len(candidate_goal_ids)
+        for admitted_goal, cause in zip(candidate_goal_ids, causes):
+            expected_admission_by_goal[admitted_goal] = (
+                expected_admission_by_goal.get(admitted_goal, 0) + 1
+            )
+            expected_admission_by_cause[cause] = (
+                expected_admission_by_cause.get(cause, 0) + 1
+            )
+            if cause == "fixed":
+                fixed_opportunities += 1
+        cause_set = set(causes)
+        if bool(decision["escalate"]) and cause_set - {"fixed"}:
+            signal_admits += 1
+            health_cause = "motion"
+        elif bool(decision["escalate"]) and cause_set == {"fixed"}:
+            fixed_admits += 1
+            health_cause = "fixed"
+        elif bool(decision["coast_admit"]):
+            coast_admits += 1
+            health_cause = "coast"
+        else:
+            _fail(f"{arm.arm} admitted candidate has no reconstructable admission cause")
+        expected_escalations.append(
+            (candidate.t, {"source": source_id, "cause": health_cause})
+        )
+
+    stats = _thaw(arm.runtime_stats)
+    exact_stats = {
+        "frames": len(candidates),
+        "frames_dropped": 0,
+        "escalations": len(admitted),
+        "judge_calls": len(dispatched),
+        "fires": len(arm.incidents),
+        "asks": len(arm.asks),
+        "incidents": len(arm.incidents),
+        "sink_errors": 0,
+        "audio_chunks": 0,
+        "audio_wakes": 0,
+        "signal_admits": signal_admits,
+        "fixed_admits": fixed_admits,
+        "coast_admits": coast_admits,
+        "boundaries": 0,
+        "utterances": 0,
+        "preroll_frames_dropped": 0,
+        "judge_superseded": 0,
+        "judge_revision_dropped": 0,
+        "judge_source_discontinuity_dropped": 0,
+        "judge_source_discontinuity_active_dropped": 0,
+        "judge_source_discontinuity_pending_dropped": 0,
+        "source_observed": len(candidates),
+        "source_excluded": 0,
+        "source_discontinuities": 0,
+        "source_missing_sequences": 0,
+        "fixed_opportunities": fixed_opportunities,
+        "goal_admissions": goal_admissions,
+        "admission_by_goal": expected_admission_by_goal,
+        "admission_by_cause": expected_admission_by_cause,
+        "perceive_dispatches": len(dispatched),
+    }
+    _require(
+        all(stats.get(key) == value for key, value in exact_stats.items()),
+        f"{arm.arm} RuntimeStats contain a counter that cannot be reconstructed",
+    )
+    expected_last_media_t = candidates[-1].t if candidates else None
+    _require(
+        stats["last_media_t"] == expected_last_media_t
+        and isinstance(stats["last_wall_t"], float)
+        and math.isfinite(stats["last_wall_t"])
+        and stats["last_wall_t"] >= 0.0,
+        f"{arm.arm} RuntimeStats source clocks are invalid",
+    )
+
+    dispatch_health = [item for item in arm.health if item["kind"] == "judge_dispatch"]
+    _require(
+        len(dispatch_health) == 1
+        and dispatch_health[0]["ts"] is None
+        and _thaw(dispatch_health[0]["data"]) == {"mode": "inline"},
+        f"{arm.arm} judge-dispatch health is not the executed inline topology",
+    )
+    observed_escalations = [
+        (float(item["ts"]), _thaw(item["data"]))
+        for item in arm.health
+        if item["kind"] == "escalation"
+    ]
+    _require(
+        observed_escalations == expected_escalations,
+        f"{arm.arm} escalation health does not reconstruct from edge admissions",
+    )
+
+    plan = _thaw(receipt.watch_plan)
+    expected_plan_id = PlanIdentity.from_goals(
+        [Goal(id=goal_id, condition=str(plan["condition"]), say=str(plan["condition"]))],
+        revision=1,
+    ).plan_hash
+    dispatch_ordinals = {
+        candidate.index: ordinal
+        for ordinal, candidate in enumerate(dispatched, start=1)
+    }
+    expected_incident_health: list[tuple[float, dict[str, Any]]] = []
+    judgment_traces = [
+        item for item in arm.traces if item["stage"] == "judgment.event"
+    ]
+    incident_traces = [
+        item for item in arm.traces if item["stage"] == "incident.created"
+    ]
+    incident_by_id = {str(item["id"]): item for item in arm.incidents}
+    for candidate in candidates:
+        for incident_id in candidate.incident_ids:
+            incident = incident_by_id[str(incident_id)]
+            dispatch_seq = dispatch_ordinals[candidate.index]
+            expected_entity = "scene" if route == "transition" else None
+            expected_incident_origin = "transition" if route == "transition" else None
+            expected_trace_origin = "transition" if route == "transition" else "judged"
+            expected_reason = None if route == "transition" else "rising_edge"
+            expected_judgment_id = judgment_event_id(
+                goal_id,
+                expected_entity,
+                dispatch_seq,
+            )
+            _require(
+                incident["concern_id"] == goal_id
+                and float(incident["ts"]) == candidate.t
+                and incident["message"] == plan["condition"]
+                and incident["entity_id"] == expected_entity
+                and incident["reason"] == expected_reason
+                and incident["watchplan_id"] == expected_plan_id
+                and incident["judgment_event_id"] == expected_judgment_id
+                and incident["evidence_origin"] == expected_incident_origin,
+                f"{arm.arm} Incident fields do not reconstruct from the compiled Watch",
+            )
+            matching_judgments = [
+                item
+                for item in judgment_traces
+                if item["data"]["judgment_event_id"] == expected_judgment_id
+            ]
+            _require(
+                len(matching_judgments) == 1
+                and matching_judgments[0]["trace_id"] == f"{source_id}@{candidate.t}"
+                and matching_judgments[0]["t"] == candidate.t
+                and matching_judgments[0]["goal_id"] == goal_id
+                and _thaw(matching_judgments[0]["data"])
+                == {
+                    "action": "fire",
+                    "dispatch_seq": dispatch_seq,
+                    "entity_id": expected_entity,
+                    "judgment_event_id": expected_judgment_id,
+                    "evidence_origin": expected_trace_origin,
+                },
+                f"{arm.arm} judgment trace does not reconstruct from its FIRE candidate",
+            )
+            matching_incident_traces = [
+                item
+                for item in incident_traces
+                if item["data"]["incident_id"] == incident_id
+            ]
+            _require(
+                len(matching_incident_traces) == 1
+                and matching_incident_traces[0]["trace_id"] == f"{source_id}@{candidate.t}"
+                and matching_incident_traces[0]["t"] == candidate.t
+                and matching_incident_traces[0]["goal_id"] == goal_id
+                and _thaw(matching_incident_traces[0]["data"])
+                == {
+                    "incident_id": incident_id,
+                    "from_boundary": False,
+                    "entity_id": expected_entity,
+                    "judgment_event_id": expected_judgment_id,
+                    "evidence_origin": expected_incident_origin,
+                },
+                f"{arm.arm} incident trace does not reconstruct from its delivered Incident",
+            )
+            expected_incident_health.append(
+                (
+                    candidate.t,
+                    {
+                        "incident_id": incident_id,
+                        "goal_id": goal_id,
+                        "entity_id": expected_entity,
+                    },
+                )
+            )
+    observed_incident_health = [
+        (float(item["ts"]), _thaw(item["data"]))
+        for item in arm.health
+        if item["kind"] == "incident"
+    ]
+    _require(
+        observed_incident_health == expected_incident_health,
+        f"{arm.arm} incident health does not reconstruct from delivered Incidents",
+    )
 
 
 def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
@@ -3408,6 +3820,13 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
             missing_decisions == arm.provider_call_failures,
             "missing decisions disagree with provider failures",
         )
+        if is_v2:
+            _validate_v2_arm_reconstruction(
+                receipt,
+                arm,
+                manifest=manifest,
+                route=route,
+            )
 
         ended = [item for item in arm.health if item["kind"] == "runtime_ended"]
         _require(len(ended) == 1, "runtime_ended health record is missing or duplicated")
@@ -3692,7 +4111,7 @@ def _revalidate_v2_input_artifacts(receipt: MatchedWatchReceipt) -> None:
         path = Path(str(recorded["path"]))
         try:
             if role in {"manifest", "corpus", "oracle"}:
-                observed = load_json_file(path).receipt
+                observed = _load_json_snapshot(path).receipt
             else:
                 observed = _snapshot_binary(path)
         except (SafeJSONInputError, MatchedWatchInputError) as exc:
