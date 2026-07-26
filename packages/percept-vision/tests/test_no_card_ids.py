@@ -23,6 +23,7 @@ _PERCEPT_VISION_ROOT = _THIS_DIR.parent  # packages/percept-vision
 _PACKAGE_ROOT = _PERCEPT_VISION_ROOT / "percept"
 _EDGE_SRC_ROOT = _PERCEPT_VISION_ROOT.parent / "percept-edge" / "src"
 _REPO_ROOT = _PERCEPT_VISION_ROOT.parents[1]
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 # Catch compact uppercase work-item identifiers while allowing documented technical acronyms below.
 _CARD_ID_RE = re.compile(r"\b[A-Z]{1,3}[0-9]{1,3}[A-Za-z]{0,2}\b")
@@ -189,9 +190,25 @@ def _iter_source_files() -> list[Path]:
     return files
 
 
-def _hits(path: Path) -> list[tuple[int, str]]:
-    text = path.read_text(encoding="utf-8")
+def _decode_public_blob(content: bytes) -> tuple[str | None, str | None]:
+    """Decode tracked text while recognizing the repository's content-identified binary format."""
+    if content.startswith(_PNG_SIGNATURE):
+        return None, None
+    try:
+        return content.decode("utf-8"), None
+    except UnicodeDecodeError:
+        # Latin-1 is a one-to-one byte mapping, so ASCII policy phrases remain detectable. The
+        # encoding violation is also a hit: unknown non-UTF-8 tracked content must never fail open.
+        return content.decode("latin-1"), "non-UTF-8 tracked text"
+
+
+def _hits(path: Path, content: bytes) -> list[tuple[int, str]]:
+    text, decode_error = _decode_public_blob(content)
+    if text is None:
+        return []
     out: list[tuple[int, str]] = []
+    if decode_error is not None:
+        out.append((1, decode_error))
     for m in _CARD_ID_RE.finditer(text):
         token = m.group(0)
         if token in _ALLOWLIST:
@@ -207,32 +224,61 @@ def _hits(path: Path) -> list[tuple[int, str]]:
 _SOURCE_FILES = _iter_source_files()
 
 
+def _index_paths(repo_root: Path = _REPO_ROOT) -> list[Path] | None:
+    completed = subprocess.run(
+        ["git", "-C", str(repo_root), "ls-files", "-z"],
+        check=False,
+        capture_output=True,
+    )
+    if completed.returncode != 0:
+        return None
+    return sorted(
+        repo_root / raw.decode("utf-8")
+        for raw in completed.stdout.split(b"\0")
+        if raw
+    )
+
+
+_INDEXED_PUBLIC_FILES = _index_paths()
+
+
 def _iter_public_text_files() -> list[Path]:
     """Return the authoritative public release surface from Git's tracked-file index.
 
     Directory walking can silently omit a new public root and can accidentally inspect ignored local
     material. In an installed artifact without Git metadata, fall back narrowly to shipped source.
     """
+    if _INDEXED_PUBLIC_FILES is None:
+        return _SOURCE_FILES
+    return _INDEXED_PUBLIC_FILES
+
+
+def _read_public_blob(path: Path, repo_root: Path = _REPO_ROOT) -> bytes:
+    """Read a tracked blob from the index, falling back only when no Git index exists."""
+    indexed = _INDEXED_PUBLIC_FILES if repo_root == _REPO_ROOT else _index_paths(repo_root)
+    if indexed is None:
+        return path.read_bytes()
+    try:
+        relative = path.relative_to(repo_root).as_posix()
+    except ValueError as exc:
+        raise AssertionError(f"{path} is outside indexed repository {repo_root}") from exc
     completed = subprocess.run(
-        ["git", "-C", str(_REPO_ROOT), "ls-files", "-z"],
+        ["git", "-C", str(repo_root), "show", f":{relative}"],
         check=False,
         capture_output=True,
     )
     if completed.returncode != 0:
-        return _SOURCE_FILES
-    return sorted(
-        _REPO_ROOT / raw.decode("utf-8")
-        for raw in completed.stdout.split(b"\0")
-        if raw
-    )
+        raise AssertionError(f"could not read indexed blob {relative}: {completed.stderr!r}")
+    return completed.stdout
 
 
-def _context_hits(path: Path) -> list[tuple[int, str]]:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
+def _context_hits(path: Path, content: bytes) -> list[tuple[int, str]]:
+    text, decode_error = _decode_public_blob(content)
+    if text is None:
         return []
     out: list[tuple[int, str]] = []
+    if decode_error is not None:
+        out.append((1, decode_error))
     for match in _STANDALONE_WORK_ITEM_NOUN_RE.finditer(text):
         if _is_allowed_public_object_context(text, match):
             continue
@@ -303,7 +349,7 @@ def test_public_tree_scope_is_the_git_index():
 def test_compact_internal_reference_forms_are_rejected(text: str, tmp_path: Path):
     path = tmp_path / "public.md"
     path.write_text(text, encoding="utf-8")
-    assert _context_hits(path), text
+    assert _context_hits(path, path.read_bytes()), text
 
 
 @pytest.mark.parametrize(
@@ -318,7 +364,7 @@ def test_compact_internal_reference_forms_are_rejected(text: str, tmp_path: Path
 def test_legitimate_compact_technical_identifiers_are_allowed(text: str, tmp_path: Path):
     path = tmp_path / "public.md"
     path.write_text(text, encoding="utf-8")
-    assert not _context_hits(path), text
+    assert not _context_hits(path, path.read_bytes()), text
 
 
 @pytest.mark.parametrize(
@@ -347,14 +393,14 @@ def test_legitimate_compact_technical_identifiers_are_allowed(text: str, tmp_pat
 def test_generic_internal_planning_narratives_are_rejected(text: str, tmp_path: Path):
     path = tmp_path / "public.md"
     path.write_text(text, encoding="utf-8")
-    assert _context_hits(path), text
+    assert _context_hits(path, path.read_bytes()), text
 
 
 def test_generic_planning_narrative_is_rejected_inside_benchmark_tree(tmp_path: Path):
     path = tmp_path / "eval" / "bench" / "run.py"
     path.parent.mkdir(parents=True)
     path.write_text("implement this in a later " + "ca" + "rd", encoding="utf-8")
-    assert _context_hits(path)
+    assert _context_hits(path, path.read_bytes())
 
 
 @pytest.mark.parametrize(
@@ -373,7 +419,37 @@ def test_generic_planning_narrative_is_rejected_inside_benchmark_tree(tmp_path: 
 def test_legitimate_public_object_language_is_allowed(text: str, tmp_path: Path):
     path = tmp_path / "public.md"
     path.write_text(text, encoding="utf-8")
-    assert not _context_hits(path)
+    assert not _context_hits(path, path.read_bytes())
+
+
+def test_policy_reads_staged_blob_instead_of_divergent_worktree(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    path = repo / "public.md"
+    path.write_text("implement this in a later " + "ca" + "rd", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "public.md"], check=True)
+    path.write_text("a benchmark " + "ca" + "rd", encoding="utf-8")
+
+    indexed = _read_public_blob(path, repo)
+    assert _context_hits(path, indexed)
+    assert not _context_hits(path, path.read_bytes())
+
+
+@pytest.mark.parametrize(
+    "content",
+    (
+        b"implement this in a later ca" + b"rd: caf\xe9",
+        b"otherwise acceptable text with invalid byte \xff",
+    ),
+)
+def test_non_utf8_text_like_blob_fails_closed(content: bytes, tmp_path: Path):
+    assert _context_hits(tmp_path / "public.md", content)
+
+
+def test_content_identified_png_is_classified_as_binary(tmp_path: Path):
+    content = _PNG_SIGNATURE + b"\x00\xffca" + b"rd"
+    assert not _context_hits(tmp_path / "image.png", content)
 
 
 def test_source_files_were_discovered():
@@ -389,7 +465,7 @@ def test_source_files_were_discovered():
     ids=lambda p: str(p.relative_to(_PERCEPT_VISION_ROOT.parent)),
 )
 def test_no_card_id_citations(path: Path):
-    hits = _hits(path)
+    hits = _hits(path, _read_public_blob(path))
     assert not hits, (
         f"{path}: opaque work-item citation(s) leaked into shipped source: {hits}. "
         "Reword the citation into plain factual language describing the behavior — do not "
@@ -402,7 +478,7 @@ def test_public_tree_has_self_contained_context():
     hits = [
         (str(path.relative_to(_REPO_ROOT)), line_no, match)
         for path in _iter_public_text_files()
-        for line_no, match in _context_hits(path)
+        for line_no, match in _context_hits(path, _read_public_blob(path))
     ]
     assert not hits, (
         "public content contains opaque planning or private product-history references; replace each "
