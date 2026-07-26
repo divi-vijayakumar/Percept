@@ -397,7 +397,10 @@ class _FusedSynchronizer:
         ] = {}
         self._pending: list[_AcceptedMediaUnit] = []
         self._ready: list[_FusedEvidenceBundle] = []
-        self._emitted_anchor_ids: set[tuple[str, int, int, int]] = set()
+        # Video acceptance is strictly increasing for the generation's single
+        # (source_id, epoch) identity, so exact-once emission needs one scalar
+        # high-water rather than an ever-growing identity set.
+        self._emitted_anchor_sequence: int | None = None
         self._closed = False
         self._close_drained = False
         self._bound_drop_count = 0
@@ -437,7 +440,7 @@ class _FusedSynchronizer:
     def _queue_forced_bounds(self, anchor: _AcceptedMediaUnit) -> None:
         """Retain a bounded typed degradation receipt; capture never blocks."""
         self._ready.append(self._forced_bounds_bundle(anchor))
-        self._emitted_anchor_ids.add(self._anchor_id(anchor))
+        self._mark_anchor_emitted(anchor)
         while (
             len(self._ready) > self.policy.max_units_per_modality
             or sum(
@@ -588,7 +591,7 @@ class _FusedSynchronizer:
         self._accepted_sequence_frontier.clear()
         self._pending.clear()
         self._ready.clear()
-        self._emitted_anchor_ids.clear()
+        self._emitted_anchor_sequence = None
         self._closed = False
         self._close_drained = False
         self._bound_drop_count = 0
@@ -718,6 +721,15 @@ class _FusedSynchronizer:
             anchor.generation,
             anchor.source_sequence,
         )
+
+    def _anchor_was_emitted(self, anchor: _AcceptedMediaUnit) -> bool:
+        high_water = self._emitted_anchor_sequence
+        return high_water is not None and anchor.source_sequence <= high_water
+
+    def _mark_anchor_emitted(self, anchor: _AcceptedMediaUnit) -> None:
+        high_water = self._emitted_anchor_sequence
+        if high_water is None or anchor.source_sequence > high_water:
+            self._emitted_anchor_sequence = anchor.source_sequence
 
     def _bundle_for(
         self,
@@ -860,10 +872,9 @@ class _FusedSynchronizer:
         if not any(any(unit is anchor for unit in lane.units) for lane in video_lanes):
             raise ValueError("fused bundle anchor was not accepted by this synchronizer")
         bundle = self._bundle_for(anchor)
-        anchor_id = self._anchor_id(anchor)
         if (
             _FusedCoverageUncertainty.WATERMARK_PENDING in bundle.coverage_reasons
-            and anchor_id not in self._emitted_anchor_ids
+            and not self._anchor_was_emitted(anchor)
             and not any(pending is anchor for pending in self._pending)
         ):
             if len(self._pending) >= self.policy.max_units_per_modality:
@@ -893,7 +904,7 @@ class _FusedSynchronizer:
             if _FusedCoverageUncertainty.WATERMARK_PENDING in bundle.coverage_reasons:
                 pending.append(anchor)
                 continue
-            self._emitted_anchor_ids.add(self._anchor_id(anchor))
+            self._mark_anchor_emitted(anchor)
             ready.append(bundle)
         self._pending = pending
         return tuple(ready)
@@ -908,9 +919,8 @@ class _FusedSynchronizer:
         bundles = tuple(self._ready) + tuple(
             self._bundle_for(anchor) for anchor in self._pending
         )
-        self._emitted_anchor_ids.update(
-            self._anchor_id(anchor) for anchor in self._pending
-        )
+        for anchor in self._pending:
+            self._mark_anchor_emitted(anchor)
         self._ready.clear()
         self._pending.clear()
         self._close_drained = True

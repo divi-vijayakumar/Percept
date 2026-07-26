@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from dataclasses import replace
 
 from percept import Goal, Percept
 from percept.agent import FireEvent
@@ -24,6 +25,11 @@ from percept.goals import GoalOp
 from percept.harness.tier0 import CivilTime, Frame, MotionGate, gray_frame
 from percept.profile_wiring import resolve_watch_profile
 from percept.runtime.worker import RuntimeStats, run
+from percept.runtime.envelope import (
+    SourceEnvelope,
+    legacy_audio_envelope,
+    legacy_video_envelope,
+)
 from percept.sourceprofile import (
     DEFAULT_SOURCE_REGISTRY,
     SourceProfile,
@@ -103,7 +109,48 @@ class VisionOnlyRecording(RecordingVision):
     SUPPORTS_FUSED_AUDIO_INPUT = False
 
 
+class _ClockedReplay(list):
+    clock_authority = "test.replay.shared"
+    clock_confidence = 1.0
+
+
 async def _collect(core: Percept, source, **kwargs):
+    if "audio_source" in kwargs:
+        if isinstance(source, (list, tuple)) and not isinstance(source, _ClockedReplay):
+            source = _ClockedReplay(
+                replace(
+                    item
+                    if type(item) is SourceEnvelope
+                    else legacy_video_envelope(
+                        item,
+                        source_id="video",
+                        sequence=sequence,
+                        observed_time=float(item[0]),
+                    ),
+                    clock_authority=_ClockedReplay.clock_authority,
+                    clock_confidence=_ClockedReplay.clock_confidence,
+                )
+                for sequence, item in enumerate(source)
+            )
+        audio_source = kwargs["audio_source"]
+        if isinstance(audio_source, (list, tuple)) and not isinstance(
+            audio_source, _ClockedReplay
+        ):
+            kwargs["audio_source"] = _ClockedReplay(
+                replace(
+                    item
+                    if type(item) is SourceEnvelope
+                    else legacy_audio_envelope(
+                        item,
+                        source_id="audio",
+                        sequence=sequence,
+                        observed_time=float(item[0]),
+                    ),
+                    clock_authority=_ClockedReplay.clock_authority,
+                    clock_confidence=_ClockedReplay.clock_confidence,
+                )
+                for sequence, item in enumerate(audio_source)
+            )
     return [incident async for incident in run(core, source=source, **kwargs)]
 
 

@@ -234,6 +234,29 @@ class RuntimeHealthEvent:
     data: dict[str, Any] | None = None
 
 
+class _UnsafeMixedTopologyError(ValueError):
+    """The worker rejected fused and non-fused Watches sharing split cognition owners."""
+
+    code = "unsafe_mixed_topology"
+
+    def __init__(
+        self,
+        *,
+        fused_goal_ids: tuple[str, ...],
+        non_fused_goal_ids: tuple[str, ...],
+        from_revision: int | None,
+        to_revision: int | None,
+    ) -> None:
+        self.fused_goal_ids = fused_goal_ids
+        self.non_fused_goal_ids = non_fused_goal_ids
+        self.from_revision = from_revision
+        self.to_revision = to_revision
+        super().__init__(
+            "mixed non-fused/fused Watches require the shared owner judgment pipeline; "
+            "this runtime refuses unsafe split cognition ownership"
+        )
+
+
 class _JudgeScheduler:
     """Off-loop judge dispatch (``run(judge_dispatch="async")``): the capture loop never awaits a
     network judgment.
@@ -406,14 +429,41 @@ class _JudgeScheduler:
         self._check_stall(t)
         if self._pending is not None:
             dropped_t = self._pending[0]
+            dropped_job = self._pending[1]
+            dropped_token = getattr(dropped_job, "token", None)
+            drop_data = {
+                "source": self._source,
+                "reason": "superseded_by_newer_admission",
+                "dropped_t": dropped_t,
+                "admitted_t": t,
+            }
+            if dropped_token is not None:
+                drop_data.update(
+                    {
+                        "admission_id": getattr(
+                            dropped_token, "admission_id", None
+                        ),
+                        "evidence_seq": getattr(
+                            dropped_token, "evidence_seq", None
+                        ),
+                        "goal_id": getattr(dropped_token, "goal_id", None),
+                        "slot": "pending",
+                    }
+                )
+                record_drop = getattr(
+                    self._core, "record_fused_admission_drop", None
+                )
+                if callable(record_drop):
+                    record_drop(
+                        dropped_job,
+                        reason="superseded_by_newer_admission",
+                        slot="pending",
+                    )
             if self._stats is not None:
                 self._stats.judge_superseded += 1  # latest wins: the older queued candidate is dropped
             self._trace.append((
                 "judge_superseded",
-                {
-                    "source": self._source, "reason": "superseded_by_newer_admission",
-                    "dropped_t": dropped_t, "admitted_t": t,
-                },
+                drop_data,
             ))
             self._mc_resolve(dropped_t)  # leaves the collector's pending map — it stopped waiting here
             funnel = getattr(self._core, "funnel", None)
@@ -2478,6 +2528,37 @@ async def _run_worker(
         if _audio_is_container(source) and _goals_want_audio(_source_goals()):
             audio_source = source
     runtime_bindings = getattr(core, "_watch_runtime_bindings", {})
+
+    def _live_watch_topology():
+        goals = list(_source_goals())
+        fused = [
+            goal
+            for goal in goals
+            if goal.id in runtime_bindings
+            and program_of(goal).perception.modality == "fused"
+        ]
+        non_fused = [
+            goal
+            for goal in goals
+            if program_of(goal).perception.modality != "fused"
+        ]
+        return fused, non_fused
+
+    def _guard_live_watch_topology(
+        *,
+        from_revision: int | None,
+        to_revision: int | None,
+    ):
+        fused, non_fused = _live_watch_topology()
+        if fused and non_fused:
+            raise _UnsafeMixedTopologyError(
+                fused_goal_ids=tuple(sorted(goal.id for goal in fused)),
+                non_fused_goal_ids=tuple(sorted(goal.id for goal in non_fused)),
+                from_revision=from_revision,
+                to_revision=to_revision,
+            )
+        return fused, non_fused
+
     compiled_audio_goals = [
         goal
         for goal in _source_goals()
@@ -2551,16 +2632,10 @@ async def _run_worker(
         if _has_fused
         else None
     )
-    non_fused_goals = [
-        goal
-        for goal in _source_goals()
-        if program_of(goal).perception.modality != "fused"
-    ]
-    if fused_goals and non_fused_goals:
-        raise ValueError(
-            "mixed non-fused/fused Watches require the shared owner judgment pipeline; "
-            "this runtime refuses unsafe split cognition ownership"
-        )
+    _guard_live_watch_topology(
+        from_revision=goals_revision,
+        to_revision=goals_revision,
+    )
     if fused_goals and (
         audio_tb is None or video_tb.resolved != audio_tb.resolved
     ):
@@ -2587,21 +2662,54 @@ async def _run_worker(
             )
         if goals_revision is None:
             raise ValueError("compiled fused Watches require a revisioned Goal registry")
+
+        def _iterable_clock_claim(media_source: Any) -> tuple[str, float] | None:
+            authority = getattr(media_source, "clock_authority", None)
+            confidence = getattr(media_source, "clock_confidence", None)
+            if authority is None and isinstance(media_source, (list, tuple)) and media_source:
+                if any(type(item) is not SourceEnvelope for item in media_source):
+                    return None
+                claims = {
+                    (item.clock_authority, item.clock_confidence)
+                    for item in media_source
+                }
+                if len(claims) != 1:
+                    return None
+                authority, confidence = next(iter(claims))
+            if (
+                type(authority) is not str
+                or not authority
+                or not isinstance(confidence, (int, float))
+                or isinstance(confidence, bool)
+                or not math.isfinite(float(confidence))
+            ):
+                return None
+            return authority, float(confidence)
+
+        _fused_requires_envelope_clock_claim = False
         if video_tb.resolved == "wall":
             _video_clock_authority = _audio_clock_authority = (
                 f"runtime.monotonic:{id(core)}"
             )
+            _fused_clock_confidence = 1.0
         elif isinstance(source, str) and isinstance(audio_source, str):
             _video_clock_authority = f"media:{source}"
             _audio_clock_authority = f"media:{audio_source}"
-        else:
-            # Deterministic iterable lanes explicitly author both event timelines into this run.
-            _video_clock_authority = _audio_clock_authority = (
-                f"runtime.replay:{id(core)}"
+            _fused_clock_confidence = (
+                1.0 if _video_clock_authority == _audio_clock_authority else 0.0
             )
-        _fused_clock_confidence = (
-            1.0 if _video_clock_authority == _audio_clock_authority else 0.0
-        )
+        else:
+            _fused_requires_envelope_clock_claim = True
+            video_claim = _iterable_clock_claim(source)
+            audio_claim = _iterable_clock_claim(audio_source)
+            if video_claim is None or audio_claim is None:
+                raise ValueError(
+                    "compiled fused Watches over separate iterable lanes require explicit "
+                    "matching clock_authority and clock_confidence proof before iteration"
+                )
+            _video_clock_authority, video_confidence = video_claim
+            _audio_clock_authority, audio_confidence = audio_claim
+            _fused_clock_confidence = min(video_confidence, audio_confidence)
         if (
             _video_clock_authority != _audio_clock_authority
             or _fused_clock_confidence < 1.0
@@ -3170,6 +3278,12 @@ async def _run_worker(
                 async for ingress in _audio_aiter(audio_source, **audio_kwargs):
                     submitted_unit = ingress.unit
                     envelope = ingress.envelope
+                    ingress_clock_authority = getattr(
+                        envelope, "clock_authority", None
+                    )
+                    ingress_clock_confidence = getattr(
+                        envelope, "clock_confidence", None
+                    )
                     canonical_ingress_unit = None
                     if compiled_audio_capability is not None:
                         from percept.audio_input import (
@@ -3359,6 +3473,16 @@ async def _run_worker(
                             timebase=ingress.legacy_timebase,
                         )
                     assert envelope is not None
+                    if _fused_syncs and _fused_requires_envelope_clock_claim and (
+                        ingress_clock_authority != _audio_clock_authority
+                        or ingress_clock_confidence is None
+                        or float(ingress_clock_confidence)
+                        != _fused_clock_confidence
+                    ):
+                        raise ValueError(
+                            "fused audio envelope changed or omitted its qualified "
+                            "clock authority/confidence"
+                        )
                     require_source_time = (
                         submitted_unit is None
                         and audio_tb is not None
@@ -3872,6 +3996,25 @@ async def _run_worker(
         _was_paused = False
         _fused_was_paused = False
         async for envelope in _aiter(source, capture_fps, **source_kwargs):
+            # A source iterator, voice command, or other task can author a Watch between
+            # frames.  Re-run the topology firewall before this envelope reaches the
+            # SourceTracker, any provider lane, or any runtime callback.  The later
+            # revision block repeats the same check after callback-bearing drain work.
+            envelope_revision = getattr(core.goals, "revision", goals_revision)
+            if envelope_revision != goals_revision:
+                _guard_live_watch_topology(
+                    from_revision=goals_revision,
+                    to_revision=envelope_revision,
+                )
+            if _fused_syncs and _fused_requires_envelope_clock_claim and (
+                envelope.clock_authority != _video_clock_authority
+                or envelope.clock_confidence is None
+                or float(envelope.clock_confidence) != _fused_clock_confidence
+            ):
+                raise ValueError(
+                    "fused video envelope changed or omitted its qualified "
+                    "clock authority/confidence"
+                )
             require_source_time = video_tb.resolved == "media"
             if envelope.modality in ("video", "audio") and envelope.modality != "video":
                 inspection = _video_source_tracker.exclude("source_modality_mismatch")
@@ -4094,6 +4237,13 @@ async def _run_worker(
             if goals_revision is not None:
                 rev = getattr(core.goals, "revision", goals_revision)
                 if rev != goals_revision:
+                    # Validate before generation changes, scheduler installation/removal,
+                    # gate rebuilding, or any callback.  A rejected revision therefore has
+                    # no runtime admission footprint.
+                    current_fused, _ = _guard_live_watch_topology(
+                        from_revision=goals_revision,
+                        to_revision=rev,
+                    )
                     if _fused_syncs:
                         _advance_fused_generation(
                             _FusedDiscontinuity.WATCH_REVISION,
@@ -4103,12 +4253,7 @@ async def _run_worker(
                             scheduler.invalidate_source_continuity(
                                 ("watch_revision",)
                             )
-                    current_fused = {
-                        goal.id: goal
-                        for goal in _source_goals()
-                        if goal.id in runtime_bindings
-                        and program_of(goal).perception.modality == "fused"
-                    }
+                    current_fused = {goal.id: goal for goal in current_fused}
                     if current_fused and not fused_goals:
                         raise ValueError(
                             "a fused Watch must be armed before percept.run starts so both media "

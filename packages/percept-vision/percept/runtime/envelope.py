@@ -71,6 +71,11 @@ class SourceEnvelope:
     # Audio provenance that must survive capture-envelope validation before ordered-unit ingestion.
     audio_direction: Literal["input", "output", "mixed", "unknown"] | None = None
     participant_id: str | None = None
+    # Optional adapter-authored calibration proof for fused media. Separate
+    # iterable lanes are not assumed to share a clock merely because one
+    # worker consumes them.
+    clock_authority: str | None = None
+    clock_confidence: float | None = None
 
     def __post_init__(self) -> None:
         """Own mutable media buffers even though callers may pass ``bytearray``/``memoryview``.
@@ -79,6 +84,19 @@ class SourceEnvelope:
         approve one byte sequence and the judge could later consume another.  Normalize the media
         carriers we understand at construction time.  Opaque objects remain caller-owned by design.
         """
+        if (self.clock_authority is None) != (self.clock_confidence is None):
+            raise ValueError(
+                "clock_authority and clock_confidence must be supplied together"
+            )
+        if self.clock_authority is not None and (
+            type(self.clock_authority) is not str
+            or not self.clock_authority
+            or not isinstance(self.clock_confidence, (int, float))
+            or isinstance(self.clock_confidence, bool)
+            or not math.isfinite(float(self.clock_confidence))
+            or not 0.0 <= float(self.clock_confidence) <= 1.0
+        ):
+            raise ValueError("invalid source clock calibration claim")
         payload = self.payload
         if isinstance(payload, (bytearray, memoryview)):
             object.__setattr__(self, "payload", bytes(payload))
