@@ -564,13 +564,28 @@ class FusedPureContinuityTests(unittest.TestCase):
         sync.accept(unit("audio", 1, 2.0))
         direct = (sync.bundle_for(first), sync.bundle_for(second))
 
+        # ``bundle_for`` may itself return a terminal ASK receipt once both watermarks close even
+        # when media coverage is incomplete.  Only WATERMARK_PENDING remains owned by the queue;
+        # count every other direct receipt exactly once instead of equating terminal with complete.
+        terminal_direct = tuple(
+            bundle
+            for bundle in direct
+            if "watermark_pending"
+            not in " ".join(uncertainty_codes(bundle)).lower()
+        )
         closed = (
-            tuple(bundle for bundle in direct if bundle.complete)
+            terminal_direct
             + sync.drain_ready()
             + sync.close()
         )
         self.assertEqual(len(closed), 2)
-        self.assertTrue(all(bundle.complete for bundle in closed))
+        self.assertTrue(
+            all(
+                "watermark_pending"
+                not in " ".join(uncertainty_codes(bundle)).lower()
+                for bundle in closed
+            )
+        )
         self.assertEqual(sync.close(), ())
 
     def test_eos_closes_unwatermarked_anchor_but_reports_nonempty_truncated_tail(self) -> None:
@@ -817,11 +832,43 @@ class FusedPureBoundsAndIdentityTests(unittest.TestCase):
         for seq in range(1, 20):
             sync.accept(unit("video", seq, float(seq + 1), payload=b"v"))
             sync.accept(unit("audio", seq, float(seq + 1), payload=b"aa"))
+
+        replayed = unit(
+            "video",
+            0,
+            1.0,
+            payload=b"v",
+            source_watermark=2.0,
+        )
+        self.assertIsNot(replayed, anchor)
+        self.assertEqual(
+            (
+                replayed.source_id,
+                replayed.source_epoch,
+                replayed.generation,
+                replayed.source_sequence,
+            ),
+            (
+                anchor.source_id,
+                anchor.source_epoch,
+                anchor.generation,
+                anchor.source_sequence,
+            ),
+        )
+        try:
+            replay_accepted = sync.accept(replayed)
+        except ValueError:
+            replay_accepted = False
+        self.assertFalse(replay_accepted)
+        with self.assertRaises((KeyError, ValueError)):
+            sync.bundle_for(replayed)
+
         try:
             sync.bundle_for(anchor)
         except (KeyError, ValueError):
             pass
         self.assertEqual(sync.drain_ready(), ())
+        self.assertEqual(sync.close(), ())
 
 
 if __name__ == "__main__":
