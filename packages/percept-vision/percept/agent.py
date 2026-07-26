@@ -221,7 +221,9 @@ class _JudgmentJob:
         if self.bundle is None:
             object.__setattr__(self, "bundle", self.evidence)
         if self.dispatch is None:
-            object.__setattr__(self, "dispatch", self.provider.dispatch)
+            object.__setattr__(
+                self, "dispatch", getattr(self.provider, "dispatch", None)
+            )
 
     @property
     def condition(self) -> str:
