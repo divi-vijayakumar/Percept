@@ -462,7 +462,7 @@ class MeasuredEvidenceBundleReport:
     def frontier_report(self) -> ViabilityFrontierReport:
         return self.frontier
 
-    def content_dict(self) -> dict[str, Any]:
+    def _unchecked_content_dict(self) -> dict[str, Any]:
         return {
             "schema": _SCHEMA,
             "method": self.method,
@@ -484,30 +484,52 @@ class MeasuredEvidenceBundleReport:
             "qualification_reason": "; ".join(self.authority_blockers),
         }
 
-    def evidence_dict(self) -> dict[str, Any]:
-        result = self.content_dict()
+    def _unchecked_evidence_dict(self) -> dict[str, Any]:
+        result = self._unchecked_content_dict()
         result["artifacts"] = [item.evidence_dict() for item in self.artifacts]
         result["coverage"] = [item.evidence_dict() for item in self.coverage]
         result["receipt_evidence_seals"] = list(self.receipt_evidence_seals)
         return result
 
+    def _validated_rederived(self) -> MeasuredEvidenceBundleReport:
+        return _rederive_measured_evidence_bundle(self)
+
+    def content_dict(self) -> dict[str, Any]:
+        """Return semantic content only after revalidating every descriptor-backed input."""
+
+        return self._validated_rederived()._unchecked_content_dict()
+
+    def evidence_dict(self) -> dict[str, Any]:
+        """Return exact evidence only after revalidating every descriptor-backed input."""
+
+        return self._validated_rederived()._unchecked_evidence_dict()
+
+    def _unchecked_content_sha256(self) -> str:
+        return _canonical_sha256(self._unchecked_content_dict())
+
+    def _unchecked_evidence_sha256(self) -> str:
+        return _canonical_sha256(self._unchecked_evidence_dict())
+
     @property
     def content_sha256(self) -> str:
         """Path- and run-time-neutral canonical hash of the bundle's semantic content."""
 
-        return _canonical_sha256(self.content_dict())
+        return self._validated_rederived()._unchecked_content_sha256()
 
     @property
     def evidence_sha256(self) -> str:
         """Exact hash additionally binding every descriptor-backed local input snapshot."""
 
-        return _canonical_sha256(self.evidence_dict())
+        return self._validated_rederived()._unchecked_evidence_sha256()
+
+    def _unchecked_to_dict(self) -> dict[str, Any]:
+        result = self._unchecked_evidence_dict()
+        result["content_sha256"] = self._unchecked_content_sha256()
+        result["evidence_sha256"] = self._unchecked_evidence_sha256()
+        return result
 
     def to_dict(self) -> dict[str, Any]:
-        result = self.evidence_dict()
-        result["content_sha256"] = self.content_sha256
-        result["evidence_sha256"] = self.evidence_sha256
-        return result
+        return self._validated_rederived()._unchecked_to_dict()
 
     def to_json(self, *, indent: int = 2) -> str:
         return json.dumps(self.to_dict(), indent=indent, sort_keys=True)
@@ -531,10 +553,23 @@ def _artifact(
 
 def _load_opaque_artifact(path: str | Path, role: str) -> MeasuredEvidenceArtifact:
     try:
-        loaded = load_json_file(path)
+        loaded = load_json_file(_stable_input_path(path))
     except SafeJSONInputError as exc:
         raise MeasuredEvidenceInputError(f"unsafe {role} artifact: {exc}") from exc
     return _artifact(role, _canonical_sha256(loaded.value), loaded.receipt)
+
+
+def _stable_input_path(path: str | Path) -> str:
+    """Capture a cwd-independent display path while retaining canonical descriptor identity."""
+
+    try:
+        raw = os.fspath(path)
+        _require(isinstance(raw, str), "input path must resolve to text")
+        return os.path.abspath(raw)
+    except MeasuredEvidenceInputError:
+        raise
+    except Exception as exc:
+        raise MeasuredEvidenceInputError(f"invalid evidence input path: {exc}") from exc
 
 
 def _receipt_case_signature(loaded: LoadedMatchedWatchReceipt) -> str:
@@ -603,7 +638,7 @@ def derive_measured_evidence_bundle(
         "receipt_paths must be a non-empty sequence of paths",
     )
     try:
-        manifest_loaded = load_json_file(viability_manifest_path)
+        manifest_loaded = load_json_file(_stable_input_path(viability_manifest_path))
     except SafeJSONInputError as exc:
         raise MeasuredEvidenceInputError(f"unsafe viability manifest: {exc}") from exc
     manifest = manifest_loaded.value
@@ -619,7 +654,7 @@ def derive_measured_evidence_bundle(
     loaded_receipts: list[LoadedMatchedWatchReceipt] = []
     for index, path in enumerate(receipt_paths):
         try:
-            loaded = load_matched_watch_receipt(path)
+            loaded = load_matched_watch_receipt(_stable_input_path(path))
         except MatchedWatchInputError as exc:
             raise MeasuredEvidenceInputError(
                 f"invalid matched-Watch receipt at index {index}: {exc}"
@@ -764,6 +799,46 @@ def derive_measured_evidence_bundle(
     )
 
 
+def _rederive_measured_evidence_bundle(
+    report: MeasuredEvidenceBundleReport,
+) -> MeasuredEvidenceBundleReport:
+    """Reconstruct a report from its recorded inputs and require an exact DTO match."""
+
+    try:
+        artifacts_by_role: dict[str, list[MeasuredEvidenceArtifact]] = {}
+        artifacts_by_id = {item.artifact_id: item for item in report.artifacts}
+        for artifact in report.artifacts:
+            artifacts_by_role.setdefault(artifact.role, []).append(artifact)
+        manifest_artifact = artifacts_by_role["viability_manifest"][0]
+        receipt_paths = [
+            artifacts_by_id[cell.receipt_artifact_id].input_receipt.path for cell in report.coverage
+        ]
+        optional_paths = {
+            role: (
+                artifacts_by_role[role][0].input_receipt.path
+                if artifacts_by_role.get(role)
+                else None
+            )
+            for role in ("corpus_report", "preregistration")
+        }
+    except (AttributeError, IndexError, KeyError, TypeError) as exc:
+        raise MeasuredEvidenceInputError(
+            f"measured-evidence report cannot identify its descriptor-backed inputs: {exc}"
+        ) from exc
+    rederived = derive_measured_evidence_bundle(
+        viability_manifest_path=manifest_artifact.input_receipt.path,
+        receipt_paths=receipt_paths,
+        corpus_report_path=optional_paths["corpus_report"],
+        preregistration_path=optional_paths["preregistration"],
+    )
+    _require(
+        rederived._unchecked_content_dict() == report._unchecked_content_dict()
+        and rederived._unchecked_evidence_dict() == report._unchecked_evidence_dict(),
+        "measured-evidence report no longer exactly matches its descriptor-backed inputs",
+    )
+    return rederived
+
+
 def write_measured_evidence_bundle(
     report: MeasuredEvidenceBundleReport,
     path: str | Path,
@@ -774,35 +849,10 @@ def write_measured_evidence_bundle(
         isinstance(report, MeasuredEvidenceBundleReport),
         "report must be a MeasuredEvidenceBundleReport",
     )
-    artifacts_by_role: dict[str, list[MeasuredEvidenceArtifact]] = {}
-    artifacts_by_id = {item.artifact_id: item for item in report.artifacts}
-    for artifact in report.artifacts:
-        artifacts_by_role.setdefault(artifact.role, []).append(artifact)
-    manifest_artifact = artifacts_by_role["viability_manifest"][0]
-    receipt_paths = [
-        artifacts_by_id[cell.receipt_artifact_id].input_receipt.canonical_path
-        for cell in report.coverage
-    ]
-    optional_paths = {
-        role: (
-            artifacts_by_role[role][0].input_receipt.canonical_path
-            if artifacts_by_role.get(role)
-            else None
-        )
-        for role in ("corpus_report", "preregistration")
-    }
-    rederived = derive_measured_evidence_bundle(
-        viability_manifest_path=manifest_artifact.input_receipt.canonical_path,
-        receipt_paths=receipt_paths,
-        corpus_report_path=optional_paths["corpus_report"],
-        preregistration_path=optional_paths["preregistration"],
+    rederived = _rederive_measured_evidence_bundle(report)
+    payload = (json.dumps(rederived._unchecked_to_dict(), indent=2, sort_keys=True) + "\n").encode(
+        "utf-8"
     )
-    _require(
-        rederived.content_dict() == report.content_dict()
-        and rederived.evidence_dict() == report.evidence_dict(),
-        "measured-evidence report no longer exactly matches its descriptor-backed inputs",
-    )
-    payload = (rederived.to_json() + "\n").encode("utf-8")
     _require(
         len(payload) <= _MAX_OUTPUT_BYTES,
         f"measured-evidence output exceeds the {_MAX_OUTPUT_BYTES}-byte limit",

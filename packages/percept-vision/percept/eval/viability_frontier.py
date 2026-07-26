@@ -6,8 +6,8 @@ windows. It does not choose a universal threshold: every archetype's policy and 
 must be preregistered in the input manifest.
 
 The evaluator reports rates and their exact integer denominators. It does not estimate monetary
-cost. This module is diagnostic-only: release qualification fails closed until a separately
-verified, provenance-preserving measured-evidence adapter is implemented.
+cost. This raw manifest-and-row path is diagnostic-only: release qualification fails closed because
+it does not consume a validated measured-evidence bundle or establish external release authority.
 """
 
 from __future__ import annotations
@@ -1222,8 +1222,8 @@ def evaluate_viability_frontier(
     policy_cleared = all(archetype.clears_policy for archetype in archetype_results)
     blockers = [
         (
-            f"release qualification is disabled until a separately verified "
-            f"{REQUIRED_MEASURED_ADAPTER} adapter supplies provenance-preserving matched evidence"
+            f"raw manifest-and-row evaluation does not consume a validated "
+            f"{REQUIRED_MEASURED_ADAPTER} bundle"
         ),
         (
             "manifest evidence_kind and preregistered fields are caller-declared metadata, "
@@ -1333,7 +1333,7 @@ def render_text(report: ViabilityFrontierReport) -> str:
             f"POLICY CLEARED: {str(report.policy_cleared).upper()}",
             f"LAUNCH QUALIFIED: {str(report.launch_qualified).upper()}",
             f"Reason: {report.qualification_reason}",
-            f"Required measured adapter/schema: {report.required_measured_adapter}",
+            f"Validated measured bundle schema: {report.required_measured_adapter}",
             "Qualification blockers:",
             *(f"- {blocker}" for blocker in report.qualification_blockers),
         ]
@@ -1355,8 +1355,8 @@ def _parser() -> argparse.ArgumentParser:
         "--require-launch-qualification",
         action="store_true",
         help=(
-            "return status 1; release qualification is unavailable until the separately verified "
-            "measured-evidence adapter is implemented"
+            "return status 1; raw manifest-and-row evaluation cannot establish launch "
+            "qualification without a validated measured-evidence bundle and external authority"
         ),
     )
     return parser

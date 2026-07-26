@@ -497,6 +497,10 @@ def test_relabeling_synthetic_as_measured_cannot_qualify_release(manifest, rows)
         report.required_measured_adapter in blocker
         for blocker in report.qualification_blockers
     )
+    assert any(
+        "does not consume a validated" in blocker for blocker in report.qualification_blockers
+    )
+    assert "until" not in report.qualification_reason
 
 
 def test_deleted_archetype_even_with_rows_deleted_is_thin_evidence(manifest, rows):

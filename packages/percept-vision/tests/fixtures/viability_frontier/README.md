@@ -13,9 +13,10 @@ dispatch can make multiple provider calls. The fixture can prove that matching, 
 policy evaluation, and Pareto selection work. It cannot qualify a launch or establish a measured
 operating point.
 
-Release qualification is unconditionally disabled until a separately verified
-`percept.eval.viability_frontier.measured_evidence/v1` adapter supplies provenance-preserving
-matched evidence. Relabeling this fixture as `measured` cannot bypass that blocker.
+Release qualification is unconditionally disabled on this raw manifest-and-row path because it
+does not consume a validated `percept.eval.viability_frontier.measured_evidence/v1` bundle or
+establish external release authority. Relabeling this fixture as `measured` cannot bypass that
+blocker.
 
 The manifest is schema v3. V3 intentionally requires the explicit `runtime_dispatches` field and
 renames the unbounded output metric to `judge_call_intensity`; v2 evidence is rejected rather than

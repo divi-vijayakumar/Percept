@@ -874,6 +874,17 @@ def test_measured_bundle_derives_exact_rows_and_keeps_authority_fail_closed(tmp_
     changed_judge["prompt_sha256"] = "sha256:" + "0" * 64
     # Structurally valid caller changes remain blocked by the descriptor re-derivation at write.
     structurally_valid_tamper = replace(report, judge_identity=changed_judge)
+    serialization_surfaces = {
+        "content_dict": structurally_valid_tamper.content_dict,
+        "evidence_dict": structurally_valid_tamper.evidence_dict,
+        "content_sha256": lambda: structurally_valid_tamper.content_sha256,
+        "evidence_sha256": lambda: structurally_valid_tamper.evidence_sha256,
+        "to_dict": structurally_valid_tamper.to_dict,
+        "to_json": structurally_valid_tamper.to_json,
+    }
+    for serialize in serialization_surfaces.values():
+        with pytest.raises(MeasuredEvidenceInputError, match="exactly matches"):
+            serialize()
     with pytest.raises(MeasuredEvidenceInputError, match="exactly matches"):
         write_measured_evidence_bundle(
             structurally_valid_tamper,
@@ -900,6 +911,38 @@ def test_measured_bundle_derives_exact_rows_and_keeps_authority_fail_closed(tmp_
     with pytest.raises(MeasuredEvidenceInputError, match="already exists"):
         write_measured_evidence_bundle(report, output)
     assert output.read_bytes() == original
+
+
+def test_relative_noncanonical_inputs_remain_serializable_and_writable_after_cwd_change(
+    tmp_path,
+    monkeypatch,
+):
+    source = tmp_path / "source"
+    manifest_path, receipt_paths = _write_measured_bundle(source)
+    monkeypatch.chdir(tmp_path)
+    relative_manifest = Path("source") / ".." / Path(os.path.relpath(manifest_path, tmp_path))
+    relative_receipts = [
+        Path("source") / ".." / Path(os.path.relpath(path, tmp_path)) for path in receipt_paths
+    ]
+
+    report = derive_measured_evidence_bundle(
+        viability_manifest_path=relative_manifest,
+        receipt_paths=relative_receipts,
+    )
+    recorded_paths = [item.input_receipt.path for item in report.artifacts]
+    assert all(os.path.isabs(path) for path in recorded_paths)
+    assert {item.input_receipt.canonical_path for item in report.artifacts} == {
+        str(manifest_path.resolve()),
+        *(str(path.resolve()) for path in receipt_paths),
+    }
+
+    unrelated_cwd = tmp_path / "unrelated-cwd"
+    unrelated_cwd.mkdir()
+    monkeypatch.chdir(unrelated_cwd)
+    assert json.loads(report.to_json())["evidence_sha256"] == report.evidence_sha256
+    output = tmp_path / "relative-input-bundle.json"
+    write_measured_evidence_bundle(report, output)
+    assert json.loads(output.read_text(encoding="utf-8")) == report.to_dict()
 
 
 def test_measured_bundle_rejects_relabelled_duplicate_underlying_cases(tmp_path):
