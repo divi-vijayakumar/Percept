@@ -88,7 +88,8 @@ def _sdk_trusted_in_process_provider(adapter: Any) -> bool:
     from .backends.fake import FakeVision
     from .offline import FixtureVision
 
-    return type(adapter) in (FakeVision, FixtureVision)
+    adapter_type = type(adapter)
+    return adapter_type is FakeVision or adapter_type is FixtureVision
 
 
 @dataclass
@@ -1738,9 +1739,11 @@ class Percept:
         if window is None or len(window) == 0:
             return []
         detected = await self._invoke_provider_call(
-            self.vision.detect_events,
+            None,
             (window.frames(), self.goals.active()),
             {},
+            operation="detect_events",
+            adapter=self.vision,
         )
         out: list[FireEvent] = []
         for ev in detected:
@@ -2396,7 +2399,7 @@ class Percept:
         )
         return _ObservationCandidate(
             token=token,
-            dispatch=self.vision.detect,
+            dispatch=None,
             frame=frozen_frame,
             goals=projected_goals,
             source_t=float(t),
@@ -2432,6 +2435,7 @@ class Percept:
                     ],
                 ),
                 {},
+                operation="detect",
                 adapter=candidate.token.adapter_token,
             )
             if not isinstance(observations, (list, tuple)):
@@ -2720,7 +2724,7 @@ class Percept:
             modality=str(modality),
             evidence=candidate,
             provider=_ProviderRequest(
-                dispatch=adapter.judge,
+                dispatch=None,
                 adapter=adapter,
                 condition=str(goal.condition),
                 frame=copy.deepcopy(candidate.frame),
@@ -2922,7 +2926,7 @@ class Percept:
             }
         )
         request_common = dict(
-            dispatch=adapter.judge,
+            dispatch=None,
             adapter=adapter,
             frame=frozen_frame,
             frames=frozen_strip,
@@ -2997,7 +3001,7 @@ class Percept:
             bound=bound,
             reducer_entity_id=None,
             provider=_ProviderRequest(
-                dispatch=adapter.judge,
+                dispatch=None,
                 adapter=adapter,
                 condition=str(goal.condition),
                 frame=copy.deepcopy(candidate.frame),
@@ -3907,9 +3911,11 @@ class Percept:
             if _stale():
                 return []
             observations = await self._invoke_provider_call(
-                self.vision.detect,
+                None,
                 (frame, active_goals),
                 {},
+                operation="detect",
+                adapter=self.vision,
             )
             self.graph.ingest(observations, frame, source, t=now)
             focus = self.graph.in_focus()
@@ -4432,15 +4438,14 @@ class Percept:
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
         *,
+        operation: str,
         adapter: Any = None,
     ) -> Any:
         """Invoke a provider outside the owner unless its trust is authenticated."""
-        adapter = adapter if adapter is not None else getattr(dispatch, "__self__", None)
-        adapter_type = type(adapter)
-        boundary = adapter_type.__dict__.get(
-            "RUNTIME_EXECUTION_BOUNDARY",
-            None,
-        )
+        if adapter is None:
+            raise ValueError(
+                "provider dispatch requires an explicit adapter identity"
+            )
         reviewed_test_capability = (
             self.__dict__.get(
                 "_reviewed_test_in_process_provider_capability"
@@ -4455,30 +4460,19 @@ class Percept:
             candidate is adapter for candidate in reviewed_instances
         )
         if reviewed_test_capability or trusted_instance:
+            if dispatch is None:
+                dispatch = getattr(adapter, operation)
             return await dispatch(*args, **kwargs)
-        if (
-            boundary is not None
-            and not (
-                type(boundary) is str
-                and boundary in ("in_process", "process")
-            )
-        ):
-            raise ValueError(
-                "provider RUNTIME_EXECUTION_BOUNDARY must be "
-                "'in_process' or 'process'"
-            )
-        if boundary == "in_process":
-            if not _sdk_trusted_in_process_provider(adapter):
-                raise ValueError(
-                    "in-process provider execution is reserved for "
-                    "authenticated SDK/test fixtures"
-                )
+        if _sdk_trusted_in_process_provider(adapter):
+            if dispatch is None:
+                dispatch = getattr(adapter, operation)
             return await dispatch(*args, **kwargs)
 
         from .runtime.provider_process import run_provider_process
 
         return await run_provider_process(
-            dispatch,
+            adapter,
+            operation,
             args,
             kwargs,
             watchdog_s=float(self.settings.provider.watchdog_s),
@@ -4528,6 +4522,7 @@ class Percept:
                 request.dispatch,
                 args,
                 kwargs,
+                operation="judge",
                 adapter=request.adapter,
             )
         except Exception as exc:  # noqa: BLE001 - one provider completion fails closed
@@ -5343,17 +5338,29 @@ class Percept:
         """
         ctx = self.executor.ctx(goal_id)
         log = list(ctx.process_log)
-        summarizer = getattr(self.vision, "summarize_process", None)
-        if not log or summarizer is None:
+        if not log:
             return ctx.running_answer
         goal = self.goals.get(goal_id)
         condition = goal.condition if goal is not None else ""
-        answer = await self._invoke_provider_call(
-            summarizer,
-            (condition, log),
-            {},
-            adapter=self.vision,
-        )
+        try:
+            answer = await self._invoke_provider_call(
+                None,
+                (condition, log),
+                {},
+                operation="summarize_process",
+                adapter=self.vision,
+            )
+        except AttributeError:
+            return ctx.running_answer
+        except Exception as exc:
+            from .runtime.provider_process import ProviderChildError
+
+            if (
+                type(exc) is ProviderChildError
+                and exc.exception_type == "AttributeError"
+            ):
+                return ctx.running_answer
+            raise
         ctx.running_answer = answer or ctx.running_answer
         if wipe:
             ctx.process_log = []
@@ -5491,11 +5498,12 @@ class Percept:
         binding = kwargs.pop("_binding", None)
         audio_dispatch = kwargs.pop("_audio_dispatch", None)
         t0 = self.clock()
-        dispatch = audio_dispatch if audio_dispatch is not None else adapter.judge
+        dispatch = audio_dispatch
         verdict = await self._invoke_provider_call(
             dispatch,
             tuple(args),
             kwargs,
+            operation="judge",
             adapter=adapter,
         )
         usage = judge_usage(verdict)

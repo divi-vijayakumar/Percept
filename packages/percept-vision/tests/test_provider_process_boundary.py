@@ -14,10 +14,20 @@ import pytest
 
 from percept import Goal, Percept
 from percept.adapters import Verdict
+from percept.contracts import (
+    AudioFrame,
+    Box,
+    ClipEvent,
+    Observation,
+    SubjectRef,
+)
+from percept.events import Event
 from percept.harness.tier0 import Frame, gray_frame
 from percept.runtime import provider_process
 from percept.runtime.provider_process import (
+    ProviderProcessError,
     ProviderWatchdogExpired,
+    register_process_provider,
     run_provider_process,
 )
 from percept.runtime.worker import _ACTIVE_CORE_RUNS
@@ -133,6 +143,14 @@ class _EscapeProvider:
             )
 
 
+register_process_provider(
+    _EscapeProvider,
+    module="tests.test_provider_process_boundary",
+    qualname="_EscapeProvider",
+    constructor_fields=("effects",),
+)
+
+
 class _ResistantProvider:
     def __init__(self, effects: str) -> None:
         self.effects = effects
@@ -150,6 +168,14 @@ class _ResistantProvider:
                 continue
 
 
+register_process_provider(
+    _ResistantProvider,
+    module="tests.test_provider_process_boundary",
+    qualname="_ResistantProvider",
+    constructor_fields=("effects",),
+)
+
+
 class _SelfCancellingProvider:
     async def __call__(self) -> str:
         current = asyncio.current_task()
@@ -162,6 +188,13 @@ class _SelfCancellingProvider:
         return "still-owned-by-parent"
 
 
+register_process_provider(
+    _SelfCancellingProvider,
+    module="tests.test_provider_process_boundary",
+    qualname="_SelfCancellingProvider",
+)
+
+
 def test_terminal_result_kills_every_async_thread_and_process_escape(
     tmp_path: Path,
 ) -> None:
@@ -170,6 +203,7 @@ def test_terminal_result_kills_every_async_thread_and_process_escape(
     async def drive() -> None:
         assert await run_provider_process(
             _EscapeProvider(effects),
+            "__call__",
             (),
             {},
             watchdog_s=1.0,
@@ -191,6 +225,7 @@ def test_watchdog_kills_and_reaps_indefinitely_resistant_provider(
         with pytest.raises(ProviderWatchdogExpired):
             await run_provider_process(
                 _ResistantProvider(effects),
+                "__call__",
                 (),
                 {},
                 watchdog_s=0.05,
@@ -212,6 +247,7 @@ def test_parent_cancellation_kills_and_reaps_before_propagation(
         invocation = asyncio.create_task(
             run_provider_process(
                 _ResistantProvider(effects),
+                "__call__",
                 (),
                 {},
                 watchdog_s=5.0,
@@ -250,6 +286,7 @@ def test_cancellation_during_subprocess_launch_still_obtains_and_reaps_handle(
         invocation = asyncio.create_task(
             run_provider_process(
                 _SelfCancellingProvider(),
+                "__call__",
                 (),
                 {},
                 watchdog_s=1.0,
@@ -272,6 +309,7 @@ def test_child_cannot_cancel_the_live_parent_owner_task() -> None:
 
         assert await run_provider_process(
             _SelfCancellingProvider(),
+            "__call__",
             (),
             {},
             watchdog_s=1.0,
@@ -307,6 +345,14 @@ class _UnmarkedCustomVision:
             confidence=0.99,
             evidence="isolated",
         )
+
+
+register_process_provider(
+    _UnmarkedCustomVision,
+    module="tests.test_provider_process_boundary",
+    qualname="_UnmarkedCustomVision",
+    constructor_fields=("effects",),
+)
 
 
 def test_worker_releases_core_only_after_provider_process_is_dead(
@@ -362,14 +408,387 @@ def test_custom_adapter_cannot_self_authorize_in_process_execution(
 
     async def drive() -> None:
         with pytest.raises(
-            ValueError,
-            match="reserved for authenticated SDK/test fixtures",
+            ProviderProcessError,
+            match="not explicitly registered",
         ):
             await core._invoke_provider_call(
                 vision.judge,
                 ("condition", "frame"),
                 {},
+                operation="judge",
+                adapter=vision,
             )
         assert vision.parent_visible_calls == 0
+
+    asyncio.run(drive())
+
+
+class _HostileAdapter:
+    def __init__(self, effects: str) -> None:
+        object.__setattr__(self, "effects", effects)
+
+    def _effect(self, label: str) -> None:
+        with open(
+            object.__getattribute__(self, "effects"),
+            "a",
+            encoding="utf-8",
+        ) as stream:
+            stream.write(label + "\n")
+
+    def __getattribute__(self, name: str) -> Any:
+        if name not in {"effects", "_effect"}:
+            object.__getattribute__(self, "_effect")("getattribute")
+        return object.__getattribute__(self, name)
+
+    @property
+    def __dict__(self) -> dict[str, Any]:
+        self._effect("dict-property")
+        return {}
+
+    def __reduce__(self) -> Any:
+        self._effect("reduce")
+        return (_HostileAdapter, (self.effects,))
+
+    def __repr__(self) -> str:
+        self._effect("repr")
+        return "hostile"
+
+
+class _HostileValue:
+    def __init__(self, effects: str) -> None:
+        object.__setattr__(self, "effects", effects)
+
+    def _effect(self, label: str) -> None:
+        with open(
+            object.__getattribute__(self, "effects"),
+            "a",
+            encoding="utf-8",
+        ) as stream:
+            stream.write(label + "\n")
+
+    def __getattribute__(self, name: str) -> Any:
+        if name not in {"effects", "_effect"}:
+            object.__getattribute__(self, "_effect")("getattribute")
+        return object.__getattribute__(self, name)
+
+    def __reduce__(self) -> Any:
+        self._effect("reduce")
+        return (_HostileValue, (self.effects,))
+
+    def __repr__(self) -> str:
+        self._effect("repr")
+        return "hostile"
+
+
+class _HostileString(str):
+    effects: str
+
+    def __new__(cls, value: str, effects: str) -> "_HostileString":
+        instance = super().__new__(cls, value)
+        instance.effects = effects
+        return instance
+
+    def __reduce__(self) -> Any:
+        with open(self.effects, "a", encoding="utf-8") as stream:
+            stream.write("reduce\n")
+        return (_HostileString, (str(self), self.effects))
+
+    def __repr__(self) -> str:
+        with open(self.effects, "a", encoding="utf-8") as stream:
+            stream.write("repr\n")
+        return "hostile"
+
+
+class _PoisonedResult:
+    def __init__(self, effects: str) -> None:
+        self.effects = effects
+
+    def __reduce__(self) -> Any:
+        with open(self.effects, "a", encoding="utf-8") as stream:
+            stream.write("reduce\n")
+        return (_PoisonedResult, (self.effects,))
+
+
+class _PoisonedResultProvider:
+    def __init__(self, effects: str) -> None:
+        self.effects = effects
+
+    async def __call__(self) -> Any:
+        return _PoisonedResult(self.effects)
+
+
+register_process_provider(
+    _PoisonedResultProvider,
+    module="tests.test_provider_process_boundary",
+    qualname="_PoisonedResultProvider",
+    constructor_fields=("effects",),
+)
+
+
+class _DtoProvider:
+    async def judge(
+        self,
+        condition: str,
+        frame: Any,
+        *,
+        roi: Box | None = None,
+        audio: AudioFrame | None = None,
+        context: dict[str, Any] | None = None,
+    ) -> Verdict:
+        valid = (
+            condition == "condition"
+            and frame == ("image/jpeg", b"jpeg")
+            and type(roi) is Box
+            and type(audio) is AudioFrame
+            and context == {"strict": True}
+        )
+        return Verdict(
+            satisfied=valid,
+            confidence=0.9,
+            evidence="typed",
+            usage={"input_tokens": 3},
+            events=[ClipEvent(0.25, 0.5, "motion")],
+            subject=SubjectRef(
+                scheme="content",
+                namespace="camera",
+                key="subject-1",
+                resolution="bound",
+                scope="source",
+                strategy="test",
+                confidence=0.8,
+            ),
+            value={"raw": b"value"},
+        )
+
+    async def detect(
+        self,
+        _frame: Any,
+        _goals: list[Goal],
+    ) -> list[Observation]:
+        return [Observation("thing", Box(0.1, 0.2, 0.3, 0.4), 0.75)]
+
+    async def detect_events(
+        self,
+        _frames: list[Any],
+        _goals: list[Goal],
+    ) -> list[Event]:
+        return [Event("motion", 1.25, ["subject-1"], 0.8, "event-1")]
+
+
+register_process_provider(
+    _DtoProvider,
+    module="tests.test_provider_process_boundary",
+    qualname="_DtoProvider",
+)
+
+
+def test_typed_media_and_provider_dtos_round_trip_without_codecs() -> None:
+    goal = Goal(id="g", condition="condition", say="seen")
+
+    async def drive() -> None:
+        adapter = _DtoProvider()
+        verdict = await run_provider_process(
+            adapter,
+            "judge",
+            ("condition", ("image/jpeg", b"jpeg")),
+            {
+                "roi": Box(0.0, 0.0, 1.0, 1.0),
+                "audio": AudioFrame(pcm=b"\x00\x00"),
+                "context": {"strict": True},
+            },
+            watchdog_s=1.0,
+        )
+        assert verdict.satisfied is True
+        assert verdict.events == [ClipEvent(0.25, 0.5, "motion")]
+        assert verdict.subject is not None
+        assert verdict.subject.key == "subject-1"
+        assert verdict.value == {"raw": b"value"}
+
+        observations = await run_provider_process(
+            adapter,
+            "detect",
+            (gray_frame(2, 2, 0), [goal]),
+            {},
+            watchdog_s=1.0,
+        )
+        assert observations == [
+            Observation("thing", Box(0.1, 0.2, 0.3, 0.4), 0.75)
+        ]
+
+        events = await run_provider_process(
+            adapter,
+            "detect_events",
+            ([gray_frame(2, 2, 0)], [goal]),
+            {},
+            watchdog_s=1.0,
+        )
+        assert events == [
+            Event("motion", 1.25, ["subject-1"], 0.8, "event-1")
+        ]
+
+    asyncio.run(drive())
+
+
+def test_hostile_unregistered_adapter_has_zero_parent_effect(
+    tmp_path: Path,
+) -> None:
+    effects = tmp_path / "hostile-adapter.txt"
+
+    async def drive() -> None:
+        with pytest.raises(
+            ProviderProcessError,
+            match="not explicitly registered",
+        ):
+            await run_provider_process(
+                _HostileAdapter(str(effects)),
+                "__call__",
+                (),
+                {},
+                watchdog_s=1.0,
+            )
+
+    asyncio.run(drive())
+    assert not effects.exists()
+
+
+@pytest.mark.parametrize("location", ["frame", "context"])
+def test_hostile_frame_or_context_has_zero_parent_effect(
+    tmp_path: Path,
+    location: str,
+) -> None:
+    effects = tmp_path / f"hostile-{location}.txt"
+    adapter_effects = tmp_path / f"adapter-{location}.txt"
+    hostile = _HostileValue(str(effects))
+    args = ("condition", hostile if location == "frame" else "frame")
+    kwargs = {} if location == "frame" else {"context": {"value": hostile}}
+
+    async def drive() -> None:
+        with pytest.raises(
+            ProviderProcessError,
+            match="outside the reviewed wire schema",
+        ):
+            await run_provider_process(
+                _UnmarkedCustomVision(str(adapter_effects)),
+                "judge",
+                args,
+                kwargs,
+                watchdog_s=1.0,
+            )
+
+    asyncio.run(drive())
+    assert not effects.exists()
+    assert not adapter_effects.exists()
+
+
+def test_string_subclass_reducer_is_rejected_without_parent_effect(
+    tmp_path: Path,
+) -> None:
+    effects = tmp_path / "hostile-string.txt"
+    adapter_effects = tmp_path / "string-adapter.txt"
+
+    async def drive() -> None:
+        with pytest.raises(
+            ProviderProcessError,
+            match="outside the reviewed wire schema",
+        ):
+            await run_provider_process(
+                _UnmarkedCustomVision(str(adapter_effects)),
+                "judge",
+                (_HostileString("condition", str(effects)), "frame"),
+                {},
+                watchdog_s=1.0,
+            )
+
+    asyncio.run(drive())
+    assert not effects.exists()
+    assert not adapter_effects.exists()
+
+
+def test_child_poisoned_result_never_executes_a_reducer(
+    tmp_path: Path,
+) -> None:
+    effects = tmp_path / "poisoned-result.txt"
+
+    async def drive() -> None:
+        result = await run_provider_process(
+            _PoisonedResultProvider(str(effects)),
+            "__call__",
+            (),
+            {},
+            watchdog_s=1.0,
+        )
+        assert result.exception_type == "unsupported completion"
+
+    asyncio.run(drive())
+    assert not effects.exists()
+
+
+def test_malformed_completion_json_fails_closed() -> None:
+    with pytest.raises(
+        ProviderProcessError,
+        match="malformed JSON",
+    ):
+        provider_process._decode_provider_result(b'{"schema":1')
+
+
+def test_oversized_request_fails_before_launch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    effects = tmp_path / "oversized-adapter.txt"
+    monkeypatch.setattr(provider_process, "_MAX_REQUEST_BYTES", 32)
+
+    async def drive() -> None:
+        with pytest.raises(
+            ProviderProcessError,
+            match="process boundary limit",
+        ):
+            await run_provider_process(
+                _UnmarkedCustomVision(str(effects)),
+                "judge",
+                ("condition", b"x" * 64),
+                {},
+                watchdog_s=1.0,
+            )
+
+    asyncio.run(drive())
+    assert not effects.exists()
+
+
+@pytest.mark.parametrize("payload", [b"", b"\x00\x00", b"x"])
+def test_truncated_completion_frame_fails_closed(payload: bytes) -> None:
+    async def drive() -> None:
+        reader = asyncio.StreamReader()
+        reader.feed_data(payload)
+        reader.feed_eof()
+        with pytest.raises(
+            ProviderProcessError,
+            match="exited before returning",
+        ):
+            await provider_process._read_frame(
+                reader,
+                time.monotonic() + 1.0,
+            )
+
+    asyncio.run(drive())
+
+
+def test_oversized_completion_frame_fails_before_body_read() -> None:
+    async def drive() -> None:
+        reader = asyncio.StreamReader()
+        reader.feed_data(
+            provider_process._FRAME_HEADER.pack(
+                provider_process._MAX_RESULT_BYTES + 1
+            )
+        )
+        reader.feed_eof()
+        with pytest.raises(
+            ProviderProcessError,
+            match="oversized completion",
+        ):
+            await provider_process._read_frame(
+                reader,
+                time.monotonic() + 1.0,
+            )
 
     asyncio.run(drive())

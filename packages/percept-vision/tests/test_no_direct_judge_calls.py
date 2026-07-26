@@ -5,7 +5,9 @@
 finishes before the result is returned.  No ``<expr>.judge(...)`` call may remain in the parent.
 
 This test parses ``agent.py`` with :mod:`ast`: it rejects every direct ``.judge(...)`` call and pins
-that ``_timed_judge`` passes ``adapter.judge`` as data to ``_invoke_provider_call``.
+that ``_timed_judge`` passes an authenticated operation name plus adapter identity to
+``_invoke_provider_call``. The parent must not even retrieve an untrusted ``adapter.judge`` bound
+method before the process boundary.
 """
 from __future__ import annotations
 
@@ -61,7 +63,7 @@ class NoDirectJudgeCallsTest(unittest.TestCase):
             ),
         )
 
-    def test_timed_judge_routes_adapter_judge_through_provider_boundary(self):
+    def test_timed_judge_routes_authenticated_operation_through_boundary(self):
         lo, hi = _timed_judge_span()
         boundary_calls = [
             node
@@ -75,9 +77,31 @@ class NoDirectJudgeCallsTest(unittest.TestCase):
             and node.attr == "judge"
             and lo <= node.lineno <= hi
         ]
+        operation_keywords = [
+            keyword
+            for call in boundary_calls
+            for keyword in call.keywords
+            if keyword.arg == "operation"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value == "judge"
+        ]
+        adapter_keywords = [
+            keyword
+            for call in boundary_calls
+            for keyword in call.keywords
+            if keyword.arg == "adapter"
+            and isinstance(keyword.value, ast.Name)
+            and keyword.value.id == "adapter"
+        ]
         self.assertTrue(
-            boundary_calls and judge_references,
-            "expected _timed_judge to pass adapter.judge to _invoke_provider_call",
+            boundary_calls and operation_keywords and adapter_keywords,
+            "expected _timed_judge to pass operation='judge' and the "
+            "adapter identity to _invoke_provider_call",
+        )
+        self.assertEqual(
+            judge_references,
+            [],
+            "the parent must not retrieve adapter.judge before containment",
         )
 
 

@@ -146,25 +146,39 @@ per-plugin errors), so an adapter that raises at import time simply *does not ap
 
 ### Execution-boundary migration
 
-Vision methods now execute in a fresh, disposable provider process by default. This also applies to
-custom and third-party adapters that do not declare a boundary. Percept kills and joins that process
-before it accepts a result, reports a failure, propagates cancellation, releases the core lease, or
-returns from the stream. Provider-created Tasks, callbacks, threads, executors, and `finally`
-descendants therefore cannot outlive a terminal runtime result.
+Vision methods now execute in a fresh, disposable provider process by default. Percept kills and
+joins that process before it accepts a result, reports a failure, propagates cancellation, releases
+the core lease, or returns from the stream. Provider-created Tasks, callbacks, threads, executors,
+and `finally` descendants therefore cannot outlive a terminal runtime result.
 
-Custom adapters must consequently be importable and pickle-serializable together with each call's
-arguments. Keep client construction lazy and keep live locks, sockets, event loops, Tasks, and
-thread-pool objects out of adapter instance state. Mutations made by `judge`, `detect`, or
-`detect_events` happen in the disposable child and are not reflected on the parent adapter object;
-use returned SDK DTOs, tracing, or another explicit IPC sink for observations instead of inspecting
-an in-memory call ledger.
+Custom and third-party adapters must opt into an explicit reconstruction contract:
+
+```python
+from percept.runtime.provider_process import register_process_provider
+
+register_process_provider(
+    MyVision,
+    module="myvlm.vision",
+    qualname="MyVision",
+    constructor_fields=("model",),
+)
+```
+
+`constructor_fields` names plain instance-dictionary fields that are passed back to the imported
+class as keyword arguments in the child. Their values, and every provider call argument, must be
+exact supported primitives or SDK media/contract DTOs. Percept uses bounded canonical JSON for both
+directions; it never pickles the adapter, its arguments, or its result. An unregistered custom
+adapter, a subclassed primitive, an injected client/socket/lock, or an unsupported opaque frame
+fails closed before provider code runs. Keep client construction lazy in the child. Mutations made
+by `judge`, `detect`, or `detect_events` are not reflected on the parent adapter object; use returned
+SDK DTOs, tracing, or another explicit IPC sink instead of an in-memory call ledger.
 
 `RUNTIME_EXECUTION_BOUNDARY = "process"` may be declared to document the contract, but it is already
-the default. `"in_process"` is not a public opt-out: the runtime authenticates that request against
-an exact SDK-owned offline fixture (or an explicitly reviewed internal test capability) and rejects
-an untrusted adapter that attempts to claim it. This is an intentional safety-breaking migration:
-an older adapter whose object graph is not serializable now fails closed rather than regaining
-access to the runtime owner's Task and cancellation authority.
+the default. `"in_process"` is not a public opt-out: the runtime authenticates exact SDK-owned
+offline fixtures (or an explicitly reviewed internal test capability) and ignores an untrusted
+adapter's self-asserted marker. This is an intentional safety-breaking migration: an older adapter
+without an explicit reconstruction registration now fails closed rather than regaining access to
+the runtime owner's Task and cancellation authority.
 
 ---
 
