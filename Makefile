@@ -1,4 +1,4 @@
-# percept — CI lanes (impl plan §0)
+# percept — public CI lanes
 #   L1 unit  : OUR deterministic logic, fakes only, no keys, <2s  -> `make test`
 #   L2 live  : backend INTELLIGENCE + integration, real+gated     -> `PERCEPT_LIVE=1 make eval-live`
 #   L3 e2e   : the real system a user drives, headless            -> `make e2e`
@@ -54,7 +54,7 @@ test-all: test test-js
 # --------------------------------------------------------------------------------------------------
 # Profile-acceptance CI gate — CAPABILITY assertions, not a statistical bar.
 #
-# Runs the Y16 task-level capability suite (9 capabilities over percept.harness.synthetic.corpora,
+# Runs the task-level capability suite (9 capabilities over percept.harness.synthetic.corpora,
 # replayed through a REAL ScriptedJudge standing in for a perfect classifier — what's under test is
 # the deterministic runtime: EpisodeLog, percept.claims, interval_coverage, Gate, BehaviorExecutor)
 # plus the synthetic-fixture validity smoke test those capabilities are built on. Every assertion here

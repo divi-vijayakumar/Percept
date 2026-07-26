@@ -1,6 +1,7 @@
-"""Board card DS2 — AMI Meeting Corpus (NXT) -> Percept fixture transform.
+"""AMI Meeting Corpus (NXT) -> Percept fixture-transform tests.
 
-Proves the card's promises against the COMMITTED synthetic NXT sample (no real dataset, no network):
+Proves the public transform contract against the COMMITTED synthetic NXT sample (no real dataset,
+no network):
 
 1. annotation -> fixture mapping is correct (headings -> conditions; ABSTRACT skipped; unlinked acts
    drop; the same act linked under two headings yields two key-disjoint episodes);

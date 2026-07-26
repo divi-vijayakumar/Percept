@@ -1,11 +1,10 @@
 """``meeting_observation@1`` — a SELF-CONTAINED :class:`~percept.domain_pack.DomainPack` scaffold for
-recorded-meeting evaluation (board card DS2).
+recorded-meeting evaluation.
 
 This module deliberately does NOT register itself. It is dev tooling, it lives outside the wheel, and
-its sibling registry files (``percept/packs_default.py``, ``percept/source_profiles_default.py``) are
-owned by other cards — so it exports :data:`MEETING_OBSERVATION_V1` and a
-:func:`register_meeting_pack` helper, and the one-line wiring is a documented follow-up (see the
-module ``__all__`` / this package's ``README.md``), never an import side effect.
+must not mutate the process-wide default registries as an import side effect. It exports
+:data:`MEETING_OBSERVATION_V1` and a :func:`register_meeting_pack` helper instead; see the package
+``README.md`` for explicit registration.
 
 Three templates, one per condition the AMI transform emits, all built from the EXISTING episode
 ("count") sense — no new temporal shape is invented here:

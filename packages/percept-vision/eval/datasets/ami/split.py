@@ -1,4 +1,4 @@
-"""Pre-registered, MEETING-disjoint held-out split for the AMI fixtures (board card DS2).
+"""Pre-registered, MEETING-disjoint held-out split for the AMI fixtures.
 
 The one rule that protects the trust metric on a meeting corpus: split by MEETING, never by
 utterance or dialogue act. Two dialogue acts from the same meeting share a speaker, a room and a

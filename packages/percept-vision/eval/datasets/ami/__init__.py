@@ -1,4 +1,4 @@
-"""AMI Meeting Corpus (NXT) -> Percept recorded-meeting fixtures + pack (board card DS2).
+"""AMI Meeting Corpus (NXT) -> Percept recorded-meeting fixtures and domain pack.
 
 Public surface:
 

@@ -25,39 +25,26 @@ python3 -m build
 - [ ] Top-level of the sdist is only: `LICENSE`, `README.md`, `PKG-INFO`, `pyproject.toml`,
       `setup.cfg`, `percept/`, `tests/`, `*.egg-info/`.
 - [ ] No `.env`, no `.pem`/`.key`, no datasets (Charades / Ego4D), no `.mp4`, no eval fixtures,
-      no internal planning docs.
+      and no files outside the documented package surface.
 
-## 3. Artifact **content** — the leak class a file manifest cannot catch
+## 3. Artifact content
 
-> **Learned the hard way on a pre-1.0 release.** That audit checked the sdist *file list*, found it
-> clean (276 files, no keys, no datasets), and passed. It was looking for files that shouldn't ship. The
-> actual leak was inside files that **should** ship: commercial-strategy language written into source
-> docstrings — "the raw material of the **moat**", "so the **paid side** can price escalations",
-> "`good: bool` … (False -> **billing credit on the paid side**)". A file-manifest check is
-> structurally incapable of catching this, because every file involved was supposed to be there.
->
-> It was worse than a stray comment for two reasons. First, `percept/contracts/` docstrings are the
-> **source** of the generated JSON schemas, so one class docstring propagated the phrase "the OSS
-> flywheel's keystone" into **26 published schema files** as a user-facing `description` — API
-> documentation, not an internal note. Generated artifacts amplify a content leak; check the generated
-> output too, not only the source it came from. Second, it shipped to PyPI, where releases are
-> effectively permanent — mirrors and indexes retain the text, so yanking would not have retracted it.
->
-> Scrub content before the upload, because after it there is no fix, only a follow-up release.
+File names alone do not prove that published content is appropriate. Docstrings become API
+documentation, and contract docstrings also feed generated JSON Schema descriptions. Audit source,
+generated files, and built artifacts before upload.
 
-- [ ] No commercial/strategy language in the artifact:
+- [ ] The public-content policy passes over shipped source and the repository's public documentation,
+      tests, examples, and evaluation tooling:
       ```bash
-      grep -rInE '(moat|flywheel|paid side|paid tier|OSS side|monetiz|billing credit|price escalation|upsell|free tier|enterprise tier|go-to-market|GTM|competitor|ARR|runway|TAM)' /tmp/rc
+      cd packages/percept-vision
+      python3 -m pytest -q tests/test_no_card_ids.py
       ```
-- [ ] No dangling citations to non-public documents (private specs, plans, ticket IDs, board cards).
-      Every `§`/ticket reference in shipped source should resolve to something a reader can actually
-      open, or be rewritten as self-describing prose:
-      ```bash
-      grep -rInE '(Viability §|spec §|impl plan §|PCPT-[0-9]+|board card|direction doc)' /tmp/rc
-      ```
-- [ ] The ADR set is internal (`internal-docs/adr/`, gitignored), so any `ADR-NNN` cited in shipped
-      source or docs is **self-describing prose** (name + rationale) or points to public code — never a
-      link to a non-public `docs/adr/` path.
+- [ ] Every work-item or section citation in published content resolves to a tracked public document;
+      otherwise, replace it with self-contained technical prose.
+- [ ] `docs/adr/` is a tracked, public part of the repository. Keep ADR citations when they identify a
+      real public ADR, and preserve the decision's technical rationale.
+- [ ] The same policy passes against the unpacked sdist and wheel contents. Generated schemas count as
+      published API content, not build by-products.
 - [ ] Generated schemas regenerate clean and match the source:
       ```bash
       python3 -m percept.contracts.jsonschema && git diff --exit-code -- percept/contracts/schema

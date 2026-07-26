@@ -15,8 +15,8 @@ schema, so each transform is unit-testable with no download and no network.
 Sub-packages:
 
 - :mod:`eval.datasets.meva` — MEVA (Multiview Extended Video with Activities) -> facility_observation
-  (board card DS1).
+  evaluation fixtures.
 - :mod:`eval.datasets.ami` — the AMI Meeting Corpus (NXT format) -> a recorded-meeting / conversation
-  pack (board card DS2).
-- :mod:`eval.datasets.guiworld` — GUI-World -> a screen_document pack (board card DS3).
+  pack.
+- :mod:`eval.datasets.guiworld` — GUI-World -> a screen_document pack.
 """

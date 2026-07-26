@@ -1,4 +1,4 @@
-"""Regenerate the committed synthetic AMI NXT sample + the fixtures it produces (board card DS2).
+"""Regenerate the committed synthetic AMI NXT sample and the fixtures it produces.
 
 This is NOT the AMI corpus. It is a handful of NXT-format-REPRESENTATIVE records — words +
 dialogue-acts + an abstractive summary + summary links — small enough to commit, real enough in

@@ -1,4 +1,4 @@
-"""AMI Meeting Corpus (NXT format) -> Percept ``Fixture`` transform (board card DS2).
+"""AMI Meeting Corpus (NXT format) -> Percept ``Fixture`` transform.
 
 WHAT THIS READS (reference: groups.inf.ed.ac.uk/ami — the NXT annotation stand-off format):
 

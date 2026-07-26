@@ -1,4 +1,4 @@
-# AMI Meeting Corpus → Percept fixtures (board card DS2)
+# AMI Meeting Corpus → Percept fixtures
 
 Dev tooling. **Not** shipped in the wheel. Downloads nothing, calls no model, runs no paid eval —
 build code + a small committed synthetic sample + unit tests only.
@@ -82,10 +82,10 @@ The `meeting_observation@1` pack is for **recorded** meeting evaluation. The shi
 (two speakers can collapse to one entity) and goals judge serially at ~24s/turn, so a live conversation
 outruns the watch. This pack makes **no live-conversation claim**.
 
-## Registry-wiring follow-up (one line, applied by a human/Fable)
+## Explicit registry wiring
 
 The pack is **not** auto-registered — this dev-tooling module must not mutate the shared process
-registry that the sibling registry cards (DS1/DS3) own. To wire it in, add one line to
+registry as an import side effect. To wire it in, add one line to
 `percept/packs_default.py` (alongside `register_domain_pack(FACILITY_OBSERVATION_V1)`):
 
 ```python

@@ -1,4 +1,4 @@
-"""Committed synthetic AMI NXT sample + the fixtures it produces (board card DS2).
+"""Committed synthetic AMI NXT sample and the fixtures it produces.
 
 - ``nxt/`` — a handful of NXT-format-representative annotation files (words, dialogue-acts,
   abstractive summary, summary links). NOT the real corpus; downloads nothing.
