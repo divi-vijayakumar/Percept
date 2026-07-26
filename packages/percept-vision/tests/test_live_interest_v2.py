@@ -7,10 +7,10 @@ import threading
 
 import pytest
 
-from percept import Goal
+from percept import Goal, InterestIntervalConfig, Tier0MotionInterest
 from percept.adapters import Verdict
 from percept.backends.fake import FakeVision
-from percept.edge.tier0 import CivilTime, gray_frame
+from percept.edge.tier0 import CivilTime, GatedWatchLoop, gray_frame
 from percept.goals import GoalOp
 from percept.harness import tier0 as tier0_module
 from percept.runtime import (
@@ -249,7 +249,8 @@ async def test_fixed_cadence_wait_has_typed_cadence_reason() -> None:
         "interest.entered",
         "interest.exited",
     ]
-    assert events[0].reason == "fixed"
+    assert events[0].reason == "fixed_cadence"
+    assert events[0].admission_cause == "fixed"
     assert events[-1].reason == "cadence_limited"
     assert events[-1].sequence_end == 0
     assert events[-1].event_sequence == 1
@@ -275,6 +276,40 @@ async def test_reconnect_reentry_gets_a_distinct_epoch_interval() -> None:
     assert events[0].interval_id != events[2].interval_id
     assert events[0].source_epoch == 0
     assert events[2].source_epoch == 1
+
+
+@pytest.mark.asyncio
+async def test_replay_and_live_share_the_motion_lifecycle_vocabulary() -> None:
+    replay_interest = Tier0MotionInterest(
+        source="camera",
+        config=InterestIntervalConfig(enter_threshold=0.7, exit_threshold=0.2),
+    )
+    replay_core = _core("watch")
+    replay = await GatedWatchLoop(
+        replay_core,
+        list(replay_core.goals.active()),
+        threshold=0.7,
+        source="camera",
+        interest=replay_interest,
+    ).run(
+        [(10.0, BLACK), (11.0, WHITE), (12.0, BLACK)],
+        interest_stream_epoch="video:test:0",
+        interest_observed_times=(100.0, 101.0, 102.0),
+    )
+    live = await _collect(
+        [
+            _envelope(0, BLACK),
+            _envelope(1, WHITE),
+            _envelope(2, BLACK),
+        ]
+    )
+    assert [event.kind for event in live] == [
+        event.kind for event in replay.interest_events
+    ]
+    assert [event.reason for event in live] == [
+        event.reason for event in replay.interest_events
+    ]
+    assert live[0].admission_cause == "motion"
 
 
 @pytest.mark.asyncio
@@ -487,6 +522,21 @@ async def _drain_run(core, source, subscription) -> None:
         pass
 
 
+def _assert_balanced_lifecycle(events) -> None:
+    active = set()
+    for event in events:
+        if event.kind == "interest.entered":
+            assert event.interval_id not in active
+            active.add(event.interval_id)
+        elif event.kind == "interest.updated":
+            assert event.interval_id in active
+        else:
+            assert event.kind == "interest.exited"
+            assert event.interval_id in active
+            active.remove(event.interval_id)
+    assert active == set()
+
+
 @pytest.mark.asyncio
 async def test_terminal_coordinate_uses_last_admitted_unit_after_hook_failure() -> None:
     subscription = InterestSubscription()
@@ -532,9 +582,119 @@ async def test_bounded_channel_fails_loud_and_reserves_terminal_exit() -> None:
         )
     events = [event async for event in subscription]
     assert subscription.closed is True
-    assert events[0].kind == "interest.entered"
-    assert events[-1].kind == "interest.exited"
+    assert [event.kind for event in events] == [
+        "interest.entered",
+        "interest.updated",
+        "interest.exited",
+    ]
     assert events[-1].reason == "worker_error"
+    assert events[-1].sequence_end == 2
+    _assert_balanced_lifecycle(events)
+
+
+@pytest.mark.asyncio
+async def test_overflow_preserves_multi_watch_update_and_new_interval_before_closure() -> None:
+    core = _core("a")
+    added = False
+
+    def add_watch_on_frame(t, _frame) -> None:
+        nonlocal added
+        if t == 11.0 and not added:
+            added = True
+            core.add_goal(Goal(id="b", condition="b condition", say="b fired"))
+
+    subscription = InterestSubscription(max_batches=1)
+    with pytest.raises(InterestBackpressureError):
+        async for _ in run(
+            core,
+            source=[_envelope(0, BLACK), _envelope(1, WHITE), _envelope(2, BLACK)],
+            on_frame=add_watch_on_frame,
+            interest_subscription=subscription,
+            judge_dispatch="inline",
+        ):
+            pass
+    events = [event async for event in subscription]
+    assert [(event.watch_id, event.kind) for event in events] == [
+        ("a", "interest.entered"),
+        ("a", "interest.updated"),
+        ("b", "interest.entered"),
+        ("a", "interest.exited"),
+        ("b", "interest.exited"),
+    ]
+    assert [event.reason for event in events[-2:]] == ["worker_error", "worker_error"]
+    _assert_balanced_lifecycle(events)
+
+
+@pytest.mark.asyncio
+async def test_overflow_preserves_rejected_signal_loss_exit() -> None:
+    subscription = InterestSubscription(max_batches=1)
+    with pytest.raises(InterestBackpressureError):
+        await _drain_run(
+            _core("a"),
+            [_envelope(0, BLACK), _envelope(1, WHITE), _envelope(2, WHITE)],
+            subscription,
+        )
+    events = [event async for event in subscription]
+    assert [event.kind for event in events] == [
+        "interest.entered",
+        "interest.exited",
+    ]
+    assert events[-1].reason == "signal_lost"
+    _assert_balanced_lifecycle(events)
+
+
+@pytest.mark.asyncio
+async def test_overflow_preserves_admission_change_before_new_terminal_exit() -> None:
+    core = _core("a")
+    changed = False
+
+    def change_admission_on_frame(t, _frame) -> None:
+        nonlocal changed
+        if t == 11.0 and not changed:
+            changed = True
+            goal = core.goals.get("a")
+            assert goal is not None
+            goal.state["cadence"] = {
+                "min_judge_interval": 1.0,
+                "gate_on": "fixed",
+            }
+            core.goals.apply(
+                [GoalOp(op="update", goal_id="a", fields={"say": "a still fired"})]
+            )
+
+    subscription = InterestSubscription(max_batches=1)
+    with pytest.raises(InterestBackpressureError):
+        async for _ in run(
+            core,
+            source=[_envelope(0, BLACK), _envelope(1, WHITE), _envelope(2, BLACK)],
+            on_frame=change_admission_on_frame,
+            interest_subscription=subscription,
+            judge_dispatch="inline",
+        ):
+            pass
+    events = [event async for event in subscription]
+    assert [event.kind for event in events] == [
+        "interest.entered",
+        "interest.exited",
+        "interest.entered",
+        "interest.exited",
+    ]
+    assert [event.reason for event in events] == [
+        "tier0_motion",
+        "admission_changed",
+        "fixed_cadence",
+        "worker_error",
+    ]
+    assert [event.admission_cause for event in events] == [
+        "motion",
+        "motion",
+        "fixed",
+        "fixed",
+    ]
+    assert events[0].interval_id == events[1].interval_id
+    assert events[2].interval_id == events[3].interval_id
+    assert events[0].interval_id != events[2].interval_id
+    _assert_balanced_lifecycle(events)
 
 
 @pytest.mark.asyncio
@@ -544,11 +704,15 @@ async def test_disabled_path_hashes_nothing_and_enabled_path_adds_no_judgments(
     def unexpected_hash(*_args, **_kwargs):
         raise AssertionError("disabled lifecycle must not hash causal media")
 
+    def unexpected_outcome(*_args, **_kwargs):
+        raise AssertionError("disabled lifecycle must not allocate outcome DTOs")
+
     monkeypatch.setattr(tier0_module, "_motion_evidence_id", unexpected_hash)
+    monkeypatch.setattr(tier0_module, "WatchAdmissionOutcome", unexpected_outcome)
     disabled = _core("watch")
     async for _ in run(
         disabled,
-        source=[_envelope(0, BLACK)],
+        source=[_envelope(0, BLACK), _envelope(1, WHITE), _envelope(2, BLACK)],
         judge_dispatch="inline",
     ):
         pass

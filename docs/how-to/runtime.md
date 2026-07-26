@@ -65,7 +65,9 @@ await consumer
 ```
 
 Each immutable event keeps source and observer clocks separate and identifies the Watch, source
-epoch, admitted sequence range, admission cause, detector, score, and applied threshold. An exit's
+epoch, admitted sequence range, typed `admission_cause`, detector, score, and applied threshold.
+`reason` uses the existing replay VID vocabulary for active motion (`tier0_motion`) and explicit
+lifecycle reasons for exits. An exit's
 interval end is always the last admitted unit; its separate `event_*` coordinate names the later
 schedule/cadence/pause/discontinuity/EOS boundary that made the exit known. Source gaps, reconnects,
 format changes, capture overflow, pause, Watch removal, cancellation, and worker failure close open

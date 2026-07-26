@@ -2891,6 +2891,7 @@ async def _run_worker(
                 ts=t,
                 energy=energy_now,
                 include_evidence_id=_interest_tracker is not None,
+                include_outcomes=_interest_tracker is not None,
             )
 
             # Run edge detectors on the cheap motion/energy signals at native fps. Each emitted

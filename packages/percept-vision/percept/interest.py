@@ -794,6 +794,7 @@ class LiveInterestEvent:
     event_source_time: float | None
     event_observed_at: float
     reason: str
+    admission_cause: str
     evidence_id: str
     score: float
     threshold: float
@@ -813,6 +814,8 @@ class LiveInterestEvent:
             object.__setattr__(self, name, _identity(name, getattr(self, name)))
         if self.kind == INTEREST_EXITED and self.reason not in _LIVE_EXIT_REASONS:
             raise ValueError(f"unknown live interest exit reason {self.reason!r}")
+        if self.admission_cause not in _LIVE_CAUSES:
+            raise ValueError(f"unknown live interest admission cause {self.admission_cause!r}")
         for name in (
             "source_epoch",
             "sequence_start",
@@ -888,6 +891,7 @@ class LiveInterestEvent:
             "event_source_time": self.event_source_time,
             "event_observed_at": self.event_observed_at,
             "reason": self.reason,
+            "admission_cause": self.admission_cause,
             "evidence_id": self.evidence_id,
             "score": self.score,
             "threshold": self.threshold,
@@ -941,6 +945,7 @@ class InterestSubscription:
         "_run_id",
         "_iterated",
         "_closed",
+        "_rejected_batch",
     )
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -961,6 +966,7 @@ class InterestSubscription:
         self._run_id: str | None = None
         self._iterated = False
         self._closed = False
+        self._rejected_batch: tuple[LiveInterestEvent, ...] | None = None
 
     @property
     def closed(self) -> bool:
@@ -1009,7 +1015,15 @@ class InterestSubscription:
         batch = self._validated_batch(events)
         if not batch:
             return
+        if self._rejected_batch is not None:
+            raise InterestBackpressureError(
+                "interest subscription already rejected an atomic lifecycle batch"
+            )
         if len(self._batches) >= self._max_batches:
+            # The tracker has already advanced through this exact atomic transition. Preserve it in
+            # the single terminal reserve so finalization can publish the rejected transition before
+            # closing every interval it opened/updated. The original overflow still terminates run.
+            self._rejected_batch = batch
             raise InterestBackpressureError(
                 f"interest subscription capacity ({self._max_batches} batches) was exhausted"
             )
@@ -1021,10 +1035,14 @@ class InterestSubscription:
             raise RuntimeError("InterestSubscription was not bound")
         if self._closed:
             return
-        batch = self._validated_batch(events)
-        # One terminal batch is reserved and remains bounded independently of regular publication.
-        if batch:
-            self._batches.append(batch)
+        terminal = self._validated_batch(events)
+        # The single reserve is one atomic batch in queue accounting. If ordinary publication
+        # overflowed, its rejected transition comes first; terminal exits then close the exact state
+        # produced by that transition. No exit can become orphaned and no published enter remains open.
+        reserved = (self._rejected_batch or ()) + terminal
+        if reserved:
+            self._batches.append(reserved)
+        self._rejected_batch = None
         self._closed = True
         self._ready.set()
 
@@ -1182,7 +1200,7 @@ class LiveInterestTracker:
                 self._event(
                     opened,
                     kind=kind,
-                    reason=admission.cause or "not_admitted",
+                    reason=_live_active_reason(admission.cause),
                     event_unit=unit,
                     coverage_kind=coverage_kind,
                     missing_sequences=missing_sequences,
@@ -1320,6 +1338,7 @@ class LiveInterestTracker:
             event_source_time=event_unit.source_time,
             event_observed_at=event_unit.observed_time,
             reason=reason,
+            admission_cause=admission.cause or "motion",
             evidence_id=evidence_id,
             score=admission.score,
             threshold=admission.threshold,
@@ -1340,6 +1359,17 @@ def _live_non_admission_reason(reason: str | None) -> LiveInterestExitReason:
     if reason in _LIVE_EXIT_REASONS:
         return reason  # type: ignore[return-value]
     return "not_admitted"
+
+
+def _live_active_reason(cause: str | None) -> str:
+    return {
+        "motion": "tier0_motion",
+        "structural": "tier0_structural",
+        "semantic": "tier0_semantic",
+        "fixed": "fixed_cadence",
+        "coast": "coast",
+        "audio": "audio",
+    }.get(cause, "not_admitted")
 
 
 def _discontinuity_reason(events: Sequence[str]) -> LiveInterestExitReason:

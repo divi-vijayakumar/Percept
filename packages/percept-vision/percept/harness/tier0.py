@@ -703,6 +703,36 @@ class WatchAdmissionOutcome:
                 raise ValueError(f"WatchAdmissionOutcome {name} must be a non-empty string")
 
 
+def _watch_admission_outcome(
+    condition: WatchCondition,
+    *,
+    admitted: bool,
+    cause: AdmissionCause | None,
+    non_admission_reason: NonAdmissionReason | None,
+    score: float,
+) -> WatchAdmissionOutcome:
+    """Build the typed lifecycle-only view of one already-computed gate outcome."""
+    detector_id = (
+        f"motion_score.{condition.salience_stat}"
+        if condition.gate_on == "motion"
+        else (
+            "cadence.fixed"
+            if condition.gate_on == "fixed"
+            else f"tier0.signal.{condition.gate_on}"
+        )
+    )
+    return WatchAdmissionOutcome(
+        goal_id=condition.goal_id,
+        admitted=admitted,
+        cause=cause,
+        non_admission_reason=non_admission_reason,
+        score=score,
+        threshold=condition.threshold,
+        admission_id=f"tier0.signal.{condition.gate_on}",
+        detector_id=detector_id,
+    )
+
+
 @dataclass(frozen=True)
 class GateDecision:
     """One gate decision: the reported :class:`Tier0Signal` + whether to escalate.
@@ -721,8 +751,8 @@ class GateDecision:
     # Ordered 1:1 with ``goal_ids``. A fixed cadence is reported as ``"fixed"`` and never relabelled
     # as motion salience.
     admission_causes: tuple[AdmissionCause, ...] = ()
-    # One typed outcome for every condition in the gate, admitted or not. Empty on legacy manually
-    # constructed decisions; MotionGate.evaluate always populates it.
+    # One typed outcome for every condition in the gate, admitted or not. Empty unless a lifecycle
+    # consumer explicitly requests it, and on legacy manually constructed decisions.
     outcomes: tuple[WatchAdmissionOutcome, ...] = ()
     # Content identity of the exact causal frame pair, computed only when explicitly requested.
     evidence_id: str | None = None
@@ -881,6 +911,7 @@ class MotionGate:
         energy: float | None = None,
         signals: dict[str, float] | None = None,
         include_evidence_id: bool = False,
+        include_outcomes: bool = False,
     ) -> GateDecision:
         """Score one frame against the prior, report a ``Tier0Signal``, decide escalate-vs-skip.
 
@@ -890,7 +921,8 @@ class MotionGate:
         is the civil time the per-condition :class:`~percept.adapters.Schedule` is checked against; a
         condition whose schedule is out of window at ``now`` is skipped. With no schedules and no
         ``region_hint`` this reduces to the original ``full_motion >= min(threshold)``. Advances the
-        prev-frame cursor.
+        prev-frame cursor. ``include_outcomes`` and ``include_evidence_id`` are lifecycle-only opt-ins;
+        the normal gate path allocates neither outcome DTOs nor causal hashes.
         """
         f = _as_frame(frame)
         prev = self._prev
@@ -919,50 +951,36 @@ class MotionGate:
         escalate = False
         admitted_goal_ids: list[str] = []
         admission_causes: list[AdmissionCause] = []
-        outcomes: list[WatchAdmissionOutcome] = []
+        outcomes: list[WatchAdmissionOutcome] | None = [] if include_outcomes else None
         armed: list[WatchCondition] = []
         for c in self._spec.conditions:
-            detector_id = (
-                f"motion_score.{c.salience_stat}"
-                if c.gate_on == "motion"
-                else (
-                    "cadence.fixed"
-                    if c.gate_on == "fixed"
-                    else f"tier0.signal.{c.gate_on}"
-                )
-            )
-            admission_id = f"tier0.signal.{c.gate_on}"
             if not schedule_active(c.schedule, when):
-                outcomes.append(
-                    WatchAdmissionOutcome(
-                        c.goal_id,
-                        False,
-                        None,
-                        "schedule_inactive",
-                        0.0,
-                        c.threshold,
-                        admission_id,
-                        detector_id,
+                if outcomes is not None:
+                    outcomes.append(
+                        _watch_admission_outcome(
+                            c,
+                            admitted=False,
+                            cause=None,
+                            non_admission_reason="schedule_inactive",
+                            score=0.0,
+                        )
                     )
-                )
                 continue
             armed.append(c)
             # Cadence: a goal can't escalate more than once per cadence_s. For gate_on="fixed" this
             # cadence IS the escalation trigger (a floor — look every cadence_s even with no pixel motion,
             # so content events like a screenshare aren't silently under-sampled by the motion gate).
             if c.cadence_s is not None and ts - self._last_escalate.get(c.goal_id, float("-inf")) < c.cadence_s:
-                outcomes.append(
-                    WatchAdmissionOutcome(
-                        c.goal_id,
-                        False,
-                        None,
-                        "cadence_limited",
-                        0.0,
-                        c.threshold,
-                        admission_id,
-                        detector_id,
+                if outcomes is not None:
+                    outcomes.append(
+                        _watch_admission_outcome(
+                            c,
+                            admitted=False,
+                            cause=None,
+                            non_admission_reason="cadence_limited",
+                            score=0.0,
+                        )
                     )
-                )
                 continue
             if c.gate_on == "fixed":
                 score = 1.0 if c.cadence_s is not None else 0.0
@@ -984,35 +1002,31 @@ class MotionGate:
                 admitted_goal_ids.append(c.goal_id)
                 admission_causes.append(c.gate_on)
                 self._last_escalate[c.goal_id] = ts
-                outcomes.append(
-                    WatchAdmissionOutcome(
-                        c.goal_id,
-                        True,
-                        c.gate_on,
-                        None,
-                        score,
-                        c.threshold,
-                        admission_id,
-                        detector_id,
+                if outcomes is not None:
+                    outcomes.append(
+                        _watch_admission_outcome(
+                            c,
+                            admitted=True,
+                            cause=c.gate_on,
+                            non_admission_reason=None,
+                            score=score,
+                        )
                     )
-                )
             else:
-                outcomes.append(
-                    WatchAdmissionOutcome(
-                        c.goal_id,
-                        False,
-                        None,
-                        (
-                            "fixed_cadence_unconfigured"
-                            if c.gate_on == "fixed"
-                            else "signal_below_threshold"
-                        ),
-                        score,
-                        c.threshold,
-                        admission_id,
-                        detector_id,
+                if outcomes is not None:
+                    outcomes.append(
+                        _watch_admission_outcome(
+                            c,
+                            admitted=False,
+                            cause=None,
+                            non_admission_reason=(
+                                "fixed_cadence_unconfigured"
+                                if c.gate_on == "fixed"
+                                else "signal_below_threshold"
+                            ),
+                            score=score,
+                        )
                     )
-                )
         self._prev = f
         # Reported cutoff = the most-sensitive ARMED goal's threshold (default when none is armed).
         thr = min((c.threshold for c in armed), default=self._default)
@@ -1025,7 +1039,7 @@ class MotionGate:
             threshold=thr,
             goal_ids=tuple(admitted_goal_ids),
             admission_causes=tuple(admission_causes),
-            outcomes=tuple(outcomes),
+            outcomes=tuple(outcomes) if outcomes is not None else (),
             evidence_id=_motion_evidence_id(prev, f) if include_evidence_id else None,
         )
 

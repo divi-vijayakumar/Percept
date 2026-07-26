@@ -59,7 +59,7 @@
       "example": ".claude/skills/percept-agent/template_watch_agent.py",
       "hops": [
         { "node": "n-feed-cam",  "fn": "camera frame",            "file": "percept-edge",                      "ds": "→ raw frame" },
-        { "node": "n-meas-eye",  "fn": "MotionGate.evaluate",     "file": "percept/harness/tier0.py:875",      "ds": "motion clears threshold → Tier0Signal" },
+        { "node": "n-meas-eye",  "fn": "MotionGate.evaluate",     "file": "percept/harness/tier0.py:905",      "ds": "motion clears threshold → Tier0Signal" },
         { "node": "n-cog-sense", "fn": "perceive_judged",         "file": "percept/agent.py:1748",             "ds": "roi=focus · temporal=single" },
         { "node": "n-vlm-judge", "fn": "vision.judge",            "file": "percept/backends/anthropic.py:152", "ds": "→ Verdict · Claude/Gemini", "vlm": true },
         { "node": "n-cog-gate",  "fn": "gate.evaluate",           "file": "percept/gate.py:317",               "ds": "→ FIRE / ASK / SILENT" },
