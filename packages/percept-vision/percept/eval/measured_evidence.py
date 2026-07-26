@@ -410,9 +410,14 @@ class MeasuredEvidenceBundleReport:
             ),
             "report build provenance must have the exact persisted receipt shape",
         )
+        judge_keys = set(self.judge_identity) if isinstance(self.judge_identity, Mapping) else set()
         _require(
             isinstance(self.judge_identity, Mapping)
-            and set(self.judge_identity) == {"adapter", "model", "prompt_sha256"}
+            and judge_keys
+            in (
+                {"adapter", "model", "prompt_sha256"},
+                {"adapter", "model", "prompt_sha256", "judge_mode"},
+            )
             and isinstance(self.judge_identity.get("adapter"), str)
             and bool(self.judge_identity.get("adapter"))
             and isinstance(self.judge_identity.get("model"), str)
@@ -420,6 +425,11 @@ class MeasuredEvidenceBundleReport:
             and _is_sha256(self.judge_identity.get("prompt_sha256")),
             "report judge identity must have the exact persisted receipt shape",
         )
+        if "judge_mode" in judge_keys:
+            _require(
+                self.judge_identity.get("judge_mode") == "offline_oracle",
+                "report v2 judge identity must declare judge_mode='offline_oracle'",
+            )
         object.__setattr__(self, "artifacts", artifacts)
         object.__setattr__(self, "viability_manifest", _freeze(manifest))
         object.__setattr__(self, "coverage", coverage)

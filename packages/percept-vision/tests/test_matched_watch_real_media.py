@@ -1,0 +1,707 @@
+"""Real-MP4 mechanics for the existing matched-Watch evaluator.
+
+The generated clips and offline-oracle answers are deterministic contract fixtures. They establish
+decoder/runtime/receipt mechanics only and can never qualify pack accuracy, latency, or cost.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import os
+import sys
+from dataclasses import replace
+from pathlib import Path
+
+import cv2
+import numpy as np
+import pytest
+
+import percept.eval.matched_watch as matched_watch_module
+from percept.domain_pack import watch_template
+from percept.eval.matched_watch import (
+    MatchedWatchInputError,
+    derive_viability_rows,
+    load_matched_watch_manifest,
+    load_matched_watch_receipt,
+    run_matched_watch,
+)
+from percept.eval.measured_evidence import derive_measured_evidence_bundle
+from percept.runtime.source import open_source
+from percept.tracing import content_hash
+
+
+def _sha(payload: bytes) -> str:
+    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+
+def _json_bytes(value: object) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _verdict(satisfied: bool, evidence: str) -> dict[str, object]:
+    return {
+        "satisfied": satisfied,
+        "confidence": 0.99,
+        "evidence": evidence,
+        "error": None,
+    }
+
+
+def _write_mp4(
+    path: Path,
+    values: tuple[int, ...] = (8, 30, 230, 232, 25, 27),
+) -> None:
+    writer = cv2.VideoWriter(
+        str(path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        4.0,
+        (32, 24),
+    )
+    assert writer.isOpened(), "test environment cannot create the required MP4 mechanics fixture"
+    for value in values:
+        frame = np.full((24, 32, 3), value, dtype=np.uint8)
+        writer.write(frame)
+    writer.release()
+    assert path.is_file() and path.stat().st_size > 0
+
+
+async def _decoded_candidates(path: Path) -> list[dict[str, object]]:
+    result = []
+    async for envelope in open_source(
+        str(path),
+        fps=4.0,
+        maxsize=64,
+        reconnects=0,
+        timebase="media",
+    ):
+        mime, payload = envelope.payload
+        assert mime == "image/jpeg"
+        result.append(
+            {
+                "sequence": envelope.sequence,
+                "t": envelope.event_time,
+                "frame_sha256": _sha(payload),
+            }
+        )
+    return result
+
+
+def _write_real_case(
+    root: Path,
+    *,
+    template_ref: str = "facility_observation@1/package_appeared",
+    archetype: str = "physical_scene/package_appeared",
+    case_id: str = "real-case-001",
+    source_group_id: str = "generated-session-001",
+    operating_point: str = "block-max-0.20",
+    threshold: float = 0.20,
+    frame_values: tuple[int, ...] = (8, 30, 230, 232, 25, 27),
+    states: tuple[bool, ...] = (False, False, True, True, False, False),
+    two_events: bool = False,
+) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    media_path = root / "case.mp4"
+    _write_mp4(media_path, frame_values)
+    decoded = asyncio.run(_decoded_candidates(media_path))
+    assert len(decoded) == len(states)
+    plan = watch_template(template_ref, {"zone_name": "receiving"})
+    pack_name = template_ref.partition("/")[0]
+    route = str(plan.explicit.get("Goal.state.type", "watch"))
+    if route == "transition":
+        predicates = (
+            (
+                f"sha256:{content_hash(plan.explicit['Goal.state.from'])}",
+                tuple(not state for state in states),
+                "from",
+            ),
+            (
+                f"sha256:{content_hash(plan.explicit['Goal.state.to'])}",
+                states,
+                "to",
+            ),
+        )
+    else:
+        predicates = (
+            (
+                f"sha256:{content_hash(plan.condition)}",
+                states,
+                "condition",
+            ),
+        )
+    oracle_candidates = []
+    for item in decoded:
+        index = int(item["sequence"])
+        oracle_candidates.append(
+            {
+                **item,
+                "token": f"decoded-candidate-{index}",
+                "verdicts": {
+                    condition_sha: _verdict(
+                        states[index],
+                        f"offline oracle {label} candidate {index}",
+                    )
+                    for condition_sha, states, label in predicates
+                },
+            }
+        )
+    oracle = {
+        "schema": "percept.eval.matched_watch.offline_oracle/v1",
+        "candidates": oracle_candidates,
+    }
+    oracle_path = root / "oracle.json"
+    oracle_path.write_bytes(_json_bytes(oracle))
+    media_sha = _sha(media_path.read_bytes())
+    oracle_sha = _sha(oracle_path.read_bytes())
+    corpus = {
+        "schema": "percept.eval.matched_watch.corpus/v1",
+        "corpus_id": "generated-real-media-mechanics",
+        "version": "1",
+        "cases": [
+            {
+                "case_id": case_id,
+                "split": "mechanics",
+                "source_group_id": source_group_id,
+                "media_sha256": media_sha,
+                "oracle_sha256": oracle_sha,
+            }
+        ],
+        "authorities": {
+            "license": None,
+            "label_review": None,
+            "provider_transmission": None,
+            "preregistration": None,
+        },
+    }
+    corpus_path = root / "corpus.json"
+    corpus_path.write_bytes(_json_bytes(corpus))
+    manifest = {
+        "schema": "percept.eval.matched_watch.real_video/v1",
+        "case_id": case_id,
+        "archetype": archetype,
+        "split": "mechanics",
+        "media": {
+            "path": "case.mp4",
+            "sha256": media_sha,
+            "media_type": "video/mp4",
+        },
+        "replay": {"fps": 4.0, "timebase": "media", "source_id": "camera"},
+        "watch": {
+            "template_ref": template_ref,
+            "parameters": {"zone_name": "receiving"},
+            "domain_pack": pack_name,
+        },
+        "judge": {
+            "adapter": "offline_oracle/v1",
+            "model": "deterministic-test-oracle",
+            "prompt_sha256": _sha(b"fixed mechanics oracle contract"),
+            "judge_mode": "offline_oracle",
+        },
+        "adaptive": {
+            "operating_point": operating_point,
+            "salience_stat": "block_max",
+            "threshold": threshold,
+        },
+        "events": [
+            {
+                "id": f"{case_id}/event-1",
+                "eligible_at_s": decoded[2]["t"],
+                "window_start_s": decoded[2]["t"],
+                "window_end_s": decoded[2]["t"] if two_events else decoded[3]["t"],
+                "review_authority": "generated-fixture-author",
+                "label_digest": _sha(b"mechanics-only positive interval"),
+            }
+        ]
+        + (
+            [
+                {
+                    "id": f"{case_id}/event-2",
+                    "eligible_at_s": decoded[4]["t"],
+                    "window_start_s": decoded[4]["t"],
+                    "window_end_s": decoded[5]["t"],
+                    "review_authority": "generated-fixture-author",
+                    "label_digest": _sha(b"second mechanics-only positive interval"),
+                }
+            ]
+            if two_events
+            else []
+        ),
+        "evidence_classification": "admission_only",
+        "corpus": {"path": "corpus.json", "sha256": _sha(corpus_path.read_bytes())},
+        "oracle": {"path": "oracle.json", "sha256": oracle_sha},
+    }
+    manifest_path = root / "manifest.json"
+    manifest_path.write_bytes(_json_bytes(manifest))
+    return manifest_path
+
+
+def _set_oracle_error(manifest_path: Path, *, index: int, predicate: str) -> None:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    plan = watch_template(
+        manifest["watch"]["template_ref"],
+        manifest["watch"]["parameters"],
+    )
+    condition = plan.explicit[f"Goal.state.{predicate}"]
+    condition_sha = f"sha256:{content_hash(condition)}"
+    oracle_path = manifest_path.parent / manifest["oracle"]["path"]
+    oracle = json.loads(oracle_path.read_text(encoding="utf-8"))
+    oracle["candidates"][index]["verdicts"][condition_sha]["error"] = (
+        f"offline oracle {predicate} failure"
+    )
+    oracle_path.write_bytes(_json_bytes(oracle))
+    oracle_sha = _sha(oracle_path.read_bytes())
+    corpus_path = manifest_path.parent / manifest["corpus"]["path"]
+    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+    corpus["cases"][0]["oracle_sha256"] = oracle_sha
+    corpus_path.write_bytes(_json_bytes(corpus))
+    manifest["oracle"]["sha256"] = oracle_sha
+    manifest["corpus"]["sha256"] = _sha(corpus_path.read_bytes())
+    manifest_path.write_bytes(_json_bytes(manifest))
+
+
+def test_real_transition_decodes_actual_mp4_and_executes_both_arms(tmp_path):
+    manifest_path = _write_real_case(tmp_path)
+
+    receipt = run_matched_watch(manifest_path)
+    baseline, adaptive = derive_viability_rows(receipt)
+
+    assert receipt.receipt_schema == "percept.eval.matched_watch.receipt/v2"
+    assert receipt.judge_identity["judge_mode"] == "offline_oracle"
+    assert receipt.launch_qualified is False
+    assert receipt.authority_artifact_presence == {
+        "license": False,
+        "label_review": False,
+        "provider_transmission": False,
+        "preregistration": False,
+    }
+    assert baseline["candidate_windows_total"] == 6
+    assert baseline["runtime_dispatches"] == 6
+    assert baseline["judge_calls"] == 12
+    assert adaptive["runtime_dispatches"] <= baseline["runtime_dispatches"]
+    assert all(
+        candidate.source_sequence == candidate.index
+        and candidate.frame_sha256.startswith("sha256:")
+        for candidate in receipt.baseline.candidates
+    )
+    decoder = receipt.baseline.media_identity["decoder_identity"]
+    assert decoder["library"] == "opencv"
+    assert decoder["build_sha256"].startswith("sha256:")
+    assert receipt.adaptive.media_identity["decoder_identity"] == decoder
+    assert all(
+        call.oracle_lookup_sha256.startswith("sha256:")
+        for candidate in receipt.baseline.candidates
+        for call in candidate.provider_calls
+    )
+    persisted = tmp_path / "receipt.json"
+    persisted.write_text(receipt.to_json(), encoding="utf-8")
+    loaded = load_matched_watch_receipt(persisted)
+    assert loaded.receipt.to_dict() == receipt.to_dict()
+
+
+def test_real_ordinary_template_uses_one_executed_judgment_per_dispatch(tmp_path):
+    manifest_path = _write_real_case(
+        tmp_path,
+        template_ref="facility_observation@1/zone_occupied",
+        archetype="physical_scene/zone_occupied",
+    )
+
+    receipt = run_matched_watch(manifest_path)
+    baseline, _ = derive_viability_rows(receipt)
+
+    assert baseline["runtime_dispatches"] == 6
+    assert baseline["judge_calls"] == 6
+    assert all(
+        [call.predicate for call in candidate.provider_calls] == ["condition"]
+        for candidate in receipt.baseline.candidates
+        if candidate.runtime_dispatched
+    )
+    assert len(receipt.baseline.incidents) == 1
+
+
+def test_v1_synthetic_wire_shape_remains_exactly_compatible(tmp_path):
+    from tests.test_matched_watch import _write_case
+
+    receipt = run_matched_watch(_write_case(tmp_path))
+    payload = receipt.to_dict()
+
+    assert payload["schema"] == "percept.eval.matched_watch.receipt/v1"
+    assert "input_artifacts" not in payload
+    assert "authority_artifact_presence" not in payload
+    assert "source_sequence" not in payload["baseline"]["candidates"][0]
+    assert "oracle_lookup_sha256" not in payload["baseline"]["candidates"][0]["provider_calls"][0]
+
+
+def test_v1_synthetic_validation_never_imports_the_optional_decoder(tmp_path, monkeypatch):
+    from tests.test_matched_watch import _write_case
+
+    monkeypatch.setitem(sys.modules, "cv2", None)
+    receipt = run_matched_watch(_write_case(tmp_path))
+
+    baseline, adaptive = derive_viability_rows(receipt)
+
+    assert baseline["candidate_windows_total"] == adaptive["candidate_windows_total"]
+    assert receipt.receipt_schema == "percept.eval.matched_watch.receipt/v1"
+
+
+@pytest.mark.parametrize(
+    "attack",
+    ["duplicate_media", "group_leakage", "path_escape", "oracle_tamper", "media_symlink", "media_hardlink"],
+)
+def test_real_manifest_structure_and_artifacts_fail_closed(tmp_path, attack):
+    case_root = tmp_path / "case"
+    manifest_path = _write_real_case(case_root)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    corpus_path = case_root / "corpus.json"
+    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+    if attack == "duplicate_media":
+        second = dict(corpus["cases"][0])
+        second["case_id"] = "real-case-002"
+        second["source_group_id"] = "generated-session-002"
+        corpus["cases"].append(second)
+        corpus_path.write_bytes(_json_bytes(corpus))
+        manifest["corpus"]["sha256"] = _sha(corpus_path.read_bytes())
+    elif attack == "group_leakage":
+        second = dict(corpus["cases"][0])
+        second["case_id"] = "real-case-002"
+        second["split"] = "other"
+        second["media_sha256"] = "sha256:" + "1" * 64
+        second["oracle_sha256"] = "sha256:" + "2" * 64
+        corpus["cases"].append(second)
+        corpus_path.write_bytes(_json_bytes(corpus))
+        manifest["corpus"]["sha256"] = _sha(corpus_path.read_bytes())
+    elif attack == "path_escape":
+        outside = tmp_path / "outside.mp4"
+        outside.write_bytes((case_root / "case.mp4").read_bytes())
+        manifest["media"]["path"] = "../outside.mp4"
+    elif attack == "oracle_tamper":
+        oracle = case_root / "oracle.json"
+        oracle.write_bytes(oracle.read_bytes() + b"\n")
+    elif attack == "media_symlink":
+        original = case_root / "case.mp4"
+        moved = case_root / "original.mp4"
+        original.rename(moved)
+        original.symlink_to(moved.name)
+    else:
+        original = case_root / "case.mp4"
+        hardlink = case_root / "hardlinked.mp4"
+        os.link(original, hardlink)
+    manifest_path.write_bytes(_json_bytes(manifest))
+
+    with pytest.raises(MatchedWatchInputError):
+        load_matched_watch_manifest(manifest_path)
+
+
+def test_persisted_v2_revalidates_descriptor_backed_media(tmp_path):
+    manifest_path = _write_real_case(tmp_path)
+    receipt = run_matched_watch(manifest_path)
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text(receipt.to_json(), encoding="utf-8")
+    media = tmp_path / "case.mp4"
+    media.write_bytes(media.read_bytes() + b"tamper")
+
+    with pytest.raises(MatchedWatchInputError, match="artifact|snapshot|media"):
+        load_matched_watch_receipt(receipt_path)
+
+
+def test_real_arms_decode_the_same_frozen_mp4_independently(tmp_path, monkeypatch):
+    import percept.runtime.source as source_module
+
+    manifest_path = _write_real_case(tmp_path)
+    real_open_source = source_module.open_source
+    opens = 0
+    queue_bounds = []
+
+    async def counted_open_source(*args, **kwargs):
+        nonlocal opens
+        opens += 1
+        queue_bounds.append(kwargs["maxsize"])
+        async for envelope in real_open_source(*args, **kwargs):
+            yield envelope
+
+    monkeypatch.setattr(source_module, "open_source", counted_open_source)
+    receipt = run_matched_watch(manifest_path)
+
+    assert opens == 2
+    assert queue_bounds == [64, 64]
+    assert [
+        (item.source_sequence, item.t, item.frame_sha256)
+        for item in receipt.baseline.candidates
+    ] == [
+        (item.source_sequence, item.t, item.frame_sha256)
+        for item in receipt.adaptive.candidates
+    ]
+
+
+def test_decoder_absence_fails_loudly_with_runtime_install_guidance(tmp_path, monkeypatch):
+    manifest_path = _write_real_case(tmp_path)
+    monkeypatch.setitem(sys.modules, "cv2", None)
+
+    with pytest.raises(MatchedWatchInputError, match=r"percept-vision\[runtime\]"):
+        run_matched_watch(manifest_path)
+
+
+def test_event_labels_never_answer_offline_oracle_judgments(tmp_path):
+    manifest_path = _write_real_case(tmp_path)
+    first = run_matched_watch(manifest_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["events"][0]["review_authority"] = "different-caller-string"
+    manifest["events"][0]["label_digest"] = _sha(b"different event metadata")
+    manifest_path.write_bytes(_json_bytes(manifest))
+
+    second = run_matched_watch(manifest_path)
+
+    assert [
+        call.to_dict()
+        for candidate in first.baseline.candidates
+        for call in candidate.provider_calls
+    ] == [
+        call.to_dict()
+        for candidate in second.baseline.candidates
+        for call in candidate.provider_calls
+    ]
+
+
+def test_authority_artifact_presence_is_not_authority_or_qualification(tmp_path):
+    manifest_path = _write_real_case(tmp_path)
+    license_path = tmp_path / "license.txt"
+    license_path.write_text("generated fixture license declaration", encoding="utf-8")
+    corpus_path = tmp_path / "corpus.json"
+    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+    corpus["authorities"]["license"] = {
+        "path": "license.txt",
+        "sha256": _sha(license_path.read_bytes()),
+    }
+    corpus_path.write_bytes(_json_bytes(corpus))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["corpus"]["sha256"] = _sha(corpus_path.read_bytes())
+    manifest_path.write_bytes(_json_bytes(manifest))
+
+    receipt = run_matched_watch(manifest_path)
+
+    assert receipt.authority_artifact_presence["license"] is True
+    assert receipt.authority_artifact_presence["label_review"] is False
+    assert receipt.launch_qualified is False
+    assert "authority:license" in {item["role"] for item in receipt.input_artifacts}
+
+
+def test_registered_future_pack_template_uses_same_engine_without_hardcoding(tmp_path):
+    from percept.domain_pack import (
+        DEFAULT_DOMAIN_PACK_REGISTRY,
+        DomainPack,
+        GoalTemplate,
+        register_domain_pack,
+    )
+
+    pack = DomainPack(
+        id="test_future_pack",
+        version="1",
+        templates={
+            "presence": GoalTemplate(
+                name="presence",
+                condition="an item is present in {zone_name}",
+                parameters={"zone_name": "zone"},
+                target="item",
+            )
+        },
+    )
+    register_domain_pack(pack)
+    try:
+        manifest_path = _write_real_case(
+            tmp_path,
+            template_ref="test_future_pack@1/presence",
+            archetype="future/item_presence",
+        )
+        receipt = run_matched_watch(manifest_path)
+        baseline, _ = derive_viability_rows(receipt)
+
+        assert receipt.manifest["watch"]["domain_pack"] == "test_future_pack@1"
+        assert baseline["judge_calls"] == baseline["runtime_dispatches"] == 6
+    finally:
+        DEFAULT_DOMAIN_PACK_REGISTRY.unregister("test_future_pack@1")
+
+
+@pytest.mark.parametrize(
+    ("predicate", "statuses"),
+    [
+        ("from", ["error"]),
+        ("to", ["success", "error"]),
+    ],
+)
+def test_transition_predicate_failure_short_circuits_to_one_missing_candidate(
+    tmp_path,
+    predicate,
+    statuses,
+):
+    manifest_path = _write_real_case(tmp_path)
+    _set_oracle_error(manifest_path, index=2, predicate=predicate)
+
+    receipt = run_matched_watch(manifest_path)
+    candidate = receipt.baseline.candidates[2]
+
+    assert [call.status for call in candidate.provider_calls] == statuses
+    assert candidate.decision == "missing"
+    assert sum(item.decision == "missing" for item in receipt.baseline.candidates) == 1
+    assert receipt.baseline.provider_call_failures == 1
+    matched_watch_module._validate_receipt(receipt)
+    with pytest.raises(MatchedWatchInputError, match="not comparable"):
+        derive_viability_rows(receipt)
+
+
+def test_decoder_identity_is_required_for_exact_frame_reconstruction(tmp_path, monkeypatch):
+    manifest_path = _write_real_case(tmp_path)
+    receipt = run_matched_watch(manifest_path)
+    active = dict(receipt.baseline.media_identity["decoder_identity"])
+    changed = {**active, "version": active["version"] + "-different-build"}
+    monkeypatch.setattr(
+        matched_watch_module,
+        "_decoder_identity",
+        lambda: changed,
+    )
+
+    with pytest.raises(MatchedWatchInputError, match="decoder identity"):
+        derive_viability_rows(receipt)
+
+
+def test_v2_authority_presence_cannot_be_relabelled_in_the_receipt(tmp_path):
+    receipt = run_matched_watch(_write_real_case(tmp_path))
+    forged = replace(
+        receipt,
+        authority_artifact_presence={
+            **receipt.authority_artifact_presence,
+            "license": True,
+        },
+    )
+
+    with pytest.raises(MatchedWatchInputError, match="authority artifact presence"):
+        derive_viability_rows(forged)
+
+
+def test_v2_candidate_evidence_must_reconstruct_from_the_frozen_oracle(tmp_path):
+    receipt = run_matched_watch(_write_real_case(tmp_path))
+    forged_sha = "sha256:" + "0" * 64
+
+    def forge_arm(arm):
+        candidate = replace(arm.candidates[0], frame_sha256=forged_sha)
+        return replace(arm, candidates=(candidate, *arm.candidates[1:]))
+
+    forged = replace(
+        receipt,
+        baseline=forge_arm(receipt.baseline),
+        adaptive=forge_arm(receipt.adaptive),
+    )
+
+    with pytest.raises(MatchedWatchInputError, match="decoded candidate evidence"):
+        derive_viability_rows(forged)
+
+
+def test_v2_provider_answer_must_reconstruct_from_the_frozen_oracle(tmp_path):
+    receipt = run_matched_watch(_write_real_case(tmp_path))
+    first = receipt.baseline.candidates[0]
+    forged_call = replace(first.provider_calls[0], evidence="caller-forged answer")
+    forged_candidate = replace(
+        first,
+        provider_calls=(forged_call, *first.provider_calls[1:]),
+    )
+    forged_baseline = replace(
+        receipt.baseline,
+        candidates=(forged_candidate, *receipt.baseline.candidates[1:]),
+    )
+    forged = replace(receipt, baseline=forged_baseline)
+
+    with pytest.raises(MatchedWatchInputError, match="provider calls disagree"):
+        derive_viability_rows(forged)
+
+
+def test_real_receipts_feed_existing_measured_frontier_without_qualification(tmp_path):
+    receipt_paths = []
+    cases = []
+    operating_points = {}
+    for case_number in (1, 2):
+        case_id = f"real-bundle-{case_number:02d}"
+        cases.append(
+            {
+                "id": case_id,
+                "candidate_windows_total": 6,
+                "events": [
+                    {"id": f"{case_id}/event-1", "candidate_windows": 1},
+                    {"id": f"{case_id}/event-2", "candidate_windows": 2},
+                ],
+            }
+        )
+        for point, threshold in (("observe", 0.20), ("sparse", 0.60)):
+            directory = tmp_path / f"{case_id}-{point}"
+            manifest_path = _write_real_case(
+                directory,
+                case_id=case_id,
+                source_group_id=f"session-{case_number:02d}",
+                operating_point=point,
+                threshold=threshold,
+                frame_values=(
+                    8 + case_number,
+                    30 + case_number,
+                    230 - case_number,
+                    40 + case_number,
+                    220 - case_number,
+                    222 - case_number,
+                ),
+                states=(False, False, True, False, True, True),
+                two_events=True,
+            )
+            receipt = run_matched_watch(manifest_path)
+            receipt_path = directory / "receipt.json"
+            receipt_path.write_text(receipt.to_json(), encoding="utf-8")
+            receipt_paths.append(receipt_path)
+            if point not in operating_points:
+                arm = receipt.adaptive.to_dict()
+                configuration = {
+                    "effective": arm["resolved_watch"]["effective"],
+                    "source_profile": arm["source_profile"],
+                    "compiled_binding": arm["compiled_binding"],
+                }
+                operating_points[point] = {
+                    "id": point,
+                    "configuration": configuration,
+                    "configuration_sha256": receipt.adaptive.configuration_sha256,
+                }
+    viability = {
+        "schema_version": "3",
+        "track": "viability_frontier",
+        "scope": "programmable Watches over live multimodal streams",
+        "evidence_kind": "synthetic",
+        "preregistered": False,
+        "archetypes": [
+            {
+                "id": "physical_scene/package_appeared",
+                "provider_call_contract": {
+                    "completed_dispatch_calls": 2,
+                    "missing_dispatch_min_calls": 1,
+                    "missing_dispatch_max_calls": 2,
+                },
+                "cases": cases,
+                "operating_points": list(operating_points.values()),
+                "policy": {
+                    "min_candidate_recall": 0.0,
+                    "min_event_recall": 0.0,
+                    "min_precision": 0.0,
+                    "min_call_reduction": 0.0,
+                    "max_event_abstention_rate": 1.0,
+                    "max_missing_rate": 1.0,
+                },
+            }
+        ],
+    }
+    viability_path = tmp_path / "viability.json"
+    viability_path.write_bytes(_json_bytes(viability))
+
+    report = derive_measured_evidence_bundle(
+        viability_manifest_path=viability_path,
+        receipt_paths=receipt_paths,
+    )
+
+    assert len(report.coverage) == 4
+    assert len(report.derived_rows) == 8
+    assert report.judge_identity["judge_mode"] == "offline_oracle"
+    assert report.authority_verified is False
+    assert report.launch_qualified is False
+    assert report.frontier.launch_qualified is False

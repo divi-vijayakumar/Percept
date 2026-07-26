@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import math
-from dataclasses import asdict, dataclass, replace
+import os
+import stat
+from dataclasses import asdict, dataclass, field as dc_field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
@@ -24,10 +27,11 @@ from percept._safe_json import SafeInputReceipt, SafeJSONInputError, load_json_f
 from percept.adapters import Verdict
 from percept.config import Settings
 from percept.contracts.watchplan import WatchPlan
-from percept.domain_pack import watch_template
+from percept.domain_pack import DomainPack, get_domain_pack, watch_template
 from percept.harness.tier0 import gray_frame
 from percept.packs_default import FACILITY_OBSERVATION_V1
 from percept.resolver import ConfigResolver
+from percept.runtime.envelope import SourceEnvelope
 from percept.runtime.worker import RuntimeHealthEvent, RuntimeStats, run
 from percept.sourceprofile import SourceProfile
 from percept.tracing import content_hash
@@ -51,8 +55,12 @@ __all__ = [
 ]
 
 _SCHEMA = "percept.eval.matched_watch/v1"
+_REAL_SCHEMA = "percept.eval.matched_watch.real_video/v1"
 _MEDIA_SCHEMA = "percept.eval.matched_watch.synthetic_video/v1"
 _RECEIPT_SCHEMA = "percept.eval.matched_watch.receipt/v1"
+_RECEIPT_SCHEMA_V2 = "percept.eval.matched_watch.receipt/v2"
+_CORPUS_SCHEMA = "percept.eval.matched_watch.corpus/v1"
+_ORACLE_SCHEMA = "percept.eval.matched_watch.offline_oracle/v1"
 _ARCHETYPE = "physical_scene/package_appeared"
 _TEMPLATE = "facility_observation@1/package_appeared"
 _PACK = "facility_observation@1"
@@ -77,10 +85,14 @@ _MANIFEST_KEYS = {
     "events",
     "evidence_classification",
 }
+_REAL_MANIFEST_KEYS = _MANIFEST_KEYS | {"corpus", "oracle"}
 _MEDIA_REF_KEYS = {"path", "sha256"}
+_REAL_MEDIA_REF_KEYS = {"path", "sha256", "media_type"}
+_ARTIFACT_REF_KEYS = {"path", "sha256"}
 _REPLAY_KEYS = {"fps", "timebase", "source_id"}
 _WATCH_KEYS = {"template_ref", "parameters", "domain_pack"}
 _JUDGE_KEYS = {"adapter", "model", "prompt_sha256"}
+_REAL_JUDGE_KEYS = _JUDGE_KEYS | {"judge_mode"}
 _ADAPTIVE_KEYS = {"operating_point", "salience_stat", "threshold"}
 _EVENT_KEYS = {
     "id",
@@ -93,6 +105,22 @@ _EVENT_KEYS = {
 _MEDIA_KEYS = {"schema", "width", "height", "frames"}
 _FRAME_KEYS = {"t", "fill", "token", "from", "to"}
 _VERDICT_KEYS = {"satisfied", "confidence", "evidence", "error"}
+_CORPUS_KEYS = {"schema", "corpus_id", "version", "cases", "authorities"}
+_CORPUS_CASE_KEYS = {
+    "case_id",
+    "split",
+    "source_group_id",
+    "media_sha256",
+    "oracle_sha256",
+}
+_AUTHORITY_NAMES = (
+    "license",
+    "label_review",
+    "provider_transmission",
+    "preregistration",
+)
+_ORACLE_KEYS = {"schema", "candidates"}
+_ORACLE_CANDIDATE_KEYS = {"sequence", "t", "frame_sha256", "token", "verdicts"}
 _SAFE_INPUT_RECEIPT_KEYS = {
     "path",
     "canonical_path",
@@ -102,6 +130,7 @@ _SAFE_INPUT_RECEIPT_KEYS = {
     "inode",
     "modified_time_ns",
 }
+_INPUT_ARTIFACT_KEYS = {"role"} | _SAFE_INPUT_RECEIPT_KEYS
 _PERSISTED_RECEIPT_KEYS = {
     "schema",
     "manifest",
@@ -124,6 +153,10 @@ _PERSISTED_RECEIPT_KEYS = {
     "evidence_sha256",
     "origin_evidence_sha256",
     "run_timestamp",
+}
+_PERSISTED_RECEIPT_V2_KEYS = _PERSISTED_RECEIPT_KEYS | {
+    "input_artifacts",
+    "authority_artifact_presence",
 }
 _ARM_RECEIPT_KEYS = {
     "arm",
@@ -160,6 +193,10 @@ _CANDIDATE_RECEIPT_KEYS = {
     "transition_outcome",
     "incident_ids",
 }
+_CANDIDATE_RECEIPT_V2_KEYS = _CANDIDATE_RECEIPT_KEYS | {
+    "source_sequence",
+    "frame_sha256",
+}
 _PROVIDER_CALL_RECEIPT_KEYS = {
     "sequence",
     "candidate_index",
@@ -171,6 +208,9 @@ _PROVIDER_CALL_RECEIPT_KEYS = {
     "confidence",
     "evidence",
     "error",
+}
+_PROVIDER_CALL_RECEIPT_V2_KEYS = _PROVIDER_CALL_RECEIPT_KEYS | {
+    "oracle_lookup_sha256",
 }
 _SOURCE_PROFILE_KEYS = {
     "name",
@@ -233,7 +273,16 @@ _COMPILED_BINDING_KEYS = {
     "components",
 }
 _JUDGE_IDENTITY_KEYS = {"adapter", "model", "prompt_sha256"}
+_JUDGE_IDENTITY_V2_KEYS = _JUDGE_IDENTITY_KEYS | {"judge_mode"}
 _MEDIA_IDENTITY_KEYS = {"sha256", "byte_count", "schema", "width", "height"}
+_MEDIA_IDENTITY_V2_KEYS = _MEDIA_IDENTITY_KEYS | {"decoder_identity"}
+_DECODER_IDENTITY_KEYS = {
+    "library",
+    "version",
+    "build_sha256",
+    "source_adapter",
+    "frame_encoding",
+}
 _INCIDENT_RECEIPT_KEYS = {
     "id",
     "concern_id",
@@ -286,6 +335,20 @@ _TRACE_DATA_KEYS = {
         "evidence_origin",
         "judgment_event_id",
     },
+    "judge.started": {"temporal", "roi"},
+    "judge.finished": {"satisfied", "confidence"},
+    "gate.classified": {
+        "truth",
+        "action",
+        "reason",
+        "gate_reason",
+        "entity_id",
+        "satisfied",
+        "confidence",
+        "freshness",
+        "hold_s",
+    },
+    "shadow.fold": {"subject", "fold"},
     "incident.created": {
         "entity_id",
         "evidence_origin",
@@ -429,6 +492,111 @@ def _safe_receipt_dict(receipt: SafeInputReceipt) -> dict[str, Any]:
     }
 
 
+def _artifact_receipt(role: str, receipt: SafeInputReceipt) -> Mapping[str, Any]:
+    return MappingProxyType({"role": role, **_safe_receipt_dict(receipt)})
+
+
+def _resolve_contained_path(raw: Any, *, root: Path, context: str) -> Path:
+    """Resolve one v2 artifact path without allowing an absolute path or directory escape."""
+
+    text = _text(raw, context)
+    candidate = Path(text)
+    _require(not candidate.is_absolute(), f"{context} must be relative to its manifest")
+    try:
+        canonical_root = root.resolve(strict=True)
+        lexical = canonical_root / candidate
+        canonical = lexical.resolve(strict=True)
+        contained = os.path.commonpath((str(canonical_root), str(canonical))) == str(canonical_root)
+        cursor = canonical_root
+        for part in candidate.parts:
+            cursor = cursor / part
+            _require(
+                not stat.S_ISLNK(os.lstat(cursor).st_mode),
+                f"{context} may not traverse a symlink",
+            )
+    except (OSError, ValueError) as exc:
+        raise MatchedWatchInputError(f"{context} cannot be safely resolved: {exc}") from exc
+    _require(contained, f"{context} escapes its manifest directory")
+    return lexical
+
+
+def _snapshot_binary(path: Path, *, max_bytes: int = 64 * 1024 * 1024 * 1024) -> SafeInputReceipt:
+    """Hash one stable regular-file snapshot without materializing media in memory."""
+
+    try:
+        before_path = os.lstat(path)
+    except OSError as exc:
+        raise MatchedWatchInputError(f"unsafe binary artifact: initial inspection failed: {exc}") from exc
+    _require(stat.S_ISREG(before_path.st_mode), "unsafe binary artifact: input is not a regular file")
+    _require(before_path.st_nlink == 1, "unsafe binary artifact: input must have exactly one hard link")
+    _require(0 < before_path.st_size <= max_bytes, "unsafe binary artifact: invalid or excessive byte size")
+    flags = os.O_RDONLY
+    for name in ("O_CLOEXEC", "O_NOFOLLOW"):
+        flags |= int(getattr(os, name, 0))
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise MatchedWatchInputError(f"unsafe binary artifact: open failed: {exc}") from exc
+    try:
+        opened = os.fstat(fd)
+        _require(
+            stat.S_ISREG(opened.st_mode)
+            and opened.st_nlink == 1
+            and (opened.st_dev, opened.st_ino) == (before_path.st_dev, before_path.st_ino),
+            "unsafe binary artifact: path changed while opening",
+        )
+        before_snapshot = (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_size,
+            opened.st_mtime_ns,
+            opened.st_ctime_ns,
+            opened.st_nlink,
+        )
+        digest = hashlib.sha256()
+        byte_count = 0
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            byte_count += len(chunk)
+            _require(byte_count <= max_bytes, "unsafe binary artifact exceeds byte limit")
+            digest.update(chunk)
+        after = os.fstat(fd)
+        after_snapshot = (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+            after.st_nlink,
+        )
+        try:
+            final_path = os.lstat(path)
+        except OSError as exc:
+            raise MatchedWatchInputError(
+                f"unsafe binary artifact: post-read inspection failed: {exc}"
+            ) from exc
+        _require(
+            before_snapshot == after_snapshot
+            and (final_path.st_dev, final_path.st_ino) == (after.st_dev, after.st_ino)
+            and final_path.st_nlink == 1
+            and final_path.st_size == byte_count,
+            "unsafe binary artifact changed while it was being read",
+        )
+    finally:
+        os.close(fd)
+    return SafeInputReceipt(
+        path=str(path),
+        canonical_path=str(path.resolve(strict=True)),
+        byte_count=byte_count,
+        sha256=f"sha256:{digest.hexdigest()}",
+        device=after.st_dev,
+        inode=after.st_ino,
+        modified_time_ns=after.st_mtime_ns,
+    )
+
+
 @dataclass(frozen=True)
 class _VerdictSpec:
     satisfied: bool
@@ -445,6 +613,15 @@ class _FrameSpec:
     token: str
     from_verdict: _VerdictSpec
     to_verdict: _VerdictSpec
+
+
+@dataclass(frozen=True)
+class _OracleFrameSpec:
+    index: int
+    t: float
+    frame_sha256: str
+    token: str
+    verdicts: Mapping[str, _VerdictSpec]
 
 
 @dataclass(frozen=True)
@@ -476,6 +653,17 @@ class _Manifest:
     width: int
     height: int
     evidence_classification: str
+    schema: str = _SCHEMA
+    template_ref: str = _TEMPLATE
+    domain_pack: DomainPack = FACILITY_OBSERVATION_V1
+    plan_route: str = "transition"
+    judge_mode: str = "scripted_contract"
+    media_type: str = "application/json"
+    oracle_frames: tuple[_OracleFrameSpec, ...] = ()
+    input_artifacts: tuple[Mapping[str, Any], ...] = ()
+    authority_artifact_presence: Mapping[str, bool] = dc_field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
 
 @dataclass(frozen=True)
@@ -500,9 +688,13 @@ class ProviderCallReceipt:
     confidence: float | None
     evidence: str | None
     error: str | None
+    oracle_lookup_sha256: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        result = asdict(self)
+        if self.oracle_lookup_sha256 is None:
+            result.pop("oracle_lookup_sha256")
+        return result
 
 
 @dataclass(frozen=True)
@@ -516,9 +708,11 @@ class CandidateReceipt:
     decision: str | None
     transition_outcome: str | None
     incident_ids: tuple[str, ...]
+    source_sequence: int | None = None
+    frame_sha256: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "index": self.index,
             "t": self.t,
             "edge_decision": _thaw(self.edge_decision),
@@ -529,6 +723,10 @@ class CandidateReceipt:
             "transition_outcome": self.transition_outcome,
             "incident_ids": list(self.incident_ids),
         }
+        if self.source_sequence is not None or self.frame_sha256 is not None:
+            result["source_sequence"] = self.source_sequence
+            result["frame_sha256"] = self.frame_sha256
+        return result
 
 
 @dataclass(frozen=True)
@@ -601,14 +799,19 @@ class MatchedWatchReceipt:
     comparability_blockers: tuple[str, ...]
     run_timestamp: str
     origin_evidence_sha256: str
+    receipt_schema: str = _RECEIPT_SCHEMA
+    input_artifacts: tuple[Mapping[str, Any], ...] = ()
+    authority_artifact_presence: Mapping[str, bool] = dc_field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
     @property
     def launch_qualified(self) -> bool:
         return False
 
     def content_dict(self) -> dict[str, Any]:
-        return {
-            "schema": _RECEIPT_SCHEMA,
+        result = {
+            "schema": self.receipt_schema,
             "manifest": _thaw(self.manifest),
             "manifest_input_receipt": _thaw(self.manifest_input_receipt),
             "media_input_receipt": _thaw(self.media_input_receipt),
@@ -626,12 +829,27 @@ class MatchedWatchReceipt:
             "launch_qualified": False,
             "qualification_reason": _QUALIFICATION_REASON,
         }
+        if self.receipt_schema == _RECEIPT_SCHEMA_V2:
+            result["input_artifacts"] = [_thaw(item) for item in self.input_artifacts]
+            result["authority_artifact_presence"] = _thaw(
+                self.authority_artifact_presence
+            )
+        return result
 
     def hash_content_dict(self) -> dict[str, Any]:
         result = self.content_dict()
         for key in ("manifest_input_receipt", "media_input_receipt"):
             full = result[key]
             result[key] = {"sha256": full["sha256"], "byte_count": full["byte_count"]}
+        if "input_artifacts" in result:
+            result["input_artifacts"] = [
+                {
+                    "role": item["role"],
+                    "sha256": item["sha256"],
+                    "byte_count": item["byte_count"],
+                }
+                for item in result["input_artifacts"]
+            ]
         for arm_name in ("baseline", "adaptive"):
             arm = result[arm_name]
             arm["incidents"] = [
@@ -766,14 +984,27 @@ def _parse_safe_input_receipt_mapping(value: Any, context: str) -> Mapping[str, 
     return _strict_object(doc, context, keys=_SAFE_INPUT_RECEIPT_KEYS)
 
 
-def _parse_provider_call_receipt(value: Any, context: str) -> ProviderCallReceipt:
+def _parse_provider_call_receipt(
+    value: Any,
+    context: str,
+    *,
+    v2: bool = False,
+) -> ProviderCallReceipt:
     doc = _object(value, context)
-    _exact(doc, _PROVIDER_CALL_RECEIPT_KEYS, context)
+    _exact(
+        doc,
+        _PROVIDER_CALL_RECEIPT_V2_KEYS if v2 else _PROVIDER_CALL_RECEIPT_KEYS,
+        context,
+    )
     sequence = _strict_int(doc["sequence"], f"{context}.sequence", minimum=1)
     candidate_index = _strict_int(doc["candidate_index"], f"{context}.candidate_index")
     candidate_t = _strict_float(doc["candidate_t"], f"{context}.candidate_t")
     predicate = _strict_string(doc["predicate"], f"{context}.predicate")
-    _require(predicate in {"from", "to"}, f"{context}.predicate must be 'from' or 'to'")
+    allowed_predicates = {"from", "to", "condition"} if v2 else {"from", "to"}
+    _require(
+        predicate in allowed_predicates,
+        f"{context}.predicate must be one of {sorted(allowed_predicates)!r}",
+    )
     condition_sha256 = _sha(doc["condition_sha256"], f"{context}.condition_sha256")
     status = _strict_string(doc["status"], f"{context}.status")
     _require(status in {"success", "error"}, f"{context}.status must be 'success' or 'error'")
@@ -797,6 +1028,12 @@ def _parse_provider_call_receipt(value: Any, context: str) -> ProviderCallReceip
             satisfied is None and confidence is None and evidence is None and bool(error),
             f"{context} failed call has inconsistent result fields",
         )
+    oracle_lookup_sha256 = doc.get("oracle_lookup_sha256")
+    if v2:
+        oracle_lookup_sha256 = _sha(
+            oracle_lookup_sha256,
+            f"{context}.oracle_lookup_sha256",
+        )
     return ProviderCallReceipt(
         sequence,
         candidate_index,
@@ -808,12 +1045,22 @@ def _parse_provider_call_receipt(value: Any, context: str) -> ProviderCallReceip
         confidence,
         evidence,
         error,
+        oracle_lookup_sha256,
     )
 
 
-def _parse_candidate_receipt(value: Any, context: str) -> CandidateReceipt:
+def _parse_candidate_receipt(
+    value: Any,
+    context: str,
+    *,
+    v2: bool = False,
+) -> CandidateReceipt:
     doc = _object(value, context)
-    _exact(doc, _CANDIDATE_RECEIPT_KEYS, context)
+    _exact(
+        doc,
+        _CANDIDATE_RECEIPT_V2_KEYS if v2 else _CANDIDATE_RECEIPT_KEYS,
+        context,
+    )
     index = _strict_int(doc["index"], f"{context}.index")
     t = _strict_float(doc["t"], f"{context}.t")
     raw_edge = _object(doc["edge_decision"], f"{context}.edge_decision")
@@ -831,7 +1078,11 @@ def _parse_candidate_receipt(value: Any, context: str) -> CandidateReceipt:
     dispatched = _strict_bool(doc["runtime_dispatched"], f"{context}.runtime_dispatched")
     _require(isinstance(doc["provider_calls"], list), f"{context}.provider_calls must be a list")
     calls = tuple(
-        _parse_provider_call_receipt(item, f"{context}.provider_calls[{call_index}]")
+        _parse_provider_call_receipt(
+            item,
+            f"{context}.provider_calls[{call_index}]",
+            v2=v2,
+        )
         for call_index, item in enumerate(doc["provider_calls"])
     )
     decision = doc["decision"]
@@ -852,6 +1103,14 @@ def _parse_candidate_receipt(value: Any, context: str) -> CandidateReceipt:
     )
     _require(len(incident_ids) == len(set(incident_ids)), f"{context}.incident_ids contains duplicates")
     _require(dispatched == (decision is not None), f"{context} dispatch and decision fields disagree")
+    source_sequence = None
+    frame_sha256 = None
+    if v2:
+        source_sequence = _strict_int(
+            doc["source_sequence"],
+            f"{context}.source_sequence",
+        )
+        frame_sha256 = _sha(doc["frame_sha256"], f"{context}.frame_sha256")
     return CandidateReceipt(
         index,
         t,
@@ -862,6 +1121,8 @@ def _parse_candidate_receipt(value: Any, context: str) -> CandidateReceipt:
         decision,
         transition,
         incident_ids,
+        source_sequence,
+        frame_sha256,
     )
 
 
@@ -1092,7 +1353,13 @@ def _parse_compiled_binding(value: Any, context: str) -> Mapping[str, Any]:
     return _strict_object(doc, context, keys=_COMPILED_BINDING_KEYS)
 
 
-def _parse_arm_receipt(value: Any, context: str, expected_arm: str) -> ArmReceipt:
+def _parse_arm_receipt(
+    value: Any,
+    context: str,
+    expected_arm: str,
+    *,
+    v2: bool = False,
+) -> ArmReceipt:
     doc = _object(value, context)
     _exact(doc, _ARM_RECEIPT_KEYS, context)
     _require(doc["arm"] == expected_arm, f"{context}.arm must be {expected_arm!r}")
@@ -1113,11 +1380,34 @@ def _parse_arm_receipt(value: Any, context: str, expected_arm: str) -> ArmReceip
         f"{context}.compiled_binding",
     )
     judge_identity = _strict_object(
-        doc["judge_identity"], f"{context}.judge_identity", keys=_JUDGE_IDENTITY_KEYS
+        doc["judge_identity"],
+        f"{context}.judge_identity",
+        keys=_JUDGE_IDENTITY_V2_KEYS if v2 else _JUDGE_IDENTITY_KEYS,
     )
     media_identity = _strict_object(
-        doc["media_identity"], f"{context}.media_identity", keys=_MEDIA_IDENTITY_KEYS
+        doc["media_identity"],
+        f"{context}.media_identity",
+        keys=_MEDIA_IDENTITY_V2_KEYS if v2 else _MEDIA_IDENTITY_KEYS,
     )
+    if v2:
+        decoder = _object(
+            media_identity["decoder_identity"],
+            f"{context}.media_identity.decoder_identity",
+        )
+        _exact(
+            decoder,
+            _DECODER_IDENTITY_KEYS,
+            f"{context}.media_identity.decoder_identity",
+        )
+        for key in ("library", "version", "source_adapter", "frame_encoding"):
+            _strict_string(
+                decoder[key],
+                f"{context}.media_identity.decoder_identity.{key}",
+            )
+        _sha(
+            decoder["build_sha256"],
+            f"{context}.media_identity.decoder_identity.build_sha256",
+        )
     replay_identity = _strict_object(
         doc["replay_identity"], f"{context}.replay_identity", keys=_REPLAY_KEYS
     )
@@ -1130,7 +1420,11 @@ def _parse_arm_receipt(value: Any, context: str, expected_arm: str) -> ArmReceip
     )
     _require(isinstance(doc["candidates"], list), f"{context}.candidates must be a list")
     candidates = tuple(
-        _parse_candidate_receipt(item, f"{context}.candidates[{index}]")
+        _parse_candidate_receipt(
+            item,
+            f"{context}.candidates[{index}]",
+            v2=v2,
+        )
         for index, item in enumerate(doc["candidates"])
     )
     incidents = _strict_object_tuple(
@@ -1225,9 +1519,95 @@ def _parse_arm_receipt(value: Any, context: str, expected_arm: str) -> ArmReceip
     )
 
 
+def _plan_route(plan: WatchPlan) -> str:
+    route = str(plan.explicit.get("Goal.state.type", "watch"))
+    _require(
+        route in {"watch", "transition"},
+        "matched-Watch evaluation supports only ordinary and transition Watch templates",
+    )
+    if route == "transition":
+        _require(
+            isinstance(plan.explicit.get("Goal.state.from"), str)
+            and isinstance(plan.explicit.get("Goal.state.to"), str),
+            "transition Watch template must render exact from/to predicates",
+        )
+    return route
+
+
+def _parse_persisted_real_manifest(doc: Mapping[str, Any], context: str) -> Mapping[str, Any]:
+    _exact(doc, _REAL_MANIFEST_KEYS, context)
+    _require(doc["schema"] == _REAL_SCHEMA, f"{context}.schema must be {_REAL_SCHEMA!r}")
+    _strict_string(doc["case_id"], f"{context}.case_id")
+    _strict_string(doc["archetype"], f"{context}.archetype")
+    _strict_string(doc["split"], f"{context}.split")
+    media = _object(doc["media"], f"{context}.media")
+    _exact(media, _REAL_MEDIA_REF_KEYS, f"{context}.media")
+    _strict_string(media["path"], f"{context}.media.path")
+    _sha(media["sha256"], f"{context}.media.sha256")
+    _require(media["media_type"] == "video/mp4", f"{context}.media.media_type must be 'video/mp4'")
+    replay = _object(doc["replay"], f"{context}.replay")
+    _exact(replay, _REPLAY_KEYS, f"{context}.replay")
+    _strict_float(replay["fps"], f"{context}.replay.fps")
+    _require(replay["timebase"] == "media", f"{context}.replay.timebase must be 'media'")
+    _strict_string(replay["source_id"], f"{context}.replay.source_id")
+    watch = _object(doc["watch"], f"{context}.watch")
+    _exact(watch, _WATCH_KEYS, f"{context}.watch")
+    template_ref = _strict_string(watch["template_ref"], f"{context}.watch.template_ref")
+    pack_name = _strict_string(watch["domain_pack"], f"{context}.watch.domain_pack")
+    _require(
+        template_ref.startswith(pack_name + "/"),
+        f"{context}.watch.template_ref must belong to its domain_pack",
+    )
+    parameters = _strict_object(watch["parameters"], f"{context}.watch.parameters")
+    try:
+        _plan_route(watch_template(template_ref, parameters))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise MatchedWatchInputError(f"{context}.watch cannot render: {exc}") from exc
+    judge = _object(doc["judge"], f"{context}.judge")
+    _exact(judge, _REAL_JUDGE_KEYS, f"{context}.judge")
+    for key in ("adapter", "model"):
+        _strict_string(judge[key], f"{context}.judge.{key}")
+    _sha(judge["prompt_sha256"], f"{context}.judge.prompt_sha256")
+    _require(
+        judge["judge_mode"] == "offline_oracle",
+        f"{context}.judge.judge_mode must be 'offline_oracle'",
+    )
+    adaptive = _object(doc["adaptive"], f"{context}.adaptive")
+    _exact(adaptive, _ADAPTIVE_KEYS, f"{context}.adaptive")
+    _strict_string(adaptive["operating_point"], f"{context}.adaptive.operating_point")
+    _require(
+        adaptive["salience_stat"] in {"mean", "block_max", "p95"},
+        f"{context}.adaptive.salience_stat is unsupported",
+    )
+    _strict_float(adaptive["threshold"], f"{context}.adaptive.threshold")
+    raw_events = doc["events"]
+    _require(isinstance(raw_events, list) and raw_events, f"{context}.events must be non-empty")
+    for index, raw_event in enumerate(raw_events):
+        event_context = f"{context}.events[{index}]"
+        event = _object(raw_event, event_context)
+        _exact(event, _EVENT_KEYS, event_context)
+        for key in ("id", "review_authority"):
+            _strict_string(event[key], f"{event_context}.{key}")
+        for key in ("eligible_at_s", "window_start_s", "window_end_s"):
+            _strict_float(event[key], f"{event_context}.{key}")
+        _sha(event["label_digest"], f"{event_context}.label_digest")
+    for ref_name in ("corpus", "oracle"):
+        ref = _object(doc[ref_name], f"{context}.{ref_name}")
+        _exact(ref, _ARTIFACT_REF_KEYS, f"{context}.{ref_name}")
+        _strict_string(ref["path"], f"{context}.{ref_name}.path")
+        _sha(ref["sha256"], f"{context}.{ref_name}.sha256")
+    _require(
+        doc["evidence_classification"] == "admission_only",
+        f"{context}.evidence_classification must be 'admission_only'",
+    )
+    return _strict_object(doc, context, keys=_REAL_MANIFEST_KEYS)
+
+
 def _parse_persisted_manifest(value: Any) -> Mapping[str, Any]:
     context = "receipt.manifest"
     doc = _object(value, context)
+    if doc.get("schema") == _REAL_SCHEMA:
+        return _parse_persisted_real_manifest(doc, context)
     _exact(doc, _MANIFEST_KEYS, context)
     _require(doc["schema"] == _SCHEMA, f"{context}.schema must be {_SCHEMA!r}")
     _strict_string(doc["case_id"], f"{context}.case_id")
@@ -1291,6 +1671,335 @@ def _parse_verdict(value: Any, context: str) -> _VerdictSpec:
     return _VerdictSpec(doc["satisfied"], confidence, evidence, error)
 
 
+def _load_real_manifest(
+    loaded: Any,
+    doc: Mapping[str, Any],
+) -> _Manifest:
+    _exact(doc, _REAL_MANIFEST_KEYS, "manifest")
+    case_id = _text(doc["case_id"], "manifest.case_id")
+    _text(doc["archetype"], "manifest.archetype")
+    split = _text(doc["split"], "manifest.split")
+    manifest_root = Path(loaded.receipt.canonical_path).parent
+
+    media_ref = _object(doc["media"], "manifest.media")
+    _exact(media_ref, _REAL_MEDIA_REF_KEYS, "manifest.media")
+    _require(media_ref["media_type"] == "video/mp4", "manifest.media.media_type must be 'video/mp4'")
+    media_path = _resolve_contained_path(
+        media_ref["path"],
+        root=manifest_root,
+        context="manifest.media.path",
+    )
+    _require(media_path.suffix.lower() == ".mp4", "real-video media path must end in .mp4")
+    media_receipt = _snapshot_binary(media_path)
+    _require(
+        media_receipt.sha256 == _sha(media_ref["sha256"], "manifest.media.sha256"),
+        "manifest media digest does not match the descriptor-backed MP4 snapshot",
+    )
+
+    corpus_ref = _object(doc["corpus"], "manifest.corpus")
+    _exact(corpus_ref, _ARTIFACT_REF_KEYS, "manifest.corpus")
+    corpus_path = _resolve_contained_path(
+        corpus_ref["path"],
+        root=manifest_root,
+        context="manifest.corpus.path",
+    )
+    try:
+        corpus_loaded = load_json_file(corpus_path)
+    except SafeJSONInputError as exc:
+        raise MatchedWatchInputError(f"unsafe matched-Watch corpus index: {exc}") from exc
+    _require(
+        corpus_loaded.receipt.sha256 == _sha(corpus_ref["sha256"], "manifest.corpus.sha256"),
+        "manifest corpus digest does not match its descriptor-backed snapshot",
+    )
+    corpus = _object(corpus_loaded.value, "corpus")
+    _exact(corpus, _CORPUS_KEYS, "corpus")
+    _require(corpus["schema"] == _CORPUS_SCHEMA, f"corpus.schema must be {_CORPUS_SCHEMA!r}")
+    _text(corpus["corpus_id"], "corpus.corpus_id")
+    _text(corpus["version"], "corpus.version")
+    raw_cases = corpus["cases"]
+    _require(isinstance(raw_cases, list) and raw_cases, "corpus.cases must be non-empty")
+    case_ids: set[str] = set()
+    media_owners: dict[str, str] = {}
+    group_splits: dict[str, str] = {}
+    active_case: Mapping[str, Any] | None = None
+    for index, raw_case in enumerate(raw_cases):
+        context = f"corpus.cases[{index}]"
+        case = _object(raw_case, context)
+        _exact(case, _CORPUS_CASE_KEYS, context)
+        indexed_case_id = _text(case["case_id"], f"{context}.case_id")
+        _require(indexed_case_id not in case_ids, f"duplicate corpus case id {indexed_case_id!r}")
+        case_ids.add(indexed_case_id)
+        indexed_split = _text(case["split"], f"{context}.split")
+        group = _text(case["source_group_id"], f"{context}.source_group_id")
+        media_sha = _sha(case["media_sha256"], f"{context}.media_sha256")
+        oracle_sha = _sha(case["oracle_sha256"], f"{context}.oracle_sha256")
+        owner = media_owners.setdefault(media_sha, indexed_case_id)
+        _require(
+            owner == indexed_case_id,
+            f"duplicate media digest is assigned to cases {owner!r} and {indexed_case_id!r}",
+        )
+        prior_split = group_splits.setdefault(group, indexed_split)
+        _require(
+            prior_split == indexed_split,
+            f"source group {group!r} crosses splits {prior_split!r} and {indexed_split!r}",
+        )
+        if indexed_case_id == case_id:
+            active_case = MappingProxyType(
+                {
+                    **case,
+                    "media_sha256": media_sha,
+                    "oracle_sha256": oracle_sha,
+                }
+            )
+    _require(active_case is not None, f"case {case_id!r} is absent from its corpus index")
+    _require(active_case["split"] == split, "manifest split disagrees with its corpus index")
+    _require(
+        active_case["media_sha256"] == media_receipt.sha256,
+        "manifest media does not match the indexed case",
+    )
+
+    authorities = _object(corpus["authorities"], "corpus.authorities")
+    _exact(authorities, set(_AUTHORITY_NAMES), "corpus.authorities")
+    authority_presence: dict[str, bool] = {}
+    authority_artifacts: list[Mapping[str, Any]] = []
+    corpus_root = Path(corpus_loaded.receipt.canonical_path).parent
+    for name in _AUTHORITY_NAMES:
+        raw_ref = authorities[name]
+        if raw_ref is None:
+            authority_presence[name] = False
+            continue
+        ref = _object(raw_ref, f"corpus.authorities.{name}")
+        _exact(ref, _ARTIFACT_REF_KEYS, f"corpus.authorities.{name}")
+        authority_path = _resolve_contained_path(
+            ref["path"],
+            root=corpus_root,
+            context=f"corpus.authorities.{name}.path",
+        )
+        authority_receipt = _snapshot_binary(authority_path, max_bytes=64 * 1024 * 1024)
+        _require(
+            authority_receipt.sha256
+            == _sha(ref["sha256"], f"corpus.authorities.{name}.sha256"),
+            f"corpus authority artifact {name!r} digest mismatch",
+        )
+        authority_presence[name] = True
+        authority_artifacts.append(_artifact_receipt(f"authority:{name}", authority_receipt))
+
+    oracle_ref = _object(doc["oracle"], "manifest.oracle")
+    _exact(oracle_ref, _ARTIFACT_REF_KEYS, "manifest.oracle")
+    oracle_path = _resolve_contained_path(
+        oracle_ref["path"],
+        root=manifest_root,
+        context="manifest.oracle.path",
+    )
+    try:
+        oracle_loaded = load_json_file(oracle_path)
+    except SafeJSONInputError as exc:
+        raise MatchedWatchInputError(f"unsafe matched-Watch offline oracle: {exc}") from exc
+    expected_oracle_sha = _sha(oracle_ref["sha256"], "manifest.oracle.sha256")
+    _require(
+        oracle_loaded.receipt.sha256 == expected_oracle_sha,
+        "manifest oracle digest does not match its descriptor-backed snapshot",
+    )
+    _require(
+        active_case["oracle_sha256"] == expected_oracle_sha,
+        "manifest oracle does not match the indexed case",
+    )
+
+    watch = _object(doc["watch"], "manifest.watch")
+    _exact(watch, _WATCH_KEYS, "manifest.watch")
+    template_ref = _text(watch["template_ref"], "manifest.watch.template_ref")
+    pack_name = _text(watch["domain_pack"], "manifest.watch.domain_pack")
+    _require(
+        template_ref.startswith(pack_name + "/"),
+        "manifest.watch.template_ref must belong to manifest.watch.domain_pack",
+    )
+    parameters = _object(watch["parameters"], "manifest.watch.parameters")
+    try:
+        domain_pack = get_domain_pack(pack_name)
+        plan = watch_template(template_ref, parameters)
+        route = _plan_route(plan)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise MatchedWatchInputError(f"manifest Watch template cannot render: {exc}") from exc
+    expected_conditions: dict[str, str]
+    if route == "transition":
+        expected_conditions = {
+            _canonical_sha(str(plan.explicit["Goal.state.from"])): "from",
+            _canonical_sha(str(plan.explicit["Goal.state.to"])): "to",
+        }
+    else:
+        expected_conditions = {_canonical_sha(plan.condition): "condition"}
+
+    oracle = _object(oracle_loaded.value, "oracle")
+    _exact(oracle, _ORACLE_KEYS, "oracle")
+    _require(oracle["schema"] == _ORACLE_SCHEMA, f"oracle.schema must be {_ORACLE_SCHEMA!r}")
+    raw_candidates = oracle["candidates"]
+    _require(
+        isinstance(raw_candidates, list) and 0 < len(raw_candidates) <= 100_000,
+        "oracle.candidates must contain 1..100000 decoded candidates",
+    )
+    oracle_frames: list[_OracleFrameSpec] = []
+    prior_t: float | None = None
+    for index, raw_candidate in enumerate(raw_candidates):
+        context = f"oracle.candidates[{index}]"
+        candidate = _object(raw_candidate, context)
+        _exact(candidate, _ORACLE_CANDIDATE_KEYS, context)
+        sequence = candidate["sequence"]
+        _require(
+            isinstance(sequence, int) and not isinstance(sequence, bool) and sequence == index,
+            f"{context}.sequence must be the contiguous zero-based source sequence",
+        )
+        candidate_t = _number(candidate["t"], f"{context}.t", minimum=0.0)
+        _require(
+            prior_t is None or candidate_t > prior_t,
+            "oracle candidate timestamps must be strictly increasing",
+        )
+        prior_t = candidate_t
+        frame_sha = _sha(candidate["frame_sha256"], f"{context}.frame_sha256")
+        verdict_doc = _object(candidate["verdicts"], f"{context}.verdicts")
+        _require(
+            set(verdict_doc) == set(expected_conditions),
+            f"{context}.verdicts must contain exactly the rendered Watch predicate hashes",
+        )
+        verdicts = {
+            condition_sha: _parse_verdict(
+                verdict_doc[condition_sha],
+                f"{context}.verdicts[{condition_sha!r}]",
+            )
+            for condition_sha in sorted(verdict_doc)
+        }
+        oracle_frames.append(
+            _OracleFrameSpec(
+                index,
+                candidate_t,
+                frame_sha,
+                _text(candidate["token"], f"{context}.token"),
+                MappingProxyType(verdicts),
+            )
+        )
+
+    replay = _object(doc["replay"], "manifest.replay")
+    _exact(replay, _REPLAY_KEYS, "manifest.replay")
+    fps = _number(replay["fps"], "manifest.replay.fps", minimum=0.000001)
+    _require(replay["timebase"] == "media", "manifest.replay.timebase must be 'media'")
+    source_id = _text(replay["source_id"], "manifest.replay.source_id")
+
+    judge = _object(doc["judge"], "manifest.judge")
+    _exact(judge, _REAL_JUDGE_KEYS, "manifest.judge")
+    judge_identity = {
+        "adapter": _text(judge["adapter"], "manifest.judge.adapter"),
+        "model": _text(judge["model"], "manifest.judge.model"),
+        "prompt_sha256": _sha(judge["prompt_sha256"], "manifest.judge.prompt_sha256"),
+        "judge_mode": _text(judge["judge_mode"], "manifest.judge.judge_mode"),
+    }
+    _require(
+        judge_identity["adapter"] == "offline_oracle/v1"
+        and judge_identity["judge_mode"] == "offline_oracle",
+        "real-video mechanics require adapter 'offline_oracle/v1' and judge_mode 'offline_oracle'",
+    )
+
+    adaptive = _object(doc["adaptive"], "manifest.adaptive")
+    _exact(adaptive, _ADAPTIVE_KEYS, "manifest.adaptive")
+    salience_stat = _text(adaptive["salience_stat"], "manifest.adaptive.salience_stat")
+    _require(salience_stat in {"mean", "block_max", "p95"}, "unsupported adaptive salience_stat")
+    threshold = _number(adaptive["threshold"], "manifest.adaptive.threshold", minimum=0.0)
+    _require(threshold <= 1.0, "manifest.adaptive.threshold must be <= 1")
+
+    raw_events = doc["events"]
+    _require(isinstance(raw_events, list) and raw_events, "manifest.events must be non-empty")
+    events: list[_EventSpec] = []
+    event_ids: set[str] = set()
+    for index, raw_event in enumerate(raw_events):
+        context = f"manifest.events[{index}]"
+        event = _object(raw_event, context)
+        _exact(event, _EVENT_KEYS, context)
+        event_id = _text(event["id"], f"{context}.id")
+        _require(event_id not in event_ids, f"duplicate event id {event_id!r}")
+        event_ids.add(event_id)
+        start = _number(event["window_start_s"], f"{context}.window_start_s", minimum=0.0)
+        end = _number(event["window_end_s"], f"{context}.window_end_s", minimum=0.0)
+        eligible = _number(event["eligible_at_s"], f"{context}.eligible_at_s", minimum=0.0)
+        _require(start <= eligible <= end, f"{context}.eligible_at_s must be inside its window")
+        events.append(
+            _EventSpec(
+                event_id,
+                eligible,
+                start,
+                end,
+                _text(event["review_authority"], f"{context}.review_authority"),
+                _sha(event["label_digest"], f"{context}.label_digest"),
+            )
+        )
+    for candidate in oracle_frames:
+        owners = [event.id for event in events if event.start <= candidate.t <= event.end]
+        _require(
+            len(owners) <= 1,
+            f"candidate t={candidate.t} belongs to multiple event windows {owners!r}",
+        )
+    for event in events:
+        _require(
+            any(event.start <= candidate.t <= event.end for candidate in oracle_frames),
+            f"event {event.id!r} contains zero oracle candidates",
+        )
+    for index, left in enumerate(events):
+        for right in events[index + 1 :]:
+            _require(
+                left.end < right.start or right.end < left.start,
+                f"event windows {left.id!r} and {right.id!r} overlap",
+            )
+
+    classification = _text(
+        doc["evidence_classification"],
+        "manifest.evidence_classification",
+    )
+    _require(
+        classification == "admission_only",
+        "real-video offline-oracle evidence_classification must be 'admission_only'",
+    )
+    artifacts = [
+        _artifact_receipt("manifest", loaded.receipt),
+        _artifact_receipt("corpus", corpus_loaded.receipt),
+        _artifact_receipt("media", media_receipt),
+        _artifact_receipt("oracle", oracle_loaded.receipt),
+        *authority_artifacts,
+    ]
+    identities = [
+        (item["device"], item["inode"])
+        for item in artifacts
+    ]
+    _require(
+        len(identities) == len(set(identities)),
+        "real-video input artifact files must be distinct",
+    )
+    return _Manifest(
+        MappingProxyType(dict(doc)),
+        loaded.receipt,
+        media_receipt,
+        case_id,
+        split,
+        fps,
+        source_id,
+        MappingProxyType(dict(parameters)),
+        MappingProxyType(judge_identity),
+        _text(adaptive["operating_point"], "manifest.adaptive.operating_point"),
+        salience_stat,
+        threshold,
+        tuple(events),
+        (),
+        0,
+        0,
+        classification,
+        _REAL_SCHEMA,
+        template_ref,
+        domain_pack,
+        route,
+        "offline_oracle",
+        "video/mp4",
+        tuple(oracle_frames),
+        tuple(sorted(artifacts, key=lambda item: item["role"])),
+        MappingProxyType(authority_presence),
+    )
+
+
 def load_matched_watch_manifest(path: str | Path) -> _Manifest:
     """Load and freeze a strict manifest plus its safely snapshotted synthetic media."""
 
@@ -1299,6 +2008,8 @@ def load_matched_watch_manifest(path: str | Path) -> _Manifest:
     except SafeJSONInputError as exc:
         raise MatchedWatchInputError(f"unsafe matched-Watch manifest: {exc}") from exc
     doc = _object(loaded.value, "manifest")
+    if doc.get("schema") == _REAL_SCHEMA:
+        return _load_real_manifest(loaded, doc)
     _exact(doc, _MANIFEST_KEYS, "manifest")
     _require(doc["schema"] == _SCHEMA, f"manifest.schema must be {_SCHEMA!r}")
     case_id = _text(doc["case_id"], "manifest.case_id")
@@ -1523,6 +2234,243 @@ class _RecordingTransitionJudge:
         return Verdict(answer.satisfied, answer.confidence, answer.evidence)
 
 
+@dataclass(frozen=True)
+class _DecodedCoordinate:
+    source_sequence: int
+    t: float
+    frame_sha256: str
+
+
+class _OracleCoordinateTracker:
+    def __init__(self) -> None:
+        self.current: _DecodedCoordinate | None = None
+        self.seen: list[_DecodedCoordinate] = []
+        self.width: int | None = None
+        self.height: int | None = None
+
+    def bind(self, coordinate: _DecodedCoordinate, envelope: SourceEnvelope) -> None:
+        width = envelope.format.width
+        height = envelope.format.height
+        _require(
+            isinstance(width, int)
+            and width > 0
+            and isinstance(height, int)
+            and height > 0,
+            "runtime decoder did not report positive frame dimensions",
+        )
+        if self.width is None:
+            self.width, self.height = width, height
+        _require(
+            (width, height) == (self.width, self.height),
+            "runtime decoder changed frame dimensions within one case",
+        )
+        self.current = coordinate
+        self.seen.append(coordinate)
+
+
+def _decoded_frame_sha256(frame: Any) -> str:
+    _require(
+        isinstance(frame, tuple)
+        and len(frame) == 2
+        and isinstance(frame[0], str)
+        and isinstance(frame[1], bytes),
+        "real-video decoder must supply the canonical (media_type, bytes) judge frame",
+    )
+    return f"sha256:{hashlib.sha256(frame[1]).hexdigest()}"
+
+
+def _decoder_identity() -> Mapping[str, str]:
+    try:
+        import cv2  # noqa: PLC0415 - runtime-extra identity is evaluated only for real video
+    except ImportError as exc:
+        raise MatchedWatchInputError(
+            "real-video matched evaluation requires OpenCV; "
+            "install 'percept-vision[runtime]'"
+        ) from exc
+    try:
+        build = cv2.getBuildInformation()
+        version = str(cv2.__version__)
+    except Exception as exc:  # noqa: BLE001 - normalize optional decoder failures
+        raise MatchedWatchInputError(f"cannot identify the active OpenCV decoder: {exc}") from exc
+    _require(bool(build) and bool(version), "active OpenCV decoder identity is incomplete")
+    return MappingProxyType(
+        {
+            "library": "opencv",
+            "version": version,
+            "build_sha256": f"sha256:{hashlib.sha256(build.encode('utf-8')).hexdigest()}",
+            "source_adapter": "percept.runtime.source.open_source/v1",
+            "frame_encoding": "cv2.imencode:image/jpeg:backend-default",
+        }
+    )
+
+
+class _RecordingOfflineOracleJudge:
+    """Offline mechanics judge keyed by exact decoded evidence, never by event labels."""
+
+    SUPPORTS_FUSED_AUDIO_INPUT = True
+
+    def __init__(
+        self,
+        manifest: _Manifest,
+        tracker: _OracleCoordinateTracker,
+        predicates: Mapping[str, str],
+    ) -> None:
+        self._manifest = manifest
+        self._tracker = tracker
+        self._predicates = dict(predicates)
+        self._frames = {item.index: item for item in manifest.oracle_frames}
+        self.calls: list[ProviderCallReceipt] = []
+        self._seen_lookups: set[tuple[int, str]] = set()
+
+    async def detect(self, frame: Any, goals: Any) -> list[Any]:
+        return []
+
+    async def judge(self, condition: str, frame: Any, **kwargs: Any) -> Verdict:
+        coordinate = self._tracker.current
+        if coordinate is None:
+            raise RuntimeError("offline oracle has no current decoded source coordinate")
+        actual_frame_sha = _decoded_frame_sha256(frame)
+        if actual_frame_sha != coordinate.frame_sha256:
+            raise RuntimeError("offline oracle frame bytes disagree with the current source coordinate")
+        spec = self._frames.get(coordinate.source_sequence)
+        if spec is None:
+            raise RuntimeError("offline oracle has no candidate for the decoded source sequence")
+        if not math.isclose(spec.t, coordinate.t, rel_tol=0.0, abs_tol=1e-6):
+            raise RuntimeError("offline oracle source timestamp mismatch")
+        if spec.frame_sha256 != coordinate.frame_sha256:
+            raise RuntimeError("offline oracle frame digest mismatch")
+        condition_sha = _canonical_sha(condition)
+        predicate = self._predicates.get(condition_sha)
+        if predicate is None:
+            raise RuntimeError("offline oracle received an undeclared Watch predicate")
+        answer = spec.verdicts.get(condition_sha)
+        if answer is None:
+            raise RuntimeError("offline oracle candidate is missing the rendered Watch predicate")
+        lookup_key = (coordinate.source_sequence, condition_sha)
+        if lookup_key in self._seen_lookups:
+            raise RuntimeError("offline oracle predicate was consumed more than once for one candidate")
+        self._seen_lookups.add(lookup_key)
+        lookup_sha = _canonical_sha(
+            {
+                "case_id": self._manifest.case_id,
+                "source_sequence": coordinate.source_sequence,
+                "t": coordinate.t,
+                "frame_sha256": coordinate.frame_sha256,
+                "predicate_sha256": condition_sha,
+            }
+        )
+        sequence = len(self.calls) + 1
+        if answer.error is not None:
+            self.calls.append(
+                ProviderCallReceipt(
+                    sequence,
+                    coordinate.source_sequence,
+                    coordinate.t,
+                    predicate,
+                    condition_sha,
+                    "error",
+                    None,
+                    None,
+                    None,
+                    answer.error,
+                    lookup_sha,
+                )
+            )
+            raise RuntimeError(answer.error)
+        self.calls.append(
+            ProviderCallReceipt(
+                sequence,
+                coordinate.source_sequence,
+                coordinate.t,
+                predicate,
+                condition_sha,
+                "success",
+                answer.satisfied,
+                answer.confidence,
+                answer.evidence,
+                None,
+                lookup_sha,
+            )
+        )
+        return Verdict(answer.satisfied, answer.confidence, answer.evidence)
+
+
+async def _real_video_source(
+    manifest: _Manifest,
+    tracker: _OracleCoordinateTracker,
+) -> Any:
+    """Decode the frozen MP4 through the shipped runtime source adapter without changing envelopes."""
+
+    media_path = next(
+        Path(item["canonical_path"])
+        for item in manifest.input_artifacts
+        if item["role"] == "media"
+    )
+    try:
+        import cv2  # noqa: F401, PLC0415 - fail before starting the decoder thread
+        from percept.runtime.source import open_source
+    except ImportError as exc:
+        raise MatchedWatchInputError(
+            "real-video matched evaluation requires the runtime decoder; "
+            "install 'percept-vision[runtime]'"
+        ) from exc
+    expected = manifest.oracle_frames
+    count = 0
+    try:
+        async for envelope in open_source(
+            str(media_path),
+            fps=manifest.fps,
+            # The shipped capture adapter is bounded/latest-wins. Keep its production-sized queue
+            # instead of buffering an entire corpus case in JPEG memory; any overflow becomes an
+            # observable source-sequence gap and this lossless evaluator fails the arm closed.
+            maxsize=64,
+            reconnects=0,
+            timebase="media",
+        ):
+            _require(isinstance(envelope, SourceEnvelope), "runtime decoder returned a non-envelope")
+            _require(envelope.modality == "video", "runtime decoder returned non-video evidence")
+            _require(count < len(expected), "runtime decoder produced more candidates than the oracle")
+            spec = expected[count]
+            _require(
+                envelope.sequence == spec.index,
+                "runtime decoder source sequence disagrees with the oracle",
+            )
+            decoded_t = envelope.event_time
+            _require(
+                math.isclose(decoded_t, spec.t, rel_tol=0.0, abs_tol=1e-6),
+                "runtime decoder source timestamp disagrees with the oracle",
+            )
+            frame_sha = _decoded_frame_sha256(envelope.payload)
+            _require(
+                frame_sha == spec.frame_sha256,
+                "runtime decoder frame digest disagrees with the oracle",
+            )
+            tracker.bind(
+                _DecodedCoordinate(envelope.sequence, decoded_t, frame_sha),
+                envelope,
+            )
+            count += 1
+            # The canonical SourceEnvelope and both gate/judge payloads pass through unchanged.
+            yield envelope
+    except ModuleNotFoundError as exc:
+        if exc.name == "cv2":
+            raise MatchedWatchInputError(
+                "real-video matched evaluation requires OpenCV; "
+                "install 'percept-vision[runtime]'"
+            ) from exc
+        raise
+    _require(count == len(expected), "runtime decoder produced fewer candidates than the oracle")
+    after = _snapshot_binary(media_path)
+    _require(
+        after.sha256 == manifest.media_receipt.sha256
+        and after.byte_count == manifest.media_receipt.byte_count
+        and after.device == manifest.media_receipt.device
+        and after.inode == manifest.media_receipt.inode
+        and after.modified_time_ns == manifest.media_receipt.modified_time_ns,
+        "MP4 artifact changed during matched execution",
+    )
+
+
 def _profile(arm: str, stat: str, threshold: float) -> SourceProfile:
     return SourceProfile(
         name=f"matched-watch-{stat}",
@@ -1547,14 +2495,26 @@ def _trace_dict(event: Any) -> dict[str, Any]:
     }
 
 
-def _health_dict(event: RuntimeHealthEvent, manifest: _Manifest) -> dict[str, Any]:
+def _health_dict(
+    event: RuntimeHealthEvent,
+    manifest: _Manifest,
+    *,
+    media_identity: Mapping[str, Any] | None = None,
+    candidate_count: int | None = None,
+) -> dict[str, Any]:
     data = dict(event.data or {})
     if event.kind == "runtime_started":
         # Runtime emits repr(source), which contains every synthetic pixel. Store a compact,
         # reconstructable identity at the receipt boundary instead of retaining or later masking it.
         data = {
-            "source_kind": "synthetic_video",
-            "media": {
+            "source_kind": (
+                "real_video_offline_oracle"
+                if manifest.schema == _REAL_SCHEMA
+                else "synthetic_video"
+            ),
+            "media": _thaw(media_identity)
+            if media_identity is not None
+            else {
                 "sha256": manifest.media_receipt.sha256,
                 "byte_count": manifest.media_receipt.byte_count,
                 "schema": _MEDIA_SCHEMA,
@@ -1566,7 +2526,9 @@ def _health_dict(event: RuntimeHealthEvent, manifest: _Manifest) -> dict[str, An
                 "timebase": "media",
                 "source_id": manifest.source_id,
             },
-            "candidate_count": len(manifest.frames),
+            "candidate_count": (
+                candidate_count if candidate_count is not None else len(manifest.frames)
+            ),
         }
     return {"kind": event.kind, "ts": event.ts, "data": data}
 
@@ -1603,9 +2565,25 @@ def _profile_dict(profile: SourceProfile) -> dict[str, Any]:
 async def _run_arm(manifest: _Manifest, plan: Any, arm: str) -> ArmReceipt:
     threshold = 0.0 if arm == "baseline" else manifest.threshold
     profile = _profile(arm, manifest.salience_stat, threshold)
-    from_condition = str(plan.explicit["Goal.state.from"])
-    to_condition = str(plan.explicit["Goal.state.to"])
-    adapter = _RecordingTransitionJudge(manifest.frames, from_condition, to_condition)
+    tracker: _OracleCoordinateTracker | None = None
+    if manifest.schema == _REAL_SCHEMA:
+        tracker = _OracleCoordinateTracker()
+        if manifest.plan_route == "transition":
+            predicate_conditions = {
+                _canonical_sha(str(plan.explicit["Goal.state.from"])): "from",
+                _canonical_sha(str(plan.explicit["Goal.state.to"])): "to",
+            }
+        else:
+            predicate_conditions = {_canonical_sha(plan.condition): "condition"}
+        adapter: Any = _RecordingOfflineOracleJudge(
+            manifest,
+            tracker,
+            predicate_conditions,
+        )
+    else:
+        from_condition = str(plan.explicit["Goal.state.from"])
+        to_condition = str(plan.explicit["Goal.state.to"])
+        adapter = _RecordingTransitionJudge(manifest.frames, from_condition, to_condition)
     base_settings = Settings()
     edge_updates: dict[str, Any] = {"salience_stat": manifest.salience_stat}
     edge_updates[
@@ -1629,7 +2607,7 @@ async def _run_arm(manifest: _Manifest, plan: Any, arm: str) -> ArmReceipt:
     resolved = resolver.resolve(
         plan,
         source_profile=profile,
-        domain_pack=FACILITY_OBSERVATION_V1,
+        domain_pack=manifest.domain_pack,
         settings=core.settings,
     )
     apply_receipt = apply_watch_plan(
@@ -1637,7 +2615,7 @@ async def _run_arm(manifest: _Manifest, plan: Any, arm: str) -> ArmReceipt:
         plan,
         resolver=resolver,
         source_profile=profile,
-        domain_pack=FACILITY_OBSERVATION_V1,
+        domain_pack=manifest.domain_pack,
         settings=core.settings,
     )
     _require(
@@ -1654,14 +2632,20 @@ async def _run_arm(manifest: _Manifest, plan: Any, arm: str) -> ArmReceipt:
     traces: list[Any] = []
     health: list[RuntimeHealthEvent] = []
     asks: list[Any] = []
-    source = [
-        (
-            frame.t,
-            gray_frame(manifest.width, manifest.height, frame.fill),
-            _JudgePayload(frame.index, frame.token, frame.t),
-        )
-        for frame in manifest.frames
-    ]
+    if manifest.schema == _REAL_SCHEMA:
+        assert tracker is not None
+        source: Any = _real_video_source(manifest, tracker)
+        expected_candidate_count = len(manifest.oracle_frames)
+    else:
+        source = [
+            (
+                frame.t,
+                gray_frame(manifest.width, manifest.height, frame.fill),
+                _JudgePayload(frame.index, frame.token, frame.t),
+            )
+            for frame in manifest.frames
+        ]
+        expected_candidate_count = len(manifest.frames)
     incidents = [
         incident
         async for incident in run(
@@ -1681,17 +2665,32 @@ async def _run_arm(manifest: _Manifest, plan: Any, arm: str) -> ArmReceipt:
     ]
 
     edge = [item for item in traces if item.stage == "edge.decision" and item.goal_id is None]
-    transitions = [
-        item for item in traces if item.stage == "transition.decision" and item.goal_id == goal_id
-    ]
-    candidate_ts = tuple(frame.t for frame in manifest.frames)
+    if manifest.plan_route == "transition":
+        decisions = [
+            item
+            for item in traces
+            if item.stage == "transition.decision" and item.goal_id == goal_id
+        ]
+    else:
+        decisions = [
+            item
+            for item in traces
+            if item.stage == "gate.classified" and item.goal_id == goal_id
+        ]
+    if manifest.schema == _REAL_SCHEMA:
+        assert tracker is not None
+        candidate_ts = tuple(item.t for item in tracker.seen)
+        candidate_specs: Sequence[Any] = manifest.oracle_frames
+    else:
+        candidate_ts = tuple(frame.t for frame in manifest.frames)
+        candidate_specs = manifest.frames
     blockers: list[str] = []
-    if len(edge) != len(manifest.frames):
+    if len(edge) != expected_candidate_count:
         blockers.append("edge trace count does not equal candidate count")
     edge_by_t = {float(item.t): item for item in edge if item.t is not None}
     if tuple(sorted(edge_by_t)) != candidate_ts:
         blockers.append("edge trace timestamps do not equal enumerated candidate timestamps")
-    transition_by_t = {float(item.t): item for item in transitions if item.t is not None}
+    decision_by_t = {float(item.t): item for item in decisions if item.t is not None}
     incident_by_t: dict[float, list[Any]] = {}
     for incident in incidents:
         incident_by_t.setdefault(float(incident.ts), []).append(incident)
@@ -1705,12 +2704,12 @@ async def _run_arm(manifest: _Manifest, plan: Any, arm: str) -> ArmReceipt:
         calls_by_index.setdefault(call.candidate_index, []).append(call)
 
     candidates: list[CandidateReceipt] = []
-    for frame in manifest.frames:
+    for frame in candidate_specs:
         edge_event = edge_by_t.get(frame.t)
         edge_data = dict(edge_event.data) if edge_event is not None else {}
         admitted = goal_id in tuple(edge_data.get("goal_ids", ()))
-        transition = transition_by_t.get(frame.t)
-        dispatched = transition is not None
+        decision_trace = decision_by_t.get(frame.t)
+        dispatched = decision_trace is not None
         frame_calls = tuple(calls_by_index.get(frame.index, ()))
         frame_incidents = tuple(item.id for item in incident_by_t.get(frame.t, ()))
         if dispatched:
@@ -1718,10 +2717,15 @@ async def _run_arm(manifest: _Manifest, plan: Any, arm: str) -> ArmReceipt:
                 decision = "fire"
             elif ask_by_t.get(frame.t):
                 decision = "ask"
-            elif transition.data.get("outcome") == "judge_degraded" or any(
+            elif (
+                manifest.plan_route == "transition"
+                and decision_trace.data.get("outcome") == "judge_degraded"
+            ) or any(
                 call.status != "success" for call in frame_calls
             ):
                 decision = "missing"
+            elif manifest.plan_route == "watch":
+                decision = str(decision_trace.data.get("action", "silent"))
             else:
                 decision = "silent"
         else:
@@ -1735,8 +2739,14 @@ async def _run_arm(manifest: _Manifest, plan: Any, arm: str) -> ArmReceipt:
                 dispatched,
                 frame_calls,
                 decision,
-                (str(transition.data.get("outcome")) if transition is not None else None),
+                (
+                    str(decision_trace.data.get("outcome"))
+                    if manifest.plan_route == "transition" and decision_trace is not None
+                    else None
+                ),
                 frame_incidents,
+                frame.index if manifest.schema == _REAL_SCHEMA else None,
+                frame.frame_sha256 if manifest.schema == _REAL_SCHEMA else None,
             )
         )
 
@@ -1752,8 +2762,9 @@ async def _run_arm(manifest: _Manifest, plan: Any, arm: str) -> ArmReceipt:
         blockers.append("RuntimeStats dispatch counts do not equal transition traces")
     if dispatch_count != admitted_count:
         blockers.append("admitted candidates and inline runtime dispatches differ")
-    if len(adapter.calls) != 2 * dispatch_count:
-        blockers.append("transition provider subcall count is incomplete")
+    expected_calls_per_dispatch = 2 if manifest.plan_route == "transition" else 1
+    if len(adapter.calls) != expected_calls_per_dispatch * dispatch_count:
+        blockers.append("Watch judgment subcall count is incomplete")
     if failures:
         blockers.append("provider subcall failure")
     if stats.frames_dropped or stats.sink_errors:
@@ -1775,6 +2786,12 @@ async def _run_arm(manifest: _Manifest, plan: Any, arm: str) -> ArmReceipt:
             blockers.append("baseline is not exhaustive over sampled candidates")
         if stats.coast_admits or stats.fixed_admits or stats.audio_wakes:
             blockers.append("baseline used a forbidden non-signal admission path")
+    if len(candidate_ts) != expected_candidate_count:
+        blockers.append("decoded candidate count does not equal the oracle")
+    if manifest.schema == _REAL_SCHEMA:
+        assert tracker is not None
+        if tracker.width is None or tracker.height is None:
+            blockers.append("runtime decoder reported no frame dimensions")
 
     resolved_dict = resolved.to_dict()
     compiled_dict = {
@@ -1791,6 +2808,24 @@ async def _run_arm(manifest: _Manifest, plan: Any, arm: str) -> ArmReceipt:
             "compiled_binding": _json_shape(compiled_dict),
         }
     )
+    if manifest.schema == _REAL_SCHEMA:
+        assert tracker is not None
+        media_identity = {
+            "sha256": manifest.media_receipt.sha256,
+            "byte_count": manifest.media_receipt.byte_count,
+            "schema": manifest.media_type,
+            "width": tracker.width,
+            "height": tracker.height,
+            "decoder_identity": _thaw(_decoder_identity()),
+        }
+    else:
+        media_identity = {
+            "sha256": manifest.media_receipt.sha256,
+            "byte_count": manifest.media_receipt.byte_count,
+            "schema": _MEDIA_SCHEMA,
+            "width": manifest.width,
+            "height": manifest.height,
+        }
     return ArmReceipt(
         arm,
         _freeze(_profile_dict(profile)),
@@ -1798,15 +2833,7 @@ async def _run_arm(manifest: _Manifest, plan: Any, arm: str) -> ArmReceipt:
         _freeze(apply_receipt.to_dict()),
         _freeze(compiled_dict),
         _freeze(manifest.judge_identity),
-        _freeze(
-            {
-                "sha256": manifest.media_receipt.sha256,
-                "byte_count": manifest.media_receipt.byte_count,
-                "schema": _MEDIA_SCHEMA,
-                "width": manifest.width,
-                "height": manifest.height,
-            }
-        ),
+        _freeze(media_identity),
         _freeze(
             {
                 "fps": manifest.fps,
@@ -1829,7 +2856,17 @@ async def _run_arm(manifest: _Manifest, plan: Any, arm: str) -> ArmReceipt:
             for item in asks
         ),
         tuple(_freeze(_trace_dict(item)) for item in traces),
-        tuple(_freeze(_health_dict(item, manifest)) for item in health),
+        tuple(
+            _freeze(
+                _health_dict(
+                    item,
+                    manifest,
+                    media_identity=media_identity,
+                    candidate_count=len(candidates),
+                )
+            )
+            for item in health
+        ),
         _freeze(asdict(stats)),
         dispatch_count,
         len(adapter.calls),
@@ -1901,6 +2938,20 @@ def validate_matched_arms(
         blockers.append("receipt arms must be baseline then adaptive")
     if baseline.candidate_timestamps != adaptive.candidate_timestamps:
         blockers.append("candidate timestamp sequences differ")
+    if baseline.media_identity != adaptive.media_identity:
+        blockers.append("decoded media identities differ")
+    if baseline.replay_identity != adaptive.replay_identity:
+        blockers.append("replay identities differ")
+    baseline_frames = tuple(
+        (item.source_sequence, item.t, item.frame_sha256)
+        for item in baseline.candidates
+    )
+    adaptive_frames = tuple(
+        (item.source_sequence, item.t, item.frame_sha256)
+        for item in adaptive.candidates
+    )
+    if baseline_frames != adaptive_frames:
+        blockers.append("decoded candidate evidence differs")
     baseline_plan = baseline.resolved_watch.get("plan")
     adaptive_plan = adaptive.resolved_watch.get("plan")
     if baseline_plan != adaptive_plan:
@@ -1928,8 +2979,14 @@ def validate_matched_arms(
         and f"sha256:{baseline.resolved_watch.get('plan_hash')}" != watch_plan_sha256
     ):
         blockers.append("resolved WatchPlan does not match the receipt WatchPlan identity")
-    if expected_media_sha256 is not None and not expected_media_sha256.startswith("sha256:"):
-        blockers.append("media identity is malformed")
+    if expected_media_sha256 is not None:
+        if not expected_media_sha256.startswith("sha256:"):
+            blockers.append("media identity is malformed")
+        elif (
+            baseline.media_identity.get("sha256") != expected_media_sha256
+            or adaptive.media_identity.get("sha256") != expected_media_sha256
+        ):
+            blockers.append("arm media identity does not match the expected media")
     blockers.extend(f"baseline: {item}" for item in baseline.blockers)
     blockers.extend(f"adaptive: {item}" for item in adaptive.blockers)
     return tuple(blockers)
@@ -1937,17 +2994,17 @@ def validate_matched_arms(
 
 async def run_matched_watch_async(path: str | Path) -> MatchedWatchReceipt:
     manifest = load_matched_watch_manifest(path)
-    canonical_plan = watch_template(_TEMPLATE, manifest.watch_parameters)
+    canonical_plan = watch_template(manifest.template_ref, manifest.watch_parameters)
     # Fresh render + core per arm. Sequential replay keeps append order deterministic and prevents
     # any shallow nested state in a future WatchPlan field from becoming a cross-arm channel.
     baseline = await _run_arm(
         manifest,
-        watch_template(_TEMPLATE, manifest.watch_parameters),
+        watch_template(manifest.template_ref, manifest.watch_parameters),
         "baseline",
     )
     adaptive = await _run_arm(
         manifest,
-        watch_template(_TEMPLATE, manifest.watch_parameters),
+        watch_template(manifest.template_ref, manifest.watch_parameters),
         "adaptive",
     )
     plan_dict = canonical_plan.to_dict()
@@ -1990,6 +3047,9 @@ async def run_matched_watch_async(path: str | Path) -> MatchedWatchReceipt:
         blockers,
         datetime.now(timezone.utc).isoformat(),
         "",
+        _RECEIPT_SCHEMA_V2 if manifest.schema == _REAL_SCHEMA else _RECEIPT_SCHEMA,
+        manifest.input_artifacts,
+        manifest.authority_artifact_presence,
     )
     return replace(receipt, origin_evidence_sha256=receipt.evidence_sha256)
 
@@ -2056,13 +3116,30 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
     """Reconstruct the receipt's cross-field invariants from its raw append-only records."""
 
     manifest = _thaw(receipt.manifest)
-    _exact(manifest, _MANIFEST_KEYS, "receipt.manifest")
-    _require(manifest["schema"] == _SCHEMA, "receipt manifest schema mismatch")
-    _require(manifest["archetype"] == _ARCHETYPE, "receipt archetype mismatch")
+    is_v2 = manifest.get("schema") == _REAL_SCHEMA
+    _exact(
+        manifest,
+        _REAL_MANIFEST_KEYS if is_v2 else _MANIFEST_KEYS,
+        "receipt.manifest",
+    )
+    _require(
+        manifest["schema"] == (_REAL_SCHEMA if is_v2 else _SCHEMA),
+        "receipt manifest schema mismatch",
+    )
+    if not is_v2:
+        _require(manifest["archetype"] == _ARCHETYPE, "receipt archetype mismatch")
     _require(manifest["replay"]["timebase"] == "media", "receipt replay timebase mismatch")
-    _require(manifest["watch"]["template_ref"] == _TEMPLATE, "receipt Watch template mismatch")
-    _require(manifest["watch"]["domain_pack"] == _PACK, "receipt DomainPack mismatch")
-    rendered = watch_template(_TEMPLATE, manifest["watch"]["parameters"]).to_dict()
+    if not is_v2:
+        _require(manifest["watch"]["template_ref"] == _TEMPLATE, "receipt Watch template mismatch")
+        _require(manifest["watch"]["domain_pack"] == _PACK, "receipt DomainPack mismatch")
+    template_ref = manifest["watch"]["template_ref"]
+    pack_name = manifest["watch"]["domain_pack"]
+    _require(
+        template_ref.startswith(pack_name + "/"),
+        "receipt Watch template does not belong to its DomainPack",
+    )
+    rendered = watch_template(template_ref, manifest["watch"]["parameters"]).to_dict()
+    route = _plan_route(WatchPlan.from_dict(rendered))
     _require(rendered == _thaw(receipt.watch_plan), "receipt WatchPlan render mismatch")
     _require(_canonical_sha(rendered) == receipt.watch_plan_sha256, "receipt WatchPlan identity mismatch")
     _require(manifest["judge"] == _thaw(receipt.judge_identity), "receipt judge identity mismatch")
@@ -2079,6 +3156,39 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
         "receipt build provenance mismatch",
     )
     _require(provenance == build_info().to_dict(), "receipt build provenance is not the active build")
+    if is_v2:
+        _require(
+            receipt.receipt_schema == _RECEIPT_SCHEMA_V2,
+            "real-video receipt must use receipt/v2",
+        )
+        _require(
+            set(receipt.authority_artifact_presence) == set(_AUTHORITY_NAMES)
+            and all(
+                isinstance(value, bool)
+                for value in receipt.authority_artifact_presence.values()
+            ),
+            "receipt authority artifact presence has an invalid shape",
+        )
+        artifact_roles = [item["role"] for item in receipt.input_artifacts]
+        _require(
+            artifact_roles == sorted(artifact_roles)
+            and len(artifact_roles) == len(set(artifact_roles))
+            and {"manifest", "corpus", "media", "oracle"}.issubset(artifact_roles),
+            "receipt input artifacts are incomplete, duplicated, or noncanonical",
+        )
+        for name in _AUTHORITY_NAMES:
+            _require(
+                receipt.authority_artifact_presence[name]
+                == (f"authority:{name}" in artifact_roles),
+                f"receipt authority artifact presence disagrees for {name!r}",
+            )
+    else:
+        _require(
+            receipt.receipt_schema == _RECEIPT_SCHEMA
+            and not receipt.input_artifacts
+            and not receipt.authority_artifact_presence,
+            "synthetic receipt carries v2-only artifact state",
+        )
 
     for arm in (receipt.baseline, receipt.adaptive):
         _require(
@@ -2095,6 +3205,12 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
             arm.media_identity["sha256"] == receipt.media_input_receipt["sha256"],
             "arm media identity mismatch",
         )
+        if is_v2:
+            _require(
+                _thaw(arm.media_identity["decoder_identity"])
+                == _thaw(_decoder_identity()),
+                "arm decoder identity does not match the active reconstruction environment",
+            )
         _require(arm.judge_identity == receipt.judge_identity, "arm judge identity mismatch")
         _require(
             arm.apply_receipt["status"] in {"applied", "applied_with_warnings"}
@@ -2114,14 +3230,15 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
             _thaw(arm.resolved_watch["source_profile"]) == expected_resolved_source,
             "arm resolved SourceProfile snapshot mismatch",
         )
+        active_pack = get_domain_pack(pack_name)
         expected_domain_pack = {
-            "id": FACILITY_OBSERVATION_V1.id,
-            "version": FACILITY_OBSERVATION_V1.version,
-            "values": dict(FACILITY_OBSERVATION_V1.values),
+            "id": active_pack.id,
+            "version": active_pack.version,
+            "values": dict(active_pack.values),
             "components": [
-                component.to_dict() for component in FACILITY_OBSERVATION_V1.components
+                component.to_dict() for component in active_pack.components
             ],
-            "policy_clamps": dict(FACILITY_OBSERVATION_V1.policy_clamps),
+            "policy_clamps": dict(active_pack.policy_clamps),
         }
         _require(
             _thaw(arm.resolved_watch["domain_pack"]) == expected_domain_pack,
@@ -2140,12 +3257,43 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
             [item.index for item in candidates] == list(range(len(candidates))),
             "candidate indices are not exact and contiguous",
         )
+        if is_v2:
+            _require(
+                [item.source_sequence for item in candidates]
+                == list(range(len(candidates)))
+                and all(
+                    isinstance(item.frame_sha256, str)
+                    and item.frame_sha256.startswith("sha256:")
+                    for item in candidates
+                ),
+                "real-video candidate source sequence/frame identity is incomplete",
+            )
+            for candidate in candidates:
+                for call in candidate.provider_calls:
+                    expected_lookup = _canonical_sha(
+                        {
+                            "case_id": manifest["case_id"],
+                            "source_sequence": candidate.source_sequence,
+                            "t": candidate.t,
+                            "frame_sha256": candidate.frame_sha256,
+                            "predicate_sha256": call.condition_sha256,
+                        }
+                    )
+                    _require(
+                        call.oracle_lookup_sha256 == expected_lookup,
+                        "offline-oracle lookup identity mismatch",
+                    )
         _require(
             tuple(item.t for item in candidates) == arm.candidate_timestamps,
             "candidate timestamp sequence mismatch",
         )
         edge = [item for item in arm.traces if item["stage"] == "edge.decision"]
-        transitions = [item for item in arm.traces if item["stage"] == "transition.decision"]
+        decision_traces = [
+            item
+            for item in arm.traces
+            if item["stage"]
+            == ("transition.decision" if route == "transition" else "gate.classified")
+        ]
         source_frames = [item for item in arm.traces if item["stage"] == "source.frame"]
         dispatched = [item for item in candidates if item.runtime_dispatched]
         started = [item for item in arm.health if item["kind"] == "runtime_started"]
@@ -2153,7 +3301,9 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
         _require(
             _thaw(started[0]["data"])
             == {
-                "source_kind": "synthetic_video",
+                "source_kind": (
+                    "real_video_offline_oracle" if is_v2 else "synthetic_video"
+                ),
                 "media": _thaw(arm.media_identity),
                 "replay": _thaw(arm.replay_identity),
                 "candidate_count": len(candidates),
@@ -2170,15 +3320,22 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
             "candidate edge records disagree with traces",
         )
         _require(
-            [item["t"] for item in transitions] == [item.t for item in dispatched]
+            [item["t"] for item in decision_traces] == [item.t for item in dispatched]
             and [item["t"] for item in source_frames] == [item.t for item in dispatched],
             "transition/source trace coverage mismatch",
         )
-        _require(
-            [item["data"]["outcome"] for item in transitions]
-            == [item.transition_outcome for item in dispatched],
-            "candidate transition outcomes disagree with traces",
-        )
+        if route == "transition":
+            _require(
+                [item["data"]["outcome"] for item in decision_traces]
+                == [item.transition_outcome for item in dispatched],
+                "candidate transition outcomes disagree with traces",
+            )
+        else:
+            _require(
+                [item["data"]["action"] for item in decision_traces]
+                == [item.decision for item in dispatched],
+                "candidate ordinary-Watch decisions disagree with traces",
+            )
 
         incident_ids = [str(item["id"]) for item in arm.incidents]
         linked = [
@@ -2227,10 +3384,21 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
             "FIRE/ASK decisions disagree with runtime stats and outputs",
         )
         for candidate in dispatched:
-            has_error = any(call.status != "success" for call in candidate.provider_calls)
+            failed_calls = [
+                call for call in candidate.provider_calls if call.status != "success"
+            ]
+            has_error = bool(failed_calls)
             _require(
                 (candidate.decision == "missing") == has_error,
                 "missing decision disagrees with provider outcomes",
+            )
+            _require(
+                len(failed_calls) <= 1
+                and (
+                    not failed_calls
+                    or candidate.provider_calls[-1] is failed_calls[0]
+                ),
+                "one failed Watch predicate must short-circuit the remaining predicate calls",
             )
             _require(
                 (candidate.decision == "fire") == bool(candidate.incident_ids),
@@ -2344,6 +3512,8 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
 def derive_viability_rows(receipt: MatchedWatchReceipt) -> tuple[dict[str, Any], dict[str, Any]]:
     """Derive the v3 viability rows exclusively from an immutable execution receipt."""
 
+    if receipt.receipt_schema == _RECEIPT_SCHEMA_V2:
+        _revalidate_v2_input_artifacts(receipt)
     _validate_receipt(receipt)
     _require(receipt.evidence_classification in _EVIDENCE_CLASSES, "unsupported evidence classification")
     manifest_media = _object(receipt.manifest.get("media"), "receipt.manifest.media")
@@ -2405,8 +3575,16 @@ def derive_viability_rows(receipt: MatchedWatchReceipt) -> tuple[dict[str, Any],
             tuple(candidate.t for candidate in arm.candidates) == arm.candidate_timestamps,
             "candidate timestamps disagree with arm receipt",
         )
-        from_hash = _canonical_sha(receipt.watch_plan["explicit"]["Goal.state.from"])
-        to_hash = _canonical_sha(receipt.watch_plan["explicit"]["Goal.state.to"])
+        route = _plan_route(WatchPlan.from_dict(_thaw(receipt.watch_plan)))
+        if route == "transition":
+            expected_predicates = ["from", "to"]
+            expected_hashes = [
+                _canonical_sha(receipt.watch_plan["explicit"]["Goal.state.from"]),
+                _canonical_sha(receipt.watch_plan["explicit"]["Goal.state.to"]),
+            ]
+        else:
+            expected_predicates = ["condition"]
+            expected_hashes = [_canonical_sha(receipt.watch_plan["condition"])]
         for candidate in arm.candidates:
             _require(
                 (candidate.decision == "fire") == bool(candidate.incident_ids),
@@ -2425,13 +3603,14 @@ def derive_viability_rows(receipt: MatchedWatchReceipt) -> tuple[dict[str, Any],
             if candidate.runtime_dispatched:
                 _require(candidate.admitted, "runtime dispatched a non-admitted candidate")
                 _require(
-                    [call.predicate for call in candidate.provider_calls] == ["from", "to"],
-                    "transition dispatch does not carry exact from/to provider subcalls",
+                    [call.predicate for call in candidate.provider_calls]
+                    == expected_predicates,
+                    "Watch dispatch does not carry its exact predicate calls",
                 )
                 _require(
                     [call.condition_sha256 for call in candidate.provider_calls]
-                    == [from_hash, to_hash],
-                    "provider condition hashes do not match WatchPlan transition",
+                    == expected_hashes,
+                    "provider condition hashes do not match the WatchPlan",
                 )
                 _require(
                     all(
@@ -2497,6 +3676,141 @@ def derive_viability_rows(receipt: MatchedWatchReceipt) -> tuple[dict[str, Any],
     return baseline, adaptive
 
 
+def _revalidate_v2_input_artifacts(receipt: MatchedWatchReceipt) -> None:
+    """Reopen every v2 source artifact and require its exact recorded descriptor snapshot."""
+
+    _require(
+        receipt.receipt_schema == _RECEIPT_SCHEMA_V2,
+        "v2 artifact validation requires receipt/v2",
+    )
+    by_role = {str(item["role"]): item for item in receipt.input_artifacts}
+    _require(
+        len(by_role) == len(receipt.input_artifacts),
+        "receipt input artifacts contain duplicate roles",
+    )
+    for role, recorded in by_role.items():
+        path = Path(str(recorded["path"]))
+        try:
+            if role in {"manifest", "corpus", "oracle"}:
+                observed = load_json_file(path).receipt
+            else:
+                observed = _snapshot_binary(path)
+        except (SafeJSONInputError, MatchedWatchInputError) as exc:
+            raise MatchedWatchInputError(
+                f"receipt input artifact {role!r} cannot be revalidated: {exc}"
+            ) from exc
+        expected = {key: recorded[key] for key in _SAFE_INPUT_RECEIPT_KEYS}
+        _require(
+            _safe_receipt_dict(observed) == expected,
+            f"receipt input artifact {role!r} no longer matches its recorded snapshot",
+        )
+    manifest = _thaw(receipt.manifest)
+    _require(
+        {key: by_role["manifest"][key] for key in _SAFE_INPUT_RECEIPT_KEYS}
+        == _thaw(receipt.manifest_input_receipt),
+        "manifest artifact and manifest_input_receipt disagree",
+    )
+    _require(
+        {key: by_role["media"][key] for key in _SAFE_INPUT_RECEIPT_KEYS}
+        == _thaw(receipt.media_input_receipt),
+        "media artifact and media_input_receipt disagree",
+    )
+    _require(
+        by_role["media"]["sha256"] == manifest["media"]["sha256"]
+        and by_role["corpus"]["sha256"] == manifest["corpus"]["sha256"]
+        and by_role["oracle"]["sha256"] == manifest["oracle"]["sha256"],
+        "receipt manifest artifact references disagree with input artifacts",
+    )
+    for name in _AUTHORITY_NAMES:
+        _require(
+            receipt.authority_artifact_presence[name]
+            == (f"authority:{name}" in by_role),
+            f"receipt authority artifact presence disagrees for {name!r}",
+        )
+    reconstructed = load_matched_watch_manifest(by_role["manifest"]["path"])
+    _require(
+        reconstructed.schema == _REAL_SCHEMA
+        and _thaw(reconstructed.document) == manifest
+        and [_thaw(item) for item in reconstructed.input_artifacts]
+        == [_thaw(item) for item in receipt.input_artifacts]
+        and _thaw(reconstructed.authority_artifact_presence)
+        == _thaw(receipt.authority_artifact_presence),
+        "receipt no longer reconstructs from its closed real-video manifest and corpus",
+    )
+    oracle_by_sequence = {
+        item.index: item for item in reconstructed.oracle_frames
+    }
+    _require(
+        len(oracle_by_sequence) == len(reconstructed.oracle_frames),
+        "reconstructed offline oracle contains duplicate source sequences",
+    )
+    plan = WatchPlan.from_dict(_thaw(receipt.watch_plan))
+    route = _plan_route(plan)
+    if route == "transition":
+        predicates = (
+            ("from", _canonical_sha(plan.explicit["Goal.state.from"])),
+            ("to", _canonical_sha(plan.explicit["Goal.state.to"])),
+        )
+    else:
+        predicates = (("condition", _canonical_sha(plan.condition)),)
+    for arm in (receipt.baseline, receipt.adaptive):
+        _require(
+            [
+                (candidate.source_sequence, candidate.t, candidate.frame_sha256)
+                for candidate in arm.candidates
+            ]
+            == [
+                (frame.index, frame.t, frame.frame_sha256)
+                for frame in reconstructed.oracle_frames
+            ],
+            f"{arm.arm} decoded candidate evidence disagrees with the frozen offline oracle",
+        )
+        expected_sequence = 1
+        for candidate in arm.candidates:
+            if not candidate.runtime_dispatched:
+                _require(
+                    not candidate.provider_calls,
+                    "non-dispatched real-video candidate carries provider calls",
+                )
+                continue
+            oracle_frame = oracle_by_sequence[candidate.source_sequence]
+            expected_calls: list[dict[str, Any]] = []
+            for predicate, predicate_sha in predicates:
+                verdict = oracle_frame.verdicts[predicate_sha]
+                lookup_sha = _canonical_sha(
+                    {
+                        "case_id": reconstructed.case_id,
+                        "source_sequence": candidate.source_sequence,
+                        "t": candidate.t,
+                        "frame_sha256": candidate.frame_sha256,
+                        "predicate_sha256": predicate_sha,
+                    }
+                )
+                expected_calls.append(
+                    ProviderCallReceipt(
+                        expected_sequence,
+                        candidate.index,
+                        candidate.t,
+                        predicate,
+                        predicate_sha,
+                        "error" if verdict.error is not None else "success",
+                        None if verdict.error is not None else verdict.satisfied,
+                        None if verdict.error is not None else verdict.confidence,
+                        None if verdict.error is not None else verdict.evidence,
+                        verdict.error,
+                        lookup_sha,
+                    ).to_dict()
+                )
+                expected_sequence += 1
+                if verdict.error is not None:
+                    break
+            _require(
+                [call.to_dict() for call in candidate.provider_calls]
+                == expected_calls,
+                f"{arm.arm} provider calls disagree with the frozen offline oracle",
+            )
+
+
 def load_matched_watch_receipt(path: str | Path) -> LoadedMatchedWatchReceipt:
     """Safely reconstruct and revalidate one persisted matched-Watch receipt.
 
@@ -2510,9 +3824,22 @@ def load_matched_watch_receipt(path: str | Path) -> LoadedMatchedWatchReceipt:
         raise MatchedWatchInputError(f"unsafe persisted matched-Watch receipt: {exc}") from exc
     try:
         doc = _object(loaded.value, "receipt")
-        _exact(doc, _PERSISTED_RECEIPT_KEYS, "receipt")
-        _require(doc["schema"] == _RECEIPT_SCHEMA, f"receipt.schema must be {_RECEIPT_SCHEMA!r}")
+        receipt_schema = doc.get("schema")
+        v2 = receipt_schema == _RECEIPT_SCHEMA_V2
+        _exact(
+            doc,
+            _PERSISTED_RECEIPT_V2_KEYS if v2 else _PERSISTED_RECEIPT_KEYS,
+            "receipt",
+        )
+        _require(
+            receipt_schema in {_RECEIPT_SCHEMA, _RECEIPT_SCHEMA_V2},
+            "receipt.schema is unsupported",
+        )
         manifest = _parse_persisted_manifest(doc["manifest"])
+        _require(
+            v2 == (manifest["schema"] == _REAL_SCHEMA),
+            "receipt and embedded manifest schema generations disagree",
+        )
         manifest_input = _parse_safe_input_receipt_mapping(
             doc["manifest_input_receipt"], "receipt.manifest_input_receipt"
         )
@@ -2533,7 +3860,9 @@ def load_matched_watch_receipt(path: str | Path) -> LoadedMatchedWatchReceipt:
         watch_plan = _strict_object(canonical_watch_plan, "receipt.watch_plan")
         watch_plan_sha256 = _sha(doc["watch_plan_sha256"], "receipt.watch_plan_sha256")
         judge_identity = _strict_object(
-            doc["judge_identity"], "receipt.judge_identity", keys=_JUDGE_IDENTITY_KEYS
+            doc["judge_identity"],
+            "receipt.judge_identity",
+            keys=_JUDGE_IDENTITY_V2_KEYS if v2 else _JUDGE_IDENTITY_KEYS,
         )
         event_windows = _strict_object_tuple(
             doc["event_windows"], "receipt.event_windows", keys=_EVENT_KEYS
@@ -2551,8 +3880,18 @@ def load_matched_watch_receipt(path: str | Path) -> LoadedMatchedWatchReceipt:
             "receipt.build_provenance",
             keys=_BUILD_PROVENANCE_KEYS,
         )
-        baseline = _parse_arm_receipt(doc["baseline"], "receipt.baseline", "baseline")
-        adaptive = _parse_arm_receipt(doc["adaptive"], "receipt.adaptive", "adaptive")
+        baseline = _parse_arm_receipt(
+            doc["baseline"],
+            "receipt.baseline",
+            "baseline",
+            v2=v2,
+        )
+        adaptive = _parse_arm_receipt(
+            doc["adaptive"],
+            "receipt.adaptive",
+            "adaptive",
+            v2=v2,
+        )
         comparable = _strict_bool(doc["comparable"], "receipt.comparable")
         raw_blockers = doc["comparability_blockers"]
         _require(
@@ -2582,6 +3921,45 @@ def load_matched_watch_receipt(path: str | Path) -> LoadedMatchedWatchReceipt:
             parsed_timestamp.tzinfo is not None,
             "receipt.run_timestamp must include an explicit timezone",
         )
+        if v2:
+            raw_artifacts = doc["input_artifacts"]
+            _require(
+                isinstance(raw_artifacts, list) and raw_artifacts,
+                "receipt.input_artifacts must be a non-empty list",
+            )
+            input_artifacts: tuple[Mapping[str, Any], ...] = tuple(
+                _strict_object(
+                    item,
+                    f"receipt.input_artifacts[{index}]",
+                    keys=_INPUT_ARTIFACT_KEYS,
+                )
+                for index, item in enumerate(raw_artifacts)
+            )
+            for index, artifact in enumerate(input_artifacts):
+                _strict_string(artifact["role"], f"receipt.input_artifacts[{index}].role")
+                _parse_safe_input_receipt_mapping(
+                    {key: artifact[key] for key in _SAFE_INPUT_RECEIPT_KEYS},
+                    f"receipt.input_artifacts[{index}]",
+                )
+            presence_doc = _object(
+                doc["authority_artifact_presence"],
+                "receipt.authority_artifact_presence",
+            )
+            _exact(
+                presence_doc,
+                set(_AUTHORITY_NAMES),
+                "receipt.authority_artifact_presence",
+            )
+            for name, value in presence_doc.items():
+                _strict_bool(value, f"receipt.authority_artifact_presence.{name}")
+            authority_presence: Mapping[str, bool] = _strict_object(
+                presence_doc,
+                "receipt.authority_artifact_presence",
+                keys=set(_AUTHORITY_NAMES),
+            )
+        else:
+            input_artifacts = ()
+            authority_presence = MappingProxyType({})
         receipt = MatchedWatchReceipt(
             manifest,
             manifest_input,
@@ -2599,7 +3977,12 @@ def load_matched_watch_receipt(path: str | Path) -> LoadedMatchedWatchReceipt:
             comparability_blockers,
             run_timestamp,
             origin_evidence_sha256,
+            receipt_schema,
+            input_artifacts,
+            authority_presence,
         )
+        if v2:
+            _revalidate_v2_input_artifacts(receipt)
         _require(
             cached_content_sha256 == receipt.content_sha256,
             "receipt cached content hash disagrees with reconstruction",
