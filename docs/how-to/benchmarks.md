@@ -25,6 +25,19 @@ Do not set `PYTHONPATH=packages/percept-vision` for a qualification run. The run
 wheel SHA-256, build stamp, metadata, import origin, and every hashed installed RECORD file in the
 parent and each track worker.
 
+Before spending provider budget, exercise the installed product paths and audit both artifacts:
+
+```bash
+make wheel-smoke \
+  BENCH_PY=.benchmark-venv/bin/python \
+  SDK_WHEEL=dist/percept_vision-1.0.0-py3-none-any.whl \
+  SDK_SDIST=dist/percept_vision-1.0.0.tar.gz
+```
+
+This deterministic smoke covers compiled video, audio, and fused Watches, local Incident delivery,
+`ask`, bounded judge timeout cleanup, and the Physical Scene/Ego Motion starter-pack bindings. It
+proves SDK mechanics, not provider perception quality.
+
 ## Snapshot scorecard
 
 The scorecard renders a multi-track benchmark card. Offline it fills cells with deterministic stubs; real

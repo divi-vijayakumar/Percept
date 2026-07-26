@@ -7,7 +7,7 @@ EDGE      := packages/percept-edge
 PY        := python3
 # absolute path to the zero-dep contract pkg (vision runs from inside $(SDK), so it needs this)
 
-.PHONY: help test test-harness test-js test-all test-templates test-capability-gate viability-frontier-contract parity eval-live eval-benchmark e2e bench audit-benchmark scorecard benchmark-prepare benchmark-fetch benchmark-fetch-charades benchmark-fetch-proactiveqa benchmark-index-proactiveqa benchmark-manifest benchmark-run benchmark-collect check lint lint-all check-skills-sync reproduce clean architecture architecture-check
+.PHONY: help test test-harness test-js test-all test-templates test-capability-gate viability-frontier-contract parity eval-live eval-benchmark e2e bench audit-benchmark scorecard benchmark-prepare benchmark-fetch benchmark-fetch-charades benchmark-fetch-proactiveqa benchmark-index-proactiveqa benchmark-manifest benchmark-run benchmark-collect wheel-smoke check lint lint-all check-skills-sync reproduce clean architecture architecture-check
 
 help:
 	@echo "test       L1 unit — percept-vision (incl. percept.harness + percept.contracts; fakes, no keys, fast) + template lane"
@@ -29,6 +29,7 @@ help:
 	@echo "benchmark-manifest  write ignored content-hashed candidate manifest (PT_ACTION=200 PT_SOUND=100)"
 	@echo "benchmark-run  run installed-wheel PT qualification (set BENCH_PY and SDK_WHEEL; default N=1)"
 	@echo "benchmark-collect  re-render a local scorecard (RUN_DIR=eval/local-benchmark/runs/<id>)"
+	@echo "wheel-smoke  verify installed-wheel video/audio/fused product paths (set BENCH_PY and SDK_WHEEL)"
 	@echo "check      architecture + compile + supported-surface lint; fails on real findings"
 	@echo "lint       Ruff gate for the shipped runtime, tests, and active benchmark harness"
 	@echo "lint-all   Ruff diagnostic for all SDK files, including legacy experiment scripts"
@@ -159,17 +160,23 @@ ATTEMPTS ?= 1
 LIVE ?= 1
 BENCH_PY ?= $(PY)
 SDK_WHEEL ?=
+SDK_SDIST ?=
 BENCHMARK_MANIFEST ?= eval/golden-v1/MANIFEST.json
 BENCHMARK_MODE ?= sampled
 REQUIRE_RELEASE ?= 0
 LIVE_FLAG := $(if $(filter 1,$(LIVE)),--live,)
 SDK_WHEEL_FLAG := $(if $(strip $(SDK_WHEEL)),--sdk-wheel $(abspath $(SDK_WHEEL)),)
+SDK_SDIST_FLAG := $(if $(strip $(SDK_SDIST)),--sdist $(abspath $(SDK_SDIST)),)
 RELEASE_FLAG := $(if $(filter 1,$(REQUIRE_RELEASE)),--require-release,)
 benchmark-run:
 	$(BENCH_PY) tools/percept_benchmark.py run $(LIVE_FLAG) $(SDK_WHEEL_FLAG) \
 		--tracks $(TRACKS) --n $(N) \
 		--workers $(WORKERS) --attempts $(ATTEMPTS) --manifest $(BENCHMARK_MANIFEST) \
 		--mode $(BENCHMARK_MODE) --no-prefetch-pose
+
+wheel-smoke:
+	@if [ -z "$(SDK_WHEEL)" ]; then echo "set SDK_WHEEL=dist/percept_vision-<version>-py3-none-any.whl"; exit 2; fi
+	$(BENCH_PY) tools/percept_wheel_smoke.py --wheel $(abspath $(SDK_WHEEL)) $(SDK_SDIST_FLAG)
 
 RUN_DIR ?=
 benchmark-collect:
