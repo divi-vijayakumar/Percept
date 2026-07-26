@@ -850,6 +850,48 @@ class FixtureReplayCoverageTests(unittest.TestCase):
         self.assertEqual(len(resolved["component_snapshot_hash"]), 64)
         self.assertTrue(run.configuration["runtime_application_key"])
         json.dumps(run.configuration)
+        admissions = [
+            event
+            for event in run.interest_events
+            if event["kind"] in {"interest.entered", "interest.updated"}
+        ]
+        exits = [
+            event
+            for event in run.interest_events
+            if event["kind"] == "interest.exited"
+        ]
+        self.assertGreaterEqual(
+            len(admissions),
+            1,
+            (run.interest_events, run.configuration["runtime_stats"], run.trace),
+        )
+        self.assertGreaterEqual(len(exits), 1)
+        self.assertEqual(
+            {event["watch_id"] for event in run.interest_events},
+            {"pt-video-1"},
+        )
+        runtime_stats = run.configuration["runtime_stats"]
+        self.assertEqual(runtime_stats["goal_admissions"], len(admissions))
+        self.assertEqual(
+            runtime_stats["admission_by_goal"],
+            {"pt-video-1": len(admissions)},
+        )
+        self.assertEqual(
+            sum(runtime_stats["admission_by_cause"].values()),
+            len(admissions),
+        )
+        self.assertTrue(
+            all(
+                event["admission_id"] and event["evidence_id"]
+                for event in admissions
+            )
+        )
+        self.assertTrue(
+            all(
+                event["source_id"] and event["event_observed_at"] >= 0
+                for event in run.interest_events
+            )
+        )
 
 
 class PinnedCaseTests(unittest.TestCase):

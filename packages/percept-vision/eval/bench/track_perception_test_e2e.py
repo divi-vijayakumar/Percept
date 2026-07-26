@@ -22,7 +22,7 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
-from percept import Percept
+from percept import InterestSubscription, Percept
 from percept.adapters import Goal as ContractGoal
 from percept.backends.judge_pool import (
     JudgeCapability,
@@ -185,6 +185,7 @@ class EventRun:
     escalations: list[float] = field(default_factory=list)
     trace: list[dict[str, Any]] = field(default_factory=list)
     health: list[dict[str, Any]] = field(default_factory=list)
+    interest_events: list[dict[str, Any]] = field(default_factory=list)
     judge_receipts: list[dict[str, Any]] = field(default_factory=list)
     configuration: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
@@ -639,6 +640,7 @@ async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
     }
     dropped_frames = [0]
     stats = RuntimeStats()
+    interest_subscription = InterestSubscription(max_batches=64)
 
     def on_trace(trace_event: Any) -> None:
         row = {
@@ -672,7 +674,7 @@ async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
             result=result,
             dropped=dropped_frames,
         )
-        async for incident in worker_run(
+        runtime = worker_run(
             core,
             source=paced_source,
             fps=capture_fps(cadence),
@@ -684,15 +686,28 @@ async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
             timebase="media",
             on_trace=on_trace,
             on_health=on_health,
-        ):
-            observation = _decision_observation(incident, result)
-            if observation is None:
-                result.error = (
-                    "Incident omitted runtime-local JudgmentTiming/source_media_ts; "
-                    "action-to-fire latency cannot be qualified"
-                )
-                break
-            result.fires.append(observation)
+            interest_subscription=interest_subscription,
+            interest_session_id=f"pt:{result.case_id}",
+        )
+
+        async def collect_interest() -> None:
+            async for event in interest_subscription:
+                result.interest_events.append(event.as_dict())
+
+        interest_task = asyncio.create_task(collect_interest())
+        try:
+            async for incident in runtime:
+                observation = _decision_observation(incident, result)
+                if observation is None:
+                    result.error = (
+                        "Incident omitted runtime-local JudgmentTiming/source_media_ts; "
+                        "action-to-fire latency cannot be qualified"
+                    )
+                    break
+                result.fires.append(observation)
+        finally:
+            await runtime.aclose()
+            await interest_task
     except Exception as exc:
         result.error = f"{type(exc).__name__}: {exc}"
 
@@ -712,6 +727,9 @@ async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
         "judge_revision_dropped": stats.judge_revision_dropped,
         "judge_deadline_dropped": stats.judge_deadline_dropped,
         "judge_deadline_expired": stats.judge_deadline_expired,
+        "goal_admissions": stats.goal_admissions,
+        "admission_by_goal": dict(stats.admission_by_goal),
+        "admission_by_cause": dict(stats.admission_by_cause),
         "incidents": stats.incidents,
     }
     return result
@@ -1029,6 +1047,7 @@ def score(*, live: bool, n: int) -> TrackResult:
             "escalations": [round(t, 3) for t in r.escalations[:20]],
             "trace": r.trace,
             "health": r.health,
+            "interest_events": r.interest_events,
             "judge_receipts": r.judge_receipts,
             "configuration": r.configuration,
             "error": r.error,
