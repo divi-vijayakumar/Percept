@@ -60,6 +60,9 @@ ALIASES = {
 CHARADES_VIDEO_ZIP = "https://ai2-public-datasets.s3-us-west-2.amazonaws.com/charades/Charades_v1_480.zip"
 PROACTIVEQA_EGO_ZIP = "https://huggingface.co/datasets/wangyueqian/ProactiveVideoQA/resolve/main/EGO/videos.zip"
 SAMPLE_SEED = os.environ.get("PERCEPT_BENCH_SAMPLE_SEED", "percept-golden-v1")
+RUN_SCHEMA_V2 = "percept.benchmark.run/2"
+ARTIFACT_SCHEMA_V2 = "percept.benchmark.track_artifact/2"
+TRACK_RESULT_SCHEMA_V2 = "percept.benchmark.track_result/2"
 
 # Front-load the pose checkpoint download (RTMO via MMPose) in a child that has the
 # benchmark PYTHONPATH + certifi TLS bundle, so the counting track never blocks on it.
@@ -243,6 +246,87 @@ def _assert_resume_provenance(
             )
 
 
+def _source_identity() -> dict[str, Any]:
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        status = subprocess.check_output(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=ROOT,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return {"commit": "?", "dirty": True}
+    return {"commit": commit, "dirty": bool(status.strip())}
+
+
+def _qualification_identity(
+    *,
+    manifest: str,
+    live: bool,
+    n: int,
+    tracks: list[str],
+    mode: str,
+    fps: str,
+    device: str,
+    seeds: int,
+    provenance: dict[str, Any],
+) -> dict[str, Any]:
+    manifest_path = Path(manifest).resolve()
+    return {
+        "schema_version": RUN_SCHEMA_V2,
+        "source": _source_identity(),
+        "manifest": {
+            "path": str(manifest_path),
+            "sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        },
+        "live": live,
+        "n": n,
+        "tracks": list(tracks),
+        "mode": mode,
+        "fps": str(fps),
+        "device": str(device),
+        "seeds": seeds,
+        "vision": provenance.get("vision"),
+        "budget_plan": provenance.get("budget_plan"),
+    }
+
+
+def _assert_resume_identity(
+    existing: dict[str, Any],
+    identity: dict[str, Any],
+) -> None:
+    """Forbid mixing code, manifest, config, or provider identities in one run."""
+    if not existing:
+        return
+    if existing.get("schema_version") != RUN_SCHEMA_V2:
+        raise SystemExit(
+            "cannot resume a legacy run without a versioned qualification identity; "
+            "start a new run ID"
+        )
+    recorded = existing.get("qualification_identity")
+    recorded_digest = existing.get("qualification_identity_sha256")
+    if not isinstance(recorded, dict):
+        raise SystemExit("cannot resume run with missing qualification identity")
+    if recorded_digest != _canonical_sha256(recorded):
+        raise SystemExit("cannot resume run with a corrupt qualification identity")
+    if recorded != identity:
+        changed = sorted(
+            key
+            for key in set(recorded) | set(identity)
+            if recorded.get(key) != identity.get(key)
+        )
+        raise SystemExit(
+            "cannot resume run with changed qualification identity: "
+            + ", ".join(changed)
+        )
+
+
 def _collected_provenance(meta: dict[str, Any]) -> tuple[str, str]:
     """Render immutable run metadata, never the collection process environment."""
     if not meta.get("live"):
@@ -323,6 +407,83 @@ def _track_result_from_json(data: dict[str, Any]):
     data = dict(data)
     data["cells"] = cells
     return TrackResult(**data)
+
+
+def _result_checksum_path(path: Path) -> Path:
+    return path.with_name(path.name + ".sha256")
+
+
+def _valid_result_checksum(path: Path) -> bool:
+    checksum_path = _result_checksum_path(path)
+    if not checksum_path.is_file():
+        return False
+    parts = checksum_path.read_text().strip().split(maxsplit=1)
+    if not parts:
+        return False
+    expected = parts[0]
+    return (
+        len(expected) == 64
+        and all(char in "0123456789abcdef" for char in expected)
+        and expected == hashlib.sha256(path.read_bytes()).hexdigest()
+    )
+
+
+def _validated_run_identity(
+    meta: dict[str, Any],
+    *,
+    manifest: Path,
+    require_release: bool,
+) -> str | None:
+    """Validate a v2 run identity; legacy runs remain draft-only."""
+    if meta.get("schema_version") != RUN_SCHEMA_V2:
+        if require_release:
+            raise SystemExit(
+                "release collection requires a versioned run identity; "
+                "legacy run metadata is draft-only"
+            )
+        return None
+    identity = meta.get("qualification_identity")
+    digest = meta.get("qualification_identity_sha256")
+    if not isinstance(identity, dict) or digest != _canonical_sha256(identity):
+        raise SystemExit("run metadata qualification identity is missing or corrupt")
+    manifest_identity = identity.get("manifest")
+    actual_manifest = {
+        "path": str(manifest.resolve()),
+        "sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+    }
+    if manifest_identity != actual_manifest:
+        raise SystemExit(
+            "collection manifest does not match the run qualification identity"
+        )
+    mirrored = {
+        "live": meta.get("live"),
+        "n": meta.get("n"),
+        "tracks": meta.get("tracks"),
+        "mode": meta.get("mode"),
+        "fps": str(meta.get("fps")),
+        "device": str(meta.get("device")),
+        "seeds": meta.get("seeds"),
+        "vision": meta.get("vision"),
+        "budget_plan": meta.get("budget_plan"),
+    }
+    mismatched = sorted(
+        key for key, value in mirrored.items() if identity.get(key) != value
+    )
+    if mismatched:
+        raise SystemExit(
+            "run metadata disagrees with its qualification identity: "
+            + ", ".join(mismatched)
+        )
+    source = identity.get("source")
+    if not isinstance(source, dict) or source.get("commit") != meta.get("commit"):
+        raise SystemExit(
+            "run metadata commit disagrees with its qualification identity"
+        )
+    if require_release and source.get("dirty") is not False:
+        raise SystemExit(
+            "release collection requires a clean recorded source tree"
+        )
+    return str(digest)
 
 
 def _resolve_tracks(raw: str, exclude: str = "") -> list[str]:
@@ -856,21 +1017,60 @@ def cmd_run_track(args: argparse.Namespace) -> int:
         os.environ["PERCEPT_BENCH_MANIFEST"] = str(Path(args.manifest).resolve())
     module = importlib.import_module(TRACK_MODULES[args.track])
     result = module.score(live=args.live, n=args.n)
+    result.configuration = dict(result.configuration)
+    result.configuration["benchmark_artifact"] = {
+        "schema_version": ARTIFACT_SCHEMA_V2,
+        "run_identity_sha256": args.run_identity,
+        "runner": args.track,
+        "live": args.live,
+        "n": args.n,
+    }
     payload = _json_safe_result(result)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(f".{out.name}.tmp.{os.getpid()}")
     tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     tmp.replace(out)
-    return 0
+    digest = hashlib.sha256(out.read_bytes()).hexdigest()
+    checksum = _result_checksum_path(out)
+    checksum_tmp = checksum.with_name(f".{checksum.name}.tmp.{os.getpid()}")
+    checksum_tmp.write_text(f"{digest}  {out.name}\n")
+    checksum_tmp.replace(checksum)
+    return 0 if result.status == "pass" else 2
 
 
-def _existing_result_ok(path: Path) -> bool:
+def _existing_result_ok(
+    path: Path,
+    *,
+    run_identity: str | None = None,
+    runner: str | None = None,
+) -> bool:
     if not path.exists() or path.stat().st_size == 0:
         return False
     try:
         result = _track_result_from_json(json.loads(path.read_text()))
-        return bool(result.cells) and any(value is not None for value in result.cells.values())
+        if result.status != "pass":
+            return False
+        if not result.cells or not any(
+            value is not None for value in result.cells.values()
+        ):
+            return False
+        if (
+            result.track == "pt-action-e2e"
+            and result.schema_version != TRACK_RESULT_SCHEMA_V2
+        ):
+            return False
+        if run_identity is None:
+            return True
+        if not _valid_result_checksum(path):
+            return False
+        artifact = result.configuration.get("benchmark_artifact")
+        return (
+            isinstance(artifact, dict)
+            and artifact.get("schema_version") == ARTIFACT_SCHEMA_V2
+            and artifact.get("run_identity_sha256") == run_identity
+            and (runner is None or artifact.get("runner") == runner)
+        )
     except Exception:
         return False
 
@@ -887,10 +1087,15 @@ def _attempt_track(
     track_index: int,
     start_delay_s: float,
     manifest: str,
+    run_identity: str,
 ) -> dict[str, Any]:
     result_path = run_dir / "results" / f"{track}.json"
     log_path = run_dir / "logs" / f"{track}.log"
-    if resume and _existing_result_ok(result_path):
+    if resume and _existing_result_ok(
+        result_path,
+        run_identity=run_identity,
+        runner=track,
+    ):
         _write_event(run_dir, {"event": "track_skip_existing", "track": track, "result": str(result_path)})
         return {"track": track, "ok": True, "attempts": 0, "elapsed_s": 0, "result": str(result_path), "skipped": True}
 
@@ -906,6 +1111,8 @@ def _attempt_track(
         str(result_path),
         "--manifest",
         manifest,
+        "--run-identity",
+        run_identity,
     ]
     if live:
         cmd.append("--live")
@@ -1045,7 +1252,23 @@ def cmd_run(args: argparse.Namespace) -> int:
     existing_meta = _run_meta(run_dir) if args.resume else {}
     provenance = _run_provenance(args.live)
     _assert_resume_provenance(existing_meta, provenance, live=args.live)
+    qualification_identity = _qualification_identity(
+        manifest=args.manifest,
+        live=args.live,
+        n=args.n,
+        tracks=tracks,
+        mode=args.mode,
+        fps=args.fps,
+        device=args.device,
+        seeds=args.seeds,
+        provenance=provenance,
+    )
+    _assert_resume_identity(existing_meta, qualification_identity)
+    qualification_identity_sha256 = _canonical_sha256(
+        qualification_identity
+    )
     meta = {
+        "schema_version": RUN_SCHEMA_V2,
         "run_id": run_id,
         "created_at": existing_meta.get("created_at") or datetime.now(timezone.utc).isoformat(),
         "resumed_at": datetime.now(timezone.utc).isoformat() if existing_meta else None,
@@ -1063,7 +1286,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         "device": args.device,
         "fps": args.fps,
         "seeds": args.seeds,
-        "commit": _commit(),
+        "commit": qualification_identity["source"]["commit"],
+        "qualification_identity": qualification_identity,
+        "qualification_identity_sha256": qualification_identity_sha256,
         **provenance,
     }
     (run_dir / "run.json").write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n")
@@ -1101,6 +1326,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 track_index=idx,
                 start_delay_s=args.start_delay_s,
                 manifest=args.manifest,
+                run_identity=qualification_identity_sha256,
             ): track
             for idx, track in enumerate(tracks)
         }
@@ -1164,12 +1390,34 @@ def cmd_collect(args: argparse.Namespace) -> int:
         str(row["id"]) for row in manifest_data["tracks"] if row.get("required") is True
     }
     meta = _run_meta(run_dir)
+    run_identity = _validated_run_identity(
+        meta,
+        manifest=manifest,
+        require_release=args.require_release,
+    )
+    collection_mode = args.mode
+    collection_fps = args.fps
+    collection_device = args.device
+    collection_seeds = args.seeds
+    if run_identity is not None:
+        if args.mode != meta.get("mode"):
+            raise SystemExit(
+                "collection mode does not match the recorded run identity"
+            )
+        collection_mode = str(meta["mode"])
+        collection_fps = str(meta["fps"])
+        collection_device = str(meta["device"])
+        collection_seeds = int(meta["seeds"])
     sample_n = meta.get("n")
-    if args.mode == "sampled" and sample_n is not None and (
+    if collection_mode == "sampled" and sample_n is not None and (
         isinstance(sample_n, bool) or not isinstance(sample_n, int) or sample_n <= 0
     ):
         raise SystemExit(f"sampled run metadata has invalid n: {sample_n!r}")
-    sample_limit = sample_n if args.mode == "sampled" and sample_n is not None else None
+    sample_limit = (
+        sample_n
+        if collection_mode == "sampled" and sample_n is not None
+        else None
+    )
     manifest_cases = {
         track: [
             str(item["id"])
@@ -1183,9 +1431,30 @@ def cmd_collect(args: argparse.Namespace) -> int:
     for path in sorted(result_dir.glob("*.json")):
         runner = path.stem
         try:
-            results_by_runner[runner] = _track_result_from_json(json.loads(path.read_text()))
+            result = _track_result_from_json(json.loads(path.read_text()))
         except Exception as exc:
             raise SystemExit(f"invalid track result {path}: {exc}") from exc
+        if run_identity is not None:
+            if not _valid_result_checksum(path):
+                raise SystemExit(
+                    f"track result checksum is missing or invalid: {path}"
+                )
+            artifact = result.configuration.get("benchmark_artifact")
+            if not isinstance(artifact, dict):
+                raise SystemExit(
+                    f"track result is missing benchmark artifact identity: {path}"
+                )
+            if (
+                artifact.get("schema_version") != ARTIFACT_SCHEMA_V2
+                or artifact.get("run_identity_sha256") != run_identity
+                or artifact.get("runner") != runner
+                or artifact.get("live") is not meta.get("live")
+                or artifact.get("n") != meta.get("n")
+            ):
+                raise SystemExit(
+                    f"track result identity does not match run metadata: {path}"
+                )
+        results_by_runner[runner] = result
     results = list(results_by_runner.values())
     if not results:
         raise SystemExit(f"no track results found in {result_dir}")
@@ -1278,14 +1547,14 @@ def cmd_collect(args: argparse.Namespace) -> int:
     auroc = next((r.cells.get(("core-replay", "auroc")) for r in results if r.track == "relational"), None)
     rendered = card.render_card(
         results,
-        mode=args.mode,
+        mode=collection_mode,
         backend=backend,
         commit=meta.get("commit", _commit()),
         manifest=manifest_ref,
         budget_plan=budget_plan,
-        fps=args.fps,
-        device=args.device,
-        seeds=args.seeds,
+        fps=collection_fps,
+        device=collection_device,
+        seeds=collection_seeds,
         auroc=auroc,
     )
     out = Path(args.out) if args.out else run_dir / "scorecard.txt"
@@ -1301,7 +1570,11 @@ def cmd_collect(args: argparse.Namespace) -> int:
             f"COLLECTION STATUS: PASS — {len(results)} selected track artifact(s) audited "
             "against pinned manifest tracks and case IDs"
         )
-    if args.require_release and card.stamp_of(args.mode, results, manifest_ref) != "RELEASE":
+    if (
+        args.require_release
+        and card.stamp_of(collection_mode, results, manifest_ref)
+        != "RELEASE"
+    ):
         print("COLLECTION RELEASE GATE: BLOCKED — scorecard is DRAFT")
         return 1
     return 0
@@ -1409,6 +1682,7 @@ def build_parser() -> argparse.ArgumentParser:
     internal.add_argument("--n", type=int, required=True)
     internal.add_argument("--out", required=True)
     internal.add_argument("--manifest", required=True)
+    internal.add_argument("--run-identity", required=True)
     internal.set_defaults(func=cmd_run_track)
     return parser
 

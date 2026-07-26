@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import runpy
@@ -10,6 +11,8 @@ import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace as NS
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -333,6 +336,136 @@ class BenchmarkRunnerTruthTests(unittest.TestCase):
                 rendered,
             )
             self.assertNotIn("ambient-model-must-not-appear", rendered)
+
+    def test_v2_result_reuse_requires_matching_identity_and_checksum(self):
+        namespace = runpy.run_path(
+            str(TOOL),
+            run_name="benchmark_result_reuse_test",
+        )
+        existing_result_ok = namespace["_existing_result_ok"]
+        checksum_path = namespace["_result_checksum_path"]
+        with TemporaryDirectory() as d:
+            result_path = Path(d) / "edge.json"
+            _result(result_path, "edge-recall", ["case-1"])
+            payload = json.loads(result_path.read_text())
+            payload["configuration"] = {
+                "benchmark_artifact": {
+                    "schema_version": "percept.benchmark.track_artifact/2",
+                    "run_identity_sha256": "a" * 64,
+                    "runner": "edge",
+                    "live": False,
+                    "n": 1,
+                }
+            }
+            result_path.write_text(json.dumps(payload))
+            digest = hashlib.sha256(result_path.read_bytes()).hexdigest()
+            checksum_path(result_path).write_text(
+                f"{digest}  {result_path.name}\n"
+            )
+
+            self.assertTrue(
+                existing_result_ok(
+                    result_path,
+                    run_identity="a" * 64,
+                    runner="edge",
+                )
+            )
+            self.assertFalse(
+                existing_result_ok(
+                    result_path,
+                    run_identity="b" * 64,
+                    runner="edge",
+                )
+            )
+            result_path.write_text(result_path.read_text() + "\n")
+            self.assertFalse(
+                existing_result_ok(
+                    result_path,
+                    run_identity="a" * 64,
+                    runner="edge",
+                )
+            )
+
+    def test_run_track_returns_nonzero_for_blocked_result_and_writes_checksum(self):
+        from eval.bench.types import TrackResult
+
+        namespace = runpy.run_path(
+            str(TOOL),
+            run_name="benchmark_terminal_status_test",
+        )
+        with TemporaryDirectory() as d:
+            root = Path(d)
+            result_path = root / "blocked.json"
+            manifest = root / "manifest.json"
+            manifest.write_text("{}")
+            module = NS(
+                score=lambda **_kwargs: TrackResult(
+                    track="edge-recall",
+                    cells={("edge", "candidate_recall"): None},
+                    status="blocked",
+                )
+            )
+            args = NS(
+                live=False,
+                track="edge",
+                manifest=str(manifest),
+                n=1,
+                out=str(result_path),
+                run_identity="c" * 64,
+            )
+            with patch.object(
+                namespace["importlib"],
+                "import_module",
+                return_value=module,
+            ):
+                rc = namespace["cmd_run_track"](args)
+
+            self.assertEqual(rc, 2)
+            self.assertTrue(result_path.is_file())
+            self.assertTrue(namespace["_valid_result_checksum"](result_path))
+            payload = json.loads(result_path.read_text())
+            self.assertEqual(payload["status"], "blocked")
+            self.assertEqual(
+                payload["configuration"]["benchmark_artifact"][
+                    "run_identity_sha256"
+                ],
+                "c" * 64,
+            )
+
+    def test_resume_identity_rejects_changed_manifest_or_code(self):
+        namespace = runpy.run_path(
+            str(TOOL),
+            run_name="benchmark_resume_identity_test",
+        )
+        identity = {
+            "schema_version": "percept.benchmark.run/2",
+            "source": {"commit": "abc", "dirty": False},
+            "manifest": {"path": "/tmp/manifest", "sha256": "a" * 64},
+            "live": False,
+            "n": 1,
+            "tracks": ["edge"],
+            "mode": "sampled",
+            "fps": "1",
+            "device": "local",
+            "seeds": 1,
+            "vision": {"provider": "fake", "model": "scripted"},
+            "budget_plan": None,
+        }
+        existing = {
+            "schema_version": "percept.benchmark.run/2",
+            "qualification_identity": identity,
+            "qualification_identity_sha256": namespace[
+                "_canonical_sha256"
+            ](identity),
+        }
+        namespace["_assert_resume_identity"](existing, dict(identity))
+        changed = json.loads(json.dumps(identity))
+        changed["source"]["commit"] = "def"
+        with self.assertRaisesRegex(
+            SystemExit,
+            "changed qualification identity: source",
+        ):
+            namespace["_assert_resume_identity"](existing, changed)
 
     def test_collect_rejects_live_provider_budget_identity_mismatch(self):
         with TemporaryDirectory() as d:
