@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import runpy
 import subprocess
 import sys
 import unittest
@@ -81,6 +83,168 @@ def _budget_plan_json(
 
 
 class BenchmarkLaunchGateTests(unittest.TestCase):
+    def test_run_start_persists_provenance_in_metadata_and_event(self):
+        model = "qwen/qwen3-vl-32b-instruct"
+        raw_plan = _budget_plan_json(provider="openrouter", model=model)
+        namespace = runpy.run_path(
+            str(ROOT / "tools/percept_benchmark.py"),
+            run_name="benchmark_run_metadata_test",
+        )
+        cmd_run = namespace["cmd_run"]
+        with TemporaryDirectory() as d:
+            root = Path(d)
+            paths = {
+                "data_dir": root / "data",
+                "runs_dir": root / "runs",
+                "cache_dir": root / "cache",
+            }
+            args = NS(
+                tracks="edge",
+                exclude="",
+                live=True,
+                manifest=str(ROOT / "eval/golden-v1/MANIFEST.json"),
+                mode="sampled",
+                n=1,
+                workers=1,
+                attempts=1,
+                run_id="provenance-run",
+                background=False,
+                resume=False,
+                start_delay_s=0.0,
+                timeout_s=30,
+                device="test",
+                fps="1",
+                seeds=1,
+                prefetch_pose=False,
+            )
+
+            def completed_track(**kwargs):
+                return {
+                    "track": kwargs["track"],
+                    "ok": True,
+                    "attempts": 1,
+                    "elapsed_s": 0.0,
+                }
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "PERCEPT_VISION_BACKEND": "openrouter",
+                        "PERCEPT_VISION_MODEL": model,
+                        "PERCEPT_BENCH_BUDGET_PLAN": raw_plan,
+                        "OPENROUTER_API_KEY": "must-not-be-persisted",
+                    },
+                    clear=False,
+                ),
+                patch.dict(
+                    cmd_run.__globals__,
+                    {
+                        "_bench_paths": lambda: paths,
+                        "_guard_live_tracks": lambda _tracks: None,
+                        "_guard_live_prerequisites": lambda **_kwargs: None,
+                        "_data_inventory": lambda _path: {},
+                        "_attempt_track": completed_track,
+                        "cmd_collect": lambda _args: 0,
+                        "_commit": lambda: "test-commit",
+                    },
+                ),
+            ):
+                self.assertEqual(cmd_run(args), 0)
+
+            run_dir = paths["runs_dir"] / args.run_id
+            meta = json.loads((run_dir / "run.json").read_text())
+            event = json.loads((run_dir / "events.jsonl").read_text().splitlines()[0])
+            self.assertEqual(
+                meta["vision"],
+                {"provider": "openrouter", "model": model},
+            )
+            self.assertEqual(event["vision"], meta["vision"])
+            self.assertEqual(event["budget_plan"], meta["budget_plan"])
+            self.assertNotIn("must-not-be-persisted", json.dumps(meta))
+            self.assertNotIn("must-not-be-persisted", json.dumps(event))
+
+    def test_live_run_provenance_captures_provider_model_and_canonical_budget_hash(self):
+        model = "qwen/qwen3-vl-32b-instruct"
+        raw_plan = _budget_plan_json(provider="openrouter", model=model)
+        namespace = runpy.run_path(
+            str(ROOT / "tools/percept_benchmark.py"),
+            run_name="benchmark_provenance_test",
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "PERCEPT_VISION_BACKEND": "openrouter",
+                "PERCEPT_VISION_MODEL": model,
+                "PERCEPT_BENCH_BUDGET_PLAN": raw_plan,
+                "OPENROUTER_API_KEY": "must-not-be-persisted",
+            },
+            clear=False,
+        ):
+            provenance = namespace["_run_provenance"](True)
+
+        plan = json.loads(raw_plan)
+        expected_hash = hashlib.sha256(
+            json.dumps(
+                plan,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(
+            provenance["vision"],
+            {"provider": "openrouter", "model": model},
+        )
+        self.assertEqual(provenance["budget_plan"]["source"], "inline-json")
+        self.assertEqual(
+            provenance["budget_plan"]["canonical_sha256"],
+            expected_hash,
+        )
+        self.assertNotIn("must-not-be-persisted", json.dumps(provenance))
+        self.assertNotIn("approval", json.dumps(provenance))
+
+    def test_resume_rejects_provider_model_budget_or_mode_changes(self):
+        namespace = runpy.run_path(
+            str(ROOT / "tools/percept_benchmark.py"),
+            run_name="benchmark_resume_provenance_test",
+        )
+        assert_resume = namespace["_assert_resume_provenance"]
+        original = {
+            "live": True,
+            "vision": {
+                "provider": "openrouter",
+                "model": "qwen/qwen3-vl-32b-instruct",
+            },
+            "budget_plan": {
+                "source": "plan.json",
+                "canonical_sha256": "a" * 64,
+                "identity": {
+                    "provider": "openrouter",
+                    "model": "qwen/qwen3-vl-32b-instruct",
+                },
+            },
+        }
+        assert_resume(
+            original,
+            {
+                "vision": dict(original["vision"]),
+                "budget_plan": dict(original["budget_plan"]),
+            },
+            live=True,
+        )
+        changed_model = {
+            "vision": {
+                "provider": "openrouter",
+                "model": "qwen/qwen3-vl-235b",
+            },
+            "budget_plan": dict(original["budget_plan"]),
+        }
+        with self.assertRaisesRegex(SystemExit, "changed vision provenance"):
+            assert_resume(original, changed_model, live=True)
+        with self.assertRaisesRegex(SystemExit, "changed live/offline mode"):
+            assert_resume(original, {}, live=False)
+
     def test_openrouter_budget_plan_activates_hard_enforcement(self):
         from eval.bench.budget import live_budget_blockers, validate_budget_plan
 

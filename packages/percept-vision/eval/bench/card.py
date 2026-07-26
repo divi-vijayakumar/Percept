@@ -54,7 +54,7 @@ def execution_blockers(results: list[TrackResult]) -> list[str]:
 
 def render_card(results: list[TrackResult], *, mode: str = "sampled", backend: str = "?", commit: str = "?",
                 manifest: str = "", fps: str = "?", device: str = "?", seeds: int = 1,
-                ceiling: str = "none", auroc=None) -> str:
+                ceiling: str = "none", auroc=None, budget_plan: str = "") -> str:
     stamp = stamp_of(mode, results, manifest)
     auroc_s = f"{auroc:.2f}" if isinstance(auroc, (int, float)) else "?"
     L = [
@@ -63,6 +63,7 @@ def render_card(results: list[TrackResult], *, mode: str = "sampled", backend: s
         f"spec: {SPEC_VERSION} · mode: {mode} · stamp: {stamp}",
         f"commit: {commit} · data-manifest: {manifest or '(none — DRAFT)'}",
         f"backbone: {backend}   ceiling: {ceiling}",
+        f"budget-plan: {budget_plan or '(not recorded)'}",
         f"fps: {fps} · device: {device} · seeds: {seeds}",
         f"gates: G3 OFF (no world model) · consequence-model OFF (R3: AUROC {auroc_s} vs 0.5)",
         "=" * 84,

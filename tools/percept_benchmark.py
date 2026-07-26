@@ -158,11 +158,134 @@ def _env() -> dict[str, str]:
     return env
 
 
-def _backend_label(live: bool) -> str:
+def _canonical_sha256(value: Any) -> str:
+    payload = json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _run_provenance(live: bool) -> dict[str, Any]:
+    """Capture the effective provider selection without persisting credentials.
+
+    A scorecard can be collected long after the provider process exits, so ambient
+    environment is not provenance. Live preflight has already validated these
+    values, but this function repeats the budget validation before run metadata is
+    written so an invalid or mismatched plan can never be stamped into an artifact.
+    """
     if not live:
-        return "fake (offline stub)"
+        return {
+            "vision": {"provider": "fake", "model": "scripted"},
+            "budget_plan": None,
+        }
+
     _load_dotenv()
-    return os.environ.get("PERCEPT_VISION_MODEL") or os.environ.get("PERCEPT_GEMINI_MODEL") or "gemini"
+    provider = os.environ.get("PERCEPT_VISION_BACKEND", "gemini").strip()
+    model = os.environ.get("PERCEPT_VISION_MODEL", "").strip()
+    if not provider or not model:
+        raise SystemExit(
+            "BENCHMARK LIVE GATE: BLOCKED — provider and model must be non-empty "
+            "before run provenance is recorded"
+        )
+    raw_budget = os.environ.get("PERCEPT_BENCH_BUDGET_PLAN", "")
+    sys.path[:0] = [str(SDK)]
+    from eval.bench.budget import BudgetPlanError, validate_budget_plan
+
+    try:
+        plan = validate_budget_plan(raw_budget, provider=provider, model=model)
+    except BudgetPlanError as exc:
+        raise SystemExit(
+            f"BENCHMARK LIVE GATE: BLOCKED — budget plan invalid while recording provenance: {exc}"
+        ) from exc
+    source = "inline-json"
+    if not raw_budget.lstrip().startswith("{"):
+        source = _display_path(Path(raw_budget).expanduser().resolve())
+    return {
+        "vision": {"provider": provider, "model": model},
+        "budget_plan": {
+            "source": source,
+            "canonical_sha256": _canonical_sha256(plan),
+            "identity": {
+                "version": plan["version"],
+                "provider": plan["provider"],
+                "model": plan["model"],
+                "region": plan["region"],
+            },
+        },
+    }
+
+
+def _assert_resume_provenance(
+    existing: dict[str, Any],
+    current: dict[str, Any],
+    *,
+    live: bool,
+) -> None:
+    """Prevent one run directory from mixing provider or budget identities."""
+    if not existing:
+        return
+    if existing.get("live") is not live:
+        raise SystemExit("cannot resume a run with a changed live/offline mode")
+    if existing.get("live") is not True:
+        return
+    if "vision" not in existing or "budget_plan" not in existing:
+        raise SystemExit(
+            "cannot resume a legacy live run whose provider/model/budget provenance "
+            "was not recorded; start a new run ID"
+        )
+    for key in ("vision", "budget_plan"):
+        if existing.get(key) != current.get(key):
+            raise SystemExit(
+                f"cannot resume live run with changed {key.replace('_', ' ')} provenance"
+            )
+
+
+def _collected_provenance(meta: dict[str, Any]) -> tuple[str, str]:
+    """Render immutable run metadata, never the collection process environment."""
+    if not meta.get("live"):
+        return "fake (offline stub)", "not applicable (offline)"
+
+    vision = meta.get("vision")
+    budget = meta.get("budget_plan")
+    if vision is None and budget is None:
+        legacy = "unknown (legacy live run metadata did not record this value)"
+        return legacy, legacy
+    if not isinstance(vision, dict):
+        raise SystemExit("live run metadata has invalid vision provenance")
+    provider = vision.get("provider")
+    model = vision.get("model")
+    if not isinstance(provider, str) or not provider.strip():
+        raise SystemExit("live run metadata has invalid vision.provider provenance")
+    if not isinstance(model, str) or not model.strip():
+        raise SystemExit("live run metadata has invalid vision.model provenance")
+    if not isinstance(budget, dict):
+        raise SystemExit("live run metadata has invalid budget_plan provenance")
+    source = budget.get("source")
+    digest = budget.get("canonical_sha256")
+    identity = budget.get("identity")
+    if not isinstance(source, str) or not source.strip():
+        raise SystemExit("live run metadata has invalid budget_plan.source provenance")
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(char not in "0123456789abcdef" for char in digest)
+    ):
+        raise SystemExit(
+            "live run metadata has invalid budget_plan.canonical_sha256 provenance"
+        )
+    if not isinstance(identity, dict):
+        raise SystemExit("live run metadata has invalid budget_plan.identity provenance")
+    if identity.get("provider") != provider or identity.get("model") != model:
+        raise SystemExit(
+            "live run metadata provider/model does not match budget_plan identity"
+        )
+    return (
+        f"{provider} / {model}",
+        f"{source} canonical-sha256:{digest}",
+    )
 
 
 def _manifest_ref(path: Path | None) -> str:
@@ -920,6 +1043,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 0
 
     existing_meta = _run_meta(run_dir) if args.resume else {}
+    provenance = _run_provenance(args.live)
+    _assert_resume_provenance(existing_meta, provenance, live=args.live)
     meta = {
         "run_id": run_id,
         "created_at": existing_meta.get("created_at") or datetime.now(timezone.utc).isoformat(),
@@ -939,6 +1064,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         "fps": args.fps,
         "seeds": args.seeds,
         "commit": _commit(),
+        **provenance,
     }
     (run_dir / "run.json").write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n")
     (run_dir / "data_inventory.json").write_text(json.dumps(_data_inventory(paths["data_dir"]), indent=2) + "\n")
@@ -1148,7 +1274,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
         )
 
     manifest_ref = _manifest_ref(manifest)
-    backend = _backend_label(bool(_run_meta(run_dir).get("live")))
+    backend, budget_plan = _collected_provenance(meta)
     auroc = next((r.cells.get(("core-replay", "auroc")) for r in results if r.track == "relational"), None)
     rendered = card.render_card(
         results,
@@ -1156,6 +1282,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
         backend=backend,
         commit=meta.get("commit", _commit()),
         manifest=manifest_ref,
+        budget_plan=budget_plan,
         fps=args.fps,
         device=args.device,
         seeds=args.seeds,

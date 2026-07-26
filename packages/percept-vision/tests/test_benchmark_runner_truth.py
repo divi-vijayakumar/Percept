@@ -185,6 +185,224 @@ class BenchmarkRunnerTruthTests(unittest.TestCase):
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertIn("expected=1 observed=1", run.stdout)
 
+    def test_collect_uses_recorded_live_provenance_not_ambient_environment(self):
+        with TemporaryDirectory() as d:
+            root = Path(d)
+            run_dir = root / "run"
+            results = run_dir / "results"
+            results.mkdir(parents=True)
+            model = "qwen/qwen3-vl-32b-instruct"
+            (run_dir / "run.json").write_text(
+                json.dumps(
+                    {
+                        "tracks": ["pt-action-e2e"],
+                        "live": True,
+                        "commit": "test",
+                        "n": 1,
+                        "vision": {
+                            "provider": "openrouter",
+                            "model": model,
+                        },
+                        "budget_plan": {
+                            "source": "qwen-n1-budget.json",
+                            "canonical_sha256": "a" * 64,
+                            "identity": {
+                                "version": 1,
+                                "provider": "openrouter",
+                                "model": model,
+                                "region": "us",
+                                "approval_scope": "N=1",
+                            },
+                        },
+                    }
+                )
+            )
+            _result(
+                results / "pt-action-e2e.json",
+                "pt-action-e2e",
+                ["perception-test-action-case-0"],
+            )
+            manifest = root / "MANIFEST.json"
+            _manifest(
+                manifest,
+                {
+                    "pt-action-e2e": (
+                        "perception-test-action",
+                        "pt-action-e2e",
+                        1,
+                    )
+                },
+            )
+            out = root / "scorecard.txt"
+            env = {
+                **os.environ,
+                "PYTHONPATH": str(ROOT / "packages/percept-vision"),
+                "PERCEPT_VISION_BACKEND": "gemini",
+                "PERCEPT_VISION_MODEL": "ambient-model-must-not-appear",
+            }
+            run = subprocess.run(
+                [
+                    sys.executable,
+                    str(TOOL),
+                    "collect",
+                    "--run-dir",
+                    str(run_dir),
+                    "--manifest",
+                    str(manifest),
+                    "--mode",
+                    "sampled",
+                    "--out",
+                    str(out),
+                ],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            rendered = out.read_text()
+            self.assertIn(f"backbone: openrouter / {model}", rendered)
+            self.assertIn(
+                f"budget-plan: qwen-n1-budget.json canonical-sha256:{'a' * 64}",
+                rendered,
+            )
+            self.assertNotIn("ambient-model-must-not-appear", rendered)
+
+    def test_collect_labels_legacy_live_provenance_unknown_instead_of_guessing(self):
+        with TemporaryDirectory() as d:
+            root = Path(d)
+            run_dir = root / "run"
+            results = run_dir / "results"
+            results.mkdir(parents=True)
+            (run_dir / "run.json").write_text(
+                json.dumps(
+                    {
+                        "tracks": ["pt-action-e2e"],
+                        "live": True,
+                        "commit": "test",
+                        "n": 1,
+                    }
+                )
+            )
+            _result(
+                results / "pt-action-e2e.json",
+                "pt-action-e2e",
+                ["perception-test-action-case-0"],
+            )
+            manifest = root / "MANIFEST.json"
+            _manifest(
+                manifest,
+                {
+                    "pt-action-e2e": (
+                        "perception-test-action",
+                        "pt-action-e2e",
+                        1,
+                    )
+                },
+            )
+            out = root / "scorecard.txt"
+            run = subprocess.run(
+                [
+                    sys.executable,
+                    str(TOOL),
+                    "collect",
+                    "--run-dir",
+                    str(run_dir),
+                    "--manifest",
+                    str(manifest),
+                    "--mode",
+                    "sampled",
+                    "--out",
+                    str(out),
+                ],
+                cwd=ROOT,
+                env={
+                    **os.environ,
+                    "PYTHONPATH": str(ROOT / "packages/percept-vision"),
+                    "PERCEPT_VISION_MODEL": "ambient-model-must-not-appear",
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            rendered = out.read_text()
+            self.assertIn(
+                "backbone: unknown (legacy live run metadata did not record this value)",
+                rendered,
+            )
+            self.assertNotIn("ambient-model-must-not-appear", rendered)
+
+    def test_collect_rejects_live_provider_budget_identity_mismatch(self):
+        with TemporaryDirectory() as d:
+            root = Path(d)
+            run_dir = root / "run"
+            results = run_dir / "results"
+            results.mkdir(parents=True)
+            model = "qwen/qwen3-vl-32b-instruct"
+            (run_dir / "run.json").write_text(
+                json.dumps(
+                    {
+                        "tracks": ["pt-action-e2e"],
+                        "live": True,
+                        "commit": "test",
+                        "n": 1,
+                        "vision": {
+                            "provider": "openrouter",
+                            "model": model,
+                        },
+                        "budget_plan": {
+                            "source": "budget.json",
+                            "canonical_sha256": "b" * 64,
+                            "identity": {
+                                "provider": "gemini",
+                                "model": model,
+                            },
+                        },
+                    }
+                )
+            )
+            _result(
+                results / "pt-action-e2e.json",
+                "pt-action-e2e",
+                ["perception-test-action-case-0"],
+            )
+            manifest = root / "MANIFEST.json"
+            _manifest(
+                manifest,
+                {
+                    "pt-action-e2e": (
+                        "perception-test-action",
+                        "pt-action-e2e",
+                        1,
+                    )
+                },
+            )
+            run = subprocess.run(
+                [
+                    sys.executable,
+                    str(TOOL),
+                    "collect",
+                    "--run-dir",
+                    str(run_dir),
+                    "--manifest",
+                    str(manifest),
+                    "--mode",
+                    "sampled",
+                ],
+                cwd=ROOT,
+                env={**os.environ, "PYTHONPATH": str(ROOT / "packages/percept-vision")},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(run.returncode, 0)
+            self.assertIn(
+                "provider/model does not match budget_plan identity",
+                run.stderr,
+            )
+
     def test_collect_rejects_missing_selected_track_artifact(self):
         with TemporaryDirectory() as d:
             root = Path(d)
