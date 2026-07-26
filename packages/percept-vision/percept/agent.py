@@ -3907,6 +3907,7 @@ class Percept:
         expected_source_generation: int | None = None,
         goal_ids: "tuple[str, ...] | None" = None,
         _audio_units_by_goal: "dict[str, tuple[AudioUnit, ...]] | None" = None,
+        _decision_terminal: Any = None,
     ) -> list[FireEvent]:
         """Judge selected active *watch* goals against ``frame`` and emit rising-edge actions.
 
@@ -3932,6 +3933,10 @@ class Percept:
         captures it when async work launches and advances it at a sequence gap/reconnect/format break,
         before yielding control. A stale result may still finish if its judge suppresses task
         cancellation, but it cannot populate the verdict cache or mutate cognition state.
+
+        ``_decision_terminal`` is the equivalent scheduler-owned latch for an absolute decision
+        deadline. It is private runtime plumbing: once terminal, a cancellation-resistant audio
+        provider may physically return later, but its result cannot reach any cognition mutation.
 
         Abort semantics (what is protected vs what may proceed):
 
@@ -3980,7 +3985,11 @@ class Percept:
 
         def _stale() -> bool:
             return (
-                (
+                bool(
+                    _decision_terminal is not None
+                    and getattr(_decision_terminal, "terminal", False)
+                )
+                or (
                     expected_goals_revision is not None
                     and self.goals.revision != expected_goals_revision
                 )
@@ -4462,6 +4471,7 @@ class Percept:
         expected_goals_revision: int | None = None,
         expected_source_generation: int | None = None,
         goal_ids: "tuple[str, ...] | None" = None,
+        _decision_terminal: Any = None,
     ) -> list[FireEvent]:
         """Judge exact frozen audio evidence without synthesizing a video frame."""
         from .audio_input import canonicalize_audio_unit
@@ -4505,6 +4515,7 @@ class Percept:
             expected_source_generation=expected_source_generation,
             goal_ids=goal_ids,
             _audio_units_by_goal=frozen,
+            _decision_terminal=_decision_terminal,
         )
 
     def prepare_fused_judgment(

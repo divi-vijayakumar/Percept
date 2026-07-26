@@ -721,6 +721,57 @@ class AudioOnlyRuntimeTests(unittest.TestCase):
         self.assertEqual(len(incidents), 1)
         self.assertEqual(stats.judge_calls, 1)
 
+    def test_absolute_deadline_blocks_late_audio_cognition_commit(self) -> None:
+        candidate = unit(0)
+        core = self.core_for(
+            {token_for(candidate): Verdict(True, 0.99)}
+        )
+        stats = RuntimeStats()
+        health = []
+
+        async def drive() -> list:
+            started = asyncio.Event()
+            release = asyncio.Event()
+            original = core.perceive_audio_judged
+
+            async def delayed(*args: Any, **kwargs: Any):
+                started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    await release.wait()
+                return await original(*args, **kwargs)
+
+            core.perceive_audio_judged = delayed  # type: ignore[method-assign]
+
+            async def source():
+                yield candidate
+                await started.wait()
+                while stats.judge_deadline_expired == 0:
+                    await asyncio.sleep(0.001)
+                self.assertNotIn(("audio", None), core.gate._armed)
+                self.assertEqual(len(core.action_log), 0)
+                release.set()
+
+            return await collect(
+                core,
+                source(),
+                judge_dispatch="async",
+                judge_decision_deadline_s=0.01,
+                judge_stall_after_s=0.2,
+                stats=stats,
+                on_health=health.append,
+            )
+
+        incidents = asyncio.run(drive())
+        self.assertEqual(incidents, [])
+        self.assertNotIn(("audio", None), core.gate._armed)
+        self.assertEqual(len(core.action_log), 0)
+        self.assertEqual(stats.judge_deadline_expired, 1)
+        self.assertTrue(
+            any(item.kind == "judge_deadline_expired" for item in health)
+        )
+
     def test_trace_joins_source_audio_judgment_and_incident(self) -> None:
         candidate = unit(0)
         core = self.core_for({token_for(candidate): Verdict(True, 0.99)})

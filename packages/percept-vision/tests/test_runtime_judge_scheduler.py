@@ -36,6 +36,7 @@ from percept.adapters import Verdict
 from percept.goals import GoalOp
 from percept.harness.tier0 import Frame, gray_frame
 from percept.runtime.worker import (
+    _LegacyJudgeScheduler,
     RuntimeStats,
     _JudgeScheduler,
     _OwnerCommandQueue,
@@ -775,6 +776,75 @@ class AbsenceInterleavingTests(unittest.TestCase):
         self.assertEqual(len(overdue), 1, "the __overdue__ key fires once across the in-flight window")
         self.assertEqual(len(judged), 1, "the flushed q1 judgment still fires its own key")
         self.assertEqual(judged[0].ts, 1.0, "incident.ts stays the ADMISSION time, not completion")
+
+
+class MultimodalDecisionDeadlineTests(unittest.TestCase):
+    def test_cancellation_hostile_legacy_lane_stays_single_flight_and_ages_pending(self):
+        class Goals:
+            revision = 1
+
+        class HostileCore:
+            def __init__(self) -> None:
+                self.goals = Goals()
+                self.clock = asyncio.get_running_loop().time
+                self.release = asyncio.Event()
+                self.calls = []
+                self.live = 0
+                self.peak = 0
+
+            async def perceive(
+                self,
+                frame,
+                _source,
+                *,
+                _decision_terminal=None,
+                **_kwargs,
+            ):
+                self.calls.append(frame)
+                self.live += 1
+                self.peak = max(self.peak, self.live)
+                try:
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError:
+                        await self.release.wait()
+                    self.assert_terminal = bool(
+                        _decision_terminal is not None
+                        and _decision_terminal.terminal
+                    )
+                    return ["late"]
+                finally:
+                    self.live -= 1
+
+        async def drive():
+            core = HostileCore()
+            stats = RuntimeStats()
+            scheduler = _LegacyJudgeScheduler(
+                core,
+                "camera",
+                stats,
+                perceive=core.perceive,
+                decision_deadline_s=0.02,
+            )
+            self.assertTrue(scheduler.submit(1.0, "first"))
+            while stats.judge_deadline_expired == 0:
+                await asyncio.sleep(0.005)
+            self.assertEqual(scheduler.active, 1)
+            self.assertTrue(scheduler.submit(2.0, "pending"))
+            await asyncio.sleep(0.03)
+            self.assertEqual(core.calls, ["first"])
+            self.assertEqual(core.peak, 1)
+
+            core.release.set()
+            await scheduler.flush()
+            self.assertTrue(core.assert_terminal)
+            self.assertEqual(core.calls, ["first"])
+            self.assertEqual(core.peak, 1)
+            self.assertEqual(scheduler.drain(), [])
+            self.assertEqual(stats.judge_deadline_expired, 1)
+            self.assertEqual(stats.judge_deadline_dropped, 1)
+
+        asyncio.run(drive())
 
 
 class OwnerCommandQueueTests(unittest.TestCase):

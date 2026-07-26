@@ -129,6 +129,21 @@ def _filter_goal_events(events: Any, allowed_goal_ids: tuple[str, ...]) -> list:
     ]
 
 
+@dataclass
+class _DecisionTerminal:
+    """One scheduler-owned terminal latch shared with a legacy cognition call."""
+
+    terminal: bool = False
+    reason: str | None = None
+
+    def expire(self, reason: str) -> None:
+        self.reason = reason
+        self.terminal = True
+
+
+_LEGACY_DEADLINE_EXPIRED = object()
+
+
 # The vocabulary of REASONS a run's effective fps can differ from the requested one.
 # Closed set on purpose: a client reading a manifest at 2am must be able to map the value to a
 # sentence, not guess. "profile-default" means nothing overrode the request.
@@ -593,6 +608,7 @@ class _LegacyJudgeScheduler:
         metrics_collector: Any = None,
         stall_after_s: float = 20.0,
         backpressure_after: int = 3,
+        decision_deadline_s: float | None = None,
     ) -> None:
         self._core = core
         self._source = source
@@ -606,11 +622,29 @@ class _LegacyJudgeScheduler:
         # launch/drop decisions are unchanged whether or not a collector is wired.
         self._metrics = metrics_collector
         self._active: "asyncio.Task | None" = None
+        self._abandoned_dispatches: set[asyncio.Task] = set()
+        self._abandoned_terminal_sources: dict[
+            asyncio.Task, tuple[tuple[Any, ...], float | None]
+        ] = {}
         self._active_t: float | None = None  # admission t of the in-flight judgment (rides the result)
         self._active_payload: Any = None
-        # (t, judge_frame, admission_revision, admitted_goal_ids, fused_bundles). The ids are frozen at the same
-        # instant as the revision so a queued frame cannot broaden into unrelated Watches later.
-        self._pending: tuple[float, Any, Any, tuple[str, ...] | None, Any] | None = None
+        self._active_terminal: _DecisionTerminal | None = None
+        self._active_terminal_sources: tuple[Any, ...] = ()
+        # (t, judge_frame, admission_revision, admitted_goal_ids,
+        # fused_bundles, admitted_wall). The ids are frozen at the same instant
+        # as the revision so queued evidence cannot broaden into unrelated
+        # Watches later. ``admitted_wall`` makes the decision budget absolute.
+        self._pending: (
+            tuple[
+                float,
+                Any,
+                Any,
+                tuple[str, ...] | None,
+                Any,
+                float,
+            ]
+            | None
+        ) = None
         self._results: deque = deque()  # completed (t, [FireEvent]) awaiting drain()
         # ADR-001 §9: TRACED bound-driven drops (superseded pending / revision-dropped pending) — a
         # (kind, data) pair per drop, drained every frame tick by run() alongside drain(), so this list
@@ -633,9 +667,27 @@ class _LegacyJudgeScheduler:
         self._perceive_accepts_fused_bundles = _accepts_keyword(
             self._perceive, "_fused_bundles_by_goal"
         )
+        self._perceive_accepts_decision_terminal = _accepts_keyword(
+            self._perceive, "_decision_terminal"
+        )
         self._active_filter_goal_ids: tuple[str, ...] | None = None
         self._active_invalidated = False
         self._active_invalidation_reason = "source_discontinuity"
+        if decision_deadline_s is not None and (
+            isinstance(decision_deadline_s, bool)
+            or not isinstance(decision_deadline_s, (int, float))
+            or not math.isfinite(float(decision_deadline_s))
+            or float(decision_deadline_s) <= 0.0
+        ):
+            raise ValueError(
+                "decision_deadline_s must be a positive finite number or None"
+            )
+        self._decision_deadline_s = (
+            None
+            if decision_deadline_s is None
+            else float(decision_deadline_s)
+        )
+        self._active_admitted_wall: float | None = None
 
     def _mc_now(self, fallback: float) -> float:
         """"Now" for a MetricsCollector stamp: the core's own clock when available (real elapsed time
@@ -655,7 +707,9 @@ class _LegacyJudgeScheduler:
     # 0/1 by construction — surfaced through the escalation health event for live observability.
     @property
     def active(self) -> int:
-        return 0 if self._active is None else 1
+        return int(
+            self._active is not None or bool(self._abandoned_dispatches)
+        )
 
     @property
     def pending(self) -> int:
@@ -678,9 +732,17 @@ class _LegacyJudgeScheduler:
         if self._fatal is not None or self._closing:
             return False  # a rejected offer spends/reserves nothing
         revision = getattr(self._core.goals, "revision", None)  # ADMISSION-time, never launch-time
-        if self._active is None:
+        admitted_wall = self._mc_now(t)
+        if self._active is None and not self._abandoned_dispatches:
             self._mc_admit(t)  # launching right away — admitted into the funnel from this instant
-            self._launch(t, judge_frame, revision, goal_ids, fused_bundles)
+            self._launch(
+                t,
+                judge_frame,
+                revision,
+                goal_ids,
+                fused_bundles,
+                admitted_wall=admitted_wall,
+            )
             return True
         # The scheduler has no timer of its own — every submit() (the frame cadence) is the one
         # chance to notice the CURRENT active judgment has been outstanding too long. Checked before
@@ -733,7 +795,14 @@ class _LegacyJudgeScheduler:
             # the frame rate (sustained overwrite) — distinct from, and louder than, any one supersede.
             self._consec_supersede += 1
             self._check_backpressure(t)
-        self._pending = (t, judge_frame, revision, goal_ids, fused_bundles)
+        self._pending = (
+            t,
+            judge_frame,
+            revision,
+            goal_ids,
+            fused_bundles,
+            admitted_wall,
+        )
         self._mc_admit(t)  # queued behind the active judgment — pending in the funnel from this instant
         return True
 
@@ -745,6 +814,8 @@ class _LegacyJudgeScheduler:
         if self._active is not None and not self._active.done():
             self._active_invalidated = True
             self._active_invalidation_reason = reason
+            if self._active_terminal is not None:
+                self._active_terminal.expire("source_discontinuity")
             self._active.cancel()
         if self._pending is not None:
             dropped_t = self._pending[0]
@@ -824,6 +895,8 @@ class _LegacyJudgeScheduler:
         revision: Any,
         goal_ids: tuple[str, ...] | None,
         fused_bundles: Any,
+        *,
+        admitted_wall: float,
     ) -> None:
         if self._stats is not None:
             self._stats.judge_calls += 1  # counted at launch — a superseded candidate spent nothing
@@ -832,6 +905,7 @@ class _LegacyJudgeScheduler:
         if self._include_payload:
             self._active_payload = frame
         self._active_launch_wall = self._mc_now(t)  # this task's own clock, for stall detection
+        self._active_admitted_wall = admitted_wall
         self._stall_reported = False  # a fresh launch is unlatched — the stall window resets
         kwargs = {"t": t, "expected_goals_revision": revision}
         if self._perceive_accepts_source_generation:
@@ -844,22 +918,240 @@ class _LegacyJudgeScheduler:
             if not self._perceive_accepts_fused_bundles:
                 raise ValueError("fused dispatch requires a core accepting frozen fused bundles")
             kwargs["_fused_bundles_by_goal"] = fused_bundles
+        terminal = _DecisionTerminal()
+        self._active_terminal = terminal
+        if self._perceive_accepts_decision_terminal:
+            kwargs["_decision_terminal"] = terminal
         self._active_filter_goal_ids = (
             goal_ids
             if goal_ids is not None and not self._perceive_accepts_goal_ids
             else None
         )
-        self._active = asyncio.create_task(self._perceive(frame, self._source, **kwargs))
+        self._active_terminal_sources = self._terminal_sources_for(
+            frame,
+            goal_ids,
+        )
+        self._active = asyncio.create_task(
+            self._dispatch_active(
+                frame,
+                kwargs,
+                t=t,
+                admitted_wall=admitted_wall,
+                terminal=terminal,
+            )
+        )
         self._active.add_done_callback(self._on_done)
 
+    def _terminal_sources_for(
+        self,
+        frame: Any,
+        goal_ids: tuple[str, ...] | None,
+    ) -> tuple[Any, ...]:
+        roots: list[Any] = []
+        job_adapter = getattr(frame, "adapter", None)
+        if job_adapter is not None:
+            roots.append(job_adapter)
+        binding_for = getattr(self._core, "_audio_judge_binding_for", None)
+        goal_for = getattr(getattr(self._core, "goals", None), "get", None)
+        if callable(binding_for) and callable(goal_for):
+            for goal_id in goal_ids or ():
+                goal = goal_for(goal_id)
+                if goal is None:
+                    continue
+                try:
+                    binding = binding_for(goal)
+                except Exception:
+                    continue
+                adapter = getattr(binding, "adapter", None)
+                if adapter is not None:
+                    roots.append(adapter)
+        root_vision = getattr(self._core, "vision", None)
+        if root_vision is not None:
+            roots.append(root_vision)
+        found: list[Any] = []
+        seen: set[int] = set()
+        queue = list(roots)
+        while queue:
+            current = queue.pop(0)
+            identity = id(current)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            if callable(getattr(current, "take_terminal_error", None)):
+                found.append(current)
+                continue
+            for name in ("_adapter", "inner", "adapter"):
+                nested = getattr(current, name, None)
+                if nested is not None:
+                    queue.append(nested)
+        return tuple(found)
+
+    def _take_terminal_error(
+        self,
+        sources: tuple[Any, ...],
+        *,
+        active_t: float | None,
+    ) -> BaseException | None:
+        for source in sources:
+            take_terminal = getattr(source, "take_terminal_error", None)
+            error = take_terminal() if callable(take_terminal) else None
+            if error is None:
+                continue
+            self._trace.append(
+                (
+                    "judge_terminal_failure",
+                    {
+                        "source": self._source,
+                        "reason": "vision_adapter_terminal_outcome",
+                        "active_t": active_t,
+                        "exception_type": type(error).__name__,
+                    },
+                )
+            )
+            return error
+        return None
+
+    def _on_abandoned_done(self, task: asyncio.Task) -> None:
+        late_failure: BaseException | None = None
+        if not task.cancelled():
+            try:
+                late_failure = task.exception()
+            except asyncio.CancelledError:
+                late_failure = None
+        sources, active_t = self._abandoned_terminal_sources.pop(
+            task,
+            ((), None),
+        )
+        terminal_error = self._take_terminal_error(
+            sources,
+            active_t=active_t,
+        )
+        if terminal_error is not None:
+            self._fatal = terminal_error
+            if self._pending is not None:
+                self._mc_resolve(self._pending[0])
+            self._pending = None
+        elif late_failure is not None:
+            self._fatal = late_failure
+            if self._pending is not None:
+                self._mc_resolve(self._pending[0])
+            self._pending = None
+            self._trace.append(
+                (
+                    "judge_abandoned_failure",
+                    {
+                        "source": self._source,
+                        "reason": "late_dispatch_failure",
+                        "active_t": active_t,
+                        "exception_type": type(late_failure).__name__,
+                    },
+                )
+            )
+        self._abandoned_dispatches.discard(task)
+        if self._active is None and self._fatal is None:
+            self._launch_pending()
+
+    def _track_abandoned(
+        self,
+        task: asyncio.Task,
+        *,
+        active_t: float | None,
+        terminal_sources: tuple[Any, ...],
+    ) -> None:
+        if task in self._abandoned_dispatches:
+            return
+        self._abandoned_dispatches.add(task)
+        self._abandoned_terminal_sources[task] = (
+            terminal_sources,
+            active_t,
+        )
+        task.add_done_callback(self._on_abandoned_done)
+
+    async def _dispatch_active(
+        self,
+        frame: Any,
+        kwargs: dict[str, Any],
+        *,
+        t: float,
+        admitted_wall: float,
+        terminal: _DecisionTerminal,
+    ) -> Any:
+        dispatch = asyncio.create_task(
+            self._perceive(frame, self._source, **kwargs)
+        )
+        if self._decision_deadline_s is None:
+            try:
+                return await dispatch
+            except asyncio.CancelledError:
+                terminal.expire("scheduler_cancelled")
+                dispatch.cancel()
+                self._track_abandoned(
+                    dispatch,
+                    active_t=t,
+                    terminal_sources=self._active_terminal_sources,
+                )
+                raise
+        age_s = max(0.0, self._mc_now(t) - admitted_wall)
+        remaining_s = self._decision_deadline_s - age_s
+        if remaining_s > 0.0:
+            try:
+                done, _ = await asyncio.wait(
+                    {dispatch},
+                    timeout=remaining_s,
+                )
+            except asyncio.CancelledError:
+                terminal.expire("scheduler_cancelled")
+                dispatch.cancel()
+                self._track_abandoned(
+                    dispatch,
+                    active_t=t,
+                    terminal_sources=self._active_terminal_sources,
+                )
+                raise
+            if dispatch in done:
+                return dispatch.result()
+        terminal.expire("decision_deadline_expired")
+        dispatch.cancel()
+        self._track_abandoned(
+            dispatch,
+            active_t=t,
+            terminal_sources=self._active_terminal_sources,
+        )
+        elapsed_s = max(0.0, self._mc_now(t) - admitted_wall)
+        if self._stats is not None:
+            self._stats.judge_deadline_expired += 1
+        self._trace.append(
+            (
+                "judge_deadline_expired",
+                {
+                    "source": self._source,
+                    "reason": "active_decision_deadline_expired",
+                    "active_t": t,
+                    "age_s": elapsed_s,
+                    "decision_deadline_s": self._decision_deadline_s,
+                    "slot": "active",
+                },
+            )
+        )
+        return _LEGACY_DEADLINE_EXPIRED
+
     def _launch_pending(self) -> None:
+        if self._abandoned_dispatches:
+            return
         if self._pending is None:
             return
         if self._fatal is not None or self._closing:
             self._mc_resolve(self._pending[0])  # leaving the funnel un-launched, not a real judgment
             self._pending = None
             return
-        t, frame, revision, goal_ids, fused_bundles = self._pending
+        (
+            t,
+            frame,
+            revision,
+            goal_ids,
+            fused_bundles,
+            admitted_wall,
+        ) = self._pending
         self._pending = None
         current = getattr(self._core.goals, "revision", None)
         if revision != current:
@@ -879,7 +1171,40 @@ class _LegacyJudgeScheduler:
             if funnel is not None:
                 funnel.dropped(reason="goals_revision_changed", camera=self._source)
             return
-        self._launch(t, frame, revision, goal_ids, fused_bundles)
+        if self._decision_deadline_s is not None:
+            age_s = max(0.0, self._mc_now(t) - admitted_wall)
+            if age_s >= self._decision_deadline_s:
+                if self._stats is not None:
+                    self._stats.judge_deadline_dropped += 1
+                self._trace.append(
+                    (
+                        "judge_deadline_dropped",
+                        {
+                            "source": self._source,
+                            "reason": "pending_admission_deadline_expired",
+                            "dropped_t": t,
+                            "age_s": age_s,
+                            "decision_deadline_s": self._decision_deadline_s,
+                            "slot": "pending",
+                        },
+                    )
+                )
+                self._mc_resolve(t)
+                funnel = getattr(self._core, "funnel", None)
+                if funnel is not None:
+                    funnel.dropped(
+                        reason="decision_deadline_expired",
+                        camera=self._source,
+                    )
+                return
+        self._launch(
+            t,
+            frame,
+            revision,
+            goal_ids,
+            fused_bundles,
+            admitted_wall=admitted_wall,
+        )
 
     def _on_done(self, task: "asyncio.Task") -> None:
         # ORDERED checks — cancellation FIRST (close(drain=False) must not become a fatal error),
@@ -907,7 +1232,10 @@ class _LegacyJudgeScheduler:
             self._active_payload = None
             self._active_filter_goal_ids = None
             self._active_invalidated = False
-            if invalidated and not self._closing:
+            self._active_terminal = None
+            self._active_terminal_sources = ()
+            self._active_admitted_wall = None
+            if not self._closing:
                 self._launch_pending()
             return
         exc = task.exception()
@@ -921,9 +1249,40 @@ class _LegacyJudgeScheduler:
             self._active_payload = None
             self._active_filter_goal_ids = None
             self._active_invalidated = False
+            self._active_terminal = None
+            self._active_terminal_sources = ()
+            self._active_admitted_wall = None
             return
         self._mc_resolve(self._active_t)
         result = task.result()
+        terminal_error = self._take_terminal_error(
+            self._active_terminal_sources,
+            active_t=self._active_t,
+        )
+        if terminal_error is not None:
+            self._fatal = terminal_error
+            if self._pending is not None:
+                self._mc_resolve(self._pending[0])
+            self._pending = None
+            self._active = None
+            self._active_payload = None
+            self._active_filter_goal_ids = None
+            self._active_invalidated = False
+            self._active_terminal = None
+            self._active_terminal_sources = ()
+            self._active_admitted_wall = None
+            return
+        if result is _LEGACY_DEADLINE_EXPIRED:
+            self._active = None
+            self._active_payload = None
+            self._active_filter_goal_ids = None
+            self._active_invalidated = False
+            self._active_terminal = None
+            self._active_terminal_sources = ()
+            self._active_launch_wall = None
+            self._active_admitted_wall = None
+            self._launch_pending()
+            return
         if self._active_filter_goal_ids is not None:
             result = _filter_goal_events(result, self._active_filter_goal_ids)
         if self._active_invalidated:
@@ -951,12 +1310,15 @@ class _LegacyJudgeScheduler:
         self._active_payload = None
         self._active_invalidated = False
         self._active = None
+        self._active_terminal = None
+        self._active_terminal_sources = ()
         # A judgment completing WITHOUT raising is the same "reachable again" proof the agent level
         # (_note_judge_ok) uses — clear both latches and, only if one was actually
         # latched (never spam a clean run), report the recovery ONCE, loud, before anything new
         # launches off this completion.
         self._report_recovery_if_latched()
         self._active_launch_wall = None
+        self._active_admitted_wall = None
         self._consec_supersede = 0
         if self._closing:  # shutdown in progress: don't start new work
             if self._pending is not None:
@@ -985,9 +1347,20 @@ class _LegacyJudgeScheduler:
     async def flush(self) -> None:
         """Drain to QUIESCENCE: completing the active task may LAUNCH the pending one, so one await
         is not enough — loop until neither exists. A held failure stops the loop (drain re-raises)."""
-        while self._fatal is None and (self._active is not None or self._pending is not None):
+        while self._fatal is None and (
+            self._active is not None
+            or self._pending is not None
+            or self._abandoned_dispatches
+        ):
             task = self._active
             if task is None:
+                if self._abandoned_dispatches:
+                    await asyncio.wait(
+                        tuple(self._abandoned_dispatches),
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    await asyncio.sleep(0)
+                    continue
                 # pending-without-active never persists (submit/_on_done launch immediately) — defensive.
                 self._launch_pending()
                 continue
@@ -1030,11 +1403,15 @@ class _LegacyJudgeScheduler:
         self._pending = None
         task = self._active
         if task is not None:
+            if self._active_terminal is not None:
+                self._active_terminal.expire("runtime_shutdown")
             task.cancel()
             # A provider may suppress cancellation indefinitely. Its registered done callback owns
             # eventual cleanup; live shutdown itself must remain bounded.
             if task.done():
                 await asyncio.sleep(0)
+        for abandoned in tuple(self._abandoned_dispatches):
+            abandoned.cancel()
 
 
 class _JudgeScheduler:
@@ -2155,6 +2532,7 @@ async def _run_audio_only(
     metrics_collector: Any,
     judge_stall_after_s: float,
     judge_backpressure_after: int,
+    judge_decision_deadline_s: float | None,
     timebase: str,
     wall_clock: Callable[[], float],
     clock: Callable | None,
@@ -2274,6 +2652,7 @@ async def _run_audio_only(
             metrics_collector=metrics_collector,
             stall_after_s=judge_stall_after_s,
             backpressure_after=judge_backpressure_after,
+            decision_deadline_s=judge_decision_deadline_s,
         )
         if judge_dispatch == "async" else None
     )
@@ -2933,7 +3312,9 @@ async def _run_worker(
     - ``judge_decision_deadline_s`` — optional absolute async-lane budget measured from admission,
       including pending-slot queue time and provider dispatch. Expired pending work is dropped before
       launch; active work is cancelled and ignored at expiry. Both outcomes emit structured health
-      events and counters. ``None`` preserves deliberate/historical behavior; a reflex deployment
+      events and counters. A provider that suppresses cancellation retains the one physical lane until
+      it really terminates, and its terminal latch prevents a late audio result from mutating cognition.
+      ``None`` preserves deliberate/historical behavior; a reflex deployment
       should set this independently of the provider adapter's socket timeout.
 
     ADMISSION COVERAGE. Every run closes with ``RuntimeHealthEvent("runtime_ended")`` carrying this
@@ -3085,6 +3466,7 @@ async def _run_worker(
                 metrics_collector=metrics_collector,
                 judge_stall_after_s=judge_stall_after_s,
                 judge_backpressure_after=judge_backpressure_after,
+                judge_decision_deadline_s=judge_decision_deadline_s,
                 timebase=timebase,
                 wall_clock=wall_clock,
                 clock=clock,
@@ -3490,6 +3872,7 @@ async def _run_worker(
             perceive=core.perceive_audio_judged,
             stall_after_s=judge_stall_after_s,
             backpressure_after=judge_backpressure_after,
+            decision_deadline_s=judge_decision_deadline_s,
         )
     compiled_audio_capability = None
     if compiled_audio_goals:
@@ -3673,6 +4056,7 @@ async def _run_worker(
                 perceive=_dispatch_prepared_fused_job,
                 stall_after_s=judge_stall_after_s,
                 backpressure_after=judge_backpressure_after,
+                decision_deadline_s=judge_decision_deadline_s,
             )
             for goal in fused_goals
         }
@@ -5467,6 +5851,7 @@ async def _run_worker(
                                 perceive=_dispatch_prepared_fused_job,
                                 stall_after_s=judge_stall_after_s,
                                 backpressure_after=judge_backpressure_after,
+                                decision_deadline_s=judge_decision_deadline_s,
                             )
                     if regate_on_goal_change:
                         # Pass the live gate + banks so the rebuild ADOPTS per-goal throttle + prev
