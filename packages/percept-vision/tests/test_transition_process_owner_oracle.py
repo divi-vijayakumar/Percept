@@ -432,15 +432,51 @@ def test_transition_fire_action_and_trace_are_materialized_before_callback():
     job, events, trace_rows = asyncio.run(drive())
     assert [event.action for event in events] == ["fire"]
     assert callback_rows == []  # reducer invoked no async/user callback
-    # Legacy perceive_judged records a transition at the route boundary and again in its aggregate
-    # event log.  Promotion may later repair that historical duplication only as an explicit
-    # behavior change; this parity slice must retain both, synchronously, before callbacks.
     assert [row.goal_id for row in core.action_log.entries("fire")] == [
-        "transition",
-        "transition",
-    ], "transition FIRE returned before synchronous legacy action-log materialization"
+        "transition"
+    ], "transition FIRE did not synchronously materialize exactly one ActionRecord"
     assert trace_rows
     assert all(row[0] == job.token.judgment_trace_id for row in trace_rows)
+
+
+def test_transition_split_and_public_wrapper_converge_on_one_action_record():
+    answers = {
+        (FROM, "arm"): Verdict(True, 0.99, "pending"),
+        (TO, "arm"): Verdict(False, 0.99, "not approved"),
+        (FROM, "fire"): Verdict(False, 0.99, "not pending"),
+        (TO, "fire"): Verdict(True, 0.99, "approved"),
+    }
+    split = _core_with_goal(_ScriptVision(answers), _transition_goal())
+    public = _core_with_goal(_ScriptVision(answers), _transition_goal())
+
+    async def reduce_split(frame, t):
+        job = await _prepare_transition(split, frame=frame, t=t)
+        completion = await split.dispatch_judgment(job)
+        return split.reduce_judgment_completion(completion)
+
+    async def drive():
+        assert await reduce_split({"token": "arm"}, 1.0) == []
+        split_events = await reduce_split({"token": "fire"}, 2.0)
+        assert await public.perceive_judged(
+            {"token": "arm"}, source="camera", t=1.0
+        ) == []
+        public_events = await public.perceive_judged(
+            {"token": "fire"}, source="camera", t=2.0
+        )
+        return split_events, public_events
+
+    split_events, public_events = asyncio.run(drive())
+    assert [
+        (event.goal_id, event.action, event.text) for event in split_events
+    ] == [
+        (event.goal_id, event.action, event.text) for event in public_events
+    ] == [("transition", "fire", "approved")]
+    assert [row.goal_id for row in split.action_log.entries("fire")] == [
+        "transition"
+    ]
+    assert [row.goal_id for row in public.action_log.entries("fire")] == [
+        "transition"
+    ]
 
 
 def test_transition_extractor_trace_has_exact_legacy_stage_before_decision():
