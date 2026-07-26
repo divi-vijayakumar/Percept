@@ -877,11 +877,13 @@ class BehaviorExecutor:
             self.metrics.incr(f"{metric}.event_chain_pre")
             return replace(verdict, satisfied=False), None, None
 
-        new_occurrence = (
-            state.episode_id is None
-            or (phase == "during" and state.phase in {"pre", "post"})
-            or (phase == "post" and state.phase == "pre")
-        )
+        # Sliding temporal windows can legitimately disagree at an occurrence boundary: an
+        # overlapping window may call the latest moment ``post`` and the next one ``during`` for
+        # the SAME physical action.  Once an occurrence is open, only a confident ``pre`` read
+        # above closes it (by clearing ``episode_id``); phase regression alone must never mint a
+        # second episode.  This deliberately prefers one missed back-to-back event over a duplicate
+        # notification when no observable pre-event separator exists.
+        new_occurrence = state.episode_id is None
         if new_occurrence:
             state.sequence += 1
             state.episode_id = f"{goal.id}:event:{entity}:{state.sequence}"

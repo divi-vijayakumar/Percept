@@ -170,6 +170,12 @@ class EachEventProductPathTests(unittest.TestCase):
         _core, _vision, emitted = asyncio.run(_run(["pre", "post", "post", "pre"]))
         self.assertEqual([event.action for event in emitted], ["fire"])
 
+    def test_overlapping_window_post_to_during_regression_does_not_refire(self):
+        _core, _vision, emitted = asyncio.run(
+            _run(["pre", "post", "during", "post", "during"])
+        )
+        self.assertEqual([event.action for event in emitted], ["fire"])
+
     def test_low_confidence_during_does_not_consume_the_occurrence(self):
         _core, _vision, emitted = asyncio.run(
             _run(["pre", "during", "during", "post"], confidence={1: 0.2})
