@@ -817,6 +817,7 @@ class MotionGate:
         self,
         spec: WatchSpec,
         *,
+        external_conditions: Sequence[WatchCondition] = (),
         settings: Settings | None = None,
         clock: Callable[[], CivilTime] | None = None,
         wake_policy: WakePolicy | dict[str, Any] | None = None,
@@ -824,6 +825,7 @@ class MotionGate:
         semantic_adapter: Callable[[Frame], float] | None = None,
     ) -> None:
         self._spec = spec
+        self._external_conditions = tuple(external_conditions)
         cfg = settings or load_settings()
         self._default = cfg.edge.motion_gate
         self._prev: Frame | None = None
@@ -864,7 +866,10 @@ class MotionGate:
         the first frame after a regate diffs against the real predecessor instead of a spurious 0-motion
         cold start. Deliberately touches ONLY ``_last_escalate`` + ``_prev`` — NOT any gate-key/dwell
         state (that is SPEC-C's territory)."""
-        live_ids = {c.goal_id for c in self._spec.conditions}
+        live_ids = {
+            c.goal_id
+            for c in (*self._spec.conditions, *self._external_conditions)
+        }
         self._last_escalate = {
             gid: t for gid, t in prev._last_escalate.items() if gid in live_ids
         }
@@ -886,7 +891,7 @@ class MotionGate:
         requested = frozenset(goal_ids)
         when = now if now is not None else (self._clock() if self._clock is not None else None)
         admitted: list[str] = []
-        for condition in self._spec.conditions:
+        for condition in (*self._spec.conditions, *self._external_conditions):
             if (
                 condition.goal_id not in requested
                 or not schedule_active(condition.schedule, when)

@@ -39,9 +39,17 @@ _DEFAULT_TIMEOUT_S = 120.0  # generous headroom for a slow open-weight model; a 
 # ``vendor/model`` id (see ``_resolve_model``). Keeps a shared cross-backend setting from silently
 # leaking a Claude/Gemini model id (e.g. "claude-opus-4-8") into an OpenRouter call, which then fails.
 _DEFAULT_MODEL = "qwen/qwen3-vl-32b-instruct"
-# OpenRouter's opt-in usage-accounting extension: without it, ``usage`` (and the ``cost`` it carries) is
-# absent from the response and the token/cost funnel silently reads 0 forever (see ``_usage_of``).
+# OpenRouter now includes usage/cost automatically. Keep the former include request for compatibility
+# with older gateways; current OpenRouter treats it as a deprecated no-op.
 _USAGE_EXTRA_BODY = {"usage": {"include": True}}
+
+
+class _BudgetTerminalError(Exception):
+    """Internal marker: budget admission/reconciliation failures must never retry."""
+
+    def __init__(self, original: Exception) -> None:
+        super().__init__(str(original))
+        self.original = original
 
 
 def _timeout_s() -> float:
@@ -113,13 +121,12 @@ def _image_block(frame: Any) -> dict:
 
 
 def _usage_of(resp: Any) -> dict:
-    """Pull token usage (+ cost, when OpenRouter's usage-accounting extension is on) off an
+    """Pull token usage and billed cost off an
     OpenAI/OpenRouter chat completion for ``Verdict.usage`` (read by ``observability.judge_usage`` →
     the cost/token funnel). Defensive: no ``usage`` → ``{}`` — the metering hook stays a no-op.
 
-    ``cost`` only appears when the request set ``extra_body={"usage": {"include": True}}``
-    (:data:`_USAGE_EXTRA_BODY`, sent on every judge call below); without it OpenRouter omits ``usage``
-    entirely and this always degrades to ``{}`` — the bug this reconciles.
+    Current OpenRouter responses include this accounting automatically. We still send
+    :data:`_USAGE_EXTRA_BODY` for compatibility with older gateways.
     """
     usage = getattr(resp, "usage", None)
     if usage is None and isinstance(resp, dict):
@@ -165,12 +172,21 @@ class OpenRouterVision:
     #: PARSES the claim-mode correction channel (see :class:`~percept.backends.anthropic.AnthropicVision`).
     PARSES_CLAIM_CHANNEL = True
 
-    def __init__(self, settings: Any = None, *, client: Any = None) -> None:
+    def __init__(
+        self,
+        settings: Any = None,
+        *,
+        client: Any = None,
+        request_budget: Any = None,
+    ) -> None:
         self._settings = _settings_of(settings)
         self._client = client  # injectable for L2 fixtures; built lazily otherwise
         self._model = _resolve_model(self._settings)
         self._breaker = CircuitBreaker()
         self._timeout_s = _timeout_s()
+        # Optional request admission/reconciliation seam used by paid benchmark runners.
+        # It is deliberately duck-typed so this product adapter does not import evaluation code.
+        self._request_budget = request_budget
 
     def _ensure_client(self):
         if self._client is None:
@@ -181,15 +197,85 @@ class OpenRouterVision:
             )
             if not key:
                 raise RuntimeError("OpenRouterVision needs OPENROUTER_API_KEY in the environment.")
-            self._client = AsyncOpenAI(
-                base_url=_OPENROUTER_BASE_URL,
-                api_key=key,
-                timeout=self._timeout_s,
+            client_options = {
+                "base_url": _OPENROUTER_BASE_URL,
+                "api_key": key,
+                "timeout": self._timeout_s,
                 # OpenRouter attribution headers (optional but recommended; harmless if ignored).
-                default_headers={"HTTP-Referer": "https://github.com/divi-vijayakumar/Percept",
-                                 "X-Title": "Percept"},
+                "default_headers": {
+                    "HTTP-Referer": "https://github.com/divi-vijayakumar/Percept",
+                    "X-Title": "Percept",
+                },
+            }
+            if self._request_budget is not None:
+                # Paid benchmarks own the retry loop so each physical attempt can be
+                # admitted and accounted exactly once. Generic adapter construction
+                # preserves the OpenAI SDK's historical/default retry behavior.
+                client_options["max_retries"] = 0
+            self._client = AsyncOpenAI(
+                **client_options,
             )
         return self._client
+
+    async def _completion(self, **kwargs: Any) -> Any:
+        """Execute one metered completion with exact physical-attempt accounting."""
+        client = self._ensure_client()
+
+        async def _call():
+            try:
+                reservation = (
+                    self._request_budget.begin_attempt()
+                    if self._request_budget is not None
+                    else None
+                )
+            except Exception as exc:
+                raise _BudgetTerminalError(exc) from exc
+            try:
+                response = await client.chat.completions.create(**kwargs)
+            except BaseException:
+                if reservation is not None:
+                    self._request_budget.fail_attempt(reservation)
+                raise
+            if reservation is not None:
+                try:
+                    self._request_budget.complete_attempt(
+                        reservation,
+                        _usage_of(response),
+                    )
+                except Exception as exc:
+                    raise _BudgetTerminalError(exc) from exc
+            return response
+
+        attempts = (
+            self._request_budget.attempts_per_call
+            if self._request_budget is not None
+            else 3
+        )
+        timeout_s = (
+            min(self._timeout_s, self._request_budget.request_timeout_s)
+            if self._request_budget is not None
+            else self._timeout_s
+        )
+        try:
+            return await with_retry(
+                _call,
+                attempts=attempts,
+                breaker=self._breaker,
+                timeout_s=timeout_s,
+                non_retryable=(_BudgetTerminalError,),
+            )
+        except _BudgetTerminalError as exc:
+            raise exc.original from exc
+
+    def budget_snapshot(self) -> dict[str, int | float] | None:
+        """Return the benchmark admission ledger without exposing credential data."""
+        if self._request_budget is None:
+            return None
+        return self._request_budget.snapshot()
+
+    def configure_request_budget(self, request_budget: Any) -> None:
+        """Attach a request admission controller before the first completion is sent."""
+        self._request_budget = request_budget
 
     async def judge(
         self,
@@ -212,7 +298,6 @@ class OpenRouterVision:
         ctx = context or {}
         if ctx.get("process_qa"):  # accumulating-answer question (mirror GeminiVision._judge_process_qa)
             return await self._judge_process_qa(condition, frame, frames, str(ctx.get("running_answer") or ""))
-        client = self._ensure_client()
         claim_mode = bool(ctx.get("claim_mode"))  # claim-slot concern -> parse the correction channel
         content = self._build_content(condition, frame, exemplar=exemplar,
                                       corrections=corrections, frames=frames, context=context,
@@ -220,15 +305,12 @@ class OpenRouterVision:
         messages = [{"role": "system", "content": _JUDGE_SYSTEM},
                     {"role": "user", "content": content}]
 
-        async def _call():
-            return await client.chat.completions.create(
-                model=self._model,
-                messages=messages,
-                max_tokens=1024,  # headroom: a thinking/open model can spend tokens before the JSON verdict
-                extra_body=_USAGE_EXTRA_BODY,  # ask OpenRouter to include usage/cost on the response
-            )
-
-        resp = await with_retry(_call, breaker=self._breaker)
+        resp = await self._completion(
+            model=self._model,
+            messages=messages,
+            max_tokens=1024,  # headroom: a thinking/open model can spend tokens before the JSON verdict
+            extra_body=_USAGE_EXTRA_BODY,  # compatibility with older OpenRouter gateways
+        )
         verdict = _parse_verdict(_text_of(resp), claim_mode=claim_mode)
         verdict.usage = _usage_of(resp)  # 1.3 metering: token/cost funnel (was always {})
         return verdict
@@ -236,7 +318,6 @@ class OpenRouterVision:
     async def _judge_process_qa(self, condition: str, frame: Any, frames: list | None, prior: str) -> Verdict:
         """One process-QA step: integrate this clip into the running answer (Item 2). Returns the rewritten
         ordered answer on ``Verdict.running_answer``; on a parse miss the prior answer is preserved."""
-        client = self._ensure_client()
         strip = [f for f in (frames or []) if f is not frame]
         content: list = [_image_block(f) for f in strip]
         content.append(_image_block(frame))
@@ -247,12 +328,12 @@ class OpenRouterVision:
             '"confidence": 0..1}.')})
         messages = [{"role": "system", "content": _PROCESS_QA_SYSTEM}, {"role": "user", "content": content}]
 
-        async def _call():
-            return await client.chat.completions.create(
-                model=self._model, messages=messages, max_tokens=1024, extra_body=_USAGE_EXTRA_BODY,
-            )
-
-        resp = await with_retry(_call, breaker=self._breaker)
+        resp = await self._completion(
+            model=self._model,
+            messages=messages,
+            max_tokens=1024,
+            extra_body=_USAGE_EXTRA_BODY,
+        )
         try:
             data = _coerce_json(_text_of(resp))
         except (ValueError, TypeError):
@@ -264,7 +345,6 @@ class OpenRouterVision:
                        usage=_usage_of(resp))
 
     async def detect(self, frame: Any, goals: list[Goal]) -> list[Observation]:
-        client = self._ensure_client()
         labels = ", ".join(sorted({g.condition for g in goals})) or "any salient object"
         prompt = (
             "Detect goal-relevant objects. For each, return a JSON list item "
@@ -273,12 +353,12 @@ class OpenRouterVision:
         )
         content = [_image_block(frame), {"type": "text", "text": prompt}]
 
-        async def _call():
-            return await client.chat.completions.create(
-                model=self._model, messages=[{"role": "user", "content": content}], max_tokens=1024,
-            )
-
-        resp = await with_retry(_call, breaker=self._breaker)
+        resp = await self._completion(
+            model=self._model,
+            messages=[{"role": "user", "content": content}],
+            max_tokens=1024,
+            extra_body=_USAGE_EXTRA_BODY,
+        )
         return _parse_observations(_text_of(resp))
 
     async def detect_events(self, frames: list, goals: list[Goal]) -> list:

@@ -159,6 +159,9 @@ class CompiledWatch:
     coverage_floor: float | None
     watchspec_kwargs: Mapping[str, Any]
     components: Mapping[str, Any]
+    # Private runtime primitive, present only for a fused Watch. Kept opaque here so non-fused
+    # compilation imports and allocates no synchronization machinery.
+    fused_sync_policy: Any = None
 
 
 def _settings_from_effective(effective: Mapping[str, Any]) -> Settings:
@@ -421,6 +424,13 @@ def runtime_compile(resolved: ResolvedWatch) -> CompiledWatch:
         "stt": settings.models.stt,
         "tts": settings.models.tts,
     }
+    fused_sync_policy = None
+    if isinstance(perception, dict) and perception.get("modality") == "fused":
+        from .fused_sync import _FusedSyncPolicy
+
+        fused_sync_policy = _FusedSyncPolicy(
+            window_s=float(perception["audio_s"]),
+        )
 
     return CompiledWatch(
         settings=settings,
@@ -431,6 +441,7 @@ def runtime_compile(resolved: ResolvedWatch) -> CompiledWatch:
         coverage_floor=coverage_floor,
         watchspec_kwargs=watchspec_kwargs,
         components=components,
+        fused_sync_policy=fused_sync_policy,
     )
 
 

@@ -607,11 +607,14 @@ class DomainPackRegistry:
         if not isinstance(pack, DomainPack):
             raise DomainPackError(f"expected a DomainPack, got {type(pack).__name__}")
         existing = self._packs.get(pack.qualified_name)
-        if existing is not None and existing != pack and not overwrite:
-            raise DomainPackError(
-                f"a domain pack named {pack.qualified_name!r} is already registered; pass "
-                "overwrite=True to replace it"
-            )
+        if existing is not None:
+            if existing == pack:
+                return
+            if not overwrite:
+                raise DomainPackError(
+                    f"a domain pack named {pack.qualified_name!r} is already registered; pass "
+                    "overwrite=True to replace it"
+                )
         self._packs[pack.qualified_name] = pack
 
     def unregister(self, qualified_name: str) -> None:

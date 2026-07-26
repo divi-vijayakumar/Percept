@@ -10,13 +10,23 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import math
 import time
 import warnings
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Callable, Hashable
 
 from . import registry
-from .adapters import AudioFrame, Box, Decision, Goal, GoalOrigin, TurnResult, Verdict
+from .adapters import (
+    AudioFrame,
+    Box,
+    Decision,
+    Goal,
+    GoalOrigin,
+    Observation,
+    TurnResult,
+    Verdict,
+)
 from .behavior import BehaviorExecutor, EpisodeFoldResult, ShadowObservation, program_of
 from .behavior_routes import BehaviorRoute, goal_behavior_route, require_worker_routes
 from .duration_routes import duration_policy, require_duration_routes
@@ -61,6 +71,7 @@ from .tracing import STAGE_JUDGMENT_EVENT, STAGE_SHADOW_FOLD, STAGE_TRANSITION_D
 #: LRU ceiling on the judgment evidence-sequencer's per-key counters. Matches the gate's own
 #: default ``max_keys`` so the observability map can never outgrow the gate state it mirrors.
 _SEQ_MAX_KEYS = 10_000
+_PROVIDER_ACCOUNTING_FALLBACK_MAX = 1_024
 
 
 @dataclass
@@ -101,6 +112,499 @@ class FireEvent:
     # Exact immutable audio evidence submitted to the provider for this decision. Populated only by
     # the compiled audio-only path; the worker builds the delivered snippet from this same tuple.
     audio_units: tuple[AudioUnit, ...] | None = None
+
+
+@dataclass(frozen=True)
+class _JudgmentAdmissionToken:
+    admission_id: str
+    goal_id: str
+    modality: str
+    route: str
+    goal_object_token: object
+    watch_application: str | None
+    watch_revision: int
+    goals_registry_revision: int
+    watch_runtime_token: object | None
+    judge_binding_token: object
+    source_id: str
+    source_generation: int
+    fused_generation: int | None
+    evidence_seq: int
+    parent_source_trace_id: str
+    judgment_trace_id: str
+
+
+@dataclass(frozen=True)
+class _ProviderRequest:
+    dispatch: Any
+    condition: str
+    frame: Any
+    frames: tuple[Any, ...]
+    audio: Any
+    roi: Any
+    exemplar: Any
+    corrections: tuple[tuple[str, str], ...]
+    context: Any
+    include_frames: bool = False
+    include_audio: bool = False
+    include_context: bool = False
+    include_exemplar: bool = True
+
+
+@dataclass(frozen=True)
+class _TransitionProviderRequest:
+    """Two immutable provider calls that form one transition judgment."""
+
+    before: _ProviderRequest
+    after: _ProviderRequest
+
+
+@dataclass(frozen=True)
+class _ReducerInputs:
+    source_t: float
+    ingest_observed_ts: float
+    admitted_ts: float
+    reducer_entity_id: str | None
+    freshness: float
+    focus_token: Any = None
+    cache_key: Any = None
+    cache_store: bool = False
+    route_inputs: Any = None
+
+
+@dataclass(frozen=True)
+class _WatchReducerInputs:
+    """Frozen reducer-only state for ordinary and local watch routes."""
+
+    process_qa: bool = False
+    cached_verdict: _VerdictSnapshot | None = None
+    cache_audit: bool = False
+    extractor_facts: _FrozenMapping | None = None
+    direct_hit: bool = False
+
+
+@dataclass(frozen=True)
+class _TransitionReducerInputs:
+    identity_policy: str | None
+    latch_key: Hashable
+    latch_key_source: str
+    focus_entity_id: str | None
+    strip_len: int
+    enriched: bool
+    extractor_facts: _FrozenMapping | None = None
+
+
+@dataclass(frozen=True)
+class _ProcessReducerInputs:
+    process_key: tuple[str]
+
+
+@dataclass(frozen=True)
+class _JudgmentJob:
+    token: _JudgmentAdmissionToken
+    modality: str
+    evidence: Any
+    provider: _ProviderRequest | _TransitionProviderRequest
+    reducer: _ReducerInputs
+    adapter: Any
+    local_verdict: _VerdictSnapshot | None = None
+    trace_temporal: str | None = None
+    trace_roi: bool = False
+    trace_provenance: tuple[tuple[str, Any], ...] = ()
+    # Kept as replaceable fields for integrations that used the pre-owner
+    # private job seam to inject frozen evidence/provider doubles.  The
+    # canonical fields remain ``evidence`` and ``provider``.
+    bundle: Any = None
+    dispatch: Any = None
+
+    def __post_init__(self) -> None:
+        if self.bundle is None:
+            object.__setattr__(self, "bundle", self.evidence)
+        if self.dispatch is None:
+            object.__setattr__(self, "dispatch", self.provider.dispatch)
+
+    @property
+    def condition(self) -> str:
+        return self.provider.condition
+
+    @property
+    def frame(self) -> Any:
+        return self.provider.frame
+
+    @property
+    def frames(self) -> tuple[Any, ...]:
+        return self.provider.frames
+
+    @property
+    def audio(self) -> Any:
+        return self.provider.audio
+
+    @property
+    def roi(self) -> Any:
+        return self.provider.roi
+
+    @property
+    def exemplar(self) -> Any:
+        return self.provider.exemplar
+
+    @property
+    def corrections(self) -> tuple[tuple[str, str], ...]:
+        return self.provider.corrections
+
+    @property
+    def context(self) -> Any:
+        return self.provider.context
+
+    @property
+    def source_t(self) -> float:
+        return self.reducer.source_t
+
+    @property
+    def ingest_observed_ts(self) -> float:
+        return self.reducer.ingest_observed_ts
+
+    @property
+    def admitted_ts(self) -> float:
+        return self.reducer.admitted_ts
+
+
+@dataclass(frozen=True)
+class _ProviderFailure:
+    kind: str
+    exception_type: str
+    safe_message: str
+
+
+@dataclass(frozen=True)
+class _FrozenMapping:
+    items: tuple[tuple[Any, Any], ...]
+
+
+def _freeze_provider_value(value: Any) -> Any:
+    """Detach and recursively freeze provider-owned structured values."""
+    from .contracts import ClipEvent
+
+    if value is None or type(value) in (bool, int, float, str, bytes):
+        return value
+    if type(value) is ClipEvent:
+        return ClipEvent(value.t_start, value.t_end, value.label)
+    if type(value) is SubjectRef:
+        return value
+    if isinstance(value, dict):
+        return _FrozenMapping(
+            tuple(
+                (_freeze_provider_value(key), _freeze_provider_value(item))
+                for key, item in value.items()
+            )
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_provider_value(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_freeze_provider_value(item) for item in value)
+    raise ValueError(
+        f"provider Verdict contains unsupported mutable value {type(value).__name__}"
+    )
+
+
+def _thaw_provider_value(value: Any) -> Any:
+    if type(value) is _FrozenMapping:
+        return {
+            _thaw_provider_value(key): _thaw_provider_value(item)
+            for key, item in value.items
+        }
+    if isinstance(value, tuple):
+        return [_thaw_provider_value(item) for item in value]
+    if isinstance(value, frozenset):
+        return {_thaw_provider_value(item) for item in value}
+    return value
+
+
+@dataclass(frozen=True)
+class _VerdictSnapshot:
+    satisfied: bool
+    confidence: float
+    evidence: str
+    phase: str
+    action_present: bool | None
+    running_answer: str
+    usage: _FrozenMapping
+    events: tuple[Any, ...]
+    subject: SubjectRef | None
+    operation: str
+    value: Any
+    normalized_value: Any
+    target_revision_id: str | None
+    asserted_by: str | None
+
+    @classmethod
+    def capture(cls, verdict: Verdict) -> "_VerdictSnapshot":
+        if not _is_valid_verdict(verdict):
+            raise ValueError("provider returned a malformed Verdict")
+        usage = _freeze_provider_value(verdict.usage)
+        if type(usage) is not _FrozenMapping:
+            raise ValueError("provider Verdict usage must be a mapping")
+        return cls(
+            satisfied=verdict.satisfied,
+            confidence=float(verdict.confidence),
+            evidence=str(verdict.evidence),
+            phase=str(verdict.phase),
+            action_present=verdict.action_present,
+            running_answer=str(verdict.running_answer),
+            usage=usage,
+            events=tuple(_freeze_provider_value(event) for event in verdict.events),
+            subject=_freeze_provider_value(verdict.subject),
+            operation=str(verdict.operation),
+            value=_freeze_provider_value(verdict.value),
+            normalized_value=_freeze_provider_value(verdict.normalized_value),
+            target_revision_id=verdict.target_revision_id,
+            asserted_by=verdict.asserted_by,
+        )
+
+    def to_verdict(self) -> Verdict:
+        return Verdict(
+            satisfied=self.satisfied,
+            confidence=self.confidence,
+            evidence=self.evidence,
+            phase=self.phase,
+            action_present=self.action_present,
+            running_answer=self.running_answer,
+            usage=_thaw_provider_value(self.usage),
+            events=[_thaw_provider_value(event) for event in self.events],
+            subject=self.subject,
+            operation=self.operation,
+            value=_thaw_provider_value(self.value),
+            normalized_value=_thaw_provider_value(self.normalized_value),
+            target_revision_id=self.target_revision_id,
+            asserted_by=self.asserted_by,
+        )
+
+
+def _readonly_provider_value(value: Any) -> Any:
+    """Recursively detach input state while preserving read-only mapping access."""
+    import copy
+    from types import MappingProxyType
+
+    if value is None or type(value) in (bool, int, float, str, bytes):
+        return value
+    if isinstance(value, dict):
+        return MappingProxyType(
+            {
+                copy.deepcopy(key): _readonly_provider_value(item)
+                for key, item in value.items()
+            }
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_readonly_provider_value(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_readonly_provider_value(item) for item in value)
+    return copy.deepcopy(value)
+
+
+def _provider_input_copy(value: Any) -> Any:
+    """Give one provider call a detached mutable view of frozen request data."""
+    import copy
+    from collections.abc import Mapping
+
+    if value is None or type(value) in (bool, int, float, str, bytes):
+        return value
+    if isinstance(value, Mapping):
+        return {
+            copy.deepcopy(key): _provider_input_copy(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, tuple):
+        return tuple(_provider_input_copy(item) for item in value)
+    if isinstance(value, frozenset):
+        return {_provider_input_copy(item) for item in value}
+    return copy.deepcopy(value)
+
+
+def _goal_provider_projection(goal: Goal) -> Goal:
+    """Exact Goal-shaped, deeply read-only projection for detector providers."""
+    return Goal(
+        id=goal.id,
+        condition=goal.condition,
+        say=goal.say,
+        source=goal.source,
+        modality=goal.modality,
+        state=_readonly_provider_value(goal.state),
+        expiry=goal.expiry,
+        origin=goal.origin,
+    )
+
+
+@dataclass(frozen=True)
+class _ObservationAdmissionToken:
+    admission_id: str
+    source_id: str
+    source_generation: int
+    goals_registry_revision: int
+    goal_object_tokens: tuple[tuple[str, object], ...]
+    adapter_token: object
+    parent_source_trace_id: str
+    observation_trace_id: str
+
+
+@dataclass(frozen=True)
+class _ObservationCandidate:
+    token: _ObservationAdmissionToken
+    dispatch: Any
+    frame: Any
+    goals: tuple[Goal, ...]
+    source_t: float
+    ingest_observed_ts: float
+
+
+@dataclass(frozen=True)
+class _ObservationSnapshot:
+    label: str
+    box: Box
+    confidence: float
+    attrs: _FrozenMapping
+
+    @classmethod
+    def capture(cls, observation: Observation) -> "_ObservationSnapshot":
+        if type(observation) is not Observation or type(observation.box) is not Box:
+            raise ValueError("detector returned a malformed Observation")
+        attrs = _freeze_provider_value(observation.attrs)
+        if type(attrs) is not _FrozenMapping:
+            raise ValueError("Observation attrs must be a mapping")
+        return cls(
+            label=str(observation.label),
+            box=Box(
+                float(observation.box.x),
+                float(observation.box.y),
+                float(observation.box.w),
+                float(observation.box.h),
+            ),
+            confidence=float(observation.confidence),
+            attrs=attrs,
+        )
+
+    def to_observation(self) -> Observation:
+        return Observation(
+            label=self.label,
+            box=self.box,
+            confidence=self.confidence,
+            attrs=_thaw_provider_value(self.attrs),
+        )
+
+
+@dataclass(frozen=True)
+class _ObservationCompletion:
+    candidate: _ObservationCandidate
+    observations: tuple[_ObservationSnapshot, ...]
+    failure: _ProviderFailure | None
+    started_ts: float
+    completed_ts: float
+
+
+@dataclass(frozen=True)
+class _ObservationReduction:
+    admission_id: str
+    stale_reason: str | None
+    failure: _ProviderFailure | None
+    focus: Any = None
+    candidate: _ObservationCandidate | None = None
+
+
+@dataclass(frozen=True)
+class _ProviderCallCompletion:
+    """One frozen provider result with no live-core references."""
+
+    verdict: _VerdictSnapshot
+    failure: _ProviderFailure | None
+    usage: tuple[tuple[str, Any], ...]
+    judge_latency_s: float
+    judge_started_ts: float
+    judge_completed_ts: float
+    provider_spent: bool = True
+
+
+@dataclass(frozen=True)
+class _WatchJudgmentResult:
+    call: _ProviderCallCompletion
+
+
+@dataclass(frozen=True)
+class _ProcessJudgmentResult:
+    """A provider verdict whose only semantic output is a process-log delta."""
+
+    call: _ProviderCallCompletion
+
+
+@dataclass(frozen=True)
+class _TransitionJudgmentResult:
+    """The ordered before/after reads for one atomic transition tick."""
+
+    before: _ProviderCallCompletion
+    after: _ProviderCallCompletion | None
+
+
+@dataclass(frozen=True)
+class _JudgmentCompletion:
+    """Provider-only result; cognition changes only during owner reduction.
+
+    A transition's two provider reads share this one completion object, and
+    therefore receive one owner-ready completion ordinal when the scheduler
+    publishes it.  The scheduler assigns ``completion_ordinal``; direct/manual
+    dispatch leaves it ``None``.
+    """
+
+    job: _JudgmentJob
+    result: _WatchJudgmentResult | _ProcessJudgmentResult | _TransitionJudgmentResult
+    completion_ordinal: int | None = None
+
+    @property
+    def calls(self) -> tuple[_ProviderCallCompletion, ...]:
+        if type(self.result) is _TransitionJudgmentResult:
+            return (
+                (self.result.before,)
+                if self.result.after is None
+                else (self.result.before, self.result.after)
+            )
+        return (self.result.call,)
+
+    @property
+    def verdict(self) -> _VerdictSnapshot:
+        if type(self.result) is _TransitionJudgmentResult:
+            raise AttributeError("paired transition completion has no single verdict")
+        return self.result.call.verdict
+
+    @property
+    def failure(self) -> _ProviderFailure | None:
+        return next((call.failure for call in self.calls if call.failure is not None), None)
+
+    @property
+    def usage(self) -> tuple[tuple[str, Any], ...]:
+        if len(self.calls) == 1:
+            return self.calls[0].usage
+        combined: dict[str, Any] = {}
+        for call in self.calls:
+            for key, value in call.usage:
+                prior = combined.get(key)
+                combined[key] = (
+                    prior + value
+                    if isinstance(prior, (int, float))
+                    and isinstance(value, (int, float))
+                    else value
+                )
+        return tuple(combined.items())
+
+    @property
+    def judge_latency_s(self) -> float:
+        return sum(call.judge_latency_s for call in self.calls)
+
+    @property
+    def judge_started_ts(self) -> float:
+        return self.calls[0].judge_started_ts
+
+    @property
+    def judge_completed_ts(self) -> float:
+        return self.calls[-1].judge_completed_ts
+
+
+_FUSED_ADMISSION_LEDGER_MAX = 1024
 
 
 # -- The resolved WatchProfile.plan_mode -> the concern's PerceptionSpec -----------------------
@@ -1795,6 +2299,1407 @@ class Percept:
             return None
         return log.get(episode_id)
 
+    def prepare_observation_candidate(
+        self,
+        frame: Any,
+        source: str,
+        *,
+        t: float,
+        expected_goals_revision: int,
+        expected_source_generation: int,
+        goal_ids: "tuple[str, ...] | None" = None,
+    ) -> "_ObservationCandidate | None":
+        """Owner-only admission for one state-free entity-detection request."""
+        import copy
+
+        if (
+            type(source) is not str
+            or not source
+            or not isinstance(t, (int, float))
+            or isinstance(t, bool)
+            or not math.isfinite(float(t))
+        ):
+            raise ValueError("observation admission requires a source and finite event time")
+        if (
+            self.goals.revision != expected_goals_revision
+            or self.source_continuity_generation(source)
+            != expected_source_generation
+        ):
+            return None
+        selected = frozenset(goal_ids) if goal_ids is not None else None
+        goals = tuple(
+            goal
+            for goal in self.goals.active()
+            if goal.source == source
+            and (selected is None or goal.id in selected)
+            and (
+                program_of(goal).perception.modality == "vision"
+                or (
+                    program_of(goal).perception.modality == "fused"
+                    and self._watch_runtime_for(goal) is None
+                )
+            )
+            and goal_behavior_route(goal)
+            in (
+                BehaviorRoute.FRAME_WATCH,
+                BehaviorRoute.FRAME_TRANSITION,
+                BehaviorRoute.FRAME_PROCESS,
+            )
+        )
+        if not goals:
+            return None
+        # Finish every fallible copy/projection before publishing an admission
+        # counter or token.
+        frozen_frame = copy.deepcopy(frame)
+        projected_goals = tuple(_goal_provider_projection(goal) for goal in goals)
+        observed_at = self.clock()
+        counter = getattr(self, "_observation_admission_counter", 0) + 1
+        self._observation_admission_counter = counter
+        parent_trace_id = f"{source}@{float(t)}"
+        admission_id = (
+            f"observation:{source}:{expected_goals_revision}:"
+            f"{expected_source_generation}:{counter}"
+        )
+        token = _ObservationAdmissionToken(
+            admission_id=admission_id,
+            source_id=source,
+            source_generation=expected_source_generation,
+            goals_registry_revision=expected_goals_revision,
+            goal_object_tokens=tuple((goal.id, goal) for goal in goals),
+            adapter_token=self.vision,
+            parent_source_trace_id=parent_trace_id,
+            observation_trace_id=f"{parent_trace_id}:observation:{counter}",
+        )
+        return _ObservationCandidate(
+            token=token,
+            dispatch=self.vision.detect,
+            frame=frozen_frame,
+            goals=projected_goals,
+            source_t=float(t),
+            ingest_observed_ts=observed_at,
+        )
+
+    async def dispatch_observation_candidate(
+        self,
+        candidate: "_ObservationCandidate",
+    ) -> "_ObservationCompletion":
+        """Provider-only detection; no graph/window/cognition state is read or mutated."""
+        import copy
+
+        if type(candidate) is not _ObservationCandidate:
+            raise ValueError("observation dispatch requires an exact admitted candidate")
+        started = self.clock()
+        failure = None
+        snapshots = ()
+        try:
+            observations = await candidate.dispatch(
+                # The launched candidate is owner evidence (Window now, graph on
+                # reduction).  A detector receives a detached copy so retained
+                # provider aliases can never rewrite either owner structure.
+                copy.deepcopy(candidate.frame),
+                list(candidate.goals),
+            )
+            if not isinstance(observations, (list, tuple)):
+                raise ValueError("detector returned a malformed observation collection")
+            snapshots = tuple(
+                _ObservationSnapshot.capture(observation)
+                for observation in observations
+            )
+        except Exception as exc:  # noqa: BLE001 - provider failure becomes typed owner input
+            failure = _ProviderFailure(
+                kind="observation_provider_failure",
+                exception_type=type(exc).__name__,
+                safe_message="observation provider unavailable",
+            )
+        return _ObservationCompletion(
+            candidate=candidate,
+            observations=snapshots,
+            failure=failure,
+            started_ts=started,
+            completed_ts=self.clock(),
+        )
+
+    def launch_observation_candidate(
+        self,
+        candidate: "_ObservationCandidate",
+        *,
+        runtime_trace: bool = False,
+    ) -> bool:
+        """Owner-only lane-accept commit: push one launched frame exactly once."""
+        if type(candidate) is not _ObservationCandidate:
+            raise ValueError("observation launch requires an exact admitted candidate")
+        token = candidate.token
+        if (
+            self.goals.revision != token.goals_registry_revision
+            or self.source_continuity_generation(token.source_id)
+            != token.source_generation
+            or self.vision is not token.adapter_token
+        ):
+            return False
+        for goal_id, goal_token in token.goal_object_tokens:
+            if self.goals.get(goal_id) is not goal_token:
+                return False
+        launched = getattr(self, "_observation_launched", None)
+        if launched is None:
+            launched = {}
+            self._observation_launched = launched
+        if token.source_id in launched:
+            return False
+        self._window(token.source_id).push(candidate.source_t, candidate.frame)
+        launched[token.source_id] = token.admission_id
+        if runtime_trace and self.on_trace is not None:
+            queue = getattr(self, "_judgment_trace_queue", None)
+            if queue is None:
+                queue = []
+                self._judgment_trace_queue = queue
+            queue.append(
+                (
+                    token.parent_source_trace_id,
+                    candidate.source_t,
+                    "source.frame",
+                    {},
+                )
+            )
+        return True
+
+    def reduce_observation_completion(
+        self,
+        completion: "_ObservationCompletion",
+    ) -> "_ObservationReduction":
+        """Owner-only synchronous validation and graph/window commit."""
+        if type(completion) is not _ObservationCompletion:
+            raise ValueError("observation reducer requires an exact completion")
+        candidate = completion.candidate
+        token = candidate.token
+        launched = getattr(self, "_observation_launched", {})
+        launched_here = launched.get(token.source_id) == token.admission_id
+        stale_reason = None
+        if not launched_here:
+            stale_reason = "not_launched"
+        elif self.goals.revision != token.goals_registry_revision:
+            stale_reason = "goal_revision"
+        elif self.source_continuity_generation(token.source_id) != token.source_generation:
+            stale_reason = "source_generation"
+        elif self.vision is not token.adapter_token:
+            stale_reason = "adapter_binding"
+        else:
+            for goal_id, goal_token in token.goal_object_tokens:
+                if self.goals.get(goal_id) is not goal_token:
+                    stale_reason = "goal_object"
+                    break
+        if launched_here:
+            launched.pop(token.source_id, None)
+        if stale_reason is not None or completion.failure is not None:
+            return _ObservationReduction(
+                admission_id=token.admission_id,
+                stale_reason=stale_reason,
+                failure=completion.failure,
+                candidate=candidate,
+            )
+        observations = [
+            snapshot.to_observation() for snapshot in completion.observations
+        ]
+        self.graph.ingest(
+            observations,
+            candidate.frame,
+            token.source_id,
+            t=candidate.source_t,
+        )
+        return _ObservationReduction(
+            admission_id=token.admission_id,
+            stale_reason=None,
+            failure=None,
+            focus=self.graph.in_focus(),
+            candidate=candidate,
+        )
+
+    def prepare_frame_judgment(
+        self,
+        reduction: "_ObservationReduction",
+        *,
+        goal_id: str,
+    ) -> "_JudgmentJob | None":
+        """Owner-only admission for one ordinary FRAME_WATCH provider call.
+
+        This is the split-phase equivalent of the simple watch branch in
+        :meth:`perceive_judged`. Transition/process and local cache/direct
+        completions join this same carrier in the following slices.
+        """
+        import copy
+        from types import MappingProxyType
+
+        if type(reduction) is not _ObservationReduction:
+            raise ValueError("frame judgment requires an exact observation reduction")
+        candidate = reduction.candidate
+        if (
+            reduction.stale_reason is not None
+            or reduction.failure is not None
+            or type(candidate) is not _ObservationCandidate
+        ):
+            return None
+        token_by_id = dict(candidate.token.goal_object_tokens)
+        goal = self.goals.get(goal_id)
+        modality = (
+            program_of(goal).perception.modality
+            if goal is not None
+            else None
+        )
+        legacy_fused = (
+            goal is not None
+            and modality == "fused"
+            and self._watch_runtime_for(goal) is None
+        )
+        if (
+            goal is None
+            or token_by_id.get(goal_id) is not goal
+            or self.goals.revision
+            != candidate.token.goals_registry_revision
+            or self.source_continuity_generation(candidate.token.source_id)
+            != candidate.token.source_generation
+            or (modality != "vision" and not legacy_fused)
+            or goal_behavior_route(goal) is not BehaviorRoute.FRAME_WATCH
+        ):
+            return None
+        ctx = self.executor.ctx(goal.id)
+        spec, strip = self._resolve_strip(
+            goal,
+            candidate.token.source_id,
+            perception_level=ctx.perception_level,
+        )
+        focus = reduction.focus
+        roi = self._resolve_roi(goal, focus, spec)
+        corrections = focus.asserted() if focus else {}
+        adapter, bound = self._select_judge_adapter(goal)
+        audio = self._audio_clip(candidate.token.source_id, spec)
+        context: dict[str, Any] = {}
+        process_qa = bool(goal.state.get("process_qa"))
+        if process_qa:
+            context.update(
+                {
+                    "process_qa": True,
+                    "running_answer": ctx.running_answer,
+                }
+            )
+        extractor_facts = None
+        extractor_ctx: dict[str, Any] | None = None
+        if self.extractor is not None:
+            enrichment = self.extractor.extract(
+                goal.condition, candidate.frame, roi
+            )
+            extractor_facts = _freeze_provider_value(dict(enrichment.facts))
+            if type(extractor_facts) is not _FrozenMapping:
+                raise ValueError("extractor facts must be a mapping")
+            if not enrichment.is_empty:
+                extractor_ctx = {
+                    EXTRACTOR_CONTEXT_KEY: enrichment.to_dict()
+                }
+                context.update(extractor_ctx)
+        direct_result = None
+        if self.direct_judge is not None:
+            direct_result = self.direct_judge.route(
+                goal.condition,
+                candidate.frame,
+                roi,
+                facts=(extractor_ctx or {})
+                .get(EXTRACTOR_CONTEXT_KEY, {})
+                .get("facts", {}),
+                stakes=goal.state.get("stakes", "medium"),
+            )
+            if (
+                direct_result.outcome == "uncertain"
+                and direct_result.facts
+            ):
+                prior = dict(context.get(EXTRACTOR_CONTEXT_KEY) or {})
+                prior["facts"] = {
+                    **prior.get("facts", {}),
+                    **direct_result.facts,
+                }
+                context[EXTRACTOR_CONTEXT_KEY] = prior
+        if bound is not None and bound.static_context is not None:
+            context[JUDGE_STATIC_CONTEXT_KEY] = bound.static_context.decoded_text
+        if self._resolved_identity_policy(goal) == "claim_slot":
+            context["claim_mode"] = True
+        base_key = (
+            goal.id,
+            watch_reducer_entity_id(goal, focus.id if focus else None),
+        )
+        cache_key = None
+        cache_store = False
+        cached_verdict = None
+        cache_audit = False
+        local_verdict = None
+        direct_hit = bool(
+            direct_result is not None
+            and direct_result.outcome == "confident"
+        )
+        if direct_hit:
+            local_verdict = _VerdictSnapshot.capture(direct_result.verdict)
+        elif not strip and not context and audio is None:
+            cache_key = CacheKey(
+                goal_id=goal.id,
+                frame=candidate.frame,
+                roi=roi,
+                entity_id=base_key[1],
+                condition=goal.condition,
+            )
+            hit = self.cache.resolve(cache_key)
+            if hit.status == "HIT" and hit.verdict is not None:
+                cached_verdict = _VerdictSnapshot.capture(hit.verdict)
+                cache_audit = bool(
+                    self.audit is not None and self.audit(cache_key)
+                )
+                if not cache_audit:
+                    local_verdict = cached_verdict
+            else:
+                cache_store = True
+        parent_trace = candidate.token.parent_source_trace_id
+        projection_counter = getattr(
+            self, "_judgment_projection_counter", 0
+        ) + 1
+        self._judgment_projection_counter = projection_counter
+        admission_id = (
+            f"judgment:{goal.id}:"
+            f"{candidate.token.goals_registry_revision}:p{projection_counter}"
+        )
+        runtime = self._watch_runtime_for(goal)
+        token = _JudgmentAdmissionToken(
+            admission_id=admission_id,
+            goal_id=goal.id,
+            modality=str(modality),
+            route=BehaviorRoute.FRAME_WATCH.value,
+            goal_object_token=goal,
+            watch_application=self._watch_runtime_keys.get(goal.id),
+            watch_revision=candidate.token.goals_registry_revision,
+            goals_registry_revision=candidate.token.goals_registry_revision,
+            watch_runtime_token=runtime[0] if runtime is not None else None,
+            judge_binding_token=bound if bound is not None else adapter,
+            source_id=candidate.token.source_id,
+            source_generation=candidate.token.source_generation,
+            fused_generation=None,
+            evidence_seq=0,
+            parent_source_trace_id=parent_trace,
+            judgment_trace_id=parent_trace,
+        )
+        return _JudgmentJob(
+            token=token,
+            modality=str(modality),
+            evidence=candidate,
+            provider=_ProviderRequest(
+                dispatch=adapter.judge,
+                condition=str(goal.condition),
+                frame=copy.deepcopy(candidate.frame),
+                frames=tuple(copy.deepcopy(strip or ())),
+                audio=copy.deepcopy(audio),
+                roi=copy.deepcopy(roi),
+                exemplar=copy.deepcopy(goal.state.get("exemplar")),
+                corrections=tuple(
+                    (str(key), str(value)) for key, value in corrections.items()
+                ),
+                context=MappingProxyType(
+                    {key: _readonly_provider_value(value) for key, value in context.items()}
+                ),
+                include_frames=bool(strip),
+                include_audio=audio is not None,
+                include_context=bool(context),
+            ),
+            reducer=_ReducerInputs(
+                source_t=candidate.source_t,
+                ingest_observed_ts=candidate.ingest_observed_ts,
+                admitted_ts=0.0,
+                reducer_entity_id=base_key[1],
+                freshness=self._freshness(focus, candidate.source_t, goal.id),
+                focus_token=focus,
+                cache_key=cache_key,
+                cache_store=cache_store,
+                route_inputs=_WatchReducerInputs(
+                    process_qa=process_qa,
+                    cached_verdict=cached_verdict,
+                    cache_audit=cache_audit,
+                    extractor_facts=extractor_facts,
+                    direct_hit=direct_hit,
+                ),
+            ),
+            adapter=adapter,
+            local_verdict=local_verdict,
+            trace_temporal=spec.temporal,
+            trace_roi=roi is not None,
+            trace_provenance=tuple(_judge_binding_trace(bound).items()),
+        )
+
+    def _prepare_routed_frame_goal(
+        self,
+        reduction: "_ObservationReduction",
+        *,
+        goal_id: str,
+        route: BehaviorRoute,
+    ) -> tuple[_ObservationCandidate, Goal] | None:
+        """Validate an observation reduction before route-specific admission."""
+        if type(reduction) is not _ObservationReduction:
+            raise ValueError("frame judgment requires an exact observation reduction")
+        candidate = reduction.candidate
+        if (
+            reduction.stale_reason is not None
+            or reduction.failure is not None
+            or type(candidate) is not _ObservationCandidate
+        ):
+            return None
+        token_by_id = dict(candidate.token.goal_object_tokens)
+        goal = self.goals.get(goal_id)
+        if (
+            goal is None
+            or token_by_id.get(goal_id) is not goal
+            or self.goals.revision != candidate.token.goals_registry_revision
+            or self.source_continuity_generation(candidate.token.source_id)
+            != candidate.token.source_generation
+            or program_of(goal).perception.modality != "vision"
+            or goal_behavior_route(goal) is not route
+        ):
+            return None
+        return candidate, goal
+
+    def _publish_routed_judgment(
+        self,
+        *,
+        goal: Goal,
+        candidate: "_ObservationCandidate",
+        route: BehaviorRoute,
+        adapter: Any,
+        bound: Any,
+        reducer_entity_id: str | None,
+        provider: "_ProviderRequest | _TransitionProviderRequest",
+        route_inputs: Any,
+        freshness: float,
+        focus_token: Any = None,
+    ) -> "_JudgmentJob":
+        """Publish one fully projected owner admission after all fallible work."""
+        runtime = self._watch_runtime_for(goal)
+        parent_trace = candidate.token.parent_source_trace_id
+        projection_counter = getattr(
+            self, "_judgment_projection_counter", 0
+        ) + 1
+        self._judgment_projection_counter = projection_counter
+        admission_id = (
+            f"judgment:{goal.id}:"
+            f"{candidate.token.goals_registry_revision}:p{projection_counter}"
+        )
+        token = _JudgmentAdmissionToken(
+            admission_id=admission_id,
+            goal_id=goal.id,
+            modality="vision",
+            route=route.value,
+            goal_object_token=goal,
+            watch_application=self._watch_runtime_keys.get(goal.id),
+            watch_revision=candidate.token.goals_registry_revision,
+            goals_registry_revision=candidate.token.goals_registry_revision,
+            watch_runtime_token=runtime[0] if runtime is not None else None,
+            judge_binding_token=bound if bound is not None else adapter,
+            source_id=candidate.token.source_id,
+            source_generation=candidate.token.source_generation,
+            fused_generation=None,
+            evidence_seq=0,
+            parent_source_trace_id=parent_trace,
+            judgment_trace_id=parent_trace,
+        )
+        return _JudgmentJob(
+            token=token,
+            modality="vision",
+            evidence=candidate,
+            provider=provider,
+            reducer=_ReducerInputs(
+                source_t=candidate.source_t,
+                ingest_observed_ts=candidate.ingest_observed_ts,
+                admitted_ts=0.0,
+                reducer_entity_id=reducer_entity_id,
+                freshness=freshness,
+                focus_token=focus_token,
+                route_inputs=route_inputs,
+            ),
+            adapter=adapter,
+            trace_provenance=tuple(_judge_binding_trace(bound).items()),
+        )
+
+    def prepare_transition_judgment(
+        self,
+        reduction: "_ObservationReduction",
+        *,
+        goal_id: str,
+    ) -> "_JudgmentJob | None":
+        """Owner-only admission for one atomic before/after transition tick."""
+        import copy
+        from types import MappingProxyType
+
+        prepared = self._prepare_routed_frame_goal(
+            reduction,
+            goal_id=goal_id,
+            route=BehaviorRoute.FRAME_TRANSITION,
+        )
+        if prepared is None:
+            return None
+        candidate, goal = prepared
+        focus = reduction.focus
+        declared = identity_policy_of(goal)
+        latch_key, latch_key_source = transition_latch_key(
+            declared, focus.id if focus else None
+        )
+        # Exact legacy behavior: a per-entity transition with no subject does
+        # not admit provider work or touch the latch.
+        if declared in PER_ENTITY_IDENTITY_POLICIES and focus is None:
+            return None
+        from_cond = str(goal.state["from"])
+        to_cond = str(goal.state["to"])
+        adapter, bound = self._select_judge_adapter(goal)
+        roi: Box | None = focus.box if focus else None
+        corrections = focus.asserted() if focus else {}
+        _, strip = self._resolve_strip(goal, candidate.token.source_id)
+        judge_context: dict[str, Any] | None = None
+        enriched = False
+        extractor_facts = None
+        if self.extractor is not None:
+            enrichment = self.extractor.extract(goal.condition, candidate.frame, roi)
+            if not enrichment.is_empty:
+                judge_context = {EXTRACTOR_CONTEXT_KEY: enrichment.to_dict()}
+                enriched = True
+                extractor_facts = _freeze_provider_value(
+                    dict(enrichment.facts)
+                )
+                if type(extractor_facts) is not _FrozenMapping:
+                    raise ValueError("extractor facts must be a mapping")
+        if bound is not None and bound.static_context is not None:
+            if judge_context is not None and JUDGE_STATIC_CONTEXT_KEY in judge_context:
+                raise ReservedContextKeyError(
+                    f"goal {goal.id!r} judge context already carries the reserved key "
+                    f"{JUDGE_STATIC_CONTEXT_KEY!r}; a bound static context cannot be injected over it"
+                )
+            judge_context = dict(judge_context) if judge_context else {}
+            judge_context[JUDGE_STATIC_CONTEXT_KEY] = bound.static_context.decoded_text
+        frozen_frame = copy.deepcopy(candidate.frame)
+        frozen_strip = tuple(copy.deepcopy(strip or ()))
+        frozen_roi = copy.deepcopy(roi)
+        frozen_exemplar = copy.deepcopy(goal.state.get("exemplar"))
+        frozen_corrections = tuple(
+            (str(key), str(value)) for key, value in corrections.items()
+        )
+        frozen_context = MappingProxyType(
+            {
+                key: _readonly_provider_value(value)
+                for key, value in (judge_context or {}).items()
+            }
+        )
+        request_common = dict(
+            dispatch=adapter.judge,
+            frame=frozen_frame,
+            frames=frozen_strip,
+            audio=None,
+            roi=frozen_roi,
+            exemplar=frozen_exemplar,
+            corrections=frozen_corrections,
+            context=frozen_context,
+            include_frames=bool(strip),
+            include_context=judge_context is not None,
+            include_exemplar=False,
+        )
+        route_inputs = _TransitionReducerInputs(
+            identity_policy=declared,
+            latch_key=latch_key,
+            latch_key_source=latch_key_source,
+            focus_entity_id=focus.id if focus else None,
+            strip_len=len(strip) if strip else 0,
+            enriched=enriched,
+            extractor_facts=extractor_facts,
+        )
+        return self._publish_routed_judgment(
+            goal=goal,
+            candidate=candidate,
+            route=BehaviorRoute.FRAME_TRANSITION,
+            adapter=adapter,
+            bound=bound,
+            reducer_entity_id=latch_key,
+            provider=_TransitionProviderRequest(
+                before=_ProviderRequest(condition=from_cond, **request_common),
+                after=_ProviderRequest(condition=to_cond, **request_common),
+            ),
+            route_inputs=route_inputs,
+            freshness=1.0,
+            focus_token=focus,
+        )
+
+    def prepare_process_judgment(
+        self,
+        reduction: "_ObservationReduction",
+        *,
+        goal_id: str,
+    ) -> "_JudgmentJob | None":
+        """Owner-only admission for one typed process-log observation."""
+        import copy
+        from types import MappingProxyType
+
+        prepared = self._prepare_routed_frame_goal(
+            reduction,
+            goal_id=goal_id,
+            route=BehaviorRoute.FRAME_PROCESS,
+        )
+        if prepared is None:
+            return None
+        candidate, goal = prepared
+        adapter, bound = self._select_judge_adapter(goal)
+        ctx = self.executor.ctx(goal.id)
+        _, strip = self._resolve_strip(
+            goal,
+            candidate.token.source_id,
+            perception_level=ctx.perception_level,
+        )
+        context: dict[str, Any] = {"observe_step": True}
+        if bound is not None and bound.static_context is not None:
+            context[JUDGE_STATIC_CONTEXT_KEY] = bound.static_context.decoded_text
+        process_key = (goal.id,)
+        return self._publish_routed_judgment(
+            goal=goal,
+            candidate=candidate,
+            route=BehaviorRoute.FRAME_PROCESS,
+            adapter=adapter,
+            bound=bound,
+            reducer_entity_id=None,
+            provider=_ProviderRequest(
+                dispatch=adapter.judge,
+                condition=str(goal.condition),
+                frame=copy.deepcopy(candidate.frame),
+                frames=tuple(copy.deepcopy(strip or ())),
+                audio=None,
+                roi=None,
+                exemplar=copy.deepcopy(goal.state.get("exemplar")),
+                corrections=(),
+                context=MappingProxyType(
+                    {
+                        key: _readonly_provider_value(value)
+                        for key, value in context.items()
+                    }
+                ),
+                # _judge's process mode historically forwards these keys even
+                # when the strip/audio values are empty.
+                include_frames=True,
+                include_audio=True,
+                include_context=True,
+            ),
+            route_inputs=_ProcessReducerInputs(process_key=process_key),
+            freshness=1.0,
+        )
+
+    def prepare_judgment(
+        self,
+        reduction: "_ObservationReduction",
+        *,
+        goal_id: str,
+    ) -> "_JudgmentJob | None":
+        """One owner preparation facade for every frame-governed Watch route."""
+        goal = self.goals.get(goal_id)
+        if goal is None:
+            return None
+        route = goal_behavior_route(goal)
+        if route is BehaviorRoute.FRAME_TRANSITION:
+            return self.prepare_transition_judgment(reduction, goal_id=goal_id)
+        if route is BehaviorRoute.FRAME_PROCESS:
+            return self.prepare_process_judgment(reduction, goal_id=goal_id)
+        if route is BehaviorRoute.FRAME_WATCH:
+            return self.prepare_frame_judgment(reduction, goal_id=goal_id)
+        return None
+
+    @staticmethod
+    def _judgment_base_key(job: "_JudgmentJob") -> Hashable:
+        route_inputs = job.reducer.route_inputs
+        if type(route_inputs) is _ProcessReducerInputs:
+            return route_inputs.process_key
+        return (job.token.goal_id, job.reducer.reducer_entity_id)
+
+    def _prepared_judgment_reason(self, job: "_JudgmentJob") -> str | None:
+        """Read-only lifecycle validation before a bounded lane accepts a job."""
+        if type(job) is not _JudgmentJob:
+            return "job_type"
+        token = job.token
+        if (
+            token.evidence_seq != 0
+            or not token.admission_id
+            or not token.judgment_trace_id
+        ):
+            return "already_launched"
+        goal = self.goals.get(token.goal_id)
+        runtime = self._watch_runtime_for(token.goal_id)
+        bound = self._judge_bindings.get(token.goal_id)
+        if (
+            goal is None
+            or goal is not token.goal_object_token
+            or self.goals.revision != token.goals_registry_revision
+            or program_of(goal).perception.modality != token.modality
+            or goal_behavior_route(goal).value != token.route
+        ):
+            return "goal_revision"
+        if (runtime[0] if runtime is not None else None) is not token.watch_runtime_token:
+            return "runtime_binding"
+        if self._watch_runtime_keys.get(token.goal_id) != token.watch_application:
+            return "watch_application"
+        if token.watch_revision != token.goals_registry_revision:
+            return "watch_revision"
+        if (bound if bound is not None else self.vision) is not token.judge_binding_token:
+            return "judge_binding"
+        if (
+            self.source_continuity_generation(token.source_id)
+            != token.source_generation
+        ):
+            return "source_generation"
+        return None
+
+    def launch_judgments(
+        self,
+        jobs: "tuple[_JudgmentJob, ...]",
+        *,
+        runtime_trace: bool = False,
+    ) -> "tuple[_JudgmentJob, ...]":
+        """Atomically publish a prepared batch after a bounded lane accepts it.
+
+        Preparation is projection only.  Evidence sequences and latest-admitted
+        coordinates become visible together in this synchronous owner segment;
+        a rejected scheduler offer therefore cannot stale accepted work.
+        """
+        prepared = tuple(jobs)
+        if not prepared:
+            return ()
+        reasons = tuple(self._prepared_judgment_reason(job) for job in prepared)
+        if any(reason is not None for reason in reasons):
+            raise ValueError(
+                "judgment batch is not launchable: "
+                + ",".join(reason or "ok" for reason in reasons)
+            )
+        # Validate the whole batch before the first sequence/latest mutation.
+        launched: list[_JudgmentJob] = []
+        for job in prepared:
+            base_key = self._judgment_base_key(job)
+            evidence_seq = self._admit_evidence(base_key)
+            token = replace(
+                job.token,
+                evidence_seq=evidence_seq,
+            )
+            launched_job = replace(
+                job,
+                token=token,
+                reducer=replace(job.reducer, admitted_ts=self.clock()),
+            )
+            latest = getattr(self, "_judgment_latest_admission", None)
+            if latest is None:
+                latest = {}
+                self._judgment_latest_admission = latest
+            latest[base_key] = token.admission_id
+            admission_keys = getattr(self, "_judgment_admission_keys", None)
+            if admission_keys is None:
+                admission_keys = {}
+                self._judgment_admission_keys = admission_keys
+            admission_keys[token.admission_id] = base_key
+            while len(admission_keys) > _FUSED_ADMISSION_LEDGER_MAX:
+                admission_keys.pop(next(iter(admission_keys)), None)
+            if (
+                runtime_trace
+                and token.route == BehaviorRoute.FRAME_WATCH.value
+            ):
+                self._queue_judgment_trace(
+                    launched_job,
+                    "judge.started",
+                    goal_id=token.goal_id,
+                    temporal=job.trace_temporal,
+                    roi=job.trace_roi,
+                    **dict(job.trace_provenance),
+                )
+            launched.append(launched_job)
+        return tuple(launched)
+
+    def launch_judgment(self, job: "_JudgmentJob") -> "_JudgmentJob":
+        """Publish exactly one prepared judgment after lane acceptance."""
+        if type(job) is not _JudgmentJob:
+            raise ValueError("judgment launch requires an exact prepared job")
+        if job.token.evidence_seq > 0 and job.token.admission_id:
+            return job
+        return self.launch_judgments((job,))[0]
+
+    def validate_judgment_token(
+        self,
+        token: "_JudgmentAdmissionToken",
+        *,
+        live_fused_generation: int | None = None,
+    ) -> str | None:
+        """Read-only typed lifecycle validation for every judgment carrier."""
+        if type(token) is not _JudgmentAdmissionToken:
+            return "token_type"
+        goal = self.goals.get(token.goal_id)
+        runtime = self._watch_runtime_for(token.goal_id)
+        bound = self._judge_bindings.get(token.goal_id)
+        if goal is None or goal is not token.goal_object_token:
+            return "goal_object_token"
+        if self.goals.revision != token.goals_registry_revision:
+            return "goals_registry_revision"
+        if program_of(goal).perception.modality != token.modality:
+            return "modality"
+        if goal_behavior_route(goal).value != token.route:
+            return "route"
+        if self._watch_runtime_keys.get(token.goal_id) != token.watch_application:
+            return "watch_application"
+        if token.watch_revision != token.goals_registry_revision:
+            return "watch_revision"
+        if (runtime[0] if runtime is not None else None) is not token.watch_runtime_token:
+            return "watch_runtime_token"
+        if (bound if bound is not None else self.vision) is not token.judge_binding_token:
+            return "judge_binding_token"
+        if (
+            self.source_continuity_generation(token.source_id)
+            != token.source_generation
+        ):
+            return "source_generation"
+        if (
+            token.fused_generation is not None
+            and live_fused_generation is not None
+            and token.fused_generation != live_fused_generation
+        ):
+            return "fused_generation"
+        admission_keys = getattr(self, "_judgment_admission_keys", {})
+        base_key = admission_keys.get(token.admission_id)
+        latest = getattr(self, "_judgment_latest_admission", {})
+        if (
+            base_key is None
+            or latest.get(base_key) != token.admission_id
+            or self._sequencer is None
+            or self._sequencer.latest_admitted(base_key) != token.evidence_seq
+        ):
+            return "evidence_seq"
+        reduced = getattr(self, "_judgment_reduced_admissions", {})
+        if reduced.get(base_key) == token.admission_id:
+            return "duplicate_completion"
+        return None
+
+    def _judgment_stale_reason(self, job: "_JudgmentJob") -> str | None:
+        """Compatibility-named route check; includes exact watch_application identity."""
+        token = job.token
+        reason = self.validate_judgment_token(token)
+        return "superseded_admission" if reason == "evidence_seq" else reason
+
+    def _mark_judgment_reduced(self, job: "_JudgmentJob") -> None:
+        reduced = getattr(self, "_judgment_reduced_admissions", None)
+        if reduced is None:
+            reduced = {}
+            self._judgment_reduced_admissions = reduced
+        reduced[self._judgment_base_key(job)] = job.token.admission_id
+
+    def _queue_judgment_trace(
+        self,
+        job: "_JudgmentJob",
+        stage: str,
+        **data: Any,
+    ) -> None:
+        """Materialize a trace row without invoking an async/user callback."""
+        if self.on_trace is None:
+            return
+        queue = getattr(self, "_judgment_trace_queue", None)
+        if queue is None:
+            queue = []
+            self._judgment_trace_queue = queue
+        queue.append(
+            (
+                job.token.judgment_trace_id,
+                job.source_t,
+                stage,
+                data,
+            )
+        )
+        if len(queue) > 1024:
+            del queue[: len(queue) - 1024]
+
+    def drain_judgment_trace_rows(
+        self,
+    ) -> tuple[tuple[str, float, str, dict[str, Any]], ...]:
+        """Owner-only transfer of already-materialized shared-pipeline traces."""
+        queue = getattr(self, "_judgment_trace_queue", None)
+        if not queue:
+            return ()
+        rows = tuple(queue)
+        queue.clear()
+        return rows
+
+    def _record_completed_provider_calls(
+        self,
+        completion: "_JudgmentCompletion",
+    ) -> bool:
+        """Apply provider accounting once, including for stale semantic results.
+
+        A completion proves the provider call was launched and spent. Semantic
+        token invalidation may make its verdict inert, but cannot erase that
+        cost. Runtime-owned completions use a monotonic completion ordinal with
+        an exact high-water/gap ledger. Direct/manual completions without that
+        runtime coordinate retain a bounded admission-id compatibility ledger.
+        """
+        completion_ordinal = completion.completion_ordinal
+        if completion_ordinal is not None:
+            if not self._accept_provider_completion_ordinal(completion_ordinal):
+                return False
+        else:
+            accounted = getattr(
+                self, "_judgment_accounted_admissions", None
+            )
+            if accounted is None:
+                accounted = {}
+                self._judgment_accounted_admissions = accounted
+            admission_id = completion.job.token.admission_id
+            if admission_id in accounted:
+                return False
+            accounted[admission_id] = True
+            while len(accounted) > _PROVIDER_ACCOUNTING_FALLBACK_MAX:
+                accounted.pop(next(iter(accounted)), None)
+        token = completion.job.token
+        for call in completion.calls:
+            self.funnel.judged(
+                concern=token.goal_id,
+                camera=token.source_id,
+            )
+            if not call.provider_spent:
+                continue
+            # Legacy _timed_judge records latency/usage only when the adapter
+            # returned; a raised/malformed call has no successful receipt.
+            if (
+                call.failure is None
+                or call.failure.kind == "malformed_response"
+            ):
+                self.funnel.record_judge(
+                    latency_s=call.judge_latency_s,
+                    **dict(call.usage),
+                )
+                if call.usage:
+                    self._queue_judgment_trace(
+                        completion.job,
+                        "judge.usage",
+                        model=self._judge_model(completion.job.adapter),
+                        **dict(call.usage),
+                        **dict(completion.job.trace_provenance),
+                    )
+        return True
+
+    def _accept_provider_completion_ordinal(self, ordinal: int) -> bool:
+        """Accept one global provider receipt coordinate exactly once.
+
+        ``high_water`` records the largest observed ordinal. Missing lower
+        ordinals are retained as compact disjoint intervals, so reverse
+        completion and a late gap fill remain valid while replay of either an
+        old receipt or the filled gap remains inert forever. Interval storage
+        avoids allocating ``O(ordinal)`` memory for a large coordinate jump.
+        """
+        if type(ordinal) is not int or ordinal < 1:
+            return False
+        high_water = int(
+            getattr(self, "_provider_completion_high_water", 0)
+        )
+        gaps = list(
+            getattr(self, "_provider_completion_gap_ranges", ())
+        )
+        if ordinal > high_water:
+            if ordinal > high_water + 1:
+                gaps.append((high_water + 1, ordinal - 1))
+            self._provider_completion_high_water = ordinal
+            self._provider_completion_gap_ranges = tuple(gaps)
+            return True
+        for index, (start, end) in enumerate(gaps):
+            if ordinal < start:
+                return False
+            if ordinal > end:
+                continue
+            replacement = []
+            if start < ordinal:
+                replacement.append((start, ordinal - 1))
+            if ordinal < end:
+                replacement.append((ordinal + 1, end))
+            gaps[index : index + 1] = replacement
+            self._provider_completion_gap_ranges = tuple(gaps)
+            return True
+        return False
+
+    def _reduce_transition_completion(
+        self,
+        completion: "_JudgmentCompletion",
+    ) -> list[FireEvent]:
+        job = completion.job
+        token = job.token
+        result = completion.result
+        route_inputs = job.reducer.route_inputs
+        if (
+            type(result) is not _TransitionJudgmentResult
+            or type(route_inputs) is not _TransitionReducerInputs
+            or type(job.provider) is not _TransitionProviderRequest
+        ):
+            raise ValueError("transition reducer requires an exact paired result")
+        if self._judgment_stale_reason(job) is not None:
+            self._record_completed_provider_calls(completion)
+            return []
+        goal = self.goals.get(token.goal_id)
+        assert goal is not None  # exact token validation above
+        self._mark_judgment_reduced(job)
+        if route_inputs.extractor_facts is not None:
+            self._queue_judgment_trace(
+                job,
+                "extractor.enriched",
+                goal_id=goal.id,
+                facts=_thaw_provider_value(route_inputs.extractor_facts),
+            )
+        self._record_completed_provider_calls(completion)
+        base_key = self._judgment_base_key(job)
+        if completion.failure is not None or result.after is None:
+            failure = completion.failure
+            assert failure is not None
+            self._degrade_tick(
+                base_key,
+                failure.safe_message,
+                goal_id=goal.id,
+                label=" (transition)",
+                action="applying nothing this tick",
+            )
+            self._queue_judgment_trace(
+                job,
+                STAGE_TRANSITION_DECISION,
+                goal_id=goal.id,
+                entity_id=route_inputs.latch_key,
+                from_truth=None,
+                to_truth=None,
+                armed=None,
+                fired_latch=None,
+                outcome="judge_degraded",
+                strip_len=route_inputs.strip_len,
+                enriched=route_inputs.enriched,
+                identity_policy=route_inputs.identity_policy,
+                latch_key=route_inputs.latch_key,
+                latch_key_source=route_inputs.latch_key_source,
+                focus_entity_id=route_inputs.focus_entity_id,
+                from_confidence=None,
+                to_confidence=None,
+                from_evidence=None,
+                to_evidence=None,
+            )
+            return []
+        before = result.before.verdict.to_verdict()
+        after = result.after.verdict.to_verdict()
+        self._note_judge_ok(base_key)
+        timing = JudgmentTimingBuilder(clock=self.clock)
+        timing.mark_ingest_observed(at=job.ingest_observed_ts)
+        timing.mark_admitted(at=job.admitted_ts)
+        timing.mark_judge_started(at=result.before.judge_started_ts)
+        timing.mark_judge_completed(at=result.after.judge_completed_ts)
+        timing.set_source_media_ts(job.source_t)
+        tick = self.executor.transition_decide(
+            goal,
+            before,
+            after,
+            focus_id=route_inputs.latch_key,
+            timing=timing,
+            evidence_seq=token.evidence_seq,
+        )
+        self._queue_judgment_trace(
+            job,
+            STAGE_TRANSITION_DECISION,
+            goal_id=goal.id,
+            entity_id=route_inputs.latch_key,
+            from_truth=tick.from_truth,
+            to_truth=tick.to_truth,
+            armed=tick.armed,
+            fired_latch=tick.fired_latch,
+            outcome=tick.outcome,
+            strip_len=route_inputs.strip_len,
+            enriched=route_inputs.enriched,
+            identity_policy=route_inputs.identity_policy,
+            latch_key=route_inputs.latch_key,
+            latch_key_source=route_inputs.latch_key_source,
+            focus_entity_id=route_inputs.focus_entity_id,
+            from_confidence=before.confidence,
+            to_confidence=after.confidence,
+            from_evidence=before.evidence,
+            to_evidence=after.evidence,
+        )
+        fired = tick.fired
+        if fired is None:
+            return []
+        goal.state["count"] = goal.state.get("count", 0) + 1
+        self.metrics.incr("transition.fire")
+        if fired.action == FIRE:
+            self.funnel.fired(concern=goal.id, camera=token.source_id)
+        event = FireEvent(
+            fired.goal_id,
+            fired.action,
+            fired.text,
+            fired.entity_id,
+            fired.verdict,
+            judgment=fired.judgment,
+            provenance=fired.provenance,
+            modality=fired.modality,
+        )
+        if event.judgment is not None:
+            self._queue_judgment_trace(
+                job,
+                STAGE_JUDGMENT_EVENT,
+                goal_id=goal.id,
+                action=event.judgment.action,
+                dispatch_seq=event.judgment.evidence_seq,
+                entity_id=route_inputs.latch_key,
+                judgment_event_id=judgment_event_id(
+                    goal.id,
+                    route_inputs.latch_key,
+                    event.judgment.evidence_seq,
+                ),
+                evidence_origin=event.judgment.evidence_origin or "transition",
+            )
+        # Freeze the one audit record in the same synchronous owner segment.
+        # Trace rows are data only here; no async/user callback has run.
+        self._log_fires([event], job.source_t)
+        return [event]
+
+    def _reduce_process_completion(
+        self,
+        completion: "_JudgmentCompletion",
+    ) -> list[FireEvent]:
+        job = completion.job
+        result = completion.result
+        route_inputs = job.reducer.route_inputs
+        if (
+            type(result) is not _ProcessJudgmentResult
+            or type(route_inputs) is not _ProcessReducerInputs
+            or type(job.provider) is not _ProviderRequest
+        ):
+            raise ValueError("process reducer requires an exact log-only result")
+        if self._judgment_stale_reason(job) is not None:
+            self._record_completed_provider_calls(completion)
+            return []
+        goal = self.goals.get(job.token.goal_id)
+        assert goal is not None
+        self._mark_judgment_reduced(job)
+        self._record_completed_provider_calls(completion)
+        if result.call.failure is not None:
+            self._degrade_tick(
+                route_inputs.process_key,
+                result.call.failure.safe_message,
+                goal_id=goal.id,
+                label=" (observe_step)",
+                action="logging nothing this tick",
+            )
+            return []
+        self._note_judge_ok(route_inputs.process_key)
+        verdict = result.call.verdict.to_verdict()
+        step = (getattr(verdict, "evidence", "") or "").strip()
+        if step and step != "not enough evidence":
+            ctx = self.executor.ctx(goal.id)
+            ctx.process_log.append(step)
+            ctx.last_step_at = job.source_t
+        return []
+
+    def reduce_judgment_completion(
+        self,
+        completion: "_JudgmentCompletion",
+    ) -> list[FireEvent]:
+        """Owner-only validation and cognition commit for every non-fused frame route."""
+        if type(completion) is not _JudgmentCompletion:
+            raise ValueError("judgment reducer requires an exact provider completion")
+        job = completion.job
+        token = job.token
+        from .fused_sync import _FusedEvidenceBundle
+
+        if type(job.bundle) is _FusedEvidenceBundle:
+            raise ValueError("fused completion requires its live generation")
+        if type(completion.result) is _TransitionJudgmentResult:
+            return self._reduce_transition_completion(completion)
+        if type(completion.result) is _ProcessJudgmentResult:
+            return self._reduce_process_completion(completion)
+        if type(completion.result) is not _WatchJudgmentResult:
+            raise ValueError("judgment reducer requires a typed result variant")
+        goal = self.goals.get(token.goal_id)
+        if self._judgment_stale_reason(job) is not None:
+            self._record_completed_provider_calls(completion)
+            return []
+        assert goal is not None
+        base_key = self._judgment_base_key(job)
+        self._mark_judgment_reduced(job)
+        self._record_completed_provider_calls(completion)
+        route_inputs = job.reducer.route_inputs
+        if type(route_inputs) is not _WatchReducerInputs:
+            raise ValueError("watch reducer requires exact route inputs")
+        if route_inputs.extractor_facts is not None:
+            self._queue_judgment_trace(
+                job,
+                "extractor.enriched",
+                goal_id=goal.id,
+                facts=_thaw_provider_value(route_inputs.extractor_facts),
+            )
+        if route_inputs.direct_hit:
+            self.metrics.incr("direct_judge.hit")
+        verdict = completion.verdict.to_verdict()
+        if route_inputs.cached_verdict is not None:
+            cached = route_inputs.cached_verdict.to_verdict()
+            if route_inputs.cache_audit:
+                self.metrics.incr("cache.audit")
+                if completion.failure is not None:
+                    self._degrade_tick(
+                        base_key,
+                        completion.failure.safe_message,
+                        goal_id=goal.id,
+                        label=" (cache audit)",
+                        action=(
+                            "discarding prior dwell support and serving "
+                            "the cached read"
+                        ),
+                    )
+                    verdict = cached
+                elif verdict.satisfied != cached.satisfied:
+                    self.metrics.incr("cache.false_serve")
+                    if job.reducer.cache_key is not None:
+                        self.cache.store(
+                            job.reducer.cache_key,
+                            verdict,
+                            verdict.confidence,
+                        )
+                else:
+                    verdict = cached
+            else:
+                self.metrics.incr("cache.hit")
+                verdict = cached
+        elif completion.failure is not None:
+            self.funnel.refused(concern=goal.id, camera=token.source_id)
+            self._degrade_tick(
+                base_key,
+                completion.failure.safe_message,
+                goal_id=goal.id,
+                label="",
+                action="degrading this tick to ASK/SILENT",
+            )
+            self._queue_judgment_trace(
+                job,
+                "judge.degraded",
+                goal_id=goal.id,
+                cause=repr(RuntimeError(completion.failure.safe_message)),
+            )
+            self._queue_judgment_trace(
+                job,
+                "gate.classified",
+                goal_id=goal.id,
+                truth="unknown",
+                action="ask",
+                entity_id=job.reducer.reducer_entity_id,
+                degraded=True,
+            )
+            return []
+        elif job.reducer.cache_store and job.reducer.cache_key is not None:
+            self.cache.store(
+                job.reducer.cache_key,
+                verdict,
+                verdict.confidence,
+            )
+        self._note_judge_ok(base_key)
+        timing = JudgmentTimingBuilder(clock=self.clock)
+        timing.mark_ingest_observed(at=job.ingest_observed_ts)
+        timing.mark_admitted(at=job.admitted_ts)
+        timing.mark_judge_started(at=completion.judge_started_ts)
+        timing.mark_judge_completed(at=completion.judge_completed_ts)
+        timing.set_source_media_ts(job.source_t)
+        freshness = job.reducer.freshness
+        truth = classify(
+            verdict,
+            freshness,
+            self.gate.threshold,
+            self.gate.fresh_min,
+        )
+        ctx = self.executor.ctx(goal.id)
+        if truth == "unknown":
+            self.funnel.refused(concern=goal.id, camera=token.source_id)
+        else:
+            self.last_supported[goal.id] = job.source_t
+            ctx.perception_level = 0
+        if truth == "yes":
+            self.last_satisfied[goal.id] = job.source_t
+        resolved: FireEvent | None = None
+        if route_inputs.process_qa and verdict.running_answer:
+            ctx.running_answer = verdict.running_answer
+            ctx.process_log.append(verdict.running_answer)
+            if len(ctx.process_log) > 256:
+                del ctx.process_log[: len(ctx.process_log) - 256]
+            ctx.last_step_at = job.source_t
+            resolved = self._resolve_process_qa(
+                goal,
+                ctx,
+                verdict.confidence,
+            )
+        doc_fold = self._document_episode_fold(goal, verdict, job.source_t)
+        claim_fold = self._claim_episode_fold(goal, verdict, job.source_t)
+        gate_outcomes: list[GateOutcome] = []
+        fire = self._fire_concern(
+            goal,
+            verdict,
+            base_key,
+            freshness=freshness,
+            t=job.source_t,
+            timing=timing,
+            evidence_seq=token.evidence_seq,
+            fold=doc_fold if doc_fold is not None else claim_fold,
+            outcome_sink=gate_outcomes.append,
+        )
+        events = [] if fire is None else [fire]
+        if fire is not None:
+            if fire.action == FIRE:
+                self.funnel.fired(concern=goal.id, camera=token.source_id)
+            else:
+                self.funnel.refused(concern=goal.id, camera=token.source_id)
+        if resolved is not None:
+            self.funnel.fired(concern=goal.id, camera=token.source_id)
+            events.append(resolved)
+        action = (
+            "fire"
+            if resolved is not None
+            or (fire is not None and fire.action == FIRE)
+            else fire.action
+            if fire is not None
+            else "silent"
+        )
+        gate_reason = gate_outcomes[-1].reason if gate_outcomes else None
+        self._queue_judgment_trace(
+            job,
+            "judge.finished",
+            goal_id=goal.id,
+            satisfied=verdict.satisfied,
+            confidence=verdict.confidence,
+            **dict(job.trace_provenance),
+        )
+        self._queue_judgment_trace(
+            job,
+            "gate.classified",
+            goal_id=goal.id,
+            truth=truth,
+            action=action,
+            reason=_trace_reason(truth, action, gate_reason),
+            gate_reason=gate_reason,
+            entity_id=job.reducer.reducer_entity_id,
+            satisfied=verdict.satisfied,
+            confidence=verdict.confidence,
+            freshness=freshness,
+            hold_s=program_of(goal).hold_s,
+        )
+        if fire is not None and fire.judgment is not None:
+            self._queue_judgment_trace(
+                job,
+                STAGE_JUDGMENT_EVENT,
+                goal_id=goal.id,
+                action=fire.judgment.action,
+                dispatch_seq=fire.judgment.evidence_seq,
+                entity_id=job.reducer.reducer_entity_id,
+                judgment_event_id=judgment_event_id(
+                    goal.id,
+                    job.reducer.reducer_entity_id,
+                    fire.judgment.evidence_seq,
+                ),
+                evidence_origin=fire.judgment.evidence_origin or "judged",
+            )
+        self._queue_judgment_trace(
+            job,
+            STAGE_SHADOW_FOLD,
+            goal_id=goal.id,
+            **self._shadow_observe(verdict).to_advisory(),
+        )
+        self._log_fires(events, job.source_t)
+        return events
+
     async def perceive_judged(
         self, frame: Any, source: str = "camera", *, t: float | None = None,
         expected_goals_revision: int | None = None,
@@ -2164,11 +4069,6 @@ class Percept:
             if _stale():
                 break  # source/goal generation moved while the judge was in flight: commit nothing
             self._note_judge_ok(base_key)  # a well-formed verdict resets this key's degrade streak
-            if tracing:
-                await self._emit_trace(trace_id, now, "judge.finished", goal_id=goal.id,
-                                       satisfied=getattr(verdict, "satisfied", None),
-                                       confidence=getattr(verdict, "confidence", None),
-                                       **judge_prov)
             resolved: FireEvent | None = None
             if process_ctx is not None and getattr(verdict, "running_answer", ""):
                 ctx.running_answer = verdict.running_answer  # accumulate the model's rewritten summary
@@ -2217,6 +4117,19 @@ class Percept:
                 self.funnel.fired(concern=goal.id, camera=source)
                 events.append(resolved)
             if tracing:
+                # Provider completion through cognition/action-log commit above is one
+                # synchronous owner segment.  Trace callbacks run only after that commit,
+                # so a tracer cannot change the Watch revision between stale validation
+                # and gate/executor mutation.
+                await self._emit_trace(
+                    trace_id,
+                    now,
+                    "judge.finished",
+                    goal_id=goal.id,
+                    satisfied=getattr(verdict, "satisfied", None),
+                    confidence=getattr(verdict, "confidence", None),
+                    **judge_prov,
+                )
                 # AFTER both fire paths: label a FIRE whenever an incident was actually emitted this tick
                 # — either the gate fired OR a resolved process-QA answer crossed the bar (which fires even
                 # when the gate abstained/ASK'd on this same tick). Only ask/silent when nothing fired.
@@ -2335,6 +4248,716 @@ class Percept:
             expected_source_generation=expected_source_generation,
             goal_ids=goal_ids,
             _audio_units_by_goal=frozen,
+        )
+
+    def prepare_fused_judgment(
+        self,
+        bundle: Any,
+        *,
+        goal_id: str,
+        source: str,
+        source_t: float,
+        goals_revision: int,
+        source_generation: int,
+        fused_generation: int,
+    ) -> "_JudgmentJob | None":
+        """Owner-only synchronous admission: freeze every provider input and token."""
+        import copy
+        from types import MappingProxyType
+
+        from .audio_input import audio_frame_from_units
+        from .fused_sync import _FusedEvidenceBundle
+
+        if type(bundle) is not _FusedEvidenceBundle:
+            raise ValueError("fused admission requires an exact frozen bundle")
+        goal = self.goals.get(goal_id)
+        if goal is None or program_of(goal).perception.modality != "fused":
+            return None
+        if self.goals.revision != goals_revision:
+            return None
+        binding = self._audio_judge_binding_for(goal)
+        runtime = self._watch_runtime_for(goal)
+        if (
+            runtime is None
+            or bundle.watch_application != binding.application_key
+            or bundle.watch_revision != goals_revision
+            or bundle.video_units[-1].generation != fused_generation
+        ):
+            raise ValueError("fused bundle application does not match its immutable judge binding")
+        # Complete every fallible projection before reserving sequence/latest
+        # admission state.  Admission publication below is one synchronous,
+        # non-raising owner segment.
+        anchor = bundle.video_units[-1]
+        observed = [
+            unit.observed_end for unit in (*bundle.video_units, *bundle.audio_units)
+        ]
+        audio = (
+            audio_frame_from_units(
+                tuple(unit.payload for unit in bundle.audio_units),
+                capability=binding.capability,
+            )
+            if bundle.complete
+            else None
+        )
+        exemplar = copy.deepcopy(goal.state.get("exemplar"))
+        frozen_source_t = float(source_t)
+        ingest_observed_ts = max(observed) if observed else self.clock()
+        admitted_ts = self.clock()
+        base_key = (goal.id, None)
+        evidence_seq = self._admit_evidence(base_key)
+        bundle = bundle.with_judgment_identity(
+            evidence_seq=evidence_seq,
+            judgment_event_id=judgment_event_id(goal.id, None, evidence_seq),
+        )
+        counter = getattr(self, "_fused_admission_counter", 0) + 1
+        self._fused_admission_counter = counter
+        parent_trace_id = (
+            f"{anchor.source_id}:{anchor.source_epoch}:{anchor.source_sequence}:"
+            f"{anchor.generation}"
+        )
+        admission_id = f"{goal.id}:{goals_revision}:{counter}"
+        token = _JudgmentAdmissionToken(
+            admission_id=admission_id,
+            goal_id=goal.id,
+            modality="fused",
+            route=goal_behavior_route(goal).value,
+            goal_object_token=goal,
+            watch_application=binding.application_key,
+            watch_revision=bundle.watch_revision,
+            goals_registry_revision=goals_revision,
+            watch_runtime_token=runtime[0],
+            judge_binding_token=binding.binding_token,
+            source_id=source,
+            source_generation=source_generation,
+            fused_generation=fused_generation,
+            evidence_seq=evidence_seq,
+            parent_source_trace_id=parent_trace_id,
+            judgment_trace_id=f"{parent_trace_id}:{goal.id}:{evidence_seq}",
+        )
+        latest = getattr(self, "_fused_latest_admission", None)
+        if latest is None:
+            latest = {}
+            self._fused_latest_admission = latest
+        latest[base_key] = admission_id
+        reduced = getattr(self, "_fused_reduced_admissions", None)
+        if reduced is None:
+            reduced = {}
+            self._fused_reduced_admissions = reduced
+        ledger_max = getattr(
+            self, "_fused_admission_ledger_max", _FUSED_ADMISSION_LEDGER_MAX
+        )
+        while len(latest) > ledger_max:
+            evicted_key = next(iter(latest))
+            latest.pop(evicted_key, None)
+            # Admission and reduction identity are one replay firewall.
+            # Evicting both means an old completion fails latest-admission
+            # validation; retaining one side independently is forbidden.
+            reduced.pop(evicted_key, None)
+        return _JudgmentJob(
+            token=token,
+            modality="fused",
+            evidence=bundle,
+            provider=_ProviderRequest(
+                dispatch=binding.dispatch,
+                condition=str(goal.condition),
+                frame=anchor.payload,
+                frames=tuple(unit.payload for unit in bundle.video_units[:-1]),
+                audio=audio,
+                roi=None,
+                exemplar=exemplar,
+                corrections=(),
+                context=MappingProxyType({"_percept_frames_are_earlier": True}),
+                include_frames=True,
+                include_audio=True,
+                include_context=True,
+            ),
+            reducer=_ReducerInputs(
+                source_t=frozen_source_t,
+                ingest_observed_ts=ingest_observed_ts,
+                admitted_ts=admitted_ts,
+                reducer_entity_id=None,
+                freshness=1.0,
+            ),
+            adapter=binding.adapter,
+            trace_temporal=program_of(goal).perception.temporal,
+            trace_roi=False,
+        )
+
+    async def _dispatch_provider_request(
+        self,
+        request: "_ProviderRequest",
+    ) -> "_ProviderCallCompletion":
+        """Execute one frozen request without reading or mutating cognition."""
+        if type(request) is not _ProviderRequest:
+            raise ValueError("provider dispatch requires an exact frozen request")
+        failure = None
+        usage: dict[str, Any] = {}
+        judge_latency_s = 0.0
+        judge_started_ts = self.clock()
+        provider_started = self.clock()
+        try:
+            kwargs: dict[str, Any] = {
+                "roi": _provider_input_copy(request.roi),
+                "corrections": dict(request.corrections) or None,
+            }
+            if request.include_exemplar:
+                kwargs["exemplar"] = _provider_input_copy(request.exemplar)
+            if request.include_frames:
+                kwargs["frames"] = (
+                    list(_provider_input_copy(request.frames)) or None
+                )
+            if request.include_audio:
+                kwargs["audio"] = _provider_input_copy(request.audio)
+            if request.include_context:
+                kwargs["context"] = _provider_input_copy(request.context)
+            provider_verdict = await request.dispatch(
+                request.condition,
+                _provider_input_copy(request.frame),
+                **kwargs,
+            )
+        except Exception as exc:  # noqa: BLE001 - one provider completion fails closed
+            failure = _ProviderFailure(
+                kind="provider_failure",
+                exception_type=type(exc).__name__,
+                safe_message="judgment provider unavailable",
+            )
+            verdict = _VerdictSnapshot.capture(
+                Verdict(
+                    satisfied=False,
+                    confidence=0.0,
+                    evidence="judgment provider unavailable",
+                )
+            )
+        else:
+            # _timed_judge historically records latency/usage after any
+            # provider RETURN and only then does _safe_timed_judge reject a
+            # malformed result. Preserve that factual receipt while keeping
+            # the invalid object out of cognition.
+            usage = judge_usage(provider_verdict)
+            if not _is_valid_verdict(provider_verdict):
+                failure = _ProviderFailure(
+                    kind="malformed_response",
+                    exception_type=type(provider_verdict).__name__,
+                    safe_message="judgment provider returned malformed data",
+                )
+                verdict = _VerdictSnapshot.capture(
+                    Verdict(
+                        satisfied=False,
+                        confidence=0.0,
+                        evidence="judgment provider returned malformed data",
+                    )
+                )
+            else:
+                verdict = _VerdictSnapshot.capture(provider_verdict)
+        judge_latency_s = self.clock() - provider_started
+        return _ProviderCallCompletion(
+            verdict=verdict,
+            failure=failure,
+            usage=tuple(usage.items()),
+            judge_latency_s=judge_latency_s,
+            judge_started_ts=judge_started_ts,
+            judge_completed_ts=self.clock(),
+        )
+
+    async def dispatch_judgment(
+        self,
+        job: "_JudgmentJob",
+    ) -> "_JudgmentCompletion":
+        """Provider-only phase: no live goal, binding, gate, trace, or metrics reads."""
+        if type(job) is not _JudgmentJob:
+            raise ValueError("provider dispatch requires an exact admitted job")
+        job = self.launch_judgment(job)
+        if job.local_verdict is not None:
+            return self.complete_judgment_locally(job)
+        if type(job.provider) is _TransitionProviderRequest:
+            before = await self._dispatch_provider_request(job.provider.before)
+            after = (
+                None
+                if before.failure is not None
+                else await self._dispatch_provider_request(job.provider.after)
+            )
+            result: (
+                _WatchJudgmentResult
+                | _ProcessJudgmentResult
+                | _TransitionJudgmentResult
+            ) = _TransitionJudgmentResult(before=before, after=after)
+        elif type(job.provider) is _ProviderRequest:
+            from .fused_sync import _FusedEvidenceBundle
+
+            if (
+                type(job.bundle) is _FusedEvidenceBundle
+                and not job.bundle.complete
+            ):
+                now = self.clock()
+                call = _ProviderCallCompletion(
+                    verdict=_VerdictSnapshot.capture(
+                        Verdict(
+                            satisfied=False,
+                            confidence=0.0,
+                            evidence="fused coverage uncertainty: "
+                            + ",".join(
+                                reason.value for reason in job.bundle.coverage_reasons
+                            ),
+                        )
+                    ),
+                    failure=None,
+                    usage=(),
+                    judge_latency_s=0.0,
+                    judge_started_ts=now,
+                    judge_completed_ts=now,
+                )
+            else:
+                # ``dispatch`` is a frozen compatibility seam on the job;
+                # honor an explicitly replaced provider callable without
+                # letting the dispatch task touch any reducer state.
+                request = job.provider
+                if job.dispatch is not request.dispatch:
+                    request = replace(request, dispatch=job.dispatch)
+                call = await self._dispatch_provider_request(request)
+            result = (
+                _ProcessJudgmentResult(call)
+                if job.token.route == BehaviorRoute.FRAME_PROCESS.value
+                else _WatchJudgmentResult(call)
+            )
+        else:
+            raise ValueError("provider dispatch requires a typed provider request")
+        return _JudgmentCompletion(
+            job=job,
+            result=result,
+        )
+
+    def complete_judgment_locally(
+        self,
+        job: "_JudgmentJob",
+        verdict: "Verdict | None" = None,
+    ) -> "_JudgmentCompletion":
+        """Enter cache/direct local results into the generic completion protocol."""
+        if type(job) is not _JudgmentJob:
+            raise ValueError("local completion requires an exact judgment job")
+        job = self.launch_judgment(job)
+        snapshot = (
+            _VerdictSnapshot.capture(verdict)
+            if verdict is not None
+            else job.local_verdict
+        )
+        if snapshot is None:
+            raise ValueError("local completion requires a frozen local verdict")
+        now = self.clock()
+        return _JudgmentCompletion(
+            job=job,
+            result=_WatchJudgmentResult(
+                _ProviderCallCompletion(
+                    verdict=snapshot,
+                    failure=None,
+                    usage=(),
+                    judge_latency_s=0.0,
+                    judge_started_ts=now,
+                    judge_completed_ts=now,
+                    provider_spent=False,
+                )
+            ),
+        )
+
+    async def dispatch_fused_judgment(
+        self,
+        job: "_JudgmentJob",
+    ) -> "_JudgmentCompletion":
+        """Compatibility-named fused entrypoint over the generic dispatcher."""
+        if type(job) is not _JudgmentJob or job.modality != "fused":
+            raise ValueError("fused provider dispatch requires an exact admitted job")
+        return await self.dispatch_judgment(job)
+
+    def complete_fused_locally(
+        self,
+        job: "_JudgmentJob",
+    ) -> "_JudgmentCompletion":
+        """Build an uncertain no-provider completion without occupying a lane."""
+        if type(job) is not _JudgmentJob or job.modality != "fused" or job.bundle.complete:
+            raise ValueError("local fused completion requires one uncertain admitted job")
+        now = self.clock()
+        verdict = _VerdictSnapshot.capture(
+            Verdict(
+                satisfied=False,
+                confidence=0.0,
+                evidence="fused coverage uncertainty: "
+                + ",".join(reason.value for reason in job.bundle.coverage_reasons),
+            )
+        )
+        return _JudgmentCompletion(
+            job=job,
+            result=_WatchJudgmentResult(
+                _ProviderCallCompletion(
+                    verdict=verdict,
+                    failure=None,
+                    usage=(),
+                    judge_latency_s=0.0,
+                    judge_started_ts=now,
+                    judge_completed_ts=now,
+                )
+            ),
+        )
+
+    def reduce_fused_completion(
+        self,
+        completion: "_JudgmentCompletion | None",
+        *,
+        live_fused_generation: int,
+    ) -> list[FireEvent]:
+        """Owner-only token validation and synchronous cognition commit."""
+        from .fused_sync import _FusedEvidenceBundle
+
+        if completion is None:
+            return []
+        if type(completion) is not _JudgmentCompletion:
+            raise ValueError("fused reducer requires an exact provider completion")
+        job = completion.job
+        token = job.token
+        goal = self.goals.get(token.goal_id)
+        runtime = self._watch_runtime_for(token.goal_id)
+        binding = self._audio_judge_bindings.get(token.goal_id)
+        base_key = (token.goal_id, None)
+        latest = getattr(self, "_fused_latest_admission", {})
+        reduced = getattr(self, "_fused_reduced_admissions", None)
+        if reduced is None:
+            reduced = {}
+            self._fused_reduced_admissions = reduced
+        stale_reason = None
+        if (
+            goal is None
+            or goal is not token.goal_object_token
+            or token.modality != "fused"
+            or program_of(goal).perception.modality != token.modality
+            or goal_behavior_route(goal).value != token.route
+        ):
+            stale_reason = "goal_revision"
+        elif self.goals.revision != token.goals_registry_revision:
+            stale_reason = "goal_revision"
+        elif runtime is None or runtime[0] is not token.watch_runtime_token:
+            stale_reason = "runtime_binding"
+        elif (
+            binding is None
+            or binding.binding_token is not token.judge_binding_token
+            or self._audio_judge_binding_tokens.get(token.goal_id)
+            is not token.judge_binding_token
+        ):
+            stale_reason = "judge_binding"
+        elif (
+            self.source_continuity_generation(token.source_id)
+            != token.source_generation
+        ):
+            stale_reason = "source_generation"
+        elif live_fused_generation != token.fused_generation:
+            stale_reason = "fused_generation"
+        elif (
+            latest.get(base_key) != token.admission_id
+            or self._sequencer.latest_admitted(base_key) != token.evidence_seq
+        ):
+            stale_reason = "superseded_admission"
+        elif reduced.get(base_key) == token.admission_id:
+            stale_reason = "duplicate_completion"
+        if stale_reason is not None:
+            trace_queue = getattr(self, "_fused_trace_queue", None)
+            if trace_queue is None:
+                trace_queue = []
+                self._fused_trace_queue = trace_queue
+            trace_queue.append(
+                (
+                    token.judgment_trace_id,
+                    job.source_t,
+                    "judgment.dropped",
+                    {
+                        "goal_id": token.goal_id,
+                        "admission_id": token.admission_id,
+                        "evidence_seq": token.evidence_seq,
+                        "reason": stale_reason,
+                        "slot": "completed",
+                    },
+                )
+            )
+            return []
+        bundle = job.bundle
+        if type(bundle) is not _FusedEvidenceBundle:
+            raise ValueError("fused completion lost its exact evidence bundle")
+        if (
+            bundle.watch_application != token.watch_application
+            or bundle.watch_revision != token.watch_revision
+            or bundle.evidence_seq != token.evidence_seq
+            or bundle.judgment_event_id
+            != judgment_event_id(goal.id, None, token.evidence_seq)
+        ):
+            trace_queue = getattr(self, "_fused_trace_queue", None)
+            if trace_queue is None:
+                trace_queue = []
+                self._fused_trace_queue = trace_queue
+            trace_queue.append(
+                (
+                    token.judgment_trace_id,
+                    job.source_t,
+                    "judgment.dropped",
+                    {
+                        "goal_id": token.goal_id,
+                        "admission_id": token.admission_id,
+                        "evidence_seq": token.evidence_seq,
+                        "reason": "evidence_identity",
+                        "slot": "completed",
+                    },
+                )
+            )
+            return []
+        reduced[base_key] = token.admission_id
+        verdict = completion.verdict.to_verdict()
+        timing = JudgmentTimingBuilder(clock=self.clock)
+        timing.mark_ingest_observed(at=job.ingest_observed_ts)
+        timing.mark_admitted(at=job.admitted_ts)
+        timing.mark_judge_started(at=completion.judge_started_ts)
+        timing.mark_judge_completed(at=completion.judge_completed_ts)
+        timing.set_source_media_ts(job.source_t)
+        usage = dict(completion.usage)
+        if bundle.complete:
+            self.funnel.judged(concern=goal.id, camera=token.source_id)
+            self.funnel.record_judge(
+                latency_s=completion.judge_latency_s,
+                **usage,
+            )
+        if completion.failure is not None:
+            self.funnel.refused(concern=goal.id, camera=token.source_id)
+            self._degrade_tick(
+                base_key,
+                completion.failure.safe_message,
+                goal_id=goal.id,
+                label="",
+                action="degrading this fused tick to ASK",
+            )
+            trace_queue = getattr(self, "_fused_trace_queue", None)
+            if trace_queue is None:
+                trace_queue = []
+                self._fused_trace_queue = trace_queue
+            if self.on_trace is not None:
+                trace_queue.extend(
+                    [
+                        (
+                            token.judgment_trace_id,
+                            job.source_t,
+                            "source.fused",
+                            {
+                                "goal_id": goal.id,
+                                "judgment_event_id": bundle.judgment_event_id,
+                                "evidence_seq": bundle.evidence_seq,
+                                "policy_version": bundle.policy_version,
+                                "coverage_reasons": tuple(
+                                    reason.value
+                                    for reason in bundle.coverage_reasons
+                                ),
+                            },
+                        ),
+                        (
+                            token.judgment_trace_id,
+                            job.source_t,
+                            "judge.degraded",
+                            {
+                                "goal_id": goal.id,
+                                "cause": completion.failure.safe_message,
+                                "failure_code": completion.failure.kind,
+                                "exception_type": completion.failure.exception_type,
+                            },
+                        ),
+                        (
+                            token.judgment_trace_id,
+                            job.source_t,
+                            "gate.classified",
+                            {
+                                "goal_id": goal.id,
+                                "truth": "unknown",
+                                "action": "ask",
+                                "entity_id": None,
+                                "degraded": True,
+                            },
+                        ),
+                    ]
+                )
+            return []
+        if bundle.complete:
+            self._note_judge_ok(base_key)
+        truth = classify(
+            verdict,
+            1.0,
+            self.gate.threshold,
+            self.gate.fresh_min,
+        )
+        if truth != "unknown":
+            self.last_supported[goal.id] = job.source_t
+        if truth == "yes":
+            self.last_satisfied[goal.id] = job.source_t
+        doc_fold = self._document_episode_fold(
+            goal, verdict, job.source_t
+        )
+        claim_fold = self._claim_episode_fold(
+            goal, verdict, job.source_t
+        )
+        gate_outcomes: list[GateOutcome] = []
+        fire = self._fire_concern(
+            goal,
+            verdict,
+            base_key,
+            freshness=1.0,
+            t=job.source_t,
+            timing=timing,
+            evidence_seq=token.evidence_seq,
+            fold=doc_fold if doc_fold is not None else claim_fold,
+            outcome_sink=gate_outcomes.append,
+        )
+        events: list[FireEvent] = []
+        if fire is not None:
+            fire._fused_evidence_bundle = bundle
+            if fire.action == FIRE:
+                self.funnel.fired(concern=goal.id, camera=token.source_id)
+            else:
+                self.funnel.refused(concern=goal.id, camera=token.source_id)
+            events.append(fire)
+        trace_queue = getattr(self, "_fused_trace_queue", None)
+        if trace_queue is None:
+            trace_queue = []
+            self._fused_trace_queue = trace_queue
+        if self.on_trace is not None:
+            action = fire.action if fire is not None else "silent"
+            gate_reason = gate_outcomes[-1].reason if gate_outcomes else None
+            trace_queue.extend(
+                [
+                    (
+                        token.judgment_trace_id,
+                        job.source_t,
+                        "source.fused",
+                        {
+                            "goal_id": goal.id,
+                            "judgment_event_id": bundle.judgment_event_id,
+                            "evidence_seq": bundle.evidence_seq,
+                            "policy_version": bundle.policy_version,
+                            "actual_skew_s": bundle.actual_skew_s,
+                            "video_watermark": bundle.video_watermark,
+                            "audio_watermark": bundle.audio_watermark,
+                            "coverage_reasons": tuple(
+                                reason.value for reason in bundle.coverage_reasons
+                            ),
+                        },
+                    ),
+                    (
+                        token.judgment_trace_id,
+                        job.source_t,
+                        "judge.finished",
+                        {
+                            "goal_id": goal.id,
+                            "satisfied": verdict.satisfied,
+                            "confidence": verdict.confidence,
+                            "fused": True,
+                        },
+                    ),
+                    (
+                        token.judgment_trace_id,
+                        job.source_t,
+                        "gate.classified",
+                        {
+                            "goal_id": goal.id,
+                            "truth": truth,
+                            "action": action,
+                            "reason": _trace_reason(truth, action, gate_reason),
+                            "gate_reason": gate_reason,
+                            "entity_id": None,
+                            "satisfied": verdict.satisfied,
+                            "confidence": verdict.confidence,
+                            "freshness": 1.0,
+                            "hold_s": program_of(goal).hold_s,
+                        },
+                    ),
+                ]
+            )
+            if usage:
+                trace_queue.append(
+                    (
+                        token.judgment_trace_id,
+                        job.source_t,
+                        "judge.usage",
+                        {
+                            "model": self._judge_model(job.adapter),
+                            **usage,
+                        },
+                    )
+                )
+            if fire is not None and fire.judgment is not None:
+                trace_queue.append(
+                    (
+                        token.judgment_trace_id,
+                        job.source_t,
+                        STAGE_JUDGMENT_EVENT,
+                        {
+                            "goal_id": goal.id,
+                            "action": fire.judgment.action,
+                            "dispatch_seq": fire.judgment.evidence_seq,
+                            "entity_id": None,
+                            "judgment_event_id": bundle.judgment_event_id,
+                            "evidence_origin": fire.judgment.evidence_origin or "judged",
+                            "fused_policy_version": bundle.policy_version,
+                            "fused_actual_skew_s": bundle.actual_skew_s,
+                            "fused_video_watermark": bundle.video_watermark,
+                            "fused_audio_watermark": bundle.audio_watermark,
+                            "fused_coverage_reasons": tuple(
+                                reason.value for reason in bundle.coverage_reasons
+                            ),
+                            "fused_judgment_event_id": bundle.judgment_event_id,
+                            "fused_evidence_seq": bundle.evidence_seq,
+                        },
+                    )
+                )
+            trace_queue.append(
+                (
+                    token.judgment_trace_id,
+                    job.source_t,
+                    STAGE_SHADOW_FOLD,
+                    {
+                        "goal_id": goal.id,
+                        **self._shadow_observe(verdict).to_advisory(),
+                    },
+                )
+            )
+            if len(trace_queue) > 1024:
+                del trace_queue[: len(trace_queue) - 1024]
+        self._log_fires(events, job.source_t)
+        return events
+
+    def drain_fused_trace_records(self) -> list[tuple[str, float, str, dict]]:
+        records = getattr(self, "_fused_trace_queue", [])
+        self._fused_trace_queue = []
+        return records
+
+    def record_fused_admission_drop(
+        self,
+        job: "_JudgmentJob",
+        *,
+        reason: str,
+        slot: str = "admitted",
+    ) -> None:
+        if (
+            type(job) is not _JudgmentJob
+            or not reason
+            or slot not in ("admitted", "pending", "completed")
+        ):
+            raise ValueError("fused admission drop requires an exact job and reason")
+        queue = getattr(self, "_fused_trace_queue", None)
+        if queue is None:
+            queue = []
+            self._fused_trace_queue = queue
+        queue.append(
+            (
+                job.token.judgment_trace_id,
+                job.source_t,
+                "judgment.dropped",
+                {
+                    "goal_id": job.token.goal_id,
+                    "admission_id": job.token.admission_id,
+                    "evidence_seq": job.token.evidence_seq,
+                    "reason": reason,
+                    "slot": slot,
+                },
+            )
         )
 
     async def _perceive_transition(
@@ -2491,26 +5114,38 @@ class Percept:
         tick = self.executor.transition_decide(
             goal, from_v, to_v, focus_id=latch_key, timing=timing, evidence_seq=evidence_seq,
         )
-        if tracing:
-            await self._emit_trace(
-                trace_id, now, STAGE_TRANSITION_DECISION, goal_id=goal.id, entity_id=latch_key,
-                from_truth=tick.from_truth, to_truth=tick.to_truth, armed=tick.armed,
-                fired_latch=tick.fired_latch, outcome=tick.outcome,
-                # So a miss is diagnosable as single-frame-vs-strip and with/without extractor facts.
-                strip_len=(len(strip) if strip else 0), enriched=enriched,
-                # Additive fields: entity_id now reports the LATCH key, so focus_entity_id
-                # preserves what in_focus said; identity_policy/latch_key_source make the scoping
-                # decision auditable; the from/to confidence+evidence close the dropped-evidence-on-miss
-                # gap (a miss no longer discards the verdicts that explain it).
-                identity_policy=declared, latch_key=latch_key, latch_key_source=latch_key_source,
-                focus_entity_id=focus.id if focus else None,
-                # from_v/to_v are well-formed Verdicts here — _safe_timed_judge rejected any
-                # non-Verdict as _JudgeDegraded above — so read the fields directly.
-                from_confidence=from_v.confidence, to_confidence=to_v.confidence,
-                from_evidence=from_v.evidence, to_evidence=to_v.evidence,
-            )
+        transition_trace = (
+            {
+                "goal_id": goal.id,
+                "entity_id": latch_key,
+                "from_truth": tick.from_truth,
+                "to_truth": tick.to_truth,
+                "armed": tick.armed,
+                "fired_latch": tick.fired_latch,
+                "outcome": tick.outcome,
+                "strip_len": len(strip) if strip else 0,
+                "enriched": enriched,
+                "identity_policy": declared,
+                "latch_key": latch_key,
+                "latch_key_source": latch_key_source,
+                "focus_entity_id": focus.id if focus else None,
+                "from_confidence": from_v.confidence,
+                "to_confidence": to_v.confidence,
+                "from_evidence": from_v.evidence,
+                "to_evidence": to_v.evidence,
+            }
+            if tracing
+            else None
+        )
         fired = tick.fired
         if fired is None:
+            if transition_trace is not None:
+                await self._emit_trace(
+                    trace_id,
+                    now,
+                    STAGE_TRANSITION_DECISION,
+                    **transition_trace,
+                )
             return None
         goal.state["count"] = goal.state.get("count", 0) + 1
         self.metrics.incr("transition.fire")
@@ -2520,6 +5155,17 @@ class Percept:
             fired.goal_id, fired.action, fired.text, fired.entity_id, fired.verdict,
             judgment=fired.judgment, provenance=fired.provenance, modality=fired.modality,
         )
+        # Materialize the audit action before any decision/event callback.
+        # The frame-level aggregate calls _log_fires again, but that seam is
+        # idempotent on this exact event object.
+        self._log_fires([ev], now)
+        if transition_trace is not None:
+            await self._emit_trace(
+                trace_id,
+                now,
+                STAGE_TRANSITION_DECISION,
+                **transition_trace,
+            )
         # The SAME STAGE_JUDGMENT_EVENT row shape the watch path emits — so the recorder's frame-seq
         # stamping (data["evidence_seq"] = this trace_id's source.frame seq) works unchanged — but with
         # evidence_origin="transition" and the judgment_event_id the delivered Incident will also carry.
@@ -2728,7 +5374,11 @@ class Percept:
         if usage and self.on_trace is not None:
             await self._emit_trace(
                 getattr(self, "_usage_trace_id", None) or f"judge@{t0}",
-                getattr(self, "_usage_source_ts", None) if getattr(self, "_usage_source_ts", None) is not None else t0,
+                (
+                    self._usage_source_ts
+                    if getattr(self, "_usage_source_ts", None) is not None
+                    else t0
+                ),
                 "judge.usage",  # percept.tracing.STAGE_JUDGE_USAGE (string here to keep agent import-light)
                 model=self._judge_model(adapter),
                 **usage,
@@ -3273,8 +5923,10 @@ class Percept:
 
     # -- consent + audit (SDK primitives; the strip UI is project 2) --------
     def _log_fires(self, events: list[FireEvent], t: float) -> None:
-        """Record every fire/ask to the action log (the audit seed and feedback corpus)."""
+        """Record each materialized event once in the action audit log."""
         for ev in events:
+            if getattr(ev, "_action_materialized", False):
+                continue
             self.action_log.record(
                 ActionRecord(
                     kind=ev.action,
@@ -3283,6 +5935,7 @@ class Percept:
                     t=t,
                 )
             )
+            ev._action_materialized = True
 
     def act(
         self, goal_id: str, action: str, detail: dict | None = None, *, t: float | None = None

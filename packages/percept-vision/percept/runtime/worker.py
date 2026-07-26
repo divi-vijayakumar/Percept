@@ -13,8 +13,10 @@ accepted and are normalized at ingress.
 from __future__ import annotations
 
 import asyncio
+import functools
 import inspect
 import math
+import threading
 import time
 import uuid
 from collections import deque
@@ -50,6 +52,54 @@ from percept.runtime.envelope import (
 )
 
 _log = get_logger("percept.runtime.worker")
+
+
+class ConcurrentCoreRunError(RuntimeError):
+    """The same cognition core is already owned by another active runtime."""
+
+
+_ACTIVE_CORE_RUNS_LOCK = threading.Lock()
+_ACTIVE_CORE_RUNS: dict[int, Any] = {}
+
+
+def _acquire_core_run(core: Any) -> tuple[int, Any] | None:
+    """Acquire a process-local, thread-safe lease without requiring a hashable/weakref core."""
+    if core is None:
+        return None
+    identity = id(core)
+    with _ACTIVE_CORE_RUNS_LOCK:
+        active = _ACTIVE_CORE_RUNS.get(identity)
+        if active is core:
+            raise ConcurrentCoreRunError(
+                "percept.run already has an active runtime for this core; "
+                "wait for it to finish before reusing the same core"
+            )
+        # Keeping the active object itself prevents id reuse and retains only active cores.
+        _ACTIVE_CORE_RUNS[identity] = core
+    return identity, core
+
+
+def _release_core_run(lease: tuple[int, Any] | None) -> None:
+    if lease is None:
+        return
+    identity, core = lease
+    with _ACTIVE_CORE_RUNS_LOCK:
+        if _ACTIVE_CORE_RUNS.get(identity) is core:
+            del _ACTIVE_CORE_RUNS[identity]
+
+
+def _exclusive_core_runtime(func):
+    """Guard an async-generator runtime before any wrapped-body work can execute."""
+    @functools.wraps(func)
+    async def leased(core: Any = None, *args: Any, **kwargs: Any):
+        lease = _acquire_core_run(core)
+        try:
+            async for item in func(core, *args, **kwargs):
+                yield item
+        finally:
+            _release_core_run(lease)
+
+    return leased
 
 
 def _accepts_keyword(callable_obj: Any, name: str) -> bool:
@@ -234,7 +284,226 @@ class RuntimeHealthEvent:
     data: dict[str, Any] | None = None
 
 
-class _JudgeScheduler:
+@dataclass(frozen=True)
+class _OwnerCommand:
+    """One immutable item in the runtime cognition owner's total order."""
+
+    ordinal: int
+    kind: str
+    payload: Any
+
+
+class _OwnerCommandQueue:
+    """Bounded synchronous owner queue with explicit overflow semantics.
+
+    Publication authors one global monotonic ``ordinal``. The queue never
+    silently evicts an older command: reaching ``maxsize`` increments the
+    observable ``overflow_count`` and raises :class:`OverflowError` before an
+    ordinal is consumed. The one event-loop owner drains the ordered batch
+    synchronously before any subscriber callback can run.
+    """
+
+    def __init__(self, *, maxsize: int) -> None:
+        if type(maxsize) is not int or maxsize < 1:
+            raise ValueError("owner queue maxsize must be a positive integer")
+        self.maxsize = maxsize
+        self.overflow_count = 0
+        self._next_ordinal = 1
+        self._items: deque[_OwnerCommand] = deque()
+
+    def publish(self, kind: str, payload: Any) -> _OwnerCommand:
+        """Synchronously append one item or fail loudly without mutation."""
+        if type(kind) is not str or not kind:
+            raise ValueError("owner command kind must be non-empty text")
+        if len(self._items) >= self.maxsize:
+            self.overflow_count += 1
+            raise OverflowError("runtime owner command queue overflow")
+        row = _OwnerCommand(
+            ordinal=self._next_ordinal,
+            kind=kind,
+            payload=payload,
+        )
+        self._next_ordinal += 1
+        self._items.append(row)
+        return row
+
+    def drain(self) -> tuple[_OwnerCommand, ...]:
+        """Transfer the current ordered batch to the sole runtime owner."""
+        rows = tuple(self._items)
+        self._items.clear()
+        return rows
+
+
+@dataclass(frozen=True)
+class _MaterializedItem:
+    action: str
+    fire: Any
+    incident: Any = None
+    trace: tuple[str, float, str, dict[str, Any]] | None = None
+
+
+@dataclass(frozen=True)
+class _MaterializedReduction:
+    at: float
+    items: tuple[_MaterializedItem, ...]
+
+
+def _materialize_reduction(
+    fires: Any,
+    *,
+    at: float,
+    gate_source: str,
+    snippet_for_fire: Any,
+    watchplan_id: str | None,
+    label_store: Any,
+    disposition_log: Any,
+    verdict_ref: Any,
+    from_boundary: bool,
+) -> _MaterializedReduction:
+    """Synchronously freeze every output before a subscriber can run."""
+    items = []
+    for fire in fires or ():
+        action = getattr(fire, "action", None)
+        if action == ASK:
+            if disposition_log is not None:
+                _log_disposition(
+                    disposition_log,
+                    incident_id="",
+                    fire=fire,
+                    disposition="ask",
+                    ts=at,
+                )
+            items.append(_MaterializedItem(action=ASK, fire=fire))
+            continue
+        if action != FIRE:
+            continue
+        incident = make_incident(
+            fire,
+            ts=at,
+            snippet=snippet_for_fire(fire),
+            watchplan_id=watchplan_id,
+        )
+        fused_bundle = getattr(fire, "_fused_evidence_bundle", None)
+        if fused_bundle is not None:
+            if (
+                fused_bundle.judgment_event_id
+                != incident.judgment_event_id
+                or fused_bundle.evidence_seq != incident.evidence_seq
+            ):
+                raise RuntimeError(
+                    "fused evidence identity diverged from the delivered judgment"
+                )
+            incident._fused_evidence_bundle = fused_bundle
+        if label_store is not None:
+            incident.bind_labeler(
+                label_store.append,
+                verdict_ref=verdict_ref(getattr(fire, "verdict", None)),
+                goal_id=getattr(fire, "goal_id", None),
+            )
+        if disposition_log is not None:
+            _log_disposition(
+                disposition_log,
+                incident_id=incident.id,
+                fire=fire,
+                disposition="fire",
+                ts=at,
+            )
+        judgment_trace_id = f"{gate_source}@{at}"
+        trace = (
+            judgment_trace_id,
+            at,
+            "incident.created",
+            {
+                "goal_id": incident.concern_id,
+                "incident_id": incident.id,
+                "from_boundary": from_boundary,
+                "entity_id": incident.entity_id,
+                "judgment_event_id": incident.judgment_event_id,
+                "evidence_origin": incident.evidence_origin,
+            },
+        )
+        items.append(
+            _MaterializedItem(
+                action=FIRE,
+                fire=fire,
+                incident=incident,
+                trace=trace,
+            )
+        )
+    return _MaterializedReduction(at=at, items=tuple(items))
+
+
+async def _deliver_materialized(
+    materialized: _MaterializedReduction,
+    *,
+    core: Any,
+    on_health: Any,
+    on_ask: Any,
+    on_incident: Any,
+    sink_errors: str,
+    stats: Any,
+    coverage: Any,
+) -> tuple[Any, ...]:
+    """Deliver already-frozen outputs without authoring cognition state."""
+    delivered = []
+    for item in materialized.items:
+        if item.action == ASK:
+            if on_health is not None:
+                await _call_sink(
+                    on_health,
+                    RuntimeHealthEvent(
+                        "ask",
+                        ts=materialized.at,
+                        data={"goal_id": item.fire.goal_id},
+                    ),
+                )
+            if on_ask is not None:
+                await _call_sink_with_policy(
+                    on_ask,
+                    item.fire,
+                    errors=sink_errors,
+                    stats=stats,
+                    on_health=on_health,
+                    health_kind="ask_sink_error",
+                )
+            continue
+        incident = item.incident
+        assert incident is not None
+        if item.trace is not None:
+            emit_trace = getattr(core, "_emit_trace", None)
+            if getattr(core, "on_trace", None) is not None and callable(
+                emit_trace
+            ):
+                trace_id, trace_t, stage, data = item.trace
+                await emit_trace(trace_id, trace_t, stage, **data)
+        if on_health is not None:
+            await _call_sink(
+                on_health,
+                RuntimeHealthEvent(
+                    "incident",
+                    ts=incident.ts,
+                    data={
+                        "incident_id": incident.id,
+                        "goal_id": incident.concern_id,
+                        "entity_id": incident.entity_id,
+                    },
+                ),
+            )
+        if on_incident is not None:
+            await _call_sink_with_policy(
+                on_incident,
+                incident,
+                errors=sink_errors,
+                stats=stats,
+                on_health=on_health,
+                health_kind="incident_sink_error",
+            )
+        coverage.incidents += 1
+        delivered.append(incident)
+    return tuple(delivered)
+
+
+class _LegacyJudgeScheduler:
     """Off-loop judge dispatch (``run(judge_dispatch="async")``): the capture loop never awaits a
     network judgment.
 
@@ -325,9 +594,9 @@ class _JudgeScheduler:
         self._active: "asyncio.Task | None" = None
         self._active_t: float | None = None  # admission t of the in-flight judgment (rides the result)
         self._active_payload: Any = None
-        # (t, judge_frame, admission_revision, admitted_goal_ids). The ids are frozen at the same
+        # (t, judge_frame, admission_revision, admitted_goal_ids, fused_bundles). The ids are frozen at the same
         # instant as the revision so a queued frame cannot broaden into unrelated Watches later.
-        self._pending: tuple[float, Any, Any, tuple[str, ...] | None] | None = None
+        self._pending: tuple[float, Any, Any, tuple[str, ...] | None, Any] | None = None
         self._results: deque = deque()  # completed (t, [FireEvent]) awaiting drain()
         # ADR-001 §9: TRACED bound-driven drops (superseded pending / revision-dropped pending) — a
         # (kind, data) pair per drop, drained every frame tick by run() alongside drain(), so this list
@@ -346,6 +615,9 @@ class _JudgeScheduler:
         self._perceive_accepts_goal_ids = _accepts_keyword(self._perceive, "goal_ids")
         self._perceive_accepts_source_generation = _accepts_keyword(
             self._perceive, "expected_source_generation"
+        )
+        self._perceive_accepts_fused_bundles = _accepts_keyword(
+            self._perceive, "_fused_bundles_by_goal"
         )
         self._active_filter_goal_ids: tuple[str, ...] | None = None
         self._active_invalidated = False
@@ -375,17 +647,27 @@ class _JudgeScheduler:
     def pending(self) -> int:
         return 0 if self._pending is None else 1
 
+    @property
+    def can_accept(self) -> bool:
+        """Whether one synchronous owner offer can be installed right now."""
+        return self._fatal is None and not self._closing
+
     def submit(
-        self, t: float, judge_frame: Any, goal_ids: tuple[str, ...] | None = None
-    ) -> None:
+        self,
+        t: float,
+        judge_frame: Any,
+        goal_ids: tuple[str, ...] | None = None,
+        *,
+        fused_bundles: Any = None,
+    ) -> bool:
         """Admit a frame for judgment. Never blocks; never launches after a failure or during close."""
         if self._fatal is not None or self._closing:
-            return  # drain() re-raises the failure on the next loop tick; a closing run spends nothing
+            return False  # a rejected offer spends/reserves nothing
         revision = getattr(self._core.goals, "revision", None)  # ADMISSION-time, never launch-time
         if self._active is None:
             self._mc_admit(t)  # launching right away — admitted into the funnel from this instant
-            self._launch(t, judge_frame, revision, goal_ids)
-            return
+            self._launch(t, judge_frame, revision, goal_ids, fused_bundles)
+            return True
         # The scheduler has no timer of its own — every submit() (the frame cadence) is the one
         # chance to notice the CURRENT active judgment has been outstanding too long. Checked before
         # the supersede below so a stalled-AND-overloaded tick reports both, in the order they became
@@ -393,14 +675,41 @@ class _JudgeScheduler:
         self._check_stall(t)
         if self._pending is not None:
             dropped_t = self._pending[0]
+            dropped_job = self._pending[1]
+            dropped_token = getattr(dropped_job, "token", None)
+            drop_data = {
+                "source": self._source,
+                "reason": "superseded_by_newer_admission",
+                "dropped_t": dropped_t,
+                "admitted_t": t,
+            }
+            if dropped_token is not None:
+                drop_data.update(
+                    {
+                        "admission_id": getattr(
+                            dropped_token, "admission_id", None
+                        ),
+                        "evidence_seq": getattr(
+                            dropped_token, "evidence_seq", None
+                        ),
+                        "goal_id": getattr(dropped_token, "goal_id", None),
+                        "slot": "pending",
+                    }
+                )
+                record_drop = getattr(
+                    self._core, "record_fused_admission_drop", None
+                )
+                if callable(record_drop):
+                    record_drop(
+                        dropped_job,
+                        reason="superseded_by_newer_admission",
+                        slot="pending",
+                    )
             if self._stats is not None:
                 self._stats.judge_superseded += 1  # latest wins: the older queued candidate is dropped
             self._trace.append((
                 "judge_superseded",
-                {
-                    "source": self._source, "reason": "superseded_by_newer_admission",
-                    "dropped_t": dropped_t, "admitted_t": t,
-                },
+                drop_data,
             ))
             self._mc_resolve(dropped_t)  # leaves the collector's pending map — it stopped waiting here
             funnel = getattr(self._core, "funnel", None)
@@ -410,12 +719,15 @@ class _JudgeScheduler:
             # the frame rate (sustained overwrite) — distinct from, and louder than, any one supersede.
             self._consec_supersede += 1
             self._check_backpressure(t)
-        self._pending = (t, judge_frame, revision, goal_ids)
+        self._pending = (t, judge_frame, revision, goal_ids, fused_bundles)
         self._mc_admit(t)  # queued behind the active judgment — pending in the funnel from this instant
+        return True
 
     def invalidate_source_continuity(self, reasons: tuple[str, ...]) -> None:
         """Prevent pre-discontinuity judgments from mutating post-discontinuity state."""
         reason = ",".join(reasons) or "source_discontinuity"
+        # A task can complete between ticks; its result is still pre-boundary work and must not
+        # survive in the delivery queue merely because the provider await already returned.
         if self._active is not None and not self._active.done():
             self._active_invalidated = True
             self._active_invalidation_reason = reason
@@ -497,6 +809,7 @@ class _JudgeScheduler:
         frame: Any,
         revision: Any,
         goal_ids: tuple[str, ...] | None,
+        fused_bundles: Any,
     ) -> None:
         if self._stats is not None:
             self._stats.judge_calls += 1  # counted at launch — a superseded candidate spent nothing
@@ -513,6 +826,10 @@ class _JudgeScheduler:
                 kwargs["expected_source_generation"] = generation_for(self._source)
         if goal_ids is not None and self._perceive_accepts_goal_ids:
             kwargs["goal_ids"] = goal_ids
+        if fused_bundles is not None:
+            if not self._perceive_accepts_fused_bundles:
+                raise ValueError("fused dispatch requires a core accepting frozen fused bundles")
+            kwargs["_fused_bundles_by_goal"] = fused_bundles
         self._active_filter_goal_ids = (
             goal_ids
             if goal_ids is not None and not self._perceive_accepts_goal_ids
@@ -528,7 +845,7 @@ class _JudgeScheduler:
             self._mc_resolve(self._pending[0])  # leaving the funnel un-launched, not a real judgment
             self._pending = None
             return
-        t, frame, revision, goal_ids = self._pending
+        t, frame, revision, goal_ids, fused_bundles = self._pending
         self._pending = None
         current = getattr(self._core.goals, "revision", None)
         if revision != current:
@@ -548,7 +865,7 @@ class _JudgeScheduler:
             if funnel is not None:
                 funnel.dropped(reason="goals_revision_changed", camera=self._source)
             return
-        self._launch(t, frame, revision, goal_ids)
+        self._launch(t, frame, revision, goal_ids, fused_bundles)
 
     def _on_done(self, task: "asyncio.Task") -> None:
         # ORDERED checks — cancellation FIRST (close(drain=False) must not become a fatal error),
@@ -690,9 +1007,6 @@ class _JudgeScheduler:
             self._closing = True
             return
         self._closing = True
-        advance = getattr(self._core, "advance_source_continuity", None)
-        if callable(advance):
-            advance(self._source)
         self.invalidate_source_continuity(("runtime_shutdown",))
         if self._pending is not None:
             self._mc_resolve(self._pending[0])  # a live shutdown drops the pending candidate outright
@@ -704,6 +1018,396 @@ class _JudgeScheduler:
             # eventual cleanup; live shutdown itself must remain bounded.
             if task.done():
                 await asyncio.sleep(0)
+
+
+class _ProviderScheduler:
+    """Bounded single-flight transport lane with one latest-pending batch.
+
+    The runtime owner prepares and atomically launches a batch only after this
+    lane accepts it. Provider tasks return frozen completions through ``ready``;
+    they never run a whole-core cognition coroutine or reduce state themselves.
+    """
+
+    def __init__(
+        self,
+        core: Any,
+        source: str,
+        stats: RuntimeStats | None,
+        *,
+        ready: Any = None,
+        stall_after_s: float = 20.0,
+        backpressure_after: int = 3,
+    ) -> None:
+        self._core = core
+        self._source = source
+        self._stats = stats
+        self.ready = ready
+        self._active: asyncio.Task | None = None
+        self._active_t: float | None = None
+        self._pending: tuple[float, tuple[Any, ...], int | None] | None = None
+        self._results: deque = deque()
+        self._trace: list[tuple[str, dict]] = []
+        self._fatal: BaseException | None = None
+        self._closing = False
+        # A core can be driven by more than one finite run over its lifetime.
+        # Seed the transport coordinate from the cognition owner's accepted
+        # high-water so a fresh scheduler cannot replay ordinal 1 after a
+        # prior run already accounted for it.
+        self._completion_ordinal = int(
+            getattr(core, "_provider_completion_high_water", 0)
+        )
+        self._split_protocol = callable(
+            getattr(core, "launch_judgments", None)
+        ) and callable(getattr(core, "dispatch_judgment", None))
+        self._legacy_dispatch = (
+            None
+            if self._split_protocol
+            else getattr(core, "perceive_" + "judged", None)
+        )
+        self._stall_after_s = stall_after_s
+        self._backpressure_after = backpressure_after
+        self._active_launch_wall: float | None = None
+        self._stall_reported = False
+        self._backpressure_reported = False
+        self._consec_supersede = 0
+
+    def _mc_now(self, fallback: float) -> float:
+        clock = getattr(self._core, "clock", None)
+        return clock() if callable(clock) else fallback
+
+    @property
+    def active(self) -> int:
+        return 0 if self._active is None else 1
+
+    @property
+    def pending(self) -> int:
+        return 0 if self._pending is None else 1
+
+    @property
+    def can_accept(self) -> bool:
+        return self._fatal is None and not self._closing
+
+    def submit(
+        self,
+        t: float,
+        jobs: Any,
+        goal_ids: tuple[str, ...] | None = None,
+    ) -> bool:
+        """Accept one prepared batch and publish its reservations atomically."""
+        if not self.can_accept:
+            return False
+        prepared = (
+            tuple(jobs)
+            if self._split_protocol
+            else ("legacy", jobs, goal_ids)
+        )
+        if not prepared:
+            return False
+        if self._active is None:
+            self._launch(t, prepared)
+            return True
+        self._check_stall(t)
+        revision = (
+            prepared[0].token.goals_registry_revision
+            if self._split_protocol
+            else getattr(self._core.goals, "revision", None)
+        )
+        if self._pending is not None:
+            dropped_t, dropped_jobs, _ = self._pending
+            if self._stats is not None:
+                self._stats.judge_superseded += 1
+            self._trace.append(
+                (
+                    "judge_superseded",
+                    {
+                        "source": self._source,
+                        "reason": "superseded_by_newer_admission",
+                        "dropped_t": dropped_t,
+                        "admitted_t": t,
+                        "goal_ids": (
+                            tuple(job.token.goal_id for job in dropped_jobs)
+                            if self._split_protocol
+                            else dropped_jobs[2]
+                        ),
+                        "slot": "pending",
+                    },
+                )
+            )
+            self._consec_supersede += 1
+            self._check_backpressure(t)
+        self._pending = (t, prepared, revision)
+        return True
+
+    def _launch(self, t: float, jobs: tuple[Any, ...]) -> None:
+        launched = (
+            tuple(self._core.launch_judgments(jobs, runtime_trace=True))
+            if self._split_protocol
+            else jobs
+        )
+        if self._stats is not None:
+            self._stats.perceive_dispatches += (
+                len(launched) if self._split_protocol else 1
+            )
+            # RuntimeStats.judge_calls is the historical scheduler-launch
+            # count (one admitted frame batch), not provider subcall spend.
+            self._stats.judge_calls += 1
+        self._active_t = t
+        self._active_launch_wall = self._mc_now(t)
+        self._stall_reported = False
+        self._active = asyncio.create_task(
+            self._dispatch(launched, t=t)
+        )
+        self._active.add_done_callback(self._on_done)
+
+    def _check_stall(self, now_t: float) -> None:
+        if (
+            self._stall_reported
+            or self._active is None
+            or self._active_launch_wall is None
+        ):
+            return
+        elapsed = self._mc_now(now_t) - self._active_launch_wall
+        if elapsed < self._stall_after_s:
+            return
+        self._stall_reported = True
+        self._trace.append(
+            (
+                "judge_scheduler_stalled",
+                {
+                    "source": self._source,
+                    "reason": "active_judgment_exceeded_stall_threshold",
+                    "active_t": self._active_t,
+                    "elapsed_s": elapsed,
+                    "stall_after_s": self._stall_after_s,
+                },
+            )
+        )
+
+    def _check_backpressure(self, now_t: float) -> None:
+        if (
+            self._backpressure_reported
+            or self._consec_supersede < self._backpressure_after
+        ):
+            return
+        self._backpressure_reported = True
+        self._trace.append(
+            (
+                "judge_scheduler_backpressure",
+                {
+                    "source": self._source,
+                    "reason": "sustained_pending_overwrite",
+                    "consecutive_supersessions": self._consec_supersede,
+                    "active_t": self._active_t,
+                    "active_elapsed_s": (
+                        self._mc_now(now_t) - self._active_launch_wall
+                        if self._active_launch_wall is not None
+                        else None
+                    ),
+                },
+            )
+        )
+
+    def _launch_pending(self) -> None:
+        if self._pending is None or self._closing or self._fatal is not None:
+            self._pending = None
+            return
+        t, jobs, revision = self._pending
+        self._pending = None
+        current = getattr(self._core.goals, "revision", None)
+        if revision != current:
+            if self._stats is not None:
+                self._stats.judge_revision_dropped += 1
+            self._trace.append(
+                (
+                    "judge_revision_dropped",
+                    {
+                        "source": self._source,
+                        "reason": "goals_revision_changed",
+                        "dropped_t": t,
+                        "admitted_revision": revision,
+                        "current_revision": current,
+                    },
+                )
+            )
+            return
+        self._launch(t, jobs)
+
+    async def _dispatch(
+        self,
+        jobs: tuple[Any, ...],
+        *,
+        t: float,
+    ) -> tuple[Any, ...] | list[Any]:
+        if not self._split_protocol:
+            if not callable(self._legacy_dispatch):
+                raise AttributeError("core has no scheduler dispatch seam")
+            _, frame, goal_ids = jobs
+            kwargs = {
+                "t": t,
+                "expected_goals_revision": getattr(
+                    self._core.goals, "revision", None
+                ),
+            }
+            if goal_ids is not None and _accepts_keyword(
+                self._legacy_dispatch, "goal_ids"
+            ):
+                kwargs["goal_ids"] = goal_ids
+            return await self._legacy_dispatch(
+                frame,
+                self._source,
+                **kwargs,
+            )
+        completions = []
+        for job in jobs:
+            completions.append(await self._core.dispatch_judgment(job))
+        return tuple(completions)
+
+    def _on_done(self, task: asyncio.Task) -> None:
+        if task.cancelled():
+            self._active = None
+            return
+        failure = task.exception()
+        if failure is not None:
+            self._fatal = failure
+            self._active = None
+            self._pending = None
+            return
+        from dataclasses import replace
+
+        if self._split_protocol:
+            ready = []
+            for completion in task.result():
+                self._completion_ordinal += 1
+                ready.append(
+                    replace(
+                        completion,
+                        completion_ordinal=self._completion_ordinal,
+                    )
+                )
+            row = (self._active_t, tuple(ready))
+        else:
+            row = (self._active_t, task.result())
+        self._results.append(row)
+        callback = self.ready
+        if callback is not None:
+            callback(row)
+        self._active = None
+        recovered = []
+        if self._stall_reported:
+            recovered.append("stalled")
+        if self._backpressure_reported:
+            recovered.append("backpressure")
+        self._stall_reported = False
+        self._backpressure_reported = False
+        if recovered:
+            self._trace.append(
+                (
+                    "judge_scheduler_recovered",
+                    {
+                        "source": self._source,
+                        "recovered_from": recovered,
+                        "resolved_t": self._active_t,
+                    },
+                )
+            )
+        self._active_launch_wall = None
+        self._consec_supersede = 0
+        if not self._split_protocol:
+            self._launch_pending()
+
+    def owner_reduced(self) -> None:
+        """Release the next lane slot only after ready state was owner-reduced."""
+        if self._split_protocol and self._active is None:
+            self._launch_pending()
+
+    def drain(self) -> list[tuple[float, tuple[Any, ...]]]:
+        if self._fatal is not None:
+            raise self._fatal
+        rows = []
+        while self._results:
+            rows.append(self._results.popleft())
+        return rows
+
+    def drain_trace(self) -> list[tuple[str, dict]]:
+        rows = self._trace
+        self._trace = []
+        return rows
+
+    def invalidate_source_continuity(self, reasons: tuple[str, ...]) -> None:
+        """Cancel transport work; the runtime owner advances continuity once."""
+        reason = ",".join(
+            str(getattr(item, "value", item)) for item in reasons
+        ) or "source_discontinuity"
+        if self._pending is not None:
+            self._pending = None
+            if self._stats is not None:
+                self._stats.judge_source_discontinuity_dropped += 1
+                self._stats.judge_source_discontinuity_pending_dropped += 1
+            self._trace.append(
+                (
+                    "judge_source_discontinuity_dropped",
+                    {
+                        "source": self._source,
+                        "reason": reason,
+                        "slot": "pending",
+                    },
+                )
+            )
+        if self._active is not None and not self._active.done():
+            self._active.cancel()
+            if self._stats is not None:
+                self._stats.judge_source_discontinuity_dropped += 1
+                self._stats.judge_source_discontinuity_active_dropped += 1
+            self._trace.append(
+                (
+                    "judge_source_discontinuity_dropped",
+                    {
+                        "source": self._source,
+                        "reason": reason,
+                        "slot": "active",
+                    },
+                )
+            )
+
+    async def flush(self) -> None:
+        while self._fatal is None and (
+            self._active is not None or self._pending is not None
+        ):
+            task = self._active
+            if task is None:
+                if self._split_protocol:
+                    return
+                self._launch_pending()
+                continue
+            if task.done():
+                await asyncio.sleep(0)
+                continue
+            try:
+                await task
+            except asyncio.CancelledError:
+                if not task.cancelled():
+                    raise
+            except BaseException:  # noqa: BLE001
+                pass
+
+    async def close(self, *, drain: bool) -> None:
+        if drain:
+            await self.flush()
+            self._closing = True
+            return
+        self._closing = True
+        self._pending = None
+        task = self._active
+        if task is not None:
+            task.cancel()
+            if task.done():
+                await asyncio.sleep(0)
+
+
+# ``_JudgeScheduler`` remains the historical, direct-dispatch compatibility
+# adapter.  New runtime routes use the provider-only scheduler above and
+# reduce its immutable completions through the one runtime owner.
+_JudgeScheduler = _LegacyJudgeScheduler
 
 
 # Per-path timebase-skew tolerances. The tripwire compares a frame/chunk `t` against the core
@@ -724,6 +1428,7 @@ _AUDIO_SKEW_TOL_S = 120.0  # audio queue worst-case ~64s + margin (a blocked pum
 # the AudioWindow stay filled slightly AHEAD of the current frame (matching `audio_settle_s`-style
 # onset-then-settle usage) without letting it race arbitrarily far ahead.
 _AUDIO_PACE_LOOKAHEAD_S = 0.5
+_RUNTIME_OWNER_QUEUE_MAX = 4_096
 
 
 async def _assert_timebase(
@@ -1279,7 +1984,7 @@ async def _run_audio_only(
     suppressed = False
     cov = stats if stats is not None else RuntimeStats()
     scheduler = (
-        _JudgeScheduler(
+        _LegacyJudgeScheduler(
             core,
             gate_source,
             cov,
@@ -1704,7 +2409,8 @@ async def _run_audio_only(
             else:
                 cov.judge_calls += 1
                 cov.perceive_dispatches += 1
-                fires = await core.perceive_audio_judged(
+                perceive_audio = getattr(core, "perceive_audio_judged")
+                fires = await perceive_audio(
                     evidence,
                     gate_source,
                     t=at,
@@ -2129,6 +2835,14 @@ async def _run_worker(
             if program_of(goal).perception.modality in ("vision", "fused")
         ]
 
+    def _external_only_audio_goals() -> list:
+        """Audio Watches compiled for acoustic admission, never visual motion."""
+        return [
+            goal
+            for goal in _source_goals()
+            if program_of(goal).perception.modality == "audio"
+        ]
+
     clear_pending_dwell = getattr(core, "clear_pending_dwell", None)
 
     def _require_duration_runtime() -> None:
@@ -2224,16 +2938,22 @@ async def _run_worker(
     # is double-counted; when the caller passed none we keep a throwaway so the end-of-run coverage
     # payload is still honest (and so the async scheduler's judge_calls land somewhere countable).
     _cov = stats if stats is not None else RuntimeStats()
+    _owner_queue = _OwnerCommandQueue(maxsize=_RUNTIME_OWNER_QUEUE_MAX)
     _video_source_tracker = SourceTracker()
     _audio_source_tracker = SourceTracker()
     _video_source_id: str | None = None
+    _audio_source_id: str | None = None
     _judge_sched = (
-        _JudgeScheduler(
-            core, gate_source, _cov, metrics_collector=metrics_collector,
-            stall_after_s=judge_stall_after_s, backpressure_after=judge_backpressure_after,
+        _ProviderScheduler(
+            core,
+            gate_source,
+            _cov,
+            stall_after_s=judge_stall_after_s,
+            backpressure_after=judge_backpressure_after,
         )
         if judge_dispatch == "async" else None
     )
+    _audio_judge_sched = None
     # The standard telemetry funnel (seen->gated->judged->refused->fired,
     # percept.observability.Funnel), bound to THIS core's Metrics when it exposes one (the Percept
     # agent always does; a bare duck-typed core without `.funnel` leaves this None and the two calls
@@ -2325,9 +3045,12 @@ async def _run_worker(
         require_worker_routes(_source_goals(), driver="percept.run")
         _require_duration_runtime()
         visual_active = _visual_goals()
+        external_audio_active = _external_only_audio_goals()
         conditions = []
+        external_conditions = []
         runtime_bindings = getattr(core, "_watch_runtime_bindings", {})
-        for goal in visual_active:
+
+        def _compile_condition(goal):
             bound = runtime_bindings.get(goal.id)
             kwargs = (
                 dict(bound[0].watchspec_kwargs)
@@ -2343,13 +3066,24 @@ async def _run_worker(
                     },
                 }
             )
-            conditions.extend(compile_watchspec([goal], **kwargs).conditions)
+            compiled = compile_watchspec([goal], **kwargs).conditions
+            if len(compiled) != 1:
+                raise ValueError(
+                    f"Watch {goal.id!r} did not compile to exactly one admission condition"
+                )
+            return compiled[0]
+
+        for goal in visual_active:
+            conditions.append(_compile_condition(goal))
+        for goal in external_audio_active:
+            external_conditions.append(_compile_condition(goal))
         s = WatchSpec(conditions=conditions)
         # clock: a civil-time source arms per-goal Schedules; None -> always-armed (default).
         # The tier-0 extension seam, reachable from the supported entrypoint. None -> the gate's
         # structural/semantic channels stay 0.0 and this is byte-for-byte the motion-only path.
         g = MotionGate(
             s,
+            external_conditions=external_conditions,
             settings=settings,
             wake_policy=wake_policy,
             clock=clock,
@@ -2433,12 +3167,42 @@ async def _run_worker(
         if _audio_is_container(source) and _goals_want_audio(_source_goals()):
             audio_source = source
     runtime_bindings = getattr(core, "_watch_runtime_bindings", {})
+
+    def _live_watch_topology():
+        goals = list(_source_goals())
+        fused = [
+            goal
+            for goal in goals
+            if goal.id in runtime_bindings
+            and program_of(goal).perception.modality == "fused"
+        ]
+        non_fused = [
+            goal
+            for goal in goals
+            if program_of(goal).perception.modality != "fused"
+        ]
+        return fused, non_fused
+
     compiled_audio_goals = [
         goal
         for goal in _source_goals()
         if goal.id in runtime_bindings
         and program_of(goal).perception.modality in ("audio", "fused")
     ]
+    compiled_audio_only_goals = [
+        goal
+        for goal in compiled_audio_goals
+        if program_of(goal).perception.modality == "audio"
+    ]
+    if judge_dispatch == "async" and compiled_audio_only_goals:
+        _audio_judge_sched = _LegacyJudgeScheduler(
+            core,
+            gate_source,
+            _cov,
+            perceive=core.perceive_audio_judged,
+            stall_after_s=judge_stall_after_s,
+            backpressure_after=judge_backpressure_after,
+        )
     compiled_audio_capability = None
     if compiled_audio_goals:
         bound_audio = [
@@ -2462,33 +3226,6 @@ async def _run_worker(
             "a compiled audio-only Watch requires an audio admission gate; audio_gate=None would "
             "leave it with no executable admission path."
         )
-    if audio_source is not None and audio_gate is not None:
-        audio_goals = [
-            goal
-            for goal in _source_goals()
-            if program_of(goal).perception.modality in ("audio", "fused")
-        ]
-        if len(audio_goals) > 1:
-            runtime_bindings = getattr(core, "_watch_runtime_bindings", {})
-
-            def _audio_policy_signature(goal: Any) -> str:
-                bound = runtime_bindings.get(goal.id)
-                watchspec = dict(bound[0].watchspec_kwargs) if bound is not None else {}
-                return repr((
-                    watchspec,
-                    goal.state.get("cadence"),
-                    goal.state.get("schedule"),
-                    goal.state.get("sense"),
-                    goal.state.get("perception"),
-                ))
-
-            signatures = {_audio_policy_signature(goal) for goal in audio_goals}
-            if len(signatures) > 1:
-                raise ValueError(
-                    "audio onset admission is shared by this worker, but active audio/fused "
-                    "Watches resolve to different admission policies. Run them on separate workers "
-                    "or give them one identical policy; refusing cross-Watch wake leakage."
-                )
     # Resolve the clock BEFORE the capture source is opened; both the video and the audio
     # path get their own record (a "mic:0" live mic and a "session.wav" recording resolve differently
     # even inside one run).
@@ -2506,6 +3243,222 @@ async def _run_worker(
         if audio_source is not None
         else None
     )
+    _has_fused = any(
+        program_of(goal).perception.modality == "fused"
+        for goal in compiled_audio_goals
+    )
+    fused_goals = (
+        [
+            goal
+            for goal in compiled_audio_goals
+            if program_of(goal).perception.modality == "fused"
+        ]
+        if _has_fused
+        else None
+    )
+    if fused_goals and (
+        audio_tb is None or video_tb.resolved != audio_tb.resolved
+    ):
+        raise ValueError(
+            "compiled fused Watches require calibrated audio and video in one clock domain; "
+            "refusing cross-domain synchronization before source iteration."
+        )
+    _fused_syncs = None
+    _fused_judge_scheds = None
+    _fused_local_completions = None
+    if fused_goals:
+        fused_prepare = getattr(core, "prepare_fused_judgment", None)
+        fused_dispatch = getattr(core, "dispatch_fused_judgment", None)
+        fused_complete_local = getattr(core, "complete_fused_locally", None)
+        fused_reduce = getattr(core, "reduce_fused_completion", None)
+        if (
+            not callable(fused_prepare)
+            or not callable(fused_dispatch)
+            or not callable(fused_complete_local)
+            or not callable(fused_reduce)
+        ):
+            raise ValueError(
+                "compiled fused Watches require provider-only dispatch and owner reduction seams"
+            )
+        if goals_revision is None:
+            raise ValueError("compiled fused Watches require a revisioned Goal registry")
+
+        def _iterable_clock_claim(media_source: Any) -> tuple[str, float] | None:
+            authority = getattr(media_source, "clock_authority", None)
+            confidence = getattr(media_source, "clock_confidence", None)
+            if authority is None and isinstance(media_source, (list, tuple)) and media_source:
+                if any(type(item) is not SourceEnvelope for item in media_source):
+                    return None
+                claims = {
+                    (item.clock_authority, item.clock_confidence)
+                    for item in media_source
+                }
+                if len(claims) != 1:
+                    return None
+                authority, confidence = next(iter(claims))
+            if (
+                type(authority) is not str
+                or not authority
+                or not isinstance(confidence, (int, float))
+                or isinstance(confidence, bool)
+                or not math.isfinite(float(confidence))
+            ):
+                return None
+            return authority, float(confidence)
+
+        _fused_requires_envelope_clock_claim = False
+        if video_tb.resolved == "wall":
+            _video_clock_authority = _audio_clock_authority = (
+                f"runtime.monotonic:{id(core)}"
+            )
+            _fused_clock_confidence = 1.0
+        elif isinstance(source, str) and isinstance(audio_source, str):
+            _video_clock_authority = f"media:{source}"
+            _audio_clock_authority = f"media:{audio_source}"
+            _fused_clock_confidence = (
+                1.0 if _video_clock_authority == _audio_clock_authority else 0.0
+            )
+        else:
+            _fused_requires_envelope_clock_claim = True
+            video_claim = _iterable_clock_claim(source)
+            audio_claim = _iterable_clock_claim(audio_source)
+            # Sized iterables can prove their domain before capture starts.
+            # Async iterators cannot be speculatively consumed: doing so loses
+            # an item or changes capture ordering.  Defer their exact claim
+            # validation to the owner ingress, where SourceEnvelope provides
+            # the same immutable proof without provider spend or cognition.
+            if video_claim is None or audio_claim is None:
+                _video_clock_authority = None
+                _audio_clock_authority = None
+                _fused_clock_confidence = 1.0
+            else:
+                _video_clock_authority, video_confidence = video_claim
+                _audio_clock_authority, audio_confidence = audio_claim
+                _fused_clock_confidence = min(video_confidence, audio_confidence)
+        if (
+            _video_clock_authority != _audio_clock_authority
+            or _fused_clock_confidence < 1.0
+        ):
+            raise ValueError(
+                "compiled fused Watches require one qualified clock authority; "
+                "distinct media sources are uncalibrated and are rejected before iteration"
+            )
+        from percept.fused_sync import (
+            _AcceptedMediaUnit,
+            _FusedDiscontinuity,
+            _FusedSyncPolicy,
+            _FusedSynchronizer,
+        )
+
+        def _new_fused_synchronizer(goal: Any, revision: int) -> _FusedSynchronizer:
+            binding = core._audio_judge_binding_for(goal)
+            runtime = runtime_bindings.get(goal.id)
+            policy = runtime[0].fused_sync_policy if runtime is not None else None
+            if type(policy) is not _FusedSyncPolicy:
+                raise ValueError("compiled fused Watch has no exact frozen synchronization policy")
+            if policy.max_bytes_per_modality > min(
+                binding.capability.max_input_bytes,
+                binding.capability.max_provider_bytes,
+            ):
+                raise ValueError("compiled fused policy exceeds the bound provider media limit")
+            return _FusedSynchronizer(
+                policy,
+                watch_application=binding.application_key,
+                watch_revision=revision,
+            )
+
+        _fused_syncs = {
+            goal.id: _new_fused_synchronizer(goal, goals_revision)
+            for goal in fused_goals
+        }
+        _fused_local_completions = deque(
+            maxlen=sum(
+                synchronizer.policy.max_units_per_modality
+                for synchronizer in _fused_syncs.values()
+            )
+        )
+        async def _dispatch_prepared_fused_job(job, _source=None, **_ignored):
+            return await fused_dispatch(job)
+
+        # Each fused Watch has bounded admission slots. Distinct goals mutate distinct executor/gate
+        # keys; the core's per-task usage correlation is context-local.
+        _fused_judge_scheds = {
+            goal.id: _LegacyJudgeScheduler(
+                core,
+                gate_source,
+                _cov,
+                perceive=_dispatch_prepared_fused_job,
+                stall_after_s=judge_stall_after_s,
+                backpressure_after=judge_backpressure_after,
+            )
+            for goal in fused_goals
+        }
+
+        def _fused_reason(events: tuple[str, ...]) -> _FusedDiscontinuity:
+            mapping = {
+                "source_gap": _FusedDiscontinuity.GAP,
+                "source_reconnect": _FusedDiscontinuity.RECONNECT,
+                "source_epoch_gap": _FusedDiscontinuity.EPOCH_GAP,
+                "source_format_change": _FusedDiscontinuity.FORMAT_CHANGE,
+                "source_capture_overflow": _FusedDiscontinuity.CAPTURE_OVERFLOW,
+            }
+            for event in events:
+                if event in mapping:
+                    return mapping[event]
+            return _FusedDiscontinuity.GAP
+
+        def _advance_fused_generation(
+            reason: _FusedDiscontinuity,
+            *,
+            revision: int | None = None,
+            boundary: float | None = None,
+        ) -> None:
+            for synchronizer in _fused_syncs.values():
+                synchronizer.advance_generation(reason, watch_revision=revision)
+                if boundary is not None:
+                    synchronizer.set_generation_start(boundary)
+
+        def _queue_fused_bundle(goal_id: str, bundle: Any) -> None:
+            at = (
+                bundle.video_event_interval[1]
+                if bundle.video_event_interval is not None
+                else 0.0
+            )
+            synchronizer = _fused_syncs[goal_id]
+            scheduler = (_fused_judge_scheds or {}).get(goal_id)
+            if bundle.complete and (
+                scheduler is None or not scheduler.can_accept
+            ):
+                return
+            job = fused_prepare(
+                bundle,
+                goal_id=goal_id,
+                source=gate_source,
+                source_t=at,
+                goals_revision=goals_revision,
+                source_generation=core.source_continuity_generation(gate_source),
+                fused_generation=synchronizer.generation,
+            )
+            if job is None:
+                return
+            if not bundle.complete:
+                if len(_fused_local_completions) == _fused_local_completions.maxlen:
+                    dropped_at, dropped = _fused_local_completions.popleft()
+                    record_drop = getattr(core, "record_fused_admission_drop", None)
+                    if callable(record_drop):
+                        record_drop(dropped.job, reason="local_completion_bound")
+                _fused_local_completions.append(
+                    (at, fused_complete_local(job))
+                )
+                return
+            assert scheduler is not None
+            if not scheduler.submit(at, job):
+                # No await occurs between can_accept, preparation, and submit;
+                # rejection here is an invariant violation, not an ignorable drop.
+                raise RuntimeError(
+                    "fused provider lane rejected an atomically prepared admission"
+                )
+
     effective_config = EffectiveConfig(
         fps=effective_fps, video_timebase=video_tb, audio_timebase=audio_tb,
         coast_enabled=bool(getattr(getattr(settings, "edge", None), "coast_enabled", True)),
@@ -2725,8 +3678,6 @@ async def _run_worker(
         deadlines_accepts_goal_ids = (
             check_deadlines is not None and _accepts_keyword(check_deadlines, "goal_ids")
         )
-        perceive_accepts_goal_ids = _accepts_keyword(core.perceive_judged, "goal_ids")
-
         # --- autosave: periodically persist state so a crash/restart resumes, not restarts. ----
         # Also persists the delivery idempotency ledger's snapshot() (event_id -> ts of a
         # terminal-OK delivery only — no secrets/media) alongside goals/entities, so a restart that
@@ -2792,6 +3743,37 @@ async def _run_worker(
                 return False
             return True
 
+        def _exact_audio_evidence(
+            goal_ids: tuple[str, ...],
+            *,
+            at: float,
+        ) -> dict[str, tuple[Any, ...]]:
+            """Freeze exact retained units for audio-only provider admission."""
+            from percept.audio_input import validate_audio_units_for_provider
+
+            evidence = {}
+            for goal_id in goal_ids:
+                goal = core.goals.get(goal_id)
+                if goal is None:
+                    continue
+                perception = program_of(goal).perception
+                if perception.modality != "audio":
+                    continue
+                units = tuple(
+                    core._audio_window(gate_source).clip_units(
+                        perception.audio_s or settings.events.audio_window_s,
+                        now=at,
+                    )
+                )
+                if not units:
+                    continue
+                binding = core._audio_judge_binding_for(goal)
+                validate_audio_units_for_provider(
+                    units, capability=binding.capability
+                )
+                evidence[goal_id] = units
+            return evidence
+
         _prev_chunk_at: list = [None]  # last chunk's t — for the observed inter-chunk cadence (chunk_dt)
         audio_task = None
         # Media-clock pacing for a FILE/CONTAINER audio_source (see `_AUDIO_PACE_LOOKAHEAD_S`).
@@ -2815,7 +3797,14 @@ async def _run_worker(
         _audio_paced = live_audio and audio_tb is not None and audio_tb.resolved == "media"
         _video_media_t: list = [0.0]
         _video_progress = asyncio.Event()
+        _audio_pace_settled = asyncio.Event()
+        _owner_ready = asyncio.Event()
         _video_exhausted = [False]
+        _audio_eos_seen = [False]
+        # Capture-side ordering is transport state only. The pump uses this
+        # mirror to validate/publish a canonical command stream while the
+        # cognition owner's tracker advances later during ordered drains.
+        _audio_capture_tracker = SourceTracker()
         if audio_source is not None:
             # Size the SHARED fused-judge AudioWindow (distinct from the per-utterance buffer below).
             # A voice-enabled session wants richer acoustic context than the small fused default; the
@@ -2890,9 +3879,338 @@ async def _run_worker(
                 _utt["start"] = None
                 _utt_buf.clear()
 
+            async def _apply_audio_boundary(command: dict[str, Any]) -> None:
+                """Commit one audio continuity boundary on the runtime owner."""
+                reasons = tuple(command["reasons"]) or (
+                    "audio_unit_discontinuity",
+                )
+                if _fused_syncs:
+                    _advance_fused_generation(
+                        _fused_reason(reasons),
+                        boundary=command["boundary"],
+                    )
+                _advance_source_continuity()
+                if _judge_sched is not None:
+                    _judge_sched.invalidate_source_continuity(reasons)
+                if _audio_judge_sched is not None:
+                    _audio_judge_sched.invalidate_source_continuity(reasons)
+                for scheduler in (_fused_judge_scheds or {}).values():
+                    scheduler.invalidate_source_continuity(reasons)
+                _reset_audio_temporal_state(clear_window=True)
+
+            async def _apply_audio_rejected(command: dict[str, Any]) -> None:
+                """Commit one capture-side rejection to owner coverage."""
+                inspection = _audio_source_tracker.inspect(
+                    command["envelope"],
+                    require_source_time=command["require_source_time"],
+                )
+                await _record_source_inspection(
+                    command["envelope"],
+                    inspection,
+                    ts=command["at"],
+                )
+
+            async def _apply_audio_media(command: dict[str, Any]) -> None:
+                """Commit one canonical audio carrier on the sole runtime owner."""
+                nonlocal _audio_source_id
+                envelope = command["envelope"]
+                unit = command["unit"]
+                unit_preview = command["unit_preview"]
+                at = command["at"]
+                chunk = command["chunk"]
+                energy = command["energy"]
+
+                if (
+                    _fused_syncs
+                    and _audio_source_id is not None
+                    and envelope.source_id != _audio_source_id
+                ):
+                    raise ValueError(
+                        "one fused runtime worker accepts exactly one audio source_id; "
+                        f"got {_audio_source_id!r} then {envelope.source_id!r}"
+                    )
+                inspection = _audio_source_tracker.inspect(
+                    envelope, require_source_time=command["require_source_time"]
+                )
+                if not inspection.accepted:
+                    await _record_source_inspection(envelope, inspection, ts=at)
+                    return
+                if _fused_syncs and _audio_source_id is None:
+                    _audio_source_id = envelope.source_id
+                continuity_reset = (
+                    inspection.resets_continuity
+                    or (
+                        compiled_audio_capability is not None
+                        and unit_preview.discontinuous
+                    )
+                )
+                if continuity_reset and not command["boundary_published"]:
+                    if _fused_syncs:
+                        _advance_fused_generation(
+                            _fused_reason(inspection.events),
+                            boundary=unit.t_start,
+                        )
+                    _advance_source_continuity()
+                    if _judge_sched is not None:
+                        reasons = inspection.events or (
+                            "audio_unit_discontinuity",
+                        )
+                        _judge_sched.invalidate_source_continuity(reasons)
+                    if _audio_judge_sched is not None:
+                        reasons = inspection.events or (
+                            "audio_unit_discontinuity",
+                        )
+                        _audio_judge_sched.invalidate_source_continuity(reasons)
+                    for scheduler in (_fused_judge_scheds or {}).values():
+                        reasons = inspection.events or (
+                            "audio_unit_discontinuity",
+                        )
+                        scheduler.invalidate_source_continuity(reasons)
+                    _reset_audio_temporal_state(clear_window=True)
+                discontinuity = (
+                    _fused_reason(inspection.events)
+                    if _fused_syncs and continuity_reset
+                    else _FusedDiscontinuity.NONE
+                    if _fused_syncs
+                    else None
+                )
+                accepted_fused_audio = []
+                for synchronizer in (_fused_syncs or {}).values():
+                    accepted_fused_audio.append(
+                        (
+                            synchronizer,
+                            _AcceptedMediaUnit(
+                                modality="audio",
+                                payload=unit,
+                                source_id=envelope.source_id,
+                                source_epoch=envelope.epoch,
+                                source_sequence=envelope.sequence,
+                                generation=synchronizer.generation,
+                                watch_application=synchronizer.watch_application,
+                                watch_revision=synchronizer.watch_revision,
+                                event_start=unit.t_start,
+                                event_end=unit.t_end,
+                                observed_start=envelope.observed_time,
+                                observed_end=envelope.observed_time,
+                                clock_domain=(
+                                    "source"
+                                    if audio_tb is not None
+                                    and audio_tb.resolved == "media"
+                                    else "observed"
+                                ),
+                                clock_authority=_audio_clock_authority,
+                                clock_confidence=_fused_clock_confidence,
+                                provenance={
+                                    "adapter": "runtime.audio",
+                                    "format": {
+                                        "media_type": envelope.format.media_type,
+                                        "sample_rate": envelope.format.sample_rate,
+                                        "channels": envelope.format.channels,
+                                        "sample_format": envelope.format.sample_format,
+                                    },
+                                    "direction": unit.direction,
+                                    "participant_id": unit.participant_id,
+                                    "source_time": envelope.source_time,
+                                    "observed_time": envelope.observed_time,
+                                },
+                                discontinuity=discontinuity,
+                            ),
+                        )
+                    )
+                try:
+                    ingest = core.push_audio(unit, source=gate_source)
+                except Exception as exc:  # noqa: BLE001
+                    if _fused_syncs:
+                        _advance_fused_generation(
+                            _FusedDiscontinuity.WORKER_ERROR
+                        )
+                    if on_health is not None:
+                        await _call_sink(
+                            on_health,
+                            RuntimeHealthEvent(
+                                "audio_unit_rejected",
+                                ts=at,
+                                data={
+                                    "source": gate_source,
+                                    "seq": getattr(unit, "seq", None),
+                                    "error": repr(exc),
+                                },
+                            ),
+                        )
+                    return
+                await _record_source_inspection(envelope, inspection, ts=at)
+                if (
+                    ingest is not None
+                    and getattr(ingest, "discontinuous", False)
+                    and on_health is not None
+                ):
+                    data = ingest.as_dict()
+                    data.update({"source": gate_source, "seq": unit.seq})
+                    await _call_sink(
+                        on_health,
+                        RuntimeHealthEvent(
+                            "audio_discontinuity", ts=at, data=data
+                        ),
+                    )
+                if ingest is not None and not getattr(
+                    ingest, "accepted", True
+                ):
+                    if _fused_syncs:
+                        _advance_fused_generation(
+                            _FusedDiscontinuity.WORKER_ERROR
+                        )
+                    return
+                fused_accept_failed = False
+                for synchronizer, accepted_audio in accepted_fused_audio:
+                    try:
+                        if not synchronizer.accept(accepted_audio):
+                            fused_accept_failed = True
+                    except Exception:
+                        fused_accept_failed = True
+                if fused_accept_failed:
+                    _advance_fused_generation(
+                        _FusedDiscontinuity.WORKER_ERROR
+                    )
+                    return
+                for goal_id, synchronizer in (_fused_syncs or {}).items():
+                    for ready_bundle in synchronizer.drain_ready():
+                        _queue_fused_bundle(goal_id, ready_bundle)
+                if stats is not None:
+                    stats.audio_chunks += 1
+
+                if ingest is not None and getattr(ingest, "reordered", False):
+                    return
+                if ingest is not None and (
+                    getattr(ingest, "missing", 0)
+                    or getattr(ingest, "gap_s", 0.0)
+                    or getattr(ingest, "format_changed", False)
+                ):
+                    _reset_audio_temporal_state()
+
+                if _prev_chunk_at[0] is not None:
+                    delta = at - _prev_chunk_at[0]
+                    if delta > 0:
+                        audio["chunk_dt"] = delta
+                _prev_chunk_at[0] = at
+                if energy is not None:
+                    audio["energy"] = float(energy)
+                    audio["energy_t"] = at
+                if onset is not None and energy is not None:
+                    for boundary in onset.push(at, float(energy)):
+                        if (
+                            getattr(boundary, "kind", None) == "onset"
+                            and audio["wake_at"] is None
+                        ):
+                            audio["wake_at"] = at + max(
+                                0.0, float(audio_settle_s)
+                            )
+                        if getattr(boundary, "kind", None) == "onset":
+                            core._audio_window(gate_source).annotate(
+                                unit.seq,
+                                AudioBoundary(
+                                    "onset", float(boundary.t)
+                                ),
+                            )
+
+                if _vad is None or energy is None:
+                    return
+                suppress = False
+                if stale_audio_s is not None or deaf_until is not None:
+                    wall_now = command["wall_now"]
+                    if stale_audio_s is not None:
+                        if _wall_anchor[0] is None:
+                            _wall_anchor[0] = (wall_now, at)
+                        wall_start, stream_start = _wall_anchor[0]
+                        lag = (wall_now - wall_start) - (at - stream_start)
+                        if lag > stale_audio_s:
+                            suppress = True
+                            if on_health is not None:
+                                await _call_sink(
+                                    on_health,
+                                    RuntimeHealthEvent(
+                                        "audio_stale",
+                                        ts=at,
+                                        data={"lag_s": lag},
+                                    ),
+                                )
+                    if deaf_until is not None and wall_now < deaf_until():
+                        suppress = True
+                if suppress:
+                    _vad.reset()
+                    _utt["start"] = None
+                    _utt_buf.clear()
+                    return
+
+                endpoint = _vad.push(float(energy))
+                if getattr(endpoint, "started", False):
+                    _utt["start"] = at
+                    _utt_buf.clear()
+                    core._audio_window(gate_source).annotate(
+                        unit.seq, AudioBoundary("vad_start", at)
+                    )
+                if _utt["start"] is not None:
+                    _utt_buf.append((at, chunk))
+                    cutoff = at - utterance_max_s
+                    while _utt_buf and _utt_buf[0][0] < cutoff:
+                        _utt_buf.pop(0)
+                if not getattr(endpoint, "endpoint", False):
+                    return
+                core._audio_window(gate_source).annotate(
+                    unit.seq, AudioBoundary("endpoint", at)
+                )
+                start_t = _utt["start"] if _utt["start"] is not None else at
+                _utt["start"] = None
+                buf = list(_utt_buf)
+                _utt_buf.clear()
+                first_t = buf[0][0] if buf else start_t
+                clip = _clip_from_chunks(
+                    [part for _, part in buf],
+                    t_start=first_t,
+                    t_end=at,
+                )
+                if clip is None:
+                    return
+                if stats is not None:
+                    stats.utterances += 1
+                covered = at - first_t
+                expected = at - start_t
+                if on_health is not None and covered < expected - 0.25:
+                    await _call_sink(
+                        on_health,
+                        RuntimeHealthEvent(
+                            "utterance_truncated",
+                            ts=at,
+                            data={
+                                "covered_s": covered,
+                                "expected_s": expected,
+                            },
+                        ),
+                    )
+                if on_health is not None:
+                    await _call_sink(
+                        on_health,
+                        RuntimeHealthEvent(
+                            "utterance", ts=at, data={"dur_s": expected}
+                        ),
+                    )
+                task = asyncio.ensure_future(
+                    _call_sink_with_policy(
+                        on_utterance,
+                        clip,
+                        at,
+                        errors=sink_errors,
+                        stats=stats,
+                        on_health=on_health,
+                        health_kind="utterance_sink_error",
+                    )
+                )
+                _utt_tasks.add(task)
+                task.add_done_callback(_utt_done)
+
             async def _pump_audio():
                 # Pump every chunk into the AudioWindow (un-strands modality="fused"/"audio") and track
                 # energy + onsets. Never lets a bad audio chunk kill the run — the watch survives a mic drop.
+                nonlocal _audio_source_id, _audio_clock_authority
                 synthetic_carrier_sequence = 0
 
                 async def _reject_unit(envelope, unit, at, exc) -> None:
@@ -2918,6 +4236,12 @@ async def _run_worker(
                 async for ingress in _audio_aiter(audio_source, **audio_kwargs):
                     submitted_unit = ingress.unit
                     envelope = ingress.envelope
+                    ingress_clock_authority = getattr(
+                        envelope, "clock_authority", None
+                    )
+                    ingress_clock_confidence = getattr(
+                        envelope, "clock_confidence", None
+                    )
                     canonical_ingress_unit = None
                     if compiled_audio_capability is not None:
                         from percept.audio_input import (
@@ -3107,6 +4431,29 @@ async def _run_worker(
                             timebase=ingress.legacy_timebase,
                         )
                     assert envelope is not None
+                    if _fused_syncs and _fused_requires_envelope_clock_claim:
+                        if (
+                            ingress_clock_authority is None
+                            or ingress_clock_confidence is None
+                            or float(ingress_clock_confidence)
+                            < _fused_clock_confidence
+                        ):
+                            raise ValueError(
+                                "fused audio envelope omitted its qualified "
+                                "clock authority/confidence"
+                            )
+                        if _audio_clock_authority is None:
+                            _audio_clock_authority = ingress_clock_authority
+                        if (
+                            ingress_clock_authority != _audio_clock_authority
+                            or (
+                                _video_clock_authority is not None
+                                and ingress_clock_authority != _video_clock_authority
+                            )
+                        ):
+                            raise ValueError(
+                                "fused audio envelope changed its qualified clock authority"
+                            )
                     require_source_time = (
                         submitted_unit is None
                         and audio_tb is not None
@@ -3138,7 +4485,7 @@ async def _run_worker(
                         )
                         continue
                     else:
-                        source_preview = _audio_source_tracker.preview(
+                        source_preview = _audio_capture_tracker.preview(
                             envelope, require_source_time=require_source_time
                         )
                     at = (
@@ -3159,10 +4506,19 @@ async def _run_worker(
                     ):
                         at = None
                     if not source_preview.accepted:
-                        inspection = _audio_source_tracker.inspect(
+                        inspection = _audio_capture_tracker.inspect(
                             envelope, require_source_time=require_source_time
                         )
-                        await _record_source_inspection(envelope, inspection, ts=at)
+                        _owner_queue.publish(
+                            "AudioRejected",
+                            {
+                                "envelope": envelope,
+                                "require_source_time": require_source_time,
+                                "at": at,
+                                "capture_inspection": inspection,
+                            },
+                        )
+                        _owner_ready.set()
                         continue
                     if at is None:
                         await _reject_unit(
@@ -3224,9 +4580,12 @@ async def _run_worker(
                     # existed).
                     while (
                         _audio_paced
+                        and not source_preview.resets_continuity
                         and not _video_exhausted[0]
                         and at > _video_media_t[0] + _AUDIO_PACE_LOOKAHEAD_S
                     ):
+                        _audio_pace_settled.set()
+                        _owner_ready.set()
                         _video_progress.clear()
                         await _video_progress.wait()
                     # A LIVE mic stamps chunks on the wall clock; a divergence past the AUDIO tolerance
@@ -3241,253 +4600,346 @@ async def _run_worker(
                     # signals freeze, without ending the session. Default (muted=None) is byte-for-byte.
                     if muted is not None and muted():
                         continue
-                    # The last pre-commit await is above. Commit carrier ordering and the exact
-                    # retained AudioUnit adjacently; cancellation/mute cannot leave one side ahead.
-                    inspection = _audio_source_tracker.inspect(
-                        envelope, require_source_time=require_source_time
-                    )
-                    if not inspection.accepted:
-                        await _record_source_inspection(envelope, inspection, ts=at)
-                        continue
-                    continuity_reset = (
-                        inspection.resets_continuity
+                    boundary_published = (
+                        source_preview.resets_continuity
                         or (
                             compiled_audio_capability is not None
                             and unit_preview.discontinuous
                         )
                     )
-                    if continuity_reset:
-                        _advance_source_continuity()
-                        if _judge_sched is not None:
-                            reasons = inspection.events or (
-                                "audio_unit_discontinuity",
-                            )
-                            _judge_sched.invalidate_source_continuity(reasons)
-                        _reset_audio_temporal_state(clear_window=True)
-                    try:
-                        ingest = core.push_audio(unit, source=gate_source)
-                    except Exception as exc:  # noqa: BLE001 - reject one malformed unit, keep capture alive
-                        if on_health is not None:
-                            await _call_sink(
-                                on_health,
-                                RuntimeHealthEvent(
-                                    "audio_unit_rejected",
-                                    ts=at,
-                                    data={
-                                        "source": gate_source,
-                                        "seq": getattr(unit, "seq", None),
-                                        "error": repr(exc),
-                                    },
-                                ),
-                            )
-                        continue
+                    if boundary_published:
+                        _owner_queue.publish(
+                            "AudioBoundary",
+                            {
+                                "reasons": source_preview.events,
+                                "boundary": unit.t_start,
+                            },
+                        )
+                    _owner_queue.publish(
+                        "AudioAccepted",
+                        {
+                            "envelope": envelope,
+                            "unit": unit,
+                            "unit_preview": unit_preview,
+                            "at": at,
+                            "chunk": chunk,
+                            "energy": energy,
+                            "require_source_time": require_source_time,
+                            "boundary_published": boundary_published,
+                            "wall_now": (
+                                wall_clock()
+                                if _vad is not None
+                                and energy is not None
+                                and (
+                                    stale_audio_s is not None
+                                    or deaf_until is not None
+                                )
+                                else None
+                            ),
+                        },
+                    )
+                    committed_preview = _audio_capture_tracker.inspect(
+                        envelope, require_source_time=require_source_time
+                    )
+                    if not committed_preview.accepted:
+                        raise RuntimeError(
+                            "audio capture ordering changed between preview and publish"
+                        )
                     if submitted_unit is not None or ingress.legacy_item is not None:
                         synthetic_carrier_sequence += 1
-                    await _record_source_inspection(envelope, inspection, ts=at)
-                    if (
-                        ingest is not None
-                        and getattr(ingest, "discontinuous", False)
-                        and on_health is not None
-                    ):
-                        data = ingest.as_dict()
-                        data.update({"source": gate_source, "seq": unit.seq})
-                        await _call_sink(
-                            on_health, RuntimeHealthEvent("audio_discontinuity", ts=at, data=data)
-                        )
-                    if ingest is not None and not getattr(ingest, "accepted", True):
-                        continue
-                    if stats is not None:
-                        stats.audio_chunks += 1
-
-                    # A historical insertion repairs the ordered evidence window but must never be
-                    # replayed through LIVE gate/VAD state after newer audio was already processed.
-                    if ingest is not None and getattr(ingest, "reordered", False):
-                        continue
-                    if ingest is not None and (
-                        getattr(ingest, "missing", 0)
-                        or getattr(ingest, "gap_s", 0.0)
-                        or getattr(ingest, "format_changed", False)
-                    ):
-                        _reset_audio_temporal_state()
-
-                    # Track the cadence + the time of the last REAL reading (a None-energy chunk is not
-                    # a fresh reading). The frame loop reads energy only while fresh (dead mic → video-only).
-                    if _prev_chunk_at[0] is not None:
-                        _d = at - _prev_chunk_at[0]
-                        if _d > 0:
-                            audio["chunk_dt"] = _d
-                    _prev_chunk_at[0] = at
-                    if energy is not None:
-                        audio["energy"] = float(energy)
-                        audio["energy_t"] = at
-                    if onset is not None and energy is not None:
-                        for b in onset.push(at, float(energy)):
-                            if getattr(b, "kind", None) == "onset" and audio["wake_at"] is None:
-                                # settle: judge AFTER the sound has filled the window, not at its first instant
-                                audio["wake_at"] = at + max(0.0, float(audio_settle_s))
-                            if getattr(b, "kind", None) == "onset":
-                                audio_window_for = getattr(core, "_audio_window", None)
-                                if callable(audio_window_for):
-                                    audio_window_for(gate_source).annotate(
-                                        unit.seq, AudioBoundary("onset", float(b.t))
-                                    )
-
-                    # Voice escalation: endpoint a complete utterance and hand its clip to on_utterance.
-                    # Runs AFTER push_audio so the just-heard chunk is already in the window we clip from.
-                    if _vad is not None and energy is not None:
-                        # Suppress the endpointer while the app is about to speak (deafen) or while
-                        # the pump is replaying a stale capture backlog (staleness). The chunk still filled
-                        # the AudioWindow above — this is turn-taking, not perception. Reset the VAD when
-                        # suppressed so a half-built utterance cannot straddle (survive) the window.
-                        suppress = False
-                        if stale_audio_s is not None or deaf_until is not None:
-                            wnow = wall_clock()
-                            if stale_audio_s is not None:
-                                if _wall_anchor[0] is None:
-                                    _wall_anchor[0] = (wnow, at)
-                                w0, s0 = _wall_anchor[0]
-                                if (wnow - w0) - (at - s0) > stale_audio_s:  # pump lag vs real time
-                                    suppress = True
-                                    if on_health is not None:
-                                        await _call_sink(on_health, RuntimeHealthEvent(
-                                            "audio_stale", ts=at, data={"lag_s": (wnow - w0) - (at - s0)}))
-                            if deaf_until is not None and wnow < deaf_until():
-                                suppress = True
-                        if suppress:
-                            _vad.reset()
-                            _utt["start"] = None
-                            _utt_buf.clear()  # a suppressed span must not straddle into the next turn
-                        else:
-                            ev = _vad.push(float(energy))
-                            if getattr(ev, "started", False):
-                                _utt["start"] = at
-                                _utt_buf.clear()  # a fresh turn — drop any pre-start residue
-                                audio_window_for = getattr(core, "_audio_window", None)
-                                if callable(audio_window_for):
-                                    audio_window_for(gate_source).annotate(
-                                        unit.seq, AudioBoundary("vad_start", at)
-                                    )
-                            # Accumulate the turn into our OWN buffer (started→endpoint), bounded by
-                            # utterance_max_s so a stuck-open mic can't grow it without limit.
-                            if _utt["start"] is not None:
-                                _utt_buf.append((at, chunk))
-                                _cutoff = at - utterance_max_s
-                                while _utt_buf and _utt_buf[0][0] < _cutoff:
-                                    _utt_buf.pop(0)
-                            if getattr(ev, "endpoint", False):
-                                audio_window_for = getattr(core, "_audio_window", None)
-                                if callable(audio_window_for):
-                                    audio_window_for(gate_source).annotate(
-                                        unit.seq, AudioBoundary("endpoint", at)
-                                    )
-                                start_t = _utt["start"] if _utt["start"] is not None else at
-                                _utt["start"] = None
-                                buf = list(_utt_buf)
-                                _utt_buf.clear()
-                                first_t = buf[0][0] if buf else start_t
-                                # Hand the WHOLE turn from the own buffer (never a window slice).
-                                clip = _clip_from_chunks(
-                                    [c for _, c in buf], t_start=first_t, t_end=at)
-                                if clip is not None:
-                                    if stats is not None:
-                                        stats.utterances += 1
-                                    # Truncation tripwire: if the handed clip covers less than the turn's
-                                    # known duration (buffer capped, or leading chunks lost), shout — a
-                                    # truncated utterance must NEVER be handed off silently.
-                                    _covered = at - first_t
-                                    _expected = at - start_t
-                                    if on_health is not None and _covered < _expected - 0.25:
-                                        await _call_sink(on_health, RuntimeHealthEvent(
-                                            "utterance_truncated", ts=at,
-                                            data={"covered_s": _covered, "expected_s": _expected}))
-                                    if on_health is not None:
-                                        await _call_sink(on_health, RuntimeHealthEvent(
-                                            "utterance", ts=at, data={"dur_s": _expected}))
-                                    # Hand off OFF the pump — a real handler (STT + voice turn + playback)
-                                    # blocking here guarantees a capture backlog replayed as self-echo the
-                                    # instant it returns. The app owns concurrency (overlaps are possible;
-                                    # the runtime does not serialize). Errors still route through the policy.
-                                    task = asyncio.ensure_future(_call_sink_with_policy(
-                                        on_utterance, clip, at, errors=sink_errors, stats=stats,
-                                        on_health=on_health, health_kind="utterance_sink_error",
-                                    ))
-                                    _utt_tasks.add(task)
-                                    task.add_done_callback(_utt_done)
+                    _owner_ready.set()
+                    continue
+                _owner_queue.publish("AudioEOS", {"source": gate_source})
+                _audio_pace_settled.set()
+                _owner_ready.set()
 
             audio_task = asyncio.ensure_future(_pump_audio())
             audio_task.add_done_callback(_task_watchdog("audio_pump_died"))
+            audio_task.add_done_callback(
+                lambda _done: (
+                    _owner_ready.set(),
+                    _audio_pace_settled.set(),
+                )
+            )
 
-        async def _emit_fires(fires, *, at, from_boundary=False):
-            """Turn a list of FireEvents (from perceive_judged OR the boundary) into incidents/asks."""
-            for fire in fires or []:
-                if getattr(fire, "action", None) == ASK:
-                    if stats is not None:
-                        stats.asks += 1
-                    if disposition_log is not None:  # escalation-meter raw feed (asks are not incidents)
-                        _log_disposition(disposition_log, incident_id="", fire=fire, disposition="ask", ts=at)
-                    if on_health is not None:
-                        await _call_sink(on_health, RuntimeHealthEvent("ask", ts=at, data={"goal_id": fire.goal_id}))
-                    if on_ask is not None:
-                        await _call_sink_with_policy(
-                            on_ask, fire, errors=sink_errors, stats=stats, on_health=on_health, health_kind="ask_sink_error"
-                        )
+        async def _drain_owner_commands() -> None:
+            """Apply every published command on the sole runtime owner."""
+            for command in _owner_queue.drain():
+                if command.kind == "AudioBoundary":
+                    await _apply_audio_boundary(command.payload)
                     continue
-                if getattr(fire, "action", None) != FIRE:
+                if command.kind == "AudioAccepted":
+                    await _apply_audio_media(command.payload)
                     continue
-                if stats is not None:
-                    stats.fires += 1
-                snippet = snippet_from_window(clips, kind=snippet_kind, pre_s=snippet_pre_s)
-                incident = make_incident(
-                    fire, ts=at, snippet=snippet, watchplan_id=_current_watchplan_id())
-                if label_store is not None:  # bind the local label sink so incident.record_label() writes
-                    incident.bind_labeler(
-                        label_store.append,
-                        verdict_ref=_verdict_ref(getattr(fire, "verdict", None)),
-                        goal_id=getattr(fire, "goal_id", None),
+                if command.kind == "AudioRejected":
+                    await _apply_audio_rejected(command.payload)
+                    continue
+                if command.kind == "AudioEOS":
+                    _audio_eos_seen[0] = True
+                    continue
+                raise RuntimeError(
+                    f"unknown runtime owner command {command.kind!r}"
+                )
+
+        def _materialize_fires(fires, *, at, from_boundary=False):
+            """Freeze one owner reduction and its counters without invoking callbacks."""
+            def _snippet_for_fire(fire):
+                exact_audio_units = tuple(
+                    getattr(fire, "audio_units", None) or ()
+                )
+                if exact_audio_units:
+                    from percept.audio_input import audio_snippet_from_units
+
+                    audio_goal = core.goals.get(fire.goal_id)
+                    audio_binding = core._audio_judge_binding_for(audio_goal)
+                    return audio_snippet_from_units(
+                        exact_audio_units,
+                        capability=audio_binding.capability,
                     )
-                if disposition_log is not None:  # escalation-meter raw feed
-                    _log_disposition(disposition_log, incident_id=incident.id, fire=fire, disposition="fire", ts=at)
-                emit_trace = getattr(core, "_emit_trace", None)
-                if getattr(core, "on_trace", None) is not None and emit_trace is not None:
-                    # Routed through the safe core emitter (awaits async, swallows tracer errors); guarded
-                    # with getattr since `core` is duck-typed (a custom core may lack _emit_trace).
-                    # from_boundary flags incidents that did NOT pass through perceive_judged, so their
-                    # trace_id has no upstream judge stages (an honest marker, not an orphan).
-                    await emit_trace(
-                        f"{gate_source}@{at}", at, "incident.created",
-                        goal_id=incident.concern_id, incident_id=incident.id, from_boundary=from_boundary,
-                        entity_id=incident.entity_id,
-                        # The 1.9 evidence link, carried onto the trace row a client audit resolves: this
-                        # incident joins back to EXACTLY ONE judgment.event carrying the same handle.
-                        judgment_event_id=incident.judgment_event_id,
-                        evidence_origin=incident.evidence_origin,
-                    )
-                if on_health is not None:
-                    await _call_sink(
-                        on_health,
-                        RuntimeHealthEvent(
-                            "incident",
-                            ts=at,
-                            data={
-                                "incident_id": incident.id,
-                                "goal_id": incident.concern_id,
-                                "entity_id": incident.entity_id,  # which subject fired, not just which goal
-                            },
-                        ),
-                    )
-                if on_incident is not None:
-                    await _call_sink_with_policy(
-                        on_incident, incident, errors=sink_errors, stats=stats, on_health=on_health, health_kind="incident_sink_error",
-                    )
-                _cov.incidents += 1
+                return snippet_from_window(
+                    clips, kind=snippet_kind, pre_s=snippet_pre_s
+                )
+
+            materialized = _materialize_reduction(
+                fires,
+                at=at,
+                gate_source=gate_source,
+                snippet_for_fire=_snippet_for_fire,
+                watchplan_id=_current_watchplan_id(),
+                label_store=label_store,
+                disposition_log=disposition_log,
+                verdict_ref=_verdict_ref,
+                from_boundary=from_boundary,
+            )
+            if stats is not None:
+                stats.asks += sum(
+                    item.action == ASK for item in materialized.items
+                )
+                stats.fires += sum(
+                    item.action == FIRE for item in materialized.items
+                )
+            return materialized
+
+        async def _emit_materialized(materialized):
+            delivered = await _deliver_materialized(
+                materialized,
+                core=core,
+                on_health=on_health,
+                on_ask=on_ask,
+                on_incident=on_incident,
+                sink_errors=sink_errors,
+                stats=stats,
+                coverage=_cov,
+            )
+            for incident in delivered:
                 yield incident
 
+        async def _emit_fires(fires, *, at, from_boundary=False):
+            """Materialize the whole owner reduction, then deliver it."""
+            materialized = _materialize_fires(
+                fires,
+                at=at,
+                from_boundary=from_boundary,
+            )
+            async for incident in _emit_materialized(materialized):
+                yield incident
+
+        async def _emit_fused_completion(completion, *, at):
+            token = completion.job.token
+            synchronizer = (_fused_syncs or {}).get(token.goal_id)
+            live_generation = (
+                synchronizer.generation if synchronizer is not None else -1
+            )
+            fires = fused_reduce(
+                completion,
+                live_fused_generation=live_generation,
+            )
+            # Freeze the Incident before any callback, while retaining the
+            # causal trace order: cognition rows precede incident.created.
+            materialized = _materialize_fires(fires, at=at)
+            drain_records = getattr(core, "drain_fused_trace_records", None)
+            emit_trace = getattr(core, "_emit_trace", None)
+            if callable(drain_records) and callable(emit_trace):
+                for trace_id, trace_t, stage, data in drain_records():
+                    await emit_trace(trace_id, trace_t, stage, **data)
+            await _drain_judge_health(core, on_health, at)
+            async for incident in _emit_materialized(materialized):
+                yield incident
+
+        async def _prepare_split_jobs(
+            frame,
+            goal_ids,
+            *,
+            at,
+            revision,
+        ):
+            """Run observation projection, then the generic route preparer.
+
+            ``prepare_transition_judgment`` and ``prepare_process_judgment``
+            are reached through ``prepare_judgment``; provider dispatch and
+            ``reduce_judgment_completion`` remain separate owner phases.
+            """
+            generation = core.source_continuity_generation(gate_source)
+            candidate = core.prepare_observation_candidate(
+                frame,
+                gate_source,
+                t=at,
+                expected_goals_revision=revision,
+                expected_source_generation=generation,
+                goal_ids=goal_ids,
+            )
+            if candidate is None or not core.launch_observation_candidate(
+                candidate,
+                runtime_trace=True,
+            ):
+                return ()
+            observation = await core.dispatch_observation_candidate(candidate)
+            reduction = core.reduce_observation_completion(observation)
+            if reduction.failure is not None:
+                raise RuntimeError(
+                    "observation provider failed: "
+                    f"{reduction.failure.exception_type}"
+                )
+            if reduction.stale_reason is not None:
+                return ()
+            return tuple(
+                job
+                for goal_id in goal_ids
+                if (
+                    job := core.prepare_judgment(
+                        reduction,
+                        goal_id=goal_id,
+                    )
+                )
+                is not None
+            )
+
+        async def _emit_judgment_completions(
+            completions,
+            *,
+            at,
+            scheduler=None,
+        ):
+            fires = []
+            for completion in sorted(
+                completions,
+                key=lambda item: (
+                    item.completion_ordinal
+                    if item.completion_ordinal is not None
+                    else -1
+                ),
+            ):
+                fires.extend(core.reduce_judgment_completion(completion))
+            if scheduler is not None:
+                scheduler.owner_reduced()
+            # Reduction and Incident construction are synchronous owner work.
+            # Deliver their already-frozen trace rows in causal order before
+            # incident.created and subscriber callbacks.
+            materialized = _materialize_fires(fires, at=at)
+            drain_rows = getattr(core, "drain_judgment_trace_rows", None)
+            emit_trace = getattr(core, "_emit_trace", None)
+            if callable(drain_rows) and callable(emit_trace):
+                for trace_id, trace_t, stage, data in drain_rows():
+                    await emit_trace(trace_id, trace_t, stage, **data)
+            await _drain_judge_health(core, on_health, at)
+            async for incident in _emit_materialized(materialized):
+                yield incident
+
+        async def _owner_driven_video():
+            """Yield video while servicing owner commands during source stalls."""
+            iterator = _aiter(
+                source, capture_fps, **source_kwargs
+            ).__aiter__()
+            next_envelope = asyncio.create_task(anext(iterator))
+            owner_wakeup = None
+            try:
+                while True:
+                    owner_wakeup = asyncio.create_task(_owner_ready.wait())
+                    done, _pending = await asyncio.wait(
+                        (next_envelope, owner_wakeup),
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if owner_wakeup in done:
+                        _owner_ready.clear()
+                        await _drain_owner_commands()
+                        # Newly materialized utterance handlers run off-owner;
+                        # give them their first turn while capture continues.
+                        await asyncio.sleep(0)
+                    else:
+                        owner_wakeup.cancel()
+                        await asyncio.gather(
+                            owner_wakeup, return_exceptions=True
+                        )
+                    if next_envelope not in done:
+                        continue
+                    try:
+                        envelope = next_envelope.result()
+                    except StopAsyncIteration:
+                        return
+                    yield envelope
+                    next_envelope = asyncio.create_task(anext(iterator))
+            finally:
+                if owner_wakeup is not None and not owner_wakeup.done():
+                    owner_wakeup.cancel()
+                if not next_envelope.done():
+                    next_envelope.cancel()
+                await asyncio.gather(
+                    *(
+                        task
+                        for task in (owner_wakeup, next_envelope)
+                        if task is not None
+                    ),
+                    return_exceptions=True,
+                )
+
         _was_paused = False
-        async for envelope in _aiter(source, capture_fps, **source_kwargs):
+        _fused_was_paused = False
+        video_stream = (
+            _owner_driven_video()
+            if audio_source is not None
+            else _aiter(source, capture_fps, **source_kwargs)
+        )
+        async for envelope in video_stream:
+            await _drain_owner_commands()
+            if _fused_syncs and _fused_requires_envelope_clock_claim:
+                if (
+                    envelope.clock_authority is None
+                    or envelope.clock_confidence is None
+                    or float(envelope.clock_confidence) < _fused_clock_confidence
+                ):
+                    raise ValueError(
+                        "fused video envelope omitted its qualified "
+                        "clock authority/confidence"
+                    )
+                if _video_clock_authority is None:
+                    _video_clock_authority = envelope.clock_authority
+                if (
+                    envelope.clock_authority != _video_clock_authority
+                    or (
+                        _audio_clock_authority is not None
+                        and envelope.clock_authority != _audio_clock_authority
+                    )
+                ):
+                    raise ValueError(
+                        "fused video envelope changed its qualified clock authority"
+                    )
             require_source_time = video_tb.resolved == "media"
             if envelope.modality in ("video", "audio") and envelope.modality != "video":
                 inspection = _video_source_tracker.exclude("source_modality_mismatch")
             else:
+                preview = _video_source_tracker.preview(
+                    envelope, require_source_time=require_source_time
+                )
+                if (
+                    _fused_syncs
+                    and preview.accepted
+                    and _video_source_id is not None
+                    and envelope.source_id != _video_source_id
+                ):
+                    raise ValueError(
+                        "one fused runtime worker accepts exactly one video source_id; "
+                        f"got {_video_source_id!r} then {envelope.source_id!r}"
+                    )
                 inspection = _video_source_tracker.inspect(
                     envelope, require_source_time=require_source_time
                 )
@@ -3513,9 +4965,28 @@ async def _run_worker(
             if inspection.resets_continuity:
                 # This must precede health-sink awaits and result draining: both yield control and can
                 # let a cancellation-resistant stale judge finish.
+                if _fused_syncs:
+                    boundary = (
+                        envelope.source_time
+                        if require_source_time
+                        and isinstance(envelope.source_time, (int, float))
+                        and not isinstance(envelope.source_time, bool)
+                        and math.isfinite(float(envelope.source_time))
+                        else envelope.observed_time
+                    )
+                    _advance_fused_generation(
+                        _fused_reason(inspection.events),
+                        boundary=float(boundary),
+                    )
                 _advance_source_continuity()
                 if _judge_sched is not None:
                     _judge_sched.invalidate_source_continuity(inspection.events)
+                if _audio_judge_sched is not None:
+                    _audio_judge_sched.invalidate_source_continuity(
+                        inspection.events
+                    )
+                for scheduler in (_fused_judge_scheds or {}).values():
+                    scheduler.invalidate_source_continuity(inspection.events)
             t = (
                 envelope.source_time
                 if require_source_time
@@ -3529,6 +5000,49 @@ async def _run_worker(
                 and math.isfinite(float(t))
             ):
                 t = None
+            fused_anchors = {}
+            if inspection.accepted and t is not None:
+                for goal_id, synchronizer in (_fused_syncs or {}).items():
+                    accepted_video = _AcceptedMediaUnit(
+                        modality="video",
+                        payload=envelope.payload,
+                        source_id=envelope.source_id,
+                        source_epoch=envelope.epoch,
+                        source_sequence=envelope.sequence,
+                        generation=synchronizer.generation,
+                        watch_application=synchronizer.watch_application,
+                        watch_revision=synchronizer.watch_revision,
+                        event_start=float(t),
+                        event_end=float(t),
+                        observed_start=envelope.observed_time,
+                        observed_end=envelope.observed_time,
+                        clock_domain=(
+                            "source" if video_tb.resolved == "media" else "observed"
+                        ),
+                        clock_authority=_video_clock_authority,
+                        clock_confidence=_fused_clock_confidence,
+                        provenance={
+                            "adapter": "runtime.video",
+                            "format": {
+                                "media_type": envelope.format.media_type,
+                                "width": envelope.format.width,
+                                "height": envelope.format.height,
+                            },
+                            "source_time": envelope.source_time,
+                            "observed_time": envelope.observed_time,
+                        },
+                        discontinuity=(
+                            _fused_reason(inspection.events)
+                            if inspection.resets_continuity
+                            else _FusedDiscontinuity.NONE
+                        ),
+                        # SourceTracker has proven this carrier's event ordering final.
+                        source_watermark=float(t),
+                    )
+                    if synchronizer.accept(accepted_video):
+                        if synchronizer.generation_start_event_time is None:
+                            synchronizer.set_generation_start(float(t))
+                        fused_anchors[goal_id] = accepted_video
             await _record_source_inspection(envelope, inspection, ts=t)
             # Async judge dispatch: surface everything the off-loop scheduler finished since the last
             # frame — fires route through the SAME _emit_fires machinery at their ADMISSION time `jt`
@@ -3543,12 +5057,41 @@ async def _run_worker(
                 for _hk, _hd in _judge_sched.drain_trace():
                     if on_health is not None:
                         await _call_sink(on_health, RuntimeHealthEvent(_hk, ts=t, data=_hd))
-                for _jt, _jfires in _judge_sched.drain():
-                    async for incident in _emit_fires(_jfires, at=_jt):
+                for _jt, _completions in _judge_sched.drain():
+                    async for incident in _emit_judgment_completions(
+                        _completions,
+                        at=_jt,
+                        scheduler=_judge_sched,
+                    ):
                         yield incident
                 # Surface any judge_degraded/judge_persistent_failure events queued by the
                 # perceive_judged calls that just drained above (core is shared across dispatch modes).
                 await _drain_judge_health(core, on_health, t)
+            if _audio_judge_sched is not None:
+                for _hk, _hd in _audio_judge_sched.drain_trace():
+                    if on_health is not None:
+                        await _call_sink(
+                            on_health, RuntimeHealthEvent(_hk, ts=t, data=_hd)
+                        )
+                for _jt, _jfires in _audio_judge_sched.drain():
+                    async for incident in _emit_fires(_jfires, at=_jt):
+                        yield incident
+                await _drain_judge_health(core, on_health, t)
+            while _fused_local_completions:
+                _local_t, _local_completion = _fused_local_completions.popleft()
+                async for incident in _emit_fused_completion(
+                    _local_completion, at=_local_t
+                ):
+                    yield incident
+            for scheduler in (_fused_judge_scheds or {}).values():
+                for _hk, _hd in scheduler.drain_trace():
+                    if on_health is not None:
+                        await _call_sink(on_health, RuntimeHealthEvent(_hk, ts=t, data=_hd))
+                for _jt, _completion in scheduler.drain():
+                    async for incident in _emit_fused_completion(
+                        _completion, at=_jt
+                    ):
+                        yield incident
             if not inspection.accepted:
                 continue
             assert t is not None  # accepted envelope validation guarantees a finite lane clock
@@ -3585,7 +5128,25 @@ async def _run_worker(
                     t if (video_tb.resolved if live_video else "media") == "media"
                     else ((t - _clock_t0[0]) if _clock_t0[0] is not None else 0.0)
                 )
-                _video_progress.set()
+                if audio_task is not None and not audio_task.done():
+                    _audio_pace_settled.clear()
+                    _owner_ready.clear()
+                    _video_progress.set()
+                    # Wait until the capture-only publisher reaches the next
+                    # beyond-lookahead carrier (or EOS), then commit the
+                    # complete ready prefix before this video coordinate can
+                    # judge it.
+                    while not _audio_pace_settled.is_set():
+                        await _owner_ready.wait()
+                        _owner_ready.clear()
+                        await _drain_owner_commands()
+                        if audio_task.done():
+                            break
+                else:
+                    _video_progress.set()
+                await _drain_owner_commands()
+                if audio_task is not None and audio_task.done():
+                    audio_task.result()
             if _clock_t0[0] is None:
                 _clock_t0[0] = t
             # On a WALL-timebase source, frame `t` IS the wall clock — if it has drifted from the core
@@ -3606,6 +5167,49 @@ async def _run_worker(
             if goals_revision is not None:
                 rev = getattr(core.goals, "revision", goals_revision)
                 if rev != goals_revision:
+                    current_fused, _ = _live_watch_topology()
+                    if _fused_syncs:
+                        _advance_fused_generation(
+                            _FusedDiscontinuity.WATCH_REVISION,
+                            revision=rev,
+                        )
+                        for scheduler in (_fused_judge_scheds or {}).values():
+                            scheduler.invalidate_source_continuity(
+                                ("watch_revision",)
+                            )
+                    current_fused = {goal.id: goal for goal in current_fused}
+                    if current_fused and not fused_goals:
+                        raise ValueError(
+                            "a fused Watch must be armed before percept.run starts so both media "
+                            "lanes and the frozen synchronization policy can be preflighted"
+                        )
+                    if _fused_syncs is not None:
+                        for removed_id in set(_fused_syncs) - set(current_fused):
+                            _fused_syncs.pop(removed_id).advance_generation(
+                                _FusedDiscontinuity.WATCH_REVISION,
+                                watch_revision=rev,
+                            )
+                            removed_scheduler = (_fused_judge_scheds or {}).pop(
+                                removed_id, None
+                            )
+                            if removed_scheduler is not None:
+                                removed_scheduler.invalidate_source_continuity(
+                                    ("watch_revision",)
+                                )
+                        for added_id in set(current_fused) - set(_fused_syncs):
+                            added_goal = current_fused[added_id]
+                            _fused_syncs[added_id] = _new_fused_synchronizer(
+                                added_goal, rev
+                            )
+                            assert _fused_judge_scheds is not None
+                            _fused_judge_scheds[added_id] = _LegacyJudgeScheduler(
+                                core,
+                                gate_source,
+                                _cov,
+                                perceive=_dispatch_prepared_fused_job,
+                                stall_after_s=judge_stall_after_s,
+                                backpressure_after=judge_backpressure_after,
+                            )
                     if regate_on_goal_change:
                         # Pass the live gate + banks so the rebuild ADOPTS per-goal throttle + prev
                         # frame and REUSES surviving goals' detector banks (no throttle release / rep
@@ -3659,6 +5263,18 @@ async def _run_worker(
             _cov.frames += 1
             _cov.frames_dropped = dropped[0]
             clips.push(t, judge_frame)
+            is_paused = bool(paused is not None and paused())
+            if _fused_syncs and is_paused != _fused_was_paused:
+                _advance_fused_generation(
+                    _FusedDiscontinuity.PAUSE
+                    if is_paused
+                    else _FusedDiscontinuity.RESUME
+                )
+                for scheduler in (_fused_judge_scheds or {}).values():
+                    scheduler.invalidate_source_continuity(
+                        ("runtime_pause" if is_paused else "runtime_resume",)
+                    )
+                _fused_was_paused = is_paused
             # A pre-roll frame dropped by the BYTE budget is announced on the frame cadence, with its
             # reason and the live held bytes/frames — the operator sees the snippet getting shorter
             # instead of silently receiving less evidence than the configured pre_s (ADR-001 §9).
@@ -3675,7 +5291,6 @@ async def _run_worker(
             # SLEEP (RuntimeSession.pause): keep capturing + streaming frames to subscribers (the camera
             # panel stays live) but spend NO gate/judge/incident this tick — a cost-free pause that resumes
             # instantly. Default (paused=None) is byte-for-byte.
-            is_paused = bool(paused is not None and paused())
             if is_paused != _was_paused:
                 # Neither a pause nor a resume is evidence that a condition remained continuously
                 # true. Pending dwell is invalidated on both boundaries without re-arming fired state.
@@ -3966,21 +5581,139 @@ async def _run_worker(
             # The admit CONDITION above is unchanged by dispatch mode — only what "spend a judgment"
             # means changes. judge_calls is counted at LAUNCH either way (inline: launch == admit;
             # async: a superseded/revision-dropped candidate never spent a call — the scheduler counts).
-            if _judge_sched is not None:
-                _judge_sched.submit(t, judge_frame, tuple(admitted_goal_ids))
-            else:
-                _cov.perceive_dispatches += 1
-                _cov.judge_calls += 1
-                perceive_kwargs = {"t": t}
-                if perceive_accepts_goal_ids:
-                    perceive_kwargs["goal_ids"] = tuple(admitted_goal_ids)
-                fires = await core.perceive_judged(
-                    judge_frame, gate_source, **perceive_kwargs
+            fused_admitted = [
+                goal_id
+                for goal_id in admitted_goal_ids
+                if _fused_syncs is not None and goal_id in _fused_syncs
+            ]
+            for goal_id in fused_admitted:
+                anchor = fused_anchors.get(goal_id)
+                if anchor is None:
+                    continue
+                bundle = _fused_syncs[goal_id].bundle_for(anchor)
+                for receipt in _fused_syncs[goal_id].drain_bound_drops():
+                    if on_health is not None:
+                        await _call_sink(
+                            on_health,
+                            RuntimeHealthEvent(
+                                "fused_bounds_drop",
+                                ts=t,
+                                data={
+                                    "goal_id": goal_id,
+                                    "dropped_count": receipt.dropped_count,
+                                    "latest_anchor_identity": receipt.latest_anchor_identity,
+                                    "reason": receipt.reason.value,
+                                },
+                            ),
+                        )
+                if not any(
+                    reason.value == "watermark_pending"
+                    for reason in bundle.coverage_reasons
+                ):
+                    _queue_fused_bundle(goal_id, bundle)
+            audio_goal_ids = tuple(
+                goal_id
+                for goal_id in admitted_goal_ids
+                if (
+                    (goal := core.goals.get(goal_id)) is not None
+                    and program_of(goal).perception.modality == "audio"
                 )
-                if not perceive_accepts_goal_ids:
-                    fires = _filter_goal_events(fires, tuple(admitted_goal_ids))
-                async for incident in _emit_fires(fires, at=t):
-                    yield incident
+            )
+            ordinary_goal_ids = tuple(
+                goal_id
+                for goal_id in admitted_goal_ids
+                if (
+                    (_fused_syncs is None or goal_id not in _fused_syncs)
+                    and goal_id not in audio_goal_ids
+                )
+            )
+            if audio_goal_ids:
+                audio_evidence = _exact_audio_evidence(audio_goal_ids, at=t)
+                admitted_audio_ids = tuple(
+                    goal_id for goal_id in audio_goal_ids if goal_id in audio_evidence
+                )
+                if _audio_judge_sched is not None:
+                    if admitted_audio_ids:
+                        _audio_judge_sched.submit(
+                            t, audio_evidence, admitted_audio_ids
+                        )
+                elif admitted_audio_ids:
+                    _cov.perceive_dispatches += 1
+                    _cov.judge_calls += 1
+                    perceive_audio = getattr(core, "perceive_audio_judged")
+                    fires = await perceive_audio(
+                        audio_evidence,
+                        gate_source,
+                        t=t,
+                        expected_goals_revision=goals_revision,
+                        expected_source_generation=core.source_continuity_generation(
+                            gate_source
+                        ),
+                        goal_ids=admitted_audio_ids,
+                    )
+                    async for incident in _emit_fires(fires, at=t):
+                        yield incident
+            if _judge_sched is not None:
+                if ordinary_goal_ids:
+                    jobs = await _prepare_split_jobs(
+                        judge_frame,
+                        ordinary_goal_ids,
+                        at=t,
+                        revision=goals_revision,
+                    )
+                    if jobs:
+                        _judge_sched.submit(t, jobs)
+                        # Give a non-blocking provider task one scheduling turn.
+                        # Fast local/scripted adapters settle before the next
+                        # frame; a slow provider remains off the capture path.
+                        await asyncio.sleep(0)
+                        await asyncio.sleep(0)
+            elif ordinary_goal_ids:
+                # Preserve the documented inline override seam.  A caller
+                # that installs ``perceive_judged`` on this core instance has
+                # explicitly opted into the historical all-in-one inline
+                # callback; do not silently bypass it through the split
+                # provider protocol.  The normal class method still uses the
+                # owner-only prepare/dispatch/reduce path below.
+                legacy_inline = vars(core).get("perceive_judged")
+                if callable(legacy_inline):
+                    _cov.judge_calls += 1
+                    _cov.perceive_dispatches += 1
+                    fires = await legacy_inline(
+                        judge_frame,
+                        gate_source,
+                        t=t,
+                        expected_goals_revision=goals_revision,
+                        expected_source_generation=core.source_continuity_generation(
+                            gate_source
+                        ),
+                        goal_ids=ordinary_goal_ids,
+                    )
+                    async for incident in _emit_fires(fires, at=t):
+                        yield incident
+                else:
+                    jobs = await _prepare_split_jobs(
+                        judge_frame,
+                        ordinary_goal_ids,
+                        at=t,
+                        revision=goals_revision,
+                    )
+                    launched = (
+                        core.launch_judgments(jobs, runtime_trace=True)
+                        if jobs
+                        else ()
+                    )
+                    completions = []
+                    if launched:
+                        _cov.judge_calls += 1
+                    for job in launched:
+                        _cov.perceive_dispatches += 1
+                        completions.append(await core.dispatch_judgment(job))
+                    async for incident in _emit_judgment_completions(
+                        completions,
+                        at=t,
+                    ):
+                        yield incident
         # Source exhausted (finite file / test stream): a judgment may still be IN FLIGHT and one more
         # PENDING behind it. Flush to QUIESCENCE (completing the active may launch the pending — one
         # await is not enough) and emit everything, so a collect-all consumer sees every incident the
@@ -3992,28 +5725,235 @@ async def _run_worker(
         if _audio_paced:
             _video_exhausted[0] = True
             _video_progress.set()
+            if audio_task is not None:
+                await audio_task
+        elif audio_task is not None and not live_audio:
+            # A deterministic finite audio iterable is part of the same finite
+            # replay. Join its capture-only publisher before the final owner
+            # drain; a live mic remains cancellation-owned in ``finally``.
+            try:
+                await audio_task
+            except Exception:
+                # The watchdog already surfaced capture/publisher failure.
+                pass
+        await _drain_owner_commands()
+        await asyncio.sleep(0)
+        for goal_id, synchronizer in (_fused_syncs or {}).items():
+            for final_bundle in synchronizer.close():
+                _queue_fused_bundle(goal_id, final_bundle)
+        while _fused_local_completions:
+            _local_t, _local_completion = _fused_local_completions.popleft()
+            async for incident in _emit_fused_completion(
+                _local_completion, at=_local_t
+            ):
+                yield incident
+        async def _flush_provider_lane(kind, goal_id, scheduler):
+            await scheduler.flush()
+            return kind, goal_id, scheduler
+
+        provider_flush_tasks = []
+        provider_flush_meta = {}
+        for goal_id, scheduler in (_fused_judge_scheds or {}).items():
+            task = asyncio.create_task(
+                _flush_provider_lane("fused", goal_id, scheduler)
+            )
+            provider_flush_tasks.append(task)
+            provider_flush_meta[task] = ("fused", goal_id, scheduler)
+        if _audio_judge_sched is not None:
+            task = asyncio.create_task(
+                _flush_provider_lane("audio", None, _audio_judge_sched)
+            )
+            provider_flush_tasks.append(task)
+            provider_flush_meta[task] = ("audio", None, _audio_judge_sched)
         if _judge_sched is not None:
-            await _judge_sched.flush()
-            for _hk, _hd in _judge_sched.drain_trace():
+            task = asyncio.create_task(
+                _flush_provider_lane("ordinary", None, _judge_sched)
+            )
+            provider_flush_tasks.append(task)
+            provider_flush_meta[task] = ("ordinary", None, _judge_sched)
+        eos_timeout_s = max(0.01, float(judge_stall_after_s))
+        eos_deadline = asyncio.get_running_loop().time() + eos_timeout_s
+        try:
+            for completed in asyncio.as_completed(
+                provider_flush_tasks,
+                timeout=eos_timeout_s,
+            ):
+                lane_kind, _goal_id, scheduler = await completed
+                for _hk, _hd in scheduler.drain_trace():
+                    if on_health is not None:
+                        await _call_sink(
+                            on_health, RuntimeHealthEvent(_hk, data=_hd)
+                        )
+                if lane_kind == "fused":
+                    for _jt, _completion in scheduler.drain():
+                        async for incident in _emit_fused_completion(
+                            _completion, at=_jt
+                        ):
+                            yield incident
+                else:
+                    for _jt, _result in scheduler.drain():
+                        if lane_kind == "ordinary":
+                            async for incident in _emit_judgment_completions(
+                                _result,
+                                at=_jt,
+                                scheduler=scheduler,
+                            ):
+                                yield incident
+                        else:
+                            async for incident in _emit_fires(
+                                _result,
+                                at=_jt,
+                            ):
+                                yield incident
+            # Split ordinary transport cannot launch its accepted pending
+            # batch until the owner reduces the preceding ready completion.
+            # Repeat within the same absolute multi-lane deadline.
+            while (
+                _judge_sched is not None
+                and (_judge_sched.active or _judge_sched.pending)
+            ):
+                remaining = (
+                    eos_deadline - asyncio.get_running_loop().time()
+                )
+                if remaining <= 0:
+                    raise TimeoutError
+                await asyncio.wait_for(
+                    _flush_provider_lane(
+                        "ordinary", None, _judge_sched
+                    ),
+                    timeout=remaining,
+                )
+                for _hk, _hd in _judge_sched.drain_trace():
+                    if on_health is not None:
+                        await _call_sink(
+                            on_health,
+                            RuntimeHealthEvent(_hk, data=_hd),
+                        )
+                for _jt, _result in _judge_sched.drain():
+                    async for incident in _emit_judgment_completions(
+                        _result,
+                        at=_jt,
+                        scheduler=_judge_sched,
+                    ):
+                        yield incident
+        except TimeoutError:
+            # A cancellation-resistant provider lane must not hold completed
+            # reflex lanes or end-of-stream delivery hostage.
+            closed_schedulers = set()
+            for task in provider_flush_tasks:
+                if not task.done():
+                    lane_kind, goal_id, scheduler = provider_flush_meta[task]
+                    if on_health is not None:
+                        await _call_sink(
+                            on_health,
+                            RuntimeHealthEvent(
+                                "judge_eos_timeout",
+                                ts=_last_t,
+                                data={
+                                    "lane": lane_kind,
+                                    "goal_id": goal_id,
+                                    "reason": "end_of_stream_deadline",
+                                    "active": scheduler.active,
+                                    "pending": scheduler.pending,
+                                },
+                            ),
+                        )
+                    task.cancel()
+                    # Never await this wrapper: its provider may suppress
+                    # cancellation.  The scheduler owns bounded teardown.
+                    task.add_done_callback(
+                        lambda done: (
+                            None
+                            if done.cancelled()
+                            else done.exception()
+                        )
+                    )
+                    await scheduler.close(drain=False)
+                    closed_schedulers.add(scheduler)
+            for lane_kind, goal_id, scheduler in provider_flush_meta.values():
+                if (
+                    scheduler in closed_schedulers
+                    or not (scheduler.active or scheduler.pending)
+                ):
+                    continue
                 if on_health is not None:
-                    await _call_sink(on_health, RuntimeHealthEvent(_hk, data=_hd))
-            for _jt, _jfires in _judge_sched.drain():
-                async for incident in _emit_fires(_jfires, at=_jt):
-                    yield incident
+                    await _call_sink(
+                        on_health,
+                        RuntimeHealthEvent(
+                            "judge_eos_timeout",
+                            ts=_last_t,
+                            data={
+                                "lane": lane_kind,
+                                "goal_id": goal_id,
+                                "reason": "end_of_stream_deadline",
+                                "active": scheduler.active,
+                                "pending": scheduler.pending,
+                            },
+                        ),
+                    )
+                await scheduler.close(drain=False)
+                closed_schedulers.add(scheduler)
+            # Closing a lane creates typed cancellation/drop traces. Drain
+            # those plus any result that completed immediately before the
+            # deadline, including fast ordinary/reflex completions.
+            for lane_kind, _goal_id, scheduler in provider_flush_meta.values():
+                for _hk, _hd in scheduler.drain_trace():
+                    if on_health is not None:
+                        await _call_sink(
+                            on_health, RuntimeHealthEvent(_hk, ts=_last_t, data=_hd)
+                        )
+                if lane_kind == "fused":
+                    for _jt, _completion in scheduler.drain():
+                        async for incident in _emit_fused_completion(
+                            _completion, at=_jt
+                        ):
+                            yield incident
+                else:
+                    for _jt, _result in scheduler.drain():
+                        if lane_kind == "ordinary":
+                            async for incident in _emit_judgment_completions(
+                                _result,
+                                at=_jt,
+                                scheduler=scheduler,
+                            ):
+                                yield incident
+                        else:
+                            async for incident in _emit_fires(
+                                _result,
+                                at=_jt,
+                            ):
+                                yield incident
+        await _drain_judge_health(core, on_health, _last_t)
         # The LAST tick's suppressions (and anything the end-of-source flush above produced) would
         # otherwise die with the queue — drain once more so a finite stream reports every suppression
         # it earned, not all-but-the-final-tick's.
         await _drain_gate_health(core, on_health, _last_t)
     except Exception as exc:
+        if _fused_syncs:
+            _advance_fused_generation(_FusedDiscontinuity.WORKER_ERROR)
+            for scheduler in (_fused_judge_scheds or {}).values():
+                scheduler.invalidate_source_continuity(("worker_error",))
         if on_health is not None:
             await _call_sink(on_health, RuntimeHealthEvent("runtime_error", data={"error": repr(exc)}))
         raise
     finally:
+        # Teardown is a single runtime-owner continuity boundary.  Provider
+        # lanes only cancel transport; they must never each advance shared
+        # cognition state.
+        _advance_source_continuity()
+        if _fused_syncs:
+            _advance_fused_generation(_FusedDiscontinuity.CANCELLATION)
+            for scheduler in (_fused_judge_scheds or {}).values():
+                scheduler.invalidate_source_continuity(("runtime_shutdown",))
         # Async judge dispatch: never start new work past this point; cancel an in-flight judgment and
         # swallow its CancelledError (live shutdown / consumer break / cancellation). The normal
         # end-of-source path already flushed to quiescence above, so this is a no-op there.
         if _judge_sched is not None:
             await _judge_sched.close(drain=False)
+        if _audio_judge_sched is not None:
+            await _audio_judge_sched.close(drain=False)
+        for scheduler in (_fused_judge_scheds or {}).values():
+            await scheduler.close(drain=False)
         if audio_task is not None:  # stop the audio pump; a dangling capture thread outlives the run otherwise
             audio_task.cancel()
         for _t in list(_utt_tasks):  # an in-flight voice turn must not outlive the run
@@ -4076,6 +6016,7 @@ async def _run_worker(
             await _call_sink(on_health, RuntimeHealthEvent("runtime_ended", data=_cov_data))
 
 
+@_exclusive_core_runtime
 async def run(
     core: Any = None,
     *,
