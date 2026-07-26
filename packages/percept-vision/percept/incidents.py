@@ -108,6 +108,11 @@ def make_incident(
     if shadow_val is not None and hasattr(shadow_val, "to_advisory"):
         shadow_val = shadow_val.to_advisory()
     incident._shadow = shadow_val  # type: ignore[attr-defined]
+    fused_bundle = getattr(fire, "_fused_evidence_bundle", None)
+    if fused_bundle is not None:
+        # Runtime-local exact carrier, parallel to the existing revision/shadow
+        # annotations.  It is intentionally absent from the public wire schema.
+        incident._fused_evidence_bundle = fused_bundle  # type: ignore[attr-defined]
     return incident
 
 

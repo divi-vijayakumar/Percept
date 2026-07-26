@@ -103,6 +103,166 @@ class FireEvent:
     audio_units: tuple[AudioUnit, ...] | None = None
 
 
+@dataclass(frozen=True)
+class _JudgmentAdmissionToken:
+    admission_id: str
+    goal_id: str
+    watch_application: str
+    watch_revision: int
+    goals_registry_revision: int
+    watch_runtime_token: object
+    judge_binding_token: object
+    source_id: str
+    source_generation: int
+    fused_generation: int
+    evidence_seq: int
+    parent_source_trace_id: str
+    judgment_trace_id: str
+
+
+@dataclass(frozen=True)
+class _FusedJudgmentJob:
+    token: _JudgmentAdmissionToken
+    bundle: Any
+    dispatch: Any
+    adapter: Any
+    condition: str
+    frame: Any
+    frames: tuple[Any, ...]
+    audio: Any
+    roi: Any
+    exemplar: Any
+    corrections: tuple[tuple[str, str], ...]
+    context: Any
+    source_t: float
+    ingest_observed_ts: float
+    admitted_ts: float
+
+
+@dataclass(frozen=True)
+class _FusedProviderFailure:
+    kind: str
+    exception_type: str
+    safe_message: str
+
+
+@dataclass(frozen=True)
+class _FrozenMapping:
+    items: tuple[tuple[Any, Any], ...]
+
+
+def _freeze_provider_value(value: Any) -> Any:
+    """Detach and recursively freeze provider-owned structured values."""
+    from .contracts import ClipEvent
+
+    if value is None or type(value) in (bool, int, float, str, bytes):
+        return value
+    if type(value) is ClipEvent:
+        return ClipEvent(value.t_start, value.t_end, value.label)
+    if type(value) is SubjectRef:
+        return value
+    if isinstance(value, dict):
+        return _FrozenMapping(
+            tuple(
+                (_freeze_provider_value(key), _freeze_provider_value(item))
+                for key, item in value.items()
+            )
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_provider_value(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_freeze_provider_value(item) for item in value)
+    raise ValueError(
+        f"provider Verdict contains unsupported mutable value {type(value).__name__}"
+    )
+
+
+def _thaw_provider_value(value: Any) -> Any:
+    if type(value) is _FrozenMapping:
+        return {
+            _thaw_provider_value(key): _thaw_provider_value(item)
+            for key, item in value.items
+        }
+    if isinstance(value, tuple):
+        return [_thaw_provider_value(item) for item in value]
+    if isinstance(value, frozenset):
+        return {_thaw_provider_value(item) for item in value}
+    return value
+
+
+@dataclass(frozen=True)
+class _VerdictSnapshot:
+    satisfied: bool
+    confidence: float
+    evidence: str
+    phase: str
+    action_present: bool | None
+    running_answer: str
+    usage: _FrozenMapping
+    events: tuple[Any, ...]
+    subject: SubjectRef | None
+    operation: str
+    value: Any
+    normalized_value: Any
+    target_revision_id: str | None
+    asserted_by: str | None
+
+    @classmethod
+    def capture(cls, verdict: Verdict) -> "_VerdictSnapshot":
+        if not _is_valid_verdict(verdict):
+            raise ValueError("provider returned a malformed Verdict")
+        usage = _freeze_provider_value(verdict.usage)
+        if type(usage) is not _FrozenMapping:
+            raise ValueError("provider Verdict usage must be a mapping")
+        return cls(
+            satisfied=verdict.satisfied,
+            confidence=float(verdict.confidence),
+            evidence=str(verdict.evidence),
+            phase=str(verdict.phase),
+            action_present=verdict.action_present,
+            running_answer=str(verdict.running_answer),
+            usage=usage,
+            events=tuple(_freeze_provider_value(event) for event in verdict.events),
+            subject=_freeze_provider_value(verdict.subject),
+            operation=str(verdict.operation),
+            value=_freeze_provider_value(verdict.value),
+            normalized_value=_freeze_provider_value(verdict.normalized_value),
+            target_revision_id=verdict.target_revision_id,
+            asserted_by=verdict.asserted_by,
+        )
+
+    def to_verdict(self) -> Verdict:
+        return Verdict(
+            satisfied=self.satisfied,
+            confidence=self.confidence,
+            evidence=self.evidence,
+            phase=self.phase,
+            action_present=self.action_present,
+            running_answer=self.running_answer,
+            usage=_thaw_provider_value(self.usage),
+            events=[_thaw_provider_value(event) for event in self.events],
+            subject=self.subject,
+            operation=self.operation,
+            value=_thaw_provider_value(self.value),
+            normalized_value=_thaw_provider_value(self.normalized_value),
+            target_revision_id=self.target_revision_id,
+            asserted_by=self.asserted_by,
+        )
+
+
+@dataclass(frozen=True)
+class _FusedProviderCompletion:
+    """Provider-only fused result; it cannot mutate cognition until owner reduction."""
+
+    job: _FusedJudgmentJob
+    verdict: _VerdictSnapshot
+    failure: _FusedProviderFailure | None
+    usage: tuple[tuple[str, Any], ...]
+    judge_latency_s: float
+    judge_started_ts: float
+    judge_completed_ts: float
+
+
 # -- The resolved WatchProfile.plan_mode -> the concern's PerceptionSpec -----------------------
 # ``plan_mode`` was carried onto the core before anything read it. This module makes it LIVE: a resolved profile whose
 # plan_mode is "window" makes the judge see an ORDERED FRAME WINDOW (``judge(frames=[...])``, oldest→
@@ -1971,6 +2131,7 @@ class Percept:
 
         events: list[FireEvent] = []
         for goal in active_goals:
+            events_before_goal = len(events)
             if _stale():
                 break  # revision moved during a prior goal's judge — stop before judging under it
             route = goal_behavior_route(goal)
@@ -1985,6 +2146,7 @@ class Percept:
                 )
                 if ev is not None:
                     events.append(ev)
+                    self._log_fires([ev], now)
                 continue
             if route is BehaviorRoute.FRAME_PROCESS:
                 # Item 4: log a delta, never fire here
@@ -2164,11 +2326,6 @@ class Percept:
             if _stale():
                 break  # source/goal generation moved while the judge was in flight: commit nothing
             self._note_judge_ok(base_key)  # a well-formed verdict resets this key's degrade streak
-            if tracing:
-                await self._emit_trace(trace_id, now, "judge.finished", goal_id=goal.id,
-                                       satisfied=getattr(verdict, "satisfied", None),
-                                       confidence=getattr(verdict, "confidence", None),
-                                       **judge_prov)
             resolved: FireEvent | None = None
             if process_ctx is not None and getattr(verdict, "running_answer", ""):
                 ctx.running_answer = verdict.running_answer  # accumulate the model's rewritten summary
@@ -2216,7 +2373,21 @@ class Percept:
             if resolved is not None:  # the process-QA running answer crossed the bar this tick
                 self.funnel.fired(concern=goal.id, camera=source)
                 events.append(resolved)
+            self._log_fires(events[events_before_goal:], now)
             if tracing:
+                # Provider completion through cognition/action-log commit above is one
+                # synchronous owner segment.  Trace callbacks run only after that commit,
+                # so a tracer cannot change the Watch revision between stale validation
+                # and gate/executor mutation.
+                await self._emit_trace(
+                    trace_id,
+                    now,
+                    "judge.finished",
+                    goal_id=goal.id,
+                    satisfied=getattr(verdict, "satisfied", None),
+                    confidence=getattr(verdict, "confidence", None),
+                    **judge_prov,
+                )
                 # AFTER both fire paths: label a FIRE whenever an incident was actually emitted this tick
                 # — either the gate fired OR a resolved process-QA answer crossed the bar (which fires even
                 # when the gate abstained/ASK'd on this same tick). Only ask/silent when nothing fired.
@@ -2276,7 +2447,6 @@ class Percept:
                 # no shadow work at all).
                 await self._emit_trace(trace_id, now, STAGE_SHADOW_FOLD, goal_id=goal.id,
                                        **self._shadow_observe(verdict).to_advisory())
-        self._log_fires(events, now)
         if _stale():
             return events  # aborted mid-loop: skip auto-refinement (it authors goal changes)
         if not audio_only:
@@ -2335,6 +2505,550 @@ class Percept:
             expected_source_generation=expected_source_generation,
             goal_ids=goal_ids,
             _audio_units_by_goal=frozen,
+        )
+
+    def prepare_fused_judgment(
+        self,
+        bundle: Any,
+        *,
+        goal_id: str,
+        source: str,
+        source_t: float,
+        goals_revision: int,
+        source_generation: int,
+        fused_generation: int,
+    ) -> "_FusedJudgmentJob | None":
+        """Owner-only synchronous admission: freeze every provider input and token."""
+        import copy
+        from types import MappingProxyType
+
+        from .audio_input import audio_frame_from_units
+        from .fused_sync import _FusedEvidenceBundle
+
+        if type(bundle) is not _FusedEvidenceBundle:
+            raise ValueError("fused admission requires an exact frozen bundle")
+        goal = self.goals.get(goal_id)
+        if goal is None or program_of(goal).perception.modality != "fused":
+            return None
+        if self.goals.revision != goals_revision:
+            return None
+        binding = self._audio_judge_binding_for(goal)
+        runtime = self._watch_runtime_for(goal)
+        if (
+            runtime is None
+            or bundle.watch_application != binding.application_key
+            or bundle.watch_revision != goals_revision
+            or bundle.video_units[-1].generation != fused_generation
+        ):
+            raise ValueError("fused bundle application does not match its immutable judge binding")
+        # Complete every fallible projection before reserving sequence/latest
+        # admission state.  Admission publication below is one synchronous,
+        # non-raising owner segment.
+        anchor = bundle.video_units[-1]
+        observed = [
+            unit.observed_end for unit in (*bundle.video_units, *bundle.audio_units)
+        ]
+        audio = (
+            audio_frame_from_units(
+                tuple(unit.payload for unit in bundle.audio_units),
+                capability=binding.capability,
+            )
+            if bundle.complete
+            else None
+        )
+        exemplar = copy.deepcopy(goal.state.get("exemplar"))
+        frozen_source_t = float(source_t)
+        ingest_observed_ts = max(observed) if observed else self.clock()
+        admitted_ts = self.clock()
+        base_key = (goal.id, None)
+        evidence_seq = self._admit_evidence(base_key)
+        bundle = bundle.with_judgment_identity(
+            evidence_seq=evidence_seq,
+            judgment_event_id=judgment_event_id(goal.id, None, evidence_seq),
+        )
+        counter = getattr(self, "_fused_admission_counter", 0) + 1
+        self._fused_admission_counter = counter
+        parent_trace_id = (
+            f"{anchor.source_id}:{anchor.source_epoch}:{anchor.source_sequence}:"
+            f"{anchor.generation}"
+        )
+        admission_id = f"{goal.id}:{goals_revision}:{counter}"
+        token = _JudgmentAdmissionToken(
+            admission_id=admission_id,
+            goal_id=goal.id,
+            watch_application=binding.application_key,
+            watch_revision=bundle.watch_revision,
+            goals_registry_revision=goals_revision,
+            watch_runtime_token=runtime[0],
+            judge_binding_token=binding.binding_token,
+            source_id=source,
+            source_generation=source_generation,
+            fused_generation=fused_generation,
+            evidence_seq=evidence_seq,
+            parent_source_trace_id=parent_trace_id,
+            judgment_trace_id=f"{parent_trace_id}:{goal.id}:{evidence_seq}",
+        )
+        latest = getattr(self, "_fused_latest_admission", None)
+        if latest is None:
+            latest = {}
+            self._fused_latest_admission = latest
+        latest[base_key] = admission_id
+        return _FusedJudgmentJob(
+            token=token,
+            bundle=bundle,
+            dispatch=binding.dispatch,
+            adapter=binding.adapter,
+            condition=str(goal.condition),
+            frame=anchor.payload,
+            frames=tuple(unit.payload for unit in bundle.video_units[:-1]),
+            audio=audio,
+            roi=None,
+            exemplar=exemplar,
+            corrections=(),
+            context=MappingProxyType({"_percept_frames_are_earlier": True}),
+            source_t=frozen_source_t,
+            ingest_observed_ts=ingest_observed_ts,
+            admitted_ts=admitted_ts,
+        )
+
+    async def dispatch_fused_judgment(
+        self,
+        job: "_FusedJudgmentJob",
+    ) -> "_FusedProviderCompletion":
+        """Provider-only phase: no live goal, binding, gate, trace, or metrics reads."""
+        if type(job) is not _FusedJudgmentJob:
+            raise ValueError("fused provider dispatch requires an exact admitted job")
+        failure = None
+        usage: dict[str, Any] = {}
+        judge_latency_s = 0.0
+        judge_started_ts = self.clock()
+        if not job.bundle.complete:
+            verdict = _VerdictSnapshot.capture(
+                Verdict(
+                    satisfied=False,
+                    confidence=0.0,
+                    evidence="fused coverage uncertainty: "
+                    + ",".join(
+                        reason.value for reason in job.bundle.coverage_reasons
+                    ),
+                )
+            )
+        else:
+            provider_started = self.clock()
+            try:
+                verdict = await job.dispatch(
+                    job.condition,
+                    job.frame,
+                    roi=job.roi,
+                    exemplar=job.exemplar,
+                    corrections=dict(job.corrections) or None,
+                    frames=list(job.frames) or None,
+                    audio=job.audio,
+                    context=job.context,
+                )
+                if not _is_valid_verdict(verdict):
+                    raise ValueError("fused provider returned a malformed Verdict")
+                usage = judge_usage(verdict)
+                verdict = _VerdictSnapshot.capture(verdict)
+            except Exception as exc:  # noqa: BLE001 - one provider completion fails closed
+                failure = _FusedProviderFailure(
+                    kind="provider_failure",
+                    exception_type=type(exc).__name__,
+                    safe_message="fused provider unavailable",
+                )
+                verdict = _VerdictSnapshot.capture(
+                    Verdict(
+                        satisfied=False,
+                        confidence=0.0,
+                        evidence="fused provider unavailable",
+                    )
+                )
+            judge_latency_s = self.clock() - provider_started
+        return _FusedProviderCompletion(
+            job=job,
+            verdict=verdict,
+            failure=failure,
+            usage=tuple(usage.items()),
+            judge_latency_s=judge_latency_s,
+            judge_started_ts=judge_started_ts,
+            judge_completed_ts=self.clock(),
+        )
+
+    def complete_fused_locally(
+        self,
+        job: "_FusedJudgmentJob",
+    ) -> "_FusedProviderCompletion":
+        """Build an uncertain no-provider completion without occupying a lane."""
+        if type(job) is not _FusedJudgmentJob or job.bundle.complete:
+            raise ValueError("local fused completion requires one uncertain admitted job")
+        now = self.clock()
+        verdict = _VerdictSnapshot.capture(
+            Verdict(
+                satisfied=False,
+                confidence=0.0,
+                evidence="fused coverage uncertainty: "
+                + ",".join(reason.value for reason in job.bundle.coverage_reasons),
+            )
+        )
+        return _FusedProviderCompletion(
+            job=job,
+            verdict=verdict,
+            failure=None,
+            usage=(),
+            judge_latency_s=0.0,
+            judge_started_ts=now,
+            judge_completed_ts=now,
+        )
+
+    def reduce_fused_completion(
+        self,
+        completion: "_FusedProviderCompletion | None",
+        *,
+        live_fused_generation: int,
+    ) -> list[FireEvent]:
+        """Owner-only token validation and synchronous cognition commit."""
+        from .fused_sync import _FusedEvidenceBundle
+
+        if completion is None:
+            return []
+        if type(completion) is not _FusedProviderCompletion:
+            raise ValueError("fused reducer requires an exact provider completion")
+        job = completion.job
+        token = job.token
+        goal = self.goals.get(token.goal_id)
+        runtime = self._watch_runtime_for(token.goal_id)
+        binding = self._audio_judge_bindings.get(token.goal_id)
+        base_key = (token.goal_id, None)
+        latest = getattr(self, "_fused_latest_admission", {})
+        reduced = getattr(self, "_fused_reduced_admissions", None)
+        if reduced is None:
+            reduced = {}
+            self._fused_reduced_admissions = reduced
+        stale_reason = None
+        if goal is None or program_of(goal).perception.modality != "fused":
+            stale_reason = "goal_revision"
+        elif self.goals.revision != token.goals_registry_revision:
+            stale_reason = "goal_revision"
+        elif runtime is None or runtime[0] is not token.watch_runtime_token:
+            stale_reason = "runtime_binding"
+        elif (
+            binding is None
+            or binding.binding_token is not token.judge_binding_token
+            or self._audio_judge_binding_tokens.get(token.goal_id)
+            is not token.judge_binding_token
+        ):
+            stale_reason = "judge_binding"
+        elif (
+            self.source_continuity_generation(token.source_id)
+            != token.source_generation
+        ):
+            stale_reason = "source_generation"
+        elif live_fused_generation != token.fused_generation:
+            stale_reason = "fused_generation"
+        elif (
+            latest.get(base_key) != token.admission_id
+            or self._sequencer.latest_admitted(base_key) != token.evidence_seq
+        ):
+            stale_reason = "superseded_admission"
+        elif reduced.get(base_key) == token.admission_id:
+            stale_reason = "duplicate_completion"
+        if stale_reason is not None:
+            trace_queue = getattr(self, "_fused_trace_queue", None)
+            if trace_queue is None:
+                trace_queue = []
+                self._fused_trace_queue = trace_queue
+            trace_queue.append(
+                (
+                    token.judgment_trace_id,
+                    job.source_t,
+                    "judgment.dropped",
+                    {
+                        "goal_id": token.goal_id,
+                        "admission_id": token.admission_id,
+                        "evidence_seq": token.evidence_seq,
+                        "reason": stale_reason,
+                        "slot": "completed",
+                    },
+                )
+            )
+            return []
+        bundle = job.bundle
+        if type(bundle) is not _FusedEvidenceBundle:
+            raise ValueError("fused completion lost its exact evidence bundle")
+        if (
+            bundle.watch_application != token.watch_application
+            or bundle.watch_revision != token.watch_revision
+            or bundle.evidence_seq != token.evidence_seq
+            or bundle.judgment_event_id
+            != judgment_event_id(goal.id, None, token.evidence_seq)
+        ):
+            trace_queue = getattr(self, "_fused_trace_queue", None)
+            if trace_queue is None:
+                trace_queue = []
+                self._fused_trace_queue = trace_queue
+            trace_queue.append(
+                (
+                    token.judgment_trace_id,
+                    job.source_t,
+                    "judgment.dropped",
+                    {
+                        "goal_id": token.goal_id,
+                        "admission_id": token.admission_id,
+                        "evidence_seq": token.evidence_seq,
+                        "reason": "evidence_identity",
+                        "slot": "completed",
+                    },
+                )
+            )
+            return []
+        reduced[base_key] = token.admission_id
+        verdict = completion.verdict.to_verdict()
+        timing = JudgmentTimingBuilder(clock=self.clock)
+        timing.mark_ingest_observed(at=job.ingest_observed_ts)
+        timing.mark_admitted(at=job.admitted_ts)
+        timing.mark_judge_started(at=completion.judge_started_ts)
+        timing.mark_judge_completed(at=completion.judge_completed_ts)
+        timing.set_source_media_ts(job.source_t)
+        usage = dict(completion.usage)
+        if bundle.complete:
+            self.funnel.judged(concern=goal.id, camera=token.source_id)
+            self.funnel.record_judge(
+                latency_s=completion.judge_latency_s,
+                **usage,
+            )
+        if completion.failure is not None:
+            self.funnel.refused(concern=goal.id, camera=token.source_id)
+            self._degrade_tick(
+                base_key,
+                completion.failure.safe_message,
+                goal_id=goal.id,
+                label="",
+                action="degrading this fused tick to ASK",
+            )
+            trace_queue = getattr(self, "_fused_trace_queue", None)
+            if trace_queue is None:
+                trace_queue = []
+                self._fused_trace_queue = trace_queue
+            if self.on_trace is not None:
+                trace_queue.extend(
+                    [
+                        (
+                            token.judgment_trace_id,
+                            job.source_t,
+                            "source.fused",
+                            {
+                                "goal_id": goal.id,
+                                "judgment_event_id": bundle.judgment_event_id,
+                                "evidence_seq": bundle.evidence_seq,
+                                "policy_version": bundle.policy_version,
+                                "coverage_reasons": tuple(
+                                    reason.value
+                                    for reason in bundle.coverage_reasons
+                                ),
+                            },
+                        ),
+                        (
+                            token.judgment_trace_id,
+                            job.source_t,
+                            "judge.degraded",
+                            {
+                                "goal_id": goal.id,
+                                "cause": completion.failure.safe_message,
+                                "failure_code": completion.failure.kind,
+                                "exception_type": completion.failure.exception_type,
+                            },
+                        ),
+                        (
+                            token.judgment_trace_id,
+                            job.source_t,
+                            "gate.classified",
+                            {
+                                "goal_id": goal.id,
+                                "truth": "unknown",
+                                "action": "ask",
+                                "entity_id": None,
+                                "degraded": True,
+                            },
+                        ),
+                    ]
+                )
+            return []
+        if bundle.complete:
+            self._note_judge_ok(base_key)
+        truth = classify(
+            verdict,
+            1.0,
+            self.gate.threshold,
+            self.gate.fresh_min,
+        )
+        if truth != "unknown":
+            self.last_supported[goal.id] = job.source_t
+        if truth == "yes":
+            self.last_satisfied[goal.id] = job.source_t
+        doc_fold = self._document_episode_fold(
+            goal, verdict, job.source_t
+        )
+        claim_fold = self._claim_episode_fold(
+            goal, verdict, job.source_t
+        )
+        gate_outcomes: list[GateOutcome] = []
+        fire = self._fire_concern(
+            goal,
+            verdict,
+            base_key,
+            freshness=1.0,
+            t=job.source_t,
+            timing=timing,
+            evidence_seq=token.evidence_seq,
+            fold=doc_fold if doc_fold is not None else claim_fold,
+            outcome_sink=gate_outcomes.append,
+        )
+        events: list[FireEvent] = []
+        if fire is not None:
+            fire._fused_evidence_bundle = bundle
+            if fire.action == FIRE:
+                self.funnel.fired(concern=goal.id, camera=token.source_id)
+            else:
+                self.funnel.refused(concern=goal.id, camera=token.source_id)
+            events.append(fire)
+        trace_queue = getattr(self, "_fused_trace_queue", None)
+        if trace_queue is None:
+            trace_queue = []
+            self._fused_trace_queue = trace_queue
+        if self.on_trace is not None:
+            action = fire.action if fire is not None else "silent"
+            gate_reason = gate_outcomes[-1].reason if gate_outcomes else None
+            trace_queue.extend(
+                [
+                    (
+                        token.judgment_trace_id,
+                        job.source_t,
+                        "source.fused",
+                        {
+                            "goal_id": goal.id,
+                            "judgment_event_id": bundle.judgment_event_id,
+                            "evidence_seq": bundle.evidence_seq,
+                            "policy_version": bundle.policy_version,
+                            "actual_skew_s": bundle.actual_skew_s,
+                            "video_watermark": bundle.video_watermark,
+                            "audio_watermark": bundle.audio_watermark,
+                            "coverage_reasons": tuple(
+                                reason.value for reason in bundle.coverage_reasons
+                            ),
+                        },
+                    ),
+                    (
+                        token.judgment_trace_id,
+                        job.source_t,
+                        "judge.finished",
+                        {
+                            "goal_id": goal.id,
+                            "satisfied": verdict.satisfied,
+                            "confidence": verdict.confidence,
+                            "fused": True,
+                        },
+                    ),
+                    (
+                        token.judgment_trace_id,
+                        job.source_t,
+                        "gate.classified",
+                        {
+                            "goal_id": goal.id,
+                            "truth": truth,
+                            "action": action,
+                            "reason": _trace_reason(truth, action, gate_reason),
+                            "gate_reason": gate_reason,
+                            "entity_id": None,
+                            "satisfied": verdict.satisfied,
+                            "confidence": verdict.confidence,
+                            "freshness": 1.0,
+                            "hold_s": program_of(goal).hold_s,
+                        },
+                    ),
+                ]
+            )
+            if usage:
+                trace_queue.append(
+                    (
+                        token.judgment_trace_id,
+                        job.source_t,
+                        "judge.usage",
+                        {
+                            "model": self._judge_model(job.adapter),
+                            **usage,
+                        },
+                    )
+                )
+            if fire is not None and fire.judgment is not None:
+                trace_queue.append(
+                    (
+                        token.judgment_trace_id,
+                        job.source_t,
+                        STAGE_JUDGMENT_EVENT,
+                        {
+                            "goal_id": goal.id,
+                            "action": fire.judgment.action,
+                            "dispatch_seq": fire.judgment.evidence_seq,
+                            "entity_id": None,
+                            "judgment_event_id": bundle.judgment_event_id,
+                            "evidence_origin": fire.judgment.evidence_origin or "judged",
+                            "fused_policy_version": bundle.policy_version,
+                            "fused_actual_skew_s": bundle.actual_skew_s,
+                            "fused_video_watermark": bundle.video_watermark,
+                            "fused_audio_watermark": bundle.audio_watermark,
+                            "fused_coverage_reasons": tuple(
+                                reason.value for reason in bundle.coverage_reasons
+                            ),
+                            "fused_judgment_event_id": bundle.judgment_event_id,
+                            "fused_evidence_seq": bundle.evidence_seq,
+                        },
+                    )
+                )
+            trace_queue.append(
+                (
+                    token.judgment_trace_id,
+                    job.source_t,
+                    STAGE_SHADOW_FOLD,
+                    {
+                        "goal_id": goal.id,
+                        **self._shadow_observe(verdict).to_advisory(),
+                    },
+                )
+            )
+            if len(trace_queue) > 1024:
+                del trace_queue[: len(trace_queue) - 1024]
+        self._log_fires(events, job.source_t)
+        return events
+
+    def drain_fused_trace_records(self) -> list[tuple[str, float, str, dict]]:
+        records = getattr(self, "_fused_trace_queue", [])
+        self._fused_trace_queue = []
+        return records
+
+    def record_fused_admission_drop(
+        self,
+        job: "_FusedJudgmentJob",
+        *,
+        reason: str,
+    ) -> None:
+        if type(job) is not _FusedJudgmentJob or not reason:
+            raise ValueError("fused admission drop requires an exact job and reason")
+        queue = getattr(self, "_fused_trace_queue", None)
+        if queue is None:
+            queue = []
+            self._fused_trace_queue = queue
+        queue.append(
+            (
+                job.token.judgment_trace_id,
+                job.source_t,
+                "judgment.dropped",
+                {
+                    "goal_id": job.token.goal_id,
+                    "admission_id": job.token.admission_id,
+                    "evidence_seq": job.token.evidence_seq,
+                    "reason": reason,
+                },
+            )
         )
 
     async def _perceive_transition(
@@ -2728,7 +3442,11 @@ class Percept:
         if usage and self.on_trace is not None:
             await self._emit_trace(
                 getattr(self, "_usage_trace_id", None) or f"judge@{t0}",
-                getattr(self, "_usage_source_ts", None) if getattr(self, "_usage_source_ts", None) is not None else t0,
+                (
+                    self._usage_source_ts
+                    if getattr(self, "_usage_source_ts", None) is not None
+                    else t0
+                ),
                 "judge.usage",  # percept.tracing.STAGE_JUDGE_USAGE (string here to keep agent import-light)
                 model=self._judge_model(adapter),
                 **usage,

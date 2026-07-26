@@ -18,10 +18,10 @@ from percept.backends.fake import FakeVision
 from percept.backends.gemini import GeminiVision
 from percept.backends.openrouter import OpenRouterVision
 from percept.behavior import program_of
-from percept.contracts import AudioFrame
+from percept.contracts import AudioFrame, Schedule, WatchCondition, WatchSpec
 from percept.contracts.watchplan import WatchPlan
 from percept.goals import GoalOp
-from percept.harness.tier0 import CivilTime, Frame, gray_frame
+from percept.harness.tier0 import CivilTime, Frame, MotionGate, gray_frame
 from percept.profile_wiring import resolve_watch_profile
 from percept.runtime.worker import RuntimeStats, run
 from percept.sourceprofile import (
@@ -754,7 +754,7 @@ class PerWatchRuntimeIsolationTests(unittest.TestCase):
         audio = [
             (
                 0.5,
-                AudioFrame(pcm=b"\x01\x00" * 100, sample_rate=16_000),
+                AudioFrame(pcm=b"\x01\x00" * 8_000, sample_rate=16_000),
                 0.5,
             )
         ]
@@ -864,6 +864,186 @@ class PerWatchRuntimeIsolationTests(unittest.TestCase):
             "audio",
         )
 
+    def test_combined_source_motion_never_spends_audio_only_watch(self) -> None:
+        core = Percept.create(vision=FakeVision(), discover_plugins=False)
+        self.assertEqual(
+            apply_watch_plan(
+                core,
+                WatchPlan(id="audio", condition="someone speaks", sense="audio"),
+                source_profile=_profile(
+                    "audio-external-only",
+                    threshold=0.01,
+                    modalities=frozenset({"audio"}),
+                ),
+            ).status,
+            "applied",
+        )
+        stats = RuntimeStats()
+        asyncio.run(
+            _collect(
+                core,
+                [(0.0, STILL, "prime"), (1.0, gray_frame(W, H, 255), "motion")],
+                audio_source=[
+                    (0.1, AudioFrame(pcm=b"\x00\x00" * 1_600, sample_rate=16_000), 0.0),
+                    (0.2, AudioFrame(pcm=b"\x00\x00" * 1_600, sample_rate=16_000), 0.0),
+                ],
+                audio_settle_s=0.0,
+                stats=stats,
+                judge_dispatch="inline",
+            )
+        )
+        self.assertEqual(stats.admission_by_goal.get("audio", 0), 0)
+        self.assertEqual(stats.judge_calls, 0)
+
+    def test_combined_source_audio_onset_admits_exact_audio_without_video(self) -> None:
+        from dataclasses import replace
+
+        traces = []
+        core = Percept.create(
+            vision=FakeVision(),
+            discover_plugins=False,
+            on_trace=traces.append,
+        )
+        self.assertEqual(
+            apply_watch_plan(
+                core,
+                WatchPlan(id="audio", condition="someone speaks", sense="audio"),
+                source_profile=_profile(
+                    "audio-onset",
+                    threshold=0.99,
+                    modalities=frozenset({"audio"}),
+                ),
+            ).status,
+            "applied",
+        )
+        provider_payloads = []
+        binding = core._audio_judge_bindings["audio"]
+
+        async def exact_audio_dispatch(condition, frame, *, audio=None, **kwargs):
+            self.assertIsNone(frame)
+            self.assertIsNotNone(audio)
+            provider_payloads.append(audio.as_pair())
+            return Verdict(True, 0.99, "exact audio")
+
+        core._register_audio_judge_binding(
+            "audio",
+            replace(binding, dispatch=exact_audio_dispatch),
+        )
+        stats = RuntimeStats()
+
+        async def drive():
+            audio_ready = asyncio.Event()
+            original_push_audio = core.push_audio
+            pushes = 0
+
+            def observed_push(*args, **kwargs):
+                nonlocal pushes
+                result = original_push_audio(*args, **kwargs)
+                pushes += 1
+                if pushes == 2:
+                    audio_ready.set()
+                return result
+
+            core.push_audio = observed_push
+
+            async def video_source():
+                await audio_ready.wait()
+                yield (0.0, STILL, "prime")
+                await asyncio.sleep(0)
+                yield (1.0, gray_frame(W, H, 255), "motion")
+
+            return await _collect(
+                core,
+                video_source(),
+                audio_source=[
+                    (0.1, AudioFrame(pcm=b"\x00\x00" * 1_600, sample_rate=16_000), 0.0),
+                    (0.2, AudioFrame(pcm=b"\xff\x7f" * 1_600, sample_rate=16_000), 0.5),
+                ],
+                audio_settle_s=0.0,
+                stats=stats,
+                judge_dispatch="inline",
+            )
+
+        incidents = asyncio.run(drive())
+        self.assertEqual(stats.admission_by_goal, {"audio": 1})
+        self.assertEqual(len(incidents), 1)
+        self.assertEqual(incidents[0].snippet.kind, "audio")
+        self.assertEqual(
+            (incidents[0].snippet.mime, incidents[0].snippet.media),
+            provider_payloads[0],
+        )
+        source_audio = [event for event in traces if event.stage == "source.audio"]
+        self.assertEqual(len(source_audio), 1)
+        units = source_audio[0].data["units"]["audio"]
+        self.assertEqual(tuple(item[3] for item in units), (0, 1))
+        self.assertGreater(
+            source_audio[0].data["provider_payloads"]["audio"]["bytes"],
+            44,
+        )
+        self.assertFalse(any(event.stage == "source.frame" for event in traces))
+
+    def test_external_schedule_and_cadence_are_isolated_per_watch(self) -> None:
+        monday = CivilTime(weekday=1, minute_of_day=600)
+        gate = MotionGate(
+            WatchSpec(conditions=[]),
+            external_conditions=(
+                WatchCondition(
+                    "eligible", "eligible", 0.1,
+                    schedule=Schedule(days=(1,)), cadence_s=10.0,
+                ),
+                WatchCondition(
+                    "wrong-day", "wrong-day", 0.1,
+                    schedule=Schedule(days=(2,)), cadence_s=1.0,
+                ),
+            ),
+        )
+        self.assertEqual(
+            gate.admit_external(("eligible", "wrong-day"), ts=1.0, now=monday),
+            ("eligible",),
+        )
+        self.assertEqual(
+            gate.admit_external(("eligible", "wrong-day"), ts=2.0, now=monday),
+            (),
+        )
+        self.assertEqual(
+            gate.admit_external(("eligible",), ts=11.0, now=monday),
+            ("eligible",),
+        )
+
+    def test_fused_visual_and_audio_causes_share_one_cadence_ledger(self) -> None:
+        condition = WatchCondition(
+            "fused", "joined", 0.1, cadence_s=10.0
+        )
+        gate = MotionGate(WatchSpec(conditions=[condition]))
+        gate.evaluate(STILL, ts=0.0)
+        decision = gate.evaluate(gray_frame(W, H, 255), ts=1.0)
+        self.assertEqual(decision.goal_ids, ("fused",))
+        self.assertEqual(gate.admit_external(("fused",), ts=1.0), ())
+        self.assertEqual(gate.admit_external(("fused",), ts=11.0), ("fused",))
+
+    def test_regate_preserves_cadence_only_for_live_external_ids(self) -> None:
+        old = MotionGate(
+            WatchSpec(conditions=[]),
+            external_conditions=(
+                WatchCondition("live", "live", 0.1, cadence_s=10.0),
+                WatchCondition("removed", "removed", 0.1, cadence_s=10.0),
+            ),
+        )
+        self.assertEqual(
+            old.admit_external(("live", "removed"), ts=1.0),
+            ("live", "removed"),
+        )
+        new = MotionGate(
+            WatchSpec(conditions=[]),
+            external_conditions=(
+                WatchCondition("live", "live", 0.1, cadence_s=10.0),
+                WatchCondition("new", "new", 0.1, cadence_s=10.0),
+            ),
+        )
+        new.adopt_state(old)
+        self.assertEqual(new.admit_external(("live", "new"), ts=2.0), ("new",))
+        self.assertEqual(new.admit_external(("removed",), ts=2.0), ())
+
     def test_profile_identity_defaults_remain_bound_to_their_own_watch(self) -> None:
         core = Percept.create(vision=FakeVision(), discover_plugins=False)
         content = _profile("content-profile", identity="content_key")
@@ -913,7 +1093,7 @@ class PerWatchRuntimeIsolationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "incompatible compiled timebases"):
             asyncio.run(_collect(conflict, [], judge_dispatch="inline"))
 
-    def test_different_fused_schedules_fail_closed_on_one_shared_audio_worker(self) -> None:
+    def test_different_fused_schedules_are_isolated_on_one_audio_worker(self) -> None:
         core = Percept.create(vision=FakeVision(), discover_plugins=False)
         apply_watch_plan(
             core,
@@ -943,5 +1123,5 @@ class PerWatchRuntimeIsolationTests(unittest.TestCase):
                 modalities=frozenset({"video", "audio"}),
             ),
         )
-        with self.assertRaisesRegex(ValueError, "shared by this worker"):
-            asyncio.run(_collect(core, [], audio_source=[]))
+        incidents = asyncio.run(_collect(core, [], audio_source=[]))
+        self.assertEqual(incidents, [])

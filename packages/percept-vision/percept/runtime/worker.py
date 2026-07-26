@@ -325,9 +325,9 @@ class _JudgeScheduler:
         self._active: "asyncio.Task | None" = None
         self._active_t: float | None = None  # admission t of the in-flight judgment (rides the result)
         self._active_payload: Any = None
-        # (t, judge_frame, admission_revision, admitted_goal_ids). The ids are frozen at the same
+        # (t, judge_frame, admission_revision, admitted_goal_ids, fused_bundles). The ids are frozen at the same
         # instant as the revision so a queued frame cannot broaden into unrelated Watches later.
-        self._pending: tuple[float, Any, Any, tuple[str, ...] | None] | None = None
+        self._pending: tuple[float, Any, Any, tuple[str, ...] | None, Any] | None = None
         self._results: deque = deque()  # completed (t, [FireEvent]) awaiting drain()
         # ADR-001 §9: TRACED bound-driven drops (superseded pending / revision-dropped pending) — a
         # (kind, data) pair per drop, drained every frame tick by run() alongside drain(), so this list
@@ -346,6 +346,9 @@ class _JudgeScheduler:
         self._perceive_accepts_goal_ids = _accepts_keyword(self._perceive, "goal_ids")
         self._perceive_accepts_source_generation = _accepts_keyword(
             self._perceive, "expected_source_generation"
+        )
+        self._perceive_accepts_fused_bundles = _accepts_keyword(
+            self._perceive, "_fused_bundles_by_goal"
         )
         self._active_filter_goal_ids: tuple[str, ...] | None = None
         self._active_invalidated = False
@@ -375,17 +378,27 @@ class _JudgeScheduler:
     def pending(self) -> int:
         return 0 if self._pending is None else 1
 
+    @property
+    def can_accept(self) -> bool:
+        """Whether one synchronous owner offer can be installed right now."""
+        return self._fatal is None and not self._closing
+
     def submit(
-        self, t: float, judge_frame: Any, goal_ids: tuple[str, ...] | None = None
-    ) -> None:
+        self,
+        t: float,
+        judge_frame: Any,
+        goal_ids: tuple[str, ...] | None = None,
+        *,
+        fused_bundles: Any = None,
+    ) -> bool:
         """Admit a frame for judgment. Never blocks; never launches after a failure or during close."""
         if self._fatal is not None or self._closing:
-            return  # drain() re-raises the failure on the next loop tick; a closing run spends nothing
+            return False  # a rejected offer spends/reserves nothing
         revision = getattr(self._core.goals, "revision", None)  # ADMISSION-time, never launch-time
         if self._active is None:
             self._mc_admit(t)  # launching right away — admitted into the funnel from this instant
-            self._launch(t, judge_frame, revision, goal_ids)
-            return
+            self._launch(t, judge_frame, revision, goal_ids, fused_bundles)
+            return True
         # The scheduler has no timer of its own — every submit() (the frame cadence) is the one
         # chance to notice the CURRENT active judgment has been outstanding too long. Checked before
         # the supersede below so a stalled-AND-overloaded tick reports both, in the order they became
@@ -410,12 +423,15 @@ class _JudgeScheduler:
             # the frame rate (sustained overwrite) — distinct from, and louder than, any one supersede.
             self._consec_supersede += 1
             self._check_backpressure(t)
-        self._pending = (t, judge_frame, revision, goal_ids)
+        self._pending = (t, judge_frame, revision, goal_ids, fused_bundles)
         self._mc_admit(t)  # queued behind the active judgment — pending in the funnel from this instant
+        return True
 
     def invalidate_source_continuity(self, reasons: tuple[str, ...]) -> None:
         """Prevent pre-discontinuity judgments from mutating post-discontinuity state."""
         reason = ",".join(reasons) or "source_discontinuity"
+        # A task can complete between ticks; its result is still pre-boundary work and must not
+        # survive in the delivery queue merely because the provider await already returned.
         if self._active is not None and not self._active.done():
             self._active_invalidated = True
             self._active_invalidation_reason = reason
@@ -497,6 +513,7 @@ class _JudgeScheduler:
         frame: Any,
         revision: Any,
         goal_ids: tuple[str, ...] | None,
+        fused_bundles: Any,
     ) -> None:
         if self._stats is not None:
             self._stats.judge_calls += 1  # counted at launch — a superseded candidate spent nothing
@@ -513,6 +530,10 @@ class _JudgeScheduler:
                 kwargs["expected_source_generation"] = generation_for(self._source)
         if goal_ids is not None and self._perceive_accepts_goal_ids:
             kwargs["goal_ids"] = goal_ids
+        if fused_bundles is not None:
+            if not self._perceive_accepts_fused_bundles:
+                raise ValueError("fused dispatch requires a core accepting frozen fused bundles")
+            kwargs["_fused_bundles_by_goal"] = fused_bundles
         self._active_filter_goal_ids = (
             goal_ids
             if goal_ids is not None and not self._perceive_accepts_goal_ids
@@ -528,7 +549,7 @@ class _JudgeScheduler:
             self._mc_resolve(self._pending[0])  # leaving the funnel un-launched, not a real judgment
             self._pending = None
             return
-        t, frame, revision, goal_ids = self._pending
+        t, frame, revision, goal_ids, fused_bundles = self._pending
         self._pending = None
         current = getattr(self._core.goals, "revision", None)
         if revision != current:
@@ -548,7 +569,7 @@ class _JudgeScheduler:
             if funnel is not None:
                 funnel.dropped(reason="goals_revision_changed", camera=self._source)
             return
-        self._launch(t, frame, revision, goal_ids)
+        self._launch(t, frame, revision, goal_ids, fused_bundles)
 
     def _on_done(self, task: "asyncio.Task") -> None:
         # ORDERED checks — cancellation FIRST (close(drain=False) must not become a fatal error),
@@ -2129,6 +2150,14 @@ async def _run_worker(
             if program_of(goal).perception.modality in ("vision", "fused")
         ]
 
+    def _external_only_audio_goals() -> list:
+        """Audio Watches compiled for acoustic admission, never visual motion."""
+        return [
+            goal
+            for goal in _source_goals()
+            if program_of(goal).perception.modality == "audio"
+        ]
+
     clear_pending_dwell = getattr(core, "clear_pending_dwell", None)
 
     def _require_duration_runtime() -> None:
@@ -2227,6 +2256,7 @@ async def _run_worker(
     _video_source_tracker = SourceTracker()
     _audio_source_tracker = SourceTracker()
     _video_source_id: str | None = None
+    _audio_source_id: str | None = None
     _judge_sched = (
         _JudgeScheduler(
             core, gate_source, _cov, metrics_collector=metrics_collector,
@@ -2234,6 +2264,7 @@ async def _run_worker(
         )
         if judge_dispatch == "async" else None
     )
+    _audio_judge_sched = None
     # The standard telemetry funnel (seen->gated->judged->refused->fired,
     # percept.observability.Funnel), bound to THIS core's Metrics when it exposes one (the Percept
     # agent always does; a bare duck-typed core without `.funnel` leaves this None and the two calls
@@ -2325,9 +2356,12 @@ async def _run_worker(
         require_worker_routes(_source_goals(), driver="percept.run")
         _require_duration_runtime()
         visual_active = _visual_goals()
+        external_audio_active = _external_only_audio_goals()
         conditions = []
+        external_conditions = []
         runtime_bindings = getattr(core, "_watch_runtime_bindings", {})
-        for goal in visual_active:
+
+        def _compile_condition(goal):
             bound = runtime_bindings.get(goal.id)
             kwargs = (
                 dict(bound[0].watchspec_kwargs)
@@ -2343,13 +2377,24 @@ async def _run_worker(
                     },
                 }
             )
-            conditions.extend(compile_watchspec([goal], **kwargs).conditions)
+            compiled = compile_watchspec([goal], **kwargs).conditions
+            if len(compiled) != 1:
+                raise ValueError(
+                    f"Watch {goal.id!r} did not compile to exactly one admission condition"
+                )
+            return compiled[0]
+
+        for goal in visual_active:
+            conditions.append(_compile_condition(goal))
+        for goal in external_audio_active:
+            external_conditions.append(_compile_condition(goal))
         s = WatchSpec(conditions=conditions)
         # clock: a civil-time source arms per-goal Schedules; None -> always-armed (default).
         # The tier-0 extension seam, reachable from the supported entrypoint. None -> the gate's
         # structural/semantic channels stay 0.0 and this is byte-for-byte the motion-only path.
         g = MotionGate(
             s,
+            external_conditions=external_conditions,
             settings=settings,
             wake_policy=wake_policy,
             clock=clock,
@@ -2439,6 +2484,20 @@ async def _run_worker(
         if goal.id in runtime_bindings
         and program_of(goal).perception.modality in ("audio", "fused")
     ]
+    compiled_audio_only_goals = [
+        goal
+        for goal in compiled_audio_goals
+        if program_of(goal).perception.modality == "audio"
+    ]
+    if judge_dispatch == "async" and compiled_audio_only_goals:
+        _audio_judge_sched = _JudgeScheduler(
+            core,
+            gate_source,
+            _cov,
+            perceive=core.perceive_audio_judged,
+            stall_after_s=judge_stall_after_s,
+            backpressure_after=judge_backpressure_after,
+        )
     compiled_audio_capability = None
     if compiled_audio_goals:
         bound_audio = [
@@ -2462,33 +2521,6 @@ async def _run_worker(
             "a compiled audio-only Watch requires an audio admission gate; audio_gate=None would "
             "leave it with no executable admission path."
         )
-    if audio_source is not None and audio_gate is not None:
-        audio_goals = [
-            goal
-            for goal in _source_goals()
-            if program_of(goal).perception.modality in ("audio", "fused")
-        ]
-        if len(audio_goals) > 1:
-            runtime_bindings = getattr(core, "_watch_runtime_bindings", {})
-
-            def _audio_policy_signature(goal: Any) -> str:
-                bound = runtime_bindings.get(goal.id)
-                watchspec = dict(bound[0].watchspec_kwargs) if bound is not None else {}
-                return repr((
-                    watchspec,
-                    goal.state.get("cadence"),
-                    goal.state.get("schedule"),
-                    goal.state.get("sense"),
-                    goal.state.get("perception"),
-                ))
-
-            signatures = {_audio_policy_signature(goal) for goal in audio_goals}
-            if len(signatures) > 1:
-                raise ValueError(
-                    "audio onset admission is shared by this worker, but active audio/fused "
-                    "Watches resolve to different admission policies. Run them on separate workers "
-                    "or give them one identical policy; refusing cross-Watch wake leakage."
-                )
     # Resolve the clock BEFORE the capture source is opened; both the video and the audio
     # path get their own record (a "mic:0" live mic and a "session.wav" recording resolve differently
     # even inside one run).
@@ -2506,6 +2538,194 @@ async def _run_worker(
         if audio_source is not None
         else None
     )
+    _has_fused = any(
+        program_of(goal).perception.modality == "fused"
+        for goal in compiled_audio_goals
+    )
+    fused_goals = (
+        [
+            goal
+            for goal in compiled_audio_goals
+            if program_of(goal).perception.modality == "fused"
+        ]
+        if _has_fused
+        else None
+    )
+    non_fused_goals = [
+        goal
+        for goal in _source_goals()
+        if program_of(goal).perception.modality != "fused"
+    ]
+    if fused_goals and non_fused_goals:
+        raise ValueError(
+            "mixed non-fused/fused Watches require the shared owner judgment pipeline; "
+            "this runtime refuses unsafe split cognition ownership"
+        )
+    if fused_goals and (
+        audio_tb is None or video_tb.resolved != audio_tb.resolved
+    ):
+        raise ValueError(
+            "compiled fused Watches require calibrated audio and video in one clock domain; "
+            "refusing cross-domain synchronization before source iteration."
+        )
+    _fused_syncs = None
+    _fused_judge_scheds = None
+    _fused_local_completions = None
+    if fused_goals:
+        fused_prepare = getattr(core, "prepare_fused_judgment", None)
+        fused_dispatch = getattr(core, "dispatch_fused_judgment", None)
+        fused_complete_local = getattr(core, "complete_fused_locally", None)
+        fused_reduce = getattr(core, "reduce_fused_completion", None)
+        if (
+            not callable(fused_prepare)
+            or not callable(fused_dispatch)
+            or not callable(fused_complete_local)
+            or not callable(fused_reduce)
+        ):
+            raise ValueError(
+                "compiled fused Watches require provider-only dispatch and owner reduction seams"
+            )
+        if goals_revision is None:
+            raise ValueError("compiled fused Watches require a revisioned Goal registry")
+        if video_tb.resolved == "wall":
+            _video_clock_authority = _audio_clock_authority = (
+                f"runtime.monotonic:{id(core)}"
+            )
+        elif isinstance(source, str) and isinstance(audio_source, str):
+            _video_clock_authority = f"media:{source}"
+            _audio_clock_authority = f"media:{audio_source}"
+        else:
+            # Deterministic iterable lanes explicitly author both event timelines into this run.
+            _video_clock_authority = _audio_clock_authority = (
+                f"runtime.replay:{id(core)}"
+            )
+        _fused_clock_confidence = (
+            1.0 if _video_clock_authority == _audio_clock_authority else 0.0
+        )
+        if (
+            _video_clock_authority != _audio_clock_authority
+            or _fused_clock_confidence < 1.0
+        ):
+            raise ValueError(
+                "compiled fused Watches require one qualified clock authority; "
+                "distinct media sources are uncalibrated and are rejected before iteration"
+            )
+        from percept.fused_sync import (
+            _AcceptedMediaUnit,
+            _FusedDiscontinuity,
+            _FusedSyncPolicy,
+            _FusedSynchronizer,
+        )
+
+        def _new_fused_synchronizer(goal: Any, revision: int) -> _FusedSynchronizer:
+            binding = core._audio_judge_binding_for(goal)
+            runtime = runtime_bindings.get(goal.id)
+            policy = runtime[0].fused_sync_policy if runtime is not None else None
+            if type(policy) is not _FusedSyncPolicy:
+                raise ValueError("compiled fused Watch has no exact frozen synchronization policy")
+            if policy.max_bytes_per_modality > min(
+                binding.capability.max_input_bytes,
+                binding.capability.max_provider_bytes,
+            ):
+                raise ValueError("compiled fused policy exceeds the bound provider media limit")
+            return _FusedSynchronizer(
+                policy,
+                watch_application=binding.application_key,
+                watch_revision=revision,
+            )
+
+        _fused_syncs = {
+            goal.id: _new_fused_synchronizer(goal, goals_revision)
+            for goal in fused_goals
+        }
+        _fused_local_completions = deque(
+            maxlen=sum(
+                synchronizer.policy.max_units_per_modality
+                for synchronizer in _fused_syncs.values()
+            )
+        )
+        async def _dispatch_prepared_fused_job(job, _source=None, **_ignored):
+            return await fused_dispatch(job)
+
+        # Each fused Watch has bounded admission slots. Distinct goals mutate distinct executor/gate
+        # keys; the core's per-task usage correlation is context-local.
+        _fused_judge_scheds = {
+            goal.id: _JudgeScheduler(
+                core,
+                gate_source,
+                _cov,
+                perceive=_dispatch_prepared_fused_job,
+                stall_after_s=judge_stall_after_s,
+                backpressure_after=judge_backpressure_after,
+            )
+            for goal in fused_goals
+        }
+
+        def _fused_reason(events: tuple[str, ...]) -> _FusedDiscontinuity:
+            mapping = {
+                "source_gap": _FusedDiscontinuity.GAP,
+                "source_reconnect": _FusedDiscontinuity.RECONNECT,
+                "source_epoch_gap": _FusedDiscontinuity.EPOCH_GAP,
+                "source_format_change": _FusedDiscontinuity.FORMAT_CHANGE,
+                "source_capture_overflow": _FusedDiscontinuity.CAPTURE_OVERFLOW,
+            }
+            for event in events:
+                if event in mapping:
+                    return mapping[event]
+            return _FusedDiscontinuity.GAP
+
+        def _advance_fused_generation(
+            reason: _FusedDiscontinuity,
+            *,
+            revision: int | None = None,
+            boundary: float | None = None,
+        ) -> None:
+            for synchronizer in _fused_syncs.values():
+                synchronizer.advance_generation(reason, watch_revision=revision)
+                if boundary is not None:
+                    synchronizer.set_generation_start(boundary)
+
+        def _queue_fused_bundle(goal_id: str, bundle: Any) -> None:
+            at = (
+                bundle.video_event_interval[1]
+                if bundle.video_event_interval is not None
+                else 0.0
+            )
+            synchronizer = _fused_syncs[goal_id]
+            scheduler = (_fused_judge_scheds or {}).get(goal_id)
+            if bundle.complete and (
+                scheduler is None or not scheduler.can_accept
+            ):
+                return
+            job = fused_prepare(
+                bundle,
+                goal_id=goal_id,
+                source=gate_source,
+                source_t=at,
+                goals_revision=goals_revision,
+                source_generation=core.source_continuity_generation(gate_source),
+                fused_generation=synchronizer.generation,
+            )
+            if job is None:
+                return
+            if not bundle.complete:
+                if len(_fused_local_completions) == _fused_local_completions.maxlen:
+                    dropped_at, dropped = _fused_local_completions.popleft()
+                    record_drop = getattr(core, "record_fused_admission_drop", None)
+                    if callable(record_drop):
+                        record_drop(dropped.job, reason="local_completion_bound")
+                _fused_local_completions.append(
+                    (at, fused_complete_local(job))
+                )
+                return
+            assert scheduler is not None
+            if not scheduler.submit(at, job):
+                # No await occurs between can_accept, preparation, and submit;
+                # rejection here is an invariant violation, not an ignorable drop.
+                raise RuntimeError(
+                    "fused provider lane rejected an atomically prepared admission"
+                )
+
     effective_config = EffectiveConfig(
         fps=effective_fps, video_timebase=video_tb, audio_timebase=audio_tb,
         coast_enabled=bool(getattr(getattr(settings, "edge", None), "coast_enabled", True)),
@@ -2792,6 +3012,37 @@ async def _run_worker(
                 return False
             return True
 
+        def _exact_audio_evidence(
+            goal_ids: tuple[str, ...],
+            *,
+            at: float,
+        ) -> dict[str, tuple[Any, ...]]:
+            """Freeze exact retained units for audio-only provider admission."""
+            from percept.audio_input import validate_audio_units_for_provider
+
+            evidence = {}
+            for goal_id in goal_ids:
+                goal = core.goals.get(goal_id)
+                if goal is None:
+                    continue
+                perception = program_of(goal).perception
+                if perception.modality != "audio":
+                    continue
+                units = tuple(
+                    core._audio_window(gate_source).clip_units(
+                        perception.audio_s or settings.events.audio_window_s,
+                        now=at,
+                    )
+                )
+                if not units:
+                    continue
+                binding = core._audio_judge_binding_for(goal)
+                validate_audio_units_for_provider(
+                    units, capability=binding.capability
+                )
+                evidence[goal_id] = units
+            return evidence
+
         _prev_chunk_at: list = [None]  # last chunk's t — for the observed inter-chunk cadence (chunk_dt)
         audio_task = None
         # Media-clock pacing for a FILE/CONTAINER audio_source (see `_AUDIO_PACE_LOOKAHEAD_S`).
@@ -2893,6 +3144,7 @@ async def _run_worker(
             async def _pump_audio():
                 # Pump every chunk into the AudioWindow (un-strands modality="fused"/"audio") and track
                 # energy + onsets. Never lets a bad audio chunk kill the run — the watch survives a mic drop.
+                nonlocal _audio_source_id
                 synthetic_carrier_sequence = 0
 
                 async def _reject_unit(envelope, unit, at, exc) -> None:
@@ -3224,6 +3476,7 @@ async def _run_worker(
                     # existed).
                     while (
                         _audio_paced
+                        and not source_preview.resets_continuity
                         and not _video_exhausted[0]
                         and at > _video_media_t[0] + _AUDIO_PACE_LOOKAHEAD_S
                     ):
@@ -3243,12 +3496,23 @@ async def _run_worker(
                         continue
                     # The last pre-commit await is above. Commit carrier ordering and the exact
                     # retained AudioUnit adjacently; cancellation/mute cannot leave one side ahead.
+                    if (
+                        _fused_syncs
+                        and _audio_source_id is not None
+                        and envelope.source_id != _audio_source_id
+                    ):
+                        raise ValueError(
+                            "one fused runtime worker accepts exactly one audio source_id; "
+                            f"got {_audio_source_id!r} then {envelope.source_id!r}"
+                        )
                     inspection = _audio_source_tracker.inspect(
                         envelope, require_source_time=require_source_time
                     )
                     if not inspection.accepted:
                         await _record_source_inspection(envelope, inspection, ts=at)
                         continue
+                    if _fused_syncs and _audio_source_id is None:
+                        _audio_source_id = envelope.source_id
                     continuity_reset = (
                         inspection.resets_continuity
                         or (
@@ -3257,16 +3521,77 @@ async def _run_worker(
                         )
                     )
                     if continuity_reset:
+                        if _fused_syncs:
+                            _advance_fused_generation(
+                                _fused_reason(inspection.events),
+                                boundary=unit.t_start,
+                            )
                         _advance_source_continuity()
                         if _judge_sched is not None:
                             reasons = inspection.events or (
                                 "audio_unit_discontinuity",
                             )
                             _judge_sched.invalidate_source_continuity(reasons)
+                        if _audio_judge_sched is not None:
+                            reasons = inspection.events or (
+                                "audio_unit_discontinuity",
+                            )
+                            _audio_judge_sched.invalidate_source_continuity(reasons)
+                        for scheduler in (_fused_judge_scheds or {}).values():
+                            reasons = inspection.events or (
+                                "audio_unit_discontinuity",
+                            )
+                            scheduler.invalidate_source_continuity(reasons)
                         _reset_audio_temporal_state(clear_window=True)
+                    discontinuity = (
+                        _fused_reason(inspection.events)
+                        if _fused_syncs and continuity_reset
+                        else _FusedDiscontinuity.NONE
+                        if _fused_syncs
+                        else None
+                    )
+                    accepted_fused_audio = []
+                    for synchronizer in (_fused_syncs or {}).values():
+                        accepted_fused_audio.append((synchronizer, _AcceptedMediaUnit(
+                            modality="audio",
+                            payload=unit,
+                            source_id=envelope.source_id,
+                            source_epoch=envelope.epoch,
+                            source_sequence=envelope.sequence,
+                            generation=synchronizer.generation,
+                            watch_application=synchronizer.watch_application,
+                            watch_revision=synchronizer.watch_revision,
+                            event_start=unit.t_start,
+                            event_end=unit.t_end,
+                            observed_start=envelope.observed_time,
+                            observed_end=envelope.observed_time,
+                            clock_domain=(
+                                "source"
+                                if audio_tb is not None and audio_tb.resolved == "media"
+                                else "observed"
+                            ),
+                            clock_authority=_audio_clock_authority,
+                            clock_confidence=_fused_clock_confidence,
+                            provenance={
+                                "adapter": "runtime.audio",
+                                "format": {
+                                    "media_type": envelope.format.media_type,
+                                    "sample_rate": envelope.format.sample_rate,
+                                    "channels": envelope.format.channels,
+                                    "sample_format": envelope.format.sample_format,
+                                },
+                                "direction": unit.direction,
+                                "participant_id": unit.participant_id,
+                                "source_time": envelope.source_time,
+                                "observed_time": envelope.observed_time,
+                            },
+                            discontinuity=discontinuity,
+                        )))
                     try:
                         ingest = core.push_audio(unit, source=gate_source)
                     except Exception as exc:  # noqa: BLE001 - reject one malformed unit, keep capture alive
+                        if _fused_syncs:
+                            _advance_fused_generation(_FusedDiscontinuity.WORKER_ERROR)
                         if on_health is not None:
                             await _call_sink(
                                 on_health,
@@ -3295,7 +3620,24 @@ async def _run_worker(
                             on_health, RuntimeHealthEvent("audio_discontinuity", ts=at, data=data)
                         )
                     if ingest is not None and not getattr(ingest, "accepted", True):
+                        if _fused_syncs:
+                            _advance_fused_generation(_FusedDiscontinuity.WORKER_ERROR)
                         continue
+                    fused_accept_failed = False
+                    for synchronizer, accepted_audio in accepted_fused_audio:
+                        try:
+                            if not synchronizer.accept(accepted_audio):
+                                fused_accept_failed = True
+                        except Exception:
+                            fused_accept_failed = True
+                    if fused_accept_failed:
+                        # No await exposed the temporary partial state.  Invalidate
+                        # every Watch generation together before any bundle can drain.
+                        _advance_fused_generation(_FusedDiscontinuity.WORKER_ERROR)
+                        continue
+                    for goal_id, synchronizer in (_fused_syncs or {}).items():
+                        for ready_bundle in synchronizer.drain_ready():
+                            _queue_fused_bundle(goal_id, ready_bundle)
                     if stats is not None:
                         stats.audio_chunks += 1
 
@@ -3436,9 +3778,34 @@ async def _run_worker(
                     continue
                 if stats is not None:
                     stats.fires += 1
-                snippet = snippet_from_window(clips, kind=snippet_kind, pre_s=snippet_pre_s)
+                exact_audio_units = tuple(
+                    getattr(fire, "audio_units", None) or ()
+                )
+                if exact_audio_units:
+                    from percept.audio_input import audio_snippet_from_units
+
+                    audio_goal = core.goals.get(fire.goal_id)
+                    audio_binding = core._audio_judge_binding_for(audio_goal)
+                    snippet = audio_snippet_from_units(
+                        exact_audio_units,
+                        capability=audio_binding.capability,
+                    )
+                else:
+                    snippet = snippet_from_window(
+                        clips, kind=snippet_kind, pre_s=snippet_pre_s
+                    )
                 incident = make_incident(
                     fire, ts=at, snippet=snippet, watchplan_id=_current_watchplan_id())
+                fused_bundle = getattr(fire, "_fused_evidence_bundle", None)
+                if fused_bundle is not None:
+                    if (
+                        fused_bundle.judgment_event_id != incident.judgment_event_id
+                        or fused_bundle.evidence_seq != incident.evidence_seq
+                    ):
+                        raise RuntimeError(
+                            "fused evidence identity diverged from the delivered judgment"
+                        )
+                    incident._fused_evidence_bundle = fused_bundle
                 if label_store is not None:  # bind the local label sink so incident.record_label() writes
                     incident.bind_labeler(
                         label_store.append,
@@ -3482,12 +3849,46 @@ async def _run_worker(
                 _cov.incidents += 1
                 yield incident
 
+        async def _emit_fused_completion(completion, *, at):
+            token = completion.job.token
+            synchronizer = (_fused_syncs or {}).get(token.goal_id)
+            live_generation = (
+                synchronizer.generation if synchronizer is not None else -1
+            )
+            fires = fused_reduce(
+                completion,
+                live_fused_generation=live_generation,
+            )
+            # _emit_fires materializes the Incident synchronously before its
+            # first callback await, immediately following the owner commit.
+            async for incident in _emit_fires(fires, at=at):
+                yield incident
+            drain_records = getattr(core, "drain_fused_trace_records", None)
+            emit_trace = getattr(core, "_emit_trace", None)
+            if callable(drain_records) and callable(emit_trace):
+                for trace_id, trace_t, stage, data in drain_records():
+                    await emit_trace(trace_id, trace_t, stage, **data)
+
         _was_paused = False
+        _fused_was_paused = False
         async for envelope in _aiter(source, capture_fps, **source_kwargs):
             require_source_time = video_tb.resolved == "media"
             if envelope.modality in ("video", "audio") and envelope.modality != "video":
                 inspection = _video_source_tracker.exclude("source_modality_mismatch")
             else:
+                preview = _video_source_tracker.preview(
+                    envelope, require_source_time=require_source_time
+                )
+                if (
+                    _fused_syncs
+                    and preview.accepted
+                    and _video_source_id is not None
+                    and envelope.source_id != _video_source_id
+                ):
+                    raise ValueError(
+                        "one fused runtime worker accepts exactly one video source_id; "
+                        f"got {_video_source_id!r} then {envelope.source_id!r}"
+                    )
                 inspection = _video_source_tracker.inspect(
                     envelope, require_source_time=require_source_time
                 )
@@ -3513,9 +3914,28 @@ async def _run_worker(
             if inspection.resets_continuity:
                 # This must precede health-sink awaits and result draining: both yield control and can
                 # let a cancellation-resistant stale judge finish.
+                if _fused_syncs:
+                    boundary = (
+                        envelope.source_time
+                        if require_source_time
+                        and isinstance(envelope.source_time, (int, float))
+                        and not isinstance(envelope.source_time, bool)
+                        and math.isfinite(float(envelope.source_time))
+                        else envelope.observed_time
+                    )
+                    _advance_fused_generation(
+                        _fused_reason(inspection.events),
+                        boundary=float(boundary),
+                    )
                 _advance_source_continuity()
                 if _judge_sched is not None:
                     _judge_sched.invalidate_source_continuity(inspection.events)
+                if _audio_judge_sched is not None:
+                    _audio_judge_sched.invalidate_source_continuity(
+                        inspection.events
+                    )
+                for scheduler in (_fused_judge_scheds or {}).values():
+                    scheduler.invalidate_source_continuity(inspection.events)
             t = (
                 envelope.source_time
                 if require_source_time
@@ -3529,6 +3949,49 @@ async def _run_worker(
                 and math.isfinite(float(t))
             ):
                 t = None
+            fused_anchors = {}
+            if inspection.accepted and t is not None:
+                for goal_id, synchronizer in (_fused_syncs or {}).items():
+                    accepted_video = _AcceptedMediaUnit(
+                        modality="video",
+                        payload=envelope.payload,
+                        source_id=envelope.source_id,
+                        source_epoch=envelope.epoch,
+                        source_sequence=envelope.sequence,
+                        generation=synchronizer.generation,
+                        watch_application=synchronizer.watch_application,
+                        watch_revision=synchronizer.watch_revision,
+                        event_start=float(t),
+                        event_end=float(t),
+                        observed_start=envelope.observed_time,
+                        observed_end=envelope.observed_time,
+                        clock_domain=(
+                            "source" if video_tb.resolved == "media" else "observed"
+                        ),
+                        clock_authority=_video_clock_authority,
+                        clock_confidence=_fused_clock_confidence,
+                        provenance={
+                            "adapter": "runtime.video",
+                            "format": {
+                                "media_type": envelope.format.media_type,
+                                "width": envelope.format.width,
+                                "height": envelope.format.height,
+                            },
+                            "source_time": envelope.source_time,
+                            "observed_time": envelope.observed_time,
+                        },
+                        discontinuity=(
+                            _fused_reason(inspection.events)
+                            if inspection.resets_continuity
+                            else _FusedDiscontinuity.NONE
+                        ),
+                        # SourceTracker has proven this carrier's event ordering final.
+                        source_watermark=float(t),
+                    )
+                    if synchronizer.accept(accepted_video):
+                        if synchronizer.generation_start_event_time is None:
+                            synchronizer.set_generation_start(float(t))
+                        fused_anchors[goal_id] = accepted_video
             await _record_source_inspection(envelope, inspection, ts=t)
             # Async judge dispatch: surface everything the off-loop scheduler finished since the last
             # frame — fires route through the SAME _emit_fires machinery at their ADMISSION time `jt`
@@ -3549,6 +4012,31 @@ async def _run_worker(
                 # Surface any judge_degraded/judge_persistent_failure events queued by the
                 # perceive_judged calls that just drained above (core is shared across dispatch modes).
                 await _drain_judge_health(core, on_health, t)
+            if _audio_judge_sched is not None:
+                for _hk, _hd in _audio_judge_sched.drain_trace():
+                    if on_health is not None:
+                        await _call_sink(
+                            on_health, RuntimeHealthEvent(_hk, ts=t, data=_hd)
+                        )
+                for _jt, _jfires in _audio_judge_sched.drain():
+                    async for incident in _emit_fires(_jfires, at=_jt):
+                        yield incident
+                await _drain_judge_health(core, on_health, t)
+            while _fused_local_completions:
+                _local_t, _local_completion = _fused_local_completions.popleft()
+                async for incident in _emit_fused_completion(
+                    _local_completion, at=_local_t
+                ):
+                    yield incident
+            for scheduler in (_fused_judge_scheds or {}).values():
+                for _hk, _hd in scheduler.drain_trace():
+                    if on_health is not None:
+                        await _call_sink(on_health, RuntimeHealthEvent(_hk, ts=t, data=_hd))
+                for _jt, _completion in scheduler.drain():
+                    async for incident in _emit_fused_completion(
+                        _completion, at=_jt
+                    ):
+                        yield incident
             if not inspection.accepted:
                 continue
             assert t is not None  # accepted envelope validation guarantees a finite lane clock
@@ -3606,6 +4094,53 @@ async def _run_worker(
             if goals_revision is not None:
                 rev = getattr(core.goals, "revision", goals_revision)
                 if rev != goals_revision:
+                    if _fused_syncs:
+                        _advance_fused_generation(
+                            _FusedDiscontinuity.WATCH_REVISION,
+                            revision=rev,
+                        )
+                        for scheduler in (_fused_judge_scheds or {}).values():
+                            scheduler.invalidate_source_continuity(
+                                ("watch_revision",)
+                            )
+                    current_fused = {
+                        goal.id: goal
+                        for goal in _source_goals()
+                        if goal.id in runtime_bindings
+                        and program_of(goal).perception.modality == "fused"
+                    }
+                    if current_fused and not fused_goals:
+                        raise ValueError(
+                            "a fused Watch must be armed before percept.run starts so both media "
+                            "lanes and the frozen synchronization policy can be preflighted"
+                        )
+                    if _fused_syncs is not None:
+                        for removed_id in set(_fused_syncs) - set(current_fused):
+                            _fused_syncs.pop(removed_id).advance_generation(
+                                _FusedDiscontinuity.WATCH_REVISION,
+                                watch_revision=rev,
+                            )
+                            removed_scheduler = (_fused_judge_scheds or {}).pop(
+                                removed_id, None
+                            )
+                            if removed_scheduler is not None:
+                                removed_scheduler.invalidate_source_continuity(
+                                    ("watch_revision",)
+                                )
+                        for added_id in set(current_fused) - set(_fused_syncs):
+                            added_goal = current_fused[added_id]
+                            _fused_syncs[added_id] = _new_fused_synchronizer(
+                                added_goal, rev
+                            )
+                            assert _fused_judge_scheds is not None
+                            _fused_judge_scheds[added_id] = _JudgeScheduler(
+                                core,
+                                gate_source,
+                                _cov,
+                                perceive=_dispatch_prepared_fused_job,
+                                stall_after_s=judge_stall_after_s,
+                                backpressure_after=judge_backpressure_after,
+                            )
                     if regate_on_goal_change:
                         # Pass the live gate + banks so the rebuild ADOPTS per-goal throttle + prev
                         # frame and REUSES surviving goals' detector banks (no throttle release / rep
@@ -3659,6 +4194,18 @@ async def _run_worker(
             _cov.frames += 1
             _cov.frames_dropped = dropped[0]
             clips.push(t, judge_frame)
+            is_paused = bool(paused is not None and paused())
+            if _fused_syncs and is_paused != _fused_was_paused:
+                _advance_fused_generation(
+                    _FusedDiscontinuity.PAUSE
+                    if is_paused
+                    else _FusedDiscontinuity.RESUME
+                )
+                for scheduler in (_fused_judge_scheds or {}).values():
+                    scheduler.invalidate_source_continuity(
+                        ("runtime_pause" if is_paused else "runtime_resume",)
+                    )
+                _fused_was_paused = is_paused
             # A pre-roll frame dropped by the BYTE budget is announced on the frame cadence, with its
             # reason and the live held bytes/frames — the operator sees the snippet getting shorter
             # instead of silently receiving less evidence than the configured pre_s (ADR-001 §9).
@@ -3675,7 +4222,6 @@ async def _run_worker(
             # SLEEP (RuntimeSession.pause): keep capturing + streaming frames to subscribers (the camera
             # panel stays live) but spend NO gate/judge/incident this tick — a cost-free pause that resumes
             # instantly. Default (paused=None) is byte-for-byte.
-            is_paused = bool(paused is not None and paused())
             if is_paused != _was_paused:
                 # Neither a pause nor a resume is evidence that a condition remained continuously
                 # true. Pending dwell is invalidated on both boundaries without re-arming fired state.
@@ -3966,19 +4512,91 @@ async def _run_worker(
             # The admit CONDITION above is unchanged by dispatch mode — only what "spend a judgment"
             # means changes. judge_calls is counted at LAUNCH either way (inline: launch == admit;
             # async: a superseded/revision-dropped candidate never spent a call — the scheduler counts).
+            fused_admitted = [
+                goal_id
+                for goal_id in admitted_goal_ids
+                if _fused_syncs is not None and goal_id in _fused_syncs
+            ]
+            for goal_id in fused_admitted:
+                anchor = fused_anchors.get(goal_id)
+                if anchor is None:
+                    continue
+                bundle = _fused_syncs[goal_id].bundle_for(anchor)
+                for receipt in _fused_syncs[goal_id].drain_bound_drops():
+                    if on_health is not None:
+                        await _call_sink(
+                            on_health,
+                            RuntimeHealthEvent(
+                                "fused_bounds_drop",
+                                ts=t,
+                                data={
+                                    "goal_id": goal_id,
+                                    "dropped_count": receipt.dropped_count,
+                                    "latest_anchor_identity": receipt.latest_anchor_identity,
+                                    "reason": receipt.reason.value,
+                                },
+                            ),
+                        )
+                if not any(
+                    reason.value == "watermark_pending"
+                    for reason in bundle.coverage_reasons
+                ):
+                    _queue_fused_bundle(goal_id, bundle)
+            audio_goal_ids = tuple(
+                goal_id
+                for goal_id in admitted_goal_ids
+                if (
+                    (goal := core.goals.get(goal_id)) is not None
+                    and program_of(goal).perception.modality == "audio"
+                )
+            )
+            ordinary_goal_ids = tuple(
+                goal_id
+                for goal_id in admitted_goal_ids
+                if (
+                    (_fused_syncs is None or goal_id not in _fused_syncs)
+                    and goal_id not in audio_goal_ids
+                )
+            )
+            if audio_goal_ids:
+                audio_evidence = _exact_audio_evidence(audio_goal_ids, at=t)
+                admitted_audio_ids = tuple(
+                    goal_id for goal_id in audio_goal_ids if goal_id in audio_evidence
+                )
+                if _audio_judge_sched is not None:
+                    if admitted_audio_ids:
+                        _audio_judge_sched.submit(
+                            t, audio_evidence, admitted_audio_ids
+                        )
+                elif admitted_audio_ids:
+                    _cov.perceive_dispatches += 1
+                    _cov.judge_calls += 1
+                    fires = await core.perceive_audio_judged(
+                        audio_evidence,
+                        gate_source,
+                        t=t,
+                        expected_goals_revision=goals_revision,
+                        expected_source_generation=core.source_continuity_generation(
+                            gate_source
+                        ),
+                        goal_ids=admitted_audio_ids,
+                    )
+                    async for incident in _emit_fires(fires, at=t):
+                        yield incident
             if _judge_sched is not None:
-                _judge_sched.submit(t, judge_frame, tuple(admitted_goal_ids))
-            else:
+                if ordinary_goal_ids:
+                    _judge_sched.submit(t, judge_frame, ordinary_goal_ids)
+            elif ordinary_goal_ids:
                 _cov.perceive_dispatches += 1
                 _cov.judge_calls += 1
                 perceive_kwargs = {"t": t}
                 if perceive_accepts_goal_ids:
-                    perceive_kwargs["goal_ids"] = tuple(admitted_goal_ids)
+                    perceive_kwargs["goal_ids"] = ordinary_goal_ids
                 fires = await core.perceive_judged(
                     judge_frame, gate_source, **perceive_kwargs
                 )
                 if not perceive_accepts_goal_ids:
-                    fires = _filter_goal_events(fires, tuple(admitted_goal_ids))
+                    fires = _filter_goal_events(fires, ordinary_goal_ids)
                 async for incident in _emit_fires(fires, at=t):
                     yield incident
         # Source exhausted (finite file / test stream): a judgment may still be IN FLIGHT and one more
@@ -3992,7 +4610,118 @@ async def _run_worker(
         if _audio_paced:
             _video_exhausted[0] = True
             _video_progress.set()
-        if _judge_sched is not None:
+            if audio_task is not None:
+                await audio_task
+        for goal_id, synchronizer in (_fused_syncs or {}).items():
+            for final_bundle in synchronizer.close():
+                _queue_fused_bundle(goal_id, final_bundle)
+        while _fused_local_completions:
+            _local_t, _local_completion = _fused_local_completions.popleft()
+            async for incident in _emit_fused_completion(
+                _local_completion, at=_local_t
+            ):
+                yield incident
+        async def _flush_provider_lane(kind, goal_id, scheduler):
+            await scheduler.flush()
+            return kind, goal_id, scheduler
+
+        provider_flush_tasks = []
+        provider_flush_meta = {}
+        for goal_id, scheduler in (_fused_judge_scheds or {}).items():
+            task = asyncio.create_task(
+                _flush_provider_lane("fused", goal_id, scheduler)
+            )
+            provider_flush_tasks.append(task)
+            provider_flush_meta[task] = ("fused", goal_id, scheduler)
+        if _audio_judge_sched is not None:
+            task = asyncio.create_task(
+                _flush_provider_lane("audio", None, _audio_judge_sched)
+            )
+            provider_flush_tasks.append(task)
+            provider_flush_meta[task] = ("audio", None, _audio_judge_sched)
+        ordinary_joined_provider_flush = (
+            _judge_sched is not None
+            and bool((_fused_judge_scheds or {}) or _audio_judge_sched is not None)
+        )
+        if ordinary_joined_provider_flush:
+            task = asyncio.create_task(
+                _flush_provider_lane("ordinary", None, _judge_sched)
+            )
+            provider_flush_tasks.append(task)
+            provider_flush_meta[task] = ("ordinary", None, _judge_sched)
+        try:
+            for completed in asyncio.as_completed(
+                provider_flush_tasks,
+                timeout=max(0.01, float(judge_stall_after_s)),
+            ):
+                lane_kind, _goal_id, scheduler = await completed
+                for _hk, _hd in scheduler.drain_trace():
+                    if on_health is not None:
+                        await _call_sink(
+                            on_health, RuntimeHealthEvent(_hk, data=_hd)
+                        )
+                if lane_kind == "fused":
+                    for _jt, _completion in scheduler.drain():
+                        async for incident in _emit_fused_completion(
+                            _completion, at=_jt
+                        ):
+                            yield incident
+                else:
+                    for _jt, _jfires in scheduler.drain():
+                        async for incident in _emit_fires(_jfires, at=_jt):
+                            yield incident
+        except TimeoutError:
+            # A cancellation-resistant provider lane must not hold completed
+            # reflex lanes or end-of-stream delivery hostage.
+            for task in provider_flush_tasks:
+                if not task.done():
+                    lane_kind, goal_id, scheduler = provider_flush_meta[task]
+                    if on_health is not None:
+                        await _call_sink(
+                            on_health,
+                            RuntimeHealthEvent(
+                                "judge_eos_timeout",
+                                ts=_last_t,
+                                data={
+                                    "lane": lane_kind,
+                                    "goal_id": goal_id,
+                                    "reason": "end_of_stream_deadline",
+                                    "active": scheduler.active,
+                                    "pending": scheduler.pending,
+                                },
+                            ),
+                        )
+                    task.cancel()
+                    # Never await this wrapper: its provider may suppress
+                    # cancellation.  The scheduler owns bounded teardown.
+                    task.add_done_callback(
+                        lambda done: (
+                            None
+                            if done.cancelled()
+                            else done.exception()
+                        )
+                    )
+                    await scheduler.close(drain=False)
+            # Closing a lane creates typed cancellation/drop traces. Drain
+            # those plus any result that completed immediately before the
+            # deadline, including fast ordinary/reflex completions.
+            for lane_kind, _goal_id, scheduler in provider_flush_meta.values():
+                for _hk, _hd in scheduler.drain_trace():
+                    if on_health is not None:
+                        await _call_sink(
+                            on_health, RuntimeHealthEvent(_hk, ts=_last_t, data=_hd)
+                        )
+                if lane_kind == "fused":
+                    for _jt, _completion in scheduler.drain():
+                        async for incident in _emit_fused_completion(
+                            _completion, at=_jt
+                        ):
+                            yield incident
+                else:
+                    for _jt, _jfires in scheduler.drain():
+                        async for incident in _emit_fires(_jfires, at=_jt):
+                            yield incident
+        if _judge_sched is not None and not ordinary_joined_provider_flush:
             await _judge_sched.flush()
             for _hk, _hd in _judge_sched.drain_trace():
                 if on_health is not None:
@@ -4000,20 +4729,33 @@ async def _run_worker(
             for _jt, _jfires in _judge_sched.drain():
                 async for incident in _emit_fires(_jfires, at=_jt):
                     yield incident
+        await _drain_judge_health(core, on_health, _last_t)
         # The LAST tick's suppressions (and anything the end-of-source flush above produced) would
         # otherwise die with the queue — drain once more so a finite stream reports every suppression
         # it earned, not all-but-the-final-tick's.
         await _drain_gate_health(core, on_health, _last_t)
     except Exception as exc:
+        if _fused_syncs:
+            _advance_fused_generation(_FusedDiscontinuity.WORKER_ERROR)
+            for scheduler in (_fused_judge_scheds or {}).values():
+                scheduler.invalidate_source_continuity(("worker_error",))
         if on_health is not None:
             await _call_sink(on_health, RuntimeHealthEvent("runtime_error", data={"error": repr(exc)}))
         raise
     finally:
+        if _fused_syncs:
+            _advance_fused_generation(_FusedDiscontinuity.CANCELLATION)
+            for scheduler in (_fused_judge_scheds or {}).values():
+                scheduler.invalidate_source_continuity(("runtime_shutdown",))
         # Async judge dispatch: never start new work past this point; cancel an in-flight judgment and
         # swallow its CancelledError (live shutdown / consumer break / cancellation). The normal
         # end-of-source path already flushed to quiescence above, so this is a no-op there.
         if _judge_sched is not None:
             await _judge_sched.close(drain=False)
+        if _audio_judge_sched is not None:
+            await _audio_judge_sched.close(drain=False)
+        for scheduler in (_fused_judge_scheds or {}).values():
+            await scheduler.close(drain=False)
         if audio_task is not None:  # stop the audio pump; a dangling capture thread outlives the run otherwise
             audio_task.cancel()
         for _t in list(_utt_tasks):  # an in-flight voice turn must not outlive the run

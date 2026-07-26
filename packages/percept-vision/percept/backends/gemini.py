@@ -243,7 +243,13 @@ class GeminiVision(_GeminiBase):
         # temporal strip: earlier context frames (oldest->newest), then the current frame last, so the
         # model reads time from Part order. A single multimodal call — Gemini's native modality is why
         # the strip + audio are token-cheap (one call, not N).
-        strip = [f for f in (frames or []) if f is not frame]
+        strip = list(frames or [])
+        if (
+            strip
+            and not (context or {}).get("_percept_frames_are_earlier")
+            and strip[-1] is frame
+        ):
+            strip.pop()
         parts: list[Any] = [_image_part(types, f) for f in strip]
         if frame is not None:
             parts.append(_image_part(types, frame))
@@ -291,7 +297,11 @@ class GeminiVision(_GeminiBase):
             )
         if context:
             # ``claim_mode`` is a RESERVED control key (not a specialist fact) — never surface it as one.
-            spec_facts = "; ".join(f"{k}={v}" for k, v in context.items() if k != "claim_mode")
+            spec_facts = "; ".join(
+                f"{k}={v}"
+                for k, v in context.items()
+                if k != "claim_mode" and not k.startswith("_percept_")
+            )
             if spec_facts:
                 question += (
                     f"A specialist model has reported these structured facts (trust them over your own "
@@ -334,7 +344,9 @@ class GeminiVision(_GeminiBase):
         """
         _, types = _require_genai()
         client = self._ensure_client()
-        strip = [f for f in (frames or []) if f is not frame]
+        strip = list(frames or [])
+        if strip and strip[-1] is frame:
+            strip.pop()
         parts: list[Any] = [_image_part(types, f) for f in strip]
         parts.append(_image_part(types, frame))
         parts.append(
@@ -377,7 +389,9 @@ class GeminiVision(_GeminiBase):
         """
         _, types = _require_genai()
         client = self._ensure_client()
-        strip = [f for f in (frames or []) if f is not frame]
+        strip = list(frames or [])
+        if strip and strip[-1] is frame:
+            strip.pop()
         parts: list[Any] = [_image_part(types, f) for f in strip]
         parts.append(_image_part(types, frame))
         parts.append(
