@@ -16,21 +16,33 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from statistics import median
 from typing import Any
 
-from percept import Goal, Percept
+from percept import Percept
 from percept.adapters import Goal as ContractGoal
+from percept.backends.judge_pool import (
+    JudgeCapability,
+    JudgePool,
+    JudgeRoute,
+)
 from percept.behavior import program_of
 from percept.config import load_settings
 from percept.contracts import JudgmentTiming
-from percept.edge.tier0 import MotionGate, compile_watchspec
-from percept.gate import FIRE, Gate
+from percept.contracts.watchplan import ResolvedWatch, WatchPlan
+from percept.gate import Gate
+from percept.incidents import incident_judgment
+from percept.resolver import ConfigResolver
+from percept.runtime import NativeVideoVision, RuntimeStats
 from percept.runtime.source import open_source
+from percept.runtime.worker import run as worker_run
 from percept.sampling import SamplingController, SensePolicy
 from percept.sensorplan import sensor_plan_for
+from percept.source_profiles_default import PHYSICAL_SCENE
+from percept.watchplan_apply import apply_watch_plan
 
 from . import perception_test as pt
 from .budget import BudgetEnforcer, build_budget_enforcer
@@ -54,6 +66,11 @@ _CAPTURE_HEADROOM_FPS = 8.0
 # latency into an uncontrolled memory spike. A small blocking queue bounds memory and backpressures
 # only the benchmark decoder; ``open_source`` retains latest-frame semantics everywhere else.
 _FIXTURE_QUEUE_SIZE = 8
+# One hard action budget, split so provider/evidence work cannot consume the
+# full user-visible reflex envelope. The measured launch gate remains strict
+# action-onset -> Incident under 2 seconds.
+ACTION_PROVIDER_DEADLINE_S = 1.5
+ACTION_DECISION_DEADLINE_S = 1.9
 
 
 def cadence_policy(cadence: dict) -> SensePolicy:
@@ -167,6 +184,8 @@ class EventRun:
     asks: list[float] = field(default_factory=list)
     escalations: list[float] = field(default_factory=list)
     trace: list[dict[str, Any]] = field(default_factory=list)
+    health: list[dict[str, Any]] = field(default_factory=list)
+    judge_receipts: list[dict[str, Any]] = field(default_factory=list)
     configuration: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
 
@@ -242,6 +261,10 @@ def _action_goal_state() -> dict[str, Any]:
         "type": "watch",
         "count": 0,
         "rearm": "each_event",
+        # PT actions are localized hand/object motion. Pin the measured Tier-0
+        # operating point in the benchmark itself; never inherit an ambient
+        # deployment-wide mean-stat default.
+        "salience_stat": "block_max",
         "sense": {"brief_window_s": ACTION_BRIEF_WINDOW_S},
         "perception": {
             "temporal": "strip",
@@ -252,11 +275,108 @@ def _action_goal_state() -> dict[str, Any]:
     }
 
 
+def _action_watch_plan(*, goal_id: str, condition: str) -> WatchPlan:
+    """The public, annotation-independent WatchPlan executed for every PT case."""
+    state = _action_goal_state()
+    perception = state["perception"]
+    return WatchPlan(
+        id=goal_id,
+        condition=condition,
+        sense="video",
+        rearm=state["rearm"],
+        explicit={
+            "Goal.state.sense.brief_window_s": state["sense"]["brief_window_s"],
+            "Goal.state.perception.temporal": perception["temporal"],
+            "Goal.state.perception.n_frames": perception["n_frames"],
+            "Goal.state.perception.sampling": perception["sampling"],
+            "Goal.state.perception.window_s": perception["window_s"],
+            "WatchProfile.salience_stat": state["salience_stat"],
+        },
+    )
+
+
+class _BenchmarkResolver(ConfigResolver):
+    """Capture the exact ResolvedWatch that ``apply_watch_plan`` compiled and armed."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.applied: ResolvedWatch | None = None
+
+    def resolve(self, *args: Any, **kwargs: Any) -> ResolvedWatch:
+        resolved = super().resolve(*args, **kwargs)
+        self.applied = resolved
+        return resolved
+
+
+_BENCHMARK_RESOLVED_PATHS = (
+    "Goal.state.rearm",
+    "Goal.state.sense.brief_window_s",
+    "Goal.state.perception.temporal",
+    "Goal.state.perception.n_frames",
+    "Goal.state.perception.sampling",
+    "Goal.state.perception.window_s",
+    "Settings.edge.salience_stat",
+    "Settings.edge.motion_gate_block_max",
+    "Settings.gate.threshold",
+    "Settings.gate.require_false_first",
+    "Settings.gate.refractory_s",
+    "SourceProfile.default_timebase",
+)
+
+
+def _json_value(value: Any) -> Any:
+    """Normalize immutable configuration snapshots for the JSON benchmark artifact."""
+    if isinstance(value, dict):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_json_value(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        return sorted(_json_value(item) for item in value)
+    return value
+
+
+def _resolved_watch_record(resolved: ResolvedWatch) -> dict[str, Any]:
+    paths = [
+        path for path in _BENCHMARK_RESOLVED_PATHS if path in resolved.effective
+    ]
+    return {
+        "plan_hash": resolved.plan_hash,
+        "component_snapshot_hash": resolved.component_snapshot_hash,
+        "optimization_lock_hash": resolved.optimization_lock_hash,
+        "source_profile": (
+            _json_value(dict(resolved.source_profile))
+            if resolved.source_profile is not None
+            else None
+        ),
+        "domain_pack": (
+            _json_value(dict(resolved.domain_pack))
+            if resolved.domain_pack is not None
+            else None
+        ),
+        "execution_policy": (
+            _json_value(dict(resolved.execution_policy))
+            if resolved.execution_policy is not None
+            else None
+        ),
+        "components": _json_value(dict(resolved.components)),
+        "effective": {
+            path: _json_value(resolved.effective[path]) for path in paths
+        },
+        "provenance": {
+            path: _json_value(resolved.provenance[path].to_dict())
+            for path in paths
+        },
+    }
+
+
 class RecordingVision:
     """Judge wrapper that records calls, verdicts, and swallowed backend failures."""
 
     def __init__(self, inner: Any) -> None:
         self.inner = inner
+        self.SUPPORTS_NATIVE_VIDEO_TRANSPORT = bool(
+            getattr(inner, "SUPPORTS_NATIVE_VIDEO_TRANSPORT", False)
+        )
         self.calls = 0
         self.last_verdict: dict[str, Any] | None = None
         self.last_error: Exception | None = None
@@ -307,7 +427,7 @@ def _decision_observation(
     run: EventRun,
 ) -> DecisionObservation | None:
     """Materialize one timing-bearing decision without mixing clock domains."""
-    judgment = getattr(fire, "judgment", None)
+    judgment = getattr(fire, "judgment", None) or incident_judgment(fire)
     timing = getattr(judgment, "timing", None)
     if timing is None or timing.source_media_ts is None:
         return None
@@ -331,6 +451,52 @@ def _decision_observation(
     )
 
 
+async def _paced_fixture_source(
+    path: str,
+    *,
+    fps: float,
+    result: EventRun,
+    dropped: list[int],
+):
+    """Replay a finite file at its media cadence while preserving envelopes."""
+    started_wall = time.monotonic()
+    first_media: float | None = None
+    async for envelope in open_source(
+        path,
+        fps=fps,
+        maxsize=_FIXTURE_QUEUE_SIZE,
+        queue_policy="block",
+        timebase="media",
+        dropped=dropped,
+    ):
+        if envelope.source_time is None:
+            raise ValueError(
+                "paced PT qualification requires decoder source timestamps"
+            )
+        media_t = float(envelope.source_time)
+        if first_media is None:
+            first_media = media_t
+        target = started_wall + (media_t - first_media)
+        remaining = target - time.monotonic()
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+        result.frames += 1
+        yield envelope
+
+
+def _receipt_record(receipt: Any) -> dict[str, Any]:
+    return {
+        "route": receipt.route,
+        "evidence_shape": receipt.evidence_shape,
+        "mode": receipt.mode,
+        "outcome": receipt.outcome,
+        "latency_s": round(float(receipt.latency_s), 6),
+        "deadline_s": float(receipt.deadline_s),
+        "confidence": receipt.confidence,
+        "exception_type": receipt.exception_type,
+    }
+
+
 async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
     goal_text = _action_goal(event["label"])
     result = EventRun(
@@ -349,7 +515,58 @@ async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
         ],
     )
     settings = load_settings()
-    vision = RecordingVision(bench_vision(settings, request_budget=request_budget))
+    goal_id = f"pt-{event['video_id']}"
+    provider = RecordingVision(
+        bench_vision(settings, request_budget=request_budget)
+    )
+
+    def on_receipt(receipt: Any) -> None:
+        record = _receipt_record(receipt)
+        result.judge_receipts.append(record)
+        if receipt.outcome in {
+            "provider_error",
+            "malformed",
+            "deadline",
+            "capacity",
+            "no_route",
+        }:
+            result.error = (
+                f"reflex judge route failed closed: outcome={receipt.outcome}; "
+                f"route={receipt.route}; exception={receipt.exception_type}"
+            )
+
+    vision = JudgePool(
+        [
+            JudgeRoute(
+                "native-video-primary",
+                NativeVideoVision(
+                    provider,
+                    # The adapter recomputes clip fps from the retained source span.
+                    # This bounded capture ceiling is only the no-span fallback.
+                    fps=_CAPTURE_HEADROOM_FPS,
+                    max_frames=ACTION_TEMPORAL_FRAMES,
+                    require_native_transport=True,
+                ),
+                JudgeCapability(
+                    evidence_shapes=frozenset({"video_clip"}),
+                    latency_slo_s=ACTION_PROVIDER_DEADLINE_S,
+                    modes=frozenset({"reflex"}),
+                    max_inflight=1,
+                ),
+            )
+        ],
+        mode="reflex",
+        deadline_s=ACTION_PROVIDER_DEADLINE_S,
+        max_parallel=1,
+        on_receipt=on_receipt,
+        terminal_outcomes={
+            "provider_error",
+            "malformed",
+            "deadline",
+            "capacity",
+            "no_route",
+        },
+    )
     # This benchmark arms its goal in code and only exercises the supplied live vision adapter.
     # Explicit scripted values isolate unused language/specialist seams from ambient deployment env.
     core = Percept.create(
@@ -361,22 +578,46 @@ async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
         settings=settings,
         discover_plugins=False,
     )
-    goal_id = f"pt-{event['video_id']}"
-    goal = Goal(
-        id=goal_id,
-        condition=goal_text,
-        say=f"Perception Test action detected: {goal_text}",
-        state=_action_goal_state(),
+    plan = _action_watch_plan(goal_id=goal_id, condition=goal_text)
+    resolver = _BenchmarkResolver()
+    receipt = apply_watch_plan(
+        core,
+        plan,
+        resolver=resolver,
+        source_profile=PHYSICAL_SCENE,
     )
-    core.add_goal(goal)
-    plan = sensor_plan_for(goal)
-    cadence = plan.cadence
-    policy = cadence_policy(cadence)
-    ctrl = SamplingController(policy)
-    spec = compile_watchspec(list(core.goals.active()), threshold=settings.edge.motion_gate)
-    gate = MotionGate(spec, settings=settings)
+    if receipt.status != "applied" or receipt.watch_ids != (goal_id,):
+        result.error = (
+            "WatchPlan failed to arm exactly through the compiled product path: "
+            f"status={receipt.status}; watch_ids={receipt.watch_ids!r}; "
+            f"dropped={[item.code for item in receipt.dropped_fields]!r}; "
+            f"warnings={[item.code for item in receipt.warnings]!r}"
+        )
+        result.configuration = {
+            "watch_plan": plan.to_dict(),
+            "watch_receipt": receipt.to_dict(),
+        }
+        return result
+    if resolver.applied is None:
+        result.error = "WatchPlan applied without an inspectable ResolvedWatch"
+        return result
+    goal = core.goals.get(goal_id)
+    runtime_binding = core._watch_runtime_for(goal_id)
+    if goal is None or runtime_binding is None:
+        result.error = "WatchPlan receipt claimed applied but compiled runtime binding is absent"
+        return result
+    compiled = runtime_binding[0]
+    cadence = sensor_plan_for(goal).cadence
     program = program_of(goal)
     result.configuration = {
+        "architecture": (
+            "WatchPlan -> ConfigResolver -> ResolvedWatch -> "
+            "RuntimeCompiler -> async worker"
+        ),
+        "watch_plan": plan.to_dict(),
+        "watch_receipt": receipt.to_dict(),
+        "resolved_watch": _resolved_watch_record(resolver.applied),
+        "runtime_application_key": core._watch_runtime_keys.get(goal_id),
         "goal_state": dict(goal.state),
         "resolved_perception": {
             "modality": program.perception.modality,
@@ -387,90 +628,71 @@ async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
         },
         "resolved_cadence": dict(cadence),
         "capture_fps": capture_fps(cadence),
+        "tier0": {
+            "salience_stat": compiled.settings.edge.salience_stat,
+            "threshold": compiled.settings.edge.motion_gate_block_max,
+            "threshold_setting": "Settings.edge.motion_gate_block_max",
+        },
+        "evidence_shape": "video_clip",
+        "provider_deadline_s": ACTION_PROVIDER_DEADLINE_S,
+        "decision_deadline_s": ACTION_DECISION_DEADLINE_S,
     }
     dropped_frames = [0]
+    stats = RuntimeStats()
+
+    def on_trace(trace_event: Any) -> None:
+        row = {
+            "trace_id": trace_event.trace_id,
+            "stage": trace_event.stage,
+            "ts": trace_event.t,
+            "goal_id": trace_event.goal_id,
+            "data": dict(trace_event.data),
+        }
+        result.trace.append(row)
+        if (
+            trace_event.stage == "edge.decision"
+            and trace_event.data.get("goal_ids")
+            and trace_event.t is not None
+        ):
+            result.escalations.append(float(trace_event.t))
+
+    def on_health(event: Any) -> None:
+        result.health.append(
+            {
+                "kind": event.kind,
+                "ts": event.ts,
+                "data": dict(event.data or {}),
+            }
+        )
 
     try:
-        async for t, gate_frame, judge_frame in open_source(
+        paced_source = _paced_fixture_source(
             str(event["path"]),
             fps=capture_fps(cadence),
-            maxsize=_FIXTURE_QUEUE_SIZE,
-            queue_policy="block",
+            result=result,
             dropped=dropped_frames,
+        )
+        async for incident in worker_run(
+            core,
+            source=paced_source,
+            fps=capture_fps(cadence),
+            stats=stats,
+            gate_source="camera",
+            judge_dispatch="async",
+            judge_stall_after_s=ACTION_DECISION_DEADLINE_S,
+            judge_decision_deadline_s=ACTION_DECISION_DEADLINE_S,
+            timebase="media",
+            on_trace=on_trace,
+            on_health=on_health,
         ):
-            result.frames += 1
-            decision = gate.evaluate(gate_frame, ts=float(t))
-            # JUDGE on EITHER the motion gate's escalation (legacy firing logic — UNCHANGED) OR the fovea's
-            # sensitive cadence coasting over a quiet-but-in-window frame (the coverage fix). The motion
-            # signal drives the controller's saccade, so a real motion burst still densifies to max_fps.
-            coast = ctrl.should_process("judge", float(t), float(decision.signal.motion))
-            if not (decision.escalate or coast):
-                continue
-            cause = admission_cause(gate=bool(decision.escalate), cadence=coast)
-            edge_trace = {
-                "decision": "escalate" if decision.escalate else "suppress",
-                "motion": round(float(decision.signal.motion), 4),
-                "structural": round(float(decision.signal.structural), 4),
-                "semantic": round(float(decision.signal.semantic), 4),
-                "threshold": round(float(decision.threshold), 4),
-            }
-            result.escalations.append(float(t))
-            vision.last_verdict = None
-            events = await core.perceive_judged(judge_frame, "pt-action", t=float(t))
-            if vision.last_error is not None:
-                result.error = f"{type(vision.last_error).__name__}: {vision.last_error}"
-                result.trace.append(
-                    {
-                        "ts": round(float(t), 3),
-                        "case_id": result.case_id,
-                        "goal_id": goal_id,
-                        "edge": edge_trace,
-                        "admission_cause": cause,
-                        "core_gate_action": "invalid",
-                        "reason": f"backend failure: {result.error}",
-                    }
+            observation = _decision_observation(incident, result)
+            if observation is None:
+                result.error = (
+                    "Incident omitted runtime-local JudgmentTiming/source_media_ts; "
+                    "action-to-fire latency cannot be qualified"
                 )
                 break
-            action = "silent"
-            for fire in events or []:
-                action = getattr(fire, "action", "silent")
-                if action == FIRE:
-                    observation = _decision_observation(fire, result)
-                    if observation is None:
-                        result.error = (
-                            "FIRE omitted JudgmentTiming/source_media_ts; "
-                            "action-to-fire latency cannot be qualified"
-                        )
-                    else:
-                        result.fires.append(observation)
-                else:
-                    result.asks.append(float(t))
-            verdict = vision.last_verdict
-            result.trace.append(
-                {
-                    "ts": round(float(t), 3),
-                    "edge": edge_trace,
-                    "admission_cause": cause,
-                    "goal_id": goal_id,
-                    "case_id": result.case_id,
-                    "goal": goal_text,
-                    "judge_verdict": {
-                        "satisfied": bool(verdict.get("satisfied")) if verdict else None,
-                        "confidence": round(float(verdict.get("confidence") or 0.0), 3)
-                        if verdict
-                        else None,
-                        "evidence": str(verdict.get("evidence", "") if verdict else "")[:240],
-                        "phase": verdict.get("phase") if verdict else None,
-                        "action_present": verdict.get("action_present") if verdict else None,
-                    },
-                    "core_gate_action": action,
-                    "reason": f"{action}: emitted"
-                    if action != "silent"
-                    else _silent_reason(verdict, settings.gate.threshold),
-                }
-            )
-            if result.error:
-                break
+            result.fires.append(observation)
     except Exception as exc:
         result.error = f"{type(exc).__name__}: {exc}"
 
@@ -481,7 +703,17 @@ async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
             "benchmark coverage is invalid"
         )
     result.reconcile_fire_windows()
-    result.judge_calls = vision.calls
+    result.judge_calls = provider.calls
+    result.configuration["runtime_stats"] = {
+        "frames": stats.frames,
+        "escalations": stats.escalations,
+        "judge_calls": stats.judge_calls,
+        "judge_superseded": stats.judge_superseded,
+        "judge_revision_dropped": stats.judge_revision_dropped,
+        "judge_deadline_dropped": stats.judge_deadline_dropped,
+        "judge_deadline_expired": stats.judge_deadline_expired,
+        "incidents": stats.incidents,
+    }
     return result
 
 
@@ -796,6 +1028,8 @@ def score(*, live: bool, n: int) -> TrackResult:
             "fires": _fire_records(r),
             "escalations": [round(t, 3) for t in r.escalations[:20]],
             "trace": r.trace,
+            "health": r.health,
+            "judge_receipts": r.judge_receipts,
             "configuration": r.configuration,
             "error": r.error,
         }
@@ -889,7 +1123,9 @@ def score(*, live: bool, n: int) -> TrackResult:
             "model": model,
             "watch": _action_goal_state(),
             "evidence_contract": {
-                "ordered_frames": True,
+                "native_video_clip": True,
+                "ordered_images_are_not_equivalent": True,
+                "ordered_image_fallback": False,
                 "event_chain": True,
                 "required_phase_vocabulary": ["pre", "during", "post"],
                 "required_action_present": True,
@@ -912,6 +1148,9 @@ def score(*, live: bool, n: int) -> TrackResult:
             },
             "decision": {
                 "confidence_threshold": settings.gate.threshold,
+                "provider_deadline_s": ACTION_PROVIDER_DEADLINE_S,
+                "absolute_decision_deadline_s": ACTION_DECISION_DEADLINE_S,
+                "reflex_action_to_fire_s": 2.0,
                 "freshness_min": Gate().fresh_min,
                 "require_false_first": settings.gate.require_false_first,
                 "refractory_s": settings.gate.refractory_s,

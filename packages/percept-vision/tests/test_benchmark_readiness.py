@@ -28,6 +28,7 @@ from eval.bench.track_perception_test_e2e import (
     ACTION_TEMPORAL_WINDOW_S,
     EventRun,
     _action_goal_state,
+    _action_watch_plan,
     _call_reductions,
     _decision_observation,
     _event_precision,
@@ -40,6 +41,7 @@ from percept.adapters import Verdict
 from percept.backends import openrouter
 from percept.backends.openrouter import OpenRouterVision
 from percept.contracts import JudgmentTiming
+from percept.harness.tier0 import Frame, gray_frame
 
 
 def _plan(
@@ -133,6 +135,26 @@ class ActionBenchmarkConfigurationTests(unittest.TestCase):
             },
         )
         self.assertGreaterEqual(ACTION_TEMPORAL_FRAMES, 3)
+
+    def test_action_configuration_is_a_public_watch_plan(self):
+        plan = _action_watch_plan(
+            goal_id="pt-case",
+            condition="someone performs one discrete action",
+        )
+
+        self.assertEqual(plan.id, "pt-case")
+        self.assertEqual(plan.sense, "video")
+        self.assertEqual(plan.rearm, "each_event")
+        self.assertEqual(
+            plan.explicit["Goal.state.sense.brief_window_s"],
+            ACTION_BRIEF_WINDOW_S,
+        )
+        self.assertEqual(
+            plan.explicit["WatchProfile.salience_stat"],
+            "block_max",
+        )
+        self.assertNotIn("onset_s", json.dumps(plan.to_dict()))
+        self.assertNotIn("end_s", json.dumps(plan.to_dict()))
 
 
 class BudgetAdmissionTests(unittest.TestCase):
@@ -378,17 +400,23 @@ class BudgetAdmissionTests(unittest.TestCase):
 
 
 class TerminalBenchmarkFailureTests(unittest.TestCase):
-    class _AlwaysGate:
-        def __init__(self, *_args, **_kwargs) -> None:
-            pass
+    class _NativeVideo:
+        def __init__(self, inner, **_kwargs) -> None:
+            self.inner = inner
 
-        def evaluate(self, _frame, *, ts):
-            return NS(
-                escalate=True,
-                signal=NS(motion=1.0, structural=0.0, semantic=0.0),
-                threshold=0.1,
-                ts=ts,
+        async def judge(self, condition, _frame, **kwargs):
+            return await self.inner.judge(
+                condition,
+                ("video/mp4", b"fixture"),
+                frames=None,
+                context={
+                    **(kwargs.get("context") or {}),
+                    "_percept_evidence_shape": "video_clip",
+                },
             )
+
+        async def detect(self, _frame, _goals):
+            return []
 
     @staticmethod
     def _events() -> list[dict]:
@@ -446,9 +474,17 @@ class TerminalBenchmarkFailureTests(unittest.TestCase):
 
             async def frames():
                 nonlocal decoded_frames
-                for timestamp in (0.0, 0.5):
+                still = gray_frame(8, 8, 0)
+                pixels = [0] * 64
+                for index in range(40):
+                    pixels[index] = 255
+                motion = Frame(8, 8, tuple(pixels))
+                for timestamp, gate_frame in (
+                    (0.0, still),
+                    (0.5, motion),
+                ):
                     decoded_frames += 1
-                    yield timestamp, object(), b"frame"
+                    yield timestamp, gate_frame, b"frame"
 
             return frames()
 
@@ -473,9 +509,16 @@ class TerminalBenchmarkFailureTests(unittest.TestCase):
                 return_value=0.25,
             ),
             patch.object(pt_track, "bench_vision", side_effect=make_vision),
-            patch.object(pt_track, "open_source", side_effect=source),
-            patch.object(pt_track, "MotionGate", self._AlwaysGate),
-            patch.object(pt_track, "compile_watchspec", return_value=NS()),
+            patch.object(
+                pt_track,
+                "_paced_fixture_source",
+                side_effect=source,
+            ),
+            patch.object(
+                pt_track,
+                "NativeVideoVision",
+                self._NativeVideo,
+            ),
         ):
             result = pt_track.score(live=True, n=2)
         return result, transport_calls, source_starts, decoded_frames
@@ -504,7 +547,7 @@ class TerminalBenchmarkFailureTests(unittest.TestCase):
         )
         self.assertEqual(transport_calls, 1)
         self.assertEqual(source_starts, 1)
-        self.assertEqual(decoded_frames, 1)
+        self.assertEqual(decoded_frames, 2)
         self.assertIn("BudgetExceeded", result.excluded[0])
         self._assert_terminal_result(result, physical_attempts=1)
 
@@ -514,7 +557,7 @@ class TerminalBenchmarkFailureTests(unittest.TestCase):
         )
         self.assertEqual(transport_calls, 2)
         self.assertEqual(source_starts, 1)
-        self.assertEqual(decoded_frames, 1)
+        self.assertEqual(decoded_frames, 2)
         self.assertIn("RuntimeError", result.excluded[0])
         self._assert_terminal_result(result, physical_attempts=2)
 
@@ -526,7 +569,7 @@ class TerminalBenchmarkFailureTests(unittest.TestCase):
         )
         self.assertEqual(transport_calls, 1)
         self.assertEqual(source_starts, 1)
-        self.assertEqual(decoded_frames, 1)
+        self.assertEqual(decoded_frames, 2)
         self.assertIn("omitted enforceable", result.excluded[0])
         self._assert_terminal_result(result, physical_attempts=1)
 
@@ -548,6 +591,8 @@ class FixtureReplayCoverageTests(unittest.TestCase):
         captured: dict = {}
 
         class NoCallVision:
+            SUPPORTS_NATIVE_VIDEO_TRANSPORT = True
+
             async def judge(self, *_args, **_kwargs):
                 raise AssertionError("empty fixture replay must not call a provider")
 
@@ -575,6 +620,8 @@ class FixtureReplayCoverageTests(unittest.TestCase):
 
     def test_any_fixture_drop_fails_closed_and_invalidates_coverage(self):
         class NoCallVision:
+            SUPPORTS_NATIVE_VIDEO_TRANSPORT = True
+
             async def judge(self, *_args, **_kwargs):
                 raise AssertionError("empty fixture replay must not call a provider")
 
@@ -619,6 +666,8 @@ class FixtureReplayCoverageTests(unittest.TestCase):
 
     def test_ambient_language_seams_cannot_hijack_code_armed_track(self):
         class NoCallVision:
+            SUPPORTS_NATIVE_VIDEO_TRANSPORT = True
+
             async def judge(self, *_args, **_kwargs):
                 raise AssertionError("empty fixture replay must not call a provider")
 
@@ -656,36 +705,151 @@ class FixtureReplayCoverageTests(unittest.TestCase):
                     evidence="not yet",
                 )
 
-        class SuppressedGate:
-            def __init__(self, *_args, **_kwargs):
-                pass
+        class NativeVideo:
+            def __init__(self, inner, **_kwargs):
+                self.inner = inner
 
-            def evaluate(self, _frame, *, ts):
-                return NS(
-                    escalate=False,
-                    signal=NS(
-                        motion=0.0,
-                        structural=0.0,
-                        semantic=0.0,
-                    ),
-                    threshold=0.1,
-                    ts=ts,
+            async def judge(self, condition, _frame, **kwargs):
+                return await self.inner.judge(
+                    condition,
+                    ("video/mp4", b"fixture"),
+                    frames=None,
+                    context=kwargs.get("context"),
                 )
 
+            async def detect(self, _frame, _goals):
+                return []
+
         async def source(*_args, **_kwargs):
-            yield 0.0, object(), b"frame"
+            yield 0.0, gray_frame(8, 8, 0), b"frame"
 
         with (
             patch.object(pt_track, "bench_vision", return_value=FalseVision()),
-            patch.object(pt_track, "open_source", side_effect=source),
-            patch.object(pt_track, "MotionGate", SuppressedGate),
+            patch.object(
+                pt_track,
+                "_paced_fixture_source",
+                side_effect=source,
+            ),
+            patch.object(pt_track, "NativeVideoVision", NativeVideo),
         ):
             run = asyncio.run(pt_track._score_one(self._event(), _enforcer()))
 
         self.assertIsNone(run.error)
-        self.assertEqual(len(run.trace), 1)
-        self.assertEqual(run.trace[0]["edge"]["decision"], "suppress")
-        self.assertEqual(run.trace[0]["admission_cause"], "cadence")
+        edge_rows = [
+            row for row in run.trace if row["stage"] == "edge.decision"
+        ]
+        self.assertEqual(len(edge_rows), 1)
+        self.assertFalse(edge_rows[0]["data"]["escalate"])
+        self.assertTrue(edge_rows[0]["data"]["coast_admit"])
+        self.assertEqual(
+            edge_rows[0]["data"]["admission_causes"],
+            ("coast",),
+        )
+
+    def test_product_path_delivers_native_video_through_async_worker(self):
+        try:
+            import cv2
+            import numpy as np
+        except ModuleNotFoundError:
+            self.skipTest("runtime extra is not installed")
+
+        class VideoVision:
+            SUPPORTS_NATIVE_VIDEO_TRANSPORT = True
+
+            def __init__(self):
+                self.calls = []
+
+            async def judge(self, _condition, frame, **kwargs):
+                self.calls.append((frame, kwargs))
+                return Verdict(
+                    satisfied=True,
+                    confidence=0.95,
+                    evidence="one complete occurrence",
+                    phase="post",
+                    action_present=False,
+                )
+
+        vision = VideoVision()
+        still = gray_frame(8, 8, 0)
+        pixels = [0] * 64
+        for index in range(40):
+            pixels[index] = 255
+        motion = Frame(8, 8, tuple(pixels))
+        encoded = []
+        for value in (0, 127, 255):
+            ok, payload = cv2.imencode(
+                ".jpg",
+                np.full((24, 32, 3), value, dtype=np.uint8),
+            )
+            self.assertTrue(ok)
+            encoded.append(("image/jpeg", payload.tobytes()))
+
+        async def source(*_args, **_kwargs):
+            for index, gate_frame in enumerate((still, motion, still)):
+                yield index * 0.2, gate_frame, encoded[index]
+                await asyncio.sleep(0)
+
+        with (
+            patch.object(pt_track, "bench_vision", return_value=vision),
+            patch.object(
+                pt_track,
+                "_paced_fixture_source",
+                side_effect=source,
+            ),
+        ):
+            run = asyncio.run(
+                pt_track._score_one(self._event(), _enforcer())
+            )
+
+        self.assertIsNone(run.error)
+        self.assertGreaterEqual(len(vision.calls), 1)
+        for frame, kwargs in vision.calls:
+            self.assertEqual(frame[0], "video/mp4")
+            self.assertGreater(len(frame[1]), 0)
+            self.assertIsNone(kwargs["frames"])
+            self.assertEqual(
+                kwargs["context"]["_percept_evidence_shape"],
+                "video_clip",
+            )
+        self.assertTrue(
+            all(
+                receipt["evidence_shape"] == "video_clip"
+                for receipt in run.judge_receipts
+            )
+        )
+        self.assertTrue(
+            any(row["stage"] == "edge.decision" for row in run.trace)
+        )
+        self.assertEqual(
+            run.configuration["architecture"],
+            (
+                "WatchPlan -> ConfigResolver -> ResolvedWatch -> "
+                "RuntimeCompiler -> async worker"
+            ),
+        )
+        self.assertEqual(
+            run.configuration["watch_receipt"]["status"],
+            "applied",
+        )
+        resolved = run.configuration["resolved_watch"]
+        self.assertEqual(
+            resolved["source_profile"]["SourceProfile.name"],
+            "physical_scene",
+        )
+        self.assertEqual(
+            resolved["effective"]["Settings.edge.salience_stat"],
+            "block_max",
+        )
+        self.assertEqual(
+            resolved["provenance"]["Settings.edge.salience_stat"][
+                "owner_layer"
+            ],
+            "WatchPlan",
+        )
+        self.assertEqual(len(resolved["plan_hash"]), 64)
+        self.assertEqual(len(resolved["component_snapshot_hash"]), 64)
+        self.assertTrue(run.configuration["runtime_application_key"])
+        json.dumps(run.configuration)
 
 
 class PinnedCaseTests(unittest.TestCase):
