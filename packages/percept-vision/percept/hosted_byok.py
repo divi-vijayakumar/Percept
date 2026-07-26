@@ -48,7 +48,7 @@ from .config import Settings
 from .contracts import Box, ClipEvent, SubjectRef
 
 HOSTED_BYOK_CONTRACT_VERSION = "1.0.0"
-HOSTED_BYOK_PROCESS_ISOLATION_VERSION = "2.2.0"
+HOSTED_BYOK_PROCESS_ISOLATION_VERSION = "2.3.0"
 HOSTED_BYOK_CAPABILITIES: Mapping[str, frozenset[str]] = {
     "gemini": frozenset({"vision.judge", "vision.judge.fused"}),
     "openrouter": frozenset({"vision.judge"}),
@@ -520,7 +520,11 @@ class _MathAuthority:
     isfinite: Callable[[float], bool]
 
 
-def _make_private_wire_codec() -> tuple[Callable[[Any], bytes], Callable[[bytes], Any]]:
+def _make_private_wire_codec() -> tuple[
+    Callable[[Any], bytes],
+    Callable[[bytes], Any],
+    Callable[[Any], Any],
+]:
     """Recursively freeze the canonical codec instead of retaining live module globals."""
 
     json_authority = _JsonAuthority(json.dumps, json.loads)
@@ -584,7 +588,41 @@ def _make_private_wire_codec() -> tuple[Callable[[Any], bytes], Callable[[bytes]
         }
     )
     frozen_loads = clone(_wire_loads, loads_globals)
-    return frozen_dumps, frozen_loads
+    return frozen_dumps, frozen_loads, frozen_value
+
+
+def _make_private_input_validator(
+    wire_value: Callable[[Any], Any],
+) -> Callable[..., None]:
+    """Freeze every recursive/helper edge used by hosted call-input validation."""
+
+    def clone(
+        implementation: Callable[..., Any],
+        globals_snapshot: dict[str, Any],
+    ) -> Callable[..., Any]:
+        frozen = FunctionType(
+            implementation.__code__,
+            globals_snapshot,
+            name=implementation.__name__,
+            argdefs=implementation.__defaults__,
+            closure=implementation.__closure__,
+        )
+        frozen.__kwdefaults__ = implementation.__kwdefaults__
+        return frozen
+
+    contains_globals = dict(_input_contains_credential.__globals__)
+    frozen_contains = clone(_input_contains_credential, contains_globals)
+    contains_globals["_input_contains_credential"] = frozen_contains
+
+    validate_globals = dict(_validate_hosted_call_inputs.__globals__)
+    validate_globals.update(
+        {
+            "math": _MathAuthority(math.isfinite),
+            "_wire_value": wire_value,
+            "_input_contains_credential": frozen_contains,
+        }
+    )
+    return clone(_validate_hosted_call_inputs, validate_globals)
 
 
 class HostedByokSubprocessSupervisor:
@@ -1761,10 +1799,15 @@ def _make_worker_exchange(
                 )
             )
         finally:
+            close_failed = False
             try:
                 peer.close()
+            except BaseException:
+                close_failed = True
             finally:
                 terminate(process)
+            if close_failed:
+                fail()
 
     return exchange
 
@@ -1798,7 +1841,8 @@ def _make_private_supervisor_dispatch(poll_interval_s: float) -> _PrivateSupervi
     compare_digest = hmac.compare_digest
     invocation_error = HostedByokInvocationError
     contract_error = HostedByokContractError
-    wire_dumps, wire_loads = _make_private_wire_codec()
+    wire_dumps, wire_loads, wire_value = _make_private_wire_codec()
+    validate_inputs = _make_private_input_validator(wire_value)
 
     def file_attestation(path: str, *, trusted_tool: bool) -> tuple[Any, ...]:
         resolved = realpath(path)
@@ -1862,20 +1906,39 @@ def _make_private_supervisor_dispatch(poll_interval_s: float) -> _PrivateSupervi
         if type(challenge) is not bytes or len(challenge) != 32:
             raise invocation_error(failure_code)
         parent_socket, child_socket = socketpair()
-        child_fd = child_socket.fileno()
-        command = [
-            *prefix,
-            interpreter_path,
-            "-I",
-            "-S",
-            "-B",
-            "-c",
-            child_bootstrap,
-            import_roots_json,
-            str(child_fd),
-            challenge.hex(),
-            boundary_kind,
-        ]
+
+        def close_socket_pair() -> None:
+            # Each close gets a chance, while neither close can prevent process reclamation.
+            try:
+                try:
+                    parent_socket.close()
+                except BaseException:
+                    pass
+            finally:
+                try:
+                    child_socket.close()
+                except BaseException:
+                    pass
+
+        try:
+            child_fd = child_socket.fileno()
+            command = [
+                *prefix,
+                interpreter_path,
+                "-I",
+                "-S",
+                "-B",
+                "-c",
+                child_bootstrap,
+                import_roots_json,
+                str(child_fd),
+                challenge.hex(),
+                boundary_kind,
+            ]
+        except BaseException:
+            close_socket_pair()
+            raise invocation_error(failure_code) from None
+
         try:
             process = popen_type(
                 command,
@@ -1887,12 +1950,21 @@ def _make_private_supervisor_dispatch(poll_interval_s: float) -> _PrivateSupervi
                 cwd="/",
                 env=dict(environment_items),
             )
-            parent_socket.setblocking(False)
-        except Exception:
-            parent_socket.close()
-            child_socket.close()
+        except BaseException:
+            close_socket_pair()
             raise invocation_error(failure_code) from None
-        child_socket.close()
+
+        # Popen returning transfers process ownership here. Every subsequent setup failure
+        # closes both sockets and synchronously kills/joins that exact process.
+        try:
+            parent_socket.setblocking(False)
+            child_socket.close()
+        except BaseException:
+            try:
+                close_socket_pair()
+            finally:
+                terminate(process)
+            raise invocation_error(failure_code) from None
         return process, parent_socket, challenge
 
     def terminate(process: Any) -> None:
@@ -1979,7 +2051,7 @@ def _make_private_supervisor_dispatch(poll_interval_s: float) -> _PrivateSupervi
         exchange=exchange,
         wire_dumps=wire_dumps,
         positive_duration=_positive_duration,
-        validate_inputs=_validate_hosted_call_inputs,
+        validate_inputs=validate_inputs,
         verdict_is_credential_free=_verdict_is_credential_free,
         sleep=asyncio.sleep,
         monotonic=time.monotonic,
@@ -2296,7 +2368,9 @@ def _hosted_byok_clean_child_main(
         worker_payload = _receive_framed_blocking(connection)
 
         async def run() -> Verdict:
-            values = _wire_loads(worker_payload)
+            _, child_wire_loads, child_wire_value = _make_private_wire_codec()
+            child_validate_inputs = _make_private_input_validator(child_wire_value)
+            values = child_wire_loads(worker_payload)
             if type(values) is not tuple or len(values) != 10:
                 raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
             request, condition, frame, roi, exemplar, corrections, frames, audio, context, deadline = (
@@ -2310,6 +2384,17 @@ def _hosted_byok_clean_child_main(
                 raise HostedByokDeadlineExceeded(
                     "hosted BYOK invocation exceeded its effective deadline."
                 )
+            child_validate_inputs(
+                request,
+                condition=condition,
+                frame=frame,
+                roi=roi,
+                exemplar=exemplar,
+                corrections=corrections,
+                frames=frames,
+                audio=audio,
+                context=context,
+            )
             factory = HostedByokAdapterFactory()
             return await factory._judge_in_process(
                 request,

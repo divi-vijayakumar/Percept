@@ -343,10 +343,12 @@ def _run_production_composition_harness(
         f"""
         import asyncio
         import json
+        import time
         from pathlib import Path
         from percept import (
             HostedByokAdapterFactory,
             HostedByokCancelled,
+            HostedByokContractError,
             HostedByokDeadlineExceeded,
             HostedByokRequest,
             HostedByokSubprocessSupervisor,
@@ -389,6 +391,13 @@ def _run_production_composition_harness(
                 hosted_module._make_private_supervisor_dispatch = poison
                 hosted_module._make_worker_exchange = poison
                 hosted_module._make_private_wire_codec = poison
+                hosted_module._make_private_input_validator = poison
+                hosted_module._validate_hosted_call_inputs = (
+                    lambda *args, **kwargs: None
+                )
+                hosted_module._input_contains_credential = (
+                    lambda *args, **kwargs: False
+                )
                 hosted_module._wire_value = poison
                 hosted_module._wire_unvalue = poison
                 hosted_module._reject_duplicate_json_pairs = poison
@@ -412,26 +421,60 @@ def _run_production_composition_harness(
                 discover_plugins=False,
             )
             context = {{"blob": "x" * (16 * 1024 * 1024)}} if {large_context!r} else None
-            task = asyncio.create_task(
-                core.vision.judge("someone enters", b"jpeg", context=context)
-            )
-            if {scenario!r} == "cancel":
-                marker = Path({str(call_path)!r})
-                for _ in range(500):
-                    if marker.exists():
-                        break
-                    await asyncio.sleep(0.01)
-                else:
-                    raise RuntimeError("provider was not reached before cancellation")
-                cancellation.set()
-            try:
-                verdict = await task
-            except HostedByokDeadlineExceeded:
-                outcome = "deadline"
-            except HostedByokCancelled:
-                outcome = "cancelled"
+            if {scenario!r} == "child-credential-input":
+                deadline = time.monotonic() + 5.0
+                dispatch = supervisor._dispatch
+                payload = dispatch.wire_dumps(
+                    (
+                        request,
+                        request.credential,
+                        b"jpeg",
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        deadline,
+                    )
+                )
+                child_outcome = await dispatch.exchange(payload, None, deadline)
+                outcome = (
+                    "child-contract"
+                    if child_outcome[0] == "contract"
+                    else "wrong-child-outcome"
+                )
             else:
-                outcome = "success" if verdict.satisfied else "wrong-verdict"
+                task = asyncio.create_task(
+                    core.vision.judge(
+                        (
+                            "sk-production-composition-secret"
+                            if {scenario!r} == "credential-input"
+                            else "someone enters"
+                        ),
+                        b"jpeg",
+                        context=context,
+                    )
+                )
+                if {scenario!r} == "cancel":
+                    marker = Path({str(call_path)!r})
+                    for _ in range(500):
+                        if marker.exists():
+                            break
+                        await asyncio.sleep(0.01)
+                    else:
+                        raise RuntimeError("provider was not reached before cancellation")
+                    cancellation.set()
+                try:
+                    verdict = await task
+                except HostedByokDeadlineExceeded:
+                    outcome = "deadline"
+                except HostedByokCancelled:
+                    outcome = "cancelled"
+                except HostedByokContractError:
+                    outcome = "contract"
+                else:
+                    outcome = "success" if verdict.satisfied else "wrong-verdict"
             await asyncio.sleep(0.4)
             print(json.dumps({{
                 "outcome": outcome,
@@ -1394,6 +1437,40 @@ def test_public_composition_uses_sealed_launch_snapshot_after_global_poison(
     }
 
 
+@pytest.mark.parametrize("provider", ["gemini", "openrouter"])
+def test_frozen_validation_graph_rejects_credential_before_provider_after_global_poison(
+    tmp_path, provider
+):
+    result = _run_production_composition_harness(
+        tmp_path,
+        provider=provider,
+        scenario="credential-input",
+        poison_launch_globals=True,
+    )
+    assert result == {
+        "outcome": "contract",
+        "provider_called": False,
+        "late_effect": False,
+    }
+
+
+@pytest.mark.parametrize("provider", ["gemini", "openrouter"])
+def test_clean_child_revalidates_decoded_credential_input_before_provider_construction(
+    tmp_path, provider
+):
+    result = _run_production_composition_harness(
+        tmp_path,
+        provider=provider,
+        scenario="child-credential-input",
+        poison_launch_globals=True,
+    )
+    assert result == {
+        "outcome": "child-contract",
+        "provider_called": False,
+        "late_effect": False,
+    }
+
+
 @pytest.mark.skipif(
     not (
         sys.platform.startswith("linux")
@@ -1552,7 +1629,118 @@ class _FramedPeerProcess:
         return self.returncode
 
 
-def _framed_exchange_for_test(parent_socket, process):
+class _PostSpawnSocket:
+    def __init__(
+        self,
+        *,
+        descriptor=73,
+        setblocking_failure=False,
+        close_failure=False,
+    ):
+        self.descriptor = descriptor
+        self.setblocking_failure = setblocking_failure
+        self.close_failure = close_failure
+        self.setblocking_calls = 0
+        self.close_calls = 0
+
+    def fileno(self):
+        return self.descriptor
+
+    def setblocking(self, value):
+        assert value is False
+        self.setblocking_calls += 1
+        if self.setblocking_failure:
+            raise OSError("injected parent setblocking failure")
+
+    def close(self):
+        self.close_calls += 1
+        if self.close_failure:
+            raise OSError("injected socket close failure")
+
+
+@pytest.mark.parametrize(
+    ("setblocking_failure", "parent_close_failure", "child_close_failure"),
+    [
+        (True, False, False),
+        (True, True, False),
+        (True, False, True),
+        (True, True, True),
+        (False, False, True),
+        (False, True, True),
+    ],
+    ids=[
+        "setblocking",
+        "setblocking-parent-close",
+        "setblocking-child-close",
+        "setblocking-both-closes",
+        "child-close",
+        "child-and-parent-close",
+    ],
+)
+def test_every_post_spawn_setup_failure_kills_and_joins_exact_process(
+    monkeypatch,
+    setblocking_failure,
+    parent_close_failure,
+    child_close_failure,
+):
+    import percept.hosted_byok as hosted_module
+
+    parent_socket = _PostSpawnSocket(
+        setblocking_failure=setblocking_failure,
+        close_failure=parent_close_failure,
+    )
+    child_socket = _PostSpawnSocket(close_failure=child_close_failure)
+    processes = []
+
+    def fake_popen(*args, **kwargs):
+        del args, kwargs
+        process = _FramedPeerProcess()
+        processes.append(process)
+        return process
+
+    # Restore the shared stdlib module attributes before asyncio creates its loop; the
+    # supervisor must retain only the exact fake authorities captured at construction.
+    with monkeypatch.context() as patch:
+        patch.setattr(hosted_module.subprocess, "Popen", fake_popen)
+        patch.setattr(
+            hosted_module.socket,
+            "socketpair",
+            lambda: (parent_socket, child_socket),
+        )
+        supervisor = HostedByokSubprocessSupervisor()
+
+    with pytest.raises(HostedByokInvocationError):
+        asyncio.run(
+            supervisor._execute_impl(
+                _request(),
+                "condition",
+                b"frame",
+                deadline_monotonic=time.monotonic() + 2.0,
+                roi=None,
+                exemplar=None,
+                corrections=None,
+                frames=None,
+                audio=None,
+                context=None,
+            )
+        )
+
+    assert len(processes) == 1
+    process = processes[0]
+    assert process.killed
+    assert process.waited
+    assert process.poll() is not None
+    assert parent_socket.close_calls >= 1
+    assert child_socket.close_calls >= 1
+
+
+def _framed_exchange_for_test(
+    parent_socket,
+    process,
+    *,
+    verify_ready=None,
+    wire_loads=None,
+):
     from percept.hosted_byok import (
         _MAX_PROCESS_IPC_BYTES,
         _make_worker_exchange,
@@ -1568,11 +1756,22 @@ def _framed_exchange_for_test(parent_socket, process):
             target.kill()
         target.wait()
 
+    if verify_ready is None:
+        def default_verify_ready(ready, challenge):
+            return ready == b"ready" and challenge == b"c" * 32
+
+        verify_ready = default_verify_ready
+    if wire_loads is None:
+        def default_wire_loads(payload):
+            return payload
+
+        wire_loads = default_wire_loads
+
     return _make_worker_exchange(
         launch=launch,
         terminate=terminate,
-        verify_ready=lambda ready, challenge: ready == b"ready" and challenge == b"c" * 32,
-        wire_loads=lambda payload: payload,
+        verify_ready=verify_ready,
+        wire_loads=wire_loads,
         sleep=asyncio.sleep,
         monotonic=time.monotonic,
         poll_interval_s=0.001,
@@ -1582,6 +1781,84 @@ def _framed_exchange_for_test(parent_socket, process):
         cancellation_error=HostedByokCancelled,
         failure_code="hosted_byok_provider_failure",
     )
+
+
+class _FaultingFramedSocket:
+    def __init__(self, peer, *, send_failure=False, close_failure=False):
+        self.peer = peer
+        self.send_failure = send_failure
+        self.close_failure = close_failure
+
+    def setblocking(self, value):
+        return self.peer.setblocking(value)
+
+    def recv(self, size):
+        return self.peer.recv(size)
+
+    def send(self, payload):
+        if self.send_failure:
+            raise OSError("injected framed send failure")
+        return self.peer.send(payload)
+
+    def close(self):
+        try:
+            self.peer.close()
+        finally:
+            if self.close_failure:
+                raise OSError("injected framed close failure")
+
+
+@pytest.mark.parametrize(
+    ("failure_stage", "expected_error"),
+    [
+        ("ready-decode", RuntimeError),
+        ("ready-verify", RuntimeError),
+        ("request-send", HostedByokInvocationError),
+        ("peer-close", HostedByokInvocationError),
+    ],
+)
+def test_post_spawn_readiness_send_and_cleanup_exceptions_always_join_worker(
+    failure_stage,
+    expected_error,
+):
+    async def exercise():
+        parent_socket, writer = socket.socketpair()
+        process = _FramedPeerProcess()
+        peer = _FaultingFramedSocket(
+            parent_socket,
+            send_failure=failure_stage == "request-send",
+            close_failure=failure_stage == "peer-close",
+        )
+
+        def decode(payload):
+            if failure_stage == "ready-decode":
+                raise RuntimeError("injected ready decode failure")
+            return payload
+
+        def verify(ready, challenge):
+            if failure_stage == "ready-verify":
+                raise RuntimeError("injected ready verification failure")
+            if failure_stage == "peer-close":
+                return False
+            return ready == b"ready" and challenge == b"c" * 32
+
+        exchange = _framed_exchange_for_test(
+            peer,
+            process,
+            wire_loads=decode,
+            verify_ready=verify,
+        )
+        writer.sendall(struct.pack("!I", 5) + b"ready")
+        try:
+            with pytest.raises(expected_error):
+                await exchange(b"request", None, time.monotonic() + 1.0)
+        finally:
+            writer.close()
+        assert process.killed
+        assert process.waited
+        assert process.poll() is not None
+
+    asyncio.run(exercise())
 
 
 @pytest.mark.parametrize(
@@ -1840,7 +2117,7 @@ def test_exact_subprocess_supervisor_and_factory_configuration_are_immutable():
     supervisor = HostedByokSubprocessSupervisor()
     factory = HostedByokAdapterFactory(process_supervisor=supervisor)
     assert factory.transport_safety(_request()).production_ready
-    assert factory.transport_safety(_request()).process_isolation_version == "2.2.0"
+    assert factory.transport_safety(_request()).process_isolation_version == "2.3.0"
     with pytest.raises(AttributeError, match="immutable"):
         supervisor._poll_interval_s = 99
     with pytest.raises(FrozenInstanceError):
@@ -1906,6 +2183,40 @@ def test_factory_uses_frozen_supervisor_dispatch_after_class_poison(monkeypatch)
                 "condition",
                 b"frame",
             )
+        )
+
+
+def test_supervisor_validator_freezes_transitive_helpers_and_type_authorities(monkeypatch):
+    import percept.hosted_byok as hosted_module
+
+    supervisor = HostedByokSubprocessSupervisor()
+    validate_inputs = supervisor._dispatch.validate_inputs
+    roi = percept.Box(0, 0, 1, 1)
+
+    def poison(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("live validation dependency was used")
+
+    monkeypatch.setattr(hosted_module, "_validate_hosted_call_inputs", poison)
+    monkeypatch.setattr(hosted_module, "_input_contains_credential", poison)
+    monkeypatch.setattr(hosted_module, "_wire_value", poison)
+    monkeypatch.setattr(hosted_module, "dataclass_fields", poison)
+    monkeypatch.setattr(hosted_module, "math", SimpleNamespace(isfinite=poison))
+    monkeypatch.setattr(hosted_module, "HostedByokRequest", object)
+    monkeypatch.setattr(hosted_module, "Box", object)
+    monkeypatch.setattr(hosted_module, "AudioFrame", object)
+
+    with pytest.raises(HostedByokContractError, match="must not contain the credential"):
+        validate_inputs(
+            _request(),
+            condition="condition",
+            frame=b"frame",
+            roi=roi,
+            exemplar=None,
+            corrections=None,
+            frames=None,
+            audio=None,
+            context={"nested": [SECRET_A]},
         )
 
 
