@@ -346,7 +346,7 @@ FACILITY_OBSERVATION_V1 = DomainPack(
     quality_bars=_LEGACY_QUALITY_BARS,
     search_space=_SEARCH_SPACE,
     notes=(
-        "Compatibility pack for physical-scene Watch templates. Its retained fixtures and "
+        "Compatibility pack for physical-scene Watch templates. Unmatched templates are not quality-qualified. Its retained fixtures and "
         "quality_bars are candidate qualification declarations, not achieved results; no template "
         "is qualified until permission-safe, independently reviewed, source-group-held-out "
         "Watch-semantic evaluation exists. No security@1 pack ships because the SDK does not "
