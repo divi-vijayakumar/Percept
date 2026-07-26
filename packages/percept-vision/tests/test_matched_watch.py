@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import stat
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -1105,3 +1106,101 @@ def test_measured_bundle_is_path_neutral_but_evidence_binds_descriptors(tmp_path
             viability_manifest_path=manifest_path,
             receipt_paths=[*receipt_paths, receipt_paths[0]],
         )
+
+
+def test_coherently_resealed_report_cannot_serialize_or_publish(tmp_path):
+    manifest_path, receipt_paths = _write_measured_bundle(tmp_path / "source")
+    report = derive_measured_evidence_bundle(
+        viability_manifest_path=manifest_path,
+        receipt_paths=receipt_paths,
+    )
+    report_content = report.content_dict()
+    changed_rows = report_content["derived_rows"]
+    changed_rows[1]["candidate_windows_admitted"] += 1
+    changed_row_hash = f"sha256:{content_hash(changed_rows[1])}"
+    changed_row_hashes = list(report.derived_row_sha256)
+    changed_row_hashes[1] = changed_row_hash
+    changed_coverage = list(report.coverage)
+    changed_coverage[0] = replace(
+        changed_coverage[0],
+        adaptive_row_sha256=changed_row_hash,
+    )
+    changed_frontier = evaluate_viability_frontier(
+        report_content["viability_manifest"],
+        changed_rows,
+    )
+    changed_judge = dict(report.judge_identity)
+    changed_judge["prompt_sha256"] = (
+        "sha256:" + ("0" if changed_judge["prompt_sha256"] != "sha256:" + "0" * 64 else "1") * 64
+    )
+    coherently_resealed = replace(
+        report,
+        coverage=tuple(changed_coverage),
+        derived_rows=tuple(changed_rows),
+        derived_row_sha256=tuple(changed_row_hashes),
+        judge_identity=changed_judge,
+        frontier=changed_frontier,
+    )
+
+    public_surfaces = (
+        coherently_resealed.content_dict,
+        coherently_resealed.evidence_dict,
+        lambda: coherently_resealed.content_sha256,
+        lambda: coherently_resealed.evidence_sha256,
+        coherently_resealed.to_dict,
+        coherently_resealed.to_json,
+    )
+    for serialize in public_surfaces:
+        with pytest.raises(MeasuredEvidenceInputError, match="descriptor-backed inputs"):
+            serialize()
+
+    output = tmp_path / "must-not-publish.json"
+    with pytest.raises(MeasuredEvidenceInputError, match="descriptor-backed inputs"):
+        write_measured_evidence_bundle(coherently_resealed, output)
+    assert not output.exists()
+    assert not list(tmp_path.glob(f".{output.name}.*.tmp"))
+
+
+@pytest.mark.parametrize("path_spelling", ["canonical", "relative", "darwin-var-alias"])
+def test_descriptor_path_spelling_does_not_drift_evidence_on_write(
+    tmp_path,
+    monkeypatch,
+    path_spelling,
+):
+    manifest_path, receipt_paths = _write_measured_bundle(tmp_path / "source")
+    if path_spelling == "canonical":
+        supplied_manifest = manifest_path.resolve()
+        supplied_receipts = [path.resolve() for path in receipt_paths]
+    elif path_spelling == "relative":
+        monkeypatch.chdir(tmp_path)
+        supplied_manifest = Path(os.path.relpath(manifest_path, tmp_path))
+        supplied_receipts = [Path(os.path.relpath(path, tmp_path)) for path in receipt_paths]
+    else:
+        if sys.platform != "darwin" or not str(manifest_path.resolve()).startswith("/private/var/"):
+            pytest.skip("requires the macOS /var -> /private/var filesystem alias")
+
+        def darwin_var_alias(path):
+            canonical = str(path.resolve())
+            assert canonical.startswith("/private/var/")
+            return canonical.removeprefix("/private")
+
+        supplied_manifest = darwin_var_alias(manifest_path)
+        supplied_receipts = [darwin_var_alias(path) for path in receipt_paths]
+
+    report = derive_measured_evidence_bundle(
+        viability_manifest_path=supplied_manifest,
+        receipt_paths=supplied_receipts,
+    )
+    content_sha256 = report.content_sha256
+    evidence_sha256 = report.evidence_sha256
+    output = tmp_path / f"measured-evidence-{path_spelling}.json"
+
+    write_measured_evidence_bundle(report, output)
+
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["content_sha256"] == content_sha256
+    assert payload["evidence_sha256"] == evidence_sha256
+    assert report.content_sha256 == content_sha256
+    assert report.evidence_sha256 == evidence_sha256
+    assert output.is_file()
+    assert not list(tmp_path.glob(f".{output.name}.*.tmp"))
