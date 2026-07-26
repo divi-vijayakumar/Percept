@@ -39,6 +39,7 @@ from percept.runtime.worker import (
     RuntimeStats,
     run,
 )
+from percept.runtime.video_clip import NativeVideoVision, encode_mp4_clip
 
 __all__ = [
     "run",
@@ -76,4 +77,6 @@ __all__ = [
     "BoundedDeadLetterQueue",
     "incident_payload",
     "webhook",
+    "NativeVideoVision",
+    "encode_mp4_clip",
 ]

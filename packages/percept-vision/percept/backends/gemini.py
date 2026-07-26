@@ -105,8 +105,7 @@ def _model_for(settings: Any, attr: str) -> str:
     return m if isinstance(m, str) and m.startswith("gemini") else GEMINI_DEFAULT
 
 
-def _image_part(types: Any, frame: Any):
-    """Render an opaque frame to a Gemini image ``Part``: ``(media_type, bytes)`` | bytes | image dict."""
+def _media_value(frame: Any) -> tuple[str, bytes]:
     if isinstance(frame, tuple) and len(frame) == 2 and isinstance(frame[1], (bytes, bytearray)):
         media, raw = str(frame[0]), bytes(frame[1])
     elif isinstance(frame, (bytes, bytearray)):
@@ -117,9 +116,28 @@ def _image_part(types: Any, frame: Any):
         raw = base64.b64decode(src.get("data", ""))
     else:
         raise TypeError(
-            "GeminiVision needs image bytes / a (media_type, bytes) pair / an image dict as the frame; "
+            "GeminiVision needs media bytes / a (media_type, bytes) pair / an image dict as the frame; "
             f"got {type(frame).__name__}. Pre-encode the frame (and crop the ROI) before judging."
         )
+    return media, raw
+
+
+def _is_video(frame: Any) -> bool:
+    media, _ = _media_value(frame)
+    return media.lower().startswith("video/")
+
+
+def _media_part(types: Any, frame: Any):
+    """Render encoded image or native-video evidence to a Gemini ``Part``."""
+    media, raw = _media_value(frame)
+    return types.Part.from_bytes(data=raw, mime_type=media)
+
+
+def _image_part(types: Any, frame: Any):
+    """Render image-only evidence, rejecting accidental native-video use."""
+    media, raw = _media_value(frame)
+    if media.lower().startswith("video/"):
+        raise TypeError("video evidence is not valid in an image-only Gemini path")
     return types.Part.from_bytes(data=raw, mime_type=media)
 
 
@@ -207,6 +225,9 @@ class GeminiVision(_GeminiBase):
     # a native Gemini part below; adapters that merely accept-and-discard the protocol argument do
     # not set the marker.
     SUPPORTS_FUSED_AUDIO_INPUT = True
+    # Transport capability only: actual model quality/latency remains a
+    # qualification result, never something inferred from this marker.
+    SUPPORTS_NATIVE_VIDEO_TRANSPORT = True
 
     def __init__(self, settings: Any = None, *, client: Any = None) -> None:
         super().__init__(settings, client=client, model_attr="vision_model")
@@ -234,12 +255,18 @@ class GeminiVision(_GeminiBase):
             # Item 4 logsum: report ONLY this clip's step delta (no memory shown). evidence=the step.
             return await self._observe_step(condition, frame, frames)
         claim_mode = bool(context and context.get("claim_mode"))  # claim-slot: parse the correction channel
-        _, types = _require_genai()
-        client = self._ensure_client()
         if frame is None and audio is None:
             raise TypeError("GeminiVision requires image evidence, audio evidence, or both")
         if frame is None and (frames or exemplar is not None):
             raise TypeError("audio-only Gemini judgment cannot carry image strip/exemplar inputs")
+        native_video = frame is not None and _is_video(frame)
+        if native_video and frames:
+            raise ValueError(
+                "native video evidence cannot be mixed with ordered images; "
+                "select one exact evidence shape"
+            )
+        _, types = _require_genai()
+        client = self._ensure_client()
         # temporal strip: earlier context frames (oldest->newest), then the current frame last, so the
         # model reads time from Part order. A single multimodal call — Gemini's native modality is why
         # the strip + audio are token-cheap (one call, not N).
@@ -250,24 +277,39 @@ class GeminiVision(_GeminiBase):
             and strip[-1] is frame
         ):
             strip.pop()
-        parts: list[Any] = [_image_part(types, f) for f in strip]
+        parts: list[Any] = [_media_part(types, f) for f in strip]
         if frame is not None:
-            parts.append(_image_part(types, frame))
+            parts.append(_media_part(types, frame))
         if frame is None:
             question = f'Listening only to the attached audio: is this true right now — "{condition}"? '
+        elif context and context.get("event_chain"):
+            if exemplar is not None:
+                parts.append(_image_part(types, exemplar))
+            representation = (
+                "This is a short native video clip with continuous temporal order."
+                if native_video
+                else (
+                    f"These {len(strip) + 1} images are consecutive moments in TIME ORDER "
+                    "(oldest first)."
+                )
+            )
+            question = (
+                f'{representation} Find every distinct occurrence of "{condition}" in the '
+                "evidence; do not merge adjacent repetitions. Classify the "
+                "LATEST moment as pre (not begun), during (visibly in progress), or post (just "
+                "completed within this clip). Do not infer the action from a static pose; require "
+                "visible motion/change in the evidence. "
+            )
+            if exemplar is not None:
+                question += (
+                    "The final attached image is a reference exemplar. Track "
+                    "the occurrence only for that specific object. "
+                )
         elif exemplar is not None:
             parts.append(_image_part(types, exemplar))
             question = (
                 f'Looking only at the image (and comparing to the reference exemplar): is this true — '
                 f'"{condition}" — about THIS specific object? '
-            )
-        elif context and context.get("event_chain"):
-            question = (
-                f'These {len(strip) + 1} images are consecutive moments in TIME ORDER '
-                f'(oldest first). Track one discrete occurrence of "{condition}". Classify the '
-                "LATEST moment as pre (not begun), during (visibly in progress), or post (just "
-                "completed within this clip). Do not infer the action from a static pose; require "
-                "visible change across the ordered images. "
             )
         elif strip:
             if os.environ.get("PERCEPT_STRIP_PROMPT", "change") == "neutral":
@@ -316,9 +358,16 @@ class GeminiVision(_GeminiBase):
                     f"read): {spec_facts}. "
                 )
         if context and context.get("event_chain"):
+            span_s = context.get("_percept_temporal_span_s")
+            if isinstance(span_s, (int, float)) and not isinstance(span_s, bool):
+                question += f"The evidence spans {float(span_s):.6g} seconds. "
             question += (
                 'Answer as STRICT JSON {"satisfied", "confidence", "evidence", '
-                '"action_present", "phase"}. Set action_present=true only for "during". '
+                '"action_present", "phase", "events": [{"t_start": seconds, '
+                '"t_end": seconds|null, "label": "short description"}]}. '
+                "List every grounded occurrence in chronological order with times "
+                "relative to the beginning of the evidence. Set action_present=true only for "
+                '"during". '
                 "Use satisfied=true for a grounded during or just-completed post occurrence."
             )
         elif strip:
@@ -361,8 +410,13 @@ class GeminiVision(_GeminiBase):
         strip = list(frames or [])
         if strip and strip[-1] is frame:
             strip.pop()
-        parts: list[Any] = [_image_part(types, f) for f in strip]
-        parts.append(_image_part(types, frame))
+        if _is_video(frame) and strip:
+            raise ValueError(
+                "native video evidence cannot be mixed with ordered images; "
+                "select one exact evidence shape"
+            )
+        parts: list[Any] = [_media_part(types, f) for f in strip]
+        parts.append(_media_part(types, frame))
         parts.append(
             f"Standing question: {condition}\n"
             f"RUNNING ANSWER SO FAR: {prior or '(none yet)'}\n"
@@ -406,8 +460,13 @@ class GeminiVision(_GeminiBase):
         strip = list(frames or [])
         if strip and strip[-1] is frame:
             strip.pop()
-        parts: list[Any] = [_image_part(types, f) for f in strip]
-        parts.append(_image_part(types, frame))
+        if _is_video(frame) and strip:
+            raise ValueError(
+                "native video evidence cannot be mixed with ordered images; "
+                "select one exact evidence shape"
+            )
+        parts: list[Any] = [_media_part(types, f) for f in strip]
+        parts.append(_media_part(types, frame))
         parts.append(
             f"Process question: {condition}\n{len(strip) + 1} frame(s) in time order (oldest first). JSON only."
         )

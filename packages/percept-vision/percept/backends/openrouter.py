@@ -10,9 +10,9 @@ cleanly with neither present (the SDK is lazy-imported inside ``_ensure_client``
 lane uses ``FakeVision``, never this.
 
 The model id is taken from ``settings.models.vision_model`` (rule 5: no literal in logic), e.g.
-``"qwen/qwen2.5-vl-72b-instruct"``, ``"opengvlab/internvl3-78b"``, ``"openai/gpt-5-mini"``. Percept already
-builds multi-frame clips (strip/sprite/window); this adapter sends them as ordered ``image_url`` blocks, so
-multi-image models work and the current frame is read last (time = image order).
+``"qwen/qwen2.5-vl-72b-instruct"``, ``"opengvlab/internvl3-78b"``, ``"openai/gpt-5-mini"``. Ordered
+images remain ordered ``image_url`` blocks. A ``("video/mp4", bytes)`` frame is instead transported as
+one native ``video_url`` block; it is never silently flattened into a sprite or image strip.
 """
 
 from __future__ import annotations
@@ -97,11 +97,10 @@ def _resolve_model(settings: Any) -> str:
 
 
 def _data_url(frame: Any) -> str:
-    """Render an opaque frame to a base64 ``data:`` URL (the OpenAI/OpenRouter image format).
+    """Render opaque media to a base64 ``data:`` URL.
 
     Accepts an Anthropic-style ``{"type": "image", "source": {...}}`` block, a ``(media_type, bytes)``
-    pair, or raw JPEG/PNG bytes — the same frame shapes the other backends accept, so the bench's clips
-    flow through unchanged."""
+    pair, or raw JPEG/PNG bytes."""
     if isinstance(frame, dict) and frame.get("type") == "image":
         src = frame.get("source", {})
         return f"data:{src.get('media_type', 'image/jpeg')};base64,{src.get('data', '')}"
@@ -111,13 +110,35 @@ def _data_url(frame: Any) -> str:
     if isinstance(frame, (bytes, bytearray)):
         return f"data:image/jpeg;base64,{base64.b64encode(bytes(frame)).decode('ascii')}"
     raise TypeError(
-        "OpenRouterVision needs image bytes / a (media_type, bytes) pair / an image block as the frame; "
+        "OpenRouterVision needs media bytes / a (media_type, bytes) pair / an image block as the frame; "
         f"got {type(frame).__name__}. Pre-encode the frame before judging."
     )
 
 
+def _media_type(frame: Any) -> str:
+    if isinstance(frame, dict) and frame.get("type") == "image":
+        return str(frame.get("source", {}).get("media_type", "image/jpeg"))
+    if isinstance(frame, tuple) and len(frame) == 2:
+        return str(frame[0])
+    if isinstance(frame, (bytes, bytearray)):
+        return "image/jpeg"
+    raise TypeError(f"unsupported OpenRouter media value: {type(frame).__name__}")
+
+
+def _is_video(frame: Any) -> bool:
+    return _media_type(frame).lower().startswith("video/")
+
+
 def _image_block(frame: Any) -> dict:
+    if _is_video(frame):
+        raise TypeError("video evidence must use a native video_url block")
     return {"type": "image_url", "image_url": {"url": _data_url(frame)}}
+
+
+def _media_block(frame: Any) -> dict:
+    if _is_video(frame):
+        return {"type": "video_url", "video_url": {"url": _data_url(frame)}}
+    return _image_block(frame)
 
 
 def _usage_of(resp: Any) -> dict:
@@ -171,6 +192,9 @@ class OpenRouterVision:
 
     #: PARSES the claim-mode correction channel (see :class:`~percept.backends.anthropic.AnthropicVision`).
     PARSES_CLAIM_CHANNEL = True
+    # The adapter can emit OpenAI-compatible video_url content. Individual
+    # OpenRouter models still have to pass live qualification for that shape.
+    SUPPORTS_NATIVE_VIDEO_TRANSPORT = True
 
     def __init__(
         self,
@@ -291,11 +315,17 @@ class OpenRouterVision:
     ) -> Verdict:
         """Ask the selected OpenRouter model a narrow grounded yes/no about ``condition``.
 
-        ``frames`` is the temporal strip (earlier context, oldest→newest); the current ``frame`` is sent
-        last so the model reads time from image order. ``audio`` is IGNORED (these models are vision-only
-        here; a ``fused`` concern honestly degrades to the visual strip)."""
+        ``frames`` is the lower-fidelity ordered-image representation (earlier context,
+        oldest→newest); the current ``frame`` is sent last. For motion-sensitive watches, pass one
+        native clip as ``("video/mp4", bytes)`` and no ``frames``. ``audio`` is IGNORED (these models
+        are vision-only here; a ``fused`` concern honestly degrades to visual evidence)."""
         del audio, roi  # accepted for protocol parity; ROI cropping is the caller's job (real pixels)
         ctx = context or {}
+        if _is_video(frame) and frames:
+            raise ValueError(
+                "native video evidence cannot be mixed with ordered images; "
+                "select one exact evidence shape"
+            )
         if ctx.get("process_qa"):  # accumulating-answer question (mirror GeminiVision._judge_process_qa)
             return await self._judge_process_qa(condition, frame, frames, str(ctx.get("running_answer") or ""))
         claim_mode = bool(ctx.get("claim_mode"))  # claim-slot concern -> parse the correction channel
@@ -319,8 +349,8 @@ class OpenRouterVision:
         """One process-QA step: integrate this clip into the running answer (Item 2). Returns the rewritten
         ordered answer on ``Verdict.running_answer``; on a parse miss the prior answer is preserved."""
         strip = [f for f in (frames or []) if f is not frame]
-        content: list = [_image_block(f) for f in strip]
-        content.append(_image_block(frame))
+        content: list = [_media_block(f) for f in strip]
+        content.append(_media_block(frame))
         content.append({"type": "text", "text": (
             f"Standing question: {condition}\nRUNNING ANSWER SO FAR: {prior or '(none yet)'}\n"
             f"{len(strip) + 1} frame(s) in time order (oldest first). Integrate any NEW step and rewrite the "
@@ -377,21 +407,42 @@ class OpenRouterVision:
     ) -> list:
         strip = [f for f in (frames or []) if f is not frame]  # earlier context, oldest->newest
         event_chain = bool((context or {}).get("event_chain"))
-        content: list = [_image_block(f) for f in strip]
-        content.append(_image_block(frame))
-        if exemplar is not None:
+        native_video = _is_video(frame)
+        if native_video and strip:
+            raise ValueError(
+                "native video evidence cannot be mixed with ordered images; "
+                "select one exact evidence shape"
+            )
+        content: list = [_media_block(f) for f in strip]
+        content.append(_media_block(frame))
+        if event_chain:
+            if exemplar is not None:
+                content.append(_image_block(exemplar))
+            representation = (
+                "This is a short native video clip with continuous temporal order."
+                if native_video
+                else (
+                    f"These {len(strip) + 1} images are consecutive moments in TIME ORDER "
+                    "(oldest first)."
+                )
+            )
+            question = (
+                f'{representation} Find every distinct occurrence of "{condition}" in the '
+                "evidence; do not merge adjacent repetitions. Classify the "
+                "LATEST moment as pre (the occurrence has not begun), during (it is visibly in "
+                "progress), or post (it just completed within this clip). Do not infer an action "
+                "from a static hand/object pose; require visible motion/change in the evidence. "
+            )
+            if exemplar is not None:
+                question += (
+                    "The final image is a reference exemplar. Report occurrences "
+                    "only for that specific object. "
+                )
+        elif exemplar is not None:
             content.append(_image_block(exemplar))
             question = (
                 f'Looking only at the region of interest, and comparing to the reference exemplar: is this '
                 f'true — "{condition}" — about THIS specific object? '
-            )
-        elif event_chain:
-            question = (
-                f'These {len(strip) + 1} images are consecutive moments in TIME ORDER '
-                f'(oldest first). Track one discrete occurrence of "{condition}". Classify the '
-                "LATEST moment as pre (the occurrence has not begun), during (it is visibly in "
-                "progress), or post (it just completed within this clip). Do not infer an action "
-                "from a static hand/object pose; require visible change across the ordered images. "
             )
         elif strip:
             question = (
@@ -415,9 +466,16 @@ class OpenRouterVision:
             if spec:
                 question += f"A specialist model reported these structured facts (trust them): {spec}. "
         if event_chain:
+            span_s = (context or {}).get("_percept_temporal_span_s")
+            if isinstance(span_s, (int, float)) and not isinstance(span_s, bool):
+                question += f"The evidence spans {float(span_s):.6g} seconds. "
             question += (
                 'Answer as STRICT JSON {"satisfied", "confidence", "evidence", '
-                '"action_present", "phase"}. Set action_present=true only for "during". '
+                '"action_present", "phase", "events": [{"t_start": seconds, '
+                '"t_end": seconds|null, "label": "short description"}]}. '
+                "List every grounded occurrence in chronological order with times "
+                "relative to the beginning of the evidence. Set action_present=true only for "
+                '"during". '
                 "Use satisfied=true when this clip grounds a during or just-completed post "
                 "occurrence; otherwise false."
             )

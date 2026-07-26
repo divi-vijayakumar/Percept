@@ -66,6 +66,65 @@ class OpenRouterBackendTests(unittest.TestCase):
         self.assertEqual(len(imgs), 2)  # earlier-context frame + current frame (current last)
         self.assertTrue(any(m["role"] == "system" for m in sent["messages"]))
 
+    def test_native_video_is_one_video_url_and_never_an_image_strip(self):
+        content = json.dumps(
+            {
+                "satisfied": True,
+                "confidence": 0.94,
+                "evidence": "one complete putting occurrence",
+                "action_present": False,
+                "phase": "post",
+            }
+        )
+        client = _FakeClient(content)
+        verdict = asyncio.run(
+            OpenRouterVision(_settings(), client=client).judge(
+                "one discrete putting occurrence",
+                ("video/mp4", b"native-mp4"),
+                context={
+                    "event_chain": True,
+                    "_percept_evidence_shape": "video_clip",
+                },
+            )
+        )
+        self.assertEqual(verdict.phase, "post")
+        user = next(
+            message
+            for message in client.chat.completions.calls[0]["messages"]
+            if message["role"] == "user"
+        )
+        videos = [
+            block for block in user["content"] if block.get("type") == "video_url"
+        ]
+        images = [
+            block for block in user["content"] if block.get("type") == "image_url"
+        ]
+        self.assertEqual(len(videos), 1)
+        self.assertEqual(images, [])
+        self.assertTrue(
+            videos[0]["video_url"]["url"].startswith("data:video/mp4;base64,")
+        )
+        prompt = " ".join(
+            block["text"]
+            for block in user["content"]
+            if block.get("type") == "text"
+        )
+        self.assertIn("short native video clip", prompt)
+
+    def test_native_video_rejects_mixed_ordered_image_fallback(self):
+        with self.assertRaisesRegex(ValueError, "exact evidence shape"):
+            asyncio.run(
+                OpenRouterVision(
+                    _settings(),
+                    client=_FakeClient("{}"),
+                ).judge(
+                    "one discrete action",
+                    ("video/mp4", b"native-mp4"),
+                    frames=[b"earlier"],
+                    context={"event_chain": True},
+                )
+            )
+
     def test_event_chain_prompt_and_structured_phase_round_trip(self):
         content = json.dumps(
             {
@@ -74,6 +133,10 @@ class OpenRouterBackendTests(unittest.TestCase):
                 "evidence": "hand and object visibly move through the action",
                 "action_present": True,
                 "phase": "during",
+                "events": [
+                    {"t_start": 0.1, "t_end": 0.3, "label": "first"},
+                    {"t_start": 0.6, "t_end": 0.8, "label": "second"},
+                ],
             }
         )
         client = _FakeClient(content)
@@ -86,6 +149,10 @@ class OpenRouterBackendTests(unittest.TestCase):
             )
         )
         self.assertEqual((verdict.phase, verdict.action_present), ("during", True))
+        self.assertEqual(
+            [(event.t_start, event.t_end, event.label) for event in verdict.events],
+            [(0.1, 0.3, "first"), (0.6, 0.8, "second")],
+        )
         user = next(
             message
             for message in client.chat.completions.calls[0]["messages"]
@@ -97,6 +164,7 @@ class OpenRouterBackendTests(unittest.TestCase):
         self.assertIn("pre (the occurrence has not begun)", prompt)
         self.assertIn("Do not infer an action from a static", prompt)
         self.assertIn('"action_present", "phase"', prompt)
+        self.assertIn("List every grounded occurrence", prompt)
 
     def test_bad_reply_degrades_to_low_confidence_unknown(self):
         v = OpenRouterVision(_settings(), client=_FakeClient("not json at all"))

@@ -83,7 +83,10 @@ class TestEventChainPrompt(unittest.TestCase):
                     text=(
                         '{"satisfied": true, "confidence": 0.94, '
                         '"evidence": "visible temporal change", '
-                        '"action_present": true, "phase": "during"}'
+                        '"action_present": true, "phase": "during", '
+                        '"events": ['
+                        '{"t_start": 0.1, "t_end": 0.3, "label": "first"},'
+                        '{"t_start": 0.6, "t_end": 0.8, "label": "second"}]}'
                     ),
                     usage_metadata=None,
                 )
@@ -112,10 +115,82 @@ class TestEventChainPrompt(unittest.TestCase):
                 )
             )
         self.assertEqual((verdict.phase, verdict.action_present), ("during", True))
+        self.assertEqual(
+            [(event.t_start, event.t_end, event.label) for event in verdict.events],
+            [(0.1, 0.3, "first"), (0.6, 0.8, "second")],
+        )
         prompt = calls[0]["contents"][-1]
         self.assertIn("pre (not begun)", prompt)
         self.assertIn('"action_present", "phase"', prompt)
+        self.assertIn("List every grounded occurrence", prompt)
         self.assertNotIn("_percept_frames_are_earlier", prompt)
+
+    def test_native_video_is_one_video_part_not_an_image_strip(self):
+        class Part:
+            @staticmethod
+            def from_bytes(**kwargs):
+                return ("media", kwargs)
+
+        class GenerateContentConfig:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        calls = []
+
+        class Models:
+            async def generate_content(self, **kwargs):
+                calls.append(kwargs)
+                return types.SimpleNamespace(
+                    text=(
+                        '{"satisfied": true, "confidence": 0.95, '
+                        '"evidence": "the action completes in the clip", '
+                        '"action_present": false, "phase": "post"}'
+                    ),
+                    usage_metadata=None,
+                )
+
+        fake_types = types.SimpleNamespace(
+            Part=Part,
+            GenerateContentConfig=GenerateContentConfig,
+        )
+        client = types.SimpleNamespace(
+            aio=types.SimpleNamespace(models=Models())
+        )
+        with patch.object(
+            gemini_backend,
+            "_require_genai",
+            return_value=(object(), fake_types),
+        ):
+            verdict = asyncio.run(
+                GeminiVision(client=client).judge(
+                    "one discrete putting occurrence",
+                    ("video/mp4", b"native-mp4"),
+                    context={
+                        "event_chain": True,
+                        "_percept_evidence_shape": "video_clip",
+                    },
+                )
+            )
+        self.assertEqual(verdict.phase, "post")
+        media_parts = [
+            part
+            for part in calls[0]["contents"]
+            if isinstance(part, tuple) and part[0] == "media"
+        ]
+        self.assertEqual(len(media_parts), 1)
+        self.assertEqual(media_parts[0][1]["mime_type"], "video/mp4")
+        self.assertIn("short native video clip", calls[0]["contents"][-1])
+
+    def test_native_video_rejects_mixed_ordered_image_fallback(self):
+        with self.assertRaisesRegex(ValueError, "exact evidence shape"):
+            asyncio.run(
+                GeminiVision(client=object()).judge(
+                    "one discrete action",
+                    ("video/mp4", b"native-mp4"),
+                    frames=[b"earlier"],
+                    context={"event_chain": True},
+                )
+            )
 
 
 if __name__ == "__main__":

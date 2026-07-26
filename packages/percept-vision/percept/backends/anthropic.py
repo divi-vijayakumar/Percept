@@ -19,11 +19,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import math
 import os
 import re
 from typing import Any
 
 from ..adapters import Box, Goal, Observation, Verdict
+from ..contracts import ClipEvent
 from ._resilience import CircuitBreaker, with_retry
 
 # A tight system prompt that pins the contract: narrow grounded yes/no + calibrated confidence
@@ -293,9 +295,16 @@ class AnthropicVision:
                     f"read): {spec_facts}. "
                 )
         if context and context.get("event_chain"):
+            span_s = context.get("_percept_temporal_span_s")
+            if isinstance(span_s, (int, float)) and not isinstance(span_s, bool):
+                question += f"The evidence spans {float(span_s):.6g} seconds. "
             question += (
                 'Answer as STRICT JSON {"satisfied", "confidence", "evidence", '
-                '"action_present", "phase"}. Set action_present=true only for "during". '
+                '"action_present", "phase", "events": [{"t_start": seconds, '
+                '"t_end": seconds|null, "label": "short description"}]}. '
+                "List every grounded distinct occurrence in chronological order "
+                "with times relative to the beginning of the evidence; do not merge "
+                "adjacent repetitions. Set action_present=true only for \"during\". "
                 "Use satisfied=true for a grounded during or just-completed post occurrence."
             )
         else:
@@ -449,6 +458,44 @@ def _apply_claim_fields(verdict: Verdict, data: Any) -> None:
     # asserted_by intentionally left at its default (None): no speaker attribution is ever invented.
 
 
+def _parse_clip_events(value: Any) -> list[ClipEvent]:
+    """Strictly parse a bounded, clip-relative occurrence list."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > 64:
+        raise ValueError("events must be a bounded list")
+    events: list[ClipEvent] = []
+    prior_start = -1.0
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("event must be an object")
+        start = float(item["t_start"])
+        raw_end = item.get("t_end")
+        end = None if raw_end is None else float(raw_end)
+        if (
+            not math.isfinite(start)
+            or start < 0.0
+            or start < prior_start
+            or (
+                end is not None
+                and (
+                    not math.isfinite(end)
+                    or end < start
+                )
+            )
+        ):
+            raise ValueError("event interval is invalid or unordered")
+        prior_start = start
+        events.append(
+            ClipEvent(
+                t_start=start,
+                t_end=end,
+                label=str(item.get("label", ""))[:160],
+            )
+        )
+    return events
+
+
 def _parse_verdict(text: str, *, claim_mode: bool = False) -> Verdict:
     """Parse the strict-JSON judge reply into a ``Verdict`` (defensive defaults on a bad read).
 
@@ -461,6 +508,14 @@ def _parse_verdict(text: str, *, claim_mode: bool = False) -> Verdict:
     byte-for-byte the pre-claim parser (the malformed-JSON salvage path is shared, unchanged)."""
     try:
         data = _coerce_json(text)
+        try:
+            clip_events = _parse_clip_events(data.get("events"))
+        except ValueError:
+            return Verdict(
+                satisfied=False,
+                confidence=0.0,
+                evidence="event-chain abstention: invalid clip events",
+            )
         ap = data.get("action_present")
         phase = str(data.get("phase", "")).lower()
         verdict = Verdict(
@@ -470,6 +525,7 @@ def _parse_verdict(text: str, *, claim_mode: bool = False) -> Verdict:
             # optional structured fields (clip judging); absent in single-frame replies -> defaults
             phase=phase if phase in ("pre", "during", "post") else "",
             action_present=(bool(ap) if isinstance(ap, bool) else None),
+            events=clip_events,
         )
         if claim_mode:
             _apply_claim_fields(verdict, data)
