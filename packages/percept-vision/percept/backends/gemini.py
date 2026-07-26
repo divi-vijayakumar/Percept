@@ -200,6 +200,14 @@ def _usage_of(resp: Any) -> dict:
 _REQUEST_TIMEOUT_MS = 120_000
 
 
+class _BudgetTerminalError(Exception):
+    """Prevent budget admission/reconciliation failures from being retried."""
+
+    def __init__(self, original: Exception) -> None:
+        super().__init__(str(original))
+        self.original = original
+
+
 class _GeminiBase:
     def __init__(self, settings: Any = None, *, client: Any = None, model_attr: str = "vision_model") -> None:
         self._settings = _settings_of(settings)
@@ -255,7 +263,10 @@ class GeminiVision(_GeminiBase):
 
     async def _metered_completion(self, call):
         async def attempt():
-            reservation = self._request_budget.begin_attempt() if self._request_budget is not None else None
+            try:
+                reservation = self._request_budget.begin_attempt() if self._request_budget is not None else None
+            except Exception as exc:
+                raise _BudgetTerminalError(exc) from exc
             try:
                 response = await call()
             except BaseException:
@@ -263,12 +274,24 @@ class GeminiVision(_GeminiBase):
                     self._request_budget.fail_attempt(reservation)
                 raise
             if reservation is not None:
-                self._request_budget.complete_attempt(reservation, self._budget_usage(response))
+                try:
+                    self._request_budget.complete_attempt(reservation, self._budget_usage(response))
+                except Exception as exc:
+                    raise _BudgetTerminalError(exc) from exc
             return response
 
         attempts = self._request_budget.attempts_per_call if self._request_budget is not None else 3
         timeout_s = min(_REQUEST_TIMEOUT_MS / 1000, self._request_budget.request_timeout_s) if self._request_budget is not None else _REQUEST_TIMEOUT_MS / 1000
-        return await with_retry(attempt, attempts=attempts, breaker=self._breaker, timeout_s=timeout_s)
+        try:
+            return await with_retry(
+                attempt,
+                attempts=attempts,
+                breaker=self._breaker,
+                timeout_s=timeout_s,
+                non_retryable=(_BudgetTerminalError,),
+            )
+        except _BudgetTerminalError as exc:
+            raise exc.original from exc
 
     async def judge(
         self,
