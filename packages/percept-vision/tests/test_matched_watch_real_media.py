@@ -266,6 +266,25 @@ def _set_oracle_error(manifest_path: Path, *, index: int, predicate: str) -> Non
     manifest_path.write_bytes(_json_bytes(manifest))
 
 
+def _set_ordinary_oracle_error(manifest_path: Path, *, index: int) -> None:
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    oracle_path = manifest_path.parent / manifest["oracle"]["path"]
+    oracle = json.loads(oracle_path.read_text(encoding="utf-8"))
+    condition_sha = next(iter(oracle["candidates"][index]["verdicts"]))
+    oracle["candidates"][index]["verdicts"][condition_sha]["error"] = (
+        "offline ordinary-Watch failure"
+    )
+    oracle_path.write_bytes(_json_bytes(oracle))
+    oracle_sha = _sha(oracle_path.read_bytes())
+    corpus_path = manifest_path.parent / manifest["corpus"]["path"]
+    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+    corpus["cases"][0]["oracle_sha256"] = oracle_sha
+    corpus_path.write_bytes(_json_bytes(corpus))
+    manifest["oracle"]["sha256"] = oracle_sha
+    manifest["corpus"]["sha256"] = _sha(corpus_path.read_bytes())
+    manifest_path.write_bytes(_json_bytes(manifest))
+
+
 def test_real_transition_decodes_actual_mp4_and_executes_both_arms(tmp_path):
     manifest_path = _write_real_case(tmp_path)
 
@@ -893,6 +912,59 @@ def test_v2_rows_can_be_derived_inside_an_active_event_loop(tmp_path):
 
     assert baseline["arm"] == "baseline"
     assert adaptive["arm"] == "adaptive"
+
+
+def test_v2_ordinary_judge_finished_trace_reconstructs_from_oracle(tmp_path):
+    receipt = run_matched_watch(
+        _write_real_case(
+            tmp_path,
+            template_ref="facility_observation@1/zone_occupied",
+            archetype="physical_scene/zone_occupied",
+        )
+    )
+    traces = list(receipt.baseline.traces)
+    index = next(
+        index
+        for index, trace in enumerate(traces)
+        if trace["stage"] == "judge.finished"
+    )
+    traces[index] = {
+        **traces[index],
+        "trace_id": "caller-forged-judge-coordinate",
+        "data": {
+            **traces[index]["data"],
+            "satisfied": not traces[index]["data"]["satisfied"],
+            "confidence": 0.01,
+        },
+    }
+    forged = _reseal(
+        receipt,
+        baseline=replace(receipt.baseline, traces=tuple(traces)),
+    )
+
+    with pytest.raises(MatchedWatchInputError, match="judge|trace|oracle|identity|execution"):
+        derive_viability_rows(forged)
+
+
+def test_v2_ordinary_provider_failure_receipt_validates_before_not_comparable(
+    tmp_path,
+):
+    manifest_path = _write_real_case(
+        tmp_path,
+        template_ref="facility_observation@1/zone_occupied",
+        archetype="physical_scene/zone_occupied",
+    )
+    _set_ordinary_oracle_error(manifest_path, index=0)
+    receipt = run_matched_watch(manifest_path)
+
+    matched_watch_module._validate_receipt(receipt)
+    receipt_path = tmp_path / "ordinary-error-receipt.json"
+    receipt_path.write_text(receipt.to_json(), encoding="utf-8")
+
+    with pytest.raises(MatchedWatchInputError, match="not comparable"):
+        load_matched_watch_receipt(receipt_path)
+    with pytest.raises(MatchedWatchInputError, match="not comparable"):
+        derive_viability_rows(receipt)
 
 
 @pytest.mark.parametrize(

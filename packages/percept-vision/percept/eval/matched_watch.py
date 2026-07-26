@@ -348,6 +348,7 @@ _TRACE_DATA_KEYS = {
     },
     "judge.started": {"temporal", "roi"},
     "judge.finished": {"satisfied", "confidence"},
+    "judge.degraded": {"cause"},
     "gate.classified": {
         "truth",
         "action",
@@ -367,6 +368,12 @@ _TRACE_DATA_KEYS = {
         "incident_id",
         "judgment_event_id",
     },
+}
+_DEGRADED_GATE_TRACE_DATA_KEYS = {
+    "truth",
+    "action",
+    "entity_id",
+    "degraded",
 }
 _HEALTH_DATA_KEYS = {
     "runtime_started": {"candidate_count", "media", "replay", "source_kind"},
@@ -1712,7 +1719,12 @@ def _parse_arm_receipt(
             f"{context}.traces[{index}].stage is unsupported",
         )
         trace_data = _object(trace["data"], f"{context}.traces[{index}].data")
-        _exact(trace_data, _TRACE_DATA_KEYS[stage], f"{context}.traces[{index}].data")
+        trace_data_keys = (
+            _DEGRADED_GATE_TRACE_DATA_KEYS
+            if stage == "gate.classified" and trace_data.get("degraded") is True
+            else _TRACE_DATA_KEYS[stage]
+        )
+        _exact(trace_data, trace_data_keys, f"{context}.traces[{index}].data")
         _require(
             trace["t"] is None or isinstance(trace["t"], float),
             f"{context}.traces[{index}].t must be an exact JSON floating-point number or null",
@@ -3720,10 +3732,87 @@ def _validate_v2_arm_reconstruction(
         }
         hold_value = plan["explicit"].get("Goal.state.hold_s")
         hold_s = float(hold_value) if hold_value is not None else None
+        started_by_t = {
+            float(item["t"]): item
+            for item in arm.traces
+            if item["stage"] == "judge.started"
+        }
+        finished_by_t = {
+            float(item["t"]): item
+            for item in arm.traces
+            if item["stage"] == "judge.finished"
+        }
+        degraded_by_t = {
+            float(item["t"]): item
+            for item in arm.traces
+            if item["stage"] == "judge.degraded"
+        }
+        shadow_by_t = {
+            float(item["t"]): item
+            for item in arm.traces
+            if item["stage"] == "shadow.fold"
+        }
         for candidate in dispatched:
-            if any(call.status != "success" for call in candidate.provider_calls):
+            coordinate = {
+                "trace_id": f"{source_id}@{candidate.t}",
+                "t": candidate.t,
+                "goal_id": goal_id,
+            }
+            _require(
+                _thaw(started_by_t.get(candidate.t))
+                == {
+                    **coordinate,
+                    "stage": "judge.started",
+                    "data": {"temporal": "single", "roi": False},
+                },
+                f"{arm.arm} judge-started trace does not reconstruct from dispatch",
+            )
+            failed = [
+                call
+                for call in candidate.provider_calls
+                if call.status != "success"
+            ]
+            if failed:
+                failed_call = failed[0]
+                _require(
+                    candidate.t not in finished_by_t
+                    and candidate.t not in shadow_by_t
+                    and _thaw(degraded_by_t.get(candidate.t))
+                    == {
+                        **coordinate,
+                        "stage": "judge.degraded",
+                        "data": {
+                            "cause": repr(RuntimeError(str(failed_call.error)))
+                        },
+                    }
+                    and _thaw(gate_by_t.get(candidate.t))
+                    == {
+                        **coordinate,
+                        "stage": "gate.classified",
+                        "data": {
+                            "truth": "unknown",
+                            "action": "ask",
+                            "entity_id": None,
+                            "degraded": True,
+                        },
+                    },
+                    f"{arm.arm} degraded judge traces do not reconstruct from provider failure",
+                )
                 continue
             call = candidate.provider_calls[0]
+            _require(
+                candidate.t not in degraded_by_t
+                and _thaw(finished_by_t.get(candidate.t))
+                == {
+                    **coordinate,
+                    "stage": "judge.finished",
+                    "data": {
+                        "satisfied": call.satisfied,
+                        "confidence": call.confidence,
+                    },
+                },
+                f"{arm.arm} judge-finished trace does not reconstruct from oracle result",
+            )
             verdict = Verdict(
                 bool(call.satisfied),
                 float(call.confidence),
@@ -3767,6 +3856,25 @@ def _validate_v2_arm_reconstruction(
                 },
                 f"{arm.arm} ordinary gate trace does not reconstruct from oracle/state",
             )
+            _require(
+                _thaw(shadow_by_t.get(candidate.t))
+                == {
+                    **coordinate,
+                    "stage": "shadow.fold",
+                    "data": {
+                        "subject": None,
+                        "fold": {
+                            "episode_id": None,
+                            "match": "unbound",
+                            "mutation": "none",
+                            "should_rearm": False,
+                            "should_evaluate_gate": True,
+                            "supersedes": None,
+                        },
+                    },
+                },
+                f"{arm.arm} shadow-fold trace does not reconstruct from ordinary Watch state",
+            )
 
     expected_trace_order: list[tuple[str, float, str | None]] = []
     for candidate in candidates:
@@ -3777,16 +3885,25 @@ def _validate_v2_arm_reconstruction(
         if route == "transition":
             expected_trace_order.append(("transition.decision", candidate.t, goal_id))
         else:
-            expected_trace_order.extend(
-                [
-                    ("judge.started", candidate.t, goal_id),
-                    ("judge.finished", candidate.t, goal_id),
-                    ("gate.classified", candidate.t, goal_id),
-                ]
+            expected_trace_order.append(("judge.started", candidate.t, goal_id))
+            if any(
+                call.status != "success" for call in candidate.provider_calls
+            ):
+                expected_trace_order.append(
+                    ("judge.degraded", candidate.t, goal_id)
+                )
+            else:
+                expected_trace_order.append(
+                    ("judge.finished", candidate.t, goal_id)
+                )
+            expected_trace_order.append(
+                ("gate.classified", candidate.t, goal_id)
             )
         if candidate.incident_ids:
             expected_trace_order.append(("judgment.event", candidate.t, goal_id))
-        if route != "transition":
+        if route != "transition" and all(
+            call.status == "success" for call in candidate.provider_calls
+        ):
             expected_trace_order.append(("shadow.fold", candidate.t, goal_id))
         if candidate.incident_ids:
             expected_trace_order.extend(
@@ -4202,7 +4319,10 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
         else:
             _require(
                 [item["data"]["action"] for item in decision_traces]
-                == [item.decision for item in dispatched],
+                == [
+                    "ask" if item.decision == "missing" else item.decision
+                    for item in dispatched
+                ],
                 "candidate ordinary-Watch decisions disagree with traces",
             )
 
