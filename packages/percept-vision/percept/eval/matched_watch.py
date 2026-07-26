@@ -14,6 +14,8 @@ import json
 import math
 import os
 import stat
+import tempfile
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field as dc_field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -404,6 +406,14 @@ _QUALIFICATION_REASON = (
     "L1 scripted/admission evidence proves execution mechanics only; "
     "provider-measured release qualification is unavailable"
 )
+_CLI_DESCRIPTION = """Preregistered L1 matched-Watch execution receipts.
+
+This module is deliberately narrow.  It executes the shipped
+``facility_observation@1/package_appeared`` transition Watch through the real resolver/compiler and
+runtime worker for an exhaustive sampled baseline and one adaptive operating point.  The bundled
+judge is scripted and proves contract mechanics only; no receipt produced here is provider-measured
+or launch-qualifying.
+"""
 
 
 class MatchedWatchInputError(ValueError):
@@ -603,6 +613,7 @@ def _read_artifact_snapshot(
     *,
     max_bytes: int,
     capture: bool,
+    sink_fd: int | None = None,
 ) -> tuple[bytes | None, SafeInputReceipt]:
     """Read one stable file through a symlink-safe descriptor walk."""
 
@@ -664,6 +675,17 @@ def _read_artifact_snapshot(
             digest.update(chunk)
             if payload is not None:
                 payload.extend(chunk)
+            if sink_fd is not None:
+                unwritten = memoryview(chunk)
+                while unwritten:
+                    try:
+                        written = os.write(sink_fd, unwritten)
+                    except OSError as exc:
+                        raise MatchedWatchInputError(
+                            f"unsafe binary artifact: private snapshot write failed: {exc}"
+                        ) from exc
+                    _require(written > 0, "unsafe binary artifact: private snapshot write stalled")
+                    unwritten = unwritten[written:]
         try:
             after = os.fstat(fd)
         except OSError as exc:
@@ -746,6 +768,120 @@ def _load_json_snapshot(
     except SafeJSONInputError:
         raise
     return SafeJSONResult(value, receipt)
+
+
+@contextmanager
+def _private_decoder_snapshot(
+    path: Path,
+    *,
+    expected: Mapping[str, Any],
+) -> Any:
+    """Yield an unlinked, read-only descriptor path containing the exact recorded MP4 bytes."""
+
+    with tempfile.TemporaryDirectory(prefix="percept-matched-media-") as private_root:
+        private_path = Path(private_root) / "snapshot.mp4"
+        output_flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | int(getattr(os, "O_CLOEXEC", 0))
+            | int(getattr(os, "O_NOFOLLOW", 0))
+        )
+        output_fd = os.open(private_path, output_flags, 0o600)
+        try:
+            _payload, observed = _read_artifact_snapshot(
+                path,
+                max_bytes=64 * 1024 * 1024 * 1024,
+                capture=False,
+                sink_fd=output_fd,
+            )
+            os.fsync(output_fd)
+        finally:
+            os.close(output_fd)
+        _require(
+            _safe_receipt_dict(observed)
+            == {key: expected[key] for key in _SAFE_INPUT_RECEIPT_KEYS},
+            "media artifact changed before its immutable decoder snapshot",
+        )
+        os.chmod(private_path, 0o400)
+        snapshot_fd = os.open(
+            private_path,
+            os.O_RDONLY
+            | int(getattr(os, "O_CLOEXEC", 0))
+            | int(getattr(os, "O_NOFOLLOW", 0)),
+        )
+        os.unlink(private_path)
+        descriptor_path = next(
+            (
+                candidate
+                for candidate in (
+                    f"/dev/fd/{snapshot_fd}",
+                    f"/proc/self/fd/{snapshot_fd}",
+                )
+                if os.path.exists(candidate)
+            ),
+            None,
+        )
+        try:
+            _require(
+                descriptor_path is not None,
+                "real-video matched evaluation requires descriptor-path decoding",
+            )
+            yield descriptor_path
+        finally:
+            os.close(snapshot_fd)
+
+
+def _assert_recorded_artifact_identity(
+    path: Path,
+    *,
+    expected: Mapping[str, Any],
+) -> None:
+    """Check path and opened inode identity without rehashing a large media file."""
+
+    normalized = _normalize_platform_root_alias(path)
+    fd = _open_artifact_no_symlinks(normalized)
+    try:
+        opened = os.fstat(fd)
+        lexical = os.lstat(normalized)
+        canonical = normalized.resolve(strict=True)
+        canonical_info = os.lstat(canonical)
+    except OSError as exc:
+        raise MatchedWatchInputError(
+            f"media artifact identity cannot be inspected: {exc}"
+        ) from exc
+    finally:
+        os.close(fd)
+    _require(
+        stat.S_ISREG(opened.st_mode)
+        and opened.st_nlink == 1
+        and (opened.st_dev, opened.st_ino)
+        == (int(expected["device"]), int(expected["inode"]))
+        == (lexical.st_dev, lexical.st_ino)
+        == (canonical_info.st_dev, canonical_info.st_ino)
+        and opened.st_size == int(expected["byte_count"])
+        and opened.st_mtime_ns == int(expected["modified_time_ns"])
+        and str(canonical) == str(expected["canonical_path"]),
+        "media artifact identity changed while the immutable snapshot was decoded",
+    )
+
+
+async def _monitor_recorded_media(
+    path: Path,
+    *,
+    expected: Mapping[str, Any],
+    stop: asyncio.Event,
+    violation: list[BaseException],
+) -> None:
+    """Observe the recorded path while OpenCV consumes its immutable private snapshot."""
+
+    while not stop.is_set() and not violation:
+        try:
+            _assert_recorded_artifact_identity(path, expected=expected)
+        except BaseException as exc:  # noqa: BLE001 - preserve the exact fail-closed cause
+            violation.append(exc)
+            return
+        await asyncio.sleep(0)
 
 
 @dataclass(frozen=True)
@@ -2162,8 +2298,8 @@ def load_matched_watch_manifest(path: str | Path) -> _Manifest:
     """Load and freeze a strict manifest plus its safely snapshotted synthetic media."""
 
     try:
-        loaded = load_json_file(path)
-    except SafeJSONInputError as exc:
+        loaded = _load_json_snapshot(Path(path))
+    except (SafeJSONInputError, MatchedWatchInputError) as exc:
         raise MatchedWatchInputError(f"unsafe matched-Watch manifest: {exc}") from exc
     doc = _object(loaded.value, "manifest")
     if doc.get("schema") == _REAL_SCHEMA:
@@ -2559,11 +2695,10 @@ async def _real_video_source(
 ) -> Any:
     """Decode the frozen MP4 through the shipped runtime source adapter without changing envelopes."""
 
-    media_path = next(
-        Path(item["canonical_path"])
-        for item in manifest.input_artifacts
-        if item["role"] == "media"
+    media_artifact = next(
+        item for item in manifest.input_artifacts if item["role"] == "media"
     )
+    media_path = Path(media_artifact["canonical_path"])
     try:
         import cv2  # noqa: F401, PLC0415 - fail before starting the decoder thread
         from percept.runtime.source import open_source
@@ -2575,41 +2710,69 @@ async def _real_video_source(
     expected = manifest.oracle_frames
     count = 0
     try:
-        async for envelope in open_source(
-            str(media_path),
-            fps=manifest.fps,
-            # The shipped capture adapter is bounded/latest-wins. Keep its production-sized queue
-            # instead of buffering an entire corpus case in JPEG memory; any overflow becomes an
-            # observable source-sequence gap and this lossless evaluator fails the arm closed.
-            maxsize=64,
-            reconnects=0,
-            timebase="media",
-        ):
-            _require(isinstance(envelope, SourceEnvelope), "runtime decoder returned a non-envelope")
-            _require(envelope.modality == "video", "runtime decoder returned non-video evidence")
-            _require(count < len(expected), "runtime decoder produced more candidates than the oracle")
-            spec = expected[count]
-            _require(
-                envelope.sequence == spec.index,
-                "runtime decoder source sequence disagrees with the oracle",
+        with _private_decoder_snapshot(media_path, expected=media_artifact) as decoder_path:
+            monitor_stop = asyncio.Event()
+            monitor_violations: list[BaseException] = []
+            monitor_task = asyncio.create_task(
+                _monitor_recorded_media(
+                    media_path,
+                    expected=media_artifact,
+                    stop=monitor_stop,
+                    violation=monitor_violations,
+                )
             )
-            decoded_t = envelope.event_time
-            _require(
-                math.isclose(decoded_t, spec.t, rel_tol=0.0, abs_tol=1e-6),
-                "runtime decoder source timestamp disagrees with the oracle",
-            )
-            frame_sha = _decoded_frame_sha256(envelope.payload)
-            _require(
-                frame_sha == spec.frame_sha256,
-                "runtime decoder frame digest disagrees with the oracle",
-            )
-            tracker.bind(
-                _DecodedCoordinate(envelope.sequence, decoded_t, frame_sha),
-                envelope,
-            )
-            count += 1
-            # The canonical SourceEnvelope and both gate/judge payloads pass through unchanged.
-            yield envelope
+            try:
+                async for envelope in open_source(
+                    decoder_path,
+                    fps=manifest.fps,
+                    # The shipped capture adapter is bounded/latest-wins. Keep its production-sized queue
+                    # instead of buffering an entire corpus case in JPEG memory; any overflow becomes an
+                    # observable source-sequence gap and this lossless evaluator fails the arm closed.
+                    maxsize=64,
+                    reconnects=0,
+                    timebase="media",
+                ):
+                    if monitor_violations:
+                        raise monitor_violations[0]
+                    _require(
+                        isinstance(envelope, SourceEnvelope),
+                        "runtime decoder returned a non-envelope",
+                    )
+                    _require(
+                        envelope.modality == "video",
+                        "runtime decoder returned non-video evidence",
+                    )
+                    _require(
+                        count < len(expected),
+                        "runtime decoder produced more candidates than the oracle",
+                    )
+                    spec = expected[count]
+                    _require(
+                        envelope.sequence == spec.index,
+                        "runtime decoder source sequence disagrees with the oracle",
+                    )
+                    decoded_t = envelope.event_time
+                    _require(
+                        math.isclose(decoded_t, spec.t, rel_tol=0.0, abs_tol=1e-6),
+                        "runtime decoder source timestamp disagrees with the oracle",
+                    )
+                    frame_sha = _decoded_frame_sha256(envelope.payload)
+                    _require(
+                        frame_sha == spec.frame_sha256,
+                        "runtime decoder frame digest disagrees with the oracle",
+                    )
+                    tracker.bind(
+                        _DecodedCoordinate(envelope.sequence, decoded_t, frame_sha),
+                        envelope,
+                    )
+                    count += 1
+                    # The canonical SourceEnvelope and both gate/judge payloads pass through unchanged.
+                    yield envelope
+            finally:
+                monitor_stop.set()
+                await monitor_task
+            if monitor_violations:
+                raise monitor_violations[0]
     except ModuleNotFoundError as exc:
         if exc.name == "cv2":
             raise MatchedWatchInputError(
@@ -3421,6 +3584,82 @@ def _validate_v2_arm_reconstruction(
         observed_escalations == expected_escalations,
         f"{arm.arm} escalation health does not reconstruct from edge admissions",
     )
+    source_frames = [item for item in arm.traces if item["stage"] == "source.frame"]
+    _require(
+        [_thaw(item) for item in source_frames]
+        == [
+            {
+                "trace_id": f"{source_id}@{candidate.t}",
+                "stage": "source.frame",
+                "t": candidate.t,
+                "goal_id": None,
+                "data": {},
+            }
+            for candidate in dispatched
+        ],
+        f"{arm.arm} source-frame trace identity does not reconstruct from dispatches",
+    )
+    if route == "transition":
+        transition_by_t = {
+            float(item["t"]): item
+            for item in arm.traces
+            if item["stage"] == "transition.decision"
+        }
+        for candidate in dispatched:
+            trace_data = _thaw(transition_by_t[candidate.t]["data"])
+            if any(call.status != "success" for call in candidate.provider_calls):
+                _require(
+                    all(
+                        trace_data[key] is None
+                        for key in (
+                            "from_confidence",
+                            "from_evidence",
+                            "from_truth",
+                            "to_confidence",
+                            "to_evidence",
+                            "to_truth",
+                        )
+                    ),
+                    f"{arm.arm} degraded transition trace retained an unexecuted verdict claim",
+                )
+                continue
+            for call in candidate.provider_calls:
+                _require(
+                    trace_data[f"{call.predicate}_confidence"] == call.confidence
+                    and trace_data[f"{call.predicate}_evidence"] == call.evidence
+                    and trace_data[f"{call.predicate}_truth"]
+                    == ("yes" if call.satisfied else "no"),
+                    f"{arm.arm} transition trace verdict does not reconstruct "
+                    "from offline-oracle calls",
+                )
+
+    expected_effective_config = {
+        "fps": {
+            "requested_fps": float(arm.replay_identity["fps"]),
+            "effective_fps": float(arm.replay_identity["fps"]),
+            "reason": "profile-default",
+        },
+        "video_timebase": {
+            "requested": "media",
+            "resolved": "media",
+            "reason": "explicit-override",
+        },
+        "audio_timebase": None,
+        "coast_enabled": True,
+    }
+    effective_health = [item for item in arm.health if item["kind"] == "effective_config"]
+    _require(
+        stats["effective_config"] == expected_effective_config
+        and len(effective_health) == 1
+        and effective_health[0]["ts"] is None
+        and _thaw(effective_health[0]["data"])
+        == {
+            "fps": {**expected_effective_config["fps"], "overridden": False},
+            "video_timebase": expected_effective_config["video_timebase"],
+            "coast_enabled": True,
+        },
+        f"{arm.arm} effective runtime configuration does not reconstruct from the compiled replay",
+    )
 
     plan = _thaw(receipt.watch_plan)
     expected_plan_id = PlanIdentity.from_goals(
@@ -3521,6 +3760,42 @@ def _validate_v2_arm_reconstruction(
     _require(
         observed_incident_health == expected_incident_health,
         f"{arm.arm} incident health does not reconstruct from delivered Incidents",
+    )
+    ended = [item for item in arm.health if item["kind"] == "runtime_ended"]
+    _require(
+        len(ended) == 1
+        and ended[0]["ts"] is None
+        and _thaw(ended[0]["data"])
+        == {
+            "frames_seen": len(candidates),
+            "admitted": len(admitted),
+            "signal_admits": signal_admits,
+            "fixed_admits": fixed_admits,
+            "coast_admits": coast_admits,
+            "audio_wakes": 0,
+            "fixed_opportunities": fixed_opportunities,
+            "goal_admissions": goal_admissions,
+            "admission_by_goal": expected_admission_by_goal,
+            "admission_by_cause": expected_admission_by_cause,
+            "perceive_dispatches": len(dispatched),
+            "judge_calls": len(dispatched),
+            "incidents": len(arm.incidents),
+            "source_coverage": {
+                "video": {
+                    "observed": len(candidates),
+                    "excluded": 0,
+                    "discontinuities": 0,
+                    "missing_sequences": 0,
+                },
+                "audio": {
+                    "observed": 0,
+                    "excluded": 0,
+                    "discontinuities": 0,
+                    "missing_sequences": 0,
+                },
+            },
+        },
+        f"{arm.arm} runtime-ended health does not reconstruct from executed candidates",
     )
 
 
@@ -4436,7 +4711,7 @@ def load_matched_watch_receipt(path: str | Path) -> LoadedMatchedWatchReceipt:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=_CLI_DESCRIPTION)
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--out")
     args = parser.parse_args(argv)

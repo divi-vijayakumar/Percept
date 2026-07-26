@@ -640,6 +640,42 @@ def test_run_fails_if_oracle_changes_between_independent_arms(tmp_path, monkeypa
         run_matched_watch(manifest_path)
 
 
+def test_decoder_cannot_use_a_transient_unrecorded_media_path(tmp_path, monkeypatch):
+    import percept.runtime.source as source_module
+
+    case_root = tmp_path / "case"
+    manifest_path = _write_real_case(case_root)
+    media = case_root / "case.mp4"
+    outside = tmp_path / "outside.mp4"
+    outside.write_bytes(media.read_bytes() + b"unrecorded trailing container bytes")
+    real_open_source = source_module.open_source
+    opens = 0
+
+    async def swap_only_while_decoder_opens(uri, *args, **kwargs):
+        nonlocal opens
+        opens += 1
+        saved = case_root / f"case.saved-{opens}.mp4"
+        media.rename(saved)
+        media.symlink_to(outside)
+        restored = False
+        try:
+            async for envelope in real_open_source(uri, *args, **kwargs):
+                if not restored:
+                    media.unlink()
+                    saved.rename(media)
+                    restored = True
+                yield envelope
+        finally:
+            if not restored:
+                media.unlink(missing_ok=True)
+                saved.rename(media)
+
+    monkeypatch.setattr(source_module, "open_source", swap_only_while_decoder_opens)
+
+    with pytest.raises(MatchedWatchInputError, match="media|artifact|snapshot|changed|symlink"):
+        run_matched_watch(manifest_path)
+
+
 def test_directory_swap_to_symlink_between_containment_check_and_open_fails(
     tmp_path,
     monkeypatch,
@@ -776,6 +812,107 @@ def test_v2_incident_message_must_reconstruct_from_compiled_watch(tmp_path):
 
     with pytest.raises(MatchedWatchInputError, match="Incident|message|Watch"):
         derive_viability_rows(forged)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("from_evidence", "caller-forged verdict evidence"),
+        ("from_confidence", 0.01),
+    ],
+)
+def test_v2_transition_verdict_trace_must_reconstruct_from_oracle_call(
+    tmp_path,
+    field,
+    value,
+):
+    receipt = run_matched_watch(_write_real_case(tmp_path))
+    traces = list(receipt.baseline.traces)
+    index = next(
+        index
+        for index, trace in enumerate(traces)
+        if trace["stage"] == "transition.decision"
+    )
+    traces[index] = {
+        **traces[index],
+        "data": {**traces[index]["data"], field: value},
+    }
+    forged = _reseal(
+        receipt,
+        baseline=replace(receipt.baseline, traces=tuple(traces)),
+    )
+
+    with pytest.raises(MatchedWatchInputError, match="transition trace verdict|oracle"):
+        derive_viability_rows(forged)
+
+
+def test_v2_runtime_ended_counters_must_reconstruct_from_candidates(tmp_path):
+    receipt = run_matched_watch(_write_real_case(tmp_path))
+    health = list(receipt.baseline.health)
+    index = next(
+        index for index, event in enumerate(health) if event["kind"] == "runtime_ended"
+    )
+    health[index] = {
+        **health[index],
+        "data": {
+            **health[index]["data"],
+            "signal_admits": health[index]["data"]["signal_admits"] + 1,
+        },
+    }
+    forged = _reseal(
+        receipt,
+        baseline=replace(receipt.baseline, health=tuple(health)),
+    )
+
+    with pytest.raises(MatchedWatchInputError, match="runtime-ended|RuntimeStats"):
+        derive_viability_rows(forged)
+
+
+def test_v2_runtime_effective_config_must_reconstruct_from_compiled_replay(tmp_path):
+    receipt = run_matched_watch(_write_real_case(tmp_path))
+    effective = {
+        **receipt.baseline.runtime_stats["effective_config"],
+        "coast_enabled": False,
+    }
+    runtime_stats = {
+        **receipt.baseline.runtime_stats,
+        "effective_config": effective,
+    }
+    forged = _reseal(
+        receipt,
+        baseline=replace(receipt.baseline, runtime_stats=runtime_stats),
+    )
+
+    with pytest.raises(MatchedWatchInputError, match="effective runtime configuration"):
+        derive_viability_rows(forged)
+
+
+def test_v2_source_frame_identity_must_reconstruct_from_dispatch(tmp_path):
+    receipt = run_matched_watch(_write_real_case(tmp_path))
+    traces = list(receipt.baseline.traces)
+    index = next(
+        index
+        for index, trace in enumerate(traces)
+        if trace["stage"] == "source.frame"
+    )
+    traces[index] = {**traces[index], "trace_id": "caller-forged@0.0"}
+    forged = _reseal(
+        receipt,
+        baseline=replace(receipt.baseline, traces=tuple(traces)),
+    )
+
+    with pytest.raises(MatchedWatchInputError, match="source-frame trace identity"):
+        derive_viability_rows(forged)
+
+
+def test_real_manifest_rejects_a_symlinked_parent_path(tmp_path):
+    real_root = tmp_path / "real"
+    manifest_path = _write_real_case(real_root)
+    alias = tmp_path / "alias"
+    alias.symlink_to(real_root, target_is_directory=True)
+
+    with pytest.raises(MatchedWatchInputError, match="symlink|unsafe"):
+        load_matched_watch_manifest(alias / manifest_path.name)
 
 
 def test_real_receipts_feed_existing_measured_frontier_without_qualification(tmp_path):
