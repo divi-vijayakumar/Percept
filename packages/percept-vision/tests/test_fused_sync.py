@@ -871,7 +871,7 @@ def test_fused_pending_supersession_records_exact_dropped_job_identity():
     ]
 
 
-def test_public_midrun_mixed_watch_revision_is_typed_and_semantically_inert():
+def test_public_midrun_mixed_watch_revision_runs_through_shared_owner():
     import asyncio
     from dataclasses import replace
 
@@ -881,7 +881,6 @@ def test_public_midrun_mixed_watch_revision_is_typed_and_semantically_inert():
     from percept.harness.tier0 import gray_frame
     from percept.runtime import RuntimeStats, run
     from percept.runtime.envelope import legacy_video_envelope
-    from percept.runtime.worker import _UnsafeMixedTopologyError
     from percept.watchplan_apply import apply_watch_plan
     from tests.test_watchplan_runtime_binding import (
         STILL,
@@ -960,37 +959,32 @@ def test_public_midrun_mixed_watch_revision_is_typed_and_semantically_inert():
         )
 
     async def exercise():
-        with pytest.raises(_UnsafeMixedTopologyError) as caught:
-            async for incident in run(
-                core,
-                source=ClockedAsyncSource(),
-                audio_source=ClockedAudio(),
-                audio_gate=None,
-                timebase="media",
-                on_frame=lambda *args: exposed_frames.append(args),
-                on_incident=delivered.append,
-                on_health=health.append,
-                stats=stats,
-            ):
-                delivered.append(incident)
-        return caught.value
+        async for incident in run(
+            core,
+            source=ClockedAsyncSource(),
+            audio_source=ClockedAudio(),
+            audio_gate=None,
+            timebase="media",
+            on_frame=lambda *args: exposed_frames.append(args),
+            on_incident=delivered.append,
+            on_health=health.append,
+            stats=stats,
+        ):
+            delivered.append(incident)
 
-    outcome = asyncio.run(exercise())
-    assert outcome.code == "unsafe_mixed_topology"
-    assert outcome.from_revision == initial_revision
-    assert outcome.to_revision == initial_revision + 1
-    assert outcome.fused_goal_ids == ("fused",)
-    assert outcome.non_fused_goal_ids == ("ordinary",)
-    assert len(exposed_frames) == 1
+    asyncio.run(exercise())
+    assert core.goals.revision == initial_revision + 1
+    assert len(exposed_frames) == 2
     assert exposed_frames[0][1] == "prime"
-    assert stats.frames == 1
+    assert exposed_frames[1][1] == "must-not-reach-runtime"
+    assert stats.frames == 2
+    assert stats.perceive_dispatches == 1
     assert provider_calls == []
     assert delivered == []
-    # Lifecycle health remains public, but the rejected envelope/goal never reaches
-    # a source-, admission-, provider-, or delivery-bearing callback payload.
-    assert "must-not-reach-runtime" not in repr(health)
-    assert "ordinary" not in repr(health)
-    assert core.action_log.entries() == []
+    actions = core.action_log.entries()
+    assert [(action.kind, action.goal_id) for action in actions] == [
+        ("ask", "ordinary")
+    ]
 
 
 def test_separate_iterable_fusion_requires_clock_proof_before_iteration():

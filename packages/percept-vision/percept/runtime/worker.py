@@ -234,29 +234,6 @@ class RuntimeHealthEvent:
     data: dict[str, Any] | None = None
 
 
-class _UnsafeMixedTopologyError(ValueError):
-    """The worker rejected fused and non-fused Watches sharing split cognition owners."""
-
-    code = "unsafe_mixed_topology"
-
-    def __init__(
-        self,
-        *,
-        fused_goal_ids: tuple[str, ...],
-        non_fused_goal_ids: tuple[str, ...],
-        from_revision: int | None,
-        to_revision: int | None,
-    ) -> None:
-        self.fused_goal_ids = fused_goal_ids
-        self.non_fused_goal_ids = non_fused_goal_ids
-        self.from_revision = from_revision
-        self.to_revision = to_revision
-        super().__init__(
-            "mixed non-fused/fused Watches require the shared owner judgment pipeline; "
-            "this runtime refuses unsafe split cognition ownership"
-        )
-
-
 @dataclass(frozen=True)
 class _OwnerCommand:
     """One immutable item in the runtime cognition owner's total order."""
@@ -305,6 +282,175 @@ class _OwnerCommandQueue:
         rows = tuple(self._items)
         self._items.clear()
         return rows
+
+
+@dataclass(frozen=True)
+class _MaterializedItem:
+    action: str
+    fire: Any
+    incident: Any = None
+    trace: tuple[str, float, str, dict[str, Any]] | None = None
+
+
+@dataclass(frozen=True)
+class _MaterializedReduction:
+    at: float
+    items: tuple[_MaterializedItem, ...]
+
+
+def _materialize_reduction(
+    fires: Any,
+    *,
+    at: float,
+    gate_source: str,
+    snippet_for_fire: Any,
+    watchplan_id: str | None,
+    label_store: Any,
+    disposition_log: Any,
+    verdict_ref: Any,
+    from_boundary: bool,
+) -> _MaterializedReduction:
+    """Synchronously freeze every output before a subscriber can run."""
+    items = []
+    for fire in fires or ():
+        action = getattr(fire, "action", None)
+        if action == ASK:
+            if disposition_log is not None:
+                _log_disposition(
+                    disposition_log,
+                    incident_id="",
+                    fire=fire,
+                    disposition="ask",
+                    ts=at,
+                )
+            items.append(_MaterializedItem(action=ASK, fire=fire))
+            continue
+        if action != FIRE:
+            continue
+        incident = make_incident(
+            fire,
+            ts=at,
+            snippet=snippet_for_fire(fire),
+            watchplan_id=watchplan_id,
+        )
+        fused_bundle = getattr(fire, "_fused_evidence_bundle", None)
+        if fused_bundle is not None:
+            if (
+                fused_bundle.judgment_event_id
+                != incident.judgment_event_id
+                or fused_bundle.evidence_seq != incident.evidence_seq
+            ):
+                raise RuntimeError(
+                    "fused evidence identity diverged from the delivered judgment"
+                )
+            incident._fused_evidence_bundle = fused_bundle
+        if label_store is not None:
+            incident.bind_labeler(
+                label_store.append,
+                verdict_ref=verdict_ref(getattr(fire, "verdict", None)),
+                goal_id=getattr(fire, "goal_id", None),
+            )
+        if disposition_log is not None:
+            _log_disposition(
+                disposition_log,
+                incident_id=incident.id,
+                fire=fire,
+                disposition="fire",
+                ts=at,
+            )
+        judgment_trace_id = f"{gate_source}@{at}"
+        trace = (
+            judgment_trace_id,
+            at,
+            "incident.created",
+            {
+                "goal_id": incident.concern_id,
+                "incident_id": incident.id,
+                "from_boundary": from_boundary,
+                "entity_id": incident.entity_id,
+                "judgment_event_id": incident.judgment_event_id,
+                "evidence_origin": incident.evidence_origin,
+            },
+        )
+        items.append(
+            _MaterializedItem(
+                action=FIRE,
+                fire=fire,
+                incident=incident,
+                trace=trace,
+            )
+        )
+    return _MaterializedReduction(at=at, items=tuple(items))
+
+
+async def _deliver_materialized(
+    materialized: _MaterializedReduction,
+    *,
+    core: Any,
+    on_health: Any,
+    on_ask: Any,
+    on_incident: Any,
+    sink_errors: str,
+    stats: Any,
+    coverage: Any,
+) -> tuple[Any, ...]:
+    """Deliver already-frozen outputs without authoring cognition state."""
+    delivered = []
+    for item in materialized.items:
+        if item.action == ASK:
+            if on_health is not None:
+                await _call_sink(
+                    on_health,
+                    RuntimeHealthEvent(
+                        "ask",
+                        ts=materialized.at,
+                        data={"goal_id": item.fire.goal_id},
+                    ),
+                )
+            if on_ask is not None:
+                await _call_sink_with_policy(
+                    on_ask,
+                    item.fire,
+                    errors=sink_errors,
+                    stats=stats,
+                    on_health=on_health,
+                    health_kind="ask_sink_error",
+                )
+            continue
+        incident = item.incident
+        assert incident is not None
+        if item.trace is not None:
+            emit_trace = getattr(core, "_emit_trace", None)
+            if getattr(core, "on_trace", None) is not None and callable(
+                emit_trace
+            ):
+                trace_id, trace_t, stage, data = item.trace
+                await emit_trace(trace_id, trace_t, stage, **data)
+        if on_health is not None:
+            await _call_sink(
+                on_health,
+                RuntimeHealthEvent(
+                    "incident",
+                    ts=incident.ts,
+                    data={
+                        "incident_id": incident.id,
+                        "goal_id": incident.concern_id,
+                        "entity_id": incident.entity_id,
+                    },
+                ),
+            )
+        if on_incident is not None:
+            await _call_sink_with_policy(
+                on_incident,
+                incident,
+                errors=sink_errors,
+                stats=stats,
+                on_health=on_health,
+                health_kind="incident_sink_error",
+            )
+        coverage.incidents += 1
+        delivered.append(incident)
+    return tuple(delivered)
 
 
 class _LegacyJudgeScheduler:
@@ -2214,7 +2360,8 @@ async def _run_audio_only(
             else:
                 cov.judge_calls += 1
                 cov.perceive_dispatches += 1
-                fires = await core.perceive_audio_judged(
+                perceive_audio = getattr(core, "perceive_audio_judged")
+                fires = await perceive_audio(
                     evidence,
                     gate_source,
                     t=at,
@@ -2987,21 +3134,6 @@ async def _run_worker(
         ]
         return fused, non_fused
 
-    def _guard_live_watch_topology(
-        *,
-        from_revision: int | None,
-        to_revision: int | None,
-    ):
-        fused, non_fused = _live_watch_topology()
-        if fused and non_fused:
-            raise _UnsafeMixedTopologyError(
-                fused_goal_ids=tuple(sorted(goal.id for goal in fused)),
-                non_fused_goal_ids=tuple(sorted(goal.id for goal in non_fused)),
-                from_revision=from_revision,
-                to_revision=to_revision,
-            )
-        return fused, non_fused
-
     compiled_audio_goals = [
         goal
         for goal in _source_goals()
@@ -3074,10 +3206,6 @@ async def _run_worker(
         ]
         if _has_fused
         else None
-    )
-    _guard_live_watch_topology(
-        from_revision=goals_revision,
-        to_revision=goals_revision,
     )
     if fused_goals and (
         audio_tb is None or video_tb.resolved != audio_tb.resolved
@@ -4487,24 +4615,9 @@ async def _run_worker(
                 )
 
         async def _emit_fires(fires, *, at, from_boundary=False):
-            """Turn a list of FireEvents (from perceive_judged OR the boundary) into incidents/asks."""
-            for fire in fires or []:
-                if getattr(fire, "action", None) == ASK:
-                    if stats is not None:
-                        stats.asks += 1
-                    if disposition_log is not None:  # escalation-meter raw feed (asks are not incidents)
-                        _log_disposition(disposition_log, incident_id="", fire=fire, disposition="ask", ts=at)
-                    if on_health is not None:
-                        await _call_sink(on_health, RuntimeHealthEvent("ask", ts=at, data={"goal_id": fire.goal_id}))
-                    if on_ask is not None:
-                        await _call_sink_with_policy(
-                            on_ask, fire, errors=sink_errors, stats=stats, on_health=on_health, health_kind="ask_sink_error"
-                        )
-                    continue
-                if getattr(fire, "action", None) != FIRE:
-                    continue
-                if stats is not None:
-                    stats.fires += 1
+            """Materialize the whole owner reduction, then deliver it."""
+
+            def _snippet_for_fire(fire):
                 exact_audio_units = tuple(
                     getattr(fire, "audio_units", None) or ()
                 )
@@ -4513,67 +4626,43 @@ async def _run_worker(
 
                     audio_goal = core.goals.get(fire.goal_id)
                     audio_binding = core._audio_judge_binding_for(audio_goal)
-                    snippet = audio_snippet_from_units(
+                    return audio_snippet_from_units(
                         exact_audio_units,
                         capability=audio_binding.capability,
                     )
-                else:
-                    snippet = snippet_from_window(
-                        clips, kind=snippet_kind, pre_s=snippet_pre_s
-                    )
-                incident = make_incident(
-                    fire, ts=at, snippet=snippet, watchplan_id=_current_watchplan_id())
-                fused_bundle = getattr(fire, "_fused_evidence_bundle", None)
-                if fused_bundle is not None:
-                    if (
-                        fused_bundle.judgment_event_id != incident.judgment_event_id
-                        or fused_bundle.evidence_seq != incident.evidence_seq
-                    ):
-                        raise RuntimeError(
-                            "fused evidence identity diverged from the delivered judgment"
-                        )
-                    incident._fused_evidence_bundle = fused_bundle
-                if label_store is not None:  # bind the local label sink so incident.record_label() writes
-                    incident.bind_labeler(
-                        label_store.append,
-                        verdict_ref=_verdict_ref(getattr(fire, "verdict", None)),
-                        goal_id=getattr(fire, "goal_id", None),
-                    )
-                if disposition_log is not None:  # escalation-meter raw feed
-                    _log_disposition(disposition_log, incident_id=incident.id, fire=fire, disposition="fire", ts=at)
-                emit_trace = getattr(core, "_emit_trace", None)
-                if getattr(core, "on_trace", None) is not None and emit_trace is not None:
-                    # Routed through the safe core emitter (awaits async, swallows tracer errors); guarded
-                    # with getattr since `core` is duck-typed (a custom core may lack _emit_trace).
-                    # from_boundary flags incidents that did NOT pass through perceive_judged, so their
-                    # trace_id has no upstream judge stages (an honest marker, not an orphan).
-                    await emit_trace(
-                        f"{gate_source}@{at}", at, "incident.created",
-                        goal_id=incident.concern_id, incident_id=incident.id, from_boundary=from_boundary,
-                        entity_id=incident.entity_id,
-                        # The 1.9 evidence link, carried onto the trace row a client audit resolves: this
-                        # incident joins back to EXACTLY ONE judgment.event carrying the same handle.
-                        judgment_event_id=incident.judgment_event_id,
-                        evidence_origin=incident.evidence_origin,
-                    )
-                if on_health is not None:
-                    await _call_sink(
-                        on_health,
-                        RuntimeHealthEvent(
-                            "incident",
-                            ts=at,
-                            data={
-                                "incident_id": incident.id,
-                                "goal_id": incident.concern_id,
-                                "entity_id": incident.entity_id,  # which subject fired, not just which goal
-                            },
-                        ),
-                    )
-                if on_incident is not None:
-                    await _call_sink_with_policy(
-                        on_incident, incident, errors=sink_errors, stats=stats, on_health=on_health, health_kind="incident_sink_error",
-                    )
-                _cov.incidents += 1
+                return snippet_from_window(
+                    clips, kind=snippet_kind, pre_s=snippet_pre_s
+                )
+
+            materialized = _materialize_reduction(
+                fires,
+                at=at,
+                gate_source=gate_source,
+                snippet_for_fire=_snippet_for_fire,
+                watchplan_id=_current_watchplan_id(),
+                label_store=label_store,
+                disposition_log=disposition_log,
+                verdict_ref=_verdict_ref,
+                from_boundary=from_boundary,
+            )
+            if stats is not None:
+                stats.asks += sum(
+                    item.action == ASK for item in materialized.items
+                )
+                stats.fires += sum(
+                    item.action == FIRE for item in materialized.items
+                )
+            delivered = await _deliver_materialized(
+                materialized,
+                core=core,
+                on_health=on_health,
+                on_ask=on_ask,
+                on_incident=on_incident,
+                sink_errors=sink_errors,
+                stats=stats,
+                coverage=_cov,
+            )
+            for incident in delivered:
                 yield incident
 
         async def _emit_fused_completion(completion, *, at):
@@ -4701,8 +4790,8 @@ async def _run_worker(
                         envelope = next_envelope.result()
                     except StopAsyncIteration:
                         return
-                    next_envelope = asyncio.create_task(anext(iterator))
                     yield envelope
+                    next_envelope = asyncio.create_task(anext(iterator))
             finally:
                 if owner_wakeup is not None and not owner_wakeup.done():
                     owner_wakeup.cancel()
@@ -4719,18 +4808,13 @@ async def _run_worker(
 
         _was_paused = False
         _fused_was_paused = False
-        async for envelope in _owner_driven_video():
+        video_stream = (
+            _owner_driven_video()
+            if audio_source is not None
+            else _aiter(source, capture_fps, **source_kwargs)
+        )
+        async for envelope in video_stream:
             await _drain_owner_commands()
-            # A source iterator, voice command, or other task can author a Watch between
-            # frames.  Re-run the topology firewall before this envelope reaches the
-            # SourceTracker, any provider lane, or any runtime callback.  The later
-            # revision block repeats the same check after callback-bearing drain work.
-            envelope_revision = getattr(core.goals, "revision", goals_revision)
-            if envelope_revision != goals_revision:
-                _guard_live_watch_topology(
-                    from_revision=goals_revision,
-                    to_revision=envelope_revision,
-                )
             if _fused_syncs and _fused_requires_envelope_clock_claim and (
                 envelope.clock_authority != _video_clock_authority
                 or envelope.clock_confidence is None
@@ -4984,13 +5068,7 @@ async def _run_worker(
             if goals_revision is not None:
                 rev = getattr(core.goals, "revision", goals_revision)
                 if rev != goals_revision:
-                    # Validate before generation changes, scheduler installation/removal,
-                    # gate rebuilding, or any callback.  A rejected revision therefore has
-                    # no runtime admission footprint.
-                    current_fused, _ = _guard_live_watch_topology(
-                        from_revision=goals_revision,
-                        to_revision=rev,
-                    )
+                    current_fused, _ = _live_watch_topology()
                     if _fused_syncs:
                         _advance_fused_generation(
                             _FusedDiscontinuity.WATCH_REVISION,
@@ -5463,7 +5541,8 @@ async def _run_worker(
                 elif admitted_audio_ids:
                     _cov.perceive_dispatches += 1
                     _cov.judge_calls += 1
-                    fires = await core.perceive_audio_judged(
+                    perceive_audio = getattr(core, "perceive_audio_judged")
+                    fires = await perceive_audio(
                         audio_evidence,
                         gate_source,
                         t=t,
@@ -5564,20 +5643,18 @@ async def _run_worker(
             )
             provider_flush_tasks.append(task)
             provider_flush_meta[task] = ("audio", None, _audio_judge_sched)
-        ordinary_joined_provider_flush = (
-            _judge_sched is not None
-            and bool((_fused_judge_scheds or {}) or _audio_judge_sched is not None)
-        )
-        if ordinary_joined_provider_flush:
+        if _judge_sched is not None:
             task = asyncio.create_task(
                 _flush_provider_lane("ordinary", None, _judge_sched)
             )
             provider_flush_tasks.append(task)
             provider_flush_meta[task] = ("ordinary", None, _judge_sched)
+        eos_timeout_s = max(0.01, float(judge_stall_after_s))
+        eos_deadline = asyncio.get_running_loop().time() + eos_timeout_s
         try:
             for completed in asyncio.as_completed(
                 provider_flush_tasks,
-                timeout=max(0.01, float(judge_stall_after_s)),
+                timeout=eos_timeout_s,
             ):
                 lane_kind, _goal_id, scheduler = await completed
                 for _hk, _hd in scheduler.drain_trace():
@@ -5606,9 +5683,41 @@ async def _run_worker(
                                 at=_jt,
                             ):
                                 yield incident
+            # Split ordinary transport cannot launch its accepted pending
+            # batch until the owner reduces the preceding ready completion.
+            # Repeat within the same absolute multi-lane deadline.
+            while (
+                _judge_sched is not None
+                and (_judge_sched.active or _judge_sched.pending)
+            ):
+                remaining = (
+                    eos_deadline - asyncio.get_running_loop().time()
+                )
+                if remaining <= 0:
+                    raise TimeoutError
+                await asyncio.wait_for(
+                    _flush_provider_lane(
+                        "ordinary", None, _judge_sched
+                    ),
+                    timeout=remaining,
+                )
+                for _hk, _hd in _judge_sched.drain_trace():
+                    if on_health is not None:
+                        await _call_sink(
+                            on_health,
+                            RuntimeHealthEvent(_hk, data=_hd),
+                        )
+                for _jt, _result in _judge_sched.drain():
+                    async for incident in _emit_judgment_completions(
+                        _result,
+                        at=_jt,
+                        scheduler=_judge_sched,
+                    ):
+                        yield incident
         except TimeoutError:
             # A cancellation-resistant provider lane must not hold completed
             # reflex lanes or end-of-stream delivery hostage.
+            closed_schedulers = set()
             for task in provider_flush_tasks:
                 if not task.done():
                     lane_kind, goal_id, scheduler = provider_flush_meta[task]
@@ -5638,6 +5747,30 @@ async def _run_worker(
                         )
                     )
                     await scheduler.close(drain=False)
+                    closed_schedulers.add(scheduler)
+            for lane_kind, goal_id, scheduler in provider_flush_meta.values():
+                if (
+                    scheduler in closed_schedulers
+                    or not (scheduler.active or scheduler.pending)
+                ):
+                    continue
+                if on_health is not None:
+                    await _call_sink(
+                        on_health,
+                        RuntimeHealthEvent(
+                            "judge_eos_timeout",
+                            ts=_last_t,
+                            data={
+                                "lane": lane_kind,
+                                "goal_id": goal_id,
+                                "reason": "end_of_stream_deadline",
+                                "active": scheduler.active,
+                                "pending": scheduler.pending,
+                            },
+                        ),
+                    )
+                await scheduler.close(drain=False)
+                closed_schedulers.add(scheduler)
             # Closing a lane creates typed cancellation/drop traces. Drain
             # those plus any result that completed immediately before the
             # deadline, including fast ordinary/reflex completions.
@@ -5668,25 +5801,6 @@ async def _run_worker(
                                 at=_jt,
                             ):
                                 yield incident
-        if _judge_sched is not None and not ordinary_joined_provider_flush:
-            while True:
-                await _judge_sched.flush()
-                for _hk, _hd in _judge_sched.drain_trace():
-                    if on_health is not None:
-                        await _call_sink(
-                            on_health,
-                            RuntimeHealthEvent(_hk, data=_hd),
-                        )
-                rows = _judge_sched.drain()
-                for _jt, _completions in rows:
-                    async for incident in _emit_judgment_completions(
-                        _completions,
-                        at=_jt,
-                        scheduler=_judge_sched,
-                    ):
-                        yield incident
-                if not _judge_sched.active and not _judge_sched.pending:
-                    break
         await _drain_judge_health(core, on_health, _last_t)
         # The LAST tick's suppressions (and anything the end-of-source flush above produced) would
         # otherwise die with the queue — drain once more so a finite stream reports every suppression
