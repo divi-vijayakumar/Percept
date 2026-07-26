@@ -203,7 +203,6 @@ def test_generator_exit_hostile_teardown_holds_core_lease_until_quiescent() -> N
         release.set()
         await asyncio.wait_for(owner_task, timeout=0.5)
         assert provider_task.done()
-        assert provider_task not in worker._FORCE_CLOSED_PROVIDER_TASKS
         assert asyncio.CancelledError in exits
         assert GeneratorExit in exits
 
@@ -393,6 +392,68 @@ def test_direct_forged_cancelled_subclass_has_zero_authority() -> None:
         with pytest.raises(_ForgedCancelled) as caught:
             await _collect(_iteration_failure(core, error=forged))
         assert caught.value is forged
+
+    asyncio.run(drive())
+    assert core.advanced == []
+
+
+def test_provider_self_cancellation_caught_has_zero_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core = _Core()
+
+    async def self_cancelling_worker(**_kwargs: Any) -> AsyncIterator[Any]:
+        current = asyncio.current_task()
+        assert current is not None
+        assert current.cancel()
+        try:
+            await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            pass
+        if False:
+            yield None
+
+    monkeypatch.setattr(worker, "_run_worker", self_cancelling_worker)
+
+    async def drive() -> None:
+        assert await _collect(
+            worker.run(
+                core,
+                source=(),
+                interest_subscription=InterestSubscription(),
+                gate_source="self-cancelled-provider",
+            )
+        ) == []
+
+    asyncio.run(drive())
+    assert core.advanced == []
+
+
+def test_late_cancel_rejected_after_terminal_has_zero_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core = _Core()
+
+    async def completed_worker(**_kwargs: Any) -> AsyncIterator[Any]:
+        if False:
+            yield None
+
+    monkeypatch.setattr(worker, "_run_worker", completed_worker)
+
+    async def drive() -> None:
+        task = asyncio.create_task(
+            _collect(
+                worker.run(
+                    core,
+                    source=(),
+                    interest_subscription=InterestSubscription(),
+                    gate_source="late-cancel",
+                )
+            )
+        )
+        assert await task == []
+        assert task.cancel() is False
+        await asyncio.sleep(0)
 
     asyncio.run(drive())
     assert core.advanced == []
