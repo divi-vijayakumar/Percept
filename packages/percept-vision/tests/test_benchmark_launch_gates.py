@@ -83,6 +83,40 @@ def _budget_plan_json(
 
 
 class BenchmarkLaunchGateTests(unittest.TestCase):
+    def test_pt_action_qualification_rejects_non_openrouter_qwen_route(self):
+        from eval.bench.run import _live_prerequisite_blockers
+
+        with patch.dict(
+            os.environ,
+            {
+                "PERCEPT_VISION_BACKEND": "gemini",
+                "PERCEPT_VISION_MODEL": "gemini-3.5-flash",
+                "GEMINI_API_KEY": "offline-presence-check-only",
+                "PERCEPT_BENCH_BUDGET_PLAN": _budget_plan_json(
+                    provider="gemini",
+                    model="gemini-3.5-flash",
+                ),
+            },
+            clear=False,
+        ):
+            blockers = _live_prerequisite_blockers(
+                manifest=None,
+                release=False,
+                n=None,
+                tracks=["pt-action-e2e"],
+            )
+
+        self.assertIn(
+            "pt-action-e2e qualification requires "
+            "PERCEPT_VISION_BACKEND=openrouter",
+            blockers,
+        )
+        self.assertIn(
+            "pt-action-e2e qualification requires an explicitly pinned "
+            "Qwen model through OpenRouter",
+            blockers,
+        )
+
     def test_run_start_persists_provenance_in_metadata_and_event(self):
         model = "qwen/qwen3-vl-32b-instruct"
         raw_plan = _budget_plan_json(provider="openrouter", model=model)

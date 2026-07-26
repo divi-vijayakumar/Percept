@@ -1477,8 +1477,15 @@ def score(*, live: bool, n: int) -> TrackResult:
         result.status = "blocked"
         return result
 
-    backend = os.environ.get("PERCEPT_VISION_BACKEND", "gemini")
-    model = os.environ.get("PERCEPT_VISION_MODEL")
+    backend = os.environ.get("PERCEPT_VISION_BACKEND", "").strip()
+    model = os.environ.get("PERCEPT_VISION_MODEL", "").strip()
+    if backend != "openrouter" or not model.lower().startswith("qwen/"):
+        result = _unavailable(
+            "pt-action-e2e qualification requires an explicitly pinned "
+            "Qwen model through OpenRouter"
+        )
+        result.status = "blocked"
+        return result
     settings = load_settings()
     request_budget = build_budget_enforcer(
         os.environ.get("PERCEPT_BENCH_BUDGET_PLAN", ""),

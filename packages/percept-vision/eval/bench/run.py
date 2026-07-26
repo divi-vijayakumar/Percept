@@ -76,6 +76,19 @@ def _live_prerequisite_blockers(
     configured_model = os.environ.get("PERCEPT_VISION_MODEL")
     if not configured_model:
         blockers.append("PERCEPT_VISION_MODEL must explicitly pin the budgeted provider model")
+    if "pt-action-e2e" in tracks:
+        if backend != "openrouter":
+            blockers.append(
+                "pt-action-e2e qualification requires "
+                "PERCEPT_VISION_BACKEND=openrouter"
+            )
+        if not configured_model or not configured_model.lower().startswith(
+            "qwen/"
+        ):
+            blockers.append(
+                "pt-action-e2e qualification requires an explicitly pinned "
+                "Qwen model through OpenRouter"
+            )
     raw_budget = os.environ.get("PERCEPT_BENCH_BUDGET_PLAN")
     budget_blockers = live_budget_blockers(
         provider=backend,
