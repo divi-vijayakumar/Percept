@@ -180,7 +180,13 @@ from .provider import (  # noqa: E402
 # (PR: Wave 0) so `percept.run` / `percept.RuntimeSession` are the FIRST thing a builder reaches,
 # instead of being two import-hops deep at `percept.runtime.worker.run`. Import is stdlib-pure
 # (cv2/numpy are lazy inside run()), so the zero-vendor-import invariant holds.
-from .runtime import RuntimeSession, RuntimeStats, run, start  # noqa: E402
+from .runtime import (  # noqa: E402
+    ConcurrentCoreRunError,
+    RuntimeSession,
+    RuntimeStats,
+    run,
+    start,
+)
 
 # The diagnostic data model: percept doctor, percept eval and the visualizer all derive
 # their numbers from THIS module, so three surfaces cannot invent three definitions of the funnel.
@@ -244,6 +250,7 @@ __all__ = [
     "assert_live_or_offline",
     # the runtime front door (start here)
     "run",
+    "ConcurrentCoreRunError",
     "start",
     "RuntimeSession",
     "RuntimeStats",

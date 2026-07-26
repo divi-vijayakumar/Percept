@@ -13,8 +13,10 @@ accepted and are normalized at ingress.
 from __future__ import annotations
 
 import asyncio
+import functools
 import inspect
 import math
+import threading
 import time
 import uuid
 from collections import deque
@@ -50,6 +52,54 @@ from percept.runtime.envelope import (
 )
 
 _log = get_logger("percept.runtime.worker")
+
+
+class ConcurrentCoreRunError(RuntimeError):
+    """The same cognition core is already owned by another active runtime."""
+
+
+_ACTIVE_CORE_RUNS_LOCK = threading.Lock()
+_ACTIVE_CORE_RUNS: dict[int, Any] = {}
+
+
+def _acquire_core_run(core: Any) -> tuple[int, Any] | None:
+    """Acquire a process-local, thread-safe lease without requiring a hashable/weakref core."""
+    if core is None:
+        return None
+    identity = id(core)
+    with _ACTIVE_CORE_RUNS_LOCK:
+        active = _ACTIVE_CORE_RUNS.get(identity)
+        if active is core:
+            raise ConcurrentCoreRunError(
+                "percept.run already has an active runtime for this core; "
+                "wait for it to finish before reusing the same core"
+            )
+        # Keeping the active object itself prevents id reuse and retains only active cores.
+        _ACTIVE_CORE_RUNS[identity] = core
+    return identity, core
+
+
+def _release_core_run(lease: tuple[int, Any] | None) -> None:
+    if lease is None:
+        return
+    identity, core = lease
+    with _ACTIVE_CORE_RUNS_LOCK:
+        if _ACTIVE_CORE_RUNS.get(identity) is core:
+            del _ACTIVE_CORE_RUNS[identity]
+
+
+def _exclusive_core_runtime(func):
+    """Guard an async-generator runtime before any wrapped-body work can execute."""
+    @functools.wraps(func)
+    async def leased(core: Any = None, *args: Any, **kwargs: Any):
+        lease = _acquire_core_run(core)
+        try:
+            async for item in func(core, *args, **kwargs):
+                yield item
+        finally:
+            _release_core_run(lease)
+
+    return leased
 
 
 def _accepts_keyword(callable_obj: Any, name: str) -> bool:
@@ -5890,6 +5940,7 @@ async def _run_worker(
             await _call_sink(on_health, RuntimeHealthEvent("runtime_ended", data=_cov_data))
 
 
+@_exclusive_core_runtime
 async def run(
     core: Any = None,
     *,

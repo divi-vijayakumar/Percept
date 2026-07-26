@@ -31,6 +31,7 @@ from percept.interest import (
 from percept.runtime.session import RuntimeSession, start
 from percept.runtime.sinks import BoundedDeadLetterQueue, FileDeadLetterQueue, WebhookSink, incident_payload, webhook
 from percept.runtime.worker import (
+    ConcurrentCoreRunError,
     EffectiveConfig,
     EffectiveFps,
     EffectiveTimebase,
@@ -41,6 +42,7 @@ from percept.runtime.worker import (
 
 __all__ = [
     "run",
+    "ConcurrentCoreRunError",
     "RuntimeStats",
     "RuntimeHealthEvent",
     "EffectiveConfig",
