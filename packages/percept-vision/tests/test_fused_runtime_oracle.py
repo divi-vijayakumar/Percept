@@ -13,7 +13,8 @@ import json
 import struct
 import types
 import unittest
-from dataclasses import FrozenInstanceError, dataclass, is_dataclass
+from copy import deepcopy
+from dataclasses import FrozenInstanceError, dataclass, is_dataclass, replace
 from unittest.mock import patch
 
 from percept import Percept
@@ -25,7 +26,7 @@ from percept.contracts import AudioFrame, WatchPlan
 from percept.direct_judge import DirectJudge, DirectResult, DirectRouting
 from percept.events import AudioUnit
 from percept.goals import GoalOp
-from percept.harness.tier0 import gray_frame
+from percept.harness.tier0 import CivilTime, gray_frame
 from percept.incidents import make_incident
 from percept.runtime.envelope import SourceEnvelope, SourceFormat
 from percept.runtime.worker import RuntimeStats, _JudgeScheduler, run
@@ -278,7 +279,14 @@ def video_envelope(seq: int, at: float, *, epoch: int = 0, changed: bool = False
     )
 
 
-def audio_envelope(seq: int, start: float, end: float, *, epoch: int = 0):
+def audio_envelope(
+    seq: int,
+    start: float,
+    end: float,
+    *,
+    epoch: int = 0,
+    energy: float = 0.5,
+):
     sample_rate = 4
     sample_count = max(1, round((end - start) * sample_rate))
     end = start + sample_count / sample_rate
@@ -304,7 +312,7 @@ def audio_envelope(seq: int, start: float, end: float, *, epoch: int = 0):
             sample_format="s16le",
         ),
         payload=frame,
-        signal=0.5,
+        signal=energy,
         audio_direction="input",
     )
 
@@ -719,10 +727,22 @@ class FusedPublicIsolationAndFailureTests(unittest.TestCase):
         )
 
     def test_provider_failure_for_complete_fusion_asks_and_never_fires(self):
+        traces = []
         core, models = trusted_core(
-            answers={"fused": RuntimeError("provider unavailable")}
+            answers={"fused": RuntimeError("provider unavailable")},
+            on_trace=traces.append,
         )
         apply(core, "fused", "fused", "fused")
+        # Seed the in-progress dwell directly: the compiled fused route does not itself author a
+        # duration Watch, but the failure reducer must still invoke the shared pending-dwell clear.
+        core.goals.get("fused").state["hold_s"] = 5.0
+        key = ("fused", None)
+        core.gate._dwell_since[key] = 0.25
+        core.gate._dwell_last_supported[key] = 0.5
+        durable_gate_before = {
+            name: deepcopy(getattr(core.gate, name))
+            for name in ("_armed", "_last_fire", "_touched", "_no_evict")
+        }
         bundle = fused_bundle(
             watch_revision=core.goals.revision,
             application=application_for(core, "fused"),
@@ -732,9 +752,30 @@ class FusedPublicIsolationAndFailureTests(unittest.TestCase):
             dispatch_and_reduce_fused(core, bundle, goal_id="fused")
         )
 
-        self.assertFalse(any(event.action == "fire" for event in events))
-        self.assertTrue(any(event.action == "ask" for event in events))
+        self.assertEqual(events, [])
         self.assertGreaterEqual(len(models.calls), 1)
+        self.assertNotIn(key, core.gate._dwell_since)
+        self.assertNotIn(key, core.gate._dwell_last_supported)
+        self.assertEqual(
+            {
+                name: getattr(core.gate, name)
+                for name in durable_gate_before
+            },
+            durable_gate_before,
+        )
+        degraded = [row for row in traces if row.stage == "judge.degraded"]
+        classified = [row for row in traces if row.stage == "gate.classified"]
+        self.assertEqual(len(degraded), 1)
+        self.assertEqual(len(classified), 1)
+        self.assertEqual(classified[0].data["action"], "ask")
+        self.assertTrue(classified[0].data["degraded"])
+        self.assertEqual(
+            [
+                (kind, health_key)
+                for kind, health_key, _cause in core._judge_health_log
+            ],
+            [("judge_degraded", key)],
+        )
 
     def test_hung_deliberate_watch_does_not_delay_reflex_watch(self):
         async def drive():
@@ -1389,6 +1430,248 @@ class FusedPromotionBlockerTests(unittest.TestCase):
         }
         self.assertTrue(reported)
 
+    def test_provider_owned_nested_verdict_is_frozen_before_completion(self):
+        async def drive():
+            core, _models = trusted_core()
+            apply(core, "nested", "nested", "fused")
+            bundle = fused_bundle(
+                watch_revision=core.goals.revision,
+                application=application_for(core, "nested"),
+            )
+            original_job = prepare_fused_job(
+                core,
+                bundle,
+                goal_id="nested",
+            )
+            provider_owned = Verdict(
+                True,
+                0.99,
+                "nested",
+                usage={
+                    "input_tokens": 3,
+                    "provider": {"ids": ["original"]},
+                },
+                value={"amounts": [1, {"currency": "USD"}]},
+                normalized_value={"amounts": [1]},
+            )
+
+            async def provider(*_args, **_kwargs):
+                return provider_owned
+
+            job = replace(original_job, dispatch=provider)
+            completion = await core.dispatch_fused_judgment(job)
+            provider_owned.satisfied = False
+            provider_owned.confidence = 0.0
+            provider_owned.evidence = "mutated"
+            provider_owned.usage["provider"]["ids"].append("mutated")
+            provider_owned.value["amounts"][1]["currency"] = "EUR"
+            provider_owned.normalized_value["amounts"].append(2)
+            frozen = completion.verdict.to_verdict()
+            events = core.reduce_fused_completion(
+                completion,
+                live_fused_generation=job.token.fused_generation,
+            )
+            return frozen, events
+
+        frozen, events = asyncio.run(bounded(drive()))
+        self.assertTrue(frozen.satisfied)
+        self.assertEqual(frozen.confidence, 0.99)
+        self.assertEqual(frozen.evidence, "nested")
+        self.assertEqual(
+            frozen.usage["provider"],
+            {"ids": ["original"]},
+        )
+        self.assertEqual(
+            frozen.value,
+            {"amounts": [1, {"currency": "USD"}]},
+        )
+        self.assertEqual(frozen.normalized_value, {"amounts": [1]})
+        self.assertEqual(
+            [event.goal_id for event in events if event.action == "fire"],
+            ["nested"],
+        )
+
+    def test_provider_failure_is_pure_for_all_cognition_state_owners(self):
+        class TrapCache:
+            def __init__(self):
+                self.layers = []
+                self.marker = {"nested": ["unchanged"]}
+
+            def resolve(self, _key):
+                raise AssertionError("fused failure touched verdict cache")
+
+            def store(self, *_args, **_kwargs):
+                raise AssertionError("fused failure touched verdict cache")
+
+        async def drive():
+            core, _models = trusted_core(
+                answers={"failure": RuntimeError("provider unavailable")}
+            )
+            apply(core, "failure", "failure", "fused")
+            core.cache = TrapCache()
+            bundle = fused_bundle(
+                watch_revision=core.goals.revision,
+                application=application_for(core, "failure"),
+            )
+            job = prepare_fused_job(core, bundle, goal_id="failure")
+            state_before = {
+                "gate": deepcopy(core.gate.snapshot()),
+                "documents": deepcopy(core._doc_episode_hwm),
+                "claims": deepcopy(core._claim_states),
+                "claim_hwm": deepcopy(core._claim_hwm),
+                "claim_episode": deepcopy(core._claim_episode_id),
+                "episodes": deepcopy(core.episodes),
+                "cache": deepcopy(core.cache.marker),
+                "actions": tuple(core.action_log.entries()),
+                "supported": deepcopy(core.last_supported),
+                "satisfied": deepcopy(core.last_satisfied),
+            }
+            completion = await core.dispatch_fused_judgment(job)
+            events = core.reduce_fused_completion(
+                completion,
+                live_fused_generation=job.token.fused_generation,
+            )
+            state_after = {
+                "gate": deepcopy(core.gate.snapshot()),
+                "documents": deepcopy(core._doc_episode_hwm),
+                "claims": deepcopy(core._claim_states),
+                "claim_hwm": deepcopy(core._claim_hwm),
+                "claim_episode": deepcopy(core._claim_episode_id),
+                "episodes": deepcopy(core.episodes),
+                "cache": deepcopy(core.cache.marker),
+                "actions": tuple(core.action_log.entries()),
+                "supported": deepcopy(core.last_supported),
+                "satisfied": deepcopy(core.last_satisfied),
+            }
+            return completion, events, state_before, state_after
+
+        completion, events, state_before, state_after = asyncio.run(
+            bounded(drive())
+        )
+        self.assertIsNotNone(completion.failure)
+        self.assertEqual(events, [])
+        self.assertEqual(state_after, state_before)
+
+    def test_exact_bundle_identity_mismatch_is_typed_and_validation_is_pure(self):
+        core, models = trusted_core()
+        apply(core, "identity", "identity", "fused")
+        bundle = fused_bundle(
+            watch_revision=core.goals.revision,
+            application=application_for(core, "identity"),
+            include_audio=False,
+        )
+        job = prepare_fused_job(core, bundle, goal_id="identity")
+        completion = core.complete_fused_locally(job)
+        forged_bundle = replace(
+            job.bundle,
+            evidence_seq=job.token.evidence_seq + 1,
+        )
+        forged = replace(
+            completion,
+            job=replace(job, bundle=forged_bundle),
+        )
+        gate_before = deepcopy(core.gate.snapshot())
+        actions_before = tuple(core.action_log.entries())
+        episodes_before = deepcopy(core.episodes)
+
+        events = core.reduce_fused_completion(
+            forged,
+            live_fused_generation=job.token.fused_generation,
+        )
+
+        self.assertEqual(events, [])
+        self.assertEqual(models.calls, [])
+        self.assertEqual(core.gate.snapshot(), gate_before)
+        self.assertEqual(tuple(core.action_log.entries()), actions_before)
+        self.assertEqual(core.episodes, episodes_before)
+        drops = [
+            data
+            for _trace_id, _at, stage, data in core.drain_fused_trace_records()
+            if stage == "judgment.dropped"
+        ]
+        self.assertEqual(
+            drops,
+            [
+                {
+                    "goal_id": "identity",
+                    "admission_id": job.token.admission_id,
+                    "evidence_seq": job.token.evidence_seq,
+                    "reason": "evidence_identity",
+                    "slot": "completed",
+                }
+            ],
+        )
+
+    def test_scheduler_submit_after_close_or_fatal_publishes_nothing(self):
+        async def drive():
+            core, _models = trusted_core()
+
+            async def succeed(*_args, **_kwargs):
+                return []
+
+            closed_stats = RuntimeStats()
+            closed = _JudgeScheduler(
+                core,
+                "camera",
+                closed_stats,
+                perceive=succeed,
+            )
+            await closed.close(drain=True)
+            closed_before = (
+                closed_stats.judge_calls,
+                closed_stats.perceive_dispatches,
+                closed_stats.judge_superseded,
+            )
+            closed.submit(1.0, object())
+
+            async def explode(*_args, **_kwargs):
+                raise RuntimeError("fatal judge")
+
+            fatal_stats = RuntimeStats()
+            fatal = _JudgeScheduler(
+                core,
+                "camera",
+                fatal_stats,
+                perceive=explode,
+            )
+            fatal.submit(1.0, object())
+            await fatal.flush()
+            with self.assertRaisesRegex(RuntimeError, "fatal judge"):
+                fatal.drain()
+            fatal_before = (
+                fatal_stats.judge_calls,
+                fatal_stats.perceive_dispatches,
+                fatal_stats.judge_superseded,
+            )
+            fatal.submit(2.0, object())
+            return closed, closed_stats, closed_before, fatal, fatal_stats, fatal_before
+
+        closed, closed_stats, closed_before, fatal, fatal_stats, fatal_before = (
+            asyncio.run(bounded(drive()))
+        )
+        self.assertEqual((closed.active, closed.pending), (0, 0))
+        self.assertEqual(len(closed._results), 0)
+        self.assertEqual(closed.drain_trace(), [])
+        self.assertEqual(
+            (
+                closed_stats.judge_calls,
+                closed_stats.perceive_dispatches,
+                closed_stats.judge_superseded,
+            ),
+            closed_before,
+        )
+        self.assertEqual((fatal.active, fatal.pending), (0, 0))
+        self.assertEqual(len(fatal._results), 0)
+        self.assertEqual(fatal.drain_trace(), [])
+        self.assertEqual(
+            (
+                fatal_stats.judge_calls,
+                fatal_stats.perceive_dispatches,
+                fatal_stats.judge_superseded,
+            ),
+            fatal_before,
+        )
+
     def test_projection_failure_publishes_no_ghost_admission(self):
         core, _models = trusted_core()
         apply(core, "projection", "projection", "fused")
@@ -1424,6 +1707,349 @@ class FusedPromotionBlockerTests(unittest.TestCase):
             getattr(core, "_fused_admission_counter", 0),
             counter_before,
         )
+
+
+class ExternalAcousticAdmissionOracleTests(unittest.TestCase):
+    @staticmethod
+    def _condition_calls(models, condition: str) -> int:
+        return sum(condition in str(call) for call in models.calls)
+
+    @staticmethod
+    def _audio_plan(
+        goal_id: str,
+        condition: str,
+        *,
+        schedule=None,
+        cadence_s: float | None = None,
+    ) -> WatchPlan:
+        explicit = (
+            {"Goal.state.cadence.min_judge_interval": cadence_s}
+            if cadence_s is not None
+            else {}
+        )
+        return WatchPlan(
+            id=goal_id,
+            condition=condition,
+            sense="audio",
+            schedule=schedule,
+            explicit=explicit,
+        )
+
+    def test_visual_motion_never_admits_or_spends_external_audio_watch(self):
+        async def drive():
+            core, models = trusted_core(
+                answers={
+                    "visual motion": Verdict(True, 0.99, "visual"),
+                    "audio only": Verdict(True, 0.99, "audio"),
+                }
+            )
+            apply(core, "visual", "visual motion", "video")
+            receipt = apply_watch_plan(
+                core,
+                self._audio_plan("audio", "audio only"),
+            )
+            self.assertEqual(receipt.status, "applied")
+            audio_processed = asyncio.Event()
+            quiet = (
+                audio_envelope(0, 0.0, 1.0, energy=0.0),
+                audio_envelope(1, 1.0, 2.0, energy=0.0),
+            )
+
+            async def audio_source():
+                for envelope in quiet:
+                    yield envelope
+                audio_processed.set()
+
+            async def video_source():
+                await audio_processed.wait()
+                yield video_envelope(0, 1.0)
+                yield video_envelope(1, 2.0, changed=True)
+
+            stats = RuntimeStats()
+            incidents = await collect(
+                core,
+                source=video_source(),
+                audio_source=audio_source(),
+                audio_gate="acoustic-onset",
+                audio_settle_s=0.0,
+                audio_wake={"high": 0.1, "low": 0.05},
+                timebase="media",
+                judge_dispatch="inline",
+                stats=stats,
+            )
+            return models, incidents, stats
+
+        models, incidents, stats = asyncio.run(bounded(drive()))
+        self.assertEqual(
+            [incident.concern_id for incident in incidents],
+            ["visual"],
+        )
+        self.assertEqual(self._condition_calls(models, "visual motion"), 1)
+        self.assertEqual(self._condition_calls(models, "audio only"), 0)
+        self.assertEqual(stats.admission_by_goal.get("visual"), 1)
+        self.assertIsNone(stats.admission_by_goal.get("audio"))
+        self.assertEqual((stats.judge_calls, stats.perceive_dispatches), (1, 1))
+
+    def test_acoustic_onset_admits_exact_audio_without_synthetic_video(self):
+        async def drive():
+            core, models = trusted_core(
+                answers={
+                    "visual only": Verdict(True, 0.99, "visual"),
+                    "heard onset": Verdict(True, 0.99, "audio"),
+                }
+            )
+            apply(core, "visual", "visual only", "video")
+            receipt = apply_watch_plan(
+                core,
+                self._audio_plan("audio", "heard onset"),
+            )
+            self.assertEqual(receipt.status, "applied")
+            quiet = audio_envelope(0, 0.0, 1.0, energy=0.0)
+            onset = audio_envelope(1, 1.0, 2.0, energy=1.0)
+            audio_processed = asyncio.Event()
+
+            async def audio_source():
+                yield quiet
+                yield onset
+                audio_processed.set()
+
+            async def video_source():
+                await audio_processed.wait()
+                yield video_envelope(0, 1.0)
+                yield video_envelope(1, 2.0)
+
+            stats = RuntimeStats()
+            incidents = await collect(
+                core,
+                source=video_source(),
+                audio_source=audio_source(),
+                audio_gate="acoustic-onset",
+                audio_settle_s=0.0,
+                audio_wake={"high": 0.1, "low": 0.05},
+                timebase="media",
+                judge_dispatch="inline",
+                stats=stats,
+            )
+            return models, incidents, stats, quiet, onset
+
+        models, incidents, stats, quiet, onset = asyncio.run(bounded(drive()))
+        self.assertEqual([incident.concern_id for incident in incidents], ["audio"])
+        self.assertEqual(self._condition_calls(models, "heard onset"), 1)
+        self.assertEqual(self._condition_calls(models, "visual only"), 0)
+        self.assertEqual((stats.judge_calls, stats.perceive_dispatches), (1, 1))
+        provider_blobs = provider_bytes(models.calls[0])
+        expected_pcm = quiet.payload.pcm + onset.payload.pcm
+        self.assertTrue(any(expected_pcm in blob for blob in provider_blobs))
+        self.assertTrue(
+            all(VIDEO_PAYLOAD[1] not in blob for blob in provider_blobs)
+        )
+        snippet = incidents[0].snippet
+        self.assertEqual(snippet.kind, "audio")
+        self.assertEqual(
+            [frame.source_sequence for frame in snippet.frames],
+            [0, 1],
+        )
+
+    def test_external_audio_schedule_and_cadence_are_per_watch(self):
+        async def drive():
+            conditions = ("fast audio", "slow audio", "closed audio")
+            core, models = trusted_core(
+                answers={
+                    condition: Verdict(False, 0.99, condition)
+                    for condition in conditions
+                }
+            )
+            receipt = apply_watch_plan(
+                core,
+                [
+                    self._audio_plan("fast", "fast audio"),
+                    self._audio_plan("slow", "slow audio", cadence_s=10.0),
+                    self._audio_plan(
+                        "closed",
+                        "closed audio",
+                        schedule={"days": [2]},
+                    ),
+                ],
+            )
+            self.assertEqual(receipt.status, "applied")
+            first_pair = asyncio.Event()
+            first_video = asyncio.Event()
+            second_pair = asyncio.Event()
+
+            async def audio_source():
+                yield audio_envelope(0, 0.0, 1.0, energy=0.0)
+                yield audio_envelope(1, 1.0, 2.0, energy=1.0)
+                first_pair.set()
+                await first_video.wait()
+                yield audio_envelope(2, 2.0, 3.0, energy=0.0)
+                yield audio_envelope(3, 3.0, 4.0, energy=1.0)
+                second_pair.set()
+
+            async def video_source():
+                await first_pair.wait()
+                yield video_envelope(0, 2.0)
+                first_video.set()
+                await second_pair.wait()
+                yield video_envelope(1, 4.0)
+
+            stats = RuntimeStats()
+            incidents = await collect(
+                core,
+                source=video_source(),
+                audio_source=audio_source(),
+                audio_gate="acoustic-onset",
+                audio_settle_s=0.0,
+                audio_wake={
+                    "high": 0.1,
+                    "low": 0.05,
+                    "refractory_s": 0.0,
+                },
+                timebase="media",
+                clock=lambda: CivilTime(weekday=1, minute_of_day=600),
+                judge_dispatch="inline",
+                stats=stats,
+            )
+            return models, incidents, stats
+
+        models, incidents, stats = asyncio.run(bounded(drive()))
+        self.assertEqual(incidents, [])
+        self.assertEqual(self._condition_calls(models, "fast audio"), 2)
+        self.assertEqual(self._condition_calls(models, "slow audio"), 1)
+        self.assertEqual(self._condition_calls(models, "closed audio"), 0)
+        self.assertEqual(stats.admission_by_goal.get("fast"), 2)
+        self.assertEqual(stats.admission_by_goal.get("slow"), 1)
+        self.assertIsNone(stats.admission_by_goal.get("closed"))
+        self.assertEqual((stats.judge_calls, stats.perceive_dispatches), (2, 2))
+
+    def test_fused_motion_and_audio_wake_share_cadence_without_double_spend(self):
+        async def drive():
+            core, models = trusted_core(
+                answers={"both lanes": Verdict(True, 0.99, "joined")}
+            )
+            receipt = apply_watch_plan(
+                core,
+                WatchPlan(
+                    id="fused",
+                    condition="both lanes",
+                    sense="fused",
+                    explicit={
+                        "Goal.state.cadence.min_judge_interval": 10.0,
+                    },
+                ),
+            )
+            self.assertEqual(receipt.status, "applied")
+            audio_processed = asyncio.Event()
+
+            async def audio_source():
+                yield audio_envelope(0, 0.0, 1.0, energy=0.0)
+                yield audio_envelope(1, 1.0, 2.0, energy=1.0)
+                audio_processed.set()
+
+            async def video_source():
+                await audio_processed.wait()
+                yield video_envelope(0, 1.0)
+                yield video_envelope(1, 2.0, changed=True)
+
+            stats = RuntimeStats()
+            health = []
+            incidents = await collect(
+                core,
+                source=video_source(),
+                audio_source=audio_source(),
+                audio_gate="acoustic-onset",
+                audio_settle_s=0.0,
+                audio_wake={"high": 0.1, "low": 0.05},
+                timebase="media",
+                judge_dispatch="inline",
+                stats=stats,
+                on_health=health.append,
+            )
+            return models, incidents, stats, health
+
+        models, incidents, stats, health = asyncio.run(bounded(drive()))
+        self.assertEqual([incident.concern_id for incident in incidents], ["fused"])
+        self.assertEqual(self._condition_calls(models, "both lanes"), 1)
+        self.assertEqual(stats.admission_by_goal, {"fused": 1})
+        self.assertEqual((stats.judge_calls, stats.perceive_dispatches), (1, 1))
+        escalations = [event for event in health if event.kind == "escalation"]
+        self.assertEqual(len(escalations), 1)
+        self.assertEqual(escalations[0].data["cause"], "both")
+
+    def test_dynamic_regate_preserves_survivor_and_removes_external_ids(self):
+        async def drive():
+            conditions = ("survivor audio", "removed audio", "new audio")
+            core, models = trusted_core(
+                answers={
+                    condition: Verdict(False, 0.99, condition)
+                    for condition in conditions
+                }
+            )
+            receipt = apply_watch_plan(
+                core,
+                [
+                    self._audio_plan(
+                        "survivor",
+                        "survivor audio",
+                        cadence_s=10.0,
+                    ),
+                    self._audio_plan("removed", "removed audio"),
+                ],
+            )
+            self.assertEqual(receipt.status, "applied")
+            first_pair = asyncio.Event()
+            first_video = asyncio.Event()
+            second_pair = asyncio.Event()
+
+            async def audio_source():
+                yield audio_envelope(0, 0.0, 1.0, energy=0.0)
+                yield audio_envelope(1, 1.0, 2.0, energy=1.0)
+                first_pair.set()
+                await first_video.wait()
+                yield audio_envelope(2, 2.0, 3.0, energy=0.0)
+                yield audio_envelope(3, 3.0, 4.0, energy=1.0)
+                second_pair.set()
+
+            async def video_source():
+                await first_pair.wait()
+                yield video_envelope(0, 2.0)
+                core.apply_goal_ops(
+                    [GoalOp(op="complete", goal_id="removed")]
+                )
+                added = apply_watch_plan(
+                    core,
+                    self._audio_plan("new", "new audio"),
+                )
+                self.assertEqual(added.status, "applied")
+                first_video.set()
+                await second_pair.wait()
+                yield video_envelope(1, 4.0)
+
+            stats = RuntimeStats()
+            incidents = await collect(
+                core,
+                source=video_source(),
+                audio_source=audio_source(),
+                audio_gate="acoustic-onset",
+                audio_settle_s=0.0,
+                audio_wake={
+                    "high": 0.1,
+                    "low": 0.05,
+                    "refractory_s": 0.0,
+                },
+                timebase="media",
+                judge_dispatch="inline",
+                stats=stats,
+            )
+            return models, incidents, stats
+
+        models, incidents, stats = asyncio.run(bounded(drive()))
+        self.assertEqual(incidents, [])
+        self.assertEqual(self._condition_calls(models, "survivor audio"), 1)
+        self.assertEqual(self._condition_calls(models, "removed audio"), 1)
+        self.assertEqual(self._condition_calls(models, "new audio"), 1)
+        self.assertEqual(stats.admission_by_goal.get("survivor"), 1)
+        self.assertEqual(stats.admission_by_goal.get("removed"), 1)
+        self.assertEqual(stats.admission_by_goal.get("new"), 1)
 
 
 class FusedRealWorkerContinuityTests(unittest.TestCase):
@@ -1482,6 +2108,9 @@ class FusedRealWorkerContinuityTests(unittest.TestCase):
         self.assertEqual(core.metrics.get("judge.latency.count"), 1)
 
     def test_audio_gap_purges_pre_gap_video_and_recovers_with_post_gap_pair(self):
+        # Cross-lane pacing deadlock regression: the audio lane waits until the pre-gap video was
+        # consumed, while the video lane then waits until the accepted gap carrier is committed.
+        # ``bounded`` below makes any cyclic wait a deterministic failure, not a hung test process.
         token = f"{VIDEO_PAYLOAD}|audio"
         core = Percept.create(
             vision=FakeVision(script={token: Verdict(True, 0.99, "joined")}),
@@ -1691,10 +2320,29 @@ class FusedPublicEvidenceIdentityTests(unittest.TestCase):
                     dispatch_and_reduce_fused(core, bundle, goal_id="fused")
                 )
                 self.assertFalse(any(event.action == "fire" for event in events))
-                if name != "silent":
+                if name == "ask":
                     self.assertTrue(any(event.action == "ask" for event in events))
                     ask = next(event for event in events if event.action == "ask")
                     self.assertIsNotNone(ask._fused_evidence_bundle)
+                elif name == "degraded":
+                    self.assertEqual(events, [])
+                    degraded = [
+                        row for row in traces if row.stage == "judge.degraded"
+                    ]
+                    classified = [
+                        row for row in traces if row.stage == "gate.classified"
+                    ]
+                    self.assertEqual(len(degraded), 1)
+                    self.assertEqual(len(classified), 1)
+                    self.assertEqual(classified[0].data["action"], "ask")
+                    self.assertTrue(classified[0].data["degraded"])
+                    self.assertEqual(
+                        [
+                            (kind, key)
+                            for kind, key, _cause in core._judge_health_log
+                        ],
+                        [("judge_degraded", ("fused", None))],
+                    )
                 identity_rows = [
                     row
                     for row in traces
