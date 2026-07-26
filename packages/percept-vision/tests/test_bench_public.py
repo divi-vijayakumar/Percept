@@ -101,14 +101,18 @@ class TestPublicBenchShim(unittest.TestCase):
             }],
             schema_version=TRACK_RESULT_SCHEMA_V2,
             contract={
-                "runtime_path": "compiled-runtime",
+                "runtime_path": (
+                    "WatchPlan -> ConfigResolver -> ResolvedWatch -> "
+                    "RuntimeCompiler -> worker -> JudgePool -> Incident"
+                ),
                 "qualification_scope": "owned",
-                "plan_hashes": ["plan"],
-                "component_snapshot_hashes": ["components"],
+                "plan_hashes": ["a" * 64],
+                "component_snapshot_hashes": ["b" * 64],
                 "evidence": "native clip",
                 "decision_output": "Incident",
                 "dense_baseline": {
                     "unit": "watch opportunities",
+                    "formula": "duration * fps * active Watches",
                     "capture_fps": 2.0,
                     "active_watches": 1,
                 },

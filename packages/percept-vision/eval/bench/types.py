@@ -270,6 +270,21 @@ class TrackResult:
                 reasons.append(
                     f"{self.track}: release contract missing {key}"
                 )
+        runtime_path = self.contract.get("runtime_path")
+        required_runtime_stages = (
+            "WatchPlan",
+            "ConfigResolver",
+            "ResolvedWatch",
+            "RuntimeCompiler",
+            "JudgePool",
+            "Incident",
+        )
+        if not isinstance(runtime_path, str) or not all(
+            stage in runtime_path for stage in required_runtime_stages
+        ):
+            reasons.append(
+                f"{self.track}: release contract omits canonical runtime stages"
+            )
         if self.contract.get("decision_output") != "Incident":
             reasons.append(
                 f"{self.track}: release contract decision_output must be Incident"
@@ -281,8 +296,11 @@ class TrackResult:
                 or not hashes
                 or any(
                     not isinstance(value, str)
-                    or not value
-                    or value == "None"
+                    or len(value) != 64
+                    or any(
+                        char not in "0123456789abcdef"
+                        for char in value.lower()
+                    )
                     for value in hashes
                 )
             ):
@@ -298,6 +316,12 @@ class TrackResult:
             if dense.get("unit") != "watch opportunities":
                 reasons.append(
                     f"{self.track}: dense baseline unit must be watch opportunities"
+                )
+            if not isinstance(dense.get("formula"), str) or not dense[
+                "formula"
+            ].strip():
+                reasons.append(
+                    f"{self.track}: dense baseline formula is missing"
                 )
             for key in ("capture_fps", "active_watches"):
                 value = dense.get(key)

@@ -1019,8 +1019,8 @@ class FixtureReplayCoverageTests(unittest.TestCase):
                 ),
                 "watch_receipt": {"status": "applied"},
                 "resolved_watch": {
-                    "plan_hash": "plan-hash",
-                    "component_snapshot_hash": "component-hash",
+                    "plan_hash": "a" * 64,
+                    "component_snapshot_hash": "b" * 64,
                 },
                 "capture_fps": 6.0,
                 "reconciliation": {
@@ -1114,6 +1114,7 @@ class FixtureReplayCoverageTests(unittest.TestCase):
             {"pass"},
         )
         self.assertEqual(result.invalid_reasons(), [])
+        self.assertEqual(result.release_contract_reasons(), [])
 
 
 class PinnedCaseTests(unittest.TestCase):
