@@ -1233,6 +1233,7 @@ _AUDIO_SKEW_TOL_S = 120.0  # audio queue worst-case ~64s + margin (a blocked pum
 # the AudioWindow stay filled slightly AHEAD of the current frame (matching `audio_settle_s`-style
 # onset-then-settle usage) without letting it race arbitrarily far ahead.
 _AUDIO_PACE_LOOKAHEAD_S = 0.5
+_RUNTIME_OWNER_QUEUE_MAX = 4_096
 
 
 async def _assert_timebase(
@@ -2741,6 +2742,7 @@ async def _run_worker(
     # is double-counted; when the caller passed none we keep a throwaway so the end-of-run coverage
     # payload is still honest (and so the async scheduler's judge_calls land somewhere countable).
     _cov = stats if stats is not None else RuntimeStats()
+    _owner_queue = _OwnerCommandQueue(maxsize=_RUNTIME_OWNER_QUEUE_MAX)
     _video_source_tracker = SourceTracker()
     _audio_source_tracker = SourceTracker()
     _video_source_id: str | None = None
@@ -3613,7 +3615,14 @@ async def _run_worker(
         _audio_paced = live_audio and audio_tb is not None and audio_tb.resolved == "media"
         _video_media_t: list = [0.0]
         _video_progress = asyncio.Event()
+        _audio_pace_settled = asyncio.Event()
+        _owner_ready = asyncio.Event()
         _video_exhausted = [False]
+        _audio_eos_seen = [False]
+        # Capture-side ordering is transport state only. The pump uses this
+        # mirror to validate/publish a canonical command stream while the
+        # cognition owner's tracker advances later during ordered drains.
+        _audio_capture_tracker = SourceTracker()
         if audio_source is not None:
             # Size the SHARED fused-judge AudioWindow (distinct from the per-utterance buffer below).
             # A voice-enabled session wants richer acoustic context than the small fused default; the
@@ -3687,6 +3696,334 @@ async def _run_worker(
                     _vad.reset()
                 _utt["start"] = None
                 _utt_buf.clear()
+
+            async def _apply_audio_boundary(command: dict[str, Any]) -> None:
+                """Commit one audio continuity boundary on the runtime owner."""
+                reasons = tuple(command["reasons"]) or (
+                    "audio_unit_discontinuity",
+                )
+                if _fused_syncs:
+                    _advance_fused_generation(
+                        _fused_reason(reasons),
+                        boundary=command["boundary"],
+                    )
+                _advance_source_continuity()
+                if _judge_sched is not None:
+                    _judge_sched.invalidate_source_continuity(reasons)
+                if _audio_judge_sched is not None:
+                    _audio_judge_sched.invalidate_source_continuity(reasons)
+                for scheduler in (_fused_judge_scheds or {}).values():
+                    scheduler.invalidate_source_continuity(reasons)
+                _reset_audio_temporal_state(clear_window=True)
+
+            async def _apply_audio_rejected(command: dict[str, Any]) -> None:
+                """Commit one capture-side rejection to owner coverage."""
+                inspection = _audio_source_tracker.inspect(
+                    command["envelope"],
+                    require_source_time=command["require_source_time"],
+                )
+                await _record_source_inspection(
+                    command["envelope"],
+                    inspection,
+                    ts=command["at"],
+                )
+
+            async def _apply_audio_media(command: dict[str, Any]) -> None:
+                """Commit one canonical audio carrier on the sole runtime owner."""
+                nonlocal _audio_source_id
+                envelope = command["envelope"]
+                unit = command["unit"]
+                unit_preview = command["unit_preview"]
+                at = command["at"]
+                chunk = command["chunk"]
+                energy = command["energy"]
+
+                if (
+                    _fused_syncs
+                    and _audio_source_id is not None
+                    and envelope.source_id != _audio_source_id
+                ):
+                    raise ValueError(
+                        "one fused runtime worker accepts exactly one audio source_id; "
+                        f"got {_audio_source_id!r} then {envelope.source_id!r}"
+                    )
+                inspection = _audio_source_tracker.inspect(
+                    envelope, require_source_time=command["require_source_time"]
+                )
+                if not inspection.accepted:
+                    await _record_source_inspection(envelope, inspection, ts=at)
+                    return
+                if _fused_syncs and _audio_source_id is None:
+                    _audio_source_id = envelope.source_id
+                continuity_reset = (
+                    inspection.resets_continuity
+                    or (
+                        compiled_audio_capability is not None
+                        and unit_preview.discontinuous
+                    )
+                )
+                if continuity_reset and not command["boundary_published"]:
+                    if _fused_syncs:
+                        _advance_fused_generation(
+                            _fused_reason(inspection.events),
+                            boundary=unit.t_start,
+                        )
+                    _advance_source_continuity()
+                    if _judge_sched is not None:
+                        reasons = inspection.events or (
+                            "audio_unit_discontinuity",
+                        )
+                        _judge_sched.invalidate_source_continuity(reasons)
+                    if _audio_judge_sched is not None:
+                        reasons = inspection.events or (
+                            "audio_unit_discontinuity",
+                        )
+                        _audio_judge_sched.invalidate_source_continuity(reasons)
+                    for scheduler in (_fused_judge_scheds or {}).values():
+                        reasons = inspection.events or (
+                            "audio_unit_discontinuity",
+                        )
+                        scheduler.invalidate_source_continuity(reasons)
+                    _reset_audio_temporal_state(clear_window=True)
+                discontinuity = (
+                    _fused_reason(inspection.events)
+                    if _fused_syncs and continuity_reset
+                    else _FusedDiscontinuity.NONE
+                    if _fused_syncs
+                    else None
+                )
+                accepted_fused_audio = []
+                for synchronizer in (_fused_syncs or {}).values():
+                    accepted_fused_audio.append(
+                        (
+                            synchronizer,
+                            _AcceptedMediaUnit(
+                                modality="audio",
+                                payload=unit,
+                                source_id=envelope.source_id,
+                                source_epoch=envelope.epoch,
+                                source_sequence=envelope.sequence,
+                                generation=synchronizer.generation,
+                                watch_application=synchronizer.watch_application,
+                                watch_revision=synchronizer.watch_revision,
+                                event_start=unit.t_start,
+                                event_end=unit.t_end,
+                                observed_start=envelope.observed_time,
+                                observed_end=envelope.observed_time,
+                                clock_domain=(
+                                    "source"
+                                    if audio_tb is not None
+                                    and audio_tb.resolved == "media"
+                                    else "observed"
+                                ),
+                                clock_authority=_audio_clock_authority,
+                                clock_confidence=_fused_clock_confidence,
+                                provenance={
+                                    "adapter": "runtime.audio",
+                                    "format": {
+                                        "media_type": envelope.format.media_type,
+                                        "sample_rate": envelope.format.sample_rate,
+                                        "channels": envelope.format.channels,
+                                        "sample_format": envelope.format.sample_format,
+                                    },
+                                    "direction": unit.direction,
+                                    "participant_id": unit.participant_id,
+                                    "source_time": envelope.source_time,
+                                    "observed_time": envelope.observed_time,
+                                },
+                                discontinuity=discontinuity,
+                            ),
+                        )
+                    )
+                try:
+                    ingest = core.push_audio(unit, source=gate_source)
+                except Exception as exc:  # noqa: BLE001
+                    if _fused_syncs:
+                        _advance_fused_generation(
+                            _FusedDiscontinuity.WORKER_ERROR
+                        )
+                    if on_health is not None:
+                        await _call_sink(
+                            on_health,
+                            RuntimeHealthEvent(
+                                "audio_unit_rejected",
+                                ts=at,
+                                data={
+                                    "source": gate_source,
+                                    "seq": getattr(unit, "seq", None),
+                                    "error": repr(exc),
+                                },
+                            ),
+                        )
+                    return
+                await _record_source_inspection(envelope, inspection, ts=at)
+                if (
+                    ingest is not None
+                    and getattr(ingest, "discontinuous", False)
+                    and on_health is not None
+                ):
+                    data = ingest.as_dict()
+                    data.update({"source": gate_source, "seq": unit.seq})
+                    await _call_sink(
+                        on_health,
+                        RuntimeHealthEvent(
+                            "audio_discontinuity", ts=at, data=data
+                        ),
+                    )
+                if ingest is not None and not getattr(
+                    ingest, "accepted", True
+                ):
+                    if _fused_syncs:
+                        _advance_fused_generation(
+                            _FusedDiscontinuity.WORKER_ERROR
+                        )
+                    return
+                fused_accept_failed = False
+                for synchronizer, accepted_audio in accepted_fused_audio:
+                    try:
+                        if not synchronizer.accept(accepted_audio):
+                            fused_accept_failed = True
+                    except Exception:
+                        fused_accept_failed = True
+                if fused_accept_failed:
+                    _advance_fused_generation(
+                        _FusedDiscontinuity.WORKER_ERROR
+                    )
+                    return
+                for goal_id, synchronizer in (_fused_syncs or {}).items():
+                    for ready_bundle in synchronizer.drain_ready():
+                        _queue_fused_bundle(goal_id, ready_bundle)
+                if stats is not None:
+                    stats.audio_chunks += 1
+
+                if ingest is not None and getattr(ingest, "reordered", False):
+                    return
+                if ingest is not None and (
+                    getattr(ingest, "missing", 0)
+                    or getattr(ingest, "gap_s", 0.0)
+                    or getattr(ingest, "format_changed", False)
+                ):
+                    _reset_audio_temporal_state()
+
+                if _prev_chunk_at[0] is not None:
+                    delta = at - _prev_chunk_at[0]
+                    if delta > 0:
+                        audio["chunk_dt"] = delta
+                _prev_chunk_at[0] = at
+                if energy is not None:
+                    audio["energy"] = float(energy)
+                    audio["energy_t"] = at
+                if onset is not None and energy is not None:
+                    for boundary in onset.push(at, float(energy)):
+                        if (
+                            getattr(boundary, "kind", None) == "onset"
+                            and audio["wake_at"] is None
+                        ):
+                            audio["wake_at"] = at + max(
+                                0.0, float(audio_settle_s)
+                            )
+                        if getattr(boundary, "kind", None) == "onset":
+                            core._audio_window(gate_source).annotate(
+                                unit.seq,
+                                AudioBoundary(
+                                    "onset", float(boundary.t)
+                                ),
+                            )
+
+                if _vad is None or energy is None:
+                    return
+                suppress = False
+                if stale_audio_s is not None or deaf_until is not None:
+                    wall_now = command["wall_now"]
+                    if stale_audio_s is not None:
+                        if _wall_anchor[0] is None:
+                            _wall_anchor[0] = (wall_now, at)
+                        wall_start, stream_start = _wall_anchor[0]
+                        lag = (wall_now - wall_start) - (at - stream_start)
+                        if lag > stale_audio_s:
+                            suppress = True
+                            if on_health is not None:
+                                await _call_sink(
+                                    on_health,
+                                    RuntimeHealthEvent(
+                                        "audio_stale",
+                                        ts=at,
+                                        data={"lag_s": lag},
+                                    ),
+                                )
+                    if deaf_until is not None and wall_now < deaf_until():
+                        suppress = True
+                if suppress:
+                    _vad.reset()
+                    _utt["start"] = None
+                    _utt_buf.clear()
+                    return
+
+                endpoint = _vad.push(float(energy))
+                if getattr(endpoint, "started", False):
+                    _utt["start"] = at
+                    _utt_buf.clear()
+                    core._audio_window(gate_source).annotate(
+                        unit.seq, AudioBoundary("vad_start", at)
+                    )
+                if _utt["start"] is not None:
+                    _utt_buf.append((at, chunk))
+                    cutoff = at - utterance_max_s
+                    while _utt_buf and _utt_buf[0][0] < cutoff:
+                        _utt_buf.pop(0)
+                if not getattr(endpoint, "endpoint", False):
+                    return
+                core._audio_window(gate_source).annotate(
+                    unit.seq, AudioBoundary("endpoint", at)
+                )
+                start_t = _utt["start"] if _utt["start"] is not None else at
+                _utt["start"] = None
+                buf = list(_utt_buf)
+                _utt_buf.clear()
+                first_t = buf[0][0] if buf else start_t
+                clip = _clip_from_chunks(
+                    [part for _, part in buf],
+                    t_start=first_t,
+                    t_end=at,
+                )
+                if clip is None:
+                    return
+                if stats is not None:
+                    stats.utterances += 1
+                covered = at - first_t
+                expected = at - start_t
+                if on_health is not None and covered < expected - 0.25:
+                    await _call_sink(
+                        on_health,
+                        RuntimeHealthEvent(
+                            "utterance_truncated",
+                            ts=at,
+                            data={
+                                "covered_s": covered,
+                                "expected_s": expected,
+                            },
+                        ),
+                    )
+                if on_health is not None:
+                    await _call_sink(
+                        on_health,
+                        RuntimeHealthEvent(
+                            "utterance", ts=at, data={"dur_s": expected}
+                        ),
+                    )
+                task = asyncio.ensure_future(
+                    _call_sink_with_policy(
+                        on_utterance,
+                        clip,
+                        at,
+                        errors=sink_errors,
+                        stats=stats,
+                        on_health=on_health,
+                        health_kind="utterance_sink_error",
+                    )
+                )
+                _utt_tasks.add(task)
+                task.add_done_callback(_utt_done)
 
             async def _pump_audio():
                 # Pump every chunk into the AudioWindow (un-strands modality="fused"/"audio") and track
@@ -3953,7 +4290,7 @@ async def _run_worker(
                         )
                         continue
                     else:
-                        source_preview = _audio_source_tracker.preview(
+                        source_preview = _audio_capture_tracker.preview(
                             envelope, require_source_time=require_source_time
                         )
                     at = (
@@ -3974,10 +4311,19 @@ async def _run_worker(
                     ):
                         at = None
                     if not source_preview.accepted:
-                        inspection = _audio_source_tracker.inspect(
+                        inspection = _audio_capture_tracker.inspect(
                             envelope, require_source_time=require_source_time
                         )
-                        await _record_source_inspection(envelope, inspection, ts=at)
+                        _owner_queue.publish(
+                            "AudioRejected",
+                            {
+                                "envelope": envelope,
+                                "require_source_time": require_source_time,
+                                "at": at,
+                                "capture_inspection": inspection,
+                            },
+                        )
+                        _owner_ready.set()
                         continue
                     if at is None:
                         await _reject_unit(
@@ -4043,6 +4389,8 @@ async def _run_worker(
                         and not _video_exhausted[0]
                         and at > _video_media_t[0] + _AUDIO_PACE_LOOKAHEAD_S
                     ):
+                        _audio_pace_settled.set()
+                        _owner_ready.set()
                         _video_progress.clear()
                         await _video_progress.wait()
                     # A LIVE mic stamps chunks on the wall clock; a divergence past the AUDIO tolerance
@@ -4057,270 +4405,86 @@ async def _run_worker(
                     # signals freeze, without ending the session. Default (muted=None) is byte-for-byte.
                     if muted is not None and muted():
                         continue
-                    # The last pre-commit await is above. Commit carrier ordering and the exact
-                    # retained AudioUnit adjacently; cancellation/mute cannot leave one side ahead.
-                    if (
-                        _fused_syncs
-                        and _audio_source_id is not None
-                        and envelope.source_id != _audio_source_id
-                    ):
-                        raise ValueError(
-                            "one fused runtime worker accepts exactly one audio source_id; "
-                            f"got {_audio_source_id!r} then {envelope.source_id!r}"
-                        )
-                    inspection = _audio_source_tracker.inspect(
-                        envelope, require_source_time=require_source_time
-                    )
-                    if not inspection.accepted:
-                        await _record_source_inspection(envelope, inspection, ts=at)
-                        continue
-                    if _fused_syncs and _audio_source_id is None:
-                        _audio_source_id = envelope.source_id
-                    continuity_reset = (
-                        inspection.resets_continuity
+                    boundary_published = (
+                        source_preview.resets_continuity
                         or (
                             compiled_audio_capability is not None
                             and unit_preview.discontinuous
                         )
                     )
-                    if continuity_reset:
-                        if _fused_syncs:
-                            _advance_fused_generation(
-                                _fused_reason(inspection.events),
-                                boundary=unit.t_start,
-                            )
-                        _advance_source_continuity()
-                        if _judge_sched is not None:
-                            reasons = inspection.events or (
-                                "audio_unit_discontinuity",
-                            )
-                            _judge_sched.invalidate_source_continuity(reasons)
-                        if _audio_judge_sched is not None:
-                            reasons = inspection.events or (
-                                "audio_unit_discontinuity",
-                            )
-                            _audio_judge_sched.invalidate_source_continuity(reasons)
-                        for scheduler in (_fused_judge_scheds or {}).values():
-                            reasons = inspection.events or (
-                                "audio_unit_discontinuity",
-                            )
-                            scheduler.invalidate_source_continuity(reasons)
-                        _reset_audio_temporal_state(clear_window=True)
-                    discontinuity = (
-                        _fused_reason(inspection.events)
-                        if _fused_syncs and continuity_reset
-                        else _FusedDiscontinuity.NONE
-                        if _fused_syncs
-                        else None
-                    )
-                    accepted_fused_audio = []
-                    for synchronizer in (_fused_syncs or {}).values():
-                        accepted_fused_audio.append((synchronizer, _AcceptedMediaUnit(
-                            modality="audio",
-                            payload=unit,
-                            source_id=envelope.source_id,
-                            source_epoch=envelope.epoch,
-                            source_sequence=envelope.sequence,
-                            generation=synchronizer.generation,
-                            watch_application=synchronizer.watch_application,
-                            watch_revision=synchronizer.watch_revision,
-                            event_start=unit.t_start,
-                            event_end=unit.t_end,
-                            observed_start=envelope.observed_time,
-                            observed_end=envelope.observed_time,
-                            clock_domain=(
-                                "source"
-                                if audio_tb is not None and audio_tb.resolved == "media"
-                                else "observed"
-                            ),
-                            clock_authority=_audio_clock_authority,
-                            clock_confidence=_fused_clock_confidence,
-                            provenance={
-                                "adapter": "runtime.audio",
-                                "format": {
-                                    "media_type": envelope.format.media_type,
-                                    "sample_rate": envelope.format.sample_rate,
-                                    "channels": envelope.format.channels,
-                                    "sample_format": envelope.format.sample_format,
-                                },
-                                "direction": unit.direction,
-                                "participant_id": unit.participant_id,
-                                "source_time": envelope.source_time,
-                                "observed_time": envelope.observed_time,
+                    if boundary_published:
+                        _owner_queue.publish(
+                            "AudioBoundary",
+                            {
+                                "reasons": source_preview.events,
+                                "boundary": unit.t_start,
                             },
-                            discontinuity=discontinuity,
-                        )))
-                    try:
-                        ingest = core.push_audio(unit, source=gate_source)
-                    except Exception as exc:  # noqa: BLE001 - reject one malformed unit, keep capture alive
-                        if _fused_syncs:
-                            _advance_fused_generation(_FusedDiscontinuity.WORKER_ERROR)
-                        if on_health is not None:
-                            await _call_sink(
-                                on_health,
-                                RuntimeHealthEvent(
-                                    "audio_unit_rejected",
-                                    ts=at,
-                                    data={
-                                        "source": gate_source,
-                                        "seq": getattr(unit, "seq", None),
-                                        "error": repr(exc),
-                                    },
-                                ),
-                            )
-                        continue
+                        )
+                    _owner_queue.publish(
+                        "AudioAccepted",
+                        {
+                            "envelope": envelope,
+                            "unit": unit,
+                            "unit_preview": unit_preview,
+                            "at": at,
+                            "chunk": chunk,
+                            "energy": energy,
+                            "require_source_time": require_source_time,
+                            "boundary_published": boundary_published,
+                            "wall_now": (
+                                wall_clock()
+                                if _vad is not None
+                                and energy is not None
+                                and (
+                                    stale_audio_s is not None
+                                    or deaf_until is not None
+                                )
+                                else None
+                            ),
+                        },
+                    )
+                    committed_preview = _audio_capture_tracker.inspect(
+                        envelope, require_source_time=require_source_time
+                    )
+                    if not committed_preview.accepted:
+                        raise RuntimeError(
+                            "audio capture ordering changed between preview and publish"
+                        )
                     if submitted_unit is not None or ingress.legacy_item is not None:
                         synthetic_carrier_sequence += 1
-                    await _record_source_inspection(envelope, inspection, ts=at)
-                    if (
-                        ingest is not None
-                        and getattr(ingest, "discontinuous", False)
-                        and on_health is not None
-                    ):
-                        data = ingest.as_dict()
-                        data.update({"source": gate_source, "seq": unit.seq})
-                        await _call_sink(
-                            on_health, RuntimeHealthEvent("audio_discontinuity", ts=at, data=data)
-                        )
-                    if ingest is not None and not getattr(ingest, "accepted", True):
-                        if _fused_syncs:
-                            _advance_fused_generation(_FusedDiscontinuity.WORKER_ERROR)
-                        continue
-                    fused_accept_failed = False
-                    for synchronizer, accepted_audio in accepted_fused_audio:
-                        try:
-                            if not synchronizer.accept(accepted_audio):
-                                fused_accept_failed = True
-                        except Exception:
-                            fused_accept_failed = True
-                    if fused_accept_failed:
-                        # No await exposed the temporary partial state.  Invalidate
-                        # every Watch generation together before any bundle can drain.
-                        _advance_fused_generation(_FusedDiscontinuity.WORKER_ERROR)
-                        continue
-                    for goal_id, synchronizer in (_fused_syncs or {}).items():
-                        for ready_bundle in synchronizer.drain_ready():
-                            _queue_fused_bundle(goal_id, ready_bundle)
-                    if stats is not None:
-                        stats.audio_chunks += 1
-
-                    # A historical insertion repairs the ordered evidence window but must never be
-                    # replayed through LIVE gate/VAD state after newer audio was already processed.
-                    if ingest is not None and getattr(ingest, "reordered", False):
-                        continue
-                    if ingest is not None and (
-                        getattr(ingest, "missing", 0)
-                        or getattr(ingest, "gap_s", 0.0)
-                        or getattr(ingest, "format_changed", False)
-                    ):
-                        _reset_audio_temporal_state()
-
-                    # Track the cadence + the time of the last REAL reading (a None-energy chunk is not
-                    # a fresh reading). The frame loop reads energy only while fresh (dead mic → video-only).
-                    if _prev_chunk_at[0] is not None:
-                        _d = at - _prev_chunk_at[0]
-                        if _d > 0:
-                            audio["chunk_dt"] = _d
-                    _prev_chunk_at[0] = at
-                    if energy is not None:
-                        audio["energy"] = float(energy)
-                        audio["energy_t"] = at
-                    if onset is not None and energy is not None:
-                        for b in onset.push(at, float(energy)):
-                            if getattr(b, "kind", None) == "onset" and audio["wake_at"] is None:
-                                # settle: judge AFTER the sound has filled the window, not at its first instant
-                                audio["wake_at"] = at + max(0.0, float(audio_settle_s))
-                            if getattr(b, "kind", None) == "onset":
-                                audio_window_for = getattr(core, "_audio_window", None)
-                                if callable(audio_window_for):
-                                    audio_window_for(gate_source).annotate(
-                                        unit.seq, AudioBoundary("onset", float(b.t))
-                                    )
-
-                    # Voice escalation: endpoint a complete utterance and hand its clip to on_utterance.
-                    # Runs AFTER push_audio so the just-heard chunk is already in the window we clip from.
-                    if _vad is not None and energy is not None:
-                        # Suppress the endpointer while the app is about to speak (deafen) or while
-                        # the pump is replaying a stale capture backlog (staleness). The chunk still filled
-                        # the AudioWindow above — this is turn-taking, not perception. Reset the VAD when
-                        # suppressed so a half-built utterance cannot straddle (survive) the window.
-                        suppress = False
-                        if stale_audio_s is not None or deaf_until is not None:
-                            wnow = wall_clock()
-                            if stale_audio_s is not None:
-                                if _wall_anchor[0] is None:
-                                    _wall_anchor[0] = (wnow, at)
-                                w0, s0 = _wall_anchor[0]
-                                if (wnow - w0) - (at - s0) > stale_audio_s:  # pump lag vs real time
-                                    suppress = True
-                                    if on_health is not None:
-                                        await _call_sink(on_health, RuntimeHealthEvent(
-                                            "audio_stale", ts=at, data={"lag_s": (wnow - w0) - (at - s0)}))
-                            if deaf_until is not None and wnow < deaf_until():
-                                suppress = True
-                        if suppress:
-                            _vad.reset()
-                            _utt["start"] = None
-                            _utt_buf.clear()  # a suppressed span must not straddle into the next turn
-                        else:
-                            ev = _vad.push(float(energy))
-                            if getattr(ev, "started", False):
-                                _utt["start"] = at
-                                _utt_buf.clear()  # a fresh turn — drop any pre-start residue
-                                audio_window_for = getattr(core, "_audio_window", None)
-                                if callable(audio_window_for):
-                                    audio_window_for(gate_source).annotate(
-                                        unit.seq, AudioBoundary("vad_start", at)
-                                    )
-                            # Accumulate the turn into our OWN buffer (started→endpoint), bounded by
-                            # utterance_max_s so a stuck-open mic can't grow it without limit.
-                            if _utt["start"] is not None:
-                                _utt_buf.append((at, chunk))
-                                _cutoff = at - utterance_max_s
-                                while _utt_buf and _utt_buf[0][0] < _cutoff:
-                                    _utt_buf.pop(0)
-                            if getattr(ev, "endpoint", False):
-                                audio_window_for = getattr(core, "_audio_window", None)
-                                if callable(audio_window_for):
-                                    audio_window_for(gate_source).annotate(
-                                        unit.seq, AudioBoundary("endpoint", at)
-                                    )
-                                start_t = _utt["start"] if _utt["start"] is not None else at
-                                _utt["start"] = None
-                                buf = list(_utt_buf)
-                                _utt_buf.clear()
-                                first_t = buf[0][0] if buf else start_t
-                                # Hand the WHOLE turn from the own buffer (never a window slice).
-                                clip = _clip_from_chunks(
-                                    [c for _, c in buf], t_start=first_t, t_end=at)
-                                if clip is not None:
-                                    if stats is not None:
-                                        stats.utterances += 1
-                                    # Truncation tripwire: if the handed clip covers less than the turn's
-                                    # known duration (buffer capped, or leading chunks lost), shout — a
-                                    # truncated utterance must NEVER be handed off silently.
-                                    _covered = at - first_t
-                                    _expected = at - start_t
-                                    if on_health is not None and _covered < _expected - 0.25:
-                                        await _call_sink(on_health, RuntimeHealthEvent(
-                                            "utterance_truncated", ts=at,
-                                            data={"covered_s": _covered, "expected_s": _expected}))
-                                    if on_health is not None:
-                                        await _call_sink(on_health, RuntimeHealthEvent(
-                                            "utterance", ts=at, data={"dur_s": _expected}))
-                                    # Hand off OFF the pump — a real handler (STT + voice turn + playback)
-                                    # blocking here guarantees a capture backlog replayed as self-echo the
-                                    # instant it returns. The app owns concurrency (overlaps are possible;
-                                    # the runtime does not serialize). Errors still route through the policy.
-                                    task = asyncio.ensure_future(_call_sink_with_policy(
-                                        on_utterance, clip, at, errors=sink_errors, stats=stats,
-                                        on_health=on_health, health_kind="utterance_sink_error",
-                                    ))
-                                    _utt_tasks.add(task)
-                                    task.add_done_callback(_utt_done)
+                    _owner_ready.set()
+                    continue
+                _owner_queue.publish("AudioEOS", {"source": gate_source})
+                _audio_pace_settled.set()
+                _owner_ready.set()
 
             audio_task = asyncio.ensure_future(_pump_audio())
             audio_task.add_done_callback(_task_watchdog("audio_pump_died"))
+            audio_task.add_done_callback(
+                lambda _done: (
+                    _owner_ready.set(),
+                    _audio_pace_settled.set(),
+                )
+            )
+
+        async def _drain_owner_commands() -> None:
+            """Apply every published command on the sole runtime owner."""
+            for command in _owner_queue.drain():
+                if command.kind == "AudioBoundary":
+                    await _apply_audio_boundary(command.payload)
+                    continue
+                if command.kind == "AudioAccepted":
+                    await _apply_audio_media(command.payload)
+                    continue
+                if command.kind == "AudioRejected":
+                    await _apply_audio_rejected(command.payload)
+                    continue
+                if command.kind == "AudioEOS":
+                    _audio_eos_seen[0] = True
+                    continue
+                raise RuntimeError(
+                    f"unknown runtime owner command {command.kind!r}"
+                )
 
         async def _emit_fires(fires, *, at, from_boundary=False):
             """Turn a list of FireEvents (from perceive_judged OR the boundary) into incidents/asks."""
@@ -4506,9 +4670,57 @@ async def _run_worker(
                 for trace_id, trace_t, stage, data in drain_rows():
                     await emit_trace(trace_id, trace_t, stage, **data)
 
+        async def _owner_driven_video():
+            """Yield video while servicing owner commands during source stalls."""
+            iterator = _aiter(
+                source, capture_fps, **source_kwargs
+            ).__aiter__()
+            next_envelope = asyncio.create_task(anext(iterator))
+            owner_wakeup = None
+            try:
+                while True:
+                    owner_wakeup = asyncio.create_task(_owner_ready.wait())
+                    done, _pending = await asyncio.wait(
+                        (next_envelope, owner_wakeup),
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if owner_wakeup in done:
+                        _owner_ready.clear()
+                        await _drain_owner_commands()
+                        # Newly materialized utterance handlers run off-owner;
+                        # give them their first turn while capture continues.
+                        await asyncio.sleep(0)
+                    else:
+                        owner_wakeup.cancel()
+                        await asyncio.gather(
+                            owner_wakeup, return_exceptions=True
+                        )
+                    if next_envelope not in done:
+                        continue
+                    try:
+                        envelope = next_envelope.result()
+                    except StopAsyncIteration:
+                        return
+                    next_envelope = asyncio.create_task(anext(iterator))
+                    yield envelope
+            finally:
+                if owner_wakeup is not None and not owner_wakeup.done():
+                    owner_wakeup.cancel()
+                if not next_envelope.done():
+                    next_envelope.cancel()
+                await asyncio.gather(
+                    *(
+                        task
+                        for task in (owner_wakeup, next_envelope)
+                        if task is not None
+                    ),
+                    return_exceptions=True,
+                )
+
         _was_paused = False
         _fused_was_paused = False
-        async for envelope in _aiter(source, capture_fps, **source_kwargs):
+        async for envelope in _owner_driven_video():
+            await _drain_owner_commands()
             # A source iterator, voice command, or other task can author a Watch between
             # frames.  Re-run the topology firewall before this envelope reaches the
             # SourceTracker, any provider lane, or any runtime callback.  The later
@@ -4733,7 +4945,25 @@ async def _run_worker(
                     t if (video_tb.resolved if live_video else "media") == "media"
                     else ((t - _clock_t0[0]) if _clock_t0[0] is not None else 0.0)
                 )
-                _video_progress.set()
+                if audio_task is not None and not audio_task.done():
+                    _audio_pace_settled.clear()
+                    _owner_ready.clear()
+                    _video_progress.set()
+                    # Wait until the capture-only publisher reaches the next
+                    # beyond-lookahead carrier (or EOS), then commit the
+                    # complete ready prefix before this video coordinate can
+                    # judge it.
+                    while not _audio_pace_settled.is_set():
+                        await _owner_ready.wait()
+                        _owner_ready.clear()
+                        await _drain_owner_commands()
+                        if audio_task.done():
+                            break
+                else:
+                    _video_progress.set()
+                await _drain_owner_commands()
+                if audio_task is not None and audio_task.done():
+                    audio_task.result()
             if _clock_t0[0] is None:
                 _clock_t0[0] = t
             # On a WALL-timebase source, frame `t` IS the wall clock — if it has drifted from the core
@@ -5296,6 +5526,17 @@ async def _run_worker(
             _video_progress.set()
             if audio_task is not None:
                 await audio_task
+        elif audio_task is not None and not live_audio:
+            # A deterministic finite audio iterable is part of the same finite
+            # replay. Join its capture-only publisher before the final owner
+            # drain; a live mic remains cancellation-owned in ``finally``.
+            try:
+                await audio_task
+            except Exception:
+                # The watchdog already surfaced capture/publisher failure.
+                pass
+        await _drain_owner_commands()
+        await asyncio.sleep(0)
         for goal_id, synchronizer in (_fused_syncs or {}).items():
             for final_bundle in synchronizer.close():
                 _queue_fused_bundle(goal_id, final_bundle)
