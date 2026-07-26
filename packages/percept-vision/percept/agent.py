@@ -157,6 +157,21 @@ class _ProviderRequest:
     include_exemplar: bool = True
 
 
+class _TemporalStrip(list):
+    """Selected temporal frames with exact source-coordinate provenance."""
+
+    def __init__(
+        self,
+        frames: list[Any],
+        *,
+        source_start_t: float,
+        source_end_t: float,
+    ) -> None:
+        super().__init__(frames)
+        self.source_start_t = source_start_t
+        self.source_end_t = source_end_t
+
+
 @dataclass(frozen=True)
 class _TransitionProviderRequest:
     """Two immutable provider calls that form one transition judgment."""
@@ -2576,6 +2591,7 @@ class Percept:
         reduction: "_ObservationReduction",
         *,
         goal_id: str,
+        temporal_window: "tuple[tuple[float, Any], ...] | None" = None,
     ) -> "_JudgmentJob | None":
         """Owner-only admission for one ordinary FRAME_WATCH provider call.
 
@@ -2624,6 +2640,18 @@ class Percept:
             candidate.token.source_id,
             perception_level=ctx.perception_level,
         )
+        if temporal_window is not None:
+            if (
+                not temporal_window
+                or float(temporal_window[-1][0]) != candidate.source_t
+            ):
+                raise ValueError(
+                    "temporal evidence window must end at the admitted source frame"
+                )
+            strip = self._strip_frames_from_entries(
+                list(temporal_window),
+                spec,
+            )
         focus = reduction.focus
         roi = self._resolve_roi(goal, focus, spec)
         corrections = focus.asserted() if focus else {}
@@ -2679,6 +2707,9 @@ class Percept:
             context["claim_mode"] = True
         if goal.state.get("rearm") == "each_event":
             context["event_chain"] = True
+            context.update(
+                self._temporal_evidence_context(strip)
+            )
         base_key = (
             goal.id,
             watch_reducer_entity_id(goal, focus.id if focus else None),
@@ -3049,6 +3080,7 @@ class Percept:
         reduction: "_ObservationReduction",
         *,
         goal_id: str,
+        temporal_window: "tuple[tuple[float, Any], ...] | None" = None,
     ) -> "_JudgmentJob | None":
         """One owner preparation facade for every frame-governed Watch route."""
         goal = self.goals.get(goal_id)
@@ -3060,7 +3092,11 @@ class Percept:
         if route is BehaviorRoute.FRAME_PROCESS:
             return self.prepare_process_judgment(reduction, goal_id=goal_id)
         if route is BehaviorRoute.FRAME_WATCH:
-            return self.prepare_frame_judgment(reduction, goal_id=goal_id)
+            return self.prepare_frame_judgment(
+                reduction,
+                goal_id=goal_id,
+                temporal_window=temporal_window,
+            )
         return None
 
     @staticmethod
@@ -4069,6 +4105,9 @@ class Percept:
             # that metadata to own one session-local episode per distinct occurrence.
             if goal.state.get("rearm") == "each_event":
                 judge_context = {**(judge_context or {}), "event_chain": True}
+                judge_context.update(
+                    self._temporal_evidence_context(strip)
+                )
             # Computed BEFORE the judge call (not just on success) so cache, degradation, sequencing,
             # gate, evidence and trace all use ONE effective reducer entity. Only a concern-declared
             # identity_policy="scene" opts out of volatile focus identity; undeclared/profile-only
@@ -5402,16 +5441,33 @@ class Percept:
         superseded candidate BEFORE it ever reaches this method, so a frame that lost the latest-wins
         race contributes nothing to any window, and the window a launched judgment sees is always
         anchored on its own admitted frame — never on a newer one that arrived mid-flight."""
+        return self._strip_frames_from_entries(
+            self._window(source).frames(),
+            spec,
+        )
+
+    @staticmethod
+    def _strip_frames_from_entries(
+        window: list[tuple[float, Any]],
+        spec: Any,
+    ) -> list | None:
+        """Select an exact temporal strip from a retained source window.
+
+        The manual SDK path supplies the core's cognition window. The runtime
+        supplies its independently bounded capture ring so VID admission does
+        not erase pre-action context merely because earlier frames were not
+        themselves judged.
+        """
         spec = replace(spec, temporal=_normalize_plan_mode(spec.temporal))  # shim: sprite -> window
         if spec.temporal == "single":
             return None
-        earlier = self._window(source).frames()[:-1]  # drop the current frame (passed as `frame`)
+        earlier = window[:-1]  # drop the current frame (passed as `frame`)
         if not earlier:
             return None
         # A clip window (window_s) bounds the strip by TIME — keep only the earlier frames within
         # window_s seconds of the current frame, so "a 4s clip" means the last 4s, not a frame count.
         if getattr(spec, "window_s", None):
-            now_t = self._window(source).frames()[-1][0]  # current frame's timestamp
+            now_t = window[-1][0]  # current frame's timestamp
             cutoff = now_t - spec.window_s
             earlier = [(t, f) for t, f in earlier if t >= cutoff]
             if not earlier:
@@ -5429,7 +5485,35 @@ class Percept:
             picked = earlier[-want:]
         # Ordered, oldest→newest. The sprite montage that used to collapse these into ONE image is gone
         # from the plan path: the judge sees the real ordered frames.
-        return [f for _, f in picked]
+        strip = [f for _, f in picked]
+        # Keep source coordinates attached to this exact selection. Recovering
+        # them later by frame identity is incorrect when capture reuses a
+        # bytes/object instance at multiple timestamps.
+        return _TemporalStrip(
+            strip,
+            source_start_t=float(picked[0][0]),
+            source_end_t=float(window[-1][0]),
+        )
+
+    def _temporal_evidence_context(
+        self,
+        strip: list | None,
+    ) -> dict[str, Any]:
+        """Describe the actual retained temporal span without exposing timestamps."""
+        if not strip:
+            return {}
+        start_t = getattr(strip, "source_start_t", None)
+        end_t = getattr(strip, "source_end_t", None)
+        if not isinstance(start_t, (int, float)) or not isinstance(
+            end_t,
+            (int, float),
+        ):
+            return {}
+        span_s = max(0.0, float(end_t) - float(start_t))
+        return {
+            "_percept_temporal_frame_count": len(strip) + 1,
+            "_percept_temporal_span_s": span_s,
+        }
 
     async def _timed_judge(self, *args: Any, **kwargs: Any) -> Verdict:
         """Call the vision judge, timing wall-clock latency and capturing token/cost off the verdict.

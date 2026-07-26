@@ -5079,6 +5079,7 @@ async def _run_worker(
                     job := core.prepare_judgment(
                         reduction,
                         goal_id=goal_id,
+                        temporal_window=tuple(clips.frames()),
                     )
                 )
                 is not None
