@@ -13,7 +13,7 @@ export const PRIVACY_CATEGORIES = new Set([
   "financial", //    bank account / routing
   "credential", //   API key, token, password
   "sexual", //       nudity / exposed
-  "document-id", //  ID card, passport, document in view
+  "document-id", //  identity document, passport, document in view
 ]);
 
 /** The egress actions, least → most restrictive. Order is load-bearing for escalation (never de-escalate). */

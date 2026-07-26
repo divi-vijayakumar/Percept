@@ -1,6 +1,6 @@
 """DomainPack contract + facility-observation@1 (percept/domain_pack.py, percept/packs_default.py).
 
-Covers, per the card's own exit criteria: install -> inspect (catalog/CLI) -> compose with
+Covers the public exit criteria: install -> inspect (catalog/CLI) -> compose with
 source+execution -> watch_template arm -> resolve end-to-end, with ZERO edits to the core runtime
 modules (percept.behavior/percept.gate/percept.agent/percept.runtime_compiler/
 percept.watchplan_apply) — this pack composes with them through their EXISTING public API only.
@@ -432,7 +432,7 @@ class TestFacilityObservationPack(unittest.TestCase):
         self.assertIn("does not identify", FACILITY_OBSERVATION_V1.template("zone_occupied").notes)
 
     def test_all_components_are_preferred_not_required(self) -> None:
-        """'recommended (not required) components' — the card's own posture; no security@1."""
+        """Recommended components remain optional; no ``security@1`` is implied."""
         self.assertTrue(FACILITY_OBSERVATION_V1.components)
         for rec in FACILITY_OBSERVATION_V1.components:
             self.assertEqual(rec.strength, "preferred")

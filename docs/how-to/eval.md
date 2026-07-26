@@ -268,7 +268,7 @@ percept-bench scorecard --mode full --require-release \
     --out scorecard.txt
 ```
 
-`--require-release` writes the card, then exits non-zero unless the rendered stamp is `RELEASE`
+`--require-release` writes the benchmark card, then exits non-zero unless the rendered stamp is `RELEASE`
 (`mode=full`, pinned manifest, and no modeled cells).
 
 ---

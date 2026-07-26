@@ -85,7 +85,7 @@ The transform targets templates the shipped `facility_observation@1` pack **alre
 runs with no registry change. `pack_ext.py` additionally ships an **optional**, self-contained
 `facility_observation_meva@1` pack whose templates are named with MEVA's own activity vocabulary. It
 is deliberately **not** auto-registered (this dev module must not mutate the shared registry that
-sibling pack cards also touch). To make it resolvable, apply the one-liner:
+sibling pack modules also touch). To make it resolvable, apply the one-liner:
 
 ```python
 from eval.datasets.meva.pack_ext import register

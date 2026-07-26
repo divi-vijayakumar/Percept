@@ -260,7 +260,7 @@ wildcard fallback chain (`(env, goal, "*")` -> `(env, "*", "*")` -> `("*", "*", 
 
 1. **Automatic runtime resolution.** Should `run()` / `watch()` resolve a `SourceProfile` and apply its
    coast, evidence and identity strategies automatically, or should that stay explicit client wiring?
-   Deferred: it touches frozen surfaces and deserves its own card.
+   Deferred: it touches frozen surfaces and requires its own compatibility decision.
 2. **Should `admission_strategy` become a registry of callables** rather than a name plus a separately
    registered detector? Today the strategy is a *name* and the implementation is a registered detector;
    collapsing them is tempting but would couple the profile to the detector lifecycle.

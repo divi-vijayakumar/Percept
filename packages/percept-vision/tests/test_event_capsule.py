@@ -246,7 +246,7 @@ class TestEventCapsuleTrace(unittest.TestCase):
 
 
 # --------------------------------------------------------------------------------------------------
-# 3. Old Temporal values -- byte-for-byte unchanged (additive-only card).
+# 3. Old Temporal values -- byte-for-byte unchanged (additive-only change).
 # --------------------------------------------------------------------------------------------------
 
 

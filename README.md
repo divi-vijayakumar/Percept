@@ -195,8 +195,8 @@ Every command has a full flag reference in [`docs/reference/cli.md`](docs/refere
   never the thing standing between a person and harm on a clock it can't guarantee. *Out:*
   driver-drowsiness intervention. *In:* a post-hoc driving debrief.
 - **Watches the user's own world, with the user as beneficiary** — never a non-consenting third party to
-  the wearer's advantage. *Out:* covert analysis of someone you're negotiating with; card-counting
-  against a live casino. *In:* a play-money practice trainer.
+  the wearer's advantage. *Out:* covert analysis of someone you're negotiating with; real-time
+  assistance during live casino play. *In:* a play-money practice trainer.
 
 These refusals are a feature. **Do not lead with surveillance demos.**
 

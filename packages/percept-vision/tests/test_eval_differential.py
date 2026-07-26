@@ -1,6 +1,6 @@
 """— `percept eval`, the paired differential A/B over client fixtures.
 
-The properties under test are the card's own promises: paired (not two independent runs), honest
+The properties under test are the public contract: paired (not two independent runs), honest
 about scope (ADR-006 shapes), silent about pass/fail without client bars, and refusing to score a
 configuration that moved after the bars were declared.
 """

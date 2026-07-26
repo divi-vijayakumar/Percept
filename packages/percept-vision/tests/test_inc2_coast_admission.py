@@ -1,6 +1,6 @@
 """Signal-only admission via the strict_admission ExecutionPolicy.
 
-The nine checks the card declares, one class per concern:
+Nine declared checks, one class per concern:
 
 1. strict_admission@1 resolves SCREEN_DOCUMENT with NO coast bindings emitted, the coast_enabled
    SettingOrigin still present in provenance, and an applied_with_warnings receipt carrying
@@ -164,7 +164,7 @@ class BlankScreenAdmissionTests(unittest.TestCase):
         self.assertGreater(changed_stats.signal_admits, 0, "strict still admits a real change via the signal")
         self.assertEqual(changed_stats.coast_admits, 0)
 
-    # expose the before/after the card asks the report to name
+    # expose the before/after values the report must name
     def numbers(self):  # pragma: no cover - helper for the human report, not an assertion
         d, s = RuntimeStats(), RuntimeStats()
         _run(_doc_core(None), BLANK, d)

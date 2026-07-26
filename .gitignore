@@ -110,7 +110,7 @@ omnipro_*.json
 *.bak
 .env.*
 
-# generated benchmark cards (regenerable; RELEASE cards committed deliberately)
+# generated benchmark cards (regenerable; RELEASE benchmark reports committed deliberately)
 **/bench_card_*.txt
 
 # Perception Test raw data (CC-BY; range-fetched videos + annotations, regenerable)

@@ -440,7 +440,8 @@ RepCount-A references?
 ### Required Unbiased Scope
 
 The publishable RepCount-A track must use the full selected RepCount-A split, not only actions that are
-friendly to a specific detector. A detector-specific subset is allowed only as a diagnostic card.
+friendly to a specific detector. A detector-specific subset is allowed only as a diagnostic
+benchmark card.
 
 Allowed result labels:
 

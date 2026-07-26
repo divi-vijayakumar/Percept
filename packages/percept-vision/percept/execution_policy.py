@@ -19,7 +19,7 @@ This module ships exactly that: a typed :class:`ExecutionPolicy` dataclass (an `
 ``values`` bundle, same shape :mod:`percept.resolver` already accepted as a placeholder — this
 module now OWNS that class; :mod:`percept.resolver` imports it from here) plus four named,
 versioned instances built ONLY from the 13 paths above. No new temporal shapes, no
-``event_capsule`` defaults (validated-but-not-defaulted per the capsule card) — every value here is
+``event_capsule`` defaults (validated but deliberately not defaulted) — every value here is
 an existing ``Settings``/``WatchProfile.cadence`` field, nothing invented.
 
 Ownership is enforced where it always has been: :meth:`percept.resolver.ConfigResolver.resolve`
@@ -86,7 +86,7 @@ class ExecutionPolicy:
 
     @property
     def qualified_name(self) -> str:
-        """``"{id}@{version}"`` — the registry key and the card-vocabulary name (``"balanced@1"``)."""
+        """``"{id}@{version}"`` — the registry key and public policy name (``"balanced@1"``)."""
         return f"{self.id}@{self.version}"
 
     def to_dict(self) -> dict[str, Any]:

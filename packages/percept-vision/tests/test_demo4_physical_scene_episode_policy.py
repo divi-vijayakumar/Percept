@@ -1,4 +1,4 @@
-"""Card DEMO4 (Finding 3a) — PHYSICAL_SCENE gets a real, non-default ``default_episode_policy`` — the same
+"""PHYSICAL_SCENE gets a real, non-default ``default_episode_policy`` — the same
 "profile declares, concern selects" mechanism ``SCREEN_DOCUMENT`` uses
 (``SourceProfile.default_episode_policy``, ``percept/sourceprofile.py``, the provisional-identity pattern
 ``test_c2f_source_profile_defaults.py`` exercises for screen_document) — but a DIFFERENT one of the

@@ -278,7 +278,7 @@ def test_doctor_cli_exposes_the_actuation_flag():
 
 
 def test_assistant_class_only_is_reported_as_docs_enforced_with_the_gap_named():
-    """The card accepts 'only in docs, here is what it would take' — but it must be CHECKED, so the
+    """The contract accepts 'only in docs, here is what it would take' — but it must be CHECKED, so the
     claim cannot drift away from the code."""
     assert ATTENTION_CLASS_ENFORCEMENT == "docs"
     assert "channel_class" in ATTENTION_CLASS_GAP
@@ -326,7 +326,7 @@ def test_adr007_citations_match_the_code():
 
     # Assert the SYMBOL EXISTS, not the line it sits on. A line-number citation is broken by any
     # edit above it: this test failed the moment the implementation added a scope paragraph to
-    # sourceprofile.py's module docstring, even though both cards were individually correct.
+    # sourceprofile.py's module docstring, even though both references were individually correct.
     # A citation test should pin what is cited, not where it happens to be today.
     def defines(mod, symbol: str) -> bool:
         return symbol in Path(inspect.getfile(mod)).read_text()

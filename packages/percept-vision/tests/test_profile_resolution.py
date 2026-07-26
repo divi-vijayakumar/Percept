@@ -256,7 +256,7 @@ def test_resolve_profile_overrides_a_custom_registered_profile() -> None:
     profile, overrides = resolve_profile("stative", "fixed", "start_anchored", registry=registry)
 
     assert profile.plan_mode == "single"  # overridden from the registered "window"
-    # salience_stat/stat_thresholds are NOT a situation override (ADR-008 ownership transfer, card
+    # salience_stat/stat_thresholds are NOT a situation override (ADR-008 ownership transfer,
     # C2) -- the registered profile's own declared "mean" passes through untouched.
     assert profile.salience_stat == "mean"
     assert profile.gate.require_false_first is False  # overridden from the registered True

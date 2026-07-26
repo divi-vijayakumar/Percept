@@ -109,7 +109,7 @@ class BenchmarkRunnerTruthTests(unittest.TestCase):
                 manifest,
                 {"relational": ("relational-track", "relational", len(case_ids))},
             )
-            out = root / "card.txt"
+            out = root / "benchmark_card.txt"
             run = subprocess.run(
                 [
                     sys.executable,

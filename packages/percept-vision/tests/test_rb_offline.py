@@ -151,7 +151,7 @@ def test_an_unscripted_frame_never_fires_through_the_runtime(keyless):
 
 
 def test_offline_run_is_keyless_and_reproduces_the_fixture_expectation(keyless):
-    """THE card: pip install -> mode='offline' -> the real gate path fires, with no API key set."""
+    """Installed package -> offline mode -> real gate path fires, with no API key set."""
     fx = load_fixture()
     core = offline_core(fx)
     assert core._mode == "offline"

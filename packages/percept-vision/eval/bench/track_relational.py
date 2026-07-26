@@ -10,7 +10,7 @@ two configs from the *same* per-frame verdicts (no extra calls):
 P/R/F1 are strict over ``expected_verdict in {fire,silent}`` (ask/silent predictions count as not-fire);
 ``expected=="ask"`` cases are excluded from P/R. This is a core replay diagnostic, not product E2E.
 
-``score(live=False)`` returns a clearly-fake offline stub (no API, no key) so the card still renders.
+``score(live=False)`` returns a clearly-fake offline stub (no API, no key) so the benchmark card still renders.
 """
 
 from __future__ import annotations

@@ -50,7 +50,7 @@ def _watchspec_kwargs(core: Percept) -> dict:
 
 
 class WatchPlanLegacyEquivalenceTests(unittest.TestCase):
-    """``test_only_legacy_fields_produce_identical_watchspec_and_goal_state`` — the card's named
+    """``test_only_legacy_fields_produce_identical_watchspec_and_goal_state`` — the required
     equivalence test — plus a dynamic end-to-end companion over the same scripted fixture."""
 
     def test_only_legacy_fields_produce_identical_watchspec_and_goal_state(self):

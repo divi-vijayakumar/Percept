@@ -156,7 +156,7 @@
   `source_media_ts` carries the caller's stream timeline `t` when one was supplied and is left unset
   otherwise. Capture-side times upstream of the core (camera capture, the worker's tier-0 admission)
   are not threaded through this seam and are deliberately not approximated.
-- **The operating-frontier report — the honest form of a quality claim (card RB-FRONTIER).**
+- **The operating-frontier report — the honest form of a quality claim.**
   `percept-eval --frontier` emits the full §3.2 report from the eval harness: **exact one-sided 95%
   bounds** on FIRE recall and on false FIREs **per scheduled watch-hour**, plus ASK rate, coverage,
   assisted recall, degraded time, duplicate FIREs per episode, and a **per-archetype breakdown over

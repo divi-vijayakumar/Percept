@@ -1,10 +1,10 @@
-"""The track contract — every track scorer returns a TrackResult; the card emitter consumes a list of them.
+"""The track contract — every track scorer returns a TrackResult; the benchmark emitter consumes a list of them.
 
 A track scorer is a module exposing::
 
     def score(*, live: bool, n: int) -> TrackResult
 
-- ``live=False``  -> a fast OFFLINE result (fakes / cached / stub cells) so the card renders with no API.
+- ``live=False``  -> a fast OFFLINE result so the benchmark card renders with no API.
 - ``live=True``   -> the real numbers (Gemini), reusing the existing per-track tool.
 
 Cells are keyed ``(lane, metric)`` with ``lane in CONFIGS``. Lanes match the benchmark methodology:
@@ -18,7 +18,7 @@ Cells are keyed ``(lane, metric)`` with ``lane in CONFIGS``. Lanes match the ben
 ``core-replay``
     The cognition core replayed over already-collected observations/verdicts.
 
-Numbers that are *modeled* (not executed) must be listed in ``.modeled`` so the card flags them with a
+Numbers that are *modeled* (not executed) must be listed in ``.modeled`` so the benchmark card flags them with a
 ``~``. Non-dense modeled result cells refuse a RELEASE stamp; ``dense-modeled`` cost references are
 allowed because they are explicitly part of the methodology. Tracks that are useful diagnostics but not
 publishable product benchmarks must set ``diagnostic=True`` and explain why in ``excluded``.
@@ -45,7 +45,7 @@ def bench_vision(settings=None):
 
 @dataclass
 class Coverage:
-    """Per-track coverage/provenance gate for a publishable card."""
+    """Per-track coverage/provenance gate for a publishable benchmark card."""
 
     dataset: str
     expected: int
@@ -72,7 +72,7 @@ class TrackResult:
     track: str  # "relational" | "counting" | "acoustic" | ...
     cells: dict = field(default_factory=dict)  # {(lane, metric): value}  e.g. ("e2e","precision"): 0.83
     fmts: dict = field(default_factory=dict)  # {metric: "{:.2f}"} optional per-metric format
-    headline: dict = field(default_factory=dict)  # {label: str} -> the card's headline vector
+    headline: dict = field(default_factory=dict)  # {label: str} -> benchmark headline vector
     measured: list = field(default_factory=list)  # provenance: measured cell labels
     modeled: list = field(default_factory=list)  # provenance: modeled cells (rendered with ~)
     excluded: list = field(default_factory=list)  # invalid items + reason

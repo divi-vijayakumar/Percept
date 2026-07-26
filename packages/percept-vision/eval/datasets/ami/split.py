@@ -80,7 +80,7 @@ class MeetingSplitRegistration:
     Mirrors :class:`percept.eval.derivation.DerivationPreRegistration`: same ``payload()`` /
     ``registration_hash`` / ``seed`` / ``assert_no_drift`` shape, without pulling in a WatchProfile
     ladder (this module owns the fixtures and split, not the eye-tuning ladder a later derivation
-    card supplies).
+    meeting corpus supplies).
     """
 
     fixture_set_hash: str

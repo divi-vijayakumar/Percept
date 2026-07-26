@@ -74,7 +74,7 @@ Verdict(satisfied=True, confidence=0.82, evidence="steam above the pan rim",
 - `satisfied` — a real `bool`. Not `1`, not `"yes"`; the gate branches on it.
 - `confidence` — a float in **`[0.0, 1.0]`**. The gate compares it against a probability threshold, so
   an unnormalized logit silently breaks firing.
-- `evidence` — a short human-readable string; it lands on the incident card.
+- `evidence` — a short human-readable string; it lands on the incident record.
 - `usage` — optional but strongly recommended: `input_tokens` / `output_tokens` / `cost_usd`. This is
   what `percept.observability.judge_usage` costs the stream from, and what the $/stream-hour SLO reads.
 - `phase`, `action_present`, `running_answer`, `events` — optional structured fields for clip/temporal

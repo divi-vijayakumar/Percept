@@ -1,6 +1,6 @@
 ### Added — synthetic UNIT-layer capability fixtures (test-prep, not shipped behaviour)
 
-Fixture groundwork that runs AHEAD of the capability cards, so the corpora exist, are labelled and
+Fixture groundwork that runs ahead of the capability implementations, so the corpora exist, are labelled and
 are proven to load before any implementation needs them. Nothing here changes runtime behaviour.
 
 - **`percept.harness.scripted.ScriptedJudge`** — a `Vision` double that is scriptable PER CALL (a

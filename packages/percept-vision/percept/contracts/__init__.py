@@ -170,8 +170,8 @@ class ClipEvent:
 
     Times are seconds RELATIVE to the start of the judged clip (not wall-clock), because that is
     what a video-native model returns. ``t_end`` is ``None`` for an instantaneous event; ``label``
-    is the model's short description (e.g. ``"item concealed in bag"``). These are the incident-card
-    evidence for a clip verdict — carried on :attr:`Verdict.events`.
+    is the model's short description (e.g. ``"item concealed in bag"``). These are the incident
+    evidence entries for a clip verdict — carried on :attr:`Verdict.events`.
     """
 
     t_start: float

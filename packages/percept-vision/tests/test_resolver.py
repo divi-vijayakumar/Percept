@@ -1,6 +1,6 @@
 """ConfigResolver — the ADR-008 resolution core (percept/resolver.py).
 
-Covers, per the card's own test list: precedence both directions (env beats a lower-precedence
+Covers the resolver test contract: precedence both directions (env beats a lower-precedence
 default; an explicit WatchPlan override beats env); the loud diagnostic when env overrides an
 explicitly-selected profile; an out-of-ownership write raising ConfigError; an unknown key
 raising; ``explain()`` rendering every effective field with its owner + source; hashes stable

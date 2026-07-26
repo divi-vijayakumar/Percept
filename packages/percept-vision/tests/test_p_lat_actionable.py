@@ -258,7 +258,7 @@ class TestLateAdmissionDemonstration(unittest.TestCase):
 
 class TestActionableLatencyOverCoreArchetypeFixtures(unittest.TestCase):
     """Exercises the SAME reuse (core_archetypes.py + ground_truth.py's by-construction GroundTruth)
-    the card names, over the real neutral fixture set rather than hand-authored numbers
+    the latency contract names, over the real neutral fixture set rather than hand-authored numbers
     alone — proving the wiring works against the actual fixtures a for-record run will use."""
 
     def test_actionable_latency_matches_hand_computed_ground_truth_offset(self):

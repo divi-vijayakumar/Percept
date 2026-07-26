@@ -20,7 +20,7 @@ Every fixture the accompanying test drives is OFFLINE and KEYLESS (synthetic fra
 :class:`~percept.contracts.Verdict`, no network, no API keys) — see ``tests/test_slo_asserts.py``.
 
 --------------------------------------------------------------------------------------------------
-THRESHOLD RATIONALE — pre-registered BEFORE inspecting any measured run, per the card's "no
+THRESHOLD RATIONALE — pre-registered BEFORE inspecting any measured run, preserving the "no
 tune-to-green" rule. Each constant states WHY that number, grounded in something the architecture
 already committed to elsewhere in the tree (never invented fresh to make a particular run pass).
 --------------------------------------------------------------------------------------------------
@@ -33,7 +33,7 @@ already committed to elsewhere in the tree (never invented fresh to make a parti
    default) is the runtime's already-documented COST CEILING — the densest the loop ever asks
    tier-0 to run (``percept/sampling.py`` module docstring: "bound by max_fps — the cost ceiling").
    At that ceiling the frame budget is ``1/15 s ~= 66.7ms``. For a still scene to be "effectively
-   free" (the card's own phrase) the reflex path must consume a SMALL, FIXED fraction of that
+   free", the reflex path must consume a SMALL, FIXED fraction of that
    budget, leaving headroom for capture/decode/the rest of the loop around it — the bar is set at
    15% of the max_fps frame period: ``0.15 * (1/15) ~= 0.0100s``.
 
@@ -276,7 +276,7 @@ def fovea_call_reduction(report: LoopReport) -> float:
 # loud ``ValueError`` at construction, never a silently honoured latency regression.
 
 #: The DEFAULT settle window: provisional-immediate. A concern that declares nothing emits on the
-#: rising edge exactly as today (the card's "a concern that declares nothing gets today's behaviour").
+#: rising edge exactly as today: a concern that declares nothing gets the existing behaviour.
 SETTLE_WINDOW_DEFAULT_S = 0.0
 
 #: The hard ceiling on a DECLARED settle window — the judge round-trip reflex budget
@@ -298,8 +298,8 @@ class SettleWindow:
 
     :attr:`seconds` defaults to :data:`SETTLE_WINDOW_DEFAULT_S` (``0.0`` — provisional-immediate, the
     default a concern that declares nothing gets). Construction enforces the SLO: a negative window is
-    nonsensical and a window past :data:`SETTLE_WINDOW_MAX_S` is the latency regression the card
-    rejects — both raise :class:`ValueError` LOUDLY rather than silently degrade latency.
+    nonsensical and a window past :data:`SETTLE_WINDOW_MAX_S` is the defined latency regression;
+    both raise :class:`ValueError` LOUDLY rather than silently degrade latency.
     """
 
     seconds: float = SETTLE_WINDOW_DEFAULT_S

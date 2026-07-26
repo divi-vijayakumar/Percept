@@ -7,7 +7,7 @@ Two layers:
 * **fixture-driven** — the synthetic `mutation` corpus (`eval/synthetic/mutation/`) is THE SPEC:
   every labelled case is replayed through the state machine and its `value_after`/`final_value`/
   authority ground truth is asserted. The corpus's own text-→value classification is NOT under test
-  (the fixture says so); the acts come from the labels and the value from the utterance, and the card
+  (the fixture says so); the acts come from the labels and the value from the utterance, and the test
   proves only the state machine DOWNSTREAM of that classification.
 """
 

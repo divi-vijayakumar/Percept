@@ -7,7 +7,7 @@ The public names are re-exported **lazily** (PEP 562 ``__getattr__``), and the C
 "run from a checkout" note instead of crashing at import on a bare wheel install.
 
     percept-bench eval/benchmark_ci_gate/manifest.json  # per-concern P/R
-    percept-bench scorecard --manifest <path>          # multi-track card
+    percept-bench scorecard --manifest <path>          # multi-track benchmark card
     percept-bench audit                                # validate golden artifacts
 """
 
@@ -122,7 +122,7 @@ def _reproduce_main(argv: list[str] | None = None) -> int:
         "diagnostic executed."
     )
     print(
-        "OSS LAUNCH QUALIFICATION: BLOCKED — the card is DRAFT with modeled/incomplete cells, "
+        "OSS LAUNCH QUALIFICATION: BLOCKED — the benchmark card is DRAFT with modeled/incomplete cells, "
         "missing coverage, and skipped tracks; call reduction is not matched-quality/same-archetype."
     )
     print(

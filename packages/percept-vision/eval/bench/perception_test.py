@@ -94,7 +94,7 @@ def fetch_video(video_id: str) -> Path:
 
 
 def manifest_hash(events: list[dict]) -> str:
-    """Pin the exact sample (data-manifest for the card)."""
+    """Pin the exact sample used by the benchmark card."""
     key = json.dumps(sorted((e["video_id"], round(e["onset_s"], 3)) for e in events))
     return "pt-" + hashlib.sha256(key.encode()).hexdigest()[:12]
 

@@ -14,7 +14,7 @@ Two things live here, kept separate:
    shipped senses. It is DELIBERATELY NOT registered at import time: registering it is a one-line
    call the human/Fable applies (see ``README.md`` and :func:`register`), so this dev-tooling module
    never mutates the shared :data:`percept.domain_pack.DEFAULT_DOMAIN_PACK_REGISTRY` that sibling
-   pack cards also touch.
+   pack modules also touch.
 
 Mapping rationale:
 

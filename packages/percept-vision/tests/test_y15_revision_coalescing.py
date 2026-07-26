@@ -29,7 +29,7 @@ def _log(gap=1000.0, **kw):
 
 
 class TestConfirmHeartbeatCoalesces(unittest.TestCase):
-    """The card: N unchanged confirmations must produce exactly ONE row — the open."""
+    """N unchanged confirmations must produce exactly one row: the open."""
 
     def test_run_of_confirmations_does_not_grow_the_timeline(self):
         log = _log()

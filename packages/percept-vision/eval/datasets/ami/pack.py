@@ -151,6 +151,6 @@ def register_meeting_pack(register=register_domain_pack, *, overwrite: bool = Fa
     A human/Fable applies it explicitly — either by calling this, or by adding
     ``register_domain_pack(MEETING_OBSERVATION_V1)`` to ``percept/packs_default.py`` if the meeting
     pack graduates into the shipped set. Kept out of import side effects so this dev-tooling module
-    never mutates the shared process registry the sibling registry cards own.
+    never mutates the shared process registry used by other pack modules.
     """
     register(MEETING_OBSERVATION_V1, overwrite=overwrite)

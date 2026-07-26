@@ -107,7 +107,7 @@ class TestCaptureJudgingIsolatedFromSinkHealth(unittest.TestCase):
 
     def test_unavailable_sink_never_blocks_capture_or_judging_across_fire_and_ask_ticks(self) -> None:
         # A realistic judged stream: mostly ASK, with FIRE on the rising edges — repeated, as the
-        # card specifies ("produce repeated FIRE + ASK").
+        # contract specifies ("produce repeated FIRE + ASK").
         actions = ["ask", "fire", "ask", "ask", "fire", "fire", "ask", "fire", "ask", "ask"]
         dlq = BoundedDeadLetterQueue(max_records=50)
         sink = WebhookSink(
@@ -244,7 +244,7 @@ class TestIdempotentRedeliveryAcrossRestart(unittest.TestCase):
     def test_retry_of_a_failed_attempt_is_not_deduped_reaches_the_sink_again(self) -> None:
         # A retry of an IN-FLIGHT/FAILED attempt (never reached terminal-OK) must still reuse the
         # same event_id and still be DELIVERED — only a terminal-OK delivery is ever remembered, per
-        # the card ("a retry of an in-flight/failed one still reuses the same event_id — that's fine").
+        # the contract ("a retry of an in-flight/failed one still reuses the same event_id").
         ledger = IdempotencyLedger()
         calls: list[Incident] = []
 

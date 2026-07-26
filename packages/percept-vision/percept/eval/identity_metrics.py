@@ -24,7 +24,7 @@ that here, and both are tested:
 2. a **weighted harm score** where a false bind costs many times what an abstention costs.
 
 Swapping one abstention for one false bind must therefore strictly worsen the verdict, never improve
-it. That property is the whole point of the card, and :mod:`tests` asserts it directly.
+it. That property is the essential metric invariant, and :mod:`tests` asserts it directly.
 """
 
 from __future__ import annotations

@@ -75,7 +75,7 @@ def _result(p_pauc, pvqa_native, p50, p90, *, n_fired, total, calls, notes, mode
 
 def score(*, live: bool, n: int) -> TrackResult:
     if not live:
-        # Offline card path: use the golden-v1 PT sample count when annotations are staged, but keep
+        # Offline benchmark-card path: use the golden-v1 PT sample count when annotations are staged, but keep
         # the VLM-dependent timeliness cells modeled until --live measures them.
         from eval.bench import perception_test as pt
 

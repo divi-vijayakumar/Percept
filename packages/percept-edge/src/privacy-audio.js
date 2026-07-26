@@ -30,7 +30,8 @@ function zeroCrossingRate(pcm) {
  * Coarse acoustic-context head. Bounded, category-free, and deterministic.
  *
  * The heuristic: sustained mid-energy speech with a moderate, regular zero-crossing rate is the acoustic
- * shape of someone articulating a sequence (reading a card/SSN aloud). We can't verify the content, so we
+ * shape of someone articulating a sequence (reading a payment number or SSN aloud). We can't verify
+ * the content, so we
  * only nudge toward `confirm`. Silence and noise-like buffers score ~0.
  */
 export class PrivacyAudioHead {

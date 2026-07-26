@@ -1,6 +1,6 @@
 """ExecutionPolicy (percept/execution_policy.py, percept/execution_policies_default.py) — the implementation.
 
-Covers, per the card's own exit criteria: each of the shipped policies (balanced@1, burst@1,
+Covers the public exit criteria: each of the shipped policies (balanced@1, burst@1,
 low_cost@1, privacy_edge@1, strict_admission@1) resolves through ConfigResolver AND compiles through
 percept.runtime_compiler.runtime_compile; balanced@1 proves byte-for-byte equality with a
 no-execution-policy resolution; a policy writing outside ExecutionPolicy's ownership raises

@@ -215,7 +215,7 @@ a reader to assume.
   needs to reason about an app's webhook infrastructure.
 - Implementation must retire (or clearly demote to an internal detail behind) the current
   `worker.py` coupling where `on_health` shares a call stack with `on_frame`/`on_ask`/`on_incident`
-  delivery — that is new, real work this ADR creates a card for; it is not free.
+  delivery — that requires separate delivery-path implementation; it is not free.
 - A future health-consuming dashboard/CLI can rely on `w.health()` being cheap and always fresh, and
   on `on_health(..., replay_current=True)` never showing a false "all quiet" for a watch that has
   been failed the whole time the subscriber was away.

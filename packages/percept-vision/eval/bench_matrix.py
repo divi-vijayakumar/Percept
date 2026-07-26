@@ -41,7 +41,7 @@ REFERENCES = [
     "ProactiveVideoQA (PAUC), arXiv:2507.09313, 2025",
     'Hu et al., "TransRAC ... Repetitive Action Counting" (RepCount-A), CVPR 2022',
     'Li, Wang, Ramanan, "Towards Streaming Perception", ECCV 2020',
-    "SOTA baselines (card ref column): RepCount-A OBO/MAE - TransRAC (CVPR'22) 0.291/0.443; recent",
+    "SOTA baselines (benchmark reference column): RepCount-A OBO/MAE - TransRAC (CVPR'22) 0.291/0.443; recent",
     "  SOTA ~0.358/0.354; CountLLM (arXiv:2503.17690). ProactiveVideoQA PAUC - MMDuet2 (arXiv:2512.06810).",
 ]
 

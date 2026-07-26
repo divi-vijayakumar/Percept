@@ -1,4 +1,4 @@
-"""Card RB-PROVIDER — provider identity is the NAME; the model id is configuration.
+"""Provider identity is the NAME; the model id is configuration.
 
 The property under test is architectural, not behavioral: a volatile model id must never become the
 thing that selects an adapter, and an explicitly requested model must never be silently swapped.
@@ -31,7 +31,7 @@ def test_provider_name_resolves_to_adapter_and_model_is_carried_as_settings():
 
 
 def test_same_provider_different_models_is_one_adapter_identity():
-    """Two model ids, ONE adapter identity — the card in one assertion."""
+    """Two model ids, one adapter identity."""
     a = resolve_vision("openrouter", model="qwen/qwen3-vl-32b-instruct")
     b = resolve_vision("openrouter", model="opengvlab/internvl3-78b")
     assert type(a) is type(b)

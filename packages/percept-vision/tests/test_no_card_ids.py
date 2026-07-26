@@ -44,38 +44,19 @@ _ALLOWLIST = frozenset(
         # documented cross-package vocabulary, reused for unrelated meanings in different modules
         # (test-lane tier documented in README.md/docs/reference/backends.md: L1=offline fakes,
         # L2/L3=live backends with keys; the L1 math norm in harness/appearance.py; the cache
-        # invalidation-order step names in cache/framehash.py) — not board-card citations.
+        # invalidation-order step names in cache/framehash.py) — not opaque work-item citations.
         "L0", "L1", "L2", "L3",
-        # RFC 3551 audio MIME subtype ("audio/L16" = linear 16-bit PCM), not a card id.
+        # RFC 3551 audio MIME subtype ("audio/L16" = linear 16-bit PCM), not a work-item id.
         "L16",
     }
 )
 
 # Keep each rejected expression out of this file's literal text: the scanner must not need to exempt
-# itself. These patterns target context, not legitimate uses such as a dataset's licence terms or a
-# runtime's private-memory implementation details.
+# itself. Context-specific policies below supplement the deny-by-default standalone-noun rule.
 _PUBLIC_CONTEXT_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
-        r"\b" + "board" + r"\s+" + "card" + r"\b",
         r"\b" + "board" + r"\s+the\s+" + "impl" + r"(?:ementation)?\b",
-        r"\b"
-        + "card"
-        + r"\s+(?:(?-i:[A-Z]{1,3})\d{1,3}[A-Za-z]{0,2}|(?-i:RB-"
-        + "OFFLINE"
-        + r"))\b",
-        r"\b(?:this|that|whole|separate|later|future|follow[- ]?up|sibling|"
-        + "impl"
-        + r"(?:ementation)?)\s+"
-        + "card"
-        + r"(?:['’]s|s)?\b",
-        r"\b"
-        + "card"
-        + r"['’]s\s+(?:scope|problem|reuse|file|decision|contract|work|concern)\b",
-        r"\b"
-        + "card"
-        + r"\s+(?:exists|must|wires?|builds?|ships?|resolves?|consumes?|forbids?|owns?|"
-        r"that\s+(?:builds?|ships?|resolves?|consumes?))\b",
         r"\b" + "found" + "er" + r"\s+(?:decision|sign[- ]?off)\b",
         r"\b" + "found" + "er" + r"(?:['’]s)?\b",
         r"\b" + "paying" + r"\s+(?:client|customer)(?:\s+teams?)?\b",
@@ -95,7 +76,6 @@ _PUBLIC_CONTEXT_PATTERNS = tuple(
         r"\b" + "impl" + r"(?:ementation)?\s+plan\s+epic\b",
         r"\b" + "PC" + "PT" + r"-\d+\b",
         r"\b" + "direction" + r"\s+doc(?:ument)?\b",
-        r"\b" + "MVP" + r"\s+cards?\b",
         r"\b" + "epic" + r"\s+[A-Z]\d+[A-Za-z]?\b",
         r"\b" + "scratch" + r"/",
         r"\b(?-i:" + "Spec" + r"/)",
@@ -123,10 +103,15 @@ _COMPACT_REFERENCE_ALLOWLIST = _ALLOWLIST | frozenset(
 # assembled so this policy remains clean itself.
 _OPAQUE_ID = r"(?-i:[A-Z]{1,3})\d{1,3}[A-Za-z]{0,2}"
 _OPAQUE_ID_LIST = _OPAQUE_ID + r"(?:\s*(?:/|,|–|—|\bto\b)\s*" + _OPAQUE_ID + r")*"
+_WORK_ITEM_NOUN = "ca" + "rd"
+_STANDALONE_WORK_ITEM_NOUN_RE = re.compile(
+    r"\b" + _WORK_ITEM_NOUN + r"s?\b",
+    re.IGNORECASE,
+)
 _COMPACT_CONTEXT_PATTERNS = tuple(
     re.compile(pattern)
     for pattern in (
-        r"\b[Cc]ards?\s+(?:" + _OPAQUE_ID_LIST + r")",
+        r"\b[Cc]a" + r"rds?\s+(?:" + _OPAQUE_ID_LIST + r")",
         r"\b(?:pre|post)-(?:" + _OPAQUE_ID + r")\b",
         r"\bpending\s+(?:" + _OPAQUE_ID + r")\b",
         r"\b(?:" + _OPAQUE_ID + r")(?:/(?:" + _OPAQUE_ID + r"))+\b",
@@ -154,6 +139,47 @@ _COMPACT_CONTEXT_PATTERNS = tuple(
         r"reuses?)\b",
     )
 )
+
+_PUBLIC_OBJECT_CONTEXT_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        # Explicit public report names, including prose outside the benchmark implementation.
+        r"\b(?:benchmark|snapshot|score|report)[- ]" + _WORK_ITEM_NOUN + r"s?\b",
+        # Exact typed uses of the benchmark report module.
+        r"\bfrom\s+(?:\.|eval\.bench)\s+import\s+" + _WORK_ITEM_NOUN + r"\b",
+        r"\b"
+        + _WORK_ITEM_NOUN
+        + r"\.(?:render_"
+        + _WORK_ITEM_NOUN
+        + r"|stamp_of|execution_blockers)\b",
+        # Payment data and payment-number examples.
+        r"\b(?:payment|credit|debit)\s+" + _WORK_ITEM_NOUN + r"s?\b",
+        r"\b" + _WORK_ITEM_NOUN + r"s?\s+(?:number|numbers|holder|verification)\b",
+        r"\b" + _WORK_ITEM_NOUN + r"\s+(?:\d[\d -]{11,}\d)\b",
+        # Removable storage media.
+        r"\b(?:SD|memory)\s+" + _WORK_ITEM_NOUN + r"s?\b",
+        # Human-facing layout components. Source syntax is matched explicitly rather than by path.
+        r"\bUI\s+" + _WORK_ITEM_NOUN + r"\s+component\b",
+        r"(?:\.|--)" + _WORK_ITEM_NOUN + r"\b",
+        r"""class=["'][^"']*\b""" + _WORK_ITEM_NOUN + r"""\b[^"']*["']""",
+    )
+)
+
+
+def _is_allowed_public_object_context(text: str, match: re.Match[str]) -> bool:
+    """Return whether this noun names a public report, payment/storage object, or UI element."""
+    line_start = text.rfind("\n", 0, match.start()) + 1
+    line_end = text.find("\n", match.end())
+    if line_end < 0:
+        line_end = len(text)
+    line = text[line_start:line_end]
+    offset = match.start() - line_start
+
+    for pattern in _PUBLIC_OBJECT_CONTEXT_PATTERNS:
+        for allowed in pattern.finditer(line):
+            if allowed.start() <= offset < allowed.end():
+                return True
+    return False
 
 
 def _iter_source_files() -> list[Path]:
@@ -207,6 +233,11 @@ def _context_hits(path: Path) -> list[tuple[int, str]]:
     except UnicodeDecodeError:
         return []
     out: list[tuple[int, str]] = []
+    for match in _STANDALONE_WORK_ITEM_NOUN_RE.finditer(text):
+        if _is_allowed_public_object_context(text, match):
+            continue
+        line_no = text.count("\n", 0, match.start()) + 1
+        out.append((line_no, match.group(0)))
     for pattern in _PUBLIC_CONTEXT_PATTERNS:
         for match in pattern.finditer(text):
             line_no = text.count("\n", 0, match.start()) + 1
@@ -257,7 +288,7 @@ def test_public_tree_scope_is_the_git_index():
 @pytest.mark.parametrize(
     "text",
     (
-        "Cards " + "Y" + "2–" + "Y" + "15 govern this.",
+        "Ca" + "rds " + "Y" + "2–" + "Y" + "15 govern this.",
         "A pre-" + "D" + "11 record remains readable.",
         "The " + "Y" + "5/" + "Z" + "3 path is additive.",
         "(M" + "1) froze the entrypoint.",
@@ -294,12 +325,23 @@ def test_legitimate_compact_technical_identifiers_are_allowed(text: str, tmp_pat
     "text",
     (
         "board the " + "implementation",
-        "this " + "card" + "'s reuse list",
-        "implementation " + "card" + "'s problem",
-        "the whole " + "card",
-        "a separate " + "card",
-        "later " + "cards",
-        "the " + "card" + " that builds this",
+        "this " + "ca" + "rd's reuse list",
+        "implementation " + "ca" + "rd's problem",
+        "registry " + "ca" + "rd",
+        "resolver " + "ca" + "rd",
+        "derivation " + "ca" + "rd",
+        "ADR " + "ca" + "rd",
+        "our own " + "ca" + "rd",
+        "the whole " + "ca" + "rd",
+        "a separate " + "ca" + "rd",
+        "later " + "ca" + "rds",
+        "sibling " + "ca" + "rds",
+        "the subsequent " + "ca" + "rd",
+        "per the " + "ca" + "rd",
+        "the whole point of the " + "ca" + "rd",
+        "goals-widening " + "ca" + "rd",
+        "ca" + "rd RB-" + "FRONTIER",
+        "the " + "ca" + "rd that builds this",
     ),
 )
 def test_generic_internal_planning_narratives_are_rejected(text: str, tmp_path: Path):
@@ -308,9 +350,29 @@ def test_generic_internal_planning_narratives_are_rejected(text: str, tmp_path: 
     assert _context_hits(path), text
 
 
-def test_public_benchmark_card_language_is_allowed(tmp_path: Path):
+def test_generic_planning_narrative_is_rejected_inside_benchmark_tree(tmp_path: Path):
+    path = tmp_path / "eval" / "bench" / "run.py"
+    path.parent.mkdir(parents=True)
+    path.write_text("implement this in a later " + "ca" + "rd", encoding="utf-8")
+    assert _context_hits(path)
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "a benchmark " + "ca" + "rd that renders DRAFT",
+        "a report " + "ca" + "rd for this release",
+        "a payment " + "ca" + "rd number",
+        "a credit " + "ca" + "rd",
+        "an SD " + "ca" + "rd",
+        "a memory " + "ca" + "rd",
+        "a UI " + "ca" + "rd component",
+        '<div class="' + "ca" + 'rd">status</div>',
+    ),
+)
+def test_legitimate_public_object_language_is_allowed(text: str, tmp_path: Path):
     path = tmp_path / "public.md"
-    path.write_text("a benchmark card that renders DRAFT", encoding="utf-8")
+    path.write_text(text, encoding="utf-8")
     assert not _context_hits(path)
 
 
@@ -329,7 +391,7 @@ def test_source_files_were_discovered():
 def test_no_card_id_citations(path: Path):
     hits = _hits(path)
     assert not hits, (
-        f"{path}: internal board-card-id citation(s) leaked into shipped source: {hits}. "
+        f"{path}: opaque work-item citation(s) leaked into shipped source: {hits}. "
         "Reword the citation into plain factual language describing the behavior — do not "
         "delete the surrounding documentation, and do not add the token to the allowlist unless "
         "it is a genuine false positive (lint code / encoding / protocol acronym)."

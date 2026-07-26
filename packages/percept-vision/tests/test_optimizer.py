@@ -1,7 +1,7 @@
 """— the optimizer: a typed SearchSpace over declared-safe tunables, scored through the
 same ladder discipline percept.eval.derivation already runs, emitting an OptimizationLock.
 
-The properties under test are the card's own promises:
+The properties under test are the optimizer's public promises:
 
 * a SearchSpace may only cover tunables.json paths with safe_to_optimize=true — an unsafe path
   raises at construction, and a hard-coded guardrail deny-list blocks gate/goal/consent/retention

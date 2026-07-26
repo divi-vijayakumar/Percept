@@ -1,10 +1,10 @@
 """— the profile-derivation job (fixtures, bars) -> provenance-stamped WatchProfile.
 
-The properties under test are the card's own promises:
+The properties under test are the profile-derivation contract:
 
 * the whole ladder is reported, losers included;
 * NO winner and NO profile without operator-supplied bars (and none when nothing meets them);
-* the emitted profile is a card-P4 VersionedProfile, content-addressed and round-trippable;
+* the emitted profile is a ``VersionedProfile``, content-addressed and round-trippable;
 * the bars, the split and the FIXTURE LABELS are pre-registered and hashed before scoring, and a
   configuration that moved after the bars were declared refuses to score;
 * ADR-005: a rung names its SourceProfile, and overloading WatchProfile.environment with a

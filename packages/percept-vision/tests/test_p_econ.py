@@ -515,7 +515,7 @@ class TestPEcon1PassFailDecision(unittest.TestCase):
 
     def test_placeholder_defaults_are_directly_callable_and_clearly_not_real_bars(self):
         """The function must be callable with ZERO explicit bars (placeholders only) — this is the
-        "defaulted to placeholders a real run overrides" contract from the card. Not asserting a
+        "defaulted to placeholders a real run overrides" contract. Not asserting a
         particular pass/fail outcome here (the placeholders are not real bars); only that the call
         succeeds and returns a well-formed, fully-populated result."""
         chosen = cheapest_point_holding_recall(self.points, recall_min=PLACEHOLDER_RECALL_MIN)

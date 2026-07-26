@@ -424,8 +424,8 @@ class RegistryDiff:
 
     ``added`` / ``removed`` map a registry key to a full profile dict; ``changed`` holds a
     :class:`ProfileDelta` per key present on both sides with different content; ``unchanged`` lists the
-    keys whose content hash is identical. :meth:`inverse` returns the diff that undoes this one — the
-    "reversible" half of the card.
+    keys whose content hash is identical. :meth:`inverse` returns the diff that undoes this one,
+    making the operation reversible.
     """
 
     added: dict[tuple[str, str, str], dict[str, Any]] = field(default_factory=dict)

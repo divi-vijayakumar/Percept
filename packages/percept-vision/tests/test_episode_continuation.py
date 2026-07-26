@@ -131,7 +131,7 @@ class TestContinuationStreams(unittest.TestCase):
 
 class TestThreeDecisionsAreSeparate(unittest.TestCase):
     def test_same_subject_is_evidence_not_definition(self):
-        # THE card. Exact subject equality holds in both observations; only the continuation
+        # Exact subject equality holds in both observations; only the continuation
         # conjunction differs, and it alone decides.
         log = EpisodeLog("g", policy=EpisodePolicy(continuity_gap_s=10.0))
         first = log.observe_decision(0.0, "PO-4471", subject_key="PO-4471")

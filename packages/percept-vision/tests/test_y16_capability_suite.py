@@ -76,7 +76,7 @@ def _case(built: tuple[dict, dict], case_id: str) -> tuple[list[dict], dict]:
 
 async def _scripted_verdicts(steps: list[dict]) -> list[Verdict]:
     """Replay a frame-kind case's ``steps`` through a REAL :class:`ScriptedJudge`, one ``judge()``
-    call per step, in order — the seam the card asks for: each step's labelled ``verdict`` block is
+    call per step, in order — the required seam: each step's labelled ``verdict`` block is
     what a perfect classifier would answer; the judge is what actually hands it to the runtime."""
     judge = ScriptedJudge.from_steps(steps)
     return [await judge.judge("scripted condition", s["frame"]) for s in steps]
@@ -230,7 +230,7 @@ class Capability04NoSpuriousThirdFire(unittest.TestCase):
 
 class Capability05BFailsDwellDoesNotLetARefire(unittest.TestCase):
     """continuation/b_stuck_in_ask_must_not_refire_a — one subject's pending-ASK state must not govern
-    another subject's duplicate suppression. The card's OWN criterion: A fires once, not twice."""
+    another subject's duplicate suppression. Criterion: A fires once, not twice."""
 
     def test_a_does_not_refire_when_b_is_stuck_in_ask(self):
         steps, expect = _case(continuation_corpus.build(), "b_stuck_in_ask_must_not_refire_a")
@@ -247,7 +247,7 @@ class Capability05BFailsDwellDoesNotLetARefire(unittest.TestCase):
 
 
 class Capability05FullTraceDiscrepancy(unittest.TestCase):
-    """DISCOVERED DEFECT (filed, not required by the card's own capability-5 wording): the fixture's
+    """Known limitation outside capability 5: the fixture's
     full per-step ``actions`` additionally expects B's SECOND unresolved low-confidence read (step 2)
     to be SILENT, not ASK again. The real gate/fold does not do that — ``episode_fold``'s own
     docstring says a not-yet-emitted continuation "keeps evaluating" the gate on every tick, so a

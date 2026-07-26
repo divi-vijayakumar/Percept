@@ -28,10 +28,11 @@ this cycle, so adopt them wholesale:
 
 1. **Add a v0.5 "runnable-now" slice.** The spec is publication-grade and therefore data- and harness-heavy;
    the risk is it never *runs*. Define an explicit minimal slice (relational + counting + acoustic, sampled,
-   modeled-e2e, **DRAFT** card) that we can emit this week with what we already have, then grow to v1-full.
+   modeled-e2e, **DRAFT** benchmark card) that we can emit this week with what we already have, then grow to v1-full.
    (§4 phasing.)
 
-2. **Make AUROC-of-confidence a measured headline, not just a gate footnote.** R3 lives in the card as
+2. **Make AUROC-of-confidence a measured headline, not just a gate footnote.** R3 lives in the
+   benchmark card as
    `AUROC <value>`. Promote it: "does the backbone's confidence separate right from wrong?" is a clean,
    citable number (we already saw it's ≈flat). It *justifies* the ASK discipline and the consequence-model
    gate — it's the benchmark's most defensible single finding. Report it per track.
@@ -49,7 +50,7 @@ this cycle, so adopt them wholesale:
 
 5. **Downgrade "gap recovered %" from headline to directional until the full run.** It depends on the native
    ceiling, which is the most expensive and least-controlled measurement (different sampling regime, §2.0).
-   Lead the sampled card with **call-reduction + count-OBO + acoustic recall-flip + AUROC**; treat
+   Lead the sampled benchmark card with **call-reduction + count-OBO + acoustic recall-flip + AUROC**; treat
    gap-recovered as a v1-full headline.
 
 6. **Absence has no public dataset — derive it (transparently) from Perception Test TAL.** Pick a recurring
@@ -95,7 +96,7 @@ problem for those tracks.
 
 Today `bench_matrix` is a **cache re-scorer** (re-reads cached run JSONs → a fixed table). The spec needs it
 to become the **Snapshot-Card emitter**: run tracks × configs, compute the metric vector (§4 of the spec),
-and emit a stamped card with a provenance block (measured vs modeled), commit SHA, and data-manifest hash.
+and emit a stamped benchmark card with a provenance block (measured vs modeled), commit SHA, and data-manifest hash.
 That is the central build. The per-track scorers already exist and slot in as entry points:
 
 | track | existing tool → role |
@@ -104,7 +105,7 @@ That is the central build. The per-track scorers already exist and slot in as en
 | counting | `count_video.py` / `pose_count.py` → raw-VLM-count vs edge/pose vs gt |
 | acoustic | `fused_judge.py` → vision-only vs fused (+ `AcousticOnset` for onsets) |
 | absence | agent-loop replay (deadline rearm) → absence recall/precision |
-| matrix | `bench_matrix.py` → **rewrite as card emitter** |
+| matrix | `bench_matrix.py` → **rewrite as benchmark report emitter** |
 
 New scorers to write: **P-PAUC + reaction-λ** (timeliness, from PT-TAL onsets), **AUROC-of-confidence**
 (per track, from the judged verdicts vs labels), **cost block** (VCPM, $/correct-event from a pinned price
@@ -114,16 +115,16 @@ sheet), **edge event-recall** (amendment #3).
 
 ## 4. Phased implementation plan
 
-### Phase A — v0.5 "runnable-now" DRAFT card (this week; no new data)
-Goal: emit a real, stamped DRAFT Snapshot Card on the data + tools we have, to lock the card format and the
+### Phase A — v0.5 "runnable-now" DRAFT benchmark card (this week; no new data)
+Goal: emit a real, stamped DRAFT Snapshot Card on the data + tools we have, to lock the benchmark report format and the
 measured-vs-modeled plumbing.
-1. **Card emitter skeleton** — rewrite `bench_matrix` to emit the §7 card (headline vector + per-track×config
+1. **Benchmark report emitter skeleton** — rewrite `bench_matrix` to emit the §7 benchmark card (headline vector + per-track×config
    table + provenance), commit SHA + a data-manifest hash, `stamp=DRAFT`.
 2. **Relational** (raw vs core): wire `scorecard` for ~20 golden dev cases → P/R/F1 + ASK-rate + **AUROC**.
 3. **Counting** (raw vs e2e): `count_video` vs `pose_count` on the user clips → OBO/MAE (pose=12, alphabets=3).
 4. **Acoustic** (e2e): `fused_judge` on the hairdryer (+ any clips) → recall-flip + fusion-FP.
 5. **Cost**: VCPM + $/correct-event from a pinned Gemini price sheet; e2e call-reduction from the edge gate.
-6. **Modeled cells** flagged with `~` (e2e relational accuracy); card stays `DRAFT`.
+6. **Modeled cells** flagged with `~` (e2e relational accuracy); the benchmark card stays `DRAFT`.
 
 ### Phase B — Perception Test integration (the data unlock)
 1. **Fetcher + manifest**: a `perception_test` loader (GCS zips → frames + WAV + onset annotations), pinned
@@ -135,7 +136,7 @@ measured-vs-modeled plumbing.
 4. **Edge event-recall** (amendment #3): on PT onsets, does the motion-gate escalate? → validates/denies the
    e2e modeling.
 
-### Phase C — v1-full RELEASE card
+### Phase C — v1-full RELEASE benchmark card
 1. **Absence track**: construct from PT-TAL (recurring action + deadline) + the self-recorded case →
    absence recall/precision; raw forced-silent (0 by construction).
 2. **Agent-loop replay**: measure e2e accuracy + reaction-λ end-to-end (remove the modeled cells) on a target
@@ -153,8 +154,8 @@ measured-vs-modeled plumbing.
 
 ## 5. Critical-path risks (call them before running)
 
-- **Runnability over ambition.** Ship the Phase-A DRAFT card first; a perfect spec that never emits a card is
-  worth less than a DRAFT card that does. (Amendment #1.)
+- **Runnability over ambition.** Ship the Phase-A DRAFT benchmark card first; a perfect spec that
+  never emits a benchmark card is worth less than a DRAFT benchmark card that does. (Amendment #1.)
 - **The modeling hole (amendment #3).** If the motion-gate misses low-motion events, "e2e ≈ core" is false.
   Measure edge event-recall in Phase B *before* citing any modeled e2e relational number.
 - **Ceiling is apples-to-oranges** (sampling regime, §2.0). Keep it directional until Phase C; don't lead with
@@ -168,7 +169,7 @@ measured-vs-modeled plumbing.
 ## 6. References
 
 Every Snapshot Card carries a `references:` block citing the works the run builds on. Cite these (the
-verified three in full; confirm author lists for the rest before a `RELEASE` card):
+verified three in full; confirm author lists for the rest before a `RELEASE` benchmark card):
 
 - **Interaction Models** — the *native interaction model* concept underlying the §2.1 native-ceiling
   reference line (the duplex omni-model we measure the gap against, never claim to beat):

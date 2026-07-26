@@ -45,7 +45,7 @@ MEASURED = ["dense-modeled:vision_recall", "core-replay:fused_recall", "core-rep
 
 def score(*, live: bool, n: int) -> TrackResult:
     if not live:
-        # OFFLINE card path: use the golden-v1 PT sample count when annotations are staged, but keep
+        # Offline benchmark-card path: use the golden-v1 PT sample count when annotations are staged, but keep
         # VLM/audio-fusion cells modeled until --live measures them.
         try:
             n_events = len(pt.golden_sound_events(require_media=False))

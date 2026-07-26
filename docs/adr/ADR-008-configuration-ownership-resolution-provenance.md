@@ -209,7 +209,7 @@ zero-admit run to be reported as degraded rather than quiet.
 `evidence_ref` (never a typed evidence blob at the contract layer), `WatchSpec` as the name of the
 low-level edge wire form (untouched by this ADR — see §I/O contract), and `SourceProfile` as an
 **extension** of the existing `percept/sourceprofile.py` dataclass, not a new type replacing it. No
-renaming ships with this ADR or any card it authorizes.
+renaming ships with this ADR or any follow-on change it authorizes.
 
 **(d) A deployment change touching a locked field invalidates the `OptimizationLock` — loud, never
 silent.** An `OptimizationLock` records a hash over the exact tunable values it validated. If a
@@ -228,7 +228,7 @@ Conflating any two of them is a bug class this ledger exists to name:
 | version | meaning | current value | bump rule |
 |---|---|---|---|
 | SDK package version | `packages/percept-vision/pyproject.toml` `version` | `0.7.0` (next PyPI release is `1.0.0` — local wheels only until then, per release policy) | semver over the whole package |
-| `WATCH_VERSION` | `watch()`'s public API surface — signature + streaming semantics | `1.0.0` | MAJOR on a breaking signature/streaming change; MINOR for an additive kwarg (e.g. the goals-widening card held this at `1.0.0` because the change was additive) |
+| `WATCH_VERSION` | `watch()`'s public API surface — signature + streaming semantics | `1.0.0` | MAJOR on a breaking signature/streaming change; MINOR for an additive kwarg (the goals-widening change held this at `1.0.0` because it was additive) |
 | `CONTRACT_VERSION` | DTO shapes across `percept.contracts` (the frozen membrane) | `1.6.0` | MAJOR on a breaking frozen-shape change; MINOR per additive batch (new optional field/DTO); PATCH for docs-only |
 | `WatchSpec.version` | the edge wire schema integer | `1` | unchanged by this ADR; `WatchSpec` is explicitly out of scope (§I/O contract) |
 | pack manifest schema | `DomainPack`'s on-disk/wire shape | `v1` (prospective — `DomainPack` does not exist in code yet) | set by the `DomainPack` implementation |
@@ -267,7 +267,7 @@ regression, whatever it resolves to:
 
 **Good**
 
-- `tunables.json` gives every subsequent card a single, CI-checked place to look up "does
+- `tunables.json` gives every subsequent implementation change a single, CI-checked place to look up "does
   this field exist, who owns it, is it safe to automate" instead of grepping six modules.
 - Ownership-gated precedence makes "who set this" answerable in code, not folklore — the same
   upgrade ADR-005 made for gate semantics, applied to configuration broadly.
@@ -300,4 +300,5 @@ regression, whatever it resolves to:
    vocabulary is the likely home (consistent with `ADMISSION_SIGNAL_UNTUNED`), but not fixed here.
 4. **Does `DomainPack` recommend a `(SourceProfile, WatchProfile)` pair, or select one outright?**
    Recommending preserves the "templates never auto-arm" invariant; selecting outright would need an
-   explicit `WatchPlan` acknowledgement to stay consistent with it. Deferred to the `DomainPack` card.
+   explicit `WatchPlan` acknowledgement to stay consistent with it. Deferred to the `DomainPack`
+   compatibility design.

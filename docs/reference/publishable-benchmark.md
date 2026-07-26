@@ -97,7 +97,7 @@ make benchmark-fetch VIDEOS=12 REPCOUNT=12
 ```
 
 The tracked local control-room docs live in `eval/local-benchmark/`; datasets,
-logs, caches, and generated cards remain ignored.
+logs, caches, and generated benchmark cards remain ignored.
 
 1. Expand and freeze the public manifest.
    - Add rows to `eval/golden-v1/MANIFEST.json`.
@@ -130,12 +130,12 @@ PERCEPT_LIVE=1 PYTHONPATH=packages/percept-vision python3 -m eval.exp_charades_m
 PERCEPT_LIVE=1 PYTHONPATH=packages/percept-vision python3 -m eval.exp_omnipro
 ```
 
-4. Render the public card.
+4. Render the public benchmark card.
 
 ```bash
 make benchmark-collect RUN_DIR=eval/local-benchmark/runs/<run-id>
 
-# Release gate still uses the official scorer/card command:
+# Release gate still uses the official benchmark scorecard command:
 percept-bench scorecard --mode full --require-release \
   --manifest eval/golden-v1/MANIFEST.json \
   --out scorecard.txt

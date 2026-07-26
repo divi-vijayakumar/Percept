@@ -1,7 +1,7 @@
 """— SubjectRef: namespace, tri-state resolution, resolver precedence, conflict as a
 first-class outcome, and the ``Verdict.subject`` -> ``episodes._subject_match`` wiring.
 
-Stdlib only, no backends, no keys. These assert the CONTRACT INVARIANTS the card enumerates — not a
+Stdlib only, no backends, no keys. These assert the documented contract invariants — not a
 model's ability to read a key off a real screen (that is a benchmark question, not a capability one).
 """
 
@@ -58,7 +58,7 @@ class SubjectRefInvariantTests(unittest.TestCase):
             SubjectRef("content", "acme", "", "bound", "durable", "judge")
 
     def test_unknown_requires_key_is_none(self) -> None:
-        # The card's fixture line: unreadable key -> resolution='unknown', key=None which
+        # Fixture invariant: unreadable key -> resolution='unknown', key=None, which
         # __post_init__ must REJECT if a key is present.
         with self.assertRaises(ValueError):
             SubjectRef("content", "acme", "PO-1", "unknown", "session", "judge")

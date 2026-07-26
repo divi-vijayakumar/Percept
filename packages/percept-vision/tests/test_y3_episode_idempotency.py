@@ -81,7 +81,7 @@ class TestEpisodeFoldPure(unittest.TestCase):
         self.assertFalse(f.should_rearm)
 
     def test_continuation_after_emission_is_idempotent(self):
-        # THE card: an already-emitted episode, re-confirmed unchanged, does NOT re-enter the gate.
+        # An already-emitted episode, re-confirmed unchanged, does not re-enter the gate.
         log = self._log()
         log.observe_decision(0.0, "s", subject_key="s")
         d = log.observe_decision(1.0, "s", subject_key="s")
@@ -253,7 +253,7 @@ class TestAbaContinuationFixture(unittest.TestCase):
 
     #: A fires (YES). B is a new episode whose read is low-confidence -> ASK, so it never fires but
     #: still re-arms the SHARED scene key. A revisits with a clean YES. This is the exact fragile
-    #: trace from the card: "B ... becomes ASK and never fires, A's return is a continuation ...".
+    #: required trace: "B ... becomes ASK and never fires, A's return is a continuation ...".
     _STREAM = [(0.0, "A", _YES), (1.0, "B", Verdict(True, 0.3)), (2.0, "A", _YES)]
 
     def _setup(self, prog):

@@ -21,7 +21,7 @@ export PYTHONPATH=packages/percept-vision
 
 ## Snapshot scorecard
 
-The scorecard renders a multi-track card. Offline it fills cells with deterministic stubs; real
+The scorecard renders a multi-track benchmark card. Offline it fills cells with deterministic stubs; real
 numbers need `--live` and provider keys.
 
 ```bash
@@ -31,9 +31,9 @@ PYTHONPATH=packages/percept-vision python3 -m percept.bench scorecard \
 
 This is exactly what `make scorecard` runs. Add `--live` (plus keys) to score real cells.
 
-The card carries a **stamp**. It is `DRAFT` unless the run is `mode=full`, points at a pinned release
+The benchmark card carries a **stamp**. It is `DRAFT` unless the run is `mode=full`, points at a pinned release
 manifest, has no modeled cells, and passes coverage — only then is it `RELEASE`. Pass
-`--require-release` to make CI exit non-zero on a card that renders `DRAFT`.
+`--require-release` to make CI exit non-zero on a benchmark card that renders `DRAFT`.
 
 ## Artifact audit
 
@@ -67,7 +67,7 @@ make benchmark-collect RUN_DIR=eval/local-benchmark/runs/<run-id>   # re-render 
 ```
 
 `benchmark-run` writes a run directory under `eval/local-benchmark/runs/`; pass it to
-`benchmark-collect` to (re-)render the card from the collected results.
+`benchmark-collect` to (re-)render the benchmark card from the collected results.
 
 ## Results (pending final run)
 

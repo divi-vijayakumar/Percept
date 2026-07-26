@@ -10,7 +10,7 @@ for-record P-LAT-RUNTIME-1 run needs, not a real latency verdict about Percept i
 * that p95 classifies correctly into the the release criteria band: GREEN ``< 2s`` / YELLOW ``2-3s`` /
   RED ``>= 3s``.
 
-Reuses, never edits, the already-landed harness pieces named in the card: ``load_driver.py``
+Reuses, never edits, the existing harness pieces: ``load_driver.py``
 (``LoadDriver``/``LoadProfile``/``RampSchedule``), ``fake_judge.py`` (``FakeJudge``/
 ``LatencyProfile``), ``metrics.py`` (``MetricsCollector``), ``percept.contracts.JudgmentTiming``,
 and ``percept.clock.FakeClock``. ``percept.harness.stream_gen.parametric_motion_clip`` is imported
@@ -115,7 +115,7 @@ def _timings_from_judge_calls(judge: FakeJudge) -> list[JudgmentTiming]:
 
 class TestBandingLogicOnKnownSyntheticSet(unittest.TestCase):
     """Banding logic asserted directly against hand-authored, known latency values — independent
-    of the load driver, per the card's explicit ask."""
+    of the load driver, as required by the latency contract."""
 
     def test_boundary_values(self):
         self.assertEqual(classify_latency_band(0.0), "GREEN")

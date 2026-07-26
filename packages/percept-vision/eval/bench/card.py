@@ -1,6 +1,6 @@
 """Snapshot Card emitter: turn TrackResults and run metadata into a stamped benchmark card.
 
-A card is DRAFT unless: mode=full, no non-dense modeled cells, no diagnostic/excluded tracks, all
+A benchmark card is DRAFT unless: mode=full, no non-dense modeled cells, no diagnostic/excluded tracks, all
 coverage gates pass, and a pinned data-manifest is present. That is intentionally strict: benchmark
 code should fail closed rather than accidentally publishing diagnostics as product E2E.
 """

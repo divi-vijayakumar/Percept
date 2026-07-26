@@ -72,7 +72,7 @@ class TestShadowTraceRoundTrip(unittest.TestCase):
         adv = shadow.to_advisory()
         self.assertIn("subject", adv)
         self.assertIn("fold", adv)
-        # The five fold fields the card names must all be present.
+        # All five documented fold fields must be present.
         for k in ("match", "mutation", "should_rearm", "should_evaluate_gate", "supersedes"):
             self.assertIn(k, adv["fold"])
         # And it reconstructs to an equal ShadowObservation.

@@ -9,7 +9,7 @@ for an ``'unknown'`` ref, so the log MINTS a fresh episode per unknown and two u
   2. The OPT-IN single-focus provisional attach — a narrowly-scoped source MAY continue the sole open
      bound episode with an unknown sighting, RECORDED (never a silent merge).
 
-These are stdlib-only, deterministic, no backend. They assert the card's four design questions:
+These are stdlib-only, deterministic, no backend. They assert four explicit design questions:
 mint / rearm / continue-a-bound-episode / merge-on-later-bind.
 """
 
@@ -80,7 +80,7 @@ class FoldGateGovernanceTests(unittest.TestCase):
         f = episode_fold(d, emitted=0, unknown=True)
         self.assertEqual(f.match, "unknown")
         self.assertEqual(f.mutation, "none")
-        self.assertFalse(f.should_rearm)          # <- the card: a visible abstention never rearms
+        self.assertFalse(f.should_rearm)          # a visible abstention never rearms
         self.assertTrue(f.should_evaluate_gate)   # gate-only, like unbound
         self.assertIsNone(f.supersedes)
 

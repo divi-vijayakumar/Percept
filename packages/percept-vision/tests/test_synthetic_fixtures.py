@@ -7,7 +7,7 @@ runtime and evaluation consumers arrive.
 **What this deliberately does NOT assert: the capabilities themselves.** Subject keys, continuation
 vs new episode, speech-act mutation, episode counting, interval gaps and idempotency are NOT BUILT
 YET. A test here that asserted them would be asserting a plan, and would have to be deleted or
-rewritten the moment the real behaviour landed. The capability assertions belong in the cards.
+rewritten the moment the real behaviour landed. Capability assertions belong in implementation tests.
 
 The generated data lives in the repo's gitignored ``eval/synthetic/``, so this test generates into a
 tmp dir of its own and never depends on that directory existing. When it *does* exist (a developer

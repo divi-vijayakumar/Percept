@@ -75,7 +75,7 @@ class VocabularyTests(unittest.TestCase):
             self.assertNotIn(not_a_suppression, SUPPRESSION_REASONS)
 
     def test_silent_is_not_a_delivered_action(self):
-        """The whole point of the card's 'SILENT stays internal-only' clause, stated as data."""
+        """Assert the ``SILENT stays internal-only`` contract directly as data."""
         self.assertNotIn(SILENT, DELIVERED_ACTIONS)
         self.assertEqual(set(DELIVERED_ACTIONS), {FIRE, ASK})
         self.assertIn(SILENT, GATE_ACTIONS)

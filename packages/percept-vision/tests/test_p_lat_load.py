@@ -13,7 +13,7 @@ Per the release criteria, Reflex requires BOTH G3-A and G3-B < 2s (GREEN); 2-3s 
 (CONDITIONAL-GO / Reflex beta); >= 3s on either leg is RED (NO-GO for the Reflex claim, not for
 Percept as a whole).
 
-Reuses, never edits, the harness pieces named in the card: ``load_driver.py``
+Reuses, never edits, the named harness pieces: ``load_driver.py``
 (``LoadDriver``/``LoadProfile``/``RampSchedule``), ``fake_judge.py``
 (``FakeJudge``/``LatencyProfile``), ``metrics.py`` (``MetricsCollector``),
 ``percept.contracts.JudgmentTiming``, and ``percept.clock.FakeClock``.

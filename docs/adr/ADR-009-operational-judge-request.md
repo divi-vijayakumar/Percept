@@ -158,8 +158,8 @@ shapes, which remain byte-compatible with contract 1.9.
 
 **Costs / accepted risks**
 
-- The resolver reconciliation and dispatch-side re-check are specified here but ship in follow-on
-  cards; until then this ADR is a binding target for those, not a description of a fully wired path.
+- The resolver reconciliation and dispatch-side re-check are specified here but ship as follow-on
+  work; until then this ADR is a binding target, not a description of a fully wired path.
 - A deployment that forgets to configure a catalog gets zero authorized judges. That is the
   intended fail-closed default, but it will surface as "my judge request refused" for a deployment
   that expected ambient availability — correctly, and loudly.
@@ -167,6 +167,7 @@ shapes, which remain byte-compatible with contract 1.9.
 ## Open questions
 
 1. **How does a fail-closed judge refusal surface to the caller** — a resolve-time exception, a
-   `WatchEvent`-adjacent diagnostic, or a `percept doctor` finding? Deferred to the resolver card.
+   `WatchEvent`-adjacent diagnostic, or a `percept doctor` finding? Deferred to resolver
+   implementation.
 2. **Does the catalog resolve once per `watch()` call or once per process?** Same trade-off ADR-008
-   left open for `ConfigResolver`; deferred to the same card.
+   left open for `ConfigResolver`; deferred to the same resolver implementation.

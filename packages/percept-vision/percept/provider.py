@@ -187,7 +187,7 @@ def resolve(
 
 
 def resolve_vision(judge: Any, *, model: str | None = None, settings: Settings | None = None) -> Any:
-    """The card's headline shape: ``resolve_vision("openrouter", model="qwen/...")``.
+    """Resolve the public provider/model shape: ``resolve_vision("openrouter", model="qwen/...")``.
 
     ``judge`` is a provider name or an already-constructed ``Vision`` adapter. See :func:`resolve`.
     """

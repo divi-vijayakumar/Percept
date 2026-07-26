@@ -32,7 +32,7 @@ Reuses (imported, never edited):
   * ``percept.gate.{Gate, FIRE, SILENT}`` — the underlying three-state gate the reducer wraps.
 
 Key shape used throughout: ``(source_id, plan_id, episode_or_entity_key)`` — a 3-tuple, matching the
-card's key description; the reducer/sequencer treat it as an opaque ``Hashable``, so nothing
+the allocator's public key contract; the reducer/sequencer treat it as an opaque ``Hashable``, so nothing
 downstream needs to know the tuple's internal shape.
 """
 
@@ -101,7 +101,7 @@ async def _run_job(
 
 
 class TestClassicOutOfOrderRace(unittest.TestCase):
-    """The exact scenario the card names: admit seq=1 (OLD, slow provider) then seq=2 (NEW, fast
+    """Admit seq=1 (OLD, slow provider) then seq=2 (NEW, fast
     provider) for the SAME key under the SAME plan revision; drive completions out of order (2
     finishes before 1) via a REAL asyncio race, and prove the gate ends up reflecting seq=2 ONLY."""
 

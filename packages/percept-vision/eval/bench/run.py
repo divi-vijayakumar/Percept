@@ -1,6 +1,6 @@
 """Phase-A v0.5 runner — score the tracks and emit the DRAFT Snapshot Card.
 
-Offline smoke (no API, renders the card with stub cells):
+Offline smoke (no API, renders the benchmark card with stub cells):
     PYTHONPATH=packages/percept-vision python3.12 -m eval.bench.run
 Live sampled:
     PERCEPT_LIVE=1 PYTHONPATH=... python3.12 -m eval.bench.run --live --n 20
@@ -112,16 +112,16 @@ def main(argv: list[str] | None = None) -> int:
         help="run the deterministic/keyless OSS scorecard (does not qualify a provider)",
     )
     ap.add_argument("--n", type=int, default=20, help="relational sample size")
-    ap.add_argument("--out", default=None, help="also write the card to this path")
-    ap.add_argument("--manifest", default=None, help="path to the pinned data manifest to stamp on the card")
+    ap.add_argument("--out", default=None, help="also write the benchmark card to this path")
+    ap.add_argument("--manifest", default=None, help="path to the pinned data manifest to stamp on the benchmark card")
     ap.add_argument("--mode", default="sampled", choices=["sampled", "full"], help="scorecard mode")
-    ap.add_argument("--device", default="?", help="device/runtime descriptor for the card header")
-    ap.add_argument("--fps", default="1", help="sampling/capture fps for the card header")
+    ap.add_argument("--device", default="?", help="device/runtime descriptor for the benchmark card header")
+    ap.add_argument("--fps", default="1", help="sampling/capture fps for the benchmark card header")
     ap.add_argument("--seeds", type=int, default=1, help="number of seeds/runs represented")
     ap.add_argument(
         "--require-release",
         action="store_true",
-        help="exit non-zero unless the rendered card is stamped RELEASE",
+        help="exit non-zero unless the rendered benchmark card is stamped RELEASE",
     )
     args = ap.parse_args(argv)
 
@@ -211,9 +211,9 @@ def main(argv: list[str] | None = None) -> int:
         if not artifact.exists() or artifact.stat().st_size == 0:
             print(f"SCORECARD EXECUTION FAILED: output is missing or empty: {artifact}")
             return 1
-        print(f"  card written -> {args.out}")
+        print(f"  benchmark card written -> {args.out}")
     if args.require_release and stamp != "RELEASE":
-        print("SCORECARD RELEASE GATE: BLOCKED — rendered card is DRAFT")
+        print("SCORECARD RELEASE GATE: BLOCKED — rendered benchmark card is DRAFT")
         return 1
     if args.live:
         print(f"BENCHMARK LIVE GATE: {'PASS' if stamp == 'RELEASE' else 'DRAFT'}")

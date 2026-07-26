@@ -115,7 +115,7 @@ needs to read first is that percept is being wired somewhere it refuses to go.
 
 ### 4. "Assistant-class only" is enforceable in DOCS, not in config — and here is what it would take
 
-This is the card's reported item, and the honest answer is docs. It is recorded as data
+This is the reported gap, and the honest answer is docs. It is recorded as data
 (`ATTENTION_CLASS_ENFORCEMENT = "docs"`, `ATTENTION_CLASS_GAP`) and asserted in
 `tests/test_envelope.py`, so the claim cannot drift away from the code.
 

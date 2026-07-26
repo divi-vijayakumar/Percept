@@ -143,16 +143,16 @@ def _write_clip(vid):
 
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
-    cards = []
+    clip_entries = []
     for vid in ORDER:
         print(f"  rendering {vid} ...", flush=True)
-        cards.append(_write_clip(vid))
+        clip_entries.append(_write_clip(vid))
 
     def verdict(p, gt):
         return "ok" if abs(p - gt) <= 1 else ("over" if p > gt else "under")
 
     rowshtml = []
-    for c in cards:
+    for c in clip_entries:
         gt = c["gt"]
         rowshtml.append(f"""
         <section>
@@ -181,8 +181,8 @@ Frames with no green box = the performer wasn't held that frame (low htc). Video
 the contact sheet below each video always shows the annotated frames.</p>
 {''.join(rowshtml)}"""
     (OUT / "index.html").write_text(html)
-    print(f"\n  wrote {len(cards)} clips -> {OUT}/index.html")
-    for c in cards:
+    print(f"\n  wrote {len(clip_entries)} clips -> {OUT}/index.html")
+    for c in clip_entries:
         print(f"    {c['vid']:10s} codec={c['codec']}  (A={c['A']} B={c['B']} C={c['C']} gt={c['gt']})")
 
 

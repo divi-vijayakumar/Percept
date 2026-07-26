@@ -505,7 +505,7 @@ class ContinuationDecision:
 
     ``subject_matched`` answers decision (1) on its own — it is true whenever an existing episode
     shared this observation's subject, INCLUDING the cases where we then refused to continue it.
-    That split is the whole point of the card: ``subject_matched and is_new`` is precisely the
+    That split is the essential invariant: ``subject_matched and is_new`` is precisely the
     situation the collapsed design got wrong.
     """
 

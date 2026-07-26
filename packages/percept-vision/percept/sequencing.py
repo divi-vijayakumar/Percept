@@ -42,7 +42,7 @@ This module supplies the two missing primitives:
 
 Today's caller (``Percept.perceive_judged``, strictly single-flight) does not need any of this and is
 left untouched — every existing gate test stays byte-for-byte. This module is the mechanism a future
-worker pool wires in (per the card: "you don't need to enable a real worker pool").
+worker pool wires in; callers do not need to enable a real worker pool.
 """
 
 from __future__ import annotations
@@ -87,8 +87,8 @@ class GateDecision:
     ``action`` is the underlying three-state :data:`~percept.gate.GateAction` when the result was
     applied, or ``SILENT`` as a neutral fill when it was dropped — never FIRE/ASK for a dropped
     result, so a caller that only checks ``action == FIRE`` can never be fooled by a drop into acting
-    on stale evidence. ``dropped``/``drop_reason`` are the TRACED stale-completion signal the card
-    requires: every drop names why.
+    on stale evidence. ``dropped``/``drop_reason`` are the traced stale-completion signal required
+    for audit: every drop names why.
     """
 
     key: Hashable

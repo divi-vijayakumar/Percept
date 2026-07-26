@@ -1,4 +1,4 @@
-"""Card RB-FRONTIER — the operating-frontier report (§3.2) emitted from the eval harness.
+"""The operating-frontier report emitted from the eval harness.
 
 Two families of test here, and they check different kinds of promise:
 
