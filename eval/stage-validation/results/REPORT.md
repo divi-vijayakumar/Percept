@@ -1,6 +1,6 @@
 # Percept stage-validation report
 
-Generated: 2026-07-26T22:44:51+00:00
+Generated: 2026-07-26T22:54:56+00:00
 Runtime under test: exact launch wheel `percept 1.0.0` (`bba572a`)
 
 Corpus: **100 cases**
@@ -26,7 +26,7 @@ Long-horizon sources: **6**
 
 ## Totals
 
-PASS **16** · FAIL **7** · UNKNOWN 0 · suites MISSING 0
+PASS **18** · FAIL **9** · UNKNOWN 0 · suites MISSING 0
 
 ## STAGE 0
 
@@ -97,8 +97,12 @@ Status: **FAIL** (FAIL 1, PASS 3)
 
 ### Cognition + disposition (`sv4_cognition`)
 
-Status: **FAIL** (FAIL 1)
+Status: **FAIL** (FAIL 3, PASS 2)
 
 | Test | Status | Detail |
 |---|---|---|
+| SV-4.1 | PASS |  |
+| SV-4.5 | FAIL |  |
+| SV-4.6 | PASS |  |
 | SV-4.7 | FAIL |  |
+| SV-4.8 | FAIL |  |

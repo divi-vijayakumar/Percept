@@ -29,7 +29,7 @@
     },
     "n_cases": 100
   },
-  "generated": "2026-07-26T22:44:51+00:00",
+  "generated": "2026-07-26T22:54:56+00:00",
   "long_sources": {
     "n_sources": 6,
     "sources": [
@@ -776,14 +776,39 @@
     "STAGE 4": [
       {
         "counts": {
-          "FAIL": 1
+          "FAIL": 3,
+          "PASS": 2
         },
         "status": "FAIL",
         "suite": "sv4_cognition",
         "tests": [
           {
             "detail": "",
+            "id": "SV-4.1",
+            "measured": {},
+            "status": "PASS"
+          },
+          {
+            "detail": "",
+            "id": "SV-4.5",
+            "measured": {},
+            "status": "FAIL"
+          },
+          {
+            "detail": "",
+            "id": "SV-4.6",
+            "measured": {},
+            "status": "PASS"
+          },
+          {
+            "detail": "",
             "id": "SV-4.7",
+            "measured": {},
+            "status": "FAIL"
+          },
+          {
+            "detail": "",
+            "id": "SV-4.8",
             "measured": {},
             "status": "FAIL"
           }
@@ -793,9 +818,9 @@
     ]
   },
   "totals": {
-    "FAIL": 7,
+    "FAIL": 9,
     "MISSING": 0,
-    "PASS": 16,
+    "PASS": 18,
     "UNKNOWN": 0
   }
 }
