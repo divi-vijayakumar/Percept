@@ -211,7 +211,10 @@ class _GeminiBase:
             genai, types = _require_genai()
             self._client = genai.Client(
                 api_key=_gemini_key(),
-                http_options=types.HttpOptions(timeout=_REQUEST_TIMEOUT_MS),
+                http_options=types.HttpOptions(
+                    timeout=_REQUEST_TIMEOUT_MS,
+                    retry_options=types.HttpRetryOptions(attempts=1),
+                ),
             )
         return self._client
 
@@ -236,6 +239,9 @@ class GeminiVision(_GeminiBase):
 
     def configure_request_budget(self, request_budget: Any) -> None:
         self._request_budget = request_budget
+
+    def budget_snapshot(self) -> dict[str, int | float] | None:
+        return self._request_budget.snapshot() if self._request_budget is not None else None
 
     def _budget_usage(self, response: Any) -> dict[str, Any]:
         usage = _usage_of(response)
