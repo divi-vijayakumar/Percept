@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from dataclasses import FrozenInstanceError
 from types import SimpleNamespace
 
@@ -24,7 +25,11 @@ from percept import (
     Percept,
 )
 from percept.adapters import Verdict
+from percept.contracts import AudioFrame, WatchPlan
 from percept.config import Settings
+from percept.harness.tier0 import gray_frame
+from percept.runtime.worker import run
+from percept.watchplan_apply import apply_watch_plan
 
 SECRET_A = "sk-secret-a-never-disclose"
 SECRET_B = "sk-secret-b-never-disclose"
@@ -325,6 +330,91 @@ def test_credential_is_redacted_from_backend_error_and_exception_chain():
     assert str(raised.value) == "hosted_byok_provider_failure"
 
 
+@pytest.mark.parametrize(
+    ("field_name", "leaky_value"),
+    [
+        ("evidence", f"Bearer {SECRET_A}"),
+        ("phase", SECRET_A),
+        ("running_answer", f"summary:{SECRET_A}"),
+        ("usage", {"nested": [{"credential": SECRET_A}]}),
+        ("usage", {SECRET_A: 1}),
+        ("events", [{"label": SECRET_A}]),
+        ("subject", {"nested": (SECRET_A,)}),
+        ("operation", SECRET_A),
+        ("value", {"secret": bytearray(SECRET_A.encode())}),
+        ("normalized_value", [SECRET_A]),
+        ("target_revision_id", SECRET_A),
+        ("asserted_by", SECRET_A),
+    ],
+)
+def test_credential_in_any_verdict_carrier_fails_closed_without_echo(
+    field_name, leaky_value
+):
+    verdict = Verdict(True, 0.99, "safe")
+    setattr(verdict, field_name, leaky_value)
+    hosted = HostedByokAdapterFactory(
+        backend_factories={"openrouter": lambda request, timeout: _Backend(verdict)}
+    )
+    with pytest.raises(HostedByokInvocationError) as raised:
+        asyncio.run(hosted.judge(_request(), "condition", b"frame"))
+    assert str(raised.value) == "hosted_byok_provider_failure"
+    assert SECRET_A not in str(raised.value)
+    assert raised.value.__cause__ is None
+
+
+@pytest.mark.parametrize("provider", ["gemini", "openrouter"])
+def test_real_adapter_transport_cannot_return_credential_in_evidence(provider):
+    if provider == "gemini":
+        client = _GeminiClient()
+
+        async def generate_content(**kwargs):
+            client.aio.models.calls.append(kwargs)
+            return SimpleNamespace(
+                text=json.dumps(
+                    {
+                        "satisfied": True,
+                        "confidence": 0.99,
+                        "evidence": f"leaked {SECRET_A}",
+                    }
+                ),
+                usage_metadata=None,
+            )
+
+        client.aio.models.generate_content = generate_content
+        hosted = HostedByokAdapterFactory(
+            gemini_client_factory=lambda request, timeout: HostedByokGeminiClient(
+                client, _GeminiTypes
+            )
+        )
+        request = _request(provider="gemini", model="gemini-3.5-flash")
+    else:
+        client = _OpenRouterClient()
+
+        async def create(**kwargs):
+            client.chat.completions.calls.append(kwargs)
+            text = json.dumps(
+                {
+                    "satisfied": True,
+                    "confidence": 0.99,
+                    "evidence": f"leaked {SECRET_A}",
+                }
+            )
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content=text))]
+            )
+
+        client.chat.completions.create = create
+        hosted = HostedByokAdapterFactory(
+            openrouter_client_factory=lambda request, timeout: client
+        )
+        request = _request()
+
+    with pytest.raises(HostedByokInvocationError) as raised:
+        asyncio.run(hosted.judge(request, "condition", b"frame"))
+    assert str(raised.value) == "hosted_byok_provider_failure"
+    assert client.closed
+
+
 def test_injected_backend_reuse_is_rejected_across_sequential_leases():
     shared = _Backend()
     hosted = HostedByokAdapterFactory(
@@ -367,6 +457,23 @@ def test_timeout_cancels_provider_work():
     with pytest.raises(HostedByokDeadlineExceeded):
         asyncio.run(hosted.judge(_request(timeout_s=0.01), "condition", b"frame"))
     assert cancelled.is_set()
+
+
+def test_event_loop_blocking_provider_result_is_rejected_after_monotonic_deadline():
+    effects: list[str] = []
+
+    class BlockingBackend:
+        async def judge(self, condition, frame, **kwargs):
+            time.sleep(0.03)
+            effects.append("provider-returned")
+            return Verdict(True, 0.99, "too late")
+
+    hosted = HostedByokAdapterFactory(
+        backend_factories={"openrouter": lambda request, timeout: BlockingBackend()}
+    )
+    with pytest.raises(HostedByokDeadlineExceeded, match="completed after"):
+        asyncio.run(hosted.judge(_request(timeout_s=0.01), "condition", b"frame"))
+    assert effects == ["provider-returned"]
 
 
 def test_absolute_deadline_fails_before_constructing_backend():
@@ -443,64 +550,268 @@ def test_cancellation_during_construction_spends_zero_provider_calls():
     assert judge_calls == 0
 
 
-def test_cancellation_is_bounded_when_provider_temporarily_suppresses_cancel():
+def test_cancellation_holds_ownership_until_cancel_suppressing_provider_finishes():
     cancellation = asyncio.Event()
     release = asyncio.Event()
+    started = asyncio.Event()
+    effects: list[str] = []
+
+    class SuppressingBackend:
+        async def judge(self, condition, frame, **kwargs):
+            started.set()
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                await release.wait()
+                effects.append("provider-finished")
+                return Verdict(False, 0.0, "late")
+
+    async def run():
+        hosted = HostedByokAdapterFactory(
+            backend_factories={"openrouter": lambda request, timeout: SuppressingBackend()},
+        )
+        task = asyncio.create_task(
+            hosted.judge(_request(cancellation=cancellation), "condition", b"frame")
+        )
+        await started.wait()
+        cancellation.set()
+        await asyncio.sleep(0.02)
+        assert not task.done()
+        assert effects == []
+        release.set()
+        with pytest.raises(HostedByokCancelled):
+            await task
+        assert effects == ["provider-finished"]
+        await asyncio.sleep(0)
+        assert effects == ["provider-finished"]
+        assert {pending for pending in asyncio.all_tasks() if pending is not asyncio.current_task()} == set()
+
+    asyncio.run(run())
+
+
+def test_timeout_waits_for_cancel_suppressing_provider_and_consumes_late_error():
+    effects: list[str] = []
 
     class SuppressingBackend:
         async def judge(self, condition, frame, **kwargs):
             try:
                 await asyncio.sleep(60)
             except asyncio.CancelledError:
-                await release.wait()
-                return Verdict(False, 0.0, "late")
+                await asyncio.sleep(0.03)
+                effects.append("provider-finished")
+                raise RuntimeError(f"late provider detail {SECRET_A}")
 
     async def run():
-        hosted = HostedByokAdapterFactory(
-            backend_factories={"openrouter": lambda request, timeout: SuppressingBackend()},
-            cancellation_grace_s=0.01,
-        )
-        task = asyncio.create_task(
-            hosted.judge(_request(cancellation=cancellation), "condition", b"frame")
-        )
-        await asyncio.sleep(0)
-        started = asyncio.get_running_loop().time()
-        cancellation.set()
-        with pytest.raises(HostedByokCancelled):
-            await asyncio.wait_for(task, 0.2)
-        elapsed = asyncio.get_running_loop().time() - started
-        release.set()
-        await asyncio.sleep(0)
-        return elapsed
+        loop_errors = []
+        loop = asyncio.get_running_loop()
+        original_handler = loop.get_exception_handler()
+        loop.set_exception_handler(lambda _loop, context: loop_errors.append(context))
+        try:
+            hosted = HostedByokAdapterFactory(
+                backend_factories={
+                    "openrouter": lambda request, timeout: SuppressingBackend()
+                },
+            )
+            started = loop.time()
+            with pytest.raises(HostedByokDeadlineExceeded):
+                await hosted.judge(_request(timeout_s=0.01), "condition", b"frame")
+            elapsed = loop.time() - started
+            assert elapsed >= 0.03
+            assert effects == ["provider-finished"]
+            await asyncio.sleep(0.02)
+            assert effects == ["provider-finished"]
+            assert loop_errors == []
+            assert {
+                pending
+                for pending in asyncio.all_tasks()
+                if pending is not asyncio.current_task()
+            } == set()
+        finally:
+            loop.set_exception_handler(original_handler)
 
-    assert asyncio.run(run()) < 0.15
+    asyncio.run(run())
 
 
-def test_hanging_client_close_is_separately_bounded():
+def test_external_task_cancel_holds_ownership_until_provider_finishes():
     release = asyncio.Event()
+    started = asyncio.Event()
+    effects: list[str] = []
 
-    class HangingCloseClient(_OpenRouterClient):
-        async def close(self):
+    class SuppressingBackend:
+        async def judge(self, condition, frame, **kwargs):
+            started.set()
             try:
                 await asyncio.sleep(60)
             except asyncio.CancelledError:
                 await release.wait()
+                effects.append("provider-finished")
+                return Verdict(False, 0.0, "ignored")
+
+    async def run():
+        hosted = HostedByokAdapterFactory(
+            backend_factories={"openrouter": lambda request, timeout: SuppressingBackend()}
+        )
+        task = asyncio.create_task(hosted.judge(_request(), "condition", b"frame"))
+        await started.wait()
+        task.cancel()
+        await asyncio.sleep(0.02)
+        assert not task.done()
+        assert effects == []
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert effects == ["provider-finished"]
+        assert {
+            pending
+            for pending in asyncio.all_tasks()
+            if pending is not asyncio.current_task()
+        } == set()
+
+    asyncio.run(run())
+
+
+def test_async_client_close_is_shielded_and_completed_before_cancel_returns():
+    release = asyncio.Event()
+    close_started = asyncio.Event()
+    close_cancelled = False
+    close_effects: list[str] = []
+
+    class HangingCloseClient(_OpenRouterClient):
+        async def close(self):
+            nonlocal close_cancelled
+            close_started.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                close_cancelled = True
+                await release.wait()
+            self.closed = True
+            close_effects.append("closed")
 
     async def run():
         hosted = HostedByokAdapterFactory(
             openrouter_client_factory=lambda request, timeout: HangingCloseClient(),
-            close_timeout_s=0.01,
         )
-        started = asyncio.get_running_loop().time()
-        verdict = await asyncio.wait_for(hosted.judge(_request(), "condition", b"frame"), 0.2)
-        elapsed = asyncio.get_running_loop().time() - started
+        task = asyncio.create_task(hosted.judge(_request(), "condition", b"frame"))
+        await close_started.wait()
+        task.cancel()
+        await asyncio.sleep(0.02)
+        assert not task.done()
+        assert not close_cancelled
+        assert close_effects == []
         release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert close_effects == ["closed"]
         await asyncio.sleep(0)
-        return verdict, elapsed
+        assert close_effects == ["closed"]
+        assert {
+            pending
+            for pending in asyncio.all_tasks()
+            if pending is not asyncio.current_task()
+        } == set()
 
-    verdict, elapsed = asyncio.run(run())
+    asyncio.run(run())
+
+
+def test_sync_client_close_runs_inline_and_finishes_before_return():
+    effects: list[str] = []
+
+    class SyncCloseClient(_OpenRouterClient):
+        def close(self):
+            self.closed = True
+            effects.append("closed")
+
+    verdict = asyncio.run(
+        HostedByokAdapterFactory(
+            openrouter_client_factory=lambda request, timeout: SyncCloseClient()
+        ).judge(_request(), "condition", b"frame")
+    )
     assert verdict.satisfied
-    assert elapsed < 0.15
+    assert effects == ["closed"]
+
+
+@pytest.mark.parametrize("provider", ["gemini", "openrouter"])
+def test_acquired_client_closes_when_backend_constructor_fails(monkeypatch, provider):
+    clients = []
+    if provider == "gemini":
+        import percept.backends.gemini as backend_module
+
+        request = _request(provider="gemini", model="gemini-3.5-flash")
+
+        def client_factory(request, timeout):
+            client = _GeminiClient()
+            clients.append(client)
+            return HostedByokGeminiClient(client, _GeminiTypes)
+
+        hosted = HostedByokAdapterFactory(gemini_client_factory=client_factory)
+    else:
+        import percept.backends.openrouter as backend_module
+
+        request = _request()
+
+        def client_factory(request, timeout):
+            client = _OpenRouterClient()
+            clients.append(client)
+            return client
+
+        hosted = HostedByokAdapterFactory(openrouter_client_factory=client_factory)
+
+    def fail_constructor(self, *args, **kwargs):
+        raise RuntimeError(f"constructor leaked {SECRET_A}")
+
+    adapter_type = (
+        backend_module.GeminiVision
+        if provider == "gemini"
+        else backend_module.OpenRouterVision
+    )
+    monkeypatch.setattr(adapter_type, "__init__", fail_constructor)
+    with pytest.raises(HostedByokInvocationError) as raised:
+        asyncio.run(hosted.judge(request, "condition", b"frame"))
+    assert str(raised.value) == "hosted_byok_provider_failure"
+    assert len(clients) == 1
+    assert clients[0].closed
+
+
+@pytest.mark.parametrize("provider", ["gemini", "openrouter"])
+def test_acquired_client_closes_when_backend_refuses_exact_model(monkeypatch, provider):
+    clients = []
+    if provider == "gemini":
+        import percept.backends.gemini as backend_module
+
+        adapter_type = backend_module.GeminiVision
+        request = _request(provider="gemini", model="gemini-3.5-flash")
+
+        def client_factory(request, timeout):
+            client = _GeminiClient()
+            clients.append(client)
+            return HostedByokGeminiClient(client, _GeminiTypes)
+
+        hosted = HostedByokAdapterFactory(gemini_client_factory=client_factory)
+    else:
+        import percept.backends.openrouter as backend_module
+
+        adapter_type = backend_module.OpenRouterVision
+        request = _request()
+
+        def client_factory(request, timeout):
+            client = _OpenRouterClient()
+            clients.append(client)
+            return client
+
+        hosted = HostedByokAdapterFactory(openrouter_client_factory=client_factory)
+
+    original_init = adapter_type.__init__
+
+    def substitute_model(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        self._model = "provider/fallback"
+
+    monkeypatch.setattr(adapter_type, "__init__", substitute_model)
+    with pytest.raises(HostedByokUnsupportedError, match="no fallback"):
+        asyncio.run(hosted.judge(request, "condition", b"frame"))
+    assert len(clients) == 1
+    assert clients[0].closed
 
 
 @pytest.mark.parametrize("fatal", [KeyboardInterrupt, SystemExit])
@@ -528,7 +839,12 @@ def test_process_control_base_exceptions_are_not_swallowed(fatal):
             None,
             "does not support capability",
         ),
-        (_request(), b"audio", "does not support fused audio"),
+        (_request(), b"audio", "forbids audio evidence"),
+        (
+            _request(provider="gemini", model="gemini-3.5-flash"),
+            b"audio",
+            "forbids audio evidence",
+        ),
     ],
 )
 def test_unsupported_provider_model_or_capability_fails_before_factory(byok_request, audio, match):
@@ -561,8 +877,280 @@ def test_fused_capability_is_gemini_only_and_requires_both_modalities():
     )
     with pytest.raises(HostedByokUnsupportedError, match="both image and audio"):
         asyncio.run(hosted.judge(request, "condition", b"frame"))
+    with pytest.raises(HostedByokUnsupportedError, match="both image and audio"):
+        asyncio.run(hosted.judge(request, "condition", None, audio=b"audio"))
     verdict = asyncio.run(hosted.judge(request, "condition", b"frame", audio=b"audio"))
     assert verdict.satisfied
+
+
+@pytest.mark.parametrize(
+    ("byok_request", "frame", "audio"),
+    [
+        (
+            _request(provider="gemini", model="gemini-3.5-flash"),
+            b"frame",
+            b"audio",
+        ),
+        (
+            _request(provider="gemini", model="gemini-3.5-flash"),
+            None,
+            b"audio",
+        ),
+        (
+            _request(
+                provider="gemini",
+                model="gemini-3.5-flash",
+                capability="vision.judge.fused",
+            ),
+            b"frame",
+            None,
+        ),
+        (
+            _request(
+                provider="gemini",
+                model="gemini-3.5-flash",
+                capability="vision.judge.fused",
+            ),
+            None,
+            b"audio",
+        ),
+        (_request(), b"frame", b"audio"),
+        (_request(), None, b"audio"),
+        (_request(capability="vision.judge.fused"), b"frame", b"audio"),
+    ],
+)
+def test_exact_evidence_capability_negatives_spend_zero_fake_backend_calls(
+    byok_request, frame, audio
+):
+    constructions = 0
+    dispatches = 0
+
+    class CountingBackend(_Backend):
+        async def judge(self, condition, frame, **kwargs):
+            nonlocal dispatches
+            dispatches += 1
+            return await super().judge(condition, frame, **kwargs)
+
+    def factory(request, timeout):
+        nonlocal constructions
+        constructions += 1
+        return CountingBackend()
+
+    hosted = HostedByokAdapterFactory(
+        backend_factories={"gemini": factory, "openrouter": factory}
+    )
+    with pytest.raises(HostedByokUnsupportedError):
+        asyncio.run(hosted.judge(byok_request, "condition", frame, audio=audio))
+    assert (constructions, dispatches) == (0, 0)
+
+
+def test_exact_evidence_capability_negatives_spend_zero_real_adapter_transport_calls():
+    gemini_clients = 0
+    openrouter_clients = 0
+
+    def gemini_factory(request, timeout):
+        nonlocal gemini_clients
+        gemini_clients += 1
+        return HostedByokGeminiClient(_GeminiClient(), _GeminiTypes)
+
+    def openrouter_factory(request, timeout):
+        nonlocal openrouter_clients
+        openrouter_clients += 1
+        return _OpenRouterClient()
+
+    hosted = HostedByokAdapterFactory(
+        gemini_client_factory=gemini_factory,
+        openrouter_client_factory=openrouter_factory,
+    )
+    attempts = (
+        (
+            _request(provider="gemini", model="gemini-3.5-flash"),
+            b"frame",
+            b"audio",
+        ),
+        (
+            _request(
+                provider="gemini",
+                model="gemini-3.5-flash",
+                capability="vision.judge.fused",
+            ),
+            b"frame",
+            None,
+        ),
+        (_request(), b"frame", b"audio"),
+        (_request(capability="vision.judge.fused"), b"frame", b"audio"),
+    )
+    for request, frame, audio in attempts:
+        with pytest.raises(HostedByokUnsupportedError):
+            asyncio.run(hosted.judge(request, "condition", frame, audio=audio))
+    assert (gemini_clients, openrouter_clients) == (0, 0)
+
+
+@pytest.mark.parametrize(
+    ("byok_request", "kwargs"),
+    [
+        (_request(), {"frame": ("audio/wav", b"audio")}),
+        (_request(), {"frame": b"frame", "frames": [("audio/wav", b"audio")]}),
+        (_request(), {"frame": b"frame", "exemplar": ("audio/wav", b"audio")}),
+        (
+            _request(
+                provider="gemini",
+                model="gemini-3.5-flash",
+                capability="vision.judge.fused",
+            ),
+            {"frame": b"frame", "audio": ("image/jpeg", b"not-audio")},
+        ),
+        (
+            _request(
+                provider="gemini",
+                model="gemini-3.5-flash",
+                capability="vision.judge.fused",
+            ),
+            {
+                "frame": b"frame",
+                "audio": b"audio",
+                "context": {"process_qa": True},
+            },
+        ),
+        (
+            _request(
+                provider="gemini",
+                model="gemini-3.5-flash",
+                capability="vision.judge.fused",
+            ),
+            {
+                "frame": b"frame",
+                "audio": b"audio",
+                "context": {"observe_step": True},
+            },
+        ),
+    ],
+)
+def test_media_and_context_routes_cannot_widen_or_discard_declared_capability(
+    byok_request, kwargs
+):
+    constructions = 0
+
+    def factory(request, timeout):
+        nonlocal constructions
+        constructions += 1
+        return _Backend()
+
+    hosted = HostedByokAdapterFactory(
+        backend_factories={"gemini": factory, "openrouter": factory}
+    )
+    call_kwargs = dict(kwargs)
+    frame = call_kwargs.pop("frame")
+    with pytest.raises(HostedByokUnsupportedError):
+        asyncio.run(hosted.judge(byok_request, "condition", frame, **call_kwargs))
+    assert constructions == 0
+
+
+def test_fake_backend_receives_frames_context_and_exact_declared_modalities():
+    backends: list[_Backend] = []
+
+    def factory(request, timeout):
+        backend = _Backend()
+        backends.append(backend)
+        return backend
+
+    hosted = HostedByokAdapterFactory(
+        backend_factories={"gemini": factory, "openrouter": factory}
+    )
+    plain_context = {"specialist": "plain"}
+    asyncio.run(
+        hosted.judge(
+            _request(),
+            "plain",
+            ("image/jpeg", b"anchor"),
+            frames=[("image/jpeg", b"earlier")],
+            context=plain_context,
+        )
+    )
+    assert backends[0].calls[0][2]["frames"] == [("image/jpeg", b"earlier")]
+    assert backends[0].calls[0][2]["context"] is plain_context
+    assert backends[0].calls[0][2]["audio"] is None
+
+    fused_context = {"specialist": "fused"}
+    audio = ("audio/wav", b"RIFF-audio")
+    asyncio.run(
+        hosted.judge(
+            _request(
+                provider="gemini",
+                model="gemini-3.5-flash",
+                capability="vision.judge.fused",
+            ),
+            "fused",
+            ("image/jpeg", b"anchor"),
+            frames=[("image/jpeg", b"earlier")],
+            audio=audio,
+            context=fused_context,
+        )
+    )
+    assert backends[1].calls[0][2]["frames"] == [("image/jpeg", b"earlier")]
+    assert backends[1].calls[0][2]["context"] is fused_context
+    assert backends[1].calls[0][2]["audio"] == audio
+
+
+def test_real_gemini_frames_and_context_keep_audio_in_fused_transport():
+    clients: list[_GeminiClient] = []
+
+    def client_factory(request, timeout):
+        client = _GeminiClient()
+        clients.append(client)
+        return HostedByokGeminiClient(client, _GeminiTypes)
+
+    hosted = HostedByokAdapterFactory(gemini_client_factory=client_factory)
+    verdict = asyncio.run(
+        hosted.judge(
+            _request(
+                provider="gemini",
+                model="gemini-3.5-flash",
+                capability="vision.judge.fused",
+            ),
+            "condition",
+            ("image/jpeg", b"anchor"),
+            frames=[("image/png", b"earlier")],
+            audio=("audio/wav", b"RIFF-audio"),
+            context={"specialist": "trusted"},
+        )
+    )
+    assert not verdict.satisfied
+    contents = clients[0].aio.models.calls[0]["contents"]
+    assert ("part", "image/png", b"earlier") in contents
+    assert ("part", "image/jpeg", b"anchor") in contents
+    assert ("part", "audio/wav", b"RIFF-audio") in contents
+    assert clients[0].closed
+
+
+def test_real_openrouter_frames_and_context_remain_image_only():
+    clients: list[_OpenRouterClient] = []
+
+    def client_factory(request, timeout):
+        client = _OpenRouterClient()
+        clients.append(client)
+        return client
+
+    verdict = asyncio.run(
+        HostedByokAdapterFactory(openrouter_client_factory=client_factory).judge(
+            _request(),
+            "condition",
+            ("image/jpeg", b"anchor"),
+            frames=[("image/png", b"earlier")],
+            context={"specialist": "trusted"},
+        )
+    )
+    assert verdict.satisfied
+    payload = clients[0].chat.completions.calls[0]
+    content = payload["messages"][1]["content"]
+    urls = [
+        item["image_url"]["url"]
+        for item in content
+        if item.get("type") == "image_url"
+    ]
+    assert len(urls) == 2
+    assert all(url.startswith("data:image/") for url in urls)
+    assert clients[0].closed
 
 
 def test_request_bound_adapter_runs_through_real_percept_with_fake_transport():
@@ -589,6 +1177,98 @@ def test_request_bound_adapter_runs_through_real_percept_with_fake_transport():
     assert len(clients) == 1
     assert clients[0].chat.completions.calls[0]["model"] == "qwen/qwen3-vl-32b-instruct"
     assert clients[0].closed
+
+
+def test_plain_bound_adapter_cannot_arm_audio_or_fused_watch():
+    client_calls = 0
+
+    def client_factory(request, timeout_s):
+        nonlocal client_calls
+        client_calls += 1
+        return HostedByokGeminiClient(_GeminiClient(), _GeminiTypes)
+
+    vision = HostedByokAdapterFactory(gemini_client_factory=client_factory).bind(
+        _request(provider="gemini", model="gemini-3.5-flash")
+    )
+    for sense in ("audio", "fused"):
+        core = Percept.create(
+            vision=vision,
+            settings=Settings(),
+            mode="offline",
+            discover_plugins=False,
+        )
+        receipt = apply_watch_plan(
+            core,
+            WatchPlan(id=sense, condition="speaker points", sense=sense),
+        )
+        assert receipt.status == "rejected"
+        assert receipt.dropped_fields[0].code == "audio_input_backend_unsupported"
+        assert core.goals.all() == []
+    assert client_calls == 0
+
+
+def test_fused_bound_adapter_arms_real_watchplan_and_runtime_uses_fake_transport():
+    clients: list[_GeminiClient] = []
+
+    def client_factory(request, timeout_s):
+        client = _GeminiClient()
+        clients.append(client)
+        return HostedByokGeminiClient(client, _GeminiTypes)
+
+    request = _request(
+        provider="gemini",
+        model="gemini-3.5-flash",
+        capability="vision.judge.fused",
+    )
+    vision = HostedByokAdapterFactory(gemini_client_factory=client_factory).bind(request)
+    core = Percept.create(
+        vision=vision,
+        settings=Settings(),
+        mode="offline",
+        discover_plugins=False,
+    )
+    receipt = apply_watch_plan(
+        core,
+        WatchPlan(id="fused", condition="speaker points", sense="fused"),
+    )
+    assert receipt.status == "applied"
+    binding = core._audio_judge_bindings["fused"]
+    assert binding.adapter is vision
+    assert binding.mode == "fused"
+    assert binding.capability.modes == frozenset({"fused"})
+
+    still = gray_frame(48, 36, 0)
+    changed = gray_frame(48, 36, 255)
+    audio = [
+        (
+            0.5,
+            AudioFrame(pcm=b"\x01\x00" * 100, sample_rate=16_000),
+            0.5,
+        )
+    ]
+
+    async def collect():
+        return [
+            incident
+            async for incident in run(
+                core,
+                source=[
+                    (0.0, still, ("image/jpeg", b"prime")),
+                    (1.0, changed, ("image/jpeg", b"changed")),
+                ],
+                audio_source=audio,
+                audio_gate=None,
+                judge_dispatch="inline",
+            )
+        ]
+
+    assert asyncio.run(collect()) == []
+    assert len(clients) == 1
+    assert clients[0].closed
+    call = clients[0].aio.models.calls[0]
+    assert call["model"] == "gemini-3.5-flash"
+    assert ("part", "image/jpeg", b"changed") in call["contents"]
+    assert any(part[1] == "audio/wav" for part in call["contents"] if isinstance(part, tuple))
 
 
 def test_public_exports_are_cloud_usable():

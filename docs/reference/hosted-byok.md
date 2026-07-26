@@ -63,15 +63,33 @@ bind a new request for each incoming credential lease.
 
 For Gemini, use `provider="gemini"` and an exact `gemini-*` model id. Gemini's fused image/audio
 path must also declare `capability="vision.judge.fused"` and pass both `frame=` and `audio=`.
-OpenRouter accepts exact `vendor/model` ids and fails closed if audio is supplied.
+Plain `capability="vision.judge"` requires an image and forbids audio for every provider; audio-only
+input is not part of this contract. OpenRouter accepts exact `vendor/model` ids and does not advertise
+the fused capability. The anchor, temporal `frames`, exemplar, and audio carriers are validated by
+media kind before construction. Gemini fused requests reject process/observe context subroutes that
+would omit their audio instead of silently downgrading to image-only judgment.
+
+A fused request-bound Gemini adapter composes with a normal compiled `WatchPlan(sense="fused")`.
+Watch preparation captures the immutable request and trusted Hosted BYOK dispatch in the runtime's
+sealed audio-input binding. A plain request-bound adapter cannot arm an audio or fused Watch, and an
+OpenRouter request cannot declare fused capability.
 
 `timeout_s` is relative to entry into `judge`; `deadline_unix_s` is an absolute UNIX timestamp. If
 both are supplied, the earlier limit wins. Omitting both uses the contract's 120-second safety ceiling.
 `asyncio.Event` implements the public cancellation protocol. Cancelling the calling task also cancels
-the provider task. Provider construction is synchronous and included in the monotonic deadline
-accounting: an over-budget construction is rejected when it returns, before any provider task is
-scheduled. Cancellation is checked before and after construction and again immediately before
-dispatch, so a cancellation observed during construction spends zero provider calls.
+the provider task. The deadline bounds result acceptance and cancellation initiation, not cleanup
+latency. Python cannot forcibly terminate an in-process coroutine that suppresses cancellation, so
+`judge` does not return or release invocation ownership until the actual provider coroutine and all
+client/backend teardown have completed. Callers that protect the credential lease or rotation with a
+lifecycle guard must hold (and, where applicable, renew) that guard for the complete `await`.
+
+Provider construction is synchronous and included in the monotonic deadline accounting: an
+over-budget construction is rejected when it returns, before any provider task is scheduled.
+Cancellation is checked before and after construction and again immediately before dispatch, so a
+cancellation observed during construction spends zero provider calls. The monotonic deadline is also
+checked after provider completion, so a coroutine that blocked the event loop cannot have a late
+result accepted. A killable worker/process boundary can provide a bounded hard-stop contract, but this
+in-process SDK boundary does not claim one.
 
 ## Isolation and secret handling
 
@@ -84,7 +102,10 @@ The explicit path:
 - requires the caller to rotate `credential_lease_id` when the opaque credential rotates;
 - excludes the credential from request repr, equality, and hashing, and makes the request unhashable;
 - forwards neither vendor exception text nor exception chaining, since a client error may echo headers;
-- best-effort closes invocation-local clients after success, failure, timeout, or cancellation; and
+- recursively rejects any returned `Verdict` whose public fields contain the opaque credential;
+- records a client as soon as construction acquires it, including partial backend construction;
+- completes invocation-local client/backend closure after success, failure, timeout, or cancellation;
+- leaves no provider, cancellation-watcher, close task, or thread running after `judge` returns; and
 - never serializes or persists the request or credential.
 
 Principal and lease ids are non-secret isolation/audit identities; the provider credential is not.

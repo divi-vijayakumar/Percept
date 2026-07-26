@@ -7,8 +7,9 @@ another tenant's client, or a prior rotation participate in that invocation. The
 * accepts an immutable, explicitly versioned request;
 * validates an exact provider/model/capability tuple before constructing vendor objects;
 * constructs a fresh backend and client for every :meth:`HostedByokAdapterFactory.judge` call;
-* applies the request's cancellation/deadline around the complete provider call; and
-* discards and best-effort closes all invocation-local provider objects afterward.
+* applies the request's cancellation/deadline to result acceptance and cancellation initiation;
+* does not return until provider work and invocation-local teardown have actually completed; and
+* discards every invocation-local provider object afterward.
 
 For composition with :class:`percept.Percept`, :meth:`HostedByokAdapterFactory.bind` returns a
 request-bound ``Vision`` adapter. It contains no provider resources or result cache: every adapter
@@ -18,15 +19,15 @@ request-bound ``Vision`` adapter. It contains no provider resources or result ca
 from __future__ import annotations
 
 import asyncio
-import inspect
 import math
 import time
 import weakref
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields as dataclass_fields, is_dataclass, replace
+from enum import Enum
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
-from .adapters import Verdict
+from .adapters import AudioFrame, Verdict
 from .config import Settings
 
 HOSTED_BYOK_CONTRACT_VERSION = "1.0.0"
@@ -35,8 +36,6 @@ HOSTED_BYOK_CAPABILITIES: Mapping[str, frozenset[str]] = {
     "openrouter": frozenset({"vision.judge"}),
 }
 _DEFAULT_TIMEOUT_S = 120.0
-_DEFAULT_CANCELLATION_GRACE_S = 0.05
-_DEFAULT_CLOSE_TIMEOUT_S = 0.25
 _PROVIDER_FAILURE_CODE = "hosted_byok_provider_failure"
 _INJECTED_REUSE_CODE = "hosted_byok_injected_component_reused"
 
@@ -160,7 +159,7 @@ HostedByokOpenRouterClientFactory = Callable[[HostedByokRequest, float], Any]
 
 @dataclass(slots=True)
 class _Invocation:
-    backend: Any
+    backend: Any = None
     client: Any = None
 
 
@@ -181,8 +180,6 @@ class HostedByokAdapterFactory:
         openrouter_client_factory: HostedByokOpenRouterClientFactory | None = None,
         time_fn: Callable[[], float] = time.time,
         monotonic_fn: Callable[[], float] = time.monotonic,
-        cancellation_grace_s: float = _DEFAULT_CANCELLATION_GRACE_S,
-        close_timeout_s: float = _DEFAULT_CLOSE_TIMEOUT_S,
     ) -> None:
         overrides = dict(backend_factories or {})
         unknown = sorted(set(overrides) - set(HOSTED_BYOK_CAPABILITIES))
@@ -195,10 +192,6 @@ class HostedByokAdapterFactory:
         self._openrouter_client_factory = openrouter_client_factory
         self._time_fn = time_fn
         self._monotonic_fn = monotonic_fn
-        self._cancellation_grace_s = _positive_duration(
-            "cancellation_grace_s", cancellation_grace_s
-        )
-        self._close_timeout_s = _positive_duration("close_timeout_s", close_timeout_s)
         # Weak identity claims enforce the fresh-object contract without retaining clients/backends
         # (and therefore without turning this factory into a resource cache).
         self._injected_claims: dict[int, weakref.ReferenceType[Any]] = {}
@@ -226,15 +219,33 @@ class HostedByokAdapterFactory:
         audio: Any = None,
         context: dict | None = None,
     ) -> Verdict:
-        """Perform one isolated vision judgment and return the normal public :class:`Verdict`."""
+        """Perform one isolated vision judgment and return the normal public :class:`Verdict`.
+
+        A timeout or cancellation stops accepting a provider result and requests task cancellation
+        immediately. It does not release invocation ownership: Python cannot forcibly terminate an
+        in-process coroutine that suppresses ``CancelledError``, so this await completes only after
+        the provider coroutine and all teardown have actually settled.
+        """
 
         invocation: _Invocation | None = None
-        provider_task: asyncio.Task | None = None
-        cancellation_task: asyncio.Task | None = None
+        provider_task: asyncio.Future | None = None
+        cancellation_task: asyncio.Future | None = None
+        cleanup_interrupted = False
         try:
-            timeout_s = self._preflight(request, frame=frame, audio=audio)
+            timeout_s = self._preflight(
+                request,
+                frame=frame,
+                exemplar=exemplar,
+                frames=frames,
+                audio=audio,
+                context=context,
+            )
             expires_at = float(self._monotonic_fn()) + timeout_s
-            invocation = self._build_invocation(request, timeout_s)
+            # Allocate the record before construction. Client factories and vendor constructors put
+            # their client into it immediately, so a later backend-constructor or exact-model failure
+            # is still closed by the unconditional teardown below.
+            invocation = _Invocation()
+            self._build_invocation(request, timeout_s, invocation)
             remaining_s = expires_at - float(self._monotonic_fn())
             if remaining_s <= 0:
                 raise HostedByokDeadlineExceeded(
@@ -242,6 +253,12 @@ class HostedByokAdapterFactory:
                 )
             if request.cancellation is not None and request.cancellation.is_set():
                 raise HostedByokCancelled()
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                # A caller cancellation requested while synchronous construction was running must
+                # spend zero provider calls. Raising explicitly reaches the same completion/teardown
+                # path without first yielding to a newly created provider task.
+                raise asyncio.CancelledError()
             judge = getattr(invocation.backend, "judge", None)
             if not callable(judge):
                 raise HostedByokUnsupportedError(
@@ -251,7 +268,7 @@ class HostedByokAdapterFactory:
             # point before task creation so a construction/lookup race can spend zero provider calls.
             if request.cancellation is not None and request.cancellation.is_set():
                 raise HostedByokCancelled()
-            provider_task = asyncio.create_task(
+            provider_task = asyncio.ensure_future(
                 judge(
                     condition,
                     frame,
@@ -263,64 +280,121 @@ class HostedByokAdapterFactory:
                     context=context,
                 )
             )
-            wait_for: set[asyncio.Task] = {provider_task}
+            wait_for: set[asyncio.Future] = {provider_task}
             if request.cancellation is not None:
-                cancellation_task = asyncio.create_task(request.cancellation.wait())
+                cancellation_task = asyncio.ensure_future(request.cancellation.wait())
                 wait_for.add(cancellation_task)
             done, _ = await asyncio.wait(
                 wait_for, timeout=remaining_s, return_when=asyncio.FIRST_COMPLETED
             )
             if request.cancellation is not None and request.cancellation.is_set():
-                await self._stop_task(provider_task, self._cancellation_grace_s)
+                cleanup_interrupted |= await self._settle_task(provider_task, cancel=True)
                 raise HostedByokCancelled()
             if cancellation_task is not None and cancellation_task in done:
                 try:
-                    await cancellation_task
-                except Exception:
-                    await self._stop_task(provider_task, self._cancellation_grace_s)
+                    cancellation_task.result()
+                except (asyncio.CancelledError, Exception):
+                    cleanup_interrupted |= await self._settle_task(provider_task, cancel=True)
                     raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
+                # ``wait()`` returning without the signal becoming set violates the public protocol.
+                # Fail closed instead of treating the early wake as a deadline or dispatch result.
+                cleanup_interrupted |= await self._settle_task(provider_task, cancel=True)
+                raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
             if provider_task not in done:
-                await self._stop_task(provider_task, self._cancellation_grace_s)
+                cleanup_interrupted |= await self._settle_task(provider_task, cancel=True)
                 raise HostedByokDeadlineExceeded(
                     "hosted BYOK invocation exceeded its effective deadline."
                 )
+            if float(self._monotonic_fn()) >= expires_at:
+                # A provider can block the event loop synchronously and return a completed task after
+                # ``asyncio.wait``'s timeout should have fired. Consume that terminal result, but never
+                # accept it after the monotonic deadline.
+                cleanup_interrupted |= await self._settle_task(provider_task, cancel=False)
+                raise HostedByokDeadlineExceeded(
+                    "hosted BYOK provider completed after its effective deadline."
+                )
             try:
-                result = await provider_task
+                result = provider_task.result()
+            except asyncio.CancelledError:
+                # A provider that cancels itself is a provider failure, not caller cancellation.
+                raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
             except Exception:
                 raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
             if not isinstance(result, Verdict):
+                raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
+            if not _verdict_is_credential_free(result, request.credential):
                 raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE)
             return result
         except (HostedByokError, HostedByokCancelled):
             raise
         except asyncio.CancelledError:
             if provider_task is not None:
-                await self._stop_task(provider_task, self._cancellation_grace_s)
+                cleanup_interrupted |= await self._settle_task(provider_task, cancel=True)
             raise
         except Exception:
             # Never forward a vendor exception: an SDK/client may echo headers, constructor args, or
             # even an attacker-controlled exception class name. A fixed code is the whole surface.
+            if provider_task is not None:
+                cleanup_interrupted |= await self._settle_task(provider_task, cancel=True)
             raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
         finally:
             if cancellation_task is not None:
-                await self._stop_task(cancellation_task, self._cancellation_grace_s)
+                cleanup_interrupted |= await self._settle_task(cancellation_task, cancel=True)
             if invocation is not None:
-                await self._close_invocation(invocation, timeout_s=self._close_timeout_s)
+                cleanup_interrupted |= await self._close_invocation(invocation)
+            if cleanup_interrupted:
+                # Cancellation received while result/deadline teardown was already in progress is
+                # delivered only after all owned work has completed. This deliberately overrides a
+                # pending result or typed timeout: the caller explicitly cancelled its own await.
+                raise asyncio.CancelledError()
 
-    def _preflight(self, request: HostedByokRequest, *, frame: Any, audio: Any) -> float:
+    def _preflight(
+        self,
+        request: HostedByokRequest,
+        *,
+        frame: Any,
+        exemplar: Any,
+        frames: list | None,
+        audio: Any,
+        context: dict | None,
+    ) -> float:
         self._validate_route(request)
-        if request.capability == "vision.judge.fused" and (frame is None or audio is None):
+        if not _is_hosted_image(frame):
+            if request.capability == "vision.judge.fused":
+                raise HostedByokUnsupportedError(
+                    "vision.judge.fused requires both image and audio evidence as exact non-empty "
+                    "media carriers."
+                )
             raise HostedByokUnsupportedError(
-                "vision.judge.fused requires both image and audio evidence."
+                "vision.judge requires exact non-empty image evidence."
             )
-        if request.provider == "openrouter" and audio is not None:
+        if exemplar is not None and not _is_hosted_image(exemplar):
             raise HostedByokUnsupportedError(
-                "OpenRouter hosted BYOK does not support fused audio input."
+                "hosted BYOK exemplar evidence must be an exact non-empty image."
             )
-        if request.provider == "openrouter" and frame is None:
+        if frames is not None and (
+            type(frames) is not list or any(not _is_hosted_image(item) for item in frames)
+        ):
             raise HostedByokUnsupportedError(
-                "OpenRouter hosted BYOK vision.judge requires image evidence."
+                "hosted BYOK frames must be an exact list of non-empty image evidence."
             )
+        if context is not None and type(context) is not dict:
+            raise HostedByokUnsupportedError("hosted BYOK context must be an exact dict.")
+        if request.capability == "vision.judge":
+            if audio is not None:
+                raise HostedByokUnsupportedError(
+                    "vision.judge forbids audio evidence; declare vision.judge.fused exactly."
+                )
+        else:
+            if not _is_hosted_audio(audio):
+                raise HostedByokUnsupportedError(
+                    "vision.judge.fused requires both image and audio evidence as exact non-empty "
+                    "media carriers."
+                )
+            if context and (context.get("process_qa") or context.get("observe_step")):
+                raise HostedByokUnsupportedError(
+                    "vision.judge.fused does not support context routes that omit audio evidence."
+                )
         if request.cancellation is not None and request.cancellation.is_set():
             raise HostedByokCancelled()
 
@@ -338,7 +412,7 @@ class HostedByokAdapterFactory:
 
     @staticmethod
     def _validate_route(request: HostedByokRequest) -> None:
-        if not isinstance(request, HostedByokRequest):
+        if type(request) is not HostedByokRequest:
             raise HostedByokContractError(
                 "request must be an immutable HostedByokRequest; implicit configuration is unsupported."
             )
@@ -369,22 +443,35 @@ class HostedByokAdapterFactory:
                 f"model {request.model!r} is not an exact OpenRouter 'vendor/model' id."
             )
 
-    def _build_invocation(self, request: HostedByokRequest, timeout_s: float) -> _Invocation:
+    def _build_invocation(
+        self,
+        request: HostedByokRequest,
+        timeout_s: float,
+        invocation: _Invocation,
+    ) -> None:
         override = self._backend_factories.get(request.provider)
         if override is not None:
             try:
                 backend = override(request, timeout_s)
             except Exception:
                 raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
+            invocation.backend = backend
             self._claim_injected(backend)
-            return _Invocation(backend=backend)
+            return
         if request.provider == "gemini":
-            return self._build_gemini(request, timeout_s)
+            self._build_gemini(request, timeout_s, invocation)
+            return
         if request.provider == "openrouter":
-            return self._build_openrouter(request, timeout_s)
+            self._build_openrouter(request, timeout_s, invocation)
+            return
         raise HostedByokUnsupportedError(f"unsupported hosted BYOK provider {request.provider!r}.")
 
-    def _build_gemini(self, request: HostedByokRequest, timeout_s: float) -> _Invocation:
+    def _build_gemini(
+        self,
+        request: HostedByokRequest,
+        timeout_s: float,
+        invocation: _Invocation,
+    ) -> None:
         from .backends.gemini import GeminiVision, _require_genai
 
         settings = _settings_for_model(request.model)
@@ -397,7 +484,6 @@ class HostedByokAdapterFactory:
                 raise HostedByokContractError(
                     "gemini_client_factory must return HostedByokGeminiClient."
                 )
-            self._claim_injected(binding.client)
         else:
             genai, types = _require_genai()
             client = genai.Client(
@@ -405,19 +491,27 @@ class HostedByokAdapterFactory:
                 http_options=types.HttpOptions(timeout=max(1, int(timeout_s * 1000))),
             )
             binding = HostedByokGeminiClient(client=client, transport_types=types)
+        invocation.client = binding.client
+        if self._gemini_client_factory is not None:
+            self._claim_injected(binding.client)
         backend = GeminiVision(
             settings,
             client=binding.client,
             transport_types=binding.transport_types,
             strip_prompt="change",
         )
+        invocation.backend = backend
         if backend._model != request.model:
             raise HostedByokUnsupportedError(
                 f"Gemini refused exact model {request.model!r}; no fallback is permitted."
             )
-        return _Invocation(backend=backend, client=binding.client)
 
-    def _build_openrouter(self, request: HostedByokRequest, timeout_s: float) -> _Invocation:
+    def _build_openrouter(
+        self,
+        request: HostedByokRequest,
+        timeout_s: float,
+        invocation: _Invocation,
+    ) -> None:
         from .backends.openrouter import (
             OpenRouterVision,
             _OPENROUTER_BASE_URL,
@@ -430,7 +524,6 @@ class HostedByokAdapterFactory:
                 client = self._openrouter_client_factory(request, timeout_s)
             except Exception:
                 raise HostedByokInvocationError(_PROVIDER_FAILURE_CODE) from None
-            self._claim_injected(client)
         else:
             AsyncOpenAI = _require_openai()
             client = AsyncOpenAI(
@@ -442,12 +535,15 @@ class HostedByokAdapterFactory:
                     "X-Title": "Percept",
                 },
             )
+        invocation.client = client
+        if self._openrouter_client_factory is not None:
+            self._claim_injected(client)
         backend = OpenRouterVision(settings, client=client, timeout_s=timeout_s)
+        invocation.backend = backend
         if backend._model != request.model:
             raise HostedByokUnsupportedError(
                 f"OpenRouter refused exact model {request.model!r}; no fallback is permitted."
             )
-        return _Invocation(backend=backend, client=client)
 
     def _claim_injected(self, component: Any) -> None:
         """Reject callback-returned object reuse without retaining the object."""
@@ -472,21 +568,43 @@ class HostedByokAdapterFactory:
         self._injected_claims[component_id] = claimed
 
     @staticmethod
-    async def _stop_task(task: asyncio.Task, timeout_s: float) -> None:
-        if not task.done():
+    async def _settle_task(task: asyncio.Future, *, cancel: bool) -> bool:
+        """Optionally cancel ``task`` and await its actual terminal state without detaching it.
+
+        ``asyncio.shield`` keeps repeated cancellation of the owning ``judge`` task from silently
+        abandoning this child. The boolean tells the caller whether an additional caller cancellation
+        arrived during settlement; child cancellation itself does not count.
+        """
+
+        owner = asyncio.current_task()
+        cancelling_before = owner.cancelling() if owner is not None else 0
+        if cancel and not task.done():
             task.cancel()
-        done, _ = await asyncio.wait({task}, timeout=timeout_s)
-        if task not in done:
-            return
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                # Either the child reached its cancelled terminal state or the owner was cancelled
+                # again. In the latter case shield left the child running, so keep ownership and wait.
+                continue
+            except Exception:
+                # The child is terminal; consume the fixed result surface below.
+                break
         try:
             task.result()
         except asyncio.CancelledError:
             pass
         except Exception:
             pass
+        return owner is not None and owner.cancelling() > cancelling_before
 
     @staticmethod
-    async def _close_invocation(invocation: _Invocation, *, timeout_s: float) -> None:
+    async def _close_invocation(invocation: _Invocation) -> bool:
+        """Close every acquired component to actual completion, without threads or orphan tasks."""
+
+        owner = asyncio.current_task()
+        cancelling_before = owner.cancelling() if owner is not None else 0
+        interrupted = False
         seen: set[int] = set()
         for component in (invocation.backend, invocation.client):
             if component is None or id(component) in seen:
@@ -498,24 +616,20 @@ class HostedByokAdapterFactory:
                 continue
             if not callable(closer):
                 continue
-
-            async def close_one() -> None:
-                result = await asyncio.to_thread(closer)
-                if inspect.isawaitable(result):
-                    await result
-
-            close_task = asyncio.create_task(close_one())
-            done, _ = await asyncio.wait({close_task}, timeout=timeout_s)
-            if close_task not in done:
-                close_task.cancel()
-                continue
             try:
-                close_task.result()
-            except asyncio.CancelledError:
-                pass
+                result = closer()
+                if hasattr(result, "__await__"):
+                    close_task = asyncio.ensure_future(result)
+                    interrupted |= await HostedByokAdapterFactory._settle_task(
+                        close_task,
+                        cancel=False,
+                    )
             except Exception:
                 # Teardown must not hide the judgment result/failure. Objects are discarded regardless.
                 pass
+        return interrupted or (
+            owner is not None and owner.cancelling() > cancelling_before
+        )
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -586,6 +700,92 @@ def _positive_duration(name: str, value: float) -> float:
     ):
         raise HostedByokContractError(f"{name} must be a finite positive number.")
     return float(value)
+
+
+def _is_hosted_image(value: Any) -> bool:
+    """Whether ``value`` is one exact image carrier supported by both hosted adapters."""
+
+    if isinstance(value, (bytes, bytearray)):
+        return bool(value)
+    if (
+        type(value) is tuple
+        and len(value) == 2
+        and type(value[0]) is str
+        and value[0].strip().lower().startswith("image/")
+        and isinstance(value[1], (bytes, bytearray))
+    ):
+        return bool(value[1])
+    if type(value) is dict and value.get("type") == "image":
+        source = value.get("source")
+        return (
+            type(source) is dict
+            and type(source.get("media_type")) is str
+            and source["media_type"].strip().lower().startswith("image/")
+            and type(source.get("data")) is str
+            and bool(source["data"])
+        )
+    return False
+
+
+def _is_hosted_audio(value: Any) -> bool:
+    """Whether ``value`` is one exact non-empty Gemini audio carrier."""
+
+    if isinstance(value, (bytes, bytearray)):
+        return bool(value)
+    if (
+        type(value) is tuple
+        and len(value) == 2
+        and type(value[0]) is str
+        and value[0].strip().lower().startswith("audio/")
+        and isinstance(value[1], (bytes, bytearray))
+    ):
+        return bool(value[1])
+    if type(value) is AudioFrame:
+        pcm = value.pcm if isinstance(value.pcm, (bytes, bytearray, memoryview)) else b""
+        encoded = (
+            value.encoded
+            if isinstance(value.encoded, (bytes, bytearray, memoryview))
+            else b""
+        )
+        return bool(pcm) != bool(encoded)
+    return False
+
+
+def _verdict_is_credential_free(verdict: Verdict, credential: str) -> bool:
+    """Recursively inspect the complete public Verdict carrier without rendering attacker values."""
+
+    secret_bytes = credential.encode("utf-8")
+    seen: set[int] = set()
+
+    def contains(value: Any) -> bool:
+        if value is None or type(value) in (bool, int, float):
+            return False
+        if type(value) is str:
+            return credential in value
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            return secret_bytes in bytes(value)
+        if isinstance(value, Enum):
+            return contains(value.value)
+
+        identity = id(value)
+        if identity in seen:
+            return False
+        seen.add(identity)
+
+        if is_dataclass(value) and not isinstance(value, type):
+            return any(contains(getattr(value, item.name)) for item in dataclass_fields(value))
+        if isinstance(value, Mapping):
+            return any(contains(key) or contains(item) for key, item in value.items())
+        if type(value) in (list, tuple, set, frozenset):
+            return any(contains(item) for item in value)
+        # Hosted provider adapters parse JSON-like data into SDK DTOs. An opaque custom carrier
+        # cannot be proven credential-free without invoking attacker-controlled rendering/access.
+        raise TypeError("unsupported hosted BYOK Verdict carrier")
+
+    try:
+        return not contains(verdict)
+    except Exception:
+        return False
 
 
 __all__ = [
