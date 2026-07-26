@@ -222,6 +222,8 @@ class BudgetEnforcer:
         self._input_tokens = 0
         self._output_tokens = 0
         self._billed_usd = 0.0
+        self._unpriced_attempts = 0
+        self._estimated_usd = 0.0
 
     @property
     def attempts_per_call(self) -> int:
@@ -317,12 +319,42 @@ class BudgetEnforcer:
             self._inflight -= 1
             self._failed_attempts += 1
 
+    def complete_unpriced_attempt(
+        self, reservation: AttemptReservation, usage: dict[str, Any]
+    ) -> None:
+        """Close token-metered success when the provider supplies no billed USD.
+
+        Keep the approved USD reservation committed rather than presenting a
+        plan estimate as a bill.  The optional estimate is diagnostic only.
+        """
+        try:
+            input_tokens = int(usage["input_tokens"])
+            output_tokens = int(usage["output_tokens"])
+        except (KeyError, OverflowError, TypeError, ValueError) as exc:
+            self.fail_attempt(reservation)
+            raise BudgetExceeded("provider response omitted enforceable token usage") from exc
+        if input_tokens < 0 or output_tokens < 0:
+            self.fail_attempt(reservation)
+            raise BudgetExceeded("provider returned invalid token usage")
+        estimate = usage.get("estimated_usd")
+        if estimate is not None and (not isinstance(estimate, (int, float)) or not math.isfinite(float(estimate)) or float(estimate) < 0):
+            self.fail_attempt(reservation)
+            raise BudgetExceeded("provider returned invalid estimated usage")
+        with self._lock:
+            self._ensure_open(reservation)
+            reservation.closed = True
+            self._inflight -= 1
+            self._input_tokens += input_tokens
+            self._output_tokens += output_tokens
+            self._unpriced_attempts += 1
+            self._estimated_usd += float(estimate or 0.0)
+
     @staticmethod
     def _ensure_open(reservation: AttemptReservation) -> None:
         if reservation.closed:
             raise RuntimeError(f"attempt reservation {reservation.sequence} already closed")
 
-    def snapshot(self) -> dict[str, int | float]:
+    def snapshot(self) -> dict[str, int | float | bool]:
         with self._lock:
             return {
                 "physical_attempts": self._attempts,
@@ -334,6 +366,9 @@ class BudgetEnforcer:
                 "output_tokens": self._output_tokens,
                 "committed_usd": self._committed_usd,
                 "billed_usd": self._billed_usd,
+                "billed_usd_known": self._unpriced_attempts == 0,
+                "unpriced_attempts": self._unpriced_attempts,
+                "estimated_usd": self._estimated_usd,
             }
 
 

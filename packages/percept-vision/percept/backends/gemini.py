@@ -186,12 +186,18 @@ def _usage_of(resp: Any) -> dict:
     if um is None:
         return {}
     out: dict[str, int] = {}
-    pt = getattr(um, "prompt_token_count", None)
-    ct = getattr(um, "candidates_token_count", None)
-    if isinstance(pt, int):
-        out["input_tokens"] = pt
-    if isinstance(ct, int):
-        out["output_tokens"] = ct
+    prompt = sum(
+        value for value in (getattr(um, "prompt_token_count", None), getattr(um, "tool_use_prompt_token_count", None))
+        if isinstance(value, int)
+    )
+    output = sum(
+        value for value in (getattr(um, "candidates_token_count", None), getattr(um, "thoughts_token_count", None))
+        if isinstance(value, int)
+    )
+    if prompt:
+        out["input_tokens"] = prompt
+    if output:
+        out["output_tokens"] = output
     return out
 
 
@@ -253,9 +259,9 @@ class GeminiVision(_GeminiBase):
 
     def _budget_usage(self, response: Any) -> dict[str, Any]:
         usage = _usage_of(response)
-        if self._request_budget is not None and "cost_usd" not in usage:
+        if self._request_budget is not None:
             price = self._request_budget.plan["price_snapshot"]
-            usage["cost_usd"] = (
+            usage["estimated_usd"] = (
                 usage.get("input_tokens", 0) * float(price["input_usd_per_million_tokens"])
                 + usage.get("output_tokens", 0) * float(price["output_usd_per_million_tokens"])
             ) / 1_000_000
@@ -275,7 +281,11 @@ class GeminiVision(_GeminiBase):
                 raise
             if reservation is not None:
                 try:
-                    self._request_budget.complete_attempt(reservation, self._budget_usage(response))
+                    usage = self._budget_usage(response)
+                    if "cost_usd" in usage:
+                        self._request_budget.complete_attempt(reservation, usage)
+                    else:
+                        self._request_budget.complete_unpriced_attempt(reservation, usage)
                 except Exception as exc:
                     raise _BudgetTerminalError(exc) from exc
             return response
