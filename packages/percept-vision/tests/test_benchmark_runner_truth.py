@@ -89,6 +89,21 @@ def _result(path: Path, track: str, case_ids: list[str]) -> None:
 
 
 class BenchmarkRunnerTruthTests(unittest.TestCase):
+    def test_launch_defaults_select_only_the_runtime_v2_track(self):
+        namespace = runpy.run_path(
+            str(TOOL),
+            run_name="benchmark_launch_defaults_test",
+        )
+
+        args = namespace["build_parser"]().parse_args(["run"])
+
+        self.assertEqual(namespace["SAFE_LIVE_TRACKS"], ("pt-action-e2e",))
+        self.assertEqual(args.tracks, "pt-action-e2e")
+        self.assertEqual(
+            namespace["_resolve_tracks"]("stable"),
+            ["pt-action-e2e"],
+        )
+
     def test_all_alias_resolves_every_registered_track(self):
         namespace = runpy.run_path(str(TOOL), run_name="benchmark_tool_test")
         self.assertEqual(

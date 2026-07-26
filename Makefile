@@ -1,6 +1,6 @@
 # percept — public CI lanes
 #   L1 unit  : OUR deterministic logic, fakes only, no keys, <2s  -> `make test`
-#   L2 live  : backend INTELLIGENCE + integration, real+gated     -> `PERCEPT_LIVE=1 make eval-live`
+#   L2 live  : compiled runtime + bounded provider qualification  -> `make benchmark-run`
 #   L3 e2e   : the real system a user drives, headless            -> `make e2e`
 SDK       := packages/percept-vision
 EDGE      := packages/percept-edge
@@ -16,7 +16,7 @@ help:
 	@echo "viability-frontier-contract  validate matched frontier mechanics on synthetic data (never launch-qualifying)"
 	@echo "test-js    L1 unit — percept-edge (vitest; needs npm install)"
 	@echo "test-all   test + test-js"
-	@echo "eval-live  L2 live eval (needs keys + validated budget plan; skips without PERCEPT_LIVE=1)"
+	@echo "eval-live  compatibility alias for the PT runtime-v2 provider canary"
 	@echo "eval-benchmark  per-concern P/R on a labelled-clip manifest (offline; MANIFEST=path)"
 	@echo "e2e        L3 e2e — live smoke (needs keys; skips cleanly)"
 	@echo "bench      deterministic offline execution + measured call reduction (not provider cost)"
@@ -27,7 +27,7 @@ help:
 	@echo "benchmark-fetch-proactiveqa  pre-cache ProactiveVideoQA EGO videos (PVQA_N=100)"
 	@echo "benchmark-index-proactiveqa  rewrite ProactiveQA subset from local cache"
 	@echo "benchmark-manifest  write ignored content-hashed candidate manifest (PT_ACTION=200 PT_SOUND=100)"
-	@echo "benchmark-run  run reproducible local scorecard wrapper (TRACKS=stable N=8 WORKERS=2)"
+	@echo "benchmark-run  run PT runtime-v2 qualification (OpenRouter/Qwen; default N=1 canary)"
 	@echo "benchmark-collect  re-render a local scorecard (RUN_DIR=eval/local-benchmark/runs/<id>)"
 	@echo "check      architecture + compile + supported-surface lint; fails on real findings"
 	@echo "lint       Ruff gate for the shipped runtime, tests, and active benchmark harness"
@@ -102,7 +102,7 @@ eval-live:
 	@if [ "$$PERCEPT_LIVE" != "1" ]; then \
 		echo "L2 STATUS: SKIPPED — set PERCEPT_LIVE=1 and provide provider key, local media, and PERCEPT_BENCH_BUDGET_PLAN."; \
 	else \
-		cd $(SDK) && PYTHONPATH=. $(PY) -m eval.run; \
+		$(MAKE) benchmark-run LIVE=1 TRACKS=pt-action-e2e; \
 	fi
 
 # Per-concern precision/recall on a labelled-clip manifest (offline; fake backend; no keys).
@@ -151,19 +151,26 @@ MANIFEST_REPCOUNT ?= 100
 benchmark-manifest:
 	$(PY) tools/percept_benchmark.py manifest-candidate --pt-action $(PT_ACTION) --pt-sound $(PT_SOUND) --charades $(MANIFEST_CHARADES) --proactiveqa $(MANIFEST_PVQA) --repcount $(MANIFEST_REPCOUNT)
 
-TRACKS ?= stable
-N ?= 8
+TRACKS ?= pt-action-e2e
+N ?= 1
 WORKERS ?= 1
 ATTEMPTS ?= 1
-LIVE ?= 0
+LIVE ?= 1
+BENCHMARK_MANIFEST ?= eval/golden-v1/MANIFEST.json
+BENCHMARK_MODE ?= sampled
+REQUIRE_RELEASE ?= 0
 LIVE_FLAG := $(if $(filter 1,$(LIVE)),--live,)
+RELEASE_FLAG := $(if $(filter 1,$(REQUIRE_RELEASE)),--require-release,)
 benchmark-run:
-	$(PY) tools/percept_benchmark.py run $(LIVE_FLAG) --tracks $(TRACKS) --n $(N) --workers $(WORKERS) --attempts $(ATTEMPTS)
+	$(PY) tools/percept_benchmark.py run $(LIVE_FLAG) --tracks $(TRACKS) --n $(N) \
+		--workers $(WORKERS) --attempts $(ATTEMPTS) --manifest $(BENCHMARK_MANIFEST) \
+		--mode $(BENCHMARK_MODE) --no-prefetch-pose
 
 RUN_DIR ?=
 benchmark-collect:
 	@if [ -z "$(RUN_DIR)" ]; then echo "set RUN_DIR=eval/local-benchmark/runs/<run-id>"; exit 2; fi
-	$(PY) tools/percept_benchmark.py collect --run-dir $(RUN_DIR)
+	$(PY) tools/percept_benchmark.py collect --run-dir $(RUN_DIR) \
+		--manifest $(BENCHMARK_MANIFEST) --mode $(BENCHMARK_MODE) $(RELEASE_FLAG)
 
 calibrate:
 	cd $(SDK) && PYTHONPATH=. $(PY) -m eval.calibrate

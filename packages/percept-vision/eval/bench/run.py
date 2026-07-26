@@ -23,7 +23,6 @@ from . import (
     track_counting,
     track_cuespeak,
     track_edge_recall,
-    track_escalation_policy,
     track_perception_test_e2e,
     track_relational,
     track_timeliness,
@@ -235,14 +234,10 @@ def main(argv: list[str] | None = None) -> int:
 
     results = []
     if args.live:
-        tracks = (
-            track_perception_test_e2e,
-            track_edge_recall,
-            track_escalation_policy,
-            track_counting,
-            track_cuespeak,
-            track_timespeak,
-        )
+        # OSS launch qualification has one canonical live lane. The other
+        # modules remain directly runnable diagnostics until they are migrated
+        # to the compiled runtime-v2 result contract.
+        tracks = (track_perception_test_e2e,)
     else:
         tracks = (track_relational, track_counting, track_acoustic_pt, track_timeliness, track_edge_recall,
                   track_cuespeak, track_timespeak)

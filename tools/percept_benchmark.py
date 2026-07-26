@@ -46,7 +46,7 @@ TRACK_MODULES = {
     "cuespeak": "eval.bench.track_cuespeak",
     "timespeak": "eval.bench.track_timespeak",
 }
-SAFE_LIVE_TRACKS = ("pt-action-e2e", "edge", "escalation", "counting", "cuespeak", "timespeak")
+SAFE_LIVE_TRACKS = ("pt-action-e2e",)
 LEGACY_MEDIA_DENSE_TRACKS = ("relational", "acoustic", "timeliness")
 DERIVED_ARTIFACT_TRACKS = ("cuespeak", "timespeak")
 ALIASES = {
@@ -1637,7 +1637,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--n", type=int, default=8, help="sample size per track")
     run.add_argument(
         "--tracks",
-        default="safe-live",
+        default="pt-action-e2e",
         help="comma list or alias: all, safe-live, stable, no-counting, legacy-all",
     )
     run.add_argument("--exclude", default="", help="comma list of tracks to skip")
