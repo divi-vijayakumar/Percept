@@ -83,7 +83,7 @@ def _budget_plan_json(
 
 
 class BenchmarkLaunchGateTests(unittest.TestCase):
-    def test_pt_action_qualification_rejects_non_openrouter_qwen_route(self):
+    def test_pt_action_qualification_accepts_exactly_pinned_budgeted_provider(self):
         from eval.bench.run import _live_prerequisite_blockers
 
         with patch.dict(
@@ -106,14 +106,35 @@ class BenchmarkLaunchGateTests(unittest.TestCase):
                 tracks=["pt-action-e2e"],
             )
 
+        self.assertEqual(blockers, [])
+
+    def test_pt_action_qualification_rejects_provider_model_budget_mismatch(self):
+        from eval.bench.run import _live_prerequisite_blockers
+
+        with patch.dict(
+            os.environ,
+            {
+                "PERCEPT_VISION_BACKEND": "gemini",
+                "PERCEPT_VISION_MODEL": "gemini-3.5-flash",
+                "GEMINI_API_KEY": "offline-presence-check-only",
+                "PERCEPT_BENCH_BUDGET_PLAN": _budget_plan_json(
+                    provider="gemini",
+                    model="gemini-3.1-flash-lite",
+                ),
+            },
+            clear=False,
+        ):
+            blockers = _live_prerequisite_blockers(
+                manifest=None,
+                release=False,
+                n=None,
+                tracks=["pt-action-e2e"],
+            )
+
         self.assertIn(
-            "pt-action-e2e qualification requires "
-            "PERCEPT_VISION_BACKEND=openrouter",
-            blockers,
-        )
-        self.assertIn(
-            "pt-action-e2e qualification requires an explicitly pinned "
-            "Qwen model through OpenRouter",
+            "budget plan invalid: budget model 'gemini-3.1-flash-lite' "
+            "does not match configured model "
+            "'gemini-3.5-flash'",
             blockers,
         )
 
