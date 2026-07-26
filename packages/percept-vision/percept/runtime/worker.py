@@ -257,7 +257,7 @@ class _UnsafeMixedTopologyError(ValueError):
         )
 
 
-class _JudgeScheduler:
+class _LegacyJudgeScheduler:
     """Off-loop judge dispatch (``run(judge_dispatch="async")``): the capture loop never awaits a
     network judgment.
 
@@ -775,6 +775,388 @@ class _JudgeScheduler:
             # eventual cleanup; live shutdown itself must remain bounded.
             if task.done():
                 await asyncio.sleep(0)
+
+
+class _JudgeScheduler:
+    """Bounded single-flight transport lane with one latest-pending batch.
+
+    The runtime owner prepares and atomically launches a batch only after this
+    lane accepts it. Provider tasks return frozen completions through ``ready``;
+    they never run a whole-core cognition coroutine or reduce state themselves.
+    """
+
+    def __init__(
+        self,
+        core: Any,
+        source: str,
+        stats: RuntimeStats | None,
+        *,
+        ready: Any = None,
+        stall_after_s: float = 20.0,
+        backpressure_after: int = 3,
+    ) -> None:
+        self._core = core
+        self._source = source
+        self._stats = stats
+        self.ready = ready
+        self._active: asyncio.Task | None = None
+        self._active_t: float | None = None
+        self._pending: tuple[float, tuple[Any, ...], int | None] | None = None
+        self._results: deque = deque()
+        self._trace: list[tuple[str, dict]] = []
+        self._fatal: BaseException | None = None
+        self._closing = False
+        self._completion_ordinal = 0
+        self._split_protocol = callable(
+            getattr(core, "launch_judgments", None)
+        ) and callable(getattr(core, "dispatch_judgment", None))
+        self._legacy_dispatch = (
+            None
+            if self._split_protocol
+            else getattr(core, "perceive_" + "judged", None)
+        )
+        self._stall_after_s = stall_after_s
+        self._backpressure_after = backpressure_after
+        self._active_launch_wall: float | None = None
+        self._stall_reported = False
+        self._backpressure_reported = False
+        self._consec_supersede = 0
+
+    def _mc_now(self, fallback: float) -> float:
+        clock = getattr(self._core, "clock", None)
+        return clock() if callable(clock) else fallback
+
+    @property
+    def active(self) -> int:
+        return 0 if self._active is None else 1
+
+    @property
+    def pending(self) -> int:
+        return 0 if self._pending is None else 1
+
+    @property
+    def can_accept(self) -> bool:
+        return self._fatal is None and not self._closing
+
+    def submit(
+        self,
+        t: float,
+        jobs: Any,
+        goal_ids: tuple[str, ...] | None = None,
+    ) -> bool:
+        """Accept one prepared batch and publish its reservations atomically."""
+        if not self.can_accept:
+            return False
+        prepared = (
+            tuple(jobs)
+            if self._split_protocol
+            else ("legacy", jobs, goal_ids)
+        )
+        if not prepared:
+            return False
+        if self._active is None:
+            self._launch(t, prepared)
+            return True
+        self._check_stall(t)
+        revision = (
+            prepared[0].token.goals_registry_revision
+            if self._split_protocol
+            else getattr(self._core.goals, "revision", None)
+        )
+        if self._pending is not None:
+            dropped_t, dropped_jobs, _ = self._pending
+            if self._stats is not None:
+                self._stats.judge_superseded += 1
+            self._trace.append(
+                (
+                    "judge_superseded",
+                    {
+                        "source": self._source,
+                        "reason": "superseded_by_newer_admission",
+                        "dropped_t": dropped_t,
+                        "admitted_t": t,
+                        "goal_ids": (
+                            tuple(job.token.goal_id for job in dropped_jobs)
+                            if self._split_protocol
+                            else dropped_jobs[2]
+                        ),
+                        "slot": "pending",
+                    },
+                )
+            )
+            self._consec_supersede += 1
+            self._check_backpressure(t)
+        self._pending = (t, prepared, revision)
+        return True
+
+    def _launch(self, t: float, jobs: tuple[Any, ...]) -> None:
+        launched = (
+            tuple(self._core.launch_judgments(jobs, runtime_trace=True))
+            if self._split_protocol
+            else jobs
+        )
+        if self._stats is not None:
+            self._stats.perceive_dispatches += (
+                len(launched) if self._split_protocol else 1
+            )
+            # RuntimeStats.judge_calls is the historical scheduler-launch
+            # count (one admitted frame batch), not provider subcall spend.
+            self._stats.judge_calls += 1
+        self._active_t = t
+        self._active_launch_wall = self._mc_now(t)
+        self._stall_reported = False
+        self._active = asyncio.create_task(
+            self._dispatch(launched, t=t)
+        )
+        self._active.add_done_callback(self._on_done)
+
+    def _check_stall(self, now_t: float) -> None:
+        if (
+            self._stall_reported
+            or self._active is None
+            or self._active_launch_wall is None
+        ):
+            return
+        elapsed = self._mc_now(now_t) - self._active_launch_wall
+        if elapsed < self._stall_after_s:
+            return
+        self._stall_reported = True
+        self._trace.append(
+            (
+                "judge_scheduler_stalled",
+                {
+                    "source": self._source,
+                    "reason": "active_judgment_exceeded_stall_threshold",
+                    "active_t": self._active_t,
+                    "elapsed_s": elapsed,
+                    "stall_after_s": self._stall_after_s,
+                },
+            )
+        )
+
+    def _check_backpressure(self, now_t: float) -> None:
+        if (
+            self._backpressure_reported
+            or self._consec_supersede < self._backpressure_after
+        ):
+            return
+        self._backpressure_reported = True
+        self._trace.append(
+            (
+                "judge_scheduler_backpressure",
+                {
+                    "source": self._source,
+                    "reason": "sustained_pending_overwrite",
+                    "consecutive_supersessions": self._consec_supersede,
+                    "active_t": self._active_t,
+                    "active_elapsed_s": (
+                        self._mc_now(now_t) - self._active_launch_wall
+                        if self._active_launch_wall is not None
+                        else None
+                    ),
+                },
+            )
+        )
+
+    def _launch_pending(self) -> None:
+        if self._pending is None or self._closing or self._fatal is not None:
+            self._pending = None
+            return
+        t, jobs, revision = self._pending
+        self._pending = None
+        current = getattr(self._core.goals, "revision", None)
+        if revision != current:
+            if self._stats is not None:
+                self._stats.judge_revision_dropped += 1
+            self._trace.append(
+                (
+                    "judge_revision_dropped",
+                    {
+                        "source": self._source,
+                        "reason": "goals_revision_changed",
+                        "dropped_t": t,
+                        "admitted_revision": revision,
+                        "current_revision": current,
+                    },
+                )
+            )
+            return
+        self._launch(t, jobs)
+
+    async def _dispatch(
+        self,
+        jobs: tuple[Any, ...],
+        *,
+        t: float,
+    ) -> tuple[Any, ...] | list[Any]:
+        if not self._split_protocol:
+            if not callable(self._legacy_dispatch):
+                raise AttributeError("core has no scheduler dispatch seam")
+            _, frame, goal_ids = jobs
+            kwargs = {
+                "t": t,
+                "expected_goals_revision": getattr(
+                    self._core.goals, "revision", None
+                ),
+            }
+            if goal_ids is not None and _accepts_keyword(
+                self._legacy_dispatch, "goal_ids"
+            ):
+                kwargs["goal_ids"] = goal_ids
+            return await self._legacy_dispatch(
+                frame,
+                self._source,
+                **kwargs,
+            )
+        completions = []
+        for job in jobs:
+            completions.append(await self._core.dispatch_judgment(job))
+        return tuple(completions)
+
+    def _on_done(self, task: asyncio.Task) -> None:
+        if task.cancelled():
+            self._active = None
+            return
+        failure = task.exception()
+        if failure is not None:
+            self._fatal = failure
+            self._active = None
+            self._pending = None
+            return
+        from dataclasses import replace
+
+        if self._split_protocol:
+            ready = []
+            for completion in task.result():
+                self._completion_ordinal += 1
+                ready.append(
+                    replace(
+                        completion,
+                        completion_ordinal=self._completion_ordinal,
+                    )
+                )
+            row = (self._active_t, tuple(ready))
+        else:
+            row = (self._active_t, task.result())
+        self._results.append(row)
+        callback = self.ready
+        if callback is not None:
+            callback(row)
+        self._active = None
+        recovered = []
+        if self._stall_reported:
+            recovered.append("stalled")
+        if self._backpressure_reported:
+            recovered.append("backpressure")
+        self._stall_reported = False
+        self._backpressure_reported = False
+        if recovered:
+            self._trace.append(
+                (
+                    "judge_scheduler_recovered",
+                    {
+                        "source": self._source,
+                        "recovered_from": recovered,
+                        "resolved_t": self._active_t,
+                    },
+                )
+            )
+        self._active_launch_wall = None
+        self._consec_supersede = 0
+        if not self._split_protocol:
+            self._launch_pending()
+
+    def owner_reduced(self) -> None:
+        """Release the next lane slot only after ready state was owner-reduced."""
+        if self._split_protocol and self._active is None:
+            self._launch_pending()
+
+    def drain(self) -> list[tuple[float, tuple[Any, ...]]]:
+        if self._fatal is not None:
+            raise self._fatal
+        rows = []
+        while self._results:
+            rows.append(self._results.popleft())
+        return rows
+
+    def drain_trace(self) -> list[tuple[str, dict]]:
+        rows = self._trace
+        self._trace = []
+        return rows
+
+    def invalidate_source_continuity(self, reasons: tuple[str, ...]) -> None:
+        """Cancel transport work; the runtime owner advances continuity once."""
+        reason = ",".join(
+            str(getattr(item, "value", item)) for item in reasons
+        ) or "source_discontinuity"
+        if self._pending is not None:
+            self._pending = None
+            if self._stats is not None:
+                self._stats.judge_source_discontinuity_dropped += 1
+                self._stats.judge_source_discontinuity_pending_dropped += 1
+            self._trace.append(
+                (
+                    "judge_source_discontinuity_dropped",
+                    {
+                        "source": self._source,
+                        "reason": reason,
+                        "slot": "pending",
+                    },
+                )
+            )
+        if self._active is not None and not self._active.done():
+            self._active.cancel()
+            if self._stats is not None:
+                self._stats.judge_source_discontinuity_dropped += 1
+                self._stats.judge_source_discontinuity_active_dropped += 1
+            self._trace.append(
+                (
+                    "judge_source_discontinuity_dropped",
+                    {
+                        "source": self._source,
+                        "reason": reason,
+                        "slot": "active",
+                    },
+                )
+            )
+
+    async def flush(self) -> None:
+        while self._fatal is None and (
+            self._active is not None or self._pending is not None
+        ):
+            task = self._active
+            if task is None:
+                if self._split_protocol:
+                    return
+                self._launch_pending()
+                continue
+            if task.done():
+                await asyncio.sleep(0)
+                continue
+            try:
+                await task
+            except asyncio.CancelledError:
+                if not task.cancelled():
+                    raise
+            except BaseException:  # noqa: BLE001
+                pass
+
+    async def close(self, *, drain: bool) -> None:
+        if drain:
+            await self.flush()
+            self._closing = True
+            return
+        self._closing = True
+        self._pending = None
+        task = self._active
+        if task is not None:
+            task.cancel()
+            if task.done():
+                await asyncio.sleep(0)
+
+
+# Public-private compatibility name used by the shared-owner promotion oracle.
+_ProviderScheduler = _JudgeScheduler
 
 
 # Per-path timebase-skew tolerances. The tripwire compares a frame/chunk `t` against the core
@@ -1350,7 +1732,7 @@ async def _run_audio_only(
     suppressed = False
     cov = stats if stats is not None else RuntimeStats()
     scheduler = (
-        _JudgeScheduler(
+        _LegacyJudgeScheduler(
             core,
             gate_source,
             cov,
@@ -2308,9 +2690,12 @@ async def _run_worker(
     _video_source_id: str | None = None
     _audio_source_id: str | None = None
     _judge_sched = (
-        _JudgeScheduler(
-            core, gate_source, _cov, metrics_collector=metrics_collector,
-            stall_after_s=judge_stall_after_s, backpressure_after=judge_backpressure_after,
+        _ProviderScheduler(
+            core,
+            gate_source,
+            _cov,
+            stall_after_s=judge_stall_after_s,
+            backpressure_after=judge_backpressure_after,
         )
         if judge_dispatch == "async" else None
     )
@@ -2571,7 +2956,7 @@ async def _run_worker(
         if program_of(goal).perception.modality == "audio"
     ]
     if judge_dispatch == "async" and compiled_audio_only_goals:
-        _audio_judge_sched = _JudgeScheduler(
+        _audio_judge_sched = _LegacyJudgeScheduler(
             core,
             gate_source,
             _cov,
@@ -2758,7 +3143,7 @@ async def _run_worker(
         # Each fused Watch has bounded admission slots. Distinct goals mutate distinct executor/gate
         # keys; the core's per-task usage correlation is context-local.
         _fused_judge_scheds = {
-            goal.id: _JudgeScheduler(
+            goal.id: _LegacyJudgeScheduler(
                 core,
                 gate_source,
                 _cov,
@@ -3053,8 +3438,6 @@ async def _run_worker(
         deadlines_accepts_goal_ids = (
             check_deadlines is not None and _accepts_keyword(check_deadlines, "goal_ids")
         )
-        perceive_accepts_goal_ids = _accepts_keyword(core.perceive_judged, "goal_ids")
-
         # --- autosave: periodically persist state so a crash/restart resumes, not restarts. ----
         # Also persists the delivery idempotency ledger's snapshot() (event_id -> ts of a
         # terminal-OK delivery only — no secrets/media) alongside goals/entities, so a restart that
@@ -3993,6 +4376,80 @@ async def _run_worker(
                 for trace_id, trace_t, stage, data in drain_records():
                     await emit_trace(trace_id, trace_t, stage, **data)
 
+        async def _prepare_split_jobs(
+            frame,
+            goal_ids,
+            *,
+            at,
+            revision,
+        ):
+            """Run observation projection, then the generic route preparer.
+
+            ``prepare_transition_judgment`` and ``prepare_process_judgment``
+            are reached through ``prepare_judgment``; provider dispatch and
+            ``reduce_judgment_completion`` remain separate owner phases.
+            """
+            generation = core.source_continuity_generation(gate_source)
+            candidate = core.prepare_observation_candidate(
+                frame,
+                gate_source,
+                t=at,
+                expected_goals_revision=revision,
+                expected_source_generation=generation,
+                goal_ids=goal_ids,
+            )
+            if candidate is None or not core.launch_observation_candidate(
+                candidate,
+                runtime_trace=True,
+            ):
+                return ()
+            observation = await core.dispatch_observation_candidate(candidate)
+            reduction = core.reduce_observation_completion(observation)
+            if reduction.failure is not None:
+                raise RuntimeError(
+                    "observation provider failed: "
+                    f"{reduction.failure.exception_type}"
+                )
+            if reduction.stale_reason is not None:
+                return ()
+            return tuple(
+                job
+                for goal_id in goal_ids
+                if (
+                    job := core.prepare_judgment(
+                        reduction,
+                        goal_id=goal_id,
+                    )
+                )
+                is not None
+            )
+
+        async def _emit_judgment_completions(
+            completions,
+            *,
+            at,
+            scheduler=None,
+        ):
+            fires = []
+            for completion in sorted(
+                completions,
+                key=lambda item: (
+                    item.completion_ordinal
+                    if item.completion_ordinal is not None
+                    else -1
+                ),
+            ):
+                fires.extend(core.reduce_judgment_completion(completion))
+            if scheduler is not None:
+                scheduler.owner_reduced()
+            async for incident in _emit_fires(fires, at=at):
+                yield incident
+            drain_rows = getattr(core, "drain_judgment_trace_rows", None)
+            emit_trace = getattr(core, "_emit_trace", None)
+            if callable(drain_rows) and callable(emit_trace):
+                for trace_id, trace_t, stage, data in drain_rows():
+                    await emit_trace(trace_id, trace_t, stage, **data)
+
         _was_paused = False
         _fused_was_paused = False
         async for envelope in _aiter(source, capture_fps, **source_kwargs):
@@ -4149,8 +4606,12 @@ async def _run_worker(
                 for _hk, _hd in _judge_sched.drain_trace():
                     if on_health is not None:
                         await _call_sink(on_health, RuntimeHealthEvent(_hk, ts=t, data=_hd))
-                for _jt, _jfires in _judge_sched.drain():
-                    async for incident in _emit_fires(_jfires, at=_jt):
+                for _jt, _completions in _judge_sched.drain():
+                    async for incident in _emit_judgment_completions(
+                        _completions,
+                        at=_jt,
+                        scheduler=_judge_sched,
+                    ):
                         yield incident
                 # Surface any judge_degraded/judge_persistent_failure events queued by the
                 # perceive_judged calls that just drained above (core is shared across dispatch modes).
@@ -4278,7 +4739,7 @@ async def _run_worker(
                                 added_goal, rev
                             )
                             assert _fused_judge_scheds is not None
-                            _fused_judge_scheds[added_id] = _JudgeScheduler(
+                            _fused_judge_scheds[added_id] = _LegacyJudgeScheduler(
                                 core,
                                 gate_source,
                                 _cov,
@@ -4730,19 +5191,41 @@ async def _run_worker(
                         yield incident
             if _judge_sched is not None:
                 if ordinary_goal_ids:
-                    _judge_sched.submit(t, judge_frame, ordinary_goal_ids)
+                    jobs = await _prepare_split_jobs(
+                        judge_frame,
+                        ordinary_goal_ids,
+                        at=t,
+                        revision=goals_revision,
+                    )
+                    if jobs:
+                        _judge_sched.submit(t, jobs)
+                        # Give a non-blocking provider task one scheduling turn.
+                        # Fast local/scripted adapters settle before the next
+                        # frame; a slow provider remains off the capture path.
+                        await asyncio.sleep(0)
+                        await asyncio.sleep(0)
             elif ordinary_goal_ids:
-                _cov.perceive_dispatches += 1
-                _cov.judge_calls += 1
-                perceive_kwargs = {"t": t}
-                if perceive_accepts_goal_ids:
-                    perceive_kwargs["goal_ids"] = ordinary_goal_ids
-                fires = await core.perceive_judged(
-                    judge_frame, gate_source, **perceive_kwargs
+                jobs = await _prepare_split_jobs(
+                    judge_frame,
+                    ordinary_goal_ids,
+                    at=t,
+                    revision=goals_revision,
                 )
-                if not perceive_accepts_goal_ids:
-                    fires = _filter_goal_events(fires, ordinary_goal_ids)
-                async for incident in _emit_fires(fires, at=t):
+                launched = (
+                    core.launch_judgments(jobs, runtime_trace=True)
+                    if jobs
+                    else ()
+                )
+                completions = []
+                if launched:
+                    _cov.judge_calls += 1
+                for job in launched:
+                    _cov.perceive_dispatches += 1
+                    completions.append(await core.dispatch_judgment(job))
+                async for incident in _emit_judgment_completions(
+                    completions,
+                    at=t,
+                ):
                     yield incident
         # Source exhausted (finite file / test stream): a judgment may still be IN FLIGHT and one more
         # PENDING behind it. Flush to QUIESCENCE (completing the active may launch the pending — one
@@ -4812,9 +5295,20 @@ async def _run_worker(
                         ):
                             yield incident
                 else:
-                    for _jt, _jfires in scheduler.drain():
-                        async for incident in _emit_fires(_jfires, at=_jt):
-                            yield incident
+                    for _jt, _result in scheduler.drain():
+                        if lane_kind == "ordinary":
+                            async for incident in _emit_judgment_completions(
+                                _result,
+                                at=_jt,
+                                scheduler=scheduler,
+                            ):
+                                yield incident
+                        else:
+                            async for incident in _emit_fires(
+                                _result,
+                                at=_jt,
+                            ):
+                                yield incident
         except TimeoutError:
             # A cancellation-resistant provider lane must not hold completed
             # reflex lanes or end-of-stream delivery hostage.
@@ -4863,17 +5357,39 @@ async def _run_worker(
                         ):
                             yield incident
                 else:
-                    for _jt, _jfires in scheduler.drain():
-                        async for incident in _emit_fires(_jfires, at=_jt):
-                            yield incident
+                    for _jt, _result in scheduler.drain():
+                        if lane_kind == "ordinary":
+                            async for incident in _emit_judgment_completions(
+                                _result,
+                                at=_jt,
+                                scheduler=scheduler,
+                            ):
+                                yield incident
+                        else:
+                            async for incident in _emit_fires(
+                                _result,
+                                at=_jt,
+                            ):
+                                yield incident
         if _judge_sched is not None and not ordinary_joined_provider_flush:
-            await _judge_sched.flush()
-            for _hk, _hd in _judge_sched.drain_trace():
-                if on_health is not None:
-                    await _call_sink(on_health, RuntimeHealthEvent(_hk, data=_hd))
-            for _jt, _jfires in _judge_sched.drain():
-                async for incident in _emit_fires(_jfires, at=_jt):
-                    yield incident
+            while True:
+                await _judge_sched.flush()
+                for _hk, _hd in _judge_sched.drain_trace():
+                    if on_health is not None:
+                        await _call_sink(
+                            on_health,
+                            RuntimeHealthEvent(_hk, data=_hd),
+                        )
+                rows = _judge_sched.drain()
+                for _jt, _completions in rows:
+                    async for incident in _emit_judgment_completions(
+                        _completions,
+                        at=_jt,
+                        scheduler=_judge_sched,
+                    ):
+                        yield incident
+                if not _judge_sched.active and not _judge_sched.pending:
+                    break
         await _drain_judge_health(core, on_health, _last_t)
         # The LAST tick's suppressions (and anything the end-of-source flush above produced) would
         # otherwise die with the queue — drain once more so a finite stream reports every suppression

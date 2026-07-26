@@ -759,7 +759,7 @@ def test_fused_pending_supersession_records_exact_dropped_job_identity():
     from percept import Percept
     from percept.backends.fake import FakeVision
     from percept.contracts.watchplan import WatchPlan
-    from percept.runtime.worker import RuntimeStats, _JudgeScheduler
+    from percept.runtime.worker import RuntimeStats, _LegacyJudgeScheduler
     from percept.watchplan_apply import apply_watch_plan
     from tests.test_watchplan_runtime_binding import _profile
 
@@ -827,7 +827,7 @@ def test_fused_pending_supersession_records_exact_dropped_job_identity():
             await release.wait()
             return None
 
-        scheduler = _JudgeScheduler(
+        scheduler = _LegacyJudgeScheduler(
             core,
             "camera",
             RuntimeStats(),

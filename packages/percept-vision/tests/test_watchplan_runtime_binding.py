@@ -525,7 +525,7 @@ class WatchPlanCompilationTests(unittest.TestCase):
 
 
 class PerWatchRuntimeIsolationTests(unittest.TestCase):
-    def test_duck_typed_perceive_without_goal_ids_runs_inline_and_async(self) -> None:
+    def test_runtime_uses_split_seams_even_if_whole_core_method_is_replaced(self) -> None:
         for dispatch in ("inline", "async"):
             with self.subTest(dispatch=dispatch):
                 core = Percept.create(vision=RecordingVision(), discover_plugins=False)
@@ -560,7 +560,11 @@ class PerWatchRuntimeIsolationTests(unittest.TestCase):
                         judge_dispatch=dispatch,
                     )
                 )
-                self.assertEqual(len(calls), 1)
+                # A real Percept owns cognition through the split preparation,
+                # provider, and reduction seams. Replacing the legacy
+                # whole-core convenience method must not replace that owner.
+                self.assertEqual(calls, [])
+                self.assertEqual(len(core.vision.judged), 1)
                 self.assertEqual(incidents, [])
 
     def test_different_source_profiles_admit_only_the_matching_watch(self) -> None:

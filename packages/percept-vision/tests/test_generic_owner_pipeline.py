@@ -494,14 +494,19 @@ def test_unlaunched_superseded_job_spends_nothing_and_launched_pair_counts_once(
             live_reduction, goal_id="transition"
         )
         assert live_launched is not None
+        # Projection alone cannot supersede accepted work. The latest
+        # admission changes only when the lane launches this job.
         assert (
             core._judgment_latest_admission[("transition", "scene")]
-            == live_launched.token.admission_id
-            != stale_launched.token.admission_id
+            == stale_launched.token.admission_id
             != never_launched.token.admission_id
         )
         assert core.metrics.get("funnel.judged") == 0
         live_completion = await core.dispatch_judgment(live_launched)
+        assert (
+            core._judgment_latest_admission[("transition", "scene")]
+            == live_launched.token.admission_id
+        )
         # A finished provider task is still only a receipt; spend is published
         # once, atomically with owner reduction.
         assert core.metrics.get("funnel.judged") == 0
@@ -606,15 +611,20 @@ def test_routed_token_validates_exact_watch_application_and_revision(
         )
         assert job.token.watch_application == "application-a"
         assert job.token.watch_revision == core.goals.revision
+        completion = await core.dispatch_judgment(job)
         if stale_kind == "watch_revision":
-            job = replace(
-                job,
-                token=replace(
-                    job.token,
-                    watch_revision=job.token.watch_revision + 1,
+            completion = replace(
+                completion,
+                job=replace(
+                    completion.job,
+                    token=replace(
+                        completion.job.token,
+                        watch_revision=(
+                            completion.job.token.watch_revision + 1
+                        ),
+                    ),
                 ),
             )
-        completion = await core.dispatch_judgment(job)
         if stale_kind == "watch_application":
             core._watch_runtime_keys[route] = "application-b"
         assert core.reduce_judgment_completion(completion) == []
