@@ -22,6 +22,7 @@ from eval.bench.budget import (
     build_budget_enforcer,
     validate_budget_plan,
 )
+from eval.bench.run import _live_prerequisite_blockers
 from eval.bench.track_perception_test_e2e import (
     ACTION_BRIEF_WINDOW_S,
     ACTION_TEMPORAL_FRAMES,
@@ -55,12 +56,14 @@ def _plan(
     tokens_per_attempt: int = 1000,
     usd_per_attempt: float = 0.1,
     retries: int = 1,
+    provider: str = "openrouter",
+    model: str = "qwen/qwen3-vl-32b-instruct",
 ) -> str:
     return json.dumps(
         {
             "version": 1,
-            "provider": "openrouter",
-            "model": "qwen/qwen3-vl-32b-instruct",
+            "provider": provider,
+            "model": model,
             "region": "us",
             "price_snapshot": {
                 "as_of": "2026-07-25",
@@ -161,6 +164,43 @@ class ActionBenchmarkConfigurationTests(unittest.TestCase):
 
 
 class BudgetAdmissionTests(unittest.TestCase):
+    def test_gemini_pinned_budget_passes_live_preflight(self):
+        plan = _plan(provider="gemini", model="gemini-3.1-flash-lite")
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "PERCEPT_VISION_BACKEND": "gemini",
+                    "PERCEPT_VISION_MODEL": "gemini-3.1-flash-lite",
+                    "PERCEPT_BENCH_BUDGET_PLAN": plan,
+                },
+                clear=False,
+            ),
+            patch("percept.config.missing_credential", return_value=()),
+        ):
+            blockers = _live_prerequisite_blockers(
+                manifest=None, release=False, n=1, tracks=["pt-action-e2e"]
+            )
+        self.assertEqual(blockers, [])
+
+    def test_mismatched_pinned_budget_blocks_live_preflight(self):
+        plan = _plan(provider="gemini", model="gemini-3.1-flash-lite")
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "PERCEPT_VISION_BACKEND": "gemini",
+                    "PERCEPT_VISION_MODEL": "gemini-3.1-flash",
+                    "PERCEPT_BENCH_BUDGET_PLAN": plan,
+                },
+                clear=False,
+            ),
+            patch("percept.config.missing_credential", return_value=()),
+        ):
+            blockers = _live_prerequisite_blockers(
+                manifest=None, release=False, n=1, tracks=["pt-action-e2e"]
+            )
+        self.assertTrue(any("model" in blocker for blocker in blockers))
     def test_non_finite_plan_numbers_are_rejected(self):
         for value in (float("nan"), float("inf"), float("-inf")):
             with self.subTest(value=value):

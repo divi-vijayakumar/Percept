@@ -1547,10 +1547,9 @@ def score(*, live: bool, n: int) -> TrackResult:
 
     backend = os.environ.get("PERCEPT_VISION_BACKEND", "").strip()
     model = os.environ.get("PERCEPT_VISION_MODEL", "").strip()
-    if backend != "openrouter" or not model.lower().startswith("qwen/"):
+    if not backend or not model:
         result = _unavailable(
-            "pt-action-e2e qualification requires an explicitly pinned "
-            "Qwen model through OpenRouter"
+            "pt-action-e2e qualification requires an explicitly pinned provider and model"
         )
         result.status = "blocked"
         return result
@@ -1836,9 +1835,14 @@ def score(*, live: bool, n: int) -> TrackResult:
             "model": model,
             "watch": _action_goal_state(),
             "evidence_contract": {
-                "native_video_clip": True,
-                "ordered_images_are_not_equivalent": True,
-                "ordered_image_fallback": False,
+                "logical_evidence": "video_clip",
+                "provider_transports": sorted(
+                    {
+                        run.configuration.get("provider_transport")
+                        for run in runs
+                        if run.configuration.get("provider_transport")
+                    }
+                ),
                 "event_chain": True,
                 "required_phase_vocabulary": ["pre", "during", "post"],
                 "required_action_present": True,

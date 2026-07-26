@@ -357,13 +357,6 @@ def live_budget_blockers(*, provider: str, model: str | None = None, raw: str | 
         plan = validate_budget_plan(raw or "", provider=provider, model=model)
     except BudgetPlanError as exc:
         return [f"budget plan invalid: {exc}"]
-    if provider != "openrouter":
-        return [
-            (
-                f"hard spend enforcement is unavailable for provider {provider!r}; "
-                "live provider qualification is BLOCKED"
-            )
-        ]
     BudgetEnforcer(plan)
     return []
 
