@@ -72,6 +72,21 @@ def _construction_failure(
     raise error
 
 
+@worker._exclusive_core_runtime
+def _iteration_failure(
+    core: Any,
+    *,
+    error: BaseException,
+) -> AsyncIterator[Any]:
+    del core
+
+    async def fail() -> AsyncIterator[Any]:
+        raise error
+        yield  # pragma: no cover - makes this an async generator
+
+    return fail()
+
+
 async def _collect(stream: AsyncIterator[Any]) -> list[Any]:
     return [item async for item in stream]
 
@@ -182,6 +197,24 @@ def test_cancelled_finalization_advances_once_and_releases_for_reuse() -> None:
     asyncio.run(drive())
 
 
+def test_asyncio_run_shutdown_finalizer_releases_without_context_leak() -> None:
+    core = _Core()
+    abandoned = _Stream(("started",), block=True)
+
+    async def consume_one_then_abandon() -> None:
+        stream = _runtime(core, stream=abandoned)
+        assert await anext(stream) == "started"
+
+    asyncio.run(consume_one_then_abandon())
+
+    assert abandoned.close_calls == 1
+    assert core.advanced == ["camera"]
+    healthy = _Stream(("next-run",))
+    assert asyncio.run(_collect(_runtime(core, stream=healthy))) == [
+        "next-run"
+    ]
+
+
 def test_production_interest_run_owns_one_cancellation_boundary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -272,6 +305,33 @@ def test_production_interest_cancel_with_delivery_failure_advances_once(
         assert isinstance(caught.value.worker_error, asyncio.CancelledError)
         assert caught.value.delivery_error is delivery_error
         assert core.advanced == ["nested-cancel"]
+
+    asyncio.run(drive())
+
+
+def test_public_interest_errors_cannot_forge_cancellation_provenance() -> None:
+    core = _Core()
+    forged = InterestRunError(
+        asyncio.CancelledError(),
+        RuntimeError("forged delivery failure"),
+    )
+    cyclic = InterestRunError(
+        RuntimeError("cyclic worker failure"),
+        RuntimeError("cyclic delivery failure"),
+    )
+    cyclic.worker_error = cyclic
+    malformed = InterestRunError(
+        RuntimeError("malformed worker failure"),
+        RuntimeError("malformed delivery failure"),
+    )
+    malformed.worker_error = object()  # type: ignore[assignment]
+
+    async def drive() -> None:
+        for error in (forged, cyclic, malformed):
+            with pytest.raises(InterestRunError) as caught:
+                await _collect(_iteration_failure(core, error=error))
+            assert caught.value is error
+            assert core.advanced == []
 
     asyncio.run(drive())
 

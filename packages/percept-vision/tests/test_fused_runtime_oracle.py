@@ -11,6 +11,7 @@ import asyncio
 import inspect
 import json
 import struct
+import sys
 import types
 import unittest
 from copy import deepcopy
@@ -132,6 +133,32 @@ class ProviderClient:
     def __init__(self, answers=None, blocked=()):
         self.models = ProviderModels(answers, blocked)
         self.aio = types.SimpleNamespace(models=self.models)
+
+
+def provider_wire_modules() -> dict[str, types.ModuleType]:
+    """Minimal google-genai wire types for the already-injected fake provider."""
+    google = types.ModuleType("google")
+    genai = types.ModuleType("google.genai")
+    google_types = types.ModuleType("google.genai.types")
+
+    class Part:
+        @staticmethod
+        def from_bytes(**kwargs):
+            return types.SimpleNamespace(**kwargs)
+
+    class GenerateContentConfig:
+        def __init__(self, **kwargs):
+            vars(self).update(kwargs)
+
+    google.genai = genai
+    genai.types = google_types
+    google_types.Part = Part
+    google_types.GenerateContentConfig = GenerateContentConfig
+    return {
+        "google": google,
+        "google.genai": genai,
+        "google.genai.types": google_types,
+    }
 
 
 def trusted_core(*, answers=None, blocked=(), **kwargs):
@@ -1365,6 +1392,12 @@ class FusedPromotionBlockerTests(unittest.TestCase):
 
     def test_mixed_eos_hung_lane_is_bounded_and_reflex_result_survives(self):
         async def drive():
+            current = asyncio.current_task()
+            baseline_tasks = {
+                task
+                for task in asyncio.all_tasks()
+                if task is not current
+            }
             core, models = trusted_core(
                 answers={
                     "hung deliberate": Verdict(True, 0.99, "deliberate"),
@@ -1398,11 +1431,49 @@ class FusedPromotionBlockerTests(unittest.TestCase):
                 judge_stall_after_s=0.05,
                 on_health=health.append,
             )
-            return core, models, incidents, health
+            effects_before_release = (
+                len(models.calls),
+                tuple(core.action_log.entries()),
+            )
+            models.cancellation_release.set()
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            effects_after_release = (
+                len(models.calls),
+                tuple(core.action_log.entries()),
+            )
+            lingering = [
+                task
+                for task in asyncio.all_tasks()
+                if (
+                    task is not asyncio.current_task()
+                    and task not in baseline_tasks
+                    and not task.done()
+                )
+            ]
+            return (
+                core,
+                models,
+                incidents,
+                health,
+                effects_before_release,
+                effects_after_release,
+                lingering,
+            )
 
-        core, models, incidents, health = asyncio.run(
-            bounded(drive(), timeout=1.0)
-        )
+        # Keep this a cold-start test: the injected provider needs only the
+        # stable wire constructors, not a cache-priming import of the entire
+        # optional google-genai SDK before the hard outer deadline begins.
+        with patch.dict(sys.modules, provider_wire_modules()):
+            (
+                core,
+                models,
+                incidents,
+                health,
+                effects_before_release,
+                effects_after_release,
+                lingering,
+            ) = asyncio.run(bounded(drive(), timeout=1.0))
         self.assertEqual(
             [incident.concern_id for incident in incidents],
             ["reflex"],
@@ -1413,6 +1484,8 @@ class FusedPromotionBlockerTests(unittest.TestCase):
             ),
         )
         self.assertIn("hung deliberate", models.cancelled_conditions)
+        self.assertEqual(lingering, [])
+        self.assertEqual(effects_after_release, effects_before_release)
         self.assertEqual(
             [record.goal_id for record in core.action_log.entries("fire")],
             ["reflex"],
