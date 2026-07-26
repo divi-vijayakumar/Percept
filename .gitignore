@@ -191,3 +191,7 @@ eval/datasets/meva/_pilot_data/
 packages/percept-vision/eval/datasets/guiworld/_pilot_data/
 packages/percept-vision/eval/datasets/*/_pilot_data/
 client-preview/*.whl
+
+# stage-validation corpus artifacts (media-derived, rebuildable via build_corpus.py)
+eval/stage-validation/corpus.json
+eval/local-benchmark/
