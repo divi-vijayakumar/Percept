@@ -47,7 +47,8 @@ test-templates:
 	cd templates/realtime_voice_watch_agent && PYTHONPATH=.:$(abspath $(SDK)) PERCEPT_MODE=offline PERCEPT_NO_BANNER=1 $(PY) -m unittest discover -s tests -t .
 
 test-js:
-	cd $(EDGE) && npm test
+	pnpm --dir $(EDGE) install --frozen-lockfile
+	pnpm --dir $(EDGE) test
 
 test-all: test test-js
 
