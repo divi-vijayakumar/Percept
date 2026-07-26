@@ -118,10 +118,24 @@ percept-bench audit --release \
 
 ```bash
 export PERCEPT_LIVE=1
-export GEMINI_API_KEY=...
-export PERCEPT_GEMINI_MODEL=gemini-3.5-flash
+export PERCEPT_VISION_BACKEND=openrouter
+export PERCEPT_VISION_MODEL=qwen/qwen3-vl-32b-instruct
+export OPENROUTER_API_KEY=...
 
-make benchmark-run LIVE=1 TRACKS=stable N=20 WORKERS=2 ATTEMPTS=2
+python3 -m build --sdist --wheel --outdir dist packages/percept-vision
+python3 -m venv .benchmark-venv
+.benchmark-venv/bin/python -m pip install \
+  "dist/percept_vision-1.0.0-py3-none-any.whl[bench,runtime,openrouter]"
+
+# Artifact/accounting canary first.
+make benchmark-run LIVE=1 TRACKS=pt-action-e2e N=1 WORKERS=1 ATTEMPTS=1 \
+  BENCH_PY=.benchmark-venv/bin/python \
+  SDK_WHEEL=dist/percept_vision-1.0.0-py3-none-any.whl
+
+# Preserve the exact wheel, manifest, configuration, and budget plan for N=20.
+make benchmark-run LIVE=1 TRACKS=pt-action-e2e N=20 WORKERS=1 ATTEMPTS=1 \
+  BENCH_PY=.benchmark-venv/bin/python \
+  SDK_WHEEL=dist/percept_vision-1.0.0-py3-none-any.whl
 
 # Direct lower-level experiment lanes remain available:
 PERCEPT_LIVE=1 make e2e-bench

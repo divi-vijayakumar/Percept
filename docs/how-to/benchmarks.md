@@ -7,17 +7,23 @@ and a reproducible local **model-sweep** runbook. This guide is how to run them.
 producing them; the numbers themselves are a separate, later phase. Everything below is runnable
 today, but the results are yours to generate on your own data — do not expect a published figure.
 
-## Prerequisite: run from a checkout
+## Prerequisite: checkout plus an installed candidate wheel
 
 The benchmark harness is repo/dev tooling — it lives in the top-level `eval` package and does **not**
-ship in the installed wheel (`percept.bench` imports it lazily and degrades to a "run from a
-checkout" note on a bare install). So clone and install with the `bench` extra:
+ship in the installed wheel. Qualification deliberately combines source-only benchmark tooling with
+the product runtime from one exact wheel; importing `percept` from the checkout is rejected.
 
 ```bash
 git clone https://github.com/divi-vijayakumar/Percept && cd Percept
-pip install -e "packages/percept-vision[bench]"
-export PYTHONPATH=packages/percept-vision
+python3 -m build --sdist --wheel --outdir dist packages/percept-vision
+python3 -m venv .benchmark-venv
+.benchmark-venv/bin/python -m pip install \
+  "dist/percept_vision-1.0.0-py3-none-any.whl[bench,runtime,openrouter]"
 ```
+
+Do not set `PYTHONPATH=packages/percept-vision` for a qualification run. The runner verifies the
+wheel SHA-256, build stamp, metadata, import origin, and every hashed installed RECORD file in the
+parent and each track worker.
 
 ## Snapshot scorecard
 
@@ -60,8 +66,21 @@ make benchmark-prepare                          # create ignored local folders +
 make benchmark-fetch VIDEOS=12 REPCOUNT=12      # pre-cache benchmark media
 make benchmark-manifest                         # write a content-hashed candidate manifest
 
-export PERCEPT_LIVE=1 GEMINI_API_KEY=...         # real provider calls
-make benchmark-run LIVE=1 TRACKS=stable N=20 WORKERS=2
+export PERCEPT_LIVE=1
+export PERCEPT_VISION_BACKEND=openrouter
+export PERCEPT_VISION_MODEL=qwen/qwen3-vl-32b-instruct
+export OPENROUTER_API_KEY=...
+
+# First validate one pinned case. OpenRouter qualification is intentionally
+# single-worker and single-attempt so one budget ledger accounts for every call.
+make benchmark-run LIVE=1 N=1 WORKERS=1 ATTEMPTS=1 \
+  BENCH_PY=.benchmark-venv/bin/python \
+  SDK_WHEEL=dist/percept_vision-1.0.0-py3-none-any.whl
+
+# Run N=20 only after the N=1 artifact and accounting gates pass.
+make benchmark-run LIVE=1 N=20 WORKERS=1 ATTEMPTS=1 \
+  BENCH_PY=.benchmark-venv/bin/python \
+  SDK_WHEEL=dist/percept_vision-1.0.0-py3-none-any.whl
 
 make benchmark-collect RUN_DIR=eval/local-benchmark/runs/<run-id>   # re-render a scorecard
 ```

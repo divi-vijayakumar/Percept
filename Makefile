@@ -27,7 +27,7 @@ help:
 	@echo "benchmark-fetch-proactiveqa  pre-cache ProactiveVideoQA EGO videos (PVQA_N=100)"
 	@echo "benchmark-index-proactiveqa  rewrite ProactiveQA subset from local cache"
 	@echo "benchmark-manifest  write ignored content-hashed candidate manifest (PT_ACTION=200 PT_SOUND=100)"
-	@echo "benchmark-run  run PT runtime-v2 qualification (OpenRouter/Qwen; default N=1 canary)"
+	@echo "benchmark-run  run installed-wheel PT qualification (set BENCH_PY and SDK_WHEEL; default N=1)"
 	@echo "benchmark-collect  re-render a local scorecard (RUN_DIR=eval/local-benchmark/runs/<id>)"
 	@echo "check      architecture + compile + supported-surface lint; fails on real findings"
 	@echo "lint       Ruff gate for the shipped runtime, tests, and active benchmark harness"
@@ -157,13 +157,17 @@ N ?= 1
 WORKERS ?= 1
 ATTEMPTS ?= 1
 LIVE ?= 1
+BENCH_PY ?= $(PY)
+SDK_WHEEL ?=
 BENCHMARK_MANIFEST ?= eval/golden-v1/MANIFEST.json
 BENCHMARK_MODE ?= sampled
 REQUIRE_RELEASE ?= 0
 LIVE_FLAG := $(if $(filter 1,$(LIVE)),--live,)
+SDK_WHEEL_FLAG := $(if $(strip $(SDK_WHEEL)),--sdk-wheel $(abspath $(SDK_WHEEL)),)
 RELEASE_FLAG := $(if $(filter 1,$(REQUIRE_RELEASE)),--require-release,)
 benchmark-run:
-	$(PY) tools/percept_benchmark.py run $(LIVE_FLAG) --tracks $(TRACKS) --n $(N) \
+	$(BENCH_PY) tools/percept_benchmark.py run $(LIVE_FLAG) $(SDK_WHEEL_FLAG) \
+		--tracks $(TRACKS) --n $(N) \
 		--workers $(WORKERS) --attempts $(ATTEMPTS) --manifest $(BENCHMARK_MANIFEST) \
 		--mode $(BENCHMARK_MODE) --no-prefetch-pose
 

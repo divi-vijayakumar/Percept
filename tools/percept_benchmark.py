@@ -1945,7 +1945,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="run benchmark tracks with retries and per-track logs")
     run.add_argument("--live", action="store_true", help="use the configured live vision backend")
-    run.add_argument("--n", type=int, default=8, help="sample size per track")
+    run.add_argument(
+        "--n",
+        type=int,
+        default=1,
+        help="sample size per track (default: one-case provider canary)",
+    )
     run.add_argument(
         "--tracks",
         default="pt-action-e2e",

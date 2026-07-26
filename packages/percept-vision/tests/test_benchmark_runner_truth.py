@@ -100,6 +100,7 @@ class BenchmarkRunnerTruthTests(unittest.TestCase):
 
         self.assertEqual(namespace["SAFE_LIVE_TRACKS"], ("pt-action-e2e",))
         self.assertEqual(args.tracks, "pt-action-e2e")
+        self.assertEqual(args.n, 1)
         self.assertEqual(
             namespace["_resolve_tracks"]("stable"),
             ["pt-action-e2e"],
@@ -560,6 +561,13 @@ class BenchmarkRunnerTruthTests(unittest.TestCase):
         command = namespace["_background_cmd"](args, "run-1")
         index = command.index("--sdk-wheel")
         self.assertEqual(command[index + 1], wheel)
+
+    def test_make_launch_command_requires_explicit_wheel_and_interpreter(self):
+        makefile = (ROOT / "Makefile").read_text()
+        self.assertIn("BENCH_PY ?= $(PY)", makefile)
+        self.assertIn("SDK_WHEEL ?=", makefile)
+        self.assertIn("$(BENCH_PY) tools/percept_benchmark.py run", makefile)
+        self.assertIn("$(SDK_WHEEL_FLAG)", makefile)
 
     def test_run_track_returns_nonzero_for_blocked_result_and_writes_checksum(self):
         from eval.bench.types import TrackResult
