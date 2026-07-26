@@ -19,6 +19,12 @@ from .fake_judge import (
     LatencyProfile,
     ProviderError,
 )
+from .judge_pool import (
+    JudgeCapability,
+    JudgePool,
+    JudgeRoute,
+    JudgeRouteReceipt,
+)
 
 __all__ = [
     "FakeVision",
@@ -33,4 +39,8 @@ __all__ = [
     "ErrorInjectionConfig",
     "ProviderError",
     "JudgeCallRecord",
+    "JudgeCapability",
+    "JudgePool",
+    "JudgeRoute",
+    "JudgeRouteReceipt",
 ]
