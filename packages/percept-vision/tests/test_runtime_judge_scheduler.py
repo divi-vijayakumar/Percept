@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from types import SimpleNamespace
 
 from percept import Goal, Percept
 from percept.adapters import Verdict
@@ -440,12 +441,16 @@ class SchedulerUnitTests(unittest.TestCase):
             for _ in range(3):  # deliver the cancellation + run the done-callback
                 await asyncio.sleep(0)
             self.assertIsNone(sched._fatal, "cancellation must not be recorded as a fatal error")
-            self.assertEqual(sched.active, 0)
-            self.assertEqual(core.judged, ["f1"], "a cancelled completion must not launch the pending")
+            self.assertEqual(
+                core.judged,
+                ["f1", "f2"],
+                "the latest pending call launches only after physical cancellation settles",
+            )
+            self.assertEqual((sched.active, sched.pending), (1, 0))
             self.assertEqual(sched.drain(), [], "nothing to re-raise, nothing to emit")
             await sched.close(drain=False)  # returns cleanly, discards the pending
             self.assertEqual(sched.pending, 0)
-            self.assertEqual(stats.judge_calls, 1)
+            self.assertEqual(stats.judge_calls, 2)
 
         asyncio.run(main())
 
@@ -502,6 +507,234 @@ class SchedulerUnitTests(unittest.TestCase):
             await asyncio.sleep(0)
             with self.assertRaisesRegex(TypeError, "internal judge bug"):
                 sched.drain()
+
+        asyncio.run(main())
+
+    def test_absolute_decision_deadline_bounds_active_dispatch(self):
+        async def main():
+            core = _StubCore()
+            stats = RuntimeStats()
+            sched = _JudgeScheduler(
+                core,
+                "camera",
+                stats,
+                decision_deadline_s=0.02,
+            )
+            started = asyncio.get_running_loop().time()
+            self.assertTrue(sched.submit(1.0, "f1"))
+            while sched.active:
+                await asyncio.sleep(0.005)
+            elapsed = asyncio.get_running_loop().time() - started
+
+            self.assertLess(elapsed, 0.1)
+            self.assertEqual(sched.drain(), [(1.0, ())])
+            self.assertEqual(stats.judge_deadline_expired, 1)
+            self.assertEqual(stats.judge_deadline_dropped, 0)
+            expired = [
+                data
+                for kind, data in sched.drain_trace()
+                if kind == "judge_deadline_expired"
+            ]
+            self.assertEqual(len(expired), 1)
+            self.assertEqual(expired[0]["slot"], "active")
+
+        asyncio.run(main())
+
+    def test_pending_work_is_not_launched_after_absolute_deadline(self):
+        core = _StubCore()
+        now = [10.0]
+        core.clock = lambda: now[0]
+        stats = RuntimeStats()
+        sched = _JudgeScheduler(
+            core,
+            "camera",
+            stats,
+            decision_deadline_s=0.1,
+        )
+        sched._pending = (
+            2.0,
+            ("legacy", "f2", None),
+            core.goals.revision,
+            now[0],
+        )
+        now[0] += 0.11
+
+        sched._launch_pending()
+
+        self.assertEqual((sched.active, sched.pending), (0, 0))
+        self.assertEqual(core.judged, [])
+        self.assertEqual(stats.judge_calls, 0)
+        self.assertEqual(stats.judge_deadline_dropped, 1)
+        dropped = [
+            data
+            for kind, data in sched.drain_trace()
+            if kind == "judge_deadline_dropped"
+        ]
+        self.assertEqual(len(dropped), 1)
+        self.assertEqual(dropped[0]["slot"], "pending")
+
+    def test_cancellation_hostile_child_keeps_physical_lane_occupied(self):
+        class HostileCore(_StubCore):
+            def __init__(self):
+                super().__init__()
+                self.live = 0
+                self.peak = 0
+
+            async def perceive_judged(
+                self,
+                frame,
+                source,
+                *,
+                t=None,
+                expected_goals_revision=None,
+            ):
+                self.judged.append(frame)
+                self.live += 1
+                self.peak = max(self.peak, self.live)
+                try:
+                    if self.block.is_set():
+                        return []
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError:
+                        await self.block.wait()
+                    return []
+                finally:
+                    self.live -= 1
+
+        async def main():
+            core = HostileCore()
+            sched = _JudgeScheduler(core, "camera", RuntimeStats())
+            sched.submit(1.0, "f1")
+            await asyncio.sleep(0)
+            sched.invalidate_source_continuity(("reset",))
+            for _ in range(4):
+                await asyncio.sleep(0)
+            self.assertEqual(sched.active, 1)
+
+            sched.submit(2.0, "f2")
+            self.assertEqual(sched.pending, 1)
+            self.assertEqual(core.judged, ["f1"])
+            self.assertEqual(core.peak, 1)
+
+            core.block.set()
+            await sched.flush()
+            self.assertEqual(core.peak, 1)
+            self.assertEqual(core.judged, ["f1", "f2"])
+
+        asyncio.run(main())
+
+    def test_deadline_hostile_child_blocks_new_spend_and_ages_out_pending(self):
+        class HostileCore(_StubCore):
+            def __init__(self):
+                super().__init__()
+                self.live = 0
+                self.peak = 0
+
+            async def perceive_judged(
+                self,
+                frame,
+                source,
+                *,
+                t=None,
+                expected_goals_revision=None,
+            ):
+                self.judged.append(frame)
+                self.live += 1
+                self.peak = max(self.peak, self.live)
+                try:
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError:
+                        await self.block.wait()
+                    return []
+                finally:
+                    self.live -= 1
+
+        async def main():
+            core = HostileCore()
+            core.clock = asyncio.get_running_loop().time
+            stats = RuntimeStats()
+            sched = _JudgeScheduler(
+                core,
+                "camera",
+                stats,
+                decision_deadline_s=0.02,
+            )
+            sched.submit(1.0, "f1")
+            while stats.judge_deadline_expired == 0:
+                await asyncio.sleep(0.005)
+            self.assertEqual(sched.active, 1)
+            sched.submit(2.0, "f2")
+            await asyncio.sleep(0.03)
+            self.assertEqual(core.judged, ["f1"])
+            self.assertEqual(core.peak, 1)
+
+            core.block.set()
+            await sched.flush()
+            self.assertEqual(core.judged, ["f1"])
+            self.assertEqual(core.peak, 1)
+            self.assertEqual(stats.judge_deadline_dropped, 1)
+
+        asyncio.run(main())
+
+    def test_terminal_goal_bound_adapter_stops_rest_of_split_batch(self):
+        error = RuntimeError("terminal provider failure")
+
+        class TerminalSource:
+            def __init__(self):
+                self.errors = [error]
+
+            def take_terminal_error(self):
+                return self.errors.pop(0) if self.errors else None
+
+        class SplitCore:
+            class _Goals:
+                revision = 1
+
+            def __init__(self):
+                self.goals = self._Goals()
+                self.calls = []
+
+            def launch_judgments(self, jobs, runtime_trace=False):
+                return tuple(jobs)
+
+            async def dispatch_judgment(self, job):
+                self.calls.append(job.token.goal_id)
+                return SimpleNamespace()
+
+        async def main():
+            core = SplitCore()
+            jobs = tuple(
+                SimpleNamespace(
+                    token=SimpleNamespace(
+                        goal_id=goal_id,
+                        goals_registry_revision=1,
+                    ),
+                    adapter=adapter,
+                )
+                for goal_id, adapter in (
+                    ("first", TerminalSource()),
+                    ("second", object()),
+                )
+            )
+            sched = _JudgeScheduler(core, "camera", RuntimeStats())
+            sched.submit(1.0, jobs)
+            for _ in range(5):
+                await asyncio.sleep(0)
+
+            self.assertEqual(core.calls, ["first"])
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "terminal provider failure",
+            ):
+                sched.drain()
+            terminal = [
+                data
+                for kind, data in sched.drain_trace()
+                if kind == "judge_terminal_failure"
+            ]
+            self.assertEqual(len(terminal), 1)
 
         asyncio.run(main())
 

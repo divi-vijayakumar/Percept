@@ -252,6 +252,8 @@ class RuntimeStats:
     # drop did not, so the split is retained rather than hiding that distinction.
     judge_superseded: int = 0  # pending judge candidate replaced by a newer admitted frame
     judge_revision_dropped: int = 0  # pending candidate dropped: goals.revision moved after admission
+    judge_deadline_dropped: int = 0  # pending candidate aged past its absolute decision deadline
+    judge_deadline_expired: int = 0  # launched provider batch exceeded its remaining decision budget
     judge_source_discontinuity_dropped: int = 0
     judge_source_discontinuity_active_dropped: int = 0
     judge_source_discontinuity_pending_dropped: int = 0
@@ -364,6 +366,18 @@ def _materialize_reduction(
     items = []
     for fire in fires or ():
         action = getattr(fire, "action", None)
+        judgment = getattr(fire, "judgment", None)
+        source_media_ts = getattr(
+            getattr(judgment, "timing", None),
+            "source_media_ts",
+            None,
+        )
+        event_at = (
+            float(source_media_ts)
+            if isinstance(source_media_ts, (int, float))
+            and not isinstance(source_media_ts, bool)
+            else at
+        )
         if action == ASK:
             if disposition_log is not None:
                 _log_disposition(
@@ -371,7 +385,7 @@ def _materialize_reduction(
                     incident_id="",
                     fire=fire,
                     disposition="ask",
-                    ts=at,
+                    ts=event_at,
                 )
             items.append(_MaterializedItem(action=ASK, fire=fire))
             continue
@@ -379,7 +393,7 @@ def _materialize_reduction(
             continue
         incident = make_incident(
             fire,
-            ts=at,
+            ts=event_at,
             snippet=snippet_for_fire(fire),
             watchplan_id=watchplan_id,
         )
@@ -1040,14 +1054,22 @@ class _JudgeScheduler:
         ready: Any = None,
         stall_after_s: float = 20.0,
         backpressure_after: int = 3,
+        decision_deadline_s: float | None = None,
     ) -> None:
         self._core = core
         self._source = source
         self._stats = stats
         self.ready = ready
         self._active: asyncio.Task | None = None
+        self._abandoned_dispatches: set[asyncio.Task] = set()
+        self._abandoned_terminal_sources: dict[
+            asyncio.Task, tuple[Any, ...]
+        ] = {}
+        self._active_terminal_sources: tuple[Any, ...] = ()
         self._active_t: float | None = None
-        self._pending: tuple[float, tuple[Any, ...], int | None] | None = None
+        self._pending: (
+            tuple[float, tuple[Any, ...], int | None, float] | None
+        ) = None
         self._results: deque = deque()
         self._trace: list[tuple[str, dict]] = []
         self._fatal: BaseException | None = None
@@ -1073,6 +1095,21 @@ class _JudgeScheduler:
         self._stall_reported = False
         self._backpressure_reported = False
         self._consec_supersede = 0
+        if decision_deadline_s is not None and (
+            isinstance(decision_deadline_s, bool)
+            or not isinstance(decision_deadline_s, (int, float))
+            or not math.isfinite(float(decision_deadline_s))
+            or float(decision_deadline_s) <= 0
+        ):
+            raise ValueError(
+                "decision_deadline_s must be a positive finite number or None"
+            )
+        self._decision_deadline_s = (
+            float(decision_deadline_s)
+            if decision_deadline_s is not None
+            else None
+        )
+        self._active_admitted_wall: float | None = None
 
     def _mc_now(self, fallback: float) -> float:
         clock = getattr(self._core, "clock", None)
@@ -1080,7 +1117,9 @@ class _JudgeScheduler:
 
     @property
     def active(self) -> int:
-        return 0 if self._active is None else 1
+        return int(
+            self._active is not None or bool(self._abandoned_dispatches)
+        )
 
     @property
     def pending(self) -> int:
@@ -1106,8 +1145,9 @@ class _JudgeScheduler:
         )
         if not prepared:
             return False
-        if self._active is None:
-            self._launch(t, prepared)
+        admitted_wall = self._mc_now(t)
+        if self._active is None and not self._abandoned_dispatches:
+            self._launch(t, prepared, admitted_wall=admitted_wall)
             return True
         self._check_stall(t)
         revision = (
@@ -1116,7 +1156,7 @@ class _JudgeScheduler:
             else getattr(self._core.goals, "revision", None)
         )
         if self._pending is not None:
-            dropped_t, dropped_jobs, _ = self._pending
+            dropped_t, dropped_jobs, _, _ = self._pending
             if self._stats is not None:
                 self._stats.judge_superseded += 1
             self._trace.append(
@@ -1138,14 +1178,23 @@ class _JudgeScheduler:
             )
             self._consec_supersede += 1
             self._check_backpressure(t)
-        self._pending = (t, prepared, revision)
+        self._pending = (t, prepared, revision, admitted_wall)
         return True
 
-    def _launch(self, t: float, jobs: tuple[Any, ...]) -> None:
+    def _launch(
+        self,
+        t: float,
+        jobs: tuple[Any, ...],
+        *,
+        admitted_wall: float,
+    ) -> None:
         launched = (
             tuple(self._core.launch_judgments(jobs, runtime_trace=True))
             if self._split_protocol
             else jobs
+        )
+        self._active_terminal_sources = self._terminal_sources(
+            launched if self._split_protocol else ()
         )
         if self._stats is not None:
             self._stats.perceive_dispatches += (
@@ -1156,9 +1205,14 @@ class _JudgeScheduler:
             self._stats.judge_calls += 1
         self._active_t = t
         self._active_launch_wall = self._mc_now(t)
+        self._active_admitted_wall = admitted_wall
         self._stall_reported = False
         self._active = asyncio.create_task(
-            self._dispatch(launched, t=t)
+            self._dispatch_with_deadline(
+                launched,
+                t=t,
+                admitted_wall=admitted_wall,
+            )
         )
         self._active.add_done_callback(self._on_done)
 
@@ -1211,10 +1265,12 @@ class _JudgeScheduler:
         )
 
     def _launch_pending(self) -> None:
+        if self._abandoned_dispatches:
+            return
         if self._pending is None or self._closing or self._fatal is not None:
             self._pending = None
             return
-        t, jobs, revision = self._pending
+        t, jobs, revision, admitted_wall = self._pending
         self._pending = None
         current = getattr(self._core.goals, "revision", None)
         if revision != current:
@@ -1233,7 +1289,189 @@ class _JudgeScheduler:
                 )
             )
             return
-        self._launch(t, jobs)
+        if self._decision_deadline_s is not None:
+            age_s = max(0.0, self._mc_now(t) - admitted_wall)
+            if age_s >= self._decision_deadline_s:
+                if self._stats is not None:
+                    self._stats.judge_deadline_dropped += 1
+                self._trace.append(
+                    (
+                        "judge_deadline_dropped",
+                        {
+                            "source": self._source,
+                            "reason": "pending_admission_deadline_expired",
+                            "dropped_t": t,
+                            "age_s": age_s,
+                            "decision_deadline_s": self._decision_deadline_s,
+                            "slot": "pending",
+                        },
+                    )
+                )
+                return
+        self._launch(t, jobs, admitted_wall=admitted_wall)
+
+    @staticmethod
+    def _consume_abandoned(task: asyncio.Task) -> None:
+        if task.cancelled():
+            return
+        try:
+            task.exception()
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    @staticmethod
+    def _terminal_sources(jobs: tuple[Any, ...]) -> tuple[Any, ...]:
+        """Find the exact adapters used by a launched provider batch.
+
+        Goal-bound judges are not necessarily ``core.vision``. Stop at the
+        first wrapper in each chain that exposes the terminal-latch protocol;
+        wrappers such as NativeVideoVision delegate that protocol inward.
+        """
+        roots = [getattr(job, "adapter", None) for job in jobs]
+        found: list[Any] = []
+        seen: set[int] = set()
+        queue = [root for root in roots if root is not None]
+        while queue:
+            current = queue.pop(0)
+            identity = id(current)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            if callable(getattr(current, "take_terminal_error", None)):
+                found.append(current)
+                continue
+            for name in ("_adapter", "inner", "adapter"):
+                nested = getattr(current, name, None)
+                if nested is not None:
+                    queue.append(nested)
+        return tuple(found)
+
+    def _take_terminal_error(
+        self,
+        sources: tuple[Any, ...],
+        *,
+        active_t: float | None,
+    ) -> BaseException | None:
+        for source in sources:
+            take_terminal = getattr(source, "take_terminal_error", None)
+            error = take_terminal() if callable(take_terminal) else None
+            if error is None:
+                continue
+            self._trace.append(
+                (
+                    "judge_terminal_failure",
+                    {
+                        "source": self._source,
+                        "reason": "vision_adapter_terminal_outcome",
+                        "active_t": active_t,
+                        "exception_type": type(error).__name__,
+                    },
+                )
+            )
+            return error
+        return None
+
+    def _on_abandoned_done(self, task: asyncio.Task) -> None:
+        late_failure: BaseException | None = None
+        if not task.cancelled():
+            try:
+                late_failure = task.exception()
+            except asyncio.CancelledError:
+                late_failure = None
+        sources = self._abandoned_terminal_sources.pop(task, ())
+        terminal_error = self._take_terminal_error(
+            sources,
+            active_t=self._active_t,
+        )
+        if terminal_error is not None:
+            self._fatal = terminal_error
+            self._pending = None
+        elif late_failure is not None:
+            self._fatal = late_failure
+            self._pending = None
+            self._trace.append(
+                (
+                    "judge_abandoned_failure",
+                    {
+                        "source": self._source,
+                        "reason": "late_dispatch_failure",
+                        "active_t": self._active_t,
+                        "exception_type": type(late_failure).__name__,
+                    },
+                )
+            )
+        self._abandoned_dispatches.discard(task)
+        if self._active is None and self._fatal is None:
+            self._launch_pending()
+
+    def _track_abandoned(self, task: asyncio.Task) -> None:
+        if task in self._abandoned_dispatches:
+            return
+        self._abandoned_dispatches.add(task)
+        self._abandoned_terminal_sources[task] = (
+            self._active_terminal_sources
+        )
+        task.add_done_callback(self._on_abandoned_done)
+
+    async def _dispatch_with_deadline(
+        self,
+        jobs: tuple[Any, ...],
+        *,
+        t: float,
+        admitted_wall: float,
+    ) -> tuple[Any, ...] | list[Any]:
+        if self._decision_deadline_s is None:
+            return await self._dispatch(jobs, t=t)
+        age_s = max(0.0, self._mc_now(t) - admitted_wall)
+        remaining_s = self._decision_deadline_s - age_s
+        if remaining_s <= 0:
+            if self._stats is not None:
+                self._stats.judge_deadline_expired += 1
+            self._trace.append(
+                (
+                    "judge_deadline_expired",
+                    {
+                        "source": self._source,
+                        "reason": "decision_deadline_expired_before_dispatch",
+                        "active_t": t,
+                        "age_s": age_s,
+                        "decision_deadline_s": self._decision_deadline_s,
+                    },
+                )
+            )
+            return ()
+
+        dispatch = asyncio.create_task(self._dispatch(jobs, t=t))
+        try:
+            done, _ = await asyncio.wait({dispatch}, timeout=remaining_s)
+        except asyncio.CancelledError:
+            # Source discontinuity/live shutdown cancels the scheduler-owned
+            # wrapper. The provider child may suppress cancellation, so retain
+            # physical occupancy until it truly terminates.
+            dispatch.cancel()
+            self._track_abandoned(dispatch)
+            raise
+        if dispatch in done:
+            return dispatch.result()
+        dispatch.cancel()
+        self._track_abandoned(dispatch)
+        elapsed_s = max(0.0, self._mc_now(t) - admitted_wall)
+        if self._stats is not None:
+            self._stats.judge_deadline_expired += 1
+        self._trace.append(
+            (
+                "judge_deadline_expired",
+                {
+                    "source": self._source,
+                    "reason": "active_decision_deadline_expired",
+                    "active_t": t,
+                    "age_s": elapsed_s,
+                    "decision_deadline_s": self._decision_deadline_s,
+                    "slot": "active",
+                },
+            )
+        )
+        return ()
 
     async def _dispatch(
         self,
@@ -1263,16 +1501,45 @@ class _JudgeScheduler:
         completions = []
         for job in jobs:
             completions.append(await self._core.dispatch_judgment(job))
+            terminal_error = self._take_terminal_error(
+                self._terminal_sources((job,)),
+                active_t=t,
+            )
+            if terminal_error is not None:
+                raise terminal_error
         return tuple(completions)
 
     def _on_done(self, task: asyncio.Task) -> None:
         if task.cancelled():
             self._active = None
+            self._active_terminal_sources = ()
+            self._launch_pending()
             return
         failure = task.exception()
         if failure is not None:
             self._fatal = failure
             self._active = None
+            self._active_terminal_sources = ()
+            self._pending = None
+            return
+        terminal_sources = self._active_terminal_sources
+        if not terminal_sources:
+            root_vision = getattr(self._core, "vision", None)
+            terminal_sources = (
+                (root_vision,)
+                if callable(
+                    getattr(root_vision, "take_terminal_error", None)
+                )
+                else ()
+            )
+        terminal_error = self._take_terminal_error(
+            terminal_sources,
+            active_t=self._active_t,
+        )
+        if terminal_error is not None:
+            self._fatal = terminal_error
+            self._active = None
+            self._active_terminal_sources = ()
             self._pending = None
             return
         from dataclasses import replace
@@ -1295,6 +1562,7 @@ class _JudgeScheduler:
         if callback is not None:
             callback(row)
         self._active = None
+        self._active_terminal_sources = ()
         recovered = []
         if self._stall_reported:
             recovered.append("stalled")
@@ -1314,6 +1582,7 @@ class _JudgeScheduler:
                 )
             )
         self._active_launch_wall = None
+        self._active_admitted_wall = None
         self._consec_supersede = 0
         if not self._split_protocol:
             self._launch_pending()
@@ -1374,10 +1643,19 @@ class _JudgeScheduler:
 
     async def flush(self) -> None:
         while self._fatal is None and (
-            self._active is not None or self._pending is not None
+            self._active is not None
+            or self._pending is not None
+            or self._abandoned_dispatches
         ):
             task = self._active
             if task is None:
+                if self._abandoned_dispatches:
+                    await asyncio.wait(
+                        tuple(self._abandoned_dispatches),
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    await asyncio.sleep(0)
+                    continue
                 if self._split_protocol:
                     return
                 self._launch_pending()
@@ -1405,6 +1683,8 @@ class _JudgeScheduler:
             task.cancel()
             if task.done():
                 await asyncio.sleep(0)
+        for abandoned in tuple(self._abandoned_dispatches):
+            abandoned.cancel()
 
 
 # Public-private compatibility name used by the shared-owner promotion oracle.
@@ -2510,6 +2790,7 @@ async def _run_worker(
     metrics_collector: Any = None,
     judge_stall_after_s: float = 20.0,
     judge_backpressure_after: int = 3,
+    judge_decision_deadline_s: float | None = None,
     timebase: str = "auto",
     coverage_floor: float | None = None,
     _interest_tracker: LiveInterestTracker | None = None,
@@ -2649,6 +2930,11 @@ async def _run_worker(
     - ``judge_stall_after_s`` / ``judge_backpressure_after`` — thresholds for the two health events
       just above (async mode only); the defaults are generous enough that a normal run never trips
       either.
+    - ``judge_decision_deadline_s`` — optional absolute async-lane budget measured from admission,
+      including pending-slot queue time and provider dispatch. Expired pending work is dropped before
+      launch; active work is cancelled and ignored at expiry. Both outcomes emit structured health
+      events and counters. ``None`` preserves deliberate/historical behavior; a reflex deployment
+      should set this independently of the provider adapter's socket timeout.
 
     ADMISSION COVERAGE. Every run closes with ``RuntimeHealthEvent("runtime_ended")`` carrying this
     run's counters — including exact fixed/per-goal admission, dispatch, judge, and incident counts —
@@ -2951,6 +3237,7 @@ async def _run_worker(
             _cov,
             stall_after_s=judge_stall_after_s,
             backpressure_after=judge_backpressure_after,
+            decision_deadline_s=judge_decision_deadline_s,
         )
         if judge_dispatch == "async" else None
     )
@@ -6020,6 +6307,7 @@ async def run(
     metrics_collector: Any = None,
     judge_stall_after_s: float = 20.0,
     judge_backpressure_after: int = 3,
+    judge_decision_deadline_s: float | None = None,
     timebase: str = "auto",
     coverage_floor: float | None = None,
 ) -> AsyncIterator:
