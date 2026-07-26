@@ -90,17 +90,25 @@ both are supplied, the earlier limit wins. Omitting both uses the contract's 120
 immutable `HostedByokSubprocessSupervisor`; there is no boolean or virtual health hook that can waive
 this requirement. Gemini and OpenRouter are both classified `production_process_isolated` because their
 HTTP stacks may use DNS threads, AnyIO worker threads, or implementation-dependent background work.
-The parent validates the request, spawns a fresh process/session, and on success, failure, cancellation,
-or timeout kills the entire process group and joins the worker before releasing the outcome. Clean
-`Context` tasks, deferred event-loop Handles, close workers, threads, and child processes therefore
-cannot survive a terminal parent outcome. The process-isolation contract version is
-`HOSTED_BYOK_PROCESS_ISOLATION_VERSION` (`"1.0.0"`). Request and Verdict IPC are bounded to 32 MiB;
+The parent starts one monotonic deadline before validation, launches a clean interpreter under an
+irreversible OS boundary that denies all child-process creation, and authenticates that boundary before
+sending the credential-bearing payload. On success, failure, cancellation, or timeout it terminates and
+waits for the worker before releasing the outcome. A provider cannot escape with `fork`, `posix_spawn`,
+`setsid`, or a reparented descendant because the boundary permits no descendant to be created; clean
+`Context` tasks, deferred event-loop Handles, close workers, and threads die with the waited worker.
+The process-isolation contract version is `HOSTED_BYOK_PROCESS_ISOLATION_VERSION` (`"2.0.0"`).
+The v2 supervisor currently requires a validated root-owned Darwin `sandbox-exec` or Linux `prlimit`
+boundary plus a successful no-fork attestation; unsupported or ineffective hosts fail closed before
+the credential payload is sent.
+Request and Verdict IPC are bounded to 32 MiB;
 the wire is canonical tagged JSON over `send_bytes`/`recv_bytes`, never pickle. Exact recursive carrier
 validation rejects hostile subclasses, duplicate keys, non-finite values, unsupported DTOs, malformed
 or oversized payloads before construction/unmarshal. Every non-credential input is also rejected if it
 contains the credential. The credential crosses only the private inherited pipe: it is never placed in
-the worker's argv or environment, and inherited provider credential variables are removed before any
-factory, backend, or provider construction.
+the worker's argv or environment. The allowlisted child environment is installed by the parent before
+the interpreter, `sitecustomize`, or SDK starts, excluding provider configuration, proxies, custom CA
+paths, TLS key logging, dynamic-loader controls, and other inherited transport routing. Hosted Gemini
+and OpenRouter HTTP clients also set environment trust off explicitly.
 
 `factory.transport_safety(request)` exposes this machine-readable classification. Every built-in route
 sets `requires_process_supervisor=True`; a factory without the exact SDK supervisor fails before provider
@@ -110,13 +118,15 @@ are classified `test_only_in_process`, cannot be combined with a production supe
 for deterministic SDK conformance tests. Callers protecting a credential lease or rotation with a
 lifecycle guard must hold it for the complete `await`.
 
-Provider construction is synchronous and included in the monotonic deadline accounting: an
-over-budget construction is rejected when it returns, before any provider task is scheduled.
+Validation, canonical serialization, clean startup, boundary authentication, provider construction,
+execution, teardown, worker termination/wait, result decoding, and final result acceptance all consume
+the single monotonic budget created at public `judge()` entry. An over-budget construction is rejected
+when it returns, before any provider task is scheduled.
 Cancellation is checked before and after construction and again immediately before dispatch, so a
 cancellation observed during construction spends zero provider calls. The monotonic deadline is also
-checked after provider completion, so a coroutine that blocked the event loop cannot have a late
-result accepted. A killable worker/process boundary can provide a bounded hard-stop contract, but this
-in-process SDK boundary does not claim one.
+checked after provider completion and after the worker is terminal, so neither a coroutine that blocked
+the event loop nor slow teardown can have a late result accepted. Injected test-only transports remain
+in-process and do not carry this production containment claim.
 
 ## Isolation and secret handling
 
@@ -133,8 +143,9 @@ The explicit path:
   any approved public carrier containing the opaque credential;
 - records a client as soon as construction acquires it, including partial backend construction;
 - completes invocation-local client/backend closure after success, failure, timeout, or cancellation;
-- kills and joins the production worker process group before `judge` returns, leaving no provider,
-  deferred callback, thread, or child process from that invocation alive; and
+- authenticates the no-descendant OS boundary before sending the credential, then terminates and waits
+  for the production worker before `judge` returns, leaving no provider, deferred callback, thread, or
+  child process from that invocation alive; and
 - never writes the request or credential to argv, environment variables, logs, tracebacks, or temporary
   storage; the bounded private IPC payload exists only for the isolated invocation.
 

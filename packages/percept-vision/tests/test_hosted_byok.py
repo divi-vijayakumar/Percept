@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-import multiprocessing
 import os
+from pathlib import Path
+import subprocess
 import sys
-import threading
+import textwrap
 import time
 from dataclasses import FrozenInstanceError
 from types import SimpleNamespace
@@ -59,75 +60,26 @@ _HOSTED_ENV_KEYS = {
     "PERCEPT_VISION_TIMEOUT_S",
     "PERCEPT_STRIP_PROMPT",
 }
-
-
-def _spawn_adversarial_effect_worker(send, effect, grandchild_pid):
-    """Spawn target proving process kill contains clean-context tasks, Handles, threads, and forks."""
-
-    if hasattr(os, "setsid"):
-        os.setsid()
-
-    def delayed_thread():
-        time.sleep(0.2)
-        effect.value |= 1
-
-    threading.Thread(target=delayed_thread, daemon=False).start()
-
-    async def run():
-        loop = asyncio.get_running_loop()
-        loop.call_later(0.2, lambda: setattr(effect, "value", effect.value | 2))
-
-        async def clean_context_task():
-            await asyncio.sleep(0.2)
-            effect.value |= 4
-
-        __import__("contextvars").Context().run(asyncio.create_task, clean_context_task())
-        if hasattr(os, "fork"):
-            pid = os.fork()
-            if pid == 0:
-                time.sleep(0.2)
-                effect.value |= 8
-                os._exit(0)
-            grandchild_pid.value = pid
-        send.send(("accepted", os.getpid()))
-        await asyncio.sleep(60)
-
-    asyncio.run(run())
-
-
-def _spawn_large_ipc_worker(send, size):
-    if hasattr(os, "setsid"):
-        os.setsid()
-    send.send(("ok", b"x" * size))
-    time.sleep(60)
-
-
-def _spawn_exiting_leader_worker(send):
-    if hasattr(os, "setsid"):
-        os.setsid()
-    pid = os.fork()
-    if pid == 0:
-        time.sleep(60)
-        os._exit(0)
-    send.send(pid)
-    send.close()
-    os._exit(0)
-
-
-def _spawn_secret_visibility_worker(send, secret):
-    argv_leak = secret in "\0".join(sys.argv)
-    env_leak = any(secret in key or secret in value for key, value in os.environ.items())
-    send.send((argv_leak, env_leak))
-    time.sleep(60)
-
-
-def _spawn_environment_scrub_worker(send):
-    from percept.hosted_byok import _scrub_provider_environment
-
-    _scrub_provider_environment()
-    send.send({key: os.environ.get(key) for key in _HOSTED_ENV_KEYS})
-    time.sleep(60)
-
+_HOSTILE_STARTUP_ENV_KEYS = _HOSTED_ENV_KEYS | {
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "SSLKEYLOGFILE",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "AWS_CA_BUNDLE",
+    "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
+    "NODE_EXTRA_CA_CERTS",
+    "GOOGLE_API_USE_MTLS_ENDPOINT",
+    "GOOGLE_API_USE_CLIENT_CERTIFICATE",
+}
 
 def _request(
     *,
@@ -146,6 +98,290 @@ def _request(
         principal_id=principal,
         **kwargs,
     )
+
+
+def _write_production_transport_fakes(
+    root: Path,
+    *,
+    behavior: str,
+    effect_path: Path,
+    call_path: Path,
+) -> None:
+    package_dir = Path(__file__).resolve().parents[1] / "percept"
+    (root / "percept").symlink_to(package_dir, target_is_directory=True)
+    (root / "fake_transport_common.py").write_text(
+        textwrap.dedent(
+            f"""
+            import asyncio
+            import os
+            from pathlib import Path
+            import sys
+            import time
+
+            BLOCKED = {sorted(_HOSTILE_STARTUP_ENV_KEYS)!r}
+            BEHAVIOR = {behavior!r}
+            EFFECT_PATH = Path({str(effect_path)!r})
+            CALL_PATH = Path({str(call_path)!r})
+
+            def verify_and_attempt_detached(secret, trust_env):
+                if secret in "\\0".join(sys.argv):
+                    raise RuntimeError("credential appeared in worker argv")
+                if any(secret in key or secret in value for key, value in os.environ.items()):
+                    raise RuntimeError("credential appeared in worker environment")
+                if any(key in os.environ for key in BLOCKED):
+                    raise RuntimeError("hostile startup environment survived")
+                if trust_env is not False:
+                    raise RuntimeError("transport still trusts process environment")
+                CALL_PATH.write_text("provider-called")
+                try:
+                    pid = os.fork()
+                except OSError:
+                    return
+                if pid == 0:
+                    try:
+                        os.setsid()
+                    except OSError:
+                        pass
+                    time.sleep(0.25)
+                    EFFECT_PATH.write_text("late-detached-effect")
+                    os._exit(0)
+                raise RuntimeError("detached child creation was not contained")
+
+            async def maybe_wait():
+                if BEHAVIOR == "wait":
+                    await asyncio.sleep(60)
+
+            async def maybe_close():
+                if BEHAVIOR == "slow-close":
+                    await asyncio.sleep(60)
+            """
+        )
+    )
+    (root / "httpx.py").write_text(
+        textwrap.dedent(
+            """
+            class AsyncClient:
+                def __init__(self, *, timeout, trust_env):
+                    self.timeout = timeout
+                    self._trust_env = trust_env
+                    self.closed = False
+
+                async def aclose(self):
+                    self.closed = True
+            """
+        )
+    )
+    (root / "openai.py").write_text(
+        textwrap.dedent(
+            """
+            import json
+            from types import SimpleNamespace
+            from fake_transport_common import maybe_close, maybe_wait, verify_and_attempt_detached
+
+            class _Completions:
+                def __init__(self, owner):
+                    self._owner = owner
+
+                async def create(self, **kwargs):
+                    del kwargs
+                    verify_and_attempt_detached(
+                        self._owner._secret, self._owner._http_client._trust_env
+                    )
+                    await maybe_wait()
+                    content = json.dumps(
+                        {"satisfied": True, "confidence": 0.99, "evidence": "contained"}
+                    )
+                    return SimpleNamespace(
+                        choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+                        usage=None,
+                    )
+
+            class AsyncOpenAI:
+                def __init__(self, *, api_key, http_client, **kwargs):
+                    del kwargs
+                    self._secret = api_key
+                    self._http_client = http_client
+                    self.chat = SimpleNamespace(completions=_Completions(self))
+
+                async def close(self):
+                    await maybe_close()
+                    await self._http_client.aclose()
+            """
+        )
+    )
+    google = root / "google"
+    genai = google / "genai"
+    genai.mkdir(parents=True)
+    (google / "__init__.py").write_text("")
+    (genai / "types.py").write_text(
+        textwrap.dedent(
+            """
+            class HttpOptions:
+                def __init__(self, *, timeout, client_args, async_client_args):
+                    self.timeout = timeout
+                    self.client_args = client_args
+                    self.async_client_args = async_client_args
+
+            class Part:
+                @staticmethod
+                def from_bytes(*, data, mime_type):
+                    return (mime_type, data)
+
+            class GenerateContentConfig:
+                def __init__(self, **kwargs):
+                    self.kwargs = kwargs
+            """
+        )
+    )
+    (genai / "__init__.py").write_text(
+        textwrap.dedent(
+            """
+            import json
+            from types import SimpleNamespace
+            from . import types
+            from fake_transport_common import maybe_close, maybe_wait, verify_and_attempt_detached
+
+            class _Models:
+                def __init__(self, owner):
+                    self._owner = owner
+
+                async def generate_content(self, **kwargs):
+                    del kwargs
+                    trust_env = self._owner._http_options.async_client_args.get("trust_env")
+                    verify_and_attempt_detached(self._owner._secret, trust_env)
+                    await maybe_wait()
+                    text = json.dumps(
+                        {"satisfied": True, "confidence": 0.99, "evidence": "contained"}
+                    )
+                    return SimpleNamespace(text=text, usage_metadata=None)
+
+            class Client:
+                def __init__(self, *, api_key, http_options):
+                    self._secret = api_key
+                    self._http_options = http_options
+                    self.aio = SimpleNamespace(models=_Models(self))
+
+                async def aclose(self):
+                    await maybe_close()
+                    return None
+            """
+        )
+    )
+
+
+def _run_production_composition_harness(
+    tmp_path: Path,
+    *,
+    provider: str,
+    scenario: str,
+    python_executable: str = sys.executable,
+    large_context: bool = False,
+) -> dict:
+    root = tmp_path / f"{provider}-{scenario}-root"
+    root.mkdir()
+    effect_path = tmp_path / f"{provider}-{scenario}-late-effect"
+    call_path = tmp_path / f"{provider}-{scenario}-provider-called"
+    _write_production_transport_fakes(
+        root,
+        behavior=(
+            "wait"
+            if scenario in {"timeout", "cancel"}
+            else ("slow-close" if scenario == "teardown" else "success")
+        ),
+        effect_path=effect_path,
+        call_path=call_path,
+    )
+    model = "gemini-3.5-flash" if provider == "gemini" else "qwen/qwen3-vl-32b-instruct"
+    script = textwrap.dedent(
+        f"""
+        import asyncio
+        import json
+        from pathlib import Path
+        from percept import (
+            HostedByokAdapterFactory,
+            HostedByokCancelled,
+            HostedByokDeadlineExceeded,
+            HostedByokRequest,
+            HostedByokSubprocessSupervisor,
+            Percept,
+        )
+        from percept.config import Settings
+
+        async def main():
+            cancellation = asyncio.Event() if {scenario!r} == "cancel" else None
+            timeout_s = (
+                0.001
+                if {large_context!r}
+                else (2.0 if {scenario!r} in {{"timeout", "teardown"}} else 5.0)
+            )
+            request = HostedByokRequest(
+                provider={provider!r},
+                model={model!r},
+                credential="sk-production-composition-secret",
+                credential_lease_id="lease-production",
+                principal_id="principal-production",
+                timeout_s=timeout_s,
+                cancellation=cancellation,
+            )
+            vision = HostedByokAdapterFactory(
+                process_supervisor=HostedByokSubprocessSupervisor()
+            ).bind(request)
+            core = Percept.create(
+                vision=vision,
+                settings=Settings(),
+                mode="offline",
+                discover_plugins=False,
+            )
+            context = {{"blob": "x" * (16 * 1024 * 1024)}} if {large_context!r} else None
+            task = asyncio.create_task(
+                core.vision.judge("someone enters", b"jpeg", context=context)
+            )
+            if {scenario!r} == "cancel":
+                marker = Path({str(call_path)!r})
+                for _ in range(500):
+                    if marker.exists():
+                        break
+                    await asyncio.sleep(0.01)
+                else:
+                    raise RuntimeError("provider was not reached before cancellation")
+                cancellation.set()
+            try:
+                verdict = await task
+            except HostedByokDeadlineExceeded:
+                outcome = "deadline"
+            except HostedByokCancelled:
+                outcome = "cancelled"
+            else:
+                outcome = "success" if verdict.satisfied else "wrong-verdict"
+            await asyncio.sleep(0.4)
+            print(json.dumps({{
+                "outcome": outcome,
+                "provider_called": Path({str(call_path)!r}).exists(),
+                "late_effect": Path({str(effect_path)!r}).exists(),
+            }}))
+
+        asyncio.run(main())
+        """
+    )
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(root)
+    for key in _HOSTILE_STARTUP_ENV_KEYS:
+        environment[key] = (
+            str(tmp_path / "ssl-keylog.txt")
+            if key == "SSLKEYLOGFILE"
+            else "http://inherited-attacker.invalid:4444"
+        )
+    completed = subprocess.run(
+        [python_executable, "-c", script],
+        cwd="/",
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout.strip().splitlines()[-1])
 
 
 class _Backend:
@@ -284,7 +520,8 @@ def test_openrouter_client_seam_routes_exact_model_and_explicit_credential(monke
         )
     )
     assert verdict.satisfied
-    assert received == [(SECRET_A, "qwen/qwen3-vl-32b-instruct", 4.0)]
+    assert received[0][:2] == (SECRET_A, "qwen/qwen3-vl-32b-instruct")
+    assert received[0][2] == pytest.approx(4.0, abs=0.01)
     assert clients[0].chat.completions.calls[0]["model"] == "qwen/qwen3-vl-32b-instruct"
     assert clients[0].closed
 
@@ -317,7 +554,8 @@ def test_gemini_client_seam_routes_exact_model_and_explicit_credential(monkeypat
         )
     )
     assert not verdict.satisfied
-    assert received == [(SECRET_A, "gemini-3.5-flash", 3.0)]
+    assert received[0][:2] == (SECRET_A, "gemini-3.5-flash")
+    assert received[0][2] == pytest.approx(3.0, abs=0.01)
     assert clients[0].aio.models.calls[0]["model"] == "gemini-3.5-flash"
     assert clients[0].closed
 
@@ -589,13 +827,13 @@ def test_absolute_deadline_fails_before_constructing_backend():
     hosted = HostedByokAdapterFactory(
         backend_factories={"openrouter": factory}, time_fn=lambda: 100.0
     )
-    with pytest.raises(HostedByokDeadlineExceeded, match="before provider"):
+    with pytest.raises(HostedByokDeadlineExceeded, match="public judge entry"):
         asyncio.run(hosted.judge(_request(deadline_unix_s=99.0), "condition", b"frame"))
     assert not constructed
 
 
 def test_provider_construction_time_counts_against_monotonic_deadline():
-    monotonic_values = iter((10.0, 12.1))
+    monotonic_values = iter((10.0, 10.0, 10.0, 12.1))
 
     hosted = HostedByokAdapterFactory(
         backend_factories={"openrouter": lambda request, timeout: _Backend()},
@@ -1035,116 +1273,44 @@ def test_cloud_foreign_transport_supervisor_gate_is_machine_checkable_before_con
         )
 
 
-def test_spawn_process_kill_and_join_contains_clean_context_handle_thread_and_grandchild():
-    from percept.hosted_byok import _kill_and_join_process
-
-    mp_context = multiprocessing.get_context("spawn")
-    receive, send = mp_context.Pipe(duplex=False)
-    effect = mp_context.Value("i", 0)
-    grandchild_pid = mp_context.Value("i", 0)
-    process = mp_context.Process(
-        target=_spawn_adversarial_effect_worker,
-        args=(send, effect, grandchild_pid),
+@pytest.mark.parametrize("provider", ["gemini", "openrouter"])
+@pytest.mark.parametrize(
+    "scenario,expected",
+    [
+        ("success", "success"),
+        ("timeout", "deadline"),
+        ("cancel", "cancelled"),
+        ("teardown", "deadline"),
+    ],
+)
+def test_public_production_composition_contains_detached_descendants_and_environment(
+    tmp_path, provider, scenario, expected
+):
+    result = _run_production_composition_harness(
+        tmp_path,
+        provider=provider,
+        scenario=scenario,
     )
-    process.start()
-    send.close()
-    assert receive.poll(5.0)
-    assert receive.recv()[0] == "accepted"
-    _kill_and_join_process(process)
-    assert not process.is_alive()
-    assert process.exitcode is not None
-    time.sleep(0.35)
-    assert effect.value == 0
-    if grandchild_pid.value:
-        with pytest.raises(ProcessLookupError):
-            os.kill(grandchild_pid.value, 0)
-    receive.close()
+    assert result == {
+        "outcome": expected,
+        "provider_called": True,
+        "late_effect": False,
+    }
 
 
-@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX process groups")
-def test_process_group_is_killed_even_when_worker_leader_already_exited():
-    from percept.hosted_byok import _kill_and_join_process
-
-    mp_context = multiprocessing.get_context("spawn")
-    receive, send = mp_context.Pipe(duplex=False)
-    process = mp_context.Process(target=_spawn_exiting_leader_worker, args=(send,))
-    process.start()
-    send.close()
-    assert receive.poll(5.0)
-    grandchild_pid = receive.recv()
-    time.sleep(0.1)
-
-    _kill_and_join_process(process)
-
-    assert not process.is_alive()
-    for _ in range(100):
-        try:
-            os.kill(grandchild_pid, 0)
-        except ProcessLookupError:
-            break
-        time.sleep(0.01)
-    else:
-        pytest.fail("worker grandchild survived leader exit and group cleanup")
-    receive.close()
-
-
-def test_spawn_large_ipc_is_drained_before_kill_without_process_or_fd_leak():
-    from percept.hosted_byok import _kill_and_join_process
-
-    mp_context = multiprocessing.get_context("spawn")
-    active_before = {child.pid for child in multiprocessing.active_children()}
-    fd_before = len(os.listdir("/dev/fd")) if os.path.isdir("/dev/fd") else None
-    for _ in range(3):
-        receive, send = mp_context.Pipe(duplex=False)
-        process = mp_context.Process(
-            target=_spawn_large_ipc_worker,
-            args=(send, 4 * 1024 * 1024),
-        )
-        process.start()
-        send.close()
-        assert receive.poll(5.0)
-        kind, payload = receive.recv()
-        assert kind == "ok"
-        assert len(payload) == 4 * 1024 * 1024
-        _kill_and_join_process(process)
-        receive.close()
-    assert {child.pid for child in multiprocessing.active_children()} == active_before
-    if fd_before is not None:
-        assert len(os.listdir("/dev/fd")) <= fd_before + 2
-
-
-def test_spawned_credential_is_absent_from_child_argv_and_environment():
-    from percept.hosted_byok import _kill_and_join_process
-
-    mp_context = multiprocessing.get_context("spawn")
-    receive, send = mp_context.Pipe(duplex=False)
-    process = mp_context.Process(
-        target=_spawn_secret_visibility_worker,
-        args=(send, SECRET_A),
+@pytest.mark.parametrize("provider", ["gemini", "openrouter"])
+def test_entry_deadline_rejects_large_context_before_production_provider(tmp_path, provider):
+    result = _run_production_composition_harness(
+        tmp_path,
+        provider=provider,
+        scenario="large-context",
+        large_context=True,
     )
-    process.start()
-    send.close()
-    assert receive.poll(5.0)
-    assert receive.recv() == (False, False)
-    _kill_and_join_process(process)
-    receive.close()
-
-
-def test_spawned_worker_scrubs_all_inherited_provider_environment(monkeypatch):
-    from percept.hosted_byok import _kill_and_join_process
-
-    for key in _HOSTED_ENV_KEYS:
-        monkeypatch.setenv(key, "poisoned-parent-value")
-    mp_context = multiprocessing.get_context("spawn")
-    receive, send = mp_context.Pipe(duplex=False)
-    process = mp_context.Process(target=_spawn_environment_scrub_worker, args=(send,))
-    process.start()
-    send.close()
-    assert receive.poll(5.0)
-    assert set(receive.recv().values()) == {None}
-    _kill_and_join_process(process)
-    assert all(os.environ.get(key) == "poisoned-parent-value" for key in _HOSTED_ENV_KEYS)
-    receive.close()
+    assert result == {
+        "outcome": "deadline",
+        "provider_called": False,
+        "late_effect": False,
+    }
 
 
 def test_non_executable_wire_rejects_reduce_bombs_both_directions():
@@ -1305,13 +1471,21 @@ def test_exact_subprocess_supervisor_and_factory_configuration_are_immutable():
     supervisor = HostedByokSubprocessSupervisor()
     factory = HostedByokAdapterFactory(process_supervisor=supervisor)
     assert factory.transport_safety(_request()).production_ready
-    assert factory.transport_safety(_request()).process_isolation_version == "1.0.0"
+    assert factory.transport_safety(_request()).process_isolation_version == "2.0.0"
     with pytest.raises(AttributeError, match="immutable"):
         supervisor._poll_interval_s = 99
     with pytest.raises(AttributeError, match="immutable"):
         factory._process_supervisor = None
     with pytest.raises(TypeError, match="sealed"):
         type("ForgedSupervisor", (HostedByokSubprocessSupervisor,), {})
+
+
+def test_production_supervisor_rejects_virtual_clock_seams():
+    supervisor = HostedByokSubprocessSupervisor()
+    with pytest.raises(HostedByokContractError, match="exact system"):
+        HostedByokAdapterFactory(process_supervisor=supervisor, monotonic_fn=lambda: 1.0)
+    with pytest.raises(HostedByokContractError, match="exact system"):
+        HostedByokAdapterFactory(process_supervisor=supervisor, time_fn=lambda: 1.0)
 
 
 def test_factory_uses_frozen_supervisor_dispatch_after_class_poison(monkeypatch):
