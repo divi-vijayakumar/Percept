@@ -93,10 +93,20 @@ def _exclusive_core_runtime(func):
     @functools.wraps(func)
     async def leased(core: Any = None, *args: Any, **kwargs: Any):
         lease = _acquire_core_run(core)
+        stream = func(core, *args, **kwargs)
         try:
-            async for item in func(core, *args, **kwargs):
+            async for item in stream:
                 yield item
         finally:
+            # ``async for`` cancellation does not promise to close a nested
+            # async generator before this wrapper releases the core lease.
+            # Explicitly close it so run() can contain its worker/provider
+            # tasks and no stale callback survives into the next lease.
+            await stream.aclose()
+            if asyncio.current_task().cancelling():
+                advance = getattr(core, "advance_source_continuity", None)
+                if callable(advance):
+                    advance(kwargs.get("gate_source", "camera"))
             _release_core_run(lease)
 
     return leased
@@ -5937,10 +5947,6 @@ async def _run_worker(
             await _call_sink(on_health, RuntimeHealthEvent("runtime_error", data={"error": repr(exc)}))
         raise
     finally:
-        # Teardown is a single runtime-owner continuity boundary.  Provider
-        # lanes only cancel transport; they must never each advance shared
-        # cognition state.
-        _advance_source_continuity()
         if _fused_syncs:
             _advance_fused_generation(_FusedDiscontinuity.CANCELLATION)
             for scheduler in (_fused_judge_scheds or {}).values():
@@ -6120,6 +6126,11 @@ async def run(
     worker_error: BaseException | None = None
     delivery_error: BaseException | None = None
     terminal_reason = "cancelled"
+    worker_stream = _run_worker(
+        **worker_args,
+        _interest_tracker=tracker,
+        _interest_subscription=interest_subscription,
+    )
     try:
         if interest_session_id is not None and not valid_session_id:
             raise ValueError("interest_session_id must be a non-empty string when set")
@@ -6128,14 +6139,17 @@ async def run(
                 "on_interest callbacks are not supported; create InterestSubscription(...) and pass "
                 "interest_subscription=..., then consume it with async iteration"
             )
-        async for incident in _run_worker(
-            **worker_args,
-            _interest_tracker=tracker,
-            _interest_subscription=interest_subscription,
-        ):
+        async for incident in worker_stream:
             yield incident
         terminal_reason = "end_of_stream"
     except asyncio.CancelledError as exc:
+        # The public run wrapper observes consumer cancellation even when an
+        # inner capture iterator is currently blocked.  Advance the owner
+        # generation here, before a cancellation-resistant legacy provider
+        # can resume, so its expected token is already stale.
+        advance = getattr(core, "advance_source_continuity", None)
+        if callable(advance):
+            advance(worker_args["gate_source"])
         worker_error = exc
         terminal_reason = "cancelled"
     except GeneratorExit as exc:
@@ -6145,6 +6159,16 @@ async def run(
         worker_error = exc
         terminal_reason = "worker_error"
     finally:
+        # Closing an outer async generator does not reliably propagate an
+        # explicit close to a nested worker when cancellation is caught here.
+        # Own that lifecycle edge so the worker's cancellation cleanup runs
+        # before a cancellation-resistant provider can resume and commit.
+        try:
+            await worker_stream.aclose()
+        except BaseException as exc:  # noqa: BLE001 - preserve primary failure below
+            if worker_error is None:
+                worker_error = exc
+                terminal_reason = "worker_error"
         try:
             InterestSubscription._finish(
                 interest_subscription,
