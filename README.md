@@ -94,6 +94,14 @@ by adapter instance, or by env (`PERCEPT_VISION_BACKEND`). Keyless runs are **`m
 backend with no key prints a one-line instruction, never a stack trace. See
 [`templates/`](templates/) for copyable reference applications.
 
+## Official free packs
+
+`physical_scene_starter@1` and `ego_motion_starter@1` ship as mechanics-only DomainPacks. They render
+portable `WatchPlan` values and never auto-arm a runtime. Both deliberately declare empty
+qualification fixtures and quality bars: availability is not a claim about real-media accuracy,
+provider latency, or cost. See [the DomainPack reference](docs/reference/domain-packs.md) for the
+template names and explicit identity/tracking/reacquisition boundaries.
+
 ## Watch a live source
 
 For a real watch agent you don't write a capture loop — **`percept.run` owns it**: it opens the source,

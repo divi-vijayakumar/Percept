@@ -1,7 +1,15 @@
-"""The shipped :class:`~percept.domain_pack.DomainPack` set — ``facility-observation@1``.
+"""Official starter packs for programmable Watches over live video streams.
 
-One pack, four templates, built ONLY from senses that already exist in
-:func:`percept.behavior.program_of` — no new temporal shape, no new sense, nothing invented:
+The SDK ships two official, mechanics-only starter packs:
+
+- ``physical_scene_starter@1`` — four fixed-scene templates;
+- ``ego_motion_starter@1`` — four moving-camera templates.
+
+``facility_observation@1`` remains registered as the original compatibility surface for the
+physical templates. It is not removed or silently redirected.
+
+Every template is built only from behavior routes that :func:`percept.behavior.program_of` and the
+runtime worker execute today — ordinary rising-edge Watches and two-state transitions:
 
 - ``door_left_open`` — an ordinary scene Watch with sustained truth and an explicit fixed
   observation cadence.
@@ -11,20 +19,30 @@ One pack, four templates, built ONLY from senses that already exist in
   package, a different domain.
 - ``zone_occupied`` — an ordinary Watch: one rising-edge incident per contiguous occupied interval.
   It does not identify, track, or count distinct people.
+- ``camera_view_moving`` — an ordinary scene-scoped Watch over a moving-camera observation.
+- ``scene_transition`` — a caller-authored visible scene A -> visible scene B transition.
+- ``object_focus_gained`` — a category-level out-of-focus -> in-focus transition. It does not
+  establish that a previously seen object was reacquired.
+- ``task_step_reached`` — a caller-authored visible prior-state -> visible next-state transition.
+  It does not understand or infer a task plan.
 
-Every :class:`~percept.domain_pack.ComponentRecommendation` here is ``strength="preferred"`` —
-this pack recommends, it never requires (ADR-008 Invariants: "templates never auto-arm"; no
+Every :class:`~percept.domain_pack.ComponentRecommendation` is ``strength="preferred"`` — these
+packs recommend, they never require (ADR-008 Invariants: "templates never auto-arm"; no
 identity/tracking calibration exists yet for a domain that would need a harder floor — a
 ``security@1`` pack is explicitly future work, not shipped here).
 
 Importing this module seeds :data:`~percept.domain_pack.DEFAULT_DOMAIN_PACK_REGISTRY` (the same
 import-for-its-side-effect contract :mod:`percept.execution_policies_default` /
 :mod:`percept.profiles_default` / :mod:`percept.source_profiles_default` already use) —
-:func:`~percept.domain_pack.get_domain_pack` does this for you. The pack is ALSO advertised under
-the ``percept.packs`` entry-point group (see ``pyproject.toml``) via :func:`register_entrypoint_pack`
-below, so a fresh install exercises the SAME pip-installed-pack discovery path
-(:func:`~percept.domain_pack.discover_domain_pack_entrypoints`) a third-party pack would use — not
-just the in-code default.
+:func:`~percept.domain_pack.get_domain_pack` does this for you. All three names are also advertised
+under the ``percept.packs`` entry-point group (see ``pyproject.toml``), so a fresh install exercises
+the same pip-installed-pack discovery path
+(:func:`~percept.domain_pack.discover_domain_pack_entrypoints`) a third-party pack would use.
+
+Availability is not qualification. Both official packs deliberately declare ``fixtures=()`` and
+``quality_bars={}``: deterministic tests prove compilation, ambiguity handling, rising-edge state,
+and replay mechanics, but no permission-safe held-out corpus currently supports an accuracy,
+latency, or cost claim.
 """
 
 from __future__ import annotations
@@ -111,6 +129,118 @@ _TEMPLATES = {
 }
 
 # ---------------------------------------------------------------------------
+# Ego Motion Starter templates — scene-scoped mechanics only.
+# ---------------------------------------------------------------------------
+
+_CAMERA_VIEW_MOVING = GoalTemplate(
+    name="camera_view_moving",
+    condition="the camera viewpoint is moving because the wearer or device is moving",
+    parameters={"observation_interval_s": 1.0},
+    sense="vision",
+    target="camera viewpoint",
+    identity_policy=SCENE_IDENTITY,
+    cadence={
+        "min_judge_interval": "{observation_interval_s}",
+        "gate_on": "fixed",
+    },
+    consequence={"miss_cost": "mild", "false_fire_cost": "trivial"},
+    notes=(
+        "fires on the ordinary scene-level rising edge of a judged moving-camera observation. "
+        "It is an unqualified template, not a camera-motion accuracy claim."
+    ),
+)
+
+_SCENE_TRANSITION = GoalTemplate(
+    name="scene_transition",
+    condition="the camera view transitioned from {from_scene} to {to_scene}",
+    parameters={
+        "from_scene": "the starting scene",
+        "to_scene": "the destination scene",
+        "observation_interval_s": 1.0,
+    },
+    sense="vision",
+    target="visible scene",
+    identity_policy=SCENE_IDENTITY,
+    behavior={
+        "type": "transition",
+        "from": "{from_scene} is the current visible scene",
+        "to": "{to_scene} is the current visible scene",
+    },
+    cadence={
+        "min_judge_interval": "{observation_interval_s}",
+        "gate_on": "fixed",
+    },
+    consequence={"miss_cost": "mild", "false_fire_cost": "trivial"},
+    notes=(
+        "fires only after the existing transition runtime observes the authored from-scene and then "
+        "the authored to-scene. It does not detect a general revisit or establish location identity."
+    ),
+)
+
+_OBJECT_FOCUS_GAINED = GoalTemplate(
+    name="object_focus_gained",
+    condition="{object_name} became centered and clearly visible in the camera view",
+    parameters={
+        "object_name": "the target object category",
+        "observation_interval_s": 1.0,
+    },
+    sense="vision",
+    target="{object_name}",
+    identity_policy=SCENE_IDENTITY,
+    behavior={
+        "type": "transition",
+        "from": "{object_name} is not centered and clearly visible in the camera view",
+        "to": "{object_name} is centered and clearly visible in the camera view",
+    },
+    cadence={
+        "min_judge_interval": "{observation_interval_s}",
+        "gate_on": "fixed",
+    },
+    consequence={"miss_cost": "mild", "false_fire_cost": "trivial"},
+    notes=(
+        "category-level visible focus only. Scene scoping is deliberate: this template does not "
+        "identify, track, or claim same-object reacquisition after a gap."
+    ),
+)
+
+_TASK_STEP_REACHED = GoalTemplate(
+    name="task_step_reached",
+    condition="the visible work changed from {previous_state} to {completed_state}",
+    parameters={
+        "previous_state": "the visible prior step state",
+        "completed_state": "the visible completed next-step state",
+        "observation_interval_s": 1.0,
+    },
+    sense="vision",
+    target="visible task state",
+    identity_policy=SCENE_IDENTITY,
+    behavior={
+        "type": "transition",
+        "from": "{previous_state}",
+        "to": "{completed_state}",
+    },
+    cadence={
+        "min_judge_interval": "{observation_interval_s}",
+        "gate_on": "fixed",
+    },
+    consequence={"miss_cost": "mild", "false_fire_cost": "trivial"},
+    notes=(
+        "fires on one explicitly authored visible state transition. It does not infer a task plan, "
+        "understand intent, or advance later steps automatically."
+    ),
+)
+
+_EGO_TEMPLATES = {
+    t.name: t
+    for t in (
+        _CAMERA_VIEW_MOVING,
+        _SCENE_TRANSITION,
+        _OBJECT_FOCUS_GAINED,
+        _TASK_STEP_REACHED,
+    )
+}
+
+# ---------------------------------------------------------------------------
 # Component recommendations — all "preferred": this pack recommends, it never requires.
 # ---------------------------------------------------------------------------
 
@@ -130,6 +260,22 @@ _COMPONENTS = (
     ),
 )
 
+_EGO_COMPONENTS = (
+    ComponentRecommendation(
+        ref="sense:physical_scene",
+        strength="preferred",
+        reason="the current video SourceProfile supports fixed, handheld, and wearable cameras.",
+    ),
+    ComponentRecommendation(
+        ref="profile:handheld",
+        strength="preferred",
+        reason=(
+            "the existing handheld WatchProfile carries the moving-camera admission posture; "
+            "applications still select and validate it explicitly for their source."
+        ),
+    ),
+)
+
 # ---------------------------------------------------------------------------
 # DirectJudge routes — a RESERVED namespace, no rule implementation ships here (see module
 # docstring and percept.direct_judge). None of the four templates' rendered conditions are
@@ -141,24 +287,26 @@ _COMPONENTS = (
 _DIRECT_JUDGE_ROUTES = (DirectRouting(condition_namespace="facility_observation."),)
 
 # ---------------------------------------------------------------------------
-# Fixtures + quality bars — plain data declarations. A template appears here only when the pack has
-# a matching evaluation route for the behavior it executes. ``door_left_open`` deliberately does
-# not: the sustained-duration runtime is executable, but a still-open interval cannot be scored by
-# the opening-action MEVA labels and no matched duration corpus ships in this release. Consequently
-# the SDK makes no accuracy or efficiency claim for that template.
+# Fixtures + quality bars. The legacy facility pack preserves its original candidate declarations
+# for data-contract compatibility; they are not achieved qualification results. The two official
+# starters are deliberately empty. Mechanics fixtures live in tests and must never be presented as
+# accuracy evidence.
 # ---------------------------------------------------------------------------
 
-_FIXTURES = (
+_LEGACY_FIXTURES = (
     "facility_observation/package_appeared",
     "facility_observation/standing_water",
     "facility_observation/zone_occupied",
 )
 
-_QUALITY_BARS = {
+_LEGACY_QUALITY_BARS = {
     "package_appeared.recall_min": 0.60,
     "standing_water.recall_min": 0.55,
     "zone_occupied.recall_min": 0.60,
 }
+
+_UNQUALIFIED_FIXTURES: tuple[str, ...] = ()
+_UNQUALIFIED_QUALITY_BARS: dict[str, float] = {}
 
 # ---------------------------------------------------------------------------
 # SearchSpace — data only (percept.tunables.REGISTRY safe_to_optimize=True paths this domain cares
@@ -178,29 +326,81 @@ FACILITY_OBSERVATION_V1 = DomainPack(
     components=_COMPONENTS,
     policy_clamps={"false_negative_cost_min": "mild", "retention_max_days": 30.0},
     direct_judge_routes=_DIRECT_JUDGE_ROUTES,
-    fixtures=_FIXTURES,
-    quality_bars=_QUALITY_BARS,
+    fixtures=_LEGACY_FIXTURES,
+    quality_bars=_LEGACY_QUALITY_BARS,
     search_space=_SEARCH_SPACE,
     notes=(
-        "Physical-scene Watch templates for a door left open, package appearance, standing water, "
-        "and zone occupancy. door_left_open is executable but not quality-qualified: it has no "
-        "fixture or quality bar until a matched sustained-duration evaluation ships. No security@1 "
-        "pack ships because the SDK does not provide identity/tracking calibration."
+        "Compatibility pack for physical-scene Watch templates. Its retained fixtures and "
+        "quality_bars are candidate qualification declarations, not achieved results; no template "
+        "is qualified until permission-safe, independently reviewed, source-group-held-out "
+        "Watch-semantic evaluation exists. No security@1 pack ships because the SDK does not "
+        "provide identity/tracking calibration."
     ),
 )
 
-register_domain_pack(FACILITY_OBSERVATION_V1)
+PHYSICAL_SCENE_STARTER_V1 = DomainPack(
+    id="physical_scene_starter",
+    version="1",
+    templates=_TEMPLATES,
+    components=_COMPONENTS,
+    policy_clamps={"false_negative_cost_min": "mild"},
+    fixtures=_UNQUALIFIED_FIXTURES,
+    quality_bars=_UNQUALIFIED_QUALITY_BARS,
+    search_space=_SEARCH_SPACE,
+    notes=(
+        "Official free Physical Scene Starter: door-left-open, package-appearance, standing-water, "
+        "and scene-level zone-occupancy Watch mechanics. Availability is not qualification; the "
+        "pack declares no fixtures or quality bars and makes no accuracy, latency, or cost claim. "
+        "It does not identify, track, or count people or objects."
+    ),
+)
+
+EGO_MOTION_STARTER_V1 = DomainPack(
+    id="ego_motion_starter",
+    version="1",
+    templates=_EGO_TEMPLATES,
+    components=_EGO_COMPONENTS,
+    policy_clamps={"false_negative_cost_min": "mild"},
+    fixtures=_UNQUALIFIED_FIXTURES,
+    quality_bars=_UNQUALIFIED_QUALITY_BARS,
+    search_space={},
+    notes=(
+        "Official free Ego Motion Starter: scene-scoped moving-view, visible scene-transition, "
+        "category-level focus-gained, and visible task-step transition mechanics. Availability is "
+        "not qualification; the pack declares no fixtures or quality bars and makes no accuracy, "
+        "latency, or cost claim. Revisit, same-object reacquisition, identity, tracking, location "
+        "authority, and task understanding are not supported claims."
+    ),
+)
+
+for _pack in (
+    FACILITY_OBSERVATION_V1,
+    PHYSICAL_SCENE_STARTER_V1,
+    EGO_MOTION_STARTER_V1,
+):
+    register_domain_pack(_pack)
 
 
 def register_entrypoint_pack(register: "callable") -> None:
-    """The ``percept.packs`` entry-point TARGET this package's own ``pyproject.toml`` advertises
-    (mirrors ``percept.sourceprofile``'s ``discover_source_profile_entrypoints`` contract: an entry
-    point's value is a callable taking the register function). Lets a fresh install exercise the
-    SAME pip-installed-pack discovery path
-    (:func:`percept.domain_pack.discover_domain_pack_entrypoints`) this pack's own in-code default
-    already uses, so the two registration paths are provably consistent rather than one being
-    untested."""
+    """Register the legacy ``facility_observation@1`` entry-point target."""
     register(FACILITY_OBSERVATION_V1, overwrite=True)
 
 
-__all__ = ["FACILITY_OBSERVATION_V1", "register_entrypoint_pack"]
+def register_physical_scene_entrypoint_pack(register: "callable") -> None:
+    """Register the official ``physical_scene_starter@1`` entry-point target."""
+    register(PHYSICAL_SCENE_STARTER_V1, overwrite=True)
+
+
+def register_ego_motion_entrypoint_pack(register: "callable") -> None:
+    """Register the official ``ego_motion_starter@1`` entry-point target."""
+    register(EGO_MOTION_STARTER_V1, overwrite=True)
+
+
+__all__ = [
+    "FACILITY_OBSERVATION_V1",
+    "PHYSICAL_SCENE_STARTER_V1",
+    "EGO_MOTION_STARTER_V1",
+    "register_entrypoint_pack",
+    "register_physical_scene_entrypoint_pack",
+    "register_ego_motion_entrypoint_pack",
+]

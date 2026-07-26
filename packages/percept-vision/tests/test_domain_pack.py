@@ -33,7 +33,14 @@ from percept.domain_pack import (
     watch_template,
 )
 from percept import domain_pack as domain_pack_mod
-from percept.packs_default import FACILITY_OBSERVATION_V1, register_entrypoint_pack
+from percept.packs_default import (
+    EGO_MOTION_STARTER_V1,
+    FACILITY_OBSERVATION_V1,
+    PHYSICAL_SCENE_STARTER_V1,
+    register_ego_motion_entrypoint_pack,
+    register_entrypoint_pack,
+    register_physical_scene_entrypoint_pack,
+)
 from percept.resolver import ConfigError, ConfigResolver
 from percept.watchplan_apply import apply_watch_plan
 
@@ -49,7 +56,9 @@ class TestComponentRecommendation(unittest.TestCase):
         self.assertEqual(rec.to_dict()["ref"], "sense:physical_scene")
 
     def test_default_strength_is_preferred(self) -> None:
-        self.assertEqual(ComponentRecommendation(ref="detector:motion-periodicity").strength, "preferred")
+        self.assertEqual(
+            ComponentRecommendation(ref="detector:motion-periodicity").strength, "preferred"
+        )
 
     def test_empty_ref_raises(self) -> None:
         with self.assertRaises(DomainPackError):
@@ -68,14 +77,16 @@ class TestComponentRecommendation(unittest.TestCase):
 class TestGoalTemplateValidation(unittest.TestCase):
     def test_valid_transition_template(self) -> None:
         t = GoalTemplate(
-            name="t1", condition="x appears",
+            name="t1",
+            condition="x appears",
             behavior={"type": "transition", "from": "absent", "to": "present"},
         )
         self.assertEqual(t.behavior["type"], "transition")
 
     def test_valid_absence_template(self) -> None:
         t = GoalTemplate(
-            name="t2", condition="the door is open",
+            name="t2",
+            condition="the door is open",
             parameters={"deadline_after_s": 60.0},
             behavior={"rearm": "deadline", "deadline_after_s": "{deadline_after_s}"},
         )
@@ -101,7 +112,8 @@ class TestGoalTemplateValidation(unittest.TestCase):
     def test_negative_deadline_raises(self) -> None:
         with self.assertRaises(DomainPackError):
             GoalTemplate(
-                name="bad", condition="x",
+                name="bad",
+                condition="x",
                 parameters={"deadline_after_s": -5.0},
                 behavior={"rearm": "deadline", "deadline_after_s": "{deadline_after_s}"},
             )
@@ -109,7 +121,8 @@ class TestGoalTemplateValidation(unittest.TestCase):
     def test_unsafe_fire_when_raises(self) -> None:
         with self.assertRaises(DomainPackError):
             GoalTemplate(
-                name="bad", condition="x",
+                name="bad",
+                condition="x",
                 behavior={"accumulate": {"fire_when": "__import__('os').system('x')"}},
             )
 
@@ -162,7 +175,8 @@ class TestGoalTemplateRender(unittest.TestCase):
 
     def test_typed_param_reference_preserves_type(self) -> None:
         t = GoalTemplate(
-            name="t", condition="the door is open",
+            name="t",
+            condition="the door is open",
             parameters={"deadline_after_s": 300.0},
             behavior={"rearm": "deadline", "deadline_after_s": "{deadline_after_s}"},
         )
@@ -172,7 +186,8 @@ class TestGoalTemplateRender(unittest.TestCase):
 
     def test_override_substitutes(self) -> None:
         t = GoalTemplate(
-            name="t", condition="a package appears at {zone}",
+            name="t",
+            condition="a package appears at {zone}",
             parameters={"zone": "doorstep"},
         )
         plan = t.render(zone="loading dock")
@@ -185,7 +200,8 @@ class TestGoalTemplateRender(unittest.TestCase):
 
     def test_transition_explicit_paths(self) -> None:
         t = GoalTemplate(
-            name="t", condition="x appears",
+            name="t",
+            condition="x appears",
             behavior={"type": "transition", "from": "absent", "to": "present"},
         )
         plan = t.render()
@@ -250,7 +266,9 @@ class TestDomainPackConstruction(unittest.TestCase):
             DomainPack(id="p1", policy_clamps={"retention_max_days": -1})
 
     def test_valid_policy_clamps(self) -> None:
-        pack = DomainPack(id="p1", policy_clamps={"false_negative_cost_min": "mild", "retention_max_days": 7})
+        pack = DomainPack(
+            id="p1", policy_clamps={"false_negative_cost_min": "mild", "retention_max_days": 7}
+        )
         self.assertEqual(pack.policy_clamps["false_negative_cost_min"], "mild")
 
     def test_non_direct_routing_raises(self) -> None:
@@ -273,7 +291,8 @@ class TestDomainPackConstruction(unittest.TestCase):
 
     def test_to_dict_roundtrip_shape(self) -> None:
         pack = DomainPack(
-            id="p1", templates={"a": GoalTemplate(name="a", condition="x")},
+            id="p1",
+            templates={"a": GoalTemplate(name="a", condition="x")},
             components=(ComponentRecommendation(ref="sense:physical_scene"),),
             policy_clamps={"false_negative_cost_min": "mild"},
         )
@@ -337,12 +356,20 @@ class TestEntryPointDiscovery(unittest.TestCase):
         register_entrypoint_pack(reg.register)
         self.assertIn(FACILITY_OBSERVATION_V1.qualified_name, reg.names())
 
+    def test_official_starter_entrypoint_targets_register_separately(self) -> None:
+        reg = DomainPackRegistry()
+        register_physical_scene_entrypoint_pack(reg.register)
+        self.assertEqual(reg.names(), ["physical_scene_starter@1"])
+        register_ego_motion_entrypoint_pack(reg.register)
+        self.assertEqual(
+            reg.names(),
+            ["ego_motion_starter@1", "physical_scene_starter@1"],
+        )
+
     def test_discover_domain_pack_entrypoints_loads_mocked_plugin(self) -> None:
         fake_pack = DomainPack(id="third_party")
-        fake_ep = SimpleNamespace(load=lambda: (lambda register: register(fake_pack)))
-        with mock.patch(
-            "importlib.metadata.entry_points", return_value=[fake_ep]
-        ):
+        fake_ep = SimpleNamespace(load=lambda: lambda register: register(fake_pack))
+        with mock.patch("importlib.metadata.entry_points", return_value=[fake_ep]):
             discover_domain_pack_entrypoints()
         self.assertIn("third_party@v1", DEFAULT_DOMAIN_PACK_REGISTRY.names())
         DEFAULT_DOMAIN_PACK_REGISTRY.unregister("third_party@v1")  # leave global state as found
@@ -428,7 +455,9 @@ class TestFacilityObservationPack(unittest.TestCase):
             FACILITY_OBSERVATION_V1.template("zone_occupied").to_dict()["identity_policy"],
             "scene",
         )
-        self.assertIn("contiguous occupied interval", FACILITY_OBSERVATION_V1.template("zone_occupied").notes)
+        self.assertIn(
+            "contiguous occupied interval", FACILITY_OBSERVATION_V1.template("zone_occupied").notes
+        )
         self.assertIn("does not identify", FACILITY_OBSERVATION_V1.template("zone_occupied").notes)
 
     def test_all_components_are_preferred_not_required(self) -> None:
@@ -444,12 +473,28 @@ class TestFacilityObservationPack(unittest.TestCase):
         self.assertIn("false_negative_cost_min", FACILITY_OBSERVATION_V1.policy_clamps)
         self.assertIn("retention_max_days", FACILITY_OBSERVATION_V1.policy_clamps)
 
-    def test_search_space_and_fixtures_declared(self) -> None:
+    def test_legacy_candidate_declarations_are_preserved(self) -> None:
         self.assertTrue(FACILITY_OBSERVATION_V1.search_space)
-        self.assertTrue(FACILITY_OBSERVATION_V1.fixtures)
-        self.assertTrue(FACILITY_OBSERVATION_V1.quality_bars)
+        self.assertEqual(
+            FACILITY_OBSERVATION_V1.fixtures,
+            (
+                "facility_observation/package_appeared",
+                "facility_observation/standing_water",
+                "facility_observation/zone_occupied",
+            ),
+        )
+        self.assertEqual(
+            dict(FACILITY_OBSERVATION_V1.quality_bars),
+            {
+                "package_appeared.recall_min": 0.60,
+                "standing_water.recall_min": 0.55,
+                "zone_occupied.recall_min": 0.60,
+            },
+        )
+        self.assertIn("candidate qualification declarations", FACILITY_OBSERVATION_V1.notes)
+        self.assertIn("not achieved results", FACILITY_OBSERVATION_V1.notes)
 
-    def test_unmatched_duration_template_has_no_quality_claim(self) -> None:
+    def test_unmatched_duration_template_has_no_candidate_bar(self) -> None:
         self.assertNotIn(
             "facility_observation/door_left_open",
             FACILITY_OBSERVATION_V1.fixtures,
@@ -457,7 +502,6 @@ class TestFacilityObservationPack(unittest.TestCase):
         self.assertFalse(
             any(key.startswith("door_left_open.") for key in FACILITY_OBSERVATION_V1.quality_bars)
         )
-        self.assertIn("not quality-qualified", FACILITY_OBSERVATION_V1.notes)
 
     def test_search_space_paths_are_safe_to_optimize(self) -> None:
         from percept.tunables import REGISTRY
@@ -480,15 +524,28 @@ class TestCatalogSurfacing(unittest.TestCase):
     def test_facility_observation_listed(self) -> None:
         names = [c.name for c in catalog.list_components(role="domain_pack")]
         self.assertIn("facility_observation@1", names)
+        self.assertIn("physical_scene_starter@1", names)
+        self.assertIn("ego_motion_starter@1", names)
 
     def test_describe_via_cli_grammar(self) -> None:
         matches = [
-            c for c in catalog.list_components(role="domain_pack")
+            c
+            for c in catalog.list_components(role="domain_pack")
             if c.name == "facility_observation@1"
         ]
         self.assertEqual(len(matches), 1)
         self.assertIn("templates", matches[0].metadata)
-        self.assertEqual(set(matches[0].metadata["templates"]), set(FACILITY_OBSERVATION_V1.templates))
+        self.assertEqual(
+            set(matches[0].metadata["templates"]), set(FACILITY_OBSERVATION_V1.templates)
+        )
+
+    def test_official_starters_expose_no_qualification_claims(self) -> None:
+        for pack in (PHYSICAL_SCENE_STARTER_V1, EGO_MOTION_STARTER_V1):
+            with self.subTest(pack=pack.qualified_name):
+                payload = pack.to_dict()
+                self.assertEqual(payload["fixtures"], [])
+                self.assertEqual(payload["quality_bars"], {})
+                self.assertIn("not qualification", pack.notes)
 
     def test_snapshot_includes_domain_pack(self) -> None:
         snap = catalog.snapshot()
@@ -513,7 +570,8 @@ class TestResolverDomainPackOwnership(unittest.TestCase):
     def test_domain_pack_snapshot_carries_more_than_values(self) -> None:
         resolver = ConfigResolver()
         pack = DomainPack(
-            id="dp1", components=(ComponentRecommendation(ref="sense:physical_scene"),),
+            id="dp1",
+            components=(ComponentRecommendation(ref="sense:physical_scene"),),
             policy_clamps={"false_negative_cost_min": "mild"},
         )
         resolved = resolver.resolve(WatchPlan(condition="x"), domain_pack=pack)
@@ -556,7 +614,9 @@ class TestResolverPolicyClamps(unittest.TestCase):
         resolver = ConfigResolver()
         pack = DomainPack(id="dp1", policy_clamps={"retention_max_days": 1.0})
         settings = Settings()
-        settings = dc.replace(settings, episodes=dc.replace(settings.episodes, window_s=10 * 86400.0))
+        settings = dc.replace(
+            settings, episodes=dc.replace(settings.episodes, window_s=10 * 86400.0)
+        )
         with self.assertRaises(ConfigError) as ctx:
             resolver.resolve(WatchPlan(condition="x"), domain_pack=pack, settings=settings)
         self.assertIn("retention_max_days", str(ctx.exception))
@@ -662,8 +722,12 @@ class TestEndToEndArm(unittest.TestCase):
 
         resolver = ConfigResolver()
         plan = watch_template("facility_observation@1/standing_water")
-        resolved = resolver.resolve(plan, domain_pack=FACILITY_OBSERVATION_V1, execution_policy=LOW_COST_V1)
-        self.assertTrue(resolved.effective["Settings.cache.enabled"])  # LOW_COST_V1's own contribution
+        resolved = resolver.resolve(
+            plan, domain_pack=FACILITY_OBSERVATION_V1, execution_policy=LOW_COST_V1
+        )
+        self.assertTrue(
+            resolved.effective["Settings.cache.enabled"]
+        )  # LOW_COST_V1's own contribution
         self.assertIsNotNone(resolved.domain_pack)
         self.assertIsNotNone(resolved.execution_policy)
 
@@ -721,7 +785,8 @@ class TestTemplatesNeverAutoArm(unittest.TestCase):
     def test_pack_construction_arms_nothing(self) -> None:
         core = Percept.create(mode="offline", discover_plugins=False)
         DomainPack(
-            id="p", templates={"t": GoalTemplate(name="t", condition="x")},
+            id="p",
+            templates={"t": GoalTemplate(name="t", condition="x")},
         )
         self.assertEqual(len(core.goals.all()), 0)
 
@@ -736,7 +801,9 @@ class TestZeroCoreEditsProof(unittest.TestCase):
     def test_domain_pack_reuses_the_real_behavior_coercers_by_identity(self) -> None:
         """percept.domain_pack imports (not reimplements) percept.behavior's own closed-vocabulary
         firewall — the SAME function objects, proven by identity, not just by matching output."""
-        self.assertIs(domain_pack_mod.coerce_authored_behavior, behavior_mod.coerce_authored_behavior)
+        self.assertIs(
+            domain_pack_mod.coerce_authored_behavior, behavior_mod.coerce_authored_behavior
+        )
         self.assertIs(domain_pack_mod.coerce_authored_episode, behavior_mod.coerce_authored_episode)
 
     def test_watch_plan_type_is_the_real_frozen_contract(self) -> None:

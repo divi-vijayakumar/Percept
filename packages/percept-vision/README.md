@@ -76,6 +76,15 @@ agent = Percept.create(vision="gemini")          # needs percept-vision[gemini] 
 Backends are selected by name (`"scripted"` (canonical) · `"gemini"` · `"claude"` · `"openrouter"`), by
 adapter instance, or by env (`PERCEPT_VISION_BACKEND`).
 
+## Official free packs
+
+`physical_scene_starter@1` and `ego_motion_starter@1` ship as mechanics-only DomainPacks. They render
+portable `WatchPlan` values and never auto-arm a runtime. Both deliberately declare empty
+qualification fixtures and quality bars: availability is not a claim about real-media accuracy,
+provider latency, or cost. See the
+[DomainPack reference](https://github.com/divi-vijayakumar/Percept/blob/main/docs/reference/domain-packs.md)
+for the template names and explicit identity/tracking/reacquisition boundaries.
+
 ## Watch a live source
 
 For a real watch agent you don't write a capture loop — **`percept.run` owns it**: it opens the source,

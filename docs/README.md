@@ -34,6 +34,8 @@ per-module reference is the generated [CodeWiki](../codewiki/) (source of truth 
 - [Scope and persistence](reference/v1-4-scope-and-persistence.md) — **read first if you are designing around percept**: the subject kinds covered, what is excluded, why episodes do not survive a restart, and what `scope='durable'` does and does not mean.
 - [`watch()` contract](reference/watch-contract.md) — the frozen public entrypoint + `WatchEvent` schema.
 - [Consequence gate](reference/consequence-gate.md) — FIRE/ASK/SILENT, the rising edge, refractory, and the typed reason vocabulary.
+- [Official free DomainPacks](reference/domain-packs.md) — Physical Scene and Ego Motion
+  mechanics, template names, discovery, and explicit qualification boundaries.
 - [Backends](reference/backends.md) — the seams, backend names, extras, custom backends.
 - [Vision adapter interface](reference/vision-adapter.md) — the public extension point: bring your own model, fail-closed injection, and the runnable conformance suite.
 - [Registration](reference/registration.md) — detector / concern / enricher registries.

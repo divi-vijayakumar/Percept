@@ -98,6 +98,8 @@ percept-schema = "percept.contracts.jsonschema:main"
 # consistent rather than one being untested (see percept/packs_default.py's module docstring).
 [project.entry-points."percept.packs"]
 facility_observation = "percept.packs_default:register_entrypoint_pack"
+physical_scene_starter = "percept.packs_default:register_physical_scene_entrypoint_pack"
+ego_motion_starter = "percept.packs_default:register_ego_motion_entrypoint_pack"
 
 [tool.setuptools.packages.find]
 where = ["."]

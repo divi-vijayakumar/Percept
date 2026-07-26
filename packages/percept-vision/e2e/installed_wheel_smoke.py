@@ -59,7 +59,57 @@ def _assert_declared_entry_points(distribution: importlib.metadata.Distribution)
         if entry_point.group == "console_scripts":
             script = Path(sys.executable).parent / entry_point.name
             if not script.exists():
-                raise AssertionError(f"declared console entry point was not installed: {entry_point.name}")
+                raise AssertionError(
+                    f"declared console entry point was not installed: {entry_point.name}"
+                )
+
+
+def _assert_free_pack_surface(distribution: importlib.metadata.Distribution) -> None:
+    from percept.domain_pack import DomainPackRegistry, get_domain_pack, watch_template
+
+    official = {
+        "physical_scene_starter@1": {
+            "door_left_open",
+            "package_appeared",
+            "standing_water",
+            "zone_occupied",
+        },
+        "ego_motion_starter@1": {
+            "camera_view_moving",
+            "scene_transition",
+            "object_focus_gained",
+            "task_step_reached",
+        },
+    }
+    for qualified_name, expected_templates in official.items():
+        pack = get_domain_pack(qualified_name)
+        if set(pack.templates) != expected_templates:
+            raise AssertionError(
+                f"installed {qualified_name} templates differ: {sorted(pack.templates)}"
+            )
+        if pack.fixtures or pack.quality_bars:
+            raise AssertionError(
+                f"unqualified installed starter {qualified_name} exposes quality claims"
+            )
+        plan = watch_template(f"{qualified_name}/{sorted(expected_templates)[0]}")
+        if not plan.condition:
+            raise AssertionError(f"installed {qualified_name} did not render a WatchPlan")
+
+    # The original public name remains resolvable; the official starter is additive.
+    get_domain_pack("facility_observation@1")
+
+    discovered: set[str] = set()
+    for entry_point in distribution.entry_points:
+        if entry_point.group != "percept.packs":
+            continue
+        registry = DomainPackRegistry()
+        entry_point.load()(registry.register)
+        discovered.update(registry.names())
+    expected = {*official, "facility_observation@1"}
+    if not expected.issubset(discovered):
+        raise AssertionError(
+            f"installed percept.packs entry points missing {sorted(expected - discovered)}"
+        )
 
 
 async def _watch_fixture(percept: object) -> None:
@@ -75,7 +125,9 @@ async def _watch_fixture(percept: object) -> None:
     expected = [(item["goal_id"], item["action"]) for item in fixture.expect]
     observed = [(event.goal_id, event.action) for event in events]
     if observed != expected:
-        raise AssertionError(f"offline Watch events differ from its bundled manifest: {observed} != {expected}")
+        raise AssertionError(
+            f"offline Watch events differ from its bundled manifest: {observed} != {expected}"
+        )
     if not events:
         raise AssertionError("bundled Watch manifest declares no event")
     for event in events:
@@ -92,8 +144,11 @@ def main() -> int:
     distribution = _assert_installed_distribution(percept)
     _assert_public_exports(percept)
     _assert_declared_entry_points(distribution)
+    _assert_free_pack_surface(distribution)
     if importlib.util.find_spec("eval") is not None:
-        raise AssertionError("the repository-only eval package is selectable from the installed wheel")
+        raise AssertionError(
+            "the repository-only eval package is selectable from the installed wheel"
+        )
     asyncio.run(_watch_fixture(percept))
     print(f"installed public perception runtime OK: {percept.__version__}")
     return 0
