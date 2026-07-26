@@ -107,6 +107,8 @@ def parse_spoken_verdict(transcript: str) -> Verdict:
 class GeminiLiveVision:
     """``Vision`` adapter backed by a Gemini *live* model: audio out, transcribed back to a Verdict."""
 
+    RUNTIME_EXECUTION_BOUNDARY = "process"
+
     def __init__(self, settings: Any = None, *, client: Any = None) -> None:
         self._settings = _settings_of(settings)
         self._client = client

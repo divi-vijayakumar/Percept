@@ -178,18 +178,27 @@ def provider_wire_modules() -> dict[str, types.ModuleType]:
 def trusted_core(*, answers=None, blocked=(), **kwargs):
     client = ProviderClient(answers, blocked)
     vision = GeminiVision(client=client)
+    # This oracle intentionally coordinates an injected in-memory provider via
+    # asyncio.Events and inspects its live call ledger.  Process containment is
+    # covered by test_provider_process_boundary; retain this fixture's explicit
+    # in-process transport so it continues to test fused scheduling semantics.
+    vision.RUNTIME_EXECUTION_BOUNDARY = "in_process"
 
-    async def no_detection(_frame, _goals):
+    async def no_detection(_self, _frame, _goals):
         return []
 
     # Detection is not the fused provider-judgment seam under test. Keep the exact trusted Gemini
     # judge/binding while replacing only this unrelated object-detection call with an offline no-op.
-    vision.detect = no_detection
+    vision.detect = types.MethodType(no_detection, vision)
     core = Percept.create(
         vision=vision,
         discover_plugins=False,
         **kwargs,
     )
+    # Exact-instance capability: this reviewed oracle deliberately coordinates
+    # shared-memory Events and ledgers. A provider cannot mint this authority
+    # merely by declaring the public boundary marker.
+    core._trusted_in_process_provider_instances = (vision,)
     return core, client.models
 
 

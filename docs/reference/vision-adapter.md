@@ -144,6 +144,28 @@ A failing plugin never breaks resolution of the others (`registry.discover_entry
 per-plugin errors), so an adapter that raises at import time simply *does not appear* — check
 `registry.available("vision")`.
 
+### Execution-boundary migration
+
+Vision methods now execute in a fresh, disposable provider process by default. This also applies to
+custom and third-party adapters that do not declare a boundary. Percept kills and joins that process
+before it accepts a result, reports a failure, propagates cancellation, releases the core lease, or
+returns from the stream. Provider-created Tasks, callbacks, threads, executors, and `finally`
+descendants therefore cannot outlive a terminal runtime result.
+
+Custom adapters must consequently be importable and pickle-serializable together with each call's
+arguments. Keep client construction lazy and keep live locks, sockets, event loops, Tasks, and
+thread-pool objects out of adapter instance state. Mutations made by `judge`, `detect`, or
+`detect_events` happen in the disposable child and are not reflected on the parent adapter object;
+use returned SDK DTOs, tracing, or another explicit IPC sink for observations instead of inspecting
+an in-memory call ledger.
+
+`RUNTIME_EXECUTION_BOUNDARY = "process"` may be declared to document the contract, but it is already
+the default. `"in_process"` is not a public opt-out: the runtime authenticates that request against
+an exact SDK-owned offline fixture (or an explicitly reviewed internal test capability) and rejects
+an untrusted adapter that attempts to claim it. This is an intentional safety-breaking migration:
+an older adapter whose object graph is not serializable now fails closed rather than regaining
+access to the runtime owner's Task and cancellation authority.
+
 ---
 
 ## The conformance suite

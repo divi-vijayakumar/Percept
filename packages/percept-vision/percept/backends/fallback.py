@@ -39,6 +39,8 @@ class FallbackVision:
     nothing downstream of the eye needs to know a fallback happened.
     """
 
+    RUNTIME_EXECUTION_BOUNDARY = "process"
+
     def __init__(self, primary: Any, fallback: Any = None) -> None:
         self._primary = primary
         self._fallback = fallback

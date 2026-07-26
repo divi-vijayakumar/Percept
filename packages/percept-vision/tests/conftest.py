@@ -18,6 +18,11 @@ import sys
 
 import pytest
 
+from percept.agent import (
+    Percept,
+    _REVIEWED_TEST_IN_PROCESS_PROVIDER_CAPABILITY,
+)
+
 if sys.version_info < (3, 11):
     import tomli
 
@@ -29,3 +34,35 @@ if sys.version_info < (3, 11):
 @pytest.fixture(autouse=True)
 def _offline(monkeypatch):
     monkeypatch.setenv("PERCEPT_MODE", "offline")
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _reviewed_shared_memory_provider_fixtures():
+    """Grant this repository's legacy shared-memory oracles an opaque capability.
+
+    Production defaults every unmarked adapter to process isolation. Many
+    unit/eval fixtures intentionally inspect mutable call ledgers or coordinate
+    asyncio.Events, so the central harness authenticates those cores explicitly
+    instead of teaching production code to trust test-looking marker strings.
+    Process-boundary regressions explicitly remove the capability from the
+    exact cores whose production behavior they exercise.
+    """
+    original_create = Percept.create.__func__
+    original_descriptor = Percept.__dict__["create"]
+
+    def create_reviewed_core(cls, *args, **kwargs):
+        core = original_create(cls, *args, **kwargs)
+        core._reviewed_test_in_process_provider_capability = (
+            _REVIEWED_TEST_IN_PROCESS_PROVIDER_CAPABILITY
+        )
+        return core
+
+    setattr(
+        Percept,
+        "create",
+        classmethod(create_reviewed_core),
+    )
+    try:
+        yield
+    finally:
+        setattr(Percept, "create", original_descriptor)

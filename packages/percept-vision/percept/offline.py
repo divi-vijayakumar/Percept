@@ -155,6 +155,8 @@ class FixtureVision:
     asserts a gate-visible verdict, never object intelligence.
     """
 
+    RUNTIME_EXECUTION_BOUNDARY = "in_process"
+
     def __init__(self, fixture: OfflineFixture | str | None = None) -> None:
         self.fixture = fixture if isinstance(fixture, OfflineFixture) else load_fixture(fixture)
 

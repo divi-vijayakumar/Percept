@@ -140,6 +140,13 @@ class ModelSettings:
 
 
 @dataclass(frozen=True)
+class ProviderSettings:
+    # Hard wall-clock bound for one externally isolated provider root.  The
+    # process boundary kills and joins the provider process group at expiry.
+    watchdog_s: float = 60.0  # PERCEPT_PROVIDER_WATCHDOG_S
+
+
+@dataclass(frozen=True)
 class ConsentSettings:
     allow_computer_use: bool = False  # PERCEPT_ALLOW_COMPUTER_USE — gates the `act` modality
     allowed_actions: frozenset = frozenset()  # PERCEPT_ACT_ALLOWED_ACTIONS — comma-separated scope
@@ -216,6 +223,7 @@ class Settings:
     entity: EntitySettings = EntitySettings()
     cache: CacheSettings = CacheSettings()
     models: ModelSettings = ModelSettings()
+    provider: ProviderSettings = ProviderSettings()
     routing: RoutingSettings = RoutingSettings()
     identity: IdentitySettings = IdentitySettings()
     episodes: EpisodeSettings = EpisodeSettings()
@@ -256,6 +264,9 @@ def load_settings() -> Settings:
             vision_model=_env("PERCEPT_VISION_MODEL", "claude-opus-4-8", str),
             conductor_model=_env("PERCEPT_CONDUCTOR_MODEL", "claude-haiku-4-5", str),
             specialist_model=_env("PERCEPT_SPECIALIST_MODEL", "claude-haiku-4-5", str),
+        ),
+        provider=ProviderSettings(
+            watchdog_s=_env("PERCEPT_PROVIDER_WATCHDOG_S", 60.0, float),
         ),
         routing=RoutingSettings(
             confidence_threshold=_env("PERCEPT_ROUTE_THRESHOLD", 0.6, float),
@@ -302,6 +313,7 @@ __all__ = [
     "EntitySettings",
     "CacheSettings",
     "ModelSettings",
+    "ProviderSettings",
     "RoutingSettings",
     "IdentitySettings",
     "EpisodeSettings",

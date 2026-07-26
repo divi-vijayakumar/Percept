@@ -201,6 +201,8 @@ class _GeminiBase:
 class GeminiVision(_GeminiBase):
     """``Vision`` adapter backed by Gemini Flash — narrow grounded VQA, same firing contract as Claude."""
 
+    RUNTIME_EXECUTION_BOUNDARY = "process"
+
     #: PARSES the claim-mode correction channel (see :class:`~percept.backends.anthropic.AnthropicVision`).
     PARSES_CLAIM_CHANNEL = True
     # Narrow, enforced capability marker used by WatchPlan apply. This adapter attaches ``audio`` as

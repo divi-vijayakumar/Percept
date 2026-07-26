@@ -203,6 +203,7 @@ def test_generator_exit_hostile_teardown_holds_core_lease_until_quiescent() -> N
         release.set()
         await asyncio.wait_for(owner_task, timeout=0.5)
         assert provider_task.done()
+        assert provider_task not in worker._FORCE_CLOSED_PROVIDER_TASKS
         assert asyncio.CancelledError in exits
         assert GeneratorExit in exits
 
@@ -525,3 +526,43 @@ def test_explicit_production_run_close_is_one_cancelled_boundary(
     asyncio.run(drive())
     assert terminal_reasons == ["cancelled"]
     assert core.advanced == ["consumer-close"]
+
+
+def test_rejected_concurrent_aclose_mints_no_consumer_close_authority() -> None:
+    core = _Core()
+
+    class ReleasableStream:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.close_calls = 0
+
+        def __aiter__(self) -> "ReleasableStream":
+            return self
+
+        async def __anext__(self) -> Any:
+            self.started.set()
+            await self.release.wait()
+            raise StopAsyncIteration
+
+        async def aclose(self) -> None:
+            self.close_calls += 1
+
+    async def drive() -> None:
+        source = ReleasableStream()
+        runtime = _runtime(core, stream=source, gate_source="rejected-close")
+        advancing = asyncio.create_task(anext(runtime))
+        await source.started.wait()
+
+        with pytest.raises(RuntimeError, match="asynchronous generator is already running"):
+            await runtime.aclose()
+        assert runtime._cancellation.consumer_closed is False
+        assert core.advanced == []
+
+        source.release.set()
+        with pytest.raises(StopAsyncIteration):
+            await advancing
+        assert source.close_calls == 1
+        assert core.advanced == []
+
+    asyncio.run(drive())

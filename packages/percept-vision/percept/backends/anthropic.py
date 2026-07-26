@@ -117,6 +117,10 @@ class AnthropicVision:
     first call so the module imports with no key present (L2 boundary).
     """
 
+    # Runtime provider effects live in a disposable process.  The parent only
+    # receives a frozen completion after that process group is killed + reaped.
+    RUNTIME_EXECUTION_BOUNDARY = "process"
+
     #: This backend PARSES the claim-mode correction channel (operation/value) — read by
     #: ``watchplan_apply`` to decide whether a ``claim_slot`` plan needs the "backend unverified"
     #: warning. A client backend that emits the channel declares the same marker.

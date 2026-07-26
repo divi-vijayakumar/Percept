@@ -1918,6 +1918,24 @@
     {
       "bounds": [
         0.0,
+        Infinity
+      ],
+      "choices": null,
+      "default": 60.0,
+      "env_var": "PERCEPT_PROVIDER_WATCHDOG_S",
+      "note": "hard deadline before the provider process group is killed and joined.",
+      "owner": "ExecutionPolicy",
+      "path": "Settings.provider.watchdog_s",
+      "requires_recompile": true,
+      "requires_restart": false,
+      "risk": "high",
+      "safe_to_optimize": false,
+      "value_type": "float",
+      "visibility": "public"
+    },
+    {
+      "bounds": [
+        0.0,
         1.0
       ],
       "choices": null,

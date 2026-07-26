@@ -20,7 +20,6 @@ import math
 import threading
 import time
 import uuid
-import weakref
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -244,7 +243,6 @@ class _ExclusiveCoreRuntime:
         return await anext(self._driver)
 
     async def aclose(self) -> None:
-        self._cancellation.consumer_closed = True
         await self._driver.aclose()
 
     async def _drive(self) -> AsyncIterator[Any]:
@@ -351,263 +349,7 @@ def _filter_goal_events(events: Any, allowed_goal_ids: tuple[str, ...]) -> list:
     ]
 
 
-_PROVIDER_EXECUTION_SCOPE: contextvars.ContextVar[
-    "_ProviderExecutionScope | None"
-] = contextvars.ContextVar(
-    "percept_provider_execution_scope",
-    default=None,
-)
-_PROVIDER_SCOPE_FACTORIES: weakref.WeakKeyDictionary[
-    asyncio.AbstractEventLoop,
-    Callable[..., asyncio.Future[Any]],
-] = weakref.WeakKeyDictionary()
 _FORCE_CLOSED_PROVIDER_TASKS: set[asyncio.Task[Any]] = set()
-
-
-def _install_provider_scope_task_factory(
-    loop: asyncio.AbstractEventLoop,
-) -> None:
-    """Compose a task factory that enrolls provider-created descendants."""
-    installed = _PROVIDER_SCOPE_FACTORIES.get(loop)
-    if installed is not None and loop.get_task_factory() is installed:
-        return
-
-    previous = loop.get_task_factory()
-
-    def task_factory(
-        factory_loop: asyncio.AbstractEventLoop,
-        coroutine: Any,
-        context: contextvars.Context | None = None,
-    ) -> asyncio.Future[Any]:
-        ambient_scope = _PROVIDER_EXECUTION_SCOPE.get()
-        creation_context = (
-            context.copy()
-            if context is not None
-            else contextvars.copy_context()
-        )
-        contextual_scope = creation_context.get(_PROVIDER_EXECUTION_SCOPE)
-        scope = ambient_scope or contextual_scope
-        if scope is not None and contextual_scope is not scope:
-            creation_context.run(_PROVIDER_EXECUTION_SCOPE.set, scope)
-
-        if previous is None:
-            if context is None:
-                task = asyncio.Task(coroutine, loop=factory_loop)
-            else:
-                task = asyncio.Task(
-                    coroutine,
-                    loop=factory_loop,
-                    context=creation_context,
-                )
-        elif context is not None and _accepts_keyword(previous, "context"):
-            task = previous(
-                factory_loop,
-                coroutine,
-                context=creation_context,
-            )
-        else:
-            # Python 3.10 has no explicit task context argument. The factory
-            # itself runs in the creator's context, which Task captures.
-            task = previous(factory_loop, coroutine)
-
-        if scope is not None:
-            if not isinstance(task, asyncio.Task):
-                raise TypeError(
-                    "provider execution requires a task factory returning asyncio.Task"
-                )
-            scope._register(task, creation_context)
-        return task
-
-    loop.set_task_factory(task_factory)
-    _PROVIDER_SCOPE_FACTORIES[loop] = task_factory
-
-
-def _create_task_in_context(
-    loop: asyncio.AbstractEventLoop,
-    coroutine: Any,
-    context: contextvars.Context,
-) -> asyncio.Task[Any]:
-    """Create a Task with an explicit context on 3.11+ and via run() on 3.10."""
-    if _accepts_keyword(loop.create_task, "context"):
-        return loop.create_task(coroutine, context=context)
-    return context.run(loop.create_task, coroutine)
-
-
-class _ProviderExecutionScope:
-    """Structured lifetime for one provider root and every created descendant.
-
-    The scheduler owns only the supervisor returned by :meth:`run`. Provider
-    tasks inherit this scope through Context and the loop task factory, so a
-    scheduler result cannot become terminal until the entire provider tree is
-    quiescent. Teardown remains open while injecting ``GeneratorExit``: tasks
-    created by provider ``finally`` blocks are enrolled, cancelled, and joined
-    in the same scope.
-    """
-
-    def __init__(self, *, cancellation_grace_s: float = 0.01) -> None:
-        self._loop = asyncio.get_running_loop()
-        _install_provider_scope_task_factory(self._loop)
-        self._cancellation_grace_s = cancellation_grace_s
-        self._tasks: set[asyncio.Task[Any]] = set()
-        self._contexts: dict[
-            asyncio.Task[Any],
-            contextvars.Context,
-        ] = {}
-        self._root: asyncio.Task[Any] | None = None
-        self._closing = False
-        self._sealed = False
-        self._teardown: asyncio.Task[None] | None = None
-
-    def _register(
-        self,
-        task: asyncio.Task[Any],
-        context: contextvars.Context,
-    ) -> None:
-        self._tasks.add(task)
-        self._contexts[task] = context
-        if self._closing or self._sealed:
-            # Registration happens synchronously during create_task(), before
-            # the new task can execute its first bytecode.
-            task.cancel()
-
-    def _live_tasks(self) -> set[asyncio.Task[Any]]:
-        return {task for task in self._tasks if not task.done()}
-
-    def run(self, provider_awaitable: Any) -> Any:
-        """Start one provider root now and return its supervisor coroutine."""
-        if self._root is not None:
-            raise RuntimeError("provider execution scope is single-use")
-        provider_context = contextvars.copy_context()
-        provider_context.run(_PROVIDER_EXECUTION_SCOPE.set, self)
-        self._root = _create_task_in_context(
-            self._loop,
-            provider_awaitable,
-            provider_context,
-        )
-        return self._supervise()
-
-    async def _supervise(self) -> Any:
-        """Publish the root result only after descendant quiescence."""
-        if self._root is None:  # pragma: no cover - private construction invariant
-            raise RuntimeError("provider execution scope has no root")
-        try:
-            result = await asyncio.shield(self._root)
-            await self._join_normal_descendants()
-            self._sealed = True
-            failure = self._reap_tasks(report_descendant_failure=True)
-            if failure is not None:
-                raise failure
-            return result
-        except BaseException:  # noqa: BLE001 - scope must quiesce before propagation
-            await self.cancel_and_join()
-            raise
-
-    async def _join_normal_descendants(self) -> None:
-        """Join every descendant created before provider tasks become terminal."""
-        while True:
-            live = self._live_tasks()
-            if live:
-                done, _pending = await asyncio.wait(
-                    live,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                for task in done:
-                    if task.cancelled():
-                        continue
-                    failure = task.exception()
-                    if failure is not None:
-                        raise failure
-                continue
-            return
-
-    async def cancel_and_join(self) -> None:
-        """Cancel and join the complete scope, immune to caller interruption."""
-        if self._teardown is None:
-            self._teardown = asyncio.create_task(self._cancel_and_join_impl())
-        interrupted: asyncio.CancelledError | None = None
-        while not self._teardown.done():
-            try:
-                await asyncio.shield(self._teardown)
-            except asyncio.CancelledError as exc:
-                if interrupted is None:
-                    interrupted = exc
-            except BaseException:  # noqa: BLE001 - re-raised by result() below
-                break
-        self._teardown.result()
-        if interrupted is not None:
-            raise interrupted
-
-    async def _cancel_and_join_impl(self) -> None:
-        self._closing = True
-        force_closed: set[asyncio.Task[Any]] = set()
-        generator_exit_refused = False
-        while True:
-            live = self._live_tasks()
-            if not live:
-                break
-
-            for task in live:
-                task.cancel()
-            done, pending = await asyncio.wait(
-                live,
-                timeout=self._cancellation_grace_s,
-            )
-            del done
-            for task in tuple(pending):
-                if task.done() or task in force_closed:
-                    continue
-                force_closed.add(task)
-                coroutine = task.get_coro()
-                task_context = self._contexts.get(task)
-                try:
-                    if task_context is None:
-                        coroutine.close()
-                    else:
-                        task_context.run(coroutine.close)
-                except RuntimeError as exc:
-                    if str(exc) == "coroutine ignored GeneratorExit":
-                        generator_exit_refused = True
-                except BaseException:  # noqa: BLE001 - terminal join owns outcome
-                    pass
-                # Manual close can leave Task waiting on its old waiter. A
-                # cancel wakeup returns ownership to Task; if provider code
-                # ignored GeneratorExit, the join below deliberately remains
-                # pending until that code really becomes terminal.
-                task.cancel()
-            if pending:
-                await asyncio.wait(pending)
-
-        if generator_exit_refused:
-            # CPython closes the outer coroutine even when a nested awaited
-            # coroutine suppresses GeneratorExit, orphaning that nested
-            # coroutine outside Task bookkeeping. There is no truthful
-            # in-process join after that point. Fail closed forever: an
-            # external process watchdog/sandbox may terminate the execution,
-            # but the runtime must not publish a terminal result or release
-            # its core lease while untracked provider code could still exist.
-            await asyncio.Event().wait()
-
-        self._sealed = True
-        self._reap_tasks(report_descendant_failure=False)
-
-    def _reap_tasks(
-        self,
-        *,
-        report_descendant_failure: bool,
-    ) -> BaseException | None:
-        failure: BaseException | None = None
-        for task in self._tasks:
-            if not task.done() or task.cancelled():
-                continue
-            task_failure = task.exception()
-            if (
-                report_descendant_failure
-                and task is not self._root
-                and failure is None
-                and task_failure is not None
-            ):
-                failure = task_failure
-        return failure
 
 
 async def _cancel_and_join_task(
@@ -638,6 +380,8 @@ async def _cancel_and_join_task(
             done = set()
         if task not in done and not task.done():
             _FORCE_CLOSED_PROVIDER_TASKS.add(task)
+            # Scheduler callbacks were registered at launch, so they observe
+            # this marker before the later discard callback removes it.
             task.add_done_callback(_FORCE_CLOSED_PROVIDER_TASKS.discard)
             try:
                 task.get_coro().close()
@@ -1137,7 +881,6 @@ class _LegacyJudgeScheduler:
         # launch/drop decisions are unchanged whether or not a collector is wired.
         self._metrics = metrics_collector
         self._active: "asyncio.Task | None" = None
-        self._active_scope: _ProviderExecutionScope | None = None
         self._active_t: float | None = None  # admission t of the in-flight judgment (rides the result)
         self._active_payload: Any = None
         # (t, judge_frame, admission_revision, admitted_goal_ids, fused_bundles). The ids are frozen at the same
@@ -1381,11 +1124,8 @@ class _LegacyJudgeScheduler:
             if goal_ids is not None and not self._perceive_accepts_goal_ids
             else None
         )
-        self._active_scope = _ProviderExecutionScope()
         self._active = asyncio.create_task(
-            self._active_scope.run(
-                self._perceive(frame, self._source, **kwargs)
-            )
+            self._perceive(frame, self._source, **kwargs)
         )
         self._active.add_done_callback(self._on_done)
 
@@ -1421,8 +1161,10 @@ class _LegacyJudgeScheduler:
     def _on_done(self, task: "asyncio.Task") -> None:
         # ORDERED checks — cancellation FIRST (close(drain=False) must not become a fatal error),
         # then failure (fatal: never launch pending after a failure), then result + pending launch.
-        self._active_scope = None
-        if task.cancelled():
+        force_closed = task in _FORCE_CLOSED_PROVIDER_TASKS
+        if force_closed:
+            _FORCE_CLOSED_PROVIDER_TASKS.discard(task)
+        if task.cancelled() or force_closed:
             self._mc_resolve(self._active_t)  # no longer pending, whether or not it truly judged
             invalidated = self._active_invalidated
             if invalidated:
@@ -1565,9 +1307,6 @@ class _LegacyJudgeScheduler:
         self._pending = None
         task = self._active
         if task is not None:
-            scope = self._active_scope
-            if scope is not None:
-                await scope.cancel_and_join()
             await _cancel_and_join_task(task)
 
 
@@ -1594,7 +1333,6 @@ class _ProviderScheduler:
         self._stats = stats
         self.ready = ready
         self._active: asyncio.Task | None = None
-        self._active_scope: _ProviderExecutionScope | None = None
         self._active_t: float | None = None
         self._pending: tuple[float, tuple[Any, ...], int | None] | None = None
         self._results: deque = deque()
@@ -1707,11 +1445,8 @@ class _ProviderScheduler:
         self._active_invalidated = False
         self._active_launch_wall = self._mc_now(t)
         self._stall_reported = False
-        self._active_scope = _ProviderExecutionScope()
         self._active = asyncio.create_task(
-            self._active_scope.run(
-                self._dispatch(launched, t=t)
-            )
+            self._dispatch(launched, t=t)
         )
         self._active.add_done_callback(self._on_done)
 
@@ -1819,8 +1554,10 @@ class _ProviderScheduler:
         return tuple(completions)
 
     def _on_done(self, task: asyncio.Task) -> None:
-        self._active_scope = None
-        if task.cancelled():
+        force_closed = task in _FORCE_CLOSED_PROVIDER_TASKS
+        if force_closed:
+            _FORCE_CLOSED_PROVIDER_TASKS.discard(task)
+        if task.cancelled() or force_closed:
             invalidated = self._active_invalidated
             self._active_invalidated = False
             self._active = None
@@ -1961,13 +1698,7 @@ class _ProviderScheduler:
         self._pending = None
         task = self._active
         if task is not None:
-            # Cancel the supervisor before draining the scope so a provider
-            # root that already returned while descendants were still live
-            # cannot publish its result during shutdown.
             task.cancel()
-            scope = self._active_scope
-            if scope is not None:
-                await scope.cancel_and_join()
             await _cancel_and_join_task(task)
 
 

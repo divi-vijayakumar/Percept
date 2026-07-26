@@ -169,6 +169,8 @@ class OpenRouterVision:
     Constructed by the registry as ``OpenRouterVision(settings)`` (``vision="openrouter"``). The client is
     built lazily on first call so the module imports with no key present (L2 boundary)."""
 
+    RUNTIME_EXECUTION_BOUNDARY = "process"
+
     #: PARSES the claim-mode correction channel (see :class:`~percept.backends.anthropic.AnthropicVision`).
     PARSES_CLAIM_CHANNEL = True
 

@@ -277,6 +277,15 @@ _SETTINGS: tuple[TunableSpec, ...] = (
         env_var="PERCEPT_SPECIALIST_MODEL", requires_recompile=True, risk="low",
         note="model id carried to the specialist adapter.",
     ),
+    # -- ProviderSettings — the hard external-execution deadline is a
+    # deployment resource/safety posture, never an optimization target.
+    TunableSpec(
+        path="Settings.provider.watchdog_s", owner="ExecutionPolicy", visibility="public",
+        safe_to_optimize=False, default=60.0, value_type="float",
+        bounds=(0.0, float("inf")), env_var="PERCEPT_PROVIDER_WATCHDOG_S",
+        requires_recompile=True, risk="high",
+        note="hard deadline before the provider process group is killed and joined.",
+    ),
     # -- RoutingSettings — local-router defer-on-miss cutoff: a cost/quality tradeoff -> ExecutionPolicy.
     TunableSpec(
         path="Settings.routing.confidence_threshold", owner="ExecutionPolicy", visibility="public",

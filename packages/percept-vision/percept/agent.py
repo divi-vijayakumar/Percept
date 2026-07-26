@@ -72,6 +72,23 @@ from .tracing import STAGE_JUDGMENT_EVENT, STAGE_SHADOW_FOLD, STAGE_TRANSITION_D
 #: default ``max_keys`` so the observability map can never outgrow the gate state it mirrors.
 _SEQ_MAX_KEYS = 10_000
 _PROVIDER_ACCOUNTING_FALLBACK_MAX = 1_024
+# Opaque capability used only by this repository's central pytest harness.
+# Provider objects never receive it and cannot mint it from a marker string.
+_REVIEWED_TEST_IN_PROCESS_PROVIDER_CAPABILITY = object()
+
+
+def _sdk_trusted_in_process_provider(adapter: Any) -> bool:
+    """Authenticate the two SDK-owned, side-effect-free provider doubles.
+
+    A provider cannot grant itself this authority by copying a marker string:
+    trust is exact-type identity against classes owned by this distribution.
+    Test-only shared-memory oracles may additionally grant one exact instance
+    through ``Percept._trusted_in_process_provider_instances``.
+    """
+    from .backends.fake import FakeVision
+    from .offline import FixtureVision
+
+    return type(adapter) in (FakeVision, FixtureVision)
 
 
 @dataclass
@@ -137,6 +154,7 @@ class _JudgmentAdmissionToken:
 @dataclass(frozen=True)
 class _ProviderRequest:
     dispatch: Any
+    adapter: Any
     condition: str
     frame: Any
     frames: tuple[Any, ...]
@@ -1719,7 +1737,11 @@ class Percept:
         window = self.windows.get(source)
         if window is None or len(window) == 0:
             return []
-        detected = await self.vision.detect_events(window.frames(), self.goals.active())
+        detected = await self._invoke_provider_call(
+            self.vision.detect_events,
+            (window.frames(), self.goals.active()),
+            {},
+        )
         out: list[FireEvent] = []
         for ev in detected:
             distinct, _is_new = self.event_log.observe(
@@ -2394,12 +2416,23 @@ class Percept:
         failure = None
         snapshots = ()
         try:
-            observations = await candidate.dispatch(
-                # The launched candidate is owner evidence (Window now, graph on
-                # reduction).  A detector receives a detached copy so retained
-                # provider aliases can never rewrite either owner structure.
-                copy.deepcopy(candidate.frame),
-                list(candidate.goals),
+            observations = await self._invoke_provider_call(
+                candidate.dispatch,
+                (
+                    # The launched candidate is owner evidence (Window now,
+                    # graph on reduction). A detector receives a detached copy
+                    # so retained aliases cannot rewrite owner structures.
+                    copy.deepcopy(candidate.frame),
+                    [
+                        replace(
+                            goal,
+                            state=_provider_input_copy(goal.state),
+                        )
+                        for goal in candidate.goals
+                    ],
+                ),
+                {},
+                adapter=candidate.token.adapter_token,
             )
             if not isinstance(observations, (list, tuple)):
                 raise ValueError("detector returned a malformed observation collection")
@@ -2688,6 +2721,7 @@ class Percept:
             evidence=candidate,
             provider=_ProviderRequest(
                 dispatch=adapter.judge,
+                adapter=adapter,
                 condition=str(goal.condition),
                 frame=copy.deepcopy(candidate.frame),
                 frames=tuple(copy.deepcopy(strip or ())),
@@ -2889,6 +2923,7 @@ class Percept:
         )
         request_common = dict(
             dispatch=adapter.judge,
+            adapter=adapter,
             frame=frozen_frame,
             frames=frozen_strip,
             audio=None,
@@ -2963,6 +2998,7 @@ class Percept:
             reducer_entity_id=None,
             provider=_ProviderRequest(
                 dispatch=adapter.judge,
+                adapter=adapter,
                 condition=str(goal.condition),
                 frame=copy.deepcopy(candidate.frame),
                 frames=tuple(copy.deepcopy(strip or ())),
@@ -3870,7 +3906,11 @@ class Percept:
             self._window(source).push(now, frame)
             if _stale():
                 return []
-            observations = await self.vision.detect(frame, active_goals)
+            observations = await self._invoke_provider_call(
+                self.vision.detect,
+                (frame, active_goals),
+                {},
+            )
             self.graph.ingest(observations, frame, source, t=now)
             focus = self.graph.in_focus()
             if _stale():
@@ -4361,6 +4401,7 @@ class Percept:
             evidence=bundle,
             provider=_ProviderRequest(
                 dispatch=binding.dispatch,
+                adapter=binding.adapter,
                 condition=str(goal.condition),
                 frame=anchor.payload,
                 frames=tuple(unit.payload for unit in bundle.video_units[:-1]),
@@ -4385,11 +4426,78 @@ class Percept:
             trace_roi=False,
         )
 
+    async def _invoke_provider_call(
+        self,
+        dispatch: Any,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        *,
+        adapter: Any = None,
+    ) -> Any:
+        """Invoke a provider outside the owner unless its trust is authenticated."""
+        adapter = adapter if adapter is not None else getattr(dispatch, "__self__", None)
+        adapter_type = type(adapter)
+        boundary = adapter_type.__dict__.get(
+            "RUNTIME_EXECUTION_BOUNDARY",
+            None,
+        )
+        reviewed_test_capability = (
+            self.__dict__.get(
+                "_reviewed_test_in_process_provider_capability"
+            )
+            is _REVIEWED_TEST_IN_PROCESS_PROVIDER_CAPABILITY
+        )
+        reviewed_instances = self.__dict__.get(
+            "_trusted_in_process_provider_instances",
+            (),
+        )
+        trusted_instance = any(
+            candidate is adapter for candidate in reviewed_instances
+        )
+        if reviewed_test_capability or trusted_instance:
+            return await dispatch(*args, **kwargs)
+        if (
+            boundary is not None
+            and not (
+                type(boundary) is str
+                and boundary in ("in_process", "process")
+            )
+        ):
+            raise ValueError(
+                "provider RUNTIME_EXECUTION_BOUNDARY must be "
+                "'in_process' or 'process'"
+            )
+        if boundary == "in_process":
+            if not _sdk_trusted_in_process_provider(adapter):
+                raise ValueError(
+                    "in-process provider execution is reserved for "
+                    "authenticated SDK/test fixtures"
+                )
+            return await dispatch(*args, **kwargs)
+
+        from .runtime.provider_process import run_provider_process
+
+        return await run_provider_process(
+            dispatch,
+            args,
+            kwargs,
+            watchdog_s=float(self.settings.provider.watchdog_s),
+        )
+
     async def _dispatch_provider_request(
         self,
         request: "_ProviderRequest",
     ) -> "_ProviderCallCompletion":
-        """Execute one frozen request without reading or mutating cognition."""
+        """Execute one frozen request in its adapter-declared hard boundary."""
+        if type(request) is not _ProviderRequest:
+            raise ValueError("provider dispatch requires an exact frozen request")
+        return await self._dispatch_provider_request_in_process(request)
+
+    async def _dispatch_provider_request_in_process(
+        self,
+        request: "_ProviderRequest",
+    ) -> "_ProviderCallCompletion":
+        """Build and freeze one provider call without touching reducer state."""
         if type(request) is not _ProviderRequest:
             raise ValueError("provider dispatch requires an exact frozen request")
         failure = None
@@ -4412,10 +4520,15 @@ class Percept:
                 kwargs["audio"] = _provider_input_copy(request.audio)
             if request.include_context:
                 kwargs["context"] = _provider_input_copy(request.context)
-            provider_verdict = await request.dispatch(
+            args = (
                 request.condition,
                 _provider_input_copy(request.frame),
-                **kwargs,
+            )
+            provider_verdict = await self._invoke_provider_call(
+                request.dispatch,
+                args,
+                kwargs,
+                adapter=request.adapter,
             )
         except Exception as exc:  # noqa: BLE001 - one provider completion fails closed
             failure = _ProviderFailure(
@@ -4439,7 +4552,13 @@ class Percept:
             if not _is_valid_verdict(provider_verdict):
                 failure = _ProviderFailure(
                     kind="malformed_response",
-                    exception_type=type(provider_verdict).__name__,
+                    exception_type=str(
+                        getattr(
+                            provider_verdict,
+                            "exception_type",
+                            type(provider_verdict).__name__,
+                        )
+                    ),
                     safe_message="judgment provider returned malformed data",
                 )
                 verdict = _VerdictSnapshot.capture(
@@ -5229,7 +5348,12 @@ class Percept:
             return ctx.running_answer
         goal = self.goals.get(goal_id)
         condition = goal.condition if goal is not None else ""
-        answer = await summarizer(condition, log)
+        answer = await self._invoke_provider_call(
+            summarizer,
+            (condition, log),
+            {},
+            adapter=self.vision,
+        )
         ctx.running_answer = answer or ctx.running_answer
         if wipe:
             ctx.process_log = []
@@ -5367,10 +5491,13 @@ class Percept:
         binding = kwargs.pop("_binding", None)
         audio_dispatch = kwargs.pop("_audio_dispatch", None)
         t0 = self.clock()
-        if audio_dispatch is not None:
-            verdict = await audio_dispatch(*args, **kwargs)
-        else:
-            verdict = await adapter.judge(*args, **kwargs)
+        dispatch = audio_dispatch if audio_dispatch is not None else adapter.judge
+        verdict = await self._invoke_provider_call(
+            dispatch,
+            tuple(args),
+            kwargs,
+            adapter=adapter,
+        )
         usage = judge_usage(verdict)
         self.funnel.record_judge(latency_s=self.clock() - t0, **usage)
         if usage and self.on_trace is not None:

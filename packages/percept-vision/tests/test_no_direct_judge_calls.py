@@ -1,14 +1,11 @@
-"""P06-002 — structural invariant: ``_timed_judge`` is the ONE site every judge call passes through.
+"""Structural invariant: every judge call crosses the provider execution boundary.
 
-``Percept._timed_judge``'s docstring claims it is "the only site EVERY judge call passes through".
-That is load-bearing: the cost/latency wire and (via ``_safe_timed_judge``) the fail-closed boundary
-only cover a judge call if the call actually goes through this wrapper. Before P06-002 the transition
-path called the adapter directly, silently bypassing both.
+``Percept._timed_judge`` remains the metering/fail-closed wrapper, but provider code now executes in
+``_invoke_provider_call`` so the live runtime Task is outside provider reach and process teardown
+finishes before the result is returned.  No ``<expr>.judge(...)`` call may remain in the parent.
 
-This test makes the claim STRUCTURALLY true by PARSING ``agent.py`` with :mod:`ast` (not a regex — so
-a ``.judge(`` inside a string, comment or docstring can never match, and a call under ANY receiver
-name is caught, not just the two ``adapter`` / ``self.vision`` spellings). It asserts that every
-``<expr>.judge(...)`` call node in the module lives inside the ``_timed_judge`` function body.
+This test parses ``agent.py`` with :mod:`ast`: it rejects every direct ``.judge(...)`` call and pins
+that ``_timed_judge`` passes ``adapter.judge`` as data to ``_invoke_provider_call``.
 """
 from __future__ import annotations
 
@@ -43,25 +40,45 @@ def _judge_call_lines() -> list[int]:
     ]
 
 
+def _provider_boundary_calls() -> list[ast.Call]:
+    return [
+        node
+        for node in ast.walk(_TREE)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_invoke_provider_call"
+    ]
+
+
 class NoDirectJudgeCallsTest(unittest.TestCase):
-    def test_only_timed_judge_calls_the_adapter(self):
-        lo, hi = _timed_judge_span()
-        offenders = [ln for ln in _judge_call_lines() if not (lo <= ln <= hi)]
+    def test_no_parent_code_calls_the_adapter_directly(self):
         self.assertEqual(
-            offenders, [],
+            _judge_call_lines(),
+            [],
             msg=(
-                "Every live judge call must route through _timed_judge (directly or via "
-                "_safe_timed_judge). A `<expr>.judge(...)` call was found OUTSIDE the _timed_judge "
-                f"body (lines {lo}-{hi}) at agent.py line(s): {offenders}"
+                "Every live judge call must route through _invoke_provider_call; "
+                "the parent must contain no direct `<expr>.judge(...)` call."
             ),
         )
 
-    def test_timed_judge_body_does_contain_the_one_call(self):
-        # Guard the guard: if the wrapper stopped calling the adapter the test above would pass
-        # vacuously. Pin that the sanctioned call really lives inside the span.
+    def test_timed_judge_routes_adapter_judge_through_provider_boundary(self):
         lo, hi = _timed_judge_span()
-        inside = [ln for ln in _judge_call_lines() if lo <= ln <= hi]
-        self.assertTrue(inside, "expected a `<expr>.judge(` call inside the _timed_judge body")
+        boundary_calls = [
+            node
+            for node in _provider_boundary_calls()
+            if lo <= node.lineno <= hi
+        ]
+        judge_references = [
+            node
+            for node in ast.walk(_TREE)
+            if isinstance(node, ast.Attribute)
+            and node.attr == "judge"
+            and lo <= node.lineno <= hi
+        ]
+        self.assertTrue(
+            boundary_calls and judge_references,
+            "expected _timed_judge to pass adapter.judge to _invoke_provider_call",
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover
