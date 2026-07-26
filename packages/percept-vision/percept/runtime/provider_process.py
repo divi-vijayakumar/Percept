@@ -99,6 +99,18 @@ class ProcessProviderRegistration:
     module: str
     qualname: str
     constructor_fields: tuple[str, ...]
+    credential_fields: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, repr=False)
+class _BuiltProviderRequest:
+    """Parent-authored payload plus non-wire result-acceptance authority."""
+
+    payload: bytes
+    credentials: tuple[str, ...]
+
+    def __repr__(self) -> str:
+        return "_BuiltProviderRequest(<redacted>)"
 
 
 _PROCESS_PROVIDER_REGISTRATIONS: dict[
@@ -120,11 +132,14 @@ def register_process_provider(
     module: str,
     qualname: str,
     constructor_fields: tuple[str, ...] = (),
+    credential_fields: tuple[str, ...] = (),
 ) -> None:
     """Authorize a fixed import + exact primitive-field constructor contract.
 
     Registration is intentionally explicit: arbitrary adapter instances are
     never pickled, inspected through their hooks, or imported by class name.
+    Credential-bearing fields must be named separately so result rejection
+    never guesses secret provenance from a field name.
     """
     if type(adapter_type) is not type:
         raise TypeError("process provider registration requires an exact class")
@@ -142,6 +157,19 @@ def register_process_provider(
         )
     if len(set(constructor_fields)) != len(constructor_fields):
         raise ValueError("process provider constructor fields must be unique")
+    if type(credential_fields) is not tuple or any(
+        type(name) is not str or _IMPORT_PART.fullmatch(name) is None
+        for name in credential_fields
+    ):
+        raise ValueError(
+            "process provider credential fields must be exact identifiers"
+        )
+    if len(set(credential_fields)) != len(credential_fields):
+        raise ValueError("process provider credential fields must be unique")
+    if any(name not in constructor_fields for name in credential_fields):
+        raise ValueError(
+            "process provider credential fields must be constructor fields"
+        )
     class_namespace = type.__getattribute__(adapter_type, "__dict__")
     if constructor_fields and type(class_namespace.get("__dict__")) is not (
         types.GetSetDescriptorType
@@ -154,6 +182,7 @@ def register_process_provider(
         module=module,
         qualname=qualname,
         constructor_fields=constructor_fields,
+        credential_fields=credential_fields,
     )
     with _PROCESS_PROVIDER_REGISTRATIONS_LOCK:
         existing = _PROCESS_PROVIDER_REGISTRATIONS.get(adapter_type)
@@ -284,6 +313,82 @@ def _establish_child_containment() -> None:
 class _MalformedProviderResult:
     def __init__(self, exception_type: str) -> None:
         self.exception_type = exception_type
+
+
+class _CredentialGuard:
+    """Reject parent-selected credentials without rendering provider values."""
+
+    __slots__ = ("_credential_bytes", "_credentials")
+
+    def __init__(self, credentials: tuple[str, ...]) -> None:
+        if type(credentials) is not tuple or any(
+            type(credential) is not str or not credential
+            for credential in credentials
+        ):
+            raise ProviderProcessError(
+                "provider credential provenance is malformed"
+            )
+        self._credentials = credentials
+        self._credential_bytes = tuple(
+            credential.encode("utf-8", errors="surrogatepass")
+            for credential in credentials
+        )
+
+    def __repr__(self) -> str:
+        return "_CredentialGuard(<redacted>)"
+
+    def check(self, value: Any) -> None:
+        if type(value) is str:
+            if any(credential in value for credential in self._credentials):
+                self._reject()
+            return
+        if type(value) in (bytes, bytearray, memoryview):
+            raw = bytes(value)
+            if any(secret in raw for secret in self._credential_bytes):
+                self._reject()
+
+    def check_wire_value(self, value: Any) -> None:
+        """Inspect semantic wire values before any SDK DTO is constructed."""
+        if not self._credentials:
+            return
+        pending = [value]
+        nodes = 0
+        while pending:
+            item = pending.pop()
+            nodes += 1
+            if nodes > _MAX_WIRE_NODES:
+                raise ProviderProcessError(
+                    "provider process returned an oversized completion graph"
+                )
+            if type(item) is str:
+                self.check(item)
+                continue
+            if type(item) is list:
+                pending.extend(item)
+                continue
+            if type(item) is not dict:
+                continue
+            if item.get("$") == "bytes":
+                encoded = item.get("v")
+                if type(encoded) is str:
+                    try:
+                        decoded = base64.b64decode(encoded, validate=True)
+                    except (TypeError, ValueError):
+                        continue
+                    self.check(decoded)
+                continue
+            # ``$`` tag values and untagged Verdict field names are protocol
+            # structure. Plain mapping keys live in the tagged pair list and
+            # therefore remain semantic values traversed here.
+            pending.extend(
+                nested for key, nested in item.items() if key != "$"
+            )
+
+    @staticmethod
+    def _reject() -> None:
+        raise ProviderProcessError(
+            "provider process returned a credential-bearing completion"
+        ) from None
 
 
 class _WireBudget:
@@ -1058,7 +1163,11 @@ def _decode_json_bytes(payload: bytes) -> Any:
         ) from exc
 
 
-def _decode_provider_result(payload: bytes) -> Any:
+def _decode_provider_result(
+    payload: bytes,
+    *,
+    credentials: tuple[str, ...] = (),
+) -> Any:
     envelope = _decode_json_bytes(payload)
     if (
         type(envelope) is not dict
@@ -1069,6 +1178,8 @@ def _decode_provider_result(payload: bytes) -> Any:
         raise ProviderProcessError(
             "provider process returned an invalid completion envelope"
         )
+    credential_guard = _CredentialGuard(credentials)
+    credential_guard.check_wire_value(envelope["value"])
     if envelope["status"] == "error":
         if type(envelope["value"]) is not str:
             raise ProviderProcessError(
@@ -1270,6 +1381,15 @@ def _adapter_spec(
                 raise ProviderProcessError(
                     "registered provider constructor field is missing"
                 )
+            if name in registration.credential_fields and (
+                type(state[name]) is not str
+                or not state[name]
+                or len(state[name]) > 65_536
+            ):
+                raise ProviderProcessError(
+                    "registered provider credential field is outside "
+                    "the reviewed schema"
+                )
             try:
                 constructor[name] = _encode_plain_value(
                     state[name], budget
@@ -1284,9 +1404,115 @@ def _adapter_spec(
             "module": registration.module,
             "qualname": registration.qualname,
             "constructor": constructor,
+            "credential_fields": list(registration.credential_fields),
         }
     finally:
         seen.discard(identity)
+
+
+def _registered_credential_names(spec: dict[str, Any]) -> tuple[str, ...]:
+    constructor = spec.get("constructor")
+    names = spec.get("credential_fields")
+    if (
+        type(constructor) is not dict
+        or any(
+            type(name) is not str
+            or _IMPORT_PART.fullmatch(name) is None
+            for name in constructor
+        )
+        or type(names) is not list
+        or any(
+            type(name) is not str
+            or _IMPORT_PART.fullmatch(name) is None
+            for name in names
+        )
+        or len(set(names)) != len(names)
+        or any(name not in constructor for name in names)
+    ):
+        raise ProviderProcessError(
+            "registered provider reconstruction recipe is malformed"
+        )
+    credentials: list[str] = []
+    for name in names:
+        credential = constructor[name]
+        if (
+            type(credential) is not str
+            or not credential
+            or len(credential) > 65_536
+        ):
+            raise ProviderProcessError(
+                "registered provider reconstruction recipe is malformed"
+            )
+        credentials.append(credential)
+    return tuple(credentials)
+
+
+def _selected_credentials_from_spec(
+    spec: dict[str, Any],
+) -> tuple[str, ...]:
+    """Derive immutable result authority from one exact parent recipe."""
+    selected: list[str] = []
+
+    def collect(recipe: Any) -> None:
+        if type(recipe) is not dict or type(recipe.get("kind")) is not str:
+            raise ProviderProcessError(
+                "provider credential provenance is malformed"
+            )
+        kind = recipe["kind"]
+        if kind == "builtin" and set(recipe) == {
+            "kind",
+            "id",
+            "model",
+            "credential",
+        }:
+            if (
+                type(recipe["id"]) is not str
+                or type(recipe["model"]) is not str
+                or type(recipe["credential"]) is not str
+                or not recipe["credential"]
+                or len(recipe["credential"]) > 65_536
+            ):
+                raise ProviderProcessError(
+                    "provider credential provenance is malformed"
+                )
+            selected.append(recipe["credential"])
+            return
+        if kind == "fallback" and set(recipe) == {
+            "kind",
+            "primary",
+            "fallback",
+        }:
+            collect(recipe["primary"])
+            if recipe["fallback"] is not None:
+                collect(recipe["fallback"])
+            return
+        if kind == "registered" and set(recipe) == {
+            "kind",
+            "module",
+            "qualname",
+            "constructor",
+            "credential_fields",
+        }:
+            if (
+                not _valid_import_name(recipe["module"], dotted=True)
+                or not _valid_import_name(recipe["qualname"], dotted=True)
+            ):
+                raise ProviderProcessError(
+                    "provider credential provenance is malformed"
+                )
+            try:
+                selected.extend(_registered_credential_names(recipe))
+            except ProviderProcessError:
+                raise ProviderProcessError(
+                    "provider credential provenance is malformed"
+                ) from None
+            return
+        raise ProviderProcessError(
+            "provider credential provenance is malformed"
+        )
+
+    collect(spec)
+    return tuple(dict.fromkeys(selected))
 
 
 def _build_request(
@@ -1294,7 +1520,7 @@ def _build_request(
     operation: str,
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
-) -> bytes:
+) -> _BuiltProviderRequest:
     if type(operation) is not str or operation not in _OPERATIONS:
         raise ProviderProcessError(
             "provider operation is outside the reviewed dispatch set"
@@ -1320,16 +1546,19 @@ def _build_request(
         raise ProviderProcessError(
             "provider call arguments are outside the reviewed wire schema"
         ) from exc
-    return _encode_json_bytes(
+    provider_spec = _adapter_spec(adapter)
+    credentials = _selected_credentials_from_spec(provider_spec)
+    payload = _encode_json_bytes(
         {
             "schema": _SCHEMA_VERSION,
-            "provider": _adapter_spec(adapter),
+            "provider": provider_spec,
             "operation": operation,
             "args": encoded_args,
             "kwargs": encoded_kwargs,
         },
         limit=_MAX_REQUEST_BYTES,
     )
+    return _BuiltProviderRequest(payload=payload, credentials=credentials)
 
 
 def _decode_request(
@@ -1437,6 +1666,7 @@ def _construct_adapter(spec: dict[str, Any]) -> Any:
         "module",
         "qualname",
         "constructor",
+        "credential_fields",
     }:
         module_name = spec["module"]
         qualname = spec["qualname"]
@@ -1445,15 +1675,11 @@ def _construct_adapter(spec: dict[str, Any]) -> Any:
             not _valid_import_name(module_name, dotted=True)
             or not _valid_import_name(qualname, dotted=True)
             or type(constructor) is not dict
-            or any(
-                type(name) is not str
-                or _IMPORT_PART.fullmatch(name) is None
-                for name in constructor
-            )
         ):
             raise ProviderProcessError(
                 "registered provider reconstruction recipe is malformed"
             )
+        _registered_credential_names(spec)
         module = importlib.import_module(module_name)
         target: Any = module
         for part in qualname.split("."):
@@ -1682,7 +1908,9 @@ async def run_provider_process(
             raise ProviderProcessError(
                 "provider process failed its containment handshake"
             )
-        process.stdin.write(_FRAME_HEADER.pack(len(request)) + request)
+        process.stdin.write(
+            _FRAME_HEADER.pack(len(request.payload)) + request.payload
+        )
         await process.stdin.drain()
         process.stdin.close()
         payload = await _read_frame(process.stdout, deadline)
@@ -1697,7 +1925,10 @@ async def run_provider_process(
     if payload is None:  # pragma: no cover - control-flow invariant
         raise ProviderProcessError("provider process returned no completion")
     try:
-        return _decode_provider_result(payload)
+        return _decode_provider_result(
+            payload,
+            credentials=request.credentials,
+        )
     except ProviderProcessError:
         raise
     except BaseException as exc:  # noqa: BLE001 - untrusted protocol data

@@ -15,6 +15,7 @@ import pytest
 from percept import Goal, Percept
 from percept.adapters import Verdict
 from percept.backends.fallback import FallbackVision
+from percept.backends.gemini import GeminiVision
 from percept.backends.openrouter import OpenRouterVision
 from percept.config import ModelSettings
 from percept.contracts import (
@@ -662,7 +663,9 @@ class _EnvironmentProbeProvider:
 
     async def __call__(self) -> dict[str, Any]:
         return {
-            "credential": self.credential,
+            "credential_received": (
+                self.credential == "reviewed-explicit-credential"
+            ),
             "environment": dict(os.environ),
             "import_forbidden": list(self.import_forbidden),
             "constructor_forbidden": list(self.constructor_forbidden),
@@ -680,7 +683,11 @@ class _EnvironmentProbeProvider:
             if sealed:
                 raise RuntimeError("exercise registered fallback")
             return Verdict(False, 0.0, "primary environment was not sealed")
-        return Verdict(sealed, 1.0 if sealed else 0.0, self.credential)
+        return Verdict(
+            sealed,
+            1.0 if sealed else 0.0,
+            "registered-fallback",
+        )
 
 
 register_process_provider(
@@ -688,6 +695,78 @@ register_process_provider(
     module="tests.test_provider_process_boundary",
     qualname="_EnvironmentProbeProvider",
     constructor_fields=("credential", "mode"),
+    credential_fields=("credential",),
+)
+
+
+class _CredentialReflectingProvider:
+    def __init__(
+        self,
+        credential: str,
+        mode: str,
+        reflected: str = "nonsecret",
+    ) -> None:
+        self.credential = credential
+        self.mode = mode
+        self.reflected = reflected
+
+    async def __call__(self) -> Any:
+        if self.mode == "plain":
+            return {
+                f"key::{self.credential}": {
+                    "value": self.credential,
+                    "bytes": self.credential.encode(
+                        "utf-8",
+                        errors="surrogatepass",
+                    ),
+                }
+            }
+        if self.mode == "error":
+            raise RuntimeError("fixed provider failure")
+        return "nonsecret"
+
+    async def judge(
+        self,
+        _condition: str,
+        _frame: Any,
+        **_kwargs: Any,
+    ) -> Verdict:
+        if self.mode == "error":
+            raise RuntimeError("fixed provider failure")
+        if self.mode == "verdict":
+            return Verdict(
+                satisfied=True,
+                confidence=1.0,
+                evidence=f"reflected::{self.credential}",
+                usage={
+                    f"key::{self.credential}": self.credential.encode(
+                        "utf-8",
+                        errors="surrogatepass",
+                    )
+                },
+            )
+        return Verdict(True, 1.0, self.reflected)
+
+
+register_process_provider(
+    _CredentialReflectingProvider,
+    module="tests.test_provider_process_boundary",
+    qualname="_CredentialReflectingProvider",
+    constructor_fields=("credential", "mode", "reflected"),
+    credential_fields=("credential",),
+)
+
+
+class _CredentialLookingDataProvider:
+    def __init__(self, api_key: str) -> None:
+        self.api_key = api_key
+
+
+register_process_provider(
+    _CredentialLookingDataProvider,
+    module="tests.test_provider_process_boundary",
+    qualname="_CredentialLookingDataProvider",
+    constructor_fields=("api_key",),
 )
 
 
@@ -720,7 +799,7 @@ def test_registered_child_environment_is_exact_and_credential_is_typed(
             watchdog_s=1.0,
         )
         assert result == {
-            "credential": "reviewed-explicit-credential",
+            "credential_received": True,
             "environment": provider_process._provider_child_environment(),
             "import_forbidden": [],
             "constructor_forbidden": [],
@@ -749,9 +828,378 @@ def test_registered_fallback_graph_is_constructed_only_after_env_seal(
             watchdog_s=1.0,
         )
         assert verdict.satisfied is True
-        assert verdict.evidence == "typed-fallback"
+        assert verdict.evidence == "registered-fallback"
 
     asyncio.run(drive())
+
+
+def _assert_credential_absent_from_error(
+    error: BaseException,
+    *credentials: str,
+) -> None:
+    pending: list[BaseException] = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        rendered = f"{type(current).__name__}: {current}"
+        assert all(
+            not credential or credential not in rendered
+            for credential in credentials
+        )
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+        if current.__context__ is not None:
+            pending.append(current.__context__)
+
+
+@pytest.mark.parametrize("mode", ["plain", "verdict"])
+def test_actual_registered_child_cannot_return_selected_credential(
+    mode: str,
+) -> None:
+    credential = f"registered-{mode}-credential-7e91"
+
+    async def drive() -> None:
+        operation = "__call__" if mode == "plain" else "judge"
+        args = () if mode == "plain" else ("condition", None)
+        with pytest.raises(
+            ProviderProcessError,
+            match="credential-bearing completion",
+        ) as caught:
+            await run_provider_process(
+                _CredentialReflectingProvider(credential, mode),
+                operation,
+                args,
+                {},
+                watchdog_s=1.0,
+            )
+        _assert_credential_absent_from_error(caught.value, credential)
+
+    asyncio.run(drive())
+
+
+def test_nested_fallback_tracks_every_registered_credential() -> None:
+    primary_credential = "nested-primary-credential-a1"
+    middle_credential = "nested-middle-credential-b2"
+    final_credential = "nested-final-credential-c3"
+    adapter = FallbackVision(
+        _CredentialReflectingProvider(
+            primary_credential,
+            "error",
+        ),
+        FallbackVision(
+            _CredentialReflectingProvider(
+                middle_credential,
+                "error",
+            ),
+            _CredentialReflectingProvider(
+                final_credential,
+                "return",
+                reflected=primary_credential,
+            ),
+        ),
+    )
+    request = provider_process._build_request(
+        adapter,
+        "judge",
+        ("condition", None),
+        {},
+    )
+    assert request.credentials == (
+        primary_credential,
+        middle_credential,
+        final_credential,
+    )
+    assert repr(request) == "_BuiltProviderRequest(<redacted>)"
+    assert all(
+        credential not in repr(request)
+        for credential in request.credentials
+    )
+
+    async def drive() -> None:
+        with pytest.raises(
+            ProviderProcessError,
+            match="credential-bearing completion",
+        ) as caught:
+            await run_provider_process(
+                adapter,
+                "judge",
+                ("condition", None),
+                {},
+                watchdog_s=1.0,
+            )
+        _assert_credential_absent_from_error(
+            caught.value,
+            *request.credentials,
+        )
+
+    asyncio.run(drive())
+
+
+def test_builtin_fallback_cannot_reflect_selected_credential() -> None:
+    credential = (
+        "GeminiVision requires image evidence, audio evidence, or both"
+    )
+    adapter = FallbackVision(
+        GeminiVision(
+            ModelSettings(vision_model="gemini-3.5-flash"),
+            api_key=credential,
+        )
+    )
+
+    async def drive() -> None:
+        with pytest.raises(
+            ProviderProcessError,
+            match="credential-bearing completion",
+        ) as caught:
+            await run_provider_process(
+                adapter,
+                "judge",
+                ("condition", None),
+                {},
+                watchdog_s=5.0,
+            )
+        _assert_credential_absent_from_error(caught.value, credential)
+
+    asyncio.run(drive())
+
+
+def test_registered_credential_contract_does_not_infer_field_names() -> None:
+    ordinary_value = "api-key-shaped-ordinary-data"
+    request = provider_process._build_request(
+        _CredentialLookingDataProvider(ordinary_value),
+        "__call__",
+        (),
+        {},
+    )
+    assert request.credentials == ()
+
+
+@pytest.mark.parametrize(
+    ("constructor_fields", "credential_fields", "message"),
+    [
+        (
+            ("credential",),
+            ["credential"],
+            "credential fields must be exact identifiers",
+        ),
+        (
+            ("credential",),
+            ("not-valid!",),
+            "credential fields must be exact identifiers",
+        ),
+        (
+            ("credential",),
+            ("credential", "credential"),
+            "credential fields must be unique",
+        ),
+        (
+            ("credential",),
+            ("missing",),
+            "credential fields must be constructor fields",
+        ),
+    ],
+)
+def test_registered_credential_field_contract_is_explicit(
+    constructor_fields: tuple[str, ...],
+    credential_fields: Any,
+    message: str,
+) -> None:
+    class RegistrationCandidate:
+        pass
+
+    with pytest.raises(ValueError, match=message):
+        register_process_provider(
+            RegistrationCandidate,
+            module="tests.test_provider_process_boundary",
+            qualname="RegistrationCandidate",
+            constructor_fields=constructor_fields,
+            credential_fields=credential_fields,
+        )
+
+
+@pytest.mark.parametrize(
+    "credential",
+    [
+        pytest.param("", id="empty"),
+        pytest.param(7, id="non-string"),
+        pytest.param("x" * 65_537, id="oversized"),
+    ],
+)
+def test_registered_credential_value_fails_before_launch(
+    credential: Any,
+) -> None:
+    with pytest.raises(
+        ProviderProcessError,
+        match="credential field is outside the reviewed schema",
+    ) as caught:
+        provider_process._build_request(
+            _CredentialReflectingProvider(credential, "plain"),
+            "__call__",
+            (),
+            {},
+        )
+    _assert_credential_absent_from_error(caught.value, str(credential))
+
+
+def test_credential_matching_child_error_type_is_not_reflected() -> None:
+    credential = "RuntimeError"
+
+    async def drive() -> None:
+        with pytest.raises(
+            ProviderProcessError,
+            match="credential-bearing completion",
+        ) as caught:
+            await run_provider_process(
+                _CredentialReflectingProvider(credential, "error"),
+                "__call__",
+                (),
+                {},
+                watchdog_s=1.0,
+            )
+        _assert_credential_absent_from_error(caught.value, credential)
+
+    asyncio.run(drive())
+
+
+def _encoded_result_payload(value: Any) -> bytes:
+    return provider_process._encode_json_bytes(
+        {
+            "schema": provider_process._SCHEMA_VERSION,
+            "status": "ok",
+            "value": provider_process._encode_provider_result(value),
+        },
+        limit=provider_process._MAX_RESULT_BYTES,
+    )
+
+
+@pytest.mark.parametrize(
+    "make_result",
+    [
+        pytest.param(lambda secret: secret, id="primitive-string"),
+        pytest.param(
+            lambda secret: secret.encode("utf-8"),
+            id="primitive-bytes",
+        ),
+        pytest.param(lambda secret: {secret: "value"}, id="mapping-key"),
+        pytest.param(
+            lambda secret: {"key": bytearray(secret.encode("utf-8"))},
+            id="mapping-byte-value",
+        ),
+        pytest.param(
+            lambda secret: AudioFrame(pcm=secret.encode("utf-8")),
+            id="audio-frame",
+        ),
+        pytest.param(
+            lambda secret: Goal(
+                id=secret,
+                condition="condition",
+                say="say",
+            ),
+            id="goal",
+        ),
+        pytest.param(
+            lambda secret: ClipEvent(0.0, 1.0, secret),
+            id="clip-event",
+        ),
+        pytest.param(
+            lambda secret: SubjectRef(
+                scheme="content",
+                namespace="camera",
+                key=secret,
+                resolution="bound",
+                scope="source",
+                strategy="test",
+            ),
+            id="subject-ref",
+        ),
+        pytest.param(
+            lambda secret: Observation(
+                secret,
+                Box(0.0, 0.0, 1.0, 1.0),
+                1.0,
+            ),
+            id="observation",
+        ),
+        pytest.param(
+            lambda secret: Event(
+                "motion",
+                0.0,
+                [secret],
+                1.0,
+                "event",
+            ),
+            id="event",
+        ),
+        pytest.param(
+            lambda secret: Verdict(
+                True,
+                1.0,
+                "safe",
+                usage={secret: secret.encode("utf-8")},
+            ),
+            id="verdict-recursive",
+        ),
+    ],
+)
+def test_selected_credential_is_rejected_in_every_result_carrier(
+    make_result: Any,
+) -> None:
+    credential = "recursive-result-credential-f4"
+    with pytest.raises(
+        ProviderProcessError,
+        match="credential-bearing completion",
+    ) as caught:
+        provider_process._decode_provider_result(
+            _encoded_result_payload(make_result(credential)),
+            credentials=(credential,),
+        )
+    _assert_credential_absent_from_error(caught.value, credential)
+
+
+def test_protocol_field_names_are_not_inferred_as_credentials() -> None:
+    result = provider_process._decode_provider_result(
+        _encoded_result_payload(Verdict(True, 1.0, "safe", value=b"safe")),
+        credentials=("verdict", "evidence", "plain", "bytes", "v"),
+    )
+    assert result.evidence == "safe"
+    assert result.value == b"safe"
+
+
+def test_secret_is_rejected_before_malformed_dto_construction() -> None:
+    credential = "malformed-dto-credential-e5"
+    payload = provider_process._encode_json_bytes(
+        {
+            "schema": provider_process._SCHEMA_VERSION,
+            "status": "ok",
+            "value": {
+                "$": "plain",
+                "v": {
+                    "$": "goal",
+                    "id": credential,
+                    "condition": "condition",
+                    "say": "say",
+                    "source": "camera",
+                    "modality": "speak",
+                    "state": {"$": "dict", "v": []},
+                    "expiry": "until_cancelled",
+                    "origin": "invalid-origin",
+                },
+            },
+        },
+        limit=provider_process._MAX_RESULT_BYTES,
+    )
+    with pytest.raises(
+        ProviderProcessError,
+        match="credential-bearing completion",
+    ) as caught:
+        provider_process._decode_provider_result(
+            payload,
+            credentials=(credential,),
+        )
+    _assert_credential_absent_from_error(caught.value, credential)
 
 
 def test_builtin_credential_uses_typed_recipe_not_child_environment(

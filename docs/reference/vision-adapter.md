@@ -160,7 +160,8 @@ register_process_provider(
     MyVision,
     module="myvlm.vision",
     qualname="MyVision",
-    constructor_fields=("model",),
+    constructor_fields=("model", "api_key"),
+    credential_fields=("api_key",),
 )
 ```
 
@@ -173,13 +174,20 @@ fails closed before provider code runs. Keep client construction lazy in the chi
 by `judge`, `detect`, or `detect_events` are not reflected on the parent adapter object; use returned
 SDK DTOs, tracing, or another explicit IPC sink instead of an in-memory call ledger.
 
+`credential_fields` is the explicit subset of constructor fields that contains credentials. Each
+declared value must be an exact, non-empty, bounded string. Percept does not infer credentials from
+names such as `api_key`: it recursively records the declared fields (and built-in credentials) from
+every branch of a fallback recipe, then rejects any child result or error containing one of those
+values in a supported primitive, mapping key/value, bytes carrier, or SDK DTO.
+
 The child also starts with a fixed interpreter-only environment. Parent provider keys, cloud-auth
 selectors, proxy settings, custom certificate paths, user/home configuration, dynamic loader and
 Python import-path controls, and vendor transport overrides are not inherited. Built-in provider
 credentials are copied into the same reviewed typed reconstruction recipe used for constructor
 fields and are passed directly to the child-side client constructor—never restored as environment
-variables. A custom adapter that needs a credential must likewise declare an exact string
-`constructor_field`; ambient credential discovery inside provider code is intentionally unavailable.
+variables. A custom adapter that needs a credential must likewise declare an exact string in
+`constructor_fields` and list it in `credential_fields`; ambient credential discovery inside
+provider code is intentionally unavailable.
 Custom adapter modules must therefore be installed/importable from the interpreter's isolated
 system environment (the runtime never inherits `PYTHONPATH`).
 
