@@ -167,10 +167,12 @@ class _TemporalStrip(list):
         *,
         source_start_t: float,
         source_end_t: float,
+        source_offsets_s: tuple[float, ...],
     ) -> None:
         super().__init__(frames)
         self.source_start_t = source_start_t
         self.source_end_t = source_end_t
+        self.source_offsets_s = source_offsets_s
 
 
 @dataclass(frozen=True)
@@ -5641,6 +5643,10 @@ class Percept:
             strip,
             source_start_t=float(picked[0][0]),
             source_end_t=float(window[-1][0]),
+            source_offsets_s=tuple(
+                float(t) - float(picked[0][0])
+                for t, _ in [*picked, window[-1]]
+            ),
         )
 
     def _temporal_evidence_context(
@@ -5658,10 +5664,18 @@ class Percept:
         ):
             return {}
         span_s = max(0.0, float(end_t) - float(start_t))
-        return {
+        result = {
             "_percept_temporal_frame_count": len(strip) + 1,
             "_percept_temporal_span_s": span_s,
         }
+        offsets = getattr(strip, "source_offsets_s", None)
+        if (
+            isinstance(offsets, tuple)
+            and len(offsets) == len(strip) + 1
+            and all(isinstance(value, (int, float)) for value in offsets)
+        ):
+            result["_percept_temporal_offsets_s"] = offsets
+        return result
 
     async def _timed_judge(self, *args: Any, **kwargs: Any) -> Verdict:
         """Call the vision judge, timing wall-clock latency and capturing token/cost off the verdict.

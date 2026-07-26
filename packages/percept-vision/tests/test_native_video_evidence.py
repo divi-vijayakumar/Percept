@@ -8,7 +8,7 @@ import pytest
 
 from percept import Verdict
 from percept.backends.judge_pool import JudgeCapability, JudgePool, JudgeRoute
-from percept.runtime.video_clip import NativeVideoVision, encode_mp4_clip
+from percept.runtime.video_clip import NativeVideoVision, TemporalImageVision, encode_mp4_clip
 
 
 class _RecordingVision:
@@ -102,6 +102,95 @@ async def test_event_chain_never_falls_back_to_ordered_images():
 
 
 @pytest.mark.asyncio
+async def test_event_chain_uses_explicit_ordered_image_route_when_video_is_unavailable():
+    recording = _RecordingVision()
+    temporal = TemporalImageVision(
+        recording,
+        max_frames=3,
+        preprocessor=lambda frames: [("image/jpeg", bytes(frame)) for frame in frames],
+    )
+    pool = JudgePool(
+        [
+            JudgeRoute(
+                "temporal-images",
+                temporal,
+                JudgeCapability(
+                    evidence_shapes=frozenset({"video_clip"}),
+                    latency_slo_s=0.05,
+                    modes=frozenset({"reflex"}),
+                ),
+            )
+        ],
+        deadline_s=0.1,
+    )
+
+    verdict = await pool.judge(
+        "one discrete action",
+        b"current-jpeg",
+        frames=[b"oldest-jpeg", b"before-jpeg"],
+        context={"event_chain": True, "_percept_temporal_span_s": 1.2},
+    )
+
+    assert verdict.evidence == "native temporal evidence"
+    _, frame, kwargs = recording.calls[0]
+    assert frame == ("image/jpeg", b"current-jpeg")
+    assert kwargs["frames"] == [
+        ("image/jpeg", b"oldest-jpeg"),
+        ("image/jpeg", b"before-jpeg"),
+    ]
+    assert kwargs["context"]["_percept_evidence_shape"] == "video_clip"
+    assert kwargs["context"]["_percept_temporal_transport"] == "ordered_timestamped_images"
+    assert kwargs["context"]["_percept_temporal_image_timestamps_s"] == (0.0, 0.6, 1.2)
+    assert pool.receipts()[-1].evidence_shape == "video_clip"
+
+
+@pytest.mark.asyncio
+async def test_event_chain_prefers_native_video_when_both_temporal_routes_exist():
+    native_recording = _RecordingVision()
+    image_recording = _RecordingVision()
+    pool = JudgePool(
+        [
+            JudgeRoute(
+                "native",
+                NativeVideoVision(
+                    native_recording,
+                    encoder=lambda *_args, **_kwargs: b"native-mp4",
+                ),
+                JudgeCapability(
+                    evidence_shapes=frozenset({"video_clip"}),
+                    latency_slo_s=0.05,
+                    modes=frozenset({"reflex"}),
+                ),
+            ),
+            JudgeRoute(
+                "images",
+                TemporalImageVision(
+                    image_recording,
+                    preprocessor=lambda frames: [("image/jpeg", bytes(frame)) for frame in frames],
+                ),
+                JudgeCapability(
+                    evidence_shapes=frozenset({"video_clip"}),
+                    latency_slo_s=0.05,
+                    modes=frozenset({"reflex"}),
+                ),
+            ),
+        ],
+        deadline_s=0.1,
+    )
+
+    await pool.judge(
+        "one discrete action",
+        b"current-jpeg",
+        frames=[b"before-jpeg"],
+        context={"event_chain": True},
+    )
+
+    assert len(native_recording.calls) == 1
+    assert image_recording.calls == []
+    assert pool.receipts()[-1].evidence_shape == "video_clip"
+
+
+@pytest.mark.asyncio
 async def test_first_temporal_admission_abstains_without_spending_provider_call():
     recording = _RecordingVision()
     native = NativeVideoVision(
@@ -135,6 +224,20 @@ async def test_first_temporal_admission_abstains_without_spending_provider_call(
     assert "at least two retained frames" in verdict.evidence
     assert recording.calls == []
     assert [receipt.outcome for receipt in pool.receipts()] == ["uncertain"]
+
+
+@pytest.mark.asyncio
+async def test_malformed_temporal_image_fails_before_inner_provider_call():
+    recording = _RecordingVision()
+    temporal = TemporalImageVision(recording)
+    with pytest.raises(ValueError, match="undecodable"):
+        await temporal.judge(
+            "one discrete action",
+            b"not-a-jpeg",
+            frames=[b"also-not-a-jpeg"],
+            context={"event_chain": True},
+        )
+    assert recording.calls == []
 
 
 @pytest.mark.asyncio

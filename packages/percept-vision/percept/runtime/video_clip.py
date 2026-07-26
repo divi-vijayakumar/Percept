@@ -1,4 +1,4 @@
-"""Native short-video evidence for motion-sensitive judges.
+"""Bounded temporal evidence routes for motion-sensitive judges.
 
 Ordered images and sprites are useful, lower-fidelity evidence shapes. They
 are not substitutes for motion. ``NativeVideoVision`` converts a bounded
@@ -173,8 +173,67 @@ def encode_mp4_clip(
     return payload
 
 
+def prepare_temporal_images(
+    frames: Sequence[Any],
+    *,
+    max_dimension: int = 768,
+    max_input_image_bytes: int = 8 * 1024 * 1024,
+    max_input_total_bytes: int = 32 * 1024 * 1024,
+    max_image_bytes: int = 1024 * 1024,
+    max_total_bytes: int = 4 * 1024 * 1024,
+) -> list[tuple[str, bytes]]:
+    """Resize/re-JPEG temporal images in memory under strict upload bounds."""
+    try:
+        import cv2  # noqa: PLC0415 - [runtime] extra, intentionally lazy
+        import numpy as np  # noqa: PLC0415 - [runtime] extra, intentionally lazy
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("temporal image evidence needs percept-vision[runtime]") from exc
+    prepared: list[tuple[str, bytes]] = []
+    total = 0
+    input_total = 0
+    for item in frames:
+        raw = _encoded_image_bytes(item)
+        if len(raw) > max_input_image_bytes:
+            raise ValueError("temporal image evidence exceeds max_input_image_bytes")
+        input_total += len(raw)
+        if input_total > max_input_total_bytes:
+            raise ValueError("temporal image evidence exceeds max_input_total_bytes")
+        image = cv2.imdecode(
+            np.frombuffer(raw, dtype=np.uint8),
+            cv2.IMREAD_COLOR,
+        )
+        if image is None or image.size == 0:
+            raise ValueError("temporal image evidence contains an undecodable image")
+        height, width = image.shape[:2]
+        if max(height, width) > max_dimension:
+            scale = max_dimension / max(height, width)
+            image = cv2.resize(
+                image,
+                (max(1, round(width * scale)), max(1, round(height * scale))),
+                interpolation=cv2.INTER_AREA,
+            )
+        payload = b""
+        for quality in (85, 70, 55, 40):
+            ok, encoded = cv2.imencode(
+                ".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+            )
+            if ok:
+                payload = encoded.tobytes()
+            if payload and len(payload) <= max_image_bytes:
+                break
+        if not payload or len(payload) > max_image_bytes:
+            raise ValueError("temporal image evidence exceeds max_image_bytes")
+        total += len(payload)
+        if total > max_total_bytes:
+            raise ValueError("temporal image evidence exceeds max_total_bytes")
+        prepared.append(("image/jpeg", payload))
+    return prepared
+
+
 class NativeVideoVision:
     """Vision adapter that delivers retained images as one native video clip."""
+
+    TEMPORAL_TRANSPORT = "native_video"
 
     def __init__(
         self,
@@ -305,4 +364,149 @@ class NativeVideoVision:
         return method() if callable(method) else None
 
 
-__all__ = ["NativeVideoVision", "encode_mp4_clip"]
+class TemporalImageVision:
+    """Deliver one bounded, timestamped image sequence to a non-video judge.
+
+    This is an explicit transport route for providers which accept multiple
+    images but not a native video content block.  It is not a sprite and does
+    not fan a clip out into per-frame requests: one admitted temporal window
+    makes one inner ``judge`` call.  The surrounding ``JudgePool`` still sees
+    the logical ``video_clip`` evidence shape and retains its single deadline.
+    """
+
+    TEMPORAL_TRANSPORT = "ordered_timestamped_images"
+
+    def __init__(
+        self,
+        adapter: Any,
+        *,
+        max_frames: int = 5,
+        preprocessor: Callable[[Sequence[Any]], list[tuple[str, bytes]]] = prepare_temporal_images,
+    ) -> None:
+        if not callable(getattr(adapter, "judge", None)):
+            raise ValueError("TemporalImageVision adapter needs judge()")
+        if (
+            isinstance(max_frames, bool)
+            or not isinstance(max_frames, int)
+            or max_frames < 2
+            or max_frames > 5
+        ):
+            raise ValueError("max_frames must be an integer from 2 through 5")
+        if not callable(preprocessor):
+            raise ValueError("TemporalImageVision preprocessor must be callable")
+        self._adapter = adapter
+        self._max_frames = max_frames
+        self._preprocessor = preprocessor
+        self._prepare_slot = threading.BoundedSemaphore(1)
+
+    def _prepare(self, frames: Sequence[Any]) -> list[tuple[str, bytes]]:
+        if not self._prepare_slot.acquire(blocking=False):
+            raise RuntimeError("temporal image preprocessor capacity exhausted")
+        try:
+            return self._preprocessor(frames)
+        finally:
+            self._prepare_slot.release()
+
+    async def judge(
+        self,
+        condition: str,
+        frame: Any,
+        *,
+        roi: Box | None = None,
+        exemplar: Any = None,
+        corrections: dict | None = None,
+        frames: list | None = None,
+        audio: Any = None,
+        context: dict | None = None,
+    ):
+        if audio is not None:
+            raise ValueError(
+                "TemporalImageVision is a video_clip route, not fused evidence"
+            )
+        history = [item for item in (frames or []) if item is not frame]
+        clip_frames = [*history, frame][-self._max_frames :]
+        if len(clip_frames) < 2:
+            return Verdict(
+                satisfied=False,
+                confidence=0.0,
+                evidence=(
+                    "temporal image evidence unavailable: at least two "
+                    "retained frames are required"
+                ),
+            )
+        prepared_frames = await asyncio.to_thread(self._prepare, clip_frames)
+        source_offsets = (context or {}).get("_percept_temporal_offsets_s")
+        if (
+            isinstance(source_offsets, (tuple, list))
+            and len(source_offsets) >= len(prepared_frames)
+            and all(
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(float(value))
+                and float(value) >= 0
+                for value in source_offsets
+            )
+        ):
+            selected_offsets = tuple(
+                float(value) for value in source_offsets[-len(prepared_frames) :]
+            )
+            origin = selected_offsets[0]
+            timestamps = tuple(value - origin for value in selected_offsets)
+        else:
+            span_s = (context or {}).get("_percept_temporal_span_s")
+            if not (
+                isinstance(span_s, (int, float))
+                and not isinstance(span_s, bool)
+                and math.isfinite(float(span_s))
+                and float(span_s) > 0
+            ):
+                span_s = float(len(prepared_frames) - 1)
+            timestamps = tuple(
+                float(span_s) * index / (len(prepared_frames) - 1)
+                for index in range(len(prepared_frames))
+            )
+        image_context = {
+            **(context or {}),
+            "_percept_evidence_shape": "video_clip",
+            "_percept_temporal_transport": "ordered_timestamped_images",
+            "_percept_clip_frame_count": len(prepared_frames),
+            "_percept_temporal_image_timestamps_s": timestamps,
+        }
+        return await self._adapter.judge(
+            condition,
+            prepared_frames[-1],
+            roi=roi,
+            exemplar=exemplar,
+            corrections=corrections,
+            frames=prepared_frames[:-1],
+            audio=None,
+            context=image_context,
+        )
+
+    async def detect(self, frame: Any, goals: list[Any]) -> list[Any]:
+        method = getattr(self._adapter, "detect", None)
+        if not callable(method):
+            return []
+        return await method(frame, goals)
+
+    async def detect_events(
+        self,
+        frames: list,
+        goals: list[Any],
+    ) -> list[Any]:
+        method = getattr(self._adapter, "detect_events", None)
+        if not callable(method):
+            return []
+        return await method(frames, goals)
+
+    def take_terminal_error(self) -> BaseException | None:
+        method = getattr(self._adapter, "take_terminal_error", None)
+        return method() if callable(method) else None
+
+
+__all__ = [
+    "NativeVideoVision",
+    "TemporalImageVision",
+    "encode_mp4_clip",
+    "prepare_temporal_images",
+]

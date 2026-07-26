@@ -208,10 +208,10 @@ def _evidence_shape(
         and (frame is not None or frames)
         and audio is None
     ):
-        # Motion-sensitive event-chain watches require genuine temporal
-        # evidence. A video_clip route may assemble the retained input images
-        # inside its bounded call; an ordered-images/sprite route is not an
-        # implicit substitute.
+        # Motion-sensitive event-chain watches require a declared temporal
+        # route. Its physical transport may be native video or an explicitly
+        # configured timestamped image burst, but its logical evidence is a
+        # bounded temporal clip.
         return "video_clip"
     if audio is not None and (frame is not None or frames):
         return "fused"
@@ -549,6 +549,22 @@ class JudgePool:
         # route-level max_inflight bounds occupancy across concurrent
         # decisions.
         selected = eligible
+        if shape == "video_clip":
+            # If a deployment publishes both exact temporal transports, prefer
+            # native video before the timestamped-image alternative. Both are
+            # explicit video_clip routes; this only resolves the transport
+            # tie, without inventing a fallback for ordinary image judges.
+            selected = sorted(
+                eligible,
+                key=lambda route: (
+                    0
+                    if getattr(route.adapter, "TEMPORAL_TRANSPORT", None)
+                    == "native_video"
+                    else 1,
+                    route.priority,
+                    route.name,
+                ),
+            )
         dispatch_slots = asyncio.Semaphore(self._max_parallel)
         tasks: set[asyncio.Task] = set()
         task_routes: dict[asyncio.Task, JudgeRoute] = {}

@@ -11,8 +11,8 @@ lane uses ``FakeVision``, never this.
 
 The model id is taken from ``settings.models.vision_model`` (rule 5: no literal in logic), e.g.
 ``"qwen/qwen2.5-vl-72b-instruct"``, ``"opengvlab/internvl3-78b"``, ``"openai/gpt-5-mini"``. Ordered
-images remain ordered ``image_url`` blocks. A ``("video/mp4", bytes)`` frame is instead transported as
-one native ``video_url`` block; it is never silently flattened into a sprite or image strip.
+images remain ordered ``image_url`` blocks. The benchmark's temporal-image route supplies an explicit,
+bounded timestamped image sequence for models that do not accept native video.
 """
 
 from __future__ import annotations
@@ -50,6 +50,28 @@ class _BudgetTerminalError(Exception):
     def __init__(self, original: Exception) -> None:
         super().__init__(str(original))
         self.original = original
+
+
+class _PermanentProviderError(Exception):
+    """Internal marker for a provider 4xx that cannot succeed on retry."""
+
+    def __init__(self, original: BaseException) -> None:
+        super().__init__(str(original))
+        self.original = original
+
+
+def _permanent_client_error(exc: BaseException) -> bool:
+    """Return whether an OpenAI-compatible HTTP failure is permanently invalid.
+
+    Timeouts, conflicts, and rate limits may recover; other 4xx responses such
+    as unsupported media must consume exactly one physical attempt.
+    """
+    status = getattr(exc, "status_code", None)
+    return (
+        isinstance(status, int)
+        and 400 <= status < 500
+        and status not in {408, 409, 429}
+    )
 
 
 def _timeout_s() -> float:
@@ -192,9 +214,10 @@ class OpenRouterVision:
 
     #: PARSES the claim-mode correction channel (see :class:`~percept.backends.anthropic.AnthropicVision`).
     PARSES_CLAIM_CHANNEL = True
-    # The adapter can emit OpenAI-compatible video_url content. Individual
-    # OpenRouter models still have to pass live qualification for that shape.
-    SUPPORTS_NATIVE_VIDEO_TRANSPORT = True
+    # Qwen's OpenRouter route accepts ordered image blocks but rejects native
+    # ``video_url``. The runtime therefore selects its explicit one-request
+    # temporal-image transport instead of attempting an unsupported MP4 call.
+    SUPPORTS_NATIVE_VIDEO_TRANSPORT = False
 
     def __init__(
         self,
@@ -256,9 +279,11 @@ class OpenRouterVision:
                 raise _BudgetTerminalError(exc) from exc
             try:
                 response = await client.chat.completions.create(**kwargs)
-            except BaseException:
+            except BaseException as exc:
                 if reservation is not None:
                     self._request_budget.fail_attempt(reservation)
+                if _permanent_client_error(exc):
+                    raise _PermanentProviderError(exc) from exc
                 raise
             if reservation is not None:
                 try:
@@ -286,9 +311,11 @@ class OpenRouterVision:
                 attempts=attempts,
                 breaker=self._breaker,
                 timeout_s=timeout_s,
-                non_retryable=(_BudgetTerminalError,),
+                non_retryable=(_BudgetTerminalError, _PermanentProviderError),
             )
         except _BudgetTerminalError as exc:
+            raise exc.original from exc
+        except _PermanentProviderError as exc:
             raise exc.original from exc
 
     def budget_snapshot(self) -> dict[str, int | float] | None:
@@ -321,10 +348,10 @@ class OpenRouterVision:
         are vision-only here; a ``fused`` concern honestly degrades to visual evidence)."""
         del audio, roi  # accepted for protocol parity; ROI cropping is the caller's job (real pixels)
         ctx = context or {}
-        if _is_video(frame) and frames:
+        if _is_video(frame):
             raise ValueError(
-                "native video evidence cannot be mixed with ordered images; "
-                "select one exact evidence shape"
+                "OpenRouterVision does not accept native video; use the runtime "
+                "timestamped temporal-image transport"
             )
         if ctx.get("process_qa"):  # accumulating-answer question (mirror GeminiVision._judge_process_qa)
             return await self._judge_process_qa(condition, frame, frames, str(ctx.get("running_answer") or ""))
@@ -413,8 +440,33 @@ class OpenRouterVision:
                 "native video evidence cannot be mixed with ordered images; "
                 "select one exact evidence shape"
             )
-        content: list = [_media_block(f) for f in strip]
-        content.append(_media_block(frame))
+        temporal_timestamps = (context or {}).get(
+            "_percept_temporal_image_timestamps_s"
+        )
+        ordered_images = [*strip, frame]
+        if (
+            isinstance(temporal_timestamps, (tuple, list))
+            and len(temporal_timestamps) == len(ordered_images)
+            and all(
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                for value in temporal_timestamps
+            )
+        ):
+            content = []
+            for index, (image, timestamp_s) in enumerate(
+                zip(ordered_images, temporal_timestamps, strict=True), start=1
+            ):
+                content.append(
+                    {
+                        "type": "text",
+                        "text": f"Temporal frame {index}/{len(ordered_images)} at t={float(timestamp_s):.6g}s.",
+                    }
+                )
+                content.append(_image_block(image))
+        else:
+            content = [_media_block(f) for f in strip]
+            content.append(_media_block(frame))
         if event_chain:
             if exemplar is not None:
                 content.append(_image_block(exemplar))

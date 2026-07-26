@@ -39,7 +39,12 @@ from percept.runtime.worker import (
     RuntimeStats,
     run,
 )
-from percept.runtime.video_clip import NativeVideoVision, encode_mp4_clip
+from percept.runtime.video_clip import (
+    NativeVideoVision,
+    TemporalImageVision,
+    encode_mp4_clip,
+    prepare_temporal_images,
+)
 
 __all__ = [
     "run",
@@ -78,5 +83,7 @@ __all__ = [
     "incident_payload",
     "webhook",
     "NativeVideoVision",
+    "TemporalImageVision",
+    "prepare_temporal_images",
     "encode_mp4_clip",
 ]

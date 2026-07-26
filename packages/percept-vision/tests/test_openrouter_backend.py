@@ -66,53 +66,23 @@ class OpenRouterBackendTests(unittest.TestCase):
         self.assertEqual(len(imgs), 2)  # earlier-context frame + current frame (current last)
         self.assertTrue(any(m["role"] == "system" for m in sent["messages"]))
 
-    def test_native_video_is_one_video_url_and_never_an_image_strip(self):
-        content = json.dumps(
-            {
-                "satisfied": True,
-                "confidence": 0.94,
-                "evidence": "one complete putting occurrence",
-                "action_present": False,
-                "phase": "post",
-            }
-        )
-        client = _FakeClient(content)
-        verdict = asyncio.run(
-            OpenRouterVision(_settings(), client=client).judge(
+    def test_native_video_fails_before_a_provider_attempt(self):
+        client = _FakeClient("{}")
+        with self.assertRaisesRegex(ValueError, "does not accept native video"):
+            asyncio.run(
+                OpenRouterVision(_settings(), client=client).judge(
                 "one discrete putting occurrence",
                 ("video/mp4", b"native-mp4"),
                 context={
                     "event_chain": True,
                     "_percept_evidence_shape": "video_clip",
                 },
+                )
             )
-        )
-        self.assertEqual(verdict.phase, "post")
-        user = next(
-            message
-            for message in client.chat.completions.calls[0]["messages"]
-            if message["role"] == "user"
-        )
-        videos = [
-            block for block in user["content"] if block.get("type") == "video_url"
-        ]
-        images = [
-            block for block in user["content"] if block.get("type") == "image_url"
-        ]
-        self.assertEqual(len(videos), 1)
-        self.assertEqual(images, [])
-        self.assertTrue(
-            videos[0]["video_url"]["url"].startswith("data:video/mp4;base64,")
-        )
-        prompt = " ".join(
-            block["text"]
-            for block in user["content"]
-            if block.get("type") == "text"
-        )
-        self.assertIn("short native video clip", prompt)
+        self.assertEqual(client.chat.completions.calls, [])
 
     def test_native_video_rejects_mixed_ordered_image_fallback(self):
-        with self.assertRaisesRegex(ValueError, "exact evidence shape"):
+        with self.assertRaisesRegex(ValueError, "does not accept native video"):
             asyncio.run(
                 OpenRouterVision(
                     _settings(),
@@ -165,6 +135,46 @@ class OpenRouterBackendTests(unittest.TestCase):
         self.assertIn("Do not infer an action from a static", prompt)
         self.assertIn('"action_present", "phase"', prompt)
         self.assertIn("List every grounded occurrence", prompt)
+
+    def test_timestamped_temporal_images_stay_in_one_ordered_request(self):
+        content = json.dumps(
+            {"satisfied": True, "confidence": 0.93, "evidence": "the action completes"}
+        )
+        client = _FakeClient(content)
+        asyncio.run(
+            OpenRouterVision(_settings(), client=client).judge(
+                "one discrete action",
+                b"latest",
+                frames=[b"oldest", b"middle"],
+                context={
+                    "event_chain": True,
+                    "_percept_evidence_shape": "video_clip",
+                    "_percept_temporal_image_timestamps_s": (0.0, 0.4, 0.8),
+                },
+            )
+        )
+        self.assertEqual(len(client.chat.completions.calls), 1)
+        user = next(
+            message
+            for message in client.chat.completions.calls[0]["messages"]
+            if message["role"] == "user"
+        )
+        self.assertEqual(
+            len([block for block in user["content"] if block.get("type") == "image_url"]),
+            3,
+        )
+        self.assertEqual(
+            [
+                block["text"]
+                for block in user["content"]
+                if block.get("type") == "text" and block["text"].startswith("Temporal frame")
+            ],
+            [
+                "Temporal frame 1/3 at t=0s.",
+                "Temporal frame 2/3 at t=0.4s.",
+                "Temporal frame 3/3 at t=0.8s.",
+            ],
+        )
 
     def test_bad_reply_degrades_to_low_confidence_unknown(self):
         v = OpenRouterVision(_settings(), client=_FakeClient("not json at all"))
