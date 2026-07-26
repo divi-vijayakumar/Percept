@@ -38,7 +38,7 @@ from percept.contracts.watchplan import ResolvedWatch, WatchPlan
 from percept.gate import Gate
 from percept.incidents import incident_judgment
 from percept.resolver import ConfigResolver
-from percept.runtime import NativeVideoVision, RuntimeStats
+from percept.runtime import NativeVideoVision, RuntimeStats, TemporalImageVision
 from percept.runtime.source import open_source
 from percept.runtime.worker import run as worker_run
 from percept.sampling import SamplingController, SensePolicy
@@ -431,6 +431,24 @@ class RecordingVision:
         self.last_verdict = None
         self.last_error = None
         context = dict(kwargs.get("context") or {})
+        ordered_frames = [*(kwargs.get("frames") or []), frame]
+
+        def media_type(value: Any) -> str | None:
+            return (
+                value[0]
+                if isinstance(value, tuple)
+                and len(value) == 2
+                and isinstance(value[0], str)
+                else None
+            )
+
+        def media_bytes(value: Any) -> int:
+            if isinstance(value, tuple) and len(value) == 2 and isinstance(
+                value[1], (bytes, bytearray)
+            ):
+                return len(value[1])
+            return len(value) if isinstance(value, (bytes, bytearray)) else 0
+
         record: dict[str, Any] = {
             "sequence": self.calls,
             "condition": condition,
@@ -449,7 +467,15 @@ class RecordingVision:
                 else None
             ),
             "input_frames_is_none": kwargs.get("frames") is None,
+            "input_frame_count": len(ordered_frames),
+            "ordered_image_count": sum(
+                str(media_type(value) or "image/jpeg").startswith("image/")
+                for value in ordered_frames
+            ),
+            "total_input_bytes": sum(media_bytes(value) for value in ordered_frames),
             "evidence_shape": context.get("_percept_evidence_shape"),
+            "transport": context.get("_percept_temporal_transport", "native_video"),
+            "temporal_offsets_s": context.get("_percept_temporal_image_timestamps_s"),
             "clip_frame_count": context.get("_percept_clip_frame_count"),
             "clip_fps": context.get("_percept_clip_fps"),
             "temporal_span_s": context.get("_percept_temporal_span_s"),
@@ -640,18 +666,31 @@ async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
                 f"route={receipt.route}; exception={receipt.exception_type}"
             )
 
+    native_transport = bool(
+        getattr(provider.inner, "SUPPORTS_NATIVE_VIDEO_TRANSPORT", False)
+    )
+    temporal_adapter = (
+        NativeVideoVision(
+            provider,
+            # The adapter recomputes clip fps from the retained source span.
+            # This bounded capture ceiling is only the no-span fallback.
+            fps=_CAPTURE_HEADROOM_FPS,
+            max_frames=ACTION_TEMPORAL_FRAMES,
+            require_native_transport=True,
+        )
+        if native_transport
+        else TemporalImageVision(provider, max_frames=min(ACTION_TEMPORAL_FRAMES, 5))
+    )
+    temporal_route_name = (
+        "native-video-primary"
+        if native_transport
+        else "timestamped-images-primary"
+    )
     vision = JudgePool(
         [
             JudgeRoute(
-                "native-video-primary",
-                NativeVideoVision(
-                    provider,
-                    # The adapter recomputes clip fps from the retained source span.
-                    # This bounded capture ceiling is only the no-span fallback.
-                    fps=_CAPTURE_HEADROOM_FPS,
-                    max_frames=ACTION_TEMPORAL_FRAMES,
-                    require_native_transport=True,
-                ),
+                temporal_route_name,
+                temporal_adapter,
                 JudgeCapability(
                     evidence_shapes=frozenset({"video_clip"}),
                     latency_slo_s=ACTION_PROVIDER_DEADLINE_S,
@@ -739,6 +778,10 @@ async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
             "threshold_setting": "Settings.edge.motion_gate_block_max",
         },
         "evidence_shape": "video_clip",
+        "provider_transport": (
+            "native_video" if native_transport else "ordered_timestamped_images"
+        ),
+        "provider_route": temporal_route_name,
         "provider_deadline_s": ACTION_PROVIDER_DEADLINE_S,
         "decision_deadline_s": ACTION_DECISION_DEADLINE_S,
     }
@@ -955,10 +998,34 @@ async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
             ).items()
         )
     )
-    forbidden_fallbacks = sum(
-        call.get("evidence_shape") != "video_clip"
-        or call.get("input_media_type") != "video/mp4"
-        or not call.get("input_frames_is_none")
+    expected_transport = (
+        "native_video" if native_transport else "ordered_timestamped_images"
+    )
+    invalid_transports = sum(
+        not (
+            call.get("evidence_shape") == "video_clip"
+            and call.get("transport") == expected_transport
+            and (
+                (
+                    call.get("transport") == "native_video"
+                    and call.get("input_media_type") == "video/mp4"
+                    and call.get("input_frames_is_none")
+                )
+                or (
+                    call.get("transport") == "ordered_timestamped_images"
+                    and str(call.get("input_media_type") or "").startswith("image/")
+                    and 2 <= int(call.get("input_frame_count") or 0) <= 5
+                    and call.get("ordered_image_count") == call.get("input_frame_count")
+                    and isinstance(call.get("temporal_offsets_s"), tuple)
+                    and len(call["temporal_offsets_s"]) == call.get("input_frame_count")
+                    and call["temporal_offsets_s"][0] == 0.0
+                    and list(call["temporal_offsets_s"]) == sorted(call["temporal_offsets_s"])
+                    and call["temporal_offsets_s"][-1] <= float(call.get("temporal_span_s") or 0.0)
+                    and int(call.get("total_input_bytes") or 0) <= 4 * 1024 * 1024
+                    and not call.get("input_frames_is_none")
+                )
+            )
+        )
         for call in provider.call_records
     )
     result.configuration["reconciliation"] = {
@@ -973,7 +1040,8 @@ async def _score_one(event: dict, request_budget: BudgetEnforcer) -> EventRun:
         "pool_receipts": len(result.judge_receipts),
         "pool_outcomes": pool_outcomes,
         "provider_call_outcomes": provider_outcomes,
-        "forbidden_evidence_fallbacks": forbidden_fallbacks,
+        "invalid_temporal_transports": invalid_transports,
+        "forbidden_evidence_fallbacks": invalid_transports,
         "reported_provider_events": reported_events,
         "considered_provider_events": considered_events,
         "truncated_provider_events": truncated_events,

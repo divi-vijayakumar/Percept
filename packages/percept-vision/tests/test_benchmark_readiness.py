@@ -401,6 +401,30 @@ class BudgetAdmissionTests(unittest.TestCase):
         self.assertEqual(calls, 1)
         self.assertEqual(budget.snapshot()["physical_attempts"], 1)
 
+    def test_permanent_openrouter_4xx_is_one_failed_physical_attempt(self):
+        class UnsupportedMedia(RuntimeError):
+            status_code = 404
+
+        calls = 0
+
+        async def create(**_kwargs):
+            nonlocal calls
+            calls += 1
+            raise UnsupportedMedia("no endpoints support video")
+
+        budget = _enforcer(requests=4, retries=2)
+        vision = OpenRouterVision(
+            NS(models=NS(vision_model="qwen/qwen3-vl-32b-instruct")),
+            client=NS(chat=NS(completions=NS(create=create))),
+            request_budget=budget,
+        )
+        with self.assertRaisesRegex(UnsupportedMedia, "no endpoints support video"):
+            asyncio.run(vision.judge("action?", b"frame"))
+        self.assertEqual(calls, 1)
+        snapshot = budget.snapshot()
+        self.assertEqual(snapshot["physical_attempts"], 1)
+        self.assertEqual(snapshot["failed_attempts"], 1)
+
 
 class TerminalBenchmarkFailureTests(unittest.TestCase):
     class _NativeVideo:
@@ -415,6 +439,30 @@ class TerminalBenchmarkFailureTests(unittest.TestCase):
                 context={
                     **(kwargs.get("context") or {}),
                     "_percept_evidence_shape": "video_clip",
+                },
+            )
+
+        async def detect(self, _frame, _goals):
+            return []
+
+    class _TemporalImages:
+        def __init__(self, inner, **_kwargs) -> None:
+            self.inner = inner
+
+        async def judge(self, condition, frame, **kwargs):
+            images = [
+                item if isinstance(item, tuple) else ("image/jpeg", item)
+                for item in [*(kwargs.get("frames") or []), frame]
+            ]
+            return await self.inner.judge(
+                condition,
+                images[-1],
+                frames=images[:-1],
+                context={
+                    **(kwargs.get("context") or {}),
+                    "_percept_evidence_shape": "video_clip",
+                    "_percept_temporal_transport": "ordered_timestamped_images",
+                    "_percept_temporal_image_timestamps_s": (0.0, 0.5),
                 },
             )
 
@@ -521,6 +569,11 @@ class TerminalBenchmarkFailureTests(unittest.TestCase):
                 pt_track,
                 "NativeVideoVision",
                 self._NativeVideo,
+            ),
+            patch.object(
+                pt_track,
+                "TemporalImageVision",
+                self._TemporalImages,
             ),
         ):
             result = pt_track.score(live=True, n=2)
