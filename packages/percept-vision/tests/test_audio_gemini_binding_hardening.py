@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import sys
 import types
 import unittest
@@ -45,6 +46,41 @@ def _audio() -> AudioFrame:
 
 async def _dispatch(binding: object) -> object:
     return await binding.dispatch("someone speaks", None, audio=_audio())
+
+
+def _lazy_google(created: list[_Client]) -> dict[str, types.ModuleType]:
+    class Part:
+        @staticmethod
+        def from_bytes(**kwargs: object) -> object:
+            return ("part", kwargs)
+
+    class GenerateContentConfig:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    class HttpOptions:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    def make_client(**kwargs: object) -> _Client:
+        client = _Client()
+        created.append(client)
+        return client
+
+    google = types.ModuleType("google")
+    genai = types.ModuleType("google.genai")
+    google_types = types.ModuleType("google.genai.types")
+    genai.Client = make_client
+    genai.types = google_types
+    google.genai = genai
+    google_types.Part = Part
+    google_types.GenerateContentConfig = GenerateContentConfig
+    google_types.HttpOptions = HttpOptions
+    return {
+        "google": google,
+        "google.genai": genai,
+        "google.genai.types": google_types,
+    }
 
 
 class GeminiBindingHardeningTests(unittest.TestCase):
@@ -154,41 +190,7 @@ class GeminiBindingHardeningTests(unittest.TestCase):
 
     def test_trusted_lazy_client_initialization_is_allowed_once(self) -> None:
         created: list[_Client] = []
-
-        class Part:
-            @staticmethod
-            def from_bytes(**kwargs: object) -> object:
-                return ("part", kwargs)
-
-        class GenerateContentConfig:
-            def __init__(self, **kwargs: object) -> None:
-                self.kwargs = kwargs
-
-        class HttpOptions:
-            def __init__(self, **kwargs: object) -> None:
-                self.kwargs = kwargs
-
-        def make_client(**kwargs: object) -> _Client:
-            client = _Client()
-            created.append(client)
-            return client
-
-        google = types.ModuleType("google")
-        genai = types.ModuleType("google.genai")
-        google_types = types.ModuleType("google.genai.types")
-        genai.Client = make_client
-        genai.types = google_types
-        google.genai = genai
-        google_types.Part = Part
-        google_types.GenerateContentConfig = GenerateContentConfig
-        google_types.HttpOptions = HttpOptions
-
-        modules = {
-            "google": google,
-            "google.genai": genai,
-            "google.genai.types": google_types,
-        }
-        with patch.dict(sys.modules, modules):
+        with patch.dict(sys.modules, _lazy_google(created)):
             adapter = GeminiVision(client=None)
             binding = prepare_audio_judge_binding(
                 adapter,
@@ -203,6 +205,85 @@ class GeminiBindingHardeningTests(unittest.TestCase):
         self.assertEqual(len(created), 1)
         self.assertIs(adapter._client, created[0])
         self.assertEqual(created[0].models.calls, 2)
+
+    def test_two_lazy_bindings_share_one_trusted_initialization_in_both_orders(self) -> None:
+        for order in ((0, 1), (1, 0)):
+            with self.subTest(order=order):
+                created: list[_Client] = []
+                with patch.dict(sys.modules, _lazy_google(created)):
+                    adapter = GeminiVision(client=None)
+                    bindings = [
+                        prepare_audio_judge_binding(
+                            adapter,
+                            mode="audio_only",
+                            application_key=f"watch-{index}",
+                        )
+                        for index in range(2)
+                    ]
+                    first = asyncio.run(_dispatch(bindings[order[0]]))
+                    second = asyncio.run(_dispatch(bindings[order[1]]))
+                self.assertTrue(first.satisfied)
+                self.assertTrue(second.satisfied)
+                self.assertEqual(len(created), 1)
+                self.assertEqual(created[0].models.calls, 2)
+
+    def test_concurrent_first_dispatches_share_one_lazy_client(self) -> None:
+        created: list[_Client] = []
+
+        async def drive(bindings: list[object]) -> list[object]:
+            return await asyncio.gather(*(_dispatch(item) for item in bindings))
+
+        with patch.dict(sys.modules, _lazy_google(created)):
+            adapter = GeminiVision(client=None)
+            bindings = [
+                prepare_audio_judge_binding(
+                    adapter,
+                    mode="audio_only",
+                    application_key=f"watch-{index}",
+                )
+                for index in range(2)
+            ]
+            results = asyncio.run(drive(bindings))
+        self.assertTrue(all(item.satisfied for item in results))
+        self.assertEqual(len(created), 1)
+        self.assertEqual(created[0].models.calls, 2)
+
+    def test_post_lazy_init_client_replacement_fails_for_every_binding(self) -> None:
+        created: list[_Client] = []
+        poison = _Client()
+        with patch.dict(sys.modules, _lazy_google(created)):
+            adapter = GeminiVision(client=None)
+            first = prepare_audio_judge_binding(
+                adapter, mode="audio_only", application_key="first"
+            )
+            second = prepare_audio_judge_binding(
+                adapter, mode="audio_only", application_key="second"
+            )
+            self.assertTrue(asyncio.run(_dispatch(first)).satisfied)
+            adapter._client = poison
+            with self.assertRaisesRegex(RuntimeError, "state was mutated"):
+                asyncio.run(_dispatch(second))
+        self.assertEqual(len(created), 1)
+        self.assertEqual(created[0].models.calls, 1)
+        self.assertEqual(poison.models.calls, 0)
+
+    def test_rolled_back_preparation_does_not_poison_later_adapter_state(self) -> None:
+        adapter = GeminiVision(client=None)
+        abandoned = prepare_audio_judge_binding(
+            adapter, mode="audio_only", application_key="rolled-back"
+        )
+        del abandoned
+        gc.collect()
+        accepted = _Client()
+        adapter._client = accepted
+
+        binding = prepare_audio_judge_binding(
+            adapter, mode="audio_only", application_key="later-valid"
+        )
+        result = asyncio.run(_dispatch(binding))
+
+        self.assertTrue(result.satisfied)
+        self.assertEqual(accepted.models.calls, 1)
 
 
 if __name__ == "__main__":

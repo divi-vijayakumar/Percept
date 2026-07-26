@@ -8,6 +8,7 @@ import unittest
 from dataclasses import replace
 from typing import Any
 
+import percept.audio_input as audio_input_module
 from percept import Percept
 from percept.adapters import Verdict
 from percept.audio_input import (
@@ -428,6 +429,48 @@ class BindingTests(unittest.TestCase):
             FakeVision.judge = original  # type: ignore[assignment]
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].verdict.evidence, "captured")
+
+    def test_compiled_fake_freezes_audio_token_helper_and_script_state(self) -> None:
+        candidate = unit(0)
+        token = token_for(candidate)
+        fake = FakeVision(
+            script={
+                token: Verdict(True, 0.99, evidence="captured"),
+                "redirected": Verdict(False, 0.99, evidence="redirected"),
+            }
+        )
+        core = Percept.create(vision=fake, discover_plugins=False)
+        self.assertEqual(apply_watch_plan(core, audio_plan()).status, "applied")
+        binding = core._audio_judge_bindings["audio"]
+        payload = audio_frame_from_units((canonical(candidate),), capability=CAP)
+        original_helper = audio_input_module.audio_script_token
+        helper_calls = 0
+
+        def poisoned_helper(frame: AudioFrame) -> str:
+            nonlocal helper_calls
+            helper_calls += 1
+            return "redirected"
+
+        audio_input_module.audio_script_token = poisoned_helper
+        fake._script[token].satisfied = False
+        fake._script[token].evidence = "mutated-live-script"
+        fake._script = {"redirected": Verdict(False, 1.0, "replacement")}
+        try:
+            first = asyncio.run(
+                binding.dispatch("sound", None, audio=payload)
+            )
+            first.evidence = "consumer-mutated"
+            first.usage["poison"] = True
+            second = asyncio.run(
+                binding.dispatch("sound", None, audio=payload)
+            )
+        finally:
+            audio_input_module.audio_script_token = original_helper
+
+        self.assertEqual(helper_calls, 0)
+        self.assertTrue(second.satisfied)
+        self.assertEqual(second.evidence, "captured")
+        self.assertEqual(second.usage, {})
 
     def test_complete_releases_audio_binding(self) -> None:
         core = Percept.create(vision=FakeVision(), discover_plugins=False)

@@ -11,14 +11,16 @@ import copy
 import hashlib
 import math
 import struct
+import threading
 import types
+import weakref
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal
 
 from .backends import gemini as _gemini_backend
 from .backends.fake import FakeVision as _SdkFakeVision
 from .backends.gemini import GeminiVision as _SdkGeminiVision
-from .contracts import AudioFrame, IncidentSnippet
+from .contracts import AudioFrame, IncidentSnippet, Verdict
 
 AudioJudgeMode = Literal["audio_only", "fused"]
 
@@ -717,6 +719,98 @@ _TRUSTED_GEMINI_HELPERS = {
 }
 
 
+@dataclass
+class _SharedGeminiDispatchState:
+    """One trusted lazy-client transition shared by every binding on an adapter."""
+
+    settings: Any
+    model: Any
+    breaker: Any
+    expected_client: Any
+    captured_provider: Any = None
+    lock: Any = field(default_factory=threading.RLock, repr=False)
+    binding_refs: list[Any] = field(default_factory=list, repr=False)
+
+    def register(self, binding: AudioJudgeBinding) -> None:
+        with self.lock:
+            self.binding_refs = [ref for ref in self.binding_refs if ref() is not None]
+            self.binding_refs.append(weakref.ref(binding))
+
+    def has_live_bindings(self) -> bool:
+        with self.lock:
+            self.binding_refs = [ref for ref in self.binding_refs if ref() is not None]
+            return bool(self.binding_refs)
+
+
+_GEMINI_STATE_LOCK = threading.RLock()
+_GEMINI_STATES: "weakref.WeakKeyDictionary[Any, _SharedGeminiDispatchState]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _capture_gemini_client(client: Any) -> Any:
+    """Expose only the provider callable captured from the accepted client."""
+    generate = client.aio.models.generate_content
+    if not callable(generate):
+        raise RuntimeError("compiled Gemini audio client has no callable generate_content")
+
+    class _CapturedModels:
+        async def generate_content(self, *args: Any, **kwargs: Any) -> Any:
+            return await generate(*args, **kwargs)
+
+    return types.SimpleNamespace(
+        aio=types.SimpleNamespace(models=_CapturedModels())
+    )
+
+
+def _shared_gemini_state(adapter: Any) -> _SharedGeminiDispatchState:
+    settings = getattr(adapter, "_settings", None)
+    model = getattr(adapter, "_model", None)
+    breaker = getattr(adapter, "_breaker", None)
+    client = getattr(adapter, "_client", None)
+    with _GEMINI_STATE_LOCK:
+        state = _GEMINI_STATES.get(adapter)
+        if state is None:
+            state = _SharedGeminiDispatchState(
+                settings=settings,
+                model=model,
+                breaker=breaker,
+                expected_client=client,
+            )
+            if client is not None:
+                try:
+                    state.captured_provider = _capture_gemini_client(client)
+                except (AttributeError, RuntimeError):
+                    # Inert placeholders remain apply-compatible and fail closed on dispatch.
+                    pass
+            _GEMINI_STATES[adapter] = state
+        elif (
+            state.settings is not settings
+            or state.model != model
+            or state.breaker is not breaker
+            or state.expected_client is not client
+        ):
+            if state.has_live_bindings():
+                raise ValueError(
+                    "compiled Gemini audio adapter state changed between Watch bindings"
+                )
+            # A prior plan may have prepared and rolled back without landing a binding. Such a
+            # reservation must not poison a later valid application after ordinary adapter use.
+            state = _SharedGeminiDispatchState(
+                settings=settings,
+                model=model,
+                breaker=breaker,
+                expected_client=client,
+            )
+            if client is not None:
+                try:
+                    state.captured_provider = _capture_gemini_client(client)
+                except (AttributeError, RuntimeError):
+                    pass
+            _GEMINI_STATES[adapter] = state
+        return state
+
+
 def _assert_trusted_gemini_dispatch(
     adapter: Any,
     *,
@@ -746,15 +840,17 @@ def _assert_trusted_gemini_dispatch(
         raise RuntimeError("compiled Gemini audio adapter state was mutated")
 
 
-def _prepare_gemini_dispatch(adapter: Any) -> Callable[..., Awaitable[Any]]:
+def _prepare_gemini_dispatch(
+    adapter: Any,
+) -> tuple[Callable[..., Awaitable[Any]], _SharedGeminiDispatchState]:
     """Capture Gemini state while permitting its one trusted lazy-client transition."""
     instance_dict = getattr(adapter, "__dict__", {})
     if "judge" in instance_dict or "_ensure_client" in instance_dict:
         raise ValueError("compiled audio rejects an instance-level Gemini dispatch shadow")
-    settings = getattr(adapter, "_settings", None)
-    model = getattr(adapter, "_model", None)
-    breaker = getattr(adapter, "_breaker", None)
-    expected_client = getattr(adapter, "_client", None)
+    state = _shared_gemini_state(adapter)
+    settings = state.settings
+    model = state.model
+    breaker = state.breaker
 
     # Validate before returning a binding as well as at call time. The sentinel client argument is
     # the current value here; after a trusted lazy initialization the closure advances it exactly
@@ -764,7 +860,7 @@ def _prepare_gemini_dispatch(adapter: Any) -> Callable[..., Awaitable[Any]]:
         settings=settings,
         model=model,
         breaker=breaker,
-        client=expected_client,
+        client=state.expected_client,
     )
 
     def freeze_function(implementation: Any) -> Any:
@@ -799,58 +895,109 @@ def _prepare_gemini_dispatch(adapter: Any) -> Callable[..., Awaitable[Any]]:
         snapshot,
     )
 
-    def captured_client(client: Any) -> Any:
-        """Expose only the provider callable captured from the accepted client."""
-        generate = client.aio.models.generate_content
-        if not callable(generate):
-            raise RuntimeError("compiled Gemini audio client has no callable generate_content")
-
-        class _CapturedModels:
-            async def generate_content(self, *args: Any, **kwargs: Any) -> Any:
-                return await generate(*args, **kwargs)
-
-        return types.SimpleNamespace(
-            aio=types.SimpleNamespace(models=_CapturedModels())
-        )
-
-    captured_provider = None
-    if expected_client is not None:
-        try:
-            captured_provider = captured_client(expected_client)
-        except (AttributeError, RuntimeError):
-            # Preserve apply-time compatibility with deliberately inert provider placeholders.
-            # They still fail closed, before a provider call, if a compiled judgment is attempted.
-            captured_provider = None
-
     async def dispatch(*args: Any, **kwargs: Any) -> Any:
-        nonlocal captured_provider, expected_client
-        _assert_trusted_gemini_dispatch(
-            adapter,
-            settings=settings,
-            model=model,
-            breaker=breaker,
-            client=expected_client,
-        )
-        if expected_client is None:
-            # Initialize synchronously through the captured SDK function after every dependency has
-            # been verified. This is the only permitted post-application adapter-state transition.
-            initialized = _TRUSTED_GEMINI_ENSURE_CLIENT(adapter)
-            if initialized is None or getattr(adapter, "_client", None) is not initialized:
-                raise RuntimeError("compiled Gemini audio lazy client initialization was invalid")
-            expected_client = initialized
-            captured_provider = captured_client(initialized)
-        elif captured_provider is None:
-            captured_provider = captured_client(expected_client)
-        snapshot._client = captured_provider
+        # Lazy initialization is synchronous and serialized across every Watch binding sharing this
+        # exact adapter. The provider await happens after releasing the lock.
+        with state.lock:
+            _assert_trusted_gemini_dispatch(
+                adapter,
+                settings=settings,
+                model=model,
+                breaker=breaker,
+                client=state.expected_client,
+            )
+            if state.expected_client is None:
+                initialized = _TRUSTED_GEMINI_ENSURE_CLIENT(adapter)
+                if initialized is None or getattr(adapter, "_client", None) is not initialized:
+                    raise RuntimeError(
+                        "compiled Gemini audio lazy client initialization was invalid"
+                    )
+                state.expected_client = initialized
+                state.captured_provider = _capture_gemini_client(initialized)
+            elif state.captured_provider is None:
+                state.captured_provider = _capture_gemini_client(
+                    state.expected_client
+                )
+            provider = state.captured_provider
+        snapshot._client = provider
         result = await frozen_judge(*args, **kwargs)
-        _assert_trusted_gemini_dispatch(
-            adapter,
-            settings=settings,
-            model=model,
-            breaker=breaker,
-            client=expected_client,
-        )
+        with state.lock:
+            _assert_trusted_gemini_dispatch(
+                adapter,
+                settings=settings,
+                model=model,
+                breaker=breaker,
+                client=state.expected_client,
+            )
         return result
+
+    return dispatch, state
+
+
+def _prepare_fake_dispatch(adapter: Any) -> Callable[..., Awaitable[Any]]:
+    """Freeze the scripted table and audio-token algorithm for compiled Watches."""
+    live_script = getattr(adapter, "_script", None)
+    if type(live_script) is not dict or any(
+        type(key) is not str or type(verdict) is not Verdict
+        for key, verdict in live_script.items()
+    ):
+        raise ValueError("compiled FakeVision requires an exact scripted verdict table")
+    script = copy.deepcopy(live_script)
+    unknown = copy.deepcopy(
+        _SdkFakeVision.__dict__["judge"].__globals__["_UNKNOWN"]
+    )
+    clone = copy.deepcopy
+    sha256 = hashlib.sha256
+    audio_frame_type = AudioFrame
+
+    def frozen_audio_token(audio: Any) -> str:
+        if type(audio) is not audio_frame_type:
+            raise TypeError("compiled FakeVision audio requires an exact AudioFrame")
+        if audio.encoded is not None:
+            if not isinstance(audio.encoded, bytes):
+                raise TypeError("compiled FakeVision encoded audio must be exact bytes")
+            mime, raw = audio.mime or "audio/wav", audio.encoded
+        else:
+            if not isinstance(audio.pcm, bytes):
+                raise TypeError("compiled FakeVision PCM audio must be exact bytes")
+            base = "audio/L16" if audio.sample_format == "s16le" else "audio/pcm"
+            mime = f"{base};rate={audio.sample_rate};channels={audio.channels}"
+            raw = audio.pcm
+        digest = sha256(mime.lower().encode("ascii") + b"\0" + raw).hexdigest()
+        return f"audio:sha256:{digest}"
+
+    async def dispatch(
+        condition: str,
+        frame: Any,
+        *,
+        roi: Any = None,
+        exemplar: Any = None,
+        corrections: dict | None = None,
+        frames: list | None = None,
+        audio: Any = None,
+        context: dict | None = None,
+    ) -> Any:
+        token = (
+            frozen_audio_token(audio)
+            if frame is None and audio is not None
+            else str(frame)
+        )
+        if context and context.get("observe_step"):
+            verdict = script.get(
+                f"{token}|step",
+                type(unknown)(satisfied=False, confidence=0.5, evidence=""),
+            )
+        elif context and f"{token}|enriched" in script:
+            verdict = script[f"{token}|enriched"]
+        elif corrections and f"{token}|corrected" in script:
+            verdict = script[f"{token}|corrected"]
+        elif audio is not None and f"{token}|audio" in script:
+            verdict = script[f"{token}|audio"]
+        elif frames and f"{token}|strip" in script:
+            verdict = script[f"{token}|strip"]
+        else:
+            verdict = script.get(token, unknown)
+        return clone(verdict)
 
     return dispatch
 
@@ -873,13 +1020,13 @@ def prepare_audio_judge_binding(
     implementation = adapter_type.__dict__.get("judge")
     if implementation is not _TRUSTED_AUDIO_JUDGES[adapter_type]:
         raise ValueError("compiled audio rejects a class-level judge mutation")
-    dispatch = (
-        _prepare_gemini_dispatch(adapter)
-        if adapter_type is _SdkGeminiVision
-        else types.MethodType(implementation, adapter)
-    )
+    gemini_state = None
+    if adapter_type is _SdkGeminiVision:
+        dispatch, gemini_state = _prepare_gemini_dispatch(adapter)
+    else:
+        dispatch = _prepare_fake_dispatch(adapter)
     capability = AudioInputCapability(modes=frozenset({"audio_only", "fused"}))
-    return AudioJudgeBinding(
+    binding = AudioJudgeBinding(
         adapter=adapter,
         dispatch=dispatch,
         adapter_identity=f"{adapter_type.__module__}.{adapter_type.__qualname__}",
@@ -887,6 +1034,9 @@ def prepare_audio_judge_binding(
         capability=capability,
         application_key=application_key,
     )
+    if gemini_state is not None:
+        gemini_state.register(binding)
+    return binding
 
 
 __all__ = [
