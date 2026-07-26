@@ -15,6 +15,7 @@ import math
 import os
 import stat
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field as dc_field, replace
 from datetime import datetime, timezone
@@ -450,7 +451,10 @@ def _text(value: Any, context: str) -> str:
 
 
 def _number(value: Any, context: str, *, minimum: float | None = None) -> float:
-    _require(isinstance(value, (int, float)) and not isinstance(value, bool), f"{context} must be a finite number")
+    _require(
+        isinstance(value, (int, float)) and not isinstance(value, bool),
+        f"{context} must be a finite number",
+    )
     try:
         result = float(value)
     except (OverflowError, TypeError, ValueError) as exc:
@@ -568,11 +572,7 @@ def _open_artifact_no_symlinks(path: Path) -> int:
         | int(getattr(os, "O_NOFOLLOW", 0))
         | int(getattr(os, "O_DIRECTORY", 0))
     )
-    file_flags = (
-        os.O_RDONLY
-        | int(getattr(os, "O_CLOEXEC", 0))
-        | int(getattr(os, "O_NOFOLLOW", 0))
-    )
+    file_flags = os.O_RDONLY | int(getattr(os, "O_CLOEXEC", 0)) | int(getattr(os, "O_NOFOLLOW", 0))
     directory_fd = -1
     try:
         directory_fd = os.open(parts[0], directory_flags)
@@ -619,9 +619,7 @@ def _read_artifact_snapshot(
     """Read one stable file through a symlink-safe descriptor walk."""
 
     _require(
-        isinstance(max_bytes, int)
-        and not isinstance(max_bytes, bool)
-        and max_bytes > 0,
+        isinstance(max_bytes, int) and not isinstance(max_bytes, bool) and max_bytes > 0,
         "unsafe binary artifact: max_bytes must be positive",
     )
     display_path = str(path)
@@ -666,9 +664,7 @@ def _read_artifact_snapshot(
             try:
                 chunk = os.read(fd, min(1024 * 1024, max_bytes + 1 - byte_count))
             except OSError as exc:
-                raise MatchedWatchInputError(
-                    f"unsafe binary artifact: read failed: {exc}"
-                ) from exc
+                raise MatchedWatchInputError(f"unsafe binary artifact: read failed: {exc}") from exc
             if not chunk:
                 break
             byte_count += len(chunk)
@@ -713,8 +709,7 @@ def _read_artifact_snapshot(
         _require(
             before_snapshot == after_snapshot
             and (final_path.st_dev, final_path.st_ino) == (after.st_dev, after.st_ino)
-            and (canonical_info.st_dev, canonical_info.st_ino)
-            == (after.st_dev, after.st_ino)
+            and (canonical_info.st_dev, canonical_info.st_ino) == (after.st_dev, after.st_ino)
             and initial_canonical == final_canonical
             and final_path.st_nlink == 1
             and final_path.st_size == byte_count,
@@ -807,9 +802,7 @@ def _private_decoder_snapshot(
         os.chmod(private_path, 0o400)
         snapshot_fd = os.open(
             private_path,
-            os.O_RDONLY
-            | int(getattr(os, "O_CLOEXEC", 0))
-            | int(getattr(os, "O_NOFOLLOW", 0)),
+            os.O_RDONLY | int(getattr(os, "O_CLOEXEC", 0)) | int(getattr(os, "O_NOFOLLOW", 0)),
         )
         os.unlink(private_path)
         descriptor_path = next(
@@ -845,16 +838,15 @@ def _recorded_artifact_guard(path: Path) -> tuple[int, ...]:
         canonical_info = os.lstat(canonical)
         parent = os.lstat(normalized.parent)
     except OSError as exc:
-        raise MatchedWatchInputError(
-            f"media artifact identity cannot be inspected: {exc}"
-        ) from exc
+        raise MatchedWatchInputError(f"media artifact identity cannot be inspected: {exc}") from exc
     finally:
         os.close(fd)
     _require(
         stat.S_ISREG(opened.st_mode)
         and opened.st_nlink == 1
         and stat.S_ISDIR(parent.st_mode)
-        and (opened.st_dev, opened.st_ino) == (lexical.st_dev, lexical.st_ino)
+        and (opened.st_dev, opened.st_ino)
+        == (lexical.st_dev, lexical.st_ino)
         == (canonical_info.st_dev, canonical_info.st_ino)
         and str(canonical) == str(normalized.resolve(strict=True)),
         "media artifact guard cannot bind one stable regular file",
@@ -1109,9 +1101,7 @@ class MatchedWatchReceipt:
         }
         if self.receipt_schema == _RECEIPT_SCHEMA_V2:
             result["input_artifacts"] = [_thaw(item) for item in self.input_artifacts]
-            result["authority_artifact_presence"] = _thaw(
-                self.authority_artifact_presence
-            )
+            result["authority_artifact_presence"] = _thaw(self.authority_artifact_presence)
         return result
 
     def hash_content_dict(self) -> dict[str, Any]:
@@ -1219,10 +1209,7 @@ def _strict_json(value: Any, context: str) -> Any:
         return tuple(_strict_json(item, f"{context}[{index}]") for index, item in enumerate(value))
     if isinstance(value, dict):
         return MappingProxyType(
-            {
-                key: _strict_json(item, f"{context}.{key}")
-                for key, item in value.items()
-            }
+            {key: _strict_json(item, f"{context}.{key}") for key, item in value.items()}
         )
     _fail(f"{context} contains a non-JSON value")
 
@@ -1244,8 +1231,7 @@ def _strict_object_tuple(
 ) -> tuple[Mapping[str, Any], ...]:
     _require(isinstance(value, list), f"{context} must be a list")
     return tuple(
-        _strict_object(item, f"{context}[{index}]", keys=keys)
-        for index, item in enumerate(value)
+        _strict_object(item, f"{context}[{index}]", keys=keys) for index, item in enumerate(value)
     )
 
 
@@ -1290,15 +1276,23 @@ def _parse_provider_call_receipt(
     confidence = doc["confidence"]
     evidence = doc["evidence"]
     error = doc["error"]
-    _require(satisfied is None or isinstance(satisfied, bool), f"{context}.satisfied must be boolean or null")
+    _require(
+        satisfied is None or isinstance(satisfied, bool),
+        f"{context}.satisfied must be boolean or null",
+    )
     if confidence is not None:
         _strict_float(confidence, f"{context}.confidence")
         _require(0.0 <= confidence <= 1.0, f"{context}.confidence must be in [0, 1]")
-    _require(evidence is None or isinstance(evidence, str), f"{context}.evidence must be text or null")
+    _require(
+        evidence is None or isinstance(evidence, str), f"{context}.evidence must be text or null"
+    )
     _require(error is None or isinstance(error, str), f"{context}.error must be text or null")
     if status == "success":
         _require(
-            satisfied is not None and confidence is not None and evidence is not None and error is None,
+            satisfied is not None
+            and confidence is not None
+            and evidence is not None
+            and error is None,
             f"{context} successful call has inconsistent result fields",
         )
     else:
@@ -1379,8 +1373,12 @@ def _parse_candidate_receipt(
         _strict_string(item, f"{context}.incident_ids[{item_index}]")
         for item_index, item in enumerate(raw_ids)
     )
-    _require(len(incident_ids) == len(set(incident_ids)), f"{context}.incident_ids contains duplicates")
-    _require(dispatched == (decision is not None), f"{context} dispatch and decision fields disagree")
+    _require(
+        len(incident_ids) == len(set(incident_ids)), f"{context}.incident_ids contains duplicates"
+    )
+    _require(
+        dispatched == (decision is not None), f"{context} dispatch and decision fields disagree"
+    )
     source_sequence = None
     frame_sha256 = None
     if v2:
@@ -1412,9 +1410,7 @@ def _same_json_value(left: Any, right: Any) -> bool:
             _same_json_value(left[key], right[key]) for key in left
         )
     if isinstance(left, list):
-        return len(left) == len(right) and all(
-            _same_json_value(a, b) for a, b in zip(left, right)
-        )
+        return len(left) == len(right) and all(_same_json_value(a, b) for a, b in zip(left, right))
     return bool(left == right)
 
 
@@ -1452,9 +1448,7 @@ def _parse_resolved_watch(value: Any, context: str) -> Mapping[str, Any]:
         for key in ("ref", "strength", "reason"):
             _strict_string(component[key], f"{component_context}.{key}")
     clamps = _object(domain_pack["policy_clamps"], f"{context}.domain_pack.policy_clamps")
-    unsupported_clamps = sorted(
-        set(clamps) - {"false_negative_cost_min", "retention_max_days"}
-    )
+    unsupported_clamps = sorted(set(clamps) - {"false_negative_cost_min", "retention_max_days"})
     _require(
         not unsupported_clamps,
         f"{context}.domain_pack.policy_clamps has unsupported fields {unsupported_clamps!r}",
@@ -1499,8 +1493,7 @@ def _parse_resolved_watch(value: Any, context: str) -> Mapping[str, Any]:
     _strict_string(doc["plan_hash"], f"{context}.plan_hash")
     _strict_string(doc["component_snapshot_hash"], f"{context}.component_snapshot_hash")
     _require(
-        doc["optimization_lock_hash"] is None
-        or isinstance(doc["optimization_lock_hash"], str),
+        doc["optimization_lock_hash"] is None or isinstance(doc["optimization_lock_hash"], str),
         f"{context}.optimization_lock_hash must be text or null",
     )
     return _strict_object(doc, context, keys=_RESOLVED_WATCH_KEYS)
@@ -1760,10 +1753,7 @@ def _parse_arm_receipt(
         "provider_call_successes",
         "provider_call_failures",
     )
-    counts = {
-        key: _strict_int(doc[key], f"{context}.{key}")
-        for key in count_fields
-    }
+    counts = {key: _strict_int(doc[key], f"{context}.{key}") for key in count_fields}
     valid = _strict_bool(doc["valid"], f"{context}.valid")
     raw_blockers = doc["blockers"]
     _require(isinstance(raw_blockers, list), f"{context}.blockers must be a list")
@@ -1919,7 +1909,9 @@ def _parse_persisted_manifest(value: Any) -> Mapping[str, Any]:
     )
     _strict_float(adaptive["threshold"], f"{context}.adaptive.threshold")
     raw_events = doc["events"]
-    _require(isinstance(raw_events, list) and raw_events, f"{context}.events must be a non-empty list")
+    _require(
+        isinstance(raw_events, list) and raw_events, f"{context}.events must be a non-empty list"
+    )
     for index, raw_event in enumerate(raw_events):
         event_context = f"{context}.events[{index}]"
         event = _object(raw_event, event_context)
@@ -1961,7 +1953,9 @@ def _load_real_manifest(
 
     media_ref = _object(doc["media"], "manifest.media")
     _exact(media_ref, _REAL_MEDIA_REF_KEYS, "manifest.media")
-    _require(media_ref["media_type"] == "video/mp4", "manifest.media.media_type must be 'video/mp4'")
+    _require(
+        media_ref["media_type"] == "video/mp4", "manifest.media.media_type must be 'video/mp4'"
+    )
     media_path = _resolve_contained_path(
         media_ref["path"],
         root=manifest_root,
@@ -2062,8 +2056,7 @@ def _load_real_manifest(
         )
         authority_receipt = _snapshot_binary(authority_path, max_bytes=64 * 1024 * 1024)
         _require(
-            authority_receipt.sha256
-            == _sha(ref["sha256"], f"corpus.authorities.{name}.sha256"),
+            authority_receipt.sha256 == _sha(ref["sha256"], f"corpus.authorities.{name}.sha256"),
             f"corpus authority artifact {name!r} digest mismatch",
         )
         authority_presence[name] = True
@@ -2247,10 +2240,7 @@ def _load_real_manifest(
         _artifact_receipt("oracle", oracle_loaded.receipt),
         *authority_artifacts,
     ]
-    identities = [
-        (item["device"], item["inode"])
-        for item in artifacts
-    ]
+    identities = [(item["device"], item["inode"]) for item in artifacts]
     _require(
         len(identities) == len(set(identities)),
         "real-video input artifact files must be distinct",
@@ -2336,7 +2326,9 @@ def load_matched_watch_manifest(path: str | Path) -> _Manifest:
         "media.height must be an exact integer",
     )
     width, height = media["width"], media["height"]
-    _require(1 <= width <= 512 and 1 <= height <= 512, "media dimensions exceed the 512x512 L1 limit")
+    _require(
+        1 <= width <= 512 and 1 <= height <= 512, "media dimensions exceed the 512x512 L1 limit"
+    )
     _require(width * height <= 262_144, "media pixel budget exceeds 262144")
 
     raw_frames = media["frames"]
@@ -2355,7 +2347,9 @@ def load_matched_watch_manifest(path: str | Path) -> _Manifest:
         frame = _object(raw, context)
         _exact(frame, _FRAME_KEYS, context)
         t = _number(frame["t"], f"{context}.t", minimum=0.0)
-        _require(prior_t is None or t > prior_t, "media frame timestamps must be strictly increasing")
+        _require(
+            prior_t is None or t > prior_t, "media frame timestamps must be strictly increasing"
+        )
         prior_t = t
         fill = frame["fill"]
         _require(
@@ -2381,7 +2375,9 @@ def load_matched_watch_manifest(path: str | Path) -> _Manifest:
 
     watch = _object(doc["watch"], "manifest.watch")
     _exact(watch, _WATCH_KEYS, "manifest.watch")
-    _require(watch["template_ref"] == _TEMPLATE, f"manifest.watch.template_ref must be {_TEMPLATE!r}")
+    _require(
+        watch["template_ref"] == _TEMPLATE, f"manifest.watch.template_ref must be {_TEMPLATE!r}"
+    )
     _require(watch["domain_pack"] == _PACK, f"manifest.watch.domain_pack must be {_PACK!r}")
     parameters = _object(watch["parameters"], "manifest.watch.parameters")
 
@@ -2431,7 +2427,9 @@ def load_matched_watch_manifest(path: str | Path) -> _Manifest:
         )
     for frame in frames:
         owners = [event.id for event in events if event.start <= frame.t <= event.end]
-        _require(len(owners) <= 1, f"candidate t={frame.t} belongs to multiple event windows {owners!r}")
+        _require(
+            len(owners) <= 1, f"candidate t={frame.t} belongs to multiple event windows {owners!r}"
+        )
     for event in events:
         _require(
             any(event.start <= frame.t <= event.end for frame in frames),
@@ -2475,7 +2473,9 @@ def load_matched_watch_manifest(path: str | Path) -> _Manifest:
 class _RecordingTransitionJudge:
     SUPPORTS_FUSED_AUDIO_INPUT = True
 
-    def __init__(self, frames: Sequence[_FrameSpec], from_condition: str, to_condition: str) -> None:
+    def __init__(
+        self, frames: Sequence[_FrameSpec], from_condition: str, to_condition: str
+    ) -> None:
         self._frames = tuple(frames)
         self._from = from_condition
         self._to = to_condition
@@ -2546,10 +2546,7 @@ class _OracleCoordinateTracker:
         width = envelope.format.width
         height = envelope.format.height
         _require(
-            isinstance(width, int)
-            and width > 0
-            and isinstance(height, int)
-            and height > 0,
+            isinstance(width, int) and width > 0 and isinstance(height, int) and height > 0,
             "runtime decoder did not report positive frame dimensions",
         )
         if self.width is None:
@@ -2578,8 +2575,7 @@ def _decoder_identity() -> Mapping[str, str]:
         import cv2  # noqa: PLC0415 - runtime-extra identity is evaluated only for real video
     except ImportError as exc:
         raise MatchedWatchInputError(
-            "real-video matched evaluation requires OpenCV; "
-            "install 'percept-vision[runtime]'"
+            "real-video matched evaluation requires OpenCV; install 'percept-vision[runtime]'"
         ) from exc
     try:
         build = cv2.getBuildInformation()
@@ -2625,7 +2621,9 @@ class _RecordingOfflineOracleJudge:
             raise RuntimeError("offline oracle has no current decoded source coordinate")
         actual_frame_sha = _decoded_frame_sha256(frame)
         if actual_frame_sha != coordinate.frame_sha256:
-            raise RuntimeError("offline oracle frame bytes disagree with the current source coordinate")
+            raise RuntimeError(
+                "offline oracle frame bytes disagree with the current source coordinate"
+            )
         spec = self._frames.get(coordinate.source_sequence)
         if spec is None:
             raise RuntimeError("offline oracle has no candidate for the decoded source sequence")
@@ -2642,7 +2640,9 @@ class _RecordingOfflineOracleJudge:
             raise RuntimeError("offline oracle candidate is missing the rendered Watch predicate")
         lookup_key = (coordinate.source_sequence, condition_sha)
         if lookup_key in self._seen_lookups:
-            raise RuntimeError("offline oracle predicate was consumed more than once for one candidate")
+            raise RuntimeError(
+                "offline oracle predicate was consumed more than once for one candidate"
+            )
         self._seen_lookups.add(lookup_key)
         lookup_sha = _canonical_sha(
             {
@@ -2695,9 +2695,7 @@ async def _real_video_source(
 ) -> Any:
     """Decode the frozen MP4 through the shipped runtime source adapter without changing envelopes."""
 
-    media_artifact = next(
-        item for item in manifest.input_artifacts if item["role"] == "media"
-    )
+    media_artifact = next(item for item in manifest.input_artifacts if item["role"] == "media")
     media_path = Path(media_artifact["canonical_path"])
     try:
         import cv2  # noqa: F401, PLC0415 - fail before starting the decoder thread
@@ -2759,8 +2757,7 @@ async def _real_video_source(
     except ModuleNotFoundError as exc:
         if exc.name == "cv2":
             raise MatchedWatchInputError(
-                "real-video matched evaluation requires OpenCV; "
-                "install 'percept-vision[runtime]'"
+                "real-video matched evaluation requires OpenCV; install 'percept-vision[runtime]'"
             ) from exc
         raise
     _require(count == len(expected), "runtime decoder produced fewer candidates than the oracle")
@@ -3006,9 +3003,7 @@ async def _run_arm(manifest: _Manifest, plan: Any, arm: str) -> ArmReceipt:
         ]
     else:
         decisions = [
-            item
-            for item in traces
-            if item.stage == "gate.classified" and item.goal_id == goal_id
+            item for item in traces if item.stage == "gate.classified" and item.goal_id == goal_id
         ]
     if manifest.schema == _REAL_SCHEMA:
         assert tracker is not None
@@ -3053,9 +3048,7 @@ async def _run_arm(manifest: _Manifest, plan: Any, arm: str) -> ArmReceipt:
             elif (
                 manifest.plan_route == "transition"
                 and decision_trace.data.get("outcome") == "judge_degraded"
-            ) or any(
-                call.status != "success" for call in frame_calls
-            ):
+            ) or any(call.status != "success" for call in frame_calls):
                 decision = "missing"
             elif manifest.plan_route == "watch":
                 decision = str(decision_trace.data.get("action", "silent"))
@@ -3276,12 +3269,10 @@ def validate_matched_arms(
     if baseline.replay_identity != adaptive.replay_identity:
         blockers.append("replay identities differ")
     baseline_frames = tuple(
-        (item.source_sequence, item.t, item.frame_sha256)
-        for item in baseline.candidates
+        (item.source_sequence, item.t, item.frame_sha256) for item in baseline.candidates
     )
     adaptive_frames = tuple(
-        (item.source_sequence, item.t, item.frame_sha256)
-        for item in adaptive.candidates
+        (item.source_sequence, item.t, item.frame_sha256) for item in adaptive.candidates
     )
     if baseline_frames != adaptive_frames:
         blockers.append("decoded candidate evidence differs")
@@ -3397,10 +3388,28 @@ def run_matched_watch(path: str | Path) -> MatchedWatchReceipt:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(run_matched_watch_async(path))
-    raise RuntimeError("run_matched_watch() cannot be called from an active event loop; await the async API")
+    raise RuntimeError(
+        "run_matched_watch() cannot be called from an active event loop; await the async API"
+    )
 
 
-def _event_rows(receipt: MatchedWatchReceipt, arm: ArmReceipt) -> tuple[list[dict[str, Any]], list[str]]:
+def _reconstruct_matched_watch(path: str | Path) -> MatchedWatchReceipt:
+    """Run synchronous validation even when its caller already owns an event loop."""
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return run_matched_watch(path)
+    with ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix="percept-receipt-reconstruction",
+    ) as executor:
+        return executor.submit(lambda: asyncio.run(run_matched_watch_async(path))).result()
+
+
+def _event_rows(
+    receipt: MatchedWatchReceipt, arm: ArmReceipt
+) -> tuple[list[dict[str, Any]], list[str]]:
     events: list[dict[str, Any]] = []
     fire_ids: list[str] = []
     known_incidents = {item["id"]: item for item in arm.incidents}
@@ -3490,9 +3499,7 @@ def _validate_v2_arm_reconstruction(
             expected_admission_by_goal[admitted_goal] = (
                 expected_admission_by_goal.get(admitted_goal, 0) + 1
             )
-            expected_admission_by_cause[cause] = (
-                expected_admission_by_cause.get(cause, 0) + 1
-            )
+            expected_admission_by_cause[cause] = expected_admission_by_cause.get(cause, 0) + 1
             if cause == "fixed":
                 fixed_opportunities += 1
         cause_set = set(causes)
@@ -3507,9 +3514,7 @@ def _validate_v2_arm_reconstruction(
             health_cause = "coast"
         else:
             _fail(f"{arm.arm} admitted candidate has no reconstructable admission cause")
-        expected_escalations.append(
-            (candidate.t, {"source": source_id, "cause": health_cause})
-        )
+        expected_escalations.append((candidate.t, {"source": source_id, "cause": health_cause}))
 
     stats = _thaw(arm.runtime_stats)
     exact_stats = {
@@ -3574,6 +3579,21 @@ def _validate_v2_arm_reconstruction(
         f"{arm.arm} escalation health does not reconstruct from edge admissions",
     )
     source_frames = [item for item in arm.traces if item["stage"] == "source.frame"]
+    edge_traces = [item for item in arm.traces if item["stage"] == "edge.decision"]
+    _require(
+        [_thaw(item) for item in edge_traces]
+        == [
+            {
+                "trace_id": f"{source_id}@{candidate.t}",
+                "stage": "edge.decision",
+                "t": candidate.t,
+                "goal_id": None,
+                "data": _thaw(candidate.edge_decision),
+            }
+            for candidate in candidates
+        ],
+        f"{arm.arm} edge trace identity does not reconstruct from candidates",
+    )
     _require(
         [_thaw(item) for item in source_frames]
         == [
@@ -3590,9 +3610,7 @@ def _validate_v2_arm_reconstruction(
     )
     if route == "transition":
         transition_by_t = {
-            float(item["t"]): item
-            for item in arm.traces
-            if item["stage"] == "transition.decision"
+            float(item["t"]): item for item in arm.traces if item["stage"] == "transition.decision"
         }
         armed = False
         fired_latch = False
@@ -3618,9 +3636,7 @@ def _validate_v2_arm_reconstruction(
                         "outcome": "judge_degraded",
                         "strip_len": 0,
                         "enriched": False,
-                        "identity_policy": plan["explicit"].get(
-                            "Goal.state.identity_policy"
-                        ),
+                        "identity_policy": plan["explicit"].get("Goal.state.identity_policy"),
                         "latch_key": "scene",
                         "latch_key_source": "default_scene",
                         "focus_entity_id": None,
@@ -3680,9 +3696,7 @@ def _validate_v2_arm_reconstruction(
                     "outcome": outcome,
                     "strip_len": 0,
                     "enriched": False,
-                    "identity_policy": plan["explicit"].get(
-                        "Goal.state.identity_policy"
-                    ),
+                    "identity_policy": plan["explicit"].get("Goal.state.identity_policy"),
                     "latch_key": "scene",
                     "latch_key_source": "default_scene",
                     "focus_entity_id": None,
@@ -3698,15 +3712,11 @@ def _validate_v2_arm_reconstruction(
             threshold=float(effective["Settings.gate.threshold"]),
             max_keys=None,
             key_ttl_s=None,
-            require_false_first=bool(
-                effective["Settings.gate.require_false_first"]
-            ),
+            require_false_first=bool(effective["Settings.gate.require_false_first"]),
             refractory_s=float(effective["Settings.gate.refractory_s"]),
         )
         gate_by_t = {
-            float(item["t"]): item
-            for item in arm.traces
-            if item["stage"] == "gate.classified"
+            float(item["t"]): item for item in arm.traces if item["stage"] == "gate.classified"
         }
         hold_value = plan["explicit"].get("Goal.state.hold_s")
         hold_s = float(hold_value) if hold_value is not None else None
@@ -3733,9 +3743,7 @@ def _validate_v2_arm_reconstruction(
                 gate.fresh_min,
             )
             trace_reason = (
-                "verdict_not_satisfied"
-                if outcome.reason == "not_satisfied"
-                else outcome.reason
+                "verdict_not_satisfied" if outcome.reason == "not_satisfied" else outcome.reason
             )
             trace = _thaw(gate_by_t[candidate.t])
             _require(
@@ -3759,6 +3767,38 @@ def _validate_v2_arm_reconstruction(
                 },
                 f"{arm.arm} ordinary gate trace does not reconstruct from oracle/state",
             )
+
+    expected_trace_order: list[tuple[str, float, str | None]] = []
+    for candidate in candidates:
+        expected_trace_order.append(("edge.decision", candidate.t, None))
+        if not candidate.runtime_dispatched:
+            continue
+        expected_trace_order.extend([("source.frame", candidate.t, None)])
+        if route == "transition":
+            expected_trace_order.append(("transition.decision", candidate.t, goal_id))
+        else:
+            expected_trace_order.extend(
+                [
+                    ("judge.started", candidate.t, goal_id),
+                    ("judge.finished", candidate.t, goal_id),
+                    ("gate.classified", candidate.t, goal_id),
+                ]
+            )
+        if candidate.incident_ids:
+            expected_trace_order.append(("judgment.event", candidate.t, goal_id))
+        if route != "transition":
+            expected_trace_order.append(("shadow.fold", candidate.t, goal_id))
+        if candidate.incident_ids:
+            expected_trace_order.extend(
+                [
+                    ("incident.created", candidate.t, goal_id),
+                ]
+            )
+    _require(
+        [(str(item["stage"]), float(item["t"]), item["goal_id"]) for item in arm.traces]
+        == expected_trace_order,
+        f"{arm.arm} trace append order does not reconstruct from execution",
+    )
 
     expected_effective_config = {
         "fps": {
@@ -3793,16 +3833,11 @@ def _validate_v2_arm_reconstruction(
         revision=1,
     ).plan_hash
     dispatch_ordinals = {
-        candidate.index: ordinal
-        for ordinal, candidate in enumerate(dispatched, start=1)
+        candidate.index: ordinal for ordinal, candidate in enumerate(dispatched, start=1)
     }
     expected_incident_health: list[tuple[float, dict[str, Any]]] = []
-    judgment_traces = [
-        item for item in arm.traces if item["stage"] == "judgment.event"
-    ]
-    incident_traces = [
-        item for item in arm.traces if item["stage"] == "incident.created"
-    ]
+    judgment_traces = [item for item in arm.traces if item["stage"] == "judgment.event"]
+    incident_traces = [item for item in arm.traces if item["stage"] == "incident.created"]
     incident_by_id = {str(item["id"]): item for item in arm.incidents}
     for candidate in candidates:
         for incident_id in candidate.incident_ids:
@@ -3849,9 +3884,7 @@ def _validate_v2_arm_reconstruction(
                 f"{arm.arm} judgment trace does not reconstruct from its FIRE candidate",
             )
             matching_incident_traces = [
-                item
-                for item in incident_traces
-                if item["data"]["incident_id"] == incident_id
+                item for item in incident_traces if item["data"]["incident_id"] == incident_id
             ]
             _require(
                 len(matching_incident_traces) == 1
@@ -3886,6 +3919,33 @@ def _validate_v2_arm_reconstruction(
     _require(
         observed_incident_health == expected_incident_health,
         f"{arm.arm} incident health does not reconstruct from delivered Incidents",
+    )
+    expected_health_order: list[tuple[str, float | None]] = [
+        ("runtime_started", None),
+        ("judge_dispatch", None),
+        ("effective_config", None),
+    ]
+    incidents_by_candidate = {
+        candidate.index: len(candidate.incident_ids) for candidate in candidates
+    }
+    for candidate in admitted:
+        expected_health_order.append(("escalation", candidate.t))
+        expected_health_order.extend(
+            ("incident", candidate.t) for _ in range(incidents_by_candidate[candidate.index])
+        )
+    if candidates and not admitted:
+        expected_health_order.append(("zero_admission_coverage", None))
+    expected_health_order.append(("runtime_ended", None))
+    _require(
+        [
+            (
+                str(item["kind"]),
+                None if item["ts"] is None else float(item["ts"]),
+            )
+            for item in arm.health
+        ]
+        == expected_health_order,
+        f"{arm.arm} health append order does not reconstruct from execution",
     )
     ended = [item for item in arm.health if item["kind"] == "runtime_ended"]
     _require(
@@ -3954,7 +4014,9 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
     rendered = watch_template(template_ref, manifest["watch"]["parameters"]).to_dict()
     route = _plan_route(WatchPlan.from_dict(rendered))
     _require(rendered == _thaw(receipt.watch_plan), "receipt WatchPlan render mismatch")
-    _require(_canonical_sha(rendered) == receipt.watch_plan_sha256, "receipt WatchPlan identity mismatch")
+    _require(
+        _canonical_sha(rendered) == receipt.watch_plan_sha256, "receipt WatchPlan identity mismatch"
+    )
     _require(manifest["judge"] == _thaw(receipt.judge_identity), "receipt judge identity mismatch")
     _require(manifest["events"] == _thaw(receipt.event_windows), "receipt event windows mismatch")
     _require(
@@ -3968,7 +4030,9 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
         == {"package_version", "git_commit", "contract_version", "build_timestamp"},
         "receipt build provenance mismatch",
     )
-    _require(provenance == build_info().to_dict(), "receipt build provenance is not the active build")
+    _require(
+        provenance == build_info().to_dict(), "receipt build provenance is not the active build"
+    )
     if is_v2:
         _require(
             receipt.receipt_schema == _RECEIPT_SCHEMA_V2,
@@ -3977,8 +4041,7 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
         _require(
             set(receipt.authority_artifact_presence) == set(_AUTHORITY_NAMES)
             and all(
-                isinstance(value, bool)
-                for value in receipt.authority_artifact_presence.values()
+                isinstance(value, bool) for value in receipt.authority_artifact_presence.values()
             ),
             "receipt authority artifact presence has an invalid shape",
         )
@@ -4020,8 +4083,7 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
         )
         if is_v2:
             _require(
-                _thaw(arm.media_identity["decoder_identity"])
-                == _thaw(_decoder_identity()),
+                _thaw(arm.media_identity["decoder_identity"]) == _thaw(_decoder_identity()),
                 "arm decoder identity does not match the active reconstruction environment",
             )
         _require(arm.judge_identity == receipt.judge_identity, "arm judge identity mismatch")
@@ -4048,9 +4110,7 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
             "id": active_pack.id,
             "version": active_pack.version,
             "values": dict(active_pack.values),
-            "components": [
-                component.to_dict() for component in active_pack.components
-            ],
+            "components": [component.to_dict() for component in active_pack.components],
             "policy_clamps": dict(active_pack.policy_clamps),
         }
         _require(
@@ -4072,11 +4132,9 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
         )
         if is_v2:
             _require(
-                [item.source_sequence for item in candidates]
-                == list(range(len(candidates)))
+                [item.source_sequence for item in candidates] == list(range(len(candidates)))
                 and all(
-                    isinstance(item.frame_sha256, str)
-                    and item.frame_sha256.startswith("sha256:")
+                    isinstance(item.frame_sha256, str) and item.frame_sha256.startswith("sha256:")
                     for item in candidates
                 ),
                 "real-video candidate source sequence/frame identity is incomplete",
@@ -4114,9 +4172,7 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
         _require(
             _thaw(started[0]["data"])
             == {
-                "source_kind": (
-                    "real_video_offline_oracle" if is_v2 else "synthetic_video"
-                ),
+                "source_kind": ("real_video_offline_oracle" if is_v2 else "synthetic_video"),
                 "media": _thaw(arm.media_identity),
                 "replay": _thaw(arm.replay_identity),
                 "candidate_count": len(candidates),
@@ -4197,9 +4253,7 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
             "FIRE/ASK decisions disagree with runtime stats and outputs",
         )
         for candidate in dispatched:
-            failed_calls = [
-                call for call in candidate.provider_calls if call.status != "success"
-            ]
+            failed_calls = [call for call in candidate.provider_calls if call.status != "success"]
             has_error = bool(failed_calls)
             _require(
                 (candidate.decision == "missing") == has_error,
@@ -4207,10 +4261,7 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
             )
             _require(
                 len(failed_calls) <= 1
-                and (
-                    not failed_calls
-                    or candidate.provider_calls[-1] is failed_calls[0]
-                ),
+                and (not failed_calls or candidate.provider_calls[-1] is failed_calls[0]),
                 "one failed Watch predicate must short-circuit the remaining predicate calls",
             )
             _require(
@@ -4240,9 +4291,7 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
             and ended_data["incidents"] == arm.runtime_stats["incidents"],
             "runtime_ended health disagrees with RuntimeStats",
         )
-        zero_admission = [
-            item for item in arm.health if item["kind"] == "zero_admission_coverage"
-        ]
+        zero_admission = [item for item in arm.health if item["kind"] == "zero_admission_coverage"]
         expects_zero_admission = (
             arm.runtime_stats["frames"] > 0 and arm.runtime_stats["escalations"] == 0
         )
@@ -4259,24 +4308,18 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
                 "zero_admission_coverage must immediately precede runtime_ended",
             )
             zero_data = _thaw(zero_admission[0]["data"])
-            shared = {
-                key: zero_data[key]
-                for key in _RUNTIME_ENDED_DATA_KEYS
-            }
+            shared = {key: zero_data[key] for key in _RUNTIME_ENDED_DATA_KEYS}
             _require(
                 shared == _thaw(ended_data),
                 "zero_admission_coverage counters/source coverage disagree with runtime_ended",
             )
-            expected_threshold = float(
-                arm.source_profile["parameters"]["salience_threshold"]
-            )
+            expected_threshold = float(arm.source_profile["parameters"]["salience_threshold"])
             expected_stat = arm.source_profile["parameters"]["salience_stat"]
             compiled_threshold = arm.compiled_binding["watchspec_kwargs"]["stat_thresholds"][
                 expected_stat
             ]
             _require(
-                float(zero_data["threshold"]) == expected_threshold
-                == float(compiled_threshold)
+                float(zero_data["threshold"]) == expected_threshold == float(compiled_threshold)
                 and zero_data["stat"] == expected_stat,
                 "zero_admission_coverage threshold/stat disagree with the effective "
                 "SourceProfile/compiled binding",
@@ -4290,8 +4333,7 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
                 isinstance(zero_data["floor_unmet"], bool)
                 and zero_data["floor_unmet"]
                 == (
-                    coverage_floor is not None
-                    and arm.runtime_stats["escalations"] < coverage_floor
+                    coverage_floor is not None and arm.runtime_stats["escalations"] < coverage_floor
                 ),
                 "zero_admission_coverage floor state is inconsistent",
             )
@@ -4304,7 +4346,8 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
         _require(len(effective) == 1, "effective_config health record is missing or duplicated")
         _require(
             float(effective[0]["data"]["fps"]["requested_fps"]) == arm.replay_identity["fps"]
-            and effective[0]["data"]["video_timebase"]["resolved"] == arm.replay_identity["timebase"],
+            and effective[0]["data"]["video_timebase"]["resolved"]
+            == arm.replay_identity["timebase"],
             "observed effective config disagrees with replay identity",
         )
 
@@ -4331,11 +4374,10 @@ def _validate_receipt(receipt: MatchedWatchReceipt) -> None:
         manifest_artifact = next(
             item for item in receipt.input_artifacts if item["role"] == "manifest"
         )
-        reconstructed_execution = run_matched_watch(manifest_artifact["path"])
+        reconstructed_execution = _reconstruct_matched_watch(manifest_artifact["path"])
         _require(
             reconstructed_execution.content_sha256 == receipt.content_sha256,
-            "v2 receipt deterministic execution claims do not reconstruct "
-            "from the closed inputs",
+            "v2 receipt deterministic execution claims do not reconstruct from the closed inputs",
         )
 
 
@@ -4345,7 +4387,9 @@ def derive_viability_rows(receipt: MatchedWatchReceipt) -> tuple[dict[str, Any],
     if receipt.receipt_schema == _RECEIPT_SCHEMA_V2:
         _revalidate_v2_input_artifacts(receipt)
     _validate_receipt(receipt)
-    _require(receipt.evidence_classification in _EVIDENCE_CLASSES, "unsupported evidence classification")
+    _require(
+        receipt.evidence_classification in _EVIDENCE_CLASSES, "unsupported evidence classification"
+    )
     manifest_media = _object(receipt.manifest.get("media"), "receipt.manifest.media")
     _require(
         manifest_media.get("sha256") == receipt.media_input_receipt.get("sha256"),
@@ -4360,7 +4404,10 @@ def derive_viability_rows(receipt: MatchedWatchReceipt) -> tuple[dict[str, Any],
         "receipt judge identity does not match its manifest",
     )
     manifest_events = _thaw(receipt.manifest.get("events"))
-    _require(manifest_events == _thaw(receipt.event_windows), "receipt event windows do not match manifest")
+    _require(
+        manifest_events == _thaw(receipt.event_windows),
+        "receipt event windows do not match manifest",
+    )
     recomputed_blockers = validate_matched_arms(
         receipt.baseline,
         receipt.adaptive,
@@ -4393,9 +4440,7 @@ def derive_viability_rows(receipt: MatchedWatchReceipt) -> tuple[dict[str, Any],
         )
         incident_ids = {str(item["id"]) for item in arm.incidents}
         candidate_incident_ids = {
-            incident_id
-            for candidate in arm.candidates
-            for incident_id in candidate.incident_ids
+            incident_id for candidate in arm.candidates for incident_id in candidate.incident_ids
         }
         _require(
             incident_ids == candidate_incident_ids,
@@ -4420,11 +4465,7 @@ def derive_viability_rows(receipt: MatchedWatchReceipt) -> tuple[dict[str, Any],
                 (candidate.decision == "fire") == bool(candidate.incident_ids),
                 "candidate decision and incident links disagree",
             )
-        observed_calls = [
-            call
-            for candidate in arm.candidates
-            for call in candidate.provider_calls
-        ]
+        observed_calls = [call for candidate in arm.candidates for call in candidate.provider_calls]
         _require(
             [call.sequence for call in observed_calls] == list(range(1, len(observed_calls) + 1)),
             "provider call sequence is incomplete or reordered",
@@ -4433,13 +4474,11 @@ def derive_viability_rows(receipt: MatchedWatchReceipt) -> tuple[dict[str, Any],
             if candidate.runtime_dispatched:
                 _require(candidate.admitted, "runtime dispatched a non-admitted candidate")
                 _require(
-                    [call.predicate for call in candidate.provider_calls]
-                    == expected_predicates,
+                    [call.predicate for call in candidate.provider_calls] == expected_predicates,
                     "Watch dispatch does not carry its exact predicate calls",
                 )
                 _require(
-                    [call.condition_sha256 for call in candidate.provider_calls]
-                    == expected_hashes,
+                    [call.condition_sha256 for call in candidate.provider_calls] == expected_hashes,
                     "provider condition hashes do not match the WatchPlan",
                 )
                 _require(
@@ -4553,8 +4592,7 @@ def _revalidate_v2_input_artifacts(receipt: MatchedWatchReceipt) -> None:
     )
     for name in _AUTHORITY_NAMES:
         _require(
-            receipt.authority_artifact_presence[name]
-            == (f"authority:{name}" in by_role),
+            receipt.authority_artifact_presence[name] == (f"authority:{name}" in by_role),
             f"receipt authority artifact presence disagrees for {name!r}",
         )
     reconstructed = load_matched_watch_manifest(by_role["manifest"]["path"])
@@ -4567,9 +4605,7 @@ def _revalidate_v2_input_artifacts(receipt: MatchedWatchReceipt) -> None:
         == _thaw(receipt.authority_artifact_presence),
         "receipt no longer reconstructs from its closed real-video manifest and corpus",
     )
-    oracle_by_sequence = {
-        item.index: item for item in reconstructed.oracle_frames
-    }
+    oracle_by_sequence = {item.index: item for item in reconstructed.oracle_frames}
     _require(
         len(oracle_by_sequence) == len(reconstructed.oracle_frames),
         "reconstructed offline oracle contains duplicate source sequences",
@@ -4590,8 +4626,7 @@ def _revalidate_v2_input_artifacts(receipt: MatchedWatchReceipt) -> None:
                 for candidate in arm.candidates
             ]
             == [
-                (frame.index, frame.t, frame.frame_sha256)
-                for frame in reconstructed.oracle_frames
+                (frame.index, frame.t, frame.frame_sha256) for frame in reconstructed.oracle_frames
             ],
             f"{arm.arm} decoded candidate evidence disagrees with the frozen offline oracle",
         )
@@ -4635,8 +4670,7 @@ def _revalidate_v2_input_artifacts(receipt: MatchedWatchReceipt) -> None:
                 if verdict.error is not None:
                     break
             _require(
-                [call.to_dict() for call in candidate.provider_calls]
-                == expected_calls,
+                [call.to_dict() for call in candidate.provider_calls] == expected_calls,
                 f"{arm.arm} provider calls disagree with the frozen offline oracle",
             )
 

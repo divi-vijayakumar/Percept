@@ -366,7 +366,14 @@ def test_v1_synthetic_manifest_remains_portable_without_dir_fd_open(
 
 @pytest.mark.parametrize(
     "attack",
-    ["duplicate_media", "group_leakage", "path_escape", "oracle_tamper", "media_symlink", "media_hardlink"],
+    [
+        "duplicate_media",
+        "group_leakage",
+        "path_escape",
+        "oracle_tamper",
+        "media_symlink",
+        "media_hardlink",
+    ],
 )
 def test_real_manifest_structure_and_artifacts_fail_closed(tmp_path, attack):
     case_root = tmp_path / "case"
@@ -445,12 +452,8 @@ def test_real_arms_decode_the_same_frozen_mp4_independently(tmp_path, monkeypatc
     assert opens == 2
     assert queue_bounds == [64, 64]
     assert [
-        (item.source_sequence, item.t, item.frame_sha256)
-        for item in receipt.baseline.candidates
-    ] == [
-        (item.source_sequence, item.t, item.frame_sha256)
-        for item in receipt.adaptive.candidates
-    ]
+        (item.source_sequence, item.t, item.frame_sha256) for item in receipt.baseline.candidates
+    ] == [(item.source_sequence, item.t, item.frame_sha256) for item in receipt.adaptive.candidates]
 
 
 def test_decoder_absence_fails_loudly_with_runtime_install_guidance(tmp_path, monkeypatch):
@@ -641,9 +644,7 @@ def test_run_fails_if_oracle_changes_between_independent_arms(tmp_path, monkeypa
         result = await original(manifest, plan, arm)
         if arm == "baseline":
             oracle = next(
-                Path(item["path"])
-                for item in manifest.input_artifacts
-                if item["role"] == "oracle"
+                Path(item["path"]) for item in manifest.input_artifacts if item["role"] == "oracle"
             )
             oracle.write_bytes(oracle.read_bytes() + b"\n")
         return result
@@ -778,11 +779,7 @@ def test_v2_runtime_counters_must_reconstruct_from_candidates(
 def test_v2_judgment_action_must_reconstruct_from_fire_candidate(tmp_path):
     receipt = run_matched_watch(_write_real_case(tmp_path))
     traces = list(receipt.baseline.traces)
-    index = next(
-        index
-        for index, trace in enumerate(traces)
-        if trace["stage"] == "judgment.event"
-    )
+    index = next(index for index, trace in enumerate(traces) if trace["stage"] == "judgment.event")
     traces[index] = {
         **traces[index],
         "data": {**traces[index]["data"], "action": "ask"},
@@ -799,9 +796,7 @@ def test_v2_judgment_action_must_reconstruct_from_fire_candidate(tmp_path):
 def test_v2_escalation_health_must_reconstruct_from_edge_admission(tmp_path):
     receipt = run_matched_watch(_write_real_case(tmp_path))
     health = list(receipt.baseline.health)
-    index = next(
-        index for index, event in enumerate(health) if event["kind"] == "escalation"
-    )
+    index = next(index for index, event in enumerate(health) if event["kind"] == "escalation")
     health[index] = {
         **health[index],
         "data": {**health[index]["data"], "cause": "forged-cause"},
@@ -828,6 +823,78 @@ def test_v2_incident_message_must_reconstruct_from_compiled_watch(tmp_path):
         derive_viability_rows(forged)
 
 
+def test_v2_edge_trace_outer_identity_must_reconstruct_from_candidate(tmp_path):
+    receipt = run_matched_watch(_write_real_case(tmp_path))
+    traces = list(receipt.baseline.traces)
+    index = next(index for index, trace in enumerate(traces) if trace["stage"] == "edge.decision")
+    traces[index] = {
+        **traces[index],
+        "trace_id": "caller-forged-edge-coordinate",
+        "goal_id": "caller-forged-goal",
+    }
+    forged = _reseal(
+        receipt,
+        baseline=replace(receipt.baseline, traces=tuple(traces)),
+    )
+
+    with pytest.raises(MatchedWatchInputError, match="edge|trace|identity|coordinate|goal"):
+        derive_viability_rows(forged)
+
+
+def test_v2_global_trace_append_order_must_reconstruct_from_execution(tmp_path):
+    receipt = run_matched_watch(_write_real_case(tmp_path))
+    traces = list(receipt.baseline.traces)
+    source_index = next(
+        index for index, trace in enumerate(traces) if trace["stage"] == "source.frame"
+    )
+    transition_index = next(
+        index
+        for index, trace in enumerate(traces)
+        if trace["stage"] == "transition.decision" and trace["t"] == traces[source_index]["t"]
+    )
+    traces[source_index], traces[transition_index] = (
+        traces[transition_index],
+        traces[source_index],
+    )
+    forged = _reseal(
+        receipt,
+        baseline=replace(receipt.baseline, traces=tuple(traces)),
+    )
+
+    with pytest.raises(MatchedWatchInputError, match="trace|order|execution|append"):
+        derive_viability_rows(forged)
+
+
+def test_v2_health_append_order_must_reconstruct_from_execution(tmp_path):
+    receipt = run_matched_watch(_write_real_case(tmp_path))
+    health = list(receipt.baseline.health)
+    ended_index = next(
+        index for index, event in enumerate(health) if event["kind"] == "runtime_ended"
+    )
+    ended = health.pop(ended_index)
+    health.insert(0, ended)
+    forged = _reseal(
+        receipt,
+        baseline=replace(receipt.baseline, health=tuple(health)),
+    )
+
+    with pytest.raises(MatchedWatchInputError, match="health|order|runtime|execution|append"):
+        derive_viability_rows(forged)
+
+
+def test_v2_rows_can_be_derived_inside_an_active_event_loop(tmp_path):
+    manifest_path = _write_real_case(tmp_path)
+
+    async def exercise():
+        receipt = await matched_watch_module.run_matched_watch_async(manifest_path)
+        return derive_viability_rows(receipt)
+
+    baseline, adaptive = asyncio.run(exercise())
+
+    assert baseline["arm"] == "baseline"
+    assert adaptive["arm"] == "adaptive"
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -843,9 +910,7 @@ def test_v2_transition_verdict_trace_must_reconstruct_from_oracle_call(
     receipt = run_matched_watch(_write_real_case(tmp_path))
     traces = list(receipt.baseline.traces)
     index = next(
-        index
-        for index, trace in enumerate(traces)
-        if trace["stage"] == "transition.decision"
+        index for index, trace in enumerate(traces) if trace["stage"] == "transition.decision"
     )
     traces[index] = {
         **traces[index],
@@ -864,9 +929,7 @@ def test_v2_transition_trace_identity_must_reconstruct_from_dispatch(tmp_path):
     receipt = run_matched_watch(_write_real_case(tmp_path))
     traces = list(receipt.baseline.traces)
     index = next(
-        index
-        for index, trace in enumerate(traces)
-        if trace["stage"] == "transition.decision"
+        index for index, trace in enumerate(traces) if trace["stage"] == "transition.decision"
     )
     traces[index] = {
         **traces[index],
@@ -886,9 +949,7 @@ def test_v2_transition_latch_state_must_reconstruct_from_oracle_sequence(tmp_pat
     receipt = run_matched_watch(_write_real_case(tmp_path))
     traces = list(receipt.baseline.traces)
     index = next(
-        index
-        for index, trace in enumerate(traces)
-        if trace["stage"] == "transition.decision"
+        index for index, trace in enumerate(traces) if trace["stage"] == "transition.decision"
     )
     traces[index] = {
         **traces[index],
@@ -916,11 +977,7 @@ def test_v2_ordinary_gate_trace_must_reconstruct_from_oracle_and_gate(tmp_path):
         )
     )
     traces = list(receipt.baseline.traces)
-    index = next(
-        index
-        for index, trace in enumerate(traces)
-        if trace["stage"] == "gate.classified"
-    )
+    index = next(index for index, trace in enumerate(traces) if trace["stage"] == "gate.classified")
     traces[index] = {
         **traces[index],
         "data": {
@@ -941,9 +998,7 @@ def test_v2_ordinary_gate_trace_must_reconstruct_from_oracle_and_gate(tmp_path):
 def test_v2_runtime_ended_counters_must_reconstruct_from_candidates(tmp_path):
     receipt = run_matched_watch(_write_real_case(tmp_path))
     health = list(receipt.baseline.health)
-    index = next(
-        index for index, event in enumerate(health) if event["kind"] == "runtime_ended"
-    )
+    index = next(index for index, event in enumerate(health) if event["kind"] == "runtime_ended")
     health[index] = {
         **health[index],
         "data": {
@@ -982,11 +1037,7 @@ def test_v2_runtime_effective_config_must_reconstruct_from_compiled_replay(tmp_p
 def test_v2_source_frame_identity_must_reconstruct_from_dispatch(tmp_path):
     receipt = run_matched_watch(_write_real_case(tmp_path))
     traces = list(receipt.baseline.traces)
-    index = next(
-        index
-        for index, trace in enumerate(traces)
-        if trace["stage"] == "source.frame"
-    )
+    index = next(index for index, trace in enumerate(traces) if trace["stage"] == "source.frame")
     traces[index] = {**traces[index], "trace_id": "caller-forged@0.0"}
     forged = _reseal(
         receipt,
