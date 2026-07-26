@@ -414,7 +414,7 @@ class EnergyFreshnessTests(unittest.TestCase):
 
 
 class StaleGuardRevalidationTests(unittest.TestCase):
-    """Re-validation (post-A2 clock flip): the ``stale_audio_s`` VAD guard compares a delta-of-deltas
+    """After monotonic-clock unification, the ``stale_audio_s`` VAD guard compares a delta-of-deltas
     ((wall-elapsed) - (stream-elapsed) since the first chunk), which is magnitude-robust to the absolute
     value of the chunk timestamp. It must NOT false-fire on a healthy real-time pump."""
 
@@ -434,7 +434,7 @@ class StaleGuardRevalidationTests(unittest.TestCase):
                 on_health=lambda e: health.append(e.kind))
 
         asyncio.run(go())
-        self.assertEqual(len(heard), 1, "a healthy utterance still endpoints post-A2")
+        self.assertEqual(len(heard), 1, "a healthy utterance still endpoints after clock unification")
         self.assertNotIn("audio_stale", health, "a healthy real-time pump must not false-fire audio_stale")
 
 

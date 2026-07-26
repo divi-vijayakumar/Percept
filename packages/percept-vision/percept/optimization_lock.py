@@ -5,7 +5,7 @@ as "a validated, hashed selection of tunables an optimizer previously proved saf
 by hand... new — not yet in code" and assigns it a precedence slot between ``ExecutionPolicy`` and
 ``Deployment``. :mod:`percept.resolver` previously carried a MINIMAL placeholder (``id``/``version``/
 ``values``/``locked_hash`` only — "the precedence chain is real and testable now; its full contract
-(optimizer validation logic) is a later card's scope, deliberately not built here"). This module now
+(optimizer validation logic) was deliberately not built there"). This module now
 OWNS that class (mirroring :class:`percept.domain_pack.DomainPack` / :class:`percept.execution_policy.
 ExecutionPolicy`'s own earlier graduation out of the same placeholder set); :mod:`percept.resolver`
 imports it from here and still owns the two enforcement gates that depend on the tunables registry
@@ -41,7 +41,7 @@ from typing import Any, Mapping
 from .tracing import content_hash
 
 #: Schema id + version stamped into a lock's on-disk/wire JSON (``percept optimize --out-lock``) —
-#: ADR-008's own version ledger: "lock schema... set by the card that ships OptimizationLock".
+#: ADR-008's version ledger assigns this schema to the OptimizationLock implementation.
 LOCK_SCHEMA = "percept.optimization_lock/1"
 LOCK_SCHEMA_VERSION = 1
 

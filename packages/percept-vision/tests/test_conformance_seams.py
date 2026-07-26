@@ -10,7 +10,7 @@ judge, in the SAME reporting shape:
 
 Same two directions as the Vision suite, both load-bearing: it passes what conforms (every shipping
 detector), and it FAILS what does not — one deliberately broken plug-in per invariant, because a
-conformance suite that only ever passes is theatre. Plus the standing rule the whole card rests on:
+conformance suite that only ever passes is theatre. The standing rule for this suite is:
 the honest scope disclaimer is on EVERY report, for EVERY role.
 """
 
@@ -127,7 +127,7 @@ class TestDetectorFailsWhatDoesNot(unittest.TestCase):
 
     def test_unroutable_signal_channel_fails(self):
         # `signal = "change"` is not one of motion/energy/frame; DetectorBank would silently route it
-        # to MOTION. That silence is exactly the production failure this card exists to prevent.
+        # to MOTION. That silence is exactly the production failure this suite prevents.
         report = _check(GoodDetector)
         self.assertFails(report, "detector.signal_channel_is_routable")
         self.assertFalse(report.ok)

@@ -160,7 +160,7 @@ A higher-precedence object's value wins **only for fields it owns** (see the own
 promotion to the top of the chain.
 
 **Two tested consequences**, both direct readings of the ordering above and both to be pinned by
-tests in the card that ships `ConfigResolver`:
+tests in the `ConfigResolver` implementation:
 
 1. **Env beats profile defaults.** A `DeploymentConfig`-owned value (including a `PERCEPT_*` env
    var) outranks the same field's `SourceProfile`/`DomainPack`/`ExecutionPolicy` default, because
@@ -231,9 +231,9 @@ Conflating any two of them is a bug class this ledger exists to name:
 | `WATCH_VERSION` | `watch()`'s public API surface — signature + streaming semantics | `1.0.0` | MAJOR on a breaking signature/streaming change; MINOR for an additive kwarg (e.g. the goals-widening card held this at `1.0.0` because the change was additive) |
 | `CONTRACT_VERSION` | DTO shapes across `percept.contracts` (the frozen membrane) | `1.6.0` | MAJOR on a breaking frozen-shape change; MINOR per additive batch (new optional field/DTO); PATCH for docs-only |
 | `WatchSpec.version` | the edge wire schema integer | `1` | unchanged by this ADR; `WatchSpec` is explicitly out of scope (§I/O contract) |
-| pack manifest schema | `DomainPack`'s on-disk/wire shape | `v1` (prospective — `DomainPack` does not exist in code yet) | set by the card that ships `DomainPack` |
-| lock schema | `OptimizationLock`'s on-disk/wire shape | `v1` (prospective — `OptimizationLock` does not exist in code yet) | set by the card that ships `OptimizationLock` |
-| tunables artifact schema | `tunables.json`'s `schema_version` | `1` (ships with this card, C0) | bump on any change to the `TunableSpec` shape itself |
+| pack manifest schema | `DomainPack`'s on-disk/wire shape | `v1` (prospective — `DomainPack` does not exist in code yet) | set by the `DomainPack` implementation |
+| lock schema | `OptimizationLock`'s on-disk/wire shape | `v1` (prospective — `OptimizationLock` does not exist in code yet) | set by the `OptimizationLock` implementation |
+| tunables artifact schema | `tunables.json`'s `schema_version` | `1` | bump on any change to the `TunableSpec` shape itself |
 
 ## Invariants
 
@@ -277,12 +277,12 @@ regression, whatever it resolves to:
 
 **Costs / accepted risks**
 
-- Four of the six objects, `ConfigResolver`, and `RuntimeCompiler` ship in later cards against this
+- Four of the six objects, `ConfigResolver`, and `RuntimeCompiler` are follow-on implementations of this
   contract; until then this ADR is a binding target, not a description of running code, and a reader
   of `percept/` alone will not find `DomainPack`/`ExecutionPolicy`/`DeploymentConfig`/`WatchPlan`/
   `OptimizationLock`.
 - The "coverage floor" field's owning object is not fixed by this ADR (see §Corrections(b)) —
-  left as an open question for the card that resolves it, rather than guessed here.
+  left as an open question for the resolver implementation rather than guessed here.
 - `Settings`/`load_settings()` continues to play `DeploymentConfig`'s role informally until that
   object ships; this ADR does not require an immediate migration, only that new deployment-shaped
   fields be added with this ownership model in mind.
@@ -291,10 +291,10 @@ regression, whatever it resolves to:
 
 1. **Which object owns a coverage-floor field?** `SourceProfile` (per-source-class default) and
    `ExecutionPolicy` (per-deployment posture) are both plausible owners; `tunables.json` marks this
-   knob `owner: "unclassified"` pending that card's decision (see the implementer's report for C0).
+   knob `owner: "unclassified"` pending an explicit ownership decision.
 2. **Does `ConfigResolver` construct once per `watch()` call or once per process?** A per-call
    resolve keeps provenance fresh against a changing `DeploymentConfig`/env; a per-process resolve is
-   cheaper. Deferred to the card that ships `ConfigResolver`.
+   cheaper. Deferred until `ConfigResolver` is implemented.
 3. **How does an `OptimizationLock` hash mismatch surface to the caller** — an exception, a
    `WatchEvent`-adjacent diagnostic, or a `percept doctor` finding? `percept/doctor.py`'s findings
    vocabulary is the likely home (consistent with `ADMISSION_SIGNAL_UNTUNED`), but not fixed here.

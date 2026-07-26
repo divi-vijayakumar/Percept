@@ -17,7 +17,7 @@ SCAFFOLD-ONLY (Viability phase, gated on bars-locked before any for-record run):
 existing, already-landed primitives under a REAL concurrent asyncio race (multiple in-flight
 ``FakeJudge.judge()`` coroutines with different per-call latency, driven through ``asyncio.gather`` so
 completion order is decided by actual awaited time, not by program call order) — not a simulated
-timeline. No source file is edited by this card; this is the only file it creates.
+timeline. This is a standalone scaffold and edits no product source.
 
 Reuses (imported, never edited):
   * ``percept.sequencing.{EvidenceSequencer, GateDecision, ResultPolicy, SerializedDecisionReducer}`` — the sequencing + serialized-reducer mechanism under test.

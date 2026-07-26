@@ -58,11 +58,24 @@ _PUBLIC_CONTEXT_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
         r"\b" + "board" + r"\s+" + "card" + r"\b",
+        r"\b" + "board" + r"\s+the\s+" + "impl" + r"(?:ementation)?\b",
         r"\b"
         + "card"
         + r"\s+(?:(?-i:[A-Z]{1,3})\d{1,3}[A-Za-z]{0,2}|(?-i:RB-"
         + "OFFLINE"
         + r"))\b",
+        r"\b(?:this|that|whole|separate|later|future|follow[- ]?up|sibling|"
+        + "impl"
+        + r"(?:ementation)?)\s+"
+        + "card"
+        + r"(?:['’]s|s)?\b",
+        r"\b"
+        + "card"
+        + r"['’]s\s+(?:scope|problem|reuse|file|decision|contract|work|concern)\b",
+        r"\b"
+        + "card"
+        + r"\s+(?:exists|must|wires?|builds?|ships?|resolves?|consumes?|forbids?|owns?|"
+        r"that\s+(?:builds?|ships?|resolves?|consumes?))\b",
         r"\b" + "found" + "er" + r"\s+(?:decision|sign[- ]?off)\b",
         r"\b" + "found" + "er" + r"(?:['’]s)?\b",
         r"\b" + "paying" + r"\s+(?:client|customer)(?:\s+teams?)?\b",
@@ -114,7 +127,8 @@ _COMPACT_CONTEXT_PATTERNS = tuple(
     re.compile(pattern)
     for pattern in (
         r"\b[Cc]ards?\s+(?:" + _OPAQUE_ID_LIST + r")",
-        r"\bpre-(?:" + _OPAQUE_ID + r")\b",
+        r"\b(?:pre|post)-(?:" + _OPAQUE_ID + r")\b",
+        r"\bpending\s+(?:" + _OPAQUE_ID + r")\b",
         r"\b(?:" + _OPAQUE_ID + r")(?:/(?:" + _OPAQUE_ID + r"))+\b",
         r"\bADR-\d{3}/(?:" + _OPAQUE_ID + r")\b",
         r"\((?:" + _OPAQUE_ID + r")\)",
@@ -124,6 +138,7 @@ _COMPACT_CONTEXT_PATTERNS = tuple(
         r"\b(?:" + _OPAQUE_ID + r")(?:['’]s)\b",
         r"\b(?:the|per)\s+(?:" + _OPAQUE_ID + r")\b",
         r"\b(?:before|after|until|from)\s+(?:" + _OPAQUE_ID + r")\b",
+        r"\b(?:" + _OPAQUE_ID + r")\s+coordination\s+note\b",
         r"\b(?:"
         + _OPAQUE_ID
         + r")\s+(?:frozen|claim|judgment|shadow|correlation|resolver|clip|tier-0|"
@@ -249,6 +264,9 @@ def test_public_tree_scope_is_the_git_index():
         "the " + "Z" + "3 judgment envelope",
         "ADR-005/" + "M" + "2",
         "// " + "D" + "11: correlation handle",
+        "pending " + "A" + "30",
+        "post-" + "A" + "30",
+        "module docstring's " + "A" + "30 coordination note",
     ),
 )
 def test_compact_internal_reference_forms_are_rejected(text: str, tmp_path: Path):
@@ -270,6 +288,30 @@ def test_legitimate_compact_technical_identifiers_are_allowed(text: str, tmp_pat
     path = tmp_path / "public.md"
     path.write_text(text, encoding="utf-8")
     assert not _context_hits(path), text
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "board the " + "implementation",
+        "this " + "card" + "'s reuse list",
+        "implementation " + "card" + "'s problem",
+        "the whole " + "card",
+        "a separate " + "card",
+        "later " + "cards",
+        "the " + "card" + " that builds this",
+    ),
+)
+def test_generic_internal_planning_narratives_are_rejected(text: str, tmp_path: Path):
+    path = tmp_path / "public.md"
+    path.write_text(text, encoding="utf-8")
+    assert _context_hits(path), text
+
+
+def test_public_benchmark_card_language_is_allowed(tmp_path: Path):
+    path = tmp_path / "public.md"
+    path.write_text("a benchmark card that renders DRAFT", encoding="utf-8")
+    assert not _context_hits(path)
 
 
 def test_source_files_were_discovered():

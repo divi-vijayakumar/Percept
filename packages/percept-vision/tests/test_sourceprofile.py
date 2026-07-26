@@ -244,7 +244,7 @@ def test_screen_document_notes_carry_the_measured_evidence_not_a_guess():
 
 
 def test_the_measured_thresholds_were_not_lowered_to_make_screen_admit():
-    # The one thing this card must never do. screen_document's tuned default is the SAME calibrated
+    # The profile must never lower this value. screen_document's tuned default is the SAME calibrated
     # cutoff physical_scene carries, never a lowered one invented to force this fixture to admit.
     assert PHYSICAL_SCENE.parameters["salience_threshold"] == 0.20
     assert SCREEN_DOCUMENT.parameters["salience_threshold"] == 0.20

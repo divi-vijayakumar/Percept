@@ -130,7 +130,7 @@ class NoCapsuleGoalsByteForByteTests(unittest.TestCase):
 
 class PlanModesExcludesEventCapsuleTests(unittest.TestCase):
     """``PLAN_MODES`` — the vocabulary a resolved ``WatchProfile.plan_mode`` is validated against —
-    still excludes ``event_capsule``; this card wires the agent-side rank rung, not the profile fence."""
+    still excludes ``event_capsule``; this suite covers the agent-side rank rung, not the profile fence."""
 
     def test_plan_modes_excludes_event_capsule(self):
         self.assertNotIn("event_capsule", PLAN_MODES)

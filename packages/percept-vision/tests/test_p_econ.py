@@ -24,7 +24,7 @@ Reuses (imported, never edited):
     this file.
 
 **What "admit policy" means in this scaffold.** Real tier-0 (VID) admission is a visual-change/ROI
-detector (``percept/harness/tier0.py``) — NOT in this card's reuse list, so it is not imported or
+detector (``percept/harness/tier0.py``) — outside this scaffold's reuse list, so it is not imported or
 reimplemented here. Instead, each synthetic candidate episode below carries a fixed, deterministic
 "VID salience" score in ``[0, 1]``, and "the admit policy" is a single swept threshold: a candidate
 is admitted to the judge iff ``salience >= threshold``. This is the minimum stand-in that lets the

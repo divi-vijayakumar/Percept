@@ -171,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
         for mod in tracks:
             try:
                 results.append(mod.score(live=args.live, n=args.n))
-            except Exception as exc:  # a track failure must not sink the whole card
+            except Exception as exc:  # A track failure must not sink the whole benchmark report.
                 from .types import TrackResult
                 results.append(TrackResult(track=getattr(mod, "TRACK", mod.__name__),
                                            notes=f"FAILED: {type(exc).__name__}: {exc}",

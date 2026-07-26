@@ -11,7 +11,7 @@ proves capsule assembly spends nothing):
      result survives the existing :class:`~percept.evidence.EvidenceStore` retention mechanism (no new
      store).
   3. The four PRE-EXISTING Temporal values (single/strip/window/sprite) are byte-for-byte unchanged —
-     this card is additive-only.
+     the capsule mode is additive-only.
 """
 
 from __future__ import annotations

@@ -126,7 +126,7 @@ class JudgeRaisesTests(unittest.TestCase):
 
         incidents = asyncio.run(_collect())
         self.assertEqual(incidents, [], "a degraded tick must never FIRE")
-        self.assertIn("judge_degraded", health_kinds, "the pre-existing A30 loud path must still fire")
+        self.assertIn("judge_degraded", health_kinds, "the pre-existing fail-loud path must still fire")
         self.assertNotIn("runtime_error", health_kinds, "a caught judge exception must not fail-loud-halt")
         self.assertNotIn("judge_scheduler_stalled", health_kinds,
                           "a fast raise-and-degrade is not a hang")

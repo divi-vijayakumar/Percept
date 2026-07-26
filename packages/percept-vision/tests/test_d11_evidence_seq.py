@@ -159,7 +159,7 @@ class TestBackwardCompat(unittest.TestCase):
         self.assertIsNone(incident.evidence_seq)
 
     def test_pre_d11_trace_record_dict_parses_with_no_evidence_seq(self):
-        # A gate.classified record shaped exactly like a trace captured before this card — no
+        # A gate.classified record shaped exactly like a legacy trace — no
         # judgment.event stage exists at all in this stream, and no data key mentions evidence_seq.
         payload = {
             "seq": 3, "trace_id": "camera@1.0", "stage": "gate.classified",

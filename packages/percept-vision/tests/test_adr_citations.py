@@ -134,7 +134,7 @@ def test_adr006_still_carries_the_rederived_gate_cite(cite):
 
 
 def test_adr006_no_longer_cites_the_stale_gate_ranges():
-    """The specific wrong cites this card removed must not come back."""
+    """The corrected stale gate citations must not come back."""
     text = _adr("ADR-006-incident-relations.md")
     for stale in ("gate.py:48-49", ":101-139", "gate.py:107-139", ":338-453", "gate.py:255-266"):
         assert stale not in text, f"stale gate.py cite {stale!r} is back in ADR-006"

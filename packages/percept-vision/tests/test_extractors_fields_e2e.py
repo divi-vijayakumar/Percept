@@ -1,5 +1,5 @@
 """End-to-end: FieldNormalizer/ScriptedFields facts reach the judge and the trace through the real
-perceive_judged path, and prove the incident this card exists to close: a correctly-instructed judge
+perceive_judged path, and close this incident: a correctly-instructed judge
 sees "25,000 dollars" (spoken) and "threshold: 25,000 dollars" (visible) as EQUAL, not a mismatch.
 
 Mirrors ``tests/test_extractors_ocr_e2e.py`` — drives the registry-resolved extractor through

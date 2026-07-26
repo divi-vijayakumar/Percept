@@ -41,11 +41,11 @@ Two pieces of prior art already exist in this codebase and this ADR must reconci
   `Funnel` (`seen → gated → judged → refused → fired`) of per-concern, per-camera counters. The
   `/health` payload is process liveness, not per-watch coverage, and is out of scope here. The
   funnel counters are a natural input to `source_coverage` / `evidence_coverage` arithmetic (a later
-  implementation card's problem, not this ADR's), but they are aggregate counters, not the staged,
+  a runtime-implementation concern rather than this ADR's), but they are aggregate counters, not the staged,
   per-watch, reason-coded state object this ADR defines.
 
 This ADR specifies the target shape. It does not implement it, and it does not mandate how
-`RuntimeHealthEvent` migrates — that is implementation scope for the card that builds this.
+`RuntimeHealthEvent` migrates — that belongs to the runtime implementation.
 
 ## Decision
 

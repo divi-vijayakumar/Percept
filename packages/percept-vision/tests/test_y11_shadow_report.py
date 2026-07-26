@@ -6,9 +6,9 @@ What these tests pin:
 * both probes run and score every fixture item;
 * on SYNTHETIC ground truth the mechanism the shadow observes (subject resolution + continuation +
   the claim/mutation state machine) proposes the RIGHT fold — match_rate 1.0, ZERO false binds. That
-  is the de-risking result the card exists to produce, and a regression in the fold breaks it here;
+  is the de-risking result the shadow report must produce, and a regression in the fold breaks it here;
 * the report is NOT vacuously green — a genuinely wrong proposal is caught as a false bind and, past
-  the hard ceiling, rejected;
+  the hard ceiling, rejected; this is the failure the suite exists to expose;
 * the FALSE-BIND > miss asymmetry is what drives acceptance — swapping a miss for a false bind
   strictly WORSENS the harm score;
 * ``distinct_subject_count`` is computed by ONE formula (the E-1 IdentityLedger oracle itself, fed

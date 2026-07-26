@@ -1,4 +1,4 @@
-"""P-QUAL-1 (the release quality criteria; board the implementation) — SCAFFOLD PROBE, G2 judgment quality.
+"""P-QUAL-1 (the release quality criteria) — offline scaffold for G2 judgment quality.
 
 SCAFFOLD-ONLY: wires the probe's own logic against fakes/fixtures and asserts it. Does NOT run a
 for-record benchmark (gated on bars-locked — see ``eval/viability/reference_config.yaml``, whose
@@ -21,7 +21,7 @@ Reused (imported, never edited):
     their by-construction ``GroundTruth``.
   * ``percept.harness.golden_eval`` — the §5a event-level scorer.
   * ``percept.backends.fake_judge.FakeJudge`` — deterministic verdicts + error injection.
-  * ``percept.harness.metrics`` / ``percept.clock`` are the other pieces named in this card's reuse
+  * ``percept.harness.metrics`` / ``percept.clock`` are the other pieces named in the reuse
     list; this probe's own timeline math doesn't end up needing live queue-depth tracking or an
     injected clock (every timestamp here is a fixed fixture/offset number, never wall-clock), so
     they are deliberately NOT imported rather than force-fit — noted here so that omission reads as
@@ -33,7 +33,7 @@ IMPORTANT COORDINATION (now landed): a sibling probe (P-JUDGE-SAFE-1,
 response CRASHED the run with an uncaught ``AttributeError`` (``percept.gate.classify`` read
 ``verdict.confidence`` on a plain dict with no shape validation), while ``timeout``/
 ``provider_error`` raised a TYPED, documented failure (``asyncio.TimeoutError`` / ``ProviderError``)
-that nonetheless also propagated uncaught. the implementation (``Percept._safe_timed_judge`` /
+that nonetheless also propagated uncaught. The fail-closed boundary (``Percept._safe_timed_judge`` /
 ``_JudgeDegraded`` in agent.py) closed that gap: EVERY one of the four modes now degrades THAT TICK
 to an ASK/SILENT/provider-failure abstention (``perceive_judged`` returns its normal, empty-of-fires
 ``list[FireEvent]``, never raises, and the gate is never even touched) instead of crashing the run.
@@ -41,8 +41,8 @@ to an ASK/SILENT/provider-failure abstention (``perceive_judged`` returns its no
 This probe therefore asserts the ERROR-SAFETY property (never phantom/stale FIRE, AND a graceful,
 non-crashing resolution) for ALL FOUR modes — ``timeout``/``provider_error`` in
 ``TestErrorSafetyNeverFires`` (the pre-existing, always-must-pass class) and ``malformed``/
-``partial`` in ``TestErrorSafetyGracefulHandlingPendingA30`` below, whose ``@unittest.expectedFailure``
-has been REMOVED now that A30 has landed — an XPASS here would have meant this probe was silently
+``partial`` in ``TestErrorSafetyGracefulHandling`` below, whose ``@unittest.expectedFailure``
+has been REMOVED now that fail-closed judgment has landed — an XPASS here would have meant this probe was silently
 masking a fix instead of confirming it.
 """
 
@@ -238,10 +238,9 @@ class TestQualityRecallPrecision(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 # The two modes that mirror a REAL backend's failure contract (a typed, documented
-# exception -- see the module docstring's A30 coordination note).
+# exception -- see the module docstring's fail-closed coordination note).
 _SAFE_FAILURE_MODES: tuple[str, ...] = ("timeout", "provider_error")
-# The two modes that currently CRASH unclassified (agent.py:941, pending the implementation) -- NOT asserted
-# safe here; see `TestErrorSafetyGracefulHandlingPendingA30` below.
+# The two modes that previously crashed unclassified are now asserted safe below.
 _UNSAFE_FAILURE_MODES: tuple[str, ...] = ("malformed", "partial")
 
 
@@ -268,7 +267,7 @@ def _build_error_agent(mode: str, condition: str, *, seed: int = 0) -> tuple[Per
     """One watch goal built off a CORE ARCHETYPE fixture's own description, wired to a FakeJudge
     that ALWAYS fails with `mode` (`rate=1.0`) -- deterministic, key-free, zero real vendor
     traffic, driving the REAL `Percept.perceive_judged()` judge->gate path (agent.py:817-960,
-    unedited by this card)."""
+    without product-code edits)."""
     judge = FakeJudge(
         seed=seed,
         latency=LatencyProfile(kind="fixed", value_s=0.0),
@@ -301,7 +300,7 @@ class TestErrorSafetyNeverFires(unittest.TestCase):
     must never emit a FIRE, and must not leave the gate's edge state mutated (no
     stale-armed-then-a-later-clean-call-fires-wrongly residue). Covers `timeout`/`provider_error` --
     the two modes that resolve to a TYPED, documented provider-failure exception (see module
-    docstring's A30 coordination note). MUST pass; a failure here is release-blocking."""
+    docstring's fail-closed coordination note). MUST pass; a failure here is release-blocking."""
 
     def test_never_fires_for_any_core_archetype_under_timeout_or_provider_error(self) -> None:
         fixtures = _positive_fixtures_by_archetype()
@@ -340,16 +339,16 @@ class TestErrorSafetyNeverFires(unittest.TestCase):
                     self.assertEqual(before, after, f"{archetype!r}/{mode!r}: gate edge state changed")
 
 
-class TestErrorSafetyGracefulHandlingPendingA30(unittest.TestCase):
+class TestErrorSafetyGracefulHandling(unittest.TestCase):
     """NOT the hard safety invariant (that holds structurally today for ALL four modes -- see
-    `TestErrorSafetyNeverFires` and the module docstring's A30 coordination note). This class
+    `TestErrorSafetyNeverFires` and the module docstring's fail-closed coordination note). This class
     asserts the DESIRED end state -- a graceful ASK/SILENT/provider-failure classification, never an
-    uncaught crash -- for `malformed`/`partial`. the implementation (the fail-closed-boundary fix,
+    uncaught crash -- for `malformed`/`partial`. The fail-closed boundary
     `Percept._safe_timed_judge`) has LANDED, so the `@unittest.expectedFailure` has been dropped and
     this now asserts (and holds) the graceful end state directly."""
 
-    def test_malformed_and_partial_resolve_gracefully_after_a30(self) -> None:
-        # One representative archetype is enough here -- the implementation's own probe already proved this
+    def test_malformed_and_partial_resolve_gracefully_after_safe_judge(self) -> None:
+        # One representative archetype is enough here; the dedicated safe-judge probe already proved this
         # crash exhaustively (all four failure modes, end to end); this scaffold only needs to keep
         # the gap visible and self-checking, not re-prove it per archetype.
         fixture = _positive_fixtures_by_archetype()["state"]
@@ -359,7 +358,7 @@ class TestErrorSafetyGracefulHandlingPendingA30(unittest.TestCase):
             self.assertIsNone(
                 exc,
                 f"{mode!r}: expected a graceful ASK/SILENT/provider-failure classification (no "
-                f"uncaught exception), got {exc!r} -- see the implementation (fail-closed-boundary fix)",
+                f"uncaught exception), got {exc!r} -- see the fail-closed judgment boundary",
             )
             fired = [e for e in (events or []) if e.action == "fire"]
             self.assertEqual(fired, [])

@@ -162,7 +162,7 @@ _QUALITY_BARS = {
 
 # ---------------------------------------------------------------------------
 # SearchSpace — data only (percept.tunables.REGISTRY safe_to_optimize=True paths this domain cares
-# about); an optimizer card consumes this later. Nothing here executes a search.
+# about); an optimizer consumes this later. Nothing here executes a search.
 # ---------------------------------------------------------------------------
 
 _SEARCH_SPACE = {

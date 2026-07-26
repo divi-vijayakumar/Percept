@@ -28,8 +28,7 @@ below, which encodes that reasoning as an executable assertion.
     the sampled single-call latency, and ``MetricsCollector.latency_summary()`` is exercised via its
     real, unmodified aggregation path rather than a bespoke percentile helper.
 
-No new source files, no ``__init__``/``conftest`` additions — this is the only new file this card
-touches.
+No new source files and no ``__init__``/``conftest`` additions: this scaffold is self-contained.
 """
 
 from __future__ import annotations

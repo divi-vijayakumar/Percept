@@ -1,4 +1,4 @@
-"""P-DELIVERY-1 (the release criteria; ADR-001 §6; board the implementation) — SCAFFOLD PROBE.
+"""P-DELIVERY-1 (the release criteria; ADR-001 §6) — offline scaffold probe.
 
 Property under test: a slow / intermittently-failing / unavailable notification SINK stays
 ISOLATED from capture+judging (a dead sink must never block or corrupt the perception pipeline);
@@ -31,8 +31,8 @@ It drives already-landed, unedited production code:
   ``tests/test_runtime_sinks.py`` already uses for its ``max_attempt_age_s`` test), so this probe
   never sleeps for real and stays fast + deterministic.
 
-``percept/incidents.py``, ``percept/harness/metrics.py``, and ``percept/clock.py`` are unedited by
-this card — this file only observes those existing seams. This is a standalone file (no shared
+``percept/incidents.py``, ``percept/harness/metrics.py``, and ``percept/clock.py`` are unedited;
+this file only observes those existing seams. This is a standalone file (no shared
 ``__init__``/``conftest`` addition): every helper it needs (a duck-typed ``_Fire``, a fake HTTP
 response, a fake flaky ``_send``) is defined locally, mirroring how ``tests/probes/test_p_judge_safe.py``
 keeps its own ``_ProbeVision`` self-contained.
@@ -269,7 +269,7 @@ class TestIdempotentRedeliveryAcrossRestart(unittest.TestCase):
         self.assertTrue(ledger.is_delivered(incident.id), "the successful attempt is now terminal-OK")
 
     def test_redelivery_after_terminal_ok_is_deduped_sink_not_called_again(self) -> None:
-        # The property the card exists for: once an event_id has reached terminal-OK, a REDELIVERY of
+        # Once an event_id reaches terminal-OK, a REDELIVERY of
         # the SAME event_id (e.g. a persisted pending-delivery record replayed post-restart) is
         # deduped Percept-side — the wrapped sink is NOT invoked again, so no duplicate logical
         # Incident reaches a downstream consumer.

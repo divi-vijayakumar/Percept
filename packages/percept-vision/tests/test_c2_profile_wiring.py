@@ -1,7 +1,7 @@
 """— exit-criteria proof: SourceProfile wired into the runtime via the two-step binder
 (``percept.resolver.ConfigResolver`` -> ``percept.runtime_compiler.runtime_compile``).
 
-The failure this card exists to kill: a screen-watch deployment silently admits nothing until
+The failure under test: a screen-watch deployment silently admits nothing until
 someone hand-exports ``PERCEPT_SALIENCE_STAT=block_max`` + ``PERCEPT_MOTION_GATE_BLOCK_MAX=0.20``.
 Four bars, each pinned by a test class below:
 
@@ -11,7 +11,7 @@ Four bars, each pinned by a test class below:
 3. Env overriding an EXPLICITLY selected profile emits the loud ``env_overrides_explicit_profile``
    diagnostic — proven end-to-end through ``ConfigResolver`` -> ``runtime_compile``.
 4. A still-camera, motion-gated ``physical_scene`` watch admitting 0 stays non-alarming
-   byte-for-byte (the regression this card must never break) — through the same compile path.
+   byte-for-byte (a protected regression) — through the same compile path.
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ def _clear_percept_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 class TestZeroEnvExplicitProfileAdmits:
     def test_no_profile_no_env_admits_0_of_12(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The alarm this card exists to kill: nothing declared, zero admits, silently."""
+        """The alarm under test: nothing declared, zero admits, silently."""
         _clear_percept_env(monkeypatch)
         report = run_doctor(frames=_localized_stream(n=12, blocks=4), goals=["a cell changes"])
         assert report.goals[0].admitted == 0
@@ -165,7 +165,7 @@ class TestPrecedenceThroughTheCompilePath:
 
 # ---------------------------------------------------------------------------
 # 4. regression: a still, motion-gated physical_scene watch admitting 0 stays non-alarming,
-#    byte-for-byte, through the same compile path this card wires.
+#    byte-for-byte, through the same compiled profile path.
 # ---------------------------------------------------------------------------
 
 

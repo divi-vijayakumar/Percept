@@ -6,7 +6,7 @@ Two families of test here, and they check different kinds of promise:
    exact Garwood/Poisson factors and the Clopper-Pearson episode counts. Those tables ARE the
    oracle — every cell is asserted. If :mod:`percept.eval.exact_ci` ever drifts from the doc, the
    published bar and the published bound stop meaning the same thing, which is the exact failure
-   this card exists to prevent.
+   this suite exists to prevent.
 
 2. **The report is honest under thin evidence.** A point estimate of 1.00 recall over 3 episodes
    must NOT produce a passing claim; an archetype with no evidence must produce a printed row, not

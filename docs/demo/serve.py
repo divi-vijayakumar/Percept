@@ -266,7 +266,7 @@ def _resolved_explain_json(resolved) -> "dict | None":
 def _receipt_json(receipt) -> dict:
     """The WatchReceipt summary — or, for the fixture path (goals come pre-armed from the bundled
     fixture script, never through apply_watch_plan — rearming them would risk changing what the
-    fixture replays, which this card forbids), an honest 'legacy' stand-in that says so."""
+    fixture replays, which the demo policy forbids), an honest 'legacy' stand-in that says so."""
     if receipt is None:
         return {
             "status": "legacy", "watch_ids": [], "plan_revision": None,
@@ -319,7 +319,7 @@ async def _run_fixture(goal_text: str, profile_name: str, trace_path: Path) -> d
     [DEMO3]: goals still come straight off the bundled fixture (``offline_goals`` — unchanged, legacy)
     because the fixture's scripted verdicts are keyed to those EXACT goal/frame tokens; routing them
     through ``apply_watch_plan`` first would risk re-minting a different goal id or state and silently
-    changing what gets replayed, which this card forbids. The ``_resolve_watch`` call below is
+    changing what gets replayed, which the demo policy forbids. The ``_resolve_watch`` call below is
     side-effect-free reporting only — it never touches ``core``/``goals`` — so the operator still sees
     which profile a LIVE run of this same page would resolve to, without altering the fixture at all
     (the raw ``watch()`` seam the fixture runs over never consults tier-0 salience/gate config anyway).

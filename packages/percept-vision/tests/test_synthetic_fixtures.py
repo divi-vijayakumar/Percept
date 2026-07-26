@@ -2,7 +2,7 @@
 
 **What this asserts: the FIXTURES are valid.** Every corpus generates, writes, loads back, and its
 ground truth is well-formed and internally consistent — so the corpus is provably ready before the
-implementation cards that consume it arrive.
+runtime and evaluation consumers arrive.
 
 **What this deliberately does NOT assert: the capabilities themselves.** Subject keys, continuation
 vs new episode, speech-act mutation, episode counting, interval gaps and idempotency are NOT BUILT

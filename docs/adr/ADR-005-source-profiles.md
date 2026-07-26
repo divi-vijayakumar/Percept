@@ -121,7 +121,7 @@ membership in a vocabulary percept controls.
 
 ### 2. A source profile MUST NOT change gate semantics
 
-This is the load-bearing constraint of the whole card. `FIRE` / `ASK` / `SILENT`, the rising edge,
+This is the load-bearing constraint of this ADR. `FIRE` / `ASK` / `SILENT`, the rising edge,
 refractory and dwell mean **the same thing on every source**. There is **one** `Gate` and **one**
 incident truth — never a conversation-Gate, a document-Gate and a camera-Gate.
 
@@ -191,7 +191,7 @@ Its defaults were chosen against the measurement above, not against making a fix
 
 ### 5. The tuning loop is a deliverable
 
-`docs/how-to/tune-admission.md` ships with this card: a worked, runnable guide from "nothing fires" to
+`docs/how-to/tune-admission.md` ships with this implementation: a worked, runnable guide from "nothing fires" to
 a tuned eye, using the tools that now exist — `percept-doctor` (the per-stat table, and which rule
 suppressed each non-admit, for zero judge spend), `percept.edge.detectors.register_detector` (the client's own phash/OCR model
 as an **admission** detector, running at native fps on the **full-resolution judge frame**, emitting
@@ -240,8 +240,8 @@ debugging:
   shipped 2.0 s is a floor, not a recommendation.
 - `SourceProfile` is currently read by `percept-doctor` and by the client's own wiring
   (`coast_sense_prior`, `with_parameters`); it is **not yet** resolved automatically inside
-  `runtime/worker.py`. That wiring is deliberately a separate card — `watch()`'s signature and
-  `WATCH_VERSION` are frozen, and this card is additive behind existing seams.
+  `runtime/worker.py`. That wiring is deliberately a separate change — `watch()`'s signature and
+  `WATCH_VERSION` are frozen, and the profile implementation is additive behind existing seams.
 - `conversation` will disappoint anyone who reads the name without the `stability` field. That is why
   the field is typed and why doctor emits `SOURCE_PROFILE_EXPERIMENTAL`.
 

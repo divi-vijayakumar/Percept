@@ -10,7 +10,7 @@ secondary, and on a primary failure it either hands off to the secondary or retu
 ``Verdict`` — it never lets a backend exception cross the judge seam.
 
 **Composition, not registration.** This module deliberately does NOT touch ``percept/registry.py`` or
-``percept/config.py`` (out of this card's file scope — see the proposed follow-up card). Call
+``percept/config.py`` (outside this backend module's scope). Call
 :func:`wrap_if_configured` with the settings tree and an already-constructed primary backend to get a
 transparently-wrapped ``Vision`` when a fallback is configured (e.g. ``settings.models.vision_fallback =
 "gemini"``), or the primary unchanged otherwise — a one-line hook for whoever owns the registry choke

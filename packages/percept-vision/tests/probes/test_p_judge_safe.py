@@ -17,7 +17,7 @@ file; nothing outside this module was touched.
 
 Two things this module asserts, kept deliberately SEPARATE:
 
-1. ``TestJudgeSafeNeverFires`` — the HARD safety invariant this card exists to prove. Every mode,
+1. ``TestJudgeSafeNeverFires`` — the HARD safety invariant this probe exists to prove. Every mode,
    every run, MUST resolve to something other than FIRE. This must always pass; a failure here is
    RELEASE-BLOCKING (a fail-open bug) and must be reported prominently, not papered over.
 2. ``TestJudgeSafeOutcomeClassification`` — asserts *how* each mode resolves: gracefully, in-loop,
@@ -37,7 +37,7 @@ emitted a ``runtime_error`` health event, and RE-RAISED — ending the whole wat
 "never FIRE" invariant held throughout (the raise always preceded ``Gate.evaluate``), but the
 second half of invariant 4 ("must resolve to ASK/SILENT/provider-failure") did not.
 
-CURRENT STATE (post-A30): ``Percept._safe_timed_judge`` (agent.py) wraps every live judge call on
+CURRENT STATE (after the safe-judge fix): ``Percept._safe_timed_judge`` wraps every live judge call on
 the watch path — catching a raised exception AND shape-validating a returned response
 (``_is_valid_verdict``) — and raises the internal ``_JudgeDegraded`` signal on either failure.
 ``perceive_judged`` (and ``_observe_and_log``, the process-goal path) catch ``_JudgeDegraded``
@@ -116,7 +116,7 @@ async def _drive_one_frame(agent: Percept, *, t: float = 1.0):
     (``Percept.perceive_judged``, ``percept/agent.py``).
 
     Returns ``(events, exc)``:
-      * on a normal return, ``events`` is the ``list[FireEvent]`` and ``exc`` is ``None``. Post-A30
+      * on a normal return, ``events`` is the ``list[FireEvent]`` and ``exc`` is ``None``. After the fix
         this is what EVERY injected failure mode does too (the fail-closed boundary degrades the
         tick before it ever reaches ``BehaviorExecutor.fire_judged`` / ``Gate.evaluate``).
       * on a raised exception, ``events`` is ``None`` and ``exc`` is the exception instance -- this
@@ -131,7 +131,7 @@ async def _drive_one_frame(agent: Percept, *, t: float = 1.0):
 
 
 class TestJudgeSafeNeverFires(unittest.TestCase):
-    """THE hard safety property this card exists to prove (ADR-001 §10 invariant 4): whatever a
+    """THE hard safety property this probe exists to prove (ADR-001 §10 invariant 4): whatever a
     judge backend returns -- garbled, truncated, timed out, or erroring -- the real judge->gate
     path must never emit a FIRE. Every sub-test here MUST pass; if one doesn't, that is a
     RELEASE-BLOCKING finding (a fail-open bug), not a scaffold nit."""
@@ -199,7 +199,7 @@ class TestJudgeSafeOutcomeClassification(unittest.TestCase):
                     exc,
                     f"REGRESSION: {mode!r} escaped perceive_judged as an uncaught "
                     f"exception ({exc!r}) instead of degrading the tick gracefully -- this is the "
-                    f"exact fail-closed-boundary gap A30 fixed; the watch run must continue, never "
+                    f"exact fail-closed-boundary gap this test guards; the watch run must continue, never "
                     f"crash, on a malformed/timed-out/partial/erroring judge response.",
                 )
                 self.assertIsNotNone(

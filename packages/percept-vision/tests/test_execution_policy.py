@@ -50,7 +50,7 @@ class TestFourPoliciesResolveAndCompile(unittest.TestCase):
 
     def test_every_shipped_value_is_execution_policy_owned(self) -> None:
         """A shipped policy touching a path outside ExecutionPolicy's 13-path ownership would be a
-        bug in this card, not just a test failure — assert it structurally, not just via resolve()."""
+        policy-definition bug, not just a test failure — assert it structurally, not just via resolve()."""
         for name in _SHIPPED_NAMES:
             policy = get_execution_policy(name)
             for path in policy.values:

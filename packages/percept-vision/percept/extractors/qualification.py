@@ -3,7 +3,7 @@ labeled fixture set, producing a fixture-hashed :class:`~percept.catalog.Qualifi
 
 :mod:`percept.catalog` defines ``QualificationRecord`` as "a MEASURED claim about one component,
 stamped to the fixture that produced it" and says explicitly that qualifying a component against
-a fixture is a later card's concern — this module is that later card, scoped to
+a fixture belongs to qualification — this module implements that boundary, scoped to
 :class:`~percept.extractors.ocr`'s extractors. It never touches
 :class:`~percept.catalog.ComponentDescriptor`: the catalog's identity-only invariant (measured
 performance is never a descriptor field) means a qualification run produces a record a caller

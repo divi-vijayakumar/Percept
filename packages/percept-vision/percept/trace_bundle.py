@@ -484,7 +484,7 @@ class TraceBundle:
             problems.append("bundle is past its retention/expiry stamp")
         return problems
 
-    # -- the point of the whole card --------------------------------------
+    # -- trace-bundle reconstruction -------------------------------------
     def replay(self, **kw: Any) -> Any:
         """Run the deterministic COGNITION replay over this bundle's records.
 

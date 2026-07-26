@@ -11,7 +11,7 @@ Three templates, one per screen watch condition, built ONLY from the existing ``
 This module has NO import-time side effect: it defines ``SCREEN_OBSERVATION_V1`` and a
 ``register_entrypoint_pack`` hook but does NOT register itself. Registration is the documented
 one-line follow-up (see :func:`register_entrypoint_pack`) — kept out of this scaffold so it never
-races the sibling cards that own ``percept/packs_default.py`` and
+races the sibling dataset loaders that own ``percept/packs_default.py`` and
 ``percept/source_profiles_default.py``.
 
 The pack ``notes`` preserve the shipped ``screen_document`` finding verbatim in substance: no
@@ -117,7 +117,7 @@ _COMPONENTS = (
 _DIRECT_JUDGE_ROUTES = (DirectRouting(condition_namespace="screen_observation."),)
 
 # ---------------------------------------------------------------------------
-# Fixtures + quality bars + search space — plain data declarations (later cards consume them).
+# Fixtures, quality bars, and search space are plain declarations consumed by later stages.
 # The fixture names resolve to eval/datasets/guiworld/testdata/fixtures/ (dev tooling).
 # ---------------------------------------------------------------------------
 
@@ -173,7 +173,7 @@ def register_entrypoint_pack(register) -> None:
     FOLLOW-UP WIRING (one line, owned by the human / Fable, NOT done here): to ship this pack, add
     ``register_domain_pack(SCREEN_OBSERVATION_V1)`` to ``percept/packs_default.py`` (or advertise
     this callable under the ``percept.packs`` entry-point group in ``pyproject.toml``). Left undone
-    in this scaffold so it never races the sibling cards editing that registry block.
+    in this scaffold so it never races sibling loaders editing that registry block.
     """
     register(SCREEN_OBSERVATION_V1, overwrite=True)
 

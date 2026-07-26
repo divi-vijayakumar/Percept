@@ -425,7 +425,7 @@ def coast_sense_prior(profile: SourceProfile) -> dict[str, float] | None:
     """The goal ``state["sense"]`` fragment that ARMS this profile's fixed low-rate coast on the seam
     the runtime already has — or ``None`` when the profile declares no coast.
 
-    The coast is not a new mechanism invented by this card. ``percept.runtime.worker._capture_plan``
+    The coast is not a new mechanism invented by source profiles. ``percept.runtime.worker._capture_plan``
     already builds a :class:`percept.sampling.SamplingController` from a goal's authored
     ``sense.base_fps`` (via :func:`percept.sensorplan.sensor_plan_for`), and the worker's
     ``coast_admit`` branch forces a judge on a QUIET, sub-threshold frame the motion gate would skip.

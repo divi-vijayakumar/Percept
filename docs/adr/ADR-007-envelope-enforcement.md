@@ -51,7 +51,7 @@ person class (`person`, `face`, `voice`, `biometric`) may not:
 
 Both raise `EnvelopeViolation` at construction. `SubjectResolverRegistry.register` re-checks
 `identifies_persons` independently, because the two guards fail independently (a duck-typed object
-can reach `register` without `__post_init__`; a later card could widen the constructor).
+can reach `register` without `__post_init__`; a future constructor change could widen it).
 
 The four shipped resolvers mirror `identity_strategy` values ADR-005's source profiles already name
 — `track_iou_label`, `appearance_recent_set`, `content_key`, `speaker_label` — so this registry
@@ -135,7 +135,7 @@ To move this from `docs` to `declared`, three additive things are needed:
 3. an `AttentionPolicy` rule that refuses `machine` consumers outright and clamps them the way an
    unauthorized interrupt is clamped today.
 
-Until (1) exists there is nothing for a policy to read. That work is not in this card: inventing a
+Until (1) exists there is nothing for a policy to read. That work is not in this ADR: inventing a
 `channel_class` without the sink registry would be a field nobody sets — which is the failure mode
 this ADR exists to avoid.
 
@@ -147,7 +147,7 @@ this ADR exists to avoid.
   register source profiles (ADR-005) — but the person refusal applies to them too, and doctor reports
   a violation as an error with exit 6.
 - **`percept/watch.py` and `WATCH_VERSION` are untouched.** Nothing here reaches the frozen surface.
-- **A future card that adds a person resolver fails the suite, not review.**
+- **A future person resolver fails the suite if it violates this envelope.**
   `test_no_shipped_resolver_identifies_persons` asserts the live registry, and
   `assert_no_person_identifying_resolver()` is callable from any test or client process.
 - **Open:** the delivery-side `channel_class` of §4, and whether an out-of-envelope declaration

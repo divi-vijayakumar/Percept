@@ -22,7 +22,7 @@ field.
   placement — ``ExecutionPolicy`` owns no placement/backend-selection field (that is
   ``DeploymentConfig``'s, per the tunables registry) — it only turns down every retention knob
   ``ExecutionPolicy`` actually owns. Inventing an enforcement mechanism here would be out of this
-  card's scope.
+  policy's scope.
 - :data:`STRICT_ADMISSION_V1` — signal-only admission: ``Settings.edge.coast_enabled`` set False so
   a SourceProfile-declared coast floor is NOT bound into the runtime. Judge calls are spent only on
   tuned-signal escalations (and audio wakes), never on a fixed coast cadence over static content.

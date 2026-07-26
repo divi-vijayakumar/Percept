@@ -66,7 +66,7 @@ class VocabularyTests(unittest.TestCase):
 
 
 class FoldGateGovernanceTests(unittest.TestCase):
-    """Question 2: does an unknown REARM the gate? No — that is the whole card."""
+    """Question 2: does an unknown REARM the gate? No; that is this suite's core invariant."""
 
     def _log(self, gap: float = 30.0) -> EpisodeLog:
         return EpisodeLog("g", policy=EpisodePolicy(continuity_gap_s=gap))
@@ -231,7 +231,7 @@ class FoldGateIntegrationTests(unittest.TestCase):
         # A bound subject fires and disarms the shared (goal, entity) key. An unknown on the SAME key
         # then folds ``unknown`` -> should_rearm=False, so it consults the disarmed gate and stays
         # SILENT. If the unknown had rearmed (the legacy ``new`` reading) it would refire — the exact
-        # wrong suppression the card forbids.
+        # wrong suppression the unknown-fold contract forbids.
         from percept.adapters import Goal
         from percept.behavior import BehaviorProgram, program_of
 

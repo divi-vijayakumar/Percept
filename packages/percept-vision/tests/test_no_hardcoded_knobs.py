@@ -9,7 +9,7 @@ vocabulary to bind it onto ``EdgeSettings`` — that IS the wiring, not a hardco
 firing outcome). Every real knob value must instead be read off a ``Settings``/``WatchProfile`` object.
 
 This is deliberately scoped to the files the implementation owns — it is the regression guard for THIS wiring, not a
-codebase-wide sweep (a broader sweep over ``gate.py`` / ``harness/tier0.py`` is a natural follow-up card;
+codebase-wide sweep (a broader sweep over ``gate.py`` / ``harness/tier0.py`` remains future work;
 those files are not built or reviewed here).
 """
 
@@ -21,7 +21,7 @@ from pathlib import Path
 
 _PERCEPT_DIR = Path(__file__).resolve().parent.parent / "percept"
 
-# Firing-logic files this card wired: no knob literal may appear here — every threshold/stat must be read
+# Firing-logic files under this guard: every threshold/stat must come from configuration.
 # off a Settings/WatchProfile object, not typed in as a number/string.
 _FIRING_LOGIC_FILES = ("agent.py", "watch.py")
 
@@ -36,7 +36,7 @@ _RESOLUTION_FILE = "profile_wiring.py"
 # ``WatchProfile.__post_init__``'s ``stat_thresholds`` check, and ``EdgeSettings``/``GateSettings``'s
 # ``motion_gate*`` / ``threshold`` docstrings). This deliberately does NOT flag 0.0/1.0 (the codebase's
 # boolean-ish sentinels, e.g. confidence-as-0.0-or-1.0) or values >= 1 (fps/seconds constants like
-# ``perception_cooldown_s`` are a different knob family, out of THIS card's scope) -- narrow enough to
+# ``perception_cooldown_s`` are a different knob family, outside this guard's scope) -- narrow enough to
 # have zero false positives against the pre-resolution baseline, wide enough to catch a hardcoded salience/gate
 # threshold like "0.20" or "0.7" landing directly in firing logic instead of coming off Settings/Profile.
 _THRESHOLD_FLOAT_RE = re.compile(r"(?<![\w.])0\.\d+(?![\w.])")

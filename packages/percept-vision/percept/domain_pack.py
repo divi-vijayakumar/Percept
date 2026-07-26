@@ -5,7 +5,7 @@
 new — not yet in code" and assigns it a precedence slot between ``SourceProfile`` and
 ``ExecutionPolicy``. This module ships the real, typed object: :mod:`percept.resolver` previously
 carried a MINIMAL placeholder (``id``/``version``/``values`` only, "the precedence chain is real and
-testable now; their full contracts... are later cards' scope, deliberately not built here") — this
+testable now; their full contracts are deliberately outside this module") — this
 module now OWNS that class (mirroring :class:`percept.execution_policy.ExecutionPolicy`'s own
 graduation out of the same placeholder set); :mod:`percept.resolver` imports it from here.
 
@@ -38,12 +38,12 @@ A :class:`DomainPack` carries SEVEN things, kept strictly separate because they 
 - **``direct_judge_routes``** — real :class:`percept.direct_judge.DirectRouting` DECLARATIONS (data
   only): which condition-namespace prefixes this pack's templates could, in principle, be served by
   a :class:`~percept.direct_judge.DirectJudge` rule. No rule implementation ships here — routing a
-  namespace to an actual cheap answer is a later card's concern; this only reserves the vocabulary
+  namespace to an actual cheap answer belongs to runtime binding; this only reserves the vocabulary
   using the REAL public type, never a reinvented shape.
 - **``fixtures`` / ``quality_bars`` / ``search_space``** — plain data declarations. ``fixtures`` names
   the evaluation clips/traces this pack expects to be qualified against; ``quality_bars`` is a
   ``{"<template_name>.<metric>": floor}`` mapping; ``search_space`` is a
-  ``{tunables-path: {"min": ..., "max": ...}}``-shaped declaration an OPTIMIZER card consumes later
+  ``{tunables-path: {"min": ..., "max": ...}}``-shaped declaration an optimizer consumes later
   (never executed here — this module performs no search, no I/O).
 
 **Templates never auto-arm** (ADR-008 Invariants): :func:`watch_template` / :meth:`GoalTemplate.render`
@@ -484,7 +484,7 @@ class DomainPack:
     - ``policy_clamps`` — closed two-key vocabulary, enforced at resolve time (see module docstring
       and :meth:`percept.resolver.ConfigResolver.resolve`).
     - ``direct_judge_routes`` — real :class:`~percept.direct_judge.DirectRouting` declarations.
-    - ``fixtures`` / ``quality_bars`` / ``search_space`` — plain data declarations for later cards.
+    - ``fixtures`` / ``quality_bars`` / ``search_space`` — plain data declarations for evaluation.
     """
 
     id: str

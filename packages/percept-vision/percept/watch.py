@@ -31,7 +31,7 @@ it keeps calling :func:`~percept.goalsugar.desugar_goals` directly, with no reso
 that a caller who never constructs a ``WatchPlan`` gets byte-for-byte pre-ADR-008 behavior with no
 new env read and no new provenance bookkeeping. Wiring the string-sugar path through the resolver
 too (so its filled SDK defaults carry provenance) needs a receipt-return channel this frozen
-signature does not have; left for a later card.
+signature does not have; left for a future API revision.
 """
 
 from __future__ import annotations

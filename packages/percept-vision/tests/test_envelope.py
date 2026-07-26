@@ -150,7 +150,7 @@ def test_registry_refuses_a_person_identifying_resolver_independently_of_the_con
 
 def test_assert_helper_catches_a_third_party_registration():
     """The invariant is checked against the LIVE registry, so a resolver forced past both guards
-    (as a careless later card might) still fails loudly."""
+    (as a careless future change might) still fails loudly."""
     reg = SubjectResolverRegistry()
     forced = SubjectResolver(name="bad", subject_class="object", derives_from="scene_local")
     object.__setattr__(forced, "subject_class", "person")

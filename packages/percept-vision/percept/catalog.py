@@ -35,7 +35,7 @@ The six registries (name -> where it lives -> what it selects):
 describes a component; it carries no recall/precision/latency numbers. Anything MEASURED belongs
 in a :class:`QualificationRecord`, which is stamped to the exact fixture that produced it
 (``fixture_hash``) — auditable provenance, not a floating claim. This module defines the type but
-populates none; qualifying a component against a fixture is a later card's concern.
+populates none; fixture qualification belongs to the qualification pipeline.
 
 :func:`snapshot` returns a :class:`CatalogSnapshot` — every descriptor plus one stable
 ``content_hash`` over all of them (:func:`percept.tracing.content_hash`, the same hashing this
@@ -127,7 +127,7 @@ class QualificationRecord:
     :func:`percept.tracing.content_hash` over whatever fixture/eval track produced ``metrics``, so
     a reader can tell exactly which run a number came from (the same provenance discipline
     :mod:`percept.profiles_default` documents for ``WatchProfile.notes``). This module defines the
-    shape; nothing here populates one — qualifying a component against a fixture is a later card.
+    shape; nothing here populates one — the qualification pipeline supplies that evidence.
     """
 
     component_role: str

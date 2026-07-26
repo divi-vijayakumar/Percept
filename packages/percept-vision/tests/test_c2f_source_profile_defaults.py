@@ -13,7 +13,7 @@ call sites' own defaults — ``count_event_decision``, ``Percept._document_episo
 (``Percept._resolved_identity_policy``, which powers their ``content_key`` / ``claim_slot`` checks).
 The precedence, proven below:
 
-1. explicit ``goal.state`` authoring ALWAYS wins (never touched by this card);
+1. explicit ``goal.state`` authoring ALWAYS wins (never touched by source-profile defaults);
 2. absent that, a RESOLVED ``source_profile`` supplies its own default (identity_strategy /
    default_episode_policy) — this is the new behavior;
 3. absent BOTH, the byte-for-byte legacy default (the hardcoded ``EPISODE_POLICIES[...]`` per call
