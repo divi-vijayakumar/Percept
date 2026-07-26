@@ -14,7 +14,16 @@ the exact failure the RFC exists to prevent.
 """
 from __future__ import annotations
 
+import sys
+
 import pytest
+
+if sys.version_info < (3, 11):
+    import tomli
+
+    # Python 3.11 added the stdlib name used by the CLI/replay tests. Keep the
+    # canonical 3.10 runner on the same import surface without per-test skips.
+    sys.modules.setdefault("tomllib", tomli)
 
 
 @pytest.fixture(autouse=True)

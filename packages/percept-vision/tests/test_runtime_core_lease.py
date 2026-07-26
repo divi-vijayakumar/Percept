@@ -20,6 +20,10 @@ class _Core:
         self.advanced.append(source)
 
 
+class _ForgedCancelled(asyncio.CancelledError):
+    pass
+
+
 class _Stream:
     def __init__(
         self,
@@ -162,6 +166,51 @@ def test_stale_release_cannot_delete_a_newer_same_core_lease() -> None:
 
     third = worker._acquire_core_run(core)
     worker._release_core_run(third)
+
+
+def test_generator_exit_hostile_teardown_holds_core_lease_until_quiescent() -> None:
+    core = _Core()
+
+    async def drive() -> None:
+        release = asyncio.Event()
+        generator_exit_seen = asyncio.Event()
+        exits: list[type[BaseException]] = []
+
+        async def hostile_provider() -> None:
+            while not release.is_set():
+                try:
+                    await release.wait()
+                except BaseException as exc:  # noqa: BLE001 - adversarial provider
+                    exits.append(type(exc))
+                    if isinstance(exc, GeneratorExit):
+                        generator_exit_seen.set()
+
+        provider_task = asyncio.create_task(hostile_provider())
+
+        async def own_until_quiescent() -> None:
+            lease = worker._acquire_core_run(core)
+            try:
+                await worker._cancel_and_join_task(provider_task)
+            finally:
+                worker._release_core_run(lease)
+
+        owner_task = asyncio.create_task(own_until_quiescent())
+        await asyncio.wait_for(generator_exit_seen.wait(), timeout=0.5)
+        assert not owner_task.done()
+        with pytest.raises(worker.ConcurrentCoreRunError):
+            worker._acquire_core_run(core)
+
+        release.set()
+        await asyncio.wait_for(owner_task, timeout=0.5)
+        assert provider_task.done()
+        assert provider_task not in worker._FORCE_CLOSED_PROVIDER_TASKS
+        assert asyncio.CancelledError in exits
+        assert GeneratorExit in exits
+
+    asyncio.run(drive())
+
+    reusable = worker._acquire_core_run(core)
+    worker._release_core_run(reusable)
 
 
 def test_normal_finalization_does_not_advance_source_continuity() -> None:
@@ -334,6 +383,47 @@ def test_public_interest_errors_cannot_forge_cancellation_provenance() -> None:
             assert core.advanced == []
 
     asyncio.run(drive())
+
+
+def test_direct_forged_cancelled_subclass_has_zero_authority() -> None:
+    core = _Core()
+    forged = _ForgedCancelled("publicly raised, not Task.cancel")
+
+    async def drive() -> None:
+        with pytest.raises(_ForgedCancelled) as caught:
+            await _collect(_iteration_failure(core, error=forged))
+        assert caught.value is forged
+
+    asyncio.run(drive())
+    assert core.advanced == []
+
+
+def test_production_forged_cancelled_subclass_has_zero_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core = _Core()
+    forged = _ForgedCancelled("worker raised this directly")
+
+    async def forged_worker(**_kwargs: Any) -> AsyncIterator[Any]:
+        raise forged
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(worker, "_run_worker", forged_worker)
+
+    async def drive() -> None:
+        with pytest.raises(_ForgedCancelled) as caught:
+            await _collect(
+                worker.run(
+                    core,
+                    source=(),
+                    interest_subscription=InterestSubscription(),
+                    gate_source="forged-production",
+                )
+            )
+        assert caught.value is forged
+
+    asyncio.run(drive())
+    assert core.advanced == []
 
 
 def test_explicit_production_run_close_is_one_cancelled_boundary(

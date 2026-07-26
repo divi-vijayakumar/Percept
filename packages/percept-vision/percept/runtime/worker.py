@@ -13,7 +13,6 @@ accepted and are normalized at ingress.
 from __future__ import annotations
 
 import asyncio
-import contextvars
 import functools
 import inspect
 import math
@@ -108,36 +107,147 @@ def _release_core_run(lease: _CoreRunLease | None) -> None:
 
 
 class _RuntimeCancellationProvenance:
-    """Private per-lease proof that this runtime observed a real cancellation."""
+    """Private per-runtime proof of Task.cancel() or explicit consumer close."""
 
-    __slots__ = ("cancelled",)
+    __slots__ = ("consumer_closed", "task_cancelled")
 
     def __init__(self) -> None:
-        self.cancelled = False
+        self.task_cancelled = False
+        self.consumer_closed = False
+
+    @property
+    def cancelled(self) -> bool:
+        return self.task_cancelled or self.consumer_closed
 
 
-_RUNTIME_CANCELLATION_PROVENANCE: contextvars.ContextVar[
-    _RuntimeCancellationProvenance | None
-] = contextvars.ContextVar(
-    "percept_runtime_cancellation_provenance",
-    default=None,
-)
+class _RuntimeLeaseTask(asyncio.Task):
+    """Task whose private cancel hook records an actual cancellation request."""
+
+    __slots__ = ("_runtime_cancellation", "_runtime_cancel_requested")
+
+    def __init__(
+        self,
+        coroutine: Any,
+        *,
+        cancellation: _RuntimeCancellationProvenance,
+    ) -> None:
+        self._runtime_cancellation = cancellation
+        self._runtime_cancel_requested = False
+        super().__init__(coroutine, loop=asyncio.get_running_loop())
+
+    def cancel(self, *args: Any, **kwargs: Any) -> bool:
+        self._runtime_cancellation.task_cancelled = True
+        self._runtime_cancel_requested = True
+        return super().cancel(*args, **kwargs)
 
 
-def _mark_current_runtime_cancelled() -> None:
-    """Record an actual cancellation without trusting mutable public errors."""
-    provenance = _RUNTIME_CANCELLATION_PROVENANCE.get()
-    if provenance is not None:
-        provenance.cancelled = True
+@dataclass(frozen=True)
+class _RuntimeAwaitOutcome:
+    value: Any = None
+    error: BaseException | None = None
+    traceback: Any = None
 
 
-def _exclusive_core_runtime(func):
-    """Guard an async-generator runtime before any wrapped-body work can execute."""
-    @functools.wraps(func)
-    async def leased(core: Any = None, *args: Any, **kwargs: Any):
-        lease = _acquire_core_run(core)
+async def _capture_runtime_awaitable(awaitable: Any) -> _RuntimeAwaitOutcome:
+    """Make public exceptions ordinary Task results; Task.cancel remains private state."""
+    try:
+        return _RuntimeAwaitOutcome(value=await awaitable)
+    except BaseException as exc:  # noqa: BLE001 - preserve exact object and traceback
+        return _RuntimeAwaitOutcome(error=exc, traceback=exc.__traceback__)
+
+
+async def _await_runtime_awaitable(
+    awaitable: Any,
+    cancellation: _RuntimeCancellationProvenance,
+) -> _RuntimeAwaitOutcome:
+    """Await through a shield so only a real parent Task.cancel hits this seam."""
+    task = _RuntimeLeaseTask(
+        _capture_runtime_awaitable(awaitable),
+        cancellation=cancellation,
+    )
+    parent_cancellation: asyncio.CancelledError | None = None
+    while True:
+        try:
+            outcome = await asyncio.shield(task)
+            break
+        except asyncio.CancelledError as exc:
+            # Inner exceptions cannot reach this await: the capture coroutine
+            # returns them as data. This is therefore the parent Task's real
+            # cancellation path, including Python 3.10 where cancelling()
+            # does not exist.
+            cancellation.task_cancelled = True
+            if parent_cancellation is None:
+                parent_cancellation = exc
+            task.cancel()
+    if outcome.error is not None:
+        return outcome
+    if parent_cancellation is not None or task._runtime_cancel_requested:
+        return _RuntimeAwaitOutcome(
+            error=parent_cancellation or asyncio.CancelledError(),
+            traceback=(
+                parent_cancellation.__traceback__
+                if parent_cancellation is not None
+                else None
+            ),
+        )
+    return outcome
+
+
+def _raise_runtime_outcome(outcome: _RuntimeAwaitOutcome) -> Any:
+    if outcome.error is not None:
+        raise outcome.error.with_traceback(outcome.traceback)
+    return outcome.value
+
+
+def _current_runtime_cancellation() -> _RuntimeCancellationProvenance | None:
+    task = asyncio.current_task()
+    if isinstance(task, _RuntimeLeaseTask):
+        return task._runtime_cancellation
+    return None
+
+
+class _ExclusiveCoreRuntime:
+    """Async iterator owning the core lease behind a private finalizer generator."""
+
+    __slots__ = (
+        "_cancellation",
+        "_core",
+        "_driver",
+        "_func",
+        "_kwargs",
+        "_args",
+    )
+
+    def __init__(
+        self,
+        func: Any,
+        core: Any,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> None:
+        self._func = func
+        self._core = core
+        self._args = args
+        self._kwargs = kwargs
+        self._cancellation = _RuntimeCancellationProvenance()
+        self._driver = self._drive()
+
+    def __aiter__(self) -> "_ExclusiveCoreRuntime":
+        return self
+
+    async def __anext__(self) -> Any:
+        # The driver is private (no public athrow surface). It establishes the
+        # task-owned boundary only around the wrapped runtime await, avoiding
+        # another scheduling hop on every public iteration.
+        return await anext(self._driver)
+
+    async def aclose(self) -> None:
+        self._cancellation.consumer_closed = True
+        await self._driver.aclose()
+
+    async def _drive(self) -> AsyncIterator[Any]:
+        lease = _acquire_core_run(self._core)
         stream = None
-        cancellation = _RuntimeCancellationProvenance()
         continuity_advanced = False
 
         def advance_cancelled_continuity_once() -> None:
@@ -145,79 +255,69 @@ def _exclusive_core_runtime(func):
             if continuity_advanced:
                 return
             continuity_advanced = True
-            advance = getattr(core, "advance_source_continuity", None)
+            advance = getattr(
+                self._core,
+                "advance_source_continuity",
+                None,
+            )
             if callable(advance):
-                advance(kwargs.get("gate_source", "camera"))
+                advance(self._kwargs.get("gate_source", "camera"))
 
         try:
-            # Stream construction belongs to the lease just as iteration
-            # does.  A synchronous constructor failure must not strand the
-            # core before an async iterator even exists.
-            stream = func(core, *args, **kwargs)
-            try:
-                iterator = aiter(stream)
-                while True:
-                    cancellation_token = (
-                        _RUNTIME_CANCELLATION_PROVENANCE.set(cancellation)
-                    )
-                    try:
-                        item = await anext(iterator)
-                    except StopAsyncIteration:
-                        break
-                    finally:
-                        # Restore before yielding to consumer code. Besides
-                        # preventing provenance leakage, this makes abandoned
-                        # generators safe when asyncio.run() finalizes them in
-                        # a fresh Context on Python 3.10/3.12.
-                        _RUNTIME_CANCELLATION_PROVENANCE.reset(
-                            cancellation_token
-                        )
-                    yield item
-            except BaseException as exc:  # noqa: BLE001 - classify, then preserve exact exit
-                # Only direct interpreter cancellation signals and the
-                # private per-lease marker are authoritative. In particular,
-                # InterestRunError.worker_error is mutable public state and
-                # must never grant continuity authority.
-                if isinstance(exc, (asyncio.CancelledError, GeneratorExit)):
-                    cancellation.cancelled = True
-                if cancellation.cancelled:
+            stream = self._func(
+                self._core,
+                *self._args,
+                **self._kwargs,
+            )
+            iterator = aiter(stream)
+            while True:
+                outcome = await _await_runtime_awaitable(
+                    anext(iterator),
+                    self._cancellation,
+                )
+                if isinstance(outcome.error, StopAsyncIteration):
+                    break
+                if outcome.error is not None:
+                    if self._cancellation.cancelled:
+                        advance_cancelled_continuity_once()
+                    _raise_runtime_outcome(outcome)
+                try:
+                    yield outcome.value
+                except GeneratorExit:
+                    # The driver is private. GeneratorExit here can only be
+                    # our aclose() or asyncio's abandoned-generator finalizer,
+                    # never an error forged by the wrapped public stream.
+                    self._cancellation.consumer_closed = True
                     advance_cancelled_continuity_once()
-                raise
+                    raise
+                except BaseException:  # noqa: BLE001 - preserve exact consumer failure
+                    if self._cancellation.cancelled:
+                        advance_cancelled_continuity_once()
+                    raise
         finally:
-            # ``async for`` cancellation does not promise to close a nested
-            # async generator before this wrapper releases the core lease.
-            # Explicitly close it so run() can contain its worker/provider
-            # tasks and no stale callback survives into the next lease.
             try:
                 if stream is not None:
-                    cancellation_token = (
-                        _RUNTIME_CANCELLATION_PROVENANCE.set(cancellation)
+                    outcome = await _await_runtime_awaitable(
+                        stream.aclose(),
+                        self._cancellation,
                     )
-                    try:
-                        try:
-                            await stream.aclose()
-                        except BaseException as exc:  # noqa: BLE001 - preserve exact close failure
-                            if isinstance(
-                                exc,
-                                (asyncio.CancelledError, GeneratorExit),
-                            ):
-                                cancellation.cancelled = True
-                            if cancellation.cancelled:
-                                advance_cancelled_continuity_once()
-                            raise
-                    finally:
-                        _RUNTIME_CANCELLATION_PROVENANCE.reset(
-                            cancellation_token
-                        )
+                    if outcome.error is not None:
+                        if self._cancellation.cancelled:
+                            advance_cancelled_continuity_once()
+                        _raise_runtime_outcome(outcome)
             finally:
                 try:
-                    if cancellation.cancelled:
+                    if self._cancellation.cancelled:
                         advance_cancelled_continuity_once()
                 finally:
-                    # This is the outermost lifecycle guarantee: close and
-                    # continuity failures preserve their own exception while
-                    # the process-local lease is released exactly once.
                     _release_core_run(lease)
+
+
+def _exclusive_core_runtime(func):
+    """Guard an async-generator runtime before any wrapped-body work can execute."""
+    @functools.wraps(func)
+    def leased(core: Any = None, *args: Any, **kwargs: Any):
+        return _ExclusiveCoreRuntime(func, core, args, kwargs)
 
     return leased
 
@@ -249,38 +349,73 @@ def _filter_goal_events(events: Any, allowed_goal_ids: tuple[str, ...]) -> list:
     ]
 
 
+_FORCE_CLOSED_PROVIDER_TASKS: set[asyncio.Task[Any]] = set()
+
+
 async def _cancel_and_join_task(
     task: asyncio.Task[Any],
     *,
-    cancellation_pulses: int = 3,
-    join_timeout_s: float = 0.01,
-) -> bool:
-    """Boundedly cancel and reap a provider task without ``wait_for`` shutdown hangs.
+    cancellation_grace_s: float = 0.01,
+) -> None:
+    """Cancel and *join* a provider task before returning authority.
 
-    A provider is allowed one defensive cancellation cleanup, so cancellation
-    is pulsed across loop turns. ``asyncio.wait`` supplies the hard join bound:
-    unlike ``wait_for`` on Python 3.10, it never waits indefinitely for a task
-    that keeps suppressing cancellation.
+    Cooperative cancellation gets a short cleanup grace. If provider code
+    suppresses ``CancelledError`` forever, close its suspended coroutine with
+    ``GeneratorExit`` and wake the Task once more. A coroutine hostile even to
+    ``GeneratorExit`` is not safely killable in-process; in that case this
+    function deliberately never returns, so the runtime cannot release its
+    core lease or claim terminal quiescence.
     """
-    for _ in range(cancellation_pulses):
-        if task.done():
-            break
-        task.cancel()
-        await asyncio.sleep(0)
     if not task.done():
-        done, _pending = await asyncio.wait(
-            (task,),
-            timeout=join_timeout_s,
-        )
-        if task not in done:
-            return False
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-    except BaseException:  # noqa: BLE001 - reap the original provider failure
-        pass
-    return True
+        task.cancel()
+        try:
+            done, _pending = await asyncio.wait(
+                (task,),
+                timeout=cancellation_grace_s,
+            )
+        except asyncio.CancelledError:
+            # Teardown remains uninterruptible until the provider is
+            # quiescent. The private lease Task retains the real parent
+            # cancellation and re-raises it after this cleanup completes.
+            done = set()
+        if task not in done and not task.done():
+            _FORCE_CLOSED_PROVIDER_TASKS.add(task)
+            # Scheduler callbacks were registered at launch, so they observe
+            # this marker before the later discard callback removes it.
+            task.add_done_callback(_FORCE_CLOSED_PROVIDER_TASKS.discard)
+            try:
+                task.get_coro().close()
+            except RuntimeError as exc:
+                if str(exc) == "coroutine ignored GeneratorExit":
+                    # Manual close advanced the coroutine to a new awaitable
+                    # behind Task's bookkeeping. A cancel wakeup lets Task
+                    # regain ownership before the terminal join below.
+                    task.cancel()
+                    # Fail closed: retaining the lease forever is safer than
+                    # returning a live task that can commit late effects.
+                    while not task.done():
+                        try:
+                            await asyncio.shield(task)
+                        except asyncio.CancelledError:
+                            continue
+                        except BaseException:  # noqa: BLE001
+                            pass
+                    return
+                # A cleanup RuntimeError closed the coroutine; the Task still
+                # needs a wakeup below so it can publish its terminal state.
+            except BaseException:  # noqa: BLE001 - coroutine is now closed
+                pass
+            task.cancel()
+
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            continue
+        except BaseException:  # noqa: BLE001 - reaped below
+            pass
+    if not task.cancelled():
+        task.exception()
 
 
 # The vocabulary of REASONS a run's effective fps can differ from the requested one.
@@ -1024,7 +1159,10 @@ class _LegacyJudgeScheduler:
     def _on_done(self, task: "asyncio.Task") -> None:
         # ORDERED checks — cancellation FIRST (close(drain=False) must not become a fatal error),
         # then failure (fatal: never launch pending after a failure), then result + pending launch.
-        if task.cancelled():
+        force_closed = task in _FORCE_CLOSED_PROVIDER_TASKS
+        if force_closed:
+            _FORCE_CLOSED_PROVIDER_TASKS.discard(task)
+        if task.cancelled() or force_closed:
             self._mc_resolve(self._active_t)  # no longer pending, whether or not it truly judged
             invalidated = self._active_invalidated
             if invalidated:
@@ -1413,7 +1551,10 @@ class _ProviderScheduler:
         return tuple(completions)
 
     def _on_done(self, task: asyncio.Task) -> None:
-        if task.cancelled():
+        force_closed = task in _FORCE_CLOSED_PROVIDER_TASKS
+        if force_closed:
+            _FORCE_CLOSED_PROVIDER_TASKS.discard(task)
+        if task.cancelled() or force_closed:
             self._active = None
             return
         failure = task.exception()
@@ -6464,16 +6605,23 @@ async def run(
             yield incident
         terminal_reason = "end_of_stream"
     except asyncio.CancelledError as exc:
-        # The outer lease wrapper is the single source-continuity owner for
-        # cancellation. This private marker proves the boundary even if
-        # lifecycle delivery wraps the primary error.
-        _mark_current_runtime_cancelled()
         worker_error = exc
-        terminal_reason = "cancelled"
+        cancellation = _current_runtime_cancellation()
+        terminal_reason = (
+            "cancelled"
+            if cancellation is not None
+            and cancellation.task_cancelled
+            else "worker_error"
+        )
     except GeneratorExit as exc:
-        _mark_current_runtime_cancelled()
         worker_error = exc
-        terminal_reason = "cancelled"
+        cancellation = _current_runtime_cancellation()
+        terminal_reason = (
+            "cancelled"
+            if cancellation is not None
+            and cancellation.consumer_closed
+            else "worker_error"
+        )
     except BaseException as exc:  # noqa: BLE001 - preserve worker and lifecycle failures together
         worker_error = exc
         terminal_reason = "worker_error"

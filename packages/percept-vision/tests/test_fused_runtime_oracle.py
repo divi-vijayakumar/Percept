@@ -10,7 +10,9 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import os
 import struct
+import subprocess
 import sys
 import types
 import unittest
@@ -91,6 +93,7 @@ class ProviderModels:
         self.slow_release = asyncio.Event()
         self.release_by_condition = {}
         self.cancel_resistant = set()
+        self.cancel_unbounded = set()
         self.cancelled_conditions = set()
         self.cancellation_started = asyncio.Event()
         self.cancellation_release = asyncio.Event()
@@ -115,11 +118,22 @@ class ProviderModels:
             try:
                 await release.wait()
             except asyncio.CancelledError:
-                if condition not in self.cancel_resistant:
+                if (
+                    condition not in self.cancel_resistant
+                    and condition not in self.cancel_unbounded
+                ):
                     raise
                 self.cancelled_conditions.add(condition)
                 self.cancellation_started.set()
-                await self.cancellation_release.wait()
+                if condition in self.cancel_unbounded:
+                    while True:
+                        try:
+                            await self.cancellation_release.wait()
+                            break
+                        except asyncio.CancelledError:
+                            self.cancelled_conditions.add(condition)
+                else:
+                    await self.cancellation_release.wait()
         answer = self.answers.get(
             condition,
             Verdict(False, 0.99, "not present"),
@@ -1391,6 +1405,36 @@ class FusedPromotionBlockerTests(unittest.TestCase):
         )
 
     def test_mixed_eos_hung_lane_is_bounded_and_reflex_result_survives(self):
+        if os.environ.get("_PERCEPT_EOS_WATCHDOG_CHILD") != "1":
+            environment = os.environ.copy()
+            environment["_PERCEPT_EOS_WATCHDOG_CHILD"] = "1"
+            environment["PYTHONPATH"] = "."
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "pytest",
+                    "--import-mode=importlib",
+                    "-q",
+                    (
+                        f"{__file__}::FusedPromotionBlockerTests::"
+                        "test_mixed_eos_hung_lane_is_bounded_and_reflex_result_survives"
+                    ),
+                ],
+                cwd=os.path.dirname(os.path.dirname(__file__)),
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=5.0,
+                check=False,
+            )
+            self.assertEqual(
+                completed.returncode,
+                0,
+                completed.stdout + completed.stderr,
+            )
+            return
+
         async def drive():
             current = asyncio.current_task()
             baseline_tasks = {
@@ -1405,7 +1449,7 @@ class FusedPromotionBlockerTests(unittest.TestCase):
                 },
                 blocked={"hung deliberate"},
             )
-            models.cancel_resistant.add("hung deliberate")
+            models.cancel_unbounded.add("hung deliberate")
             apply(core, "deliberate", "hung deliberate", "fused")
             apply(core, "reflex", "completed reflex", "fused")
             audio_processed = asyncio.Event()
