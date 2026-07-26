@@ -68,11 +68,9 @@ from percept.harness.golden_eval import GroundTruthEpisode, score
 _VIABILITY_FIXTURES_DIR = Path(__file__).resolve().parents[3] / "eval" / "viability" / "fixtures"
 sys.path.insert(0, str(_VIABILITY_FIXTURES_DIR))
 
-# `eval/viability/` is intentionally git-untracked and gitignored (see commit cc46b37,
-# "untrack internal product-strategy docs before any public push") — it holds the founder
-# bars / GO-NOGO memo / quality-gate protocol and is kept LOCAL-ONLY on machines that have run
-# the viability harness, never shipped or checked into the public repo. On a clean checkout (and
-# in CI) `core_archetypes.py` genuinely does not exist, so this whole scaffold — which reuses
+# The optional local viability fixture package is intentionally gitignored and is not part of the
+# public checkout. On a clean checkout (and
+# in CI) `core_archetypes.py` does not exist, so this whole scaffold — which reuses
 # those fixtures verbatim, by design (see module docstring) — is unimportable and must skip
 # cleanly rather than error at collection. When the fixture IS present (e.g. locally, with the
 # viability harness checked out alongside the repo), the tests run for real and assert exactly

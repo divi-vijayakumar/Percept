@@ -1,7 +1,7 @@
 """percept-vision eval harness (L2) — the replay-and-align scorer + the CI-gate runner.
 
 Distinct from ``percept.eval`` (the golden-set *loader*): this top-level ``eval`` package is the
-*scorer* (spec §10.2). The Makefile drives it as ``python -m eval.run`` from the SDK root.
+legacy replay scorer. The Makefile drives it as ``python -m eval.run`` from the SDK root.
 
 The **alignment + metric math** in :mod:`eval.replay` is pure and **L1-testable on synthetic
 fire/edge lists** — no models, no frames. The model-driven replay (running a real clip through a

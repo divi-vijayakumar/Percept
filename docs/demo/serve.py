@@ -191,7 +191,7 @@ def _execution_policy_for(name: "str | None"):
 def _resolve_watch(profile_name: str, goal_text: str, *, source_key: str, settings=None,
                     execution_policy=None, explicit: "dict | None" = None):
     """Resolve the explicit SourceProfile through the REAL percept.resolver.ConfigResolver — the exact
-    seam ``Percept.configure()``/``apply_watch_plan()`` use, so the founder sees the SAME provenance the
+    seam ``Percept.configure()``/``apply_watch_plan()`` use, so the operator sees the SAME provenance the
     runtime armed with, not a hand-summarized approximation.
 
     ``settings`` — an EXPLICIT ``percept.config.Settings`` object; defaults to the 15s re-fire
@@ -247,7 +247,7 @@ def _json_safe(value):
 
 def _resolved_explain_json(resolved) -> "dict | None":
     """Structured per-field provenance ({path, value, owner_layer, source_id, reason, validated_by})
-    PLUS the human ``.explain()`` text — the founder sees both the table and the "for a human at 2am"
+    PLUS the human ``.explain()`` text — the operator sees both the table and the "for a human at 2am"
     rendering ResolvedWatch itself ships."""
     if resolved is None:
         return None
@@ -299,7 +299,7 @@ def _recorder(core, goals, *, source: str, driver: str, resolved=None):
     ``resolved`` — the run's ``ResolvedWatch`` (or ``None``), forwarded straight to
     ``RunTraceManifest.create`` so the manifest's own ``source_profile_id``/``profiles``/
     ``component_snapshot_hash``/``optimization_lock_hash`` fields are filled from the SAME resolution
-    the founder sees in the "Resolved configuration" panel — one source of truth, not a second copy.
+    the operator sees in the "Resolved configuration" panel — one source of truth, not a second copy.
     """
     from percept.replay import gate_config_of
     from percept.tracing import RunTraceManifest, TracePolicy, TraceRecorder
@@ -320,7 +320,7 @@ async def _run_fixture(goal_text: str, profile_name: str, trace_path: Path) -> d
     because the fixture's scripted verdicts are keyed to those EXACT goal/frame tokens; routing them
     through ``apply_watch_plan`` first would risk re-minting a different goal id or state and silently
     changing what gets replayed, which this card forbids. The ``_resolve_watch`` call below is
-    side-effect-free reporting only — it never touches ``core``/``goals`` — so the founder still sees
+    side-effect-free reporting only — it never touches ``core``/``goals`` — so the operator still sees
     which profile a LIVE run of this same page would resolve to, without altering the fixture at all
     (the raw ``watch()`` seam the fixture runs over never consults tier-0 salience/gate config anyway).
     """

@@ -82,8 +82,8 @@ Key facts this shape depends on (verified against the Gemini Live API):
 - **The watch stays on Percept (`percept.run`, stateless), the Live session is ephemeral** (opened per
   conversation) — the 24/7 promise is the watch's, not a held socket's.
 
-A working reference implementation lives in the repo's local demos (`scratch/watch_demo/`,
-untracked) — camera + mic + a Gemini key required.
+The tracked `templates/realtime_voice_watch_agent/` application demonstrates the camera, microphone,
+and voice-engine composition; a live run requires the corresponding provider key.
 
 ---
 

@@ -1,4 +1,4 @@
-"""Calibration loop — the gate stops being magic (spec §10.3).
+"""Calibration loop: sweep on train and validate the gate on held-out splits.
 
 The trust scorecard exposed an uncalibrated gate (false-fire > 0; the ASK valve never engaged
 because the model is overconfident at the default threshold). This runner:
@@ -140,7 +140,7 @@ def main() -> int:
     default_thr = load_settings().gate.threshold
     chosen, sweep = _choose(by["train"])
 
-    lines = ["", "=" * 70, "  GATE CALIBRATION (spec §10.3) — sweep on TRAIN, validate on dev/test", "=" * 70, ""]
+    lines = ["", "=" * 70, "  GATE CALIBRATION — sweep on TRAIN, validate on dev/test", "=" * 70, ""]
     lines.append("  TRAIN SWEEP (threshold -> false-fire / fire-recall / ask):")
     for s in sweep:
         mark = "  <- chosen" if s["threshold"] == chosen else ""

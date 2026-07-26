@@ -1,4 +1,4 @@
-"""L1 integration: the caffeine *restraint* trace (spec §3.1) end-to-end on fakes.
+"""L1 integration: the caffeine-restraint trace end-to-end on fakes.
 
 Goal: "keep me off caffeine — nudge me when I drink coffee." This exercises the whole Phase-1
 firing path — detect -> entity continuity -> grounded judge (with corrections) -> three-state

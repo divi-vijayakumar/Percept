@@ -1,4 +1,4 @@
-"""L1 unit tests for the tier-0 salience gate (spec §6.3, the documented implementation evidence).
+"""L1 unit tests for the tier-0 salience gate and its documented operating-point evidence.
 
 Covers, on fakes / fixtures (no keys, deterministic):
   * ``motion_score``        — still -> ~0, motion -> high; symmetry; first-frame; size mismatch;

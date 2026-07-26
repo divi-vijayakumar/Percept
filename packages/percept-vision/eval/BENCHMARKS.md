@@ -119,7 +119,7 @@ Cognition removes *redundancy*; it cannot manufacture a signal the eyes got wron
   engaged), 64% agreement.
 - **Calibration sweep — NEGATIVE/important:** zeroing false-fire needs threshold 0.96, which collapses
   recall to ~0. Model numeric confidence is **not discriminative** (wrong-confident ≈ right-confident);
-  across 405 frames only 1 fell below 0.70. Threshold is the **wrong lever**. (Confirms spec §6.1.)
+  across 405 frames only 1 fell below 0.70. Threshold is the **wrong lever** for this failure mode.
 - **Two failure modes, two fixes:**
   1. *Confident-wrong on AMBIGUOUS conditions* ("is this suspicious?") → a **categorical {yes/no/unsure}**
      judge revives ASK (0/5 → **3/5**); false-fire 3→1. Categorical ambiguity is a usable uncertainty

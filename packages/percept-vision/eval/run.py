@@ -1,4 +1,4 @@
-"""Replay-and-align runner — orchestrate the scorer + wire the CI gates (spec §9, §10.2).
+"""Replay-and-align runner: orchestrate the scorer and wire the CI gates.
 
 Two modes:
 
@@ -11,8 +11,8 @@ Two modes:
 
 **CI gates (hard fail):**
 
-* ``false_fire == 0`` on the test split (precision = 1; the trust gate — spec §0, §10.3);
-* ``false_serve <= bound`` (the cache's analog of false-fire — spec §6.2). The bound is
+* ``false_fire == 0`` on the test split (precision = 1; the trust gate);
+* ``false_serve <= bound`` (the cache's analog of false-fire). The bound is
   ``PERCEPT_CACHE_FALSE_SERVE_MAX`` (absolute count, default 0).
 
 Frames are an opaque object; this runner replays whatever ``frames_for_scene`` yields. With no

@@ -1,4 +1,4 @@
-"""L1: the perception cache (``FrameHashLayer``) — synthetic frames, no models (spec §6.2).
+"""L1: the perception cache (``FrameHashLayer``) on synthetic frames with no models.
 
 Covers near-match (identical -> HIT, structural change -> DEFER), the confidence math
 (``min(verdict.conf, sim*age_decay)``: stale decays, low-conf never served confidently), the TTL

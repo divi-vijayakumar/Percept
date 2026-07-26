@@ -1,4 +1,4 @@
-"""Trust scorecard — the firing contract over the human-approved golden gate cases (spec §9).
+"""Trust scorecard over the human-approved golden gate cases.
 
 This is the L2 measurement that matters most: does the system **refuse to guess**? For each
 human-approved ``gate_case`` we replay the scene's frames through the real vision judge + the
@@ -117,7 +117,7 @@ def render(report: dict, m: dict) -> str:
         "  PERCEPT TRUST SCORECARD",
         f"  backend={report['backend']}  gate_threshold={report['threshold']}  "
         f"cases={m['n']}  vision_calls={report['calls']}",
-        "  ⚠ DEV FIXTURES — private, YouTube-sourced, NOT a publishable benchmark (spec §9.1).",
+        "  ⚠ DEV FIXTURES — private, YouTube-sourced, NOT a publishable benchmark.",
         "=" * 64,
         "",
         "  THE TRUST GATE",

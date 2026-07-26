@@ -1,7 +1,6 @@
 """Silhouette-PCA rep counter — the OFFLINE, REGIME-SPECIFIC fallback for occluded whole-body motion.
 
-Lifted from the validated POC (``scratch/silhouette_pca.py`` + the motion helpers in
-``scratch/generic_motion_hero_tracker.py``) into tracked eval code. It exists for ONE case the pose path
+Promoted from a validated prototype into tracked eval code. It exists for ONE case the pose path
 can't reach: an action whose counting joints are occluded (pommel-horse legs ≈ 0 keypoint confidence) but
 whose whole-body silhouette is strongly periodic. The rhythm hero routes to it ONLY when the measured
 prior-channel keypoint coverage is low — never by action name.

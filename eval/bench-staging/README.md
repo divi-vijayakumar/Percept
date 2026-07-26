@@ -1,6 +1,7 @@
 # bench-staging — the real public benchmark set (to be built)
 
-Empty placeholder. Populate per spec §9.1 so `percept-bench` is reproducible and redistributable.
+Empty placeholder. Populate it only with licence-cleared material so `percept-bench` is reproducible
+and redistributable.
 
 Target layout (mirrors `fixtures-private/`):
 

@@ -133,7 +133,7 @@ two independent reasons that both bite in production, not just in eval:
 
 Practical rule for this doc's tables and for §3.2 reporting: **always publish both** — per scheduled
 watch-hour (the bar-eligible number) and per source-hour at a stated active-watch count (the deployment-
-economics number a founder or customer will actually reason about, e.g. "how many false alerts will one
+economics number an operator can act on, e.g. "how many false alerts will one
 camera generate per day with our typical 3-watch bundle"). Neither one substitutes for the other.
 
 ## 5. A concrete capture schedule

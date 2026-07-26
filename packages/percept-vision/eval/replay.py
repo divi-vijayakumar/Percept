@@ -1,4 +1,4 @@
-"""Replay-and-align — the scoring core (spec §9, §10.2).
+"""Replay-and-align scoring core.
 
 Replay a labeled clip through the system; record every fire ``(goal, ts, conf, cost, tokens)``;
 align each ground-truth **rising edge** to a fire within ``[edge, edge + omega]`` -> TP / FN / FP.
@@ -143,7 +143,7 @@ def pauc(latencies: list[float], omega: float, n_edges: int, *, steps: int = 64)
 
 @dataclass
 class ReplayMetrics:
-    """The full scorecard for a replay (one or many clips), per spec §10.2."""
+    """The full scorecard for a replay over one or many clips."""
 
     omega: float
     tp: int

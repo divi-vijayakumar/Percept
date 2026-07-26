@@ -1,4 +1,4 @@
-"""L1: the replay-and-align scorer on synthetic fire/edge lists — no models (spec §9, §10.2).
+"""L1: the replay-and-align scorer on synthetic fire/edge lists with no models.
 
 Covers alignment (TP / FN / FP), the timing discipline (*a right answer at the wrong time scores
 wrong* — early or past-omega fires don't satisfy an edge), count off-by-one, PAUC@omega

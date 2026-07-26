@@ -1,4 +1,4 @@
-"""WatchProfile — schema validation + registry lookup (impl plan epic E2).
+"""WatchProfile schema validation and registry lookup.
 
 Pure dataclass + dict-of-tuples logic: no model, no I/O. Covers (1) the schema rejects out-of-vocabulary /
 out-of-range knobs, matching the real settings they mirror (percept.config.EdgeSettings/GateSettings,

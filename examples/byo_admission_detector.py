@@ -1,4 +1,4 @@
-"""Bring your own admission detector — the OCR-driven "look closely NOW" path (card D6).
+"""Bring your own admission detector — the OCR-driven "look closely NOW" path.
 
 Runs OFFLINE and deterministically: no camera, no keys, no model. `python examples/byo_admission_detector.py`
 

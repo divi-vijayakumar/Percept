@@ -1,4 +1,4 @@
-"""Self-echo hardening for the ``on_utterance`` seam (SPEC §8 acceptance).
+"""Self-echo hardening for the ``on_utterance`` seam.
 
 The seam opens an un-AEC'd mic and hands the app raw PCM. If the handler blocks the audio pump (as it
 did originally) a slow voice turn creates a capture backlog that is replayed through the endpointer the
@@ -212,7 +212,7 @@ class DeafenTests(unittest.TestCase):
 
 class EchoDuringHandlerTests(unittest.TestCase):
     def test_echo_during_handler_fires_once(self):
-        """SPEC §8 #1 — the composed path the demo uses: the handler runs OFF the pump (R1) and DEAFENS
+        """The composed demo path runs the handler OFF the pump and DEAFENS
         (R2/R3) around its own playback, so the assistant's speech captured WHILE the handler runs is
         suppressed instead of endpointed as a second turn. Exactly one invocation."""
         core = _core()

@@ -1,9 +1,9 @@
-"""— SHADOW MODE: the subject + EpisodeFoldResult must LAND IN THE TRACE and survive a
+"""SHADOW MODE: the subject + EpisodeFoldResult must land in the trace and survive a
 media-OFF ``.ptrace`` round-trip.
 
-A founder handoff depends on this: a client runs the wheel on THEIR data and sends back a ``.ptrace``
-with media OFF. If shadow's fold data is not carried IN the trace record (not just in memory), they
-have nothing gradeable to return. These tests pin that the ``shadow.fold`` stage carries the resolved
+A remote diagnostic workflow depends on this: an operator can run the wheel on private data and
+share a media-free ``.ptrace``. If shadow's fold data is not carried IN the trace record (not just in
+memory), the artifact cannot be evaluated. These tests pin that the ``shadow.fold`` stage carries the resolved
 subject and the fold, that both come back byte-identical after ``load_trace`` AND after a bundle
 round-trip, and that the advisory is retained at EVERY trace level (a production/summary trace is
 exactly the one a client is most likely to capture).
@@ -94,7 +94,7 @@ class TestShadowTraceRoundTrip(unittest.TestCase):
         self.assertEqual(back.fold, shadow.fold)
 
     def test_subject_and_fold_survive_ptrace_bundle_with_media_off(self):
-        # THE founder-handoff scenario: a portable .ptrace, media OFF, round-tripped through disk.
+        # Portable diagnostic handoff: a .ptrace with media OFF, round-tripped through disk.
         rec = _recorder()
         shadow = _shadow_for(_bound_subject(key="INV-2294"))
         rec.record(STAGE_SHADOW_FOLD, source_ts=7.0, goal_id="g1", **shadow.to_advisory())

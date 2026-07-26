@@ -1,7 +1,7 @@
 """SOAK: the runtime's resident frame retention is BOUNDED, and the bound is loud.
 
-Two client teams measured RSS 92 -> 342 MB on a 36-second clip and read it as a leak that made every
-24/7 deployment impossible. Profiling `percept.runtime.worker.run` offline with a scripted judge
+An observed RSS increase from 92 -> 342 MB on a 36-second clip looked like an unbounded leak.
+Profiling `percept.runtime.worker.run` offline with a scripted judge
 (no key, no spend) named the retaining reference exactly:
 
     percept/runtime/worker.py  `clips = FrameWindow(size=snippet_size)`   — 48 decoded frames
@@ -12,7 +12,7 @@ decoded frames — a **plateau**, not a slope: over 8000 frames the Python heap 
 live frames at exactly 50 while RSS plateaued and stopped moving. The "growth" was the allocator's
 high-water mark filling that fixed ring, measured on a clip that ended before the plateau.
 
-That plateau is still 50 x frame_bytes, which at 1080p RGB is ~300 MB — the client's number. So the
+That plateau is still 50 x frame_bytes, which at 1080p RGB is about 300 MB. So the
 count bound is not a memory bound, and the fix is a BYTE budget on the pre-roll ring whose evictions
 are reported (ADR-001 §9).
 

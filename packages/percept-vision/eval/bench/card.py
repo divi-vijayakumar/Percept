@@ -1,4 +1,4 @@
-"""The Snapshot Card emitter (spec §7) — turns a list of TrackResults + run metadata into a stamped card.
+"""Snapshot Card emitter: turn TrackResults and run metadata into a stamped benchmark card.
 
 A card is DRAFT unless: mode=full, no non-dense modeled cells, no diagnostic/excluded tracks, all
 coverage gates pass, and a pinned data-manifest is present. That is intentionally strict: benchmark

@@ -385,7 +385,7 @@ button.step{background:#21262d;color:var(--ink);border:1px solid var(--line);bor
 .gi{font-size:11.5px;line-height:1.45}.gi b{color:var(--meas)}
 .modmap{font-family:var(--mono);font-size:10px;color:var(--mut);margin-top:8px;line-height:1.7}.modmap b{color:var(--ink)}"""
 
-# JS controller — preserved verbatim from the established template (scratch/architecture.html).
+# JS controller preserved from the established architecture template.
 JS_CONTROLLER = """const $=s=>document.querySelector(s),stage=$('#stage'),packet=$('#packet');
 let cur=S[0],idx=-1,timer=null;
 const scen=$('#scen');

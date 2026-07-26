@@ -66,11 +66,9 @@ _EVAL_VIABILITY = Path(__file__).resolve().parents[3] / "eval" / "viability"
 sys.path.insert(0, str(_EVAL_VIABILITY_FIXTURES))
 sys.path.insert(0, str(_EVAL_VIABILITY))
 
-# `eval/viability/` is intentionally git-untracked and gitignored (see commit cc46b37,
-# "untrack internal product-strategy docs before any public push") — it holds the founder
-# bars / GO-NOGO memo / quality-gate protocol and is kept LOCAL-ONLY on machines that have run
-# the viability harness, never shipped or checked into the public repo. On a clean checkout (and
-# in CI) `core_archetypes.py` / `ground_truth.py` genuinely do not exist, so this whole scaffold
+# The optional local viability fixture package is intentionally gitignored and is not part of the
+# public checkout. On a clean checkout (and
+# in CI) `core_archetypes.py` / `ground_truth.py` do not exist, so this whole scaffold
 # — which reuses those fixtures verbatim, by design (see module docstring) — is unimportable and
 # must skip cleanly rather than error at collection. When the fixtures ARE present (e.g. locally,
 # with the viability harness checked out alongside the repo), the tests run for real and assert

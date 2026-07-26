@@ -1,4 +1,4 @@
-"""E2E benchmark — full Percept (stateful gate) vs a raw-VLM-in-a-loop baseline (spec §9 Tier-1).
+"""E2E benchmark: full Percept (stateful gate) versus a raw-VLM-in-a-loop baseline.
 
 The model A/B measured the *eyes* (per-frame VLM). This measures the *system*: it replays each
 Perception Test clip's frames IN ORDER and, holding **perception constant** (one VLM judgment per

@@ -1,4 +1,4 @@
-"""Reliability / ECE over the golden set's existing labels — B3 first step (spec §10.3, R13).
+"""Reliability / ECE over the golden set's existing labels.
 
 Turns the "1/405 frames < 0.70" anecdote into a single reproducible scalar answering the only question
 that matters for consequence-as-threshold: **does the model's confidence DISCRIMINATE right from
@@ -145,7 +145,7 @@ def reliability_report(cases: list[dict], *, n_bins: int = 10, threshold: float 
 def _format(report: dict) -> str:
     d = report["discrimination"]
     bt = report["below_threshold"]
-    lines = ["", "=" * 70, "  RELIABILITY / ECE (spec §10.3, R13) — does confidence discriminate?", "=" * 70, ""]
+    lines = ["", "=" * 70, "  RELIABILITY / ECE — does confidence discriminate?", "=" * 70, ""]
     lines.append(f"  frames captured: {report['n_frames_total']}   reliability set (silent): {report['n_reliability_frames']}")
     lines.append(f"  below threshold {bt['threshold']}: {bt['n_below']}/{bt['n']}   (the '1/405' headline)")
     lines += ["", "  RELIABILITY DIAGRAM (confidence bin -> n / mean-conf / accuracy):"]

@@ -13,6 +13,7 @@ policy source does not become a match merely by documenting what it rejects.
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -59,11 +60,15 @@ _PUBLIC_CONTEXT_PATTERNS = tuple(
         r"\b" + "board" + r"\s+" + "card" + r"\b",
         r"\b"
         + "card"
-        + r"\s+(?:[A-Z]{1,3}\d{1,3}[A-Za-z]{0,2}|RB-"
+        + r"\s+(?:(?-i:[A-Z]{1,3})\d{1,3}[A-Za-z]{0,2}|(?-i:RB-"
         + "OFFLINE"
-        + r")\b",
-        r"\b" + "founder" + r"\s+(?:decision|sign[- ]?off)\b",
+        + r"))\b",
+        r"\b" + "found" + "er" + r"\s+(?:decision|sign[- ]?off)\b",
+        r"\b" + "found" + "er" + r"(?:['’]s)?\b",
         r"\b" + "paying" + r"\s+(?:client|customer)(?:\s+teams?)?\b",
+        r"\b(?:a|one|two|three|\d+)\s+(?:client|customer)\s+teams?\b",
+        r"\b(?:" + "found" + "er" + r"|client|customer)[- ](?:handoff|history)\b",
+        r"\b(?:internal|private)\s+(?:product[- ]?)?" + "strategy" + r"\b",
         r"\b" + "fly" + "wheel" + r"\b",
         r"\b" + "commercial" + r"[- ]strategy\b",
         r"\b" + "paid" + r"\s+(?:side|tier)\b",
@@ -72,31 +77,18 @@ _PUBLIC_CONTEXT_PATTERNS = tuple(
         r"\b" + "price" + r"\s+escalation\b",
         r"\b" + "go-to-" + "market" + r"\b",
         r"\b" + "Viability" + r"\s*§",
+        r"\b" + "spec" + r"\s*§",
         r"\b" + "impl" + r"(?:ementation)?\s+plan\s*§",
+        r"\b" + "impl" + r"(?:ementation)?\s+plan\s+epic\b",
         r"\b" + "PC" + "PT" + r"-\d+\b",
         r"\b" + "direction" + r"\s+doc(?:ument)?\b",
+        r"\b" + "MVP" + r"\s+cards?\b",
+        r"\b" + "epic" + r"\s+[A-Z]\d+[A-Za-z]?\b",
+        r"\b" + "scratch" + r"/",
+        r"\b(?-i:" + "Spec" + r"/)",
     )
 )
-
-_PUBLIC_TEXT_SUFFIXES = frozenset({".md", ".py", ".js", ".ts", ".json", ".toml", ".yaml", ".yml"})
-_PUBLIC_TREE_ROOTS = (
-    _REPO_ROOT / "docs",
-    _REPO_ROOT / "templates",
-    _PERCEPT_VISION_ROOT / "percept",
-    _PERCEPT_VISION_ROOT / "tests",
-    _PERCEPT_VISION_ROOT / "eval",
-    _PERCEPT_VISION_ROOT / "changelog.d",
-    _PERCEPT_VISION_ROOT.parent / "percept-edge" / "src",
-    _PERCEPT_VISION_ROOT.parent / "percept-edge" / "test",
-)
-_PUBLIC_TREE_FILES = (
-    _REPO_ROOT / "CHANGELOG.md",
-    _REPO_ROOT / "Makefile",
-    _REPO_ROOT / "README.md",
-    _PERCEPT_VISION_ROOT / "CHANGELOG.md",
-    _PERCEPT_VISION_ROOT / "README.md",
-    _PERCEPT_VISION_ROOT / "pyproject.toml",
-)
+_GITIGNORE_LOCAL_RULES = {"scr" + "atch/", "/" + "Spec" + "/"}
 
 
 def _iter_source_files() -> list[Path]:
@@ -125,26 +117,65 @@ _SOURCE_FILES = _iter_source_files()
 
 
 def _iter_public_text_files() -> list[Path]:
-    files = [path for path in _PUBLIC_TREE_FILES if path.is_file()]
-    for root in _PUBLIC_TREE_ROOTS:
-        if not root.is_dir():
-            continue
-        files.extend(
-            path
-            for path in root.rglob("*")
-            if path.is_file() and path.suffix.lower() in _PUBLIC_TEXT_SUFFIXES
-        )
-    return sorted(set(files))
+    """Return the authoritative public release surface from Git's tracked-file index.
+
+    Directory walking can silently omit a new public root and can accidentally inspect ignored local
+    material. In an installed artifact without Git metadata, fall back narrowly to shipped source.
+    """
+    completed = subprocess.run(
+        ["git", "-C", str(_REPO_ROOT), "ls-files", "-z"],
+        check=False,
+        capture_output=True,
+    )
+    if completed.returncode != 0:
+        return _SOURCE_FILES
+    return sorted(
+        _REPO_ROOT / raw.decode("utf-8")
+        for raw in completed.stdout.split(b"\0")
+        if raw
+    )
 
 
 def _context_hits(path: Path) -> list[tuple[int, str]]:
-    text = path.read_text(encoding="utf-8")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return []
     out: list[tuple[int, str]] = []
     for pattern in _PUBLIC_CONTEXT_PATTERNS:
         for match in pattern.finditer(text):
             line_no = text.count("\n", 0, match.start()) + 1
+            if path == _REPO_ROOT / ".gitignore":
+                line = text.splitlines()[line_no - 1].strip()
+                if line in _GITIGNORE_LOCAL_RULES:
+                    continue
             out.append((line_no, match.group(0)))
     return out
+
+
+def test_public_tree_scope_is_the_git_index():
+    completed = subprocess.run(
+        ["git", "-C", str(_REPO_ROOT), "ls-files", "-z"],
+        check=False,
+        capture_output=True,
+    )
+    if completed.returncode != 0:
+        pytest.skip("Git index is unavailable in the installed artifact")
+
+    indexed = {
+        _REPO_ROOT / raw.decode("utf-8")
+        for raw in completed.stdout.split(b"\0")
+        if raw
+    }
+    scanned = set(_iter_public_text_files())
+    assert scanned == indexed
+    assert {
+        _REPO_ROOT / "docs" / "demo" / "serve.py",
+        _REPO_ROOT / "eval" / "README.md",
+        _REPO_ROOT / "examples" / "byo_admission_detector.py",
+        _REPO_ROOT / "tools" / "build_architecture.py",
+        _REPO_ROOT / "packages" / "percept-vision" / "eval" / "BENCHMARKS.md",
+    } <= scanned
 
 
 def test_source_files_were_discovered():

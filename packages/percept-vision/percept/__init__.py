@@ -1,8 +1,7 @@
-"""percept — the open-source cognition layer for goal-driven, proactive vision agents.
+"""percept — programmable Watches for goal-driven perception over live multimodal streams.
 
-Public surface. The reactive watch loop, the three-state gate, the entity graph, and the goal
-registry are wired (Phase 1); identity/episodes, events/scheduler, the edge, and persistence land
-in later phases *beside* this core. See ``Spec/`` for the what/why and the implementation plan.
+This module exports the supported SDK surface: Watches, goals, the three-state gate, incidents,
+identity and episode contracts, runtime entrypoints, and component registries.
 """
 
 from __future__ import annotations

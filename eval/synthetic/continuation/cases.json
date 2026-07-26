@@ -1,5 +1,5 @@
 {
-  "about": "Card Y1 acceptance fixtures — subject / continuation / mutation are three decisions. Each case is a stream of observations carrying an explicit SUBJECT key (the Y5/Z3 judge-emitted key, stubbed here) against a per-concern EpisodePolicy. `expect.episodes` is the distinct-episode count; `expect.reasons` is the typed percept.episodes.CONTINUATION_REASONS trace, one per observation, in order.",
+  "about": "Acceptance fixtures proving that subject, continuation, and mutation are three decisions. Each case is a stream of observations carrying an explicit judge-emitted SUBJECT key (stubbed here) against a per-concern EpisodePolicy. `expect.episodes` is the distinct-episode count; `expect.reasons` is the typed percept.episodes.CONTINUATION_REASONS trace, one per observation, in order.",
   "cases": [
     {
       "name": "inside_gap_continues",

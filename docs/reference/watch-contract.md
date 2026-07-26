@@ -1,9 +1,8 @@
 # `watch()` — the frozen public contract
 
-`percept.watch(stream, goals, profile=None) -> AsyncIterator[WatchEvent]` is the **one stable,
-versioned entrypoint** every downstream MVP card builds on (implementation plan, epic E1):
-WatchProfiles (E2), resilience/SLOs (E1), the SDK front door (E6). It is a thin seam over the
-existing cognition core — `Percept.create()` + `Percept.perceive_judged()` — not a new firing path.
+`percept.watch(stream, goals, profile=None) -> AsyncIterator[WatchEvent]` is the stable, versioned
+entrypoint for direct frame-in / event-out integrations. It is a thin seam over the existing
+cognition core — `Percept.create()` + `Percept.perceive_judged()` — not a new firing path.
 **No detection behavior is hardcoded in `watch()` itself.**
 
 ```python
@@ -36,10 +35,11 @@ async def watch(
 - **`goals`** — the `Goal`s to watch; registered on the core before the first frame.
 - **`profile`** — OPTIONAL and deliberately **opaque today**. `WatchProfile` will bind
   `(environment, goal-type, state)` to the runtime's knobs (`salience_stat`, `plan_mode`, cadence,
-  gate config, ...) — the free variables of `Q(p | environment, goal, state)` (the documented implementation evidence). This card only reserves the seam. **The documented default (`profile=None`) is today's
+  gate config, ...) — the free variables of `Q(p | environment, goal, state)`. **The documented
+  default (`profile=None`) is today's
   `Settings`-driven behavior** (`percept.load_settings()`), unchanged. A bare `Settings` instance
   is also accepted as a minimal, non-behavior-changing pass-through (see
-  `percept.watch._settings_from_profile`) — everything else resolves to the default until P1 lands.
+  `percept.watch._settings_from_profile`) — unsupported profile objects resolve to the default.
 - **`percept`** — OPTIONAL, a pre-built `Percept` core to reuse (custom backends, state carried
   across calls). Omit it to get one built with `Percept.create()`.
 - **`source`** — the frame-source key; multi-camera setups pass distinct sources per `watch()` call.
@@ -97,6 +97,6 @@ capture, the tier-0 **motion gate** (the cheap "should we even look?" pre-filter
 health events, and reconnect/backpressure handling, yielding `Incident`s. `watch()` is the minimal
 seam underneath that richness — a direct frame-in / `WatchEvent`-out wrapper around the judge+gate
 core, with no tier-0 gating or capture management of its own. Use `run()` for a production camera
-worker today; `watch()` is the frozen contract other MVP cards (and simpler / non-camera streams)
-build on. A later card may layer `watch()` on top of `run()`'s tier-0 path once WatchProfiles (P1)
-land and can express that choice as a profile setting rather than a hardcoded default.
+worker today; `watch()` is the frozen contract simpler and non-camera integrations build on. A future
+compatible extension may layer it on `run()`'s tier-0 path when that choice can be expressed as a
+profile setting rather than a hardcoded default.

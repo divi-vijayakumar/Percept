@@ -33,8 +33,8 @@ from .anthropic_text import _CONDUCTOR_SYSTEM, _coerce_decision, _extract_json
 GEMINI_DEFAULT = "gemini-3.5-flash"  # GA flash (structured output + function calling); 2.5-flash hit
 # rate limits. Override via PERCEPT_*_MODEL=gemini-...
 
-# Item 2 process-QA: the eval-validated running-summary prompt (append-only + specificity-preserving —
-# beats the holistic single answer on temporally-spread process questions; see scratch/pvqa_process_ab).
+# Process-QA uses the eval-validated running-summary prompt: append-only and specificity-preserving,
+# it beats a holistic single answer on temporally spread process questions.
 _PROCESS_QA_SYSTEM = (
     "You are the perception backend for a proactive, always-on video assistant answering a standing "
     "PROCESS question (e.g. 'what are the steps to do X?'). The video arrives as a stream of short clips "
@@ -50,7 +50,7 @@ _PROCESS_QA_SYSTEM = (
     "satisfied=true once the running answer names at least one concrete step."
 )
 
-# Item 4 process-QA = log -> summarize -> wipe (eval-validated; scratch/pvqa_process_ab FINDINGS Run E).
+# Eval-validated process-QA lifecycle: log -> summarize -> wipe.
 # The model is NEVER shown the accumulated memory: per clip it reports ONE short delta (cheap, constant
 # output, no anchoring/truncation), appended to a per-concern LOG; a SINGLE summarize pass consolidates
 # the whole log (global dedup -> tight answer) on boundary/on-demand, then the log is wiped.

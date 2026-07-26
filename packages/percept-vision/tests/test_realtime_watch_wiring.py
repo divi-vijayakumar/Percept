@@ -10,8 +10,7 @@ These tests pin the contract both ways:
   * WITH regate (what `session.start()` sets for you) — it DOES fire (the fix).
 
 Mirrors the demo's composition exactly: ONE `core` shared between `run()` and the conductor that authors
-goals mid-run. Uses a scripted `FakeConductor` (the real gemini conductor authors the same goal_ops shape —
-verified live in scratch/watch_demo/check_conductor_authors.py).
+goals mid-run. A scripted `FakeConductor` emits the same `goal_ops` shape as the live conductor.
 """
 from __future__ import annotations
 

@@ -10,7 +10,7 @@ pull-only ``percept_state`` tool; transcripts flow up; ``speak`` renders fires; 
 component that needs engine portability, so it owns the seam: :class:`SpeechRequest` +
 :class:`VoiceEngine`. Swap Pipecat/Gemini-Live for LiveKit/OpenAI-Realtime by implementing the Protocol.
 
-**Audio fix (verified via scratch/watch_demo/test_wav_input.py):** Gemini's OWN auto-VAD handles turns
+**Audio behavior:** Gemini's own auto-VAD handles turns
 perfectly on a raw audio stream — so we do NOT put a Silero gate on the transport (that gate is what
 silenced the mic in the first live attempt). Audio flows straight to Gemini; Gemini decides turns.
 
@@ -100,7 +100,7 @@ _IMAGE = {"InputImageRawFrame", "UserImageRawFrame"}
 _AUDIO_IN = {"InputAudioRawFrame"}  # the browser mic frames — AEC'd in-browser before they arrive
 _IN_RATE, _OUT_RATE = 16000, 24000
 
-# Proven-working model (verified end-to-end in scratch/watch_demo/test_wav_input.py: hears + tool-calls).
+# Model verified end-to-end for audio input and tool calls.
 # When no model is passed, pipecat silently defaults to gemini-2.5-flash-native-audio-preview — a DIFFERENT
 # model class (native-audio, not the half-cascade live wire) that we never verified and that connects fine
 # but did not respond to mic audio. Always pin an explicit, verified live model.

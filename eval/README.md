@@ -1,11 +1,11 @@
 # eval — two tracks
 
-The golden corpus measures two different things (spec §9.1), so it lives in two places.
+The golden corpus separates local development fixtures from publication-eligible benchmark data.
 
 | Dir | What | Redistributable? | Tracked in git |
 |---|---|---|---|
 | `fixtures-golden/` | The hand-assembled dev fixture set (currently YouTube-sourced). Drives local L2 eval and iteration. | **No** — third-party YouTube, envelope-conflicting domains in places. Private fixture only. | Labels only; pixels git-ignored. |
-| `bench-staging/` | The real public benchmark set, to be built per spec §9.1. | **Yes** (that's the point). | Everything, once it exists. |
+| `bench-staging/` | Staging area for the licence-cleared public benchmark set. | **Yes** (that's the point). | Everything, once it exists. |
 
 ## Why the split
 
@@ -14,7 +14,7 @@ domain (produced/third-person vs first-person webcam) and not redistributable. T
 `fixtures-golden/` violates that, so it can never feed `percept-bench`. It is still useful as a
 *private* dev fixture; it is walled off here so it can't leak into a public release by accident.
 
-## What `bench-staging/` needs (per spec §9.1)
+## What `bench-staging/` needs
 
 - **Benchmark axes** (proactiveness / events / counting / latency) → existing public datasets, **no
   collection**: Ego4D, Epic-Kitchens (egocentric; action start/end = rising/falling edges),

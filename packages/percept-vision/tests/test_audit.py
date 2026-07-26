@@ -1,4 +1,4 @@
-"""L1: the false-serve audit hook + cache-enabled wiring (spec §4.1, §6.2).
+"""L1: the false-serve audit hook and cache-enabled wiring.
 
 False-serve is the cache's analog of false-fire: on a cache HIT, re-perceive an ``audit_rate``
 fraction through real vision and compare; a divergence is a **false-serve** and the fresh read

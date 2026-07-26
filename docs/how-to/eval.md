@@ -57,7 +57,7 @@ For every concern under test the report gives:
 |---|---|
 | **precision** | of the fires this concern emitted, the fraction that were right (`TP / (TP+FP)`). `1 − false-fire-rate`. |
 | **recall** | of the moments it *should* have fired, the fraction it caught (`TP / (TP+FN)`). |
-| **false_fire** | absolute count of fires that aligned to no labelled edge — the **trust gate** (spec §0). |
+| **false_fire** | absolute count of fires that aligned to no labelled edge — the primary **trust gate**. |
 | **false_fire_rate** | `FP / fires` — the fraction of emitted fires that were wrong. |
 | **refuse_rate** | `asks / (fires + asks)` — how often the gate declined to guess (ASK) rather than fire. |
 
