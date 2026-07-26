@@ -13,7 +13,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from percept import bench
-from eval.bench import card
+from eval.bench import card as snapshot
 from eval.bench.types import (
     TRACK_RESULT_SCHEMA_V2,
     Measurement,
@@ -112,7 +112,7 @@ class TestPublicBenchShim(unittest.TestCase):
             reconciliation={"final_inflight": 0},
             quality_gates=[{"id": "fixture", "status": "pass"}],
         )
-        self.assertEqual(card.stamp_of("full", [result], "manifest sha256:abc"), "RELEASE")
+        self.assertEqual(snapshot.stamp_of("full", [result], "manifest sha256:abc"), "RELEASE")
 
     def test_pt_release_requires_versioned_qualification_envelope(self):
         legacy = TrackResult(
@@ -128,13 +128,13 @@ class TestPublicBenchShim(unittest.TestCase):
             qualifying_events=1,
         )
         self.assertEqual(
-            card.stamp_of("full", [legacy], "manifest sha256:abc"),
+            snapshot.stamp_of("full", [legacy], "manifest sha256:abc"),
             "DRAFT",
         )
         self.assertTrue(
             any(
                 "track_result/2" in reason
-                for reason in card.release_blockers([legacy])
+                for reason in snapshot.release_blockers([legacy])
             )
         )
 
@@ -164,7 +164,7 @@ class TestPublicBenchShim(unittest.TestCase):
             quality_gates=[{"id": "boundedness", "status": "blocked"}],
         )
 
-        blockers = card.release_blockers([result])
+        blockers = snapshot.release_blockers([result])
 
         self.assertTrue(any("denominator must be positive" in item for item in blockers))
         self.assertTrue(any("boundedness=blocked" in item for item in blockers))
@@ -224,8 +224,8 @@ class TestPublicBenchShim(unittest.TestCase):
             cells={("raw", "precision"): 1.0},
             coverage=[{"dataset": "x", "expected": 1, "observed": 1, "failed": 0, "skipped": 0}],
         )
-        self.assertEqual(card.stamp_of("full", [diagnostic], "manifest sha256:abc"), "DRAFT")
-        self.assertEqual(card.stamp_of("full", [legacy], "manifest sha256:abc"), "DRAFT")
+        self.assertEqual(snapshot.stamp_of("full", [diagnostic], "manifest sha256:abc"), "DRAFT")
+        self.assertEqual(snapshot.stamp_of("full", [legacy], "manifest sha256:abc"), "DRAFT")
 
     def test_scorecard_renders_long_track_names_readably(self):
         result = TrackResult(
@@ -233,7 +233,7 @@ class TestPublicBenchShim(unittest.TestCase):
             cells={("e2e", "pauc@0.5_proxy"): 33.5},
             measured=["e2e:pauc@0.5_proxy"],
         )
-        text = card.render_card([result])
+        text = snapshot.render_card([result])
         self.assertIn("proactiveqa-e2e  pauc@0.5_proxy", text)
 
     def test_scorecard_renders_v2_measurement_semantics_and_gates(self):
@@ -256,7 +256,7 @@ class TestPublicBenchShim(unittest.TestCase):
             quality_gates=[{"id": "reconciliation", "status": "pass"}],
         )
 
-        text = card.render_card([result])
+        text = snapshot.render_card([result])
 
         self.assertIn(
             "watch-e2e:percept.benchmark.track_result/2",
@@ -371,7 +371,7 @@ class TestPublicBenchShim(unittest.TestCase):
         self.assertIn("AUDIT FAILED", buf.getvalue())
 
     def test_release_gate_rejects_empty_incomplete_and_non_vacuous_results(self):
-        self.assertEqual(card.stamp_of("full", [], "manifest sha256:abc"), "DRAFT")
+        self.assertEqual(snapshot.stamp_of("full", [], "manifest sha256:abc"), "DRAFT")
         incomplete = TrackResult(
             track="watch-e2e",
             cells={("e2e", "notification_recall"): None},
@@ -392,17 +392,17 @@ class TestPublicBenchShim(unittest.TestCase):
             coverage=[{"dataset": "x", "expected": 1, "observed": 1}],
         )
         for result in (incomplete, no_fire, modeled):
-            self.assertEqual(card.stamp_of("full", [result], "manifest sha256:abc"), "DRAFT")
+            self.assertEqual(snapshot.stamp_of("full", [result], "manifest sha256:abc"), "DRAFT")
 
     def test_scorecard_execution_rejects_failed_or_all_empty_results(self):
-        self.assertTrue(card.execution_blockers([]))
+        self.assertTrue(snapshot.execution_blockers([]))
         self.assertTrue(
-            card.execution_blockers(
+            snapshot.execution_blockers(
                 [TrackResult(track="watch", cells={("e2e", "recall"): None})]
             )
         )
         self.assertTrue(
-            card.execution_blockers(
+            snapshot.execution_blockers(
                 [
                     TrackResult(
                         track="watch",
