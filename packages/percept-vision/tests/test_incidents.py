@@ -4,7 +4,7 @@ from __future__ import annotations
 import unittest
 
 from percept.events import FrameWindow
-from percept.incidents import make_incident, snippet_from_window
+from percept.incidents import incident_judgment, make_incident, snippet_from_window
 from percept.contracts import Incident, IncidentSnippet, Verdict
 from percept.runtime.sinks import incident_payload
 
@@ -41,6 +41,16 @@ class MakeIncidentTests(unittest.TestCase):
         inc = make_incident(_Fire("g", "hi"), ts=1.0, id="X-1", snippet=snip)
         self.assertEqual(inc.id, "X-1")
         self.assertIs(inc.snippet, snip)
+
+    def test_preserves_exact_runtime_local_judgment(self):
+        judgment = object()
+        fire = _Fire("g", "hi")
+        fire.judgment = judgment
+
+        incident = make_incident(fire, ts=1.0)
+
+        self.assertIs(incident_judgment(incident), judgment)
+        self.assertNotIn("_judgment", incident_payload(incident))
 
 
 class IncidentEntityIdTests(unittest.TestCase):

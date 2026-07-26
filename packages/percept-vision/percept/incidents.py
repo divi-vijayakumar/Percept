@@ -111,6 +111,12 @@ def make_incident(
     # above by design: this mirror predates them and nothing here changes its meaning.
     incident._revision_id = revision_id  # type: ignore[attr-defined]
     incident._supersedes = supersedes  # type: ignore[attr-defined]
+    # Preserve the exact in-process JudgmentEvent (including its four-clock
+    # timing) for local subscribers and benchmark qualification. The public
+    # wire Incident already carries the stable judgment_event_id/evidence_seq
+    # link; this private annotation avoids a schema change while ensuring the
+    # production runtime path does not discard action-to-fire timing.
+    incident._judgment = judgment  # type: ignore[attr-defined]
     # The SHADOW advisory (resolved subject + proposed EpisodeFoldResult), attached as a
     # RUNTIME-LOCAL annotation exactly like the revision link above: the WIRE Incident stays frozen (no
     # schema bump, no webhook-payload change), and a consumer that ignores it sees byte-for-byte
@@ -142,6 +148,11 @@ def incident_supersedes(incident: Any) -> str | None:
     """The PRIOR revision id this incident supersedes (a replace/retract correction), or ``None`` for
     an original ("provisional") incident. Runtime-local annotation."""
     return getattr(incident, "_supersedes", None)
+
+
+def incident_judgment(incident: Any) -> Any:
+    """Return the runtime-local JudgmentEvent carried by an Incident, if any."""
+    return getattr(incident, "_judgment", None)
 
 
 def incident_shadow(incident: Any) -> dict | None:
