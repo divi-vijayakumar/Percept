@@ -236,6 +236,39 @@ class TestPublicBenchShim(unittest.TestCase):
         text = card.render_card([result])
         self.assertIn("proactiveqa-e2e  pauc@0.5_proxy", text)
 
+    def test_scorecard_renders_v2_measurement_semantics_and_gates(self):
+        result = TrackResult(
+            track="watch-e2e",
+            cells={("e2e", "notification_recall"): 1.0},
+            measured=["e2e:notification_recall"],
+            schema_version=TRACK_RESULT_SCHEMA_V2,
+            contract={"path": "compiled-runtime"},
+            measurements={
+                "occurrence_recall": Measurement(
+                    value=1.0,
+                    unit="ratio",
+                    conditioning="all positive occurrences",
+                    numerator=2,
+                    denominator=2,
+                )
+            },
+            reconciliation={"fires": 2, "incidents": 2},
+            quality_gates=[{"id": "reconciliation", "status": "pass"}],
+        )
+
+        text = card.render_card([result])
+
+        self.assertIn(
+            "watch-e2e:percept.benchmark.track_result/2",
+            text,
+        )
+        self.assertIn(
+            "watch-e2e:occurrence_recall "
+            "[ratio; all positive occurrences; denominator=2]",
+            text,
+        )
+        self.assertIn("watch-e2e:reconciliation=pass", text)
+
     def test_audit_subcommand_accepts_draft_artifacts(self):
         with TemporaryDirectory() as d:
             manifest = Path(d) / "MANIFEST.json"

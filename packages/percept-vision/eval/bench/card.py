@@ -104,6 +104,21 @@ def render_card(results: list[TrackResult], *, mode: str = "sampled", backend: s
     modeled = sorted({m for r in results for m in r.modeled})
     excluded = [e for r in results for e in r.excluded]
     statuses = [f"{r.track}:{r.status}" for r in results]
+    schemas = [f"{r.track}:{r.schema_version}" for r in results]
+    quality_gates = [
+        f"{r.track}:{gate.get('id', '(unnamed)')}={gate.get('status', '?')}"
+        for r in results
+        for gate in r.quality_gates
+    ]
+    measurements = [
+        (
+            f"{r.track}:{label} "
+            f"[{measurement.unit}; {measurement.conditioning}; "
+            f"denominator={measurement.denominator}]"
+        )
+        for r in results
+        for label, measurement in r.normalized_measurements().items()
+    ]
     coverage = []
     for r in results:
         for c in r.normalized_coverage():
@@ -120,6 +135,9 @@ def render_card(results: list[TrackResult], *, mode: str = "sampled", backend: s
         f"  modeled  : {modeled}   # non-dense modeled cells block RELEASE; dense-modeled is cost reference only",
         f"  excluded : {excluded}",
         f"  track-status : {statuses}",
+        f"  result-schema : {schemas}",
+        f"  typed-measurements : {measurements}",
+        f"  quality-gates : {quality_gates}",
         f"  coverage : {coverage}",
         f"  release-blockers : {blockers}",
         "", "## References",
