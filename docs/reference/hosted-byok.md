@@ -66,8 +66,12 @@ path must also declare `capability="vision.judge.fused"` and pass both `frame=` 
 Plain `capability="vision.judge"` requires an image and forbids audio for every provider; audio-only
 input is not part of this contract. OpenRouter accepts exact `vendor/model` ids and does not advertise
 the fused capability. The anchor, temporal `frames`, exemplar, and audio carriers are validated by
-media kind before construction. Gemini fused requests reject process/observe context subroutes that
-would omit their audio instead of silently downgrading to image-only judgment.
+media kind before construction. A typed `AudioFrame` must be exact, contain exactly one non-empty
+PCM or encoded payload, have valid rate/layout/format metadata, and use an explicit `audio/*` MIME for
+encoded bytes; missing or non-audio encoded MIME is rejected before a client is constructed. Contract
+1.0 rejects the presence (even a false value) of reserved control keys such as `process_qa`,
+`observe_step`, `running_answer`, `claim_mode`, `extractor`, and `judge_static_context` rather than
+silently routing into an unadvertised provider subprotocol.
 
 A fused request-bound Gemini adapter composes with a normal compiled `WatchPlan(sense="fused")`.
 Watch preparation captures the immutable request and trusted Hosted BYOK dispatch in the runtime's
@@ -78,10 +82,31 @@ OpenRouter request cannot declare fused capability.
 both are supplied, the earlier limit wins. Omitting both uses the contract's 120-second safety ceiling.
 `asyncio.Event` implements the public cancellation protocol. Cancelling the calling task also cancels
 the provider task. The deadline bounds result acceptance and cancellation initiation, not cleanup
-latency. Python cannot forcibly terminate an in-process coroutine that suppresses cancellation, so
-`judge` does not return or release invocation ownership until the actual provider coroutine and all
-client/backend teardown have completed. Callers that protect the credential lease or rotation with a
-lifecycle guard must hold (and, where applicable, renew) that guard for the complete `await`.
+latency. The SDK installs a ref-counted, context-scoped asyncio task recorder for the complete call:
+provider/client/close descendant tasks are cancelled and joined before any accepted, cancelled, or
+timeout outcome is released. A close getter, non-callable close, or close exception produces the fixed
+fail-closed provider error only after this task scope has drained. Concurrent Hosted BYOK calls use
+separate scopes; the loop's original task factory is restored after the last scope exits. If the host
+already installed a task factory, Hosted BYOK refuses before provider construction rather than replacing
+it and claiming containment.
+
+This is **asyncio-task containment**, not a general thread/process kill switch. The reviewed production
+Gemini/OpenRouter async transports must not start unmanaged threads, executors, subprocesses, or raw
+background work for a Hosted BYOK invocation. The injected client/backend callbacks are deterministic
+test/review seams, not a supported Cloud isolation mechanism; a Cloud deployment using a transport that
+can create such work must run the whole credential-bearing call in a separately supervised process and
+terminate/join that process before releasing its lease. The SDK deliberately makes no promise that it
+can stop arbitrary foreign threads in-process. Callers that protect a credential lease or rotation with
+a lifecycle guard must hold (and, where applicable, renew) that guard for the complete `await`.
+
+Cloud can enforce that rule mechanically. `factory.transport_safety(request)` returns the immutable
+`HostedByokTransportSafety`: built-in routes are classified `sdk_async_allowlist`; any injected backend
+or client route is classified `injected_foreign_work` and sets `requires_process_supervisor=True`.
+Construct a Cloud factory with `require_process_supervisor_for_foreign_work=True` and a
+`HostedByokProcessSupervisor` whose `is_available()` reports the external supervisor's live status.
+The SDK then rejects an unsafe route before any provider/client construction when that supervisor is
+absent or unavailable. This check is deliberately a Cloud policy gate; it does not pretend an arbitrary
+in-process callback can be force-killed.
 
 Provider construction is synchronous and included in the monotonic deadline accounting: an
 over-budget construction is rejected when it returns, before any provider task is scheduled.
@@ -102,10 +127,12 @@ The explicit path:
 - requires the caller to rotate `credential_lease_id` when the opaque credential rotates;
 - excludes the credential from request repr, equality, and hashing, and makes the request unhashable;
 - forwards neither vendor exception text nor exception chaining, since a client error may echo headers;
-- recursively rejects any returned `Verdict` whose public fields contain the opaque credential;
+- accepts only an exact SDK `Verdict`, recursively rejects opaque mapping/subclass carriers, and rejects
+  any approved public carrier containing the opaque credential;
 - records a client as soon as construction acquires it, including partial backend construction;
 - completes invocation-local client/backend closure after success, failure, timeout, or cancellation;
-- leaves no provider, cancellation-watcher, close task, or thread running after `judge` returns; and
+- leaves no tracked provider, cancellation-watcher, close task, or asyncio descendant worker running
+  after `judge` returns (see the process-isolation requirement above for foreign work); and
 - never serializes or persists the request or credential.
 
 Principal and lease ids are non-secret isolation/audit identities; the provider credential is not.

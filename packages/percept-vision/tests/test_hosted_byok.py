@@ -7,6 +7,7 @@ import json
 import time
 from dataclasses import FrozenInstanceError
 from types import SimpleNamespace
+from collections import UserDict
 
 import pytest
 
@@ -19,6 +20,7 @@ from percept import (
     HostedByokDeadlineExceeded,
     HostedByokGeminiClient,
     HostedByokInvocationError,
+    HostedByokTransportSafety,
     HostedByokRequest,
     HostedByokUnsupportedError,
     Goal,
@@ -29,6 +31,7 @@ from percept.contracts import AudioFrame, WatchPlan
 from percept.config import Settings
 from percept.harness.tier0 import gray_frame
 from percept.runtime.worker import run
+from percept.audio_input import prepare_audio_judge_binding
 from percept.watchplan_apply import apply_watch_plan
 
 SECRET_A = "sk-secret-a-never-disclose"
@@ -360,6 +363,24 @@ def test_credential_in_any_verdict_carrier_fails_closed_without_echo(
     assert str(raised.value) == "hosted_byok_provider_failure"
     assert SECRET_A not in str(raised.value)
     assert raised.value.__cause__ is None
+
+
+def test_verdict_subclasses_and_opaque_mapping_carriers_fail_closed():
+    class VerdictSubclass(Verdict):
+        pass
+
+    class OpaqueUsage(UserDict):
+        pass
+
+    for result in (
+        VerdictSubclass(True, 0.99, "safe"),
+        Verdict(True, 0.99, "safe", usage=OpaqueUsage({"safe": 1})),
+    ):
+        hosted = HostedByokAdapterFactory(
+            backend_factories={"openrouter": lambda request, timeout, result=result: _Backend(result)}
+        )
+        with pytest.raises(HostedByokInvocationError, match="hosted_byok_provider_failure"):
+            asyncio.run(hosted.judge(_request(), "condition", b"frame"))
 
 
 @pytest.mark.parametrize("provider", ["gemini", "openrouter"])
@@ -731,6 +752,225 @@ def test_sync_client_close_runs_inline_and_finishes_before_return():
     assert effects == ["closed"]
 
 
+def test_raising_client_close_contains_internal_worker_before_fail_closed_return():
+    release = asyncio.Event()
+    close_started = asyncio.Event()
+    effects: list[str] = []
+
+    class RaisingCloseClient(_OpenRouterClient):
+        async def close(self):
+            close_started.set()
+
+            async def internal_worker():
+                try:
+                    await asyncio.sleep(60)
+                except asyncio.CancelledError:
+                    await release.wait()
+                    effects.append("internal-worker-finished")
+
+            asyncio.create_task(internal_worker())
+            raise RuntimeError("close failure after internal worker launch")
+
+    async def run_case():
+        task = asyncio.create_task(
+            HostedByokAdapterFactory(
+                openrouter_client_factory=lambda request, timeout: RaisingCloseClient()
+            ).judge(_request(), "condition", b"frame")
+        )
+        await close_started.wait()
+        await asyncio.sleep(0.02)
+        assert not task.done()
+        assert effects == []
+        release.set()
+        with pytest.raises(HostedByokInvocationError, match="hosted_byok_provider_failure"):
+            await task
+        assert effects == ["internal-worker-finished"]
+        await asyncio.sleep(0)
+        assert effects == ["internal-worker-finished"]
+        assert {
+            pending for pending in asyncio.all_tasks() if pending is not asyncio.current_task()
+        } == set()
+
+    asyncio.run(run_case())
+
+
+@pytest.mark.parametrize("close_value", [object(), property(lambda self: (_ for _ in ()).throw(RuntimeError()))])
+def test_malformed_backend_close_fails_closed(close_value):
+    class BadCloseBackend(_Backend):
+        close = close_value
+
+    hosted = HostedByokAdapterFactory(
+        backend_factories={"openrouter": lambda request, timeout: BadCloseBackend()}
+    )
+    with pytest.raises(HostedByokInvocationError, match="hosted_byok_provider_failure"):
+        asyncio.run(hosted.judge(_request(), "condition", b"frame"))
+
+
+def test_cancelled_close_gets_fail_closed_only_after_scope_teardown():
+    class CancelledCloseBackend(_Backend):
+        def close(self):
+            raise asyncio.CancelledError()
+
+    hosted = HostedByokAdapterFactory(
+        backend_factories={"openrouter": lambda request, timeout: CancelledCloseBackend()}
+    )
+    with pytest.raises(HostedByokInvocationError, match="hosted_byok_provider_failure"):
+        asyncio.run(hosted.judge(_request(), "condition", b"frame"))
+
+
+def test_overlapping_invocations_keep_task_scopes_isolated_and_restore_loop_factory():
+    first_done = asyncio.Event()
+    allow_second_worker = asyncio.Event()
+    second_worker_started = asyncio.Event()
+    second_worker_finished = asyncio.Event()
+    release_second = asyncio.Event()
+    external_started = asyncio.Event()
+    release_external = asyncio.Event()
+
+    class Backend:
+        def __init__(self, principal):
+            self.principal = principal
+
+        async def judge(self, condition, frame, **kwargs):
+            if self.principal == "first":
+                await asyncio.sleep(0)
+                first_done.set()
+                return Verdict(True, 0.9, "first")
+            await first_done.wait()
+            await allow_second_worker.wait()
+
+            async def worker():
+                second_worker_started.set()
+                try:
+                    await asyncio.sleep(60)
+                except asyncio.CancelledError:
+                    await release_second.wait()
+                    second_worker_finished.set()
+
+            asyncio.create_task(worker())
+            await second_worker_started.wait()
+            await asyncio.sleep(60)
+
+    async def run_case():
+        loop = asyncio.get_running_loop()
+        assert loop.get_task_factory() is None
+        hosted = HostedByokAdapterFactory(
+            backend_factories={"openrouter": lambda request, timeout: Backend(request.principal_id)}
+        )
+        first = asyncio.create_task(hosted.judge(_request(principal="first"), "first", b"frame"))
+        second = asyncio.create_task(hosted.judge(_request(principal="second"), "second", b"frame"))
+        assert (await first).evidence == "first"
+        # The first scope has restored nothing yet: the overlapping second invocation still owns
+        # the shared dispatcher and may create its worker after the first result is accepted.
+        assert loop.get_task_factory() is not None
+        allow_second_worker.set()
+        await second_worker_started.wait()
+
+        async def unrelated_host_task():
+            external_started.set()
+            await release_external.wait()
+            return "host-owned"
+
+        external_during_scope = asyncio.create_task(unrelated_host_task())
+        await external_started.wait()
+        second.cancel()
+        await asyncio.sleep(0.02)
+        assert not second.done()
+        assert not second_worker_finished.is_set()
+        release_second.set()
+        with pytest.raises(asyncio.CancelledError):
+            await second
+        assert second_worker_finished.is_set()
+        assert not external_during_scope.done()
+        release_external.set()
+        assert await external_during_scope == "host-owned"
+        assert loop.get_task_factory() is None
+        marker = []
+        external = asyncio.create_task(asyncio.sleep(0, result=marker))
+        external.add_done_callback(lambda _task: marker.append("ok"))
+        await external
+        await asyncio.sleep(0)
+        assert marker == ["ok"]
+
+    asyncio.run(run_case())
+
+
+def test_existing_loop_task_factory_is_not_clobbered_and_fails_before_construction():
+    async def run_case():
+        loop = asyncio.get_running_loop()
+        constructed = False
+
+        def existing_factory(factory_loop, coroutine, context=None):
+            if context is None:
+                return asyncio.tasks.Task(coroutine, loop=factory_loop)
+            return asyncio.tasks.Task(coroutine, loop=factory_loop, context=context)
+
+        loop.set_task_factory(existing_factory)
+        try:
+            hosted = HostedByokAdapterFactory(
+                backend_factories={
+                    "openrouter": lambda request, timeout: (_ for _ in ()).throw(
+                        AssertionError("must not construct")
+                    )
+                }
+            )
+            with pytest.raises(HostedByokContractError, match="task factory"):
+                await hosted.judge(_request(), "condition", b"frame")
+            assert loop.get_task_factory() is existing_factory
+            assert not constructed
+        finally:
+            loop.set_task_factory(None)
+
+    asyncio.run(run_case())
+
+
+def test_cloud_foreign_transport_supervisor_gate_is_machine_checkable_before_construction():
+    constructed = False
+
+    class Supervisor:
+        def __init__(self, available):
+            self.available = available
+
+        def is_available(self):
+            return self.available
+
+    def factory(request, timeout):
+        nonlocal constructed
+        constructed = True
+        return _Backend()
+
+    request = _request()
+    assert HostedByokAdapterFactory().transport_safety(request) == HostedByokTransportSafety(
+        provider="openrouter",
+        transport_class="sdk_async_allowlist",
+        asyncio_task_contained=True,
+        requires_process_supervisor=False,
+    )
+    strict = HostedByokAdapterFactory(
+        backend_factories={"openrouter": factory},
+        require_process_supervisor_for_foreign_work=True,
+        process_supervisor=Supervisor(False),
+    )
+    safety = strict.transport_safety(request)
+    assert safety == HostedByokTransportSafety(
+        provider="openrouter",
+        transport_class="injected_foreign_work",
+        asyncio_task_contained=True,
+        requires_process_supervisor=True,
+    )
+    with pytest.raises(HostedByokContractError, match="process supervisor"):
+        asyncio.run(strict.judge(request, "condition", b"frame"))
+    assert not constructed
+
+    permitted = HostedByokAdapterFactory(
+        backend_factories={"openrouter": factory},
+        require_process_supervisor_for_foreign_work=True,
+        process_supervisor=Supervisor(True),
+    )
+    assert asyncio.run(permitted.judge(request, "condition", b"frame")).satisfied
+    assert constructed
+
+
 @pytest.mark.parametrize("provider", ["gemini", "openrouter"])
 def test_acquired_client_closes_when_backend_constructor_fails(monkeypatch, provider):
     clients = []
@@ -1046,6 +1286,71 @@ def test_media_and_context_routes_cannot_widen_or_discard_declared_capability(
     assert constructions == 0
 
 
+@pytest.mark.parametrize(
+    "audio",
+    [
+        AudioFrame(pcm=b"", encoded=b"RIFF", mime=None),
+        AudioFrame(pcm=b"", encoded=b"RIFF", mime="image/jpeg"),
+        AudioFrame(pcm=b"raw", sample_rate=0),
+        AudioFrame(pcm=b"raw", channels=0),
+        AudioFrame(pcm=b"raw", sample_format="not-pcm"),
+        AudioFrame(pcm=b"raw", mime="audio/wav"),
+        AudioFrame(pcm=b"raw", t_start=2.0, t_end=1.0),
+    ],
+)
+def test_fused_typed_audio_rejects_invalid_mime_metadata_or_modality_before_construction(audio):
+    constructions = 0
+
+    def factory(request, timeout):
+        nonlocal constructions
+        constructions += 1
+        return _Backend()
+
+    with pytest.raises(HostedByokUnsupportedError):
+        asyncio.run(
+            HostedByokAdapterFactory(backend_factories={"gemini": factory}).judge(
+                _request(
+                    provider="gemini",
+                    model="gemini-3.5-flash",
+                    capability="vision.judge.fused",
+                ),
+                "condition",
+                b"frame",
+                audio=audio,
+            )
+        )
+    assert constructions == 0
+
+
+@pytest.mark.parametrize(
+    "reserved_key",
+    ["process_qa", "observe_step", "running_answer", "claim_mode", "extractor", "judge_static_context"],
+)
+def test_reserved_context_key_presence_rejects_even_false_values_before_construction(reserved_key):
+    constructions = 0
+
+    def factory(request, timeout):
+        nonlocal constructions
+        constructions += 1
+        return _Backend()
+
+    with pytest.raises(HostedByokUnsupportedError, match="reserved context"):
+        asyncio.run(
+            HostedByokAdapterFactory(backend_factories={"gemini": factory}).judge(
+                _request(
+                    provider="gemini",
+                    model="gemini-3.5-flash",
+                    capability="vision.judge.fused",
+                ),
+                "condition",
+                b"frame",
+                audio=AudioFrame(pcm=b"\x01\x00", sample_rate=16_000),
+                context={reserved_key: False},
+            )
+        )
+    assert constructions == 0
+
+
 def test_fake_backend_receives_frames_context_and_exact_declared_modalities():
     backends: list[_Backend] = []
 
@@ -1271,6 +1576,47 @@ def test_fused_bound_adapter_arms_real_watchplan_and_runtime_uses_fake_transport
     assert any(part[1] == "audio/wav" for part in call["contents"] if isinstance(part, tuple))
 
 
+def test_compiled_fused_binding_captures_factory_route_before_poison_mutation(monkeypatch):
+    routed: list[str] = []
+
+    def accepted_route(request, timeout):
+        routed.append("accepted")
+        return _Backend(Verdict(True, 0.9, "sealed"))
+
+    hosted = HostedByokAdapterFactory(backend_factories={"gemini": accepted_route})
+    vision = hosted.bind(
+        _request(
+            provider="gemini",
+            model="gemini-3.5-flash",
+            capability="vision.judge.fused",
+        )
+    )
+    binding = prepare_audio_judge_binding(
+        vision,
+        mode="fused",
+        application_key="compiled-test",
+    )
+    hosted._backend_factories["gemini"] = lambda request, timeout: (_ for _ in ()).throw(
+        AssertionError("poisoned route")
+    )
+    hosted._build_invocation = lambda *args: (_ for _ in ()).throw(AssertionError("poisoned helper"))
+    monkeypatch.setattr(
+        HostedByokAdapterFactory,
+        "_build_invocation",
+        lambda *args: (_ for _ in ()).throw(AssertionError("poisoned class helper")),
+    )
+
+    verdict = asyncio.run(
+        binding.dispatch(
+            "condition",
+            b"frame",
+            audio=AudioFrame(pcm=b"\x01\x00", sample_rate=16_000),
+        )
+    )
+    assert verdict.evidence == "sealed"
+    assert routed == ["accepted"]
+
+
 def test_public_exports_are_cloud_usable():
     expected = {
         "HOSTED_BYOK_CONTRACT_VERSION",
@@ -1279,6 +1625,8 @@ def test_public_exports_are_cloud_usable():
         "HostedByokVision",
         "HostedByokCancelled",
         "HostedByokDeadlineExceeded",
+        "HostedByokProcessSupervisor",
+        "HostedByokTransportSafety",
         "HostedByokUnsupportedError",
     }
     assert expected <= set(percept.__all__)

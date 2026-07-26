@@ -707,11 +707,17 @@ _TRUSTED_HOSTED_BYOK_FACTORY_METHODS = {
         "_build_gemini",
         "_build_openrouter",
         "_claim_injected",
+        "transport_safety",
+        "_assert_transport_permitted",
         "_settle_task",
         "_close_invocation",
+        "seal_fused_dispatch",
     )
 }
 _TRUSTED_HOSTED_BYOK_FACTORY_JUDGE = _TRUSTED_HOSTED_BYOK_FACTORY_METHODS["judge"]
+_TRUSTED_HOSTED_BYOK_FACTORY_SEAL = _TRUSTED_HOSTED_BYOK_FACTORY_METHODS[
+    "seal_fused_dispatch"
+]
 
 # ``GeminiVision.judge`` intentionally lazy-loads its provider and uses module helpers. Capturing
 # only the outer function would therefore leave several dynamic lookup paths that code mutating the
@@ -1045,20 +1051,11 @@ def _prepare_hosted_byok_dispatch(adapter: Any) -> Callable[..., Awaitable[Any]]
     if not dependencies_intact():
         raise ValueError("compiled Hosted BYOK audio rejects a class-level factory mutation")
 
-    # Capture both immutable request identity and the reviewed factory implementation. Runtime
-    # dispatch never re-reads ``core.vision``, ``adapter.judge``, or adapter slots, so swapping a
-    # bound adapter after Watch preparation cannot redirect this credential-bearing route.
-    async def dispatch(*args: Any, **kwargs: Any) -> Any:
-        if not dependencies_intact():
-            raise RuntimeError("compiled Hosted BYOK audio dispatch dependency was mutated")
-        return await _TRUSTED_HOSTED_BYOK_FACTORY_JUDGE(
-            factory,
-            request,
-            *args,
-            **kwargs,
-        )
-
-    return dispatch
+    # The factory returns a private frozen snapshot: its callback routing, deadline helpers and
+    # implementation methods are captured now.  Runtime intentionally does not re-check the live
+    # factory class or map, because a post-compile mutation must not redirect an already accepted
+    # credential-bearing dispatch.
+    return _TRUSTED_HOSTED_BYOK_FACTORY_SEAL(factory, request)
 
 
 def prepare_audio_judge_binding(

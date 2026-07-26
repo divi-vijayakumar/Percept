@@ -189,7 +189,9 @@ from .hosted_byok import (  # noqa: E402
     HostedByokError,
     HostedByokGeminiClient,
     HostedByokInvocationError,
+    HostedByokProcessSupervisor,
     HostedByokRequest,
+    HostedByokTransportSafety,
     HostedByokUnsupportedError,
     HostedByokVision,
 )
@@ -310,6 +312,8 @@ __all__ = [
     "HostedByokDeadlineExceeded",
     "HostedByokCancelled",
     "HostedByokInvocationError",
+    "HostedByokProcessSupervisor",
+    "HostedByokTransportSafety",
     # DTOs
     "Box",
     "Observation",
