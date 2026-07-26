@@ -14,15 +14,19 @@ from types import SimpleNamespace as NS
 from unittest.mock import patch
 
 from eval.bench import perception_test as pt
+from eval.bench import track_perception_test_e2e as pt_track
 from eval.bench.budget import (
     BudgetExceeded,
+    BudgetPlanError,
     build_budget_enforcer,
+    validate_budget_plan,
 )
 from eval.bench.track_perception_test_e2e import (
     EventRun,
     _call_reductions,
     _decision_observation,
     _event_precision,
+    _fire_records,
     _median,
     _precision,
 )
@@ -105,6 +109,18 @@ def _enforcer(**kwargs):
 
 
 class BudgetAdmissionTests(unittest.TestCase):
+    def test_non_finite_plan_numbers_are_rejected(self):
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value):
+                plan = json.loads(_plan())
+                plan["caps"]["usd"] = value
+                with self.assertRaisesRegex(BudgetPlanError, "caps.usd must be positive"):
+                    validate_budget_plan(
+                        json.dumps(plan),
+                        provider="openrouter",
+                        model="qwen/qwen3-vl-32b-instruct",
+                    )
+
     def test_request_cap_stops_before_a_second_transport(self):
         budget = _enforcer(requests=1)
         first = budget.begin_attempt()
@@ -158,6 +174,53 @@ class BudgetAdmissionTests(unittest.TestCase):
         self.assertAlmostEqual(snapshot["billed_usd"], 0.11)
         with self.assertRaisesRegex(BudgetExceeded, "token budget exhausted"):
             budget.begin_attempt()
+
+    def test_non_finite_billed_cost_is_rejected_and_reservation_retained(self):
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value):
+                budget = _enforcer()
+                reservation = budget.begin_attempt()
+                with self.assertRaisesRegex(BudgetExceeded, "invalid token or billed-cost"):
+                    budget.complete_attempt(
+                        reservation,
+                        {
+                            "input_tokens": 20,
+                            "output_tokens": 10,
+                            "cost_usd": value,
+                        },
+                    )
+                snapshot = budget.snapshot()
+                self.assertEqual(snapshot["failed_attempts"], 1)
+                self.assertEqual(snapshot["metered_attempts"], 0)
+                self.assertEqual(snapshot["committed_tokens"], 1000)
+                self.assertEqual(snapshot["committed_usd"], 0.1)
+                self.assertEqual(snapshot["billed_usd"], 0.0)
+
+    def test_late_response_fails_reconciliation_and_retains_reservation(self):
+        now = 0.0
+
+        def clock():
+            return now
+
+        budget = build_budget_enforcer(
+            _plan(),
+            provider="openrouter",
+            model="qwen/qwen3-vl-32b-instruct",
+            clock=clock,
+        )
+        reservation = budget.begin_attempt()
+        now = 61.0
+        with self.assertRaisesRegex(BudgetExceeded, "wall-clock budget exhausted"):
+            budget.complete_attempt(
+                reservation,
+                {"input_tokens": 20, "output_tokens": 10, "cost_usd": 0.01},
+            )
+        snapshot = budget.snapshot()
+        self.assertEqual(snapshot["failed_attempts"], 1)
+        self.assertEqual(snapshot["metered_attempts"], 0)
+        self.assertEqual(snapshot["committed_tokens"], 1000)
+        self.assertEqual(snapshot["committed_usd"], 0.1)
+        self.assertEqual(snapshot["billed_usd"], 0.0)
 
     def test_openrouter_counts_each_retry_as_a_physical_attempt(self):
         class FlakyCompletions:
@@ -220,6 +283,27 @@ class BudgetAdmissionTests(unittest.TestCase):
             vision._ensure_client()
         self.assertEqual(captured["max_retries"], 0)
 
+    def test_generic_adapter_preserves_sdk_default_retry_behavior(self):
+        captured: dict = {}
+
+        def client_factory(**kwargs):
+            captured.update(kwargs)
+            return NS()
+
+        with (
+            patch.object(openrouter, "_require_openai", return_value=client_factory),
+            patch.dict(
+                os.environ,
+                {"OPENROUTER_API_KEY": "offline-construction-check"},
+                clear=False,
+            ),
+        ):
+            vision = OpenRouterVision(
+                NS(models=NS(vision_model="qwen/qwen3-vl-32b-instruct")),
+            )
+            vision._ensure_client()
+        self.assertNotIn("max_retries", captured)
+
     def test_unmetered_response_is_not_accepted(self):
         response = NS(
             choices=[
@@ -268,6 +352,162 @@ class BudgetAdmissionTests(unittest.TestCase):
             asyncio.run(vision.judge("action?", b"frame"))
         self.assertEqual(calls, 1)
         self.assertEqual(budget.snapshot()["physical_attempts"], 1)
+
+
+class TerminalBenchmarkFailureTests(unittest.TestCase):
+    class _AlwaysGate:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def evaluate(self, _frame, *, ts):
+            return NS(
+                escalate=True,
+                signal=NS(motion=1.0, structural=0.0, semantic=0.0),
+                threshold=0.1,
+                ts=ts,
+            )
+
+    @staticmethod
+    def _events() -> list[dict]:
+        return [
+            {
+                "row_id": f"case-{index}",
+                "video_id": f"video-{index}",
+                "label": "Turning something on",
+                "onset_s": 0.0,
+                "end_s": 1.0,
+                "positive_windows": [[0.0, 1.0]],
+                "path": Path(f"/offline/video-{index}.mp4"),
+            }
+            for index in (1, 2)
+        ]
+
+    def _run_terminal_failure(
+        self,
+        *,
+        requests: int,
+        retries: int,
+        unmetered_response: bool = False,
+    ) -> tuple[object, int, int, int]:
+        transport_calls = 0
+        source_starts = 0
+        decoded_frames = 0
+
+        async def create(**_kwargs):
+            nonlocal transport_calls
+            transport_calls += 1
+            if unmetered_response:
+                return NS(
+                    choices=[
+                        NS(
+                            message=NS(
+                                content='{"satisfied": true, "confidence": 0.9, "evidence": "seen"}'
+                            )
+                        )
+                    ],
+                )
+            raise RuntimeError("synthetic exhausted transport")
+
+        client = NS(chat=NS(completions=NS(create=create)))
+
+        def make_vision(settings, *, request_budget):
+            return OpenRouterVision(
+                settings,
+                client=client,
+                request_budget=request_budget,
+            )
+
+        def source(*_args, **_kwargs):
+            nonlocal source_starts
+            source_starts += 1
+
+            async def frames():
+                nonlocal decoded_frames
+                for timestamp in (0.0, 0.5):
+                    decoded_frames += 1
+                    yield timestamp, object(), b"frame"
+
+            return frames()
+
+        env = {
+            "PERCEPT_VISION_BACKEND": "openrouter",
+            "PERCEPT_VISION_MODEL": "qwen/qwen3-vl-32b-instruct",
+            "PERCEPT_BENCH_BUDGET_PLAN": _plan(
+                requests=requests,
+                retries=retries,
+            ),
+        }
+        with (
+            patch.dict(os.environ, env, clear=False),
+            patch.object(
+                pt_track.pt,
+                "select_golden_action_events",
+                return_value=self._events(),
+            ),
+            patch.object(
+                pt_track.pt,
+                "action_media_minutes",
+                return_value=0.25,
+            ),
+            patch.object(pt_track, "bench_vision", side_effect=make_vision),
+            patch.object(pt_track, "open_source", side_effect=source),
+            patch.object(pt_track, "MotionGate", self._AlwaysGate),
+            patch.object(pt_track, "compile_watchspec", return_value=NS()),
+        ):
+            result = pt_track.score(live=True, n=2)
+        return result, transport_calls, source_starts, decoded_frames
+
+    def _assert_terminal_result(self, result, *, physical_attempts: int) -> None:
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.qualifying_events, 0)
+        self.assertIsNone(result.cells[("e2e", "notification_recall")])
+        self.assertIsNone(result.cells[("e2e", "notification_precision")])
+        self.assertIsNone(result.cells[("e2e", "call_reduction")])
+        self.assertEqual(
+            result.cells[("e2e", "physical_provider_attempts")],
+            physical_attempts,
+        )
+        self.assertEqual(result.cells[("e2e", "selected_media_minutes")], 0.25)
+        coverage = result.coverage[0]
+        self.assertEqual(coverage["expected"], 2)
+        self.assertEqual(coverage["observed"], 0)
+        self.assertEqual(coverage["failed"], 1)
+        self.assertEqual(coverage["skipped"], 1)
+        self.assertTrue(result.invalid_reasons())
+
+    def test_swallowed_budget_exhaustion_stops_frames_cases_and_metrics(self):
+        result, transport_calls, source_starts, decoded_frames = (
+            self._run_terminal_failure(requests=1, retries=1)
+        )
+        self.assertEqual(transport_calls, 1)
+        self.assertEqual(source_starts, 1)
+        self.assertEqual(decoded_frames, 1)
+        self.assertIn("BudgetExceeded", result.excluded[0])
+        self._assert_terminal_result(result, physical_attempts=1)
+
+    def test_exhausted_retry_stops_frames_cases_and_metrics(self):
+        result, transport_calls, source_starts, decoded_frames = (
+            self._run_terminal_failure(requests=4, retries=1)
+        )
+        self.assertEqual(transport_calls, 2)
+        self.assertEqual(source_starts, 1)
+        self.assertEqual(decoded_frames, 1)
+        self.assertIn("RuntimeError", result.excluded[0])
+        self._assert_terminal_result(result, physical_attempts=2)
+
+    def test_swallowed_usage_reconciliation_failure_stops_the_run(self):
+        result, transport_calls, source_starts, decoded_frames = (
+            self._run_terminal_failure(
+                requests=4,
+                retries=1,
+                unmetered_response=True,
+            )
+        )
+        self.assertEqual(transport_calls, 1)
+        self.assertEqual(source_starts, 1)
+        self.assertEqual(decoded_frames, 1)
+        self.assertIn("omitted enforceable", result.excluded[0])
+        self._assert_terminal_result(result, physical_attempts=1)
 
 
 class PinnedCaseTests(unittest.TestCase):
@@ -548,6 +788,45 @@ class LatencySemanticsTests(unittest.TestCase):
         self.assertIsNotNone(observation)
         assert observation is not None
         self.assertAlmostEqual(observation.action_onset_to_fire_s, 0.9)
+
+    def test_overlapping_window_details_use_aggregate_one_to_one_assignment(self):
+        run = EventRun(
+            case_id="case-a",
+            video_id="video-a",
+            label="a",
+            goal="a",
+            onset_s=0.0,
+            end_s=5.0,
+            positive_windows=[(0.0, 5.0), (4.0, 6.0)],
+        )
+
+        def observation(source_media_ts: float, observed_s: float):
+            timing = JudgmentTiming(
+                ingest_observed_ts=100.0,
+                admitted_ts=100.01,
+                judge_started_ts=100.02,
+                judge_completed_ts=100.05,
+                decision_emitted_ts=100.0 + observed_s,
+                source_media_ts=source_media_ts,
+            )
+            value = _decision_observation(
+                NS(judgment=NS(timing=timing)),
+                run,
+            )
+            assert value is not None
+            return value
+
+        run.fires.extend([
+            observation(4.2, 0.1),
+            observation(4.3, 0.2),
+        ])
+        run.reconcile_fire_windows()
+        records = _fire_records(run)
+        self.assertEqual(run.fire_hits, 2)
+        self.assertAlmostEqual(records[0]["source_detection_latency_s"], 4.2)
+        self.assertAlmostEqual(records[0]["action_onset_to_fire_s"], 4.3)
+        self.assertAlmostEqual(records[1]["source_detection_latency_s"], 0.3)
+        self.assertAlmostEqual(records[1]["action_onset_to_fire_s"], 0.5)
 
 
 if __name__ == "__main__":

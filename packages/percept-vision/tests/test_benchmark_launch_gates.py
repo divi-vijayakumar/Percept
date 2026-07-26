@@ -9,6 +9,8 @@ import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace as NS
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -25,6 +27,7 @@ def _budget_plan_json(
     *,
     provider: str = "gemini",
     model: str = "gemini-test",
+    media_minutes: float = 5,
 ) -> str:
     return json.dumps(
         {
@@ -44,7 +47,7 @@ def _budget_plan_json(
                 "usd": 1.0,
                 "requests": 10,
                 "tokens": 10000,
-                "media_minutes": 5,
+                "media_minutes": media_minutes,
                 "wall_clock_seconds": 300,
                 "concurrency": 1,
                 "request_timeout_seconds": 30,
@@ -316,6 +319,117 @@ class BenchmarkLaunchGateTests(unittest.TestCase):
             output,
         )
         self.assertNotIn("provider response", output)
+
+    def test_oversized_selected_media_blocks_before_provider_construction(self):
+        from eval.bench.run import _live_prerequisite_blockers
+        from percept import registry
+
+        model = "qwen/qwen3-vl-32b-instruct"
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "PERCEPT_VISION_BACKEND": "openrouter",
+                    "PERCEPT_VISION_MODEL": model,
+                    "OPENROUTER_API_KEY": "offline-presence-check-only",
+                    "PERCEPT_BENCH_BUDGET_PLAN": _budget_plan_json(
+                        provider="openrouter",
+                        model=model,
+                        media_minutes=1,
+                    ),
+                },
+                clear=False,
+            ),
+            patch(
+                "eval.bench.perception_test.golden_action_capacity",
+                return_value={"licensed": 2, "verified_local": 2},
+            ),
+            patch(
+                "eval.bench.perception_test.select_golden_action_events",
+                return_value=[{"path": Path("/offline/a.mp4")}],
+            ),
+            patch(
+                "eval.bench.perception_test.action_media_minutes",
+                return_value=1.25,
+            ),
+            patch.object(registry, "make_vision") as provider_factory,
+        ):
+            blockers = _live_prerequisite_blockers(
+                manifest="offline-manifest.json",
+                release=False,
+                n=1,
+                tracks=["pt-action-e2e"],
+            )
+        self.assertIn(
+            "selected pinned media is 1.250000 minutes, "
+            "exceeding the effective media cap of 1.000000 minutes",
+            blockers,
+        )
+        provider_factory.assert_not_called()
+
+    def test_non_finite_media_metadata_blocks_before_provider_construction(self):
+        from eval.bench import perception_test
+        from eval.bench.run import _live_prerequisite_blockers
+        from percept import registry
+
+        class Capture:
+            def isOpened(self):
+                return True
+
+            def get(self, field):
+                if field == 1:
+                    return float("nan")
+                return 30.0
+
+            def release(self):
+                pass
+
+        fake_cv2 = NS(
+            CAP_PROP_FPS=1,
+            CAP_PROP_FRAME_COUNT=2,
+            VideoCapture=lambda _path: Capture(),
+        )
+        model = "qwen/qwen3-vl-32b-instruct"
+        perception_test.media_duration_s.cache_clear()
+        try:
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "PERCEPT_VISION_BACKEND": "openrouter",
+                        "PERCEPT_VISION_MODEL": model,
+                        "OPENROUTER_API_KEY": "offline-presence-check-only",
+                        "PERCEPT_BENCH_BUDGET_PLAN": _budget_plan_json(
+                            provider="openrouter",
+                            model=model,
+                        ),
+                    },
+                    clear=False,
+                ),
+                patch.dict(sys.modules, {"cv2": fake_cv2}),
+                patch(
+                    "eval.bench.perception_test.golden_action_capacity",
+                    return_value={"licensed": 1, "verified_local": 1},
+                ),
+                patch(
+                    "eval.bench.perception_test.select_golden_action_events",
+                    return_value=[{"path": Path("/offline/nan.mp4")}],
+                ),
+                patch.object(registry, "make_vision") as provider_factory,
+            ):
+                blockers = _live_prerequisite_blockers(
+                    manifest="offline-manifest.json",
+                    release=False,
+                    n=1,
+                    tracks=["pt-action-e2e"],
+                )
+        finally:
+            perception_test.media_duration_s.cache_clear()
+        self.assertTrue(
+            any("invalid duration metadata" in blocker for blocker in blockers),
+            blockers,
+        )
+        provider_factory.assert_not_called()
 
     def test_eval_live_writes_blocked_status_without_prerequisites(self):
         with TemporaryDirectory() as d:

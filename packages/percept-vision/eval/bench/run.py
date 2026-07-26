@@ -67,20 +67,39 @@ def _live_prerequisite_blockers(
     missing = missing_credential(backend)
     if missing:
         blockers.append(f"{backend} credential missing (set one of: {', '.join(missing)})")
-    from .budget import live_budget_blockers
+    from .budget import (
+        BudgetPlanError,
+        build_budget_enforcer,
+        live_budget_blockers,
+    )
 
     configured_model = os.environ.get("PERCEPT_VISION_MODEL")
     if not configured_model:
         blockers.append("PERCEPT_VISION_MODEL must explicitly pin the budgeted provider model")
-    blockers.extend(
-        live_budget_blockers(
-            provider=backend,
-            model=configured_model,
-            raw=os.environ.get("PERCEPT_BENCH_BUDGET_PLAN"),
-        )
+    raw_budget = os.environ.get("PERCEPT_BENCH_BUDGET_PLAN")
+    budget_blockers = live_budget_blockers(
+        provider=backend,
+        model=configured_model,
+        raw=raw_budget,
     )
+    blockers.extend(budget_blockers)
+    budget = None
+    if not budget_blockers:
+        try:
+            budget = build_budget_enforcer(
+                raw_budget or "",
+                provider=backend,
+                model=configured_model,
+            )
+        except BudgetPlanError:
+            pass
     if manifest and n is not None and (not tracks or "pt-action-e2e" in tracks):
-        from .perception_test import golden_action_capacity
+        from .perception_test import (
+            GoldenSetCapacityError,
+            action_media_minutes,
+            golden_action_capacity,
+            select_golden_action_events,
+        )
 
         capacity = golden_action_capacity(manifest=manifest)
         if release and n != capacity["licensed"]:
@@ -99,6 +118,23 @@ def _live_prerequisite_blockers(
                 f"{capacity['verified_local']} of {capacity['licensed']} licensed pinned "
                 "cases have verified local annotations/media"
             )
+        elif budget is not None:
+            try:
+                selected_events = select_golden_action_events(
+                    n,
+                    manifest=manifest,
+                    require_media=True,
+                )
+                selected_minutes = action_media_minutes(selected_events)
+            except (GoldenSetCapacityError, ImportError, OSError, ValueError) as exc:
+                blockers.append(f"selected media duration could not be verified: {exc}")
+            else:
+                media_cap = budget.media_minutes_cap
+                if selected_minutes > media_cap + 1e-12:
+                    blockers.append(
+                        f"selected pinned media is {selected_minutes:.6f} minutes, "
+                        f"exceeding the effective media cap of {media_cap:.6f} minutes"
+                    )
     if release:
         if not manifest:
             blockers.append("release qualification requires a pinned manifest")

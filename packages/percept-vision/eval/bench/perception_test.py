@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import zipfile
 from functools import lru_cache
@@ -135,6 +136,40 @@ def sha256_file(path: str | Path) -> str:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+@lru_cache(maxsize=64)
+def media_duration_s(path: str | Path) -> float:
+    """Read deterministic container duration from verified MP4 frame-count/FPS metadata."""
+    import cv2
+
+    media_path = repo_path(path)
+    capture = cv2.VideoCapture(str(media_path))
+    try:
+        if not capture.isOpened():
+            raise ValueError(f"cannot open media for duration metadata: {media_path}")
+        fps = float(capture.get(cv2.CAP_PROP_FPS))
+        frames = float(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    finally:
+        capture.release()
+    if (
+        not math.isfinite(fps)
+        or not math.isfinite(frames)
+        or fps <= 0
+        or frames <= 0
+    ):
+        raise ValueError(
+            f"invalid duration metadata for {media_path}: frames={frames}, fps={fps}"
+        )
+    return frames / fps
+
+
+def action_media_minutes(events: list[dict[str, Any]]) -> float:
+    """Total verified media duration for the exact selected action-case prefix."""
+    minutes = sum(media_duration_s(event["path"]) for event in events) / 60.0
+    if not math.isfinite(minutes) or minutes <= 0:
+        raise ValueError(f"selected media duration must be finite and positive: {minutes}")
+    return minutes
 
 
 @lru_cache(maxsize=4)

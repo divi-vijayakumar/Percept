@@ -198,16 +198,23 @@ class OpenRouterVision:
             )
             if not key:
                 raise RuntimeError("OpenRouterVision needs OPENROUTER_API_KEY in the environment.")
-            self._client = AsyncOpenAI(
-                base_url=_OPENROUTER_BASE_URL,
-                api_key=key,
-                timeout=self._timeout_s,
-                # Percept owns the retry loop so each physical attempt can be admitted and
-                # accounted exactly once by the request budget.
-                max_retries=0,
+            client_options = {
+                "base_url": _OPENROUTER_BASE_URL,
+                "api_key": key,
+                "timeout": self._timeout_s,
                 # OpenRouter attribution headers (optional but recommended; harmless if ignored).
-                default_headers={"HTTP-Referer": "https://github.com/divi-vijayakumar/Percept",
-                                 "X-Title": "Percept"},
+                "default_headers": {
+                    "HTTP-Referer": "https://github.com/divi-vijayakumar/Percept",
+                    "X-Title": "Percept",
+                },
+            }
+            if self._request_budget is not None:
+                # Paid benchmarks own the retry loop so each physical attempt can be
+                # admitted and accounted exactly once. Generic adapter construction
+                # preserves the OpenAI SDK's historical/default retry behavior.
+                client_options["max_retries"] = 0
+            self._client = AsyncOpenAI(
+                **client_options,
             )
         return self._client
 

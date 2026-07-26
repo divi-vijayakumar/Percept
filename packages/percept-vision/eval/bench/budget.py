@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -31,7 +32,12 @@ def _text(value: Any, name: str) -> str:
 
 
 def _positive(value: Any, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or value <= 0
+    ):
         raise BudgetPlanError(f"{name} must be positive")
     return float(value)
 
@@ -88,7 +94,12 @@ def validate_budget_plan(raw: str, *, provider: str, model: str | None = None) -
         "media_usd_per_minute",
     ):
         value = prices.get(key)
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or value < 0
+        ):
             raise BudgetPlanError(f"price_snapshot.{key} must be non-negative")
 
     caps = _object(plan.get("caps"), "caps")
@@ -129,6 +140,7 @@ def validate_budget_plan(raw: str, *, provider: str, model: str | None = None) -
     if (
         isinstance(max_error_rate, bool)
         or not isinstance(max_error_rate, (int, float))
+        or not math.isfinite(float(max_error_rate))
         or not 0 <= max_error_rate <= 1
     ):
         raise BudgetPlanError("early_stop.max_error_rate must be between 0 and 1")
@@ -219,6 +231,10 @@ class BudgetEnforcer:
     def request_timeout_s(self) -> float:
         return float(self._caps["request_timeout_seconds"])
 
+    @property
+    def media_minutes_cap(self) -> float:
+        return float(self._caps["media_minutes"])
+
     def begin_attempt(self) -> AttemptReservation:
         """Atomically reserve one request before the transport can be invoked."""
         with self._lock:
@@ -245,19 +261,31 @@ class BudgetEnforcer:
 
     def complete_attempt(self, reservation: AttemptReservation, usage: dict[str, Any]) -> None:
         """Reconcile a successful request; missing/oversized usage fails closed."""
+        if self._clock() - self._started_at >= float(self._caps["wall_clock_seconds"]):
+            self.fail_attempt(reservation)
+            raise BudgetExceeded(
+                "wall-clock budget exhausted before provider response reconciliation"
+            )
         try:
             input_tokens = int(usage["input_tokens"])
             output_tokens = int(usage["output_tokens"])
             billed_usd = float(usage["cost_usd"])
-        except (KeyError, TypeError, ValueError) as exc:
+        except (KeyError, OverflowError, TypeError, ValueError) as exc:
             self.fail_attempt(reservation)
             raise BudgetExceeded(
                 "provider response omitted enforceable input/output token or billed-cost usage"
             ) from exc
         actual_tokens = input_tokens + output_tokens
-        if input_tokens < 0 or output_tokens < 0 or billed_usd < 0:
+        if (
+            input_tokens < 0
+            or output_tokens < 0
+            or not math.isfinite(billed_usd)
+            or billed_usd < 0
+        ):
             self.fail_attempt(reservation)
-            raise BudgetExceeded("provider returned negative token or billed-cost usage")
+            raise BudgetExceeded(
+                "provider returned invalid token or billed-cost usage"
+            )
 
         with self._lock:
             self._ensure_open(reservation)
