@@ -248,3 +248,38 @@ class TrackResult:
             if lane not in CONFIGS:
                 reasons.append(f"{self.track}: unsupported lane {lane!r} for metric {metric!r}")
         return reasons
+
+
+def apply_acceptance_gates(
+    result: TrackResult,
+    acceptance: dict[str, Any],
+) -> None:
+    """Evaluate manifest-preregistered rules against typed measurements."""
+    measurements = result.normalized_measurements()
+    for label, rule in acceptance.items():
+        measurement = measurements.get(label)
+        operator = rule["operator"]
+        threshold = float(rule["threshold"])
+        value = measurement.value if measurement is not None else None
+        numeric = (
+            not isinstance(value, bool)
+            and isinstance(value, (int, float))
+        )
+        passed = False
+        if numeric:
+            observed = float(value)
+            passed = (
+                observed >= threshold
+                if operator == ">="
+                else observed <= threshold
+            )
+        result.quality_gates.append(
+            {
+                "id": f"acceptance:{label}",
+                "status": "pass" if passed else "fail",
+                "operator": operator,
+                "threshold": threshold,
+                "observed": value,
+                "basis": rule["basis"],
+            }
+        )

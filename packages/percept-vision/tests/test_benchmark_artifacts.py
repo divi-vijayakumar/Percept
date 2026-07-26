@@ -82,6 +82,14 @@ class BenchmarkArtifactValidationTests(unittest.TestCase):
                             "source": "self",
                             "status": "ready",
                             "metrics": ["recall"],
+                            "required": True,
+                            "acceptance": {
+                                "recall": {
+                                    "operator": ">=",
+                                    "threshold": 0.8,
+                                    "basis": "reviewed owned-fixture ladder",
+                                }
+                            },
                             "runners": [{"id": "watch", "result_track": "watch-e2e"}],
                         }],
                         "splits": {
@@ -120,6 +128,83 @@ class BenchmarkArtifactValidationTests(unittest.TestCase):
             )
             self.assertEqual(audit["status"], "ARTIFACT-AUDIT PASS")
             self.assertEqual(audit["cloud_status"], "NOT-RUN")
+
+    def test_release_pt_action_requires_preregistered_metric_rules(self):
+        with TemporaryDirectory() as d:
+            manifest = Path(d) / "MANIFEST.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "version": "release-test",
+                        "status": "release",
+                        "tracks": [{
+                            "id": "perception-test-action",
+                            "source": "owned",
+                            "status": "ready",
+                            "metrics": ["event_recall"],
+                            "required": True,
+                            "acceptance": {
+                                "occurrence_recall": {
+                                    "operator": ">=",
+                                    "threshold": 0.59,
+                                    "basis": "reviewed ladder",
+                                }
+                            },
+                            "runners": [{
+                                "id": "pt-action-e2e",
+                                "result_track": "pt-action-e2e",
+                            }],
+                        }],
+                        "splits": {
+                            "dev": [],
+                            "test": [{
+                                "id": "case-1",
+                                "source": "owned",
+                                "license": "owned",
+                                "track": "perception-test-action",
+                                "media_sha256": "a" * 64,
+                            }],
+                        },
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(
+                ValidationError,
+                "acceptance is missing",
+            ):
+                validate_golden_manifest(manifest, release=True)
+
+            payload = json.loads(manifest.read_text())
+            payload["tracks"][0]["acceptance"].update(
+                {
+                    "notification_precision": {
+                        "operator": ">=",
+                        "threshold": 0.8,
+                        "basis": "reviewed ladder",
+                    },
+                    "timely_occurrence_recall_at_2s": {
+                        "operator": ">=",
+                        "threshold": 0.5,
+                        "basis": "reviewed ladder",
+                    },
+                    "physical_call_reduction": {
+                        "operator": ">=",
+                        "threshold": 0.1,
+                        "basis": "reviewed ladder",
+                    },
+                    "max_action_onset_to_incident": {
+                        "operator": "<=",
+                        "threshold": 2.0,
+                        "basis": "public reflex SLO",
+                    },
+                }
+            )
+            manifest.write_text(json.dumps(payload))
+
+            validated = validate_golden_manifest(manifest, release=True)
+
+            self.assertTrue(validated["tracks"][0]["required"])
 
     def test_perception_test_golden_loader_extracts_events_without_media(self):
         with TemporaryDirectory() as d:

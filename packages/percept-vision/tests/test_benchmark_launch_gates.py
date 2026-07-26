@@ -426,6 +426,14 @@ class BenchmarkLaunchGateTests(unittest.TestCase):
                                 "source": "self",
                                 "status": "ready",
                                 "metrics": ["recall"],
+                                "required": True,
+                                "acceptance": {
+                                    "recall": {
+                                        "operator": ">=",
+                                        "threshold": 0.8,
+                                        "basis": "reviewed owned-fixture ladder",
+                                    }
+                                },
                                 "runners": [{"id": "watch", "result_track": "watch-e2e"}],
                             }
                         ],

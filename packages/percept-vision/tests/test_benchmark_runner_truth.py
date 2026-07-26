@@ -467,6 +467,66 @@ class BenchmarkRunnerTruthTests(unittest.TestCase):
         ):
             namespace["_assert_resume_identity"](existing, changed)
 
+    def test_preregistered_acceptance_rules_use_typed_measurements(self):
+        from eval.bench.types import Measurement, TrackResult
+
+        namespace = runpy.run_path(
+            str(TOOL),
+            run_name="benchmark_acceptance_gate_test",
+        )
+        result = TrackResult(
+            track="pt-action-e2e",
+            measurements={
+                "occurrence_recall": Measurement(
+                    value=0.6,
+                    unit="ratio",
+                    conditioning="all positive occurrences",
+                    numerator=6,
+                    denominator=10,
+                ),
+                "max_action_onset_to_incident": Measurement(
+                    value=2.2,
+                    unit="seconds",
+                    conditioning="matched positive occurrences",
+                    denominator=6,
+                ),
+            },
+        )
+        namespace["_apply_acceptance_gates"](
+            result,
+            {
+                "occurrence_recall": {
+                    "operator": ">=",
+                    "threshold": 0.59,
+                    "basis": "reviewed ladder",
+                },
+                "max_action_onset_to_incident": {
+                    "operator": "<=",
+                    "threshold": 2.0,
+                    "basis": "public reflex SLO",
+                },
+                "missing_measurement": {
+                    "operator": ">=",
+                    "threshold": 0.1,
+                    "basis": "reviewed ladder",
+                },
+            },
+        )
+
+        gates = {gate["id"]: gate for gate in result.quality_gates}
+        self.assertEqual(
+            gates["acceptance:occurrence_recall"]["status"],
+            "pass",
+        )
+        self.assertEqual(
+            gates["acceptance:max_action_onset_to_incident"]["status"],
+            "fail",
+        )
+        self.assertEqual(
+            gates["acceptance:missing_measurement"]["status"],
+            "fail",
+        )
+
     def test_collect_rejects_live_provider_budget_identity_mismatch(self):
         with TemporaryDirectory() as d:
             root = Path(d)

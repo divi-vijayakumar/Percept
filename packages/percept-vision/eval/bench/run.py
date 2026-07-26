@@ -29,6 +29,7 @@ from . import (
     track_timeliness,
     track_timespeak,
 )
+from .types import apply_acceptance_gates
 
 
 def _commit() -> str:
@@ -206,7 +207,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         from .validate import ValidationError, validate_golden_manifest
 
-        validate_golden_manifest(args.manifest, release=False)
+        manifest_data = validate_golden_manifest(
+            args.manifest,
+            release=False,
+        )
     except (FileNotFoundError, ValidationError) as exc:
         print(f"SCORECARD EXECUTION FAILED: manifest audit failed: {exc}")
         return 1
@@ -267,6 +271,32 @@ def main(argv: list[str] | None = None) -> int:
             os.environ.pop("PERCEPT_BENCH_MANIFEST", None)
         else:
             os.environ["PERCEPT_BENCH_MANIFEST"] = previous_manifest
+
+    if args.require_release:
+        from .validate import manifest_runner_map
+
+        mappings = list(
+            manifest_runner_map(
+                manifest_data,
+                require_all_tracks=True,
+            ).values()
+        )
+        for result in results:
+            mapping = next(
+                (
+                    item
+                    for item in mappings
+                    if item["result_track"] == result.track
+                ),
+                None,
+            )
+            acceptance = (
+                mapping.get("acceptance")
+                if mapping is not None
+                else None
+            )
+            if isinstance(acceptance, dict) and acceptance:
+                apply_acceptance_gates(result, acceptance)
 
     execution_blockers = card.execution_blockers(results)
     if execution_blockers:

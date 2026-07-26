@@ -3,8 +3,20 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
+
+PT_ACTION_ACCEPTANCE_METRICS = frozenset(
+    {
+        "occurrence_recall",
+        "notification_precision",
+        "timely_occurrence_recall_at_2s",
+        "physical_call_reduction",
+        "max_action_onset_to_incident",
+    }
+)
+ACCEPTANCE_OPERATORS = frozenset({">=", "<="})
 
 
 class ValidationError(ValueError):
@@ -15,7 +27,7 @@ def manifest_runner_map(
     data: dict[str, Any],
     *,
     require_all_tracks: bool = False,
-) -> dict[str, dict[str, str]]:
+) -> dict[str, dict[str, Any]]:
     """Build the explicit runner -> logical track/result identity mapping."""
     out: dict[str, dict[str, str]] = {}
     result_tracks: set[str] = set()
@@ -46,8 +58,61 @@ def manifest_runner_map(
             out[runner] = {
                 "manifest_track": str(track["id"]),
                 "result_track": result_track,
+                "required": track.get("required") is True,
+                "acceptance": track.get("acceptance"),
             }
     return out
+
+
+def _validate_acceptance(track: dict[str, Any]) -> None:
+    acceptance = track.get("acceptance")
+    if not isinstance(acceptance, dict) or not acceptance:
+        raise ValidationError(
+            f"required track {track['id']} needs non-empty acceptance rules"
+        )
+    for metric, rule in acceptance.items():
+        if not isinstance(metric, str) or not metric:
+            raise ValidationError(
+                f"required track {track['id']} has an invalid acceptance metric"
+            )
+        if not isinstance(rule, dict):
+            raise ValidationError(
+                f"required track {track['id']} acceptance {metric} must be an object"
+            )
+        operator = rule.get("operator")
+        threshold = rule.get("threshold")
+        basis = rule.get("basis")
+        if operator not in ACCEPTANCE_OPERATORS:
+            raise ValidationError(
+                f"required track {track['id']} acceptance {metric} has "
+                f"unsupported operator {operator!r}"
+            )
+        if (
+            isinstance(threshold, bool)
+            or not isinstance(threshold, (int, float))
+            or not math.isfinite(float(threshold))
+        ):
+            raise ValidationError(
+                f"required track {track['id']} acceptance {metric} needs a "
+                "finite numeric threshold"
+            )
+        if not isinstance(basis, str) or not basis.strip():
+            raise ValidationError(
+                f"required track {track['id']} acceptance {metric} needs a "
+                "non-empty evidence basis"
+            )
+    result_tracks = {
+        str(row.get("result_track"))
+        for row in track.get("runners", [])
+        if isinstance(row, dict)
+    }
+    if "pt-action-e2e" in result_tracks:
+        missing = sorted(PT_ACTION_ACCEPTANCE_METRICS - set(acceptance))
+        if missing:
+            raise ValidationError(
+                "required pt-action-e2e track acceptance is missing: "
+                + ", ".join(missing)
+            )
 
 
 def _load(path: str | Path) -> dict[str, Any]:
@@ -132,6 +197,15 @@ def validate_golden_manifest(path: str | Path, *, release: bool = False) -> dict
     if release:
         if data.get("status") != "release":
             raise ValidationError("release validation requires status='release'")
+        required_tracks = [
+            track for track in data["tracks"] if track.get("required") is True
+        ]
+        if not required_tracks:
+            raise ValidationError(
+                "release validation requires at least one required track"
+            )
+        for track in required_tracks:
+            _validate_acceptance(track)
         for item in splits["test"]:
             for key in ("license", "media_sha256"):
                 if not item.get(key):

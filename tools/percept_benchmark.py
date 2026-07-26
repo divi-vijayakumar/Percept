@@ -486,6 +486,14 @@ def _validated_run_identity(
     return str(digest)
 
 
+def _apply_acceptance_gates(result: Any, acceptance: dict[str, Any]) -> None:
+    """Import lazily because this standalone script bootstraps its own SDK path."""
+    sys.path[:0] = [str(SDK)]
+    from eval.bench.types import apply_acceptance_gates
+
+    apply_acceptance_gates(result, acceptance)
+
+
 def _resolve_tracks(raw: str, exclude: str = "") -> list[str]:
     selected: list[str] = []
     for part in [p.strip() for p in raw.split(",") if p.strip()]:
@@ -1509,6 +1517,9 @@ def cmd_collect(args: argparse.Namespace) -> int:
                 f"{runner}: TrackResult identity {result.track!r} does not match pinned "
                 f"result_track {mapping['result_track']!r}"
             )
+        acceptance = mapping.get("acceptance")
+        if isinstance(acceptance, dict) and acceptance:
+            _apply_acceptance_gates(result, acceptance)
         logical_track = mapping["manifest_track"]
         expected_case_ids = manifest_cases[logical_track]
         coverage = result.normalized_coverage()
