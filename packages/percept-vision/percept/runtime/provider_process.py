@@ -40,6 +40,31 @@ _MAX_WIRE_NODES = 1_000_000
 _CHILD_ARGUMENT = "--percept-provider-child"
 _DARWIN_SANDBOX_PROFILE = "(version 1)(allow default)(deny process-fork)"
 _SCHEMA_VERSION = 1
+_SDK_IMPORT_ROOT = os.path.realpath(
+    os.path.join(os.path.dirname(__file__), "..", "..")
+)
+_ISOLATED_CHILD_BOOTSTRAP = (
+    "import runpy,sys;"
+    "sys.path.insert(0,sys.argv.pop(1));"
+    "runpy.run_module('percept.runtime.provider_process',run_name='__main__')"
+)
+_CHILD_ENVIRONMENT = MappingProxyType(
+    {
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "PATH": "/usr/bin:/bin",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONUTF8": "1",
+        "TMPDIR": "/tmp",
+        # macOS injects this locale selector at exec. Supplying its
+        # deterministic, non-secret value keeps the child env exact.
+        **(
+            {"__CF_USER_TEXT_ENCODING": f"0x{os.getuid():X}:0x0:0x0"}
+            if sys.platform == "darwin"
+            else {}
+        ),
+    }
+)
 _OPERATIONS = frozenset(
     {"__call__", "judge", "detect", "detect_events", "summarize_process"}
 )
@@ -142,8 +167,10 @@ def register_process_provider(
 def _provider_child_command() -> list[str]:
     command = [
         sys.executable,
-        "-m",
-        "percept.runtime.provider_process",
+        "-I",
+        "-c",
+        _ISOLATED_CHILD_BOOTSTRAP,
+        _SDK_IMPORT_ROOT,
         _CHILD_ARGUMENT,
     ]
     if sys.platform == "darwin":
@@ -171,6 +198,11 @@ def _provider_child_command() -> list[str]:
     raise ProviderProcessError(
         "trusted provider process containment is unavailable on this platform"
     )
+
+
+def _provider_child_environment() -> dict[str, str]:
+    """Return the fixed interpreter environment; never copy ambient values."""
+    return dict(_CHILD_ENVIRONMENT)
 
 
 def _install_linux_no_descendants_filter() -> None:
@@ -1095,6 +1127,29 @@ def _adapter_state(adapter: Any) -> dict[str, Any]:
     return state
 
 
+def _reviewed_builtin_credential(
+    state: dict[str, Any],
+    aliases: tuple[str, ...],
+) -> str | None:
+    """Select one exact credential for the typed recipe, never child env."""
+    explicit = state.get("_api_key")
+    if explicit is not None:
+        if type(explicit) is not str or not explicit or len(explicit) > 65_536:
+            raise ProviderProcessError(
+                "explicit provider credential is outside the reviewed schema"
+            )
+        return explicit
+    for alias in aliases:
+        credential = os.environ.get(alias)
+        if credential:
+            if type(credential) is not str or len(credential) > 65_536:
+                raise ProviderProcessError(
+                    "provider credential is outside the reviewed schema"
+                )
+            return credential
+    return None
+
+
 def _adapter_spec(
     adapter: Any,
     *,
@@ -1124,13 +1179,34 @@ def _adapter_spec(
         from percept.backends.openrouter import OpenRouterVision
 
         builtins = {
-            AnthropicVision: "anthropic",
-            GeminiVision: "gemini",
-            GeminiLiveVision: "gemini_live",
-            OpenRouterVision: "openrouter",
+            AnthropicVision: (
+                "anthropic",
+                ("ANTHROPIC_API_KEY",),
+            ),
+            GeminiVision: (
+                "gemini",
+                (
+                    "GEMINI_API_KEY",
+                    "GOOGLE_API_KEY",
+                    "GOOGLE_AISTUDIO_API_KEY",
+                ),
+            ),
+            GeminiLiveVision: (
+                "gemini_live",
+                (
+                    "GEMINI_API_KEY",
+                    "GOOGLE_API_KEY",
+                    "GOOGLE_AISTUDIO_API_KEY",
+                ),
+            ),
+            OpenRouterVision: (
+                "openrouter",
+                ("OPENROUTER_API_KEY", "OPENROUTER_KEY"),
+            ),
         }
-        builtin_id = builtins.get(adapter_type)
-        if builtin_id is not None:
+        builtin_recipe = builtins.get(adapter_type)
+        if builtin_recipe is not None:
+            builtin_id, credential_aliases = builtin_recipe
             state = _adapter_state(adapter)
             if state.get("_client") is not None:
                 raise ProviderProcessError(
@@ -1148,7 +1224,21 @@ def _adapter_spec(
                 raise ProviderProcessError(
                     "provider adapter model must be an exact string"
                 )
-            return {"kind": "builtin", "id": builtin_id, "model": model}
+            credential = _reviewed_builtin_credential(
+                state,
+                credential_aliases,
+            )
+            if credential is None:
+                raise ProviderProcessError(
+                    "builtin process provider requires an explicit "
+                    "reviewed credential"
+                )
+            return {
+                "kind": "builtin",
+                "id": builtin_id,
+                "model": model,
+                "credential": credential,
+            }
         if adapter_type is FallbackVision:
             state = _adapter_state(adapter)
             primary = state.get("_primary")
@@ -1284,8 +1374,19 @@ def _construct_adapter(spec: dict[str, Any]) -> Any:
     if type(spec) is not dict or type(spec.get("kind")) is not str:
         raise ProviderProcessError("provider reconstruction recipe is malformed")
     kind = spec["kind"]
-    if kind == "builtin" and set(spec) == {"kind", "id", "model"}:
-        if type(spec["id"]) is not str or type(spec["model"]) is not str:
+    if kind == "builtin" and set(spec) == {
+        "kind",
+        "id",
+        "model",
+        "credential",
+    }:
+        if (
+            type(spec["id"]) is not str
+            or type(spec["model"]) is not str
+            or type(spec["credential"]) is not str
+            or not spec["credential"]
+            or len(spec["credential"]) > 65_536
+        ):
             raise ProviderProcessError(
                 "builtin provider reconstruction recipe is malformed"
             )
@@ -1295,19 +1396,19 @@ def _construct_adapter(spec: dict[str, Any]) -> Any:
         if spec["id"] == "anthropic":
             from percept.backends.anthropic import AnthropicVision
 
-            return AnthropicVision(settings)
+            return AnthropicVision(settings, api_key=spec["credential"])
         if spec["id"] == "gemini":
             from percept.backends.gemini import GeminiVision
 
-            return GeminiVision(settings)
+            return GeminiVision(settings, api_key=spec["credential"])
         if spec["id"] == "gemini_live":
             from percept.backends.gemini_live import GeminiLiveVision
 
-            return GeminiLiveVision(settings)
+            return GeminiLiveVision(settings, api_key=spec["credential"])
         if spec["id"] == "openrouter":
             from percept.backends.openrouter import OpenRouterVision
 
-            return OpenRouterVision(settings)
+            return OpenRouterVision(settings, api_key=spec["credential"])
         raise ProviderProcessError("builtin provider id is not reviewed")
     if kind == "fallback" and set(spec) == {
         "kind",
@@ -1527,6 +1628,7 @@ async def _spawn_provider_process(
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=subprocess.DEVNULL,
+            env=_provider_child_environment(),
             start_new_session=True,
         )
     )

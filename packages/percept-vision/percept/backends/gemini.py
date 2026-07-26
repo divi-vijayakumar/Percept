@@ -183,16 +183,24 @@ _REQUEST_TIMEOUT_MS = 120_000
 
 
 class _GeminiBase:
-    def __init__(self, settings: Any = None, *, client: Any = None, model_attr: str = "vision_model") -> None:
+    def __init__(
+        self,
+        settings: Any = None,
+        *,
+        client: Any = None,
+        model_attr: str = "vision_model",
+        api_key: str | None = None,
+    ) -> None:
         self._settings = _settings_of(settings)
         self._client = client
+        self._api_key = api_key
         self._model = _model_for(self._settings, model_attr)
 
     def _ensure_client(self):
         if self._client is None:
             genai, types = _require_genai()
             self._client = genai.Client(
-                api_key=_gemini_key(),
+                api_key=self._api_key or _gemini_key(),
                 http_options=types.HttpOptions(timeout=_REQUEST_TIMEOUT_MS),
             )
         return self._client
@@ -210,8 +218,19 @@ class GeminiVision(_GeminiBase):
     # not set the marker.
     SUPPORTS_FUSED_AUDIO_INPUT = True
 
-    def __init__(self, settings: Any = None, *, client: Any = None) -> None:
-        super().__init__(settings, client=client, model_attr="vision_model")
+    def __init__(
+        self,
+        settings: Any = None,
+        *,
+        client: Any = None,
+        api_key: str | None = None,
+    ) -> None:
+        super().__init__(
+            settings,
+            client=client,
+            model_attr="vision_model",
+            api_key=api_key,
+        )
         self._breaker = CircuitBreaker()  # transient-error resilience for batch captures
 
     async def judge(

@@ -173,6 +173,16 @@ fails closed before provider code runs. Keep client construction lazy in the chi
 by `judge`, `detect`, or `detect_events` are not reflected on the parent adapter object; use returned
 SDK DTOs, tracing, or another explicit IPC sink instead of an in-memory call ledger.
 
+The child also starts with a fixed interpreter-only environment. Parent provider keys, cloud-auth
+selectors, proxy settings, custom certificate paths, user/home configuration, dynamic loader and
+Python import-path controls, and vendor transport overrides are not inherited. Built-in provider
+credentials are copied into the same reviewed typed reconstruction recipe used for constructor
+fields and are passed directly to the child-side client constructor—never restored as environment
+variables. A custom adapter that needs a credential must likewise declare an exact string
+`constructor_field`; ambient credential discovery inside provider code is intentionally unavailable.
+Custom adapter modules must therefore be installed/importable from the interpreter's isolated
+system environment (the runtime never inherits `PYTHONPATH`).
+
 `RUNTIME_EXECUTION_BOUNDARY = "process"` may be declared to document the contract, but it is already
 the default. `"in_process"` is not a public opt-out: the runtime authenticates exact SDK-owned
 offline fixtures (or an explicitly reviewed internal test capability) and ignores an untrusted

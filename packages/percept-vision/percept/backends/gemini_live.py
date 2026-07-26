@@ -109,9 +109,16 @@ class GeminiLiveVision:
 
     RUNTIME_EXECUTION_BOUNDARY = "process"
 
-    def __init__(self, settings: Any = None, *, client: Any = None) -> None:
+    def __init__(
+        self,
+        settings: Any = None,
+        *,
+        client: Any = None,
+        api_key: str | None = None,
+    ) -> None:
         self._settings = _settings_of(settings)
         self._client = client
+        self._api_key = api_key
         self._model = getattr(getattr(self._settings, "models", self._settings),
                               "vision_model", "gemini-3.1-flash-live-preview")
         self._breaker = CircuitBreaker()
@@ -120,7 +127,7 @@ class GeminiLiveVision:
     def _ensure_client(self):
         if self._client is None:
             genai, _ = _require_genai()
-            self._client = genai.Client(api_key=_gemini_key())
+            self._client = genai.Client(api_key=self._api_key or _gemini_key())
         return self._client
 
     async def judge(self, condition: str, frame: Any, *, roi: Box | None = None, exemplar: Any = None,

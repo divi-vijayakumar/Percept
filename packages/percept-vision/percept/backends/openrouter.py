@@ -180,9 +180,11 @@ class OpenRouterVision:
         *,
         client: Any = None,
         request_budget: Any = None,
+        api_key: str | None = None,
     ) -> None:
         self._settings = _settings_of(settings)
         self._client = client  # injectable for L2 fixtures; built lazily otherwise
+        self._api_key = api_key
         self._model = _resolve_model(self._settings)
         self._breaker = CircuitBreaker()
         self._timeout_s = _timeout_s()
@@ -194,7 +196,8 @@ class OpenRouterVision:
         if self._client is None:
             AsyncOpenAI = _require_openai()
             key = (
-                os.environ.get("OPENROUTER_API_KEY")
+                self._api_key
+                or os.environ.get("OPENROUTER_API_KEY")
                 or os.environ.get("OPENROUTER_KEY")
             )
             if not key:

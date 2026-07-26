@@ -14,6 +14,9 @@ import pytest
 
 from percept import Goal, Percept
 from percept.adapters import Verdict
+from percept.backends.fallback import FallbackVision
+from percept.backends.openrouter import OpenRouterVision
+from percept.config import ModelSettings
 from percept.contracts import (
     AudioFrame,
     Box,
@@ -32,6 +35,67 @@ from percept.runtime.provider_process import (
 )
 from percept.runtime.worker import _ACTIVE_CORE_RUNS
 from percept.runtime.worker import run as worker_run
+
+_FORBIDDEN_CHILD_ENVIRONMENT = (
+    "ALL_PROXY",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_BASE_URL",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_CONFIG_FILE",
+    "AWS_PROFILE",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_SHARED_CREDENTIALS_FILE",
+    "AZURE_CLIENT_ID",
+    "AZURE_CLIENT_SECRET",
+    "AZURE_TENANT_ID",
+    "CLOUDSDK_CONFIG",
+    "CURL_CA_BUNDLE",
+    "DEEPGRAM_API_KEY",
+    "DYLD_INSERT_LIBRARIES",
+    "GEMINI_API_KEY",
+    "GOOGLE_AISTUDIO_API_KEY",
+    "GOOGLE_API_KEY",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_API_USE_CLIENT_CERTIFICATE",
+    "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
+    "GRPC_PROXY_EXP",
+    "HOME",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "KUBECONFIG",
+    "LD_PRELOAD",
+    "NODE_EXTRA_CA_CERTS",
+    "NO_PROXY",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "OPENROUTER_API_KEY",
+    "OPENROUTER_KEY",
+    "PERCEPT_STRIP_PROMPT",
+    "PERCEPT_VISION_TIMEOUT_S",
+    "PYTHONHOME",
+    "PYTHONINSPECT",
+    "PYTHONPATH",
+    "PYTHONSTARTUP",
+    "PYTHONUSERBASE",
+    "REQUESTS_CA_BUNDLE",
+    "SSL_CERT_DIR",
+    "SSL_CERT_FILE",
+    "VIRTUAL_ENV",
+    "all_proxy",
+    "https_proxy",
+    "http_proxy",
+    "no_proxy",
+)
+
+
+def _present_forbidden_environment() -> tuple[str, ...]:
+    return tuple(
+        name for name in _FORBIDDEN_CHILD_ENVIRONMENT if name in os.environ
+    )
+
+
+_FORBIDDEN_AT_TEST_MODULE_IMPORT = _present_forbidden_environment()
 
 
 def _production_boundary_core(vision: Any) -> Percept:
@@ -580,6 +644,147 @@ register_process_provider(
     module="tests.test_provider_process_boundary",
     qualname="_DtoProvider",
 )
+
+
+class _EnvironmentProbeProvider:
+    def __init__(self, credential: str, mode: str) -> None:
+        self.credential = credential
+        self.mode = mode
+        self.import_forbidden = _FORBIDDEN_AT_TEST_MODULE_IMPORT
+        self.constructor_forbidden = _present_forbidden_environment()
+
+    def _is_sealed(self) -> bool:
+        return not (
+            self.import_forbidden
+            or self.constructor_forbidden
+            or _present_forbidden_environment()
+        )
+
+    async def __call__(self) -> dict[str, Any]:
+        return {
+            "credential": self.credential,
+            "environment": dict(os.environ),
+            "import_forbidden": list(self.import_forbidden),
+            "constructor_forbidden": list(self.constructor_forbidden),
+            "call_forbidden": list(_present_forbidden_environment()),
+        }
+
+    async def judge(
+        self,
+        _condition: str,
+        _frame: Any,
+        **_kwargs: Any,
+    ) -> Verdict:
+        sealed = self._is_sealed()
+        if self.mode == "primary":
+            if sealed:
+                raise RuntimeError("exercise registered fallback")
+            return Verdict(False, 0.0, "primary environment was not sealed")
+        return Verdict(sealed, 1.0 if sealed else 0.0, self.credential)
+
+
+register_process_provider(
+    _EnvironmentProbeProvider,
+    module="tests.test_provider_process_boundary",
+    qualname="_EnvironmentProbeProvider",
+    constructor_fields=("credential", "mode"),
+)
+
+
+def _install_hostile_parent_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, str]:
+    sentinels = {
+        name: f"sentinel::{name}::$()\\nPYTHONPATH=/attacker"
+        for name in _FORBIDDEN_CHILD_ENVIRONMENT
+    }
+    for name, value in sentinels.items():
+        monkeypatch.setenv(name, value)
+    return sentinels
+
+
+def test_registered_child_environment_is_exact_and_credential_is_typed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sentinels = _install_hostile_parent_environment(monkeypatch)
+
+    async def drive() -> None:
+        result = await run_provider_process(
+            _EnvironmentProbeProvider(
+                "reviewed-explicit-credential",
+                "return",
+            ),
+            "__call__",
+            (),
+            {},
+            watchdog_s=1.0,
+        )
+        assert result == {
+            "credential": "reviewed-explicit-credential",
+            "environment": provider_process._provider_child_environment(),
+            "import_forbidden": [],
+            "constructor_forbidden": [],
+            "call_forbidden": [],
+        }
+
+    asyncio.run(drive())
+    assert all(os.environ[name] == value for name, value in sentinels.items())
+
+
+def test_registered_fallback_graph_is_constructed_only_after_env_seal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_hostile_parent_environment(monkeypatch)
+    adapter = FallbackVision(
+        _EnvironmentProbeProvider("typed-primary", "primary"),
+        _EnvironmentProbeProvider("typed-fallback", "fallback"),
+    )
+
+    async def drive() -> None:
+        verdict = await run_provider_process(
+            adapter,
+            "judge",
+            ("condition", ("image/jpeg", b"jpeg")),
+            {},
+            watchdog_s=1.0,
+        )
+        assert verdict.satisfied is True
+        assert verdict.evidence == "typed-fallback"
+
+    asyncio.run(drive())
+
+
+def test_builtin_credential_uses_typed_recipe_not_child_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "OPENROUTER_API_KEY",
+        "ambient-provider-credential",
+    )
+    settings = ModelSettings(vision_model="vendor/model")
+    ambient = OpenRouterVision(settings)
+    explicit = OpenRouterVision(
+        settings,
+        api_key="explicit-provider-credential",
+    )
+
+    ambient_spec = provider_process._adapter_spec(ambient)
+    explicit_spec = provider_process._adapter_spec(explicit)
+    assert ambient_spec["credential"] == "ambient-provider-credential"
+    assert explicit_spec["credential"] == "explicit-provider-credential"
+
+    monkeypatch.delenv("OPENROUTER_API_KEY")
+    reconstructed = provider_process._construct_adapter(explicit_spec)
+    assert type(reconstructed) is OpenRouterVision
+    assert reconstructed.__dict__["_api_key"] == (
+        "explicit-provider-credential"
+    )
+    assert "OPENROUTER_API_KEY" not in os.environ
+    with pytest.raises(
+        ProviderProcessError,
+        match="requires an explicit reviewed credential",
+    ):
+        provider_process._adapter_spec(OpenRouterVision(settings))
 
 
 def test_typed_media_and_provider_dtos_round_trip_without_codecs() -> None:

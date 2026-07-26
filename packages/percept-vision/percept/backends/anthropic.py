@@ -126,9 +126,16 @@ class AnthropicVision:
     #: warning. A client backend that emits the channel declares the same marker.
     PARSES_CLAIM_CHANNEL = True
 
-    def __init__(self, settings: Any = None, *, client: Any = None) -> None:
+    def __init__(
+        self,
+        settings: Any = None,
+        *,
+        client: Any = None,
+        api_key: str | None = None,
+    ) -> None:
         self._settings = _settings_of(settings)
         self._client = client  # injectable for L2 fixtures; built lazily otherwise
+        self._api_key = api_key
         self._model = getattr(
             getattr(self._settings, "models", self._settings), "vision_model", "claude-opus-4-8"
         )
@@ -149,7 +156,9 @@ class AnthropicVision:
     def _ensure_client(self):
         if self._client is None:
             anthropic = _require_anthropic()
-            self._client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from the env
+            self._client = anthropic.Anthropic(
+                **({"api_key": self._api_key} if self._api_key else {})
+            )
         return self._client
 
     # -- the firing-contract judge ----------------------------------------
