@@ -213,6 +213,71 @@ async def test_duplicate_and_reordered_envelopes_create_no_lifecycle_units() -> 
 
 
 @pytest.mark.asyncio
+async def test_signal_loss_closes_at_prior_admitted_unit() -> None:
+    events = await _collect(
+        [_envelope(0, BLACK), _envelope(1, WHITE), _envelope(2, WHITE)]
+    )
+    assert [event.kind for event in events] == [
+        "interest.entered",
+        "interest.exited",
+    ]
+    assert events[-1].reason == "signal_lost"
+    assert events[-1].sequence_end == 1
+    assert events[-1].event_sequence == 2
+
+
+@pytest.mark.asyncio
+async def test_fixed_cadence_wait_has_typed_cadence_reason() -> None:
+    core = _core("fixed")
+    goal = core.goals.get("fixed")
+    assert goal is not None
+    goal.state["cadence"] = {
+        "min_judge_interval": 10.0,
+        "gate_on": "fixed",
+    }
+    subscription = InterestSubscription()
+    consumer = asyncio.create_task(_consume_all(subscription))
+    async for _ in run(
+        core,
+        source=[_envelope(0, BLACK), _envelope(1, BLACK)],
+        interest_subscription=subscription,
+        judge_dispatch="inline",
+    ):
+        pass
+    events = await consumer
+    assert [event.kind for event in events] == [
+        "interest.entered",
+        "interest.exited",
+    ]
+    assert events[0].reason == "fixed"
+    assert events[-1].reason == "cadence_limited"
+    assert events[-1].sequence_end == 0
+    assert events[-1].event_sequence == 1
+
+
+@pytest.mark.asyncio
+async def test_reconnect_reentry_gets_a_distinct_epoch_interval() -> None:
+    events = await _collect(
+        [
+            _envelope(0, BLACK),
+            _envelope(1, WHITE),
+            _envelope(0, BLACK, epoch=1, observed_time=200.0),
+            _envelope(1, WHITE, epoch=1, observed_time=201.0),
+        ]
+    )
+    assert [event.kind for event in events] == [
+        "interest.entered",
+        "interest.exited",
+        "interest.entered",
+        "interest.exited",
+    ]
+    assert events[1].reason == "source_reconnect"
+    assert events[0].interval_id != events[2].interval_id
+    assert events[0].source_epoch == 0
+    assert events[2].source_epoch == 1
+
+
+@pytest.mark.asyncio
 async def test_ids_bind_session_media_and_watch_without_source_secret() -> None:
     secret = "rtsp://alice:password@example.invalid/private"
     source = [
@@ -590,6 +655,28 @@ async def test_subscription_binds_before_preflight_and_always_closes() -> None:
     assert await callback_consumer == []
     assert callback_subscription.closed is True
     assert called is False
+
+    subclass_code_ran = False
+
+    class SessionIdImpostor(str):
+        def strip(self, *_args, **_kwargs):
+            nonlocal subclass_code_ran
+            subclass_code_ran = True
+            raise AssertionError("session id subclass executed caller code")
+
+    impostor_subscription = InterestSubscription()
+    impostor_consumer = asyncio.create_task(_consume_all(impostor_subscription))
+    with pytest.raises(ValueError, match="interest_session_id"):
+        async for _ in run(
+            _core("watch"),
+            source=[_envelope(0, BLACK)],
+            interest_session_id=SessionIdImpostor("impostor"),
+            interest_subscription=impostor_subscription,
+        ):
+            pass
+    assert await impostor_consumer == []
+    assert impostor_subscription.closed is True
+    assert subclass_code_ran is False
 
 
 @pytest.mark.asyncio

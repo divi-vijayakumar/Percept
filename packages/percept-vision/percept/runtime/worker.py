@@ -3305,7 +3305,7 @@ async def run(
         return
 
     valid_session_id = (
-        isinstance(interest_session_id, str) and bool(interest_session_id.strip())
+        type(interest_session_id) is str and bool(interest_session_id.strip())
     )
     run_id = interest_session_id if valid_session_id else uuid.uuid4().hex
     InterestSubscription._bind(interest_subscription, run_id)
