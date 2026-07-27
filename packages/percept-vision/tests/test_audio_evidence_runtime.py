@@ -83,6 +83,21 @@ def unit(
     )
 
 
+#: Sample magnitude whose mean-square energy (8.38e-05) is REAL audible signal that still sits an
+#: order of magnitude below the shipped acoustic wake bar — the regime the whole AUDIO-GATE-DEAF
+#: corpus lived in (p99 chunk energy 0.0097, loudest 0.0277, against a bar of 0.09).
+QUIET_SAMPLE = 300
+QUIET_ENERGY = (QUIET_SAMPLE / 32768) ** 2
+
+
+def QUIET_UNITS(n: int) -> list[AudioUnit]:
+    """``n`` consecutive chunks that carry signal but never clear the wake bar."""
+    return [
+        unit(i, start=0.25 * i, samples=(QUIET_SAMPLE,), energy=QUIET_ENERGY)
+        for i in range(n)
+    ]
+
+
 def canonical(candidate: AudioUnit, *, observed: float = 10.0) -> AudioUnit:
     return canonicalize_audio_unit(
         candidate,
@@ -692,6 +707,183 @@ class AudioOnlyRuntimeTests(unittest.TestCase):
 
     def test_mute_resume_is_a_continuity_boundary(self) -> None:
         self._suppression_test("muted")
+
+    # --- AUDIO-SUPPRESSED-NO-RECEIPT -------------------------------------------------------
+    # A unit offered while muted()/paused() used to be `continue`d with no counter and no health
+    # event, while source_coverage still reported excluded: 0 — the unit simply vanished from every
+    # ledger the runtime publishes. These pin that every offered unit now has exactly one term.
+
+    def _suppression_ledger(self, keyword: str) -> tuple[list, dict]:
+        first = unit(0, start=0.0, samples=(10000,))
+        skipped_a = unit(1, start=0.25)
+        skipped_b = unit(2, start=0.5)
+        resumed = unit(3, start=0.75, samples=(32767,))
+        core = self.core_for(
+            {
+                token_for(first): Verdict(False, 0.99),
+                token_for(resumed): Verdict(True, 0.99),
+            }
+        )
+        states = iter((False, True, True, False))
+        health: list = []
+        asyncio.run(
+            collect(
+                core,
+                [first, skipped_a, skipped_b, resumed],
+                judge_dispatch="inline",
+                on_health=health.append,
+                **{keyword: lambda: next(states)},
+            )
+        )
+        ended = [event for event in health if event.kind == "runtime_ended"][-1]
+        return health, ended.data
+
+    def test_suppressed_units_are_counted_and_the_ingress_ledger_reconciles(self) -> None:
+        for keyword in ("muted", "paused"):
+            with self.subTest(keyword=keyword):
+                health, data = self._suppression_ledger(keyword)
+                self.assertEqual(data["audio_chunks"], 2)
+                self.assertEqual(data["audio_suppressed"], 2)
+                self.assertEqual(data["audio_rejected"], 0)
+                self.assertEqual(data["audio_offered"], 4)
+                # The invariant, stated exactly: nothing offered may go unaccounted for.
+                self.assertEqual(
+                    data["audio_offered"],
+                    data["audio_chunks"] + data["audio_suppressed"] + data["audio_rejected"],
+                )
+                # ... and the modality's own coverage agrees rather than reporting excluded: 0.
+                coverage = data["source_coverage"]["audio"]
+                self.assertEqual(coverage["excluded"], 2)
+                self.assertEqual(coverage["observed"] + coverage["excluded"], 4)
+
+    def test_suppression_window_edges_are_receipted_with_reason_and_size(self) -> None:
+        for keyword in ("muted", "paused"):
+            with self.subTest(keyword=keyword):
+                health, _ = self._suppression_ledger(keyword)
+                started = [e for e in health if e.kind == "audio_suppression_started"]
+                ended = [e for e in health if e.kind == "audio_suppression_ended"]
+                self.assertEqual(len(started), 1)
+                self.assertEqual(len(ended), 1)
+                self.assertEqual(started[0].data["reason"], keyword)
+                # The window's exact size, reported once, rather than one event per swallowed chunk.
+                self.assertEqual(ended[0].data["suppressed_chunks"], 2)
+
+    def test_malformed_carrier_is_excluded_in_coverage_not_only_receipted(self) -> None:
+        # The refusal decision is taken on a preview probe, which mutates no coverage — so this used
+        # to receipt an `audio_unit_rejected` event while leaving excluded at 0.
+        good = unit(0, start=0.0, samples=(32767,))
+        core = self.core_for({token_for(good): Verdict(False, 0.99)})
+        health: list = []
+        asyncio.run(
+            collect(
+                core,
+                [good, ("not", "an", "ingress")],
+                judge_dispatch="inline",
+                on_health=health.append,
+            )
+        )
+        data = [event for event in health if event.kind == "runtime_ended"][-1].data
+        self.assertEqual(
+            [e.kind for e in health].count("audio_unit_rejected"), 1
+        )
+        self.assertEqual(data["audio_rejected"], 1)
+        self.assertEqual(data["audio_chunks"], 1)
+        self.assertEqual(data["audio_offered"], 2)
+        coverage = data["source_coverage"]["audio"]
+        self.assertEqual(coverage["excluded"], 1)
+        self.assertEqual(coverage["observed"] + coverage["excluded"], 2)
+
+    # --- AUDIO-GATE-DEAF -------------------------------------------------------------------
+    # A gate that never wakes across a whole run must SAY SO. Without this, "the room was quiet" and
+    # "my gate could not hear" are byte-for-byte identical to the caller.
+
+    def _run_with_gate(self, units: list, **kwargs: Any) -> list:
+        health: list = []
+        asyncio.run(
+            self._drain(
+                self.core_for({}),
+                units,
+                on_health=health.append,
+                **kwargs,
+            )
+        )
+        return health
+
+    @staticmethod
+    async def _drain(core: Percept, source: Any, **kwargs: Any) -> list:
+        return [
+            incident
+            async for incident in run(
+                core,
+                source=None,
+                audio_source=source,
+                audio_settle_s=0.0,
+                judge_dispatch="inline",
+                **kwargs,
+            )
+        ]
+
+    def test_gate_that_never_wakes_emits_zero_wake_coverage(self) -> None:
+        # Audible-but-quiet material: every chunk carries real signal, none of it clears the bar.
+        # This is the corpus's own shape — its p99 chunk energy was 0.0097 and its loudest 0.0277.
+        health = self._run_with_gate(QUIET_UNITS(4))
+        events = [e for e in health if e.kind == "zero_wake_coverage"]
+        self.assertEqual(len(events), 1, [e.kind for e in health])
+        data = events[0].data
+        self.assertEqual(data["detector"], "acoustic-onset")
+        self.assertEqual(data["wakes"], 0)
+        self.assertEqual(data["chunks_observed"], 4)
+        self.assertTrue(data["at_end"])
+        # The gate's own setting is reported beside what the signal actually did — the pair that
+        # makes the two readings separable from outside the process.
+        self.assertGreater(data["wake_threshold"], 0.0)
+        self.assertEqual(data["rearm_threshold"], data["wake_threshold"] / 4.0)
+        self.assertGreater(data["energy_max"], 0.0)
+        self.assertLess(data["energy_max"], data["wake_threshold"])
+        self.assertAlmostEqual(
+            data["loudest_fraction_of_threshold"],
+            data["energy_max"] / data["wake_threshold"],
+        )
+        # It is emitted BEFORE runtime_ended, the way the video path orders its zero-admission twin.
+        kinds = [e.kind for e in health]
+        self.assertLess(kinds.index("zero_wake_coverage"), kinds.index("runtime_ended"))
+
+    def test_zero_wake_coverage_reports_wakes_in_runtime_ended_too(self) -> None:
+        health = self._run_with_gate(QUIET_UNITS(3))
+        data = [e for e in health if e.kind == "runtime_ended"][-1].data
+        self.assertEqual(data["audio_wakes"], 0)
+
+    def test_a_gate_that_does_wake_never_reports_deafness(self) -> None:
+        loud = [
+            unit(0, start=0.0, samples=(0,), energy=0.0),
+            unit(1, start=0.25, samples=(32767,)),
+        ]
+        health = self._run_with_gate(loud)
+        self.assertNotIn("zero_wake_coverage", [e.kind for e in health])
+        data = [e for e in health if e.kind == "runtime_ended"][-1].data
+        self.assertGreaterEqual(data["audio_wakes"], 1)
+
+    def test_no_gate_configured_never_reports_deafness(self) -> None:
+        # audio_gate=None is a documented fixed-cadence mode: there is no gate that could be deaf,
+        # so a run with zero wakes is not a fact about anything and must stay silent.
+        core = self.core_for({})
+        core.goals.get("audio").state["cadence"] = {
+            "min_judge_interval": 10.0,
+            "gate_on": "fixed",
+        }
+        health: list = []
+        asyncio.run(
+            self._drain(
+                core,
+                QUIET_UNITS(3),
+                audio_gate=None,
+                on_health=health.append,
+            )
+        )
+        self.assertNotIn("zero_wake_coverage", [e.kind for e in health])
+        self.assertEqual(
+            [e for e in health if e.kind == "runtime_ended"][-1].data["audio_wakes"], 0
+        )
 
     def test_quiet_media_units_advance_deadline_without_judge(self) -> None:
         plan = audio_plan(

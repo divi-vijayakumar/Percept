@@ -184,17 +184,17 @@ class EdgeSettings:
     # Deployment-wide default salience MODE (tracks the camera mount; overridable per goal, and by a
     # SourceProfile's own ``parameters['salience_stat']``).
     #
-    # DEFAULT RATIONALE (pre-registered sweep, no tune-to-green). This was "mean" to preserve the
-    # legacy whole-frame gate byte-for-byte. That compatibility is not worth what it costs: a
-    # whole-frame average dilutes a small mover against a still background, so the gate admits
-    # NOTHING and the judge never sees the event at all. Two independent measurements agree:
-    #   * Perception Test action events (N=80, 7.8k frames): mean@0.10 -> 0.06 recall.
-    #   * 100-case stage-validation corpus, 2,391 configs, matched economy: mean@0.10 -> 0.572
-    #     recall admitting ZERO frames on 24/100 cases, vs block_max@0.20 -> 0.947 admitting zero on
-    #     2/100. A +0.376 recall move with no new configuration surface.
-    # The same sweep found conditioning this per goal shape is NOT supported (regret reduction 0.048
-    # against a pre-registered 0.05 bar, and negative under leave-one-out), so this stays a single
-    # global default rather than becoming a per-goal lookup.
+    # DEFAULT RATIONALE (pre-registered, no tune-to-green — same discipline as percept/slo.py).
+    # A whole-frame `mean` dilutes a small mover against a still background: on a mostly-still scene
+    # the average barely moves, so the gate admits nothing and the judge never sees the event at all.
+    # A localized statistic keeps the signal where it is strong. Measured on annotated action
+    # material at matched economy, `block_max` at its own 0.20 cutoff recovers substantially more of
+    # the true events than `mean` at 0.10, and reduces zero-admission scenes by roughly an order of
+    # magnitude. `mean` remains available for whole-frame-change watches and byte-for-byte parity
+    # with the pre-1.0 gate.
+    # Selecting this per goal shape was evaluated against a pre-registered bar and NOT supported —
+    # the effect did not survive refitting — so it stays one global default plus the SourceProfile
+    # override rather than becoming a per-goal lookup.
     salience_stat: str = "block_max"  # PERCEPT_SALIENCE_STAT — "mean" | "block_max" | "p95"
     ego_compensate: bool = False  # PERCEPT_EGO_COMPENSATE — remove global camera motion before diffing
     # Per-stat escalation cutoffs. block_max/p95 live on a HIGHER value scale than the whole-frame mean

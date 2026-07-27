@@ -11,7 +11,7 @@ until you need it.
 | Fire only after a condition stays true for a duration | Build a `hold_s` Watch and use the [in-process Python duration route](../reference/sustained-duration-watches.md) | `[runtime]` + a backend | remote JS edge, restart continuity |
 | Watch **and listen** (fused audio) | `run(source="webcam:0", goals=["..."], audio_source="mic:0")` — [audio modality](../reference/audio-modality.md) | `[runtime,mic]` + a backend | JS edge, rhythm |
 | Drive a live watch (arm/ask/pause by voice or code) | [Command seam](../reference/command-seam.md) — `RuntimeSession` | `[runtime]` + a backend | — |
-| Watch my screen | [Screenshare how-to](../how-to/screenshare.md) | `[runtime]` (+ `[screen]`) | camera/benchmark internals |
+| Watch my screen (**you** grab the display and push frames — no built-in screen capture) | [Screenshare how-to](../how-to/screenshare.md) | a backend (`[gemini]`/`[claude]`) + your own grabber | camera/benchmark internals |
 | Use a real VLM | [Backends reference](../reference/backends.md) | `[gemini]` or `[claude]` | harness internals |
 | Write my own judge / vision backend | [Custom judge & backend how-to](../how-to/custom-judge.md) | your backend | harness internals |
 | Author a profile for my use case | [Custom configuration how-to](../how-to/custom-configuration.md) | `pip install percept-vision` | edge, harness |

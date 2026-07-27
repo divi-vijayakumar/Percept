@@ -16,6 +16,7 @@ from percept.adapters import Verdict
 from percept.agent import _concat_audio
 from percept.backends.fake import FakeVision
 from percept.contracts import AudioFrame
+from percept.edge.detectors import ACOUSTIC_ONSET_HIGH
 from percept.edge.tier0 import gray_frame
 from percept.events import AudioBoundary, AudioUnit, AudioWindow
 from percept.runtime import run
@@ -492,12 +493,18 @@ def test_explicit_audio_unit_sequence_is_ordered_by_audio_window_not_source_trac
 def test_explicit_audio_gap_or_format_change_resets_dsp_but_retains_ordered_evidence(
     discontinuity: str,
 ) -> None:
+    # Energy is chosen to sit in ONE regime and stay there: loud enough for the endpointer
+    # (utterance_threshold 0.01 -> energy 1e-4) and below the acoustic wake bar
+    # (ACOUSTIC_ONSET_HIGH = 1e-3), so the only boundary is `vad_start`. This test is about the DSP
+    # reset and evidence ordering, not about waking the gate; it used 0.001, which was safely under
+    # the old (unreachable) 0.09 bar and is exactly ON the retuned one.
+    assert 1e-4 < 5e-4 < ACOUSTIC_ONSET_HIGH
     first = AudioUnit(
         0,
         0.0,
         0.1,
         AudioFrame(pcm=b"\x01\x00", sample_rate=16_000),
-        energy=0.001,
+        energy=5e-4,
     )
     if discontinuity == "gap":
         second = AudioUnit(

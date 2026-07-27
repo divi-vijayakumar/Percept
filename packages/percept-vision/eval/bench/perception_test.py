@@ -37,6 +37,24 @@ GOLDEN_MANIFEST = REPO_ROOT / "eval" / "golden-v1" / "MANIFEST.json"
 SAMPLE_SEED = os.environ.get("PERCEPT_BENCH_SAMPLE_SEED", "percept-golden-v1")
 _NON_GROUNDED_ACTION_LABELS = {"", "other", "unknown", "none", "n/a"}
 
+#: Perception Test ``sound_localisation`` labels that mark the ABSENCE of an audible source rather
+#: than a sound. ``Muted`` is the annotators' marker for a stretch with NO audible source at all.
+#:
+#: GOLDEN-ACOUSTIC-MUTED-ANCHOR. This mattered because the acoustic anchor was ``segments[0]``, and
+#: for BOTH pinned ``perception-test-acoustic`` rows — ``video_9253`` (9 segments) and ``video_8241``
+#: (11 segments) — ``segments[0].label == "Muted"``. ``label_phrase`` then rendered the condition as
+#: "an audible muted sound or event", so every recall / fusion / flip number on that track was scored
+#: against SILENCE: a gate that heard nothing scored the same as a gate that worked. That is a
+#: ground-truth defect inside the licensed qualification manifest, not a product bug, and it invalidates
+#: the measurement rather than degrading it. Only the checked-in train-split ``sample.json`` rows carry
+#: ``Muted``; the valid split has none — which is exactly the material the golden manifest pins.
+_NON_SOUND_LABELS = {"", "muted", "no sound", "silence", "silent", "other", "unknown", "none", "n/a"}
+
+
+def is_scorable_sound_label(label: Any) -> bool:
+    """False for an annotation that marks the ABSENCE of sound (never a scorable acoustic event)."""
+    return str(label or "").strip().casefold() not in _NON_SOUND_LABELS
+
 
 class GoldenSetCapacityError(RuntimeError):
     """The pinned licensed corpus cannot satisfy the requested benchmark size."""
@@ -241,6 +259,17 @@ def _event_from_row(row: dict[str, Any], key: str) -> dict[str, Any] | None:
                 if str(candidate.get("label", "")).strip().casefold()
                 not in _NON_GROUNDED_ACTION_LABELS
             ),
+            None,
+        )
+        if seg is None:
+            return None
+    elif key == "sound_localisation":
+        # Anchor on the first segment that is actually a SOUND. `segments[0]` is frequently the
+        # annotators' "Muted" marker (see _NON_SOUND_LABELS) — anchoring there scores the acoustic
+        # track against silence. A row with no scorable sound segment yields no case at all, which is
+        # the honest outcome: it is a video with nothing audible to detect, not a case worth zero.
+        seg = next(
+            (candidate for candidate in segments if is_scorable_sound_label(candidate.get("label"))),
             None,
         )
         if seg is None:

@@ -1348,6 +1348,87 @@ class PinnedCaseTests(unittest.TestCase):
             self.assertEqual(event["label"], "Turning something on")
             self.assertEqual(event["positive_windows"], [[3.0, 4.0], [6.0, 7.0]])
 
+    # --- GOLDEN-ACOUSTIC-MUTED-ANCHOR ------------------------------------------------------
+    # `Muted` is the Perception Test annotators' marker for a stretch with NO audible source. It is
+    # segments[0] for BOTH pinned acoustic rows, and the anchor used to be segments[0] unconditionally
+    # — so the acoustic track scored recall against silence. These pin that it can never come back.
+
+    def _sound_row(self, root: Path, segments: list[dict]) -> dict:
+        annotation_path = root / "annotations.json"
+        annotation_path.write_text(
+            json.dumps(
+                {
+                    "video-a": {
+                        "metadata": {"video_id": "video-a", "frame_rate": 30},
+                        "sound_localisation": segments,
+                    }
+                }
+            )
+        )
+        return {
+            "id": "case-a",
+            "video_id": "video-a",
+            "annotation_path": str(annotation_path),
+            "media_path": str(root / "video-a.mp4"),
+        }
+
+    def test_muted_sound_segment_never_becomes_the_scored_event(self):
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            row = self._sound_row(
+                root,
+                [
+                    {"label": "Muted", "timestamps": [0, 2_000_000]},
+                    {"label": "Object:sound", "timestamps": [3_000_000, 4_000_000]},
+                    {"label": "Object:sound", "timestamps": [6_000_000, 7_000_000]},
+                ],
+            )
+            event = pt._event_from_row(row, "sound_localisation")
+            self.assertIsNotNone(event)
+            assert event is not None
+            self.assertEqual(event["label"], "Object:sound")
+            # ... and the muted window is not smuggled in as a positive either.
+            self.assertEqual(event["positive_windows"], [[3.0, 4.0], [6.0, 7.0]])
+            self.assertEqual(event["onset_s"], 3.0)
+
+    def test_row_with_only_muted_sound_yields_no_case_at_all(self):
+        # Scoring an all-muted video as a zero would report a working gate as a broken one.
+        with TemporaryDirectory() as raw:
+            root = Path(raw)
+            row = self._sound_row(
+                root, [{"label": "Muted", "timestamps": [0, 2_000_000]}]
+            )
+            self.assertIsNone(pt._event_from_row(row, "sound_localisation"))
+
+    def test_non_sound_labels_are_rejected_case_insensitively(self):
+        for label in ("Muted", "muted", " MUTED ", "", "none", "Silence"):
+            self.assertFalse(pt.is_scorable_sound_label(label), label)
+        for label in ("Object:sound", "Other:background sound", "Interaction:hitting"):
+            self.assertTrue(pt.is_scorable_sound_label(label), label)
+
+    def test_pinned_acoustic_rows_never_anchor_on_a_muted_segment(self):
+        # The real licensed manifest, when its annotations are staged locally. Both pinned rows have
+        # segments[0].label == "Muted"; neither may produce a scored event carrying that label.
+        rows = [
+            r
+            for r in pt.golden_rows("perception-test-acoustic")
+            if r.get("sound_segments", 0) > 0
+            and pt.repo_path(r["annotation_path"]).exists()
+        ]
+        if not rows:
+            self.skipTest("perception_test sample annotations are not staged locally")
+        anchored = 0
+        for row in rows:
+            event = pt._event_from_row(row, "sound_localisation")
+            if event is None:
+                continue
+            anchored += 1
+            self.assertTrue(
+                pt.is_scorable_sound_label(event["label"]),
+                f"{row['id']} anchored on non-sound label {event['label']!r}",
+            )
+        self.assertGreater(anchored, 0)
+
     def test_public_manifest_declares_exact_disjoint_n20_capacity(self):
         capacity = pt.golden_action_capacity(manifest=pt.GOLDEN_MANIFEST)
         self.assertEqual(capacity["licensed"], 20)

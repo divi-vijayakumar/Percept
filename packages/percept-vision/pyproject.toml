@@ -9,14 +9,22 @@ backend-path = ["."]
 [project]
 name = "percept-vision"
 version = "1.0.0"
-description = "The open-source cognition layer for goal-driven, proactive vision agents."
+description = "The open-source cognition layer for goal-driven, proactive vision agents — deterministic Watch mechanics; no accuracy or latency claims are published."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Divi", email = "divi@velvee.ai" }]
-keywords = ["vision", "agents", "proactive", "perception", "cognition", "vlm", "video", "real-time"]
+keywords = ["vision", "agents", "proactive", "perception", "cognition", "vlm", "video", "streaming"]
+# Development Status is 4 - Beta, NOT 5 - Production/Stable, and that is deliberate at 1.0.0. The
+# PUBLIC API and the wire contract are stable and semver-governed from 1.0 (see CHANGELOG), and the
+# deterministic mechanics (rising-edge/ask/silent cognition, video/audio/fused runtime paths, both
+# starter packs, replay/conformance) are qualified. What is NOT qualified is provider-dependent
+# behaviour: no reflex accuracy, recall, or end-to-end latency figure has passed its gate, and the
+# audio-only and fused paths ship as preview with no provider-quality claim. "Production/Stable"
+# would read as a claim about output quality that no published measurement supports. Promote this to
+# 5 only when the pinned provider benchmark is published, not when the version number moves.
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
@@ -55,7 +63,11 @@ mic = ["sounddevice>=0.4"]                                   # mic capture for r
 # suggest the perception package owns the voice stack; it does not. Kept as a named placeholder so the
 # extra name stays stable for when SDK-side streaming judgment actually ships (CHANGELOG note).
 realtime = []
-screen = ["mss>=9"]
+# screen: REMOVED in 1.0. There is no built-in local screen-capture source — ``screen://`` is not a
+# capture URI (``percept.runtime.source.open_source`` raises on it). Shipping an extra that installs a
+# grabber you then cannot hand to the runtime advertises a capability that does not exist. Capture the
+# display yourself with whatever grabber you like and push frames in as an iterable ``source=`` —
+# see docs/how-to/screenshare.md. (``screen://`` remains a valid SOURCE-PROFILE inference hint.)
 # The benchmark fetcher materializes PT/Charades/ProactiveQA sources through HTTP range reads and
 # Hugging Face, plus RepCount through the ``lance`` module supplied by ``pylance``. These are
 # evaluation-only dependencies; the core runtime remains stdlib-only.
@@ -71,7 +83,6 @@ all = [
     "deepgram-sdk>=3",
     "numpy>=1.24",
     "opencv-python-headless>=4.8",
-    "mss>=9",
     "mmpose>=1.3",
     "mmdet>=3.0,<4",
     "mmcv>=2.0,<2.2",

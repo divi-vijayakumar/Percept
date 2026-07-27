@@ -45,11 +45,14 @@ pip install "percept-vision[all]"          # everything above
 | `[audio]`    | `numpy`             | audio/acoustic signal processing            |
 | `[harness]`  | `numpy`             | the bundled `percept.harness` tier-0 gate + detector registry |
 | `[runtime]`  | `opencv-python-headless`, `numpy` | camera/video/RTSP runtime worker |
-| `[screen]`   | `mss`               | screen-capture dependency for custom iterable sources |
 | `[bench]`    | `numpy`, `opencv-python-headless` | `percept-bench` scorecards |
 | `[edge]`     | `numpy`             | public `percept.edge` / `percept.harness` tier-0 gate + detector registry |
 | `[pose]`     | `mmpose`, `mmdet`, `mmcv`, `mmengine`, `opencv-python-headless` | opt-in pose detector dependencies |
 | `[otel]`     | `opentelemetry-api`, `opentelemetry-sdk` | OpenTelemetry export |
+
+There is **no `[screen]` extra** and **no built-in screen capture** in 1.0: `screen://` is not a capture
+URI and opening one raises. Grab the display yourself and push the frames in as an iterable `source=` —
+see [screenshare](../how-to/screenshare.md).
 
 ---
 

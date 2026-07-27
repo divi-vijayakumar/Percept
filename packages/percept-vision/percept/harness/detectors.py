@@ -219,18 +219,79 @@ class MotionPeriodicity:
         return []
 
 
+#: Shipped wake bar for :class:`AcousticOnset`, in MEAN-SQUARE ENERGY (not amplitude, not dB).
+#:
+#: THRESHOLD RATIONALE. The previous default was ``0.09`` — which is ``0.3 ** 2``, i.e. an RMS
+#: AMPLITUDE of 0.3 (about -10 dBFS sustained). Measured against 987 s / 3,973 capture chunks of
+#: human-annotated sound (Perception Test ``sound_localisation``, 53 cases), the LOUDEST chunk in the
+#: whole corpus reached energy 0.0277 — so the shipped gate woke ZERO times and matched 0/204
+#: annotated sound events. That default could not be crossed by the material it exists to hear.
+#:
+#: Measured recall / economy (wakes per chunk) frontier on that corpus, ``low = high / 4`` throughout:
+#:
+#: ===========  ======  =======
+#: ``high``     recall  economy
+#: ===========  ======  =======
+#: 0.09 (old)   0.000   0.0000
+#: 0.01         0.069   0.0035
+#: 0.003        0.191   0.0108
+#: **0.001**    0.294   0.0181
+#: 0.0001       0.422   0.0393
+#: 5e-05        0.461   0.0468   <- argmax
+#: 1e-05        0.392   0.0418
+#: ===========  ======  =======
+#:
+#: WHY ``0.001`` AND NOT THE ARGMAX. A bare energy gate tops out near 0.46 recall on this material at
+#: ANY threshold, so no number here is a recall fix — this is a DEAFNESS fix, and it is the only thing
+#: it claims to be. Given that the recall ceiling is the detector's, not the threshold's, the default
+#: should be the value that survives material this corpus does not contain, not the value that peaks
+#: on the material it does. The argmax (5e-05 energy = RMS 7e-3 = about -43 dBFS, re-arming below
+#: -49 dBFS) is BELOW the noise floor of most live microphones: on a real mic it would wake once and
+#: then never re-arm, which is a second flavour of deafness this corpus cannot see because file audio
+#: has stretches of true digital silence (corpus p10 energy = 1.46e-07). ``0.001`` is RMS 0.032
+#: (about -30 dBFS) with a re-arm bar at RMS 0.016 (about -36 dBFS) — the conventional "something
+#: audible started" bar, above ordinary room tone, and a measured point on the frontier above
+#: (0.294 recall at 1.8% of chunks admitted).
+#:
+#: HONEST LIMIT (deliberately not fixed here). No FIXED absolute energy is right across material:
+#: microphone gain, AGC and codec loudness normalisation move the whole distribution, so the correct
+#: long-term design is a bar RELATIVE to an observed noise floor rather than a constant. That is a
+#: detector redesign, not a default change. Until it exists, ``percept.runtime.worker`` emits a
+#: ``RuntimeHealthEvent("zero_wake_coverage")`` carrying the observed energy distribution beside these
+#: thresholds whenever a run's gate never wakes, so "the room was quiet" and "my gate could not hear"
+#: are distinguishable from the outside and the caller can retune from their OWN signal.
+ACOUSTIC_ONSET_HIGH = 0.001
+
+#: Re-arm bar, energy. Held at ``ACOUSTIC_ONSET_HIGH / 4`` — the same hysteresis relationship the
+#: original ``0.09``/``0.0225`` pair encoded (a factor of 4 in energy is a factor of 2 in amplitude),
+#: and the ratio every row of the measured frontier above was swept at.
+ACOUSTIC_ONSET_LOW = ACOUSTIC_ONSET_HIGH / 4.0
+
+
 class AcousticOnset:
     """Detects energy onsets (a hiss/grunt/beep starting) — one ``onset`` boundary per rising spike.
 
     Hysteresis crossing on an audio-energy signal: fire when energy crosses ``high`` having been below
     ``low`` (armed), then re-arm only after it falls back under ``low``. Cheap stdlib DSP on the mic
     stream that's already flowing for STT — the genuinely-new sensor, no model.
+
+    UNITS. ``high``/``low`` are MEAN-SQUARE ENERGY in ``[0, 1]`` — the same quantity
+    :func:`percept.runtime._vad.frame_energy` computes, NOT RMS amplitude. The runtime's
+    ``run(audio_wake={"high": ...})`` knob is the AMPLITUDE form and is squared
+    (``_amplitude_threshold_to_energy``) before it reaches this constructor, so ``audio_wake``'s 0.032
+    and this constructor's 0.001 are the same bar. See :data:`ACOUSTIC_ONSET_HIGH` for why that number.
     """
 
     signal = "energy"
     name = "acoustic-onset"
 
-    def __init__(self, *, high: float = 0.09, low: float = 0.0225, refractory_s: float = 0.0) -> None:
+    def __init__(
+        self,
+        *,
+        high: float = ACOUSTIC_ONSET_HIGH,
+        low: float = ACOUSTIC_ONSET_LOW,
+        refractory_s: float = 0.0,
+    ) -> None:
         self.high = high
         self.low = low
         self.refractory_s = refractory_s
@@ -697,6 +758,8 @@ __all__ = [
     "Boundary",
     "MotionPeriodicity",
     "AcousticOnset",
+    "ACOUSTIC_ONSET_HIGH",
+    "ACOUSTIC_ONSET_LOW",
     "PoseOpenness",
     "PoseChannels",
     "register",

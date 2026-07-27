@@ -10,6 +10,8 @@ import math
 import unittest
 
 from percept.runtime import EnergyVad, endpoint_energy_sequence, frame_energy
+from percept.runtime._vad import DEFAULT_CHUNK_S, hangover_frames_for
+from percept.runtime.worker import _amplitude_threshold_to_energy
 
 
 class FrameEnergyTests(unittest.TestCase):
@@ -90,6 +92,66 @@ class EnergyVadStateTests(unittest.TestCase):
         for energy in (math.nan, math.inf, -0.1, 1.1, True):
             with self.subTest(energy=energy), self.assertRaises(ValueError):
                 vad.push(energy)
+
+
+class HangoverUnitsTests(unittest.TestCase):
+    """AUDIO-VAD-HANGOVER-UNITS — the two knobs whose units are not the units they look like.
+
+    ``utterance_threshold`` is an AMPLITUDE that the runtime SQUARES into energy, and
+    ``hangover_frames`` is a FRAME COUNT whose wall-clock meaning depends on ``chunk_s``. Neither
+    fact was written down anywhere near the parameters. These tests are the executable statement of
+    both, so the numbers in the docstrings cannot drift away from the behaviour.
+    """
+
+    def test_amplitude_knob_is_squared_into_the_energy_domain(self):
+        # The shipped utterance_threshold=0.01 is energy 1e-4 — two orders of magnitude below what
+        # the number looks like. A chunk at energy 5e-4 is therefore SPEECH, not silence.
+        energy = _amplitude_threshold_to_energy(0.01, name="utterance_threshold")
+        self.assertAlmostEqual(energy, 1e-4)
+        self.assertTrue(EnergyVad(threshold=energy).push(5e-4).speech)
+        self.assertFalse(EnergyVad(threshold=0.01).push(5e-4).speech)
+
+    def test_default_hangover_is_two_seconds_at_the_runtime_chunk_cadence(self):
+        # 8 frames x 0.25 s/chunk. This is the number the defect is about: continuous narration does
+        # not contain 2 s of silence, so it barely endpoints at all.
+        self.assertEqual(DEFAULT_CHUNK_S, 0.25)
+        self.assertEqual(EnergyVad().hangover_frames * DEFAULT_CHUNK_S, 2.0)
+
+    def test_hangover_frames_for_seconds_round_trips_against_a_cadence(self):
+        self.assertEqual(hangover_frames_for(2.0), 8)
+        self.assertEqual(hangover_frames_for(0.6), 2)
+        self.assertEqual(hangover_frames_for(0.5, chunk_s=0.1), 5)
+        self.assertEqual(hangover_frames_for(0.01), 1)  # never rounds down to a disabled hangover
+        for bad in (0.0, -1.0, math.nan, math.inf):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                hangover_frames_for(bad)
+        with self.assertRaises(ValueError):
+            hangover_frames_for(1.0, chunk_s=0)
+
+    def test_continuous_speech_endpoints_only_when_the_hangover_is_stated_in_seconds(self):
+        # Narration: long speech runs separated by ~0.75 s pauses (3 chunks) — a real turn boundary a
+        # human would hear, and the shape the measured corpus actually has.
+        pause = [0.0] * 3
+        energies = ([0.5] * 12 + pause) * 3
+        # The shipped 2.00 s hangover never sees 2 s of silence, so the whole passage is ONE
+        # never-finished turn. No `utterance_threshold` can fix this: it is the hangover, in frames.
+        self.assertEqual(endpoint_energy_sequence(energies), [])
+        # Stated in seconds against the real cadence, the same audio endpoints at every pause.
+        self.assertEqual(
+            len(
+                endpoint_energy_sequence(
+                    energies, hangover_frames=hangover_frames_for(0.6)
+                )
+            ),
+            3,
+        )
+
+    def test_the_default_is_unchanged_and_stays_the_javascript_twin(self):
+        # Deliberately NOT retuned: this class is a byte-exact port whose JS tests are the shared
+        # oracle, so the default cannot move on one side alone.
+        self.assertEqual(EnergyVad().hangover_frames, 8)
+        self.assertEqual(EnergyVad().min_speech_frames, 3)
+        self.assertEqual(EnergyVad().threshold, 0.01)
 
 
 if __name__ == "__main__":

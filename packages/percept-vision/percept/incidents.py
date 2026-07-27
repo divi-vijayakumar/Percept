@@ -24,6 +24,12 @@ from percept.contracts import (
 )
 
 from .concern import consequence_of
+from .events import frame_nbytes
+from .evidence_encoding import (
+    EvidenceNotEncodable,
+    encode_evidence_frame,
+    unavailable_marker,
+)
 
 
 def make_incident(
@@ -162,8 +168,29 @@ def incident_shadow(incident: Any) -> dict | None:
     return getattr(incident, "_shadow", None)
 
 
+#: Byte ceiling for a frame this bundle has to ENCODE ITSELF (a decoded pixel buffer, not an
+#: already-encoded payload). A pixel buffer is orders of magnitude larger than the JPEG the capture
+#: path publishes, and a clip snippet carries a whole pre-roll window of them, so an unbounded bundle
+#: is a second failure mode of its own. An over-budget frame becomes an explicit gap — the payload is
+#: never trimmed, downsampled or otherwise stood in for. Already-encoded ``(mime, bytes)`` payloads
+#: pass through unmeasured, exactly as they did before this bound existed.
+_MAX_ENCODED_FRAME_BYTES = 8 * 1024 * 1024
+_MAX_ENCODED_BUNDLE_BYTES = 32 * 1024 * 1024
+
+
 def _encode_frame_bundle(frames: list, *, t_start: float, t_end: float) -> tuple[str, bytes]:
-    bundle = {"version": 1, "t_start": t_start, "t_end": t_end, "frames": []}
+    """Pack a pre-roll window into the portable ``x-percept-frame-bundle+json`` payload.
+
+    Every entry either carries the frame's REAL bytes (``{"mime", "data"}``) or is an explicit typed
+    gap (``{"unavailable": {"reason", "frame_type", "detail", "source_nbytes"}}``) — see
+    :mod:`percept.evidence_encoding`. There is no third shape: this bundle never describes a frame it
+    could not carry, because a description is indistinguishable from evidence once it is labelled
+    with an evidence media type. ``unavailable_frames`` (the count) is added at the top level ONLY
+    when at least one frame is missing, so a bundle of already-encoded payloads is byte-for-byte what
+    it always was."""
+    bundle: dict[str, Any] = {"version": 1, "t_start": t_start, "t_end": t_end, "frames": []}
+    remaining = _MAX_ENCODED_BUNDLE_BYTES
+    unavailable = 0
     for frame in frames:
         if (
             isinstance(frame, tuple)
@@ -174,8 +201,33 @@ def _encode_frame_bundle(frames: list, *, t_start: float, t_end: float) -> tuple
             bundle["frames"].append(
                 {"mime": frame[0], "data": base64.b64encode(bytes(frame[1])).decode("ascii")}
             )
-        else:
-            bundle["frames"].append({"repr": repr(frame)})
+            continue
+        try:
+            mime, payload = encode_evidence_frame(frame)
+            if len(payload) > _MAX_ENCODED_FRAME_BYTES:
+                raise EvidenceNotEncodable(
+                    "exceeds-max-encoded-frame-bytes",
+                    frame_type=type(frame).__name__,
+                    detail=f"{len(payload)}>{_MAX_ENCODED_FRAME_BYTES}",
+                    source_nbytes=frame_nbytes(frame),
+                )
+            if len(payload) > remaining:
+                raise EvidenceNotEncodable(
+                    "exceeds-max-encoded-bundle-bytes",
+                    frame_type=type(frame).__name__,
+                    detail=f"{len(payload)}>{remaining}",
+                    source_nbytes=frame_nbytes(frame),
+                )
+        except EvidenceNotEncodable as exc:
+            bundle["frames"].append(unavailable_marker(exc))
+            unavailable += 1
+            continue
+        remaining -= len(payload)
+        bundle["frames"].append(
+            {"mime": mime, "data": base64.b64encode(payload).decode("ascii")}
+        )
+    if unavailable:
+        bundle["unavailable_frames"] = unavailable
     return "application/x-percept-frame-bundle+json", json.dumps(bundle).encode("utf-8")
 
 

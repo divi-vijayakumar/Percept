@@ -62,7 +62,10 @@ def _normalize_uri(uri: str):
         return int(uri.split(":", 1)[1] or 0)
     if uri.startswith("screen://"):
         raise NotImplementedError(
-            "screen:// sources need a screen grabber (mss) — see docs/scenarios/screenshare.md"
+            "screen:// is not a capture source: percept 1.0 ships no built-in local screen capture, "
+            "and there is no extra that adds one. The supported route is client-pushed frames — "
+            "grab the display yourself and pass an (async) iterable of "
+            "(t, gate_frame, judge_frame) as source=. See docs/how-to/screenshare.md."
         )
     return uri
 

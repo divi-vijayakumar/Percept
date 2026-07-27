@@ -16,7 +16,10 @@ proves capsule assembly spends nothing):
 
 from __future__ import annotations
 
+import json
+import struct
 import unittest
+import zlib
 
 from percept.adapters import Goal
 from percept.behavior import (
@@ -34,6 +37,7 @@ from percept.capsule import (
 )
 from percept.episodes import Episode
 from percept.evidence import EvidenceStore
+from percept.evidence_encoding import UNAVAILABLE_MEDIA_TYPE
 from percept.events import FrameWindow
 from percept.harness.scripted import ScriptedJudge
 from percept.tracing import STAGE_CAPSULE_ASSEMBLED, TRACE_STAGES
@@ -214,6 +218,84 @@ class TestEventCapsuleRetention(unittest.TestCase):
         store = EvidenceStore()
         empty = EventCapsule(episode_id=None)
         self.assertIsNone(store_event_capsule(store, empty))
+
+
+def _png_pixels(payload: bytes) -> bytes:
+    """The pixel bytes inside an 8-bit, filter-0 PNG — read straight off the stored artifact, with
+    no help from the encoder under test (and no PIL/OpenCV dependency)."""
+    pos, width, channels, idat = 8, 0, 0, bytearray()
+    while pos < len(payload):
+        (length,) = struct.unpack(">I", payload[pos:pos + 4])
+        tag, data = payload[pos + 4:pos + 8], payload[pos + 8:pos + 8 + length]
+        pos += 12 + length
+        if tag == b"IHDR":
+            width, _height, _depth, color_type = struct.unpack(">IIBB", data[:10])
+            channels = {0: 1, 4: 2, 2: 3, 6: 4}[color_type]
+        elif tag == b"IDAT":
+            idat += data
+        elif tag == b"IEND":
+            break
+    raw, stride, out = zlib.decompress(bytes(idat)), width * channels, bytearray()
+    for start in range(0, len(raw), stride + 1):
+        out += raw[start + 1:start + 1 + stride]
+    return bytes(out)
+
+
+class _OpaqueFrame:
+    """A frame with no faithful encoding, whose repr would leak its contents if one were taken."""
+
+    def __repr__(self) -> str:  # pragma: no cover - only reached if the defect returns
+        return "OPAQUE-CAPSULE-FRAME"
+
+
+class _PixelBuffer:
+    """A decoded pixel buffer (the array-like shape a camera frame arrives in), numpy-free."""
+
+    def __init__(self, height: int, width: int) -> None:
+        self.shape, self.dtype = (height, width, 3), "uint8"
+        self._raw = bytes((i * 11 + 5) % 256 for i in range(height * width * 3))
+        self.nbytes = len(self._raw)
+
+    def tobytes(self) -> bytes:
+        return self._raw
+
+
+class TestCapsuleStoresEvidenceNotDescriptions(unittest.TestCase):
+    """A stored capsule holds the frame's REAL bytes, or an explicit gap — never a ``repr()``.
+
+    ``repr`` of a decoded frame is a TRUNCATED description (numpy elides any array over 1000
+    elements), so retaining one under an evidence media type loses the evidence silently and
+    unrecoverably."""
+
+    def _one_child(self, frame):
+        store = EvidenceStore()
+        capsule = EventCapsule(episode_id="ep1", boundary=((0.0, frame),))
+        artifact = store_event_capsule(store, capsule)
+        (child,) = store.resolve_bundle(artifact)
+        return store, child
+
+    def test_decoded_pixel_buffer_is_retained_as_its_real_pixels(self):
+        frame = _PixelBuffer(4, 6)
+        store, child = self._one_child(frame)
+        self.assertEqual(child.media_type, "image/png")
+        payload = store.open_bytes(child)
+        self.assertTrue(payload.startswith(b"\x89PNG\r\n\x1a\n"))
+        # every pixel byte is present — a description of this buffer would be a fraction of its size.
+        self.assertGreaterEqual(len(payload), frame.nbytes // 2)
+        self.assertEqual(_png_pixels(payload), frame.tobytes())
+
+    def test_unencodable_frame_is_retained_as_an_explicit_typed_gap(self):
+        store, child = self._one_child(_OpaqueFrame())
+        self.assertEqual(child.media_type, UNAVAILABLE_MEDIA_TYPE)
+        record = json.loads(store.open_bytes(child).decode("utf-8"))
+        self.assertEqual(record["unavailable"]["frame_type"], "_OpaqueFrame")
+        self.assertEqual(record["unavailable"]["reason"], "unencodable-frame-type")
+        self.assertNotIn(b"OPAQUE-CAPSULE-FRAME", store.open_bytes(child))
+
+    def test_encoded_payloads_still_pass_through_byte_for_byte(self):
+        store, child = self._one_child(("image/jpeg", b"\xff\xd8\xffexactly-these-bytes"))
+        self.assertEqual(child.media_type, "image/jpeg")
+        self.assertEqual(store.open_bytes(child), b"\xff\xd8\xffexactly-these-bytes")
 
 
 # --------------------------------------------------------------------------------------------------

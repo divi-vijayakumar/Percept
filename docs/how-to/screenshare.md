@@ -25,8 +25,13 @@ motion gate would **never** spend a cloud call, and the assistant would see noth
 makes the gate escalate **every `min_judge_interval` seconds regardless of motion** (the demo fires on a
 constant, zero-motion screen). See [motion-and-strip](../explanation/motion-and-strip.md) for why.
 
-**Live screen source.** `pip install "percept-vision[screen]"` installs the screen-grab dependency
-(`mss`), but the runtime intentionally keeps the capture adapter thin: capture the display, downsample
-to a gray `Frame` for the gate + JPEG for the judge, and yield `(t, gate_frame, judge_frame)` (the same
-shape the iterable source uses). Wire that iterable into `source=` until the built-in `screen://` adapter
-lands.
+**Live screen source.** Percept 1.0 ships **no built-in screen capture** — there is no `[screen]` extra,
+and `screen://…` is not a capture URI (opening one raises). The supported route is **client-pushed
+frames**, which is exactly what `my_screen_frames()` above is: grab the display with whatever grabber you
+like (`mss`, `pyautogui`, a browser `getDisplayMedia` bridge — you install it yourself), downsample to a
+gray `Frame` for the gate + JPEG for the judge, and yield `(t, gate_frame, judge_frame)` (the same shape
+the iterable source uses). Wire that iterable into `source=` — that is the route until the built-in
+`screen://` adapter lands.
+
+`screen://` *is* still a useful **source-profile hint**: passing it as the `uri=` metadata tells the
+resolver to infer the screen/document profile, even though nothing captures from it.

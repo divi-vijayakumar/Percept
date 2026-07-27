@@ -283,6 +283,14 @@ class RuntimeStats:
     source_excluded: int = 0
     source_discontinuities: int = 0
     source_missing_sequences: int = 0
+    # Audio ingress ledger (AUDIO-SUPPRESSED-NO-RECEIPT). Every unit the source offered leaves by
+    # exactly one door: accepted (`audio_chunks`), declined because the caller had the runtime
+    # muted/paused (`audio_suppressed`), or refused as a malformed carrier (`audio_rejected`, which
+    # also receipts an `audio_unit_rejected` health event). Suppression had no term at all — units
+    # were `continue`d with no counter, no event, and `source_coverage.excluded` still reading 0 —
+    # so an offered-vs-accepted deficit was unattributable.
+    audio_suppressed: int = 0
+    audio_rejected: int = 0
     # Per-Watch admission accounting. A fixed opportunity is a fixed-cadence condition whose interval
     # elapsed; every such opportunity admits exactly that goal in the in-process topology.
     fixed_opportunities: int = 0
@@ -2359,7 +2367,16 @@ def _energy_fresh(energy_t: float | None, now: float | None, chunk_dt: float | N
 
 
 def _amplitude_threshold_to_energy(value: float, *, name: str) -> float:
-    """Convert the runtime's legacy RMS/amplitude threshold knob to mean-square energy."""
+    """Convert the runtime's RMS/AMPLITUDE threshold knob to MEAN-SQUARE ENERGY, by SQUARING it.
+
+    The two audio knobs a caller passes to :func:`run` — ``audio_wake={"high"/"low"}`` and
+    ``utterance_threshold`` — are amplitude; everything downstream of this function
+    (:class:`percept.harness.detectors.AcousticOnset`, :class:`percept.runtime._vad.EnergyVad`) is
+    mean-square energy. The conversion is NOT linear and the difference is two orders of magnitude at
+    the values people actually type: ``utterance_threshold=0.01`` is energy ``1e-4``, and
+    ``audio_wake={"high": 0.3}`` is energy ``0.09``. Read every threshold in this module against the
+    domain it lives in; a number moved across this boundary unsquared is off by its own magnitude.
+    """
     if (
         not isinstance(value, (int, float))
         or isinstance(value, bool)
@@ -2368,6 +2385,108 @@ def _amplitude_threshold_to_energy(value: float, *, name: str) -> float:
     ):
         raise ValueError(f"{name} must be finite and within [0, 1]")
     return float(value) ** 2
+
+
+# --- acoustic wake-gate deafness accounting --------------------------------------------------
+#
+# AUDIO-GATE-DEAF. The shipped AcousticOnset bar used to sit above anything real audio produces
+# (energy 0.09 = RMS 0.3, against a measured corpus maximum of 0.0277), so
+# `run(audio_gate="acoustic-onset")` could observe thousands of chunks, wake ZERO times, and emit
+# nothing at all: "there was no sound" and "my gate could not hear" were byte-for-byte identical to
+# the caller. `percept doctor` already refuses to let the VIDEO eye fail silently that way
+# (ZERO_ADMITS_ON_FIXTURE); `zero_wake_coverage` is the audio twin. It reports the same SHAPE of
+# fact and leaves the reading to the consumer — a doorbell watch in an empty house correctly never
+# wakes, and alarming on that would contradict tier-0's whole economic claim — but it reports the
+# gate's SETTING beside what the signal ACTUALLY did, which is the pair the caller needs to tell the
+# two apart. It is not in percept.tracing.DEGRADED_HEALTH_KINDS: it records as state="info".
+
+#: Seconds of OBSERVED audio after which a run that has never woken reports once, mid-run. A live
+#: watch may never reach its ``runtime_ended``, so an end-of-run-only diagnostic would never reach a
+#: 24/7 agent — the exact deployment where a deaf gate costs the most. Latched: at most one
+#: ``zero_wake_coverage`` per run, either here or on the way out.
+_ZERO_WAKE_DIAGNOSTIC_S = 60.0
+
+
+class _AcousticGateWitness:
+    """Run-local record of what the acoustic wake gate was FED and what it did with it.
+
+    Cheap and bounded — six scalars, no per-chunk retention — so it costs nothing to keep on a
+    long-running live watch, which is the one that needs it most.
+    """
+
+    __slots__ = (
+        "chunks", "wakes", "energy_max", "energy_sum",
+        "above_rearm", "first_t", "last_t", "reported",
+    )
+
+    def __init__(self) -> None:
+        self.chunks = 0
+        self.wakes = 0
+        self.energy_max = 0.0
+        self.energy_sum = 0.0
+        self.above_rearm = 0
+        self.first_t: float | None = None
+        self.last_t: float | None = None
+        self.reported = False
+
+    def observe(
+        self, t: float, energy: float, *, wakes: int, rearm: float | None = None
+    ) -> None:
+        """Record ONE energy reading handed to the detector and the onsets it returned."""
+        value = float(energy)
+        self.chunks += 1
+        self.wakes += int(wakes)
+        self.energy_sum += value
+        if value > self.energy_max:
+            self.energy_max = value
+        if rearm is not None and value >= rearm:
+            self.above_rearm += 1
+        if self.first_t is None:
+            self.first_t = float(t)
+        self.last_t = float(t)
+
+    @property
+    def observed_s(self) -> float:
+        """Span of gate-observed audio, in the run's own timebase."""
+        if self.first_t is None or self.last_t is None:
+            return 0.0
+        return max(0.0, self.last_t - self.first_t)
+
+    def due(self, *, at_end: bool) -> bool:
+        """True at most ONCE per run: this gate was fed audio and never woke on any of it."""
+        if self.reported or self.chunks == 0 or self.wakes:
+            return False
+        return at_end or self.observed_s >= _ZERO_WAKE_DIAGNOSTIC_S
+
+    def payload(
+        self,
+        *,
+        detector: str,
+        high: float | None,
+        low: float | None,
+        at_end: bool,
+    ) -> dict[str, Any]:
+        """Build the event body and latch. Thresholds are MEAN-SQUARE ENERGY, like the detector's."""
+        self.reported = True
+        return {
+            "detector": detector,
+            "chunks_observed": self.chunks,
+            "observed_s": round(self.observed_s, 3),
+            "wakes": self.wakes,
+            "wake_threshold": high,
+            "rearm_threshold": low,
+            "energy_max": self.energy_max,
+            "energy_mean": (self.energy_sum / self.chunks) if self.chunks else 0.0,
+            "chunks_at_or_above_rearm": self.above_rearm if low is not None else None,
+            # THE number that separates the two readings, and the reason this event exists. It is the
+            # loudest thing the run heard as a fraction of the bar it had to clear. Near 1.0: real
+            # audio kept just missing a mis-set bar — retune `audio_wake`. Near 0.0: there genuinely
+            # was nothing to hear, and the gate saved every model call exactly as intended.
+            "loudest_fraction_of_threshold": (
+                (self.energy_max / float(high)) if (high and float(high) > 0.0) else None
+            ),
+            "at_end": at_end,
+        }
 
 
 # Cap so a tiny brief-window prior can't explode the capture rate (mirrors the bench
@@ -2641,6 +2760,8 @@ async def _run_audio_only(
     goals_revision = getattr(core.goals, "revision", None)
     deadline_bound: set[str] = set()
     suppressed = False
+    suppressed_run = 0  # units dropped since the CURRENT suppression window opened
+    witness = _AcousticGateWitness()
     cov = stats if stats is not None else RuntimeStats()
     scheduler = (
         _LegacyJudgeScheduler(
@@ -2710,10 +2831,24 @@ async def _run_audio_only(
         await _drain_judge_health(core, on_health, at)
 
     def coverage_data() -> dict[str, Any]:
+        # THE INGRESS LEDGER MUST RECONCILE (AUDIO-SUPPRESSED-NO-RECEIPT). Every unit the source
+        # offered leaves through exactly one of three doors, and each door has a term here:
+        #   audio_offered == audio_chunks + audio_suppressed + audio_rejected
+        # `audio_chunks` accepted, `audio_suppressed` dropped because the caller had the runtime
+        # muted/paused, `audio_rejected` refused as a malformed carrier (each already receipts a
+        # per-unit `audio_unit_rejected`). The suppressed term used to exist NOWHERE: units simply
+        # vanished while `source_coverage.excluded` still reported 0, so a caller reconciling their
+        # own chunk count against ours found a silent deficit with no term to attribute it to.
         return {
             "source": gate_source,
             "goal_ids": tuple(condition_by_goal),
             "audio_chunks": cov.audio_chunks,
+            "audio_suppressed": cov.audio_suppressed,
+            "audio_rejected": cov.audio_rejected,
+            "audio_offered": cov.audio_chunks + cov.audio_suppressed + cov.audio_rejected,
+            # What the acoustic wake gate DID, so a zero here has a companion fact rather than being
+            # inferred from the absence of admissions.
+            "audio_wakes": witness.wakes,
             "admitted": cov.escalations,
             "goal_admissions": cov.goal_admissions,
             "perceive_dispatches": cov.perceive_dispatches,
@@ -2721,6 +2856,24 @@ async def _run_audio_only(
             "incidents": cov.incidents,
             "source_coverage": {"audio": tracker.coverage.as_dict()},
         }
+
+    async def report_zero_wake(*, at_end: bool) -> None:
+        """Emit the latched ``zero_wake_coverage`` diagnostic if this run's gate never woke."""
+        if on_health is None or onset is None or not witness.due(at_end=at_end):
+            return
+        await _call_sink(
+            on_health,
+            RuntimeHealthEvent(
+                "zero_wake_coverage",
+                ts=witness.last_t,
+                data=witness.payload(
+                    detector=str(getattr(onset, "name", audio_gate)),
+                    high=getattr(onset, "high", None),
+                    low=getattr(onset, "low", None),
+                    at_end=at_end,
+                ),
+            ),
+        )
 
     normal_completion = False
     if on_health is not None:
@@ -2744,8 +2897,16 @@ async def _run_audio_only(
         async for ingress in _audio_aiter(
             audio_source, timebase=timebase, observed_clock=wall_clock
         ):
-            is_suppressed = bool(
-                (muted is not None and muted()) or (paused is not None and paused())
+            # Evaluated ONCE per unit, short-circuit exactly as before (`paused()` is still only
+            # consulted when the muted term is falsy) — a caller's predicate must not be polled an
+            # extra time just because the runtime now names which switch swallowed the audio.
+            muted_now = muted is not None and muted()
+            paused_now = (
+                (not muted_now) and paused is not None and paused()
+            )
+            is_suppressed = bool(muted_now or paused_now)
+            suppression_reason = (
+                "muted" if muted_now else "paused" if paused_now else "unknown"
             )
             if is_suppressed != suppressed:
                 core.advance_source_continuity(gate_source)
@@ -2757,8 +2918,45 @@ async def _run_audio_only(
                 reset = getattr(onset, "reset", None)
                 if callable(reset):
                     reset()
+                # AUDIO-SUPPRESSED-NO-RECEIPT: the EDGES of a suppression window are health events,
+                # not the units inside it. A muted mic offers ~4 chunks/s, so a per-unit event would
+                # bury the sink for the whole time someone holds the mute button; the per-unit fact
+                # is carried by the counter and by source_coverage.excluded instead, and the closing
+                # event reports the window's exact size.
+                if on_health is not None:
+                    if is_suppressed:
+                        await _call_sink(
+                            on_health,
+                            RuntimeHealthEvent(
+                                "audio_suppression_started",
+                                data={
+                                    "reason": suppression_reason,
+                                    "source": gate_source,
+                                },
+                            ),
+                        )
+                    else:
+                        await _call_sink(
+                            on_health,
+                            RuntimeHealthEvent(
+                                "audio_suppression_ended",
+                                data={
+                                    "suppressed_chunks": suppressed_run,
+                                    "source": gate_source,
+                                },
+                            ),
+                        )
+                if not is_suppressed:
+                    suppressed_run = 0
             if is_suppressed:
                 suppressed = True
+                suppressed_run += 1
+                cov.audio_suppressed += 1
+                # A suppressed unit IS an excluded observation: the source offered it and this
+                # runtime declined it. `SourceTracker.exclude` is the documented consumer-level hook
+                # for exactly that, and routing through it keeps `source_coverage.excluded` equal to
+                # everything that did not become an observation.
+                tracker.exclude("audio_suppressed")
                 continue
             suppressed = False
             event_t = None
@@ -2905,6 +3103,13 @@ async def _run_audio_only(
                         f"audio unit admission rejected: {unit_preview.as_dict()!r}"
                     )
             except Exception as exc:  # noqa: BLE001 - isolate one malformed carrier
+                cov.audio_rejected += 1
+                # The rejection decision was taken on a PROBE (`tracker.preview`), which by contract
+                # mutates no coverage, and several of the raises above happen before the tracker is
+                # consulted at all — so without this the refusal receipted as a health event but left
+                # `source_coverage.excluded` at 0. Record it on the real tracker so observed +
+                # excluded accounts for every offered unit.
+                tracker.exclude("audio_unit_rejected")
                 if on_health is not None:
                     await _call_sink(
                         on_health,
@@ -2998,6 +3203,17 @@ async def _run_audio_only(
                     yield incident
 
             boundaries = onset.push(at, canonical.energy) if onset is not None else ()
+            if onset is not None:
+                witness.observe(
+                    at,
+                    canonical.energy,
+                    wakes=len(boundaries),
+                    rearm=getattr(onset, "low", None),
+                )
+                # Mid-run, latched: a live audio watch may never reach `runtime_ended`, and a gate
+                # that has heard a minute of audio without waking once is a fact the caller should
+                # get NOW, not whenever the process happens to stop.
+                await report_zero_wake(at_end=False)
             if boundaries:
                 wake_at = at + float(audio_settle_s)
             wake_due = wake_at is not None and at >= wake_at
@@ -3094,6 +3310,7 @@ async def _run_audio_only(
         if scheduler is not None:
             await scheduler.close(drain=normal_completion)
         if not normal_completion and on_health is not None:
+            await report_zero_wake(at_end=True)
             await _call_sink(
                 on_health, RuntimeHealthEvent("runtime_ended", data=coverage_data())
             )
@@ -3103,6 +3320,8 @@ async def _run_audio_only(
         ):
             yield incident
     if on_health is not None:
+        # Immediately BEFORE runtime_ended, mirroring the video path's zero_admission_coverage.
+        await report_zero_wake(at_end=True)
         await _call_sink(
             on_health,
             RuntimeHealthEvent(
@@ -3234,6 +3453,16 @@ async def _run_worker(
       Default ``None`` → no endpointing, the audio path is byte-for-byte. ``vad`` overrides the endpointer
       (any object with ``push(energy) -> event.{started,endpoint}``); else an :class:`EnergyVad` built from
       the ``utterance_*`` knobs is used.
+
+      **READ THE UNITS ON THE ``utterance_*`` KNOBS — they are not the units they look like.**
+      ``utterance_threshold`` (default ``0.01``) is an RMS AMPLITUDE and is SQUARED before it reaches
+      the endpointer, so it is really energy ``1e-4``. ``utterance_hangover_frames`` (default ``8``) is
+      a FRAME COUNT, one frame per capture chunk — at ``AudioSourceConfig.chunk_s=0.25`` that is
+      **2.00 seconds of continuous silence** before a turn is declared finished, which continuous
+      narration essentially never contains (measured: endpoints stayed at or below 4 across every
+      ``utterance_threshold`` from 0.001 to 0.3, so the threshold cannot compensate). Express it in
+      seconds with :func:`percept.runtime._vad.hangover_frames_for` — e.g.
+      ``utterance_hangover_frames=hangover_frames_for(0.6)`` for conversational endpointing.
 
       **The utterance is reconstructed from the endpointer's OWN chunk buffer** (accumulated started→
       endpoint), NOT sliced from the shared rolling AudioWindow — so a turn longer than the fused window
@@ -4286,6 +4515,42 @@ async def _run_worker(
                 ),
             )
 
+    # AUDIO-GATE-DEAF: the same deafness witness the audio-only path keeps. A fused/video run that
+    # also opened a mic can be just as deaf, and here the symptom is even quieter — the video gate
+    # keeps admitting, so nothing at all hints the audio channel is inert. Declared OUT here (not
+    # inside the `audio_source is not None` block) because the teardown below reports through it
+    # on EVERY run; `_audio_onset_ref` stays None when no gate was built, and the report is a
+    # no-op then — a video-only run is byte-for-byte unchanged.
+    #
+    # Bound BEFORE the `try` below, not inside it. The `finally` calls `_report_zero_wake`, so
+    # anything in the guarded body that raises before the definition was reached — a caller's
+    # `on_health` sink raising on `runtime_started`, a source that fails on its first pull — would
+    # hit an unbound local during teardown and replace the real exception with an UnboundLocalError.
+    # Teardown may only reference names that are bound on every path into the `try`.
+    _audio_witness = _AcousticGateWitness()
+    _audio_onset_ref: list = [None]
+
+    async def _report_zero_wake(*, at_end: bool) -> None:
+        """Emit the latched ``zero_wake_coverage`` diagnostic if this gate never woke."""
+        _onset = _audio_onset_ref[0]
+        if on_health is None or _onset is None:
+            return
+        if not _audio_witness.due(at_end=at_end):
+            return
+        await _call_sink(
+            on_health,
+            RuntimeHealthEvent(
+                "zero_wake_coverage",
+                ts=_audio_witness.last_t,
+                data=_audio_witness.payload(
+                    detector=str(getattr(_onset, "name", audio_gate)),
+                    high=getattr(_onset, "high", None),
+                    low=getattr(_onset, "low", None),
+                    at_end=at_end,
+                ),
+            ),
+        )
+
     try:
         if on_health is not None:
             await _call_sink(on_health, RuntimeHealthEvent("runtime_started", data={"source": repr(source)}))
@@ -4501,6 +4766,7 @@ async def _run_worker(
                         onset = None
                 else:
                     onset = audio_gate  # a caller-supplied detector instance
+            _audio_onset_ref[0] = onset  # publish the gate to the deafness reporter declared above
 
             # Voice-escalation endpointer: only built when on_utterance is wired — default None
             # leaves the audio path byte-for-byte. `vad` can be any object with push(energy)->ev.endpoint.
@@ -4763,7 +5029,17 @@ async def _run_worker(
                     audio["energy"] = float(energy)
                     audio["energy_t"] = at
                 if onset is not None and energy is not None:
-                    for boundary in onset.push(at, float(energy)):
+                    _boundaries = list(onset.push(at, float(energy)))
+                    _audio_witness.observe(
+                        at,
+                        float(energy),
+                        wakes=sum(
+                            1 for b in _boundaries
+                            if getattr(b, "kind", None) == "onset"
+                        ),
+                        rearm=getattr(onset, "low", None),
+                    )
+                    for boundary in _boundaries:
                         if (
                             getattr(boundary, "kind", None) == "onset"
                             and audio["wake_at"] is None
@@ -4778,6 +5054,8 @@ async def _run_worker(
                                     "onset", float(boundary.t)
                                 ),
                             )
+                    # Mid-run and latched — a live watch may never reach `runtime_ended`.
+                    await _report_zero_wake(at_end=False)
 
                 if _vad is None or energy is None:
                     return
@@ -6585,6 +6863,9 @@ async def _run_worker(
                 pass
         core.on_trace = _prev_on_trace  # restore — don't leak this run's tracer into the next run(core)
         if on_health is not None:
+            # The audio twin of zero_admission_coverage below: an acoustic gate that was fed audio
+            # and never woke says so, with its own thresholds beside the energies it actually saw.
+            await _report_zero_wake(at_end=True)
             # A run's COVERAGE, stamped on the way out. `runtime_ended` used to carry an empty
             # payload, which made a run that admitted zero frames byte-for-byte indistinguishable
             # from a healthy one; a consumer had to have kept its own counters to know.

@@ -1,5 +1,10 @@
 # Audio modality — the acoustic-onset → judge wake path
 
+> **Preview in 1.0.** The audio-only and fused audio/video paths are qualified for deterministic
+> mechanics — runtime, admission lifecycle, bounded judgment and evidence linkage are covered by
+> tests. They carry **no provider-quality claim**: no accuracy, recall or latency figure for audio
+> has passed a qualification gate. Treat the API shape as usable and the answer quality as unproven.
+
 Percept has a first-class **audio** modality, end to end: a cheap on-device detector watches the mic
 energy, proposes *where* a sound started, and only then does the brain escalate to a multimodal
 `judge(...)` call carrying a **typed audio clip**. Sound is treated exactly like motion — a Tier-0

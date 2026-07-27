@@ -31,6 +31,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
+from .evidence_encoding import (
+    EvidenceNotEncodable,
+    encode_evidence_frame,
+    unavailable_artifact,
+)
+
 #: One captured observation: a stream-time stamp + the opaque frame payload (matches
 #: ``percept.events.FrameWindow``'s ``(t, frame)`` tuple shape).
 Frame = tuple[float, Any]
@@ -221,17 +227,19 @@ def capsule_trace_data(capsule: EventCapsule) -> dict:
 def _default_encode(frame: Any) -> tuple[bytes, str]:
     """Encode one opaque frame payload to ``(bytes, media_type)``.
 
-    Recognises the ``(mime, bytes)`` tuple shape :func:`percept.incidents._encode_frame_bundle` already
-    accepts; anything else (a test double, an opaque object) falls back to its ``repr()`` so assembly
-    never raises on an unrecognised frame type — matching that function's own fallback."""
-    if (
-        isinstance(frame, tuple)
-        and len(frame) == 2
-        and isinstance(frame[0], str)
-        and isinstance(frame[1], (bytes, bytearray))
-    ):
-        return bytes(frame[1]), frame[0]
-    return repr(frame).encode("utf-8"), "application/x-percept-frame-repr"
+    Delegates to :func:`percept.evidence_encoding.encode_evidence_frame` — the single encoder the
+    incident clip bundle uses too — so a capsule stores the frame's REAL bytes (an already-encoded
+    ``(mime, bytes)`` payload passes through byte-for-byte; a decoded pixel buffer becomes lossless
+    PNG). A frame with no faithful encoding (a test double, an opaque object) is stored as an
+    explicit typed GAP under :data:`~percept.evidence_encoding.UNAVAILABLE_MEDIA_TYPE`, never as a
+    rendering of the object: storage still never raises on an unrecognised frame type, but what it
+    retains can no longer be mistaken for the evidence it stands in for."""
+    try:
+        media_type, payload = encode_evidence_frame(frame)
+    except EvidenceNotEncodable as exc:
+        gap_type, gap_payload = unavailable_artifact(exc)
+        return gap_payload, gap_type
+    return payload, media_type
 
 
 def store_event_capsule(

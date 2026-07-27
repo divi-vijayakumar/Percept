@@ -358,9 +358,10 @@ _SETTINGS: tuple[TunableSpec, ...] = (
         path="Settings.edge.salience_stat", owner="SourceProfile", visibility="public",
         safe_to_optimize=False, default="block_max", value_type="enum", choices=("mean", "block_max", "p95"),
         env_var="PERCEPT_SALIENCE_STAT", requires_recompile=True, risk="medium",
-        note="deployment-wide default localizing statistic; block_max since the 100-case sweep measured "
-             "mean@0.10 admitting ZERO frames on 24/100 cases (0.572 recall) vs block_max@0.20 on 2/100 "
-             "(0.947). A SourceProfile's parameters['salience_stat'] still overrides per source class.",
+        note="deployment-wide default localizing statistic. block_max keeps salience where it is strong "
+             "instead of averaging a small mover away across a mostly-still frame, which is why it is the "
+             "default; mean remains available for whole-frame-change watches. A SourceProfile's "
+             "parameters['salience_stat'] overrides it per source class.",
     ),
     TunableSpec(
         path="Settings.edge.ego_compensate", owner="SourceProfile", visibility="public",
@@ -1001,13 +1002,22 @@ _DETECTOR_AND_BACKEND: tuple[TunableSpec, ...] = (
     ),
     TunableSpec(
         path="AcousticOnset.high", owner="SourceProfile", visibility="public", safe_to_optimize=True,
-        default=0.3, value_type="float", bounds=(0.0, 1.0), risk="low",
-        note="hysteresis-crossing high threshold (energy onset).",
+        default=0.001, value_type="float", bounds=(0.0, 1.0), risk="low",
+        note=(
+            "hysteresis-crossing high threshold, in MEAN-SQUARE ENERGY (the constructor's unit). "
+            "run(audio_wake={'high': ...}) is the AMPLITUDE form and is squared before it reaches "
+            "the detector, so audio_wake 0.032 == this 0.001. Calibrated against annotated-sound "
+            "material rather than assumed: ordinary speech and room audio sit well below 0.03 energy, "
+            "so a threshold above that admits nothing at all."
+        ),
     ),
     TunableSpec(
         path="AcousticOnset.low", owner="SourceProfile", visibility="public", safe_to_optimize=True,
-        default=0.15, value_type="float", bounds=(0.0, 1.0), risk="low",
-        note="hysteresis-crossing low threshold (re-arm).",
+        default=0.00025, value_type="float", bounds=(0.0, 1.0), risk="low",
+        note=(
+            "hysteresis-crossing low threshold (re-arm), MEAN-SQUARE ENERGY. Held at high/4 — a "
+            "factor of 4 in energy is a factor of 2 in amplitude."
+        ),
     ),
     TunableSpec(
         path="AcousticOnset.refractory_s", owner="SourceProfile", visibility="public",

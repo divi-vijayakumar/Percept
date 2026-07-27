@@ -23,6 +23,17 @@ standard library and runs offline with deterministic fakes. Highlights of the su
   search), `percept-derive-profile`, `percept-bench` (per-concern P/R + scorecard), and the model-free
   `percept-doctor` / `percept-replay` / trace visualizer. No Percept accuracy numbers are published yet
   (methodology + runbook only — see `docs/how-to/benchmarks.md`).
+- **Removed: the `[screen]` extra.** There is no built-in local screen-capture source in 1.0 —
+  `screen://` is not a capture URI and opening one raises — so an extra that installed a screen grabber
+  the runtime could not use was advertising a capability that does not exist. Watching a screen is
+  supported through **client-pushed frames** (grab the display yourself, yield
+  `(t, gate_frame, judge_frame)` into `source=`): see `docs/how-to/screenshare.md`. `screen://` is
+  unchanged as a **source-profile inference hint**.
+- **`Development Status` is `4 - Beta`, not `5 - Production/Stable`.** The public API and the wire
+  contract are stable and semver-governed from 1.0, and the deterministic mechanics are qualified; what
+  is not qualified is provider-dependent behaviour — no reflex accuracy, recall, or end-to-end latency
+  figure has passed its gate, and the audio-only and fused paths ship as **preview** with no
+  provider-quality claim.
 
 The detailed additive changes that accumulated on the pre-1.0 development line are recorded below.
 
@@ -169,7 +180,7 @@ composed through the SDK's public seams only.
 - `percept-contracts` and `percept-harness` are now **bundled inside `percept-vision`** as the
   `percept.contracts` and `percept.harness` subpackages. Install one package:
   `pip install percept-vision`. Heavy deps stay opt-in via extras:
-  `[gemini] [claude] [openrouter] [deepgram] [runtime] [harness] [pose] [bench] [audio] [screen] [otel]`.
+  `[gemini] [claude] [openrouter] [deepgram] [runtime] [harness] [pose] [bench] [audio] [otel]`.
 - **Migration:** `from percept_harness.X import Y` → `from percept.harness.X import Y`;
   `from percept_contracts import Z` → `from percept.contracts import Z`.
 - **Deprecated:** the standalone `percept-harness` PyPI package is deprecated in favor of

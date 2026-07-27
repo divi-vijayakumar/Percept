@@ -43,7 +43,6 @@ pip install "percept-vision[gemini]"     # GeminiVision            (GEMINI_API_K
 pip install "percept-vision[claude]"     # AnthropicVision / Claude (ANTHROPIC_API_KEY)
 pip install "percept-vision[openrouter]" # OpenRouter (e.g. Qwen)  (OPENROUTER_API_KEY)
 pip install "percept-vision[deepgram]"   # Deepgram STT + TTS      (DEEPGRAM_API_KEY)
-pip install "percept-vision[screen]"     # screen-capture source (mss)
 pip install "percept-vision[mic]"        # microphone capture for fused audio+video
 pip install "percept-vision[bench]"      # benchmark + scorecard tooling (from a repo checkout)
 pip install "percept-vision[edge]"       # Python tier-0 gate (parity with the percept-edge JS package)

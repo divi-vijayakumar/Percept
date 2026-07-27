@@ -38,6 +38,36 @@ class VadEvent:
     frame: int
 
 
+#: The runtime's documented mic cadence, seconds per chunk — one ``push()`` per chunk. Mirrors
+#: ``AudioSourceConfig.chunk_s`` and ``percept.runtime.worker._DEFAULT_CHUNK_DT_S``.
+DEFAULT_CHUNK_S = 0.25
+
+
+def hangover_frames_for(seconds: float, *, chunk_s: float = DEFAULT_CHUNK_S) -> int:
+    """Frames of trailing silence equivalent to ``seconds`` at a ``chunk_s`` capture cadence.
+
+    ``hangover_frames`` is a FRAME COUNT, but every question a caller actually has about it is in
+    SECONDS ("how long must someone stop talking before I get their turn?"). At the runtime's
+    ``chunk_s=0.25`` this is a factor of four, and the shipped ``hangover_frames=8`` is therefore
+    **2.00 seconds** of continuous silence — see :class:`EnergyVad` for why that matters.
+    """
+    if (
+        not isinstance(seconds, (int, float))
+        or isinstance(seconds, bool)
+        or not math.isfinite(seconds)
+        or seconds <= 0
+    ):
+        raise ValueError("seconds must be finite and positive")
+    if (
+        not isinstance(chunk_s, (int, float))
+        or isinstance(chunk_s, bool)
+        or not math.isfinite(chunk_s)
+        or chunk_s <= 0
+    ):
+        raise ValueError("chunk_s must be finite and positive")
+    return max(1, round(float(seconds) / float(chunk_s)))
+
+
 class EnergyVad:
     """Streaming energy-threshold endpointer (port of ``EnergyVad``, vad.js:42).
 
@@ -45,10 +75,29 @@ class EnergyVad:
     speech is active and fires an ``endpoint`` once ``hangover_frames`` consecutive low-energy frames
     follow a speech run of at least ``min_speech_frames`` frames.
 
-    - ``threshold`` — energy above this counts as speech (default ``0.01``).
-    - ``hangover_frames`` — silence frames after speech before an endpoint (default ``8``).
+    - ``threshold`` — MEAN-SQUARE ENERGY above this counts as speech (default ``0.01``). **This is not
+      the knob a caller types.** :func:`percept.runtime.run`'s ``utterance_threshold`` is an RMS
+      AMPLITUDE and is SQUARED (``_amplitude_threshold_to_energy``) before it lands here: the shipped
+      ``utterance_threshold=0.01`` arrives as energy ``1e-4``, two orders of magnitude below what the
+      number looks like. Read every comparison against this field in the energy domain.
+    - ``hangover_frames`` — silence FRAMES (not seconds) after speech before an endpoint (default
+      ``8``). One frame is one capture chunk, so the wall-clock hangover is
+      ``hangover_frames * chunk_s``: at the runtime's ``chunk_s=0.25`` the shipped default demands
+      **2.00 seconds of continuous silence** before a turn is considered finished. Use
+      :func:`hangover_frames_for` to express it in seconds against a real cadence.
+
+      MEASURED CONSEQUENCE (AUDIO-VAD-HANGOVER-UNITS). Continuous narration never contains a 2-second
+      silence, so it barely endpoints at all: over a real speech corpus the endpoint count stayed at
+      or below 4 across EVERY ``utterance_threshold`` from 0.001 to 0.3, while the speech fraction
+      moved from 0.17 to 0.99. The threshold is not the lever — the hangover is, and no amount of
+      threshold tuning can compensate for it. The default is left at 8 deliberately: this class is a
+      byte-exact port of ``percept-edge/src/vad.js`` whose JS tests are the shared oracle, so the
+      number cannot move on one side alone, and no measured hangover sweep exists to justify a
+      specific replacement. A deployment that needs conversational endpointing should pass
+      ``utterance_hangover_frames=hangover_frames_for(0.6)`` (== 2 frames at 4 chunks/s) today.
     - ``min_speech_frames`` — minimum speech frames to count as an utterance (default ``3``); a shorter
-      blip is dropped silently and the endpointer re-arms.
+      blip is dropped silently and the endpointer re-arms. Also frames: ``3`` is 0.75 s at
+      ``chunk_s=0.25``.
     """
 
     def __init__(
@@ -142,4 +191,11 @@ def endpoint_energy_sequence(energies: Sequence[float], **opts) -> list[int]:
     return [ev.frame for ev in (vad.push(e) for e in energies) if ev.endpoint]
 
 
-__all__ = ["EnergyVad", "VadEvent", "frame_energy", "endpoint_energy_sequence"]
+__all__ = [
+    "EnergyVad",
+    "VadEvent",
+    "frame_energy",
+    "endpoint_energy_sequence",
+    "hangover_frames_for",
+    "DEFAULT_CHUNK_S",
+]

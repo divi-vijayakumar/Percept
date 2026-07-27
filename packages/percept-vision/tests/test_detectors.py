@@ -15,6 +15,8 @@ import unittest
 from percept.adapters import Goal
 
 from percept.harness.detectors import (
+    ACOUSTIC_ONSET_HIGH,
+    ACOUSTIC_ONSET_LOW,
     CATEGORY_AUDIO,
     CATEGORY_AUDIO_EVENT,
     CATEGORY_CHANGE,
@@ -76,6 +78,43 @@ class TestAcousticOnset(unittest.TestCase):
     def test_sustained_high_is_one_onset(self):
         # no dip below `low` -> it never re-arms, so a held tone is a single onset
         self.assertEqual(len(_drive(AcousticOnset(), [0.0, 0.9, 0.9, 0.9, 0.9])), 1)
+
+    # --- AUDIO-GATE-DEAF ------------------------------------------------------------------
+    # The shipped bar used to be energy 0.09 == RMS amplitude 0.3. Measured over 987 s / 3,973
+    # capture chunks of human-annotated sound, the LOUDEST chunk in the corpus reached 0.0277 — so
+    # the shipped gate woke zero times on the only real annotated material there is. These pin that
+    # the default is reachable by audio of that magnitude, which is the whole claim being made:
+    # it is a fix for DEAFNESS, not for recall (a bare energy gate tops out near 0.46 recall on that
+    # corpus at ANY threshold, so no default can be sold as a recall fix).
+
+    #: Real measured chunk energies from the annotated corpus: p50, p90, p99, and the loudest chunk.
+    CORPUS_ENERGIES = (3.98e-06, 1.12e-04, 9.74e-03, 2.77e-02)
+
+    def test_shipped_default_wakes_on_real_corpus_energies(self):
+        for energy in (9.74e-03, 2.77e-02):  # the corpus p99 and its loudest chunk
+            with self.subTest(energy=energy):
+                self.assertEqual(len(_drive(AcousticOnset(), [0.0, energy])), 1)
+
+    def test_the_old_default_was_unreachable_by_the_whole_corpus(self):
+        # The regression itself, stated as a fact rather than a memory: replay every measured
+        # quantile through the PREVIOUS default and confirm it produces total silence.
+        stream = [0.0]
+        for energy in self.CORPUS_ENERGIES:
+            stream.extend((energy, 0.0))
+        self.assertEqual(_drive(AcousticOnset(high=0.09, low=0.0225), stream), [])
+        self.assertGreater(len(_drive(AcousticOnset(), stream)), 0)
+
+    def test_hysteresis_relationship_is_preserved(self):
+        # A factor of 4 in energy is a factor of 2 in amplitude — the same relationship the original
+        # 0.09/0.0225 pair encoded, and the ratio every row of the measured frontier was swept at.
+        onset = AcousticOnset()
+        self.assertEqual((onset.high, onset.low), (ACOUSTIC_ONSET_HIGH, ACOUSTIC_ONSET_LOW))
+        self.assertAlmostEqual(onset.low, onset.high / 4.0)
+
+    def test_default_still_ignores_the_corpus_noise_floor(self):
+        # Economy is the other half of the claim: the retuned bar must not admit ordinary quiet.
+        # p50 and p90 chunk energy stay below it, so a quiet stream still costs nothing.
+        self.assertEqual(_drive(AcousticOnset(), [0.0, 3.98e-06, 1.12e-04, 0.0]), [])
 
 
 class TestRegistryAndManifest(unittest.TestCase):
