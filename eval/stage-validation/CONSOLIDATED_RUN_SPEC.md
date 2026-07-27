@@ -24,12 +24,39 @@ identical to the stacked arm and manufacture a null result. Every arm must **ass
 configuration took effect before the first case runs**, and record the observed value in the results
 JSON. An arm that cannot prove it is configured correctly must abort, not run.
 
+## ⚠️ Reproducibility precondition — added after the resolution arm
+
+Recall at the 1.5 s reflex deadline **is not reproducible run-to-run**. Measured: the same 18 cases,
+same settings, same build returned recall 0.797 / 0.469 / 0.531 across three runs — a **0.33 swing**,
+tracking provider p50 against the deadline. A busier machine means slower calls, more deadline
+expiries, more ASKs, fewer decisive verdicts, lower recall.
+
+**Consequence for this run: a single A-vs-B pair proves nothing.** If arm A ran on a quiet machine and
+arm B did not, the stack could look like a catastrophic regression; reverse it and the stack looks
+like a triumph. Either would be an artifact.
+
+Therefore, mandatory:
+
+1. **≥3 replicates per arm**, interleaved A/B/A/B/… so drift affects both arms equally. Never all of A
+   then all of B.
+2. **Machine quiescent.** No other agent, run, or build executing. Verify before starting and assert
+   no competing high-CPU process; record load average alongside the results.
+3. **Report the noise band first.** Within-arm spread across replicates gets quoted *before* any
+   between-arm delta. Any delta smaller than the band is reported as "no difference detected", never
+   as a win — in either direction.
+4. **Deterministic metrics are exempt.** Token counts, cost and incident counts do not vary with load;
+   they can be claimed from a single pair. Recall, precision, ASK% and latency cannot.
+
+This roughly triples the run cost, which is why the budget below is raised. It is not optional: the
+$12 alternative is a number nobody can act on.
+
 ## Arms
 
 - **A — baseline**: all six off. This is the pre-launch-work SDK.
 - **B — stacked**: all six on.
 
-Both arms: same 100 cases, same mode, same backend, same `quality()` scorer, matched per case.
+Both arms: same 100 cases, same mode, same backend, same `quality()` scorer, matched per case,
+interleaved, ≥3 replicates each.
 
 ## What gets reported
 
@@ -51,8 +78,13 @@ this run can find, and pooling would hide it.
 
 ## Budget
 
-Cap **$12**. Arm A runs at HIGH resolution and is the expensive one. Checkpoint every case so a crash
-never re-spends. Report actual provider usage, not an estimate.
+Cap **$20** (raised from $12 to pay for replicates — see the reproducibility precondition). Arm A runs
+at HIGH resolution and is the expensive one. Checkpoint every case so a crash never re-spends. Report
+actual provider usage, not an estimate.
+
+If the full 3×2×100 does not fit the cap, **cut cases before cutting replicates**: a 60-case result
+with a stated noise band is actionable, a 100-case result without one is not. State exactly what was
+dropped.
 
 ## Rules
 
