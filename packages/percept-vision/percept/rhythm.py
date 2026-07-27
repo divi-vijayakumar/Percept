@@ -563,7 +563,16 @@ class RhythmDrive:
                 detector.reset()
 
     def observe(self, t: float, frame: object) -> list:
-        """Fold one frame into every rhythm goal; return the fire events that cleared the milestone."""
+        """Fold one frame into every rhythm goal; return the fire events that cleared the milestone.
+
+        ``frame`` is whatever the frame loop PUBLISHED for this tick, handed to the eye verbatim —
+        for a file/camera source that is the runtime's ``("image/jpeg", bytes)`` transport pair, the
+        same object the judge would upload. This drive deliberately does not normalise it: the loop's
+        payload is opaque by design (a judge uploads it, a clip retains it, a sink forwards it), and a
+        measuring eye declares its own input. A frame-backed eye crosses transport to pixels through
+        :func:`percept.harness.pose.frame_pixels` — one seam, shared with the boundary detectors that
+        ``DetectorBank`` feeds off the same loop — and RAISES on a payload it cannot decode rather
+        than returning an empty channel vector that would count zero forever."""
 
         out: list = []
         if self._perceive is None or frame is None:

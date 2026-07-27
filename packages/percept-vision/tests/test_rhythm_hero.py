@@ -16,6 +16,20 @@ from percept.rhythm_hero import RhythmHero, escalate_count
 from percept.harness.detectors import make_detector, person_measures
 from percept.harness.pose import PoseDetection, PoseKeypoint
 
+try:
+    import numpy as np
+    _HAVE_NUMPY = True
+except ImportError:  # pragma: no cover - numpy is an extra, absent in the L1 stdlib lane
+    _HAVE_NUMPY = False
+
+
+def _frame(w: int = 8, h: int = 8):
+    """The eye's documented input: an RGB uint8 HxWx3 buffer.
+
+    The pose MODEL is faked below; the eye is real, and ``measure_entities`` decodes what the frame
+    loop published before its provider sees it — so this must be pixels, not ``None``."""
+    return np.zeros((h, w, 3), dtype=np.uint8)
+
 
 def _person(wy: float, cx: float, conf: float = 0.9, leg_conf: float = 0.9) -> PoseDetection:
     """One COCO pose centred at ``cx`` with wrists at height ``wy`` (the moving DOF) and ankle confidence
@@ -41,11 +55,12 @@ class FakeCrowdPose:
         return [_person(wy, cx=0.2), _person(0.5, cx=0.8)]  # performer (moving) + bystander (still)
 
 
+@unittest.skipUnless(_HAVE_NUMPY, "needs numpy (a frame-backed eye reads pixels)")
 class MeasureEntitiesTests(unittest.TestCase):
     def test_one_measure_per_person_with_channels_and_coverage(self):
         eye = make_detector("pose-channels")
         eye._provider = FakeCrowdPose()
-        measures = eye.measure_entities(None)
+        measures = eye.measure_entities(_frame())
         self.assertEqual(len(measures), 2)  # the eye no longer collapses to a single body
         for m in measures:
             self.assertIn("limb-vertical", m.channels)
@@ -59,6 +74,7 @@ class MeasureEntitiesTests(unittest.TestCase):
         self.assertGreater(measures[0].coverage["limb-vertical"], 0.5)
 
 
+@unittest.skipUnless(_HAVE_NUMPY, "needs numpy (a frame-backed eye reads pixels)")
 class RhythmHeroTests(unittest.TestCase):
     def _core(self):
         from percept.identity import AppearanceIdentity
@@ -77,7 +93,7 @@ class RhythmHeroTests(unittest.TestCase):
         eye._provider = FakeCrowdPose(period=period)
         hero = RhythmHero(core, "g", prior_channel="limb-vertical")
         for i in range(n):
-            hero.observe(i / fps, eye.measure_entities(None), frame=None)
+            hero.observe(i / fps, eye.measure_entities(_frame()), frame=None)
         return hero
 
     def test_brain_selects_the_performer_not_the_bystander(self):
@@ -131,6 +147,7 @@ def _pommel_performer(cx: float, spread: float) -> PoseDetection:
     return PoseDetection(tuple(k), confidence=0.9, person_id=str(int(cx * 100)))
 
 
+@unittest.skipUnless(_HAVE_NUMPY, "needs numpy (a frame-backed eye reads pixels)")
 class PommelHeroSelectionTests(unittest.TestCase):
     """The pommel-horse fix as an L1: on a multi-person stream the brain must SELECT the performer (not a
     bystander) and report the PERFORMER's count, regardless of the wrong-person geometry trap."""
@@ -174,7 +191,7 @@ class PommelHeroSelectionTests(unittest.TestCase):
         eye._provider = FakePommelCrowd(period=period, amp=amp)
         hero = RhythmHero(core, "g", prior_channel="ankle-spread")
         for i in range(n):
-            hero.observe(i / fps, eye.measure_entities(None), frame=None)
+            hero.observe(i / fps, eye.measure_entities(_frame()), frame=None)
         res = hero.result()
 
         # 1) the brain selected the PERFORMER, not a bystander: the reported subject is the entity whose

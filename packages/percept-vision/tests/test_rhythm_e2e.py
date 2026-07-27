@@ -16,6 +16,12 @@ from percept.behavior import coerce_authored_rhythm
 from percept.harness.detectors import make_detector
 from percept.harness.pose import PoseDetection, PoseKeypoint
 
+try:
+    import numpy as np
+    _HAVE_NUMPY = True
+except ImportError:  # pragma: no cover - numpy is an extra, absent in the L1 stdlib lane
+    _HAVE_NUMPY = False
+
 
 class FakeRepPose:
     """A pose provider that oscillates the wrists once per ``period`` frames → a clean rep on limb-vertical."""
@@ -34,18 +40,27 @@ class FakeRepPose:
         return [PoseDetection(tuple(k), confidence=0.9)]
 
 
+def _frame(w: int = 8, h: int = 8):
+    """The eye's documented input: an RGB uint8 HxWx3 buffer.
+
+    The pose model is faked here, the EYE is not: ``PoseChannels.measure`` decodes what the frame loop
+    published before its provider sees it, so this must be a real pixel buffer and not ``None``."""
+    return np.zeros((h, w, 3), dtype=np.uint8)
+
+
 def _run(core, goal_id, *, n_cycles=8, period=12, fps=6.0):
     """Drive the real pose-channels eye → perceive_rhythm for n_cycles reps; return user fire events."""
     eye = make_detector("pose-channels")
     eye._provider = FakeRepPose(period=period)
     fires = []
     for i in range(n_cycles * period):
-        fe = core.perceive_rhythm(goal_id, t=i / fps, channels=eye.measure(None))
+        fe = core.perceive_rhythm(goal_id, t=i / fps, channels=eye.measure(_frame()))
         if fe is not None:
             fires.append((i / fps, fe))
     return fires
 
 
+@unittest.skipUnless(_HAVE_NUMPY, "needs numpy (a frame-backed eye reads pixels)")
 class RhythmE2ETests(unittest.TestCase):
     def _core(self, **rhythm):
         core = Percept.create(discover_plugins=False)

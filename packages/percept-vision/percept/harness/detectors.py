@@ -353,10 +353,15 @@ class PoseOpenness:
             self._peak.reset()
 
     def push(self, t: float, frame: Any) -> list[Boundary]:
-        """frame: an RGB uint8 HxWx3 array. Emits a 'peak' boundary per rep (relabeled from the inner
-        peak detector to this detector's name)."""
+        """frame: one published frame — an RGB uint8 HxWx3 array, or any payload the frame loop
+        publishes for it (see :func:`percept.harness.pose.frame_pixels`, which decodes the runtime's
+        ``("image/jpeg", bytes)`` pair and RAISES on a payload no eye could see). Emits a 'peak'
+        boundary per rep (relabeled from the inner peak detector to this detector's name)."""
+        from .pose import frame_pixels
+
+        pixels = frame_pixels(frame)
         self._ensure()
-        poses = self._provider.detect(frame)
+        poses = self._provider.detect(pixels)
         if poses:
             from .pose import (
                 COCO_LEFT_ANKLE,
@@ -470,12 +475,25 @@ class PoseChannels:
         return select_nearest_hip(poses, self._anchor, self._MIN_POSE_CONF)
 
     def measure(self, frame: Any) -> dict[str, float]:
-        """RGB uint8 HxWx3 -> the decomposed channel vector. Tracks ONE person across frames and carries
-        forward on a dropped/low-confidence pose so a gap never injects a phantom oscillation."""
-        self._ensure()
-        from .pose import _MIN_BODY_SCALE, body_scale, hip_centre, pose_channels
+        """One published frame -> the decomposed channel vector. Tracks ONE person across frames and
+        carries forward on a dropped/low-confidence pose so a gap never injects a phantom oscillation.
 
-        chosen = self._select(self._provider.detect(frame))
+        ``frame`` is an RGB uint8 HxWx3 buffer, or any payload the frame loop publishes for one frame
+        — ``RhythmDrive.observe`` hands this the runtime's ``("image/jpeg", bytes)`` pair verbatim.
+        :func:`percept.harness.pose.frame_pixels` is the one seam that crosses transport to pixels;
+        it passes an already-decoded buffer through untouched and RAISES on a payload no eye could
+        see, so an unreadable frame can never come back as "measured nothing"."""
+        from .pose import (
+            _MIN_BODY_SCALE,
+            body_scale,
+            frame_pixels,
+            hip_centre,
+            pose_channels,
+        )
+
+        pixels = frame_pixels(frame)
+        self._ensure()
+        chosen = self._select(self._provider.detect(pixels))
         self._last_present = chosen is not None
         if chosen is not None:
             self._anchor = hip_centre(chosen)
@@ -485,11 +503,17 @@ class PoseChannels:
         return dict(self._last)
 
     def measure_entities(self, frame: Any) -> "list[PersonMeasure]":
-        """RGB uint8 HxWx3 -> ONE :class:`PersonMeasure` per detected person (the multi-person producer the
-        entity-scoped rhythm hero needs). The eye does NOT decide identity — it stops collapsing to a single
-        body; the brain's ``EntityGraph`` assigns stable ids and selects the performer."""
+        """One published frame -> ONE :class:`PersonMeasure` per detected person (the multi-person producer
+        the entity-scoped rhythm hero needs). The eye does NOT decide identity — it stops collapsing to a
+        single body; the brain's ``EntityGraph`` assigns stable ids and selects the performer.
+
+        Same input contract as :meth:`measure` (decoded pixels, or any payload
+        :func:`percept.harness.pose.frame_pixels` can decode to them)."""
+        from .pose import frame_pixels
+
+        pixels = frame_pixels(frame)
         self._ensure()
-        return person_measures(self._provider.detect(frame), min_conf=self._MIN_POSE_CONF)
+        return person_measures(self._provider.detect(pixels), min_conf=self._MIN_POSE_CONF)
 
     def push(self, t: float, frame: Any) -> list[Boundary]:
         """Emit one ``"sample"`` boundary per channel (the remote-edge up-channel for the rhythm sense)."""

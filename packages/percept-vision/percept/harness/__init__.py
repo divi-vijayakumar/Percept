@@ -46,9 +46,11 @@ from .detectors import (
 from .pose import (
     POSE_CHANNEL_NAMES,
     BlazePoseProvider,
+    FrameNotDecodable,
     PoseDetection,
     PoseKeypoint,
     RTMOPoseProvider,
+    frame_pixels,
     make_pose_provider,
     pose_channels,
 )
@@ -99,6 +101,8 @@ __all__ = [
     "make_pose_provider",
     "pose_channels",
     "POSE_CHANNEL_NAMES",
+    "frame_pixels",
+    "FrameNotDecodable",
     # concern registry (the standing-concern lifecycle)
     "register_concern",
     "registered_concerns",

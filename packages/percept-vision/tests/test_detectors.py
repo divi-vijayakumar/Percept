@@ -44,6 +44,21 @@ from percept.harness.detectors import (
 from percept.harness.pose import PoseDetection, PoseKeypoint
 from percept.harness.tier0 import compile_watchspec, watchspec_unsupported
 
+try:
+    import numpy as _np
+    _HAVE_NUMPY = True
+except ImportError:  # pragma: no cover - numpy is an extra, absent in the L1 stdlib lane
+    _HAVE_NUMPY = False
+
+
+def _rgb_frame(w: int = 8, h: int = 8):
+    """The input a frame-backed eye documents: RGB uint8 HxWx3.
+
+    Deliberately NOT a placeholder ``object()``. A frame-backed eye now DECODES what the frame loop
+    published (``percept.harness.pose.frame_pixels``) before its provider sees it, and a placeholder
+    is exactly the fiction that let a whole route ship measuring nothing on a real video source."""
+    return _np.zeros((h, w, 3), dtype=_np.uint8)
+
 
 def _drive(det, signal):
     out = []
@@ -279,6 +294,7 @@ class TestPoseSkillRegistration(unittest.TestCase):
             out.extend(bank.push(float(t), motion=v))  # no frame= -> pose is skipped, mediapipe never loads
         self.assertTrue(out and all(b.detector == "motion-periodicity" for b in out))
 
+    @unittest.skipUnless(_HAVE_NUMPY, "needs numpy (a frame-backed eye reads pixels)")
     def test_pose_openness_counts_fake_coco_keypoint_peaks(self):
         class FakePose:
             def __init__(self):
@@ -298,9 +314,10 @@ class TestPoseSkillRegistration(unittest.TestCase):
 
         d = make_detector("pose-openness")
         d._provider = FakePose()
-        out = [b for t in range(9) for b in d.push(float(t), object())]
+        out = [b for t in range(9) for b in d.push(float(t), _rgb_frame())]
         self.assertEqual([b.t for b in out], [2.0, 6.0])
 
+    @unittest.skipUnless(_HAVE_NUMPY, "needs numpy (a frame-backed eye reads pixels)")
     def test_pose_channels_measures_decomposed_basis_without_deciding(self):
         # The rhythm-sense eye MEASURES a channel basis and makes no rep decision.
         class FakePose:
@@ -315,16 +332,17 @@ class TestPoseSkillRegistration(unittest.TestCase):
         self.assertEqual(manifest_of("pose-channels").category, CATEGORY_FRAME)
         d = make_detector("pose-channels")
         d._provider = FakePose()
-        ch = d.measure(object())
+        ch = d.measure(_rgb_frame())
         self.assertEqual(set(ch), {"limb-vertical", "ankle-spread", "hip-vertical", "torso-vertical"})
         # wrist 0.3 above shoulder, normalized by the EUCLIDEAN torso length L=0.3 (hips directly below
         # shoulders) -> 1.0. Euclidean keeps L stable for lying/horizontal poses where |Δy| would collapse.
         self.assertAlmostEqual(ch["limb-vertical"], 1.0, places=6)
         # push() carries each channel as a "sample" boundary (the remote-edge up-channel).
-        bs = d.push(1.0, object())
+        bs = d.push(1.0, _rgb_frame())
         self.assertEqual({b.channel for b in bs}, set(ch))
         self.assertTrue(all(b.kind == "sample" for b in bs))
 
+    @unittest.skipUnless(_HAVE_NUMPY, "needs numpy (a frame-backed eye reads pixels)")
     def test_pose_channels_carries_forward_on_dropped_pose(self):
         class FlakyPose:
             def __init__(self):
@@ -340,8 +358,8 @@ class TestPoseSkillRegistration(unittest.TestCase):
 
         d = make_detector("pose-channels")
         d._provider = FlakyPose()
-        first = d.measure(object())
-        second = d.measure(object())  # dropped -> carries forward, never an empty/zero spike
+        first = d.measure(_rgb_frame())
+        second = d.measure(_rgb_frame())  # dropped -> carries forward, never an empty/zero spike
         self.assertEqual(first, second)
 
 

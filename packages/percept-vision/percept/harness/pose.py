@@ -210,6 +210,96 @@ def ensure_pose_ready(name: str | None = None) -> str:
     return make_pose_provider(name).warm()
 
 
+# ---------------------------------------------------------------------------
+# The INPUT side of the provider seam — what a frame-backed eye is actually handed
+# ---------------------------------------------------------------------------
+#
+# The frame loop publishes a TRANSPORT payload, not pixels: ``percept.runtime.source`` puts
+# ``("image/jpeg", bytes)`` on the queue because the very same object is what the VLM judge uploads
+# and what the clip retainer keeps. Every frame-backed detector below (and the rhythm sense that
+# drives them through ``RhythmDrive.observe``) needs PIXELS. :func:`frame_pixels` is the single
+# crossing between the two, so each eye reads one documented representation and no eye re-invents
+# the decode.
+
+
+class FrameNotDecodable(TypeError):
+    """A published frame payload cannot be turned into the pixels a frame-backed eye reads.
+
+    Typed, and raised rather than returning "no measurement", because the silent version of this
+    failure is the expensive one: a rhythm goal whose eye can never see a frame runs for hours,
+    measures nothing, and reports a count of zero with no error anywhere in the trace. ``frame_type``
+    and ``media_type`` describe the payload; neither renders its contents."""
+
+    def __init__(self, reason: str, *, frame_type: str, media_type: str | None = None) -> None:
+        where = frame_type if media_type is None else f"{frame_type}, {media_type}"
+        super().__init__(f"{reason} [{where}]")
+        self.reason = reason
+        self.frame_type = frame_type
+        self.media_type = media_type
+
+
+def frame_pixels(frame: Any) -> Any:
+    """One published frame payload -> the ``RGB uint8 HxWx3`` buffer a pose provider consumes.
+
+    Accepted, in order:
+
+    * an already-decoded pixel buffer (anything exposing ``shape`` and ``dtype``) — returned
+      **untouched**: not copied, not re-encoded, not colour-converted. The in-process benchmark path
+      (``eval/bench/repcount``) hands the eye an array it already owns, and this must stay an
+      identity;
+    * anything :func:`percept.evidence_encoding.encode_evidence_frame` can carry faithfully — the
+      ``(media_type, bytes)`` pair the runtime source publishes, bare ``bytes``/``bytearray``/
+      ``memoryview``, the provider image block ``{"type": "image", "source": {...}}``, and the
+      ``w``/``h``/``pixels`` grid frame the harness loop carries — which is decoded here.
+
+    Anything else raises :class:`FrameNotDecodable`, and so does a payload that declares image bytes
+    but carries nothing decodable.
+
+    The encoded branch reuses ``encode_evidence_frame`` — the one normalizer the judge/evidence paths
+    already run every payload shape through — precisely so this does not become a second, divergent
+    opinion about what the frame loop emits. It is the inverse of that function, and only the decode
+    itself (OpenCV) is new.
+
+    RGB, not BGR, and that is load-bearing: both shipped eyes document ``RGB uint8 HxWx3``,
+    MediaPipe's landmarker is constructed with ``ImageFormat.SRGB``, and the benchmarked rep-count
+    path feeds ``cv2.cvtColor(bgr, COLOR_BGR2RGB)``. Decoding to BGR here would silently change what
+    the calibrated eye measures.
+    """
+    if hasattr(frame, "shape") and hasattr(frame, "dtype"):
+        return frame  # already the eye's own representation — passed straight through
+    from ..evidence_encoding import EvidenceNotEncodable, encode_evidence_frame
+
+    try:
+        media_type, payload = encode_evidence_frame(frame)
+    except EvidenceNotEncodable as exc:
+        raise FrameNotDecodable(
+            "frame payload carries no image bytes a frame-backed detector could read",
+            frame_type=type(frame).__name__,
+        ) from exc
+    if not payload:
+        raise FrameNotDecodable(
+            "frame payload carries zero bytes",
+            frame_type=type(frame).__name__,
+            media_type=media_type,
+        )
+    try:
+        import cv2  # noqa: PLC0415 - [runtime] extra, intentionally lazy
+        import numpy as np  # noqa: PLC0415 - [runtime] extra, intentionally lazy
+    except ModuleNotFoundError as exc:  # pragma: no cover - runtime extra absent
+        raise RuntimeError(
+            "decoding an encoded frame for a frame-backed detector needs percept-vision[runtime] "
+            "(OpenCV + numpy); pass an already-decoded RGB uint8 HxWx3 buffer instead"
+        ) from exc
+    decoded = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if decoded is None or decoded.size == 0:
+        raise FrameNotDecodable(
+            "frame payload is not a decodable image",
+            frame_type=type(frame).__name__,
+            media_type=media_type,
+        )
+    return np.ascontiguousarray(cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB))
+
+
 def _shape_hw(frame: Any) -> tuple[float | None, float | None]:
     shape = getattr(frame, "shape", None)
     if shape is not None and len(shape) >= 2:
@@ -362,6 +452,8 @@ __all__ = [
     "BlazePoseProvider",
     "make_pose_provider",
     "ensure_pose_ready",
+    "FrameNotDecodable",
+    "frame_pixels",
     "pose_channels",
     "POSE_CHANNEL_NAMES",
     "CHANNEL_KEYPOINTS",
