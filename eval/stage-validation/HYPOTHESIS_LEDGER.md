@@ -245,7 +245,71 @@ carve-out is deliberately narrower than `_terse_reply`/`_judge_max_tokens` — t
 leaving the mutation channel untouched.
 **Revisit if:** a claim watch is ever run in reflex mode on material where corrections are transient.
 
-### R2 — over-delivery, untouched by anything so far
+### R2 — **DIAGNOSED. Re-scoped: the judge's per-window boolean is near-chance on 3 of 5 datasets.**
+
+**Mechanism (source-verified).** The rising-edge gate contributes no suppression on the path that
+actually fires. `_fire_clip_occurrences` (`agent.py:1901`) routes any verdict with a non-empty
+`events` list to `behavior.py:1093`, which builds `should_rearm=True` for EVERY judge-reported event
+unconditionally; `behavior.py:1197-1200` then calls `Gate.rearm`, and `gate.py:474-480` sets
+`_armed=True` **and pops `_last_fire`**. So `decide` can never return `already_fired` and the
+refractory check can never find a last-fire. **This is documented as intentional** — the docstring
+says an explicit rearm is a fresh episode boundary. The open question is whether *every* reported
+event deserves that treatment, not whether `rearm` is wrong.
+*(Caveat: the tester reported `gate.fire == event_chain_opened` with exact per-case equality on
+300/300 runs. Re-counting independently I get 121/300 equal and different totals (3,085 fires vs
+4,769 chain counters). The SOURCE chain verifies exactly; the per-case statistic does not reproduce
+under my counting and should be re-derived before being quoted.)*
+
+**Refractory is not the lever — measured, not argued.** Simulated offline across the real timestamps:
+precision 0.435 → 0.435 → 0.421 → 0.401 → 0.376 as R goes 0 → 1.5 → 3 → 5 → 15 s, while recall falls
+0.626 → 0.565 → 0.483 → 0.380 → 0.243. **Recall is paid 1:1 and precision buys nothing.**
+
+**THE FINDING THAT MATTERS — chance-corrected precision.** Against fires placed uniformly over media
+time (expected = GT coverage fraction):
+
+| dataset | precision | chance | lift |
+|---|---|---|---|
+| charades | 0.915 | 0.852 | **1.07** |
+| repcount | 0.848 | 0.811 | **1.04** |
+| perception_test | 0.204 | 0.199 | **1.02** |
+| proactiveqa | 0.328 | 0.183 | 1.79 |
+| omnipro | 0.115 | 0.069 | 1.67 |
+| POOLED | 0.435 | 0.345 | **1.26** |
+
+On charades, repcount and perception_test the fires are **statistically indistinguishable from random
+timestamps**. The headline precision 0.417 is largely a COVERAGE artifact — charades ground truth
+covers 85.1% of its media, repcount 80.7%. And these are not boundary misses: proactiveqa's median
+false fire is **106.6 s** from the nearest GT span.
+
+**One explanation for both over- and under-firing.** `incidents ≈ judgments × p(fire|judgment)`, and
+judgments-per-media-second is a RUNTIME CONSTANT (0.68–0.79 across all five datasets,
+`corr(media_end_s, judged) = +0.993`). With the gate suppressing nothing, incidents track judgments,
+not content: `corr(GT_occurrences, incidents) = **−0.07**`. Direction is set purely by
+judgments-per-GT-occurrence — proactiveqa gets **246.5** chances per occurrence (39.8× over),
+repcount gets **2.1** (1.03×, at parity, which also caps its recall at 0.650). The apparent
+"under-firing" at 5 frames was H5 deadline attrition, already closed — at 3 frames everything
+over-fires except repcount.
+
+**Proposed fix — only one part is free, and it is a volume fix, not a quality fix.**
+Making `should_rearm` conditional and letting `refractory_s` survive an episode re-arm gives, measured:
+full burst-collapse 1,698 → 710 incidents (−58%) but precision 0.435 → **0.414** and recall 0.626 →
+**0.465**. The only free operating point is a ~1.0 s merge: −17% incidents, precision unchanged,
+recall 0.626 → 0.623. **17% of incidents are pure zero-cost duplicates; everything beyond ~1.0 s buys
+nothing and costs recall.**
+
+**R2 RE-SCOPED.** No suppression policy reaches the real gap. A per-window decision with lift 1.26
+caps ANY function of those decisions at ~0.44 precision. The remaining levers change what is judged
+or what is asked: stage-1 admission is currently precision-neutral-to-negative (0.165 → **0.139**
+across admission), and condition wording spans a 0.00–0.75 fire rate across 20 proactiveqa cases that
+are otherwise identical (same 360.2 s length, same judgment volume, exactly 1 GT occurrence each).
+**Next test should be a wording/admission A/B on a fixed slice — not another gate change.**
+
+**Data caveats.** `incident_ts` is capped at 200/case; 3 cases hit it (deliberate proactiveqa lost
+537 — its numbers are under-counted). omnipro's 66 GT occurrences are zero-width instants widened by
+a ±1.0 s tolerance, so its 0.115 measures timing tolerance, not detection, and should not be pooled
+with interval datasets.
+
+### ~~R2 (original framing)~~ — over-delivery, untouched by anything so far
 1,698 incidents against 329 GT occurrences = **5.2×** (deliberate is 7.1×). Precision 0.417 means
 ~58% of fires land outside a ground-truth window. No fix tonight addressed this; it is the largest
 remaining quality gap and it is NOT a latency problem.
@@ -279,6 +343,10 @@ conductor's job and is next-release architecture; (a) is mechanical.
 | G5 | Episode logic holds Incidents pending close | `decision → Incident observed` p50 0.000 s, max 0.003 s |
 | G6 | Reflex sends ~1 frame vs deliberate's 5 | Measured: 5 images in both modes; `gemini.py:391-400` does not gate on reflex/terse |
 | G7 | `max_tokens` reservation inflates input tokens | An output cap cannot change input token count — arithmetic error |
+| G8 | Over-delivery is caused by interval fragmentation at `interest.py:1165-1180` | Wrong layer — that mints INTEREST intervals; incidents are minted by `behavior.fire_clip_events`. My strongest candidate, refuted |
+| G9 | A non-zero `gate.refractory_s` would fix precision | Measured: precision 0.435→0.376 while recall 0.626→0.243. Recall paid 1:1, precision buys nothing |
+| G10 | Early attribution (R1a skew) inflates false fires | Precision peaks exactly at δ=0 and falls symmetrically either side |
+| G11 | Raising the confidence threshold would help | Outside-GT fires are MORE confident than inside-GT on deliberate (0.981 vs 0.968); sweeping 0.7→1.0 moves precision 0.433→0.440 reflex, 0.405→0.378 deliberate |
 
 ---
 
