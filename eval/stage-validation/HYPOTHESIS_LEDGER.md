@@ -283,6 +283,45 @@ carve-out is deliberately narrower than `_terse_reply`/`_judge_max_tokens` — t
 leaving the mutation channel untouched.
 **Revisit if:** a claim watch is ever run in reflex mode on material where corrections are transient.
 
+### 💰 `media_resolution=LOW` — the biggest single win found, and it is threefold
+
+**`max_dimension` is strictly dominated and must NOT be touched.** Gemini bills a **fixed ~1,100
+image tokens per frame regardless of pixel dimensions** — 768, 640, 512, 384 and 256 px all produce
+an identical 3,434-token 3-frame prompt. Resizing the JPEG shrinks the upload and nothing else: same
+price, same latency, less detail. (5.7× byte range, flat TTFT.)
+
+**Gemini's own `media_resolution` knob is the real lever, and we never set it.** Measured, 15 matched
+cases:
+
+| metric | HIGH (today) | LOW | delta |
+|---|---|---|---|
+| recall | 0.462 | **0.577** | **+0.115** |
+| precision | 0.175 | 0.164 | −0.011 |
+| timely recall @2 s | 0.115 | **0.192** | +0.077 |
+| ASK % | 27.0 | **7.8** | **−71%** |
+| input tok/call | 3,560 | **1,100** | **−69.1%** |
+| cost | $1.917 | **$0.922** | **−51.9%** |
+| provider p50 | 1.145 s | 1.055 s | −7.9% |
+| deadline expiries | 548 | **142** | **−74%** |
+
+**Cases better 2, same 13, worse 0.**
+
+**Same mechanism as the frame-count fix.** LOW's ~8% latency edge pushes calls back under the 1.5 s
+deadline, so decisive verdicts rise 1,949 → 2,740 and ASKs collapse. That is why the realised token
+saving is 57.6% rather than 69% — the pipeline completes **37% MORE calls** and still costs half as
+much.
+
+**Confidence is split, and the split matters:**
+- **The cost claim is solid** — −69.1% per call is deterministic provider tokenisation, not statistics.
+- **The recall claim is directional only** — n=15 (budget cap, not 40), and those 15 are all
+  `omnipro` + `proactiveqa`, the LONG-media cells where deadline pressure is highest and LOW
+  therefore helps most. The gain rests on 2 cases / +3 occurrences of 26. Zero regressions, but the
+  remaining 25 (short media, ~$0.30) are needed before quoting +0.115.
+
+**My stated baseline precision of 0.291 does not reproduce.** Under `live_run`'s own `quality()` it is
+**0.340**; recall 0.653 / ASK 25.3% / FIRE 14.2% match exactly. Comparing against 0.291 would have
+invented a ~5-point precision gain. Use 0.340.
+
 ### ⚠️ LATENCY — CORRECTION: the honest end-to-end is ~2.55 s, not 1.667 s
 
 **The judge only samples the scene once per pipeline-cycle, and that wait was never counted.**

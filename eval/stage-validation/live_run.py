@@ -69,6 +69,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import functools
 import json
 import math
 import os
@@ -103,7 +104,12 @@ from percept.config import load_settings  # noqa: E402
 from percept.contracts.watchplan import WatchPlan  # noqa: E402
 from percept.incidents import incident_judgment  # noqa: E402
 from percept.resolver import ConfigResolver  # noqa: E402
-from percept.runtime import NativeVideoVision, RuntimeStats, TemporalImageVision  # noqa: E402
+from percept.runtime import (  # noqa: E402
+    NativeVideoVision,
+    RuntimeStats,
+    TemporalImageVision,
+    prepare_temporal_images,
+)
 from percept.runtime.source import open_source  # noqa: E402
 from percept.runtime.worker import run as worker_run  # noqa: E402
 from percept.sensorplan import sensor_plan_for  # noqa: E402
@@ -137,6 +143,23 @@ ACTION_TEMPORAL_FRAMES = int(os.environ.get("PERCEPT_SV_FRAMES", "5"))
 # frames cut provider latency (5 frames ~1.19s vs 3 ~0.73-0.91s measured) and therefore cut deadline
 # expiries, but cost temporal context per judgment. Which effect dominates recall is empirical.
 ACTION_TEMPORAL_SAMPLING = "uniform"
+
+#: JPEG long-edge the temporal frames are downscaled to before upload.  ``0`` keeps the runtime
+#: default (``prepare_temporal_images`` max_dimension=768) untouched.
+#:
+#: MEASURED 2026-07-27 and kept only as an instrument: on Gemini this knob does NOT reduce the
+#: prompt.  The provider bills a FIXED 1100 image tokens per frame whether the JPEG is 768x432 or
+#: 256x144 (3-frame prompt = 3434 tokens at every setting from 768 down to 256), so shrinking the
+#: pixels shrinks the UPLOAD and nothing else, and TTFT did not move across a 5.7x payload-byte
+#: range.  Lowering it therefore buys no latency and no cost while discarding detail -- strictly
+#: dominated.  It stays overridable so the null is re-testable on another provider, not because
+#: turning it down is expected to help.
+ACTION_MAX_DIMENSION = int(os.environ.get("PERCEPT_SV_MAX_DIM", "0"))
+
+#: Gemini 3's own vision-token budget, which IS the knob ``PERCEPT_SV_MAX_DIM`` is mistaken for.
+#: On the identical 3-frame payload: HIGH (the SDK default) = 3434 prompt tokens, MEDIUM = 1715,
+#: LOW = 926.  Empty string leaves the provider default in place.
+ACTION_MEDIA_RESOLUTION = os.environ.get("PERCEPT_SV_MEDIA_RESOLUTION", "").strip()
 _CAPTURE_HEADROOM_FPS = 8.0
 _FIXTURE_QUEUE_SIZE = 8
 _LEGACY_CAPTURE_FLOOR_FPS = 2.0
@@ -190,6 +213,35 @@ def watch_plan_for(goal_id: str, condition: str) -> WatchPlan:
 # ---------------------------------------------------------------------------------------------
 # the live provider, wrapped so physical attempts are counted at the ADAPTER boundary
 # ---------------------------------------------------------------------------------------------
+
+
+def install_media_resolution_override(value: str) -> str | None:
+    """Force a ``media_resolution`` on every Gemini request, WITHOUT touching ``percept/``.
+
+    ``percept.backends.gemini`` builds its ``GenerateContentConfig`` inline and re-imports
+    ``google.genai.types`` per call (``_require_genai``), so rebinding the SDK's attribute in this
+    process is enough to reach it — and it reaches only this process, which is the point: the
+    runtime default must not move until a measurement says it should.
+
+    Subclass rather than a factory function so ``isinstance`` checks inside the SDK still hold.
+    """
+    if not value:
+        return None
+    from google.genai import types as gtypes
+
+    base = gtypes.GenerateContentConfig
+    if getattr(base, "_sv_media_resolution", None):  # idempotent under --resume re-entry
+        return str(base._sv_media_resolution)
+
+    class _PinnedMediaResolution(base):  # type: ignore[misc, valid-type]
+        _sv_media_resolution = value
+
+        def __init__(self, **kwargs: Any) -> None:
+            kwargs.setdefault("media_resolution", value)
+            super().__init__(**kwargs)
+
+    gtypes.GenerateContentConfig = _PinnedMediaResolution
+    return value
 
 
 class RecordingVision:
@@ -416,7 +468,16 @@ async def run_case(case: dict, mode: str, *, backend: str, transport: str = "ima
             require_native_transport=True,
         )
         if native_transport
-        else TemporalImageVision(provider, max_frames=min(ACTION_TEMPORAL_FRAMES, 5))
+        else TemporalImageVision(
+            provider,
+            max_frames=min(ACTION_TEMPORAL_FRAMES, 5),
+            # The transport's own injection point, so the resolution sweep never edits `percept/`.
+            preprocessor=(
+                functools.partial(prepare_temporal_images, max_dimension=ACTION_MAX_DIMENSION)
+                if ACTION_MAX_DIMENSION
+                else prepare_temporal_images
+            ),
+        )
     )
     route_name = "native-video-primary" if native_transport else "timestamped-images-primary"
     out["transport"] = "native_video" if native_transport else "ordered_timestamped_images"
@@ -1454,6 +1515,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                          "with --resume and no new provider spend.")
     args = ap.parse_args(argv)
 
+    if ACTION_MEDIA_RESOLUTION:
+        applied = install_media_resolution_override(ACTION_MEDIA_RESOLUTION)
+        print(f"[live_run] media_resolution pinned to {applied} (harness-local monkeypatch; "
+              f"percept/ untouched)", flush=True)
+    if ACTION_MAX_DIMENSION:
+        print(f"[live_run] temporal frames downscaled to max_dimension={ACTION_MAX_DIMENSION}",
+              flush=True)
+
     corpus = SM.load_corpus()
     if args.cases:
         want = {c.strip() for c in args.cases.split(",") if c.strip()}
@@ -1592,6 +1661,9 @@ def build_payload(raw: dict[str, list[dict]], *, corpus: list[dict], selected: l
             "transport_selection": args.transport,
             "temporal_frames": ACTION_TEMPORAL_FRAMES,
             "temporal_window_s": ACTION_TEMPORAL_WINDOW_S,
+            # Declared, never inferred: a run whose evidence was shrunk must say so in its own meta.
+            "max_dimension": ACTION_MAX_DIMENSION or "runtime default (768)",
+            "media_resolution": ACTION_MEDIA_RESOLUTION or "provider default (HIGH)",
             "n_corpus": len(corpus),
             "n_selected": len(selected),
             "selection": selection,
