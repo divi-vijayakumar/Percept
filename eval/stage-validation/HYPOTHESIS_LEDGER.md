@@ -33,6 +33,19 @@ Live N=100, both modes, Gemini 3.1 Flash-Lite direct, ordered-image transport, 0
 
 ---
 
+## ✅ RESOLVED — the reflex regression is CLOSED (`23de596`)
+
+The reflex bound landed as a 3-frame evidence cap on the existing route policy.
+**Recall 0.137 → 0.626 · precision 0.392 → 0.417 · ASK 85.5% → 31.4%.**
+Suite 4,875 passed / 4 skipped / 3 xfailed / 463 subtests (baseline 4,866/441 — delta is exactly the
+9 new tests). Deliberate byte-for-byte unchanged, verified on the whole request dict. `git
+diff --check` clean. **The candidate `codex/launch-bounded-judges` is mergeable — merge/push/tag/
+publish needs explicit human approval and must not happen autonomously.**
+
+Total diagnostic spend: **$3.71 of $50**. Every decisive step except the frame curve was offline.
+
+---
+
 ## OPEN — work these in order
 
 ### H6 — **CONFIRMED, FULL CORPUS N=100.** Cutting reflex 5→3 frames raises recall 4.6×
@@ -205,7 +218,33 @@ agent stops, so no matrix result exists. Two things it DID establish and that ar
 16-vs-50 observation is adequately explained by provider non-determinism, which is expected. Revisit
 only if a reproducibility claim is needed for a published benchmark.
 
-### H4 — cognition: 71% of GT events are scored against a primitive that cannot represent them
+### R1 — residuals disclosed in `23de596` (highest remaining)
+Both were recorded in the commit rather than buried, and both are contained:
+**(a) un-timestamped `event_chain` skew.** On that path a reflex request carries only "the evidence
+spans X seconds", where X still describes the FULL captured window while the frames now cover its
+tail — so reported occurrence times can be attributed early. Left deliberately, because the prior
+behaviour there was deadline expiry to UNKNOWN (zero occurrences), and slightly-shifted beats none.
+**Fix shape:** a `structured`/`event_chain` carve-out in `_judge_max_frames`, mirroring how
+`_judge_max_tokens` already treats structured replies. Contained, offline-testable.
+**(b) claim-mode evidence trim.** Claim mode is NOT exempted, unlike in `_terse_reply`/
+`_judge_max_tokens` — those trim the REPLY (and the claim ledger reads corrections off the reply),
+whereas this trims the oldest EVIDENCE. A correction appearing only in a dropped older frame would
+be missed on a reflex claim watch. Decide: exempt claim mode, or accept and document.
+
+### R2 — over-delivery, untouched by anything so far
+1,698 incidents against 329 GT occurrences = **5.2×** (deliberate is 7.1×). Precision 0.417 means
+~58% of fires land outside a ground-truth window. No fix tonight addressed this; it is the largest
+remaining quality gap and it is NOT a latency problem.
+
+### ~~H4~~ — premise WEAKENED, needs rewriting before any conductor work
+**Original claim:** 71% of GT events are scored against a primitive that cannot represent them, so
+RepCount is structurally capped as a boolean presence Watch.
+**What actually happened:** RepCount went **0.099 → 0.650 on a frame-count change alone**. The
+structural argument still holds in principle — a boolean watch has one rising edge per continuous
+true-period — but it was demonstrably NOT the dominant limiter; deadline expiry was.
+**Do not justify conductor/rhythm work on these grounds without re-measuring.** The honest open
+question is now: with the deadline fixed, how much headroom remains that a rhythm primitive would
+actually recover? That is measurable and unmeasured.
 **Evidence:** RepCount = 203 of 329 GT occurrences, recall 0.099, running as a boolean presence Watch.
 `RhythmTracker` measures MAE 0.00 / 20-of-20 exact offline but is unreachable — `EXTERNAL_RHYTHM` is
 not in `_FRAME_ROUTES`.
