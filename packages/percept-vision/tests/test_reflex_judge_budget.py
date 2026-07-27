@@ -426,9 +426,34 @@ def _gemini_images(mode: str, *, frames) -> list[bytes]:
     ]
 
 
-def _gemini_prompt(mode: str, *, frames) -> str:
-    contents = _gemini_call(mode, frames=frames)["contents"]
+def _gemini_prompt(
+    mode: str,
+    *,
+    frames,
+    context: dict | None = None,
+    shape: str | None = None,
+) -> str:
+    contents = _gemini_call(mode, frames=frames, context=context, shape=shape)["contents"]
     return " ".join(part for part in contents if isinstance(part, str))
+
+
+def _openrouter_prompt(
+    mode: str,
+    *,
+    frames,
+    context: dict | None = None,
+    shape: str = "video_clip",
+) -> str:
+    adapter, client = _openrouter(TERSE_REPLY)
+    asyncio.run(
+        _pool(adapter, mode=mode, shape=shape).judge(
+            "one discrete closing",
+            CURRENT_FRAME,
+            frames=list(frames),
+            context=dict(context) if context is not None else None,
+        )
+    )
+    return _prompt_of(_sent(client))
 
 
 class ReflexFrameBound(unittest.TestCase):
@@ -617,6 +642,228 @@ class ReflexFrameBound(unittest.TestCase):
         )
         self.assertEqual(_sent(pooled_client), _sent(direct_client))
         self.assertEqual(_sent(pooled_client)["max_tokens"], _DELIBERATE_MAX_TOKENS)
+
+
+# --------------------------------------------------------------------------------------------
+# a bounded occurrence request still answers on the CLIP'S timeline
+# --------------------------------------------------------------------------------------------
+#
+# The bound drops the oldest frames, so the images cover only the TAIL of the captured window. The
+# reply is decoded against the whole window — agent._fire_clip_occurrences derives
+# clip_start_t = source_t - _percept_temporal_span_s and behavior.fire_clip_events reports each
+# occurrence at clip_start_t + t_start — so a request that announces the full span while showing
+# only its tail gets its occurrences attributed EARLY by up to the dropped prefix.
+#
+# The OpenRouter timestamped transport already pins this per frame (t= labels in clip coordinates).
+# Nothing else does: the Gemini adapter has no per-frame labels at all, so EVERY Gemini occurrence
+# request is on the un-timestamped path. These tests pin the origin being stated there instead.
+
+# 5 frames uniformly sampled across a 1.6s window; the reflex bound keeps the last 3, i.e. the
+# window from t=0.8s onward. 0.8 is exactly what the timestamped transport labels the first
+# retained frame (see test_timestamp_labels_are_sliced_with_the_frames_and_keep_the_clip_origin).
+CLIP_SPAN_S = 1.6
+CLIP_OFFSETS_S = (0.0, 0.4, 0.8, 1.2, 1.6)
+RETAINED_ORIGIN_S = 0.8
+
+
+def _clip_context(**extra) -> dict:
+    return {
+        "event_chain": True,
+        "_percept_temporal_span_s": CLIP_SPAN_S,
+        "_percept_temporal_offsets_s": CLIP_OFFSETS_S,
+        **extra,
+    }
+
+
+_ORIGIN_SENTENCE = (
+    "The images shown cover only the later part of that window: the first image is at "
+    "t=0.8s and the last at t=1.6s. Report every time on the full 1.6-second timeline — "
+    "t=0 is the START of the window, not the first image shown."
+)
+
+
+class BoundedClipStatesItsOrigin(unittest.TestCase):
+    def test_an_untimestamped_reflex_occurrence_request_states_the_retained_origin(self):
+        for name, prompt in (
+            (
+                "openrouter",
+                _openrouter_prompt("reflex", frames=CONTEXT_FRAMES, context=_clip_context()),
+            ),
+            (
+                "gemini",
+                _gemini_prompt(
+                    "reflex",
+                    frames=CONTEXT_FRAMES,
+                    context=_clip_context(),
+                    shape="video_clip",
+                ),
+            ),
+        ):
+            with self.subTest(adapter=name):
+                # the span the decoder uses is still announced, unchanged...
+                self.assertIn("The evidence spans 1.6 seconds.", prompt)
+                # ...and the evidence is now placed inside it
+                self.assertIn(_ORIGIN_SENTENCE, prompt)
+                self.assertIn("These 3 images are consecutive moments", prompt)
+
+    def test_the_stated_origin_matches_what_the_timestamped_transport_labels(self):
+        # One clip, two transports, one answer: whether the retained window's start reaches the
+        # model as a per-frame ``t=`` label or as prose, it must be the SAME instant, because both
+        # replies are decoded against the same _percept_temporal_span_s.
+        adapter, client = _openrouter(TERSE_REPLY)
+        asyncio.run(
+            _pool(adapter, mode="reflex", shape="video_clip").judge(
+                "one discrete closing",
+                CURRENT_FRAME,
+                frames=list(CONTEXT_FRAMES),
+                context=_clip_context(
+                    _percept_temporal_image_timestamps_s=CLIP_OFFSETS_S,
+                ),
+            )
+        )
+        user = next(m for m in _sent(client)["messages"] if m["role"] == "user")
+        first_label = next(
+            block["text"]
+            for block in user["content"]
+            if block.get("type") == "text" and block["text"].startswith("Temporal frame")
+        )
+        self.assertEqual(first_label, f"Temporal frame 1/3 at t={RETAINED_ORIGIN_S:.6g}s.")
+        self.assertIn(
+            f"the first image is at t={RETAINED_ORIGIN_S:.6g}s",
+            _gemini_prompt(
+                "reflex",
+                frames=CONTEXT_FRAMES,
+                context=_clip_context(),
+                shape="video_clip",
+            ),
+        )
+
+    def test_a_timestamped_request_is_not_given_the_prose_origin(self):
+        # Per-frame labels already pin the timeline exactly; restating it in prose would be a
+        # second, redundant frame of reference on the path the commit deliberately left correct.
+        prompt = _openrouter_prompt(
+            "reflex",
+            frames=CONTEXT_FRAMES,
+            context=_clip_context(_percept_temporal_image_timestamps_s=CLIP_OFFSETS_S),
+        )
+        self.assertIn("The evidence spans 1.6 seconds.", prompt)
+        self.assertNotIn("The images shown cover only", prompt)
+
+    def test_the_exact_per_frame_provenance_beats_the_uniform_assumption(self):
+        # Frames are not always evenly spaced across the window (window_s clipping, "recent"
+        # sampling). _percept_temporal_offsets_s is the agent's real selection provenance, so the
+        # stated origin follows it rather than span * dropped / (n - 1).
+        uneven = {
+            "event_chain": True,
+            "_percept_temporal_span_s": 2.0,
+            "_percept_temporal_offsets_s": (0.0, 1.2, 1.5, 1.7, 2.0),
+        }
+        for name, prompt in (
+            ("openrouter", _openrouter_prompt("reflex", frames=CONTEXT_FRAMES, context=uneven)),
+            (
+                "gemini",
+                _gemini_prompt(
+                    "reflex", frames=CONTEXT_FRAMES, context=uneven, shape="video_clip"
+                ),
+            ),
+        ):
+            with self.subTest(adapter=name):
+                self.assertIn("the first image is at t=1.5s and the last at t=2s", prompt)
+                self.assertNotIn("t=0.8s", prompt)
+
+    def test_without_provenance_the_origin_falls_back_to_the_sampling_the_prompt_claims(self):
+        # No offsets: the request itself tells the model the images are consecutive moments across
+        # the announced span, so the honest reading of "5 moments over 1.6s" is 0.4s apart and the
+        # retained window starts at 0.8s. Silence would leave the model with no origin at all.
+        bare = {"event_chain": True, "_percept_temporal_span_s": CLIP_SPAN_S}
+        for name, prompt in (
+            ("openrouter", _openrouter_prompt("reflex", frames=CONTEXT_FRAMES, context=bare)),
+            (
+                "gemini",
+                _gemini_prompt("reflex", frames=CONTEXT_FRAMES, context=bare, shape="video_clip"),
+            ),
+        ):
+            with self.subTest(adapter=name):
+                self.assertIn(_ORIGIN_SENTENCE, prompt)
+
+    def test_a_request_that_dropped_nothing_keeps_the_historical_sentence(self):
+        # Deliberate keeps every frame, and a strip already inside the bound has no prefix to
+        # account for. Both must read exactly as they did before the bound existed.
+        short_frames = CONTEXT_FRAMES[-2:]  # 2 context + current == the bound
+        short_context = {
+            "event_chain": True,
+            "_percept_temporal_span_s": CLIP_SPAN_S,
+            "_percept_temporal_offsets_s": (0.0, 0.4, 0.8),
+        }
+        cases = (
+            ("openrouter-deliberate", _openrouter_prompt("deliberate", frames=CONTEXT_FRAMES, context=_clip_context())),
+            (
+                "gemini-deliberate",
+                _gemini_prompt(
+                    "deliberate", frames=CONTEXT_FRAMES, context=_clip_context(), shape="video_clip"
+                ),
+            ),
+            (
+                "openrouter-inside-bound",
+                _openrouter_prompt("reflex", frames=short_frames, context=short_context),
+            ),
+            (
+                "gemini-inside-bound",
+                _gemini_prompt(
+                    "reflex", frames=short_frames, context=short_context, shape="video_clip"
+                ),
+            ),
+        )
+        for name, prompt in cases:
+            with self.subTest(case=name):
+                self.assertIn("The evidence spans 1.6 seconds.", prompt)
+                self.assertNotIn("The images shown cover only", prompt)
+
+    def test_a_deliberate_untimestamped_clip_is_byte_for_byte_the_direct_request(self):
+        # The un-timestamped clip request is where the origin sentence lives, so pin that the
+        # deliberate route there is still indistinguishable from an unpooled direct call.
+        context = _clip_context()
+        pooled_adapter, pooled_client = _openrouter(VERBOSE_REPLY)
+        asyncio.run(
+            _pool(pooled_adapter, mode="deliberate", shape="video_clip").judge(
+                "one discrete closing",
+                CURRENT_FRAME,
+                frames=list(CONTEXT_FRAMES),
+                context=dict(context),
+            )
+        )
+        direct_adapter, direct_client = _openrouter(VERBOSE_REPLY)
+        asyncio.run(
+            direct_adapter.judge(
+                "one discrete closing",
+                CURRENT_FRAME,
+                frames=list(CONTEXT_FRAMES),
+                context=dict(context),
+            )
+        )
+        self.assertEqual(_sent(pooled_client), _sent(direct_client))
+
+    def test_an_unusable_span_still_produces_no_timeline_sentence(self):
+        # A clip with no announced span is never decoded into occurrences at all
+        # (agent._fire_clip_occurrences returns [] without one), so there is no timeline to state.
+        for name, prompt in (
+            (
+                "openrouter",
+                _openrouter_prompt("reflex", frames=CONTEXT_FRAMES, context={"event_chain": True}),
+            ),
+            (
+                "gemini",
+                _gemini_prompt(
+                    "reflex",
+                    frames=CONTEXT_FRAMES,
+                    context={"event_chain": True},
+                    shape="video_clip",
+                ),
+            ),
+        ):
+            with self.subTest(adapter=name):
+                self.assertNotIn("The evidence spans", prompt)
+                self.assertNotIn("The images shown cover only", prompt)
 
 
 # --------------------------------------------------------------------------------------------

@@ -31,6 +31,7 @@ from .anthropic import (
     _JUDGE_SYSTEM,
     _JUDGE_SYSTEM_REFLEX,
     _bounded_strip,
+    _clip_timeline_sentence,
     _coerce_json,
     _is_reflex,
     _judge_max_frames,
@@ -486,6 +487,10 @@ class OpenRouterVision:
             "_percept_temporal_image_timestamps_s"
         )
         ordered_images = [*strip, frame]
+        # Whether each image ends up carrying its own ``t=`` label below. When it does, the clip's
+        # timeline is pinned per frame and the occurrence question needs no prose about where the
+        # retained window starts; when it does not, that origin has to be stated.
+        per_frame_labels = False
         if (
             isinstance(temporal_timestamps, (tuple, list))
             and len(temporal_timestamps) == len(ordered_images) + dropped_frames
@@ -501,6 +506,7 @@ class OpenRouterVision:
             # ``_percept_temporal_span_s`` (the full captured span), so re-basing here would shift
             # every occurrence earlier by exactly the dropped prefix.
             temporal_timestamps = list(temporal_timestamps)[dropped_frames:]
+            per_frame_labels = True
             content = []
             for index, (image, timestamp_s) in enumerate(
                 zip(ordered_images, temporal_timestamps, strict=True), start=1
@@ -566,9 +572,13 @@ class OpenRouterVision:
             if spec:
                 question += f"A specialist model reported these structured facts (trust them): {spec}. "
         if event_chain:
-            span_s = (context or {}).get("_percept_temporal_span_s")
-            if isinstance(span_s, (int, float)) and not isinstance(span_s, bool):
-                question += f"The evidence spans {float(span_s):.6g} seconds. "
+            question += _clip_timeline_sentence(
+                (context or {}).get("_percept_temporal_span_s"),
+                dropped_frames=dropped_frames,
+                total_frames=len(ordered_images) + dropped_frames,
+                offsets=(context or {}).get("_percept_temporal_offsets_s"),
+                per_frame_labels=per_frame_labels,
+            )
             # The occurrence fields stay REQUIRED on both routes — cognition abstains without a
             # consistent satisfied/action_present/phase tuple. A reflex occurrence request drops only
             # the free-text ``evidence`` field and caps label length.

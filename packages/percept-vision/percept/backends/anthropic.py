@@ -210,6 +210,97 @@ def _bounded_strip(strip: list, *, max_frames: int | None, has_current_frame: bo
     return strip[len(strip) - keep :]
 
 
+def _bounded_window_origin_s(
+    *,
+    dropped_frames: int,
+    total_frames: int,
+    span_s: float,
+    offsets: Any = None,
+) -> float | None:
+    """Where the RETAINED evidence begins on the CLIP'S OWN timeline, in seconds.
+
+    ``None`` whenever the question does not arise: nothing was dropped, the clip is degenerate, or
+    the origin cannot be placed inside the announced span.
+
+    EXACT WHEN IT CAN BE. ``_percept_temporal_offsets_s`` is the agent's per-frame source
+    provenance for this exact selection (``agent._temporal_evidence_context``), one value per
+    ordered image, so the retained origin is simply the offset of the first frame that survived the
+    bound. When it is absent the fallback is the sampling the PROMPT ITSELF already describes to
+    the model — N consecutive moments spread across the announced span — which is what the model
+    would assume anyway.
+    """
+    if dropped_frames <= 0 or total_frames <= 1 or dropped_frames >= total_frames:
+        return None
+    span = float(span_s)
+    if not math.isfinite(span) or span <= 0.0:
+        return None
+    if (
+        isinstance(offsets, (tuple, list))
+        and len(offsets) == total_frames
+        and all(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            for value in offsets
+        )
+    ):
+        origin = float(offsets[dropped_frames]) - float(offsets[0])
+    else:
+        origin = span * dropped_frames / (total_frames - 1)
+    if not math.isfinite(origin) or origin <= 0.0 or origin >= span:
+        return None
+    return origin
+
+
+def _clip_timeline_sentence(
+    span_s: Any,
+    *,
+    dropped_frames: int = 0,
+    total_frames: int = 0,
+    offsets: Any = None,
+    per_frame_labels: bool = False,
+) -> str:
+    """Tell an occurrence request WHICH TIMELINE its reported times live on.
+
+    An ``event_chain`` reply is decoded downstream against the FULL captured window:
+    ``agent._fire_clip_occurrences`` derives ``clip_start_t = source_t - _percept_temporal_span_s``
+    and ``behavior.fire_clip_events`` reports each occurrence at ``clip_start_t + t_start``. So the
+    model's ``t=0`` must be the start of that window and nothing else.
+
+    :func:`_bounded_strip` breaks that on a request carrying NO per-frame labels: the span sentence
+    still describes the whole window while the images now cover only its tail, so an occurrence in
+    the retained tail is reported against a timeline that begins earlier than the evidence does and
+    is decoded EARLY by up to the dropped prefix. This restates the origin instead of restating the
+    span — re-basing the span onto the retained window would not fix it, it would make the error a
+    CONSTANT shift of exactly the dropped prefix, because the decoder's ``clip_start_t`` is not
+    ours to move.
+
+    ``per_frame_labels=True`` means every image already carries its own ``t=`` label in clip
+    coordinates (the OpenRouter timestamped transport), which anchors the timeline exactly and
+    needs no prose. Nothing dropped -> the historical sentence, byte for byte, so a deliberate
+    route is untouched.
+    """
+    if isinstance(span_s, bool) or not isinstance(span_s, (int, float)):
+        return ""
+    span = float(span_s)
+    plain = f"The evidence spans {span:.6g} seconds. "
+    if per_frame_labels:
+        return plain
+    origin = _bounded_window_origin_s(
+        dropped_frames=dropped_frames,
+        total_frames=total_frames,
+        span_s=span,
+        offsets=offsets,
+    )
+    if origin is None:
+        return plain
+    return plain + (
+        f"The images shown cover only the later part of that window: the first image is at "
+        f"t={origin:.6g}s and the last at t={span:.6g}s. Report every time on the full "
+        f"{span:.6g}-second timeline — t=0 is the START of the window, not the first image shown. "
+    )
+
+
 # CLAIM-MODE contract addendum (1.5). Appended to the per-frame question ONLY when the caller marks
 # the goal claim-mode (``context["claim_mode"]`` — set in ``agent.perceive_judged`` when the concern's
 # resolved identity policy is ``claim_slot``). It advertises the OPTIONAL mutation-channel fields the

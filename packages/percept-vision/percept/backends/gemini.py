@@ -33,6 +33,7 @@ from .anthropic import (
     _JUDGE_SYSTEM,
     _JUDGE_SYSTEM_REFLEX,
     _bounded_strip,
+    _clip_timeline_sentence,
     _is_reflex,
     _judge_max_frames,
     _judge_max_tokens,
@@ -401,11 +402,17 @@ class GeminiVision(_GeminiBase):
         # (:func:`_judge_max_frames`), same rationale, so both providers ingest the same evidence on
         # the same route. Only the OLDEST context is dropped; the current frame and the newest
         # context frames survive in order, and every ``len(strip) + 1`` count below follows.
-        strip = _bounded_strip(
+        total_frames = len(strip) + (1 if frame is not None else 0)
+        bounded_strip = _bounded_strip(
             strip,
             max_frames=_judge_max_frames(reflex=reflex),
             has_current_frame=frame is not None,
         )
+        # How much of the window the bound removed. This adapter never labels individual frames, so
+        # on an ``event_chain`` request this count is the ONLY way the timeline sentence below can
+        # tell the model that its images start later than the span it is told about.
+        dropped_frames = len(strip) - len(bounded_strip)
+        strip = bounded_strip
         parts: list[Any] = [_media_part(types, f) for f in strip]
         if frame is not None:
             parts.append(_media_part(types, frame))
@@ -487,9 +494,12 @@ class GeminiVision(_GeminiBase):
                     f"read): {spec_facts}. "
                 )
         if context and context.get("event_chain"):
-            span_s = context.get("_percept_temporal_span_s")
-            if isinstance(span_s, (int, float)) and not isinstance(span_s, bool):
-                question += f"The evidence spans {float(span_s):.6g} seconds. "
+            question += _clip_timeline_sentence(
+                context.get("_percept_temporal_span_s"),
+                dropped_frames=dropped_frames,
+                total_frames=total_frames,
+                offsets=context.get("_percept_temporal_offsets_s"),
+            )
             # The occurrence fields stay REQUIRED on both routes — cognition abstains without a
             # consistent satisfied/action_present/phase tuple. A reflex occurrence request drops
             # only the free-text ``evidence`` field and caps label length.
