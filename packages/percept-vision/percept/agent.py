@@ -35,7 +35,15 @@ from .behavior import (
     normalize_event_chain_verdict,
     program_of,
 )
-from .behavior_routes import BehaviorRoute, goal_behavior_route, require_worker_routes
+from .behavior_routes import (
+    BehaviorRoute,
+    UndrivenBehaviorRouteWarning,
+    UnsupportedBehaviorRouteError,
+    classify_armed_routes,
+    goal_behavior_route,
+    require_worker_routes,
+    undriven_route_message,
+)
 from .duration_routes import duration_policy, require_duration_routes
 from .cache import CacheCascade, CacheKey, FrameHashLayer
 from .concern import attention_weight, consequence_of, requires_verification, resolution_ready
@@ -1498,8 +1506,58 @@ class Percept:
                 if value and value[0] == goal_id:
                     ledger.pop(key, None)
 
+    def _check_armed_routes(self, ops: "tuple[GoalOp, ...]") -> None:
+        """THE arm-time behavior-route gate — one check on every path that arms a Goal.
+
+        ``percept`` declares eight behavior routes; the frame worker drives four. The other four used
+        to arm in total silence: the goal went ``active``, no frame ever selected it, no incident ever
+        landed, and nothing said why. That is the worst failure an SDK can have, and it became
+        reachable in practice once :mod:`percept.conductor` started authoring real goals to
+        ``type="count"``.
+
+        This runs from :meth:`_on_goal_mutations`, the ``GoalRegistry`` owner hook, which is invoked
+        by ``GoalRegistry.apply`` for the whole batch BEFORE any mutation. That is deliberately the
+        one seam rather than three: :meth:`add_goal` (structured), :meth:`apply_goal_ops` (the
+        conductor's language path) and a direct ``core.goals.create``/``apply`` all funnel through it,
+        so no arm can slip past, and a raise here aborts the batch atomically with nothing armed.
+
+        Raise vs. warn is decided by :func:`~percept.behavior_routes.classify_armed_routes`, not here:
+
+        * ``UNSUPPORTED`` — nothing implements it and no host API can feed it, so the goal is dead on
+          arrival. **Raise.**
+        * a host-driven external route (``count``/``event``/``remind``/``scheduler``) — the driver
+          exists and ships (:meth:`perceive_boundary`, :meth:`push_frame` + :meth:`perceive_events`,
+          :meth:`schedule_every`/:meth:`schedule_at` + :meth:`tick`); what is missing is the host
+          WIRING. Every one of those APIs resolves the goal BY ID, so refusing the arm would make them
+          unreachable — it would delete three shipped capabilities to fix a message. **Warn loudly**,
+          name the exact call, and let a deployment that wants it fatal filter
+          :class:`~percept.behavior_routes.UndrivenBehaviorRouteWarning` to ``"error"``.
+
+        Note ``percept.watchplan_apply.apply_watch_plan`` still REJECTS these routes one layer up: its
+        contract is "arm a Watch that ``percept.run`` drives", and it fails in PREPARE, before this
+        hook ever sees the goal. That is unchanged — only its message now names the same remedy.
+        """
+        armed = [op.goal for op in ops if op.op == "create" and op.goal is not None]
+        if not armed:
+            return
+        undrivable, host_driven = classify_armed_routes(armed)
+        if undrivable:
+            raise UnsupportedBehaviorRouteError(
+                undrivable, driver="Percept.add_goal/apply_goal_ops", verb="arm"
+            )
+        for item in host_driven:
+            message = undriven_route_message(item)
+            # Both channels on purpose: warnings.warn reaches an interactive/test caller (and is what
+            # a strict deployment escalates to an error); the logger reaches a 24/7 deployment where
+            # nobody is watching stderr, which is exactly where a silent no-op used to live.
+            warnings.warn(message, UndrivenBehaviorRouteWarning, stacklevel=2)
+            get_logger("percept.agent").warning("%s", message)
+            self.metrics.incr(f"goal.armed.undriven_route.{item.route.value}")
+
     def _on_goal_mutations(self, ops: tuple[GoalOp, ...]) -> None:
         """Keep executable state coherent for every GoalRegistry mutation path."""
+        # Fail/flag the batch's ARM routes before any per-op state work below mutates anything.
+        self._check_armed_routes(ops)
         for op in ops:
             goal_id = op.goal.id if op.op == "create" and op.goal is not None else op.goal_id
             if goal_id is None:

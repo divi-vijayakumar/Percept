@@ -60,6 +60,7 @@ from .behavior import (
 from .behavior_routes import (
     authored_behavior_type_display,
     behavior_route,
+    route_remedy,
     worker_can_drive,
 )
 from .audio_input import prepare_audio_judge_binding
@@ -225,11 +226,13 @@ def _runtime_route_diagnostic(state: Any, *, goal_id: str | None) -> FieldDiagno
     if worker_can_drive(route):
         return None
     authored_type = authored_behavior_type_display(state)
-    guidance = (
-        " Use the matching direct event, boundary, rhythm, or scheduler primitive."
-        if route.value != "unsupported"
-        else ""
-    )
+    # Rendered from the SINGLE route->remedy table in ``percept.behavior_routes`` so this rejection,
+    # the worker's preflight error, and the arm-time warning cannot recommend three different things.
+    # A rejection that says only "unsupported" is not a fix: for an external route the caller has a
+    # real, shipped API to call, and for an unknown type they need the closed vocabulary — never a
+    # "use the matching primitive" hint, because an unknown type has no primitive to match.
+    remedy = route_remedy(route, goal_id=goal_id or "<goal_id>")
+    guidance = f" {remedy}" if remedy else ""
     return FieldDiagnostic(
         path="Goal.state.type",
         code="unsupported_runtime_route",

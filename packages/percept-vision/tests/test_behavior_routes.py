@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+import warnings
 from dataclasses import replace
 
-from percept import Goal, Percept
+from percept import Goal, GoalOp, Percept
 from percept.adapters import Box, Observation, Verdict
 from percept.behavior import coerce_authored_behavior
 from percept.behavior_routes import (
     BehaviorRoute,
+    UndrivenBehaviorRouteWarning,
     UnsupportedBehaviorRouteError,
     behavior_route,
     goal_behavior_route,
+    worker_can_drive,
 )
 from percept.config import GateSettings, Settings
 from percept.contracts.watchplan import WatchPlan
@@ -289,22 +292,29 @@ class RouteClassifierTests(unittest.TestCase):
         self.assertEqual(gated_vision.detect_calls, 0)
         self.assertEqual(gated_vision.judge_calls, [])
 
+        # The ARM is now the earliest seam: this shape used to go ``active`` and only fail once a
+        # worker or a direct judge call reached it (and never at all if neither did). It now fails at
+        # add_goal, so the later seams below are unreachable via arming rather than merely defended.
         worker_vision = _RouteVision({})
         worker_core = Percept.create(vision=worker_vision, discover_plugins=False)
-        worker_core.add_goal(raw_goal)
-        source = WorkerPreflightTests.PullSpy()
         with self.assertRaises(UnsupportedBehaviorRouteError):
-            asyncio.run(_collect(worker_core, source))
-        self.assertEqual(source.pulls, 0)
+            worker_core.add_goal(raw_goal)
+        self.assertEqual(list(worker_core.goals.active()), [])
+        self.assertEqual(worker_core.goals.revision, 0)
+        source = WorkerPreflightTests.PullSpy()
+        self.assertEqual(asyncio.run(_collect(worker_core, source)), [])
         self.assertEqual(worker_vision.detect_calls, 0)
         self.assertEqual(worker_vision.judge_calls, [])
 
         direct_vision = _RouteVision({})
         direct_core = Percept.create(vision=direct_vision, discover_plugins=False)
-        direct_core.add_goal(raw_goal)
         with self.assertRaises(UnsupportedBehaviorRouteError):
-            asyncio.run(direct_core.perceive_judged("frame", source="camera", t=1.0))
-        self.assertEqual(direct_vision.detect_calls, 0)
+            direct_core.apply_goal_ops([GoalOp(op="create", goal=raw_goal)])
+        self.assertEqual(list(direct_core.goals.active()), [])
+        self.assertEqual(
+            asyncio.run(direct_core.perceive_judged("frame", source="camera", t=1.0)), []
+        )
+        # No judge is ever spent on it: the goal never armed, so there is nothing to judge.
         self.assertEqual(direct_vision.judge_calls, [])
 
     def test_direct_perception_still_skips_external_routes_for_dedicated_apis(self):
@@ -891,6 +901,179 @@ class SceneScopedWatchTests(unittest.TestCase):
         self.assertFalse(
             any(key[0] == goal_id and key[1] is not None for key in core.gate._armed)
         )
+
+
+class ArmTimeRouteGateTests(unittest.TestCase):
+    """The arm boundary must make an undriven route LOUD — the silent no-op is the defect.
+
+    ``percept`` declares eight behavior routes and the frame worker drives four. The other four used
+    to arm in total silence: ``add_goal`` returned an ``active`` goal, no frame ever selected it, no
+    incident ever landed, and nothing in any log said why. These tests pin the two different honest
+    answers to that, per route:
+
+    * a route with a shipped host-facing driver (``count``/``event``/``remind``/``scheduler``) is
+      *unwired*, not unsupported — it WARNS and still arms, because every one of those drivers looks
+      the goal up by id and refusing the arm would make them unreachable;
+    * a route nothing implements is dead on arrival — it RAISES, and arms nothing.
+    """
+
+    #: authored type -> (route value, a substring of the exact host API the message must name)
+    UNDRIVEN = {
+        "count": ("external_boundary", "Percept.perceive_boundary("),
+        "event": ("external_event_window", "await Percept.perceive_events("),
+        "remind": ("external_scheduler", "Percept.schedule_every("),
+        "scheduler": ("external_scheduler", "Percept.schedule_at("),
+    }
+
+    @staticmethod
+    def _core():
+        return Percept.create(vision=_RouteVision({}), discover_plugins=False)
+
+    def test_each_undriven_route_warns_loudly_at_arm_and_names_its_host_driver(self):
+        for authored_type, (route_value, api) in self.UNDRIVEN.items():
+            with self.subTest(behavior_type=authored_type):
+                core = self._core()
+                goal = Goal("g", "something happens", "fired", state={"type": authored_type})
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    core.add_goal(goal)
+                undriven = [
+                    w for w in caught
+                    if issubclass(w.category, UndrivenBehaviorRouteWarning)
+                ]
+                self.assertEqual(len(undriven), 1)
+                message = str(undriven[0].message)
+                # names the goal, the route, and — the whole point — what to do instead.
+                self.assertIn("'g'", message)
+                self.assertIn(repr(authored_type), message)
+                self.assertIn(repr(route_value), message)
+                self.assertIn(api, message)
+                self.assertIn("does not drive", message)
+                # ARMED anyway: the host driver resolves the goal BY ID, so refusing would delete it.
+                self.assertEqual([g.id for g in core.goals.active()], ["g"])
+
+    def test_undriven_route_warning_also_reaches_the_deployment_log_and_metrics(self):
+        # A 24/7 deployment has nobody watching stderr; the silent no-op lived exactly there.
+        core = self._core()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with self.assertLogs("percept.agent", level="WARNING") as logs:
+                core.add_goal(Goal("c", "count things", "counted", state={"type": "count"}))
+        self.assertTrue(
+            any("undriven_behavior_route" in line for line in logs.output), logs.output
+        )
+        self.assertEqual(core.metrics.get("goal.armed.undriven_route.external_boundary"), 1)
+
+    def test_undriven_route_is_a_deployment_seam_not_a_missing_feature(self):
+        # The justification for warn-not-raise, executable: the driver the message names WORKS.
+        core = self._core()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            core.add_goal(Goal("c", "count reps", "counted", state={"type": "count"}))
+        self.assertIsNotNone(core.perceive_boundary("c", t=1.0))
+
+    def test_a_strict_deployment_can_escalate_the_warning_to_a_hard_arm_failure(self):
+        core = self._core()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UndrivenBehaviorRouteWarning)
+            with self.assertRaises(UndrivenBehaviorRouteWarning):
+                core.add_goal(Goal("c", "count things", "counted", state={"type": "count"}))
+        # The check runs in the registry's pre-commit hook, so escalating is fail-CLOSED.
+        self.assertEqual(list(core.goals.active()), [])
+        self.assertEqual(core.goals.revision, 0)
+
+    def test_a_route_nothing_implements_raises_and_arms_nothing(self):
+        for state in (
+            {"type": "made_up"},
+            {"type": "transition", "from": "closed", "to": "   "},
+            {"type": "watch", "behavior": {"type": "count"}},
+        ):
+            with self.subTest(state=state):
+                core = self._core()
+                with self.assertRaises(UnsupportedBehaviorRouteError) as caught:
+                    core.add_goal(Goal("dead", "dead on arrival", "never", state=state))
+                message = str(caught.exception)
+                self.assertIn("'dead'", message)
+                self.assertIn("route=unsupported", message)
+                # No false "use the matching primitive" claim — there is no primitive to match.
+                self.assertNotIn("matching direct", message)
+                self.assertIn("closed behavior types", message)
+                self.assertEqual(list(core.goals.active()), [])
+                self.assertEqual(core.goals.revision, 0)
+
+    def test_the_gate_is_one_seam_covering_every_arm_path_including_the_conductor(self):
+        # add_goal (structured), apply_goal_ops (the conductor's language path), and a direct
+        # GoalRegistry mutation all funnel through the registry's owner hook. One check, not three.
+        def count_goal(gid):
+            return Goal(gid, "count things", "counted", state={"type": "count"})
+
+        arms = {
+            "add_goal": lambda core, gid: core.add_goal(count_goal(gid)),
+            "apply_goal_ops": lambda core, gid: core.apply_goal_ops(
+                [GoalOp(op="create", goal=count_goal(gid))]
+            ),
+            "goals.create": lambda core, gid: core.goals.create(count_goal(gid)),
+        }
+        for name, arm in arms.items():
+            with self.subTest(arm_path=name):
+                core = self._core()
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    arm(core, "g")
+                undriven = [
+                    w for w in caught
+                    if issubclass(w.category, UndrivenBehaviorRouteWarning)
+                ]
+                # exactly one — the conductor path validates twice but commits (and warns) once.
+                self.assertEqual(len(undriven), 1)
+                self.assertIn("Percept.perceive_boundary(", str(undriven[0].message))
+
+    def test_every_worker_driven_route_arms_silently_and_unchanged(self):
+        drivable = {
+            "watch": {"type": "watch"},
+            "watch_default": {},
+            "transition": {"type": "transition", "from": "closed", "to": "open"},
+            "process": {"type": "process"},
+            "rhythm": {"type": "rhythm"},
+        }
+        for name, state in drivable.items():
+            with self.subTest(behavior_type=name):
+                core = self._core()
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    armed = core.add_goal(Goal("g", "a condition", "fired", state=dict(state)))
+                self.assertEqual(
+                    [w for w in caught if issubclass(w.category, UndrivenBehaviorRouteWarning)],
+                    [],
+                )
+                self.assertEqual([g.id for g in core.goals.active()], ["g"])
+                self.assertTrue(worker_can_drive(goal_behavior_route(armed)))
+                self.assertEqual(
+                    [
+                        name
+                        for name in core.metrics.snapshot()
+                        if name.startswith("goal.armed.undriven_route")
+                    ],
+                    [],
+                )
+
+    def test_apply_watch_plan_rejection_names_the_same_host_driver(self):
+        # The apply seam still REJECTS (its contract is "arm a Watch percept.run drives"), but a
+        # rejection that says only "unsupported" is not a fix — it must name the same remedy.
+        for authored_type, (_route_value, api) in self.UNDRIVEN.items():
+            with self.subTest(behavior_type=authored_type):
+                core = Percept.create(mode="offline", discover_plugins=False)
+                receipt = apply_watch_plan(
+                    core,
+                    WatchPlan(
+                        id="p",
+                        condition="external primitive",
+                        explicit={"Goal.state.type": authored_type},
+                    ),
+                )
+                self.assertEqual(receipt.status, "rejected")
+                self.assertIn(api, receipt.dropped_fields[0].message)
+                self.assertEqual(list(core.goals.active()), [])
 
 
 if __name__ == "__main__":

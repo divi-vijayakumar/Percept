@@ -96,6 +96,11 @@ from .gate import (
     GateOutcome,
     GateReason,
 )
+from .behavior_routes import (
+    BehaviorRoute,
+    UndrivenBehaviorRouteWarning,
+    UnsupportedBehaviorRouteError,
+)
 from .goals import GoalOp, GoalRegistry
 from .identity import AppearanceIdentity, ContinuityIdentity
 from .scheduler import Scheduler, Timer
@@ -285,6 +290,10 @@ __all__ = [
     "Attribute",
     "Goal",
     "GoalOrigin",
+    # behavior routing — the arm-time drivability contract
+    "BehaviorRoute",
+    "UndrivenBehaviorRouteWarning",
+    "UnsupportedBehaviorRouteError",
     "Concern",
     "Consequence",
     "Evidence",

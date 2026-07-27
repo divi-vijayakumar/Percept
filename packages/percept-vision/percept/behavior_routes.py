@@ -49,6 +49,82 @@ _FRAME_ROUTES = frozenset(
 _WORKER_ROUTES = frozenset(_FRAME_ROUTES | {BehaviorRoute.EXTERNAL_RHYTHM})
 _MISSING = object()
 
+#: The public, host-facing API that DRIVES each route ``percept.run`` does not.
+#:
+#: These three routes are **not unimplemented**. Each has a complete, shipped brain side that the
+#: HOST feeds rather than the frame loop: the boundary counter is the "brain-counts" half of
+#: edge-proposes·brain-counts·VLM-confirms, the event window is fed by pushed frames plus the
+#: vision adapter's own ``detect_events``, and the scheduler is fed by a clock the host owns. So a
+#: deployment that authored one of them and then saw nothing fire is missing WIRING, not a feature —
+#: which is why arming one is a loud WARNING naming the exact call to make, never a refusal claiming
+#: the goal is unsupported. ``{goal_id}`` is substituted with the armed goal's id.
+_HOST_DRIVEN_ROUTES: dict[BehaviorRoute, str] = {
+    BehaviorRoute.EXTERNAL_BOUNDARY: (
+        "Drive it from the host: call Percept.perceive_boundary({goal_id!r}, t=...) once per counted "
+        "occurrence (a detector edge, an audio onset, your own signal) — the count comes from that "
+        "cheap signal, not from a per-frame judge. If you meant \"watch the frames and count "
+        "repetitions of a body motion\", author type='rhythm' instead: the frame worker drives that one."
+    ),
+    BehaviorRoute.EXTERNAL_EVENT_WINDOW: (
+        "Drive it from the host: call Percept.push_frame(frame, source=..., t=...) to fill the rolling "
+        "window, then await Percept.perceive_events(source=...). Set Goal.state['event_type'] to the "
+        "event name your Vision.detect_events emits — the goal fires only on a matching type. If you "
+        "meant \"tell me whenever a plain-language condition becomes true\", author type='watch' with "
+        "rearm='each_event' instead: the frame worker drives that one."
+    ),
+    BehaviorRoute.EXTERNAL_SCHEDULER: (
+        "Drive it from the host: call Percept.schedule_every(interval_s, {goal_id!r}) or "
+        "Percept.schedule_at(when_s, {goal_id!r}) to register the timer, then await Percept.tick(t=...) "
+        "from your own clock. percept.run never ticks the scheduler, so a scheduler goal armed inside a "
+        "frame run alone will not fire."
+    ),
+}
+
+#: What to say when a route is not merely unwired but *undrivable* — nothing implements it and no
+#: host feed exists, so there is no call the caller can make. Never claim a "matching primitive"
+#: here: an unknown or malformed authored type has no primitive to match.
+_UNSUPPORTED_REMEDY = (
+    "No primitive implements this. Author one of the closed behavior types instead: "
+    + ", ".join(repr(name) for name in BEHAVIOR_TYPES)
+    + " (a 'transition' additionally requires non-empty 'from' and 'to' states). A goal still "
+    "carrying a nested state['behavior'] block is the pre-apply compiler shape — arm it through "
+    "percept.watchplan_apply.apply_watch_plan, which coerces it to the flat runtime shape."
+)
+
+
+class UndrivenBehaviorRouteWarning(RuntimeWarning):
+    """An armed Goal whose route the frame worker does not drive, but the host can.
+
+    Raised as a warning and not an error on purpose: :data:`_HOST_DRIVEN_ROUTES` are real, shipped
+    capabilities whose driving API *requires the goal to already be armed*, so refusing the arm would
+    delete those capabilities rather than protect anyone. A deployment that wants an unwired route to
+    be fatal opts in explicitly::
+
+        warnings.filterwarnings("error", category=percept.UndrivenBehaviorRouteWarning)
+    """
+
+
+def host_feed_api(route: BehaviorRoute) -> str | None:
+    """The host-facing driving API for ``route``, or ``None`` when nothing can drive it."""
+
+    return _HOST_DRIVEN_ROUTES.get(route)
+
+
+def route_remedy(route: BehaviorRoute, *, goal_id: str = "<goal_id>") -> str:
+    """What the caller can DO about ``route`` — the exact call, or the closed vocabulary.
+
+    Every seam that refuses or flags a non-frame-worker route renders its guidance from here, so an
+    apply rejection, a worker preflight failure, and an arm-time warning cannot drift into three
+    different (or three differently wrong) recommendations.
+    """
+
+    feed = _HOST_DRIVEN_ROUTES.get(route)
+    if feed is not None:
+        return feed.format(goal_id=goal_id)
+    if route is BehaviorRoute.UNSUPPORTED:
+        return _UNSUPPORTED_REMEDY
+    return ""
+
 
 def authored_behavior_type(state: Any) -> Any:
     """Return the authored route token from raw or armed state, preserving unknown values."""
@@ -204,55 +280,116 @@ class UnsupportedBehavior:
 class UnsupportedBehaviorRouteError(ValueError):
     """Raised before source consumption when a frame worker cannot drive its Goals."""
 
-    def __init__(self, unsupported: Iterable[UnsupportedBehavior], *, driver: str) -> None:
+    def __init__(
+        self,
+        unsupported: Iterable[UnsupportedBehavior],
+        *,
+        driver: str,
+        verb: str = "drive",
+    ) -> None:
         self.unsupported = tuple(unsupported)
         self.driver = driver
         rendered = ", ".join(
             f"{item.goal_id!r} (type={item.authored_type_display}, route={item.route.value})"
             for item in self.unsupported
         )
-        external = all(item.route is not BehaviorRoute.UNSUPPORTED for item in self.unsupported)
-        guidance = (
-            " Use the matching direct event, boundary, or scheduler primitive instead."
-            if external
-            else ""
-        )
-        super().__init__(f"{driver} cannot drive behavior route(s): {rendered}.{guidance}")
+        # One remedy per DISTINCT route, rendered from the single route->remedy table so this message
+        # cannot drift from the apply receipt's or the arm-time warning's advice.
+        seen: list[BehaviorRoute] = []
+        remedies: list[str] = []
+        for item in self.unsupported:
+            if item.route in seen:
+                continue
+            seen.append(item.route)
+            remedy = route_remedy(item.route, goal_id=item.goal_id)
+            if remedy:
+                remedies.append(remedy)
+        guidance = (" " + " ".join(remedies)) if remedies else ""
+        super().__init__(f"{driver} cannot {verb} behavior route(s): {rendered}.{guidance}")
 
 
 def require_worker_routes(goals: Iterable[Any], *, driver: str) -> None:
     """Fail before capture when any supplied Goal lacks a frame-worker execution route."""
 
-    unsupported: list[UnsupportedBehavior] = []
-    for goal in goals:
-        route = goal_behavior_route(goal)
-        if not worker_can_drive(route):
-            unsupported.append(
-                UnsupportedBehavior(
-                    goal_id=str(getattr(goal, "id", "<unknown>")),
-                    route=route,
-                    authored_type=authored_behavior_type(getattr(goal, "state", None)),
-                    authored_type_display=authored_behavior_type_display(
-                        getattr(goal, "state", None)
-                    ),
-                )
-            )
+    unsupported = [
+        _describe(goal) for goal in goals if not worker_can_drive(goal_behavior_route(goal))
+    ]
     if unsupported:
         raise UnsupportedBehaviorRouteError(unsupported, driver=driver)
+
+
+def _describe(goal: Any) -> UnsupportedBehavior:
+    """One Goal rendered as the structured, repr-safe route record every seam reports."""
+
+    state = getattr(goal, "state", None)
+    return UnsupportedBehavior(
+        goal_id=str(getattr(goal, "id", "<unknown>")),
+        route=goal_behavior_route(goal),
+        authored_type=authored_behavior_type(state),
+        authored_type_display=authored_behavior_type_display(state),
+    )
+
+
+def classify_armed_routes(
+    goals: Iterable[Any],
+) -> tuple[tuple[UnsupportedBehavior, ...], tuple[UnsupportedBehavior, ...]]:
+    """Split Goals being ARMED into ``(undrivable, host_driven)`` — the whole arm-time decision.
+
+    The split is the entire raise-vs-warn argument, in one place:
+
+    * **undrivable** — :attr:`BehaviorRoute.UNSUPPORTED`. No driver exists anywhere in the SDK and no
+      host API can feed it, so the goal cannot fire by any means a caller could reach. Arming it is a
+      goal that is dead on arrival; the arm seam raises.
+    * **host_driven** — a route the frame worker does not drive but a documented public API does
+      (:data:`_HOST_DRIVEN_ROUTES`). Arming is legitimate and in fact *required* — every one of those
+      APIs looks the goal up by id — so the arm seam warns loudly and names the call, and does not
+      refuse.
+
+    Frame-worker routes appear in neither tuple; arming those is silent and unchanged.
+    """
+
+    undrivable: list[UnsupportedBehavior] = []
+    host_driven: list[UnsupportedBehavior] = []
+    for goal in goals:
+        item = _describe(goal)
+        if worker_can_drive(item.route):
+            continue
+        (host_driven if host_feed_api(item.route) is not None else undrivable).append(item)
+    return tuple(undrivable), tuple(host_driven)
+
+
+def undriven_route_message(item: UnsupportedBehavior) -> str:
+    """The arm-time warning a client reads for a host-driven route with no host feed wired."""
+
+    return (
+        f"undriven_behavior_route: goal {item.goal_id!r} armed behavior type "
+        f"{item.authored_type_display} (route {item.route.value!r}), which the frame worker "
+        "(percept.run / GatedWatchLoop) does not drive — frames alone will NEVER fire it, and "
+        "percept.run raises rather than running it. "
+        + route_remedy(item.route, goal_id=item.goal_id)
+        + " Nothing is wrong with the goal; it is armed and waiting for that call. To make an "
+        "unwired route fatal instead, filter "
+        "percept.UndrivenBehaviorRouteWarning to 'error'."
+    )
 
 
 __all__ = [
     "BEHAVIOR_TYPES",
     "BehaviorRoute",
+    "UndrivenBehaviorRouteWarning",
     "UnsupportedBehavior",
     "UnsupportedBehaviorRouteError",
     "authored_behavior_type",
     "authored_behavior_type_display",
     "behavior_route",
+    "classify_armed_routes",
     "drives_rhythm",
     "goal_behavior_route",
+    "host_feed_api",
     "is_known_behavior_type",
     "needs_watch_condition",
     "require_worker_routes",
+    "route_remedy",
+    "undriven_route_message",
     "worker_can_drive",
 ]
