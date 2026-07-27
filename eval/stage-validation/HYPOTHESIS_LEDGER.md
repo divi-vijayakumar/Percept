@@ -337,7 +337,67 @@ than tuned away. Pinned offline via a content-addressed frozen cache (73 decisio
 calls in CI); the optimizer guardrail is untouched and a test asserts it still denies `Goal.state.*`
 to the optimizer. **Authoring and tuning stay separate acts.**
 
-### 💰 `media_resolution=LOW` — the biggest single win found, and it is threefold
+### 🚨 METHODOLOGY DEFECT — recall is not reproducible run-to-run; it tracks machine load
+
+**This is the most consequential finding in the ledger and it retroactively limits every
+single-run recall comparison we have made.**
+
+Same 18 short-media cases, same settings, same build, three HIGH runs:
+
+| arm | recall | ASK% | provider p50 | deadline expiries |
+|---|---|---|---|---|
+| HIGH (03:33, idle machine) | 0.797 | 26.2 | 1.143 s | 65 |
+| HIGH replicate 1 | 0.469 | 53.6 | 1.355 s | 129 |
+| HIGH replicate 2 | 0.531 | 37.1 | 1.237 s | 95 |
+| LOW replicate 1 | **0.844** | 8.8 | 1.065 s | 12 |
+| LOW replicate 2 | **0.844** | 9.9 | 1.013 s | 20 |
+
+**HIGH swings 0.33 recall run-to-run.** It tracks provider p50 against the 1.5 s deadline: a busier
+machine → slower calls → more deadline expiries → more ASKs → fewer decisive verdicts → lower recall.
+LOW returns 0.844 twice because it sits ~0.3 s further from the deadline.
+
+**Run-to-run noise (0.33) is ~20× the pooled LOW-vs-HIGH difference (+0.017).** Any recall claim built
+on a single cross-run pair is uninterpretable — including the +0.115 recorded above.
+
+**Cause was self-inflicted:** a long-horizon run (PID 60011) was executing throughout the replicate
+session, while the 03:33 baseline had the machine to itself. Latency-sensitive measurement was
+scheduled concurrently with a heavy job. **Machine quiescence is now a precondition for any timing or
+recall arm, not a nicety.**
+
+**What this means beyond resolution:** we have not been measuring model quality. We have been
+measuring a **deadline race**. Recall at the 1.5 s reflex deadline is a function of provider latency
+versus that deadline, and provider latency is not under our control. Effects smaller than ~0.33 recall
+require replicates. The reflex-frame-bound result (0.137 → 0.626, Δ0.49) exceeds the noise band and
+survives; nothing smaller does without repetition.
+
+### 💰 `media_resolution=LOW` — CORRECTED at n=40: the cost win holds, the recall win does not
+
+Superseding the n=15 entry below. Pooled over the full 40 matched cases:
+
+| metric | HIGH | LOW | delta | verdict |
+|---|---|---|---|---|
+| input tok/call | 3,568 | 1,100 | **−69.2%** | deterministic, solid |
+| cost | $2.599 | $1.225 | **−52.9%** | deterministic, solid |
+| ASK % | 25.3 | 8.0 | **−68.6%** | solid |
+| deadline expiries | 670 | 182 | **−72.8%** | solid |
+| provider p50 | 1.123 s | 1.047 s | −6.8% | solid |
+| recall | 0.653 | 0.669 | +0.017 | **inside the noise band — no claim** |
+| precision | 0.340 | 0.316 | −0.024 | **inside the noise band — no claim** |
+| timely recall @2 s | 0.186 | 0.271 | +0.085 | directional |
+
+**Cases better/same/worse: 4 / 29 / 7** — more cases got *worse* than better. Pooled recall rises only
+because gains land in repcount, which carries 52 of 118 occurrences.
+
+**The n=15 fear was wrong, and in the opposite direction.** LOW does not trade short-media recall for
+long-media recall: short 0.797 → 0.844, long 0.481 → 0.463. The prior arm's "+0.115, 0 cases worse"
+was an artifact of comparing across runs at different machine loads.
+
+**Adopt LOW for cost and deadline robustness, not for recall.** What it actually buys is ~0.3 s of
+headroom against the 1.5 s deadline, which is why its recall is *stable* while HIGH's collapses under
+load. Note `media_resolution` is **not implemented in `backends/gemini.py`** — it exists only as a
+harness env override, so shipping it as a default is real work, not a config edit.
+
+### 💰 `media_resolution=LOW` (SUPERSEDED — n=15, single-run pair) — the biggest single win found, and it is threefold
 
 **`max_dimension` is strictly dominated and must NOT be touched.** Gemini bills a **fixed ~1,100
 image tokens per frame regardless of pixel dimensions** — 768, 640, 512, 384 and 256 px all produce
