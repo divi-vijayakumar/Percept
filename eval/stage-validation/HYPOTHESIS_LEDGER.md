@@ -57,7 +57,24 @@ rewriting before any conductor/rhythm work is justified on these grounds.
 **Open caveat:** 1,698 incidents for 329 GT occurrences is still 5.2× over-delivery (deliberate is
 7.1×). Over-firing is unfixed.
 
-### H7 (in flight, ~$1.14) — is 3 the right constant, or just the one I happened to test?
+### H7 — **RESOLVED. 3 frames is a genuine interior optimum.**
+Frame curve, identical 40 cases, live Gemini direct:
+
+| frames | recall | precision | ASK | FIRE | incidents |
+|---|---|---|---|---|---|
+| 2 | 0.449 | **0.354** | 30.4% | 8.9% | 285 |
+| **3** | **0.653** | 0.291 | 25.3% | 14.2% | 547 |
+| 4 | 0.314 | 0.312 | 69.0% | 6.2% | 192 |
+| 5 (shipped) | 0.093 | 0.175 | 83.8% | 2.3% | 63 |
+
+Fewer is NOT monotonically better: 2 frames has a HIGHER ASK rate than 3 and loses a fifth of the
+recall — the temporal-signal trade finally appears there. So 3 is bracketed on both sides and is a
+defensible constant rather than the one value that happened to be tried first.
+**Note honestly:** precision peaks at 2 (0.354), not 3 (0.291). This is a RECALL-optimal choice, not a
+dominant one. Anyone optimising for precision should revisit it.
+**Status:** landing now as a reflex-only frame bound in the shared latency policy.
+
+### ~~H2~~ REFUTED — a majority of judgments bypass `GeminiVision.judge`
 *(Note: first launch died instantly on an argparse error — the flag is `--limit`, not `--n`. No budget
 spent, but the jobs sat dead for a full 25-minute interval. Verify a background job is ALIVE and
 producing output, not merely launched.)*
@@ -141,12 +158,15 @@ denominator artifact, which produced H5 above.
 *(Note: the tester's own explanation — that `max_tokens` reservation inflates input tokens — is wrong;
 an output cap cannot change input token count. The real explanation is H5.)*
 
-### H2 — a majority of judgments bypass `GeminiVision.judge`
-**Evidence:** a replay spy wrapping `GeminiVision.judge` captured 56 replies against 224 judged units.
-~75% of traffic takes another dispatch path.
-**Why it matters:** every per-call claim so far rests on a quarter of the traffic.
-**Kill test (offline, free):** instrument at the `JudgePool` boundary instead and count; identify the
-other path by name.
+**REFUTED 2026-07-27.** No hidden dispatch path exists. A code trace found only intentional
+non-adapter outcomes — direct-judge confident hit (`agent.py:4254`), cache hit (`agent.py:5983`),
+cache-audit degradation (`agent.py:6002`), stale-verdict discard (`agent.py:4269`).
+**Both explanations the tester offered were checked against the run data and do NOT apply:** the run
+was SINGLE-route (only `timestamped-images-primary`, 220 receipts — so no "another route answered
+first"), and there were ZERO cache/direct_judge counters (so no cache hits). The 56-of-224 gap is
+therefore deadline attrition — i.e. H5 — and H2 is a duplicate of it, not a separate defect.
+*(Caveat: the fast-judge/slow-judge counter experiment was specified but not actually run; this is
+refuted by code trace plus run data, not by that measurement.)*
 
 ### H3 — the run is not reproducible
 **Evidence:** same case, same build, same config → 16 incidents vs 50 on replay, at entirely
