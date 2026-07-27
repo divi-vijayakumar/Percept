@@ -3,10 +3,13 @@
 
 The failure under test: a screen-watch deployment silently admits nothing until
 someone hand-exports ``PERCEPT_SALIENCE_STAT=block_max`` + ``PERCEPT_MOTION_GATE_BLOCK_MAX=0.20``.
-Four bars, each pinned by a test class below:
+The shipped ``Settings.edge.salience_stat`` default is now ``block_max`` itself, so the
+nothing-declared case no longer goes blind — but the profile path, the precedence chain and the
+zero-admit ALARM all still have to hold. Four bars, each pinned by a test class below:
 
 1. The localized screen fixture admits ~11/12 with an EXPLICIT ``screen_document`` profile and
-   ZERO env vars — the profile alone must be enough, mirroring ``run_doctor`` usage.
+   ZERO env vars — the profile alone must be enough, mirroring ``run_doctor`` usage — and the
+   ``ZERO_ADMITS_ON_FIXTURE`` alarm still fires whenever the ACTIVE eye really is blind.
 2. Precedence, both directions: env beats a profile default; an explicit WatchPlan field beats env.
 3. Env overriding an EXPLICITLY selected profile emits the loud ``env_overrides_explicit_profile``
    diagnostic — proven end-to-end through ``ConfigResolver`` -> ``runtime_compile``.
@@ -17,9 +20,11 @@ Four bars, each pinned by a test class below:
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 
 import pytest
 
+from percept.config import Settings
 from percept.contracts.watchplan import WatchPlan
 from percept.doctor import ZERO_ADMITS_ON_FIXTURE, run_doctor
 from percept.harness.tier0 import Frame
@@ -65,18 +70,42 @@ def _clear_percept_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 1. baseline fixture: 0/12 with nothing declared -> ~11/12 with an EXPLICIT
-#    screen_document profile and ZERO env vars
+# 1. baseline fixture: ~11/12 with nothing declared (the shipped default eye is already
+#    localized) and ~11/12 with an EXPLICIT screen_document profile and ZERO env vars —
+#    with the zero-admit alarm still proven to fire on a blind eye
 # ---------------------------------------------------------------------------
 
 
 class TestZeroEnvExplicitProfileAdmits:
-    def test_no_profile_no_env_admits_0_of_12(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The alarm under test: nothing declared, zero admits, silently."""
+    def test_no_profile_no_env_admits_about_11_of_12(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The alarm that USED to fire here is gone by construction: the shipped
+        ``Settings.edge.salience_stat`` default is ``block_max`` (auto-routed to
+        ``motion_gate_block_max=0.20``), so "nothing declared" now SEES the localized event
+        instead of admitting zero silently. Nothing declared, nothing exported, and the same
+        fixture admits — which is the entire point of the default change."""
         _clear_percept_env(monkeypatch)
         report = run_doctor(frames=_localized_stream(n=12, blocks=4), goals=["a cell changes"])
+        assert report.goals[0].active_stat == "block_max"
+        assert report.goals[0].admitted >= 11
+        assert not report.has(ZERO_ADMITS_ON_FIXTURE)
+
+    def test_zero_admit_alarm_still_fires_when_the_active_eye_is_blind(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The DIAGNOSTIC is not retired along with the old default. Force the legacy
+        whole-frame ``mean`` back on (the exact configuration that used to ship) and the very
+        same fixture admits zero — and says so, loudly, as a warn-severity finding."""
+        _clear_percept_env(monkeypatch)
+        base = Settings()
+        blind = replace(base, edge=replace(base.edge, salience_stat="mean"))
+        report = run_doctor(
+            frames=_localized_stream(n=12, blocks=4), goals=["a cell changes"], settings=blind,
+        )
+        assert report.goals[0].active_stat == "mean"
         assert report.goals[0].admitted == 0
         assert report.has(ZERO_ADMITS_ON_FIXTURE)
+        finding = next(f for f in report.findings if f.code == ZERO_ADMITS_ON_FIXTURE)
+        assert finding.severity == "warn"
 
     def test_explicit_screen_document_profile_zero_env_admits_about_11_of_12(
         self, monkeypatch: pytest.MonkeyPatch

@@ -148,14 +148,32 @@ def test_each_stat_is_scored_against_its_own_effective_threshold():
 
 
 def test_alternative_statistics_admit_different_evidence():
-    report = run_doctor(frames=_localized_stream(n=12), goals=["a cell changes"])
+    """One fixture, three stats, three different verdicts — and doctor NAMES the better eye when
+    the active one is blind. The shipped default salience_stat is block_max, which already sees
+    this event, so the blind-active case is reached by forcing the legacy whole-frame mean."""
+    from dataclasses import replace
+
+    from percept.config import Settings
+
+    base = Settings()
+    blind = replace(base, edge=replace(base.edge, salience_stat="mean"))
+    report = run_doctor(frames=_localized_stream(n=12), goals=["a cell changes"], settings=blind)
     rows = {s.stat: s for s in report.goals[0].stats}
-    assert rows["mean"].active is True          # deployment default salience_stat is the mean
+    assert rows["mean"].active is True          # forced: the whole-frame mean is the active eye
     assert rows["mean"].admitted == 0
     assert rows["block_max"].admitted > 0
     assert rows["p95"].admitted > 0
     assert report.has(ALTERNATIVE_STAT_WOULD_ADMIT)
     assert rows["block_max"].first_admit_ts is not None
+
+    # ...and under the SHIPPED default the active eye is already the localizing one, so the same
+    # fixture admits and there is no better alternative left to report.
+    default_report = run_doctor(frames=_localized_stream(n=12), goals=["a cell changes"])
+    default_rows = {s.stat: s for s in default_report.goals[0].stats}
+    assert default_rows["block_max"].active is True
+    assert default_rows["mean"].admitted == 0   # the value scales are unchanged by the default
+    assert default_report.goals[0].admitted > 0
+    assert not default_report.has(ALTERNATIVE_STAT_WOULD_ADMIT)
 
 
 def test_block_max_profile_makes_the_localized_event_admit():
@@ -430,5 +448,5 @@ def test_doctor_plan_identity_carries_the_policy_it_hashed(tmp_path):
     assert policy["motion_gate"] == pytest.approx(0.10)
     assert policy["motion_gate_block_max"] == pytest.approx(0.20)
     assert policy["motion_gate_p95"] == pytest.approx(0.15)
-    assert policy["salience_stat"] == "mean"
+    assert policy["salience_stat"] == "block_max"   # the shipped Settings.edge default
     assert "require_false_first" in policy and "refractory_s" in policy

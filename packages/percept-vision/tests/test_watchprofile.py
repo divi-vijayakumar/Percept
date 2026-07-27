@@ -135,11 +135,18 @@ class WatchProfileTests(unittest.TestCase):
         p = _profile()
         self.assertEqual(p.key, ("fixed_camera", "stative", "start_anchored"))
 
-    def test_defaults_are_the_legacy_byte_for_byte_path(self):
-        # mean / single mirror EdgeSettings.salience_stat="mean" and PerceptionSpec's single-frame default
-        # (percept/config.py, percept/behavior.py) — a profile built with no overrides changes nothing.
+    def test_defaults_change_nothing_and_track_the_sdk_eye(self):
+        # A profile built with no overrides must change nothing. That is a LOCKSTEP requirement, not a
+        # literal: resolve_watch_profile copies salience_stat onto Settings.edge unconditionally (unlike
+        # stat_thresholds, which falls back to the base settings), so a profile default that drifts from
+        # EdgeSettings' would silently downgrade the eye of every deployment that builds a profile
+        # without naming a statistic. Assert the lockstep first, then the literal, so this bites both
+        # when one side drifts and when both drift together unnoticed.
+        from percept.config import Settings
+
         p = WatchProfile(name="noop", environment="any", goal_type="any", state="any")
-        self.assertEqual(p.salience_stat, "mean")
+        self.assertEqual(p.salience_stat, Settings().edge.salience_stat)
+        self.assertEqual(p.salience_stat, "block_max")
         self.assertEqual(p.plan_mode, "single")
         self.assertEqual(p.stat_thresholds, {})
         self.assertFalse(p.gate.require_false_first)

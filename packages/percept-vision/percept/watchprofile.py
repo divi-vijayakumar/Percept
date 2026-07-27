@@ -158,7 +158,13 @@ class WatchProfile:
     environment: str
     goal_type: str
     state: str
-    salience_stat: SalienceStat = "mean"
+    # Tracks EdgeSettings.salience_stat's default deliberately. ``resolve_watch_profile`` copies this
+    # field onto Settings.edge UNCONDITIONALLY (profile_wiring.py) — unlike ``stat_thresholds``, which
+    # falls back to the base settings when a profile leaves it undeclared. So a hand-built profile that
+    # simply doesn't care about the eye would otherwise downgrade a deployment to the whole-frame mean,
+    # the configuration measured admitting ZERO frames on 24 of 100 corpus cases. Keep these two
+    # defaults in lockstep.
+    salience_stat: SalienceStat = "block_max"
     stat_thresholds: dict[str, float] = field(default_factory=dict)
     plan_mode: str = "single"
     cadence: CadenceProfile = field(default_factory=CadenceProfile)

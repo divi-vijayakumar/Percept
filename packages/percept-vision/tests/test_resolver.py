@@ -45,10 +45,12 @@ class TestPrecedenceBothDirections(unittest.TestCase):
     """ADR-008 §Precedence's two named "tested consequences"."""
 
     def test_env_beats_sdk_default(self) -> None:
+        # "mean" is the value that is NOT the SDK default (that is "block_max"), so this is a
+        # real Deployment-tier override rather than the default passing through unchanged.
         resolver = ConfigResolver()
-        with mock.patch.dict("os.environ", {"PERCEPT_SALIENCE_STAT": "block_max"}, clear=False):
+        with mock.patch.dict("os.environ", {"PERCEPT_SALIENCE_STAT": "mean"}, clear=False):
             resolved = resolver.resolve(_plan())
-        self.assertEqual(resolved.effective["Settings.edge.salience_stat"], "block_max")
+        self.assertEqual(resolved.effective["Settings.edge.salience_stat"], "mean")
         origin = resolved.provenance["Settings.edge.salience_stat"]
         self.assertEqual(origin.owner_layer, LAYER_DEPLOYMENT)
         self.assertEqual(origin.source_id, "env:PERCEPT_SALIENCE_STAT")
@@ -78,16 +80,18 @@ class TestPrecedenceBothDirections(unittest.TestCase):
         """An unset WatchPlan field is not 'explicit' — the next value down the chain applies
         untouched (ADR-008 §Precedence)."""
         resolver = ConfigResolver()
-        with mock.patch.dict("os.environ", {"PERCEPT_SALIENCE_STAT": "block_max"}, clear=False):
+        # env names a value the SDK default does NOT ("mean" vs the shipped "block_max"), so the
+        # Deployment tier is genuinely the next value down the chain here.
+        with mock.patch.dict("os.environ", {"PERCEPT_SALIENCE_STAT": "mean"}, clear=False):
             resolved = resolver.resolve(_plan())  # no explicit override at all
-        self.assertEqual(resolved.effective["Settings.edge.salience_stat"], "block_max")
+        self.assertEqual(resolved.effective["Settings.edge.salience_stat"], "mean")
         self.assertEqual(resolved.provenance["Settings.edge.salience_stat"].owner_layer, LAYER_DEPLOYMENT)
 
     def test_no_env_no_override_stays_sdk_default(self) -> None:
         resolver = ConfigResolver()
         with mock.patch.dict("os.environ", {}, clear=True):
             resolved = resolver.resolve(_plan())
-        self.assertEqual(resolved.effective["Settings.edge.salience_stat"], "mean")
+        self.assertEqual(resolved.effective["Settings.edge.salience_stat"], "block_max")
         self.assertEqual(resolved.provenance["Settings.edge.salience_stat"].owner_layer, LAYER_SDK)
         self.assertEqual(resolved.provenance["Settings.edge.salience_stat"].source_id, "sdk_default")
 
@@ -225,7 +229,9 @@ class TestUnknownKeyRaises(unittest.TestCase):
 class TestExplainRendersEveryEffectiveField(unittest.TestCase):
     def test_explain_covers_every_effective_field(self) -> None:
         resolver = ConfigResolver()
-        with mock.patch.dict("os.environ", {"PERCEPT_SALIENCE_STAT": "block_max"}, clear=False):
+        # "mean" differs from the SDK default ("block_max"), so a Deployment-tier line really
+        # exists to be rendered.
+        with mock.patch.dict("os.environ", {"PERCEPT_SALIENCE_STAT": "mean"}, clear=False):
             resolved = resolver.resolve(_plan())
         rendered = resolved.explain()
         for path in resolved.effective:
@@ -267,7 +273,8 @@ class TestHashesStable(unittest.TestCase):
         plan = _plan()
         with mock.patch.dict("os.environ", {}, clear=True):
             r1 = resolver.resolve(plan)
-        with mock.patch.dict("os.environ", {"PERCEPT_SALIENCE_STAT": "block_max"}, clear=False):
+        # "mean" moves the field off its SDK default ("block_max") — a real change in `effective`.
+        with mock.patch.dict("os.environ", {"PERCEPT_SALIENCE_STAT": "mean"}, clear=False):
             r2 = resolver.resolve(plan)
         self.assertNotEqual(r1.effective["Settings.edge.salience_stat"], r2.effective["Settings.edge.salience_stat"])
         self.assertEqual(r1.component_snapshot_hash, r2.component_snapshot_hash)
@@ -307,10 +314,14 @@ class TestSituationResolverProvenanceStamped(unittest.TestCase):
         """ADR-008 ownership transfer: situation axes no longer carry salience_stat — a
         caller must ALSO resolve a SourceProfile (or set it explicitly) to get a tuned statistic.
         The SDK-default layer still contributes the field (every Settings.* path always does), but
-        its owner stays SDK and its value stays the legacy default."""
+        its owner stays SDK and its value stays the SDK default — the situation resolver never
+        writes this path, whatever that default happens to be."""
         resolver = ConfigResolver()
         resolved = resolver.resolve(_plan(), situation=("dynamic", "fixed", "start_anchored"))
-        self.assertEqual(resolved.effective["Settings.edge.salience_stat"], "mean")
+        self.assertEqual(
+            resolved.effective["Settings.edge.salience_stat"], Settings().edge.salience_stat,
+        )
+        self.assertEqual(resolved.effective["Settings.edge.salience_stat"], "block_max")
         self.assertEqual(resolved.provenance["Settings.edge.salience_stat"].owner_layer, "SDK")
 
     def test_gate_field_stamped_gate_layer(self) -> None:

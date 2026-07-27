@@ -1537,9 +1537,9 @@
         "block_max",
         "p95"
       ],
-      "default": "mean",
+      "default": "block_max",
       "env_var": "PERCEPT_SALIENCE_STAT",
-      "note": "deployment-wide default localizing statistic (empirical tuning: block_max ~doubled recall).",
+      "note": "deployment-wide default localizing statistic; block_max since the 100-case sweep measured mean@0.10 admitting ZERO frames on 24/100 cases (0.572 recall) vs block_max@0.20 on 2/100 (0.947). A SourceProfile's parameters['salience_stat'] still overrides per source class.",
       "owner": "SourceProfile",
       "path": "Settings.edge.salience_stat",
       "requires_recompile": true,

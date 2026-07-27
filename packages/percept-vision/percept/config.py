@@ -181,9 +181,21 @@ class EdgeSettings:
     # motion score clears this threshold. A shipped default from an auditable sweep, with optional
     # per-goal bias. (PERCEPT_MOTION_GATE)
     motion_gate: float = 0.10  # PERCEPT_MOTION_GATE — motion salience escalation cutoff (0..1)
-    # Deployment-wide default salience MODE (tracks the camera mount; overridable per goal). Default
-    # "mean" / False preserve the legacy whole-frame gate byte-for-byte.
-    salience_stat: str = "mean"  # PERCEPT_SALIENCE_STAT — "mean" | "block_max" | "p95" (localized recall)
+    # Deployment-wide default salience MODE (tracks the camera mount; overridable per goal, and by a
+    # SourceProfile's own ``parameters['salience_stat']``).
+    #
+    # DEFAULT RATIONALE (pre-registered sweep, no tune-to-green). This was "mean" to preserve the
+    # legacy whole-frame gate byte-for-byte. That compatibility is not worth what it costs: a
+    # whole-frame average dilutes a small mover against a still background, so the gate admits
+    # NOTHING and the judge never sees the event at all. Two independent measurements agree:
+    #   * Perception Test action events (N=80, 7.8k frames): mean@0.10 -> 0.06 recall.
+    #   * 100-case stage-validation corpus, 2,391 configs, matched economy: mean@0.10 -> 0.572
+    #     recall admitting ZERO frames on 24/100 cases, vs block_max@0.20 -> 0.947 admitting zero on
+    #     2/100. A +0.376 recall move with no new configuration surface.
+    # The same sweep found conditioning this per goal shape is NOT supported (regret reduction 0.048
+    # against a pre-registered 0.05 bar, and negative under leave-one-out), so this stays a single
+    # global default rather than becoming a per-goal lookup.
+    salience_stat: str = "block_max"  # PERCEPT_SALIENCE_STAT — "mean" | "block_max" | "p95"
     ego_compensate: bool = False  # PERCEPT_EGO_COMPENSATE — remove global camera motion before diffing
     # Per-stat escalation cutoffs. block_max/p95 live on a HIGHER value scale than the whole-frame mean
     # (a single active block >= the frame average), so they need their own thresholds — the mean-tuned
@@ -280,7 +292,7 @@ def load_settings() -> Settings:
         ),
         edge=EdgeSettings(
             motion_gate=_env("PERCEPT_MOTION_GATE", 0.10, float),
-            salience_stat=_env("PERCEPT_SALIENCE_STAT", "mean", str),
+            salience_stat=_env("PERCEPT_SALIENCE_STAT", "block_max", str),
             ego_compensate=_env("PERCEPT_EGO_COMPENSATE", False, _as_bool),
             motion_gate_block_max=_env("PERCEPT_MOTION_GATE_BLOCK_MAX", 0.20, float),
             motion_gate_p95=_env("PERCEPT_MOTION_GATE_P95", 0.15, float),

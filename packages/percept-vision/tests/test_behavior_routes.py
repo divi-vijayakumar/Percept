@@ -614,13 +614,19 @@ class FacilityTransitionRuntimeTests(unittest.TestCase):
         self.assertEqual(len(vision.judge_calls), (len(tokens) - 1) * 2)
 
     def test_compiled_transition_retains_bound_threshold(self):
+        """The compiled condition keeps the cutoff the BINDING resolved — the one belonging to
+        the ACTIVE statistic. ``watchspec_kwargs['threshold']`` is the mean-scale cutoff and is
+        deliberately NOT stat-derived (matched-watch arms must be able to differ in
+        ``salience_stat`` without ``threshold`` co-varying), so the invariant is
+        ``stat_thresholds[salience_stat]``; those two coincide only when the active stat is the
+        whole-frame mean."""
         core, _vision, goal_id = _transition_core("package_appeared", ["prime", "from"])
         compiled = core._watch_runtime_bindings[goal_id][0]
-        condition = compile_watchspec(
-            [core.goals.get(goal_id)], **dict(compiled.watchspec_kwargs)
-        ).conditions
+        kwargs = dict(compiled.watchspec_kwargs)
+        condition = compile_watchspec([core.goals.get(goal_id)], **kwargs).conditions
         self.assertEqual(len(condition), 1)
-        self.assertEqual(condition[0].threshold, compiled.watchspec_kwargs["threshold"])
+        bound = kwargs["stat_thresholds"][kwargs["salience_stat"]]
+        self.assertEqual(condition[0].threshold, bound)
 
 
 class FacilityOccupancyRuntimeTests(unittest.TestCase):

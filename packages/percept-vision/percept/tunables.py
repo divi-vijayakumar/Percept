@@ -356,9 +356,11 @@ _SETTINGS: tuple[TunableSpec, ...] = (
     ),
     TunableSpec(
         path="Settings.edge.salience_stat", owner="SourceProfile", visibility="public",
-        safe_to_optimize=False, default="mean", value_type="enum", choices=("mean", "block_max", "p95"),
+        safe_to_optimize=False, default="block_max", value_type="enum", choices=("mean", "block_max", "p95"),
         env_var="PERCEPT_SALIENCE_STAT", requires_recompile=True, risk="medium",
-        note="deployment-wide default localizing statistic (empirical tuning: block_max ~doubled recall).",
+        note="deployment-wide default localizing statistic; block_max since the 100-case sweep measured "
+             "mean@0.10 admitting ZERO frames on 24/100 cases (0.572 recall) vs block_max@0.20 on 2/100 "
+             "(0.947). A SourceProfile's parameters['salience_stat'] still overrides per source class.",
     ),
     TunableSpec(
         path="Settings.edge.ego_compensate", owner="SourceProfile", visibility="public",
