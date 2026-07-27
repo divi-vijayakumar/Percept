@@ -283,7 +283,45 @@ carve-out is deliberately narrower than `_terse_reply`/`_judge_max_tokens` — t
 leaving the mutation channel untouched.
 **Revisit if:** a claim watch is ever run in reflex mode on material where corrections are transient.
 
-### LATENCY — the decomposition is now settled, and the lever is spent
+### ⚠️ LATENCY — CORRECTION: the honest end-to-end is ~2.55 s, not 1.667 s
+
+**The judge only samples the scene once per pipeline-cycle, and that wait was never counted.**
+The scheduler is single-flight with one latest-wins pending slot (`worker.py:731-812`), so:
+
+| run | tier-0 admitted | judged | **superseded** | discarded before any judge |
+|---|---|---|---|---|
+| reflex 5-frame | 67,775 | 6,269 | 45,564 | **87.9%** (verified independently) |
+| deliberate | 67,775 | 6,419 | 46,449 | 87.9% |
+| reflex 3-frame | 67,775 | 8,112 | 44,401 | 84.5% |
+
+Judge sampling period: **1.771 s** (5-frame) / **1.389 s** (3-frame). An action onset therefore waits
+an additional expected HALF-CYCLE — +0.885 s / +0.695 s — before a judge even looks.
+**Honest onset→Incident ≈ 2.55 s (5-frame), ≈ 2.20 s (3-frame).** Every "1.667 s" figure earlier in
+this ledger is the pipeline leg only and understates the product-visible latency.
+
+**And the multiplier is the important part.** The sampling period IS the pipeline latency
+(1.771 ≈ 0.167 + 1.433 + 0.072 + slack), so **every second cut from the pipeline is worth ~1.5 s
+end-to-end.** Measured, not modelled — cutting 5→3 frames removed 0.178 s of prefill and bought
+**0.35 s** end-to-end:
+
+| frames | provider p50 | pipeline p50 | judge cycle | ≈ onset→Incident |
+|---|---|---|---|---|
+| 2 | 1.321 | 1.666 | 1.489 | 2.41 s |
+| **3** | **1.255** | **1.502** | **1.389** | **2.20 s** |
+| 4 | 1.356 | 1.666 | 1.662 | 2.50 s |
+| 5 (was shipped) | 1.433 | 1.667 | 1.771 | 2.55 s |
+
+**`ingest→admission` is mislabelled — it is queue wait, not gating.** On the async dispatch path used
+by every run, `admitted_ts` is stamped when the batch LAUNCHES (`agent.py:3242`), so the 0.167 s is a
+candidate waiting for the single-flight judge. Real pre-dispatch compute is **≤ 8.7 ms, ever**
+(n=4,769). Offline fit: **overhead ≈ 0.046 + 1.63/fps** — ~46 ms is a genuine compute floor, the rest
+is rendezvous with the capture tick and is recoverable ONLY by raising capture fps.
+**Raising fps does not raise provider spend** (the scheduler already discards 88%): 0.69 calls/s at
+6 fps vs 0.68 at 12 fps. 6→12 fps buys ~0.19 s of ~2.55 s (~7%) for decode CPU. Note capture fps
+comes from the sensor plan (`worker.py:4066`, cap `_BRIEF_CAPTURE_CAP_FPS = 8.0` at `worker.py:2494`)
+— a profile change, not a code change.
+
+### LATENCY — prefill decomposition (unchanged, and it is the only lever)
 
 **TTFT tracks the NUMBER OF IMAGE PARTS, not their tokens or bytes** (interleaved, Gemini direct):
 
@@ -304,6 +342,29 @@ so we pay ~1,101 tokens/image; `MEDIA_RESOLUTION_LOW` is ~264 — a **69% cut in
 judge call**. A parallel probe saw identical `satisfied`/`action_present` across 5 samples at LOW but
 correctly called 5 samples "not evidence". **A 40-case quality run is what would make it evidence,
 and it is in flight.**
+
+### DIRECT JUDGE / CACHE — both structurally unreachable BY DESIGN. Zero counters was correct.
+
+**Direct judge** is a client-supplied RULE registry, not a model (`direct_judge.py:154-190`). It never
+engaged for three independent sufficient reasons: it defaults to `None` and is constructor-only —
+**no env var, no settings knob** (`agent.py:1155/1179/1262`); the harness never passes it
+(`live_run.py:470-478`); and **no `DirectRule` implementation ships anywhere** in `percept/`,
+`examples/`, `templates/` or `docs/`. The corpus goals also lack the namespace it routes on.
+**Correctness risk if forced open:** the confident path substitutes the verdict wholesale and the Gate
+treats it as a real judge read — a wrong rule produces a real **FIRE**, not an ASK. Verify cadence is
+stakes-derived (`{"low":0,"medium":20,"high":5}`) and **no corpus goal sets `stakes`** → medium →
+**19 of every 20 confident answers are never verified**. Against a pipeline whose per-window lift is
+1.26× over chance, enable only for a deterministic oracle, pinned `stakes="high"`.
+
+**Cache** is disabled by default (`config.py:120`) AND bypassed regardless: `agent.py:5910` skips the
+cache when `frames or audio or process_mode or claim_mode or event_mode` — and the runs used a
+temporal strip (`frames`) with `rearm="each_event"` (`event_mode`), so **both** were truthy on every
+judgment. It is a single-frame dHash cache (`ttl_s=8.0`) for a near-static scene re-asked the same
+question; this corpus is continuous motion over temporal strips, which is exactly what the bypass
+exists for. **Risk if forced:** `audit_rate=0.05` and the auditor only exists if `audit=` is passed —
+`live_run` passes nothing, so a false-serve returns unchecked (`agent.py:5982-5983`).
+
+**Neither can take a single judgment off the provider.**
 
 ### R2 — **DIAGNOSED. Re-scoped: the judge's per-window boolean is near-chance on 3 of 5 datasets.**
 
