@@ -142,8 +142,9 @@ Flaky network camera? `run(..., source_reconnects=5, source_reconnect_backoff_s=
 Set these as env vars **before** `import percept`, or leave them — the demo bakes in the good ones:
 
 ```bash
-export PERCEPT_SALIENCE_STAT=block_max     # ✅ recommended for a FIXED camera + small/localized actions
-                                           #    (holding, sitting). "mean" misses low-motion events.
+# The tier-0 eye needs nothing: PERCEPT_SALIENCE_STAT already defaults to block_max. Set it only to
+# switch deliberately — "mean" averages a small action away and misses low-motion events (holding,
+# sitting); "p95" is the noise-robust cousin of block_max.
 export PERCEPT_GATE_REFRACTORY_S=15        # ✅ suppress repeat notifications of the SAME goal for N seconds
                                            #    (0 = notify on every confirmation = noisy). 8–30 is typical.
 export PERCEPT_VISION_MODEL=qwen/qwen3-vl-32b-instruct   # the judge model id for your provider
@@ -231,7 +232,7 @@ async for inc in percept.run(source="my_test.mp4", goals=goals, vision="openrout
 | `Insufficient credits` / `402` | top up OpenRouter, or switch `--vision gemini/claude` |
 | webcam black / no frames | wrong index — try `webcam:1`; on macOS grant camera permission to your terminal |
 | a stream of duplicate alerts | raise `PERCEPT_GATE_REFRACTORY_S` |
-| misses low-motion actions | set `PERCEPT_SALIENCE_STAT=block_max` |
+| misses low-motion actions | confirm the eye is `block_max` (the default) — `percept doctor` shows the active statistic and whether an alternative would have admitted |
 | `needs the 'openai' SDK` | `pip install 'percept-vision[openrouter]'` |
 | loud `SCRIPTED BACKENDS` banner | harmless (it's about the unused *voice* seam); set `PERCEPT_NO_BANNER=1` |
 

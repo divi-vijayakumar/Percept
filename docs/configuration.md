@@ -169,7 +169,7 @@ Percept's envelope, after which every act is refused (see ADR-007).
 | Field | Type | Default | Env var |
 |---|---|---|---|
 | `motion_gate` | float | `0.10` | `PERCEPT_MOTION_GATE` |
-| `salience_stat` | str | `"mean"` | `PERCEPT_SALIENCE_STAT` |
+| `salience_stat` | str | `"block_max"` | `PERCEPT_SALIENCE_STAT` |
 | `ego_compensate` | bool | `False` | `PERCEPT_EGO_COMPENSATE` |
 | `motion_gate_block_max` | float | `0.20` | `PERCEPT_MOTION_GATE_BLOCK_MAX` |
 | `motion_gate_p95` | float | `0.15` | `PERCEPT_MOTION_GATE_P95` |
@@ -179,7 +179,10 @@ Percept's envelope, after which every act is refused (see ADR-007).
 localized, so small low-motion actions survive), or `p95` (95th percentile). Thresholds are
 **per-statistic and not interchangeable**: `block_max`/`p95` sit on a higher value scale than the
 mean, each with its own cutoff, so the mean-tuned `0.10` over-fires them. `salience_stat="mean"` with
-`motion_gate=0.10` preserves the legacy whole-frame gate byte-for-byte. `ego_compensate` subtracts
+`motion_gate=0.10` reproduces the legacy whole-frame gate byte-for-byte, but it is **not** the default
+any more and is rarely what you want: a whole-frame average dilutes a small mover against a still
+background, and on a 100-case corpus it admitted **zero frames on 24 cases** (0.572 recall) versus
+`block_max@0.20`'s 2 (0.947). `ego_compensate` subtracts
 global camera motion before diffing — for a **moving** camera only. See
 [reference/edge-policy.md](reference/edge-policy.md).
 
@@ -220,20 +223,21 @@ A selected live backend with no key raises `ModeError` naming the exact variable
 
 ## The recommended watch defaults
 
-The library defaults are deliberately conservative — byte-for-byte compatible with the legacy
-whole-frame gate (`salience_stat="mean"`, `motion_gate=0.10`, `refractory_s=0.0`). That makes them a
-safe baseline, but it also means a developer embedding via `run()` / `Percept.create()` gets the
-**untuned** gate unless they set the knobs themselves. The `percept-watch` CLI sets these in the
-environment *before* importing `percept`; an embedder should do the same:
+The tier-0 **eye** is now tuned by default: `salience_stat="block_max"` with its own
+`motion_gate_block_max=0.20` cutoff. A developer embedding via `run()` /
+`Percept.create()` gets the localized gate without setting anything, so the historical failure mode —
+a silent zero-admission because the whole-frame `mean` averaged the action away — no longer happens by
+default.
+
+What is still deliberately conservative is **delivery**, not admission: `refractory_s=0.0` means every
+qualifying frame can fire. The `percept-watch` CLI sets these in the environment *before* importing
+`percept`; an embedder should consider the same:
 
 | Variable | Value | When |
 |---|---|---|
-| `PERCEPT_SALIENCE_STAT` | `block_max` | localized motion — catches small/low-motion actions on a **fixed** camera |
 | `PERCEPT_GATE_REFRACTORY_S` | `15` | one notification per episode instead of a stream of repeats |
 | `PERCEPT_EGO_COMPENSATE` | `true` | **moving** camera only (glasses / body-cam) |
-
-There is no warning on the untuned path — it simply admits less. If you embed Percept rather than run
-the CLI, set these yourself. See [how-to/tune-admission.md](how-to/tune-admission.md) and, for content
+| `PERCEPT_SALIENCE_STAT` | `mean` | only to reproduce the pre-1.0 whole-frame gate — expect it to admit far less | See [how-to/tune-admission.md](how-to/tune-admission.md) and, for content
 that has near-zero pixel motion (screenshares, documents), [how-to/screenshare.md](how-to/screenshare.md).
 
 ---

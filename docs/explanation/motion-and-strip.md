@@ -18,16 +18,17 @@ block grid:
 
 | statistic | what it summarizes | catches |
 |---|---|---|
-| `mean` (default) | the average difference across the whole frame | large, whole-frame change — someone walks in, the scene shifts |
-| `block_max` | the single most-changed block | a *localized* action — a coffee sip, a shelf grab, one error line on a large screen |
+| `mean` | the average difference across the whole frame | large, whole-frame change — someone walks in, the scene shifts |
+| `block_max` (default) | the single most-changed block | a *localized* action — a coffee sip, a shelf grab, one error line on a large screen |
 | `p95` | the 95th-percentile block | localized change, but more robust to a lone noisy block than `block_max` |
 
 The whole-frame **mean averages a small action away**: a hand moving in one corner barely moves the
 average of a mostly-still frame, so the mean-based gate skips it. A **localized** statistic keeps the
 signal where it is strong instead of diluting it across the frame, so a small or low-motion event can
-still clear the bar. `salience_stat` defaults to `"mean"` (env `PERCEPT_SALIENCE_STAT`); pick
-`block_max` or `p95` per **camera mount** — a static desk, security, or screenshare camera benefits from a
-localized statistic.
+still clear the bar. That is why `salience_stat` defaults to `"block_max"` (env
+`PERCEPT_SALIENCE_STAT`): measured over a 100-case corpus, the whole-frame `mean` at its `0.10` cutoff
+admitted **zero frames on 24 cases**, while `block_max@0.20` did so on 2. Choose `p95` instead when a
+lone noisy block is a concern, or `mean` only when the action genuinely fills the frame.
 
 ## Thresholds are per-statistic — not interchangeable
 

@@ -83,14 +83,16 @@ match the scene:
 
 | Scene / action | `salience_stat` | Effect |
 |---|---|---|
-| whole-scene motion, action fills the frame | `mean` (default) | frame-averaged motion |
-| **static camera, small/localized action** (a hand, a cup, standing still) | `block_max` | one active block in an 8×6 grid clears threshold even when the frame-mean is ~0 — catches localized motion `mean` washes out |
+| whole-scene motion, action fills the frame | `mean` | frame-averaged motion |
+| **static camera, small/localized action** (a hand, a cup, standing still) | `block_max` (default) | one active block in an 8×6 grid clears threshold even when the frame-mean is ~0 — catches localized motion `mean` washes out |
 | localized but noisy | `p95` | noise-robust cousin of `block_max` |
 | known region of interest | `region_hint` on the goal | score motion only inside the box |
 | a **moving/handheld camera** | `ego_compensate` | subtract global camera shift before scoring |
 
-Rule of thumb: **fixed mount + localized events → `block_max`.** Leaving it on `mean` is the classic reason
-low-motion actions (holding, watching, standing) never escalate and are silently missed.
+Rule of thumb: **fixed mount + localized events → `block_max`**, which is the default, so you normally
+change nothing. Switching to `mean` is the classic reason low-motion actions (holding, watching,
+standing) never escalate and are silently missed — measured over a 100-case corpus, `mean` at its
+`0.10` cutoff admitted zero frames on 24 of them.
 
 ### 3. Tune the fovea cadence to the concern's urgency
 The fovea (`percept.sampling.SensePolicy`) coasts at `base_fps` and saccades toward `max_fps` on motion:
