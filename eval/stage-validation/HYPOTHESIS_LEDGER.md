@@ -35,7 +35,26 @@ Live N=100, both modes, Gemini 3.1 Flash-Lite direct, ordered-image transport, 0
 
 ## OPEN — work these in order
 
-### H1 (highest priority) — reflex sends ~1 frame where deliberate sends 5
+### H5 (NEW — highest priority, ROOT CAUSE FOUND) — the reflex deadline has no headroom
+**Status: CONFIRMED by arithmetic; fix not yet landed.**
+Measured: deliberate's implied real provider calls = 6,419 = **100.0%** of judged. Reflex = **987 =
+15.7%**. So 5,282 judged units never received a provider answer — and reflex logged **1,010
+`judge_deadline_expired`** against deliberate's **zero**. Unanswered units fail closed to UNKNOWN →
+confidence 0.0 → **ASK**. 5,282 unanswered ≈ 5,357 ASKs observed.
+**Why:** the reflex pool deadline is 1.5 s; measured provider latency is p95 **1.473 s**. That is
+**27 ms of headroom**. Queuing and scheduling under concurrency consume it, so the pool times out
+before the provider replies. Deliberate's 30 s deadline expires never.
+**This is the cause of the ASK storm, the 2.4% fire rate, and the 0.137 recall.** Not the terse
+format, not the frame count, not cognition.
+**Next step:** decide the fix rather than tune it. Candidates, in order of honesty:
+  (a) raise the reflex pool deadline so p95 provider + scheduling fits with real margin, and re-measure
+      whether the product's 2 s action→Incident gate still holds;
+  (b) reduce provider latency further (fewer/smaller frames) to buy headroom under the existing 1.5 s;
+  (c) accept that a 1.5 s pool deadline is infeasible against a 1.473 s p95 provider and say so.
+**Do not** simply widen the deadline to make recall pass without re-measuring the end-to-end gate —
+that would be tuning to green.
+
+### ~~H1~~ REFUTED — reflex sends ~1 frame where deliberate sends 5
 **Evidence:** input tokens per call are 878 (reflex) vs 5,575 (deliberate). Deliberate's figure matches
 five 768 px frames (~1,100 tok each) + prompt. Reflex's is roughly one frame's worth. Both arms are
 supposed to send the identical temporal strip; the reflex commit was meant to touch only `max_tokens`
@@ -45,9 +64,12 @@ explain the recall collapse, and it would make the whole reflex-vs-deliberate co
 something different.
 **Where to look:** two separate strip-assembly sites, `percept/backends/gemini.py:391` and `:573`.
 Determine which path each arm takes and whether `terse`/`reflex`/`structured` gates frame count.
-**Kill test (offline, free):** construct a reflex-mode and a deliberate-mode request for the same case
-with a fake transport that records the parts actually sent; assert both carry 5 image parts. If
-reflex carries fewer, H1 is CONFIRMED and is a defect in `2d5097d`.
+**REFUTED 2026-07-27.** Measured directly by capturing assembled parts with a stubbed client: reflex
+sends **5** images, deliberate **5**, reflex+event_chain **5**. Frame assembly at `gemini.py:391-400`
+does not read `reflex` or `terse`. The refutation was productive — it forced the token gap to be a
+denominator artifact, which produced H5 above.
+*(Note: the tester's own explanation — that `max_tokens` reservation inflates input tokens — is wrong;
+an output cap cannot change input token count. The real explanation is H5.)*
 
 ### H2 — a majority of judgments bypass `GeminiVision.judge`
 **Evidence:** a replay spy wrapping `GeminiVision.judge` captured 56 replies against 224 judged units.
@@ -83,6 +105,8 @@ conductor's job and is next-release architecture; (a) is mechanical.
 | G3 | Terse replies omit `confidence`, so the 0.7 gate can never clear | A replay captured 56 replies; confidence present on **every** one, values 0.8–1.0 |
 | G4 | Replay pace lag / frame drops cause the pre-ingest delay | pace_lag 0.00 s median / 0.35 s max, zero decoder drops, 6 fps throughout |
 | G5 | Episode logic holds Incidents pending close | `decision → Incident observed` p50 0.000 s, max 0.003 s |
+| G6 | Reflex sends ~1 frame vs deliberate's 5 | Measured: 5 images in both modes; `gemini.py:391-400` does not gate on reflex/terse |
+| G7 | `max_tokens` reservation inflates input tokens | An output cap cannot change input token count — arithmetic error |
 
 ---
 
