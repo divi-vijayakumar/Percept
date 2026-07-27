@@ -188,6 +188,23 @@ checking whether the fake path involves any wall-clock deadline, since a real ti
 bit-identical output impossible by construction.
 **Cost: free (offline).**
 
+**Attempt 2 (2026-07-27) — ALSO INCOMPLETE.** The tester reported a *provisional* verdict with
+if/then branches while its harness run was still going; an agent's background work dies when the
+agent stops, so no matrix result exists. Two things it DID establish and that are worth keeping:
+- **The previous zero-incident result is explained:** the default `FakeVision` script returns
+  `Verdict(satisfied=False, confidence=0.2)` for unknown frames, and the gate needs `satisfied=True`
+  AND `confidence > 0.7` to FIRE — so it could only ever ASK. Any future determinism test must assert
+  a non-zero incident count before comparing anything.
+- **`FakeJudge` itself is deterministic** — identical fire sequence across seeded runs, using
+  `random.Random(seed)` with no global state.
+- Its named suspect, `judge_pool.py:636`, is **the opposite of a hazard**: the code deliberately
+  resolves `asyncio.wait`'s non-deterministic result SET "in declared route priority order", i.e. an
+  existing determinism guard.
+
+**H3 is DEPRIORITISED.** Two attempts, no result, and it is not on the launch critical path — the
+16-vs-50 observation is adequately explained by provider non-determinism, which is expected. Revisit
+only if a reproducibility claim is needed for a published benchmark.
+
 ### H4 — cognition: 71% of GT events are scored against a primitive that cannot represent them
 **Evidence:** RepCount = 203 of 329 GT occurrences, recall 0.099, running as a boolean presence Watch.
 `RhythmTracker` measures MAE 0.00 / 20-of-20 exact offline but is unreachable — `EXTERNAL_RHYTHM` is
