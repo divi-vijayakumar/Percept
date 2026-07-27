@@ -25,6 +25,7 @@ from percept.harness.detectors import (
     CATEGORY_POSE,
     CATEGORY_PRESENCE,
     CATEGORY_SEMANTIC_RELEVANCE,
+    _TYPE_DETECTOR_PRESET,
     AcousticOnset,
     DetectorBank,
     MotionPeriodicity,
@@ -197,6 +198,61 @@ class TestSelectionFirewall(unittest.TestCase):
     def test_detectors_for_drops_authored_garbage(self):
         g = Goal(id="g", condition="c", say="s", state={"type": "watch", "detectors": ["nope"]})
         self.assertEqual(detectors_for(g), [])
+
+
+class TestCountPresetAblation(unittest.TestCase):
+    """Pins the ablation's verdict for ``type="count"``: the preset stays EMPTY.
+
+    Measured on RepCount-A (n=20 clips / 203 annotated reps, native frame rate, shipped detector
+    defaults, shipped pose provider): count MAPE 100.0% for the no-detector control, 84.8% for
+    ``motion-periodicity`` (better on 13/20 clips, worse on 5 — two-sided sign test p=0.096, exact on
+    0/20, within +-1 on 2/20), 194.9% for ``pose-openness`` (p=0.648, within +-1 on 4/20). Nothing beat
+    the control by a margin worth a default, so nothing was installed — the ``_TYPE_DETECTOR_PRESET``
+    comment carries the full table and the two detector defects the run surfaced. This is the guard on
+    that decision: it fails the moment a preset is installed without re-running the ablation.
+    """
+
+    def _count_goal(self, **state):
+        return Goal(
+            id="reps", condition="a completed rep", say="rep",
+            state={"type": "count", "count": 0, **state},
+        )
+
+    def test_count_preset_is_empty_by_measurement(self):
+        self.assertEqual(_TYPE_DETECTOR_PRESET.get("count", []), [])
+        self.assertEqual(_TYPE_DETECTOR_PRESET, {})  # no goal type earned a default
+
+    def test_any_preset_ever_installed_stays_inside_the_registry_vocab(self):
+        # the invariant that survives a future re-run: a preset may only name calibrated skills, so a
+        # typo can never activate a detector the firewall would silently drop.
+        vocab = set(registered())
+        for goal_type, names in _TYPE_DETECTOR_PRESET.items():
+            with self.subTest(goal_type=goal_type):
+                self.assertTrue(set(names) <= vocab, f"{goal_type} -> {names} outside {sorted(vocab)}")
+                self.assertEqual(coerce_authored_detectors(names), list(names))
+
+    def test_count_goal_selects_no_detector_and_emits_no_boundary(self):
+        # the shipped consequence of the empty preset, end to end: an un-authored count goal runs an
+        # EMPTY bank, so a whole oscillating stream produces zero boundaries for the brain to count.
+        goal = self._count_goal()
+        self.assertEqual(detectors_for(goal), [])
+        bank = DetectorBank(detectors_for(goal))
+        emitted = []
+        for t, motion in enumerate([0.0, 0.5, 1.0, 0.5, 0.0] * 4):
+            emitted.extend(bank.push(float(t), motion=motion, energy=motion))
+        self.assertEqual(emitted, [])
+
+    def test_authored_detectors_remain_the_way_to_drive_a_count_goal(self):
+        # the null result leaves the authored path untouched: the same stream, counted by an
+        # explicitly authored detector, still produces boundaries.
+        goal = self._count_goal(detectors=["motion-periodicity"])
+        self.assertEqual(detectors_for(goal), ["motion-periodicity"])
+        bank = DetectorBank(detectors_for(goal))
+        emitted = []
+        for t, motion in enumerate([0.0, 0.5, 1.0, 0.5, 0.0] * 4):
+            emitted.extend(bank.push(float(t), motion=motion))
+        self.assertEqual(len(emitted), 4)
+        self.assertTrue(all(b.detector == "motion-periodicity" for b in emitted))
 
 
 class TestPoseSkillRegistration(unittest.TestCase):

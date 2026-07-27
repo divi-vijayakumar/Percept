@@ -662,8 +662,74 @@ register(
 # Selection (sense-preset default + authored override) + the firewall
 # ---------------------------------------------------------------------------
 
-# goal type -> default detectors. Empty for now (byte-for-byte today); a default (e.g. a count goal ->
-# motion-periodicity) is switched on only when the Phase-7 ablation proves its lift. Authored overrides.
+# goal type -> default detectors. EMPTY BY MEASUREMENT, not by omission: the ablation this map was
+# waiting on has been run, and no candidate earned a default. Authored overrides still win.
+#
+# THE ABLATION. RepCount-A, n=20 clips / 203 annotated reps (the ``repcount`` slice of the stage-validation
+# corpus; per-rep cycle bounds are the ground truth). Every clip decoded at its OWN native frame rate and
+# driven through the production path — ``detectors_for`` -> :class:`DetectorBank` ->
+# ``Percept.perceive_boundary`` -> ``core.edge_counts`` — with each detector constructed by
+# :func:`make_detector`, i.e. at its SHIPPED defaults; no detector parameter was tuned for this
+# measurement. Pure local DSP, zero provider calls. The motion channel is ``motion_score`` on the
+# production 48x36 gate downsample, exactly what ``GatedWatchLoop`` feeds the bank; the pose arm ran the
+# shipped default pose provider (RTMO).
+#
+# ====================  ==========  =====  ========  =======  =========  ==============  ===========
+# arm                   count MAPE    MAE  exact/20  +-1 /20  sign test  boundaries/203  rep coverage
+# ====================  ==========  =====  ========  =======  =========  ==============  ===========
+# control (this map)         100.0%  10.15         0        0          -               0         0.0%
+# motion-periodicity          84.8%   8.40         0        2  p = 0.096             241        56.7%
+# pose-openness              194.9%  17.40         3        4  p = 0.648             477        73.4%
+# ====================  ==========  =====  ========  =======  =========  ==============  ===========
+#
+# ``sign test`` is the two-sided paired sign test of that arm's per-case absolute percentage error
+# against the control's (the control predicts 0 on every clip, so its APE is exactly 1.0 each time).
+#
+# WHY NOTHING WAS INSTALLED. ``pose-openness`` is ~2x WORSE than answering zero: it fires on any wobble
+# of its openness scalar (101 boundaries on a 9-rep sit-up clip, 87 on a 19-rep one), so its 73% rep
+# coverage is saturation rather than alignment — 82 of its 477 boundaries fall inside no annotated rep.
+# ``motion-periodicity`` is nominally better than the control (84.8% vs 100% MAPE) but the margin is
+# noise, not lift: better on 13 of 20 clips and worse on 5 (p = 0.096), never once exact, within +-1 rep
+# on 2 of 20, and the error has no direction to correct out (11 over, 9 under; 0 boundaries on a 17-rep
+# squat clip, 33 on a 12-rep pull-up clip). Its 241-vs-203 boundary total is over- and under-counts
+# cancelling in aggregate, not accuracy. Timing agrees: median boundary offset 0.71 s from the nearest
+# annotated rep midpoint, yet only 57% of true reps got any boundary within half a cycle and 46 of 241
+# boundaries landed inside no rep at all. Installing either would convert "a count goal fires nothing"
+# into "a count goal fires at arbitrary times", which is the worse failure for an nth-distinct
+# accumulator (``fire_when: "n == 10"``). ``acoustic-onset`` was not scorable here: 19 of the 20 clips
+# carry no audio stream at all.
+#
+# TWO FINDINGS THE ABLATION SURFACED, DELIBERATELY NOT FIXED HERE (they are detector defaults, and this
+# measurement prices the detectors AS THEY SHIP):
+#   * :class:`MotionPeriodicity`'s ``min_height=0.02`` is above the ENTIRE motion range of 2 of the 20
+#     clips (max 0.013 and 0.017), so it is structurally deaf on them and emits nothing — the same fixed
+#     absolute-bar pathology documented at :data:`ACOUSTIC_ONSET_HIGH`.
+#   * :class:`PoseOpenness` normalizes ankle-spread by SHOULDER WIDTH IN X, guarded only against an
+#     EXACT zero (``or 0.1``). On non-upright actions the shoulders align in x — under 0.01 on 773 of
+#     1800 frames of one sit-up clip — and the openness scalar explodes: max 21559 against a median of
+#     2.7 on that clip, which is where its 101 boundaries for 9 true reps come from. A jumping jack, the
+#     shape the manifest claims, never degenerates (min shoulder width 0.074, openness max 3.35) and is
+#     counted exactly. :func:`percept.harness.pose.body_scale` already solved this for the newer
+#     pose-channel basis with a FLOORED Euclidean torso normalizer; this older detector predates it.
+#
+# WHAT THE COUNT ROUTE ACTUALLY NEEDS. Two things, neither of them this map:
+#   1. This map cannot reach a ``count`` goal at all today. ``detectors_for`` is consulted only by
+#      ``compile_watchspec`` (frame routes) and ``RhythmDrive`` (rhythm goals); ``EXTERNAL_BOUNDARY``
+#      compiles to no WatchCondition, so no :class:`DetectorBank` is ever built for it in EITHER topology.
+#      A preset installed under ``"count"`` would be inert; the key that reaches a bank is ``"watch"``.
+#   2. On the same 20 clips the OTHER counting primitive — the ``pose-channels`` eye MEASURING into
+#      ``Percept.perceive_rhythm`` (``type="rhythm"``), which confirms reps causally instead of tallying
+#      boundaries blindly — scores 26.5% MAPE, MAE 2.95, exact on 5 of 20 and within +-1 on 9 of 20:
+#      3x better than the best boundary arm above. Frame-driven counting belongs on that route.
+#
+# CONSEQUENCE (pinned by ``TestCountPresetAblation``): a ``type="count"`` goal selects NO detector and
+# emits NO boundary unless it authors ``state["detectors"]`` itself. The per-action spread says an
+# authored choice is the only defensible one anyway — ``pose-openness`` counts jumping jacks (the shape
+# its manifest claims) at 8% mean APE and sit-ups at 397%; no single global default survives that.
+#
+# Cross-check: re-running the pose arm on the BlazePose provider instead of RTMO moves it from 194.9%
+# to 245.5% MAPE — worse, not better, and the verdict is unchanged either way. The motion arm is
+# provider-independent and reproduced byte-identically across both runs.
 _TYPE_DETECTOR_PRESET: dict[str, list[str]] = {}
 
 
