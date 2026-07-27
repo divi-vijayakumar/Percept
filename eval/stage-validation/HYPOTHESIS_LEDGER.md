@@ -35,8 +35,25 @@ Live N=100, both modes, Gemini 3.1 Flash-Lite direct, ordered-image transport, 0
 
 ## OPEN — work these in order
 
-### H5 (NEW — highest priority, ROOT CAUSE FOUND) — the reflex deadline has no headroom
-**Status: CONFIRMED by arithmetic; fix not yet landed.**
+### H6 (NOW HIGHEST) — cutting reflex to 3 frames buys the headroom the deadline needs
+**Follows from H5 being CONFIRMED and the deadline being unraisable.**
+Arithmetic (measured legs): non-provider overhead is 0.241 s. A 1.5 s pool deadline yields a
+worst-case ingest→Incident of 1.741 s (OK); **1.8 s yields 2.041 s and BREAKS the 2.0 s product
+gate**. Measured ingest→Incident p95 was already 2.001 s WITH the 1.5 s deadline. So the deadline
+cannot be raised — the provider must get faster.
+Probe evidence: 5 frames ≈ 1.19 s median; 3 frames ≈ 0.73–0.91 s. That is ~0.3–0.45 s of headroom,
+taking p95 from 1.473 s to roughly 1.0–1.1 s and ending the expiries.
+**The real question is a trade, and it is empirical:** fewer frames means fewer ASKs (recall UP)
+but less temporal context per judgment (recall DOWN). Nobody has measured which dominates. The
+reflex commit deliberately held frames at 5 on the reasoning that halving temporal resolution would
+surface as lost recall — that reasoning was sound but untested, and it was made before we knew the
+deadline was expiring 84% of judgments.
+**Test (live, ~$1.43):** reflex N=100 with 3 frames, against the existing 5-frame reflex baseline
+(recall 0.137 / ASK 85.5% / FIRE 2.4%). Report recall, precision, ASK rate, deadline expiries and
+provider p95.
+
+### ~~H5~~ CONFIRMED — the reflex deadline has no headroom
+**Status: CONFIRMED. Fix is H6, not a deadline change.**
 Measured: deliberate's implied real provider calls = 6,419 = **100.0%** of judged. Reflex = **987 =
 15.7%**. So 5,282 judged units never received a provider answer — and reflex logged **1,010
 `judge_deadline_expired`** against deliberate's **zero**. Unanswered units fail closed to UNKNOWN →
@@ -51,8 +68,14 @@ format, not the frame count, not cognition.
       whether the product's 2 s action→Incident gate still holds;
   (b) reduce provider latency further (fewer/smaller frames) to buy headroom under the existing 1.5 s;
   (c) accept that a 1.5 s pool deadline is infeasible against a 1.473 s p95 provider and say so.
-**Do not** simply widen the deadline to make recall pass without re-measuring the end-to-end gate —
-that would be tuning to green.
+**Verified 2026-07-27 by direct measurement:** with a fake judge sleeping 1.6 s against a 1.5 s
+deadline, reflex produced 0 provider calls, 5 deadline + 5 cancelled receipts and 5 ASK verdicts;
+deliberate (30 s) produced 5 provider calls and 5 FIRE. The pool behaves exactly as designed.
+Two accounting facts settled: `funnel.judged` counts **dispatch attempts**, not completed provider
+calls (`agent.py:4159`, before `pool.judge()`), so the 878-tokens-per-"judged" figure was a
+meaningless denominator; and the 1,010-vs-5,282 gap is granularity — `judge_deadline_expired` is a
+BATCH-level health event while deadline receipts are per-unit. **No silent drop path exists.**
+Raising the deadline is arithmetically ruled out (see H6).
 
 ### ~~H1~~ REFUTED — reflex sends ~1 frame where deliberate sends 5
 **Evidence:** input tokens per call are 878 (reflex) vs 5,575 (deliberate). Deliberate's figure matches

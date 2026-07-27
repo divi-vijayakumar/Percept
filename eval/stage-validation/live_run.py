@@ -132,7 +132,10 @@ DELIBERATE_DECISION_DEADLINE_S = 40.0
 #: real occurrence watch sends.  Copied from the bench (lines 65-80 of the same file).
 ACTION_BRIEF_WINDOW_S = 1.0
 ACTION_TEMPORAL_WINDOW_S = 2.0
-ACTION_TEMPORAL_FRAMES = 5
+ACTION_TEMPORAL_FRAMES = int(os.environ.get("PERCEPT_SV_FRAMES", "5"))
+# Overridable so the frame-count/latency trade can be measured without editing the harness: fewer
+# frames cut provider latency (5 frames ~1.19s vs 3 ~0.73-0.91s measured) and therefore cut deadline
+# expiries, but cost temporal context per judgment. Which effect dominates recall is empirical.
 ACTION_TEMPORAL_SAMPLING = "uniform"
 _CAPTURE_HEADROOM_FPS = 8.0
 _FIXTURE_QUEUE_SIZE = 8
