@@ -1,0 +1,4808 @@
+{
+  "suite": "sv_audio",
+  "title": "Audio stage validation (Stage 1 admission, Stage 2 senses, Stage 4 cognition)",
+  "generated": "2026-07-27T02:56:31Z",
+  "runtime": {
+    "percept_version": "1.0.0",
+    "percept_path": "/private/tmp/claude-501/-Users-dhivyavijayakumar-git-Percept-sdk/3d8c8120-cb64-4426-8af7-8eb60fc4a085/scratchpad/audiovenv/lib/python3.12/site-packages/percept/__init__.py",
+    "in_site_packages": true,
+    "python": "3.12.8",
+    "executable": "/private/tmp/claude-501/-Users-dhivyavijayakumar-git-Percept-sdk/3d8c8120-cb64-4426-8af7-8eb60fc4a085/scratchpad/audiovenv/bin/python"
+  },
+  "totals": {
+    "FAIL": 3,
+    "PASS": 4
+  },
+  "corpus": {
+    "version": 1,
+    "kind": "stage-validation-audio-corpus",
+    "note": "INTERNAL validation corpus. Not the licensed publication manifest.",
+    "selection_seed": 20260726,
+    "coverage": {
+      "perception_test_sound": {
+        "requested": 40,
+        "built": 40,
+        "short_by": 0,
+        "dropped_no_audio_stream": [],
+        "gt_strength": "audio_annotated"
+      },
+      "omnipro_audio": {
+        "requested": 10,
+        "built": 3,
+        "short_by": 7,
+        "dropped_no_audio_stream": [],
+        "gt_strength": "audio_annotated_point"
+      },
+      "charades_audible": {
+        "requested": 10,
+        "built": 10,
+        "short_by": 0,
+        "dropped_no_audio_stream": [],
+        "gt_strength": "proxy"
+      }
+    },
+    "n_cases": 53,
+    "cases_by_gt_strength": {
+      "audio_annotated": 40,
+      "audio_annotated_point": 3,
+      "proxy": 10
+    },
+    "ground_truth_checks": {
+      "pt_annotation_source": "valid_split_cached_zip",
+      "pt_videos_annotated": 5359,
+      "pt_unit_max_error_s": 1e-06,
+      "pt_unit_samples": 10184,
+      "pt_dropped": {
+        "no_local_media": 4668,
+        "no_usable_segments": 0,
+        "unit_mismatch": 0,
+        "interval_past_media_end": 0,
+        "non_sound_label_segments": 0
+      },
+      "pt_candidates": 691,
+      "omnipro_audio_dependency_values": {
+        "none": 44,
+        "required": 170,
+        "helpful": 56
+      },
+      "omnipro_trigger_types": {
+        "visual": 238,
+        "speech": 177,
+        "visual+sound": 41,
+        "sound": 18,
+        "visual+speech": 424,
+        "visual+sound+speech": 10,
+        "sound+speech": 13
+      },
+      "omnipro_rows_total": 270,
+      "omnipro_videos_local": 19,
+      "omnipro_candidates": 3,
+      "charades_candidates": 76
+    },
+    "refused_datasets": {
+      "proactiveqa": {
+        "probed": 8,
+        "with_audio_stream": 0,
+        "examples_with_audio": [],
+        "verdict": "no audio stream \u2014 cannot carry audio ground truth"
+      },
+      "repcount": {
+        "probed": 8,
+        "with_audio_stream": 0,
+        "examples_with_audio": [],
+        "verdict": "no audio stream \u2014 cannot carry audio ground truth"
+      }
+    },
+    "cases": [
+      {
+        "case_id": "perception_test_sound::video_8222::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_8222.mp4",
+        "duration_s": 16.312,
+        "goal_text": "right now there is an audible object sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            2.001,
+            2.835
+          ],
+          [
+            5.838,
+            5.971
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Object:sound",
+          "labels_present": [
+            "Object:sound"
+          ],
+          "n_segments_label": 2,
+          "n_segments_any": 2,
+          "sound_positives_any": [
+            [
+              2.001,
+              2.835
+            ],
+            [
+              5.838,
+              5.971
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 29.97854232788086,
+          "audio_samples": 783535,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 44100,
+          "channels": 1,
+          "duration_s": 16.324
+        },
+        "video_sha256": "6741cc5bfa9e434112ecfb1c1506eeccd4f36a6e0bb27316d922fa99b192d6e5"
+      },
+      {
+        "case_id": "perception_test_sound::video_10071::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_10071.mp4",
+        "duration_s": 34.633,
+        "goal_text": "right now there is an audible hitting sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            1.433,
+            2.0
+          ],
+          [
+            3.7,
+            4.367
+          ],
+          [
+            10.033,
+            10.7
+          ],
+          [
+            19.467,
+            20.7
+          ],
+          [
+            22.467,
+            22.567
+          ],
+          [
+            26.067,
+            26.233
+          ],
+          [
+            30.9,
+            30.967
+          ],
+          [
+            31.967,
+            32.667
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:hitting",
+          "labels_present": [
+            "Interaction: fluid",
+            "Interaction:hitting",
+            "Object:opening/closing of something",
+            "Object:sound"
+          ],
+          "n_segments_label": 8,
+          "n_segments_any": 15,
+          "sound_positives_any": [
+            [
+              1.433,
+              2.0
+            ],
+            [
+              2.933,
+              3.1
+            ],
+            [
+              3.7,
+              4.367
+            ],
+            [
+              7.333,
+              8.0
+            ],
+            [
+              10.033,
+              10.7
+            ],
+            [
+              14.233,
+              15.267
+            ],
+            [
+              15.9,
+              16.033
+            ],
+            [
+              16.467,
+              18.967
+            ],
+            [
+              19.467,
+              20.7
+            ],
+            [
+              21.7,
+              22.0
+            ],
+            [
+              22.467,
+              22.567
+            ],
+            [
+              26.067,
+              26.233
+            ],
+            [
+              27.1,
+              29.033
+            ],
+            [
+              30.9,
+              30.967
+            ],
+            [
+              31.967,
+              32.667
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 30.0,
+          "audio_samples": 1662922,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 44100,
+          "channels": 1,
+          "duration_s": 34.644
+        },
+        "video_sha256": "37b97e469c2ea2f01aa85e7b5bd0cf0a6fe3ab8b7db37001c6d6e6425005539c"
+      },
+      {
+        "case_id": "perception_test_sound::video_10319::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_10319.mp4",
+        "duration_s": 25.962,
+        "goal_text": "right now there is an audible rolling sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            7.219,
+            9.007
+          ],
+          [
+            9.272,
+            9.901
+          ],
+          [
+            10.232,
+            11.226
+          ],
+          [
+            11.59,
+            13.246
+          ],
+          [
+            13.478,
+            14.14
+          ],
+          [
+            14.637,
+            16.16
+          ],
+          [
+            16.425,
+            16.656
+          ],
+          [
+            18.544,
+            18.676
+          ],
+          [
+            21.624,
+            21.922
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:rolling",
+          "labels_present": [
+            "Interaction:hitting",
+            "Interaction:rolling"
+          ],
+          "n_segments_label": 10,
+          "n_segments_any": 17,
+          "sound_positives_any": [
+            [
+              3.411,
+              3.609
+            ],
+            [
+              6.391,
+              6.656
+            ],
+            [
+              7.219,
+              9.007
+            ],
+            [
+              9.106,
+              9.239
+            ],
+            [
+              9.272,
+              9.901
+            ],
+            [
+              10.232,
+              11.226
+            ],
+            [
+              11.59,
+              13.246
+            ],
+            [
+              13.312,
+              13.444
+            ],
+            [
+              13.478,
+              14.14
+            ],
+            [
+              14.637,
+              16.16
+            ],
+            [
+              16.425,
+              16.656
+            ],
+            [
+              18.544,
+              18.676
+            ],
+            [
+              20.763,
+              21.061
+            ],
+            [
+              21.624,
+              21.922
+            ],
+            [
+              23.942,
+              24.438
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 30.198434829711914,
+          "audio_samples": 1246208,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 25.963
+        },
+        "video_sha256": "c8d79aabaa83647d33c012f2b9b0d68bb6b8249c9c81792768d9b9ed5f59a971"
+      },
+      {
+        "case_id": "perception_test_sound::video_11296::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_11296.mp4",
+        "duration_s": 21.306,
+        "goal_text": "right now there is an audible object sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            10.321,
+            17.822
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Object:sound",
+          "labels_present": [
+            "Object:sound"
+          ],
+          "n_segments_label": 1,
+          "n_segments_any": 1,
+          "sound_positives_any": [
+            [
+              10.321,
+              17.822
+            ]
+          ],
+          "is_visible": [
+            0
+          ],
+          "frame_rate": 30.131759643554688,
+          "audio_samples": 1024000,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 21.312
+        },
+        "video_sha256": "a9ecd517e830433b79743a25dc7a53b1818a98a1375e4596924922e88786c95c"
+      },
+      {
+        "case_id": "perception_test_sound::video_10485::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_10485.mp4",
+        "duration_s": 21.793,
+        "goal_text": "right now there is an audible speech sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            12.13,
+            14.829
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Human:Speech",
+          "labels_present": [
+            "Human:Speech"
+          ],
+          "n_segments_label": 1,
+          "n_segments_any": 1,
+          "sound_positives_any": [
+            [
+              12.13,
+              14.829
+            ]
+          ],
+          "is_visible": [
+            0
+          ],
+          "frame_rate": 30.009084701538086,
+          "audio_samples": 1051648,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 21.803
+        },
+        "video_sha256": "7a60595a6542c99935aed4ed2f22c7f78eea639fd3b0f9ceaa6b4c9cec805865"
+      },
+      {
+        "case_id": "perception_test_sound::video_11077::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_11077.mp4",
+        "duration_s": 27.546,
+        "goal_text": "right now there is an audible dropping sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            14.891,
+            15.225
+          ],
+          [
+            21.269,
+            21.436
+          ],
+          [
+            25.743,
+            26.177
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:dropping",
+          "labels_present": [
+            "Interaction:dropping",
+            "Interaction:hitting"
+          ],
+          "n_segments_label": 3,
+          "n_segments_any": 5,
+          "sound_positives_any": [
+            [
+              4.04,
+              4.374
+            ],
+            [
+              9.315,
+              10.25
+            ],
+            [
+              14.891,
+              15.225
+            ],
+            [
+              21.269,
+              21.436
+            ],
+            [
+              25.743,
+              26.177
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 29.950119018554688,
+          "audio_samples": 1323008,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 27.563
+        },
+        "video_sha256": "b7128f0f82772ad11abfdb52dcf396866c2adb08ace59fac48b6dc8cd9366232"
+      },
+      {
+        "case_id": "perception_test_sound::video_10359::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_10359.mp4",
+        "duration_s": 10.757,
+        "goal_text": "right now there is an audible hitting sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            1.378,
+            1.916
+          ],
+          [
+            3.294,
+            4.0
+          ],
+          [
+            6.555,
+            6.757
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:hitting",
+          "labels_present": [
+            "Human:Speech",
+            "Interaction:dropping",
+            "Interaction:hitting"
+          ],
+          "n_segments_label": 3,
+          "n_segments_any": 5,
+          "sound_positives_any": [
+            [
+              0.0,
+              10.723
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 29.74856185913086,
+          "audio_samples": 517120,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 10.773
+        },
+        "video_sha256": "50780a02a830f3de7709456d73c6bdad5fd72601dcfac0b565606f95b819fe9a"
+      },
+      {
+        "case_id": "perception_test_sound::video_11133::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_11133.mp4",
+        "duration_s": 30.572,
+        "goal_text": "right now there is an audible hitting sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            3.401,
+            3.995
+          ],
+          [
+            7.362,
+            7.627
+          ],
+          [
+            11.952,
+            12.48
+          ],
+          [
+            16.508,
+            17.597
+          ],
+          [
+            20.271,
+            21.724
+          ],
+          [
+            23.804,
+            24.398
+          ],
+          [
+            26.941,
+            27.865
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:hitting",
+          "labels_present": [
+            "Interaction:hitting"
+          ],
+          "n_segments_label": 7,
+          "n_segments_any": 7,
+          "sound_positives_any": [
+            [
+              3.401,
+              3.995
+            ],
+            [
+              7.362,
+              7.627
+            ],
+            [
+              11.952,
+              12.48
+            ],
+            [
+              16.508,
+              17.597
+            ],
+            [
+              20.271,
+              21.724
+            ],
+            [
+              23.804,
+              24.398
+            ],
+            [
+              26.941,
+              27.865
+            ]
+          ],
+          "is_visible": [
+            0
+          ],
+          "frame_rate": 30.288867950439453,
+          "audio_samples": 1466368,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 30.592
+        },
+        "video_sha256": "b8f03723f719a491c3306473c4ea4945bbdd5a7f6b601bb54d5ca29291f89905"
+      },
+      {
+        "case_id": "perception_test_sound::video_4114::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_4114.mp4",
+        "duration_s": 24.116,
+        "goal_text": "right now there is an audible hitting sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            6.55,
+            7.221
+          ],
+          [
+            10.949,
+            11.319
+          ],
+          [
+            14.678,
+            15.081
+          ],
+          [
+            17.633,
+            18.003
+          ],
+          [
+            21.462,
+            22.537
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:hitting",
+          "labels_present": [
+            "Animal:sound",
+            "Interaction:hitting",
+            "Object:sound"
+          ],
+          "n_segments_label": 6,
+          "n_segments_any": 8,
+          "sound_positives_any": [
+            [
+              4.971,
+              6.516
+            ],
+            [
+              6.55,
+              7.221
+            ],
+            [
+              10.949,
+              11.319
+            ],
+            [
+              14.678,
+              15.081
+            ],
+            [
+              17.633,
+              18.003
+            ],
+            [
+              21.462,
+              22.537
+            ],
+            [
+              23.679,
+              24.082
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 29.773080825805664,
+          "audio_samples": 1157120,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 24.128
+        },
+        "video_sha256": "811896f328aac7b097adcb98b42c6df9bb54ddac4623b8884fd8d2ed7f0be56a"
+      },
+      {
+        "case_id": "perception_test_sound::video_10021::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_10021.mp4",
+        "duration_s": 30.523,
+        "goal_text": "right now there is an audible hitting sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            6.243,
+            6.871
+          ],
+          [
+            12.189,
+            12.387
+          ],
+          [
+            13.478,
+            13.874
+          ],
+          [
+            16.054,
+            16.45
+          ],
+          [
+            17.673,
+            18.598
+          ],
+          [
+            22.132,
+            22.33
+          ],
+          [
+            24.345,
+            24.511
+          ],
+          [
+            25.535,
+            25.7
+          ],
+          [
+            26.294,
+            26.327
+          ],
+          [
+            26.592,
+            26.922
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:hitting",
+          "labels_present": [
+            "Interaction:hitting",
+            "Interaction:rolling",
+            "Object:sound"
+          ],
+          "n_segments_label": 10,
+          "n_segments_any": 15,
+          "sound_positives_any": [
+            [
+              6.243,
+              6.871
+            ],
+            [
+              12.189,
+              12.387
+            ],
+            [
+              12.619,
+              13.444
+            ],
+            [
+              13.478,
+              13.874
+            ],
+            [
+              16.054,
+              16.45
+            ],
+            [
+              17.673,
+              18.598
+            ],
+            [
+              21.505,
+              22.099
+            ],
+            [
+              22.132,
+              22.33
+            ],
+            [
+              24.345,
+              24.511
+            ],
+            [
+              24.94,
+              25.336
+            ],
+            [
+              25.535,
+              25.7
+            ],
+            [
+              26.03,
+              26.327
+            ],
+            [
+              26.36,
+              26.559
+            ],
+            [
+              26.592,
+              26.922
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 30.272661209106445,
+          "audio_samples": 1464320,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 30.528
+        },
+        "video_sha256": "e4b61aa8bf0fbb73eefbb4d890f9b0f582bfe2cf5bf7bc7b503301fcfc07e8b4"
+      },
+      {
+        "case_id": "perception_test_sound::video_10166::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_10166.mp4",
+        "duration_s": 11.2,
+        "goal_text": "right now there is an audible animal sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            1.667,
+            4.133
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Animal:sound",
+          "labels_present": [
+            "Animal:sound"
+          ],
+          "n_segments_label": 1,
+          "n_segments_any": 1,
+          "sound_positives_any": [
+            [
+              1.667,
+              4.133
+            ]
+          ],
+          "is_visible": [
+            0
+          ],
+          "frame_rate": 30.0,
+          "audio_samples": 538333,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 44100,
+          "channels": 1,
+          "duration_s": 11.215
+        },
+        "video_sha256": "d4b609213fb46be3cfbba1970929bf6dde62a0890a25e991616127670b09ba09"
+      },
+      {
+        "case_id": "perception_test_sound::video_10138::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_10138.mp4",
+        "duration_s": 33.56,
+        "goal_text": "right now there is an audible hitting sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            7.165,
+            7.432
+          ],
+          [
+            14.43,
+            14.73
+          ],
+          [
+            21.262,
+            21.495
+          ],
+          [
+            22.329,
+            23.095
+          ],
+          [
+            30.027,
+            30.46
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:hitting",
+          "labels_present": [
+            "Interaction:hitting"
+          ],
+          "n_segments_label": 5,
+          "n_segments_any": 5,
+          "sound_positives_any": [
+            [
+              7.165,
+              7.432
+            ],
+            [
+              14.43,
+              14.73
+            ],
+            [
+              21.262,
+              21.495
+            ],
+            [
+              22.329,
+              23.095
+            ],
+            [
+              30.027,
+              30.46
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 30.00634765625,
+          "audio_samples": 1610752,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 33.579
+        },
+        "video_sha256": "1e37f2d6ec05a336ca4cbe6d108ec38435cd57cd2ec2290e68fa29fa801f169e"
+      },
+      {
+        "case_id": "perception_test_sound::video_10946::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_10946.mp4",
+        "duration_s": 26.821,
+        "goal_text": "right now there is an audible speech sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            5.648,
+            5.879
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Human:Speech",
+          "labels_present": [
+            "Human:Speech"
+          ],
+          "n_segments_label": 1,
+          "n_segments_any": 1,
+          "sound_positives_any": [
+            [
+              5.648,
+              5.879
+            ]
+          ],
+          "is_visible": [
+            0
+          ],
+          "frame_rate": 30.27517318725586,
+          "audio_samples": 1285120,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 26.837
+        },
+        "video_sha256": "60146f91ded4b891b7aab6646366433fad96aff9c02a387f7ea66aae333b6e41"
+      },
+      {
+        "case_id": "perception_test_sound::video_9337::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_9337.mp4",
+        "duration_s": 22.562,
+        "goal_text": "right now there is an audible hitting sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            13.841,
+            14.271
+          ],
+          [
+            15.361,
+            15.559
+          ],
+          [
+            17.112,
+            17.343
+          ],
+          [
+            18.73,
+            19.16
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:hitting",
+          "labels_present": [
+            "Animal:sound",
+            "Interaction:hitting",
+            "Object:sound"
+          ],
+          "n_segments_label": 4,
+          "n_segments_any": 6,
+          "sound_positives_any": [
+            [
+              3.336,
+              22.529
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 30.271556854248047,
+          "audio_samples": 1084416,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 22.571
+        },
+        "video_sha256": "6001d2359766930f01d63ceac0cdf5ee41b5ff9a30773ff6287cd2f66d9bdd78"
+      },
+      {
+        "case_id": "perception_test_sound::video_10287::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_10287.mp4",
+        "duration_s": 33.333,
+        "goal_text": "right now there is an audible hitting sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            12.446,
+            12.913
+          ],
+          [
+            16.483,
+            16.884
+          ],
+          [
+            18.452,
+            20.053
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:hitting",
+          "labels_present": [
+            "Human:Speech",
+            "Interaction:hitting",
+            "Object:sound"
+          ],
+          "n_segments_label": 3,
+          "n_segments_any": 5,
+          "sound_positives_any": [
+            [
+              0.0,
+              33.3
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 29.970029830932617,
+          "audio_samples": 1600506,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 44100,
+          "channels": 1,
+          "duration_s": 33.344
+        },
+        "video_sha256": "bf221339db5aa6fa783c53bade1fd5d5e5e0fc97ab0fa76f96b16e5d7e3488ed"
+      },
+      {
+        "case_id": "perception_test_sound::video_2614::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_2614.mp4",
+        "duration_s": 33.899,
+        "goal_text": "right now there is an audible hitting sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            1.588,
+            2.366
+          ],
+          [
+            8.551,
+            8.956
+          ],
+          [
+            11.593,
+            14.736
+          ],
+          [
+            16.493,
+            17.575
+          ],
+          [
+            18.893,
+            19.535
+          ],
+          [
+            19.941,
+            22.408
+          ],
+          [
+            27.849,
+            30.317
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:hitting",
+          "labels_present": [
+            "Human:Speech",
+            "Interaction:dropping",
+            "Interaction:hitting",
+            "Object:opening/closing of something"
+          ],
+          "n_segments_label": 9,
+          "n_segments_any": 17,
+          "sound_positives_any": [
+            [
+              0.0,
+              33.832
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 29.587709426879883,
+          "audio_samples": 1619968,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 33.92
+        },
+        "video_sha256": "1480241cc6169a6af6d485b11a3759932495ee58cada7c200c4936c0365526a1"
+      },
+      {
+        "case_id": "perception_test_sound::video_11104::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_11104.mp4",
+        "duration_s": 10.798,
+        "goal_text": "right now there is an audible hitting sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            0.6,
+            0.866
+          ],
+          [
+            3.499,
+            3.699
+          ],
+          [
+            7.032,
+            7.265
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:hitting",
+          "labels_present": [
+            "Animal:sound",
+            "Interaction:hitting"
+          ],
+          "n_segments_label": 3,
+          "n_segments_any": 4,
+          "sound_positives_any": [
+            [
+              0.6,
+              0.866
+            ],
+            [
+              1.3,
+              10.764
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 30.00642204284668,
+          "audio_samples": 517120,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 10.816
+        },
+        "video_sha256": "4b175f0b83902b69a9c818824a83e337368ec84e243e98155d9ce87768cdfae2"
+      },
+      {
+        "case_id": "perception_test_sound::video_5797::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_5797.mp4",
+        "duration_s": 26.786,
+        "goal_text": "right now there is an audible animal sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            25.791,
+            26.023
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Animal:sound",
+          "labels_present": [
+            "Animal:sound"
+          ],
+          "n_segments_label": 1,
+          "n_segments_any": 1,
+          "sound_positives_any": [
+            [
+              25.791,
+              26.023
+            ]
+          ],
+          "is_visible": [
+            0
+          ],
+          "frame_rate": 30.16533660888672,
+          "audio_samples": 1288192,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 26.795
+        },
+        "video_sha256": "3db4c89752d406d492ed45d2fdd5f540b3805e16f97fa2020cbcf4321371a7e8"
+      },
+      {
+        "case_id": "perception_test_sound::video_5070::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_5070.mp4",
+        "duration_s": 19.629,
+        "goal_text": "right now there is an audible hitting sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            3.464,
+            3.596
+          ],
+          [
+            5.179,
+            5.773
+          ],
+          [
+            8.808,
+            9.006
+          ],
+          [
+            14.911,
+            15.01
+          ],
+          [
+            15.802,
+            16.132
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:hitting",
+          "labels_present": [
+            "Interaction:hitting",
+            "Interaction:rolling",
+            "Object:sound"
+          ],
+          "n_segments_label": 5,
+          "n_segments_any": 12,
+          "sound_positives_any": [
+            [
+              3.464,
+              3.596
+            ],
+            [
+              5.179,
+              5.773
+            ],
+            [
+              5.806,
+              6.697
+            ],
+            [
+              8.28,
+              8.742
+            ],
+            [
+              8.808,
+              9.006
+            ],
+            [
+              9.171,
+              10.293
+            ],
+            [
+              10.854,
+              11.942
+            ],
+            [
+              11.975,
+              13.031
+            ],
+            [
+              13.856,
+              14.516
+            ],
+            [
+              14.911,
+              15.769
+            ],
+            [
+              15.802,
+              16.132
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 30.31234359741211,
+          "audio_samples": 941056,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 19.648
+        },
+        "video_sha256": "e1648b254da180bf6529eb73ea68a014e71c7dd799aeecb929dc835cc3b860a5"
+      },
+      {
+        "case_id": "perception_test_sound::video_9553::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_9553.mp4",
+        "duration_s": 21.132,
+        "goal_text": "right now there is an audible animal sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            16.92,
+            21.096
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Animal:sound",
+          "labels_present": [
+            "Animal:sound"
+          ],
+          "n_segments_label": 1,
+          "n_segments_any": 1,
+          "sound_positives_any": [
+            [
+              16.92,
+              21.096
+            ]
+          ],
+          "is_visible": [
+            0
+          ],
+          "frame_rate": 27.541038513183594,
+          "audio_samples": 1016832,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 21.141
+        },
+        "video_sha256": "f06a7540465242b43b1f247bffb011f474808d9f6984b1dd48f2eb63b4694778"
+      },
+      {
+        "case_id": "perception_test_sound::video_3804::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_3804.mp4",
+        "duration_s": 30.8,
+        "goal_text": "right now there is an audible hitting sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            0.9,
+            1.167
+          ],
+          [
+            5.133,
+            5.233
+          ],
+          [
+            6.433,
+            6.7
+          ],
+          [
+            7.9,
+            8.133
+          ],
+          [
+            9.1,
+            9.5
+          ],
+          [
+            11.533,
+            11.733
+          ],
+          [
+            13.033,
+            13.267
+          ],
+          [
+            14.9,
+            15.167
+          ],
+          [
+            16.833,
+            16.967
+          ],
+          [
+            19.9,
+            20.1
+          ],
+          [
+            22.067,
+            22.233
+          ],
+          [
+            24.067,
+            24.367
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:hitting",
+          "labels_present": [
+            "Human:Speech",
+            "Interaction:hitting"
+          ],
+          "n_segments_label": 12,
+          "n_segments_any": 13,
+          "sound_positives_any": [
+            [
+              0.0,
+              30.767
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 30.000118255615234,
+          "audio_samples": 1481728,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 30.805
+        },
+        "video_sha256": "25235207006208a2ad3336b72aaacffa50aebf0b55cce20cb6e1097c056684e9"
+      },
+      {
+        "case_id": "perception_test_sound::video_10548::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_10548.mp4",
+        "duration_s": 27.833,
+        "goal_text": "right now there is an audible hitting sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            2.064,
+            2.53
+          ],
+          [
+            5.127,
+            5.627
+          ],
+          [
+            5.793,
+            6.093
+          ],
+          [
+            15.847,
+            16.147
+          ],
+          [
+            17.912,
+            18.245
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:hitting",
+          "labels_present": [
+            "Animal:sound",
+            "Human:Sound(clapping)",
+            "Interaction:hitting"
+          ],
+          "n_segments_label": 5,
+          "n_segments_any": 8,
+          "sound_positives_any": [
+            [
+              2.064,
+              2.53
+            ],
+            [
+              3.396,
+              13.783
+            ],
+            [
+              15.847,
+              16.147
+            ],
+            [
+              17.912,
+              18.245
+            ],
+            [
+              20.442,
+              21.674
+            ],
+            [
+              22.673,
+              25.902
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 30.03632354736328,
+          "audio_samples": 1332224,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 27.84
+        },
+        "video_sha256": "d424d8df966b4b054d7c56bcdc4ff141592838aaa3dcb0ee54ff9e518b5e0ed6"
+      },
+      {
+        "case_id": "perception_test_sound::video_7230::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_7230.mp4",
+        "duration_s": 19.149,
+        "goal_text": "right now there is an audible hitting sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            1.134,
+            1.401
+          ],
+          [
+            2.636,
+            2.769
+          ],
+          [
+            6.305,
+            7.273
+          ],
+          [
+            8.207,
+            8.407
+          ],
+          [
+            9.374,
+            9.474
+          ],
+          [
+            11.376,
+            11.476
+          ],
+          [
+            13.044,
+            13.144
+          ],
+          [
+            14.212,
+            14.312
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:hitting",
+          "labels_present": [
+            "Human:Speech",
+            "Interaction:hitting",
+            "Interaction:rolling"
+          ],
+          "n_segments_label": 8,
+          "n_segments_any": 16,
+          "sound_positives_any": [
+            [
+              0.1,
+              19.116
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 29.97524642944336,
+          "audio_samples": 919552,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 19.157
+        },
+        "video_sha256": "9c82eea1a39628d5ff85d47673c5eec8fa6f02fcf2a581b8ea6d56cb83303786"
+      },
+      {
+        "case_id": "perception_test_sound::video_2164::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_2164.mp4",
+        "duration_s": 28.099,
+        "goal_text": "right now there is an audible hitting sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            3.925,
+            4.254
+          ],
+          [
+            6.068,
+            6.266
+          ],
+          [
+            9.169,
+            9.399
+          ],
+          [
+            11.675,
+            12.632
+          ],
+          [
+            14.973,
+            15.237
+          ],
+          [
+            16.655,
+            17.051
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:hitting",
+          "labels_present": [
+            "Interaction:dropping",
+            "Interaction:hitting",
+            "Interaction:rolling",
+            "Object:opening/closing of something",
+            "Object:sound"
+          ],
+          "n_segments_label": 6,
+          "n_segments_any": 17,
+          "sound_positives_any": [
+            [
+              2.704,
+              2.869
+            ],
+            [
+              3.562,
+              3.694
+            ],
+            [
+              3.925,
+              4.254
+            ],
+            [
+              4.65,
+              5.673
+            ],
+            [
+              6.068,
+              6.266
+            ],
+            [
+              6.398,
+              8.905
+            ],
+            [
+              9.169,
+              9.399
+            ],
+            [
+              9.597,
+              10.092
+            ],
+            [
+              11.675,
+              12.632
+            ],
+            [
+              14.973,
+              15.237
+            ],
+            [
+              15.402,
+              16.391
+            ],
+            [
+              16.655,
+              17.051
+            ],
+            [
+              17.249,
+              17.546
+            ],
+            [
+              18.172,
+              18.37
+            ],
+            [
+              19.228,
+              19.557
+            ],
+            [
+              20.481,
+              20.613
+            ],
+            [
+              21.536,
+              21.866
+            ]
+          ],
+          "is_visible": [
+            0,
+            1
+          ],
+          "frame_rate": 30.32094383239746,
+          "audio_samples": 1348608,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 28.117
+        },
+        "video_sha256": "6f7e27356c86d6b6b4530e5150d7db301fa6d0c32e463396e22fc11e191ebf1a"
+      },
+      {
+        "case_id": "perception_test_sound::video_10064::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_10064.mp4",
+        "duration_s": 22.189,
+        "goal_text": "right now there is an audible opening/closing of something sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            4.705,
+            6.874
+          ],
+          [
+            9.61,
+            10.577
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Object:opening/closing of something",
+          "labels_present": [
+            "Interaction:hitting",
+            "Object:opening/closing of something",
+            "Object:sound"
+          ],
+          "n_segments_label": 2,
+          "n_segments_any": 4,
+          "sound_positives_any": [
+            [
+              1.768,
+              6.874
+            ],
+            [
+              9.61,
+              10.577
+            ],
+            [
+              15.449,
+              17.584
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 29.970029830932617,
+          "audio_samples": 1065518,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 44100,
+          "channels": 1,
+          "duration_s": 22.198
+        },
+        "video_sha256": "b07f4c249859f1b6e92eb95958666ad4e0c2a30e44f0f6fd64e46e643342c25b"
+      },
+      {
+        "case_id": "perception_test_sound::video_10335::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_10335.mp4",
+        "duration_s": 11.89,
+        "goal_text": "right now there is an audible hitting sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            1.893,
+            2.657
+          ],
+          [
+            3.454,
+            3.753
+          ],
+          [
+            6.41,
+            6.643
+          ],
+          [
+            7.44,
+            7.838
+          ],
+          [
+            9.864,
+            10.23
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:hitting",
+          "labels_present": [
+            "Interaction:dropping",
+            "Interaction:hitting",
+            "Interaction:rolling"
+          ],
+          "n_segments_label": 5,
+          "n_segments_any": 9,
+          "sound_positives_any": [
+            [
+              1.893,
+              2.657
+            ],
+            [
+              3.454,
+              3.753
+            ],
+            [
+              3.786,
+              4.683
+            ],
+            [
+              4.716,
+              5.048
+            ],
+            [
+              6.41,
+              6.643
+            ],
+            [
+              6.676,
+              7.406
+            ],
+            [
+              7.44,
+              7.838
+            ],
+            [
+              8.801,
+              9.831
+            ],
+            [
+              9.864,
+              10.23
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 30.108970642089844,
+          "audio_samples": 570368,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 11.904
+        },
+        "video_sha256": "404e7bd35176588cea171313f89d9637cc909249c9e37cdf02f78ee90446af2b"
+      },
+      {
+        "case_id": "perception_test_sound::video_10430::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_10430.mp4",
+        "duration_s": 34.984,
+        "goal_text": "right now there is an audible object sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            2.058,
+            9.128
+          ],
+          [
+            10.488,
+            21.076
+          ],
+          [
+            23.4,
+            29.474
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Object:sound",
+          "labels_present": [
+            "Interaction:hitting",
+            "Object:sound"
+          ],
+          "n_segments_label": 3,
+          "n_segments_any": 6,
+          "sound_positives_any": [
+            [
+              2.058,
+              9.128
+            ],
+            [
+              9.26,
+              10.024
+            ],
+            [
+              10.488,
+              21.076
+            ],
+            [
+              21.408,
+              21.607
+            ],
+            [
+              23.4,
+              29.474
+            ],
+            [
+              29.573,
+              30.038
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 30.128450393676758,
+          "audio_samples": 1680384,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 34.987
+        },
+        "video_sha256": "f9ad898c7221dc212e6bcb28904565bb73c4bb6eecb74baba075f7bca63c0b02"
+      },
+      {
+        "case_id": "perception_test_sound::video_10146::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_10146.mp4",
+        "duration_s": 28.914,
+        "goal_text": "right now there is an audible hitting sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            1.588,
+            1.925
+          ],
+          [
+            5.844,
+            6.62
+          ],
+          [
+            10.066,
+            11.248
+          ],
+          [
+            16.112,
+            17.024
+          ],
+          [
+            18.814,
+            19.287
+          ],
+          [
+            20.638,
+            21.212
+          ],
+          [
+            22.192,
+            22.699
+          ],
+          [
+            23.611,
+            23.948
+          ],
+          [
+            25.84,
+            26.347
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:hitting",
+          "labels_present": [
+            "Interaction:dropping",
+            "Interaction:hitting"
+          ],
+          "n_segments_label": 10,
+          "n_segments_any": 13,
+          "sound_positives_any": [
+            [
+              1.588,
+              1.925
+            ],
+            [
+              4.796,
+              5.168
+            ],
+            [
+              5.844,
+              6.62
+            ],
+            [
+              10.066,
+              11.248
+            ],
+            [
+              13.511,
+              13.781
+            ],
+            [
+              15.2,
+              15.774
+            ],
+            [
+              16.112,
+              17.024
+            ],
+            [
+              18.814,
+              19.287
+            ],
+            [
+              20.638,
+              21.212
+            ],
+            [
+              22.192,
+              22.699
+            ],
+            [
+              23.611,
+              23.948
+            ],
+            [
+              25.84,
+              26.347
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 29.605262756347656,
+          "audio_samples": 1386496,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 1,
+          "duration_s": 28.928
+        },
+        "video_sha256": "ea220b1cbc0395e92daed5b253ac894fea1814d9c2c903903d509f47465fb35f"
+      },
+      {
+        "case_id": "perception_test_sound::video_10942::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_10942.mp4",
+        "duration_s": 28.086,
+        "goal_text": "right now there is an audible speech sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            0.0,
+            0.3
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Human:Speech",
+          "labels_present": [
+            "Human:Speech"
+          ],
+          "n_segments_label": 1,
+          "n_segments_any": 1,
+          "sound_positives_any": [
+            [
+              0.0,
+              0.3
+            ]
+          ],
+          "is_visible": [
+            0
+          ],
+          "frame_rate": 30.01462173461914,
+          "audio_samples": 1349632,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 28.096
+        },
+        "video_sha256": "513d65156201f60c63311a08dd1b3d1b259b91b683ac831a91b465d44cc44706"
+      },
+      {
+        "case_id": "perception_test_sound::video_10602::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_10602.mp4",
+        "duration_s": 33.367,
+        "goal_text": "right now there is an audible hitting sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            1.233,
+            2.267
+          ],
+          [
+            16.933,
+            17.333
+          ],
+          [
+            20.967,
+            21.3
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:hitting",
+          "labels_present": [
+            "Human:Speech",
+            "Interaction: fluid",
+            "Interaction:hitting",
+            "Object:breaking of something",
+            "Object:sound"
+          ],
+          "n_segments_label": 3,
+          "n_segments_any": 7,
+          "sound_positives_any": [
+            [
+              1.233,
+              2.267
+            ],
+            [
+              2.633,
+              2.967
+            ],
+            [
+              3.267,
+              33.333
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 30.0,
+          "audio_samples": 1601621,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 44100,
+          "channels": 1,
+          "duration_s": 33.367
+        },
+        "video_sha256": "ea3d8838250385c34585bb830f0e726c565f96ec307edc873369f44c535b08bf"
+      },
+      {
+        "case_id": "perception_test_sound::video_11243::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_11243.mp4",
+        "duration_s": 14.664,
+        "goal_text": "right now there is an audible dropping sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            4.366,
+            4.666
+          ],
+          [
+            11.531,
+            11.798
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:dropping",
+          "labels_present": [
+            "Animal:sound",
+            "Interaction:dropping"
+          ],
+          "n_segments_label": 2,
+          "n_segments_any": 4,
+          "sound_positives_any": [
+            [
+              4.366,
+              4.666
+            ],
+            [
+              6.332,
+              9.498
+            ],
+            [
+              11.531,
+              11.798
+            ],
+            [
+              13.898,
+              14.631
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 30.005319595336914,
+          "audio_samples": 704512,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 14.677
+        },
+        "video_sha256": "f1670fcff64ad3af2b3cd366e839c0aa4ae8a1ea9db04dba1f282b143e9d990a"
+      },
+      {
+        "case_id": "perception_test_sound::video_6328::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_6328.mp4",
+        "duration_s": 29.46,
+        "goal_text": "right now there is an audible speech sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            8.218,
+            15.641
+          ],
+          [
+            25.019,
+            26.577
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Human:Speech",
+          "labels_present": [
+            "Human:Speech"
+          ],
+          "n_segments_label": 2,
+          "n_segments_any": 2,
+          "sound_positives_any": [
+            [
+              8.218,
+              15.641
+            ],
+            [
+              25.019,
+              26.577
+            ]
+          ],
+          "is_visible": [
+            0
+          ],
+          "frame_rate": 30.176816940307617,
+          "audio_samples": 1416192,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 29.461
+        },
+        "video_sha256": "87b9c082faa02b7faeeef2ffa6ac9b00965ec73a5e3ec76eef844674538ad810"
+      },
+      {
+        "case_id": "perception_test_sound::video_7641::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_7641.mp4",
+        "duration_s": 33.623,
+        "goal_text": "right now there is an audible hitting sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            6.065,
+            6.395
+          ],
+          [
+            13.219,
+            14.999
+          ],
+          [
+            20.438,
+            22.086
+          ],
+          [
+            27.393,
+            29.173
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:hitting",
+          "labels_present": [
+            "Interaction:hitting"
+          ],
+          "n_segments_label": 4,
+          "n_segments_any": 4,
+          "sound_positives_any": [
+            [
+              6.065,
+              6.395
+            ],
+            [
+              13.219,
+              14.999
+            ],
+            [
+              20.438,
+              22.086
+            ],
+            [
+              27.393,
+              29.173
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 30.33600616455078,
+          "audio_samples": 1613824,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 33.643
+        },
+        "video_sha256": "b226b0c7303829a68ff19c27626ea30a2ac0ef25d2fe23ad36f41b5ab7701174"
+      },
+      {
+        "case_id": "perception_test_sound::video_7952::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_7952.mp4",
+        "duration_s": 10.853,
+        "goal_text": "right now there is an audible opening/closing of something sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            2.738,
+            3.473
+          ],
+          [
+            5.443,
+            6.212
+          ],
+          [
+            7.38,
+            8.115
+          ],
+          [
+            9.251,
+            9.885
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Object:opening/closing of something",
+          "labels_present": [
+            "Interaction:hitting",
+            "Object:opening/closing of something",
+            "Object:sound"
+          ],
+          "n_segments_label": 4,
+          "n_segments_any": 11,
+          "sound_positives_any": [
+            [
+              1.002,
+              1.603
+            ],
+            [
+              1.636,
+              1.97
+            ],
+            [
+              2.738,
+              3.473
+            ],
+            [
+              3.507,
+              3.573
+            ],
+            [
+              4.141,
+              4.408
+            ],
+            [
+              4.442,
+              5.41
+            ],
+            [
+              5.443,
+              6.212
+            ],
+            [
+              6.913,
+              7.08
+            ],
+            [
+              7.38,
+              8.115
+            ],
+            [
+              8.148,
+              9.184
+            ],
+            [
+              9.251,
+              9.885
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 29.944318771362305,
+          "audio_samples": 519168,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 10.859
+        },
+        "video_sha256": "5a7e3f472aa1f7cd47e63eb5b830e997cbf4fa2c6c4289ad163319280078fe32"
+      },
+      {
+        "case_id": "perception_test_sound::video_10015::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_10015.mp4",
+        "duration_s": 35.034,
+        "goal_text": "right now there is an audible hitting sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            2.897,
+            3.33
+          ],
+          [
+            15.752,
+            16.918
+          ],
+          [
+            17.717,
+            18.083
+          ],
+          [
+            18.55,
+            18.883
+          ],
+          [
+            24.511,
+            25.51
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:hitting",
+          "labels_present": [
+            "Interaction:dropping",
+            "Interaction:hitting",
+            "Object:opening/closing of something",
+            "Object:sound"
+          ],
+          "n_segments_label": 5,
+          "n_segments_any": 13,
+          "sound_positives_any": [
+            [
+              0.0,
+              1.365
+            ],
+            [
+              1.399,
+              1.732
+            ],
+            [
+              2.897,
+              3.33
+            ],
+            [
+              6.361,
+              6.894
+            ],
+            [
+              6.994,
+              9.125
+            ],
+            [
+              15.752,
+              16.918
+            ],
+            [
+              17.717,
+              18.083
+            ],
+            [
+              18.55,
+              18.883
+            ],
+            [
+              18.916,
+              19.482
+            ],
+            [
+              19.515,
+              20.048
+            ],
+            [
+              22.513,
+              22.879
+            ],
+            [
+              24.511,
+              25.51
+            ],
+            [
+              26.942,
+              27.175
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 30.0275821685791,
+          "audio_samples": 1681408,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 35.051
+        },
+        "video_sha256": "c3c55abc8dce0119496f47fbc01462f30c20b256fa01f34f274784a4c3d41f5e"
+      },
+      {
+        "case_id": "perception_test_sound::video_4822::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_4822.mp4",
+        "duration_s": 10.023,
+        "goal_text": "right now there is an audible hitting sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            5.98,
+            8.286
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:hitting",
+          "labels_present": [
+            "Human:Sound(clapping)",
+            "Human:Speech",
+            "Interaction:hitting"
+          ],
+          "n_segments_label": 1,
+          "n_segments_any": 3,
+          "sound_positives_any": [
+            [
+              1.169,
+              4.677
+            ],
+            [
+              5.98,
+              8.286
+            ],
+            [
+              9.622,
+              9.99
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 29.9311580657959,
+          "audio_samples": 485376,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 10.027
+        },
+        "video_sha256": "e7ea52719f40577a3da182cde0e6a4c3d053cbfc6a0bebdda62379e413ac5ec8"
+      },
+      {
+        "case_id": "perception_test_sound::video_10412::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_10412.mp4",
+        "duration_s": 31.097,
+        "goal_text": "right now there is an audible hitting sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            1.3,
+            1.5
+          ],
+          [
+            2.0,
+            2.366
+          ],
+          [
+            3.933,
+            4.666
+          ],
+          [
+            8.099,
+            8.566
+          ],
+          [
+            16.432,
+            17.698
+          ],
+          [
+            19.398,
+            21.365
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:hitting",
+          "labels_present": [
+            "Animal:sound",
+            "Interaction:dropping",
+            "Interaction:hitting",
+            "Object:opening/closing of something",
+            "Object:sound"
+          ],
+          "n_segments_label": 6,
+          "n_segments_any": 12,
+          "sound_positives_any": [
+            [
+              1.3,
+              1.5
+            ],
+            [
+              2.0,
+              2.366
+            ],
+            [
+              2.8,
+              3.3
+            ],
+            [
+              3.933,
+              4.666
+            ],
+            [
+              6.699,
+              7.166
+            ],
+            [
+              8.099,
+              8.566
+            ],
+            [
+              10.299,
+              11.299
+            ],
+            [
+              16.432,
+              17.698
+            ],
+            [
+              19.398,
+              21.365
+            ],
+            [
+              23.198,
+              24.898
+            ],
+            [
+              25.431,
+              26.031
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 30.002819061279297,
+          "audio_samples": 1492992,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 31.104
+        },
+        "video_sha256": "12823c6a50a1aeb0cfd8168cd30ce2b6018306b6a5821281b99f6bed97e8c0cf"
+      },
+      {
+        "case_id": "perception_test_sound::video_5945::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_5945.mp4",
+        "duration_s": 27.4,
+        "goal_text": "right now there is an audible hitting sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            7.067,
+            7.633
+          ],
+          [
+            12.233,
+            18.467
+          ],
+          [
+            18.9,
+            19.133
+          ],
+          [
+            19.167,
+            20.133
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:hitting",
+          "labels_present": [
+            "Human:Speech",
+            "Interaction: fluid",
+            "Interaction:hitting",
+            "Object:sound"
+          ],
+          "n_segments_label": 4,
+          "n_segments_any": 9,
+          "sound_positives_any": [
+            [
+              0.0,
+              27.367
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 30.0,
+          "audio_samples": 1316294,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 44100,
+          "channels": 1,
+          "duration_s": 27.423
+        },
+        "video_sha256": "54471f0e7700243301eff93d80aa2434b15ca02c66cece0fa1dcfc47ddba4252"
+      },
+      {
+        "case_id": "perception_test_sound::video_5136::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_5136.mp4",
+        "duration_s": 20.746,
+        "goal_text": "right now there is an audible object sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            1.136,
+            2.873
+          ],
+          [
+            10.189,
+            11.325
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Object:sound",
+          "labels_present": [
+            "Animal:sound",
+            "Human:Speech",
+            "Interaction:hitting",
+            "Object:sound"
+          ],
+          "n_segments_label": 2,
+          "n_segments_any": 6,
+          "sound_positives_any": [
+            [
+              0.0,
+              20.713
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 29.933528900146484,
+          "audio_samples": 994304,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 2,
+          "duration_s": 20.757
+        },
+        "video_sha256": "47ead890ce3bff4a3170c93d303dfb648318b8fd37248ba981ad0f2a9379fd1c"
+      },
+      {
+        "case_id": "perception_test_sound::video_0::0",
+        "dataset": "perception_test_sound",
+        "video_path": "eval/bench-staging/perception_test/raw/videos/video_0.mp4",
+        "duration_s": 25.806,
+        "goal_text": "right now there is an audible hitting sound or event",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            10.91,
+            11.147
+          ],
+          [
+            21.55,
+            21.888
+          ]
+        ],
+        "gt_kind": "interval",
+        "gt_strength": "audio_annotated",
+        "provenance": {
+          "source": "perception_test sound_localisation",
+          "annotation_set": "valid_split_cached_zip",
+          "label": "Interaction:hitting",
+          "labels_present": [
+            "Animal:sound",
+            "Interaction: fluid",
+            "Interaction:hitting",
+            "Object:sound"
+          ],
+          "n_segments_label": 2,
+          "n_segments_any": 5,
+          "sound_positives_any": [
+            [
+              0.912,
+              17.902
+            ],
+            [
+              21.55,
+              21.888
+            ]
+          ],
+          "is_visible": [
+            1
+          ],
+          "frame_rate": 29.605262756347656,
+          "audio_samples": 1242112,
+          "audio_sample_rate": 48000.0,
+          "timestamp_unit": "microseconds (verified against frame_ids/frame_rate)"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 1,
+          "duration_s": 25.813
+        },
+        "video_sha256": "26f67202ccb0eba7df06738abccd5ff13f6d65d14d4fb7911670f1277ebded13"
+      },
+      {
+        "case_id": "omnipro_audio::TXeVf42sQdM::80",
+        "dataset": "omnipro_audio",
+        "video_path": "eval/bench-staging/omnipro/raw/videos/TXeVf42sQdM.mp4",
+        "duration_s": 119.853067,
+        "goal_text": "When the boy shouts 'No Rio 2!', count how many children are visible in the screen.",
+        "goal_kind": "count",
+        "positives": [
+          [
+            29.0,
+            29.0
+          ]
+        ],
+        "gt_kind": "point",
+        "gt_strength": "audio_annotated_point",
+        "provenance": {
+          "source": "omnipro ground_truth trigger_time_sec",
+          "task": "snapshot_counting",
+          "audio_dependency": "required",
+          "trigger_types": [
+            "visual+speech"
+          ],
+          "n_pure_audio_triggers": 0,
+          "instant_annotation": true,
+          "note": "point ground truth: matching it requires an explicit tolerance, which the consuming measurement must state"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 44100,
+          "channels": 1,
+          "duration_s": 119.861
+        },
+        "video_sha256": "a91d5420b4c81f89c01e8d7989d511212dfd702c725b882297dae05d1c89381a"
+      },
+      {
+        "case_id": "omnipro_audio::-ZvLZrWsFAc::272",
+        "dataset": "omnipro_audio",
+        "video_path": "eval/bench-staging/omnipro/raw/videos/-ZvLZrWsFAc.mp4",
+        "duration_s": 95.8,
+        "goal_text": "Monitor the narrator's presence and let me know whenever he enters or leaves the camera frame.",
+        "goal_kind": "state",
+        "positives": [
+          [
+            83.0,
+            83.0
+          ]
+        ],
+        "gt_kind": "point",
+        "gt_strength": "audio_annotated_point",
+        "provenance": {
+          "source": "omnipro ground_truth trigger_time_sec",
+          "task": "realtime_state_monitor",
+          "audio_dependency": "none",
+          "trigger_types": [
+            "speech"
+          ],
+          "n_pure_audio_triggers": 1,
+          "instant_annotation": true,
+          "note": "point ground truth: matching it requires an explicit tolerance, which the consuming measurement must state"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 44100,
+          "channels": 2,
+          "duration_s": 95.806
+        },
+        "video_sha256": "ca77c1620f0c7a7709934fcb88506608cdbb93a5ffc5cb70e8b73edede46d4e6"
+      },
+      {
+        "case_id": "omnipro_audio::DLBbSgu_JdM::256",
+        "dataset": "omnipro_audio",
+        "video_path": "eval/bench-staging/omnipro/raw/videos/DLBbSgu_JdM.mp4",
+        "duration_s": 184.781236,
+        "goal_text": "Let me know when the reviewer starts the sound test for the earbuds.",
+        "goal_kind": "transition",
+        "positives": [
+          [
+            125.0,
+            125.0
+          ]
+        ],
+        "gt_kind": "point",
+        "gt_strength": "audio_annotated_point",
+        "provenance": {
+          "source": "omnipro ground_truth trigger_time_sec",
+          "task": "instant_event_alert",
+          "audio_dependency": "none",
+          "trigger_types": [
+            "visual+sound"
+          ],
+          "n_pure_audio_triggers": 0,
+          "instant_annotation": true,
+          "note": "point ground truth: matching it requires an explicit tolerance, which the consuming measurement must state"
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 44100,
+          "channels": 2,
+          "duration_s": 184.784
+        },
+        "video_sha256": "9bfb8df111472acb52006bc5a052c8d30acca86c570937b288974915cad70caa"
+      },
+      {
+        "case_id": "charades_audible::KQ6XW::0",
+        "dataset": "charades_audible",
+        "video_path": "eval/bench-staging/charades/raw/Charades_v1_480/KQ6XW.mp4",
+        "duration_s": 39.25,
+        "goal_text": "Drinking from a cup/glass/bottle",
+        "goal_kind": "duration",
+        "positives": [
+          [
+            15.7,
+            25.2
+          ]
+        ],
+        "gt_kind": "proxy_interval",
+        "gt_strength": "proxy",
+        "provenance": {
+          "source": "charades action label with an audible referent",
+          "scene": "Closet / Walk-in closet / Spear closet",
+          "n_audible_actions": 2,
+          "note": "the ANNOTATED INTERVAL IS VISUAL. The label names an event that is usually audible; audibility itself was never annotated. Proxy only \u2014 never an audio bar."
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 44100,
+          "channels": 2,
+          "duration_s": 39.311
+        },
+        "video_sha256": "019f58e988d9b149b8c6a878331285238be6e4dc4fc8b80c322e716d7a1cdf0c"
+      },
+      {
+        "case_id": "charades_audible::W0YVE::0",
+        "dataset": "charades_audible",
+        "video_path": "eval/bench-staging/charades/raw/Charades_v1_480/W0YVE.mp4",
+        "duration_s": 19.21,
+        "goal_text": "Closing a door",
+        "goal_kind": "duration",
+        "positives": [
+          [
+            11.6,
+            16.4
+          ]
+        ],
+        "gt_kind": "proxy_interval",
+        "gt_strength": "proxy",
+        "provenance": {
+          "source": "charades action label with an audible referent",
+          "scene": "Entryway (A hall that is generally located at the entrance of a house)",
+          "n_audible_actions": 1,
+          "note": "the ANNOTATED INTERVAL IS VISUAL. The label names an event that is usually audible; audibility itself was never annotated. Proxy only \u2014 never an audio bar."
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 44100,
+          "channels": 2,
+          "duration_s": 19.249
+        },
+        "video_sha256": "579b3716a727a6bd4ad8dd761181ffe3f38c8d0f62126838a377caecee18e08b"
+      },
+      {
+        "case_id": "charades_audible::F75LG::0",
+        "dataset": "charades_audible",
+        "video_path": "eval/bench-staging/charades/raw/Charades_v1_480/F75LG.mp4",
+        "duration_s": 32.08,
+        "goal_text": "Drinking from a cup/glass/bottle",
+        "goal_kind": "duration",
+        "positives": [
+          [
+            17.1,
+            26.3
+          ]
+        ],
+        "gt_kind": "proxy_interval",
+        "gt_strength": "proxy",
+        "provenance": {
+          "source": "charades action label with an audible referent",
+          "scene": "Stairs",
+          "n_audible_actions": 1,
+          "note": "the ANNOTATED INTERVAL IS VISUAL. The label names an event that is usually audible; audibility itself was never annotated. Proxy only \u2014 never an audio bar."
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 44100,
+          "channels": 1,
+          "duration_s": 32.136
+        },
+        "video_sha256": "824d454d97ae84f674d7f3ff59749826149e45129ea0363e77a394ea767938ed"
+      },
+      {
+        "case_id": "charades_audible::EYZXC::0",
+        "dataset": "charades_audible",
+        "video_path": "eval/bench-staging/charades/raw/Charades_v1_480/EYZXC.mp4",
+        "duration_s": 41.17,
+        "goal_text": "Pouring something into a cup/glass/bottle",
+        "goal_kind": "duration",
+        "positives": [
+          [
+            8.9,
+            23.2
+          ]
+        ],
+        "gt_kind": "proxy_interval",
+        "gt_strength": "proxy",
+        "provenance": {
+          "source": "charades action label with an audible referent",
+          "scene": "Kitchen",
+          "n_audible_actions": 1,
+          "note": "the ANNOTATED INTERVAL IS VISUAL. The label names an event that is usually audible; audibility itself was never annotated. Proxy only \u2014 never an audio bar."
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 48000,
+          "channels": 1,
+          "duration_s": 41.221
+        },
+        "video_sha256": "972daf38ecdf091df6f5f6e53ec34473ad82e27eb61e6ee9a62d2621c8bc52d3"
+      },
+      {
+        "case_id": "charades_audible::LR9KL::0",
+        "dataset": "charades_audible",
+        "video_path": "eval/bench-staging/charades/raw/Charades_v1_480/LR9KL.mp4",
+        "duration_s": 30.42,
+        "goal_text": "Holding a vacuum",
+        "goal_kind": "duration",
+        "positives": [
+          [
+            0.0,
+            20.9
+          ]
+        ],
+        "gt_kind": "proxy_interval",
+        "gt_strength": "proxy",
+        "provenance": {
+          "source": "charades action label with an audible referent",
+          "scene": "Hallway",
+          "n_audible_actions": 2,
+          "note": "the ANNOTATED INTERVAL IS VISUAL. The label names an event that is usually audible; audibility itself was never annotated. Proxy only \u2014 never an audio bar."
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 44100,
+          "channels": 1,
+          "duration_s": 30.464
+        },
+        "video_sha256": "f8b7b38a6b3b73cefaf10a1064b9813d370338ef0491ca46517f46adfc5098b2"
+      },
+      {
+        "case_id": "charades_audible::BQA97::0",
+        "dataset": "charades_audible",
+        "video_path": "eval/bench-staging/charades/raw/Charades_v1_480/BQA97.mp4",
+        "duration_s": 30.25,
+        "goal_text": "Someone is laughing",
+        "goal_kind": "duration",
+        "positives": [
+          [
+            0.0,
+            9.3
+          ]
+        ],
+        "gt_kind": "proxy_interval",
+        "gt_strength": "proxy",
+        "provenance": {
+          "source": "charades action label with an audible referent",
+          "scene": "Home Office / Study (A room in a house used for work)",
+          "n_audible_actions": 1,
+          "note": "the ANNOTATED INTERVAL IS VISUAL. The label names an event that is usually audible; audibility itself was never annotated. Proxy only \u2014 never an audio bar."
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 44100,
+          "channels": 2,
+          "duration_s": 30.302
+        },
+        "video_sha256": "df5606cd3978b746bf6811b28c824fade1a8e15ef3bb5f90382a09314a258506"
+      },
+      {
+        "case_id": "charades_audible::J9T5D::0",
+        "dataset": "charades_audible",
+        "video_path": "eval/bench-staging/charades/raw/Charades_v1_480/J9T5D.mp4",
+        "duration_s": 34.0,
+        "goal_text": "Someone is laughing",
+        "goal_kind": "duration",
+        "positives": [
+          [
+            27.1,
+            34.0
+          ]
+        ],
+        "gt_kind": "proxy_interval",
+        "gt_strength": "proxy",
+        "provenance": {
+          "source": "charades action label with an audible referent",
+          "scene": "Living room",
+          "n_audible_actions": 1,
+          "note": "the ANNOTATED INTERVAL IS VISUAL. The label names an event that is usually audible; audibility itself was never annotated. Proxy only \u2014 never an audio bar."
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 44100,
+          "channels": 2,
+          "duration_s": 34.087
+        },
+        "video_sha256": "7ae07d2b60816349bd329ae955552522a9837f6c9b2a9ef0f73517dcbe3bb6f8"
+      },
+      {
+        "case_id": "charades_audible::MA6GY::0",
+        "dataset": "charades_audible",
+        "video_path": "eval/bench-staging/charades/raw/Charades_v1_480/MA6GY.mp4",
+        "duration_s": 33.33,
+        "goal_text": "Someone is eating something",
+        "goal_kind": "duration",
+        "positives": [
+          [
+            10.9,
+            33.33
+          ]
+        ],
+        "gt_kind": "proxy_interval",
+        "gt_strength": "proxy",
+        "provenance": {
+          "source": "charades action label with an audible referent",
+          "scene": "Stairs",
+          "n_audible_actions": 1,
+          "note": "the ANNOTATED INTERVAL IS VISUAL. The label names an event that is usually audible; audibility itself was never annotated. Proxy only \u2014 never an audio bar."
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 44100,
+          "channels": 1,
+          "duration_s": 33.39
+        },
+        "video_sha256": "926cdd3f8fed69c7501d782484782723030e74b220efef05e13b9880a7271864"
+      },
+      {
+        "case_id": "charades_audible::MKMFK::0",
+        "dataset": "charades_audible",
+        "video_path": "eval/bench-staging/charades/raw/Charades_v1_480/MKMFK.mp4",
+        "duration_s": 22.67,
+        "goal_text": "Drinking from a cup/glass/bottle",
+        "goal_kind": "duration",
+        "positives": [
+          [
+            0.4,
+            6.0
+          ]
+        ],
+        "gt_kind": "proxy_interval",
+        "gt_strength": "proxy",
+        "provenance": {
+          "source": "charades action label with an audible referent",
+          "scene": "Hallway",
+          "n_audible_actions": 1,
+          "note": "the ANNOTATED INTERVAL IS VISUAL. The label names an event that is usually audible; audibility itself was never annotated. Proxy only \u2014 never an audio bar."
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 44100,
+          "channels": 2,
+          "duration_s": 22.802
+        },
+        "video_sha256": "36e86dcd67c025b68e832b645db1432e323e6a949e8f8b146920d1355c3c03a1"
+      },
+      {
+        "case_id": "charades_audible::XX3RB::0",
+        "dataset": "charades_audible",
+        "video_path": "eval/bench-staging/charades/raw/Charades_v1_480/XX3RB.mp4",
+        "duration_s": 30.54,
+        "goal_text": "Someone is eating something",
+        "goal_kind": "duration",
+        "positives": [
+          [
+            0.0,
+            30.54
+          ]
+        ],
+        "gt_kind": "proxy_interval",
+        "gt_strength": "proxy",
+        "provenance": {
+          "source": "charades action label with an audible referent",
+          "scene": "Dining room",
+          "n_audible_actions": 2,
+          "note": "the ANNOTATED INTERVAL IS VISUAL. The label names an event that is usually audible; audibility itself was never annotated. Proxy only \u2014 never an audio bar."
+        },
+        "audio": {
+          "codec": "aac",
+          "sample_rate": 44100,
+          "channels": 2,
+          "duration_s": 30.604
+        },
+        "video_sha256": "95ebff68a9a0e4d6a9d9438b8a6d184220b26dc7f8999fbf9c238a548487a676"
+      }
+    ]
+  },
+  "defects": [
+    {
+      "id": "GOLDEN-ACOUSTIC-MUTED-ANCHOR",
+      "severity": "high",
+      "where": "packages/percept-vision/eval/bench/perception_test.py:197",
+      "summary": "golden_sound_events() takes segments[0] (_event_from_row, perception_test.py:172-190) as each acoustic row's ground-truth event. For both rows in the golden `perception-test-acoustic` track (video_8241, video_9253) segment 0 is labelled 'Muted' \u2014 the annotators' marker for a stretch with NO audible source. label_phrase then renders it as 'right now there is an audible muted sound or event', so the track's recall / fusion_fp / recall_flip metrics would be scored against SILENCE. The valid-split annotations carry no 'Muted' label, so only the checked-in train-split sample.json rows are affected \u2014 which is exactly what the golden manifest pins. This corpus filters NON_SOUND_LABELS instead.",
+      "repro": "python -c \"import importlib.util,sys;s=importlib.util.spec_from_file_location('pt','packages/percept-vision/eval/bench/perception_test.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m);print([(e['video_id'],e['label']) for e in m.golden_sound_events()])\""
+    },
+    {
+      "id": "AUDIO-GATE-DEAF",
+      "severity": "blocker",
+      "where": "percept/harness/detectors.py:233",
+      "summary": "AcousticOnset's shipped thresholds (high=0.09, low=0.0225) are mean-square ENERGY, and no capture chunk in 40 annotated clips (3973 chunks, 987s) reaches 0.09: corpus max energy is 0.0277. run(audio_gate='acoustic-onset') with default audio_wake therefore NEVER admits on this material \u2014 an audio Watch is silently deaf, with no health event to say so.",
+      "repro": "eval/stage-validation/sv_audio.py --only SV-A1.6R (check: 'the SHIPPED audio gate admits at least one annotated sound event')"
+    },
+    {
+      "id": "AUDIO-VAD-HANGOVER-UNITS",
+      "severity": "high",
+      "where": "percept/runtime/_vad.py:54",
+      "summary": "EnergyVad's defaults are dimensionless FRAME counts (hangover_frames=8, min_speech_frames=3) ported from percept-edge/src/vad.js, but the Python runtime feeds it capture chunks of AudioSourceConfig.chunk_s=0.25s (percept/runtime/audio.py:56). The effective hangover is therefore 2.00s of CONTINUOUS silence and the minimum utterance 0.75s. Combined with utterance_threshold=0.01 arriving as energy 1e-4, continuous narration reads as one unbroken speech run and endpoints essentially never \u2014 the saturation observed on omnipro, reproduced here.",
+      "repro": "eval/stage-validation/sv_audio.py --only SV-A1.6R (measurements.utterance_frontier)"
+    },
+    {
+      "id": "AUDIO-SUPPRESSED-NO-RECEIPT",
+      "severity": "high",
+      "where": "percept/runtime/worker.py:2760",
+      "summary": "In the compiled audio-only path, a unit arriving while muted()/paused() is `continue`d with no counter increment and no RuntimeHealthEvent. 5 of 14 units offered in this run are therefore invisible: RuntimeStats has no audio-suppressed field (only frames_dropped, which is the video path), SourceTracker never sees them (runtime_ended source_coverage reports excluded=0), and no health event names them. Units in != admitted + suppressed + dropped-with-receipt: the suppressed term has no term.",
+      "repro": "eval/stage-validation/sv_audio.py --only SV-A4.8 (check: 'the end-of-run coverage report accounts for every unit offered')"
+    },
+    {
+      "id": "AUDIO-JUDGEPOOL-REJECTED",
+      "severity": "medium",
+      "where": "percept/audio_input.py:1036",
+      "summary": "prepare_audio_judge_binding accepts only an exact percept.backends.fake.FakeVision or percept.backends.gemini.GeminiVision instance, so a JudgePool \u2014 including one whose JudgeCapability explicitly declares the 'audio' and 'fused' evidence shapes (percept/backends/judge_pool.py:35) \u2014 is rejected and apply_watch_plan returns 'rejected'. The compiled audio path therefore never inherits the pool's per-route capacity (max_inflight), latency SLO/deadline, hedging or JudgeRouteReceipts. It is NOT unbounded: the byte caps, the AudioWindow caps and the default judge_dispatch='async' single-flight scheduler bound it \u2014 but the bound is the runtime's, not the pool's, and there is no receipt trail per route.",
+      "repro": "eval/stage-validation/sv_audio.py --only SV-A4.9"
+    }
+  ],
+  "tests": [
+    {
+      "id": "SV-A1.6R",
+      "title": "VAD / acoustic admission recall against real audio ground truth (retry of the refused SV-1.6)",
+      "status": "FAIL",
+      "error": null,
+      "checks": [
+        {
+          "name": "ground truth exists: >= 20 interval-annotated audio cases",
+          "passed": true,
+          "detail": "40 cases with human-annotated SOUND intervals (+3 point-annotated)",
+          "data": {
+            "n_interval": 40,
+            "n_point": 3
+          }
+        },
+        {
+          "name": "timestamp UNITS verified, not assumed (microseconds vs frame_ids/frame_rate)",
+          "passed": true,
+          "detail": "max |timestamps/1e6 - frame_ids/frame_rate| = 1e-06 s over 10184 interval bounds",
+          "data": {
+            "max_unit_error_s": 1e-06,
+            "bounds_checked": 10184
+          }
+        },
+        {
+          "name": "every ground-truth interval falls inside its media's audio duration",
+          "passed": true,
+          "detail": "all 166 intervals inside the media",
+          "data": {
+            "offenders": []
+          }
+        },
+        {
+          "name": "every selected media file HAS an audio stream (ffprobe-probed, never assumed)",
+          "passed": true,
+          "detail": "43 cases probed, 0 without audio",
+          "data": {
+            "without_audio": []
+          }
+        },
+        {
+          "name": "the golden `perception-test-acoustic` track's case anchors are SOUND events, not silence",
+          "passed": false,
+          "detail": "golden_sound_events() returned 2 anchor(s); 2 carry a non-sound label: [('video_8241', 'Muted'), ('video_9253', 'Muted')]",
+          "data": {
+            "golden_anchors": [
+              [
+                "video_8241",
+                "Muted"
+              ],
+              [
+                "video_9253",
+                "Muted"
+              ]
+            ],
+            "silent_anchors": [
+              [
+                "video_8241",
+                "Muted"
+              ],
+              [
+                "video_9253",
+                "Muted"
+              ]
+            ]
+          }
+        },
+        {
+          "name": "the SHIPPED audio gate admits at least one annotated sound event",
+          "passed": false,
+          "detail": "AcousticOnset(high=0.09, low=0.0225) woke 0 time(s) across 3973 capture chunks and matched 0/204 annotated sound events (recall 0.0); corpus energy p99=0.00974, max=0.0277",
+          "data": {
+            "recall": 0.0,
+            "hits": 0,
+            "positives": 204,
+            "admissions": 0,
+            "chunks": 3973,
+            "economy": 0.0,
+            "corpus_energy_p50": 3.9821488317102195e-06,
+            "corpus_energy_p99": 0.009737278114072979,
+            "corpus_energy_max": 0.02772681163973175
+          }
+        },
+        {
+          "name": "a threshold exists where the gate has non-zero recall AND spends < 25% of chunks",
+          "passed": true,
+          "detail": "11/14 swept thresholds are on a usable frontier; best recall 0.461 at high=5e-05 (economy 0.0468)",
+          "data": {
+            "best_high": 5e-05,
+            "best_recall": 0.46078431372549017,
+            "best_economy": 0.046816008054366975
+          }
+        },
+        {
+          "name": "utterance_threshold is an AMPLITUDE knob squared into mean-square energy",
+          "passed": true,
+          "detail": "utterance_threshold=0.01 reaches EnergyVad as energy 0.0001 \u2014 two orders of magnitude below the number a reader sees",
+          "data": {
+            "amplitude": 0.01,
+            "energy": 0.0001
+          }
+        },
+        {
+          "name": "the shipped utterance endpointer endpoints >= 1 utterance per minute of speech material",
+          "passed": false,
+          "detail": "utterance_threshold=0.01 -> speech_fraction 0.833, 3 endpoint(s) over 400s (0.45/min) on the speech-bearing slice",
+          "data": {
+            "utterance_threshold": 0.01,
+            "energy_threshold": 0.0001,
+            "media_seconds": 400.45,
+            "speech_fraction": 0.8329177057356608,
+            "endpoints": 3,
+            "endpoints_per_minute": 0.44949270534208036
+          }
+        }
+      ],
+      "measurements": {
+        "corpus": {
+          "n_cases": 53,
+          "by_gt_strength": {
+            "audio_annotated": 40,
+            "audio_annotated_point": 3,
+            "proxy": 10
+          },
+          "coverage": {
+            "perception_test_sound": {
+              "requested": 40,
+              "built": 40,
+              "short_by": 0,
+              "dropped_no_audio_stream": [],
+              "gt_strength": "audio_annotated"
+            },
+            "omnipro_audio": {
+              "requested": 10,
+              "built": 3,
+              "short_by": 7,
+              "dropped_no_audio_stream": [],
+              "gt_strength": "audio_annotated_point"
+            },
+            "charades_audible": {
+              "requested": 10,
+              "built": 10,
+              "short_by": 0,
+              "dropped_no_audio_stream": [],
+              "gt_strength": "proxy"
+            }
+          },
+          "refused_datasets": {
+            "proactiveqa": {
+              "probed": 8,
+              "with_audio_stream": 0,
+              "examples_with_audio": [],
+              "verdict": "no audio stream \u2014 cannot carry audio ground truth"
+            },
+            "repcount": {
+              "probed": 8,
+              "with_audio_stream": 0,
+              "examples_with_audio": [],
+              "verdict": "no audio stream \u2014 cannot carry audio ground truth"
+            }
+          },
+          "interval_positives": 166,
+          "any_sound_positives": 204,
+          "media_seconds": 987.3
+        },
+        "admission_tolerance_s": 0.25,
+        "capture_chunk_s": 0.25,
+        "shipped_operating_point": {
+          "high": 0.09,
+          "low": 0.0225,
+          "recall": 0.0,
+          "hits": 0,
+          "positives": 204,
+          "admissions": 0,
+          "chunks": 3973,
+          "economy": 0.0
+        },
+        "onset_frontier": [
+          {
+            "high": 0.09,
+            "low": 0.0225,
+            "recall": 0.0,
+            "hits": 0,
+            "positives": 204,
+            "admissions": 0,
+            "chunks": 3973,
+            "economy": 0.0
+          },
+          {
+            "high": 0.05,
+            "low": 0.0125,
+            "recall": 0.0,
+            "hits": 0,
+            "positives": 204,
+            "admissions": 0,
+            "chunks": 3973,
+            "economy": 0.0
+          },
+          {
+            "high": 0.03,
+            "low": 0.0075,
+            "recall": 0.0,
+            "hits": 0,
+            "positives": 204,
+            "admissions": 0,
+            "chunks": 3973,
+            "economy": 0.0
+          },
+          {
+            "high": 0.01,
+            "low": 0.0025,
+            "recall": 0.06862745098039216,
+            "hits": 14,
+            "positives": 204,
+            "admissions": 14,
+            "chunks": 3973,
+            "economy": 0.003523785552479235
+          },
+          {
+            "high": 0.005,
+            "low": 0.00125,
+            "recall": 0.10784313725490197,
+            "hits": 22,
+            "positives": 204,
+            "admissions": 28,
+            "chunks": 3973,
+            "economy": 0.00704757110495847
+          },
+          {
+            "high": 0.003,
+            "low": 0.00075,
+            "recall": 0.19117647058823528,
+            "hits": 39,
+            "positives": 204,
+            "admissions": 43,
+            "chunks": 3973,
+            "economy": 0.010823055625471936
+          },
+          {
+            "high": 0.001,
+            "low": 0.00025,
+            "recall": 0.29411764705882354,
+            "hits": 60,
+            "positives": 204,
+            "admissions": 72,
+            "chunks": 3973,
+            "economy": 0.018122325698464635
+          },
+          {
+            "high": 0.0003,
+            "low": 7.5e-05,
+            "recall": 0.36764705882352944,
+            "hits": 75,
+            "positives": 204,
+            "admissions": 112,
+            "chunks": 3973,
+            "economy": 0.02819028441983388
+          },
+          {
+            "high": 0.0001,
+            "low": 2.5e-05,
+            "recall": 0.4215686274509804,
+            "hits": 86,
+            "positives": 204,
+            "admissions": 156,
+            "chunks": 3973,
+            "economy": 0.039265039013340046
+          },
+          {
+            "high": 5e-05,
+            "low": 1.25e-05,
+            "recall": 0.46078431372549017,
+            "hits": 94,
+            "positives": 204,
+            "admissions": 186,
+            "chunks": 3973,
+            "economy": 0.046816008054366975
+          },
+          {
+            "high": 3e-05,
+            "low": 7.5e-06,
+            "recall": 0.44607843137254904,
+            "hits": 91,
+            "positives": 204,
+            "admissions": 185,
+            "chunks": 3973,
+            "economy": 0.046564309086332745
+          },
+          {
+            "high": 1e-05,
+            "low": 2.5e-06,
+            "recall": 0.39215686274509803,
+            "hits": 80,
+            "positives": 204,
+            "admissions": 166,
+            "chunks": 3973,
+            "economy": 0.04178202869368235
+          },
+          {
+            "high": 3e-06,
+            "low": 7.5e-07,
+            "recall": 0.29901960784313725,
+            "hits": 61,
+            "positives": 204,
+            "admissions": 137,
+            "chunks": 3973,
+            "economy": 0.034482758620689655
+          },
+          {
+            "high": 1e-06,
+            "low": 2.5e-07,
+            "recall": 0.24509803921568626,
+            "hits": 50,
+            "positives": 204,
+            "admissions": 112,
+            "chunks": 3973,
+            "economy": 0.02819028441983388
+          }
+        ],
+        "best_frontier_point": {
+          "high": 5e-05,
+          "low": 1.25e-05,
+          "recall": 0.46078431372549017,
+          "economy": 0.046816008054366975
+        },
+        "best_point_label_specific_recall": {
+          "recall": 0.4939759036144578,
+          "hits": 82,
+          "positives": 166
+        },
+        "corpus_energy_quantiles": {
+          "p10": 1.456569880247116e-07,
+          "p50": 3.9821488317102195e-06,
+          "p90": 0.00011161692277528345,
+          "p99": 0.009737278114072979,
+          "max": 0.02772681163973175
+        },
+        "shipped_utterance_profile": {
+          "utterance_threshold": 0.01,
+          "energy_threshold": 0.0001,
+          "frames": 1604,
+          "media_seconds": 400.45,
+          "speech_fraction": 0.8329177057356608,
+          "endpoints": 3,
+          "endpoints_per_minute": 0.44949270534208036
+        },
+        "utterance_frontier": {
+          "speech_slice": [
+            {
+              "utterance_threshold": 0.3,
+              "energy_threshold": 0.09,
+              "frames": 1604,
+              "media_seconds": 400.45,
+              "speech_fraction": 0.16521197007481297,
+              "endpoints": 3,
+              "endpoints_per_minute": 0.44949270534208036
+            },
+            {
+              "utterance_threshold": 0.2,
+              "energy_threshold": 0.04000000000000001,
+              "frames": 1604,
+              "media_seconds": 400.45,
+              "speech_fraction": 0.39775561097256856,
+              "endpoints": 0,
+              "endpoints_per_minute": 0.0
+            },
+            {
+              "utterance_threshold": 0.1,
+              "energy_threshold": 0.010000000000000002,
+              "frames": 1604,
+              "media_seconds": 400.45,
+              "speech_fraction": 0.6677057356608479,
+              "endpoints": 1,
+              "endpoints_per_minute": 0.14983090178069344
+            },
+            {
+              "utterance_threshold": 0.05,
+              "energy_threshold": 0.0025000000000000005,
+              "frames": 1604,
+              "media_seconds": 400.45,
+              "speech_fraction": 0.7213216957605985,
+              "endpoints": 4,
+              "endpoints_per_minute": 0.5993236071227738
+            },
+            {
+              "utterance_threshold": 0.03,
+              "energy_threshold": 0.0009,
+              "frames": 1604,
+              "media_seconds": 400.45,
+              "speech_fraction": 0.7475062344139651,
+              "endpoints": 3,
+              "endpoints_per_minute": 0.44949270534208036
+            },
+            {
+              "utterance_threshold": 0.02,
+              "energy_threshold": 0.0004,
+              "frames": 1604,
+              "media_seconds": 400.45,
+              "speech_fraction": 0.7612219451371571,
+              "endpoints": 2,
+              "endpoints_per_minute": 0.2996618035613869
+            },
+            {
+              "utterance_threshold": 0.01,
+              "energy_threshold": 0.0001,
+              "frames": 1604,
+              "media_seconds": 400.45,
+              "speech_fraction": 0.8329177057356608,
+              "endpoints": 3,
+              "endpoints_per_minute": 0.44949270534208036
+            },
+            {
+              "utterance_threshold": 0.005,
+              "energy_threshold": 2.5e-05,
+              "frames": 1604,
+              "media_seconds": 400.45,
+              "speech_fraction": 0.9301745635910225,
+              "endpoints": 2,
+              "endpoints_per_minute": 0.2996618035613869
+            },
+            {
+              "utterance_threshold": 0.003,
+              "energy_threshold": 9e-06,
+              "frames": 1604,
+              "media_seconds": 400.45,
+              "speech_fraction": 0.9594763092269327,
+              "endpoints": 2,
+              "endpoints_per_minute": 0.2996618035613869
+            },
+            {
+              "utterance_threshold": 0.001,
+              "energy_threshold": 1e-06,
+              "frames": 1604,
+              "media_seconds": 400.45,
+              "speech_fraction": 0.9900249376558603,
+              "endpoints": 0,
+              "endpoints_per_minute": 0.0
+            }
+          ],
+          "sound_slice": [
+            {
+              "utterance_threshold": 0.3,
+              "energy_threshold": 0.09,
+              "frames": 3973,
+              "media_seconds": 987.71,
+              "speech_fraction": 0.0,
+              "endpoints": 0,
+              "endpoints_per_minute": 0.0
+            },
+            {
+              "utterance_threshold": 0.2,
+              "energy_threshold": 0.04000000000000001,
+              "frames": 3973,
+              "media_seconds": 987.71,
+              "speech_fraction": 0.0,
+              "endpoints": 0,
+              "endpoints_per_minute": 0.0
+            },
+            {
+              "utterance_threshold": 0.1,
+              "energy_threshold": 0.010000000000000002,
+              "frames": 3973,
+              "media_seconds": 987.71,
+              "speech_fraction": 0.009816259753335011,
+              "endpoints": 1,
+              "endpoints_per_minute": 0.06074659078742515
+            },
+            {
+              "utterance_threshold": 0.05,
+              "energy_threshold": 0.0025000000000000005,
+              "frames": 3973,
+              "media_seconds": 987.71,
+              "speech_fraction": 0.024666498867354645,
+              "endpoints": 13,
+              "endpoints_per_minute": 0.7897056802365269
+            },
+            {
+              "utterance_threshold": 0.03,
+              "energy_threshold": 0.0009,
+              "frames": 3973,
+              "media_seconds": 987.71,
+              "speech_fraction": 0.043543921469921976,
+              "endpoints": 17,
+              "endpoints_per_minute": 1.0326920433862274
+            },
+            {
+              "utterance_threshold": 0.02,
+              "energy_threshold": 0.0004,
+              "frames": 3973,
+              "media_seconds": 987.71,
+              "speech_fraction": 0.06569343065693431,
+              "endpoints": 21,
+              "endpoints_per_minute": 1.2756784065359281
+            },
+            {
+              "utterance_threshold": 0.01,
+              "energy_threshold": 0.0001,
+              "frames": 3973,
+              "media_seconds": 987.71,
+              "speech_fraction": 0.10445507173420589,
+              "endpoints": 27,
+              "endpoints_per_minute": 1.640157951260479
+            },
+            {
+              "utterance_threshold": 0.005,
+              "energy_threshold": 2.5e-05,
+              "frames": 3973,
+              "media_seconds": 987.71,
+              "speech_fraction": 0.2099169393405487,
+              "endpoints": 37,
+              "endpoints_per_minute": 2.2476238591347304
+            },
+            {
+              "utterance_threshold": 0.003,
+              "energy_threshold": 9e-06,
+              "frames": 3973,
+              "media_seconds": 987.71,
+              "speech_fraction": 0.3410521016863831,
+              "endpoints": 30,
+              "endpoints_per_minute": 1.8223977236227544
+            },
+            {
+              "utterance_threshold": 0.001,
+              "energy_threshold": 1e-06,
+              "frames": 3973,
+              "media_seconds": 987.71,
+              "speech_fraction": 0.7201107475459351,
+              "endpoints": 17,
+              "endpoints_per_minute": 1.0326920433862274
+            }
+          ]
+        }
+      },
+      "defects": [
+        {
+          "id": "GOLDEN-ACOUSTIC-MUTED-ANCHOR",
+          "severity": "high",
+          "where": "packages/percept-vision/eval/bench/perception_test.py:197",
+          "summary": "golden_sound_events() takes segments[0] (_event_from_row, perception_test.py:172-190) as each acoustic row's ground-truth event. For both rows in the golden `perception-test-acoustic` track (video_8241, video_9253) segment 0 is labelled 'Muted' \u2014 the annotators' marker for a stretch with NO audible source. label_phrase then renders it as 'right now there is an audible muted sound or event', so the track's recall / fusion_fp / recall_flip metrics would be scored against SILENCE. The valid-split annotations carry no 'Muted' label, so only the checked-in train-split sample.json rows are affected \u2014 which is exactly what the golden manifest pins. This corpus filters NON_SOUND_LABELS instead.",
+          "repro": "python -c \"import importlib.util,sys;s=importlib.util.spec_from_file_location('pt','packages/percept-vision/eval/bench/perception_test.py');m=importlib.util.module_from_spec(s);s.loader.exec_module(m);print([(e['video_id'],e['label']) for e in m.golden_sound_events()])\""
+        },
+        {
+          "id": "AUDIO-GATE-DEAF",
+          "severity": "blocker",
+          "where": "percept/harness/detectors.py:233",
+          "summary": "AcousticOnset's shipped thresholds (high=0.09, low=0.0225) are mean-square ENERGY, and no capture chunk in 40 annotated clips (3973 chunks, 987s) reaches 0.09: corpus max energy is 0.0277. run(audio_gate='acoustic-onset') with default audio_wake therefore NEVER admits on this material \u2014 an audio Watch is silently deaf, with no health event to say so.",
+          "repro": "eval/stage-validation/sv_audio.py --only SV-A1.6R (check: 'the SHIPPED audio gate admits at least one annotated sound event')"
+        },
+        {
+          "id": "AUDIO-VAD-HANGOVER-UNITS",
+          "severity": "high",
+          "where": "percept/runtime/_vad.py:54",
+          "summary": "EnergyVad's defaults are dimensionless FRAME counts (hangover_frames=8, min_speech_frames=3) ported from percept-edge/src/vad.js, but the Python runtime feeds it capture chunks of AudioSourceConfig.chunk_s=0.25s (percept/runtime/audio.py:56). The effective hangover is therefore 2.00s of CONTINUOUS silence and the minimum utterance 0.75s. Combined with utterance_threshold=0.01 arriving as energy 1e-4, continuous narration reads as one unbroken speech run and endpoints essentially never \u2014 the saturation observed on omnipro, reproduced here.",
+          "repro": "eval/stage-validation/sv_audio.py --only SV-A1.6R (measurements.utterance_frontier)"
+        }
+      ],
+      "notes": [
+        "Recall is scored against the ANY-SOUND ground truth (every annotated sound segment in the clip, merged): an energy-threshold gate cannot distinguish one sound label from another, so scoring it against a single label would measure the wrong thing. Label-specific recall at the same operating point is reported beside it.",
+        "An admission counts as a hit when a wake instant lands within 0.25s of the annotated interval \u2014 one capture chunk, because an onset is reported at the chunk's END.",
+        "No default is proposed. The frontier is reported; picking an operating point needs a consequence model (miss cost vs. spend) this suite does not have.",
+        "The speech slice is SMALL \u2014 3 case(s), 400s. The local OmniPro media is the benchmark's VISUAL subset (19 of 245 videos), so only a handful of rows with an audio-carried trigger have media on disk. Read the endpoint counts as an order of magnitude, not a rate; the speech-fraction column is the load-bearing measurement and it is stable across the slice."
+      ]
+    },
+    {
+      "id": "SV-A2.1",
+      "title": "Audio senses \u2014 determinism and the one-energy-quantity contract",
+      "status": "PASS",
+      "error": null,
+      "checks": [
+        {
+          "name": "pcm_energy is bit-exactly repeatable on real PCM",
+          "passed": true,
+          "detail": "24 real capture chunks x3 passes, identical float results",
+          "data": {
+            "n_chunks": 24
+          }
+        },
+        {
+          "name": "pcm_energy == runtime.frame_energy on the same signal (the documented single quantity)",
+          "passed": true,
+          "detail": "max |pcm_energy - frame_energy| = 0 over 24 real chunks",
+          "data": {
+            "max_delta": 0.0
+          }
+        },
+        {
+          "name": "pcm_energy is mean-square, NOT RMS (full-scale square wave -> 1.0)",
+          "passed": true,
+          "detail": "full-negative-scale energy = 1.0, full-positive-scale = 0.9999389657750726",
+          "data": {}
+        },
+        {
+          "name": "pcm_energy rejects a misaligned s16le payload instead of guessing",
+          "passed": true,
+          "detail": "odd-length s16le PCM raises ValueError",
+          "data": {}
+        },
+        {
+          "name": "normalize_audio_unit derives the interval from the PAYLOAD's true duration",
+          "passed": true,
+          "detail": "[9.75, 10.0] for a 0.25s payload anchored at t=10.0",
+          "data": {
+            "t_start": 9.75,
+            "t_end": 10.0,
+            "expected_duration": 0.25
+          }
+        },
+        {
+          "name": "normalize_audio_unit is deterministic and computes the missing energy from the PCM",
+          "passed": true,
+          "detail": "energy 2.64233467169106e-05 == pcm_energy(payload) 2.64233467169106e-05",
+          "data": {}
+        },
+        {
+          "name": "canonicalize_audio_unit COPIES the payload (a later mutation cannot rewrite evidence)",
+          "passed": true,
+          "detail": "the caller's buffer was zeroed after canonicalization; the canonical PCM is unchanged",
+          "data": {
+            "sha256": "7c0922805ac8e171851f404248291d119dd685e880433f862bbf854569e9c9ee"
+          }
+        },
+        {
+          "name": "canonicalization is deterministic (same bytes in -> same judge token out)",
+          "passed": true,
+          "detail": "the frozen provider token is a pure function of the canonical PCM",
+          "data": {}
+        },
+        {
+          "name": "EnergyVad: same energy sequence -> identical endpoints, and reset() re-arms exactly",
+          "passed": true,
+          "detail": "0 endpoints on 66 real chunks; streaming == reset-replay == batch",
+          "data": {
+            "endpoints": []
+          }
+        },
+        {
+          "name": "EnergyVad refuses an out-of-range energy instead of clamping silently",
+          "passed": true,
+          "detail": "energy outside [0, 1] and non-finite energy both raise ValueError",
+          "data": {}
+        },
+        {
+          "name": "EnergyVad rejects a non-positive hangover/min-speech configuration",
+          "passed": true,
+          "detail": "the three constructor bounds all fail closed",
+          "data": {}
+        }
+      ],
+      "measurements": {
+        "probe_case": "perception_test_sound::video_8222::0",
+        "real_chunks_used": 24,
+        "pcm_energy_vs_frame_energy_max_delta": 0.0,
+        "vad_endpoints_on_probe_case": 0
+      },
+      "defects": [],
+      "notes": []
+    },
+    {
+      "id": "SV-A2.2",
+      "title": "Audio capture on real media \u2014 byte determinism and economy",
+      "status": "PASS",
+      "error": null,
+      "checks": [
+        {
+          "name": "re-capturing the same media yields BYTE-IDENTICAL PCM and identical energies",
+          "passed": true,
+          "detail": "5 files captured twice; 0 differed",
+          "data": {
+            "mismatched": []
+          }
+        },
+        {
+          "name": "captured units are contiguous and sequentially numbered (no silent gap)",
+          "passed": true,
+          "detail": "483 chunks across 5 files, 0 file(s) with a gap or sequence jump",
+          "data": {
+            "offenders": []
+          }
+        },
+        {
+          "name": "every full capture chunk spans exactly the shipped chunk_s (tail chunk may be shorter)",
+          "passed": true,
+          "detail": "interior chunk durations [0.25] against chunk_s=0.25; 0 file(s) with an over-long tail chunk",
+          "data": {
+            "interior_durations": [
+              0.25
+            ],
+            "overlong_tails": []
+          }
+        },
+        {
+          "name": "one second of listening costs exactly one second of 16 kHz mono s16 PCM",
+          "passed": true,
+          "detail": "observed [32000] B/s against 32000 B/s (16000 Hz x 1 ch x 2 B)",
+          "data": {
+            "observed": [
+              32000
+            ],
+            "expected": 32000
+          }
+        },
+        {
+          "name": "capture keeps up with real time by a wide margin (>= 20x)",
+          "passed": true,
+          "detail": "slowest observed 468x realtime across 5 files",
+          "data": {
+            "realtime_factors": [
+              524.9,
+              738.8,
+              694.8,
+              559.4,
+              468.1
+            ]
+          }
+        },
+        {
+          "name": "the retention window is bounded by seconds AND by unit/byte caps",
+          "passed": true,
+          "detail": "AudioWindow(4.0) -> max_units=4096, max_bytes=16777216; a 4 s window at 32000 B/s holds 128000 B, 0.76% of the byte cap",
+          "data": {
+            "max_units": 4096,
+            "max_bytes": 16777216
+          }
+        }
+      ],
+      "measurements": {
+        "per_file": [
+          {
+            "case_id": "perception_test_sound::video_8222::0",
+            "chunks": 66,
+            "media_s": 16.324,
+            "pcm_bytes": 522356,
+            "wall_s": 0.0311,
+            "realtime_factor": 524.9,
+            "bytes_per_media_s": 32000,
+            "chunks_per_media_s": 4.043,
+            "pcm_sha256": "2e5e3a8d4aaae6d9ecf040b4665035979ef4c4589c5f74a93d9708f85daf3533"
+          },
+          {
+            "case_id": "perception_test_sound::video_10071::0",
+            "chunks": 139,
+            "media_s": 34.644,
+            "pcm_bytes": 1108614,
+            "wall_s": 0.0469,
+            "realtime_factor": 738.8,
+            "bytes_per_media_s": 32000,
+            "chunks_per_media_s": 4.012,
+            "pcm_sha256": "571244a7f3e9f4a16277a32a75d79d093ec7914d5c75fff2f84e1cf9ad9fdffd"
+          },
+          {
+            "case_id": "perception_test_sound::video_10319::0",
+            "chunks": 104,
+            "media_s": 25.963,
+            "pcm_bytes": 830806,
+            "wall_s": 0.0374,
+            "realtime_factor": 694.8,
+            "bytes_per_media_s": 32000,
+            "chunks_per_media_s": 4.006,
+            "pcm_sha256": "1f9207b4463c3af61b05dcdfd1e309d9d6a10ff5a7e615f6ef9434c6e2c57536"
+          },
+          {
+            "case_id": "perception_test_sound::video_11296::0",
+            "chunks": 86,
+            "media_s": 21.312,
+            "pcm_bytes": 681984,
+            "wall_s": 0.0381,
+            "realtime_factor": 559.4,
+            "bytes_per_media_s": 32000,
+            "chunks_per_media_s": 4.035,
+            "pcm_sha256": "cc01ce6eb34498245770c4485ecb61fe71d3ca6ed4c6efea3cbe468506ca949c"
+          },
+          {
+            "case_id": "perception_test_sound::video_10485::0",
+            "chunks": 88,
+            "media_s": 21.803,
+            "pcm_bytes": 697686,
+            "wall_s": 0.0466,
+            "realtime_factor": 468.1,
+            "bytes_per_media_s": 32000,
+            "chunks_per_media_s": 4.036,
+            "pcm_sha256": "b1c8a8ee354183f060f0233c8dd756eb1afc4ace928c1ee5ae36053e7f78c41b"
+          }
+        ],
+        "capture_chunk_s": 0.25,
+        "bytes_per_media_second": 32000,
+        "window_seconds_default": 4.0
+      },
+      "defects": [],
+      "notes": []
+    },
+    {
+      "id": "SV-A4.1",
+      "title": "Audio cognition \u2014 rising edge, refractory, distinct Incidents",
+      "status": "PASS",
+      "error": null,
+      "checks": [
+        {
+          "name": "every acoustic wake reaches the judge exactly once",
+          "passed": true,
+          "detail": "4 wakes -> escalations=4, judge_calls=4, perceive_dispatches=4",
+          "data": {
+            "escalations": 4,
+            "judge_calls": 4
+          }
+        },
+        {
+          "name": "the audio gate fires on the RISING EDGE and only there",
+          "passed": true,
+          "detail": "fired at [0.75, 2.75]; gate reasons ['rising_edge', 'not_satisfied', 'rising_edge', 'not_satisfied']",
+          "data": {
+            "fire_ts": [
+              0.75,
+              2.75
+            ],
+            "gate_reasons": [
+              "rising_edge",
+              "not_satisfied",
+              "rising_edge",
+              "not_satisfied"
+            ]
+          }
+        },
+        {
+          "name": "a held-true audio occurrence fires exactly ONCE",
+          "passed": true,
+          "detail": "1 incident(s); gate reasons ['rising_edge', 'already_fired', 'already_fired', 'already_fired']",
+          "data": {
+            "n_incidents": 1,
+            "reasons": [
+              "rising_edge",
+              "already_fired",
+              "already_fired",
+              "already_fired"
+            ]
+          }
+        },
+        {
+          "name": "a repeated audio occurrence yields a DISTINCT Incident",
+          "passed": true,
+          "detail": "2 incidents; 2 distinct ids, 2 distinct judgment_event_ids, 2 distinct evidence_seqs, 2 distinct evidence hashes",
+          "data": {
+            "ids": [
+              "inc-audio-0.750-634368ed",
+              "inc-audio-2.750-e0d24691"
+            ],
+            "judgment_event_ids": [
+              "audio##1",
+              "audio##3"
+            ],
+            "evidence_seqs": [
+              1,
+              3
+            ]
+          }
+        },
+        {
+          "name": "refractory suppresses an audio re-fire inside the window, with a typed receipt",
+          "passed": true,
+          "detail": "refractory_s=2.5: fired at [0.75], suppressed [('refractory', 2.75)]",
+          "data": {
+            "fire_ts": [
+              0.75
+            ],
+            "suppressed": [
+              "refractory"
+            ]
+          }
+        },
+        {
+          "name": "the second occurrence WOULD have fired without refractory (the suppression is the cause)",
+          "passed": true,
+          "detail": "same wakes and verdicts: 2 fires at refractory_s=0.0, 1 at refractory_s=2.5",
+          "data": {}
+        }
+      ],
+      "measurements": {
+        "wake_indices": [
+          2,
+          6,
+          10,
+          14
+        ],
+        "unit_seconds": 0.25,
+        "baseline_fire_ts": [
+          0.75,
+          2.75
+        ],
+        "refractory_s": 2.5,
+        "refractory_fire_ts": [
+          0.75
+        ],
+        "gate_reasons": [
+          "rising_edge",
+          "not_satisfied",
+          "rising_edge",
+          "not_satisfied"
+        ],
+        "held_true_reasons": [
+          "rising_edge",
+          "already_fired",
+          "already_fired",
+          "already_fired"
+        ]
+      },
+      "defects": [],
+      "notes": []
+    },
+    {
+      "id": "SV-A4.7",
+      "title": "Audio evidence integrity \u2014 an Incident resolves to the exact PCM fed",
+      "status": "PASS",
+      "error": null,
+      "checks": [
+        {
+          "name": "the media under test is the exact file the corpus pinned",
+          "passed": true,
+          "detail": "eval/bench-staging/perception_test/raw/videos/video_10015.mp4 sha256 c3c55abc8dce0119... matches the corpus pin",
+          "data": {
+            "case_id": "perception_test_sound::video_10015::0",
+            "media_sha256": "c3c55abc8dce0119496f47fbc01462f30c20b256fa01f34f274784a4c3d41f5e"
+          }
+        },
+        {
+          "name": "the real-audio Watch produced at least one Incident to audit",
+          "passed": true,
+          "detail": "1 incident(s) from 12 real capture chunks of perception_test_sound::video_10015::0",
+          "data": {
+            "n_incidents": 1
+          }
+        },
+        {
+          "name": "the Incident carries an AUDIO snippet, not a substituted modality",
+          "passed": true,
+          "detail": "snippet.kind=audio",
+          "data": {}
+        },
+        {
+          "name": "every evidence frame's PCM hashes to the EXACT bytes that were fed",
+          "passed": true,
+          "detail": "9 evidence frames; hashes match; seqs [0, 1, 2, 3, 4, 5, 6, 7, 8]",
+          "data": {
+            "fed_sha256": [
+              "668946bab9868b28489bb906205ee1026045c8bcd3ca62a1bdf733c65491351b",
+              "da3c5d2585c7e37d0b9fa3789bc02934b9ce02233ffedb8e3fcdf85de4c11af3",
+              "801b581a7be26ec73d42e5b41b80e23fde956248f3bcd02fbf56b5deb1f7d06d",
+              "fdc579c332b1077abf0d992d6a2b29683cdf603e694de3056ba0cf8e5f29d8cc",
+              "044c44f6fb061ecac34d5bae81315bc499b922216646adc1173f5da96a8888e8",
+              "5c8ee9d95bea4d6b7efa745b3d64043eb1aff0f0e2f9cc505f77474cdeec3674",
+              "c4d570a835aa68b6cb26948ea2509fb20f697738f0b02b1d104b99b8c048015c",
+              "d87e1c5948e4887b71e4049e6798f9b95a3a79eb37d94e397ba5551a0bcd4b54",
+              "0606af9860352d145e0338c4c7c2dfbb7ed5c4c34f0a4de265ccf017942d75a0"
+            ],
+            "evidence_sha256": [
+              "668946bab9868b28489bb906205ee1026045c8bcd3ca62a1bdf733c65491351b",
+              "da3c5d2585c7e37d0b9fa3789bc02934b9ce02233ffedb8e3fcdf85de4c11af3",
+              "801b581a7be26ec73d42e5b41b80e23fde956248f3bcd02fbf56b5deb1f7d06d",
+              "fdc579c332b1077abf0d992d6a2b29683cdf603e694de3056ba0cf8e5f29d8cc",
+              "044c44f6fb061ecac34d5bae81315bc499b922216646adc1173f5da96a8888e8",
+              "5c8ee9d95bea4d6b7efa745b3d64043eb1aff0f0e2f9cc505f77474cdeec3674",
+              "c4d570a835aa68b6cb26948ea2509fb20f697738f0b02b1d104b99b8c048015c",
+              "d87e1c5948e4887b71e4049e6798f9b95a3a79eb37d94e397ba5551a0bcd4b54",
+              "0606af9860352d145e0338c4c7c2dfbb7ed5c4c34f0a4de265ccf017942d75a0"
+            ]
+          }
+        },
+        {
+          "name": "the concatenated evidence is byte-identical to the concatenated capture",
+          "passed": true,
+          "detail": "no re-encode, no resample, no substitution between capture and Incident",
+          "data": {}
+        },
+        {
+          "name": "the evidence interval equals the real media interval it was taken from",
+          "passed": true,
+          "detail": "snippet [0.0, 2.25] vs capture [0.0, 2.25]",
+          "data": {}
+        },
+        {
+          "name": "what the judge was shown and what the Incident carries are the SAME bytes",
+          "passed": true,
+          "detail": "provider payload is audio/wav (72044 B); its PCM data chunk matches the retained evidence (72000 B) at 16000 Hz x 1 ch",
+          "data": {
+            "judged_sha256": "3594c3fef5ca62d5a7a178487d90da1e9378e9fd9534ac257ed53dc6fda41657",
+            "evidence_sha256_concat": "3594c3fef5ca62d5a7a178487d90da1e9378e9fd9534ac257ed53dc6fda41657"
+          }
+        },
+        {
+          "name": "evidence energy is the real signal, not a placeholder",
+          "passed": true,
+          "detail": "evidence energies [0.0, 2e-08, 4.8e-07, 4e-07, 1.58e-06, 3.9e-06]...",
+          "data": {}
+        }
+      ],
+      "measurements": {
+        "case_id": "perception_test_sound::video_10015::0",
+        "media_sha256": "c3c55abc8dce0119496f47fbc01462f30c20b256fa01f34f274784a4c3d41f5e",
+        "units_fed": 12,
+        "evidence_frames": 9,
+        "evidence_interval": [
+          0.0,
+          2.25
+        ],
+        "evidence_sha256": "3594c3fef5ca62d5a7a178487d90da1e9378e9fd9534ac257ed53dc6fda41657",
+        "wake_high_energy": 1.7472838051617145e-05
+      },
+      "defects": [],
+      "notes": []
+    },
+    {
+      "id": "SV-A4.8",
+      "title": "Audio drop reconciliation \u2014 units in == admitted + suppressed + receipted",
+      "status": "FAIL",
+      "error": null,
+      "checks": [
+        {
+          "name": "every malformed carrier is dropped WITH a typed receipt",
+          "passed": true,
+          "detail": "2 malformed carriers -> 2 audio_unit_rejected event(s)",
+          "data": {
+            "receipts": [
+              "ValueError('legacy audio input must be an exact (t, AudioFrame, energy) tuple')",
+              "ValueError('legacy audio input must be an exact (t, AudioFrame, energy) tuple')"
+            ]
+          }
+        },
+        {
+          "name": "accepted units are counted exactly once",
+          "passed": true,
+          "detail": "12 valid units, 5 suppressed -> audio_chunks=7",
+          "data": {
+            "audio_chunks": 7
+          }
+        },
+        {
+          "name": "admissions reconcile with judge dispatches and goal admissions",
+          "passed": true,
+          "detail": "escalations=2, judge_calls=2, perceive_dispatches=2, goal_admissions=2",
+          "data": {}
+        },
+        {
+          "name": "the end-of-run coverage report accounts for every unit offered to the runtime",
+          "passed": false,
+          "detail": "14 units offered; audio_chunks=7 + receipts=2 = 9; 5 unit(s) vanished with no counter and no health event. runtime_ended reports {'observed': 7, 'excluded': 0, 'discontinuities': 0, 'missing_sequences': 0}",
+          "data": {
+            "offered": 14,
+            "audio_chunks": 7,
+            "receipts": 2,
+            "suppressed_expected": 5,
+            "unaccounted": 5,
+            "source_coverage": {
+              "observed": 7,
+              "excluded": 0,
+              "discontinuities": 0,
+              "missing_sequences": 0
+            }
+          }
+        },
+        {
+          "name": "mute/pause suppression emits a receipt naming how many units it swallowed",
+          "passed": false,
+          "detail": "health kinds observed: ['audio_unit_rejected', 'judge_dispatch', 'runtime_ended', 'runtime_started']",
+          "data": {
+            "health_kinds": [
+              "audio_unit_rejected",
+              "judge_dispatch",
+              "runtime_ended",
+              "runtime_started"
+            ]
+          }
+        },
+        {
+          "name": "evidence trimmed by the provider byte cap is dropped WITH a receipt",
+          "passed": true,
+          "detail": "1 audio_evidence_capped event(s): [1]",
+          "data": {
+            "events": [
+              {
+                "goal_id": "audio",
+                "dropped_units": 1,
+                "provider_bytes_cap": 8044
+              }
+            ]
+          }
+        }
+      ],
+      "measurements": {
+        "units_offered": 14,
+        "valid_units": 12,
+        "malformed_carriers": 2,
+        "suppressed_units": 5,
+        "audio_chunks": 7,
+        "rejection_receipts": 2,
+        "evidence_capped_receipts": 0,
+        "unaccounted_units": 5,
+        "escalations": 2,
+        "judge_calls": 2,
+        "runtime_ended_source_coverage": {
+          "observed": 7,
+          "excluded": 0,
+          "discontinuities": 0,
+          "missing_sequences": 0
+        },
+        "health_kinds": [
+          "audio_unit_rejected",
+          "judge_dispatch",
+          "runtime_ended",
+          "runtime_started"
+        ]
+      },
+      "defects": [
+        {
+          "id": "AUDIO-SUPPRESSED-NO-RECEIPT",
+          "severity": "high",
+          "where": "percept/runtime/worker.py:2760",
+          "summary": "In the compiled audio-only path, a unit arriving while muted()/paused() is `continue`d with no counter increment and no RuntimeHealthEvent. 5 of 14 units offered in this run are therefore invisible: RuntimeStats has no audio-suppressed field (only frames_dropped, which is the video path), SourceTracker never sees them (runtime_ended source_coverage reports excluded=0), and no health event names them. Units in != admitted + suppressed + dropped-with-receipt: the suppressed term has no term.",
+          "repro": "eval/stage-validation/sv_audio.py --only SV-A4.8 (check: 'the end-of-run coverage report accounts for every unit offered')"
+        }
+      ],
+      "notes": []
+    },
+    {
+      "id": "SV-A4.9",
+      "title": "Audio judge boundedness \u2014 what bounds the compiled audio dispatch",
+      "status": "FAIL",
+      "error": null,
+      "checks": [
+        {
+          "name": "a JudgePool that DECLARES the 'audio' evidence shape can back a compiled audio Watch",
+          "passed": false,
+          "detail": "JudgePool declares evidence_shapes=['audio', 'fused', 'single_image'] yet prepare_audio_judge_binding raised [ValueError: compiled audio requires an exact SDK-owned FakeVision or GeminiVision adapter] and apply_watch_plan returned 'rejected'; the compiled audio path accepts only ['FakeVision', 'GeminiVision']",
+          "data": {
+            "pool_error": "ValueError: compiled audio requires an exact SDK-owned FakeVision or GeminiVision adapter",
+            "apply_status": "rejected",
+            "declared_shapes": [
+              "audio",
+              "fused",
+              "single_image"
+            ]
+          }
+        },
+        {
+          "name": "the audio path is bounded by explicit byte caps on input and provider payload",
+          "passed": true,
+          "detail": "AudioInputCapability(max_input_bytes=16777216, max_provider_bytes=16777216) \u2014 524s of 16 kHz mono s16 audio",
+          "data": {
+            "max_input_bytes": 16777216,
+            "max_provider_bytes": 16777216,
+            "provider_seconds": 524.288
+          }
+        },
+        {
+          "name": "the retained audio timeline is bounded by seconds, unit count AND bytes",
+          "passed": true,
+          "detail": "AudioWindow(seconds=4.0, max_units=4096, max_bytes=16777216)",
+          "data": {}
+        },
+        {
+          "name": "compiled audio at the DEFAULT judge_dispatch='async' gets a single-flight scheduler",
+          "passed": true,
+          "detail": "in-flight and pending are single scalar slots (J<=1, P<=1 by construction), with stall/backpressure/deadline defaults {'stall_after_s': 20.0, 'backpressure_after': 3, 'decision_deadline_s': None}",
+          "data": {
+            "scheduler_defaults": {
+              "stall_after_s": 20.0,
+              "backpressure_after": 3,
+              "decision_deadline_s": null
+            }
+          }
+        },
+        {
+          "name": "judge_dispatch='inline' makes the audio capture loop WAIT on cognition (documented, not a bug)",
+          "passed": true,
+          "detail": "2 admissions x 0.25s judge latency stalled the pump for 0.50s \u2014 the inline path has no deadline; the bound comes only from judge_dispatch='async'",
+          "data": {
+            "inline_elapsed_s": 0.504
+          }
+        }
+      ],
+      "measurements": {
+        "judgepool_error": "ValueError: compiled audio requires an exact SDK-owned FakeVision or GeminiVision adapter",
+        "judgepool_apply_status": "rejected",
+        "trusted_audio_judges": [
+          "percept.backends.fake.FakeVision",
+          "percept.backends.gemini.GeminiVision"
+        ],
+        "max_input_bytes": 16777216,
+        "max_provider_bytes": 16777216,
+        "provider_cap_seconds_16k_mono": 524.288,
+        "scheduler_defaults": {
+          "stall_after_s": 20.0,
+          "backpressure_after": 3,
+          "decision_deadline_s": null
+        },
+        "inline_stall_s": 0.504,
+        "bounds": [
+          "AudioInputCapability.max_input_bytes / max_provider_bytes (16 MiB each)",
+          "AudioWindow seconds + max_units(4096) + max_bytes(16 MiB)",
+          "_LegacyJudgeScheduler single-flight + one-latest-pending (judge_dispatch='async')",
+          "judge_stall_after_s=20.0, judge_backpressure_after=3, judge_decision_deadline_s=None"
+        ],
+        "not_inherited_from_judgepool": [
+          "JudgeCapability.max_inflight (per-route capacity)",
+          "JudgeCapability.latency_slo_s / JudgePool deadline_s + hedge_after_s",
+          "JudgeRouteReceipt trail"
+        ]
+      },
+      "defects": [
+        {
+          "id": "AUDIO-JUDGEPOOL-REJECTED",
+          "severity": "medium",
+          "where": "percept/audio_input.py:1036",
+          "summary": "prepare_audio_judge_binding accepts only an exact percept.backends.fake.FakeVision or percept.backends.gemini.GeminiVision instance, so a JudgePool \u2014 including one whose JudgeCapability explicitly declares the 'audio' and 'fused' evidence shapes (percept/backends/judge_pool.py:35) \u2014 is rejected and apply_watch_plan returns 'rejected'. The compiled audio path therefore never inherits the pool's per-route capacity (max_inflight), latency SLO/deadline, hedging or JudgeRouteReceipts. It is NOT unbounded: the byte caps, the AudioWindow caps and the default judge_dispatch='async' single-flight scheduler bound it \u2014 but the bound is the runtime's, not the pool's, and there is no receipt trail per route.",
+          "repro": "eval/stage-validation/sv_audio.py --only SV-A4.9"
+        }
+      ],
+      "notes": []
+    }
+  ]
+}

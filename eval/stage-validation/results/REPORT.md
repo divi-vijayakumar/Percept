@@ -1,6 +1,6 @@
 # Percept stage-validation report
 
-Generated: 2026-07-26T22:54:56+00:00
+Generated: 2026-07-27T02:58:44+00:00
 Runtime under test: exact launch wheel `percept 1.0.0` (`bba572a`)
 
 Corpus: **100 cases**
@@ -26,7 +26,7 @@ Long-horizon sources: **6**
 
 ## Totals
 
-PASS **18** · FAIL **9** · UNKNOWN 0 · suites MISSING 0
+PASS **22** · FAIL **12** · UNKNOWN 0 · suites MISSING 0
 
 ## STAGE 0
 
@@ -106,3 +106,19 @@ Status: **FAIL** (FAIL 3, PASS 2)
 | SV-4.6 | PASS |  |
 | SV-4.7 | FAIL |  |
 | SV-4.8 | FAIL |  |
+
+## AUDIO
+
+### Audio admission, senses, cognition (`sv_audio`)
+
+Status: **FAIL** (FAIL 3, PASS 4)
+
+| Test | Status | Detail |
+|---|---|---|
+| SV-A1.6R | FAIL |  |
+| SV-A2.1 | PASS |  |
+| SV-A2.2 | PASS |  |
+| SV-A4.1 | PASS |  |
+| SV-A4.7 | PASS |  |
+| SV-A4.8 | FAIL |  |
+| SV-A4.9 | FAIL |  |

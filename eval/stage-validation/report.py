@@ -29,6 +29,9 @@ SUITES: dict[str, tuple[str, str]] = {
     "sv2_senses": ("STAGE 2", "Local perception (senses, reducers)"),
     "sv3_pool": ("STAGE 3", "Semantic judges (boundedness)"),
     "sv4_cognition": ("STAGE 4", "Cognition + disposition"),
+    # Audio spans stages 1/2/4 rather than sitting in one, so it reports as its own suite instead of
+    # being split across three and losing the cross-stage picture.
+    "sv_audio": ("AUDIO", "Audio admission, senses, cognition"),
 }
 
 
@@ -165,7 +168,7 @@ def render(report: dict[str, Any]) -> str:
         f"UNKNOWN {totals.get('UNKNOWN', 0)} · suites MISSING {totals.get('MISSING', 0)}")
     add("")
 
-    for stage in ("STAGE 0", "STAGE 1", "STAGE 2", "STAGE 3", "STAGE 4"):
+    for stage in ("STAGE 0", "STAGE 1", "STAGE 2", "STAGE 3", "STAGE 4", "AUDIO"):
         entries = report["stages"].get(stage)
         if not entries:
             continue

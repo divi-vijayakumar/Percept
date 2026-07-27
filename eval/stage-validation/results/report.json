@@ -29,7 +29,7 @@
     },
     "n_cases": 100
   },
-  "generated": "2026-07-26T22:54:56+00:00",
+  "generated": "2026-07-27T02:58:44+00:00",
   "long_sources": {
     "n_sources": 6,
     "sources": [
@@ -66,6 +66,61 @@
     ]
   },
   "stages": {
+    "AUDIO": [
+      {
+        "counts": {
+          "FAIL": 3,
+          "PASS": 4
+        },
+        "status": "FAIL",
+        "suite": "sv_audio",
+        "tests": [
+          {
+            "detail": "",
+            "id": "SV-A1.6R",
+            "measured": {},
+            "status": "FAIL"
+          },
+          {
+            "detail": "",
+            "id": "SV-A2.1",
+            "measured": {},
+            "status": "PASS"
+          },
+          {
+            "detail": "",
+            "id": "SV-A2.2",
+            "measured": {},
+            "status": "PASS"
+          },
+          {
+            "detail": "",
+            "id": "SV-A4.1",
+            "measured": {},
+            "status": "PASS"
+          },
+          {
+            "detail": "",
+            "id": "SV-A4.7",
+            "measured": {},
+            "status": "PASS"
+          },
+          {
+            "detail": "",
+            "id": "SV-A4.8",
+            "measured": {},
+            "status": "FAIL"
+          },
+          {
+            "detail": "",
+            "id": "SV-A4.9",
+            "measured": {},
+            "status": "FAIL"
+          }
+        ],
+        "title": "Audio admission, senses, cognition"
+      }
+    ],
     "STAGE 0": [
       {
         "counts": {
@@ -818,9 +873,9 @@
     ]
   },
   "totals": {
-    "FAIL": 9,
+    "FAIL": 12,
     "MISSING": 0,
-    "PASS": 18,
+    "PASS": 22,
     "UNKNOWN": 0
   }
 }
