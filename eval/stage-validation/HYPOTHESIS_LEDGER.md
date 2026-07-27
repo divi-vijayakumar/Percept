@@ -283,6 +283,60 @@ carve-out is deliberately narrower than `_terse_reply`/`_judge_max_tokens` — t
 leaving the mutation channel untouched.
 **Revisit if:** a claim watch is ever run in reflex mode on material where corrections are transient.
 
+### ✅ CLOSED — incident merge narrowed 1.0 s → 0.7 s (the founder's rep-counting objection was right)
+
+The 1.0 s window was picked against the wrong distribution. Its own docstring justified itself with
+"observed rep spacing (~2.3s)" and claimed rep counting was off this seam via `fire_episode`. **Both
+were false.** Measured rep-to-rep gaps, n=183 over the 20 repcount cases: **min 0.79 s**, p10 1.13,
+p50 1.87, max 12.76. And `fire_episode` is not landed — repcount goals reach this seam *today* via
+`type="watch"` → `fire_clip_events`. So a 1.0 s window sat on top of real occurrences and deleted
+them one-for-one.
+
+Judgment strides (the artifacts the window exists to collapse): 0.333 / 0.5 / 0.667 / **0.833** s.
+0.7 s catches the first three and clears the 0.79 s floor with 0.09 s margin. **The 0.833 s stride is
+deliberately left uncaught** — it sits *above* the rep floor, so no window removes it without also
+deleting real reps. That makes ~0.75 s a hard ceiling, now written into the docstring with the full
+percentile table. Volume: reflex −12.4%, deliberate −26.5% (was −14.0/−30.5 at 1.0 s); stride purity
+of merged incidents *rises* to 87/81%. Two tests pin the constant under the floor.
+
+### ✅ CLOSED — `EXTERNAL_RHYTHM` is drivable; 4 of 8 routes still are not
+
+`RhythmDrive` resolves a rhythm goal's *measuring* eyes and folds channels into the existing
+`core.perceive_rhythm`. `worker_can_drive()` admits it; `needs_watch_condition()` deliberately does
+not — **a rhythm goal compiles to no `WatchCondition` because it is measured, not admitted.**
+
+The load-bearing decision: **an Incident for a rhythm goal is a count MILESTONE, never a rep.** The
+count is state, updated every confirmed rep and free to read; an Incident is minted only via the
+existing `Goal.state.fire_when` predicate over `{n, t}`. No `fire_when` → zero incidents.
+One-incident-per-rep is exactly the every-judgment-mints-an-incident pathology. Counting runs at
+native frame rate off `RhythmTracker`'s causal reversal detection — a test asserts `judge.calls == 0`
+while the count is real. Zero new state vocabulary, so plans stay hashable.
+
+Still undriven: `count`, `event`, `remind`, `scheduler`. `count` → `EXTERNAL_BOUNDARY` is closest but
+needs a boundary-detector selection policy that does not exist. **The conductor routes 7 corpus goals
+to `count`, and those plans will not arm** — that is the top remaining functional gap.
+
+### ✅ CLOSED — Haiku conductor: primitive selection 4/100 → 91/100
+
+`PlanConductor.author(goal_text)`, per goal, once, at submission; nothing on the reflex path.
+`claude-haiku-4-5`, cached system block, 320 tokens, temp 0. Reply is untrusted — through the shipped
+coercion firewalls, then `_guard_authoring_namespace` refuses any path outside `Goal.state.`.
+
+| kind | hit/total | acc |
+|---|---|---|
+| **overall** | **91/100** | **0.910** |
+| duration | 39/40 | 0.975 |
+| count | 27/28 | 0.964 |
+| transition | 21/28 | 0.750 |
+| state | 4/4 | 1.000 |
+
+**All 20 rep-counting goals select `rhythm`.** Two temp-0 runs both scored 91 and differed on 1/100.
+The 7 residual `transition` misses are dominated by proactiveqa items the corpus labels `transition`
+wholesale but that read as ongoing watches — that is label coarseness; it was left unfitted rather
+than tuned away. Pinned offline via a content-addressed frozen cache (73 decisions, zero provider
+calls in CI); the optimizer guardrail is untouched and a test asserts it still denies `Goal.state.*`
+to the optimizer. **Authoring and tuning stay separate acts.**
+
 ### 💰 `media_resolution=LOW` — the biggest single win found, and it is threefold
 
 **`max_dimension` is strictly dominated and must NOT be touched.** Gemini bills a **fixed ~1,100
