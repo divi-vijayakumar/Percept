@@ -1648,8 +1648,15 @@ def program_of(goal) -> BehaviorProgram:
     if gtype == "transition":
         prog = BehaviorProgram(sense="transition", from_predicate=s.get("from"), to_predicate=s.get("to"))
     elif gtype == "count":
+        # The authored milestone rides the SAME channel as every other sense: ``state["fire_when"]``
+        # (written by the authoring firewall's ``accumulate.fire_when`` branch below, and by hand).
+        # Dropping it here made ``perceive_boundary`` fire on EVERY boundary — "tell me when I hit 10"
+        # fired twelve times starting at rep 1 — contradicting its own docstring. Same expression, same
+        # AST whitelist, same nth-distinct accumulator the rhythm branch uses; None => fire each episode.
         prog = BehaviorProgram(
-            sense="episode", predicate=goal.condition, accumulate=Accumulator(kind="count_distinct")
+            sense="episode",
+            predicate=goal.condition,
+            accumulate=Accumulator(kind="count_distinct", fire_when=s.get("fire_when")),
         )
     elif gtype == "rhythm":
         # The rhythm sense: a repeating cycle counted by the brain's RhythmTracker (percept.rhythm). A

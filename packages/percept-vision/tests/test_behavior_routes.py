@@ -437,13 +437,44 @@ class WorkerPreflightTests(unittest.TestCase):
             yield (0.0, STILL, "frame")
 
     def test_raw_unsupported_route_fails_before_source_pull(self):
-        core = Percept.create(vision=_RouteVision({}), discover_plugins=False)
-        core.add_goal(Goal("count", "count", "count", state={"type": "count"}))
+        # UNSUPPORTED: no driver anywhere and no host feed, so a run carrying one is incoherent and
+        # still refuses before a frame is pulled. (Corrupted PAST the arm gate, which refuses it too.)
+        vision = _RouteVision({})
+        core = Percept.create(vision=vision, discover_plugins=False)
+        core.add_goal(Goal("watch", "watch", "watch"))
+        core.goals.get("watch").state["type"] = "wobble"
         source = self.PullSpy()
         with self.assertRaises(UnsupportedBehaviorRouteError) as caught:
             asyncio.run(_collect(core, source))
         self.assertEqual(source.pulls, 0)
-        self.assertEqual(caught.exception.unsupported[0].authored_type, "count")
+        self.assertEqual(caught.exception.unsupported[0].authored_type, "wobble")
+        self.assertEqual(vision.judge_calls, [])
+
+    def test_a_host_driven_route_is_skipped_by_the_run_not_fatal_to_it(self):
+        # A count goal has a complete, shipped driver — the HOST's. The frame worker simply is not
+        # it. Aborting the run for that reason took every unrelated Watch on the source down too.
+        vision = _RouteVision({})
+        core = Percept.create(vision=vision, discover_plugins=False)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            core.add_goal(Goal("count", "count", "count", state={"type": "count"}))
+        source = self.PullSpy()
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self.assertEqual(asyncio.run(_collect(core, source)), [])
+
+        self.assertEqual(source.pulls, 1)          # the run started instead of dying
+        self.assertEqual(vision.judge_calls, [])   # ...and never spent a judge on the skipped goal
+        self.assertEqual(vision.detect_calls, 0)
+        skipped = [
+            w for w in caught if issubclass(w.category, UndrivenBehaviorRouteWarning)
+        ]
+        self.assertEqual(len(skipped), 1)
+        self.assertIn("'count'", str(skipped[0].message))
+        self.assertIn("Percept.perceive_boundary(", str(skipped[0].message))
+        # The goal is untouched and its documented driver still fires it.
+        self.assertIsNotNone(core.perceive_boundary("count", t=1.0))
 
     def test_foreign_source_unsupported_goal_does_not_block_this_worker(self):
         core = Percept.create(vision=_RouteVision({}), discover_plugins=False)
@@ -471,7 +502,9 @@ class WorkerPreflightTests(unittest.TestCase):
         loop = GatedWatchLoop(core, source="camera")
         self.assertEqual([condition.goal_id for condition in loop.spec.conditions], ["camera"])
 
-    def test_mid_run_external_route_fails_before_detect_or_judge(self):
+    def test_mid_run_external_route_is_skipped_without_stopping_the_running_watch(self):
+        # The regate preflight makes the SAME per-goal decision as the startup one: a host-driven
+        # goal armed mid-run (by voice, say) is reported and skipped; the running Watch keeps going.
         vision = _RouteVision({})
         core = Percept.create(vision=vision, discover_plugins=False)
         core.add_goal(Goal("watch", "watch", "watch"))
@@ -480,7 +513,39 @@ class WorkerPreflightTests(unittest.TestCase):
         def source():
             pulled.append(1)
             yield (0.0, STILL, "first")
-            core.add_goal(Goal("count", "count", "count", state={"type": "count"}))
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                core.add_goal(Goal("count", "count", "count", state={"type": "count"}))
+            pulled.append(2)
+            yield (1.0, MOVED, "second")
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self.assertEqual(
+                asyncio.run(_collect(core, source(), regate_on_goal_change=True)), []
+            )
+        self.assertEqual(pulled, [1, 2])
+        # The count goal never bought a judge; the watch goal's own judging is unaffected.
+        self.assertNotIn("count", [condition for condition, _ in vision.judge_calls])
+        skipped = [
+            w for w in caught if issubclass(w.category, UndrivenBehaviorRouteWarning)
+        ]
+        self.assertEqual(len(skipped), 1)  # once per goal per run, not once per frame
+        self.assertIn("'count'", str(skipped[0].message))
+
+    def test_mid_run_undrivable_route_still_fails_before_detect_or_judge(self):
+        vision = _RouteVision({})
+        core = Percept.create(vision=vision, discover_plugins=False)
+        core.add_goal(Goal("watch", "watch", "watch"))
+        pulled: list[int] = []
+
+        def source():
+            pulled.append(1)
+            yield (0.0, STILL, "first")
+            # add_goal refuses an UNSUPPORTED shape outright, so the only way one exists mid-run is a
+            # post-arm mutation; the second (legitimate) arm is what advances the revision to regate.
+            core.goals.get("watch").state["type"] = "wobble"
+            core.add_goal(Goal("second", "second", "second"))
             pulled.append(2)
             yield (1.0, MOVED, "second")
 

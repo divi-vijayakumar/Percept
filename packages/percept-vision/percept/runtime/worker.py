@@ -19,6 +19,7 @@ import math
 import threading
 import time
 import uuid
+import warnings
 from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -3404,6 +3405,18 @@ async def _run_worker(
     - ``on_ask(event)`` — optional refusal sink for low-confidence reads; asks are not incidents.
     - ``on_frame(t, judge_frame)`` — the live-feed hook (wire an MJPEG streamer here).
     - ``on_health(event)`` — optional structured health/telemetry hook.
+    - **Behavior routes are per goal, and so is the preflight.** This worker drives the frame routes
+      (``watch``/``transition``/``process``) plus ``rhythm``. A goal on a HOST-driven route
+      (``count`` → :meth:`~percept.agent.Percept.perceive_boundary`, ``event`` → ``push_frame`` +
+      ``perceive_events``, ``remind`` → ``schedule_every`` + ``tick``) armed on this same source key
+      is SKIPPED, not fatal: it never reaches tier-0, never spends a judge, and never fires from
+      frames, while every other goal on the source runs normally. The skip is reported once per goal
+      per run as a :class:`~percept.behavior_routes.UndrivenBehaviorRouteWarning`, a
+      ``percept.runtime.worker`` log line, and an ``undriven_behavior_route`` health event, each
+      naming the goal and the exact host call. A deployment that wants an undriven route to abort the
+      run filters that warning to ``"error"``. Only a route nothing can drive
+      (:attr:`~percept.behavior_routes.BehaviorRoute.UNSUPPORTED`) still raises
+      :class:`~percept.behavior_routes.UnsupportedBehaviorRouteError` before the source is pulled.
     - ``source`` — captured and pushed inputs share the versioned
       :class:`~percept.runtime.envelope.SourceEnvelope` contract. Duplicate, reordered, corrupt,
       unsupported-version, or reset-without-epoch items are excluded before the Watch gate. Sequence
@@ -3605,9 +3618,13 @@ async def _run_worker(
     from percept.labelstore import verdict_ref as _verdict_ref
     from percept.behavior import program_of
     from percept.behavior_routes import (
+        UndrivenBehaviorRouteWarning,
         drives_rhythm,
         goal_behavior_route,
-        require_worker_routes,
+        require_drivable_routes,
+        route_remedy,
+        skipped_route_message,
+        worker_can_drive,
     )
     from percept.config import load_settings
     from percept.contracts import WatchSpec
@@ -3722,12 +3739,25 @@ async def _run_worker(
 
     settings = getattr(core, "settings", None) or load_settings()
 
-    def _source_goals() -> list:
-        """Active Watches bound to this worker's source key, in registry order."""
+    def _source_key_goals() -> list:
+        """EVERY active Goal bound to this worker's source key — driven here or not."""
         return [
             goal
             for goal in core.goals.active()
             if getattr(goal, "source", "camera") == gate_source
+        ]
+
+    def _source_goals() -> list:
+        """The Watches on this source key that THIS worker drives, in registry order.
+
+        A host-driven route (``count``/``event``/``remind``) bound to the same key is deliberately
+        ABSENT: the frame loop has no driver for it, so including it would either abort the run (the
+        old behaviour — one such goal killed every unrelated Watch beside it) or, worse, let it fall
+        through into ``_visual_goals`` and spend a per-frame judge on a goal the host counts for free.
+        It stays armed and its host API still fires it; ``_preflight_routes`` reports the skip.
+        """
+        return [
+            goal for goal in _source_key_goals() if worker_can_drive(goal_behavior_route(goal))
         ]
 
     def _rhythm_goals() -> list:
@@ -3791,9 +3821,42 @@ async def _run_worker(
                 driver="percept.run",
             )
 
-    # Route support is source-local. Refuse before this worker opens or pulls its source; repeat this
-    # preflight during regating so a newly armed unsupported Goal cannot reach detection or judging.
-    require_worker_routes(_source_goals(), driver="percept.run")
+    # Structured health for a route this run is skipping, drained through on_health with the rest.
+    _route_health: list[dict] = []
+    _route_reported: dict[str, str] = {}  # goal_id -> route already reported this run
+
+    def _preflight_routes() -> None:
+        """Refuse the UNDRIVABLE, report (never abort on) the host-driven.
+
+        Route support is source-local, and it is per GOAL: whether the frame loop can execute goal A
+        says nothing about goal B. Refuse before this worker opens or pulls its source, and repeat
+        during regating so a Goal armed mid-run cannot reach detection or judging unannounced.
+
+        The split lives in :func:`~percept.behavior_routes.require_drivable_routes`. An UNSUPPORTED
+        goal still raises here, before a frame is pulled — nothing can ever fire it. A host-driven
+        goal (``count``/``event``/``remind``) is REPORTED and skipped instead: it has a complete,
+        shipped driver that this loop simply is not, so aborting the run would take every unrelated
+        Watch down with it. Reported once per goal per run on both channels the arm seam uses — the
+        warning a test/interactive caller sees (escalate it to an error to restore the old fatal
+        behaviour) and the log a 24/7 deployment reads — plus a structured health event.
+        """
+        for item in require_drivable_routes(_source_key_goals(), driver="percept.run"):
+            if _route_reported.get(item.goal_id) == item.route.value:
+                continue
+            _route_reported[item.goal_id] = item.route.value
+            message = skipped_route_message(item, driver="percept.run", source=gate_source)
+            warnings.warn(message, UndrivenBehaviorRouteWarning, stacklevel=2)
+            _log.warning("%s", message)
+            _route_health.append({
+                "goal_id": item.goal_id,
+                "route": item.route.value,
+                "behavior_type": item.authored_type_display,
+                "source": gate_source,
+                "driver": "percept.run",
+                "remedy": route_remedy(item.route, goal_id=item.goal_id),
+            })
+
+    _preflight_routes()
     _require_duration_runtime()
     if callable(clear_pending_dwell):
         # Every run is a new observation session even when a caller reuses the same in-process core.
@@ -3958,7 +4021,7 @@ async def _run_worker(
         and a surviving goal's detector bank / rhythm eye is REUSED (its running rep-peak / refractory /
         pose-anchor state must not reset mid-rep) — so arming one goal never disturbs the others."""
         _require_source_scoped_callbacks()
-        require_worker_routes(_source_goals(), driver="percept.run")
+        _preflight_routes()
         _require_duration_runtime()
         visual_active = _visual_goals()
         external_audio_active = _external_only_audio_goals()
@@ -4584,6 +4647,12 @@ async def _run_worker(
             # correct, and the loud channel stays reserved for a requirement that is actually unmet.
             await _call_sink(on_health, RuntimeHealthEvent(
                 "effective_config", data=effective_config.as_dict()))
+            # Any route this run is SKIPPING rather than driving (the preflight already warned + logged).
+            # Structured, so a dashboard can show "armed but not driven here" instead of a client
+            # discovering it as a goal that never fires. Regate additions drain on the frame cadence below.
+            while _route_health:
+                await _call_sink(on_health, RuntimeHealthEvent(
+                    "undriven_behavior_route", data=_route_health.pop(0)))
         source_kwargs = {
             "maxsize": source_queue_size,
             "reconnects": source_reconnects,
@@ -6203,6 +6272,13 @@ async def _run_worker(
                 while source_health:
                     _hk, _hd = source_health.pop(0)
                     await _call_sink(on_health, RuntimeHealthEvent(_hk, ts=t, data=_hd))
+            # Same drain for a route a MID-RUN regate found armed on this source and skipped.
+            # Drains UNCONDITIONALLY (like the judge/gate health queues) so the list never lingers.
+            while _route_health:
+                _rd = _route_health.pop(0)
+                if on_health is not None:
+                    await _call_sink(on_health, RuntimeHealthEvent(
+                        "undriven_behavior_route", ts=t, data=_rd))
             if _funnel is not None:
                 _funnel.seen(camera=gate_source)  # the ungated baseline: a frame was observed
             _cov.frames += 1

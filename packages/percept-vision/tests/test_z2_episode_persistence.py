@@ -20,11 +20,12 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+import warnings
 
 from percept import Goal, Percept
 from percept.adapters import Verdict
 from percept.backends.fake import FakeVision
-from percept.behavior_routes import UnsupportedBehaviorRouteError
+from percept.behavior_routes import UndrivenBehaviorRouteWarning
 from percept.edge.tier0 import gray_frame
 from percept.episodes import Episode, EpisodeLog
 from percept.persistence import InMemoryPersistence
@@ -106,7 +107,8 @@ class RestoreAnnouncesTheReset(unittest.TestCase):
             pulls.append(True)
             yield from SRC
 
-        with self.assertRaises(UnsupportedBehaviorRouteError):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UndrivenBehaviorRouteWarning)
             asyncio.run(
                 _drain(
                     c2,
@@ -121,7 +123,14 @@ class RestoreAnnouncesTheReset(unittest.TestCase):
         self.assertEqual(kinds.count("episode_memory_reset"), 1, "emitted exactly once, at startup")
         ev = next(e for e in events if e.kind == "episode_memory_reset")
         self.assertEqual(ev.data["goal_ids"], ["cups"])
-        self.assertEqual(pulls, [], "unsupported restored goal must fail before source consumption")
+        # The restored goal's route is HOST-driven (perceive_boundary), so the frame run does not
+        # drive it — it says so, once, and runs anyway rather than aborting over someone else's goal.
+        skipped = [e for e in events if e.kind == "undriven_behavior_route"]
+        self.assertEqual([e.data["goal_id"] for e in skipped], ["cups"])
+        self.assertIn("Percept.perceive_boundary", skipped[0].data["remedy"])
+        self.assertEqual(pulls, [True])
+        # The amnesia is what this file is about, and it is real: the count restarts at zero.
+        self.assertEqual(c2.edge_counts.get("cups", 0), 0)
 
     def test_default_watch_run_emits_no_reset(self):
         """No persistence/restore -> no reset event; the health channel stays byte-for-byte quiet."""
