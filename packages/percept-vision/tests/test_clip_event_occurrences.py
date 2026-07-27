@@ -163,13 +163,18 @@ async def test_async_worker_emits_every_event_reported_in_one_window():
     ]
 
     assert provider.calls == 2
-    assert len(incidents) == 4
-    assert len({incident.revision_id for incident in incidents}) == 4
+    # Every event the FIRST window reported is emitted: one look enumerating three separate
+    # occurrences 0.3s apart is the provider's explicit testimony that they ARE separate, and the
+    # delivery merge never applies within a single enumeration (behavior.INCIDENT_MERGE_WINDOW_S).
+    # The SECOND window's "fourth" is a CROSS-judgment delivery landing 0.3s after the third
+    # incident for the same watch — inside the merge window, so it is dropped as a re-report.
+    assert len(incidents) == 3
+    assert len({incident.revision_id for incident in incidents}) == 3
     assert [incident.ts for incident in incidents] == pytest.approx(
-        [0.2, 0.5, 0.8, 1.1]
+        [0.2, 0.5, 0.8]
     )
     incident_links = [incident.judgment_event_id for incident in incidents]
-    assert len(set(incident_links)) == 4
+    assert len(set(incident_links)) == 3
     judgment_links = [
         trace.data["judgment_event_id"]
         for trace in traces
@@ -259,10 +264,13 @@ async def test_public_manual_path_deduplicates_overlapping_windows():
     second = await core.perceive_judged(b"f2", t=2.0)
 
     assert provider.calls == 2
-    assert len(first) == 3
-    assert len(second) == 1
+    assert len(first) == 3  # one look, three enumerated occurrences -> never merged against itself
+    # The second window's three restatements are overlap-suppressed as before; its genuinely new
+    # "fourth" lands 0.4s after the third delivery for the same watch, so the delivery merge
+    # (behavior.INCIDENT_MERGE_WINDOW_S) drops it as a re-report rather than a second notification.
+    assert len(second) == 0
     all_fires = [*first, *second]
-    assert len({fire.revision_id for fire in all_fires}) == 4
+    assert len({fire.revision_id for fire in all_fires}) == 3
     assert [
         fire.judgment.timing.source_media_ts for fire in all_fires
-    ] == pytest.approx([0.2, 0.5, 0.8, 1.2])
+    ] == pytest.approx([0.2, 0.5, 0.8])

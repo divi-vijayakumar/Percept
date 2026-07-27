@@ -756,6 +756,52 @@ def overdue_text(goal) -> str:  # mirrors agent._overdue_text
 
 
 # --------------------------------------------------------------------------------------------------
+# Delivery merge — the notification-volume guard on the DELIVERY seam (not a gate decision).
+# --------------------------------------------------------------------------------------------------
+
+#: Seconds. Two incidents for the SAME watch key landing closer together than this are one occurrence
+#: reported twice, so only the FIRST is delivered; the second is dropped at the delivery seam.
+#:
+#: Scope, precisely: this is a **notification-volume** guard, not a quality guard. It changes neither
+#: what the judge is shown nor what :class:`~percept.gate.Gate` decides — a merged fire was a real
+#: ``FIRE`` on a real rising edge, and both the merged and the surviving delivery describe the same
+#: occurrence. It therefore cannot move precision or recall on the occurrence the client already
+#: heard about; it only stops the client hearing about it twice.
+#:
+#: Why 1.0s. Swept offline over recorded incident timestamps: up to ~1s a merge essentially only
+#: ever collapses a re-report of an occurrence already delivered, so the set of distinct occurrences
+#: the client learns about is preserved. Past ~1s the window starts eating genuinely separate
+#: occurrences and costs recall one-for-one, with nothing bought for it. 1.0s is the largest free
+#: setting, not a tuning knob to push.
+#:
+#: What it never merges — the boundary that keeps it honest. Occurrences a provider enumerated in ONE
+#: judgment (the clip-occurrence list :meth:`BehaviorExecutor.fire_clip_events` walks) are its explicit
+#: testimony that they are separate actions, so they are never merged against each other however close
+#: together they land: one look resolving three actions 0.3s apart still delivers three. The window is
+#: measured only against what was already delivered BEFORE that judgment — which is where a sliding
+#: window restating a continuing action produces the duplicate this exists for. A confident-false read
+#: likewise clears the anchor: the condition was OBSERVED to stop holding, so the next true is a new
+#: occurrence and not a re-report.
+#:
+#: Short-interval occurrence senses. Rep-style counting (``rhythm`` / edge boundaries) delivers
+#: through :meth:`BehaviorExecutor.fire_episode`, which is NOT on this seam and is never merged — but
+#: judged occurrence chains can report rep-like bursts, and observed rep spacing (~2.3s) sits only
+#: about 2x above this window. Do not raise it without re-measuring against the shortest occurrence
+#: interval a watch is expected to resolve.
+INCIDENT_MERGE_WINDOW_S: float = 1.0
+
+#: Backstop bound on the merge's per-key memory, mirroring the gate's own "cannot grow without
+#: bound" discipline (ADR-001 §9). Stamps older than the window are pruned on every delivery, so in
+#: real time the map holds only the keys that fired within the last window; this cap covers the
+#: degenerate case of a caller that never advances ``t``.
+_MERGE_MAX_KEYS = 1024
+
+#: Sentinel: "measure the window from this key's LIVE last-delivery stamp" (the default). A caller
+#: that passes an explicit anchor instead is pinning the comparison to an earlier point in time.
+_LIVE_ANCHOR: object = object()
+
+
+# --------------------------------------------------------------------------------------------------
 # The executor — ONE firing path; the gate is called exactly once per sense, unchanged.
 # --------------------------------------------------------------------------------------------------
 
@@ -770,7 +816,13 @@ class _NoMetrics:
 class BehaviorExecutor:
     """One executor for every concern. Produces ``(key, verdict)`` and calls the UNCHANGED gate."""
 
-    def __init__(self, gate: Gate, metrics=None) -> None:
+    def __init__(
+        self,
+        gate: Gate,
+        metrics=None,
+        *,
+        merge_window_s: float = INCIDENT_MERGE_WINDOW_S,
+    ) -> None:
         self.gate = gate
         self.metrics = metrics if metrics is not None else _NoMetrics()
         self._ctx: dict[str, ConcernContext] = {}  # isolated per-concern state, keyed by concern id
@@ -778,6 +830,14 @@ class BehaviorExecutor:
         # Episode-owned idempotency memory (per episode id, NOT per gate key — see the module
         # section above). This is the state the gate bit was being accidentally used as.
         self._incidents = EpisodeIncidentLedger()
+        #: The delivery-merge window, defaulting to :data:`INCIDENT_MERGE_WINDOW_S`. ``0`` (or any
+        #: non-positive value) disables the merge entirely — byte-for-byte the delivery path from
+        #: before it existed.
+        self.merge_window_s = float(merge_window_s)
+        # When each gate key last passed the delivery seam with a DISTINCT occurrence. Written only
+        # for a fire the merge admitted, never for one it dropped, so a dense duplicate stream can
+        # never slide the window forward indefinitely.
+        self._merge_anchors: dict[Hashable, float] = {}
 
     def ctx(self, concern_id: str) -> ConcernContext:
         return self._ctx.setdefault(concern_id, ConcernContext())
@@ -835,6 +895,50 @@ class BehaviorExecutor:
             decision, mutation=mutation, operation=operation, ambiguous=ambiguous, unknown=unknown
         )
         return ShadowObservation(subject=subject, fold=fold)
+
+    # -- delivery merge: one occurrence, one notification -----------------------------------------
+    def _merges_into_prior_delivery(
+        self, key: Hashable, t: float, anchor: object = _LIVE_ANCHOR
+    ) -> bool:
+        """Is this fire a RE-DELIVERY of the incident ``key`` already delivered within the window?
+
+        PER-WATCH by construction: ``key`` is the very key :meth:`Gate.decide` was called with
+        (``(goal_id, entity)``), so two different watches firing in the same instant are two
+        different keys and both survive. There is no cross-key merge and never should be.
+
+        ``anchor`` overrides which prior delivery the window is measured from. The default reads the
+        key's live stamp; :meth:`fire_clip_events` pins it to the stamp as of the START of one
+        judgment's event list, which is what exempts a single enumeration from merging against
+        itself (see :data:`INCIDENT_MERGE_WINDOW_S`).
+
+        Fails OPEN in every ambiguous case — a disabled window, a non-finite ``t``, a key with no
+        prior delivery, or a ``t`` that moved BACKWARDS (out-of-order source time cannot prove a
+        re-report) all deliver, which is exactly the pre-merge behaviour.
+        """
+        window = self.merge_window_s
+        if not (window > 0.0) or not math.isfinite(t):
+            return False
+        last = self._merge_anchors.get(key) if anchor is _LIVE_ANCHOR else anchor
+        if not isinstance(last, (int, float)) or not math.isfinite(float(last)):
+            return False
+        delta = t - float(last)
+        # Half-open [0, window): a fire landing exactly ``window`` later is a separate occurrence.
+        return 0.0 <= delta < window
+
+    def _note_merge_anchor(self, key: Hashable, t: float) -> None:
+        """Stamp a DISTINCT occurrence for ``key``, and prune stamps the window can no longer use."""
+        if not (self.merge_window_s > 0.0) or not math.isfinite(t):
+            return
+        window = self.merge_window_s
+        # Anything older than the window can never suppress again (for a non-decreasing clock); a
+        # stamp in the FUTURE of ``t`` is kept, since it is another key's clock running ahead.
+        self._merge_anchors = {
+            k: v for k, v in self._merge_anchors.items() if t - v < window
+        }
+        self._merge_anchors[key] = t
+        if len(self._merge_anchors) > _MERGE_MAX_KEYS:  # degenerate clock backstop, newest wins
+            newest = sorted(self._merge_anchors.items(), key=lambda kv: kv[1], reverse=True)
+            self._merge_anchors = dict(newest[:_MERGE_MAX_KEYS])
 
     def _fire_when(self, expr: str) -> Callable[[dict], bool]:
         pred = self._fire_when_cache.get(expr)
@@ -1044,6 +1148,13 @@ class BehaviorExecutor:
             program,
             key=replace(program.key, each_event=False),
         )
+        # The delivery-merge anchor for this ENTIRE list, pinned before the first event is delivered.
+        # Occurrences the provider enumerated in ONE look are its explicit testimony that they are
+        # separate — a look that resolves three actions 0.3s apart is not the same action re-reported —
+        # so they are compared only against what was delivered BEFORE this judgment, never against each
+        # other. The merge still applies across judgments, which is where a sliding window restating a
+        # continuing action produces the duplicate this guard exists for.
+        merge_anchor = self._merge_anchors.get(base_key)
         for event, source_start_t, source_end_t in aligned:
             if any(
                 self._same_clip_occurrence(
@@ -1111,6 +1222,7 @@ class BehaviorExecutor:
                 fold=fold,
                 occurrence_id=episode_id,
                 outcome_sink=outcome_sink,
+                merge_anchor=merge_anchor,
             )
             if fired is not None:
                 state.emitted = True
@@ -1134,6 +1246,7 @@ class BehaviorExecutor:
         fold: "EpisodeFoldResult | None" = None,
         occurrence_id: str | None = None,
         outcome_sink: "Callable[[GateOutcome], None] | None" = None,
+        merge_anchor: object = _LIVE_ANCHOR,
     ) -> Fired | None:
         """Run one judged concern through the (unchanged) gate and return the firing, if any.
 
@@ -1157,6 +1270,11 @@ class BehaviorExecutor:
 
         ``outcome_sink`` is an internal observability seam: when supplied, it receives the exact
         typed outcome from this method's sole gate evaluation. It never causes a second evaluation.
+
+        ``merge_anchor`` overrides the point in time the DELIVERY MERGE measures its window from
+        (see :data:`INCIDENT_MERGE_WINDOW_S`); the default reads this key's live last-delivery stamp.
+        It never affects the gate, the judge, or which decision is made — only whether an already-
+        decided ``FIRE`` is delivered or dropped as a re-report.
         """
         ctx = self.ctx(goal.id)
         occurrence_state: OccurrenceState | None = None
@@ -1214,6 +1332,14 @@ class BehaviorExecutor:
         if outcome_sink is not None:
             outcome_sink(outcome)
         action = outcome.action
+        if outcome.reason == "not_satisfied":
+            # A confident-false is a PROVEN occurrence boundary: the condition was observed to stop
+            # holding, so whatever comes next is a new occurrence and not a re-report of the one
+            # already delivered. Drop the anchor so the merge cannot reach across that boundary.
+            # (An explicit ``gate.rearm`` deliberately does NOT clear it — a re-arm is an assertion
+            # that the edge is live again, not evidence that the occurrence ended, and re-arming on
+            # every reported event is precisely what produces the duplicates being merged here.)
+            self._merge_anchors.pop(key, None)
         # The envelope the executor knows at fire time: the gate reason, how the eye looked, and
         # that a judged read is a DIRECT observation. ``roi`` stays None — the judge does not report the
         # region it fired on, and echoing the ``region_hint`` INPUT would misreport an input as an output.
@@ -1225,6 +1351,19 @@ class BehaviorExecutor:
         )
         self.metrics.incr(f"{metric}.{action}")
         if action == FIRE:
+            # DELIVERY MERGE (see INCIDENT_MERGE_WINDOW_S). The gate has already decided, and its
+            # edge state is already spent — nothing below rolls any of it back. This drops only the
+            # second NOTIFICATION of an occurrence this same key already notified about inside the
+            # window. It is deliberately ahead of the accumulator: a re-report of an occurrence the
+            # client has already been told about is not a distinct occurrence and must not advance
+            # an "alert me the nth time" count.
+            if self._merges_into_prior_delivery(key, t, merge_anchor):
+                self.metrics.incr(f"{metric}.merged_duplicate")
+                return None
+            # A DISTINCT occurrence for this watch — it anchors the window from here. Stamped on the
+            # occurrence, not on the eventual delivery, so a duplicate is still merged (and still not
+            # counted) when the accumulator below withholds the notification for the original.
+            self._note_merge_anchor(key, t)
             # accumulate (nth-distinct): a rising edge IS a distinct occurrence, so gate the
             # USER-facing fire on fire_when(n). No fire_when -> byte-for-byte (existing goals never
             # accumulate). This is how "alert me the 3rd distinct time" composes with zero new code.
@@ -1871,6 +2010,7 @@ __all__ = [
     "episode_mutation_of",
     "revision_id",
     "BehaviorExecutor",
+    "INCIDENT_MERGE_WINDOW_S",
     "program_of",
     "coerce_authored_behavior",
     "coerce_authored_episode",
