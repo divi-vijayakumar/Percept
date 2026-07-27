@@ -353,11 +353,11 @@ def coerce_authored_primitive(payload: Any, *, goal_text: str, model: str = COND
 # Scoring — selection accuracy against a labelled goal set
 # ---------------------------------------------------------------------------------------------------
 
-#: How an authored primitive maps onto the validation corpus's ``goal_kind`` label. Stated as data so
-#: the reported accuracy is auditable rather than buried in a comparison.
+#: How an authored primitive maps onto the coarser *kind* a goal set is usually labelled with. Stated
+#: as data so the reported accuracy is auditable rather than buried in a comparison.
 #:
-#: ``count`` and ``rhythm`` both answer "how many", so both score as the corpus's ``count`` kind — the
-#: label records what the user asked for, not which of the two counting primitives serves it.
+#: ``count`` and ``rhythm`` both answer "how many", so both score as the ``count`` kind — a label
+#: records what the caller asked for, not which of the two counting primitives ends up serving it.
 _KIND_OF_TYPE: dict[str, str] = {
     "transition": "transition",
     "rhythm": "count",
@@ -368,11 +368,11 @@ _KIND_OF_TYPE: dict[str, str] = {
 
 
 def goal_kind_of(primitive: AuthoredPrimitive) -> str:
-    """The validation-corpus ``goal_kind`` an authored primitive corresponds to.
+    """The coarse goal *kind* an authored primitive corresponds to.
 
     A plain Watch that re-arms on EVERY event is the state MONITOR shape ("tell me whenever it
-    changes"), which the corpus labels ``state``; a plain Watch otherwise describes something that
-    HOLDS, which the corpus labels ``duration``.
+    changes"), scored as ``state``; a plain Watch otherwise describes something that HOLDS, scored as
+    ``duration``.
     """
 
     if primitive.behavior_type in ("watch", "process"):
@@ -384,7 +384,10 @@ def goal_kind_of(primitive: AuthoredPrimitive) -> str:
 def selection_accuracy(
     pairs: Iterable[tuple[AuthoredPrimitive, str]],
 ) -> dict[str, Any]:
-    """Per-``goal_kind`` selection accuracy over ``(authored, labelled_kind)`` pairs.
+    """Per-kind selection accuracy over ``(authored, labelled_kind)`` pairs.
+
+    Public so a caller can score the conductor against their OWN labelled goals before trusting it
+    on their workload — the shipped accuracy figure was measured on one goal set, not theirs.
 
     Returns overall and per-kind ``hit``/``total``/``accuracy`` plus the confusion counts, so a
     regression names WHICH kind moved rather than only that the number fell.
