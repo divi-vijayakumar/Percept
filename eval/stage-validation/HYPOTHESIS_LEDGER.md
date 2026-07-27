@@ -33,6 +33,44 @@ Live N=100, both modes, Gemini 3.1 Flash-Lite direct, ordered-image transport, 0
 
 ---
 
+## 🛑 LOOP STOPPED 2026-07-27 — everything autonomous is done
+
+**Launch-readiness: the candidate is ready for a human merge decision.** Everything that could be
+fixed without a founder decision has been. What remains needs prioritisation, not more debugging.
+
+| item | state |
+|---|---|
+| Evidence-substitution blocker | closed (earlier session) |
+| Deaf audio gate blocker | closed (earlier session) |
+| Reflex regression | **closed** — `23de596`, recall 0.137 → 0.626 |
+| R1a event_chain skew | **closed** — `ecc10e4` |
+| R1b claim-mode trim | **decided** — `8ad2271`, document not exempt |
+| R2 over-delivery | **diagnosed + re-scoped** — `00d63ec` |
+| Claim scope | **verified honest** — pyproject says no accuracy/latency claims, `4 - Beta` |
+| Suite | 4,883 passed / 4 skipped / 3 xfailed / 475 subtests |
+| Merge / push / tag / publish | **BLOCKED — needs explicit human approval** |
+
+**Total provider spend: $3.71 of $50.** The frame curve was the only thing worth paying for.
+
+### What needs YOUR decision, not more autonomous work
+1. **Merge the candidate.** It is clean and mergeable. Nothing has been pushed or tagged.
+2. **R2's real lever is wording, not machinery.** A per-window judge decision with lift 1.26 over
+   chance caps ANY downstream policy at ~0.44 precision. Condition wording spans a 0.00–0.75 fire
+   rate across 20 otherwise-identical proactiveqa cases. The next experiment is a wording/admission
+   A/B on a fixed slice — that is a product question about how goals are phrased, not a bug.
+3. **The free 1.0 s incident merge** (−17% notifications, precision and recall unchanged) is
+   available but NOT landed: it changes gate semantics for a volume win, which is your call.
+4. **H4 / the conductor.** Its original justification is gone — RepCount improved 0.099 → 0.650 on a
+   frame change alone. Whether a rhythm primitive still earns its build is now an open, measurable
+   question rather than a settled one.
+
+### The most useful artifact here is the graveyard
+13 refuted hypotheses, five of them mine, each killed by a measurement rather than an argument. The
+pattern that held all night: plausible mechanism, wrong layer. Check reachability with `file:line`
+before building anything.
+
+---
+
 ## ✅ RESOLVED — the reflex regression is CLOSED (`23de596`)
 
 The reflex bound landed as a 3-frame evidence cap on the existing route policy.
