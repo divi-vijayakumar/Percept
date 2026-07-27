@@ -35,7 +35,34 @@ Live N=100, both modes, Gemini 3.1 Flash-Lite direct, ordered-image transport, 0
 
 ## OPEN — work these in order
 
-### H6 — CONFIRMED on the proactiveqa slice; full-corpus run in flight
+### H6 — **CONFIRMED, FULL CORPUS N=100.** Cutting reflex 5→3 frames raises recall 4.6×
+
+| run | recall | precision | ASK | FIRE | incidents |
+|---|---|---|---|---|---|
+| reflex 5-frame (baseline) | 0.137 | 0.392 | 85.5% | 2.4% | 186 |
+| **reflex 3-frame** | **0.626** | **0.417** | 31.4% | 15.9% | 1,698 |
+| deliberate 5-frame | 0.684 | 0.486 | 8.3% | 25.7% | 2,338 |
+
+3-frame reflex reaches **92% of deliberate's recall** inside the 1.5 s deadline at a fraction of the
+token cost. Precision improved too. **Every dataset improved:**
+charades 0.700→1.000 · perception_test 0.050→0.800 · repcount 0.099→**0.650** ·
+proactiveqa 0.300→0.650 · omnipro 0.061→0.379.
+
+**This partially refutes H4.** I predicted RepCount would stay poor because a boolean presence Watch
+structurally cannot represent 10 reps. It went 0.099 → 0.650. The structural argument still holds in
+principle — a boolean watch has one rising edge per continuous true-period — but it was clearly NOT
+the dominant limiter; deadline expiry was. H4's priority drops accordingly and its framing needs
+rewriting before any conductor/rhythm work is justified on these grounds.
+
+**Open caveat:** 1,698 incidents for 329 GT occurrences is still 5.2× over-delivery (deliberate is
+7.1×). Over-firing is unfixed.
+
+### H7 (in flight, ~$1.14) — is 3 the right constant, or just the one I happened to test?
+Only 5 and 3 have ever been measured. Landing 3 as a shipped default without checking its neighbours
+would be an unvalidated constant. Stratified n=40 runs at **2** and **4** frames are running to
+bracket it. If 2 ≈ 3, prefer fewer (cheaper, faster). If 4 > 3, the optimum is between 3 and 5.
+
+### ~~H6~~ (original statement) — cutting reflex to 3 frames buys the headroom the deadline needs
 **Like-for-like, 20 proactiveqa cases in BOTH runs:**
 
 | run | recall | precision | ASK | FIRE | SILENT | incidents |
@@ -155,6 +182,8 @@ conductor's job and is next-release architecture; (a) is mechanical.
 | date | what | cost | running total |
 |---|---|---|---|
 | 2026-07-27 | live N=100 × 2 modes (baseline, already spent) | $11.12 | — |
+| 2026-07-27 | H6 reflex N=100 @ 3 frames | ~$1.43 | $48.57 left |
+| 2026-07-27 | H7 bracket 2 + 4 frames, n=40 each | ~$1.14 | **~$47.43 left** |
 | | | | **$50.00 remaining for this loop** |
 
 Record every provider spend here. Stop and report if the remaining budget falls below $5.
