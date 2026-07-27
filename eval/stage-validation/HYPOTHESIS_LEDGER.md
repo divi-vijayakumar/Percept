@@ -344,19 +344,37 @@ Source: 97 corpus videos concatenated to **81.6 min**, 640×360 @15 fps, contain
 **realtime ratio 1.023**, 24,484 frames, **0 decoder drops**, pace lag p50 0.04 s. The run was
 genuinely real-time. Spend $1.535.
 
-#### 🔴 HOLE 1 — the runtime opened ZERO episodes for 73 watch goals over 82 minutes
+#### ✅ NOT A HOLE — zero episodes on a camera source is correct behaviour (my earlier entry was wrong)
 
-`percept/agent.py:2295` — `_document_episode_fold` returns `None` whenever
-`goal.state['rearm'] == 'each_event'`. `_claim_episode_fold` does the same at `agent.py:2371`. That
-is **exactly the event-chain watch shape**, so **no watch goal can ever open an episode.** Episode
-memory is on the critical-path epic and is presently unreachable from the shape watches actually use.
+**Retracted.** The run's agent reported that `_document_episode_fold` returns `None` whenever
+`rearm == 'each_event'`, concluded "no watch goal can ever open an episode", and I recorded that.
+**Both the diagnosis and my repetition of it were wrong.** Checked against the source:
 
-The machinery underneath is fine — driven directly through the public `count_event` API
-(`agent.py:1639`): 4,380 observations → 4,088 episodes opened, 292 continuations, 1,168
-`window_expired` drops. The live-episode curve grows linearly and **flattens exactly at media
-≈3,600 s**, the moment the run crosses `Settings.episodes.window_s`. Per-log live count plateaus at
-40, under `max_episodes=64`. **The window works correctly on the first test that ever crossed it.**
-The fold predicate is the defect, not the episode store.
+1. **The corpus contains ZERO `each_event` goals.** The guard it blamed could not have fired on a
+   single one of the 73 goals. `grep -c each_event corpus.json` → 0.
+2. **There are TWO gates, and the second is the operative one.** After the `each_event` check both
+   folds require an identity policy: `!= "content_key"` → `None` (document fold), `!= "claim_slot"` →
+   `None` (claim fold).
+3. **The run armed `PHYSICAL_SCENE`, whose `identity_strategy` is `track_iou_label`**
+   (`source_profiles_default.py:117`) — neither `content_key` nor `claim_slot`. So both folds
+   correctly returned `None` for every goal.
+
+**This is designed behaviour, not a defect.** On a physical camera scene identity is resolved by IoU
+track labels — the `EntityGraph` — not by document content-keys or claim slots. Episode folds belong
+to *document* sources (`content_key`, `source_profiles_default.py:183`) and claim sources. A camera
+run opening zero episodes is exactly right.
+
+**The real lesson is about the test, not the code:** an 82-minute *camera* run cannot exercise episode
+memory at all. To measure episodes we need a **document/screen source**, which also lines up with the
+standing note that screen content needs a different eye. Episode machinery itself was independently
+shown healthy — driven through the public `count_event` API it opened 4,088 episodes, 292
+continuations, 1,168 `window_expired` drops, and the live curve flattens exactly at media ≈3,600 s
+where `Settings.episodes.window_s` bites. **The window works correctly on the first test that ever
+crossed it.** That result stands.
+
+Open product question this does surface: if episode folds only ever engage for `content_key` /
+`claim_slot` sources, the episode epic does not apply to camera video at all. Worth confirming that is
+the intended scope before the launch claims otherwise.
 
 #### 🔴 HOLE 2 — judge allocation is perfectly fair, and that is the problem
 
