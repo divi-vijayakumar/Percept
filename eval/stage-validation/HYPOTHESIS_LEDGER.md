@@ -226,10 +226,24 @@ tail — so reported occurrence times can be attributed early. Left deliberately
 behaviour there was deadline expiry to UNKNOWN (zero occurrences), and slightly-shifted beats none.
 **Fix shape:** a `structured`/`event_chain` carve-out in `_judge_max_frames`, mirroring how
 `_judge_max_tokens` already treats structured replies. Contained, offline-testable.
-**(b) claim-mode evidence trim.** Claim mode is NOT exempted, unlike in `_terse_reply`/
-`_judge_max_tokens` — those trim the REPLY (and the claim ledger reads corrections off the reply),
-whereas this trims the oldest EVIDENCE. A correction appearing only in a dropped older frame would
-be missed on a reflex claim watch. Decide: exempt claim mode, or accept and document.
+**(b) claim-mode evidence trim — DECIDED 2026-07-27: document, do not exempt.**
+Reachability: `claim_mode` (set when `identity_policy == "claim_slot"`, `agent.py:2769`) and
+`event_chain` (`rearm == "each_event"`, `agent.py:2771`) are INDEPENDENT conditions, so they can
+co-occur, and `_judge_max_frames(*, reflex)` bounds regardless — it takes no `claim_mode` argument.
+So the exposure is real, not theoretical.
+
+**But it is narrow and largely self-limiting.** The bound drops the OLDEST 2 of 5 frames — roughly
+the first 0.8 s of a 2.0 s window — and keeps the newest. A claim correction is a STATE CHANGE: if
+it occurred, the retained newer frames show it. To be missed it would have to be visible ONLY in the
+dropped prefix and NOT afterwards, i.e. transient — which is not a durable claim correction.
+
+**Decision:** exempting claim mode would return those watches to the 5-frame deadline-expiry regime
+(recall 0.137, ASK 85.5%) to protect against a case that is both narrow and self-limiting. Not worth
+it. The reasoning is already written into `_judge_max_frames`'s docstring, which explains why this
+carve-out is deliberately narrower than `_terse_reply`/`_judge_max_tokens` — those trim the REPLY
+(and the claim ledger reads corrections off the reply) whereas this trims only the oldest evidence,
+leaving the mutation channel untouched.
+**Revisit if:** a claim watch is ever run in reflex mode on material where corrections are transient.
 
 ### R2 — over-delivery, untouched by anything so far
 1,698 incidents against 329 GT occurrences = **5.2×** (deliberate is 7.1×). Precision 0.417 means
