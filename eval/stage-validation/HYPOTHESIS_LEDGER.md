@@ -168,13 +168,25 @@ therefore deadline attrition — i.e. H5 — and H2 is a duplicate of it, not a 
 *(Caveat: the fast-judge/slow-judge counter experiment was specified but not actually run; this is
 refuted by code trace plus run data, not by that measurement.)*
 
-### H3 — the run is not reproducible
+### H3 — the run is not reproducible — **STILL OPEN (a first attempt was DEGENERATE)**
 **Evidence:** same case, same build, same config → 16 incidents vs 50 on replay, at entirely
 different timestamps.
 **Why it matters:** until the variance is characterised, no single-run number is a measurement.
-**Kill test (~$0.43):** run the SAME 10 cases 3× in reflex and report per-case incident-count
-variance. Separate provider non-determinism from runtime non-determinism by also running 3× against
-a scripted judge (free) — if variance persists with a fixed judge, it is the runtime.
+
+**Attempt 1 (2026-07-27) — INCONCLUSIVE, not a refutation.** 3 charades cases × 5 repeats with a
+seeded fake judge returned identical results — but **every run produced ZERO incidents**
+(`[0,0,0,0,0]`, gate actions 100% ASK). The tester reported "REFUTED / runtime is deterministic",
+and its own output conceded timestamps were "empty, but would be deterministic if non-empty".
+**A run that fires nothing is trivially reproducible.** The fire path — where the 16-vs-50 variance
+actually appeared — was never exercised. This shows only that a no-fire configuration is stable.
+
+**What would actually settle it:** a fake judge that FIRES — returns `satisfied=True` with confidence
+above the 0.7 gate threshold on a known subset of frames — run 5× on cases that produce a non-zero
+incident count, comparing incident COUNT and TIMESTAMPS across repeats. If those are identical, the
+runtime is deterministic and the variance is provider-side (expected, not a defect). Also worth
+checking whether the fake path involves any wall-clock deadline, since a real timing dependency makes
+bit-identical output impossible by construction.
+**Cost: free (offline).**
 
 ### H4 — cognition: 71% of GT events are scored against a primitive that cannot represent them
 **Evidence:** RepCount = 203 of 329 GT occurrences, recall 0.099, running as a boolean presence Watch.
