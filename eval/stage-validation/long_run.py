@@ -813,8 +813,10 @@ async def run_long(args: argparse.Namespace) -> dict[str, Any]:
                 observed = time.monotonic()
                 judgment = incident_judgment(inc)
                 timing = getattr(judgment, "timing", None)
-                gid = getattr(inc, "goal_id", None) or getattr(
-                    getattr(inc, "goal", None), "id", None)
+                # The contract field is ``concern_id`` (percept/contracts/__init__.py:1394), NOT
+                # ``goal_id``. Reading the wrong name yields None for every incident and silently
+                # empties the per-goal incident column, which is what the first full run reported.
+                gid = getattr(inc, "concern_id", None) or getattr(inc, "goal_id", None)
                 incidents.append({
                     "goal_id": gid,
                     "ts": float(getattr(inc, "ts", 0.0) or 0.0),

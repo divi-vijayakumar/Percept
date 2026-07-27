@@ -337,6 +337,82 @@ than tuned away. Pinned offline via a content-addressed frozen cache (73 decisio
 calls in CI); the optimizer guardrail is untouched and a test asserts it still denies `Goal.state.*`
 to the optimizer. **Authoring and tuning stay separate acts.**
 
+### 🚨 LONG-HORIZON RUN — 82 min, 73 goals, one core. Two launch-relevant holes.
+
+Source: 97 corpus videos concatenated to **81.6 min**, 640×360 @15 fps, container-vs-parts drift
+**0.0 s**. 73 distinct goals armed simultaneously, 315 GT occurrences. Replay wall 5,008.8 s,
+**realtime ratio 1.023**, 24,484 frames, **0 decoder drops**, pace lag p50 0.04 s. The run was
+genuinely real-time. Spend $1.535.
+
+#### 🔴 HOLE 1 — the runtime opened ZERO episodes for 73 watch goals over 82 minutes
+
+`percept/agent.py:2295` — `_document_episode_fold` returns `None` whenever
+`goal.state['rearm'] == 'each_event'`. `_claim_episode_fold` does the same at `agent.py:2371`. That
+is **exactly the event-chain watch shape**, so **no watch goal can ever open an episode.** Episode
+memory is on the critical-path epic and is presently unreachable from the shape watches actually use.
+
+The machinery underneath is fine — driven directly through the public `count_event` API
+(`agent.py:1639`): 4,380 observations → 4,088 episodes opened, 292 continuations, 1,168
+`window_expired` drops. The live-episode curve grows linearly and **flattens exactly at media
+≈3,600 s**, the moment the run crosses `Settings.episodes.window_s`. Per-log live count plateaus at
+40, under `max_episodes=64`. **The window works correctly on the first test that ever crossed it.**
+The fold predicate is the defect, not the episode store.
+
+#### 🔴 HOLE 2 — judge allocation is perfectly fair, and that is the problem
+
+Every one of the 73 goals judged **exactly 60 times**. Gini 0.0, zero starved. Fairness is
+*structural*: a batch judges all admitted goals sequentially (`agent.py:4090`), so nobody is skipped —
+**everybody waits.** Over 4,897 s the scheduler launched only **60 batches**; **16,571 of 16,631
+admissions (99.6%) were superseded.**
+
+**onset→incident p50 79.8 s, max 94.0 s, against a 2 s product gate. The batch period IS the
+latency.** This is the multi-goal scaling wall, and it is not a tuning problem.
+
+Worse, at the shipped single-goal 1.9 s decision deadline **a 73-goal batch is cancelled wholesale**
+(`percept/runtime/worker.py:1120`). The run only produced anything because the deadline was scaled
+73× to 138.7 s and that scaling was declared. A deadline sized for one goal cancelling the entire
+batch is a defect in its own right.
+
+#### Entity graph: the bound HOLDS; what it buys is churn
+
+`max_entities=64` saturates at media 15 s and stays saturated for **99.7%** of the run. 20,184 ingest
+batches / 102,030 observations → 58,101 tracks minted, 58,037 evicted, 64 live at every sample.
+Lifetime p50 **0.0 s**, touches per track p50 1. 35,460 fragmentations, 7,934 re-ids past the 1.0 s
+coast horizon. **Zero label switches, zero resurrections of an evicted id** — eviction is clean and
+monotonic (`percept/entity.py:202`). At this observation density the graph is a **64-slot LRU, not a
+memory**. Caveat that limits the claim: observations came from a harness-local motion-blob detector at
+frame rate, so the tracks are moving *regions*, not semantic entities. The association/eviction logic
+measured is the shipped `EntityGraph`.
+
+#### Metering defects
+
+- **`funnel.refused` double-counts.** 7,480 = exactly 2 × `gate.ask` (3,740), and exceeds the 4,380
+  judged ticks — no one-per-tick counter can produce that. Sites: `agent.py:4278` (degraded) and
+  `agent.py:4321` (`truth == "unknown"`).
+- **`stats.admission_by_cause` is in frame×goal units** (sums to 1,214,063 = 73 × 16,631) while
+  `escalations` is in frame units. Two different denominators under one report.
+- The primary ledger itself reconciles **exactly**: 24,484 frames = emitted = `edge.decision` =
+  16,631 admitted + 7,853 suppressed. Admission residual **0**. `judge.started` = `judge.finished` =
+  `gate.classified` = 4,380.
+
+#### ✅ Memory is clean
+
+334 samples. RSS 219.4 MB start → 272.5 MB peak → 132.5 MB end. Least-squares slope **−43.3 MB/h** —
+net negative drift. No leak with 73 goals, 58k entity mints and 4k episodes over 82 minutes.
+
+#### Defects in the harness itself, self-caught
+
+- First builder used `scale=640:-2`, giving parts different heights; `-c copy` concat produced a file
+  with correct duration and timestamps whose **pixels froze after the first part**. Two live runs
+  (~$0.41) were spent before anyone checked the pixels. Fixed with fixed-geometry letterboxing and a
+  mandatory `verify_content()` gate (`build_long_run.py:118`) that refuses to publish a manifest
+  unless sampled frames actually differ.
+- Per-goal incident counts read `inc.goal_id`; the contract field is `concern_id`
+  (`contracts/__init__.py:1394`). **This run's per-goal incident column is unusable; the totals are
+  not.**
+- Provider latency was NOT measured on a quiet host — another agent ran concurrently. Same
+  orchestration error as the resolution arm.
+
 ### 🚨 METHODOLOGY DEFECT — recall is not reproducible run-to-run; it tracks machine load
 
 **This is the most consequential finding in the ledger and it retroactively limits every
