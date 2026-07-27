@@ -294,6 +294,16 @@ class RuntimeStats:
     audio_rejected: int = 0
     # Per-Watch admission accounting. A fixed opportunity is a fixed-cadence condition whose interval
     # elapsed; every such opportunity admits exactly that goal in the in-process topology.
+    #
+    # UNITS — this block is (frame x goal), NOT frames. One admitted frame admits every goal that
+    # cleared its own bar, so on a run where G goals admit together these count G per frame:
+    #     sum(admission_by_goal.values()) == sum(admission_by_cause.values()) == goal_admissions
+    #     goal_admissions >= escalations  (`escalations` is the FRAME count; equal only when G == 1)
+    # Two denominators, deliberately: `escalations` answers "how many frames did the eye buy?" and
+    # this block answers "which goal, and on what evidence, did the buying?". Read one for the other
+    # and a 73-goal run looks like it escalated 73x the frames it did. `judge_calls` is per JUDGE
+    # CALL — i.e. per (frame x goal) that reached a provider — so it is the one comparable to
+    # `goal_admissions`, never to `escalations`.
     fixed_opportunities: int = 0
     goal_admissions: int = 0
     admission_by_goal: dict[str, int] = field(default_factory=dict)
@@ -539,6 +549,34 @@ async def _deliver_materialized(
         coverage.incidents += 1
         delivered.append(incident)
     return tuple(delivered)
+
+
+def _batch_slots(core: Any) -> int:
+    """The core's bounded judge-concurrency, or 1 for a core that publishes no such seam.
+
+    ONE bound, declared in one place (``Percept.effective_judge_concurrency``), so the runtime's own
+    fan-out can never exceed what the deployment's judge routes declared they can hold.
+    """
+    resolve = getattr(core, "effective_judge_concurrency", None)
+    if not callable(resolve):
+        return 1
+    try:
+        return max(1, int(resolve()))
+    except Exception:  # noqa: BLE001 - a bound read must never break dispatch
+        return 1
+
+
+def _decision_waves(core: Any, count: int) -> int:
+    """How many bounded concurrency waves a batch of ``count`` judge calls needs.
+
+    The core fans a frame's admitted goals out against a bounded slot pool
+    (``Percept.effective_judge_concurrency``), so a batch of N goals resolves in
+    ``ceil(N / slots)`` waves of roughly one call each. A core that does not publish the seam is
+    assumed to judge serially, which is what it did before the seam existed.
+    """
+    if count <= 1:
+        return 1
+    return max(1, math.ceil(count / _batch_slots(core)))
 
 
 class _LegacyJudgeScheduler:
@@ -1076,6 +1114,69 @@ class _LegacyJudgeScheduler:
         )
         task.add_done_callback(self._on_abandoned_done)
 
+    def _batch_goal_count(self, goal_ids: "tuple[str, ...] | None") -> int:
+        """How many goals one admitted frame will judge — the batch's real width."""
+        if goal_ids is not None:
+            return len(goal_ids)
+        active = getattr(getattr(self._core, "goals", None), "active", None)
+        if not callable(active):
+            return 1
+        try:
+            return len(list(active()))
+        except Exception:  # noqa: BLE001 - a batch-size read must never break dispatch
+            return 1
+
+    def _batch_deadline_s(
+        self,
+        goal_ids: "tuple[str, ...] | None",
+    ) -> float | None:
+        """The absolute backstop for a WHOLE admitted frame, derived from the PER-DECISION one.
+
+        THE DEFECT THIS FIXES. ``decision_deadline_s`` is authored against a single judgment —
+        :data:`~percept.backends.judge_pool.REFLEX_DECISION_DEADLINE_S` is one provider deadline plus
+        the measured non-provider margin, and every caller that sets it is thinking about one goal's
+        answer. The scheduler, however, spends it on a batch: one admitted frame judges every
+        admitted goal. Applying a one-decision number to an N-goal batch cancelled the batch
+        WHOLESALE — 73 goals, one deadline, nothing delivered, including the goals that had already
+        answered — which is a strictly worse failure than any goal being late.
+
+        THE PER-GOAL DEADLINE IS NOT THIS LAYER'S. It is already enforced one layer down, per call:
+        :attr:`JudgePool.deadline_s` cancels a call at
+        :data:`~percept.backends.judge_pool.REFLEX_PROVIDER_DEADLINE_S` and fails it closed to an
+        UNKNOWN-shaped verdict, and ``Percept._safe_timed_judge`` degrades exactly that goal's tick
+        to ASK while its neighbours commit normally. That is the deadline with latency semantics.
+
+        WHAT THIS NUMBER IS. Not a latency budget — a **structural worst case**, used as a backstop
+        against an adapter that ignores cancellation. Because every call is individually bounded
+        above, a batch of N goals at K concurrency slots cannot exceed ``ceil(N / K)`` waves of one
+        bounded call each, so ``per_decision x waves`` IS that ceiling. (It over-counts the
+        non-provider margin, which is per-decision and does not repeat per wave, by ``(waves - 1) x
+        REFLEX_DECISION_MARGIN_S`` — 3.6s inside 84s at N=73/K=8, ~4%. Reclaiming that would mean
+        importing a backend constant into the runtime to buy 4% of a backstop, which is a worse
+        trade than the rounding.)
+
+        THE MULTIPLIER IS NOT AN ARTIFACT OF THE OLD SEQUENTIAL BATCH. ``waves`` counts what a
+        BOUNDED-concurrency batch physically does, and it collapses to 1 the moment the bound is wide
+        enough to hold the batch — at ``K >= N`` this returns exactly ``decision_deadline_s``,
+        unscaled. The lever for a narrower budget is therefore ``judge_concurrency``, not this
+        formula: raising K shrinks the batch's real makespan and its backstop together, which is the
+        only way to shrink a bound honestly.
+
+        ORDERING, WHICH THE CALLER SHOULD READ. At the shipped 8.4s and K=8, a 73-goal batch's
+        backstop is 84s — above ``stall_after_s`` (20.0s), so the LOUD health event
+        (``judge_scheduler_stalled``) fires long before the silent wholesale cancellation. That
+        ordering is correct and deliberate: a backstop that fires before the report would be the
+        defect again. It also means the backstop is effectively unreachable on a wide source, which
+        is the intended state — it exists for the adapter that ignores its own deadline, not for
+        ordinary tail latency.
+        """
+        if self._decision_deadline_s is None:
+            return None
+        return self._decision_deadline_s * _decision_waves(
+            self._core,
+            self._batch_goal_count(goal_ids),
+        )
+
     async def _dispatch_active(
         self,
         frame: Any,
@@ -1100,8 +1201,11 @@ class _LegacyJudgeScheduler:
                     terminal_sources=self._active_terminal_sources,
                 )
                 raise
+        batch_deadline_s = self._batch_deadline_s(
+            kwargs.get("goal_ids", self._active_filter_goal_ids)
+        )
         age_s = max(0.0, self._mc_now(t) - admitted_wall)
-        remaining_s = self._decision_deadline_s - age_s
+        remaining_s = batch_deadline_s - age_s
         if remaining_s > 0.0:
             try:
                 done, _ = await asyncio.wait(
@@ -1138,6 +1242,7 @@ class _LegacyJudgeScheduler:
                     "active_t": t,
                     "age_s": elapsed_s,
                     "decision_deadline_s": self._decision_deadline_s,
+                    "batch_deadline_s": batch_deadline_s,
                     "slot": "active",
                 },
             )
@@ -1181,8 +1286,11 @@ class _LegacyJudgeScheduler:
                 funnel.dropped(reason="goals_revision_changed", camera=self._source)
             return
         if self._decision_deadline_s is not None:
+            # Same derivation as the active slot: a candidate queued behind an N-goal batch is not
+            # stale merely because a ONE-goal budget elapsed while that batch was running.
+            batch_deadline_s = self._batch_deadline_s(goal_ids)
             age_s = max(0.0, self._mc_now(t) - admitted_wall)
-            if age_s >= self._decision_deadline_s:
+            if age_s >= batch_deadline_s:
                 if self._stats is not None:
                     self._stats.judge_deadline_dropped += 1
                 self._trace.append(
@@ -1194,6 +1302,7 @@ class _LegacyJudgeScheduler:
                             "dropped_t": t,
                             "age_s": age_s,
                             "decision_deadline_s": self._decision_deadline_s,
+                            "batch_deadline_s": batch_deadline_s,
                             "slot": "pending",
                         },
                     )
@@ -1799,6 +1908,41 @@ class _JudgeScheduler:
         )
         task.add_done_callback(self._on_abandoned_done)
 
+    def _batch_size(self, jobs: tuple[Any, ...]) -> int:
+        """How many judge calls this launch will spend."""
+        if self._split_protocol:
+            return len(jobs)
+        try:
+            _, _, goal_ids = jobs
+        except (TypeError, ValueError):
+            return 1
+        if goal_ids is not None:
+            return len(goal_ids)
+        active = getattr(getattr(self._core, "goals", None), "active", None)
+        if not callable(active):
+            return 1
+        try:
+            return len(list(active()))
+        except Exception:  # noqa: BLE001 - a batch-size read must never break dispatch
+            return 1
+
+    def _batch_deadline_s(self, jobs: tuple[Any, ...]) -> float | None:
+        """The whole batch's absolute backstop, derived from the per-decision ``decision_deadline_s``.
+
+        See ``_LegacyJudgeScheduler._batch_deadline_s`` for the full argument; the defect, the fix
+        and the ordering against ``stall_after_s`` are identical on both dispatch protocols. Per-goal
+        lateness stays a per-goal outcome (``JudgePool.deadline_s``, then the fail-closed degrade to
+        ASK); only the batch's own absolute abort is sized to the structural worst case an N-goal
+        batch can reach at the configured concurrency, and it collapses to the unscaled per-decision
+        value whenever the bound is wide enough to hold the batch in one wave.
+        """
+        if self._decision_deadline_s is None:
+            return None
+        return self._decision_deadline_s * _decision_waves(
+            self._core,
+            self._batch_size(jobs),
+        )
+
     async def _dispatch_with_deadline(
         self,
         jobs: tuple[Any, ...],
@@ -1808,8 +1952,9 @@ class _JudgeScheduler:
     ) -> tuple[Any, ...] | list[Any]:
         if self._decision_deadline_s is None:
             return await self._dispatch(jobs, t=t)
+        batch_deadline_s = self._batch_deadline_s(jobs)
         age_s = max(0.0, self._mc_now(t) - admitted_wall)
-        remaining_s = self._decision_deadline_s - age_s
+        remaining_s = batch_deadline_s - age_s
         if remaining_s <= 0:
             if self._stats is not None:
                 self._stats.judge_deadline_expired += 1
@@ -1822,6 +1967,7 @@ class _JudgeScheduler:
                         "active_t": t,
                         "age_s": age_s,
                         "decision_deadline_s": self._decision_deadline_s,
+                        "batch_deadline_s": batch_deadline_s,
                     },
                 )
             )
@@ -1853,6 +1999,7 @@ class _JudgeScheduler:
                     "active_t": t,
                     "age_s": elapsed_s,
                     "decision_deadline_s": self._decision_deadline_s,
+                    "batch_deadline_s": batch_deadline_s,
                     "slot": "active",
                 },
             )
@@ -1884,6 +2031,20 @@ class _JudgeScheduler:
                 self._source,
                 **kwargs,
             )
+        # DELIBERATELY SEQUENTIAL — this loop is not the batch-latency defect, and fanning it out
+        # would break a guarantee that has a name and a test. A route may declare
+        # ``terminal_outcomes``; when it does, ``take_terminal_error`` latches after the job that
+        # tripped it and this loop must spend NO further provider call (see
+        # ``test_terminal_goal_bound_adapter_stops_rest_of_split_batch``). That is only enforceable
+        # if the next job has not started yet, so "check between jobs" and "run jobs concurrently"
+        # are mutually exclusive here and the fail-closed reading wins.
+        #
+        # It costs nothing today: no production ``run()`` path constructs a split-protocol
+        # ``_JudgeScheduler`` — every live judge lane goes through ``_LegacyJudgeScheduler`` into
+        # ``Percept.perceive_judged``, which IS batched concurrently (see its dispatch/apply passes).
+        # If this protocol ever becomes the live lane, the fan-out belongs here too — but only once
+        # the terminal-abort contract has been re-expressed as something a concurrent batch can
+        # honour (e.g. a pre-dispatch latch check plus immediate cancellation), not by deleting it.
         completions = []
         for job in jobs:
             completions.append(await self._core.dispatch_judgment(job))
@@ -6992,6 +7153,11 @@ async def _run_worker(
                 "fixed_admits": _cov.fixed_admits,
                 "coast_admits": _cov.coast_admits,
                 "audio_wakes": _cov.audio_wakes,
+                # ...and the per-(FRAME x GOAL) accounting below it, which uses the OTHER
+                # denominator on purpose (see RuntimeStats): both maps sum to `goal_admissions`,
+                # never to `admitted`, because one admitted frame admits every goal that cleared its
+                # bar. A dashboard that puts `admission_by_cause` beside `admitted` is comparing a
+                # goal count to a frame count.
                 "fixed_opportunities": _cov.fixed_opportunities,
                 "goal_admissions": _cov.goal_admissions,
                 "admission_by_goal": dict(_cov.admission_by_goal),

@@ -183,7 +183,14 @@ class Funnel:
         self._stage("judged", concern=concern, camera=camera, n=n)
 
     def refused(self, *, concern: str | None = None, camera: str | None = None, n: int = 1) -> None:
-        """The gate abstained (ASK — refused to guess) for ``concern``."""
+        """The gate abstained (ASK — refused to guess) for ``concern``.
+
+        ONE per judged tick, at most: a tick either resolves to a truth or abstains, so
+        ``refused <= judged`` holds for every driver and every dispatch mode, and ``refused``
+        equals the gate's own ASK tally whenever no tick degraded. A caller that bumps this at
+        BOTH a classification point and the emission of the resulting ASK counts each abstention
+        twice and breaks that bound — which is exactly how the counter once out-ran ``judged``.
+        """
         self._stage("refused", concern=concern, camera=camera, n=n)
 
     def fired(self, *, concern: str | None = None, camera: str | None = None, n: int = 1) -> None:

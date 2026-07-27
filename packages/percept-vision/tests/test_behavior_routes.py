@@ -26,6 +26,7 @@ from percept.edge.tier0 import (
     GatedWatchLoop,
     compile_watchspec,
     gray_frame,
+    run_gated_watch,
     watchspec_unsupported,
 )
 from percept.incidents import make_incident
@@ -486,12 +487,95 @@ class WorkerPreflightTests(unittest.TestCase):
         self.assertEqual(asyncio.run(_collect(core, source)), [])
         self.assertEqual(source.pulls, 1)
 
-    def test_gated_loop_rejects_undriven_external_route_at_construction(self):
+    def test_gated_loop_refuses_a_route_nothing_can_drive_before_a_frame_is_pulled(self):
+        """The construction-time refusal, kept — and now scoped to the routes it was ever true of.
+
+        This test used to pin ``type="event"`` (a HOST-driven route) as fatal at construction, which
+        made :class:`GatedWatchLoop` the last driver where one such goal still killed every Watch
+        beside it. What it was really protecting is asserted here instead, and unchanged: for a
+        route nothing can drive, the loop refuses in ``__init__`` — nothing is compiled into the
+        gate, the stream is never pulled, and no judge or detector call is spent.
+        """
+        vision = _RouteVision({})
+        core = Percept.create(vision=vision, discover_plugins=False)
+        core.add_goal(Goal("watch", "watch", "watch"))
+        core.goals.get("watch").state["type"] = "wobble"  # corrupt it PAST the arm-time gate
+        pulled: list[int] = []
+
+        def stream():
+            pulled.append(1)
+            yield (0.0, STILL)
+
+        with self.assertRaises(UnsupportedBehaviorRouteError) as caught:
+            asyncio.run(run_gated_watch(core, stream()))
+
+        self.assertEqual(caught.exception.unsupported[0].authored_type, "wobble")
+        self.assertIn("GatedWatchLoop cannot drive", str(caught.exception))
+        self.assertEqual(pulled, [])  # refused before the stream was ever consumed
+        self.assertEqual(vision.judge_calls, [])
+        self.assertEqual(vision.detect_calls, 0)
+
+    def test_gated_loop_skips_a_host_driven_route_instead_of_killing_the_watch_beside_it(self):
+        """The same composition rule ``percept.run`` follows — one driver, one behaviour.
+
+        A ``count`` goal armed next to a ``watch`` goal on one source is exactly the topology this
+        SDK's own advice produces ("drive it with ``Percept.perceive_boundary``"). It has a
+        complete, shipped driver; this loop is simply not it. So it is excluded from the compiled
+        spec and REPORTED — on the three channels ``percept.run`` reports on, with the same text and
+        only the driver name differing — never allowed to decide the watch goal's fate.
+        """
+        vision = _RouteVision({})
+        core = Percept.create(vision=vision, discover_plugins=False)
+        core.add_goal(Goal("watch", "watch", "watch"))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            core.add_goal(Goal("count", "count", "count", state={"type": "count"}))
+        health: list = []
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with self.assertLogs("percept.harness.tier0", level="WARNING") as logs:
+                loop = GatedWatchLoop(core, on_health=health.append)
+                report = asyncio.run(loop.run([(0.0, STILL), (1.0, MOVED)]))
+
+        # 1. The unrelated watch goal was compiled and the loop ran it — the whole point.
+        self.assertEqual([c.goal_id for c in loop.spec.conditions], ["watch"])
+        self.assertEqual(report.frames, 2)
+        # 2. The count goal bought nothing: no condition, no admission, no judge.
+        self.assertNotIn("count", report.admission_by_goal)
+        self.assertEqual({condition for condition, _ in vision.judge_calls}, {"watch"})
+        # 3. ...and it was not skipped silently — warning, log, and structured health, once each.
+        skipped = [w for w in caught if issubclass(w.category, UndrivenBehaviorRouteWarning)]
+        self.assertEqual(len(skipped), 1)
+        message = str(skipped[0].message)
+        self.assertIn("GatedWatchLoop is running source 'camera'", message)
+        self.assertIn("'count'", message)
+        self.assertIn("Percept.perceive_boundary('count', t=...)", message)
+        self.assertTrue(
+            any("undriven_behavior_route" in line and "'count'" in line for line in logs.output),
+            logs.output,
+        )
+        undriven = [e for e in health if e.kind == "undriven_behavior_route"]
+        self.assertEqual([e.data["goal_id"] for e in undriven], ["count"])
+        self.assertEqual(undriven[0].data["route"], "external_boundary")
+        self.assertEqual(undriven[0].data["driver"], "GatedWatchLoop")
+        self.assertIn("Percept.perceive_boundary", undriven[0].data["remedy"])
+        self.assertEqual(loop.skipped_routes, [e.data for e in undriven])
+        # 4. The goal the loop skipped is still armed, and its documented driver still fires it.
+        self.assertIsNotNone(core.perceive_boundary("count", t=9.0))
+
+    def test_gated_loop_lets_a_strict_deployment_keep_the_old_abort(self):
+        # The knob is the same one the arm seam and percept.run document, so nobody who WANTED the
+        # construction-time abort loses it — they opt in instead of everyone paying for it.
         core = Percept.create(vision=_RouteVision({}), discover_plugins=False)
-        goal = Goal("event", "event", "event", state={"type": "event"})
-        core.add_goal(goal)
-        with self.assertRaises(UnsupportedBehaviorRouteError):
-            GatedWatchLoop(core)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            core.add_goal(Goal("watch", "watch", "watch"))
+            core.add_goal(Goal("event", "event", "event", state={"type": "event"}))
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UndrivenBehaviorRouteWarning)
+            with self.assertRaises(UndrivenBehaviorRouteWarning):
+                GatedWatchLoop(core)
 
     def test_gated_loop_filters_source_before_route_preflight_and_compilation(self):
         core = Percept.create(vision=_RouteVision({}), discover_plugins=False)

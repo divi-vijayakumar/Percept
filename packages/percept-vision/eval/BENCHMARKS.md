@@ -35,9 +35,17 @@ A User-facing number requires a real-time run; if you don't have one, write **"n
   ±3s; our PAUC). **Compute-agnostic** — leaderboards run **offline, frame-by-frame**; a slow model isn't
   penalized (the emit carries a video timestamp). We measure this; it's apples-to-apples.
 - **Wall-clock / voice-to-voice:** *event → response in real ms* (TML's "200ms"). **Not on any leaderboard**;
-  each lab self-reports. Percept's = edge gate (ms) + **VLM round-trip (dominant, ~0.5–2s)** + core gate (ms)
-  → a **~1–2s event-to-alert watcher** with a frontier VLM, **not** a 200ms native model. Different operating
-  point — state it.
+  each lab self-reports. Percept's = edge gate (ms) + **VLM round-trip (dominant)** + core gate (ms) — a
+  cognition-on-VLM watcher, **not** a 200ms native model. Different operating point — state it.
+- **STATE IT AS A DISTRIBUTION, NEVER AS A RANGE OR A DEADLINE.** This line used to read "~1–2s
+  event-to-alert watcher". That was a deadline's shadow, not a measurement: the 1.5s reflex provider
+  deadline sat *below* the median call time (p50 1.653s), so 5,224 of 7,304 calls expired unanswered and
+  every sample that would have exceeded the range had already been discarded. Report **p25 / p50 / p95 +
+  max + n + conditions** (model, transport, frame count, corpus), with unmeasured fields written as `—`.
+  The current statement lives in `percept/slo.py` §5 — `judge_latency_promise()` prints it. Measured
+  today: deliberate p50 **1.653s**, p95 **2.2834s** (uncensored, n=100 corpus, build `2d5097d`,
+  gemini-3.1-flash-lite); **reflex-uncensored is PENDING** and must be written as pending, not
+  approximated from the deliberate figures.
 - **RULE: never compare a video-time number to a wall-clock number** (our time_F1 vs TML's 200ms = invalid).
 
 ### 1d. Layer-coverage declaration — every run states what it exercised
@@ -60,8 +68,12 @@ RethinkingVAD / SmartHome-Bench) or as **selective prediction** (risk–coverage
 1. Label which latency (video-time vs wall-clock); qualify "real-time" (**causal-streaming** ✓ vs **low-wall-clock** ✗).
 2. Never compare across axes (Core vs User-facing; video-time vs wall-clock).
 3. Lead with the controlled A/B; mark external comparisons as reference bars.
-4. State the operating point (cognition-on-VLM ~1–2s vs native ~200ms).
-5. Flag every favorable subset, perception-model substitution, and judge mismatch.
+4. State the operating point (cognition-on-VLM vs native ~200ms) — and state latency as a
+   **p25/p50/p95 + max + n + conditions** distribution, never a range and never a deadline figure.
+5. **Never quote a censored distribution.** If a deadline was in force during collection, every sample
+   above it was discarded, so the percentiles describe the deadline, not the provider. Say "censored at
+   Xs" or don't report it. (`percept.slo.LatencyDistribution` refuses to mark such a run publishable.)
+6. Flag every favorable subset, perception-model substitution, and judge mismatch.
 
 ### 1g. Standing checklist for any new run
 ☐ Controlled A/B (perception constant) + reference bar if external · ☐ Layer-coverage declaration (1d) ·

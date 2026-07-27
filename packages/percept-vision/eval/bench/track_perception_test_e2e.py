@@ -27,6 +27,8 @@ from typing import Any
 from percept import InterestSubscription, Percept
 from percept.adapters import Goal as ContractGoal
 from percept.backends.judge_pool import (
+    REFLEX_DECISION_DEADLINE_S,
+    REFLEX_PROVIDER_DEADLINE_S,
     JudgeCapability,
     JudgePool,
     JudgeRoute,
@@ -40,6 +42,11 @@ from percept.incidents import incident_judgment
 from percept.resolver import ConfigResolver
 from percept.runtime import NativeVideoVision, RuntimeStats, TemporalImageVision
 from percept.runtime.source import open_source
+from percept.slo import (
+    JUDGE_ROUND_TRIP_LATENCY,
+    JUDGE_ROUND_TRIP_P95_CEILING_S,
+    REFLEX_JUDGE_LATENCY,
+)
 from percept.runtime.worker import run as worker_run
 from percept.sampling import SamplingController, SensePolicy
 from percept.sensorplan import sensor_plan_for
@@ -85,11 +92,19 @@ _CAPTURE_HEADROOM_FPS = 8.0
 # latency into an uncontrolled memory spike. A small blocking queue bounds memory and backpressures
 # only the benchmark decoder; ``open_source`` retains latest-frame semantics everywhere else.
 _FIXTURE_QUEUE_SIZE = 8
-# One hard action budget, split so provider/evidence work cannot consume the
-# full user-visible reflex envelope. The measured launch gate remains strict
-# action-onset -> Incident under 2 seconds.
-ACTION_PROVIDER_DEADLINE_S = 1.5
-ACTION_DECISION_DEADLINE_S = 1.9
+# One hard action budget, split so provider/evidence work cannot consume the whole per-decision
+# envelope. Both halves are the SHIPPED operating point, imported rather than restated here so the
+# benchmark cannot silently diverge from what the library actually does.
+#
+# WAS 1.5s / 1.9s, AND THAT WAS THE DEFECT. The 1.5s provider half sat BELOW the median call time
+# (measured p50 1.653s), so over half of every run's calls could not finish: 5,224 of 7,304 reflex
+# calls expired and only 960 returned decisive, which is where reflex's 0.137 end-to-end recall came
+# from against deliberate's 0.684 on identical frames. The benchmark was measuring its own deadline.
+#
+# These are HANG GUARDS now, not a latency claim. The run still records what it measured — see the
+# ``latency`` block in the config record below, which reports the distribution rather than a bar.
+ACTION_PROVIDER_DEADLINE_S = REFLEX_PROVIDER_DEADLINE_S
+ACTION_DECISION_DEADLINE_S = REFLEX_DECISION_DEADLINE_S
 
 
 def cadence_policy(cadence: dict) -> SensePolicy:
@@ -1878,9 +1893,27 @@ def score(*, live: bool, n: int) -> TrackResult:
             },
             "decision": {
                 "confidence_threshold": settings.gate.threshold,
+                # HANG GUARDS, not a latency claim — a run may not quote either as its latency.
                 "provider_deadline_s": ACTION_PROVIDER_DEADLINE_S,
                 "absolute_decision_deadline_s": ACTION_DECISION_DEADLINE_S,
-                "reflex_action_to_fire_s": 2.0,
+                "deadline_semantics": (
+                    "hang guard sized so a judgment completes; the latency figure is the measured "
+                    "distribution under 'latency' below, never one of these numbers"
+                ),
+                # Replaces the former "reflex_action_to_fire_s": 2.0 — a single envelope figure the
+                # pipeline was never measured to clear, and which the old 1.5s deadline enforced by
+                # discarding every call that would have disproved it.
+                "latency": {
+                    "promise": "distribution (p25/p50/p95 + max + n + conditions)",
+                    "best_available": JUDGE_ROUND_TRIP_LATENCY.describe(),
+                    "reflex_uncensored": (
+                        "PENDING"
+                        if REFLEX_JUDGE_LATENCY is None
+                        else REFLEX_JUDGE_LATENCY.describe()
+                    ),
+                    "p95_regression_bar_s": JUDGE_ROUND_TRIP_P95_CEILING_S,
+                    "p95_bar_basis": "measured, not aspirational (percept.slo §5)",
+                },
                 "freshness_min": Gate().fresh_min,
                 "require_false_first": settings.gate.require_false_first,
                 "refractory_s": settings.gate.refractory_s,

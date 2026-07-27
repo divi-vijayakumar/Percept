@@ -17,6 +17,39 @@ Provider adapters can still own their retry/circuit-breaker mechanics.  The
 pool's outer deadline is authoritative for the Watch: retries that cannot
 finish within it are cancelled, and a cancellation-hostile adapter continues
 to occupy its bounded route slot instead of allowing an unbounded task leak.
+
+WHAT THE DEADLINE IS, AND IS NOT
+--------------------------------
+``deadline_s`` is a **hang guard**, not a latency promise.  It exists so a wedged
+or pathologically slow provider cannot hold a route slot indefinitely; it is not
+a figure any caller should read as "a judgment arrives within this long".  The
+latency Percept actually reports is a measured DISTRIBUTION — see
+:mod:`percept.slo` §5 (``JUDGE_ROUND_TRIP_LATENCY`` and friends), which publishes
+p25/p50/p95 + max + n + the conditions they were measured under.
+
+This distinction was learned the expensive way.  The deadline was once set BELOW
+the median provider call time (1.5s against a p50 of 1.653s), which meant over
+half of all reflex calls physically could not finish: on an n=100 corpus 5,224 of
+7,304 reflex calls expired and only 960 returned decisive, dragging end-to-end
+recall to 0.137 against 0.684 for the same frames on the deliberate path.  The
+gap was cancellation, not judgment quality — and the "measured" reflex latency
+distribution of that run (p50 1.365s / p95 1.4726s / max 1.5155s) was simply the
+deadline's own shadow, since every sample above 1.5s had been thrown away.
+
+WHAT REFLEX IS
+--------------
+``mode='reflex'`` is the **cheap, terse, bounded-evidence** path.  Positively, and
+independent of any clock, a reflex route:
+
+* sends BOUNDED evidence — the most recent frames only (``_REFLEX_MAX_FRAMES``,
+  ``percept/backends/anthropic.py``), never the full retained strip;
+* asks for a BOUNDED reply — the two fields the gate actually reads
+  (``satisfied``/``confidence``), not prose (``_REFLEX_MAX_TOKENS``);
+* is ROUTE-SELECTIVE — only adapters that declare ``'reflex'`` in
+  :attr:`JudgeCapability.modes` may serve it.
+
+It is therefore the low-token, low-cost lane, and it stays a distinct mode.  What
+it is no longer is "the lane defined by a deadline it loses".
 """
 
 from __future__ import annotations
@@ -67,6 +100,54 @@ _EVIDENCE_SHAPE_CONTEXT_KEY = "_percept_evidence_shape"
 #: never surfaced to the model as a fact.
 LATENCY_MODE_CONTEXT_KEY = "_percept_latency_mode"
 REFLEX_LATENCY_MODE = "reflex"
+
+
+# --- the reflex operating point: a hang guard, derived from the measured distribution ------------
+#
+# DERIVATION (measured, not chosen — build 2d5097d, gemini-3.1-flash-lite, n=100 corpus).
+#
+# The only UNCENSORED provider-latency figures we have for this corpus are the deliberate-mode ones
+# (p50 1.653s, p95 2.2834s), because the reflex distribution of that same run was truncated by the
+# very deadline being replaced.  A reflex call sends strictly LESS than a deliberate one (bounded
+# frames, bounded reply), so the deliberate p95 is a CONSERVATIVE upper bound on the reflex p95 and
+# is used as the working figure until the reflex-uncensored run lands.
+#
+# The floor the ceiling must clear.  The adapters ship a resilience policy of
+# ``with_retry(attempts=3, base_delay_s=0.2)`` (``percept/backends/_resilience.py``).  At 1.5s that
+# policy was UNREACHABLE: the pool cancelled partway through the FIRST attempt, so the two retries
+# the code pays for could never run.  A deadline that lets the shipped policy actually execute must
+# cover three attempts at the measured p95 plus the deterministic backoff between them:
+#
+#     3 x 2.2834s  +  (0.2s + 0.4s)  =  7.4502s   ->  rounded up to the next whole second = 8.0s
+#
+# The ceiling it must stay under.  Two guards already exist above this one and must keep their
+# ordering, or this deadline becomes dead code:
+#
+#   * the runtime's own "this judgment has hung" health threshold, ``stall_after_s`` (default 20.0s,
+#     ``percept/runtime/worker.py``) — 8.0s is 2.5x below it, so the pool still cancels FIRST and the
+#     stall event stays what it is, a report on something the pool failed to bound;
+#   * the transport-level per-attempt socket guard, ``_REQUEST_TIMEOUT_MS = 120_000``
+#     (``percept/backends/gemini.py``) — the real wedged-socket protection, 15x above this.
+#
+# Sanity-check against the tail, which is what "generous" has to mean here: 8.0s is 3.50x the
+# measured p95 and 3.06x the p99 implied by fitting a log-normal to the measured (p50, p95) pair
+# (2.611s; p99.9 = 3.033s).  Comfortably above the tail, well inside the hang guards.
+#
+# THIS IS A DECLARED COST, NOT A TUNING.  A pipeline that answers in seconds is a different product
+# from one that fails to answer in 1.5s; the trade is slower and honest, and no metric was consulted
+# in picking the number.
+REFLEX_PROVIDER_DEADLINE_S = 8.0
+
+#: The NON-PROVIDER share of one decision — admission queue wait plus decision overhead — measured
+#: at 0.241s on the same corpus (see ``percept/backends/anthropic.py``). It does not scale with
+#: provider latency, so the old 1.5s/1.9s pair's intent is preserved as an ABSOLUTE +0.4s margin
+#: (~1.66x the measured overhead), never as that pair's 1.267x RATIO, which would have inflated the
+#: allowance to ~2.1s for no measured reason.
+REFLEX_DECISION_MARGIN_S = 0.4
+
+#: The absolute per-decision budget measured from admission, for a caller wiring the async lane's
+#: ``judge_decision_deadline_s``. Provider deadline + the non-provider margin above.
+REFLEX_DECISION_DEADLINE_S = REFLEX_PROVIDER_DEADLINE_S + REFLEX_DECISION_MARGIN_S
 
 
 @dataclass(frozen=True)
@@ -236,12 +317,17 @@ def _evidence_shape(
 
 
 class JudgePool:
-    """A bounded Vision judge router with one authoritative decision deadline.
+    """A bounded Vision judge router with one authoritative hang-guard deadline.
 
     ``mode='reflex'`` rejects routes whose declared latency SLO exceeds
     ``deadline_s``.  ``mode='deliberate'`` may use any route that explicitly
     declares deliberate support, but the same configured hard deadline still
     bounds this pool instance.
+
+    ``deadline_s`` defaults to :data:`REFLEX_PROVIDER_DEADLINE_S` — a ceiling
+    sized so a judgment COMPLETES (see that constant's derivation), not a
+    latency promise.  Percept's latency promise is the measured distribution in
+    :mod:`percept.slo` §5, never this number.
     """
 
     def __init__(
@@ -249,7 +335,7 @@ class JudgePool:
         routes: Iterable[JudgeRoute],
         *,
         mode: LatencyMode = "reflex",
-        deadline_s: float = 1.8,
+        deadline_s: float = REFLEX_PROVIDER_DEADLINE_S,
         hedge_after_s: float = 0.2,
         max_parallel: int = 2,
         min_confidence: float = 0.7,
@@ -327,6 +413,26 @@ class JudgePool:
     @property
     def deadline_s(self) -> float:
         return self._deadline_s
+
+    @property
+    def max_inflight(self) -> int:
+        """How many CONCURRENT decisions this pool can accept without failing one closed.
+
+        ``JudgeCapability.max_inflight`` bounds occupancy of ONE route across concurrent
+        ``judge()`` calls, and :meth:`judge` schedules EVERY eligible route for each decision (that
+        is what makes capacity exhaustion on a preferred route fall through to a healthy one).  So D
+        simultaneous decisions need D free slots on every route they touch, and the number of
+        decisions this pool can serve without any of them landing on the ``"capacity"`` outcome is
+        the MINIMUM declared route occupancy — not the sum, and not the maximum.
+
+        This is a DECLARATION, read by a batching caller so it can queue behind the bound instead of
+        overrunning it: the pool itself has no queue, so an over-eager caller does not get slower,
+        it gets ``"capacity"``-shaped UNKNOWN verdicts.  The pool's own enforcement in
+        :meth:`_reserve` is unchanged and remains authoritative.
+        """
+        return min(
+            route.capability.max_inflight for route in self._routes
+        )
 
     def receipts(self) -> tuple[JudgeRouteReceipt, ...]:
         with self._state_lock:
@@ -784,4 +890,7 @@ __all__ = [
     "LatencyMode",
     "LATENCY_MODE_CONTEXT_KEY",
     "REFLEX_LATENCY_MODE",
+    "REFLEX_PROVIDER_DEADLINE_S",
+    "REFLEX_DECISION_MARGIN_S",
+    "REFLEX_DECISION_DEADLINE_S",
 ]

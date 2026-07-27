@@ -14,7 +14,7 @@ deterministic rubric) could confidently judge the condition. Actionable latency 
 admission delay (how long tier-0 took to catch up to eligibility and admit) + evidence assembly, on
 top of the judge-funnel leg G3-A already covers. A slow tier-0 that admits well after eligibility is
 INVISIBLE to G3-A (which only starts its clock at ``admitted_ts``) but is caught by G3-B. Per
-the release criteria, Reflex requires BOTH G3-A (< 2s) AND G3-B (< 2s) — a fast judge funnel is not enough
+the release criteria, the GREEN latency band requires BOTH G3-A (< 2s) AND G3-B (< 2s) — a fast judge funnel is not enough
 if tier-0 itself is slow to admit.
 
 **Reuse only — no source edits.** This file imports, unmodified:
@@ -92,16 +92,28 @@ from percept.contracts import JudgmentTiming  # noqa: E402
 from percept.harness.metrics import MetricsCollector, PercentileSummary, percentile  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# Combined Reflex gate — the release criteria: BOTH G3-A and G3-B must be < 2s.
+# Combined GREEN latency band — the release criteria: BOTH G3-A and G3-B under 2s.
+#
+# NOT A "REFLEX GATE". This was once called one, and reflex was once defined by clearing it.
+# Reflex is a MODE, not a latency tier: the cheap, terse, bounded-evidence path (bounded frames in,
+# a two-field verdict out). It is never gated on, nor cancelled by, a latency figure — see
+# ``percept.backends.judge_pool`` and ``percept.slo`` §5, which publish a measured DISTRIBUTION
+# (p25/p50/p95 + max + n + conditions) in place of a single deadline number.
+#
+# What survives is the band itself: 2s is a REPORTING boundary for how a run's product latency
+# reads to a person, and a run landing outside it is a fact to report, not a mode it forfeits. The
+# value is held unchanged — deliberately not re-derived against §5's measured judge latency,
+# because moving a reporting band to flatter a measurement is the tuning this tree forbids.
 # ---------------------------------------------------------------------------
 
-REFLEX_THRESHOLD_S = 2.0
+GREEN_LATENCY_BAR_S = 2.0
 
 
-def reflex_eligible(runtime_p95_s: float, actionable_p95_s: float) -> bool:
-    """the release criteria combined Reflex gate: G3-A (runtime, admitted->decision) AND G3-B (actionable,
-    decision_eligible->decision_emitted) must BOTH be strictly under 2s."""
-    return runtime_p95_s < REFLEX_THRESHOLD_S and actionable_p95_s < REFLEX_THRESHOLD_S
+def within_green_latency_band(runtime_p95_s: float, actionable_p95_s: float) -> bool:
+    """Whether BOTH legs land in the GREEN band: G3-A (runtime, admitted->decision) AND G3-B
+    (actionable, decision_eligible->decision_emitted) strictly under 2s. A reporting
+    classification, never an eligibility verdict on any mode."""
+    return runtime_p95_s < GREEN_LATENCY_BAR_S and actionable_p95_s < GREEN_LATENCY_BAR_S
 
 
 def _timing(
@@ -162,23 +174,23 @@ class TestActionableLatencyHandVerifiedSyntheticSet(unittest.TestCase):
         self.assertEqual(report.ingest_to_decision.n, 5)
 
     def test_combined_reflex_gate_on_synthetic_inputs(self):
-        """The the release criteria combined gate: BOTH G3-A and G3-B must be < 2s for Reflex."""
-        # both comfortably under 2s -> Reflex eligible
-        self.assertTrue(reflex_eligible(runtime_p95_s=0.4, actionable_p95_s=1.1))
+        """The release criteria's combined band: BOTH G3-A and G3-B must be < 2s to read GREEN."""
+        # both comfortably under 2s -> GREEN
+        self.assertTrue(within_green_latency_band(runtime_p95_s=0.4, actionable_p95_s=1.1))
         # boundary: exactly 2.0s on either side fails (strict "< 2s", matching P-LAT-RUNTIME-1's
         # GREEN-band convention)
-        self.assertFalse(reflex_eligible(runtime_p95_s=2.0, actionable_p95_s=0.5))
-        self.assertFalse(reflex_eligible(runtime_p95_s=0.5, actionable_p95_s=2.0))
+        self.assertFalse(within_green_latency_band(runtime_p95_s=2.0, actionable_p95_s=0.5))
+        self.assertFalse(within_green_latency_band(runtime_p95_s=0.5, actionable_p95_s=2.0))
         # both over -> not eligible
-        self.assertFalse(reflex_eligible(runtime_p95_s=2.5, actionable_p95_s=3.0))
+        self.assertFalse(within_green_latency_band(runtime_p95_s=2.5, actionable_p95_s=3.0))
         # runtime fine but actionable blows the budget (the G3-B point) -> not eligible
-        self.assertFalse(reflex_eligible(runtime_p95_s=0.3, actionable_p95_s=2.4))
+        self.assertFalse(within_green_latency_band(runtime_p95_s=0.3, actionable_p95_s=2.4))
 
 
 class TestLateAdmissionDemonstration(unittest.TestCase):
     """THE G3-B point, made explicit: a run whose RUNTIME latency (admitted->decision) is small but
     whose ACTIONABLE latency (decision_eligible->decision_emitted) is large because tier-0 admitted
-    late. G3-A alone would call this run GREEN/Reflex-eligible; G3-B (and the combined gate) must
+    late. G3-A alone would call this run GREEN; G3-B (and the combined band) must
     not."""
 
     def test_small_runtime_large_actionable_due_to_late_admission(self):
@@ -213,13 +225,13 @@ class TestLateAdmissionDemonstration(unittest.TestCase):
         self.assertNotEqual(runtime_p95, actionable_p95)
         self.assertAlmostEqual(actionable_p95 - runtime_p95, LATE_ADMISSION_DELAY_S)
 
-        # G3-A alone: this judge funnel leg is GREEN/Reflex-fast in isolation.
-        self.assertLess(runtime_p95, REFLEX_THRESHOLD_S)
+        # G3-A alone: this judge funnel leg is GREEN in isolation.
+        self.assertLess(runtime_p95, GREEN_LATENCY_BAR_S)
         # G3-B: the same run is NOT actionable-fast — the slow tier-0 admission blows the budget.
-        self.assertGreaterEqual(actionable_p95, REFLEX_THRESHOLD_S)
+        self.assertGreaterEqual(actionable_p95, GREEN_LATENCY_BAR_S)
 
-        # Combined Reflex gate must catch what G3-A alone would miss.
-        self.assertFalse(reflex_eligible(runtime_p95, actionable_p95))
+        # The combined band must catch what G3-A alone would miss.
+        self.assertFalse(within_green_latency_band(runtime_p95, actionable_p95))
 
     def test_prompt_admission_makes_the_two_numbers_converge(self):
         """Contrast case: when tier-0 admits PROMPTLY (admitted_ts == decision_eligible_ts, zero
@@ -332,9 +344,9 @@ class TestActionableLatencyOverCoreArchetypeFixtures(unittest.TestCase):
 
         self.assertAlmostEqual(runtime_p95, FAST_RUNTIME_S)
         self.assertAlmostEqual(actionable_p95, LATE_ADMISSION_DELAY_S + FAST_RUNTIME_S)
-        self.assertLess(runtime_p95, REFLEX_THRESHOLD_S)
-        self.assertGreaterEqual(actionable_p95, REFLEX_THRESHOLD_S)
-        self.assertFalse(reflex_eligible(runtime_p95, actionable_p95))
+        self.assertLess(runtime_p95, GREEN_LATENCY_BAR_S)
+        self.assertGreaterEqual(actionable_p95, GREEN_LATENCY_BAR_S)
+        self.assertFalse(within_green_latency_band(runtime_p95, actionable_p95))
 
 
 class TestPercentileHelperAgreesWithCollector(unittest.TestCase):

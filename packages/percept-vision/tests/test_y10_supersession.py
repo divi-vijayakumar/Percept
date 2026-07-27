@@ -263,7 +263,13 @@ class TestSettleWindow(unittest.TestCase):
         self.assertTrue(w.holds(1.49))
         self.assertFalse(w.holds(1.5))  # window closed -> emit
 
-    def test_ceiling_is_the_reflex_budget(self):
+    def test_ceiling_bounds_added_delivery_delay(self):
+        # 2.0s bounds ADDED DELIVERY DELAY — how long a client waits past a verdict already in
+        # hand. It used to justify itself by citing a "judge round-trip reflex budget" of 2.0s;
+        # that deadline has been removed (percept.slo §5), so the anchor is retired and the value
+        # is held on its own terms. It is deliberately NOT re-derived against the measured judge
+        # latency: a settle window starts AFTER the verdict arrives, so provider speed is
+        # irrelevant to it, and widening it would only buy back the withholding this bound rejects.
         self.assertEqual(SETTLE_WINDOW_MAX_S, 2.0)
         SettleWindow(seconds=SETTLE_WINDOW_MAX_S)  # exactly at the ceiling is allowed
 

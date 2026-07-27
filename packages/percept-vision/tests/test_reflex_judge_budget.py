@@ -1,10 +1,20 @@
 """The reflex judge request is TERSE and BOUNDED; the deliberate one is unchanged.
 
-Streaming decomposition of the sub-1.5s reflex gate showed the miss was in the GENERATION half, not
-in ingestion: a shipped ``max_tokens=1024`` "headroom" plus a prose ``evidence`` field let a route
-spend seconds emitting text *after* it already knew the answer. These tests pin the fix as a
-property of the ROUTE — ``JudgePool(mode='reflex')`` stamps a reserved context key, and a
-verbosity-aware backend asks only for what the gate reads.
+This is what reflex IS: bounded evidence in (:data:`_REFLEX_MAX_FRAMES` frames), bounded verdict out
+(:data:`_REFLEX_MAX_TOKENS` tokens — exactly the two fields the gate reads). Both are properties of
+the ROUTE — ``JudgePool(mode='reflex')`` stamps a reserved context key, and a verbosity-aware
+backend asks only for what the gate reads. Neither is a property of a clock.
+
+Streaming decomposition found the original motivation in the GENERATION half, not in ingestion: a
+shipped ``max_tokens=1024`` "headroom" plus a prose ``evidence`` field let a route spend seconds
+emitting text *after* it already knew the answer. That was once framed as clearing a "sub-1.5s
+reflex gate"; that gate is gone (it sat below the median provider call time and cancelled the
+majority of judgments — see ``percept.backends.judge_pool.REFLEX_PROVIDER_DEADLINE_S`` and
+``percept.slo`` §5). The bounds are pinned here on their own merits — cheaper, faster, and nothing
+in cognition reads the prose they drop — not because a deadline forces them.
+
+The pools below therefore run at the SHIPPED deadline, imported rather than restated, so this file
+can never re-pin an operating point the library has moved off.
 
 No provider or network calls: every completion is an injected fake, exactly like the existing
 openrouter/gemini backend tests.
@@ -33,6 +43,7 @@ from percept.backends.anthropic import (
 from percept.backends.gemini import GeminiVision
 from percept.backends.judge_pool import (
     LATENCY_MODE_CONTEXT_KEY,
+    REFLEX_PROVIDER_DEADLINE_S,
     JudgeCapability,
     JudgePool,
     JudgeRoute,
@@ -80,7 +91,7 @@ def _route(adapter, *, shape: str = "single_image") -> JudgeRoute:
         adapter,
         JudgeCapability(
             evidence_shapes=frozenset({shape}),
-            latency_slo_s=1.5,
+            latency_slo_s=REFLEX_PROVIDER_DEADLINE_S,
             modes=frozenset({"reflex", "deliberate"}),
         ),
     )
@@ -90,7 +101,7 @@ def _pool(adapter, *, mode: str, shape: str = "single_image") -> JudgePool:
     return JudgePool(
         [_route(adapter, shape=shape)],
         mode=mode,
-        deadline_s=1.5,
+        deadline_s=REFLEX_PROVIDER_DEADLINE_S,
         max_parallel=1,
     )
 
@@ -370,11 +381,15 @@ class GeminiMatchesTheOpenRouterPolicy(unittest.TestCase):
 # the reflex FRAME bound: the same route policy applied to the INGESTION half
 # --------------------------------------------------------------------------------------------
 #
-# The output budget above fixed the GENERATION half of the reflex miss. The remaining miss is
-# ingestion: at 5 frames the measured provider p95 (1.473s) all but exhausts the 1.5s pool deadline,
-# so under concurrency the unit fails closed to UNKNOWN and the gate can only ASK. A measured frame
-# sweep put the recall optimum at 3, bracketed on both sides. These tests pin the bound as a ROUTE
-# property — reflex only, most-recent-first, deliberate untouched.
+# The output budget above bounds the GENERATION half; this bounds the INGESTION half. Reflex sends
+# the three most recent frames — a small, fixed, cheap evidence window, and the other half of what
+# makes reflex a distinct mode.
+#
+# The frame sweep that originally picked 3 was run under the since-replaced 1.5s deadline, so its
+# 4- and 5-frame rows measured CANCELLATION rather than evidence quality and are no longer usable
+# (see ``percept.backends.anthropic``'s ``_REFLEX_MAX_FRAMES`` comment). 3 is RETAINED, not
+# re-confirmed — these tests pin the bound as a ROUTE property (reflex only, most-recent-first,
+# deliberate untouched), which is what they always actually asserted.
 
 CONTEXT_FRAMES = [b"f1", b"f2", b"f3", b"f4"]  # earlier context, oldest -> newest
 CURRENT_FRAME = b"f5"  # the moment actually being judged; always retained
@@ -467,8 +482,8 @@ class ReflexFrameBound(unittest.TestCase):
                 self.assertEqual(len(images), _REFLEX_MAX_FRAMES)
 
     def test_a_deliberate_request_still_sends_all_five(self):
-        # No deadline to buy headroom inside, so the extra frames are free recall. Dropping them
-        # here would be a pure loss.
+        # Deliberate is the unbounded-evidence lane by definition, so the extra frames are free
+        # recall. Dropping them here would be a pure loss.
         for name, images in (
             ("openrouter", _openrouter_images("deliberate", frames=CONTEXT_FRAMES)),
             ("gemini", _gemini_images("deliberate", frames=CONTEXT_FRAMES)),

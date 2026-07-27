@@ -9,9 +9,14 @@ each load level, combine them into a single DUAL band, find the load level where
 degrades off GREEN (the "knee"), and confirm a fixed-load run shows no p95 drift between its first
 and second half?
 
-Per the release criteria, Reflex requires BOTH G3-A and G3-B < 2s (GREEN); 2-3s on either leg is YELLOW
-(CONDITIONAL-GO / Reflex beta); >= 3s on either leg is RED (NO-GO for the Reflex claim, not for
-Percept as a whole).
+Per the release criteria, a run reads GREEN only when BOTH G3-A and G3-B are < 2s; 2-3s on either
+leg is YELLOW; >= 3s on either leg is RED.
+
+These bands are a REPORTING classification of a run's product latency, not a gate any mode has to
+clear. In particular they are not a "Reflex tier": reflex is the cheap, terse, bounded-evidence
+JUDGE MODE (bounded frames in, a two-field verdict out) and is never gated on, nor cancelled by, a
+latency figure — Percept's latency statement is the measured distribution in ``percept.slo`` §5
+(p25/p50/p95 + max + n + conditions), not a single number a run passes or fails.
 
 Reuses, never edits, the named harness pieces: ``load_driver.py``
 (``LoadDriver``/``LoadProfile``/``RampSchedule``), ``fake_judge.py``
@@ -79,7 +84,7 @@ def classify_latency_band(p95_s: float) -> str:
 def combined_band(g3a_p95_s: float, g3b_p95_s: float) -> str:
     """The real G3 gate — DUAL: GREEN only if BOTH G3-A and G3-B are < 2s; RED if EITHER is >= 3s
     (checked first, so a RED leg always dominates a YELLOW one on the other leg); otherwise
-    YELLOW. Reflex requires GREEN on this combined band, not just on either leg alone."""
+    YELLOW. GREEN is a property of the combined band, not of either leg alone."""
     band_a = classify_latency_band(g3a_p95_s)
     band_b = classify_latency_band(g3b_p95_s)
     if "RED" in (band_a, band_b):

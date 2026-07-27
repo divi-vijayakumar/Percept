@@ -24,16 +24,21 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Literal, Sequence
 
 from percept.adapters import Box, Goal, Schedule, Tier0Signal, WatchCondition, WatchSpec
 from percept.behavior_routes import (
+    UndrivenBehaviorRouteWarning,
     drives_rhythm,
     goal_behavior_route,
     needs_watch_condition,
-    require_worker_routes,
+    require_drivable_routes,
+    route_remedy,
+    skipped_route_message,
+    worker_can_drive,
 )
 from percept.config import Settings, load_settings
 from percept.duration_routes import (
@@ -41,6 +46,7 @@ from percept.duration_routes import (
     require_in_process_duration_topology,
 )
 from percept.interest import InterestIntervalEvent, Tier0MotionInterest
+from percept.observability import get_logger
 from percept.rhythm import RhythmDrive
 
 from .detectors import (
@@ -1080,6 +1086,10 @@ class LoopReport:
     # ``GatedWatchLoop(interest=...)`` is supplied; these are admission-interest intervals, never
     # semantic Watch verdicts.
     interest_events: list[InterestIntervalEvent] = field(default_factory=list)
+    # UNITS — (frame x goal), NOT frames, exactly like the runtime's RuntimeStats twin: one admitted
+    # frame admits every goal that cleared its own bar, so both maps sum to the same number and that
+    # number is >= ``escalations`` (the FRAME count), equal only on a single-goal run. ``frames`` and
+    # ``escalations`` are the frame-unit terms; these two are the goal-unit ones.
     fixed_opportunities: int = 0
     admission_by_goal: dict[str, int] = field(default_factory=dict)
     admission_by_cause: dict[str, int] = field(default_factory=dict)
@@ -1106,6 +1116,12 @@ class LoopReport:
         if self.frames == 0:
             return 0.0
         return 1.0 - (self.vision_calls / self.frames)
+
+
+#: The driver name this loop reports itself as — one string, so the warning, the log line and the
+#: health event can never name it three different ways (``percept.run``'s twin is the literal
+#: ``"percept.run"``).
+_GATED_LOOP_DRIVER = "GatedWatchLoop"
 
 
 @dataclass(frozen=True)
@@ -1164,6 +1180,13 @@ class GatedWatchLoop:
 
     This is the proof point: ``compile_watchspec``'s output is consumed by the gate, and a
     ``Tier0Signal`` is reported on every frame.
+
+    A Goal on this source whose route the frame loop does not drive is decided by
+    :meth:`_preflight_routes`, on exactly ``percept.run``'s terms: an ``UNSUPPORTED`` route still
+    refuses at construction, a host-driven one (``count``/``event``/``remind``) is reported and
+    skipped so it cannot take the Watches beside it down. ``on_health`` (optional) receives the
+    same ``undriven_behavior_route`` event that runtime emits; the warning and the log line are
+    emitted whether or not it is wired.
     """
 
     def __init__(
@@ -1178,11 +1201,13 @@ class GatedWatchLoop:
         clock: Callable[[], CivilTime] | None = None,
         wake_policy: WakePolicy | dict[str, Any] | None = None,
         interest: Tier0MotionInterest | None = None,
+        on_health: Callable[[Any], None] | None = None,
     ) -> None:
         self._core = core
         cfg = settings or getattr(core, "settings", None) or load_settings()
         self._settings = cfg
         self._source = source
+        self._skipped_routes: list[dict] = []  # host-driven Goals this loop reports and skips
         # An explicit list is already a caller selection (and historically supports logical source
         # aliases such as a default-"camera" Goal on a "camera:front" loop). Only the implicit
         # registry-discovery path owns source selection and must filter before route preflight.
@@ -1195,15 +1220,17 @@ class GatedWatchLoop:
                 if getattr(goal, "source", "camera") == source
             ]
         )
-        require_worker_routes(active, driver="GatedWatchLoop")
+        # Refuse the UNDRIVABLE; report — never abort on — the host-driven. Same split, same table
+        # and same three client channels as ``percept.run``'s preflight (see _preflight_routes).
+        driven = self._preflight_routes(active, on_health=on_health)
         # A rhythm goal rides the SAME frame loop but never becomes a WatchCondition: it is measured
         # and counted, not admitted and judged. Split it out here so compile_watchspec keeps its
         # "one condition per watch goal" contract and the counting path is explicit.
-        self._rhythm = RhythmDrive(core, [g for g in active if drives_rhythm(goal_behavior_route(g))])
+        self._rhythm = RhythmDrive(core, [g for g in driven if drives_rhythm(goal_behavior_route(g))])
         thr = cfg.edge.motion_gate if threshold is None else threshold
         # edge_capabilities=None -> in-process edge runs the whole registry; a remote edge advertises a
         # subset and the brain selects within it (the capability handshake).
-        self._spec = compile_watchspec(active, threshold=thr, edge_capabilities=edge_capabilities)
+        self._spec = compile_watchspec(driven, threshold=thr, edge_capabilities=edge_capabilities)
         # clock=None -> schedules are not enforced (default path, byte-for-byte unchanged). A caller that
         # arms scheduled goals injects a civil clock (e.g. civil_now) here; pure logic never reads wall-clock.
         self._gate = MotionGate(self._spec, settings=cfg, clock=clock, wake_policy=wake_policy)
@@ -1222,6 +1249,57 @@ class GatedWatchLoop:
                 f"({interest.source!r} != {source!r})"
             )
         self._interest = interest
+
+    def _preflight_routes(
+        self, active: Sequence[Goal], *, on_health: Callable[[Any], None] | None
+    ) -> list:
+        """Refuse the UNDRIVABLE, report (never abort on) the host-driven; return what THIS loop drives.
+
+        The identical decision ``percept.run`` makes, from the identical table
+        (:func:`~percept.behavior_routes.require_drivable_routes`) — because it is the identical
+        question. Two frame drivers must not answer "can this goal ever fire?" two different ways:
+
+        * ``UNSUPPORTED`` — no driver exists anywhere and no host API can feed it. **Raises here**,
+          in ``__init__``, so nothing is armed into the gate, no frame is pulled and no judge is
+          spent. That guarantee is unchanged; only its scope narrowed to the routes it was ever true
+          of.
+        * a **host-driven** route (``count``/``event``/``remind``) — a complete, shipped capability
+          whose driver is the HOST rather than this frame loop. It is EXCLUDED from the compiled
+          spec and the rhythm drive (so it can never buy a judge call here) and reported, not
+          raised: this loop aborting for it would take every unrelated Watch beside it down, which
+          is exactly the defect ``percept.run`` fixed. A deployment that wants the old abort filters
+          :class:`~percept.behavior_routes.UndrivenBehaviorRouteWarning` to ``"error"``.
+
+        Reported on the same three channels, with the same text, differing only in the driver name:
+        the warning an interactive/test caller sees, the log a 24/7 deployment reads, and — when the
+        caller wired one — an ``undriven_behavior_route`` health event carrying the same payload.
+        """
+        skipped = require_drivable_routes(active, driver=_GATED_LOOP_DRIVER)
+        for item in skipped:
+            message = skipped_route_message(
+                item, driver=_GATED_LOOP_DRIVER, source=self._source
+            )
+            warnings.warn(message, UndrivenBehaviorRouteWarning, stacklevel=3)
+            get_logger("percept.harness.tier0").warning("%s", message)
+            record = {
+                "goal_id": item.goal_id,
+                "route": item.route.value,
+                "behavior_type": item.authored_type_display,
+                "source": self._source,
+                "driver": _GATED_LOOP_DRIVER,
+                "remedy": route_remedy(item.route, goal_id=item.goal_id),
+            }
+            self._skipped_routes.append(record)
+            if on_health is not None:
+                from percept.runtime.worker import RuntimeHealthEvent  # noqa: PLC0415 — import cycle
+
+                on_health(RuntimeHealthEvent("undriven_behavior_route", data=record))
+        return [goal for goal in active if worker_can_drive(goal_behavior_route(goal))]
+
+    @property
+    def skipped_routes(self) -> list[dict]:
+        """The host-driven Goals this loop is NOT driving — the run-time report, as data."""
+        return [dict(record) for record in self._skipped_routes]
 
     @staticmethod
     def _resolve_funnel(core: Any):
@@ -1403,12 +1481,14 @@ async def run_gated_watch(
     interest: Tier0MotionInterest | None = None,
     interest_stream_epoch: str | None = None,
     interest_observed_times: Sequence[float] | None = None,
+    on_health: Callable[[Any], None] | None = None,
 ) -> LoopReport:
     """One-call entrypoint for the wired loop (the cross-package e2e drives this).
 
     Builds a :class:`GatedWatchLoop` (compiling ``goals`` — or the core's active goals — down to a
     WatchSpec) and runs it over ``stream`` (optionally with a per-frame ``energies`` audio signal).
-    Returns the :class:`LoopReport`.
+    Returns the :class:`LoopReport`. ``on_health`` is the same optional structured channel the loop
+    reports an undriven route on.
     """
     loop = GatedWatchLoop(
         core,
@@ -1418,6 +1498,7 @@ async def run_gated_watch(
         settings=settings,
         wake_policy=wake_policy,
         interest=interest,
+        on_health=on_health,
     )
     return await loop.run(
         stream,

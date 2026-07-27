@@ -6,6 +6,7 @@ L1, fakes only, no keys, deterministic. Covers:
   * judge latency/cost     — record_judge stores count+total; means fall out by division.
   * OTel export            — degrades to a no-op without the SDK; records to a fake meter when given one.
   * agent integration      — perceive_judged emits judged + (refused | fired) into the shared Metrics.
+  * funnel BALANCE         — one refusal per judged tick, in BOTH dispatch modes (see below).
 """
 
 import asyncio
@@ -231,6 +232,147 @@ class AgentFunnelTests(unittest.TestCase):
         self.assertIs(a.funnel, a.funnel)  # lazily built once
         a.funnel.seen(camera="cam")
         self.assertEqual(a.metrics.snapshot()[funnel_key("seen")], 1)  # same registry as health()
+
+
+# ---------------------------------------------------------------------------
+# Funnel BALANCE — the arithmetic a dashboard reads, in both dispatch modes
+# ---------------------------------------------------------------------------
+
+
+class _LowConfidenceVision:
+    """Every judge call abstains; ``detect`` finds nothing (no focus, no ROI)."""
+
+    def __init__(self) -> None:
+        self.judge_calls = 0
+
+    async def detect(self, frame, goals):
+        return []
+
+    async def judge(self, condition, frame, **kwargs):
+        self.judge_calls += 1
+        return Verdict(True, 0.4, "unsure")
+
+
+class FunnelBalanceTests(unittest.TestCase):
+    """``refused`` counts each refusal ONCE — the bound a double-counting site silently broke.
+
+    A judged tick either resolves to a truth or abstains, so at most one refusal can come out of
+    one judge call. That gives two arithmetic facts a client's funnel must always satisfy:
+
+    * ``refused <= judged`` — a refusal is an OUTCOME of a judged tick and cannot outnumber the
+      ticks. When it did (``refused`` 10,714 against ``judged`` 6,269 on a 100-case corpus run),
+      the excess was not a rare race: ``refused`` was EXACTLY twice the ask count in 100 of 100
+      cases, because the async reducer bumped the counter at classification AND again when the
+      resulting ASK was emitted.
+    * ``refused == <the gate's own ask tally>`` whenever every non-decisive outcome is an ask (no
+      degraded tick, which is the ASK-class outcome that never reaches the gate at all).
+
+    Both dispatch modes are pinned, against the SAME goal and the SAME verdict, because the defect
+    existed in exactly one of them: an invariant checked on the inline path only would have passed
+    every day the async path was wrong.
+    """
+
+    ASKS = 3
+
+    def _assert_balanced(self, core, *, asks: int):
+        snap = core.metrics.snapshot()
+        refused = snap.get(funnel_key("refused"), 0)
+        judged = snap.get(funnel_key("judged"), 0)
+        self.assertEqual(judged, asks)  # one judge call per tick
+        self.assertEqual(refused, asks)  # ...and exactly one refusal out of each
+        self.assertLessEqual(refused, judged)  # the bound, stated as the client reads it
+        # The gate's independent ASK tally is the second opinion: it is incremented inside the
+        # executor, by a different line, on a different object.
+        self.assertEqual(snap.get("gate.ask", 0), refused)
+        self.assertNotIn(funnel_key("fired"), snap)  # nothing fired; nothing to net out
+        # The per-concern slice carries the same number as the run total (one goal, one camera).
+        self.assertEqual(snap.get(funnel_key("refused", concern="g1"), 0), refused)
+        self.assertEqual(snap.get(funnel_key("refused", camera="camera"), 0), refused)
+
+    def test_inline_dispatch_counts_each_refusal_once(self):
+        vision = _LowConfidenceVision()
+        core = _agent(vision)
+        _watch(core)
+
+        async def drive():
+            for i in range(self.ASKS):
+                await core.perceive_judged("frame", "camera", t=float(i + 1))
+
+        asyncio.run(drive())
+        self.assertEqual(vision.judge_calls, self.ASKS)
+        self._assert_balanced(core, asks=self.ASKS)
+
+    def test_async_dispatch_counts_each_refusal_once(self):
+        """REGRESSION: the split-phase reducer counted the same abstention twice.
+
+        Driven through the owner pipeline the runtime's off-loop judge scheduler uses
+        (prepare/launch/dispatch/reduce), not through ``perceive_judged`` — that is where the
+        double bump lived, and where a funnel-only assertion on the inline path could not see it.
+        """
+        vision = _LowConfidenceVision()
+        core = _agent(vision)
+        _watch(core)
+
+        async def drive():
+            for i in range(self.ASKS):
+                t = float(i + 1)
+                candidate = core.prepare_observation_candidate(
+                    "frame",
+                    "camera",
+                    t=t,
+                    expected_goals_revision=core.goals.revision,
+                    expected_source_generation=core.source_continuity_generation("camera"),
+                    goal_ids=("g1",),
+                )
+                self.assertIsNotNone(candidate)
+                self.assertTrue(core.launch_observation_candidate(candidate))
+                observation = await core.dispatch_observation_candidate(candidate)
+                reduction = core.reduce_observation_completion(observation)
+                job = core.prepare_frame_judgment(reduction, goal_id="g1")
+                self.assertIsNotNone(job)
+                completion = await core.dispatch_judgment(job)
+                events = core.reduce_judgment_completion(completion)
+                self.assertEqual([event.action for event in events], ["ask"])
+
+        asyncio.run(drive())
+        self.assertEqual(vision.judge_calls, self.ASKS)
+        self._assert_balanced(core, asks=self.ASKS)
+
+    def test_both_dispatch_modes_report_the_identical_funnel(self):
+        """One behaviour, two drivers: the same evidence must produce the same telemetry."""
+        inline = _agent(_LowConfidenceVision())
+        _watch(inline)
+        split = _agent(_LowConfidenceVision())
+        _watch(split)
+
+        async def drive():
+            await inline.perceive_judged("frame", "camera", t=1.0)
+            candidate = split.prepare_observation_candidate(
+                "frame",
+                "camera",
+                t=1.0,
+                expected_goals_revision=split.goals.revision,
+                expected_source_generation=split.source_continuity_generation("camera"),
+                goal_ids=("g1",),
+            )
+            split.launch_observation_candidate(candidate)
+            reduction = split.reduce_observation_completion(
+                await split.dispatch_observation_candidate(candidate)
+            )
+            job = split.prepare_frame_judgment(reduction, goal_id="g1")
+            split.reduce_judgment_completion(await split.dispatch_judgment(job))
+
+        asyncio.run(drive())
+        stages = {
+            stage: (
+                inline.metrics.snapshot().get(funnel_key(stage), 0),
+                split.metrics.snapshot().get(funnel_key(stage), 0),
+            )
+            for stage in FUNNEL_STAGES
+        }
+        for stage, (inline_n, split_n) in stages.items():
+            with self.subTest(stage=stage):
+                self.assertEqual(inline_n, split_n)
 
 
 if __name__ == "__main__":

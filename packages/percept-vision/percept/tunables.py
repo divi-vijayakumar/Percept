@@ -502,6 +502,18 @@ _RUN_PARAMETERS: tuple[TunableSpec, ...] = (
         requires_recompile=True, risk="medium",
         note="explicit temporal-shape override (Corrections(a): must never default to 'sprite').",
     ),
+    TunableSpec(
+        path="Percept.create.judge_concurrency", owner="ExecutionPolicy", visibility="public",
+        safe_to_optimize=False, default=None, value_type="int", bounds=(1, 1024),
+        requires_recompile=True, risk="medium",
+        note=(
+            "how many of ONE frame's admitted goals may hold a judge call at once (agent.py "
+            "_DEFAULT_JUDGE_CONCURRENCY=8 when unset) — a resource/concurrency ceiling, which is "
+            "the ExecutionPolicy ownership row verbatim. NOT optimizable: it is floored at runtime "
+            "by whatever the deployment's judge routes DECLARE (JudgePool.max_inflight), so tuning "
+            "it moves provider load and batch makespan, never accuracy."
+        ),
+    ),
 )
 
 # ======================================================================================================

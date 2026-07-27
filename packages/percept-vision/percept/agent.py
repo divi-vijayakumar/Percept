@@ -8,12 +8,13 @@ episodes (Phase 4), events (Phase 5) — without editing the gate/graph contract
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import math
 import time
 import warnings
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Callable, Hashable
 
@@ -958,6 +959,37 @@ def _is_scripted_backend(obj: Any) -> bool:
 _SCRIPTED_SEAMS = ("vision", "specialist", "conductor", "stt", "tts")
 _BANNER_EMITTED = False  # once-per-process guard for the loud stderr banner
 
+#: How many of ONE frame's admitted watch goals may hold a judge call at the same time when no
+#: adapter declares a capacity of its own (see ``Percept._judge_batch_slots``).
+#:
+#: WHY A BOUND AT ALL. A frame admits N goals and each spends its own judge call. Awaiting them one
+#: after another makes the frame's makespan N x the per-call latency, which IS the batch period and
+#: therefore IS the onset->incident latency (the runtime's judge scheduler holds a single in-flight
+#: slot, so nothing newer is admitted until the whole batch resolves). Unbounded fan-out is the
+#: opposite failure: N simultaneous provider requests off one key.
+#:
+#: WHY 8. Measured single-call service time on the shipped deliberate route is p50 1.653s / p95
+#: 2.283s (lognormal mean ~1.69s). At 8 slots a frame sustains 8 / 1.69 ~ 4.7 judge calls/s (~285
+#: requests per minute against one credential) — inside what a single un-negotiated provider key is
+#: normally granted — while a 73-goal frame falls from 73 serial calls to ceil(73/8) = 10 waves.
+#: Measured offline against that distribution (tests/test_judge_batch_concurrency.py --measure):
+#: N=73 costs 126.8s at 1 slot, 16.6s at 8, 7.4s at 20, 2.5s at 73.
+#:
+#: WHAT IT IS NOT. It is not a target: pooling turns a SUM into a MAX, and the MAX of N draws from
+#: the latency distribution sits near its N/(N+1) quantile, so a large frame is floored by the
+#: distribution's TAIL no matter how many slots it gets. Raising this number buys waves, never the
+#: floor. A deployment that has negotiated real provider concurrency declares it instead — either by
+#: passing ``judge_concurrency=`` or by declaring ``JudgeCapability.max_inflight`` on its routes —
+#: and the smaller of the two always wins.
+_DEFAULT_JUDGE_CONCURRENCY = 8
+
+#: Returned by :meth:`Percept._judge_slot` for a goal that reached the front of the concurrency
+#: queue only AFTER the frame went stale. It is the batched analogue of the sequential loop's
+#: ``if _stale(): break`` — the call is simply never spent, so a goals-revision change still cannot
+#: be charged for work nobody will commit. The apply pass breaks on its own ``_stale()`` check
+#: before it can observe this value; the identity check there is a belt, not the mechanism.
+_BATCH_STALE = object()
+
 
 def _scripted_seams(core: Any) -> list[str]:
     """The seams whose CONSTRUCTED backend is a scripted double, in a stable order."""
@@ -1172,6 +1204,14 @@ class Percept:
     # ``identity_policy``) always wins; see ``percept.identity_policy.select_identity_policy`` and
     # ``percept.sourceprofile.SourceProfile.default_episode_policy``.
     source_profile: Any = None
+    # How many of ONE frame's admitted watch goals may hold a judge call at the same time.
+    # ``None`` (the default) means :data:`_DEFAULT_JUDGE_CONCURRENCY`. Whatever this resolves to, it
+    # is then floored by every capacity the batch's adapters DECLARE (``JudgePool.max_inflight`` /
+    # any adapter exposing ``max_inflight``) — see :meth:`_judge_batch_slots`. A declared capacity of
+    # 1 therefore keeps the historical strictly-sequential batch, which is the correct reading of
+    # that declaration: the pool has no queue, so exceeding it does not slow calls down, it fails
+    # them closed on the ``"capacity"`` outcome.
+    judge_concurrency: int | None = None
 
     # -- construction --------------------------------------------------------
     @classmethod
@@ -1198,6 +1238,7 @@ class Percept:
         sense_policy: Any = None,
         plan_mode: str | None = None,
         source_profile: Any = None,
+        judge_concurrency: int | None = None,
     ) -> "Percept":
         cfg = settings or load_settings()
         # The mode is the switch: explicit kwarg > PERCEPT_MODE env > live. It is never "offline" by
@@ -1301,6 +1342,7 @@ class Percept:
             sense_policy=sense_policy,
             plan_mode=plan_mode,
             source_profile=source_profile,
+            judge_concurrency=judge_concurrency,
         )
         # GoalRegistry is a public mutation surface. Bind runtime cleanup to its authoritative
         # operation hook so direct ``core.goals.create/apply`` calls obey the same executable-state
@@ -3831,6 +3873,9 @@ class Percept:
         )
         ctx = self.executor.ctx(goal.id)
         if truth == "unknown":
+            # THE refusal counter for this tick — the one and only site on this path (the degraded
+            # branch above owns the ticks that never reached a verdict). Nothing downstream may
+            # count the same abstention again; see the emission loop below.
             self.funnel.refused(concern=goal.id, camera=token.source_id)
         else:
             self.last_supported[goal.id] = job.source_t
@@ -3879,11 +3924,15 @@ class Percept:
                 outcome_sink=gate_outcomes.append,
             )
             events = [] if fire is None else [fire]
+        # ONE refusal per judged tick, counted at CLASSIFICATION (the `truth == "unknown"` branch
+        # above) — never again here at EMISSION. A gate ASK is exactly an unknown truth, so bumping
+        # both points counted every abstention twice and made ``funnel.refused`` exceed
+        # ``funnel.judged``, which no one-per-tick counter can honestly do. This loop therefore
+        # counts fires only, byte-for-byte the same accounting the inline twin (``perceive_judged``)
+        # has always used: the async dispatch mode reports the SAME funnel as the inline one.
         for emitted in events:
             if emitted.action == FIRE:
                 self.funnel.fired(concern=goal.id, camera=token.source_id)
-            else:
-                self.funnel.refused(concern=goal.id, camera=token.source_id)
         if resolved is not None:
             self.funnel.fired(concern=goal.id, camera=token.source_id)
             events.append(resolved)
@@ -4145,376 +4194,470 @@ class Percept:
                 return []
 
         events: list[FireEvent] = []
-        for goal in active_goals:
-            if _stale():
-                break  # revision moved during a prior goal's judge — stop before judging under it
-            route = goal_behavior_route(goal)
-            if audio_only and route is not BehaviorRoute.FRAME_WATCH:
-                raise RuntimeError(
-                    f"audio-only execution supports watch goals; {goal.id!r} has route {route.value!r}"
-                )
-            if route is BehaviorRoute.FRAME_TRANSITION:
-                ev = await self._perceive_transition(
-                    goal, frame, focus, now=now, t=t, ingest_observed_at=ingest_observed_at,
-                    trace_id=trace_id, tracing=tracing, source=source, stale=_stale,
-                )
-                if ev is not None:
-                    events.append(ev)
-                continue
-            if route is BehaviorRoute.FRAME_PROCESS:
-                # Item 4: log a delta, never fire here
-                await self._observe_and_log(goal, frame, source, now, stale=_stale)
-                continue
-            if route is not BehaviorRoute.FRAME_WATCH:
-                continue  # external primitives are driven by their dedicated public APIs
-            ctx = self.executor.ctx(goal.id)
-            # HOW to look = the authored/preset spec, floored by the resolved profile's plan_mode —
-            # "window" hands the judge an ordered clip, never a montage — then escalated by this
-            # concern's current ladder rung (single→strip→+audio) when it's been recurrently ambiguous
-            # (set in _deliberate_confused). Same resolution the transition path now shares via
-            # _resolve_strip; strip is the temporal strip per the spec (None = single).
-            spec, strip = self._resolve_strip(goal, source, perception_level=ctx.perception_level)
-            if audio_only:
-                strip = None
-            roi = self._resolve_roi(goal, focus, spec)
-            corrections = focus.asserted() if focus else {}
-            evidence_units = tuple((_audio_units_by_goal or {}).get(goal.id, ()))
-            if audio_only:
-                from .audio_input import audio_frame_from_units
+        # ==========================================================================================
+        # ONE FRAME, N GOALS: dispatch pass, then apply pass.
+        #
+        # WHY TWO PASSES. Every admitted goal spends its own judge call, and a call is ~1.7s of
+        # PROVIDER wall-clock in which this coroutine has nothing to do. Awaiting them one after
+        # another made a frame's makespan the SUM of N calls; because the runtime's judge scheduler
+        # holds a single in-flight slot (ADR-001 §9) and admits nothing new until this coroutine
+        # returns, that sum WAS the batch period and therefore WAS the onset->incident latency. A
+        # 73-goal frame measured 81.6s per batch against a 2s product gate, with 99.6% of admissions
+        # superseded — not because any goal was starved (every goal was judged, Gini 0.0) but
+        # because they all queued behind each other.
+        #
+        # Pass 1 walks ``active_goals`` IN ORDER and, for each watch goal, does the (cheap, local)
+        # preparation and launches its judge call against a bounded slot pool. Pass 2 walks the SAME
+        # list IN THE SAME ORDER and applies each result. So the SUM becomes a MAX while everything
+        # order-dependent is untouched: evidence-sequence reservation, funnel accounting, gate and
+        # executor mutation, and the order of the returned ``events`` all still follow goal order.
+        #
+        # FAIRNESS IS UNCHANGED, AND IS THE POINT. Pass 1 launches exactly one call per admitted
+        # goal; ``asyncio.Semaphore`` hands out slots first-come-first-served, so a goal late in the
+        # list waits for a slot but is never skipped, deprioritized, or dropped. Concurrency here is
+        # a queue, never a lottery.
+        #
+        # WHAT PASS 1 IS NOT ALLOWED TO DO: judge. It reserves sequence numbers and spends funnel
+        # counters exactly where the sequential loop did, but every gate/latch/executor mutation
+        # stays in pass 2, behind the same ``_stale()`` checks, in the same order.
+        # ==========================================================================================
+        watch_goals = [
+            goal for goal in active_goals
+            if goal_behavior_route(goal) is BehaviorRoute.FRAME_WATCH
+        ]
+        judge_slots = asyncio.Semaphore(self.effective_judge_concurrency(watch_goals))
+        dispatched: dict[str, dict] = {}
+        try:
+            for goal in active_goals:
+                if _stale():
+                    break  # revision moved during dispatch — launch nothing further under it
+                route = goal_behavior_route(goal)
+                if audio_only and route is not BehaviorRoute.FRAME_WATCH:
+                    raise RuntimeError(
+                        f"audio-only execution supports watch goals; {goal.id!r} has route {route.value!r}"
+                    )
+                if route is not BehaviorRoute.FRAME_WATCH:
+                    continue  # transition/process/external routes are driven by the apply pass
+                ctx = self.executor.ctx(goal.id)
+                # HOW to look = the authored/preset spec, floored by the resolved profile's plan_mode —
+                # "window" hands the judge an ordered clip, never a montage — then escalated by this
+                # concern's current ladder rung (single→strip→+audio) when it's been recurrently ambiguous
+                # (set in _deliberate_confused). Same resolution the transition path now shares via
+                # _resolve_strip; strip is the temporal strip per the spec (None = single).
+                spec, strip = self._resolve_strip(goal, source, perception_level=ctx.perception_level)
+                if audio_only:
+                    strip = None
+                roi = self._resolve_roi(goal, focus, spec)
+                corrections = focus.asserted() if focus else {}
+                evidence_units = tuple((_audio_units_by_goal or {}).get(goal.id, ()))
+                if audio_only:
+                    from .audio_input import audio_frame_from_units
 
-                binding = self._audio_judge_binding_for(goal)
-                audio = audio_frame_from_units(
-                    evidence_units, capability=binding.capability
-                )
-            elif (
-                self._watch_runtime_for(goal) is not None
-                and spec.modality == "fused"
-            ):
-                from .audio_input import audio_frame_from_units
-
-                binding = self._audio_judge_binding_for(goal)
-                evidence_units = self._audio_window(source).clip_units(
-                    spec.audio_s or self.settings.events.audio_window_s,
-                    now=now,
-                )
-                audio = (
-                    audio_frame_from_units(
+                    binding = self._audio_judge_binding_for(goal)
+                    audio = audio_frame_from_units(
                         evidence_units, capability=binding.capability
                     )
-                    if evidence_units else None
+                elif (
+                    self._watch_runtime_for(goal) is not None
+                    and spec.modality == "fused"
+                ):
+                    from .audio_input import audio_frame_from_units
+
+                    binding = self._audio_judge_binding_for(goal)
+                    evidence_units = self._audio_window(source).clip_units(
+                        spec.audio_s or self.settings.events.audio_window_s,
+                        now=now,
+                    )
+                    audio = (
+                        audio_frame_from_units(
+                            evidence_units, capability=binding.capability
+                        )
+                        if evidence_units else None
+                    )
+                else:
+                    audio = self._audio_clip(source, spec)
+                if (
+                    self._watch_runtime_for(goal) is not None
+                    and spec.modality in ("audio", "fused")
+                    and audio is None
+                ):
+                    raise RuntimeError(
+                        f"compiled {spec.modality} Watch {goal.id!r} has no audio evidence in source "
+                        f"{source!r}; refusing to judge it as vision-only."
+                    )
+                self.funnel.judged(concern=goal.id, camera=source)  # a judge call is being spent
+                # Item 2 process-QA: opt-in goals carry a per-concern running answer in/out of the judge.
+                # GATE-IRRELEVANT — the verdict's satisfied/confidence still drive the (unchanged) gate; the
+                # running answer is just threaded through ConcernContext. Default goals pass context=None and
+                # are byte-for-byte unchanged.
+                process_ctx = (
+                    {"process_qa": True, "running_answer": ctx.running_answer}
+                    if goal.state.get("process_qa") else None
                 )
-            else:
-                audio = self._audio_clip(source, spec)
-            if (
-                self._watch_runtime_for(goal) is not None
-                and spec.modality in ("audio", "fused")
-                and audio is None
-            ):
-                raise RuntimeError(
-                    f"compiled {spec.modality} Watch {goal.id!r} has no audio evidence in source "
-                    f"{source!r}; refusing to judge it as vision-only."
+                # The EvidenceExtractor seam (percept.extraction): ``None`` by default -- every call
+                # below is skipped and every judge call stays byte-for-byte. When set, it runs at the
+                # SAME point the judge is about to be called (frame + roi already resolved), and its
+                # facts are merged into context under the RESERVED "extractor" sub-dict — visible to
+                # the judge and, independently, to the trace (so "did the facts reach the judge" is
+                # answerable from the .ptrace alone, not just from reading this call site).
+                extractor_ctx = None
+                if self.extractor is not None and not audio_only:
+                    enrichment = self.extractor.extract(goal.condition, frame, roi)
+                    if tracing:
+                        await self._emit_trace(trace_id, now, "extractor.enriched", goal_id=goal.id,
+                                               facts=dict(enrichment.facts))
+                    if not enrichment.is_empty:
+                        extractor_ctx = {EXTRACTOR_CONTEXT_KEY: enrichment.to_dict()}
+                judge_context = (
+                    process_ctx if extractor_ctx is None else
+                    {**(process_ctx or {}), **extractor_ctx}
                 )
-            self.funnel.judged(concern=goal.id, camera=source)  # a judge call is being spent
-            # Item 2 process-QA: opt-in goals carry a per-concern running answer in/out of the judge.
-            # GATE-IRRELEVANT — the verdict's satisfied/confidence still drive the (unchanged) gate; the
-            # running answer is just threaded through ConcernContext. Default goals pass context=None and
-            # are byte-for-byte unchanged.
-            process_ctx = (
-                {"process_qa": True, "running_answer": ctx.running_answer}
-                if goal.state.get("process_qa") else None
-            )
-            # The EvidenceExtractor seam (percept.extraction): ``None`` by default -- every call
-            # below is skipped and every judge call stays byte-for-byte. When set, it runs at the
-            # SAME point the judge is about to be called (frame + roi already resolved), and its
-            # facts are merged into context under the RESERVED "extractor" sub-dict — visible to
-            # the judge and, independently, to the trace (so "did the facts reach the judge" is
-            # answerable from the .ptrace alone, not just from reading this call site).
-            extractor_ctx = None
-            if self.extractor is not None and not audio_only:
-                enrichment = self.extractor.extract(goal.condition, frame, roi)
+                # DirectJudge routing (percept.direct_judge): ``None`` by default -- direct_result stays
+                # None, the block below is skipped, and every judge call is byte-for-byte unchanged.
+                # CONFIDENT is handled inside the try/except below (it substitutes the judge call
+                # itself, spending zero vision calls); UNCERTAIN's facts are merged into the SAME
+                # reserved "extractor" context key the EvidenceExtractor seam uses, here, BEFORE the
+                # judge call, so a direct rule's partial signal reaches the judge exactly like an
+                # extractor's would.
+                direct_result = None
+                if self.direct_judge is not None and not audio_only:
+                    direct_result = self.direct_judge.route(
+                        goal.condition, frame, roi,
+                        facts=(extractor_ctx or {}).get(EXTRACTOR_CONTEXT_KEY, {}).get("facts", {}),
+                        stakes=goal.state.get("stakes", "medium"),
+                    )
+                    if direct_result.outcome == "uncertain" and direct_result.facts:
+                        prior = dict((judge_context or {}).get(EXTRACTOR_CONTEXT_KEY) or {})
+                        prior["facts"] = {**prior.get("facts", {}), **direct_result.facts}
+                        judge_context = {**(judge_context or {}), EXTRACTOR_CONTEXT_KEY: prior}
+                # CLAIM-MODE seam (1.5): mark the judge context when THIS concern resolves to the
+                # claim-slot identity policy, so a parsing backend (claude/gemini/openrouter) advertises
+                # the correction contract and folds ``operation``/``value`` off the reply. A reserved
+                # control key read by _judge (context plumbing) and the backends; every non-claim concern
+                # leaves judge_context untouched, byte-for-byte. The fold itself stays authority-gated in
+                # _claim_episode_fold — this only lets a LIVE reply reach it.
+                if self._resolved_identity_policy(goal) == "claim_slot":
+                    judge_context = {**(judge_context or {}), "claim_mode": True}
+                # ``rearm=each_event`` is a temporal event-chain contract, not a level poll. The
+                # backend must return structured pre/during/post metadata; BehaviorExecutor consumes
+                # that metadata to own one session-local episode per distinct occurrence.
+                if goal.state.get("rearm") == "each_event":
+                    judge_context = {**(judge_context or {}), "event_chain": True}
+                    judge_context.update(
+                        self._temporal_evidence_context(strip)
+                    )
+                # Computed BEFORE the judge call (not just on success) so cache, degradation, sequencing,
+                # gate, evidence and trace all use ONE effective reducer entity. Only a concern-declared
+                # identity_policy="scene" opts out of volatile focus identity; undeclared/profile-only
+                # and every other policy preserve the historical focus-scoped reducer.
+                reducer_entity_id = watch_reducer_entity_id(
+                    goal, focus.id if focus else None
+                )
+                base_key = (goal.id, reducer_entity_id)
+                # Open this judgment's timing record. ``admitted_ts`` is stamped HERE: tier-0
+                # detection and focus resolution are done and this concern is about to spend a judge
+                # call, which is exactly "admitted to the judge funnel" (ADR-001 §5). ``source_media_ts``
+                # is the caller's stream timeline when one was passed and stays None otherwise — it is
+                # never back-filled from the monotonic clock, and never enters latency math.
+                judgment_timing = JudgmentTimingBuilder(clock=self.clock)
+                judgment_timing.mark_ingest_observed(at=ingest_observed_at)
+                judgment_timing.mark_admitted()
+                source_stamps = [
+                    unit.source_time for unit in evidence_units
+                    if unit.source_time is not None
+                ]
+                judgment_timing.set_source_media_ts(
+                    max(source_stamps) if audio_only and source_stamps else t
+                )
+                evidence_seq = self._admit_evidence(base_key)  # reserved at DISPATCH, per ADR-001 §8
+                # Runtime-stamped judge provenance for this goal's trace events — additive keys
+                # present ONLY when a per-goal binding exists (empty dict otherwise, so an unbound goal's
+                # judge.started/finished are byte-for-byte unchanged).
+                judge_prov = _judge_binding_trace(self._judge_bindings.get(goal.id))
                 if tracing:
-                    await self._emit_trace(trace_id, now, "extractor.enriched", goal_id=goal.id,
-                                           facts=dict(enrichment.facts))
-                if not enrichment.is_empty:
-                    extractor_ctx = {EXTRACTOR_CONTEXT_KEY: enrichment.to_dict()}
-            judge_context = (
-                process_ctx if extractor_ctx is None else
-                {**(process_ctx or {}), **extractor_ctx}
-            )
-            # DirectJudge routing (percept.direct_judge): ``None`` by default -- direct_result stays
-            # None, the block below is skipped, and every judge call is byte-for-byte unchanged.
-            # CONFIDENT is handled inside the try/except below (it substitutes the judge call
-            # itself, spending zero vision calls); UNCERTAIN's facts are merged into the SAME
-            # reserved "extractor" context key the EvidenceExtractor seam uses, here, BEFORE the
-            # judge call, so a direct rule's partial signal reaches the judge exactly like an
-            # extractor's would.
-            direct_result = None
-            if self.direct_judge is not None and not audio_only:
-                direct_result = self.direct_judge.route(
-                    goal.condition, frame, roi,
-                    facts=(extractor_ctx or {}).get(EXTRACTOR_CONTEXT_KEY, {}).get("facts", {}),
-                    stakes=goal.state.get("stakes", "medium"),
-                )
-                if direct_result.outcome == "uncertain" and direct_result.facts:
-                    prior = dict((judge_context or {}).get(EXTRACTOR_CONTEXT_KEY) or {})
-                    prior["facts"] = {**prior.get("facts", {}), **direct_result.facts}
-                    judge_context = {**(judge_context or {}), EXTRACTOR_CONTEXT_KEY: prior}
-            # CLAIM-MODE seam (1.5): mark the judge context when THIS concern resolves to the
-            # claim-slot identity policy, so a parsing backend (claude/gemini/openrouter) advertises
-            # the correction contract and folds ``operation``/``value`` off the reply. A reserved
-            # control key read by _judge (context plumbing) and the backends; every non-claim concern
-            # leaves judge_context untouched, byte-for-byte. The fold itself stays authority-gated in
-            # _claim_episode_fold — this only lets a LIVE reply reach it.
-            if self._resolved_identity_policy(goal) == "claim_slot":
-                judge_context = {**(judge_context or {}), "claim_mode": True}
-            # ``rearm=each_event`` is a temporal event-chain contract, not a level poll. The
-            # backend must return structured pre/during/post metadata; BehaviorExecutor consumes
-            # that metadata to own one session-local episode per distinct occurrence.
-            if goal.state.get("rearm") == "each_event":
-                judge_context = {**(judge_context or {}), "event_chain": True}
-                judge_context.update(
-                    self._temporal_evidence_context(strip)
-                )
-            # Computed BEFORE the judge call (not just on success) so cache, degradation, sequencing,
-            # gate, evidence and trace all use ONE effective reducer entity. Only a concern-declared
-            # identity_policy="scene" opts out of volatile focus identity; undeclared/profile-only
-            # and every other policy preserve the historical focus-scoped reducer.
-            reducer_entity_id = watch_reducer_entity_id(
-                goal, focus.id if focus else None
-            )
-            base_key = (goal.id, reducer_entity_id)
-            # Open this judgment's timing record. ``admitted_ts`` is stamped HERE: tier-0
-            # detection and focus resolution are done and this concern is about to spend a judge
-            # call, which is exactly "admitted to the judge funnel" (ADR-001 §5). ``source_media_ts``
-            # is the caller's stream timeline when one was passed and stays None otherwise — it is
-            # never back-filled from the monotonic clock, and never enters latency math.
-            judgment_timing = JudgmentTimingBuilder(clock=self.clock)
-            judgment_timing.mark_ingest_observed(at=ingest_observed_at)
-            judgment_timing.mark_admitted()
-            source_stamps = [
-                unit.source_time for unit in evidence_units
-                if unit.source_time is not None
-            ]
-            judgment_timing.set_source_media_ts(
-                max(source_stamps) if audio_only and source_stamps else t
-            )
-            evidence_seq = self._admit_evidence(base_key)  # reserved at DISPATCH, per ADR-001 §8
-            # Runtime-stamped judge provenance for this goal's trace events — additive keys
-            # present ONLY when a per-goal binding exists (empty dict otherwise, so an unbound goal's
-            # judge.started/finished are byte-for-byte unchanged).
-            judge_prov = _judge_binding_trace(self._judge_bindings.get(goal.id))
-            if tracing:
-                await self._emit_trace(trace_id, now, "judge.started", goal_id=goal.id,
-                                       temporal=getattr(spec, "temporal", None), roi=roi is not None,
-                                       **judge_prov)
-            try:
-                judgment_timing.mark_judge_started()
+                    await self._emit_trace(trace_id, now, "judge.started", goal_id=goal.id,
+                                           temporal=getattr(spec, "temporal", None), roi=roi is not None,
+                                           **judge_prov)
                 if direct_result is not None and direct_result.outcome == "confident":
                     # The confident DirectJudge path: use its normalized Verdict AS the judge's
                     # verdict — self._judge / self.vision are never called (zero vision calls).
                     # The Gate stays sole authority: `verdict` flows into the exact same
-                    # freshness/classify/gate path below as a real judge call would.
+                    # freshness/classify/gate path below as a real judge call would. It occupies no
+                    # concurrency slot: there is no provider call to bound.
+                    judgment_timing.mark_judge_started()
                     self.metrics.incr("direct_judge.hit")
-                    verdict = direct_result.verdict
+                    direct_verdict = direct_result.verdict
+                    judgment_timing.mark_judge_completed()
+                    judge_task = None
                 else:
-                    verdict = await self._judge(
-                        goal, frame, roi, corrections, entity_id=reducer_entity_id,
-                        frames=strip, audio=audio, context=judge_context, stale=_stale,
+                    direct_verdict = None
+                    judge_task = asyncio.create_task(
+                        self._judge_slot(
+                            judge_slots, goal, frame, roi, corrections,
+                            entity_id=reducer_entity_id, frames=strip, audio=audio,
+                            context=judge_context, stale=_stale, timing=judgment_timing,
+                        )
                     )
-                judgment_timing.mark_judge_completed()
-            except _JudgeDegraded as degraded:
+                    judge_task.add_done_callback(self._consume_batch_task)
+                dispatched[goal.id] = {
+                    "ctx": ctx,
+                    "evidence_units": evidence_units,
+                    "process_ctx": process_ctx,
+                    "judge_context": judge_context,
+                    "reducer_entity_id": reducer_entity_id,
+                    "base_key": base_key,
+                    "judgment_timing": judgment_timing,
+                    "evidence_seq": evidence_seq,
+                    "judge_prov": judge_prov,
+                    "task": judge_task,
+                    "direct_verdict": direct_verdict,
+                }
+
+            for goal in active_goals:
                 if _stale():
-                    break  # stale transport/goal work cannot alter the degradation breaker either
-                # Fail-closed boundary (ADR-001 §10 invariant 4): the judge call raised (timeout /
-                # provider error) or returned a malformed/partial response. NEVER read .confidence/
-                # .satisfied off that — degrade THIS goal's tick to an explicit abstention (ASK-class:
-                # same telemetry a real low-confidence read gets), never a FIRE, and never let the gate
-                # see it at all. Fail-closed bookkeeping preserves the armed/disarmed edge and
-                # last-fire/refractory memory, but clears pending positive-dwell support: a failed read
-                # cannot prove continuity. No-hold state is unchanged. The exception is swallowed HERE
-                # — it must never escape to worker.py's run() loop and end the watch.
-                self.funnel.refused(concern=goal.id, camera=source)
-                self._degrade_tick(base_key, degraded.cause, goal_id=goal.id, label="",
-                                   action="degrading this tick to ASK/SILENT")
+                    break  # revision moved during a prior goal's judge — stop before judging under it
+                route = goal_behavior_route(goal)
+                if audio_only and route is not BehaviorRoute.FRAME_WATCH:
+                    raise RuntimeError(
+                        f"audio-only execution supports watch goals; {goal.id!r} has route {route.value!r}"
+                    )
+                if route is BehaviorRoute.FRAME_TRANSITION:
+                    ev = await self._perceive_transition(
+                        goal, frame, focus, now=now, t=t, ingest_observed_at=ingest_observed_at,
+                        trace_id=trace_id, tracing=tracing, source=source, stale=_stale,
+                    )
+                    if ev is not None:
+                        events.append(ev)
+                    continue
+                if route is BehaviorRoute.FRAME_PROCESS:
+                    # Item 4: log a delta, never fire here
+                    await self._observe_and_log(goal, frame, source, now, stale=_stale)
+                    continue
+                if route is not BehaviorRoute.FRAME_WATCH:
+                    continue  # external primitives are driven by their dedicated public APIs
+                prepared = dispatched.get(goal.id)
+                if prepared is None:
+                    break  # the dispatch pass stopped here (staleness); nothing was launched beyond it
+                ctx = prepared["ctx"]
+                evidence_units = prepared["evidence_units"]
+                process_ctx = prepared["process_ctx"]
+                judge_context = prepared["judge_context"]
+                reducer_entity_id = prepared["reducer_entity_id"]
+                base_key = prepared["base_key"]
+                judgment_timing = prepared["judgment_timing"]
+                evidence_seq = prepared["evidence_seq"]
+                judge_prov = prepared["judge_prov"]
+                judge_task = prepared["task"]
+                try:
+                    verdict = (
+                        prepared["direct_verdict"] if judge_task is None
+                        else await judge_task
+                    )
+                    if verdict is _BATCH_STALE:
+                        break  # queued behind the bound when the revision moved: never dispatched
+                except _JudgeDegraded as degraded:
+                    if _stale():
+                        break  # stale transport/goal work cannot alter the degradation breaker either
+                    # Fail-closed boundary (ADR-001 §10 invariant 4): the judge call raised (timeout /
+                    # provider error) or returned a malformed/partial response. NEVER read .confidence/
+                    # .satisfied off that — degrade THIS goal's tick to an explicit abstention (ASK-class:
+                    # same telemetry a real low-confidence read gets), never a FIRE, and never let the gate
+                    # see it at all. Fail-closed bookkeeping preserves the armed/disarmed edge and
+                    # last-fire/refractory memory, but clears pending positive-dwell support: a failed read
+                    # cannot prove continuity. No-hold state is unchanged. The exception is swallowed HERE
+                    # — it must never escape to worker.py's run() loop and end the watch.
+                    self.funnel.refused(concern=goal.id, camera=source)
+                    self._degrade_tick(base_key, degraded.cause, goal_id=goal.id, label="",
+                                       action="degrading this tick to ASK/SILENT")
+                    if tracing:
+                        await self._emit_trace(
+                            trace_id, now, "judge.degraded", goal_id=goal.id, cause=repr(degraded.cause),
+                        )
+                        await self._emit_trace(trace_id, now, "gate.classified", goal_id=goal.id,
+                                               truth="unknown", action="ask",
+                                               entity_id=reducer_entity_id, degraded=True)
+                    continue  # next goal this SAME frame; the watch loop (and run) continues either way
+                if _stale():
+                    break  # source/goal generation moved while the judge was in flight: commit nothing
+                provider_verdict = verdict
+                clip_events_present = bool(
+                    goal.state.get("rearm") == "each_event"
+                    and verdict.events
+                )
+                if (
+                    goal.state.get("rearm") == "each_event"
+                    and not clip_events_present
+                ):
+                    verdict = normalize_event_chain_verdict(verdict)
+                self._note_judge_ok(base_key)  # a well-formed verdict resets this key's degrade streak
+                resolved: FireEvent | None = None
+                if process_ctx is not None and getattr(verdict, "running_answer", ""):
+                    ctx.running_answer = verdict.running_answer  # accumulate the model's rewritten summary
+                    # Accumulated-coverage stamp (answer-path only): each evidence-bearing observation that
+                    # folded into the running answer is a unit of coverage. Reuse the per-concern process_log
+                    # the boundary already owns, so len(process_log) IS the evidence count — no gate state.
+                    # Bounded so a 24/7 process_qa concern that never hits a boundary can't leak memory; the
+                    # resolver only reads it as a >= floor count, so a cap never weakens resolution.
+                    ctx.process_log.append(verdict.running_answer)
+                    if len(ctx.process_log) > 256:
+                        del ctx.process_log[: len(ctx.process_log) - 256]
+                    ctx.last_step_at = now
+                    # RESOLVE the running answer once it's complete/confident enough (general — coverage +
+                    # confidence, never the question text). De-duped through the UNCHANGED gate on a
+                    # dedicated __resolved__ key, exactly like the coverage/episode/overdue absence fires.
+                    resolved = self._resolve_process_qa(goal, ctx, verdict.confidence)
+                freshness = self._freshness(focus, now, goal.id)
+                truth = classify(verdict, freshness, self.gate.threshold, self.gate.fresh_min)
+                if truth == "unknown":
+                    self.funnel.refused(concern=goal.id, camera=source)  # abstained — refused to guess (ASK)
+                else:
+                    self.last_supported[goal.id] = now  # a confident read = perceptual coverage
+                    ctx.perception_level = 0  # decay: the (escalated) look resolved → back to the cheap default
+                if truth == "yes" or clip_events_present:
+                    self.last_satisfied[goal.id] = now  # deadline: the expected event happened
+                # base_key computed earlier (before the judge call) — reused here unchanged.
+                # GOVERNING for content-key AND claim-slot concerns only; every other concern gets
+                # fold=None (byte-for-byte, unchanged). A goal is never both types (identity_policy
+                # selects exactly one), so at most one of these returns non-None.
+                doc_fold = self._document_episode_fold(goal, verdict, now)
+                claim_fold = self._claim_episode_fold(goal, verdict, now)
+                gate_outcomes: list[GateOutcome] = []
+                if clip_events_present:
+                    clip_fires = self._fire_clip_occurrences(
+                        goal,
+                        verdict,
+                        base_key,
+                        source_t=now,
+                        context=judge_context,
+                        freshness=freshness,
+                        timing=judgment_timing,
+                        evidence_seq=evidence_seq,
+                        outcome_sink=gate_outcomes.append,
+                    )
+                    ev_fire = clip_fires[-1] if clip_fires else None
+                else:
+                    ev_fire = self._fire_concern(
+                        goal, verdict, base_key, freshness=freshness, t=now,
+                        timing=judgment_timing, evidence_seq=evidence_seq,
+                        fold=doc_fold if doc_fold is not None else claim_fold,
+                        outcome_sink=gate_outcomes.append,
+                    )
+                    clip_fires = [] if ev_fire is None else [ev_fire]
+                for emitted in clip_fires:
+                    if audio_only:
+                        emitted.audio_units = evidence_units
+                    if emitted.action == FIRE:
+                        self.funnel.fired(concern=goal.id, camera=source)  # a rising-edge fire emitted
+                    events.append(emitted)
+                if resolved is not None:  # the process-QA running answer crossed the bar this tick
+                    self.funnel.fired(concern=goal.id, camera=source)
+                    events.append(resolved)
                 if tracing:
+                    # Provider completion through cognition/action-log commit above is one
+                    # synchronous owner segment.  Trace callbacks run only after that commit,
+                    # so a tracer cannot change the Watch revision between stale validation
+                    # and gate/executor mutation.
                     await self._emit_trace(
-                        trace_id, now, "judge.degraded", goal_id=goal.id, cause=repr(degraded.cause),
+                        trace_id,
+                        now,
+                        "judge.finished",
+                        goal_id=goal.id,
+                        satisfied=getattr(provider_verdict, "satisfied", None),
+                        confidence=getattr(provider_verdict, "confidence", None),
+                        **self._event_chain_provider_advisory(
+                            goal, provider_verdict
+                        ),
+                        **judge_prov,
+                    )
+                    # AFTER both fire paths: label a FIRE whenever an incident was actually emitted this tick
+                    # — either the gate fired OR a resolved process-QA answer crossed the bar (which fires even
+                    # when the gate abstained/ASK'd on this same tick). Only ask/silent when nothing fired.
+                    if resolved is not None or (ev_fire is not None and ev_fire.action == FIRE):
+                        action = "fire"
+                    elif ev_fire is not None:
+                        action = ev_fire.action
+                    else:
+                        action = "silent"
+                    # The gate's own INPUTS ride along with its output, so a recorded trace is
+                    # replayable through the (deterministic) gate without the original frame or any
+                    # model call — see percept.replay. Purely additive trace data; nothing branches on it.
+                    gate_reason = (
+                        gate_outcomes[-1].reason
+                        if gate_outcomes and resolved is None
+                        else None
                     )
                     await self._emit_trace(trace_id, now, "gate.classified", goal_id=goal.id,
-                                           truth="unknown", action="ask",
-                                           entity_id=reducer_entity_id, degraded=True)
-                continue  # next goal this SAME frame; the watch loop (and run) continues either way
-            if _stale():
-                break  # source/goal generation moved while the judge was in flight: commit nothing
-            provider_verdict = verdict
-            clip_events_present = bool(
-                goal.state.get("rearm") == "each_event"
-                and verdict.events
-            )
-            if (
-                goal.state.get("rearm") == "each_event"
-                and not clip_events_present
-            ):
-                verdict = normalize_event_chain_verdict(verdict)
-            self._note_judge_ok(base_key)  # a well-formed verdict resets this key's degrade streak
-            resolved: FireEvent | None = None
-            if process_ctx is not None and getattr(verdict, "running_answer", ""):
-                ctx.running_answer = verdict.running_answer  # accumulate the model's rewritten summary
-                # Accumulated-coverage stamp (answer-path only): each evidence-bearing observation that
-                # folded into the running answer is a unit of coverage. Reuse the per-concern process_log
-                # the boundary already owns, so len(process_log) IS the evidence count — no gate state.
-                # Bounded so a 24/7 process_qa concern that never hits a boundary can't leak memory; the
-                # resolver only reads it as a >= floor count, so a cap never weakens resolution.
-                ctx.process_log.append(verdict.running_answer)
-                if len(ctx.process_log) > 256:
-                    del ctx.process_log[: len(ctx.process_log) - 256]
-                ctx.last_step_at = now
-                # RESOLVE the running answer once it's complete/confident enough (general — coverage +
-                # confidence, never the question text). De-duped through the UNCHANGED gate on a
-                # dedicated __resolved__ key, exactly like the coverage/episode/overdue absence fires.
-                resolved = self._resolve_process_qa(goal, ctx, verdict.confidence)
-            freshness = self._freshness(focus, now, goal.id)
-            truth = classify(verdict, freshness, self.gate.threshold, self.gate.fresh_min)
-            if truth == "unknown":
-                self.funnel.refused(concern=goal.id, camera=source)  # abstained — refused to guess (ASK)
-            else:
-                self.last_supported[goal.id] = now  # a confident read = perceptual coverage
-                ctx.perception_level = 0  # decay: the (escalated) look resolved → back to the cheap default
-            if truth == "yes" or clip_events_present:
-                self.last_satisfied[goal.id] = now  # deadline: the expected event happened
-            # base_key computed earlier (before the judge call) — reused here unchanged.
-            # GOVERNING for content-key AND claim-slot concerns only; every other concern gets
-            # fold=None (byte-for-byte, unchanged). A goal is never both types (identity_policy
-            # selects exactly one), so at most one of these returns non-None.
-            doc_fold = self._document_episode_fold(goal, verdict, now)
-            claim_fold = self._claim_episode_fold(goal, verdict, now)
-            gate_outcomes: list[GateOutcome] = []
-            if clip_events_present:
-                clip_fires = self._fire_clip_occurrences(
-                    goal,
-                    verdict,
-                    base_key,
-                    source_t=now,
-                    context=judge_context,
-                    freshness=freshness,
-                    timing=judgment_timing,
-                    evidence_seq=evidence_seq,
-                    outcome_sink=gate_outcomes.append,
-                )
-                ev_fire = clip_fires[-1] if clip_fires else None
-            else:
-                ev_fire = self._fire_concern(
-                    goal, verdict, base_key, freshness=freshness, t=now,
-                    timing=judgment_timing, evidence_seq=evidence_seq,
-                    fold=doc_fold if doc_fold is not None else claim_fold,
-                    outcome_sink=gate_outcomes.append,
-                )
-                clip_fires = [] if ev_fire is None else [ev_fire]
-            for emitted in clip_fires:
-                if audio_only:
-                    emitted.audio_units = evidence_units
-                if emitted.action == FIRE:
-                    self.funnel.fired(concern=goal.id, camera=source)  # a rising-edge fire emitted
-                events.append(emitted)
-            if resolved is not None:  # the process-QA running answer crossed the bar this tick
-                self.funnel.fired(concern=goal.id, camera=source)
-                events.append(resolved)
-            if tracing:
-                # Provider completion through cognition/action-log commit above is one
-                # synchronous owner segment.  Trace callbacks run only after that commit,
-                # so a tracer cannot change the Watch revision between stale validation
-                # and gate/executor mutation.
-                await self._emit_trace(
-                    trace_id,
-                    now,
-                    "judge.finished",
-                    goal_id=goal.id,
-                    satisfied=getattr(provider_verdict, "satisfied", None),
-                    confidence=getattr(provider_verdict, "confidence", None),
-                    **self._event_chain_provider_advisory(
-                        goal, provider_verdict
-                    ),
-                    **judge_prov,
-                )
-                # AFTER both fire paths: label a FIRE whenever an incident was actually emitted this tick
-                # — either the gate fired OR a resolved process-QA answer crossed the bar (which fires even
-                # when the gate abstained/ASK'd on this same tick). Only ask/silent when nothing fired.
-                if resolved is not None or (ev_fire is not None and ev_fire.action == FIRE):
-                    action = "fire"
-                elif ev_fire is not None:
-                    action = ev_fire.action
-                else:
-                    action = "silent"
-                # The gate's own INPUTS ride along with its output, so a recorded trace is
-                # replayable through the (deterministic) gate without the original frame or any
-                # model call — see percept.replay. Purely additive trace data; nothing branches on it.
-                gate_reason = (
-                    gate_outcomes[-1].reason
-                    if gate_outcomes and resolved is None
-                    else None
-                )
-                await self._emit_trace(trace_id, now, "gate.classified", goal_id=goal.id,
-                                       truth=truth, action=action,
-                                       reason=_trace_reason(truth, action, gate_reason),
-                                       gate_reason=gate_reason,
-                                       entity_id=reducer_entity_id,
-                                       satisfied=getattr(verdict, "satisfied", None),
-                                       confidence=getattr(verdict, "confidence", None),
-                                       freshness=freshness,
-                                       hold_s=program_of(goal).hold_s,
-                                       **self._event_chain_advisory(
-                                           goal, reducer_entity_id, verdict
-                                       ))
-                # Project the frozen JudgmentEvent (the one production construction site,
-                # behavior.py:_judgment) into the trace stream so the SAME evidence this decision
-                # judged is resolvable from the .ptrace. Only when THIS tick's fire actually carried
-                # one (the judged watch path only — a degraded tick never reaches here, and
-                # episode/rhythm/boundary/absence fires take no judge-funnel stamps and build no
-                # JudgmentEvent at all; live transition fires emit their row in
-                # ``_perceive_transition``). The RECORDER (not this caller) stamps
-                # ``data["evidence_seq"]`` as the seq of this SAME trace_id's ``source.frame``
-                # record; ``dispatch_seq`` carries the JudgmentEvent's OWN ADR-001 §8 per-key dispatch
-                # sequence, a distinct number, so neither meaning is lost (see
-                # tracing.STAGE_JUDGMENT_EVENT). Purely additive observability — governs nothing.
-                for emitted in clip_fires:
-                    if emitted.judgment is None:
-                        continue
-                    await self._emit_trace(
-                        trace_id, now, STAGE_JUDGMENT_EVENT, goal_id=goal.id,
-                        action=emitted.judgment.action,
-                        dispatch_seq=emitted.judgment.evidence_seq,
-                        entity_id=reducer_entity_id,
-                        # The OPAQUE, INJECTIVE evidence link a client audit resolves: the SAME handle the
-                        # delivered Incident carries (make_incident derives it from the same goal/entity/
-                        # seq), so exactly one judgment.event row answers each incident.created. A None
-                        # evidence_origin on the judged path reads as "judged" — stamp it explicitly here.
-                        judgment_event_id=judgment_event_id(
-                            goal.id,
-                            reducer_entity_id,
-                            emitted.judgment.evidence_seq,
-                            emitted.judgment.occurrence_id,
-                        ),
-                        evidence_origin=(
-                            emitted.judgment.evidence_origin or "judged"
-                        ),
-                        **(
-                            {
-                                "occurrence_revision_id": emitted.revision_id,
-                                "occurrence_source_t": (
-                                    emitted.judgment.timing.source_media_ts
-                                ),
-                            }
-                            if clip_events_present
-                            else {}
-                        ),
-                    )
-                # SHADOW — emit the subject + the fold the model WOULD have proposed, as ADVISORY
-                # trace data. It changes NOTHING (computed after the gate already classified, governs
-                # no firing) and lands in the ``shadow.fold`` stage so a client's media-OFF .ptrace
-                # carries something gradeable. Only built when a tracer is attached (default path does
-                # no shadow work at all).
-                await self._emit_trace(trace_id, now, STAGE_SHADOW_FOLD, goal_id=goal.id,
-                                       **self._shadow_observe(verdict).to_advisory())
+                                           truth=truth, action=action,
+                                           reason=_trace_reason(truth, action, gate_reason),
+                                           gate_reason=gate_reason,
+                                           entity_id=reducer_entity_id,
+                                           satisfied=getattr(verdict, "satisfied", None),
+                                           confidence=getattr(verdict, "confidence", None),
+                                           freshness=freshness,
+                                           hold_s=program_of(goal).hold_s,
+                                           **self._event_chain_advisory(
+                                               goal, reducer_entity_id, verdict
+                                           ))
+                    # Project the frozen JudgmentEvent (the one production construction site,
+                    # behavior.py:_judgment) into the trace stream so the SAME evidence this decision
+                    # judged is resolvable from the .ptrace. Only when THIS tick's fire actually carried
+                    # one (the judged watch path only — a degraded tick never reaches here, and
+                    # episode/rhythm/boundary/absence fires take no judge-funnel stamps and build no
+                    # JudgmentEvent at all; live transition fires emit their row in
+                    # ``_perceive_transition``). The RECORDER (not this caller) stamps
+                    # ``data["evidence_seq"]`` as the seq of this SAME trace_id's ``source.frame``
+                    # record; ``dispatch_seq`` carries the JudgmentEvent's OWN ADR-001 §8 per-key dispatch
+                    # sequence, a distinct number, so neither meaning is lost (see
+                    # tracing.STAGE_JUDGMENT_EVENT). Purely additive observability — governs nothing.
+                    for emitted in clip_fires:
+                        if emitted.judgment is None:
+                            continue
+                        await self._emit_trace(
+                            trace_id, now, STAGE_JUDGMENT_EVENT, goal_id=goal.id,
+                            action=emitted.judgment.action,
+                            dispatch_seq=emitted.judgment.evidence_seq,
+                            entity_id=reducer_entity_id,
+                            # The OPAQUE, INJECTIVE evidence link a client audit resolves: the SAME handle the
+                            # delivered Incident carries (make_incident derives it from the same goal/entity/
+                            # seq), so exactly one judgment.event row answers each incident.created. A None
+                            # evidence_origin on the judged path reads as "judged" — stamp it explicitly here.
+                            judgment_event_id=judgment_event_id(
+                                goal.id,
+                                reducer_entity_id,
+                                emitted.judgment.evidence_seq,
+                                emitted.judgment.occurrence_id,
+                            ),
+                            evidence_origin=(
+                                emitted.judgment.evidence_origin or "judged"
+                            ),
+                            **(
+                                {
+                                    "occurrence_revision_id": emitted.revision_id,
+                                    "occurrence_source_t": (
+                                        emitted.judgment.timing.source_media_ts
+                                    ),
+                                }
+                                if clip_events_present
+                                else {}
+                            ),
+                        )
+                    # SHADOW — emit the subject + the fold the model WOULD have proposed, as ADVISORY
+                    # trace data. It changes NOTHING (computed after the gate already classified, governs
+                    # no firing) and lands in the ``shadow.fold`` stage so a client's media-OFF .ptrace
+                    # carries something gradeable. Only built when a tracer is attached (default path does
+                    # no shadow work at all).
+                    await self._emit_trace(trace_id, now, STAGE_SHADOW_FOLD, goal_id=goal.id,
+                                           **self._shadow_observe(verdict).to_advisory())
+        finally:
+            # Whatever the apply pass did not consume — a mid-loop ``break`` on staleness, a raised
+            # binding invariant, a cancelled frame — must not outlive this call holding a provider
+            # connection. Cancelling here is what keeps "the batch is bounded" true in the failure
+            # paths too; a cancellation-hostile adapter still shows up as route occupancy in the
+            # pool's own snapshot rather than as a leaked task.
+            for prepared in dispatched.values():
+                task = prepared["task"]
+                if task is not None and not task.done():
+                    task.cancel()
         self._log_fires(events, now)
         if _stale():
             return events  # aborted mid-loop: skip auto-refinement (it authors goal changes)
@@ -5899,6 +6042,98 @@ class Percept:
             condition, anchor, roi=roi, corrections=corrections or None,
             frames=strip, audio=audio,
         )
+
+    @staticmethod
+    def _declared_judge_capacity(adapter: Any) -> int | None:
+        """The concurrent-decision capacity an adapter DECLARES, or ``None`` if it declares none.
+
+        :class:`~percept.backends.judge_pool.JudgePool` publishes this as ``max_inflight`` (the
+        minimum occupancy its routes grant). Any other adapter that wants to be batched under a
+        bound may expose the same attribute. A duck-typed/fake judge declares nothing and is
+        governed purely by :data:`_DEFAULT_JUDGE_CONCURRENCY` / ``judge_concurrency``.
+        """
+        value = getattr(adapter, "max_inflight", None)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            return None
+        return value
+
+    def effective_judge_concurrency(self, goals: "Iterable[Any]" = ()) -> int:
+        """How many judge calls ONE frame's batch may hold at once — the resolved, floored bound.
+
+        ``judge_concurrency`` (or :data:`_DEFAULT_JUDGE_CONCURRENCY`) is the caller's ceiling; every
+        DECLARED adapter capacity in this batch then floors it. The floor is not advisory: the pool
+        has no queue, so a caller that fans out past a route's ``max_inflight`` does not wait, it
+        collects ``"capacity"``-shaped UNKNOWN verdicts (and, in a deployment that lists ``capacity``
+        in ``terminal_outcomes``, kills the run). Bounding the fan-out HERE converts that
+        fail-closed overflow into ordinary queueing, which is what the caller wanted in the first
+        place.
+
+        Reads ``self.vision`` plus the per-goal bound adapters actually present in ``goals`` — a
+        batch routed to a strictly-bounded judge is not sped up by another goal's roomier one.
+        """
+        ceiling = (
+            _DEFAULT_JUDGE_CONCURRENCY
+            if self.judge_concurrency is None
+            else int(self.judge_concurrency)
+        )
+        declared = [self._declared_judge_capacity(self.vision)]
+        for goal in goals:
+            binding = self._judge_bindings.get(getattr(goal, "id", goal))
+            adapter = getattr(binding, "adapter", None)
+            if adapter is not None:
+                declared.append(self._declared_judge_capacity(adapter))
+        floors = [value for value in declared if value is not None]
+        if floors:
+            ceiling = min(ceiling, min(floors))
+        return max(1, ceiling)
+
+    async def _judge_slot(
+        self,
+        slots: "asyncio.Semaphore",
+        goal: Goal,
+        frame: Any,
+        roi: Box | None,
+        corrections: dict[str, str],
+        *,
+        entity_id: str | None,
+        frames: list | None,
+        audio: Any,
+        context: dict | None,
+        stale: "Callable[[], bool] | None",
+        timing: Any,
+    ) -> "Verdict | object":
+        """One goal's judge call, holding one of the batch's bounded concurrency slots.
+
+        Everything that makes a judgment a JUDGMENT (routing, cache, fail-closed normalization to
+        :class:`_JudgeDegraded`) stays in :meth:`_judge`; this only owns the slot and the two timing
+        marks. ``mark_judge_started`` fires AFTER the slot is acquired, so time spent queued behind
+        the bound is attributed to admitted->started (where it belongs) instead of inflating the
+        provider's measured latency.
+        """
+        async with slots:
+            if stale is not None and stale():
+                # The batched form of the sequential loop's ``if _stale(): break``. This goal was
+                # launched, then waited its turn, and by the time a slot opened the goals revision /
+                # source generation had moved. Judging now would spend a call whose verdict the apply
+                # pass is already forbidden to commit, so spend nothing and say so.
+                return _BATCH_STALE
+            timing.mark_judge_started()
+            verdict = await self._judge(
+                goal, frame, roi, corrections, entity_id=entity_id,
+                frames=frames, audio=audio, context=context, stale=stale,
+            )
+            timing.mark_judge_completed()
+            return verdict
+
+    @staticmethod
+    def _consume_batch_task(task: "asyncio.Task") -> None:
+        """Retrieve a batch task's exception so an un-awaited one never warns at GC."""
+        if task.cancelled():
+            return
+        try:
+            task.exception()
+        except (asyncio.CancelledError, Exception):
+            pass
 
     async def _judge(
         self,

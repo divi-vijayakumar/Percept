@@ -1084,6 +1084,24 @@
       "visibility": "public"
     },
     {
+      "bounds": [
+        1,
+        1024
+      ],
+      "choices": null,
+      "default": null,
+      "env_var": null,
+      "note": "how many of ONE frame's admitted goals may hold a judge call at once (agent.py _DEFAULT_JUDGE_CONCURRENCY=8 when unset) \u2014 a resource/concurrency ceiling, which is the ExecutionPolicy ownership row verbatim. NOT optimizable: it is floored at runtime by whatever the deployment's judge routes DECLARE (JudgePool.max_inflight), so tuning it moves provider load and batch makespan, never accuracy.",
+      "owner": "ExecutionPolicy",
+      "path": "Percept.create.judge_concurrency",
+      "requires_recompile": true,
+      "requires_restart": false,
+      "risk": "medium",
+      "safe_to_optimize": false,
+      "value_type": "int",
+      "visibility": "public"
+    },
+    {
       "bounds": null,
       "choices": [
         "offline",

@@ -76,11 +76,20 @@ _JUDGE_SYSTEM_REFLEX = (
 
 
 # --- reflex output budget: a ROUTE property, never a global downgrade ----------------------------
-# Measured on the benchmark's exact evidence payload with real streaming calls: the sub-1.5s reflex
-# gate was missed in the GENERATION half, not in ingestion. A 1024-token "headroom" invited a route
-# to spend 3.13s emitting 91 tokens it did not need; asking for two scalars instead of a prose
-# verdict dropped generation to 0.03-0.19s and total latency from 2.80s to 0.91s median. TTFT
-# (~0.5-1.0s) is the ingestion floor and is NOT addressed here — frame count is that lever.
+# WHAT A REFLEX REPLY IS: exactly the two fields the gate reads, and nothing else. That is a
+# statement about the SHAPE of the answer, not about a clock — it holds whatever the deadline is.
+#
+# Measured on the benchmark's exact evidence payload with real streaming calls: a 1024-token
+# "headroom" invited a route to spend 3.13s emitting 91 tokens it did not need; asking for two
+# scalars instead of a prose verdict dropped generation to 0.03-0.19s and total latency from 2.80s
+# to 0.91s median. That saving is real and is why the bound is kept — it buys cost and speed on
+# every call. TTFT (~0.5-1.0s) is the ingestion floor and is NOT addressed here.
+#
+# (The measurement above was originally framed as clearing a "sub-1.5s reflex gate". That gate is
+# gone — it sat below the median provider call time and cancelled the majority of judgments; see
+# ``percept.backends.judge_pool.REFLEX_PROVIDER_DEADLINE_S`` and ``percept.slo`` §5. The token
+# bound survives the gate's removal on its own merits: a terse verdict is cheaper and faster, and
+# nothing in cognition reads the prose it drops.)
 #
 # So a reflex budget is sized to the VERDICT, not to a model's thinking habit. A deliberate call
 # keeps each provider's historical ceiling: an open/thinking model on a non-latency-bound route may
@@ -112,8 +121,8 @@ def _terse_reply(*, reflex: bool, claim_mode: bool) -> bool:
 
     CLAIM MODE opts out even on a reflex route: the claim ledger reads ``operation``/``value``/
     ``normalized_value`` off the reply (:func:`_apply_claim_fields`), so trimming the correction
-    channel to hit a deadline would silently drop the mutation the watch exists to catch. Latency
-    is never worth losing a correction.
+    channel to save latency or tokens would silently drop the mutation the watch exists to catch.
+    Neither is ever worth losing a correction.
     """
     return reflex and not claim_mode
 
@@ -142,17 +151,13 @@ def _judge_max_tokens(
 # here — frame count is that lever"). It is the SAME mechanism: a property of the ROUTE, read off
 # ``LATENCY_MODE_CONTEXT_KEY``, never a global downgrade.
 #
-# WHY IT IS NEEDED AT ALL. The reflex pool deadline is 1.5s against a measured provider p95 of
-# 1.473s — 27ms of headroom. Under concurrency the deadline expires before the provider answers,
-# the unit fails closed to UNKNOWN (confidence 0.0), and the gate can then only ASK. A live N=100
-# run sat at 85.5% ASK and 0.137 recall for exactly that reason. Spending the deadline instead of
-# the frames is arithmetically closed: non-provider overhead is 0.241s, so a 1.8s pool deadline
-# yields 2.041s end-to-end and breaks the 2.0s product gate (ingest->Incident p95 was already
-# 2.001s at the 1.5s deadline). The provider has to answer sooner, and frame count is the lever
-# that moves it.
+# WHAT IT IS: reflex sends the THREE most recent frames — a small, fixed, cheap evidence window.
+# Together with the token bound above, that is what makes reflex a distinct mode: bounded evidence
+# in, bounded verdict out. Neither half depends on a deadline, and both survived the deadline's
+# removal unchanged.
 #
-# WHY 3 — a measured INTERIOR optimum, bracketed on BOTH sides, not a round number. Identical 40
-# cases, one live provider, frame count the only variable:
+# THE ORIGINAL SWEEP, AND WHAT IS NOW KNOWN ABOUT IT. 3 was selected from a live sweep over
+# identical 40 cases with frame count the only variable:
 #
 #     frames | recall | precision |  ASK  |  FIRE
 #        2   | 0.449  |   0.354   | 30.4% |   8.9%
@@ -160,21 +165,22 @@ def _judge_max_tokens(
 #        4   | 0.314  |   0.312   | 69.0% |   6.2%
 #        5   | 0.093  |   0.175   | 83.8% |   2.3%
 #
-# The two sides fail for different reasons: at 2 the strip under-grounds the CHANGE the question
-# asks about, so the model abstains more; at 4 and 5 the answer is fine but arrives after the
-# deadline, so the ASK rate is dominated by expiry rather than by uncertainty. On the full N=100
-# corpus 3 frames gave recall 0.626 / precision 0.417 against 5 frames' 0.137 / 0.392 — 4.6x recall,
-# and every one of the five datasets improved.
+# THE 4- AND 5-FRAME ROWS ARE NOT USABLE EVIDENCE ANY MORE, and this comment will not pretend
+# otherwise. Every row was collected under the 1.5s provider deadline that has since been replaced
+# (see ``percept.backends.judge_pool.REFLEX_PROVIDER_DEADLINE_S``). The sweep's own reading of the
+# upper rows was that "the answer is fine but arrives after the deadline, so the ASK rate is
+# dominated by expiry rather than by uncertainty" — i.e. 4 and 5 were penalised by CANCELLATION,
+# the exact artefact the deadline change removes. With calls now allowed to complete, the collapse
+# at 4-5 may simply not reproduce.
 #
-# IT IS A RECALL OPTIMUM, CHOSEN AS SUCH. Precision peaks at 2 frames (0.354), not at 3 (0.291).
-# 3 is kept because a watch that never reports the event it exists to catch is worthless in a way a
-# slightly noisier one is not, and because the Gate — not the judge — remains the firing authority
-# and can still be tightened against a noisier verdict.
+# So: 3 is RETAINED, not re-confirmed, and it is not re-tuned here — moving it now, with no
+# post-change measurement, would be picking a number to suit a metric. What holds independently of
+# the deadline is the 2-frame row: at 2 the strip under-grounds the CHANGE the question asks about,
+# so the model abstains more. That is a claim about evidence sufficiency, and it still stands.
+# The upper bound is now a COST and EVIDENCE-SHAPE choice: three frames is the cheap lane, and
+# widening it must be justified by a re-measured sweep, not inherited from a censored one.
 #
-# IT IS NOT A COST REDUCTION. Fewer images do bill fewer input tokens, but that is a side effect;
-# the bound exists to buy latency headroom INSIDE the reflex deadline. A DELIBERATE route has no
-# such deadline, so it stays unbounded — there the extra frames are free recall and dropping them
-# would be a pure loss.
+# A DELIBERATE route stays unbounded — there the extra frames are free recall.
 _REFLEX_MAX_FRAMES = 3
 
 

@@ -219,7 +219,26 @@ async for inc in percept.run(source="my_test.mp4", goals=goals, vision="openrout
 
 ## 9. Cost & latency (set expectations)
 
-- **Latency:** a fire trails the action by ~1 frame interval + one judge call (~1–2 s with Qwen at 1 fps).
+- **Latency:** a fire trails the action by ~1 frame interval + one judge call. The judge call is the
+  dominant term, and it is stated as a **distribution**, not a single figure — a deadline you miss most
+  of the time is not a latency promise. Most recent measurement (`percept/slo.py` §5,
+  gemini-3.1-flash-lite, ordered timestamped images, n=100 action corpus, build `2d5097d`):
+
+  | percentile | judge round-trip |
+  |---|---|
+  | p25 | not measured |
+  | p50 | **1.653 s** |
+  | p95 | **2.283 s** |
+  | max | not measured |
+  | n | not measured |
+
+  Those are the **deliberate**-mode figures, uncensored. Reflex sends strictly less (bounded frames,
+  bounded reply), so they are a *conservative upper bound* on reflex — **reflex's own uncensored
+  distribution has not been measured yet**; that run is in flight. Your numbers will differ with model,
+  transport, frame count and scene. Run `percept.slo.judge_latency_promise()` for the current statement.
+- **What the timeouts are:** the pool deadline (`8.0 s` provider / `8.4 s` decision) is a **hang guard** —
+  it stops a wedged provider holding a slot, and is deliberately far above the tail. It is not a latency
+  figure and must not be quoted as one.
 - **Cost:** the fovea spends a model call **only when salience clears the gate** — not every frame — so a
   quiet scene is nearly free. Cost scales with *activity*, not runtime. Qwen keeps it cheap.
 - **Tuning:** higher `fps` = faster detection + more cost; a longer refractory = fewer duplicate alerts.

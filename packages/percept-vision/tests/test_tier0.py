@@ -573,6 +573,33 @@ class WiredLoopTests(unittest.TestCase):
         report = asyncio.run(run_gated_watch(core, stream))
         self.assertEqual([s.ts for s in report.signals], [0.5, 1.5, 2.5])
 
+    def test_admission_maps_are_goal_units_and_escalations_are_frame_units(self):
+        """The two denominators reported side by side, pinned so neither can be read as the other.
+
+        ``escalations`` counts FRAMES the eye bought; ``admission_by_goal``/``admission_by_cause``
+        count (frame x goal) admissions. On a single-goal run they coincide, which is exactly why
+        only a multi-goal run can pin the difference — and why a reader who compares
+        ``sum(admission_by_cause.values())`` against ``escalations`` on a 73-goal run sees a 73x
+        discrepancy that is arithmetic, not a defect.
+        """
+        core = Percept.create()  # offline fakes
+        core.add_goal(watch_goal("g1", "a cup is up"))
+        core.add_goal(watch_goal("g2", "a plate is out"))
+        report = asyncio.run(
+            run_gated_watch(core, fixture_stream(total=24, motion_at=(5, 6, 14)))
+        )
+        goals = 2
+        self.assertGreater(report.escalations, 0)
+        self.assertEqual(sorted(report.admission_by_goal), ["g1", "g2"])
+        # Both goals clear the same bar on the same frames, so each map totals goals x frames...
+        self.assertEqual(sum(report.admission_by_goal.values()), goals * report.escalations)
+        self.assertEqual(
+            sum(report.admission_by_cause.values()), sum(report.admission_by_goal.values())
+        )
+        # ...and the frame-unit terms stay frame-unit.
+        self.assertEqual(len(report.signals), report.frames)
+        self.assertEqual(report.vision_calls, report.escalations)
+
 
 # ---------------------------------------------------------------------------
 # Standard telemetry funnel over the wired loop (seen→gated→judged→…→fired)
