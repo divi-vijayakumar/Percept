@@ -48,6 +48,9 @@ SUMMARY: dict[str, str] = {
     "watches/writing-goals.md": "Phrase goals and match the plan to the action, so quality isn't lost before the judge runs.",
     "configuration/profiles.md": "Author a `SourceProfile` / `WatchProfile` for your use case.",
     "judges/custom-specialist-judge.md": "Bring your own vision model or author a specialist judge; the conformance suite.",
+    # first_sentence() splits on the period inside `percept.hosted_byok`, so this page needs a
+    # curated summary rather than a derived one.
+    "judges/hosted-byok.md": "Per-invocation provider credentials for a multi-tenant hosted service — routing, isolation, cancellation, deadlines, and the gated detection route.",
     "admission/tuning-admission.md": "From \"nothing fires\" to a tuned eye. **Percept ships the harness; you tune the eye for your content.**",
     "configuration/optimize.md": "`percept-optimize` — safe-tunable search into a validated `OptimizationLock`.",
     "evaluation/evaluate-your-data.md": "Per-concern precision/recall on your manifest, the paired A/B differential, and the CI gate.",

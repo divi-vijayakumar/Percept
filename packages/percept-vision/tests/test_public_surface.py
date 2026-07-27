@@ -34,7 +34,22 @@ EXPECTED_PERCEPT_ALL = frozenset({
     "EvidenceArtifact", "EvidenceCorrupt", "EvidenceError", "EvidenceExpired", "EvidenceItem",
     "EvidenceStore", "EvidenceUnavailable", "FIRE", "FUNNEL_STAGES", "FireEvent", "FixtureVision",
     "FrameHashLayer", "FrameWindow", "Funnel", "GATE_ACTIONS", "GATE_REASONS", "Gate", "GateAction",
-    "GateOutcome", "GateReason", "Goal", "GoalOp", "GoalOrigin", "GoalRegistry", "INTEREST_ENTERED",
+    "GateOutcome", "GateReason", "Goal", "GoalOp", "GoalOrigin", "GoalRegistry",
+    # The hosted BYOK invocation seam: the public boundary for a hosted service that receives an end
+    # user's provider credential for a single call. Landed with contract 1.1.0, which is purely
+    # additive — a caller pinned to 1.0.0 keeps judging unmodified and is refused the new capability
+    # rather than silently upgraded into a surface it did not agree to. See
+    # tests/test_hosted_byok_detection.py::test_capability_is_refused_for_a_lease_pinned_to_the_older_contract.
+    "HOSTED_BYOK_CAPABILITIES", "HOSTED_BYOK_CONTRACT_VERSION", "HOSTED_BYOK_DEFAULT_REFRACTORY_S",
+    "HOSTED_BYOK_MAX_GATE_FRAME_PIXELS", "HOSTED_BYOK_PROCESS_ISOLATION_VERSION",
+    "HOSTED_BYOK_SUPPORTED_CONTRACT_VERSIONS",
+    "HostedByokAdapterFactory", "HostedByokCancellationSignal", "HostedByokCancelled",
+    "HostedByokContractError", "HostedByokDeadlineExceeded", "HostedByokDetectionGoal",
+    "HostedByokDetectionProposal", "HostedByokDetectionStarved", "HostedByokError",
+    "HostedByokGateFrame", "HostedByokGeminiClient", "HostedByokInvocationError",
+    "HostedByokProcessSupervisor", "HostedByokRequest", "HostedByokSubprocessSupervisor",
+    "HostedByokTransportSafety", "HostedByokUnsupportedError", "HostedByokVision",
+    "INTEREST_ENTERED",
     "INTEREST_EXITED", "INTEREST_UPDATED", "InMemoryPersistence", "Incident", "IncidentSnippet",
     "InterestIntervalConfig", "InterestIntervalEngine", "InterestIntervalEvent", "InterestSample",
     "InterestSubscription", "LabelRecord", "LabelStore", "LiveInterestAdmission", "LiveInterestEvent",

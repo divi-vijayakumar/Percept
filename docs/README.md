@@ -78,6 +78,7 @@ The architecture diagram is **generated from the code**
 | [Backends](judges/backends.md) | The seams, backend names, extras, and custom backends. | 2026-07-28 |
 | [The Vision adapter interface (public extension point)](judges/bring-your-own-model.md) | The public extension point — bring your own model, fail-closed injection, conformance suite. | 2026-07-23 |
 | [Judging, and creating a custom judge or specialist](judges/custom-specialist-judge.md) | Bring your own vision model or author a specialist judge; the conformance suite. | 2026-07-23 |
+| [Hosted BYOK invocation contract](judges/hosted-byok.md) | Per-invocation provider credentials for a multi-tenant hosted service — routing, isolation, cancellation, deadlines, and the gated detection route. | 2026-07-26 |
 | [Registries and adapters](judges/registries.md) | **Backend seams, detectors, and profile registries** — and how to add your own. Generated. | 2026-07-28 |
 
 ## Incidents and delivery

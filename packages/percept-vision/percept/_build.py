@@ -24,6 +24,16 @@ class BuildInfo:
     git_commit: str
     contract_version: str
     build_timestamp: str
+    #: The hosted BYOK boundary's contract version (``percept.HOSTED_BYOK_CONTRACT_VERSION``).
+    #: Unlike the four fields above it is a CODE constant, not a build stamp, so it reports its
+    #: real value even in an unbuilt source checkout — a hosted deployment must be able to ask an
+    #: imported SDK which hosted contract it implements without cutting a wheel first.
+    #:
+    #: Deliberately absent from :meth:`to_dict`: that mapping is the frozen four-field build
+    #: provenance a benchmark receipt seals and re-verifies (``percept.eval.matched_watch``), and
+    #: widening it would invalidate every already-published receipt. Read this field directly, or
+    #: :meth:`percept.HostedByokAdapterFactory.build_info` for the full hosted descriptor.
+    hosted_byok_contract_version: str = "unreleased"
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -41,6 +51,10 @@ def build_info() -> BuildInfo:
     the packaging build step — never raises.
     """
     try:
+        from .hosted_byok import HOSTED_BYOK_CONTRACT_VERSION as _hosted  # noqa: PLC0415
+    except Exception:  # pragma: no cover - defensive
+        _hosted = "unreleased"
+    try:
         from . import _build_info as _stamp  # noqa: PLC0415
     except Exception:  # pragma: no cover - defensive
         return BuildInfo(
@@ -48,10 +62,12 @@ def build_info() -> BuildInfo:
             git_commit="unreleased",
             contract_version="unreleased",
             build_timestamp="unreleased",
+            hosted_byok_contract_version=_hosted,
         )
     return BuildInfo(
         package_version=getattr(_stamp, "PACKAGE_VERSION", "unreleased"),
         git_commit=getattr(_stamp, "GIT_COMMIT", "unreleased"),
         contract_version=getattr(_stamp, "CONTRACT_VERSION", "unreleased"),
         build_timestamp=getattr(_stamp, "BUILD_TIMESTAMP", "unreleased"),
+        hosted_byok_contract_version=_hosted,
     )

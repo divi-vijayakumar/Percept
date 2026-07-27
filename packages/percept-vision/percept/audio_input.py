@@ -21,6 +21,11 @@ from .backends import gemini as _gemini_backend
 from .backends.fake import FakeVision as _SdkFakeVision
 from .backends.gemini import GeminiVision as _SdkGeminiVision
 from .contracts import AudioFrame, IncidentSnippet, Verdict
+from .hosted_byok import (
+    HostedByokAdapterFactory as _SdkHostedByokAdapterFactory,
+    HostedByokRequest as _SdkHostedByokRequest,
+    HostedByokVision as _SdkHostedByokVision,
+)
 
 AudioJudgeMode = Literal["audio_only", "fused"]
 
@@ -690,7 +695,33 @@ def audio_snippet_from_units(
 _TRUSTED_AUDIO_JUDGES = {
     _SdkFakeVision: _SdkFakeVision.__dict__["judge"],
     _SdkGeminiVision: _SdkGeminiVision.__dict__["judge"],
+    _SdkHostedByokVision: _SdkHostedByokVision.__dict__["judge"],
 }
+# The hosted BYOK boundary reaches its provider through its own factory, so the identities that can
+# steer a compiled fused dispatch are the factory's, not the adapter's. Capture them here and check
+# them once at binding time; the sealed dispatch the factory returns owns the rest.
+_TRUSTED_HOSTED_BYOK_FACTORY_METHODS = {
+    name: _SdkHostedByokAdapterFactory.__dict__[name]
+    for name in (
+        "judge",
+        "_preflight",
+        "_validate_route",
+        "_build_invocation",
+        "_build_gemini",
+        "_build_openrouter",
+        "_claim_injected",
+        "transport_safety",
+        "_assert_transport_permitted",
+        "_deadline_at_entry",
+        "_judge_in_process",
+        "_settle_task",
+        "_close_invocation",
+        "seal_fused_dispatch",
+    )
+}
+_TRUSTED_HOSTED_BYOK_FACTORY_SEAL = _TRUSTED_HOSTED_BYOK_FACTORY_METHODS[
+    "seal_fused_dispatch"
+]
 
 # ``GeminiVision.judge`` intentionally lazy-loads its provider and uses module helpers. Capturing
 # only the outer function would therefore leave several dynamic lookup paths that code mutating the
@@ -1025,6 +1056,36 @@ def _prepare_fake_dispatch(adapter: Any) -> Callable[..., Awaitable[Any]]:
     return dispatch
 
 
+def _prepare_hosted_byok_dispatch(adapter: Any) -> Callable[..., Awaitable[Any]]:
+    """Seal one exact Gemini fused request into the compiled-Watch dispatch binding."""
+
+    factory = getattr(adapter, "_factory", None)
+    request = getattr(adapter, "_request", None)
+    if type(factory) is not _SdkHostedByokAdapterFactory:
+        raise ValueError("compiled Hosted BYOK audio requires an exact SDK-owned factory")
+    if type(request) is not _SdkHostedByokRequest:
+        raise ValueError("compiled Hosted BYOK audio requires an immutable exact request")
+    if request.provider != "gemini" or request.capability != "vision.judge.fused":
+        raise ValueError(
+            "compiled Hosted BYOK audio requires an exact Gemini vision.judge.fused request"
+        )
+
+    def dependencies_intact() -> bool:
+        return all(
+            _SdkHostedByokAdapterFactory.__dict__.get(name) is implementation
+            for name, implementation in _TRUSTED_HOSTED_BYOK_FACTORY_METHODS.items()
+        )
+
+    if not dependencies_intact():
+        raise ValueError("compiled Hosted BYOK audio rejects a class-level factory mutation")
+
+    # The factory returns a private frozen snapshot: its callback routing, deadline helpers and
+    # implementation methods are captured now.  Runtime intentionally does not re-check the live
+    # factory class or map, because a post-compile mutation must not redirect an already accepted
+    # credential-bearing dispatch.
+    return _TRUSTED_HOSTED_BYOK_FACTORY_SEAL(factory, request)
+
+
 def prepare_audio_judge_binding(
     adapter: Any,
     *,
@@ -1035,7 +1096,8 @@ def prepare_audio_judge_binding(
     adapter_type = type(adapter)
     if adapter_type not in _TRUSTED_AUDIO_JUDGES:
         raise ValueError(
-            "compiled audio requires an exact SDK-owned FakeVision or GeminiVision adapter"
+            "compiled audio requires an exact SDK-owned FakeVision, GeminiVision, or fused "
+            "HostedByokVision adapter"
         )
     instance_dict = getattr(adapter, "__dict__", {})
     if "judge" in instance_dict:
@@ -1046,9 +1108,19 @@ def prepare_audio_judge_binding(
     gemini_state = None
     if adapter_type is _SdkGeminiVision:
         dispatch, gemini_state = _prepare_gemini_dispatch(adapter)
+    elif adapter_type is _SdkHostedByokVision:
+        if mode != "fused":
+            raise ValueError("Hosted BYOK does not expose an audio-only judgment capability")
+        dispatch = _prepare_hosted_byok_dispatch(adapter)
     else:
         dispatch = _prepare_fake_dispatch(adapter)
-    capability = AudioInputCapability(modes=frozenset({"audio_only", "fused"}))
+    capability = AudioInputCapability(
+        modes=(
+            frozenset({"fused"})
+            if adapter_type is _SdkHostedByokVision
+            else frozenset({"audio_only", "fused"})
+        )
+    )
     binding = AudioJudgeBinding(
         adapter=adapter,
         dispatch=dispatch,

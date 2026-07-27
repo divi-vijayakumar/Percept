@@ -263,16 +263,37 @@ class _BudgetTerminalError(Exception):
 
 
 class _GeminiBase:
-    def __init__(self, settings: Any = None, *, client: Any = None, model_attr: str = "vision_model") -> None:
+    def __init__(
+        self,
+        settings: Any = None,
+        *,
+        client: Any = None,
+        model_attr: str = "vision_model",
+        api_key: str | None = None,
+        transport_types: Any = None,
+    ) -> None:
         self._settings = _settings_of(settings)
         self._client = client
+        # An EXPLICIT caller-supplied credential (hosted BYOK): when set, the environment is never
+        # consulted for this adapter instance. ``None`` keeps the historical env-backed registry path.
+        self._api_key = api_key
         self._model = _model_for(self._settings, model_attr)
+        # An explicitly injected ``google.genai.types``-compatible namespace, so a caller that already
+        # owns the vendor transport never triggers a vendor import inside a judgment.
+        self._transport_types = transport_types
+
+    def _transport_namespace(self):
+        """The vendor ``types`` namespace: the injected one when present, else the imported SDK's."""
+        types = getattr(self, "_transport_types", None)
+        if types is None:
+            _, types = _require_genai()
+        return types
 
     def _ensure_client(self):
         if self._client is None:
             genai, types = _require_genai()
             self._client = genai.Client(
-                api_key=_gemini_key(),
+                api_key=self._api_key or _gemini_key(),
                 http_options=_provider_http_options(types),
             )
         return self._client
@@ -291,8 +312,26 @@ class GeminiVision(_GeminiBase):
     # qualification result, never something inferred from this marker.
     SUPPORTS_NATIVE_VIDEO_TRANSPORT = True
 
-    def __init__(self, settings: Any = None, *, client: Any = None, request_budget: Any = None) -> None:
-        super().__init__(settings, client=client, model_attr="vision_model")
+    def __init__(
+        self,
+        settings: Any = None,
+        *,
+        client: Any = None,
+        request_budget: Any = None,
+        api_key: str | None = None,
+        transport_types: Any = None,
+        strip_prompt: str | None = None,
+    ) -> None:
+        super().__init__(
+            settings,
+            client=client,
+            model_attr="vision_model",
+            api_key=api_key,
+            transport_types=transport_types,
+        )
+        # Explicit hosted calls pin this to "change", avoiding all process-environment reads.
+        # ``None`` keeps the existing direct-adapter ablation knob fully compatible.
+        self._strip_prompt = strip_prompt
         self._breaker = CircuitBreaker()  # transient-error resilience for batch captures
         self._request_budget = request_budget
 
@@ -386,7 +425,7 @@ class GeminiVision(_GeminiBase):
                 "native video evidence cannot be mixed with ordered images; "
                 "select one exact evidence shape"
             )
-        _, types = _require_genai()
+        types = self._transport_namespace()
         client = self._ensure_client()
         # temporal strip: earlier context frames (oldest->newest), then the current frame last, so the
         # model reads time from Part order. A single multimodal call — Gemini's native modality is why
@@ -589,7 +628,7 @@ class GeminiVision(_GeminiBase):
         and rewrite the full ordered answer, and returns it on ``Verdict.running_answer`` (also mirrored
         to ``evidence``). On a parse miss the prior answer is preserved (never regress the accumulation).
         """
-        _, types = _require_genai()
+        types = self._transport_namespace()
         client = self._ensure_client()
         strip = list(frames or [])
         if strip and strip[-1] is frame:
@@ -639,7 +678,7 @@ class GeminiVision(_GeminiBase):
         process goal never fires per-clip; the agent appends ``evidence`` to ``ConcernContext.process_log``
         and the ANSWER is produced later by :meth:`summarize_process` at the episode boundary / on demand.
         """
-        _, types = _require_genai()
+        types = self._transport_namespace()
         client = self._ensure_client()
         strip = list(frames or [])
         if strip and strip[-1] is frame:
@@ -676,7 +715,7 @@ class GeminiVision(_GeminiBase):
         Text-only (no frames). Returns the consolidated answer; the caller stores it and wipes the log.
         ``max_output_tokens=4096`` — a thinking model summarizing a long log truncates at 1024 (validated).
         """
-        _, types = _require_genai()
+        types = self._transport_namespace()
         if not log:
             return ""
         client = self._ensure_client()
@@ -700,7 +739,7 @@ class GeminiVision(_GeminiBase):
         return "; ".join(steps)
 
     async def detect(self, frame: Any, goals: list[Goal]) -> list[Observation]:
-        _, types = _require_genai()
+        types = self._transport_namespace()
         client = self._ensure_client()
         labels = ", ".join(sorted({g.condition for g in goals})) or "any salient object"
         prompt = (
@@ -730,7 +769,7 @@ class GeminiConductor(_GeminiBase):
         self._breaker = CircuitBreaker()
 
     async def run(self, event: str, utterance: str, context: dict) -> Decision:
-        _, types = _require_genai()
+        types = self._transport_namespace()
         client = self._ensure_client()
         user = json.dumps({"event": event, "utterance": utterance, "context": context}, ensure_ascii=False)
 
@@ -759,7 +798,7 @@ class GeminiSpecialist(_GeminiBase):
         super().__init__(settings, client=client, model_attr="specialist_model")
 
     async def stream(self, prompt: str, *, frame: Any = None, fast: bool = False) -> AsyncIterator[str]:
-        _, types = _require_genai()
+        types = self._transport_namespace()
         client = self._ensure_client()
         parts: list[Any] = []
         if frame is not None:
