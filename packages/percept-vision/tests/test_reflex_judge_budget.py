@@ -13,6 +13,7 @@ openrouter/gemini backend tests.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import sys
 import types
@@ -24,6 +25,7 @@ from percept.adapters import Verdict
 from percept.backends.anthropic import (
     _JUDGE_SYSTEM,
     _JUDGE_SYSTEM_REFLEX,
+    _REFLEX_MAX_FRAMES,
     _REFLEX_MAX_TOKENS,
     _REFLEX_STRUCTURED_MAX_TOKENS,
     _parse_verdict,
@@ -362,6 +364,259 @@ class GeminiMatchesTheOpenRouterPolicy(unittest.TestCase):
         config = _gemini_config("deliberate", VERBOSE_REPLY)
         self.assertEqual(config["max_output_tokens"], _DELIBERATE_MAX_TOKENS)
         self.assertEqual(config["system_instruction"], _JUDGE_SYSTEM)
+
+
+# --------------------------------------------------------------------------------------------
+# the reflex FRAME bound: the same route policy applied to the INGESTION half
+# --------------------------------------------------------------------------------------------
+#
+# The output budget above fixed the GENERATION half of the reflex miss. The remaining miss is
+# ingestion: at 5 frames the measured provider p95 (1.473s) all but exhausts the 1.5s pool deadline,
+# so under concurrency the unit fails closed to UNKNOWN and the gate can only ASK. A measured frame
+# sweep put the recall optimum at 3, bracketed on both sides. These tests pin the bound as a ROUTE
+# property — reflex only, most-recent-first, deliberate untouched.
+
+CONTEXT_FRAMES = [b"f1", b"f2", b"f3", b"f4"]  # earlier context, oldest -> newest
+CURRENT_FRAME = b"f5"  # the moment actually being judged; always retained
+
+
+def _shape_for(frames) -> str:
+    return "ordered_images" if frames else "single_image"
+
+
+def _openrouter_images(mode: str, *, frames) -> list[bytes]:
+    """The image payload of one pooled OpenRouter judge call, decoded back to frame bytes."""
+    adapter, client = _openrouter(TERSE_REPLY)
+    asyncio.run(
+        _pool(adapter, mode=mode, shape=_shape_for(frames)).judge(
+            "the lid is closed", CURRENT_FRAME, frames=list(frames)
+        )
+    )
+    user = next(m for m in _sent(client)["messages"] if m["role"] == "user")
+    return [
+        base64.b64decode(block["image_url"]["url"].split(",", 1)[1])
+        for block in user["content"]
+        if block.get("type") == "image_url"
+    ]
+
+
+def _gemini_call(mode: str, *, frames, context: dict | None = None, shape: str | None = None):
+    client = _GeminiClient(TERSE_REPLY)
+    adapter = GeminiVision(client=client)
+    with patch.dict(sys.modules, _lazy_google()):
+        asyncio.run(
+            _pool(adapter, mode=mode, shape=shape or _shape_for(frames)).judge(
+                "the lid is closed",
+                CURRENT_FRAME,
+                frames=list(frames),
+                context=context,
+            )
+        )
+    assert len(client.models.calls) == 1
+    return client.models.calls[0]
+
+
+def _gemini_images(mode: str, *, frames) -> list[bytes]:
+    """The same payload for Gemini: the fake ``Part.from_bytes`` hands back its own kwargs."""
+    contents = _gemini_call(mode, frames=frames)["contents"]
+    return [
+        part[1]["data"]
+        for part in contents
+        if isinstance(part, tuple) and part and part[0] == "part"
+    ]
+
+
+def _gemini_prompt(mode: str, *, frames) -> str:
+    contents = _gemini_call(mode, frames=frames)["contents"]
+    return " ".join(part for part in contents if isinstance(part, str))
+
+
+class ReflexFrameBound(unittest.TestCase):
+    def test_a_reflex_request_sends_at_most_three_frames_when_given_five(self):
+        for name, images in (
+            ("openrouter", _openrouter_images("reflex", frames=CONTEXT_FRAMES)),
+            ("gemini", _gemini_images("reflex", frames=CONTEXT_FRAMES)),
+        ):
+            with self.subTest(adapter=name):
+                self.assertEqual(len(images), 3)
+                self.assertEqual(len(images), _REFLEX_MAX_FRAMES)
+
+    def test_a_deliberate_request_still_sends_all_five(self):
+        # No deadline to buy headroom inside, so the extra frames are free recall. Dropping them
+        # here would be a pure loss.
+        for name, images in (
+            ("openrouter", _openrouter_images("deliberate", frames=CONTEXT_FRAMES)),
+            ("gemini", _gemini_images("deliberate", frames=CONTEXT_FRAMES)),
+        ):
+            with self.subTest(adapter=name):
+                self.assertEqual(images, [b"f1", b"f2", b"f3", b"f4", b"f5"])
+
+    def test_the_retained_frames_are_the_most_recent_ones_in_order(self):
+        # Recency carries the change signal, and the prompt promises "consecutive moments in TIME
+        # ORDER (oldest first)" — so the bound drops the OLDEST context and never reorders or
+        # resamples what it keeps.
+        for name, images in (
+            ("openrouter", _openrouter_images("reflex", frames=CONTEXT_FRAMES)),
+            ("gemini", _gemini_images("reflex", frames=CONTEXT_FRAMES)),
+        ):
+            with self.subTest(adapter=name):
+                self.assertEqual(images, [b"f3", b"f4", b"f5"])
+                self.assertEqual(images[-1], CURRENT_FRAME)
+
+    def test_a_reflex_request_under_the_bound_is_unchanged(self):
+        # No padding, no error, no resampling: a 1- or 2-frame strip is already inside the bound.
+        for size, expected in (
+            (0, [b"f5"]),
+            (1, [b"f4", b"f5"]),
+            (2, [b"f3", b"f4", b"f5"]),  # exactly at the bound
+        ):
+            frames = CONTEXT_FRAMES[len(CONTEXT_FRAMES) - size :] if size else []
+            with self.subTest(context_frames=size, adapter="openrouter"):
+                self.assertEqual(_openrouter_images("reflex", frames=frames), expected)
+            with self.subTest(context_frames=size, adapter="gemini"):
+                self.assertEqual(_gemini_images("reflex", frames=frames), expected)
+
+    def test_both_adapters_apply_the_identical_bound(self):
+        # One shared policy, not two coincidentally-similar ones: at every strip length the two
+        # providers must ingest the same evidence AND that evidence must be the bounded window.
+        for size in range(len(CONTEXT_FRAMES) + 1):
+            frames = CONTEXT_FRAMES[:size]
+            reflex_expected = [*frames, CURRENT_FRAME][-_REFLEX_MAX_FRAMES:]
+            deliberate_expected = [*frames, CURRENT_FRAME]
+            for mode, expected in (
+                ("reflex", reflex_expected),
+                ("deliberate", deliberate_expected),
+            ):
+                with self.subTest(mode=mode, context_frames=size):
+                    openrouter_images = _openrouter_images(mode, frames=frames)
+                    gemini_images = _gemini_images(mode, frames=frames)
+                    self.assertEqual(openrouter_images, gemini_images)
+                    self.assertEqual(openrouter_images, expected)
+
+    def test_the_prompt_states_the_number_of_frames_actually_sent(self):
+        # A bound that trimmed the payload but left the question claiming five images would be
+        # lying to the model about its own evidence.
+        adapter, client = _openrouter(TERSE_REPLY)
+        asyncio.run(
+            _pool(adapter, mode="reflex", shape="ordered_images").judge(
+                "the lid is closed", CURRENT_FRAME, frames=list(CONTEXT_FRAMES)
+            )
+        )
+        self.assertIn("These 3 images are consecutive moments", _prompt_of(_sent(client)))
+        self.assertIn(
+            "These 3 images are consecutive moments",
+            _gemini_prompt("reflex", frames=CONTEXT_FRAMES),
+        )
+        self.assertIn(
+            "These 5 images are consecutive moments",
+            _gemini_prompt("deliberate", frames=CONTEXT_FRAMES),
+        )
+
+    def test_timestamp_labels_are_sliced_with_the_frames_and_keep_the_clip_origin(self):
+        # agent._fire_clip_occurrences decodes a reported t_start against
+        # _percept_temporal_span_s — the FULL captured span — so the retained labels must stay in
+        # the clip's original frame of reference. Re-basing them to 0 here would shift every
+        # reported occurrence earlier by exactly the dropped prefix.
+        adapter, client = _openrouter(TERSE_REPLY)
+        clip_context = {
+            "event_chain": True,
+            "_percept_temporal_image_timestamps_s": (0.0, 0.4, 0.8, 1.2, 1.6),
+        }
+        asyncio.run(
+            _pool(adapter, mode="reflex", shape="video_clip").judge(
+                "one discrete closing",
+                CURRENT_FRAME,
+                frames=list(CONTEXT_FRAMES),
+                context=clip_context,
+            )
+        )
+        user = next(m for m in _sent(client)["messages"] if m["role"] == "user")
+        labels = [
+            block["text"]
+            for block in user["content"]
+            if block.get("type") == "text" and block["text"].startswith("Temporal frame")
+        ]
+        self.assertEqual(
+            labels,
+            [
+                "Temporal frame 1/3 at t=0.8s.",
+                "Temporal frame 2/3 at t=1.2s.",
+                "Temporal frame 3/3 at t=1.6s.",
+            ],
+        )
+        self.assertEqual(
+            len([b for b in user["content"] if b.get("type") == "image_url"]), 3
+        )
+
+        # ...and the deliberate clip is untouched: five frames, five labels, origin at 0.
+        deliberate_adapter, deliberate_client = _openrouter(TERSE_REPLY)
+        asyncio.run(
+            _pool(deliberate_adapter, mode="deliberate", shape="video_clip").judge(
+                "one discrete closing",
+                CURRENT_FRAME,
+                frames=list(CONTEXT_FRAMES),
+                context=clip_context,
+            )
+        )
+        user = next(
+            m for m in _sent(deliberate_client)["messages"] if m["role"] == "user"
+        )
+        self.assertEqual(
+            [
+                block["text"]
+                for block in user["content"]
+                if block.get("type") == "text"
+                and block["text"].startswith("Temporal frame")
+            ],
+            [
+                "Temporal frame 1/5 at t=0s.",
+                "Temporal frame 2/5 at t=0.4s.",
+                "Temporal frame 3/5 at t=0.8s.",
+                "Temporal frame 4/5 at t=1.2s.",
+                "Temporal frame 5/5 at t=1.6s.",
+            ],
+        )
+
+    def test_a_directly_constructed_adapter_keeps_every_frame(self):
+        # No pool, no stamp, no bound — an SDK user calling the adapter straight is unaffected.
+        adapter, client = _openrouter(TERSE_REPLY)
+        asyncio.run(
+            adapter.judge("x?", CURRENT_FRAME, frames=list(CONTEXT_FRAMES))
+        )
+        user = next(m for m in _sent(client)["messages"] if m["role"] == "user")
+        self.assertEqual(
+            len([b for b in user["content"] if b.get("type") == "image_url"]), 5
+        )
+
+    def test_a_deliberate_temporal_request_is_byte_for_byte_the_direct_request(self):
+        # The whole payload, not just the image count: images, per-frame timestamp labels, the
+        # question text and the output budget must all be indistinguishable from the pre-bound
+        # request. The bound is a reflex-route property and nothing else.
+        clip_context = {
+            "event_chain": True,
+            "_percept_temporal_image_timestamps_s": (0.0, 0.4, 0.8, 1.2, 1.6),
+            "_percept_temporal_span_s": 1.6,
+        }
+        pooled_adapter, pooled_client = _openrouter(VERBOSE_REPLY)
+        asyncio.run(
+            _pool(pooled_adapter, mode="deliberate", shape="video_clip").judge(
+                "one discrete closing",
+                CURRENT_FRAME,
+                frames=list(CONTEXT_FRAMES),
+                context=dict(clip_context),
+            )
+        )
+        direct_adapter, direct_client = _openrouter(VERBOSE_REPLY)
+        asyncio.run(
+            direct_adapter.judge(
+                "one discrete closing",
+                CURRENT_FRAME,
+                frames=list(CONTEXT_FRAMES),
+                context=dict(clip_context),
+            )
+        )
+        self.assertEqual(_sent(pooled_client), _sent(direct_client))
+        self.assertEqual(_sent(pooled_client)["max_tokens"], _DELIBERATE_MAX_TOKENS)
 
 
 # --------------------------------------------------------------------------------------------

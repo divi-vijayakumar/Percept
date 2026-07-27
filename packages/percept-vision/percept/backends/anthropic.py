@@ -136,6 +136,80 @@ def _judge_max_tokens(
     return _REFLEX_STRUCTURED_MAX_TOKENS if structured else _REFLEX_MAX_TOKENS
 
 
+# --- reflex INPUT bound: the same route policy, applied to the temporal strip ---------------------
+# The budget above bounds the GENERATION half of the reflex call. This bounds the INGESTION half,
+# which the output work explicitly left open ("TTFT is the ingestion floor and is NOT addressed
+# here — frame count is that lever"). It is the SAME mechanism: a property of the ROUTE, read off
+# ``LATENCY_MODE_CONTEXT_KEY``, never a global downgrade.
+#
+# WHY IT IS NEEDED AT ALL. The reflex pool deadline is 1.5s against a measured provider p95 of
+# 1.473s — 27ms of headroom. Under concurrency the deadline expires before the provider answers,
+# the unit fails closed to UNKNOWN (confidence 0.0), and the gate can then only ASK. A live N=100
+# run sat at 85.5% ASK and 0.137 recall for exactly that reason. Spending the deadline instead of
+# the frames is arithmetically closed: non-provider overhead is 0.241s, so a 1.8s pool deadline
+# yields 2.041s end-to-end and breaks the 2.0s product gate (ingest->Incident p95 was already
+# 2.001s at the 1.5s deadline). The provider has to answer sooner, and frame count is the lever
+# that moves it.
+#
+# WHY 3 — a measured INTERIOR optimum, bracketed on BOTH sides, not a round number. Identical 40
+# cases, one live provider, frame count the only variable:
+#
+#     frames | recall | precision |  ASK  |  FIRE
+#        2   | 0.449  |   0.354   | 30.4% |   8.9%
+#        3   | 0.653  |   0.291   | 25.3% |  14.2%   <- retained
+#        4   | 0.314  |   0.312   | 69.0% |   6.2%
+#        5   | 0.093  |   0.175   | 83.8% |   2.3%
+#
+# The two sides fail for different reasons: at 2 the strip under-grounds the CHANGE the question
+# asks about, so the model abstains more; at 4 and 5 the answer is fine but arrives after the
+# deadline, so the ASK rate is dominated by expiry rather than by uncertainty. On the full N=100
+# corpus 3 frames gave recall 0.626 / precision 0.417 against 5 frames' 0.137 / 0.392 — 4.6x recall,
+# and every one of the five datasets improved.
+#
+# IT IS A RECALL OPTIMUM, CHOSEN AS SUCH. Precision peaks at 2 frames (0.354), not at 3 (0.291).
+# 3 is kept because a watch that never reports the event it exists to catch is worthless in a way a
+# slightly noisier one is not, and because the Gate — not the judge — remains the firing authority
+# and can still be tightened against a noisier verdict.
+#
+# IT IS NOT A COST REDUCTION. Fewer images do bill fewer input tokens, but that is a side effect;
+# the bound exists to buy latency headroom INSIDE the reflex deadline. A DELIBERATE route has no
+# such deadline, so it stays unbounded — there the extra frames are free recall and dropping them
+# would be a pure loss.
+_REFLEX_MAX_FRAMES = 3
+
+
+def _judge_max_frames(*, reflex: bool) -> int | None:
+    """The temporal frame ceiling for ONE judge request, decided by route mode.
+
+    Counts the WHOLE strip actually sent — the earlier context frames plus the current frame — so
+    a bound of 3 means the current frame and the two most recent context frames. ``None`` means
+    unbounded: a deliberate route, a directly-constructed adapter, or anything behind a deliberate
+    pool keeps its evidence byte-for-byte.
+
+    Deliberately narrower than :func:`_terse_reply` / :func:`_judge_max_tokens`, which carve out
+    claim mode: those trim the REPLY, and the claim ledger reads correction fields off the reply.
+    This trims the OLDEST evidence only, keeping the most recent frames, so the mutation channel is
+    untouched and no carve-out is warranted.
+    """
+    return _REFLEX_MAX_FRAMES if reflex else None
+
+
+def _bounded_strip(strip: list, *, max_frames: int | None, has_current_frame: bool = True) -> list:
+    """Trim the earlier-context strip so ``strip + current frame`` fits ``max_frames``.
+
+    KEEPS THE MOST RECENT frames and preserves their order: the strip is promised to the model as
+    "consecutive moments in TIME ORDER (oldest first)", and recency is where the change signal
+    lives, so the OLDEST context is what gets dropped. ``max_frames=None`` returns the strip
+    unchanged, and a strip already inside the bound is returned unchanged (never padded).
+    """
+    if max_frames is None:
+        return strip
+    keep = max(0, max_frames - (1 if has_current_frame else 0))
+    if len(strip) <= keep:
+        return strip
+    return strip[len(strip) - keep :]
+
+
 # CLAIM-MODE contract addendum (1.5). Appended to the per-frame question ONLY when the caller marks
 # the goal claim-mode (``context["claim_mode"]`` — set in ``agent.perceive_judged`` when the concern's
 # resolved identity policy is ``claim_slot``). It advertises the OPTIONAL mutation-channel fields the

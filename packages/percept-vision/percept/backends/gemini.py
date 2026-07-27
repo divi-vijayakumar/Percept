@@ -32,7 +32,9 @@ from .anthropic import (
     _CLAIM_MODE_CONTRACT,
     _JUDGE_SYSTEM,
     _JUDGE_SYSTEM_REFLEX,
+    _bounded_strip,
     _is_reflex,
+    _judge_max_frames,
     _judge_max_tokens,
     _parse_observations,
     _parse_verdict,
@@ -395,6 +397,15 @@ class GeminiVision(_GeminiBase):
             and strip[-1] is frame
         ):
             strip.pop()
+        # A reflex route is bounded in FRAME COUNT as well as in output tokens — same shared policy
+        # (:func:`_judge_max_frames`), same rationale, so both providers ingest the same evidence on
+        # the same route. Only the OLDEST context is dropped; the current frame and the newest
+        # context frames survive in order, and every ``len(strip) + 1`` count below follows.
+        strip = _bounded_strip(
+            strip,
+            max_frames=_judge_max_frames(reflex=reflex),
+            has_current_frame=frame is not None,
+        )
         parts: list[Any] = [_media_part(types, f) for f in strip]
         if frame is not None:
             parts.append(_media_part(types, frame))

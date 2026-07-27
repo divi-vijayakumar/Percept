@@ -30,8 +30,10 @@ from .anthropic import (
     _CLAIM_MODE_CONTRACT,
     _JUDGE_SYSTEM,
     _JUDGE_SYSTEM_REFLEX,
+    _bounded_strip,
     _coerce_json,
     _is_reflex,
+    _judge_max_frames,
     _judge_max_tokens,
     _parse_observations,
     _parse_verdict,
@@ -462,9 +464,10 @@ class OpenRouterVision:
     ) -> list:
         strip = [f for f in (frames or []) if f is not frame]  # earlier context, oldest->newest
         event_chain = bool((context or {}).get("event_chain"))
-        # ``reflex`` narrows only the REPLY SHAPE. Every grounding instruction above (time order,
-        # exemplar deixis, corrections, specialist facts) is unchanged: a reflex judge is asked the
-        # same question, just not asked to write an essay about the answer.
+        # ``reflex`` narrows the REPLY SHAPE and, via ``_judge_max_frames``, the number of frames the
+        # request carries. Every grounding instruction below (time order, exemplar deixis,
+        # corrections, specialist facts) is unchanged: a reflex judge is asked the same question over
+        # a shorter, more recent window, just not asked to write an essay about the answer.
         terse = _terse_reply(reflex=reflex, claim_mode=claim_mode)
         native_video = _is_video(frame)
         if native_video and strip:
@@ -472,19 +475,32 @@ class OpenRouterVision:
                 "native video evidence cannot be mixed with ordered images; "
                 "select one exact evidence shape"
             )
+        # Same shared bound as the Gemini adapter, so the two providers ingest the same evidence on
+        # the same route. Only the OLDEST context frames are dropped.
+        bounded_strip = _bounded_strip(
+            strip, max_frames=_judge_max_frames(reflex=reflex)
+        )
+        dropped_frames = len(strip) - len(bounded_strip)
+        strip = bounded_strip
         temporal_timestamps = (context or {}).get(
             "_percept_temporal_image_timestamps_s"
         )
         ordered_images = [*strip, frame]
         if (
             isinstance(temporal_timestamps, (tuple, list))
-            and len(temporal_timestamps) == len(ordered_images)
+            and len(temporal_timestamps) == len(ordered_images) + dropped_frames
             and all(
                 isinstance(value, (int, float))
                 and not isinstance(value, bool)
                 for value in temporal_timestamps
             )
         ):
+            # Timestamps follow the frames they label, so the bound slices them in lockstep. They
+            # KEEP THE CLIP'S ORIGINAL ORIGIN rather than being re-based onto the retained window:
+            # ``agent._fire_clip_occurrences`` decodes a reported ``t_start`` against
+            # ``_percept_temporal_span_s`` (the full captured span), so re-basing here would shift
+            # every occurrence earlier by exactly the dropped prefix.
+            temporal_timestamps = list(temporal_timestamps)[dropped_frames:]
             content = []
             for index, (image, timestamp_s) in enumerate(
                 zip(ordered_images, temporal_timestamps, strict=True), start=1
