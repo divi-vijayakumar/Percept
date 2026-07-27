@@ -337,6 +337,95 @@ than tuned away. Pinned offline via a content-addressed frozen cache (73 decisio
 calls in CI); the optimizer guardrail is untouched and a test asserts it still denies `Goal.state.*`
 to the optimizer. **Authoring and tuning stay separate acts.**
 
+### 🚨 EVIDENCE AUDIT — four of six "wins" were never in the binary that produced their number
+
+Adversarial audit of the six claims. **Two governing facts:**
+
+1. **Build provenance.** Every live measurement in `results/` except five smokes carries
+   `build_commit = 2d5097d` (or `083b972`). Verified by `git grep` at that commit: it contains
+   **none** of `_REFLEX_MAX_FRAMES`, `_bounded_strip`, `INCIDENT_MERGE_WINDOW_S`, `PlanConductor`,
+   `RhythmDrive`. **Four of six wins were never present in the binary that produced their headline.**
+2. **The harness levers are not the shipped levers.** `live_run.py:141` sets frames via the WatchPlan;
+   `:259` monkeypatches `GenerateContentConfig`. Its own docstring says "WITHOUT touching `percept/`".
+   These reproduce the *effect* on old code; they do not exercise the shipped code.
+
+| # | claim | verdict |
+|---|---|---|
+| 1 | reflex 3-frame, recall 0.137→0.626 | **DIRECTIONAL** — shipped mechanism ≠ measured mechanism |
+| 2 | `block_max` default, recall 0.31→0.59 | **UNPROVEN** (recall) / DIRECTIONAL (admission) |
+| 3 | 0.7 s merge, "no real occurrences deleted" | **RETRACTED** — refuted by its own commit message |
+| 4 | `media_resolution=LOW` | tokens **PROVEN**; cost/ASK/expiries DIRECTIONAL |
+| 5 | conductor 91/100 | **UNPROVEN as a product claim** |
+| 6 | rhythm route drivable | **RETRACTED** |
+
+#### 🔴 The conductor makes things WORSE in the only controlled test available
+
+`goal_kind` is a **hardcoded per-dataset constant** (`build_corpus.py:117/158/291/374`); only omnipro's 8
+vary. The task scored is effectively "given a sentence from dataset D, predict D's stipulated kind" — a
+classifier knowing only the dataset scores 100/100. **The honest majority-class baseline is 40/100, not
+4/100.**
+
+Worse is what happens *after* selection. One real-frame test per primitive on shipped build `1c542ff`:
+
+| authored primitive | ~goals | result |
+|---|---|---|
+| `watch` | 44 | works — 7 incidents, precision 1.0 |
+| `transition` | 28 | arms, 37 calls, **19 decisive verdicts, 0 incidents**, recall 0.0 |
+| `count` | 8 | **`WatchPlan did not arm: status=rejected`** |
+| `rhythm` | 20 | **crashes** — pose runtime unresolved, then `'tuple' has no attribute 'ndim'` |
+
+**≈56 of 100 goals route to a primitive that cannot deliver an Incident today.** And the control is
+decisive: `smokeBp` runs `repcount::stu6_15::0` with the conductor OFF → **recall 0.75, 11 incidents**.
+Conductor ON → crash. **Selection accuracy is not delivery.**
+
+`FRAME_TRANSITION` producing 0 incidents from 19 decisive verdicts is a **second broken route**,
+independent of rhythm, and was not previously known.
+
+#### 🔴 `salience_stat` default is SPLIT
+
+`config.py:198/295` say `block_max`; **`contracts/__init__.py:1287` says
+`WatchCondition.salience_stat: SalienceStat = "mean"`.** A client constructing a `WatchCondition`
+directly gets the legacy path. Resolve before claiming block_max is "the default".
+
+The original 0.31→0.59 evidence (`eval/viability/LADDER_LEDGER.md`, 2026-07-17) fails the bar on four
+counts: different judge/transport (`qwen3-vl-32b` via OpenRouter), single run per cell (stated in its
+own header), n=20 one dataset, and a **volume confound** — judge calls 1,731→3,425 (1.98×) while recall
+went 1.93×. That is more shots on goal, not a better eye. The defensible half is the admission-stage
+`edge_recall` 0.698→0.995, which is deterministic in frames/statistic/cutoff.
+
+**The running consolidated comparison cannot test it:** `live_run.py:242` writes `block_max` into the
+WatchPlan `explicit` dict for **both** arms, overriding the spec's `PERCEPT_SALIENCE_STAT=mean`
+baseline. The spec's own "an arm that cannot prove its configuration must abort" rule is not enforced
+for #2.
+
+#### Claim 1: the shipped bound has never had its recall measured
+
+`agent.py:5683` with `sampling="uniform", n_frames=3, window_s=2.0` spans the **full 2.0 s**. The
+shipped `_bounded_strip` keeps the newest of a 5-frame strip, spanning **~0.7–1.0 s**. Same image count
+— so the latency mechanism transfers — but **different temporal evidence**, and H7's own curve shows
+recall is sharply sensitive to that axis. The shipped path also carries residual R1a; the measured path
+does not.
+
+#### Claim 4: cost is not the deterministic metric it was filed as
+
+Tokens/call ARE deterministic — HIGH 3,579/3,574, LOW 1,092/1,100 across three runs. But cost =
+tokens × **calls completed**, and calls completed is the load-dependent deadline race: the 40-case pair
+gives **−52.9%**, the matched 18-case replicate pair gives **−29.7%**. A 23-point spread on the same
+comparison. ASK% and expiry *directions* are solid (non-overlapping replicate ranges); the specific
+−68.6% / −72.8% are not.
+
+#### Claim 3: the volume numbers rest on under-counted data
+
+`incident_ts` is capped at 200/case and three cases hit it — deliberate proactiveqa lost 537
+timestamps, so **−26.5% is computed over admittedly under-counted data**. And `5bf26d0` / `f5f1cf8`,
+eleven minutes apart, **flatly contradict each other** on whether repcount reps reach this seam. The
+second is right, which means the safety argument in the first was wrong when it shipped.
+
+#### Process: the run in flight is a build-vs-build delta, not a six-lever ablation
+
+Arm A `2d5097d` vs arm B `1c542ff` differ by **eight commits**, including `7e17378` and `1c542ff` which
+are not among the six wins. Claim 2 is pinned identically in both arms and contributes nothing.
+
 ### 🚨 LONG-HORIZON RUN — 82 min, 73 goals, one core. Two launch-relevant holes.
 
 Source: 97 corpus videos concatenated to **81.6 min**, 640×360 @15 fps, container-vs-parts drift
