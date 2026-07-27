@@ -54,6 +54,19 @@ _EVIDENCE_SHAPES = frozenset(
 )
 _LATENCY_MODES = frozenset({"reflex", "deliberate"})
 _EVIDENCE_SHAPE_CONTEXT_KEY = "_percept_evidence_shape"
+#: Reserved context key naming the LATENCY MODE of the route that dispatched a judge call.
+#:
+#: Output verbosity is a property of the ROUTE, not of the provider. A reflex route must ask for a
+#: verdict it can finish generating inside the pool's deadline; a deliberate route may still pay
+#: for prose. The pool is the only component that knows which one it is, so it stamps this key on
+#: the context it hands the adapter, and a verbosity-aware backend (openrouter/gemini) reads it.
+#:
+#: It is stamped ONLY for ``mode='reflex'``. Its ABSENCE means deliberate: an adapter called
+#: directly, or through a deliberate pool, keeps the historical verbose contract byte-for-byte.
+#: Like every ``_percept_`` key it is filtered out of the prompt's specialist-facts line, so it is
+#: never surfaced to the model as a fact.
+LATENCY_MODE_CONTEXT_KEY = "_percept_latency_mode"
+REFLEX_LATENCY_MODE = "reflex"
 
 
 @dataclass(frozen=True)
@@ -364,6 +377,18 @@ class JudgePool:
         with self._state_lock:
             self._terminal_errors.append(error)
 
+    def _route_context(self, context: dict | None) -> dict | None:
+        """Stamp the route's latency mode onto the context handed to the adapter.
+
+        A reflex route gets :data:`LATENCY_MODE_CONTEXT_KEY` so a verbosity-aware backend can ask
+        for a bounded verdict instead of a prose one. A deliberate route is returned untouched —
+        including a ``None`` context, which stays ``None`` — so the deliberate path is byte-for-byte
+        the pre-existing call. The caller's dict is never mutated.
+        """
+        if self._mode != REFLEX_LATENCY_MODE:
+            return context
+        return {**(context or {}), LATENCY_MODE_CONTEXT_KEY: REFLEX_LATENCY_MODE}
+
     def _eligible(self, shape: EvidenceShape) -> tuple[JudgeRoute, ...]:
         return tuple(
             route
@@ -541,7 +566,10 @@ class JudgePool:
             "corrections": corrections,
             "frames": frames,
             "audio": audio,
-            "context": context,
+            # The evidence shape was already resolved off the CALLER's context above; the adapter
+            # additionally needs to know which route it is serving, so verbosity can follow the
+            # route instead of being a global downgrade.
+            "context": self._route_context(context),
         }
         # Schedule every eligible route so capacity exhaustion on a preferred
         # route can fall through to a healthy lower-priority route. The
@@ -754,4 +782,6 @@ __all__ = [
     "JudgeRoute",
     "JudgeRouteReceipt",
     "LatencyMode",
+    "LATENCY_MODE_CONTEXT_KEY",
+    "REFLEX_LATENCY_MODE",
 ]

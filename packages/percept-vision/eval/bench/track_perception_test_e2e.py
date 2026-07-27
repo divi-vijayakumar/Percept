@@ -64,6 +64,18 @@ WINDOW_PAD_S = 0.5
 # future occurrence duration, so every PT case now gets this same conservative one-second prior.
 ACTION_BRIEF_WINDOW_S = 1.0
 ACTION_TEMPORAL_WINDOW_S = 2.0
+# HELD AT 5 after the reflex-latency decomposition — reviewed, not inherited.
+# Streaming measurement split the missed 1.5s gate into TTFT (~0.5-1.0s, the ingestion floor) and
+# generation (0.47-3.13s). Dropping 5 -> 3 frames buys ~0.1-0.2s of TTFT; bounding the OUTPUT ask
+# buys 0.44-3.0s of generation, and that lever is now taken (see the reflex output budget in
+# ``percept.backends.anthropic``). Frames are the SECOND lever and are not free here: 5 frames over
+# ACTION_TEMPORAL_WINDOW_S=2.0 samples the window at ~2Hz, and 3 would halve that on precisely the
+# localized hand/object motion these PT cases are made of. This is an event-chain watch, so the
+# judge must return a consistent satisfied/action_present/pre-during-post tuple and must separate
+# adjacent repetitions — ``behavior.normalize_event_chain_verdict`` turns a disagreement into a hard
+# abstention, so lost temporal resolution surfaces as lost recall, not as a softer answer.
+# Re-measure with the bounded output first; only if the gate still misses should this drop to 3, and
+# that change alters the evidence the judge sees, so it must be re-SCORED, not merely re-timed.
 ACTION_TEMPORAL_FRAMES = 5
 ACTION_TEMPORAL_SAMPLING = "uniform"
 # Headroom so the capture stream itself isn't the bottleneck: decode at least this dense when the goal's

@@ -26,7 +26,17 @@ from ._resilience import CircuitBreaker, with_retry
 # Reuse the validated, well-tested response parsing from the Claude adapter (same strict-JSON verdict
 # shape, same defensive "unparsed -> low-confidence unknown" fallback that keeps the gate at ASK, and
 # the same claim-mode correction contract so a correction parses identically on every backend).
-from .anthropic import _CLAIM_MODE_CONTRACT, _JUDGE_SYSTEM, _coerce_json, _parse_observations, _parse_verdict
+from .anthropic import (
+    _CLAIM_MODE_CONTRACT,
+    _JUDGE_SYSTEM,
+    _JUDGE_SYSTEM_REFLEX,
+    _coerce_json,
+    _is_reflex,
+    _judge_max_tokens,
+    _parse_observations,
+    _parse_verdict,
+    _terse_reply,
+)
 
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 _PROCESS_QA_SYSTEM = (
@@ -42,6 +52,12 @@ _DEFAULT_MODEL = "qwen/qwen3-vl-32b-instruct"
 # OpenRouter now includes usage/cost automatically. Keep the former include request for compatibility
 # with older gateways; current OpenRouter treats it as a deprecated no-op.
 _USAGE_EXTRA_BODY = {"usage": {"include": True}}
+
+# The DELIBERATE output ceiling — unchanged headroom, because an open/thinking model on a route
+# that is not latency-bound may legitimately spend tokens before its JSON verdict, and truncating
+# it there turns a real read into a spurious abstain. A REFLEX route is budgeted instead by the
+# shared, measured policy in :func:`percept.backends.anthropic._judge_max_tokens`.
+_DELIBERATE_MAX_TOKENS = 1024
 
 
 class _BudgetTerminalError(Exception):
@@ -356,16 +372,27 @@ class OpenRouterVision:
         if ctx.get("process_qa"):  # accumulating-answer question (mirror GeminiVision._judge_process_qa)
             return await self._judge_process_qa(condition, frame, frames, str(ctx.get("running_answer") or ""))
         claim_mode = bool(ctx.get("claim_mode"))  # claim-slot concern -> parse the correction channel
+        event_chain = bool(ctx.get("event_chain"))
+        # Verbosity follows the ROUTE (see ``_is_reflex``): a reflex route asks for the two fields the
+        # gate actually reads; a deliberate route is byte-for-byte the historical request.
+        reflex = _is_reflex(ctx)
+        terse = _terse_reply(reflex=reflex, claim_mode=claim_mode)
         content = self._build_content(condition, frame, exemplar=exemplar,
                                       corrections=corrections, frames=frames, context=context,
-                                      claim_mode=claim_mode)
-        messages = [{"role": "system", "content": _JUDGE_SYSTEM},
-                    {"role": "user", "content": content}]
+                                      claim_mode=claim_mode, reflex=reflex)
+        system = _JUDGE_SYSTEM_REFLEX if terse and not event_chain else _JUDGE_SYSTEM
 
         resp = await self._completion(
             model=self._model,
-            messages=messages,
-            max_tokens=1024,  # headroom: a thinking/open model can spend tokens before the JSON verdict
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": content}],
+            max_tokens=_judge_max_tokens(
+                reflex=reflex,
+                # An occurrence reply still owes cognition phase/action_present/events.
+                structured=event_chain,
+                claim_mode=claim_mode,
+                deliberate=_DELIBERATE_MAX_TOKENS,
+            ),
             extra_body=_USAGE_EXTRA_BODY,  # compatibility with older OpenRouter gateways
         )
         verdict = _parse_verdict(_text_of(resp), claim_mode=claim_mode)
@@ -431,9 +458,14 @@ class OpenRouterVision:
         frames: list | None = None,
         context: dict | None = None,
         claim_mode: bool = False,
+        reflex: bool = False,
     ) -> list:
         strip = [f for f in (frames or []) if f is not frame]  # earlier context, oldest->newest
         event_chain = bool((context or {}).get("event_chain"))
+        # ``reflex`` narrows only the REPLY SHAPE. Every grounding instruction above (time order,
+        # exemplar deixis, corrections, specialist facts) is unchanged: a reflex judge is asked the
+        # same question, just not asked to write an essay about the answer.
+        terse = _terse_reply(reflex=reflex, claim_mode=claim_mode)
         native_video = _is_video(frame)
         if native_video and strip:
             raise ValueError(
@@ -521,15 +553,34 @@ class OpenRouterVision:
             span_s = (context or {}).get("_percept_temporal_span_s")
             if isinstance(span_s, (int, float)) and not isinstance(span_s, bool):
                 question += f"The evidence spans {float(span_s):.6g} seconds. "
+            # The occurrence fields stay REQUIRED on both routes — cognition abstains without a
+            # consistent satisfied/action_present/phase tuple. A reflex occurrence request drops only
+            # the free-text ``evidence`` field and caps label length.
             question += (
-                'Answer as STRICT JSON {"satisfied", "confidence", "evidence", '
-                '"action_present", "phase", "events": [{"t_start": seconds, '
-                '"t_end": seconds|null, "label": "short description"}]}. '
+                (
+                    'Answer as STRICT JSON {"satisfied", "confidence", "action_present", '
+                    '"phase", "events": [{"t_start": seconds, "t_end": seconds|null, '
+                    '"label": "at most 4 words"}]} and nothing else — omit "evidence", write no '
+                    "prose and no explanation. "
+                )
+                if terse
+                else (
+                    'Answer as STRICT JSON {"satisfied", "confidence", "evidence", '
+                    '"action_present", "phase", "events": [{"t_start": seconds, '
+                    '"t_end": seconds|null, "label": "short description"}]}. '
+                )
+            )
+            question += (
                 "List every grounded occurrence in chronological order with times "
                 "relative to the beginning of the evidence. Set action_present=true only for "
                 '"during". '
                 "Use satisfied=true when this clip grounds a during or just-completed post "
                 "occurrence; otherwise false."
+            )
+        elif terse:
+            question += (
+                'Answer as STRICT JSON {"satisfied", "confidence"} and nothing else — no '
+                '"evidence" field, no prose, no explanation.'
             )
         else:
             question += 'Answer as STRICT JSON {"satisfied", "confidence", "evidence"}.'

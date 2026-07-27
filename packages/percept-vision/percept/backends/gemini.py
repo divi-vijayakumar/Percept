@@ -28,11 +28,25 @@ from ._resilience import CircuitBreaker, with_retry
 
 # Reuse the provider-agnostic prompts + JSON-contract parsers (the contract is identical, incl. the
 # claim-mode correction channel — one contract string, one parser, every parsing backend).
-from .anthropic import _CLAIM_MODE_CONTRACT, _JUDGE_SYSTEM, _parse_observations, _parse_verdict
+from .anthropic import (
+    _CLAIM_MODE_CONTRACT,
+    _JUDGE_SYSTEM,
+    _JUDGE_SYSTEM_REFLEX,
+    _is_reflex,
+    _judge_max_tokens,
+    _parse_observations,
+    _parse_verdict,
+    _terse_reply,
+)
 from .anthropic_text import _CONDUCTOR_SYSTEM, _coerce_decision, _extract_json
 
 GEMINI_DEFAULT = "gemini-3.5-flash"  # GA flash (structured output + function calling); 2.5-flash hit
 # rate limits. Override via PERCEPT_*_MODEL=gemini-...
+
+# The DELIBERATE judge output ceiling — unchanged headroom for a route that is not latency-bound.
+# A REFLEX route is budgeted instead by the shared, measured policy in
+# :func:`percept.backends.anthropic._judge_max_tokens`.
+_DELIBERATE_MAX_TOKENS = 1024
 
 # Process-QA uses the eval-validated running-summary prompt: append-only and specificity-preserving,
 # it beats a holistic single answer on temporally spread process questions.
@@ -353,6 +367,12 @@ class GeminiVision(_GeminiBase):
             # Item 4 logsum: report ONLY this clip's step delta (no memory shown). evidence=the step.
             return await self._observe_step(condition, frame, frames)
         claim_mode = bool(context and context.get("claim_mode"))  # claim-slot: parse the correction channel
+        # Reply verbosity follows the ROUTE, not the provider: a reflex route (stamped by
+        # ``JudgePool``) asks for the fields the gate reads and stops; a deliberate route is
+        # byte-for-byte the historical request. Same policy and same prompts as the OpenRouter
+        # adapter, so the two providers stay coherent.
+        reflex = _is_reflex(context)
+        terse = _terse_reply(reflex=reflex, claim_mode=claim_mode)
         if frame is None and audio is None:
             raise TypeError("GeminiVision requires image evidence, audio evidence, or both")
         if frame is None and (frames or exemplar is not None):
@@ -459,10 +479,24 @@ class GeminiVision(_GeminiBase):
             span_s = context.get("_percept_temporal_span_s")
             if isinstance(span_s, (int, float)) and not isinstance(span_s, bool):
                 question += f"The evidence spans {float(span_s):.6g} seconds. "
+            # The occurrence fields stay REQUIRED on both routes — cognition abstains without a
+            # consistent satisfied/action_present/phase tuple. A reflex occurrence request drops
+            # only the free-text ``evidence`` field and caps label length.
             question += (
-                'Answer as STRICT JSON {"satisfied", "confidence", "evidence", '
-                '"action_present", "phase", "events": [{"t_start": seconds, '
-                '"t_end": seconds|null, "label": "short description"}]}. '
+                (
+                    'Answer as STRICT JSON {"satisfied", "confidence", "action_present", '
+                    '"phase", "events": [{"t_start": seconds, "t_end": seconds|null, '
+                    '"label": "at most 4 words"}]} and nothing else — omit "evidence", write no '
+                    "prose and no explanation. "
+                )
+                if terse
+                else (
+                    'Answer as STRICT JSON {"satisfied", "confidence", "evidence", '
+                    '"action_present", "phase", "events": [{"t_start": seconds, '
+                    '"t_end": seconds|null, "label": "short description"}]}. '
+                )
+            )
+            question += (
                 "List every grounded occurrence in chronological order with times "
                 "relative to the beginning of the evidence. Set action_present=true only for "
                 '"during". '
@@ -470,23 +504,54 @@ class GeminiVision(_GeminiBase):
             )
         elif strip:
             # clip judging: ask for the temporal structure too (parsed into Verdict.phase/action_present;
-            # single-frame replies omit these and default cleanly).
-            question += ('Answer as STRICT JSON {"satisfied", "confidence", "evidence", '
-                         '"action_present" (true if the action/event is visibly occurring across these '
-                         'frames), "phase" (one of "pre","during","post")}.')
+            # single-frame replies omit these and default cleanly). A reflex route keeps the two
+            # structured fields — they are cheap and cognition reads them — and drops the prose.
+            question += (
+                ('Answer as STRICT JSON {"satisfied", "confidence", '
+                 '"action_present" (true if the action/event is visibly occurring across these '
+                 'frames), "phase" (one of "pre","during","post")} and nothing else — no '
+                 '"evidence" field, no prose, no explanation.')
+                if terse
+                else ('Answer as STRICT JSON {"satisfied", "confidence", "evidence", '
+                      '"action_present" (true if the action/event is visibly occurring across these '
+                      'frames), "phase" (one of "pre","during","post")}.')
+            )
+        elif terse:
+            question += (
+                'Answer as STRICT JSON {"satisfied", "confidence"} and nothing else — no '
+                '"evidence" field, no prose, no explanation.'
+            )
         else:
             question += 'Answer as STRICT JSON {"satisfied", "confidence", "evidence"}.'
         if claim_mode:
             question += _CLAIM_MODE_CONTRACT  # advertise the OPTIONAL correction fields (byte-for-byte off)
         parts.append(question)
 
+        # A reply that still owes cognition phase/action_present(/events) cannot shrink to two
+        # scalars; only the plain single-moment reply can.
+        structured = bool(strip) or bool(context and context.get("event_chain"))
+        max_output_tokens = _judge_max_tokens(
+            reflex=reflex,
+            structured=structured,
+            claim_mode=claim_mode,
+            # 1024 (not 512) on the DELIBERATE route: gemini-3-flash is a thinking model whose
+            # reasoning tokens can otherwise truncate the STRICT-JSON verdict mid-string (parse
+            # fails -> false ASK/abstain). A reflex route does not ask for the prose that made
+            # that headroom necessary, so it does not need to pay for it.
+            deliberate=_DELIBERATE_MAX_TOKENS,
+        )
+        system_instruction = (
+            _JUDGE_SYSTEM_REFLEX if terse and not structured else _JUDGE_SYSTEM
+        )
+
         async def _call():
             return await client.aio.models.generate_content(
                 model=self._model,
                 contents=parts,
-                # 1024 (not 512): gemini-3-flash is a thinking model whose reasoning tokens can otherwise
-                # truncate the STRICT-JSON verdict mid-string (parse fails -> false ASK/abstain).
-                config=types.GenerateContentConfig(system_instruction=_JUDGE_SYSTEM, max_output_tokens=1024),
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    max_output_tokens=max_output_tokens,
+                ),
             )
 
         resp = await self._metered_completion(_call)  # exact per-attempt admission/reconciliation

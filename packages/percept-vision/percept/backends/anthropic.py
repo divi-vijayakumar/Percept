@@ -27,6 +27,11 @@ from typing import Any
 from ..adapters import Box, Goal, Observation, Verdict
 from ..contracts import ClipEvent
 from ._resilience import CircuitBreaker, with_retry
+# The router publishes the latency mode of the route it selected; this module owns the
+# provider-agnostic reply CONTRACT (prompt + parser + output budget) that reads it, so every
+# parsing backend asks for the identical shape on the identical route. No cycle: the pool knows
+# nothing about backends.
+from .judge_pool import LATENCY_MODE_CONTEXT_KEY, REFLEX_LATENCY_MODE
 
 # A tight system prompt that pins the contract: narrow grounded yes/no + calibrated confidence
 # + a one-line evidence string, as strict JSON. Kept here (a prompt is data for this adapter,
@@ -44,6 +49,92 @@ _JUDGE_SYSTEM = (
     "Set confidence low when the region is ambiguous, occluded, or you are unsure — a wrong "
     "confident yes is the worst outcome."
 )
+
+# The REFLEX variant of the same contract, used when a route declares itself latency-bound (see
+# ``percept.backends.judge_pool.LATENCY_MODE_CONTEXT_KEY``). Provider-agnostic and kept beside
+# :data:`_JUDGE_SYSTEM` so every parsing backend asks for the identical shape.
+#
+# Why it exists: streaming decomposition of the reflex gate showed the miss was in the GENERATION
+# half, not ingestion — a route spent seconds emitting the ``evidence`` prose *after* it already
+# knew the answer. ``satisfied``/``confidence`` are the only two fields the gate reads (``Gate``
+# compares ``confidence`` against ``Settings.gate.threshold``), so a reflex judge is asked for
+# exactly those two and nothing else. ``confidence`` is NOT optional: without it the parser
+# defaults to 0.0 and every verdict fails closed to ASK, which is safe but useless.
+#
+# What is lost: the one-line free-text ``evidence`` string. It is GATE-IRRELEVANT (nothing in
+# cognition branches on it) but it is carried on ``Verdict.evidence`` into ``Incident.verdict``
+# and the ``judgment``/transition trace rows, so a reflex fire is explainable by its frames,
+# confidence and receipt rather than by a provider sentence.
+_JUDGE_SYSTEM_REFLEX = (
+    "You are a perception module answering ONE narrow grounded question about a specific "
+    "region of an image. Answer only about what is visible in the cropped region (and the "
+    "reference exemplar if one is attached). Do NOT describe the scene and do NOT explain "
+    'yourself. Return STRICT JSON and nothing else: {"satisfied": <true|false>, '
+    '"confidence": <0..1>}. Both fields are REQUIRED. Set confidence low when the region is '
+    "ambiguous, occluded, or you are unsure — a wrong confident yes is the worst outcome."
+)
+
+
+# --- reflex output budget: a ROUTE property, never a global downgrade ----------------------------
+# Measured on the benchmark's exact evidence payload with real streaming calls: the sub-1.5s reflex
+# gate was missed in the GENERATION half, not in ingestion. A 1024-token "headroom" invited a route
+# to spend 3.13s emitting 91 tokens it did not need; asking for two scalars instead of a prose
+# verdict dropped generation to 0.03-0.19s and total latency from 2.80s to 0.91s median. TTFT
+# (~0.5-1.0s) is the ingestion floor and is NOT addressed here — frame count is that lever.
+#
+# So a reflex budget is sized to the VERDICT, not to a model's thinking habit. A deliberate call
+# keeps each provider's historical ceiling: an open/thinking model on a non-latency-bound route may
+# still spend tokens before its JSON, and truncating it there turns a real read into a false abstain.
+_REFLEX_MAX_TOKENS = 32  # measured: {"satisfied": false, "confidence": 0.87} costs 13 output tokens
+# A reflex request that must ALSO carry structured temporal fields (``phase``/``action_present``/
+# ``events``) cannot go down to two scalars: cognition reads those fields —
+# ``behavior.normalize_event_chain_verdict`` abstains outright on an inconsistent
+# satisfied/action_present/phase tuple, and the occurrence ledger counts ``events``. Such a request
+# drops only the free-text ``evidence`` field and takes a BOUNDED budget instead of open headroom.
+_REFLEX_STRUCTURED_MAX_TOKENS = 320
+
+
+def _is_reflex(context: Any) -> bool:
+    """Whether the ROUTE that dispatched this judge call declared itself latency-bound.
+
+    Stamped by :class:`~percept.backends.judge_pool.JudgePool` when ``mode='reflex'``. ABSENT means
+    deliberate, so a directly-constructed adapter — or one behind a deliberate pool — is unchanged
+    by this whole mechanism.
+    """
+    return (
+        isinstance(context, dict)
+        and context.get(LATENCY_MODE_CONTEXT_KEY) == REFLEX_LATENCY_MODE
+    )
+
+
+def _terse_reply(*, reflex: bool, claim_mode: bool) -> bool:
+    """Whether this request may ask for a stripped-down reply.
+
+    CLAIM MODE opts out even on a reflex route: the claim ledger reads ``operation``/``value``/
+    ``normalized_value`` off the reply (:func:`_apply_claim_fields`), so trimming the correction
+    channel to hit a deadline would silently drop the mutation the watch exists to catch. Latency
+    is never worth losing a correction.
+    """
+    return reflex and not claim_mode
+
+
+def _judge_max_tokens(
+    *,
+    reflex: bool,
+    structured: bool,
+    claim_mode: bool,
+    deliberate: int,
+) -> int:
+    """The output budget for ONE judge request, decided by route mode and requested reply shape.
+
+    ``structured`` marks a reply that must still carry temporal/occurrence fields beyond the two
+    the gate reads. ``deliberate`` is the provider's own historical ceiling, returned unchanged
+    whenever this is not a terse reflex request.
+    """
+    if not _terse_reply(reflex=reflex, claim_mode=claim_mode):
+        return deliberate
+    return _REFLEX_STRUCTURED_MAX_TOKENS if structured else _REFLEX_MAX_TOKENS
+
 
 # CLAIM-MODE contract addendum (1.5). Appended to the per-frame question ONLY when the caller marks
 # the goal claim-mode (``context["claim_mode"]`` — set in ``agent.perceive_judged`` when the concern's
@@ -508,6 +599,14 @@ def _parse_verdict(text: str, *, claim_mode: bool = False) -> Verdict:
     byte-for-byte the pre-claim parser (the malformed-JSON salvage path is shared, unchanged)."""
     try:
         data = _coerce_json(text)
+        if not isinstance(data, dict) or "satisfied" not in data:
+            # A reply that never states the ANSWER is not a verdict. Without this guard a stray
+            # ``{"confidence": 0.99}`` parsed as a CONFIDENT NO — which does not merely fail to
+            # fire, it RE-ARMS the gate's rising edge and so can mint a duplicate fire on the next
+            # true read. Fall through to the salvage/unknown path instead: confidence 0.0 -> ASK,
+            # which changes no edge state. (The mirror case — ``satisfied`` with no ``confidence``
+            # — is already conservative: it keeps the 0.0 default and defers to ASK.)
+            raise ValueError("judge reply carries no 'satisfied' field")
         try:
             clip_events = _parse_clip_events(data.get("events"))
         except ValueError:
