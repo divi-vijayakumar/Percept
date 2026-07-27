@@ -92,12 +92,34 @@ class MergeWindowTests(unittest.TestCase):
         goal = _goal()
 
         first = self._fire(ex, goal, t=10.0, episode="e1")
-        # Exactly one window later is OUTSIDE it — the boundary is half-open, so a fire at the
-        # window is a separate occurrence, never a merged one.
-        second = self._fire(ex, goal, t=10.0 + INCIDENT_MERGE_WINDOW_S, episode="e2")
+        second = self._fire(ex, goal, t=10.0 + INCIDENT_MERGE_WINDOW_S + 0.05, episode="e2")
 
         self.assertIsNotNone(first)
         self.assertIsNotNone(second)
+
+    def test_the_window_boundary_is_half_open(self):
+        # A fire landing exactly ``window`` later is a separate occurrence, never a merged one.
+        # Uses a binary-exact window so the boundary is testable without float drift.
+        ex = BehaviorExecutor(Gate(), merge_window_s=0.5)
+        goal = _goal()
+
+        self._fire(ex, goal, t=0.0, episode="e1")
+        inside = self._fire(ex, goal, t=0.25, episode="e2")
+        at_the_boundary = self._fire(ex, goal, t=0.5, episode="e3")
+
+        self.assertIsNone(inside)
+        self.assertIsNotNone(at_the_boundary)
+
+    def test_a_real_rep_at_the_measured_floor_is_never_merged(self):
+        # The tightest rep-to-rep gap measured across the repcount corpus is 0.79s. On the shipped
+        # path those reps arrive as judged occurrences through this seam, so the window has to clear
+        # that floor for every one of them.
+        ex = BehaviorExecutor(Gate())
+        goal = _goal()
+
+        reps = [self._fire(ex, goal, t=round(i * 0.79, 2), episode=f"rep{i}") for i in range(6)]
+
+        self.assertTrue(all(rep is not None for rep in reps))
 
     def test_a_suppressed_duplicate_does_not_slide_the_window_forward(self):
         # Anchored on the last DELIVERED incident, never on a dropped one — so a dense duplicate
@@ -160,7 +182,16 @@ class NoDuplicatesIsUnchangedTests(unittest.TestCase):
 class WindowConfigurationTests(unittest.TestCase):
     def test_the_default_window_is_the_documented_constant(self):
         self.assertEqual(BehaviorExecutor(Gate()).merge_window_s, INCIDENT_MERGE_WINDOW_S)
-        self.assertEqual(INCIDENT_MERGE_WINDOW_S, 1.0)
+        self.assertEqual(INCIDENT_MERGE_WINDOW_S, 0.7)
+
+    def test_the_window_stays_under_the_measured_rep_floor(self):
+        # 183 rep-to-rep gaps across 20 repcount cases bottom out at 0.79s, and on the SHIPPED path a
+        # repcount goal is a judged watch running through THIS seam. A window at or above that floor
+        # deletes real, separately-counted occurrences instead of judgment-cadence artifacts.
+        self.assertLess(INCIDENT_MERGE_WINDOW_S, 0.79)
+        # ...and it stays wide enough to cover the strides that actually produce the duplicates.
+        for stride in (1 / 3, 0.5, 2 / 3):
+            self.assertLess(stride, INCIDENT_MERGE_WINDOW_S)
 
     def test_the_window_is_configurable(self):
         ex = BehaviorExecutor(Gate(), merge_window_s=5.0)
@@ -169,7 +200,7 @@ class WindowConfigurationTests(unittest.TestCase):
         self.assertEqual(ex.merge_window_s, 5.0)
         self.assertIsNotNone(ex.fire_judged(goal, YES, ("g", "scene"), PROG, t=0.0,
                                             fold=_new_episode("e1")))
-        # 2.0s apart would survive the 1.0s default; under a 5.0s window it merges.
+        # 2.0s apart would survive the 0.7s default; under a 5.0s window it merges.
         self.assertIsNone(ex.fire_judged(goal, YES, ("g", "scene"), PROG, t=2.0,
                                          fold=_new_episode("e2")))
 

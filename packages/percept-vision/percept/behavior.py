@@ -768,11 +768,22 @@ def overdue_text(goal) -> str:  # mirrors agent._overdue_text
 #: occurrence. It therefore cannot move precision or recall on the occurrence the client already
 #: heard about; it only stops the client hearing about it twice.
 #:
-#: Why 1.0s. Swept offline over recorded incident timestamps: up to ~1s a merge essentially only
-#: ever collapses a re-report of an occurrence already delivered, so the set of distinct occurrences
-#: the client learns about is preserved. Past ~1s the window starts eating genuinely separate
-#: occurrences and costs recall one-for-one, with nothing bought for it. 1.0s is the largest free
-#: setting, not a tuning knob to push.
+#: Why 0.7s. The duplicates worth merging are judgment-CADENCE artifacts: on the measured corpus
+#: ~80-88% of mergeable gaps sit exactly on a judgment stride (0.333 / 0.5 / 0.667s) — consecutive
+#: looks each restating one continuing action. 0.7s catches all three of those strides. The 0.833s
+#: stride is deliberately NOT caught, because it sits above the floor below.
+#:
+#: THE FLOOR — this constant must never be raised past ~0.75s. Measured over 183 rep-to-rep gaps
+#: across 20 repcount cases: min 0.79s, p10 1.13s, p50 1.87s, max 12.76s. Real, separately-counted
+#: occurrences bottom out at 0.79s, and single cases run far tighter than the aggregate suggests —
+#: one jumping-jack case has a MEDIAN gap of 1.00s, so a 1.0s window would put about half its reps at
+#: risk of being merged away. 0.7s keeps 0.09s of margin under the observed floor. Above ~0.75s this
+#: stops removing cadence artifacts and starts deleting real occurrences one-for-one, buying nothing.
+#:
+#: That risk is present-tense, not hypothetical: on the SHIPPED path a repcount goal compiles to
+#: ``type="watch"`` -> judged occurrences -> :meth:`BehaviorExecutor.fire_clip_events`, which is
+#: exactly this seam. (The separate ``rhythm`` route via :meth:`BehaviorExecutor.fire_episode` does
+#: bypass this seam — but nothing counts through it yet, so it is not a reason to widen the window.)
 #:
 #: What it never merges — the boundary that keeps it honest. Occurrences a provider enumerated in ONE
 #: judgment (the clip-occurrence list :meth:`BehaviorExecutor.fire_clip_events` walks) are its explicit
@@ -782,13 +793,7 @@ def overdue_text(goal) -> str:  # mirrors agent._overdue_text
 #: window restating a continuing action produces the duplicate this exists for. A confident-false read
 #: likewise clears the anchor: the condition was OBSERVED to stop holding, so the next true is a new
 #: occurrence and not a re-report.
-#:
-#: Short-interval occurrence senses. Rep-style counting (``rhythm`` / edge boundaries) delivers
-#: through :meth:`BehaviorExecutor.fire_episode`, which is NOT on this seam and is never merged — but
-#: judged occurrence chains can report rep-like bursts, and observed rep spacing (~2.3s) sits only
-#: about 2x above this window. Do not raise it without re-measuring against the shortest occurrence
-#: interval a watch is expected to resolve.
-INCIDENT_MERGE_WINDOW_S: float = 1.0
+INCIDENT_MERGE_WINDOW_S: float = 0.7
 
 #: Backstop bound on the merge's per-key memory, mirroring the gate's own "cannot grow without
 #: bound" discipline (ADR-001 §9). Stamps older than the window are pruned on every delivery, so in
