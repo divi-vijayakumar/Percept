@@ -331,8 +331,28 @@ class StructuredApplyRouteTests(unittest.TestCase):
             self.assertEqual(receipt.status, "applied")
             self.assertEqual(core.goals.get(route_type).state["type"], route_type)
 
-    def test_every_external_route_is_rejected_with_no_goal_mutation(self):
-        for route_type in ("event", "count", "rhythm", "remind", "scheduler"):
+    def test_rhythm_arms_because_the_worker_now_drives_the_counting_primitive(self):
+        # ``rhythm`` used to sit with the other external primitives here. It no longer does: the
+        # frame loop drives it (percept.rhythm.RhythmDrive -> core.perceive_rhythm), so an authored
+        # rhythm plan ARMS. It still compiles to no tier-0 WatchCondition — measured, not judged.
+        core = Percept.create(mode="offline", discover_plugins=False)
+        receipt = apply_watch_plan(
+            core,
+            WatchPlan(
+                id="rhythm",
+                condition="a completed repetition",
+                explicit={"Goal.state.type": "rhythm"},
+            ),
+        )
+        self.assertEqual(receipt.status, "applied")
+        armed = core.goals.get("rhythm")
+        self.assertEqual(armed.state["type"], "rhythm")
+        self.assertEqual(
+            [c.goal_id for c in compile_watchspec([armed], threshold=0.1).conditions], []
+        )
+
+    def test_every_undriven_external_route_is_rejected_with_no_goal_mutation(self):
+        for route_type in ("event", "count", "remind", "scheduler"):
             core = Percept.create(mode="offline", discover_plugins=False)
             receipt = apply_watch_plan(
                 core,
@@ -425,9 +445,9 @@ class WorkerPreflightTests(unittest.TestCase):
         self.assertEqual(asyncio.run(_collect(core, source)), [])
         self.assertEqual(source.pulls, 1)
 
-    def test_gated_loop_rejects_external_route_at_construction(self):
+    def test_gated_loop_rejects_undriven_external_route_at_construction(self):
         core = Percept.create(vision=_RouteVision({}), discover_plugins=False)
-        goal = Goal("rhythm", "rhythm", "rhythm", state={"type": "rhythm"})
+        goal = Goal("event", "event", "event", state={"type": "event"})
         core.add_goal(goal)
         with self.assertRaises(UnsupportedBehaviorRouteError):
             GatedWatchLoop(core)

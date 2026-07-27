@@ -39,6 +39,14 @@ _FRAME_ROUTES = frozenset(
         BehaviorRoute.FRAME_PROCESS,
     }
 )
+#: Routes ``percept.run`` / :class:`~percept.harness.tier0.GatedWatchLoop` execute. A superset of
+#: :data:`_FRAME_ROUTES`: a frame route is admitted by tier-0 and JUDGED, while ``EXTERNAL_RHYTHM``
+#: is driven by the same frame loop but never becomes a :class:`~percept.adapters.WatchCondition` —
+#: it is MEASURED per frame (decomposed channels) and counted by
+#: :class:`~percept.rhythm.RhythmTracker`, spending no judge. Keeping the two sets distinct is what
+#: lets :func:`needs_watch_condition` stay "compiles to a tier-0 admission condition" while
+#: :func:`worker_can_drive` answers the different question "the worker has a driver for this".
+_WORKER_ROUTES = frozenset(_FRAME_ROUTES | {BehaviorRoute.EXTERNAL_RHYTHM})
 _MISSING = object()
 
 
@@ -167,9 +175,20 @@ def needs_watch_condition(route: BehaviorRoute) -> bool:
 
 
 def worker_can_drive(route: BehaviorRoute) -> bool:
-    """Whether ``percept.run`` and ``GatedWatchLoop`` execute ``route``."""
+    """Whether ``percept.run`` and ``GatedWatchLoop`` execute ``route``.
 
-    return route in _FRAME_ROUTES
+    Broader than :func:`needs_watch_condition`: the frame routes are driven by the JUDGE path
+    (tier-0 admission -> ``perceive_judged``), ``EXTERNAL_RHYTHM`` by the MEASUREMENT path
+    (:class:`~percept.rhythm.RhythmDrive` -> ``core.perceive_rhythm``) on the very same frame loop.
+    """
+
+    return route in _WORKER_ROUTES
+
+
+def drives_rhythm(route: BehaviorRoute) -> bool:
+    """Whether ``route`` is executed by the frame loop's rhythm (counting) driver, not the judge."""
+
+    return route is BehaviorRoute.EXTERNAL_RHYTHM
 
 
 @dataclass(frozen=True)
@@ -194,7 +213,7 @@ class UnsupportedBehaviorRouteError(ValueError):
         )
         external = all(item.route is not BehaviorRoute.UNSUPPORTED for item in self.unsupported)
         guidance = (
-            " Use the matching direct event, boundary, rhythm, or scheduler primitive instead."
+            " Use the matching direct event, boundary, or scheduler primitive instead."
             if external
             else ""
         )
@@ -230,6 +249,7 @@ __all__ = [
     "authored_behavior_type",
     "authored_behavior_type_display",
     "behavior_route",
+    "drives_rhythm",
     "goal_behavior_route",
     "is_known_behavior_type",
     "needs_watch_condition",

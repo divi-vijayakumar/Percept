@@ -27,6 +27,7 @@ confirmed-rep tally.
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
 from .measurement import CANON_HZ, ChannelScore, MeasurementSeries, channel_score
@@ -435,4 +436,161 @@ class RhythmTracker:
         return sum(1 for r in self._channels[sel].reps if now - r.stop_t <= window_s)
 
 
-__all__ = ["Rep", "RhythmTracker", "select_channel"]
+# ======================================================================================================
+# The RUNTIME DRIVE — how a ``state["type"] == "rhythm"`` goal reaches ``percept.run()``
+# ======================================================================================================
+#
+# WHAT AN INCIDENT MEANS FOR A RHYTHM GOAL
+# ----------------------------------------
+# A rhythm watch COUNTS; it does not fire per judgment. The two are different kinds of output and this
+# module keeps them apart:
+#
+#   * the COUNT is **state**. Every confirmed rep updates ``goal.state["count"]`` (and
+#     ``core.edge_counts[goal_id]`` / ``core.rhythm[goal_id]``). Reading it is free and it is always
+#     current — it is not an event, so it never needs an Incident to be observable.
+#   * an INCIDENT is a **count MILESTONE** — the sparse, consequential moment the user asked to be
+#     interrupted for ("tell me when I've done 20"). It is authored with the EXISTING
+#     ``Goal.state.fire_when`` predicate over ``{n, t}`` (``"n == 20"``), already AST-firewalled by
+#     :func:`percept.behavior.compile_fire_when` and already carried into the rhythm
+#     :class:`~percept.behavior.BehaviorProgram` by :func:`percept.behavior.program_of`. No new
+#     vocabulary, so an authored rhythm plan stays exactly as hashable/pinnable as it was.
+#
+# **A goal with no authored milestone emits NO incidents at all.** That is a deliberate, load-bearing
+# default, not an oversight: the alternative — one incident per confirmed rep — is precisely the
+# pathology that caps the judged path (one fire per judgment, so the count can never exceed the
+# judgment density). A rep is not by itself worth interrupting a human for; the tally is. A caller that
+# genuinely wants a per-rep stream authors ``fire_when: "n >= 1"`` and opts into it explicitly.
+#
+# The knock-on property that matters for the ceiling: because the count comes from the SIGNAL
+# (RhythmTracker's causal reversal detection at native frame rate) and not from a judgment, a rhythm
+# goal's count is bounded by the frame rate, not by how many times a judge was asked.
+
+#: The measuring eye a rhythm goal gets when it authored no ``state["detectors"]`` of its own — the
+#: decomposed pose-channel basis (the eye MEASURES; this module DECIDES).
+RHYTHM_DEFAULT_DETECTORS: tuple[str, ...] = ("pose-channels",)
+
+
+def rhythm_emits_incidents(state: object) -> bool:
+    """Whether a rhythm goal's confirmed reps may become Incidents — i.e. it authored a milestone.
+
+    ``True`` only when the goal carries a non-blank ``Goal.state["fire_when"]``. See this section's
+    header for why the un-authored default is silence rather than one incident per rep.
+    """
+
+    if not isinstance(state, Mapping):
+        return False
+    expr = state.get("fire_when")
+    return type(expr) is str and bool(expr.strip())
+
+
+class RhythmDrive:
+    """Drives every ``type="rhythm"`` goal on one source from the frame loop — the missing seam.
+
+    ``percept.run`` and :class:`~percept.harness.tier0.GatedWatchLoop` own frames; this owns what a
+    rhythm goal does with one. Per frame and per goal it asks the goal's MEASURING detectors for the
+    channel vector and hands it to ``core.perceive_rhythm``, which folds it into that goal's
+    :class:`RhythmTracker`. No tier-0 admission condition, no judge call, no vision token: a rhythm
+    goal is compiled out of the :class:`~percept.adapters.WatchSpec` on purpose (see
+    :func:`percept.behavior_routes.needs_watch_condition`) and counted from the signal instead.
+
+    :meth:`observe` returns only the fire events that pass this goal's milestone policy
+    (:func:`rhythm_emits_incidents`), so the default rhythm goal accrues a count and stays silent.
+    """
+
+    def __init__(self, core: object, goals: Iterable[object]) -> None:
+        self._core = core
+        self._perceive = getattr(core, "perceive_rhythm", None)
+        self._goals: dict[str, tuple[list, bool]] = {}
+        for goal in goals:
+            goal_id = str(getattr(goal, "id", ""))
+            self._goals[goal_id] = (
+                self._measurers_for(goal),
+                rhythm_emits_incidents(getattr(goal, "state", None)),
+            )
+
+    @staticmethod
+    def _measurers_for(goal: object) -> list:
+        """The goal's MEASURING edge skills: its authored detectors, else the pose-channel default.
+
+        Only detectors exposing ``measure(frame) -> {channel: value}`` qualify — a boundary-only
+        detector proposes occurrences, which is the OTHER primitive (``count`` -> ``perceive_boundary``).
+        A rhythm goal whose authored detectors can none of them measure is a shape error, not a quiet
+        no-op: it would run forever counting nothing.
+        """
+
+        from .harness.detectors import detectors_for, make_detector
+
+        names = detectors_for(goal) or list(RHYTHM_DEFAULT_DETECTORS)
+        measurers = [d for d in (make_detector(name) for name in names) if hasattr(d, "measure")]
+        if not measurers:
+            raise ValueError(
+                f"rhythm goal {str(getattr(goal, 'id', '<unknown>'))!r} selected detectors {names!r}, "
+                "none of which MEASURE channels; the rhythm sense needs a detector exposing "
+                f"measure(frame) (e.g. {RHYTHM_DEFAULT_DETECTORS[0]!r})"
+            )
+        return measurers
+
+    @property
+    def goal_ids(self) -> tuple[str, ...]:
+        return tuple(self._goals)
+
+    def __bool__(self) -> bool:
+        return bool(self._goals) and self._perceive is not None
+
+    def adopt(self, previous: "RhythmDrive | None") -> "RhythmDrive":
+        """Carry a surviving goal's MEASURERS across a mid-run regate.
+
+        The tracker itself lives on the core (``core.rhythm[goal_id]``) and is untouched by a regate;
+        the eye's per-frame continuity state (the tracked person's hip anchor, the carried-forward
+        channel values) lives in the detector and would otherwise cold-start mid-rep.
+        """
+
+        if previous is not None:
+            for goal_id, (measurers, emits) in self._goals.items():
+                prior = previous._goals.get(goal_id)
+                if prior is not None:
+                    self._goals[goal_id] = (prior[0], emits)
+        return self
+
+    def reset(self) -> None:
+        """Cold-start every measuring eye (a pause/continuity break must not diff across the gap).
+
+        Deliberately does NOT reset the trackers: the reps already counted happened, and a pause is
+        not evidence they did not."""
+
+        for measurers, _ in self._goals.values():
+            for detector in measurers:
+                detector.reset()
+
+    def observe(self, t: float, frame: object) -> list:
+        """Fold one frame into every rhythm goal; return the fire events that cleared the milestone."""
+
+        out: list = []
+        if self._perceive is None or frame is None:
+            return out
+        for goal_id, (measurers, emits) in self._goals.items():
+            channels: dict[str, float] = {}
+            for detector in measurers:
+                channels.update(detector.measure(frame))
+            if not channels:
+                continue  # the eye saw nobody this frame — no measurement, no phantom cycle
+            fired = self._perceive(goal_id, t=t, channels=channels)
+            if fired is not None and emits:
+                out.append(fired)
+        return out
+
+    def count(self, goal_id: str) -> int:
+        """The brain-owned confirmed-rep tally for one goal (0 before the first rep)."""
+
+        tracker = getattr(self._core, "rhythm", {}).get(goal_id)
+        return tracker.count if tracker is not None else 0
+
+
+__all__ = [
+    "RHYTHM_DEFAULT_DETECTORS",
+    "Rep",
+    "RhythmDrive",
+    "RhythmTracker",
+    "rhythm_emits_incidents",
+    "select_channel",
+]

@@ -29,13 +29,19 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Literal, Sequence
 
 from percept.adapters import Box, Goal, Schedule, Tier0Signal, WatchCondition, WatchSpec
-from percept.behavior_routes import goal_behavior_route, needs_watch_condition, require_worker_routes
+from percept.behavior_routes import (
+    drives_rhythm,
+    goal_behavior_route,
+    needs_watch_condition,
+    require_worker_routes,
+)
 from percept.config import Settings, load_settings
 from percept.duration_routes import (
     require_duration_routes,
     require_in_process_duration_topology,
 )
 from percept.interest import InterestIntervalEvent, Tier0MotionInterest
+from percept.rhythm import RhythmDrive
 
 from .detectors import (
     Boundary,
@@ -1077,6 +1083,11 @@ class LoopReport:
     fixed_opportunities: int = 0
     admission_by_goal: dict[str, int] = field(default_factory=dict)
     admission_by_cause: dict[str, int] = field(default_factory=dict)
+    # goal_id -> confirmed-rep tally for every ``type="rhythm"`` goal driven this run. This is the
+    # rhythm sense's real output — the COUNT, which is state, not an event. ``fire_events`` stays
+    # reserved for the sparse count MILESTONES an authored ``fire_when`` admitted (see
+    # :mod:`percept.rhythm`'s "what an Incident means for a rhythm goal").
+    rhythm_counts: dict[str, int] = field(default_factory=dict)
 
     def boundary_count(self, goal_id: str, *, kind: str | None = None) -> int:
         """How many boundaries a goal's detectors proposed (e.g. peaks = reps), optionally by kind."""
@@ -1185,6 +1196,10 @@ class GatedWatchLoop:
             ]
         )
         require_worker_routes(active, driver="GatedWatchLoop")
+        # A rhythm goal rides the SAME frame loop but never becomes a WatchCondition: it is measured
+        # and counted, not admitted and judged. Split it out here so compile_watchspec keeps its
+        # "one condition per watch goal" contract and the counting path is explicit.
+        self._rhythm = RhythmDrive(core, [g for g in active if drives_rhythm(goal_behavior_route(g))])
         thr = cfg.edge.motion_gate if threshold is None else threshold
         # edge_capabilities=None -> in-process edge runs the whole registry; a remote edge advertises a
         # subset and the brain selects within it (the capability handshake).
@@ -1277,6 +1292,7 @@ class GatedWatchLoop:
                 # Each declared replay epoch is an independent stream. The tier-0 eye must cold-start
                 # too: carrying the prior epoch's final frame would manufacture cross-epoch motion.
                 self._gate.reset()
+                self._rhythm.reset()  # same reason: no cross-epoch channel continuity -> no phantom rep
             for i, item in enumerate(items):
                 energy = energies[i] if energies is not None and i < len(energies) else None
                 extra = cheap_signals[i] if cheap_signals is not None and i < len(cheap_signals) else None
@@ -1325,6 +1341,13 @@ class GatedWatchLoop:
                             fired = count_boundary(goal_id, t=b.t)
                             if fired is not None:
                                 report.fire_events.append(fired)
+                # The rhythm sense: MEASURE this frame's channels and let the brain count reps. Runs
+                # on every frame at native rate (never gated, never judged) — the count comes from
+                # the signal, so it is bounded by the frame rate, not by judgment density.
+                if self._rhythm:
+                    report.fire_events.extend(self._rhythm.observe(item.ts, item.frame))
+                    for goal_id in self._rhythm.goal_ids:
+                        report.rhythm_counts[goal_id] = self._rhythm.count(goal_id)
                 if decision.escalate:
                     report.escalations += 1
                     report.vision_calls += 1

@@ -3604,7 +3604,11 @@ async def _run_worker(
     """
     from percept.labelstore import verdict_ref as _verdict_ref
     from percept.behavior import program_of
-    from percept.behavior_routes import require_worker_routes
+    from percept.behavior_routes import (
+        drives_rhythm,
+        goal_behavior_route,
+        require_worker_routes,
+    )
     from percept.config import load_settings
     from percept.contracts import WatchSpec
     from percept.duration_routes import (
@@ -3615,6 +3619,7 @@ async def _run_worker(
     )
     from percept.edge.detectors import DetectorBank
     from percept.edge.tier0 import MotionGate, compile_watchspec
+    from percept.rhythm import RhythmDrive
 
     # Convenience: `percept.run(source=..., goals=[...])` with no pre-built core. Build a Percept
     # here and arm each goal, so the one-line quickstart is real. Passing an explicit `core` (the
@@ -3725,12 +3730,23 @@ async def _run_worker(
             if getattr(goal, "source", "camera") == gate_source
         ]
 
+    def _rhythm_goals() -> list:
+        """Source Watches driven by the COUNTING path (``type="rhythm"``), never by a judge.
+
+        These consume frames like any visual Watch, but the frame becomes a channel MEASUREMENT
+        folded into a RhythmTracker — not a tier-0 admission decision and not a judge call. They are
+        therefore excluded from every WatchSpec-compiling partition below (``compile_watchspec``
+        emits no condition for them, and this worker asserts exactly one condition per compiled goal).
+        """
+        return [goal for goal in _source_goals() if drives_rhythm(goal_behavior_route(goal))]
+
     def _visual_goals() -> list:
-        """Source Watches whose compiled perception actually consumes video frames."""
+        """Source Watches whose compiled perception actually consumes video frames FOR A JUDGE."""
         return [
             goal
             for goal in _source_goals()
-            if program_of(goal).perception.modality in ("vision", "fused")
+            if not drives_rhythm(goal_behavior_route(goal))
+            and program_of(goal).perception.modality in ("vision", "fused")
         ]
 
     def _external_only_audio_goals() -> list:
@@ -3738,7 +3754,8 @@ async def _run_worker(
         return [
             goal
             for goal in _source_goals()
-            if program_of(goal).perception.modality == "audio"
+            if not drives_rhythm(goal_behavior_route(goal))
+            and program_of(goal).perception.modality == "audio"
         ]
 
     clear_pending_dwell = getattr(core, "clear_pending_dwell", None)
@@ -3933,13 +3950,13 @@ async def _run_worker(
                 "wrong-source state before delivery filtering. Use isolated workers/adapters."
             )
 
-    def _build_gate(prev_gate=None, prev_banks=None):
-        """(Re)compile the WatchSpec → gate + detector banks + fovea coast from the core's CURRENT active
-        goals. Called once at start, and again on a goal-registry revision change when
-        regate_on_goal_change is set (so a goal armed mid-run — e.g. by voice — actually reaches the
+    def _build_gate(prev_gate=None, prev_banks=None, prev_rhythm=None):
+        """(Re)compile the WatchSpec → gate + detector banks + rhythm drive + fovea coast from the
+        core's CURRENT active goals. Called once at start, and again on a goal-registry revision change
+        when regate_on_goal_change is set (so a goal armed mid-run — e.g. by voice — actually reaches the
         tier-0 gate). On a regate the new gate ADOPTS the prior gate's per-goal throttle + prev frame,
-        and a surviving goal's detector bank is REUSED (its running rep-peak / refractory state must
-        not reset mid-rep) — so arming one goal never disturbs the others."""
+        and a surviving goal's detector bank / rhythm eye is REUSED (its running rep-peak / refractory /
+        pose-anchor state must not reset mid-rep) — so arming one goal never disturbs the others."""
         _require_source_scoped_callbacks()
         require_worker_routes(_source_goals(), driver="percept.run")
         _require_duration_runtime()
@@ -4003,6 +4020,10 @@ async def _run_worker(
                 b[c.goal_id] = prev_banks[c.goal_id]
             else:
                 b[c.goal_id] = DetectorBank(c.detectors)
+        # The COUNTING path: one measuring eye per rhythm goal. It never enters the WatchSpec (a
+        # rhythm goal is not admitted, it is measured) so it is built from the goal partition, not
+        # from `s.conditions`. A surviving goal keeps its eye across a regate (see RhythmDrive.adopt).
+        _rhythm = RhythmDrive(core, _rhythm_goals()).adopt(prev_rhythm)
         # One fovea coast controller per Watch. A shared "most sensitive" controller made one
         # Watch's cadence admit every other Watch on the source; compiling each existing
         # SensorPlan independently preserves the already-defined per-concern allocation semantics.
@@ -4013,9 +4034,9 @@ async def _run_worker(
             if _coast is not None:
                 _coasts[goal.id] = _coast
             _req = max(_req, _goal_req)
-        return s, g, b, _coasts, _req
+        return s, g, b, _coasts, _req, _rhythm
 
-    spec, gate, banks, coasts, required_fps = _build_gate()
+    spec, gate, banks, coasts, required_fps, rhythm_drive = _build_gate()
     perceive_boundary = getattr(core, "perceive_boundary", None)
     goals_revision = getattr(core.goals, "revision", None)  # watch for mid-run goal changes
 
@@ -6020,6 +6041,7 @@ async def _run_worker(
                 gate.reset()
                 for bank in banks.values():
                     bank.reset()
+                rhythm_drive.reset()  # cold-start the measuring eye; the counted reps still happened
                 for controller in coasts.values():
                     controller.reset()
                 clips.clear()
@@ -6132,11 +6154,13 @@ async def _run_worker(
                                 decision_deadline_s=judge_decision_deadline_s,
                             )
                     if regate_on_goal_change:
-                        # Pass the live gate + banks so the rebuild ADOPTS per-goal throttle + prev
-                        # frame and REUSES surviving goals' detector banks (no throttle release / rep
-                        # drop). Coast + required_fps are rebuilt too (a mid-run brief goal gets its
-                        # coast).
-                        spec, gate, banks, coasts, required_fps = _build_gate(gate, banks)
+                        # Pass the live gate + banks + rhythm drive so the rebuild ADOPTS per-goal
+                        # throttle + prev frame and REUSES surviving goals' detector banks and
+                        # measuring eyes (no throttle release / rep drop). Coast + required_fps are
+                        # rebuilt too (a mid-run brief goal gets its coast).
+                        spec, gate, banks, coasts, required_fps, rhythm_drive = _build_gate(
+                            gate, banks, rhythm_drive
+                        )
                     else:
                         _log.warning(
                             "goals_changed_without_regate: core.goals.revision moved %s->%s while "
@@ -6221,6 +6245,7 @@ async def _run_worker(
                 gate.reset()
                 for bank in banks.values():
                     bank.reset()
+                rhythm_drive.reset()  # neither side of a pause may diff across the uninspected gap
                 for controller in coasts.values():
                     controller.reset()
                 if is_paused and _interest_tracker is not None:
@@ -6308,6 +6333,18 @@ async def _run_worker(
                         if fired is not None:
                             async for incident in _emit_fires([fired], at=b.t):
                                 yield incident
+            # The RHYTHM sense (percept.rhythm): measure this frame's decomposed channels and let the
+            # brain confirm reps causally. Runs on EVERY frame at native rate — never tier-0 gated,
+            # never judged — so the count is bounded by the frame rate, not by judgment density. Reps
+            # land on goal.state["count"]; an Incident is minted only for an authored count MILESTONE
+            # (Goal.state.fire_when), never once per rep. No rhythm goal -> the block is skipped.
+            if rhythm_drive:
+                rhythm_fires = rhythm_drive.observe(t, judge_frame)
+                if rhythm_fires:
+                    # from_boundary=True: like the edge-boundary and absence fires, a rhythm milestone
+                    # never passed through perceive_judged, so its trace must not claim a judge stage.
+                    async for incident in _emit_fires(rhythm_fires, at=t, from_boundary=True):
+                        yield incident
             # A brief-action Watch's own fovea coast admits only that Watch. Each controller carries
             # its own cadence state, so a dense Watch cannot spend judgment calls for a sparse one.
             coast_goal_ids = [
