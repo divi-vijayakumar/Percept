@@ -35,7 +35,24 @@ Live N=100, both modes, Gemini 3.1 Flash-Lite direct, ordered-image transport, 0
 
 ## OPEN — work these in order
 
-### H6 (NOW HIGHEST) — cutting reflex to 3 frames buys the headroom the deadline needs
+### H6 — CONFIRMED on the proactiveqa slice; full-corpus run in flight
+**Like-for-like, 20 proactiveqa cases in BOTH runs:**
+
+| run | recall | precision | ASK | FIRE | SILENT | incidents |
+|---|---|---|---|---|---|---|
+| 5-frame baseline | 0.300 | 0.299 | 86.8% | 1.4% | 11.8% | 87 |
+| **3-frame (H6)** | **0.650** | **0.328** | 36.5% | 9.5% | 54.1% | 795 |
+
+**Recall more than doubled and precision did not regress.** The feared trade — less temporal context
+costing recall — did NOT materialise: the deadline expiries were costing far more than frames 4 and 5
+were contributing. For scale, 3-frame reflex (0.650) approaches deliberate's full-corpus 0.684 at a
+fraction of the token cost.
+**Honest caveat:** incidents went 87 → 795 (9x). 795 fires for 20 GT occurrences is still ~40x
+over-delivery, and precision only held rather than improved. The over-firing problem is untouched by
+this fix and remains open.
+**Status:** awaiting the remaining 72 cases before this is a corpus result rather than a slice.
+
+### ~~H6~~ (original statement) — cutting reflex to 3 frames buys the headroom the deadline needs
 **Follows from H5 being CONFIRMED and the deadline being unraisable.**
 Arithmetic (measured legs): non-provider overhead is 0.241 s. A 1.5 s pool deadline yields a
 worst-case ingest→Incident of 1.741 s (OK); **1.8 s yields 2.041 s and BREAKS the 2.0 s product
