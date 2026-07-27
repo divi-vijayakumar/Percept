@@ -58,6 +58,9 @@ rewriting before any conductor/rhythm work is justified on these grounds.
 7.1×). Over-firing is unfixed.
 
 ### H7 (in flight, ~$1.14) — is 3 the right constant, or just the one I happened to test?
+*(Note: first launch died instantly on an argparse error — the flag is `--limit`, not `--n`. No budget
+spent, but the jobs sat dead for a full 25-minute interval. Verify a background job is ALIVE and
+producing output, not merely launched.)*
 Only 5 and 3 have ever been measured. Landing 3 as a shipped default without checking its neighbours
 would be an unvalidated constant. Stratified n=40 runs at **2** and **4** frames are running to
 bracket it. If 2 ≈ 3, prefer fewer (cheaper, faster). If 4 > 3, the optimum is between 3 and 5.
