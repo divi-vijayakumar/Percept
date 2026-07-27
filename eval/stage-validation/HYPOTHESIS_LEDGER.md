@@ -283,6 +283,28 @@ carve-out is deliberately narrower than `_terse_reply`/`_judge_max_tokens` — t
 leaving the mutation channel untouched.
 **Revisit if:** a claim watch is ever run in reflex mode on material where corrections are transient.
 
+### LATENCY — the decomposition is now settled, and the lever is spent
+
+**TTFT tracks the NUMBER OF IMAGE PARTS, not their tokens or bytes** (interleaved, Gemini direct):
+
+| images | prompt tok | TTFT |
+|---|---|---|
+| 0 (text only) | 356 | **0.489 s** ← irreducible per-request floor |
+| 1 | — | 0.744 s |
+| 2 | — | 0.841 s |
+| 3 (production) | 3,656 | 1.225 s |
+
+~0.25 s per image part on a ~0.49 s floor. So:
+- **Frame count is the only real latency lever, and it is spent** — 3 is the measured optimum; 2 costs recall 0.653 → 0.449.
+- **Caching is dead** (G12) and **resolution is dead for latency** (G13).
+- Sub-1.0 s would have to come from **overlapping the call with capture**, not from shrinking the request.
+
+**But resolution is a large COST lever nobody has exploited.** We never set Gemini's `media_resolution`,
+so we pay ~1,101 tokens/image; `MEDIA_RESOLUTION_LOW` is ~264 — a **69% cut in input billing on every
+judge call**. A parallel probe saw identical `satisfied`/`action_present` across 5 samples at LOW but
+correctly called 5 samples "not evidence". **A 40-case quality run is what would make it evidence,
+and it is in flight.**
+
 ### R2 — **DIAGNOSED. Re-scoped: the judge's per-window boolean is near-chance on 3 of 5 datasets.**
 
 **Mechanism (source-verified).** The rising-edge gate contributes no suppression on the path that
@@ -384,6 +406,8 @@ conductor's job and is next-release architecture; (a) is mechanical.
 | G8 | Over-delivery is caused by interval fragmentation at `interest.py:1165-1180` | Wrong layer — that mints INTEREST intervals; incidents are minted by `behavior.fire_clip_events`. My strongest candidate, refuted |
 | G9 | A non-zero `gate.refractory_s` would fix precision | Measured: precision 0.435→0.376 while recall 0.626→0.243. Recall paid 1:1, precision buys nothing |
 | G10 | Early attribution (R1a skew) inflates false fires | Precision peaks exactly at δ=0 and falls symmetrically either side |
+| G12 | Context caching can cut the 1.43 s provider call | Cacheable prefix is **100 tokens** (images are built FIRST, question appended LAST, so only the system instruction precedes them); Gemini's cache floor is **1024**. And the impossible best case — caching system + 2 of 3 images, 63% of prefill — moved TTFT **−0.7%** (0.940 vs 0.946 s, n=8 interleaved) |
+| G13 | Lower image RESOLUTION buys latency (my hypothesis) | `media_resolution=LOW` cuts the prompt **−69%** (3656→1148 tok) for **−2.4% TTFT**; cutting upload bytes 4× at identical pixel dims gave −0.2%. Prefill token count is only weakly coupled to TTFT on this model |
 | G11 | Raising the confidence threshold would help | Outside-GT fires are MORE confident than inside-GT on deliberate (0.981 vs 0.968); sweeping 0.7→1.0 moves precision 0.433→0.440 reflex, 0.405→0.378 deliberate |
 
 ---
