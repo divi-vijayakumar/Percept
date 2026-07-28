@@ -1,3 +1,9 @@
+---
+title: Architecture: the four tiers and the two-layer brain
+updated: 2026-07-23
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Architecture: the four tiers and the two-layer brain
 
 Percept turns a goal stated in plain language — *"tell me when the kettle boils"* — into a proactive
@@ -116,5 +122,5 @@ The cognition core is documented module-by-module in the CodeWiki at
 - [End to end: one judged request](e2e-flow-milk-boilover.md) — a single goal traced through the pipeline.
 - [Motion score and the temporal strip](motion-and-strip.md) — the tier-0 wake layer.
 - [Backends](../reference/backends.md) · [Edge policy](../reference/edge-policy.md) ·
-  [Configuration](../configuration.md) · [Watch contract](../reference/watch-contract.md)
+  [Configuration](../reference/configuration.md) · [Watch contract](../reference/watch-contract.md)
 - [README](../../README.md) · project site <https://percept.percia.ai>

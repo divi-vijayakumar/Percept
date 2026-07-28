@@ -1,3 +1,9 @@
+---
+title: Evaluating Percept on your own benchmark
+updated: 2026-07-23
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Evaluating Percept on your own benchmark
 
 Percept ships the eval harness it uses on itself, so you can measure the only number that matters
@@ -45,7 +51,7 @@ percept-bench scorecard --manifest eval/golden-v1/MANIFEST.json --out scorecard.
 
 For the public-grade live benchmark plan, including sample-size gates, cost estimates, and the
 decision to use OpenAI/TML as reference rows rather than paid reproduced legs, see
-[`publishable-benchmark.md`](../reference/publishable-benchmark.md).
+[`publishable-benchmark.md`](../benchmarks/publishing-runbook.md).
 
 ---
 

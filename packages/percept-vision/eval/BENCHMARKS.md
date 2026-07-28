@@ -78,7 +78,7 @@ JSON, so sweeping policy/threshold/ω costs $0 after capture.
 
 The table below is retained as historical context only. The Charades headline came from an incomplete,
 biased verdict cache and is invalid as a public claim. Current benchmark work must follow
-`docs/benchmark-methodology.md`: report capture coverage, avoid empty successful caches, separate
+`docs/benchmarks/methodology.md`: report capture coverage, avoid empty successful caches, separate
 raw/core cognition diagnostics from edge/e2e cost claims, and publish only fully covered runs.
 
 | Benchmark (TML metric) | Gemini alone | **Percept + Gemini** | Δ (controlled A/B) | TML (ref) | runner |

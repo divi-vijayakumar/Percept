@@ -1,3 +1,9 @@
+---
+title: Authoring goals and watch plans
+updated: 2026-07-17
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Authoring goals and watch plans
 
 Two authoring decisions govern detection quality *before* the model ever runs: **how you phrase a goal**

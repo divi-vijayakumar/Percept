@@ -1,3 +1,9 @@
+---
+title: Registration
+updated: 2026-07-20
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Registration
 
 Percept has two registries you extend by **registering**, never by editing the gate or adding a

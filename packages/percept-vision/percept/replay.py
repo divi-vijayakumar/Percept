@@ -1,7 +1,7 @@
 """COGNITION REPLAY — recorded verdicts fed back through the Gate. Deterministic, and only that.
 
 This module ships exactly ONE of the two things people mean by "replay", and refuses to imply the
-other. ADR-004 (``docs/adr/ADR-004-delivery-flow-replay.md`` §2) is the normative text; this is its
+other. ADR-004 (``.adr/ADR-004-delivery-flow-replay.md`` §2) is the normative text; this is its
 implementation.
 
 **COGNITION REPLAY (this module).** Take the NORMALIZED verdicts a run already recorded

@@ -1,10 +1,16 @@
+---
+title: Motion score and the temporal strip
+updated: 2026-07-23
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Motion score and the temporal strip
 
 The tier-0 wake layer answers one cheap question per frame — *is anything worth a closer look?* — so the
 brain spends a paid model call only when something plausibly changed. Three decisions are involved, and
 keeping them distinct is the whole game: **how** motion is measured, **whether** the camera itself is
 moving, and **how much history** the model sees once it does look. This page explains each conceptually;
-for the exact env vars and thresholds see [Configuration](../configuration.md) and
+for the exact env vars and thresholds see [Configuration](../reference/configuration.md) and
 [Edge policy](../reference/edge-policy.md).
 
 ## The motion score
@@ -97,6 +103,6 @@ reminders, and the motion gate for physical events.
 - [../how-to/screenshare.md](../how-to/screenshare.md) — the fixed-cadence screen-watching template.
 - [../how-to/authoring-goals-and-watch-plans.md](../how-to/authoring-goals-and-watch-plans.md) — where
   `salience_stat`, `ego_compensate`, and `gate_on` are set on a goal.
-- [../configuration.md](../configuration.md) · [../reference/edge-policy.md](../reference/edge-policy.md)
+- [../reference/configuration.md](../reference/configuration.md) · [../reference/edge-policy.md](../reference/edge-policy.md)
   — the exact env vars, thresholds, and wake-policy channels.
 - [Architecture](architecture.md) · [End to end: one judged request](e2e-flow-milk-boilover.md)

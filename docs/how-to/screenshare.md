@@ -1,3 +1,9 @@
+---
+title: Scenario: help me by watching my screenshare
+updated: 2026-07-16
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Scenario: help me by watching my screenshare
 
 A **content** event — the template for "watch my screen and help / tell me when X." The opposite of a

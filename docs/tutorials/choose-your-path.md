@@ -1,3 +1,9 @@
+---
+title: Choose your path
+updated: 2026-07-23
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Choose your path
 
 Percept has a lot of surface area — runtime, edge, harness, contracts, backends, benchmarks, process-QA,
@@ -15,9 +21,9 @@ until you need it.
 | Write my own judge / vision backend | [Custom judge & backend how-to](../how-to/custom-judge.md) | your backend | harness internals |
 | Author a profile for my use case | [Custom configuration how-to](../how-to/custom-configuration.md) | `pip install percept-vision` | edge, harness |
 | Tune the eye for my content | [Tuning admission how-to](../how-to/tune-admission.md) | `pip install percept-vision` | edge, harness |
-| Configure env vars / thresholds | [Configuration reference](../configuration.md) | core | — |
+| Configure env vars / thresholds | [Configuration reference](../reference/configuration.md) | core | — |
 | Run on-device edge gating | [Edge parity reference](../reference/edge-parity.md) | `npm install percept-edge` | process-QA, benchmark methodology |
-| Evaluate / optimize / benchmark | [Eval](../how-to/eval.md) · [Optimize](../how-to/optimize.md) · [Benchmarks](../how-to/benchmarks.md) | `[bench]` | runtime internals |
+| Evaluate / optimize / benchmark | [Eval](../how-to/eval.md) · [Optimize](../how-to/optimize.md) · [Benchmarks](../benchmarks/running-benchmarks.md) | `[bench]` | runtime internals |
 | Look up a CLI command | [Command-line reference](../reference/cli.md) | core | — |
 
 ## You probably don't need this yet

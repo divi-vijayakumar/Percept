@@ -1,3 +1,9 @@
+---
+title: Eval-Hours Costing for the Operating-Point Bars
+updated: 2026-07-23
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Eval-Hours Costing for the Operating-Point Bars
 
 Status: reference — computed once, to be re-run whenever a candidate bar or the archetype list changes.

@@ -97,7 +97,7 @@ MutationCheck = Callable[["Episode", Any], bool]
 # never their BYTES — so a per-episode frame makes the log's memory scale with source resolution,
 # the same class of leak the frame window's byte budget was built to close.
 #
-# The fix is the ADR-003 opaque-handle shape (docs/adr/ADR-003): store a small descriptor — an
+# The fix is the ADR-003 opaque-handle shape (.adr/ADR-003): store a small descriptor — an
 # opaque ``ref`` and a cheap ``fingerprint`` — NEVER the pixels. A handle carries no ``nbytes`` /
 # ``w`` / ``h`` / ``size`` attribute, so the SAME measuring function used elsewhere
 # (:func:`percept.events.frame_nbytes`) reports it as 0 (unmeasurably small) — retained evidence

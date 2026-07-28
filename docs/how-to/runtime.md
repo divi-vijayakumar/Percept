@@ -1,3 +1,9 @@
+---
+title: The runtime worker — `run(source) → incidents`
+updated: 2026-07-23
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # The runtime worker — `run(source) → incidents`
 
 The runtime owns the **camera → incidents** lifecycle: capture, the gate loop, judging off the display

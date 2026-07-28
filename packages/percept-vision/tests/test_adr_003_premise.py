@@ -18,7 +18,7 @@ import pytest
 
 from percept.contracts import JudgmentEvent, LabelRecord, Verdict, WatchEvent
 
-_ADR_DIR = Path(__file__).resolve().parents[3] / "docs" / "adr"
+_ADR_DIR = Path(__file__).resolve().parents[3] / ".adr"
 _ADR_001 = _ADR_DIR / "ADR-001-judgment-and-gate-contract.md"
 _ADR_003 = _ADR_DIR / "ADR-003-evidence-artifacts-retention.md"
 

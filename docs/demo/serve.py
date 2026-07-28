@@ -1268,11 +1268,14 @@ a{display:block;border:1px solid #0a0a0a;padding:14px 16px;margin:12px 0;color:#
 <h1>Percept demo harness</h1>
 <p>Real <code>watch()</code> runtime behind every page. Uploads run a real judge when an API key is set;
 otherwise the keyless fixture runs the real runtime with scripted verdicts.</p>
-<a href="/demo-01-video-watch.html">Demo 01 · MP4 video watch →</a>
-<a href="/demo-02-screen-watch.html">Demo 02 · Screen-share watch →</a>
 <a href="/demo-04-stream-uploaded-video.html">Demo 04 · Live stream + replay →</a>
-<p class=k>judge key: %s</p>""" % ("SET — real judge available" if _have_key() else
-                                   "UNSET — fixture only (set OPENROUTER_API_KEY / GEMINI_API_KEY / ANTHROPIC_API_KEY)")
+<p class=k>judge key: %s</p>
+<p class=k>Earlier harnesses stay served but unlisted — they are internal dogfood tooling, not the
+demo: <code>/demo-01-video-watch.html</code> (MP4 upload) ·
+<code>/demo-02-screen-watch.html</code> (screen-share) ·
+<code>/demo-03-judgment-timeline.html</code> (timeline viz).</p>""" % (
+    "SET — real judge available" if _have_key() else
+    "UNSET — fixture only (set OPENROUTER_API_KEY / GEMINI_API_KEY / ANTHROPIC_API_KEY)")
 
 
 def main():

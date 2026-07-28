@@ -1,3 +1,9 @@
+---
+title: Two apps on one command seam — a silent watchdog and a voice assistant
+updated: 2026-07-16
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Two apps on one command seam — a silent watchdog and a voice assistant
 
 `percept.run` is the watch; `RuntimeSession` is the [command seam](../reference/command-seam.md). The

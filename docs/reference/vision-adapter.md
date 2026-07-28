@@ -1,3 +1,9 @@
+---
+title: The Vision adapter interface (public extension point)
+updated: 2026-07-23
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # The Vision adapter interface (public extension point)
 
 Percept's cognition core — fovea, judge scheduling, gate, entity graph, escalation — **never imports a
@@ -196,7 +202,7 @@ failure is reported and never fails the run.
 
 **Accuracy.** No check asserts a particular `satisfied` for a particular frame. A conformant adapter
 is free to be *wrong*; it is not free to be *shaped* wrong. Model quality is an L2/L3 eval question —
-see [Benchmark methodology](benchmark-methodology.md) and the `percept.bench` scorecards.
+see [Benchmark methodology](../benchmarks/methodology.md) and the `percept.bench` scorecards.
 
 ### Reading the report
 

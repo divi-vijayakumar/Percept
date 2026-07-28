@@ -1,6 +1,6 @@
 """Card X5 — ADR-004 §1 must not lie about what ``watch()`` resolves.
 
-ADR-004 (`docs/adr/ADR-004-delivery-flow-replay.md`) shipped a "NOT guaranteed" bullet claiming
+ADR-004 (`.adr/ADR-004-delivery-flow-replay.md`) shipped a "NOT guaranteed" bullet claiming
 ``profile`` is *not resolved yet* and that ``_settings_from_profile`` is a minimal pass-through. That
 described a pre-M2 ``watch.py``: as shipped, ``_build_core`` resolves a real ``WatchProfile`` through
 ``resolve_watch_profile`` and applies ``settings``/``sense_policy``/``plan_mode`` at construction. An
@@ -27,7 +27,7 @@ from percept.watchprofile import CadenceProfile, GateProfile, WatchProfile
 
 _PKG = Path(__file__).resolve().parents[1]  # packages/percept-vision
 _REPO = _PKG.parents[1]  # repo root
-_ADR = _REPO / "docs" / "adr" / "ADR-004-delivery-flow-replay.md"
+_ADR = _REPO / ".adr" / "ADR-004-delivery-flow-replay.md"
 _WATCH = _PKG / "percept" / "watch.py"
 
 

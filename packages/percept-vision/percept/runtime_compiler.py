@@ -1,6 +1,6 @@
 """RuntimeCompiler — the ADR-008 resolution boundary, step 2 of the two-step binder.
 
-``docs/adr/ADR-008-configuration-ownership-resolution-provenance.md`` draws the boundary as two
+``.adr/ADR-008-configuration-ownership-resolution-provenance.md`` draws the boundary as two
 functions::
 
     (SourceProfile, DomainPack, ExecutionPolicy, DeploymentConfig, OptimizationLock, WatchPlan)

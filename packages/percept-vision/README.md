@@ -136,8 +136,8 @@ These refusals are a feature. **Do not lead with surveillance demos.**
 
 **No Percept accuracy numbers are published yet.** The benchmark is designed but the reproducible
 model-sweep run is a separate, later phase — see the
-[methodology](https://github.com/divi-vijayakumar/Percept/blob/main/docs/reference/benchmark-methodology.md)
-and the [benchmarks how-to](https://github.com/divi-vijayakumar/Percept/blob/main/docs/how-to/benchmarks.md).
+[methodology](https://github.com/divi-vijayakumar/Percept/blob/main/docs/benchmarks/methodology.md)
+and the [benchmarks how-to](https://github.com/divi-vijayakumar/Percept/blob/main/docs/benchmarks/running-benchmarks.md).
 The scorecard tooling operates on a manifest you provide; the bundled golden set ships with the **source
 repo, not the wheel**, so the default-manifest commands run from a repo checkout:
 

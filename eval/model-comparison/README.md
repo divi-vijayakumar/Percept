@@ -6,7 +6,7 @@ and firing contract on every arm — **only the model swaps**. Backends compared
 
 > ⚠️ **Directional, small sample (N=8 cross-task; N=10 pt-action). NOT a release claim.** These are
 > exploratory numbers to guide model selection, not a published benchmark. The reproducible,
-> release-grade scorecard is a separate effort (see `docs/reference/benchmark-methodology.md`). Cost is
+> release-grade scorecard is a separate effort (see `docs/benchmarks/methodology.md`). Cost is
 > measured `candidate_calls`; token figures use a documented proxy (see `build.py`).
 
 ## Files

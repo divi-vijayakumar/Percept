@@ -91,12 +91,24 @@ asyncio.run(main())
   perception logic on the perception side of the seam.
 
 ## Where to look
-- `docs/README.md` (index) · `docs/tutorials/quickstart.md` · `docs/explanation/concepts.md` · `docs/reference/backends.md` — adopter docs.
+- `docs/README.md` (index — generated, every page dated) · `docs/tutorials/quickstart.md` · `docs/explanation/concepts.md` — adopter docs.
+- `docs/agents/README.md` — agent onboarding: install the skill, the three things agents get wrong.
+- `docs/reference/tunables.md` — **all 157 tunables, 31 safe to optimize.** Generated from `percept.tunables.REGISTRY`.
+- `docs/reference/registries.md` — **backend seams, detectors, profile registries**, and how to register your own. Generated.
+- `docs/reference/configuration.md` — the `Settings` tree + resolver precedence; `docs/how-to/custom-configuration.md` — author a profile.
 - `docs/reference/cli.md` — all nine console scripts and their flags.
-- `docs/configuration.md` — every tunable + env var; `docs/how-to/custom-configuration.md` — author a profile.
+- `docs/how-to/integrate-into-your-app.md` — the `run()` API and event shape.
 - `docs/how-to/custom-judge.md` — bring your own vision backend or a specialist judge (with a conformance suite).
-- `docs/how-to/eval.md` · `docs/how-to/optimize.md` · `docs/how-to/benchmarks.md` — the offline quality rail.
+- `docs/how-to/eval.md` · `docs/how-to/optimize.md` · `docs/benchmarks/README.md` — the offline quality rail.
+- `docs/demo/README.md` — the browser harness; simulation mode vs BYOK.
 - `templates/` — copyable reference applications; `templates/realtime_voice_watch_agent/` is the flagship voice+vision agent.
 - `.claude/skills/percept-agent/` — a Claude Code skill that scaffolds an agent from a plain-language goal (kept in sync with `.agents/skills/percept-agent/`).
 - `percept.edge` / `percept.harness` — the server-side edge (tier-0 gate + detector registry)
   for Python deployments.
+
+## Where things live (so you put new files in the right place)
+- `docs/` — **public only.** Adoption material that feeds the website. No ADRs, no internal notes.
+- `.adr/` — architecture decision records. Tracked (six drift-guard tests read them), but not adoption docs.
+- `scratch/`, `execution-docs/`, `codewiki/`, `.dispatch-board/` — gitignored local working areas. All
+  strategy, specs, plans, and probe results live here. Never shipped.
+- Regenerate generated docs with `make docs`; gate them with `make docs-check docs-links`.

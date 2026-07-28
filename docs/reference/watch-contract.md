@@ -1,3 +1,9 @@
+---
+title: `watch()` — the frozen public contract
+updated: 2026-07-23
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # `watch()` — the frozen public contract
 
 `percept.watch(stream, goals, profile=None) -> AsyncIterator[WatchEvent]` is the **one stable,

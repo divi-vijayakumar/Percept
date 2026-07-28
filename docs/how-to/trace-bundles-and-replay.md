@@ -1,3 +1,9 @@
+---
+title: Trace bundles & replay
+updated: 2026-07-23
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Trace bundles & replay
 
 Two things people mean by "replay". Percept ships one of them, and says so.

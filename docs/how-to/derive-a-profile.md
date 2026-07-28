@@ -1,3 +1,9 @@
+---
+title: Derive a profile for a new environment
+updated: 2026-07-23
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Derive a profile for a new environment
 
 **The claim this command exists to make good on: a new environment should yield a _profile_, not a

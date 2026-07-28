@@ -1,3 +1,9 @@
+---
+title: Core concepts: the cognition/perception split, the gate, rising-edge firing, memory
+updated: 2026-07-23
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Core concepts: the cognition/perception split, the gate, rising-edge firing, memory
 
 Percept splits cleanly into two layers. Understanding the split is the key to using it well.

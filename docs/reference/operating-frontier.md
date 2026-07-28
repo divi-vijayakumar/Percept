@@ -1,3 +1,9 @@
+---
+title: The Operating-Frontier Report (§3.2)
+updated: 2026-07-20
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # The Operating-Frontier Report (§3.2)
 
 Status: reference — the report a 1.0.0 release publishes when it makes a quality claim.

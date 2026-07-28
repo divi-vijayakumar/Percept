@@ -1,3 +1,9 @@
+---
+title: Tuning admission: from "nothing fires" to a tuned eye
+updated: 2026-07-23
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Tuning admission: from "nothing fires" to a tuned eye
 
 **Read this first.** Percept ships the harness. **You tune the eye for your content.**

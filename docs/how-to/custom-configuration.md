@@ -1,3 +1,9 @@
+---
+title: Create a custom configuration for your use case
+updated: 2026-07-23
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Create a custom configuration for your use case
 
 Percept configuration is layered and open. You rarely need to fork anything — you tune a shipped
@@ -16,7 +22,7 @@ Three axes, each a different question:
 class. The two axes are orthogonal: a screen recording (`SourceProfile`) can be watched with any
 mount's tuning (`WatchProfile`).
 
-For the full `Settings` tree and the layer precedence, see [../configuration.md](../configuration.md).
+For the full `Settings` tree and the layer precedence, see [../reference/configuration.md](../reference/configuration.md).
 The lowest-effort change of all is an env var — `PERCEPT_SALIENCE_STAT=block_max`,
 `PERCEPT_GATE_REFRACTORY_S=15`, `PERCEPT_MOTION_GATE_BLOCK_MAX=0.20`, `PERCEPT_COAST_ENABLED=0` —
 no code, no registration.
@@ -143,7 +149,7 @@ core = Percept.configure(source_profile=MY_SOURCE)   # full layered resolution
 `Percept.configure` runs the six-layer resolver (SDK < SourceProfile < DomainPack < ExecutionPolicy
 < OptimizationLock < Deployment < WatchPlan), so a tuned admission signal and a declared coast floor
 are bound onto the runtime with per-field provenance. See
-[../configuration.md](../configuration.md) for the precedence and the provenance receipt.
+[../reference/configuration.md](../reference/configuration.md) for the precedence and the provenance receipt.
 
 ## Prefer to derive a profile from data?
 

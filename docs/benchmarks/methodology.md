@@ -1,3 +1,9 @@
+---
+title: Percept Benchmark Methodology Spec
+updated: 2026-07-28
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Percept Benchmark Methodology Spec
 
 Status: draft

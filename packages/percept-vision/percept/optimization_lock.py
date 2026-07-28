@@ -1,6 +1,6 @@
 """OptimizationLock (ADR-008) — a validated, hashed selection of tunables an optimizer proved safe.
 
-``docs/adr/ADR-008-configuration-ownership-resolution-provenance.md`` names :class:`OptimizationLock`
+``.adr/ADR-008-configuration-ownership-resolution-provenance.md`` names :class:`OptimizationLock`
 as "a validated, hashed selection of tunables an optimizer previously proved safe — never authored
 by hand... new — not yet in code" and assigns it a precedence slot between ``ExecutionPolicy`` and
 ``Deployment``. :mod:`percept.resolver` previously carried a MINIMAL placeholder (``id``/``version``/

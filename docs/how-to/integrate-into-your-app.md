@@ -1,3 +1,9 @@
+---
+title: Percept runtime — integration guide
+updated: 2026-07-28
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Percept runtime — integration guide
 
 Watch a live video stream for a **plain-English condition** and get a notification the moment it becomes
@@ -11,7 +17,7 @@ your source ──▶ fovea (cheap motion/salience gate) ──▶ VLM judge ─
 ```
 
 > **Before you design around it**, read
-> [Scope and persistence (v1.4)](reference/v1-4-scope-and-persistence.md). Three things clients have
+> [Scope and persistence (v1.4)](../reference/v1-4-scope-and-persistence.md). Three things clients have
 > read too generously: v1.4 covers **screen documents with stable content keys** and **conversational
 > claim slots** only — biometric re-identification, growth prediction and robotics control are
 > explicitly excluded; **episodes are session-only** and do not survive a restart, which blocks any
@@ -237,5 +243,5 @@ async for inc in percept.run(source="my_test.mp4", goals=goals, vision="openrout
 
 ---
 
-**Reference demo:** [`examples/vision_assistant.py`](../examples/vision_assistant.py) — a complete, runnable
+**Reference demo:** [`examples/vision_assistant.py`](../../examples/vision_assistant.py) — a complete, runnable
 integration you can copy from.

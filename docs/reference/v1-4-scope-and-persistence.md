@@ -1,3 +1,9 @@
+---
+title: Scope and persistence (percept 1.0.0)
+updated: 2026-07-23
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Scope and persistence (percept 1.0.0)
 
 **Read this before you design around percept.** It states, plainly, what percept 1.0.0 covers, what it

@@ -28,7 +28,7 @@ from percept.episodes import EpisodeLog
 
 _PKG = Path(inspect.getfile(episodes_mod)).resolve().parents[1]  # packages/percept-vision
 _REPO = _PKG.parents[1]
-_ADR = _REPO / "docs" / "adr" / "ADR-006-incident-relations.md"
+_ADR = _REPO / ".adr" / "ADR-006-incident-relations.md"
 _SCOPE_DOC = _REPO / "docs" / "reference" / "v1-4-scope-and-persistence.md"
 
 #: The three exclusions are scope, not backlog. Phrased as substrings so wording can breathe but the
@@ -141,7 +141,7 @@ class TheDocIsReachable(unittest.TestCase):
 
     def test_docs_index_and_integration_guide_link_the_scope_doc(self):
         target = "reference/v1-4-scope-and-persistence.md"
-        for rel in ("docs/README.md", "docs/integration.md"):
+        for rel in ("docs/README.md", "docs/how-to/integrate-into-your-app.md"):
             with self.subTest(doc=rel):
                 self.assertIn(target, _doc(_REPO / rel))
 

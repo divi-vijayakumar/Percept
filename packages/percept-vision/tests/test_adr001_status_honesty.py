@@ -25,7 +25,7 @@ from percept import clock as clock_mod
 from percept import gate as gate_mod
 
 PACKAGE_ROOT = Path(percept.__file__).resolve().parent
-ADR_PATH = PACKAGE_ROOT.parents[2] / "docs" / "adr" / "ADR-001-judgment-and-gate-contract.md"
+ADR_PATH = PACKAGE_ROOT.parents[2] / ".adr" / "ADR-001-judgment-and-gate-contract.md"
 
 
 @pytest.fixture(scope="module")

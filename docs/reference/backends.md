@@ -1,3 +1,9 @@
+---
+title: Backends
+updated: 2026-07-23
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Backends
 
 Percept reasons over a `Verdict` stream; it never imports a vendor SDK directly. Each **seam**

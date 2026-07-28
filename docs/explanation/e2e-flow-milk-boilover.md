@@ -1,3 +1,9 @@
+---
+title: End to end: one judged request (milk boiling over)
+updated: 2026-07-23
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # End to end: one judged request (milk boiling over)
 
 This page traces a single goal — **"the milk is boiling over"** — through the whole pipeline, for a fixed

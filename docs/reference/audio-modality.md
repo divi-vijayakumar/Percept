@@ -1,3 +1,9 @@
+---
+title: Audio modality — the acoustic-onset → judge wake path
+updated: 2026-07-23
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Audio modality — the acoustic-onset → judge wake path
 
 Percept has a first-class **audio** modality, end to end: a cheap on-device detector watches the mic

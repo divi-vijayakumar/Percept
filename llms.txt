@@ -7,12 +7,22 @@ https://percept.percia.ai
 
 ## Start Here
 
-- `README.md`: product overview, install commands, architecture, package map, benchmark status.
+- `README.md`: the problem, the solution, install commands, getting started, package map.
 - `AGENTS.md`: verified integration guide for Codex, Claude Code, Cursor, Copilot, and other coding agents.
-- `docs/README.md`: documentation index (Diátaxis: tutorials / how-to / reference / explanation).
-- `docs/tutorials/quickstart.md`: 60-second offline first run with the fake backend.
+- `docs/agents/README.md`: agent onboarding — install the `percept-agent` skill; the three things agents get wrong.
+- `docs/README.md`: documentation index (generated; every page carries an `updated:` date).
+- `docs/tutorials/quickstart.md`: 60-second offline first run on the scripted backend.
 - `docs/explanation/concepts.md`: cognition/perception split, gate, rising-edge firing, entity memory.
-- `docs/reference/backends.md`: fake, Gemini, Claude, OpenRouter, Deepgram, and backend selection.
+- `docs/reference/backends.md`: scripted, Gemini, Claude, OpenRouter, Deepgram, and backend selection.
+
+## Repository Layout (where things live)
+
+- `docs/`: PUBLIC documentation only — tutorials, how-to, reference, benchmarks, explanation, agents, demo.
+- `.adr/`: architecture decision records. Tracked and citable from code, but internal reasoning, not adoption docs.
+- `packages/percept-vision/`: the SDK. `packages/percept-edge/`: the JS/WASM edge.
+- `tools/`: generators — architecture diagram, tunables doc, registries doc, docs index, link checker.
+- `eval/`, `templates/`, `examples/`: benchmark harness, reference apps, runnable snippets.
+- `scratch/`, `execution-docs/`, `codewiki/`, `.dispatch-board/`: gitignored local working areas. Never shipped.
 
 ## Package Choices
 
@@ -48,12 +58,16 @@ goals=[...], vision="gemini")`.
 ## Key Docs
 
 - Architecture (generated diagram + the four tiers): `docs/explanation/architecture.md`
-- Runtime worker + custom runs: `docs/how-to/runtime.md`
-- Configuration (every tunable): `docs/configuration.md`; author a profile: `docs/how-to/custom-configuration.md`
+- Runtime worker + custom runs: `docs/how-to/runtime.md`; embed in an app: `docs/how-to/integrate-into-your-app.md`
+- Configuration: `docs/reference/configuration.md`; author a profile: `docs/how-to/custom-configuration.md`
+- ALL 157 tunables (31 safe to optimize), generated from the registry: `docs/reference/tunables.md`
+- Backend seams, detectors, profile registries + how to register your own: `docs/reference/registries.md`
 - Custom judge / bring-your-own backend: `docs/how-to/custom-judge.md`
 - Command-line reference (nine tools): `docs/reference/cli.md`
-- Evaluate / optimize / benchmark: `docs/how-to/eval.md`, `docs/how-to/optimize.md`, `docs/how-to/benchmarks.md`
+- Evaluate / optimize: `docs/how-to/eval.md`, `docs/how-to/optimize.md`
+- Benchmarks (status, methodology, runbook): `docs/benchmarks/README.md`
 - Edge parity and detector handshake: `docs/reference/edge-parity.md`
+- Browser demo driving the real runtime: `docs/demo/README.md` (demo-04 is the one to show)
 - Reference voice/realtime application: `templates/realtime_voice_watch_agent/`
 
 ## Quality Gates

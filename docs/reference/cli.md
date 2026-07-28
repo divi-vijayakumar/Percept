@@ -1,3 +1,9 @@
+---
+title: Command-line reference
+updated: 2026-07-23
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Command-line reference
 
 `percept-vision` installs nine console scripts. Each is a self-contained `main(argv) -> int`; the exit
@@ -312,5 +318,5 @@ Most commands run from a bare `pip install percept-vision`:
 - **Repo checkout + `[bench]`** (numpy + opencv, `PYTHONPATH=packages/percept-vision`):
   `percept-bench`.
 
-See [../configuration.md](../configuration.md) for every environment variable, and
+See [configuration.md](configuration.md) for every environment variable, and
 [backends.md](backends.md) for provider selection.

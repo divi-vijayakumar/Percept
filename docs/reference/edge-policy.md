@@ -1,3 +1,9 @@
+---
+title: Edge Wake Policy
+updated: 2026-07-23
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Edge Wake Policy
 
 Percept should spend the heavy perception call only when cheap evidence says a goal is plausible.

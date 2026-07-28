@@ -1,10 +1,16 @@
+---
+title: Publishable Benchmark Runbook
+updated: 2026-07-28
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Publishable Benchmark Runbook
 
 > **No Percept accuracy claims yet.** The numbers below are *external reference bars* (TML / OpenAI
 > Realtime rows, cited as comparators) and *target sample sizes* — not Percept results. Percept's own
 > scorecard is produced by the model-sweep phase, which this runbook describes how to run.
 
-Start with the methodology split in [`benchmark-methodology.md`](benchmark-methodology.md). The
+Start with the methodology split in [`benchmark-methodology.md`](methodology.md). The
 runbook below is operational; the methodology spec defines what each lane is allowed to claim.
 
 This runbook is for a public-grade Percept benchmark. It deliberately does **not** run an OpenAI

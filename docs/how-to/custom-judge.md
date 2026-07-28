@@ -1,3 +1,9 @@
+---
+title: Judging, and creating a custom judge or specialist
+updated: 2026-07-23
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Judging, and creating a custom judge or specialist
 
 A **judge** is the model-as-evaluator step Percept escalates to when a goal cannot be resolved

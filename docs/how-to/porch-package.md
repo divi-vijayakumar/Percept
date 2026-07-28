@@ -1,3 +1,9 @@
+---
+title: Scenario: tell me when a package is on the porch
+updated: 2026-07-20
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Scenario: tell me when a package is on the porch
 
 A **physical** event — the template for "alert me when X happens in the room/frame."

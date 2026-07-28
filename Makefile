@@ -7,7 +7,7 @@ EDGE      := packages/percept-edge
 PY        := python3
 # absolute path to the zero-dep contract pkg (vision runs from inside $(SDK), so it needs this)
 
-.PHONY: help test test-harness test-js test-all test-templates test-capability-gate parity eval-live eval-benchmark e2e bench audit-benchmark scorecard benchmark-prepare benchmark-fetch benchmark-fetch-charades benchmark-fetch-proactiveqa benchmark-index-proactiveqa benchmark-manifest benchmark-run benchmark-collect check check-skills-sync reproduce clean architecture architecture-check
+.PHONY: help test test-harness test-js test-all test-templates test-capability-gate parity eval-live eval-benchmark e2e bench audit-benchmark scorecard benchmark-prepare benchmark-fetch benchmark-fetch-charades benchmark-fetch-proactiveqa benchmark-index-proactiveqa benchmark-manifest benchmark-run benchmark-collect check check-skills-sync reproduce clean architecture architecture-check docs docs-tunables docs-registries docs-index docs-check docs-links
 
 help:
 	@echo "test       L1 unit — percept-vision (incl. percept.harness + percept.contracts; fakes, no keys, fast) + template lane"
@@ -181,6 +181,25 @@ architecture:  ## (re)generate architecture.html + docs/architecture.svg from co
 architecture-check:  ## CI gate: fail if the committed diagram is stale vs code/meta
 	$(PY) tools/build_architecture.py --check --meta docs/architecture.meta.json --out architecture.html --svg docs/architecture.svg
 	git diff --exit-code architecture.html docs/architecture.svg
+
+docs-tunables:  ## (re)generate docs/reference/tunables.md from percept.tunables.REGISTRY
+	$(PY) tools/build_tunables_doc.py
+
+docs-registries:  ## (re)generate docs/reference/registries.md from the live registries
+	$(PY) tools/build_registries_doc.py
+
+docs-index:  ## stamp frontmatter on docs/**.md and (re)generate docs/README.md
+	$(PY) tools/build_docs_index.py
+
+docs: docs-tunables docs-registries docs-index  ## regenerate every generated docs page
+
+docs-check:  ## CI gate: fail if any generated docs page is stale vs the code
+	$(PY) tools/build_tunables_doc.py --check
+	$(PY) tools/build_registries_doc.py --check
+	$(PY) tools/build_docs_index.py --check
+
+docs-links:  ## CI gate: fail on a broken relative link in any tracked .md
+	@$(PY) tools/check_doc_links.py
 
 reproduce:
 	PYTHONPATH=$(SDK) $(PY) -m percept.bench scorecard --manifest eval/golden-v1/MANIFEST.json --out scorecard.txt

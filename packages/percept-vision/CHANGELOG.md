@@ -263,7 +263,7 @@
   how to A/B it with `percept eval` on YOUR fixtures against YOUR bars. Stated plainly there and in
   ADR-005: percept's stock eye does not admit on this class of content, percept ships no OCR model
   and no calibrated screen threshold, and **the client supplies and tunes the admission signal**.
-- **`docs/adr/ADR-005-source-profiles.md`** — the decision, the measurement, the gate-invariance
+- **`.adr/ADR-005-source-profiles.md`** — the decision, the measurement, the gate-invariance
   argument, and an explicit constraint on card L1: the `WatchProfile` ontology is camera-shaped and
   L1 must not be built on it.
 - **`percept check` widened past the Vision seam — conformance for the seams D6 kept (card D2).**
@@ -489,7 +489,7 @@ notification once per event.
 - **Gate time-refractory** `PERCEPT_GATE_REFRACTORY_S` — suppress duplicate notifications of the same goal;
   one fire per episode.
 - **Production trace telemetry** — opt-in per-frame trace (edge decision · verdict · gate action · reason).
-- **Docs:** `docs/integration.md` (embed the runtime), `docs/how-to/authoring-goals-and-watch-plans.md`,
+- **Docs:** `docs/how-to/integrate-into-your-app.md` (embed the runtime), `docs/how-to/authoring-goals-and-watch-plans.md`,
   `examples/vision_assistant.py`, updated `percept-agent` Claude skill.
 
 ### Notes

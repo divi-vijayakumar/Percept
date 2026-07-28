@@ -1,3 +1,9 @@
+---
+title: The command seam — `RuntimeSession`
+updated: 2026-07-16
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # The command seam — `RuntimeSession`
 
 `percept.run` is the **watch** — capture → gate → judge → incidents, running headless. `RuntimeSession`

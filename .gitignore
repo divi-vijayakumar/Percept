@@ -203,3 +203,14 @@ eval/stage-validation/long_sources.json
 eval/stage-validation/results/_pilot.*
 eval/stage-validation/results/_smoke*.
 docs/demo/timeline-data.json
+
+# --- docs reorg 2026-07-28 ---
+# mediamtx auto-generated TLS certs (regenerated on demand by the demo RTSP server)
+auto.crt
+auto.key
+# stage-validation raw run artifacts — rebuildable by re-running the harness. The narrative
+# reports live in scratch/probes/stage-validation/; only the runnable harness stays tracked.
+eval/stage-validation/results/*.checkpoint.jsonl
+eval/stage-validation/results/*.json
+eval/stage-validation/results/*.md
+eval/stage-validation/sweep/results/

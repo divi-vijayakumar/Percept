@@ -1,3 +1,9 @@
+---
+title: Run benchmarks
+updated: 2026-07-28
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Run benchmarks
 
 Percept ships a benchmark harness with three parts: a snapshot **scorecard**, an artifact **audit**,
@@ -76,11 +82,11 @@ are published yet**. This section is a deliberate placeholder — there is no Pe
 here.
 
 External reference bars (for example TML, TransRAC) appear in
-[../reference/benchmark-methodology.md](../reference/benchmark-methodology.md) and
-[../reference/publishable-benchmark.md](../reference/publishable-benchmark.md) **only** as external
+[methodology.md](methodology.md) and
+[publishing-runbook.md](publishing-runbook.md) **only** as external
 comparison points. They are never presented as Percept claims.
 
-To measure precision/recall on your own labeled manifest today, see [./eval.md](./eval.md). For the
+To measure precision/recall on your own labeled manifest today, see [./eval.md](../how-to/eval.md). For the
 honest form of a quality claim (report the bound, not the point estimate) and what a release-grade
-number requires, see [../reference/benchmark-methodology.md](../reference/benchmark-methodology.md)
-and [../reference/publishable-benchmark.md](../reference/publishable-benchmark.md).
+number requires, see [methodology.md](methodology.md)
+and [publishing-runbook.md](publishing-runbook.md).

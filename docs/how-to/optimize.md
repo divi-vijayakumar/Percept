@@ -1,3 +1,9 @@
+---
+title: Run an optimization
+updated: 2026-07-23
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Run an optimization
 
 `percept-optimize` searches a small set of **safe numeric tunables** and, when a candidate clears

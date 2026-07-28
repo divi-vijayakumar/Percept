@@ -1,13 +1,21 @@
+---
+title: Percept demo harness
+updated: 2026-07-28
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Percept demo harness
 
-Browser demos that drive the **real** `percept.watch()` runtime — this is how we dogfood the wheel
-end-to-end before a client wheel ships. Nothing here is simulated: every timeline, gate decision,
-context-ledger row, and `.ptrace` comes from the runtime, via the same seam as `percept.watch_cli --trace`.
+Browser demos that drive the **real** `percept.watch()` runtime. Nothing here is mocked: every
+timeline, gate decision, context-ledger row, and `.ptrace` comes from the runtime, via the same seam
+as `percept.watch_cli --trace`.
 
-- **Demo 01 — MP4 video watch** (`demo-01-video-watch.html`): upload a video, author a goal, run a watch.
-- **Demo 02 — screen-share watch** (`demo-02-screen-watch.html`): record a screen, then the runtime judges the recording.
-- **Demo 04 — live stream + replay** (`demo-04-stream-uploaded-video.html`): watch a **live feed** be
-  judged as it happens, then replay every decision on the media timeline. See below.
+**[Demo 04 — live stream + replay](demo-04-stream-uploaded-video.html)** is the demo. It watches a
+live feed being judged as it happens, then replays every decision on the media timeline. Start there.
+
+Three earlier harnesses stay served but unlisted — internal dogfood tooling, not the demo:
+`demo-01-video-watch.html` (MP4 upload), `demo-02-screen-watch.html` (screen-share),
+`demo-03-judgment-timeline.html` (timeline visualization).
 
 ## Run it
 
@@ -15,15 +23,58 @@ context-ledger row, and `.ptrace` comes from the runtime, via the same seam as `
 python docs/demo/serve.py            # http://localhost:8788
 ```
 
-Open the printed URL. With **no API key**, the demos run the bundled fixture through the real runtime
-(scripted verdicts — proves wiring, not model intelligence). To run a **real judge over your own media**,
-set a key first:
+## Two modes: simulation and BYOK
+
+The harness picks a mode from the environment. **It never falls onto a scripted double silently** —
+the page states which mode it is in, on every run.
+
+### Simulation mode — no key, nothing to configure
+
+With no API key set, the demo runs the bundled fixture through the real runtime with **scripted
+verdicts**. Every seam (vision, conductor, specialist, STT, TTS) resolves to its scripted double.
+
+```bash
+python docs/demo/serve.py            # judge key: UNSET — fixture only
+```
+
+This exercises the real capture, admission, gate, trace, and delivery machinery. It proves
+**wiring, not model intelligence** — the judgments are human-authored, and the page labels every
+fixture run as such. Use it for UI work, trace-format work, and demos with no network.
+
+### BYOK mode — your key, your media, a real judge
+
+Set any one key and the harness resolves the live adapter for the seams that have one:
 
 ```bash
 OPENROUTER_API_KEY=…  python docs/demo/serve.py     # or GEMINI_API_KEY / ANTHROPIC_API_KEY
 ```
 
-Pick the matching backend in the page's "judge backend" selector. Real runs spend real tokens.
+Then pick the backend in the page's "judge backend" selector. **Real runs spend real tokens.**
+
+Seam coverage is not uniform, and the harness degrades per seam rather than all-or-nothing:
+
+| seam | live adapters | with no matching key |
+|---|---|---|
+| `vision` | `claude`, `gemini`, `gemini-live`, `openrouter` | `scripted` |
+| `specialist` | `claude`, `gemini` — **no OpenRouter adapter** | `scripted` |
+| `conductor` | `claude`, `gemini` — **no OpenRouter adapter** | `scripted-conductor` |
+
+So an `OPENROUTER_API_KEY`-only run judges for real on `vision` while the **conductor stays
+scripted** — goal authoring falls back to code-armed `add_goal()`, and the page says so. That is
+deliberate: forcing a live Anthropic client into existence with no `ANTHROPIC_API_KEY` would turn a
+working demo into a crash.
+
+### Environment knobs
+
+| variable | default | what it does |
+|---|---|---|
+| `PERCEPT_DEMO_PORT` | `8788` | HTTP port for the harness |
+| `PERCEPT_DEMO_RTSP_BASE` | `rtsp://127.0.0.1:8554` | publish target for a restreamed upload |
+| `OPENROUTER_API_KEY` / `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` | unset | switches the matching seams to BYOK |
+| `PERCEPT_VISION_MODEL` | per-backend default | override the judge model id |
+
+A `.env` at the repo root is read for `*_API_KEY` / `*_KEY` names, and never overrides a variable
+already exported.
 
 ## What is real vs. what to know
 

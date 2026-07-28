@@ -1,3 +1,9 @@
+---
+title: Edge parity
+updated: 2026-07-16
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # Edge parity
 
 Percept has two edge runtimes:

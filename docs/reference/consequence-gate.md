@@ -1,3 +1,9 @@
+---
+title: The consequence gate — the stable decision surface
+updated: 2026-07-23
+applies_to: percept-vision 1.0.0
+status: stable
+---
 # The consequence gate — the stable decision surface
 
 `percept.gate.Gate` is the **one firing path**. Every proactive output the SDK produces comes out of
