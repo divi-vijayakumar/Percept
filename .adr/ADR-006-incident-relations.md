@@ -375,7 +375,7 @@ correlation key ONLY" carrying "no claim about *who* or *which document* the sub
 
 These three decisions are **taken**. They are recorded here — and mirrored in the module docstrings a
 reader actually opens (`percept/sourceprofile.py`, `percept/episodes.py`) and in
-`docs/reference/v1-4-scope-and-persistence.md` — so that nobody reading the code can infer a stronger
+`docs/reference/scope-and-persistence.md` — so that nobody reading the code can infer a stronger
 promise than the one being made. They **change no behaviour**; they bound what the shipped behaviour
 is allowed to be read as.
 
