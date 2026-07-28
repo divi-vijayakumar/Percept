@@ -1,0 +1,1219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Percept Live Stream — watch a live RTSP feed (or your own video restreamed through one) be judged in real time by the REAL runtime, then replay every decision on the media timeline.">
+<title>Percept Live Stream · watch the judgment happen</title>
+<style>
+:root{
+  --ink:#0a0a0a;--graphite:#4a4a4a;--steel:#8a8a8a;--construction:#b9b9b9;
+  --hairline:#e2e2e2;--paper:#fff;--soft:#f6f6f3;--panel:#fbfbf8;--live:#a11;--fire:#2f7d4f;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --display:"Arial Narrow",Eurostile,Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:var(--paper);color:var(--ink);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+button,input,textarea,select{font:inherit}
+button{cursor:pointer}
+button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.shell{min-height:100vh;display:grid;grid-template-rows:auto auto auto 1fr}
+
+/* --- chrome --------------------------------------------------------------- */
+.topbar{height:68px;border-bottom:1px solid var(--ink);display:flex;align-items:center;justify-content:space-between;padding:0 24px;background:rgba(255,255,255,.96);position:sticky;top:0;z-index:30;backdrop-filter:blur(12px)}
+.brand{display:flex;align-items:center;gap:12px}
+.mark{width:34px;height:34px;flex:none}
+.wordmark{font-family:var(--display);font-size:13px;letter-spacing:.28em}
+.brand small{display:block;margin-top:3px;font:8px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--steel)}
+.topmeta{display:flex;align-items:center;gap:18px;font:9px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--steel)}
+.status{display:inline-flex;align-items:center;gap:7px}
+.status i{width:7px;height:7px;border-radius:50%;background:var(--construction)}
+.status.armed i{background:var(--ink);box-shadow:0 0 0 4px #ededed}
+.status.live i{background:var(--live);animation:pulse 1.1s infinite}
+.status.fire i{background:var(--ink);animation:pulse 1s infinite}
+.status.err i{background:var(--live)}
+@keyframes pulse{50%{box-shadow:0 0 0 7px rgba(0,0,0,0)}}
+.realbar{border-bottom:1px solid var(--hairline);background:#f2f7f2;padding:7px 24px;display:flex;align-items:center;justify-content:space-between;gap:12px;font:8.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--graphite)}
+.realbar b{color:var(--ink)}
+.realbar span{color:var(--steel);text-transform:none;letter-spacing:0;font-size:10px}
+
+/* --- phase bar ------------------------------------------------------------ */
+.phaseBar{border-bottom:1px solid var(--hairline);padding:10px 24px;display:flex;align-items:center;justify-content:space-between;gap:16px}
+.phases{display:flex;gap:8px;align-items:center;flex:none}
+.phase{border:1px solid var(--hairline);background:var(--panel);padding:7px 11px;font:9px var(--mono);letter-spacing:.11em;text-transform:uppercase;color:var(--steel)}
+.phase.on{border-color:var(--ink);background:var(--ink);color:#fff}
+.phase:disabled{opacity:.4;cursor:not-allowed}
+.phaseNote{font:9.5px/1.55 var(--mono);color:var(--steel)}
+.phaseNote b{color:var(--ink)}
+
+main{padding:16px 24px 28px;display:grid;gap:14px;max-width:1600px;margin:0 auto;width:100%}
+.panel{border:1px solid var(--ink);background:var(--paper)}
+.panelHead{min-height:43px;padding:6px 13px;border-bottom:1px solid var(--hairline);display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--panel);font:9px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--steel)}
+.panelHead b{color:var(--ink);font-weight:500}
+.panelHead span,.fCell b,.logRow .t,.eventHead span,#clockMeta,#streamMeta,#sourceClock{font-variant-numeric:tabular-nums}
+.dim{color:var(--steel)}
+
+/* --- 01 · source ---------------------------------------------------------- */
+.heroGrid{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(330px,.55fr);gap:14px;align-items:start}
+.videoPanel{display:grid;grid-template-rows:auto auto auto;min-height:0}
+.stage{position:relative;aspect-ratio:16/9;min-height:300px;background:#111;overflow:hidden}
+.stage video,.stage img.feed{position:absolute;inset:0;width:100%;height:100%;display:block;object-fit:contain;background:#111}
+.stage .hide{display:none}
+.emptyState{position:absolute;inset:0;display:grid;place-items:center;background:
+  radial-gradient(circle at center,transparent 0 14%,rgba(255,255,255,.02) 14% 15%,transparent 15% 29%,rgba(255,255,255,.02) 29% 30%,transparent 30%),
+  #111;color:#fff;text-align:center;padding:28px}
+.emptyInner{max-width:440px}
+.emptyIcon{width:84px;height:84px;margin:0 auto 20px;opacity:.9}
+.emptyState h1{font-family:var(--display);font-size:29px;font-weight:400;letter-spacing:-.02em;margin:0}
+.emptyState p{font-size:13px;line-height:1.65;color:#aaa;margin:12px auto 0;max-width:400px}
+.uploadBtn,.primary,.secondary,.quiet{border:1px solid var(--ink);padding:10px 13px;background:var(--ink);color:#fff;font-size:12px;font-weight:650}
+.uploadBtn{display:inline-flex;margin-top:20px;align-items:center;gap:8px}
+.secondary{background:#fff;color:var(--ink);border-color:var(--construction)}
+.quiet{background:transparent;color:var(--graphite);border-color:var(--hairline)}
+.uploadBtn input{display:none}
+.overlay{position:absolute;inset:0;pointer-events:none}
+.frameTag{position:absolute;left:12px;bottom:12px;background:rgba(0,0,0,.78);border:1px solid #555;color:#fff;padding:6px 8px;font:9px var(--mono);letter-spacing:.08em}
+.liveTag{position:absolute;right:12px;top:12px;background:var(--live);color:#fff;padding:5px 8px;font:9px var(--mono);letter-spacing:.12em;display:none}
+.liveTag.on{display:block}
+.fireBadge{position:absolute;left:12px;top:12px;background:var(--fire);color:#fff;border:1px solid var(--fire);padding:5px 9px;font:9px var(--mono);letter-spacing:.12em;display:none}
+.fireBadge.on{display:block}
+.videoControls{border-top:1px solid var(--hairline);padding:11px 13px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.fileMeta{min-width:0;flex:1;font:10px var(--mono);color:var(--steel);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.controls{display:flex;gap:7px;align-items:center}
+.controls button{padding:7px 10px;font:10px var(--mono);border:1px solid var(--construction);background:#fff}
+.controls button:disabled{opacity:.4;cursor:not-allowed}
+.controls button.stop{border-color:var(--live);color:var(--live)}
+
+/* --- 02 · source picker + goal -------------------------------------------- */
+.controlPanel{display:grid;grid-template-rows:auto 1fr;min-height:0;position:sticky;top:104px}
+.controlBody{padding:14px;display:flex;flex-direction:column}
+.srcTabs{display:grid;grid-template-columns:repeat(3,1fr);gap:0;border:1px solid var(--construction);margin-bottom:10px}
+.srcTab{border:0;border-right:1px solid var(--construction);background:#fff;padding:8px 4px;font:8.5px var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--steel);line-height:1.35}
+.srcTab:last-child{border-right:0}
+.srcTab.on{background:var(--ink);color:#fff}
+.srcTab b{display:block;font-size:9px;font-weight:600;margin-bottom:2px}
+.srcBody{border:1px solid var(--hairline);background:var(--panel);padding:10px;margin-bottom:10px}
+.srcBody p{margin:0 0 8px;font:9px/1.6 var(--mono);color:var(--steel)}
+.srcBody p b{color:var(--ink)}
+.srcBody code{background:#eeeeea;padding:1px 4px;font-size:8.5px;word-break:break-all}
+.urlRow{display:flex;gap:6px}
+.urlRow input{flex:1;min-width:0;padding:7px;border:1px solid var(--construction);font:10px var(--mono);background:#fff;color:var(--ink)}
+.urlRow button{padding:7px 9px;font:9px var(--mono);border:1px solid var(--construction);background:#fff;white-space:nowrap}
+.checkOut{margin-top:7px;font:9px/1.5 var(--mono);color:var(--steel)}
+.checkOut.ok{color:#2f7d4f}
+.checkOut.bad{color:var(--live)}
+.label{font:9px var(--mono);letter-spacing:.13em;text-transform:uppercase;color:var(--steel);margin-bottom:8px}
+.taskInput{width:100%;min-height:72px;resize:none;border:1px solid var(--construction);padding:11px;font-size:14px;line-height:1.5;color:var(--ink);background:#fff}
+.taskInput::placeholder{color:#aaa}
+.examples{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 10px}
+.examples button{border:1px solid var(--hairline);background:var(--panel);padding:6px 8px;font:9px var(--mono);color:var(--graphite)}
+.row{display:flex;gap:8px;margin-bottom:6px}
+.row label{flex:1;font:9px var(--mono);color:var(--steel)}
+.row select,.row input[type=text]{width:100%;margin-top:4px;padding:7px;border:1px solid var(--construction);font:11px var(--mono);background:#fff;color:var(--ink)}
+.advanced{border:1px solid var(--hairline);margin-bottom:10px}
+.advanced summary{cursor:pointer;padding:9px 10px;font:9px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--steel);background:var(--panel)}
+.advanced[open] summary{border-bottom:1px solid var(--hairline);color:var(--ink)}
+.advBody{padding:10px}
+.advCheck{display:flex;align-items:center;gap:7px;font:10px var(--mono);color:var(--graphite);flex:1}
+.advCheck input{width:auto;margin:0}
+.advHint{font:8.5px/1.55 var(--mono);color:var(--steel);margin-top:6px}
+.agentBox{border-top:1px solid var(--ink);padding-top:12px;margin-top:8px}
+.agentRow{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;margin-bottom:12px}
+.agentName{font-family:var(--display);font-size:18px;letter-spacing:.03em}
+.agentMeta{font:9px/1.5 var(--mono);color:var(--steel);margin-top:3px;overflow-wrap:break-word;min-height:27px}
+.armBtn{width:100%;border:1px solid var(--ink);background:var(--ink);color:#fff;padding:11px;font-weight:700}
+.armBtn:disabled{background:#ddd;color:#888;border-color:#ddd;cursor:not-allowed}
+.hint{margin-top:9px;font:9.5px/1.55 var(--mono);color:var(--steel);min-height:44px}
+.hint.err{color:var(--live)}
+
+/* --- observation ---------------------------------------------------------- */
+.observationLayout{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(330px,.5fr);gap:14px;align-items:start}
+.observationMain{display:grid;gap:14px}
+.observationSide{display:grid;gap:14px;position:sticky;top:104px}
+.funnelBody{padding:12px}
+.funnel{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--hairline);border:1px solid var(--hairline)}
+.fCell{background:#fff;padding:11px 12px;min-width:0}
+.fCell b{display:block;font-family:var(--display);font-size:26px;font-weight:400;line-height:1.1}
+.fCell span{display:block;margin-top:4px;font:8px var(--mono);letter-spacing:.11em;text-transform:uppercase;color:var(--steel)}
+.fCell small{display:block;margin-top:5px;font:8.5px/1.4 var(--mono);color:var(--steel)}
+.fCell.hot b{color:var(--fire)}
+.metricsStrip{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;min-height:23px}
+.metricsStrip .m{border:1px solid var(--hairline);background:var(--panel);padding:5px 9px;font:9px var(--mono);color:var(--steel);white-space:nowrap}
+.metricsStrip .m b{color:var(--ink);font-weight:600;margin-left:5px}
+.frameBar{position:relative;height:110px;border:1px solid var(--hairline);background:var(--panel);overflow:hidden;margin-top:12px}
+.frames{position:absolute;inset:0;display:flex;align-items:flex-end;gap:1px;padding:14px 10px}
+.frames i{flex:1;background:#ececec;min-width:1px;height:12px;transition:height .18s}
+.frames i.obs{background:#cfcfcf;height:24px}
+.frames i.admitted{background:#777;height:44px}
+.frames i.judged{background:#222;height:66px}
+.frames i.fired{background:var(--fire);height:80px}
+.playhead{position:absolute;top:0;bottom:0;width:1px;background:#000;left:0;display:none}
+.playhead.on{display:block}
+.playhead::before{content:"";position:absolute;top:6px;left:-3px;width:7px;height:7px;background:#000;border-radius:50%}
+.headline{position:absolute;top:0;bottom:0;width:1px;background:var(--live);left:0;display:none}
+.headline.on{display:block}
+.headline::before{content:"NOW";position:absolute;top:4px;left:4px;font:7.5px var(--mono);letter-spacing:.1em;color:var(--live);background:rgba(255,255,255,.88);padding:1px 3px}
+.barLegend{display:flex;flex-wrap:wrap;gap:12px;margin-top:8px;font:8px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--steel)}
+.barLegend i{display:inline-block;width:8px;height:8px;margin-right:5px;vertical-align:-1px}
+
+/* trace stream */
+.logWrap{height:340px;overflow:auto;border-top:1px solid var(--hairline)}
+.logRow{display:grid;grid-template-columns:58px 116px 1fr auto;gap:10px;padding:5px 13px;border-bottom:1px solid var(--hairline);font:9.5px/1.5 var(--mono);align-items:baseline}
+.logRow:nth-child(odd){background:#fcfcfa}
+.logRow .t{color:var(--steel);white-space:nowrap}
+.logRow .st{color:var(--graphite);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.logRow .msg{color:var(--ink);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.logRow .tag{font-size:8px;letter-spacing:.09em;text-transform:uppercase;color:var(--steel);white-space:nowrap}
+.logRow.admit .msg{font-weight:600}
+.logRow.judge{background:#f7f7f2}
+.logRow.gate .st,.logRow.gate .msg{color:#000;font-weight:600}
+.logRow.fire{background:var(--fire)}
+.logRow.fire .t,.logRow.fire .st,.logRow.fire .msg,.logRow.fire .tag{color:#fff}
+.logRow.warn .msg{color:var(--live)}
+.logEmpty{padding:26px 13px;color:var(--steel);font-size:12px;text-align:center}
+.logFoot{padding:9px 13px;border-top:1px solid var(--hairline);display:flex;justify-content:space-between;gap:12px;font:9px var(--mono);color:var(--steel)}
+
+/* progression */
+.progressBody{padding:14px}
+.progressRail{display:grid;gap:10px}
+.progressStep{display:grid;grid-template-columns:22px 1fr auto;gap:9px;align-items:start;padding:9px 0;border-bottom:1px solid var(--hairline)}
+.progressStep:last-child{border-bottom:0}
+.progressDot{width:18px;height:18px;border:1px solid var(--construction);border-radius:50%;display:grid;place-items:center;font:8px var(--mono);color:var(--steel)}
+.progressStep.done .progressDot{background:var(--ink);border-color:var(--ink);color:#fff}
+.progressStep.active .progressDot{border-color:var(--ink);box-shadow:0 0 0 4px #efefef;color:var(--ink)}
+.progressCopy b{display:block;font-size:11px;margin-bottom:2px}
+.progressCopy span{display:block;font:9px/1.45 var(--mono);color:var(--steel)}
+.progressState{font:8px var(--mono);letter-spacing:.08em;color:var(--steel);text-transform:uppercase;padding-top:2px;min-width:46px;text-align:right}
+.progressStep.active .progressState,.progressStep.done .progressState{color:var(--ink)}
+
+/* subscriber */
+.eventsPanel{display:grid;grid-template-rows:auto 360px auto;min-height:0}
+.events{padding:11px;overflow:auto;height:360px;display:grid;gap:8px;align-content:start}
+.eventEmpty{border:1px dashed var(--construction);padding:20px;color:var(--steel);font-size:12px;text-align:center}
+.event{border:1px solid var(--hairline);padding:11px;background:#fff}
+.event.fire{border-color:var(--fire);border-left:4px solid var(--fire);background:#f4faf6}
+.verdict{display:inline-block;padding:3px 7px;font:9px var(--mono);letter-spacing:.1em;border:1px solid var(--construction);color:var(--graphite)}
+.verdict.fire{background:var(--fire);border-color:var(--fire);color:#fff}
+.verdict.ask{background:#c8881f;border-color:#c8881f;color:#fff}
+.chain{margin-top:9px;border-top:1px solid var(--hairline)}
+.chain summary{cursor:pointer;padding:7px 0 0;font:8.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--steel);list-style:none}
+.chain summary::-webkit-details-marker{display:none}
+.chain summary::before{content:"▸ ";color:var(--steel)}
+.chain[open] summary::before{content:"▾ "}
+.jRow{display:grid;grid-template-columns:96px 1fr;gap:2px 9px;font:9px/1.55 var(--mono);padding:7px 0 0}
+.jRow dt{color:var(--steel);white-space:nowrap}
+.jRow dd{margin:0;color:var(--ink);min-width:0;word-break:break-word}
+.jStage{grid-column:1/-1;margin-top:7px;padding-top:5px;border-top:1px dotted var(--hairline);font:8px var(--mono);letter-spacing:.11em;text-transform:uppercase;color:var(--steel)}
+.jStage:first-child{margin-top:0;border-top:0}
+.evBlock{margin-top:9px;padding-top:9px;border-top:1px solid var(--hairline)}
+.evBlock b{display:block;font:8px var(--mono);letter-spacing:.11em;text-transform:uppercase;color:var(--steel);margin-bottom:6px}
+.evShot{display:flex;gap:8px;align-items:flex-start}
+.evShot img{width:150px;height:84px;object-fit:cover;border:2px solid var(--fire);background:#111;cursor:pointer;display:block}
+.evShot .evMeta{font:9px/1.6 var(--mono);color:var(--graphite);min-width:0}
+.eventHead{display:flex;justify-content:space-between;gap:10px;align-items:center;font:9px var(--mono);letter-spacing:.09em}
+.eventHead b{font-weight:600}.eventHead span{color:var(--steel)}
+.event h3{font-family:var(--display);font-size:16px;font-weight:400;margin:9px 0 6px}
+.event p{font-size:11px;color:var(--graphite);margin:0}
+.evidenceLink{display:inline-block;margin-top:7px;font:9px var(--mono);color:#000;text-decoration:underline;cursor:pointer}
+.eventFooter{padding:11px;border-top:1px solid var(--hairline);display:flex;gap:7px}
+.eventFooter button{flex:1}
+.eventFooter button:disabled{opacity:.4;cursor:not-allowed}
+
+/* filmstrip */
+.filmstrip{display:flex;gap:8px;overflow-x:auto;padding:12px;align-items:flex-start;min-height:96px}
+.filmThumb{flex:none;width:112px;cursor:pointer}
+.filmThumb img{width:112px;height:63px;object-fit:cover;background:#111;display:block;border:1px solid var(--hairline)}
+.filmThumb .cap{font:8px var(--mono);color:var(--steel);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.filmThumb.fired img{border:3px solid var(--fire)}
+.filmThumb.fired .cap{color:var(--fire);font-weight:700}
+.filmThumb.highlight img{box-shadow:0 0 0 3px #000,0 0 0 6px #fff}
+.filmPlaceholder{width:112px;height:63px;background:#f0f0ed;border:1px dashed var(--construction);display:flex;align-items:center;justify-content:center;font:8px var(--mono);color:var(--steel);text-align:center;padding:4px}
+
+/* drawers */
+.traceDrawer{position:fixed;inset:0;background:rgba(0,0,0,.38);z-index:60;display:none;align-items:stretch;justify-content:flex-end}
+.traceDrawer.open{display:flex}
+.tracePanel{width:min(720px,94vw);background:#fff;border-left:1px solid #000;display:grid;grid-template-rows:auto 1fr auto}
+.traceHead{height:54px;border-bottom:1px solid var(--ink);padding:0 16px;display:flex;align-items:center;justify-content:space-between}
+.traceHead b{font-family:var(--display);letter-spacing:.08em}
+.traceHead button{border:0;background:transparent;font-size:20px}
+.traceContent{margin:0;padding:18px;background:#0a0a0a;color:#eee;font:10px/1.65 var(--mono);overflow:auto;white-space:pre-wrap}
+.traceActions{padding:12px;border-top:1px solid var(--ink);display:flex;justify-content:flex-end;gap:8px}
+.frameDrawerBody{overflow:auto;display:grid;grid-template-rows:auto 1fr}
+.frameDrawerImgWrap{background:#111;display:flex;align-items:center;justify-content:center;min-height:200px}
+.frameDrawerImgWrap img{max-width:100%;max-height:360px;display:block}
+.frameDrawerBody .traceContent{max-height:none}
+
+/* A sticky column TALLER than the space below the header cannot scroll to its own bottom — it
+   pins at the top and its last rows stay permanently out of reach while the page moves past.
+   On short viewports (a 1440x800 laptop leaves 696px; the observation column wants 795px) stop
+   sticking and let both columns scroll normally. Predictable beats clever. */
+@media(max-height:920px){
+  .observationSide{position:static}
+}
+@media(max-height:820px){
+  .controlPanel{position:static}
+}
+@media(max-width:1150px){
+  .heroGrid,.observationLayout{grid-template-columns:1fr}
+  .controlPanel,.observationSide{position:static}
+}
+@media(max-width:760px){
+  .funnel{grid-template-columns:1fr 1fr}
+  .logRow{grid-template-columns:52px 1fr;gap:4px 8px}
+  .logRow .st,.logRow .tag{display:none}
+}
+@media(max-width:680px){
+  .topbar{padding:0 14px}.topmeta span:not(.status){display:none}
+  .realbar,.phaseBar{padding:8px 14px;flex-direction:column;align-items:flex-start;gap:6px}
+  main{padding:12px 12px 20px}
+  .stage{min-height:200px}.emptyState h1{font-size:23px}
+}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="shell">
+<header class="topbar">
+  <div class="brand">
+    <svg class="mark" viewBox="-145 -145 290 325" aria-hidden="true">
+      <circle r="104" fill="none" stroke="#8A8A8A" stroke-width="1" stroke-linecap="round" stroke-dasharray=".1 10.79"/>
+      <circle r="86" fill="none" stroke="#0A0A0A" stroke-width=".8" stroke-linecap="round" stroke-dasharray="7 5.87"/>
+      <circle r="58" fill="none" stroke="#0A0A0A" stroke-width=".8"/>
+      <circle r="44" fill="none" stroke="#0A0A0A" stroke-width="1" stroke-linecap="round" stroke-dasharray=".1 7.58"/>
+      <circle r="30" fill="none" stroke="#0A0A0A" stroke-width="1.6"/>
+      <circle r="17" fill="none" stroke="#0A0A0A" stroke-width="2.4"/>
+      <circle r="5.5" fill="#0A0A0A"/>
+      <g stroke="#0A0A0A" stroke-width=".8"><line x1="-100" x2="-21"/><line x1="21" x2="100"/><line y1="-100" y2="-21"/><line y1="21" y2="146"/></g>
+      <g fill="#fff" stroke="#0A0A0A"><circle cx="-104" r="4"/><circle cx="104" r="4"/><circle cy="-104" r="4"/><circle cy="150" r="4"/></g>
+    </svg>
+    <div><div class="wordmark">PERCEPT</div><small>Live Stream · Demo 04</small></div>
+  </div>
+  <div class="topmeta">
+    <span id="hostMeta">connecting to runtime…</span>
+    <span id="runtimeStatus" class="status"><i></i><b>IDLE</b></span>
+  </div>
+</header>
+<div class="realbar">
+  <b>Real runtime · every line below arrives from percept.run() while it is still running</b>
+  <span id="judgeMeta">judge: checking…</span>
+</div>
+
+<div class="phaseBar">
+  <div class="phases">
+    <button id="phaseLive" class="phase on" disabled>① Live</button>
+    <button id="phaseReplay" class="phase" disabled>② Replay</button>
+  </div>
+  <div id="phaseNote" class="phaseNote">
+    <b>Live</b> runs on the runtime's clock — a judge call takes as long as it takes.
+    <b>Replay</b> unlocks when the run ends and puts every decision back on the media timeline.
+  </div>
+</div>
+
+<main>
+  <section class="heroGrid">
+    <article class="panel videoPanel">
+      <div class="panelHead"><b>01 · Source</b><span id="sourceClock">—</span></div>
+      <div class="stage">
+        <video id="video" class="hide" playsinline controls></video>
+        <img id="feed" class="feed hide" alt="the frame the runtime is judging">
+        <div id="emptyState" class="emptyState">
+          <div class="emptyInner">
+            <svg class="emptyIcon" viewBox="-145 -145 290 290" aria-hidden="true">
+              <circle r="104" fill="none" stroke="#777" stroke-width="1" stroke-linecap="round" stroke-dasharray=".1 10.79"/>
+              <circle r="58" fill="none" stroke="#fff" stroke-width=".8"/>
+              <circle r="30" fill="none" stroke="#fff" stroke-width="1.6"/>
+              <circle r="17" fill="none" stroke="#fff" stroke-width="2.4"/>
+              <circle r="5.5" fill="#fff"/>
+              <g stroke="#fff" stroke-width=".8"><line x1="-100" x2="-21"/><line x1="21" x2="100"/><line y1="-100" y2="-21"/><line y1="21" y2="100"/></g>
+            </svg>
+            <h1>Watch it think.</h1>
+            <p>Point it at a live feed, or hand it a video and let the harness restream one. Either way you see the frames the runtime is actually judging — and the verdicts as they land.</p>
+          </div>
+        </div>
+        <div class="overlay">
+          <div id="fireBadge" class="fireBadge">● FIRE · this run emitted an incident</div>
+          <div id="liveTag" class="liveTag">● LIVE · the judged frame</div>
+          <div id="frameTag" class="frameTag">no source selected</div>
+        </div>
+      </div>
+      <div class="videoControls">
+        <div id="fileMeta" class="fileMeta">No source attached</div>
+        <div class="controls">
+          <button id="stopBtn" class="stop" disabled>■ Stop run</button>
+          <button id="replayBtn" disabled>▶ Replay</button>
+        </div>
+      </div>
+    </article>
+
+    <aside class="panel controlPanel">
+      <div class="panelHead"><b>02 · Source + goal</b><span>pick → arm → stream</span></div>
+      <div class="controlBody">
+        <div class="srcTabs">
+          <button class="srcTab on" data-src="live_url"><b>Live feed</b>RTSP url</button>
+          <button class="srcTab" data-src="restream"><b>Upload</b>→ restream</button>
+          <button class="srcTab" data-src="file"><b>Upload</b>as file</button>
+        </div>
+
+        <div class="srcBody" id="srcLiveUrl">
+          <p><b>Watch a feed that is already running.</b> The runtime opens the URL itself — the same
+          <code>percept.run(source=…)</code> call a deployed camera watch uses.</p>
+          <div class="urlRow">
+            <input id="liveUrl" type="text" value="rtsp://localhost:8554/traffic" spellcheck="false">
+            <button id="checkUrlBtn">Check</button>
+          </div>
+          <div id="checkOut" class="checkOut">Publish a feed to that path first — see the note under “Arm”.</div>
+        </div>
+
+        <div class="srcBody" id="srcRestream" style="display:none">
+          <p><b>Your video, republished as a live feed.</b> The harness runs
+          <code>ffmpeg -stream_loop -1 -re</code> into the same RTSP server, so the file arrives in real
+          time and on loop — no seeking, no rewind, no look-ahead. A rehearsal for the live feed.</p>
+          <label class="uploadBtn" style="margin-top:0">Choose video <input id="fileInput" type="file" accept="video/mp4,video/*"></label>
+        </div>
+
+        <div class="srcBody" id="srcFile" style="display:none">
+          <p><b>Your video as a file.</b> Faster than real time and seekable — the demo 01 path. Use it
+          to compare what changes when the same clip becomes a stream you cannot outrun.</p>
+          <label class="uploadBtn" style="margin-top:0">Choose video <input id="fileInput2" type="file" accept="video/mp4,video/*"></label>
+        </div>
+
+        <label class="label" for="taskInput">What should Percept watch for?</label>
+        <textarea id="taskInput" class="taskInput" placeholder="Example: Fire when a vehicle stops in the intersection."></textarea>
+        <div class="examples">
+          <button data-example="Fire when a vehicle stops in the middle of the intersection.">Stopped vehicle</button>
+          <button data-example="Fire when a pedestrian steps into the roadway.">Pedestrian in road</button>
+          <button data-example="Fire when traffic backs up into a standing queue.">Queue forming</button>
+        </div>
+        <div class="row">
+          <label>judge backend<select id="backend">
+            <option value="openrouter">openrouter (qwen)</option>
+            <option value="gemini">gemini</option>
+            <option value="claude">claude</option>
+          </select></label>
+          <label>fps<select id="fps"><option>1</option><option>2</option><option>4</option></select></label>
+          <label>run for<select id="maxS">
+            <option value="30">30 s</option><option value="60" selected>60 s</option>
+            <option value="120">2 min</option><option value="300">5 min</option>
+          </select></label>
+        </div>
+        <details class="advanced">
+          <summary>Advanced settings</summary>
+          <div class="advBody">
+            <div class="row">
+              <label>source profile<select id="advProfile">
+                <option value="physical_scene" selected>physical_scene</option>
+                <option value="screen_document">screen_document</option>
+              </select></label>
+              <label>execution policy<select id="advExec">
+                <option value="balanced" selected>balanced</option>
+                <option value="burst">burst</option>
+                <option value="low_cost">low_cost</option>
+                <option value="privacy_edge">privacy_edge</option>
+              </select></label>
+            </div>
+            <div class="row">
+              <label>identity policy<select id="advIdentity">
+                <option value="none" selected>none</option>
+                <option value="content_key">content_key</option>
+                <option value="claim_slot">claim_slot</option>
+              </select></label>
+              <label class="advCheck"><input id="advEpisode" type="checkbox"> episode tracking</label>
+            </div>
+            <div class="row">
+              <label>goal temporality<select id="advTemporality">
+                <option value="stative" selected>stative · one frame</option>
+                <option value="dynamic">dynamic · motion (window)</option>
+              </select></label>
+              <label>window seconds<select id="advWindowS">
+                <option value="3">3 s</option><option value="4" selected>4 s</option>
+                <option value="6">6 s</option><option value="8">8 s</option>
+              </select></label>
+            </div>
+            <div class="advHint">A <b>stative</b> condition ("a person is visible") is decidable from one
+              still frame. A <b>dynamic</b> one ("turns right", "stops", "sits down") is a statement about
+              CHANGE — a still photo of a car in an intersection looks the same whether it is parked or
+              doing 40, so single-frame evidence cannot contain the answer. Pick dynamic and raise fps.</div>
+            <div class="row"><label class="advCheck"><input id="advAudio" type="checkbox"> audio (fused) · file uploads only</label></div>
+            <div class="row">
+              <label>vision model <input id="advVisionModel" type="text" placeholder="auto"></label>
+              <label>conductor model <input id="advConductorModel" type="text" placeholder="auto"></label>
+              <label>specialist model <input id="advSpecialistModel" type="text" placeholder="auto"></label>
+            </div>
+            <div class="advHint">A live source has no container to demux, so audio (fused) is ignored there and the run says so.</div>
+          </div>
+        </details>
+        <div class="agentBox">
+          <div class="agentRow">
+            <div><div class="agentName">Watch runtime</div><div class="agentMeta" id="seamMeta">percept.run() · streaming NDJSON</div></div>
+            <span class="status" id="agentStatus"><i></i><b>READY</b></span>
+          </div>
+          <button id="armBtn" class="armBtn" disabled>Arm &amp; stream watch</button>
+          <div id="hint" class="hint">Pick a source and write a goal.</div>
+        </div>
+      </div>
+    </aside>
+  </section>
+
+  <section class="observationLayout">
+    <div class="observationMain">
+      <article class="panel">
+        <div class="panelHead"><b>03 · Funnel + timeline</b><span id="clockMeta">no run yet</span></div>
+        <div class="funnelBody">
+          <div class="funnel">
+            <div class="fCell"><b id="nObserved">0</b><span>observed</span><small>frames the runtime read</small></div>
+            <div class="fCell"><b id="nAdmitted">0</b><span>admitted</span><small>passed tier-0 salience</small></div>
+            <div class="fCell"><b id="nJudged">0</b><span>judged</span><small>reached the model</small></div>
+            <div class="fCell hot"><b id="nFired">0</b><span>fired</span><small>became an incident</small></div>
+          </div>
+          <div id="metricsStrip" class="metricsStrip"></div>
+          <div class="frameBar" id="frameBar">
+            <div id="frames" class="frames"></div>
+            <div id="headline" class="headline"></div>
+            <div id="playhead" class="playhead"></div>
+          </div>
+          <div class="barLegend">
+            <span><i style="background:#cfcfcf"></i>observed</span>
+            <span><i style="background:#777"></i>admitted</span>
+            <span><i style="background:#222"></i>judged</span>
+            <span><i style="background:#2f7d4f"></i>fired</span>
+            <span><i style="background:#a11"></i>where the runtime is now</span>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel">
+        <div class="panelHead"><b>04 · Trace stream</b><span id="streamMeta">idle</span></div>
+        <div class="logWrap" id="logWrap"><div class="logEmpty">Arm a watch. Every record the recorder ingests appears here the moment it does — no batching, no post-processing.</div></div>
+        <div class="logFoot">
+          <span id="logCount">0 records</span>
+          <label style="display:flex;gap:6px;align-items:center"><input id="logAutoscroll" type="checkbox" checked> follow</label>
+        </div>
+      </article>
+    </div>
+
+    <aside class="observationSide">
+      <article class="panel">
+        <div class="panelHead"><b>Run progression</b><span id="progressSummary">waiting</span></div>
+        <div class="progressBody"><div class="progressRail">
+          <div class="progressStep" data-progress="open"><div class="progressDot">1</div><div class="progressCopy"><b>Source opened</b><span>The runtime attaches to the feed and starts reading.</span></div><div class="progressState">WAIT</div></div>
+          <div class="progressStep" data-progress="observe"><div class="progressDot">2</div><div class="progressCopy"><b>Frames screened</b><span>Tier-0 decides what is worth a model call.</span></div><div class="progressState">WAIT</div></div>
+          <div class="progressStep" data-progress="judge"><div class="progressDot">3</div><div class="progressCopy"><b>Judge answering</b><span>The condition is read verbatim against the evidence.</span></div><div class="progressState">WAIT</div></div>
+          <div class="progressStep" data-progress="emit"><div class="progressDot">4</div><div class="progressCopy"><b>Decision emitted</b><span>FIRE / ASK / SILENT lands in the trace.</span></div><div class="progressState">WAIT</div></div>
+        </div></div>
+      </article>
+
+      <article class="panel eventsPanel">
+        <div class="panelHead"><b>05 · Subscriber</b><span>as delivered</span></div>
+        <div id="events" class="events"><div class="eventEmpty">No incidents yet. SILENT decisions still appear in the trace stream.</div></div>
+        <div class="eventFooter">
+          <button id="viewTraceBtn" class="secondary" disabled>View .ptrace</button>
+          <button id="downloadTraceBtn" class="quiet" disabled>Download</button>
+        </div>
+      </article>
+    </aside>
+  </section>
+
+  <section class="panel">
+    <div class="panelHead"><b>06 · Admitted frames</b><span id="filmstripMeta">—</span></div>
+    <div id="filmstrip" class="filmstrip"><div class="eventEmpty">Admitted frames appear here as the runtime admits them.</div></div>
+  </section>
+</main>
+</div>
+
+<div id="frameDrawer" class="traceDrawer">
+  <aside class="tracePanel">
+    <div class="traceHead"><b>FRAME <span id="frameDrawerSeq"></span></b><button id="closeFrameBtn" aria-label="Close">×</button></div>
+    <div class="frameDrawerBody">
+      <div class="frameDrawerImgWrap"><img id="frameDrawerImg" alt="frame"></div>
+      <pre id="frameDrawerJson" class="traceContent"></pre>
+    </div>
+  </aside>
+</div>
+
+<div id="traceDrawer" class="traceDrawer">
+  <aside class="tracePanel">
+    <div class="traceHead"><b>PERCEPT TRACE · .ptrace</b><button id="closeTraceBtn" aria-label="Close">×</button></div>
+    <pre id="traceContent" class="traceContent"></pre>
+    <div class="traceActions"><button id="drawerDownloadBtn" class="primary">Download .ptrace</button></div>
+  </aside>
+</div>
+
+<script>
+(() => {
+  const $ = s => document.querySelector(s);
+  const $$ = s => [...document.querySelectorAll(s)];
+  const video=$('#video'), feed=$('#feed'), taskInput=$('#taskInput'), armBtn=$('#armBtn'), framesEl=$('#frames');
+  const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const fmt=t=>{ if(!Number.isFinite(t))return '0:00.0'; const m=Math.floor(t/60),s=(t%60).toFixed(1).padStart(4,'0'); return m+':'+s; };
+  const num=v=>Number.isFinite(v)?v:null;
+
+  // ===========================================================================
+  // THE TWO SOURCES (plus the file path they are measured against).
+  //   live_url  — a feed that already exists; the runtime opens the URL itself.
+  //   restream  — your upload, republished to that same RTSP server by the harness with
+  //               `ffmpeg -stream_loop -1 -re`, so it arrives in real time and never ends.
+  //   file      — your upload read straight off disk (demo 01): seekable, faster than real time.
+  // Only `file` gives the browser a seekable local video, so only `file` replays against <video>;
+  // the live modes replay against the frames the runtime itself handed us.
+  // ===========================================================================
+  let srcMode='live_url';
+  let sourceFile=null, sourceUrl=null;
+  let lastRun=null, runId=null, runStartedAt=0, runIsLive=false;
+  let mode='idle';   // idle | live | done | replay
+
+  $$('.srcTab').forEach(tab=>tab.onclick=()=>{
+    if(mode==='live')return;
+    srcMode=tab.dataset.src;
+    $$('.srcTab').forEach(t=>t.classList.toggle('on',t===tab));
+    $('#srcLiveUrl').style.display = srcMode==='live_url'?'':'none';
+    $('#srcRestream').style.display = srcMode==='restream'?'':'none';
+    $('#srcFile').style.display = srcMode==='file'?'':'none';
+    showViewport();
+    updateArm();
+  });
+
+  function showViewport(){
+    const wantVideo = srcMode==='file' && !!sourceUrl;
+    const wantFeed  = srcMode!=='file';
+    video.classList.toggle('hide', !wantVideo);
+    feed.classList.toggle('hide', !wantFeed || !feed.src);
+    const anything = wantVideo || (wantFeed && feed.src);
+    $('#emptyState').style.display = anything ? 'none' : '';
+    $('#sourceClock').textContent = wantVideo ? `0:00.0 / ${fmt(video.duration)}` : (runIsLive?'live':'—');
+  }
+
+  // ===========================================================================
+  // ONE ingest path. A record is handed to ingest() either by the live NDJSON reader (wall-clock
+  // order, as the runtime emits it) or by the replay driver (media-clock order, as the clock
+  // passes its source_ts). Nothing downstream knows or cares which.
+  // ===========================================================================
+  // `t0` is the run's own time origin. A FILE source stamps source_ts from the media clock
+  // (t = i/src_fps, so it starts at ~0), but a LIVE source stamps it from a monotonic wall clock —
+  // on a machine that has been up 14 hours the first frame arrives at t=52781.4. Every timeline in
+  // this page is therefore RELATIVE to the first stamp seen; absolute source_ts stays in the log
+  // and the .ptrace, where it belongs.
+  const state={records:[],marks:[],observed:0,admitted:0,judged:0,fired:0,
+               t0:null,maxTs:0,lastSeek:-99,logRows:0};
+  const rel=ts=>ts==null?null:(state.t0==null?0:ts-state.t0);
+  const LOG_MAX_ROWS=500;
+  const previewFrames=[];        // {t, url} — the runtime's own frames, kept for replay
+  const PREVIEW_KEEP=600;
+
+  // Plain-English gloss for each real trace stage. The raw stage name is always shown next to it —
+  // this column is a reading aid, never a rename.
+  const STAGE_COPY={
+    'run.started':      () => ['runtime started', 'RUN', ''],
+    'run.ended':        r => [`runtime ended · ${(r.data||{}).frames_seen??0} frames seen`, 'RUN', ''],
+    'edge.decision':    r => ['tier-0 screened the frame'+salienceOf(r), admittedRec(r)?'ADMIT':'skip', admittedRec(r)?'admit':''],
+    'source.frame':     () => ['frame admitted as evidence', 'EVIDENCE', 'admit'],
+    'judge.started':    () => ['judge called on the admitted window', 'JUDGE', 'judge'],
+    'judge.finished':   () => ['judge answered', 'JUDGE', 'judge'],
+    'judge.usage':      r => [`tokens billed · ${(r.data||{}).model||'—'} · ${((r.data||{}).input_tokens|0)}+${((r.data||{}).output_tokens|0)}`, 'COST', 'judge'],
+    'judge.dropped':    () => ['judge call dropped — a newer frame superseded it (latest-wins)', 'DROP', 'warn'],
+    'judgment.event':   r => [`judgment recorded${(r.data||{}).evidence_seq!=null?' · evidence #'+(r.data||{}).evidence_seq:''}`, 'JUDGMENT', 'judge'],
+    'gate.classified':  r => [gateCopy(r), ((r.data||{}).action||'gate').toUpperCase(), (r.data||{}).action==='fire'?'fire':'gate'],
+    'gate.suppressed':  () => ['suppressed — inside the refractory window', 'SUPPRESSED', 'gate'],
+    'incident.created': () => ['incident created', 'INCIDENT', 'fire'],
+    'shadow.fold':      r => [foldCopy(r), 'SHADOW', ''],
+    'source.health':    r => [healthCopy(r), 'HEALTH', ((r.data||{}).state==='degraded')?'warn':''],
+    'trace_dropped':    () => ['a record was dropped by a retention bound', 'DROPPED', 'warn'],
+  };
+  const salienceOf=r=>{const s=(r.data||{}).salience; return Number.isFinite(s)?` · salience ${s.toFixed(3)}`:''};
+  const admittedRec=r=>r.stage==='source.frame'||!!(r.data&&(r.data.escalate||r.data.coast_admit));
+  const gateCopy=r=>{const d=r.data||{};return `gate says ${(d.action||'?').toUpperCase()}${d.reason?' — '+d.reason:''}`};
+  const foldCopy=r=>{const f=(r.data||{}).fold||{};return `identity/episode fold (advisory) · episode ${f.episode_id||'none'}`};
+  const healthCopy=r=>{const d=r.data||{};return `${d.kind||'health'}${d.state&&d.state!=='info'?' · '+d.state:''}${d.error?' · '+String(d.error).slice(0,70):''}`};
+
+  // The funnel deliberately speaks the RUNTIME's vocabulary, not tier-0's, so it agrees with the
+  // .ptrace summary chip for chip: `observed` = frames read, `admitted` = the source.frame records
+  // the runtime actually admitted as evidence, `judged` = judge calls started. Counting every
+  // edge.decision that escalated would read higher than `admitted` and be a different, confusing
+  // number — under latest-wins many escalations are superseded before they ever become evidence
+  // (they show up as judge.dropped in the trace stream, which is where that story belongs).
+  function ingest(rec){
+    state.records.push(rec);
+    const abs=num(rec.source_ts);
+    if(abs!=null&&state.t0==null) state.t0=abs;
+    const ts=rel(abs);
+    if(ts!=null) state.maxTs=Math.max(state.maxTs,ts);
+    if(rec.stage==='edge.decision'||rec.stage==='source.frame'){
+      if(rec.stage==='edge.decision'){ state.observed++; if(ts!=null) state.marks.push({ts,cls:'obs'}); }
+      followRuntime(ts);
+    }
+    if(rec.stage==='source.frame'){
+      state.observed++; state.admitted++;
+      if(ts!=null){ state.marks.push({ts,cls:'obs'}); state.marks.push({ts,cls:'admitted'}); }
+      addFilmCell(rec);
+      // The server writes each admitted frame's JPEG BEFORE the record reaches this wire, so a
+      // live filmstrip can show real evidence while the run is still going — not just at the end.
+      if(mode==='live') resolveThumbnails();
+    }
+    if(rec.stage==='judge.started'){ state.judged++; if(ts!=null) state.marks.push({ts,cls:'judged'}); }
+    if(rec.stage==='gate.classified'){
+      renderJudgmentCard(rec.trace_id);
+      if((rec.data||{}).action==='fire'){ state.fired++; if(ts!=null) state.marks.push({ts,cls:'fired'}); markFire(); }
+    }
+    // judgment.event / incident.created / shadow.fold land AFTER their gate row — re-render the
+    // card they belong to so the chain fills in rather than staying half-written.
+    if(rec.stage==='judgment.event'||rec.stage==='incident.created'||rec.stage==='shadow.fold'){
+      renderJudgmentCard(rec.trace_id);
+    }
+    stepFromStage(rec.stage);
+    appendLog(rec);
+    scheduleRender();
+  }
+
+  // --- surfaces ---------------------------------------------------------------
+  let renderQueued=false;
+  function scheduleRender(){ if(renderQueued)return; renderQueued=true;
+    requestAnimationFrame(()=>{renderQueued=false;renderBar();renderFunnel();}); }
+  function renderFunnel(){
+    $('#nObserved').textContent=state.observed; $('#nAdmitted').textContent=state.admitted;
+    $('#nJudged').textContent=state.judged; $('#nFired').textContent=state.fired;
+    $('#logCount').textContent=`${state.records.length} record${state.records.length===1?'':'s'}`;
+    $('#frameTag').textContent=`${state.observed} observed · ${state.admitted} admitted · ${state.fired} fire`;
+  }
+  // Timeline extent: a FILE run is bounded by the video's own duration; a LIVE run has no known
+  // end, so the bar grows with the runtime — which is the honest picture of an open-ended stream.
+  const extent=()=>{
+    if(srcMode==='file'&&Number.isFinite(video.duration)&&video.duration>0)return video.duration;
+    return Math.max(state.maxTs,1);
+  };
+  const SLOTS=96; let barCells=[];
+  function buildBar(){ framesEl.innerHTML=''; barCells=[];
+    for(let i=0;i<SLOTS;i++){const n=document.createElement('i');framesEl.appendChild(n);barCells.push(n);} }
+  function renderBar(){
+    if(!barCells.length) buildBar();
+    const span=extent()||1;
+    barCells.forEach(c=>{c.className='';});
+    state.marks.forEach(m=>{
+      barCells[Math.min(SLOTS-1,Math.max(0,Math.floor((m.ts/span)*SLOTS)))].classList.add(m.cls);
+    });
+  }
+  function appendLog(rec){
+    const wrap=$('#logWrap');
+    if(!state.logRows) wrap.innerHTML='';
+    const copy=STAGE_COPY[rec.stage];
+    const [msg,tag,cls]=copy?copy(rec):[JSON.stringify(rec.data||{}).slice(0,120),'',''];
+    const row=document.createElement('div');
+    row.className='logRow'+(cls?' '+cls:'');
+    const ts=rel(num(rec.source_ts));
+    row.innerHTML=`<span class="t">${ts!=null?'t='+ts.toFixed(1):'—'}</span>
+      <span class="st">${esc(rec.stage)}</span><span class="msg">${esc(msg)}</span>
+      <span class="tag">${esc(tag||'')}</span>`;
+    wrap.appendChild(row); state.logRows++;
+    while(state.logRows>LOG_MAX_ROWS&&wrap.firstChild){ wrap.removeChild(wrap.firstChild); state.logRows--; }
+    if($('#logAutoscroll').checked) wrap.scrollTop=wrap.scrollHeight;
+  }
+  // ===========================================================================
+  // A judgment card = the WHOLE chain for one unit of evidence, not just the gate row.
+  // Every stage of one tick shares a trace_id, so the card is assembled by walking that:
+  //   edge.decision -> source.frame -> judge.started/usage/finished -> gate.classified
+  //   -> judgment.event -> incident.created
+  // The card is (re)rendered as later stages land, because judgment.event and
+  // incident.created arrive AFTER gate.classified in the same trace.
+  // ===========================================================================
+  const cardsByTrace=new Map();
+  const deliveredByGoal=new Map();     // goal_id -> [delivered Incident, …], in delivery order
+
+  // The evidence frame for a trace, resolved the ONLY way that is correct.
+  // A delivered Incident's `evidence_seq` is a DISPATCH index (1, 2, 3…), not a recorder seq —
+  // the trace's judgment.event for the same tick carries dispatch_seq=1 AND evidence_seq=6, and it
+  // is 6 that names the source.frame record holding the actual pixels. Reading the Incident's field
+  // as a frame id is why "→ evidence frame #1" pointed at a frame that does not exist.
+  function evidenceSeqFor(traceId){
+    const jm=state.records.find(r=>r.stage==='judgment.event'&&r.trace_id===traceId);
+    if(jm&&(jm.data||{}).evidence_seq!=null) return jm.data.evidence_seq;
+    const sf=state.records.find(r=>r.stage==='source.frame'&&r.trace_id===traceId);
+    return sf?sf.seq:null;
+  }
+  const traceRec=(traceId,stage)=>state.records.find(r=>r.trace_id===traceId&&r.stage===stage);
+
+  function renderJudgmentCard(traceId){
+    const gate=traceRec(traceId,'gate.classified'); if(!gate)return;
+    const box=$('#events');
+    if(!box.dataset.live){ box.innerHTML=''; box.dataset.live='1'; }
+    const g=gate.data||{}, action=(g.action||'?').toLowerCase(), fired=action==='fire';
+    const edge=(traceRec(traceId,'edge.decision')||{}).data||{};
+    const started=(traceRec(traceId,'judge.started')||{}).data||{};
+    const usage=(traceRec(traceId,'judge.usage')||{}).data||{};
+    const fin=(traceRec(traceId,'judge.finished')||{}).data||{};
+    const jm=(traceRec(traceId,'judgment.event')||{}).data||{};
+    const inc=(traceRec(traceId,'incident.created')||{}).data||{};
+    const fold=((traceRec(traceId,'shadow.fold')||{}).data||{}).fold||{};
+    const evSeq=evidenceSeqFor(traceId);
+    const evFrame=evSeq!=null?state.records.find(r=>r.stage==='source.frame'&&r.seq===evSeq):null;
+    const t=rel(num(gate.source_ts));
+    const row=(k,v)=>v==null||v===''?'':`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`;
+    const money=usage.cost_usd!=null?`$${Number(usage.cost_usd).toFixed(6)}`:null;
+
+    const el=document.createElement('article');
+    el.className='event'+(fired?' fire':'');
+    el.innerHTML=`
+      <div class="eventHead">
+        <span class="verdict ${esc(action)}">${esc(action.toUpperCase())}</span>
+        <span>${t!=null?'t='+t.toFixed(1)+'s':''}</span>
+      </div>
+      <h3>${fired?'Incident emitted':'Judgment · no incident'}</h3>
+      <p>${esc(g.reason||'—')}</p>
+      ${evFrame&&runId?`<div class="evBlock"><b>Evidence the judge caught it on</b>
+        <div class="evShot">
+          <img src="/frame/${runId}/${evSeq}.jpg" alt="evidence frame #${evSeq}"
+               onerror="this.style.display='none'">
+          <div class="evMeta">frame <b style="color:#000">#${evSeq}</b><br>
+            t=${rel(num(evFrame.source_ts))!=null?rel(num(evFrame.source_ts)).toFixed(1)+'s':'—'}<br>
+            <a class="evidenceLink">→ show in filmstrip</a></div>
+        </div></div>`:''}
+      <details class="chain"><summary>full judgment chain</summary>
+        <dl class="jRow">
+          <div class="jStage">tier-0 · edge.decision</div>
+          ${row('motion',edge.motion)}${row('structural',edge.structural)}${row('semantic',edge.semantic)}
+          ${row('threshold',edge.threshold)}${row('admitted',edge.escalate===undefined?null:String(!!(edge.escalate||edge.coast_admit)))}
+          <div class="jStage">judge</div>
+          ${row('evidence',started.temporal?started.temporal+(started.roi?' · roi-cropped':' · full frame'):null)}
+          ${row('model',usage.model)}${row('tokens',usage.input_tokens!=null?`${usage.input_tokens|0} in + ${usage.output_tokens|0} out`:null)}
+          ${row('cost',money)}
+          ${row('satisfied',fin.satisfied===undefined?null:String(fin.satisfied))}
+          ${row('confidence',fin.confidence)}
+          <div class="jStage">gate</div>
+          ${row('action',g.action)}${row('reason',g.reason)}${row('truth',g.truth)}
+          ${row('freshness',g.freshness)}${row('hold_s',g.hold_s)}${row('entity',g.entity_id)}
+          ${jm.judgment_event_id||inc.incident_id?`<div class="jStage">judgment · incident</div>`:''}
+          ${row('judgment id',jm.judgment_event_id)}${row('dispatch #',jm.dispatch_seq)}
+          ${row('evidence origin',jm.evidence_origin)}${row('evidence seq',jm.evidence_seq)}
+          ${row('incident id',inc.incident_id)}
+          ${fold.episode_id||fold.match?`<div class="jStage">identity · episode (advisory, Y11 shadow)</div>`:''}
+          ${row('episode',fold.episode_id)}${row('match',fold.match)}${row('mutation',fold.mutation)}
+        </dl>
+      </details>`;
+    if(evFrame){
+      const a=el.querySelector('.evidenceLink');
+      if(a) a.onclick=()=>highlightFilm(evSeq);
+      const img=el.querySelector('.evShot img');
+      if(img) img.onclick=()=>openFrameDrawer(evFrame);
+    }
+    const prev=cardsByTrace.get(traceId);
+    if(prev&&prev.isConnected){
+      const wasOpen=prev.querySelector('.chain')?.open;
+      if(wasOpen) el.querySelector('.chain').open=true;
+      prev.replaceWith(el);
+    } else {
+      box.prepend(el);
+    }
+    cardsByTrace.set(traceId,el);
+    if(fired) markFire();
+  }
+
+  function noteDelivered(inc){
+    const q=deliveredByGoal.get(inc.goal_id)||[];
+    q.push(inc); deliveredByGoal.set(inc.goal_id,q);
+  }
+  function markFire(){
+    $('#fireBadge').classList.add('on');
+    const st=$('#runtimeStatus'); st.className='status fire'; st.querySelector('b').textContent='FIRE';
+  }
+
+  // filmstrip — a cell exists the moment a frame is admitted; its image resolves once the server
+  // says the thumbnails are cached, so until then the cell says "pending" instead of showing a
+  // broken image.
+  const filmCells=new Map();
+  function addFilmCell(rec){
+    const box=$('#filmstrip');
+    if(!box.dataset.live){ box.innerHTML=''; box.dataset.live='1'; }
+    if(filmCells.has(rec.seq))return;
+    const cell=document.createElement('div'); cell.className='filmThumb'; cell.id='film-'+rec.seq;
+    const ph=document.createElement('div'); ph.className='filmPlaceholder'; ph.textContent='pending';
+    const cap=document.createElement('div'); cap.className='cap';
+    cap.textContent='#'+rec.seq+(rel(num(rec.source_ts))!=null?' · t='+rel(num(rec.source_ts)).toFixed(1):'');
+    cell.append(ph,cap); cell.onclick=()=>openFrameDrawer(rec);
+    box.appendChild(cell); filmCells.set(rec.seq,{cell,rec});
+    $('#filmstripMeta').textContent=`${filmCells.size} admitted`;
+  }
+  function resolveThumbnails(){
+    if(!runId)return;
+    filmCells.forEach(({cell},seq)=>{
+      const slot=cell.firstChild;
+      if(slot && slot.tagName==='IMG')return;
+      const img=document.createElement('img'); img.loading='lazy'; img.alt='frame #'+seq;
+      img.src=`/frame/${runId}/${seq}.jpg`;
+      img.onerror=()=>{ if(img.parentNode){ const ph=document.createElement('div');
+        ph.className='filmPlaceholder'; ph.textContent='no thumbnail'; img.replaceWith(ph);} };
+      slot.replaceWith(img);
+    });
+  }
+  function markFiredCells(){
+    // Same D11 correlation demo 01 uses: a judgment.event's evidence_seq, on a gate that fired.
+    const recs=state.records, gates=recs.filter(r=>r.stage==='gate.classified'), fired=new Set();
+    recs.filter(r=>r.stage==='judgment.event').forEach(j=>{
+      const g=gates.find(g=>g.trace_id===j.trace_id&&g.goal_id===j.goal_id);
+      if(g&&(g.data||{}).action==='fire'&&(j.data||{}).evidence_seq!=null) fired.add(j.data.evidence_seq);
+    });
+    fired.forEach(seq=>{
+      const c=filmCells.get(seq); if(!c||c.cell.classList.contains('fired'))return;
+      c.cell.classList.add('fired');
+      const cap=c.cell.querySelector('.cap'); cap.textContent='FIRE · '+cap.textContent;
+    });
+    $('#filmstripMeta').textContent=`${filmCells.size} admitted · ${fired.size} fired`;
+  }
+  function highlightFilm(seq){
+    const c=filmCells.get(seq); if(!c)return;
+    c.cell.scrollIntoView({behavior:'smooth',block:'nearest',inline:'center'});
+    c.cell.classList.add('highlight'); setTimeout(()=>c.cell.classList.remove('highlight'),1600);
+  }
+  function openFrameDrawer(frameRec){
+    const recs=state.records;
+    const jm=recs.find(r=>r.stage==='judgment.event'&&(r.data||{}).evidence_seq===frameRec.seq);
+    const gate=jm?recs.find(r=>r.stage==='gate.classified'&&r.trace_id===jm.trace_id&&r.goal_id===jm.goal_id):null;
+    $('#frameDrawerSeq').textContent='#'+frameRec.seq+(rel(num(frameRec.source_ts))!=null?' · t='+rel(num(frameRec.source_ts)).toFixed(1):'');
+    $('#frameDrawerImg').src=runId?`/frame/${runId}/${frameRec.seq}.jpg`:'';
+    $('#frameDrawerJson').textContent=JSON.stringify({source_frame:frameRec,
+      gate_classified:(gate&&gate.data)||null, judgment_event:(jm&&jm.data)||null},null,2);
+    $('#frameDrawer').classList.add('open');
+  }
+
+  // --- progression rail --------------------------------------------------------
+  const STEPS=['open','observe','judge','emit'];
+  const STAGE_STEP={'run.started':'open','edge.decision':'observe','source.frame':'observe',
+    'judge.started':'judge','judge.finished':'judge','judge.usage':'judge','judgment.event':'judge',
+    'gate.classified':'emit','incident.created':'emit','gate.suppressed':'emit'};
+  let stepAt=-1;
+  function setStep(name){
+    const at=name==='complete'?STEPS.length:STEPS.indexOf(name);
+    if(at<stepAt&&name!=='')return;      // the rail only moves forward within a run
+    stepAt=at;
+    $$('.progressStep').forEach(el=>{
+      const i=STEPS.indexOf(el.dataset.progress), done=at>=0&&i<at, active=i===at;
+      el.classList.toggle('done',done); el.classList.toggle('active',active);
+      el.querySelector('.progressState').textContent=done?'DONE':active?'ACTIVE':'WAIT';
+    });
+    $('#progressSummary').textContent=name==='complete'?'complete':(name||'waiting');
+  }
+  const stepFromStage=stage=>{const s=STAGE_STEP[stage]; if(s)setStep(s);};
+
+  // --- the viewport follows the runtime ----------------------------------------
+  // On a FILE run the <video> is parked on the exact frame being judged (it is not "playing" —
+  // playback and the runtime are on different clocks). On a LIVE run the viewport is the runtime's
+  // own frame, pushed down the same stream. Either way: what you see is what is being judged.
+  function followRuntime(ts){
+    if(mode!=='live'||ts==null)return;
+    const span=extent()||1;
+    const hl=$('#headline'); hl.classList.add('on'); hl.style.left=(Math.min(1,ts/span)*100)+'%';
+    $('#clockMeta').textContent=`live · ${elapsed()} · runtime at t=${ts.toFixed(1)}s`;
+    if(srcMode!=='file'||!video.src)return;
+    if(ts-state.lastSeek<0.25||video.seeking)return;
+    state.lastSeek=ts;
+    try{ video.pause(); video.currentTime=ts; }catch(e){}
+  }
+  function showLiveFrame(msg){
+    const url='data:image/jpeg;base64,'+msg.jpeg_b64;
+    if(state.t0==null&&Number.isFinite(msg.t)) state.t0=msg.t;   // a preview frame can beat the first record
+    previewFrames.push({t:msg.t,url});                             // absolute; converted on read
+    if(previewFrames.length>PREVIEW_KEEP) previewFrames.shift();
+    if(srcMode!=='file'){ feed.src=url; feed.classList.remove('hide'); $('#emptyState').style.display='none'; }
+    $('#sourceClock').textContent='live · t='+rel(num(msg.t)).toFixed(1)+'s';
+  }
+
+  // --- authoring params ---------------------------------------------------------
+  const SEAM_MODEL_MAP={
+    claude:{vision:'claude-sonnet-5',conductor:'claude-haiku-4-5',specialist:'claude-haiku-4-5'},
+    gemini:{vision:'gemini-3.1-flash-lite',conductor:'gemini-3.5-flash',specialist:'gemini-3.5-flash'},
+    openrouter:{vision:'qwen/qwen3-vl-32b-instruct',conductor:'(fallback: claude/haiku)',specialist:'(fallback: claude/haiku)'},
+  };
+  function refreshAdvPlaceholders(){
+    const m=SEAM_MODEL_MAP[$('#backend').value]||{};
+    $('#advVisionModel').placeholder=m.vision||'auto';
+    $('#advConductorModel').placeholder=m.conductor||'auto';
+    $('#advSpecialistModel').placeholder=m.specialist||'auto';
+  }
+  $('#backend').addEventListener('change',refreshAdvPlaceholders); refreshAdvPlaceholders();
+  const advancedParams=()=>({
+    profile:$('#advProfile').value||'physical_scene', execution_policy:$('#advExec').value,
+    identity_policy:$('#advIdentity').value, episode_tracking:$('#advEpisode').checked?'1':'0',
+    audio_fused:$('#advAudio').checked?'1':'0', vision_model:$('#advVisionModel').value.trim(),
+    goal_temporality: $('#advTemporality').value,
+    window_s: $('#advWindowS').value,
+    conductor_model:$('#advConductorModel').value.trim(), specialist_model:$('#advSpecialistModel').value.trim(),
+  });
+
+  // --- runtime health -----------------------------------------------------------
+  fetch('/').then(r=>r.text()).then(t=>{
+    const m=t.match(/judge key: ([^<]+)/);
+    $('#judgeMeta').textContent='judge: '+(m?m[1].trim():'unknown');
+    $('#hostMeta').textContent='localhost harness · POST /run/stream';
+  }).catch(()=>{ $('#judgeMeta').textContent='judge: harness offline — start docs/demo/serve.py';
+    $('#hostMeta').textContent='runtime unreachable'; });
+
+  // --- source selection ----------------------------------------------------------
+  function loadFile(file){
+    if(!file)return;
+    sourceFile=file;
+    if(sourceUrl)URL.revokeObjectURL(sourceUrl);
+    sourceUrl=URL.createObjectURL(file); video.src=sourceUrl;
+    $('#fileMeta').textContent=`${file.name} · ${(file.size/1024/1024).toFixed(1)} MB · local`;
+    showViewport(); updateArm();
+  }
+  $('#fileInput').addEventListener('change',e=>loadFile(e.target.files[0]));
+  $('#fileInput2').addEventListener('change',e=>loadFile(e.target.files[0]));
+  taskInput.addEventListener('input',updateArm);
+  $('#liveUrl').addEventListener('input',updateArm);
+  $$('.examples button').forEach(b=>b.onclick=()=>{taskInput.value=b.dataset.example;updateArm()});
+  function updateArm(){
+    const haveSource = srcMode==='live_url' ? !!$('#liveUrl').value.trim() : !!sourceFile;
+    armBtn.disabled = !(haveSource && taskInput.value.trim()) || mode==='live';
+  }
+  // "Check" answers the only question that matters before spending tokens: can the runtime open
+  // this right now? The server does the probing with the SAME OpenCV/FFMPEG stack the run will use.
+  $('#checkUrlBtn').onclick=async()=>{
+    const url=$('#liveUrl').value.trim(), out=$('#checkOut');
+    out.className='checkOut'; out.textContent='opening '+url+' … (first attempt can take ~20s)';
+    try{
+      const r=await fetch('/source-check?url='+encodeURIComponent(url));
+      const d=await r.json();
+      out.className='checkOut '+(d.ok?'ok':'bad');
+      out.textContent=d.ok?('✓ reachable — '+url):('✗ '+(d.message||d.reason||'unreachable'));
+    }catch(e){ out.className='checkOut bad'; out.textContent='✗ harness unreachable — is serve.py running?'; }
+  };
+  video.addEventListener('loadedmetadata',()=>{ showViewport(); scheduleRender(); });
+  video.addEventListener('timeupdate',()=>{
+    if(srcMode!=='file')return;
+    $('#sourceClock').textContent=`${fmt(video.currentTime)} / ${fmt(video.duration)}`;
+    const span=extent()||1;
+    const ph=$('#playhead'); ph.classList.add('on'); ph.style.left=(Math.min(1,video.currentTime/span)*100)+'%';
+    if(mode==='replay'&&replayDriver==='video') replayTick(video.currentTime);
+  });
+
+  // ===========================================================================
+  // PHASE 1 — LIVE. POST /run/stream and consume NDJSON as it arrives.
+  // ===========================================================================
+  async function stream(){
+    resetRun();
+    mode='live'; runIsLive = srcMode!=='file'; setPhase();
+    setBusy(true); setStep('open'); runStartedAt=performance.now();
+    if(runIsLive) $('#liveTag').classList.add('on');
+    $('#streamMeta').textContent='connected · waiting for the first record';
+    note(runIsLive?'Streaming. The viewport is the frame being judged — press Stop run to end early.'
+                  :'Streaming the file through the runtime, faster than real time.');
+
+    const q=new URLSearchParams({goal:taskInput.value.trim(),backend:$('#backend').value,
+      fps:$('#fps').value, max_s:$('#maxS').value, ...advancedParams()});
+    const opts={method:'POST'};
+    if(srcMode==='live_url'){ q.set('source_url',$('#liveUrl').value.trim()); }
+    else{
+      q.set('source_name',sourceFile.name);
+      if(srcMode==='restream') q.set('restream','1');
+      opts.body=sourceFile;
+    }
+    let res;
+    try{ res=await fetch('/run/stream?'+q.toString(),opts); }
+    catch(e){ return fail('Runtime unreachable — is docs/demo/serve.py running?'); }
+    if(!res.ok||!res.body) return fail(`Stream refused (HTTP ${res.status}).`);
+
+    const reader=res.body.getReader(), dec=new TextDecoder(); let buf='';
+    try{
+      for(;;){
+        const {value,done}=await reader.read();
+        if(done)break;
+        buf+=dec.decode(value,{stream:true});
+        let i;
+        while((i=buf.indexOf('\n'))>=0){
+          const line=buf.slice(0,i); buf=buf.slice(i+1);
+          if(line.trim()) handleLine(JSON.parse(line));
+        }
+      }
+    }catch(e){ return fail('Stream interrupted: '+e.message); }
+    if(mode==='live'&&!lastRun) fail('Stream ended without a result line.');
+  }
+
+  function handleLine(msg){
+    switch(msg.type){
+      case 'start':
+        runId=msg.run_id;
+        $('#streamMeta').textContent=`run ${msg.run_id} · ${msg.source_kind||msg.mode}`;
+        if(msg.source_uri) $('#fileMeta').textContent=msg.source_uri;
+        if(msg.note) note(msg.note);
+        $('#stopBtn').disabled=!runIsLive;
+        break;
+      case 'armed':
+        if(msg.seams){
+          const s=n=>`${n} ${(msg.seams[n]||{}).backend||'—'}`;
+          $('#seamMeta').textContent=[s('vision'),s('conductor'),s('specialist')].join(' · ');
+        }
+        if(msg.note) note(msg.note);
+        break;
+      case 'note': note(msg.text); break;
+      case 'frame': showLiveFrame(msg); break;
+      case 'record': ingest(msg.record); break;
+      case 'incident': noteDelivered(msg.incident); setStep('emit'); break;
+      case 'thumbnails': resolveThumbnails(); break;
+      case 'ping': $('#streamMeta').textContent=`run ${runId||''} · working (${elapsed()})`; break;
+      case 'done': finish(msg.result); break;
+    }
+  }
+  const elapsed=()=>((performance.now()-runStartedAt)/1000).toFixed(1)+'s wall';
+  function note(text){ $('#hint').className='hint'; $('#hint').textContent=text; }
+
+  function finish(result){
+    $('#liveTag').classList.remove('on'); $('#headline').classList.remove('on');
+    $('#stopBtn').disabled=true;
+    if(result&&result.error) return fail(result.message||result.error);
+    lastRun=result||null; mode='done';
+    if(lastRun){
+      runId=lastRun.run_id||runId;
+      renderMetrics(lastRun.summary||{});
+      resolveThumbnails(); markFiredCells();
+      $('#viewTraceBtn').disabled=false; $('#downloadTraceBtn').disabled=false;
+      $('#replayBtn').disabled=false; $('#phaseReplay').disabled=false;
+      $('#streamMeta').textContent=`complete · ${(lastRun.records||[]).length} records`;
+      $('#clockMeta').textContent=`ran ${elapsed()} over ${state.maxTs.toFixed(1)}s of source`;
+      const why=lastRun.stop_reason?` Ended: ${lastRun.stop_reason}.`:'';
+      $('#hint').className='hint';
+      $('#hint').textContent=(lastRun.mode==='fixture'
+        ? 'Bundled fixture through the real runtime (scripted verdicts).'
+        : 'Real judge over a real source.')+why+' Replay is now unlocked.';
+    }
+    setStep('complete'); setBusy(false); setPhase();
+  }
+
+  // ===========================================================================
+  // PHASE 2 — REPLAY. Same records, same ingest(), released on the MEDIA clock.
+  //   file run  -> the <video> element IS the clock; decisions land in sync with playback.
+  //   live run  -> there is no seekable local video (and on a looping restream the browser's copy
+  //                does not line up with where the runtime joined), so a synthetic 1x clock drives
+  //                it and the viewport shows the frames the runtime itself gave us.
+  // ===========================================================================
+  let replayQueue=[], replayIdx=0, replayDriver='video', synthTimer=null, replayT0=0, replayEnd=1;
+  const replayRel=r=>Number.isFinite(r.source_ts)?r.source_ts-replayT0:0;
+  function startReplay(){
+    if(!lastRun||!(lastRun.records||[]).length)return;
+    clearSurfaces(); mode='replay'; setPhase();
+    // (source_ts, seq) order — seq breaks ties so same-timestamp stages keep emission order.
+    replayQueue=[...lastRun.records].sort((a,b)=>((a.source_ts??0)-(b.source_ts??0))||(a.seq-b.seq));
+    // The replay clock's origin is the trace's OWN first stamp, taken up front rather than
+    // discovered during ingest — the viewport needs it before the first record lands.
+    const stamps=replayQueue.map(r=>r.source_ts).filter(Number.isFinite);
+    replayT0=stamps.length?Math.min(...stamps):0;
+    replayEnd=stamps.length?Math.max(...stamps)-replayT0:1;
+    state.t0=replayT0;
+    replayIdx=0;
+    replayDriver = (srcMode==='file'&&video.src) ? 'video' : 'synthetic';
+    $('#streamMeta').textContent='replaying the recorded trace on the media clock';
+    if(replayDriver==='video'){
+      video.currentTime=0;
+      video.play().catch(()=>note('Press play on the video to run the replay.'));
+    }else{
+      const end=Math.max(state.maxTs,replayEnd||1);
+      const t0=performance.now();
+      $('#playhead').classList.add('on');
+      clearInterval(synthTimer);
+      synthTimer=setInterval(()=>{
+        const t=(performance.now()-t0)/1000;
+        $('#playhead').style.left=(Math.min(1,t/(extent()||1))*100)+'%';
+        showReplayFrame(t);
+        replayTick(t);
+        if(t>=end+0.5||replayIdx>=replayQueue.length){ clearInterval(synthTimer); synthTimer=null;
+          $('#streamMeta').textContent='replay complete'; }
+      },80);
+    }
+  }
+  function showReplayFrame(t){
+    if(!previewFrames.length)return;
+    let best=previewFrames[0];
+    for(const f of previewFrames){ if(rel(f.t)<=t) best=f; else break; }
+    if(feed.src!==best.url){ feed.src=best.url; feed.classList.remove('hide'); }
+    $('#sourceClock').textContent='replay · t='+t.toFixed(1)+'s';
+  }
+  function replayTick(t){
+    let n=0;
+    while(replayIdx<replayQueue.length&&(replayRel(replayQueue[replayIdx])??0)<=t){ ingest(replayQueue[replayIdx++]); n++; }
+    if(n){
+      $('#clockMeta').textContent=`replay · media t=${t.toFixed(1)}s · ${replayIdx}/${replayQueue.length} records`;
+      resolveThumbnails();
+    }
+    if(replayIdx>=replayQueue.length&&replayQueue.length) markFiredCells();
+  }
+
+  // --- phase / state plumbing ------------------------------------------------------
+  function setPhase(){
+    $('#phaseLive').classList.toggle('on',mode==='live');
+    $('#phaseReplay').classList.toggle('on',mode==='replay');
+    const n=$('#phaseNote');
+    if(mode==='live') n.innerHTML='<b>Live.</b> These lines are arriving from a run that has not finished. The viewport shows the frame being judged, not playback.';
+    else if(mode==='replay') n.innerHTML='<b>Replay.</b> The same trace, released on the media clock — each decision appears as the clock reaches the timestamp it was made at.';
+    else if(mode==='done') n.innerHTML='<b>Run complete.</b> Press <b>Replay</b> to watch the same decisions land again, in media time.';
+    else n.innerHTML='<b>Live</b> runs on the runtime’s clock — a judge call takes as long as it takes. <b>Replay</b> unlocks when the run ends and puts every decision back on the media timeline.';
+  }
+  function clearSurfaces(){
+    clearInterval(synthTimer); synthTimer=null;
+    state.records=[]; state.marks=[]; state.observed=state.admitted=state.judged=state.fired=0;
+    state.t0=null; state.maxTs=0; state.lastSeek=-99; state.logRows=0;
+    filmCells.clear(); cardsByTrace.clear(); deliveredByGoal.clear();
+    $('#logWrap').innerHTML='<div class="logEmpty">waiting…</div>';
+    const ev=$('#events'); ev.innerHTML='<div class="eventEmpty">No incidents yet. SILENT decisions still appear in the trace stream.</div>'; delete ev.dataset.live;
+    const fs=$('#filmstrip'); fs.innerHTML='<div class="eventEmpty">Admitted frames appear here as the runtime admits them.</div>'; delete fs.dataset.live;
+    $('#filmstripMeta').textContent='—'; $('#fireBadge').classList.remove('on');
+    $('#playhead').classList.remove('on'); $('#headline').classList.remove('on');
+    stepAt=-1; setStep(''); buildBar(); renderFunnel();
+  }
+  function resetRun(){
+    lastRun=null; runId=null; previewFrames.length=0; feed.removeAttribute('src');
+    $('#viewTraceBtn').disabled=true; $('#downloadTraceBtn').disabled=true;
+    $('#replayBtn').disabled=true; $('#phaseReplay').disabled=true; $('#stopBtn').disabled=true;
+    $('#metricsStrip').innerHTML='';
+    clearSurfaces();
+  }
+  function setBusy(b){
+    updateArm(); $$('.srcTab').forEach(t=>t.disabled=b);
+    $('#agentStatus').className='status'+(b?' live':'');
+    $('#agentStatus').querySelector('b').textContent=b?'STREAMING':(lastRun?'DONE':'READY');
+    const rt=$('#runtimeStatus');
+    if(!rt.classList.contains('fire')){ rt.className='status'+(b?' live':'');
+      rt.querySelector('b').textContent=b?'LIVE':(lastRun?'DONE':'IDLE'); }
+  }
+  function fail(msg){
+    mode='idle'; setBusy(false); setPhase();
+    $('#liveTag').classList.remove('on'); $('#stopBtn').disabled=true;
+    const rt=$('#runtimeStatus'); rt.className='status err'; rt.querySelector('b').textContent='ERROR';
+    $('#agentStatus').className='status err'; $('#agentStatus').querySelector('b').textContent='ERROR';
+    $('#hint').className='hint err'; $('#hint').textContent=msg;
+    $('#streamMeta').textContent='stream ended'; setStep('');
+  }
+  function renderMetrics(s){
+    const g=s.gate_outcomes||{}, c=s.cost||{};
+    const chips=[['observed',`${s.observed??0} ${s.observed_unit||''}`],['admitted',s.admitted??0],
+      ['judged',`${s.judge_started??0}/${s.judge_completed??0}`],['FIRE',g.fire??0],['ASK',g.ask??0],
+      ['SILENT',g.silent??0],['SUPPRESSED',g.suppressed??0],['incidents',s.incidents??0],
+      ['cost',c.text||'—'],['saved',(s.savings&&s.savings.text)||'—']];
+    $('#metricsStrip').innerHTML=chips.map(([k,v])=>`<span class="m">${k}<b>${esc(v)}</b></span>`).join('');
+  }
+
+  armBtn.onclick=()=>stream();
+  $('#replayBtn').onclick=startReplay;
+  $('#phaseReplay').onclick=startReplay;
+  $('#phaseLive').onclick=()=>{ if(lastRun){ mode='done'; clearInterval(synthTimer); setPhase(); } };
+  $('#stopBtn').onclick=async()=>{
+    if(!runId)return;
+    $('#stopBtn').disabled=true; note('stopping the run — it still writes its .ptrace…');
+    try{ await fetch('/stop/'+runId,{method:'POST'}); }catch(e){}
+  };
+
+  // --- drawers -------------------------------------------------------------------
+  $('#closeFrameBtn').onclick=()=>$('#frameDrawer').classList.remove('open');
+  $('#frameDrawer').addEventListener('click',e=>{if(e.target===$('#frameDrawer'))$('#frameDrawer').classList.remove('open')});
+  $('#closeTraceBtn').onclick=()=>$('#traceDrawer').classList.remove('open');
+  $('#traceDrawer').addEventListener('click',e=>{if(e.target===$('#traceDrawer'))$('#traceDrawer').classList.remove('open')});
+  $('#viewTraceBtn').onclick=async()=>{ if(!runId)return;
+    try{ const r=await fetch('/trace/'+runId+'.ptrace'); $('#traceContent').textContent=await r.text();
+      $('#traceDrawer').classList.add('open'); }catch(e){} };
+  async function downloadTrace(){ if(!runId)return;
+    const r=await fetch('/trace/'+runId+'.ptrace'); const blob=await r.blob();
+    const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=runId+'.ptrace';
+    a.click(); URL.revokeObjectURL(a.href); }
+  $('#downloadTraceBtn').onclick=downloadTrace;
+  $('#drawerDownloadBtn').onclick=downloadTrace;
+
+  buildBar(); setPhase(); showViewport();
+})();
+</script>
+</body>
+</html>

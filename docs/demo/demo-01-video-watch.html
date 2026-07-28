@@ -19,6 +19,8 @@ button,input,textarea{font:inherit}
 button{cursor:pointer}
 button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
 .shell{min-height:100vh;display:grid;grid-template-rows:auto auto 1fr}
+
+/* --- chrome --------------------------------------------------------------- */
 .topbar{height:68px;border-bottom:1px solid var(--ink);display:flex;align-items:center;justify-content:space-between;padding:0 24px;background:rgba(255,255,255,.96);position:sticky;top:0;z-index:30;backdrop-filter:blur(12px)}
 .brand{display:flex;align-items:center;gap:12px}
 .mark{width:34px;height:34px;flex:none}
@@ -34,13 +36,16 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 .realbar{border-bottom:1px solid var(--hairline);background:#f2f7f2;padding:7px 24px;display:flex;align-items:center;justify-content:space-between;gap:12px;font:8.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--graphite)}
 .realbar b{color:var(--ink)}
 .realbar span{color:var(--steel);text-transform:none;letter-spacing:0;font-size:10px}
-main{padding:20px 24px 28px;display:grid;gap:16px}
-.heroGrid{display:grid;grid-template-columns:minmax(0,1.32fr) minmax(340px,.68fr);gap:16px;min-height:490px}
+main{padding:18px 24px 28px;display:grid;gap:14px;max-width:1600px;margin:0 auto;width:100%}
 .panel{border:1px solid var(--ink);background:var(--paper)}
-.panelHead{height:43px;padding:0 13px;border-bottom:1px solid var(--hairline);display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--panel);font:9px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--steel)}
+.panelHead{min-height:43px;padding:0 13px;border-bottom:1px solid var(--hairline);display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--panel);font:9px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--steel)}
 .panelHead b{color:var(--ink);font-weight:500}
-.videoPanel{display:grid;grid-template-rows:auto 1fr auto;min-height:490px}
-.stage{position:relative;min-height:380px;background:#111;overflow:hidden}
+.dim{color:var(--steel)}
+
+/* --- 01/02 · source + authoring ------------------------------------------- */
+.heroGrid{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(320px,.55fr);gap:14px;align-items:start}
+.videoPanel{display:grid;grid-template-rows:auto auto auto;min-height:0}
+.stage{position:relative;min-height:360px;aspect-ratio:16/9;background:#111;overflow:hidden}
 .stage video{width:100%;height:100%;display:block;object-fit:contain;background:#111}
 .emptyState{position:absolute;inset:0;display:grid;place-items:center;background:
   radial-gradient(circle at center,transparent 0 14%,rgba(255,255,255,.02) 14% 15%,transparent 15% 29%,rgba(255,255,255,.02) 29% 30%,transparent 30%),
@@ -55,84 +60,101 @@ main{padding:20px 24px 28px;display:grid;gap:16px}
 .quiet{background:transparent;color:var(--graphite);border-color:var(--hairline)}
 .uploadBtn input{display:none}
 .overlay{position:absolute;inset:0;pointer-events:none}
-.roi{position:absolute;left:57%;top:37%;width:25%;height:35%;border:1px solid #fff;display:none}
-.roi::before{content:"ROI · AUTO";position:absolute;left:-1px;top:-20px;background:#fff;color:#000;padding:3px 5px;font:8px var(--mono);letter-spacing:.08em}
-.scanline{position:absolute;left:0;right:0;height:1px;background:#fff;opacity:.4;top:0;display:none;animation:scan 3s linear infinite}
-@keyframes scan{to{top:100%}}
 .frameTag{position:absolute;left:12px;bottom:12px;background:rgba(0,0,0,.78);border:1px solid #555;color:#fff;padding:6px 8px;font:9px var(--mono);letter-spacing:.08em}
-.fireBox{position:absolute;border:2px solid #fff;width:22%;height:31%;left:61%;top:39%;display:none}
-.fireBox::after{content:"FIRE";position:absolute;right:-2px;top:-22px;background:#fff;color:#000;padding:3px 5px;font:9px var(--mono)}
+.fireBadge{position:absolute;left:12px;top:12px;background:#fff;color:#000;border:1px solid #000;padding:5px 9px;font:9px var(--mono);letter-spacing:.12em;display:none}
+.fireBadge.on{display:block}
 .videoControls{border-top:1px solid var(--hairline);padding:11px 13px;display:flex;align-items:center;justify-content:space-between;gap:12px}
 .fileMeta{min-width:0;font:10px var(--mono);color:var(--steel);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .controls{display:flex;gap:7px;align-items:center}
 .controls button,.controls label{padding:7px 10px;font:10px var(--mono);border:1px solid var(--construction);background:#fff}
-.controlPanel{display:grid;grid-template-rows:auto 1fr}
-.controlBody{padding:18px;display:flex;flex-direction:column}
+.controlPanel{display:grid;grid-template-rows:auto 1fr;min-height:0;position:sticky;top:104px}
+.controlBody{padding:14px;display:flex;flex-direction:column}
 .label{font:9px var(--mono);letter-spacing:.13em;text-transform:uppercase;color:var(--steel);margin-bottom:8px}
-.taskInput{width:100%;min-height:96px;resize:none;border:1px solid var(--construction);padding:13px;font-size:16px;line-height:1.5;color:var(--ink);background:#fff}
+.taskInput{width:100%;min-height:78px;resize:none;border:1px solid var(--construction);padding:12px;font-size:14px;line-height:1.5;color:var(--ink);background:#fff}
 .taskInput::placeholder{color:#aaa}
-.examples{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 14px}
+.examples{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 10px}
 .examples button{border:1px solid var(--hairline);background:var(--panel);padding:7px 8px;font:9px var(--mono);color:var(--graphite)}
 .row{display:flex;gap:8px;margin-bottom:6px}
 .row label{flex:1;font:9px var(--mono);color:var(--steel)}
 .row select{width:100%;margin-top:4px;padding:7px;border:1px solid var(--construction);font:11px var(--mono)}
 .row input[type=text]{width:100%;margin-top:4px;padding:7px;border:1px solid var(--construction);font:11px var(--mono);color:var(--ink);background:#fff}
-.advanced{border:1px solid var(--hairline);margin-bottom:14px}
+.advanced{border:1px solid var(--hairline);margin-bottom:10px}
 .advanced summary{cursor:pointer;padding:9px 10px;font:9px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--steel);background:var(--panel)}
 .advanced[open] summary{border-bottom:1px solid var(--hairline);color:var(--ink)}
 .advBody{padding:10px}
 .advCheck{display:flex;align-items:center;gap:7px;font:10px var(--mono);color:var(--graphite);flex:1}
 .advCheck input{width:auto;margin:0}
-.advHint{font:8.5px var(--mono);color:var(--steel);margin-top:2px;line-height:1.5}
-.agentBox{border-top:1px solid var(--ink);padding-top:15px;margin-top:auto}
-.agentRow{display:flex;justify-content:space-between;align-items:flex-start;gap:14px}
+.advHint{font:8.5px/1.55 var(--mono);color:var(--steel);margin-top:6px}
+.agentBox{border-top:1px solid var(--ink);padding-top:12px;margin-top:8px}
+.agentRow{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;margin-bottom:12px}
 .agentName{font-family:var(--display);font-size:18px;letter-spacing:.03em}
 .agentMeta{font:9px var(--mono);color:var(--steel);margin-top:3px}
-.agentSteps{margin:15px 0;display:grid;gap:8px}
-.agentStep{display:grid;grid-template-columns:17px 1fr auto;gap:8px;align-items:center;font-size:11px;color:var(--steel)}
-.agentStep i{width:8px;height:8px;border:1px solid var(--construction);border-radius:50%}
-.agentStep.done{color:var(--ink)} .agentStep.done i{background:var(--ink);border-color:var(--ink)}
-.agentStep.active{color:var(--ink)} .agentStep.active i{border-color:var(--ink);box-shadow:0 0 0 4px #efefef}
-.agentStep span:last-child{font:8px var(--mono)}
-.armBtn{width:100%;border:1px solid var(--ink);background:var(--ink);color:#fff;padding:13px;font-weight:700}
+.armBtn{width:100%;border:1px solid var(--ink);background:var(--ink);color:#fff;padding:11px;font-weight:700}
 .armBtn:disabled{background:#ddd;color:#888;border-color:#ddd;cursor:not-allowed}
-.hint{margin-top:9px;font:9.5px var(--mono);color:var(--steel);line-height:1.5}
+.hint{margin-top:9px;font:9.5px/1.5 var(--mono);color:var(--steel)}
 .hint.err{color:#a11}
-.runtimeGrid{display:grid;grid-template-columns:1fr 1fr 1.18fr;gap:16px}
-.stack{min-height:300px;display:grid;grid-template-rows:auto 1fr}
-.code{margin:0;padding:15px;background:#0b0b0b;color:#e9e9e9;font:10.5px/1.65 var(--mono);white-space:pre-wrap;overflow:auto;max-height:340px}
-.code .dim{color:#777}
+
+/* --- observation layout --------------------------------------------------- */
+.observationLayout{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(340px,.5fr);gap:14px;align-items:start}
+.observationMain{display:grid;gap:14px}
+.observationSide{display:grid;gap:14px;position:sticky;top:104px}
+
+/* 03 · frames + trace */
+.timelineBody{padding:12px}
+.timelineTop{display:flex;justify-content:space-between;gap:12px;margin-bottom:12px;font:9px var(--mono);color:var(--steel)}
 .metricsStrip{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
 .metricsStrip .m{border:1px solid var(--hairline);background:var(--panel);padding:5px 9px;font:9px var(--mono);color:var(--steel);white-space:nowrap}
 .metricsStrip .m b{color:var(--ink);font-weight:600;margin-left:5px}
-.metricsStrip .m.fire b{color:#0a0a0a}
-.contextBody{padding:12px;display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
+.frameBar{position:relative;height:118px;border:1px solid var(--hairline);background:var(--panel);overflow:hidden}
+.frames{position:absolute;inset:0;display:flex;align-items:flex-end;gap:1px;padding:14px 10px}
+.frames i{flex:1;background:#e6e6e6;min-width:1px;height:14px;transition:.2s}
+.frames i.obs{background:#cfcfcf;height:24px}
+.frames i.admitted{background:#777;height:44px}
+.frames i.judged{background:#222;height:68px}
+.frames i.fired{background:#000;height:82px}
+.playhead{position:absolute;top:0;bottom:0;width:1px;background:#000;left:0}
+.playhead::before{content:"";position:absolute;top:6px;left:-3px;width:7px;height:7px;background:#000;border-radius:50%}
+.annotation{position:absolute;top:8px;transform:translateX(-50%);font:8px var(--mono);letter-spacing:.08em;padding:4px 5px;background:#000;color:#fff;display:none}
+.barLegend{display:flex;flex-wrap:wrap;gap:12px;margin-top:8px;font:8px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--steel)}
+.barLegend i{display:inline-block;width:8px;height:8px;margin-right:5px;vertical-align:-1px}
+.lanes{display:grid;grid-template-columns:76px 1fr;gap:6px 8px;margin-top:10px}
+.laneName{font:9px var(--mono);color:var(--steel);display:flex;align-items:center}
+.lane{height:19px;background:#f0f0ed;position:relative;border:1px solid #ededeb}
+.lane span{position:absolute;top:4px;bottom:4px;background:#222;left:0;width:0;transition:width .25s}
+
+/* 04 · plan + spec */
+.setupPanel{display:grid;grid-template-rows:auto auto}
+.setupSummary{padding:12px;display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.setupCard{border:1px solid var(--hairline);background:var(--panel);padding:10px;min-width:0}
+.setupCard b{display:block;font:8px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--steel);margin-bottom:6px}
+.setupCard pre{margin:0;font:9px/1.5 var(--mono);white-space:pre-wrap;max-height:170px;overflow:auto;color:var(--graphite)}
+
+/* 05 · context ledger */
+.stack{display:grid;grid-template-rows:auto 1fr}
+.contextBody{padding:10px;display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
 .ledger{border:1px solid var(--hairline);padding:11px;min-width:0;background:var(--panel)}
 .ledgerHead{display:flex;align-items:center;justify-content:space-between;gap:8px;border-bottom:1px solid var(--hairline);padding-bottom:8px;margin-bottom:8px}
 .ledgerHead b{font:9px var(--mono);letter-spacing:.1em;text-transform:uppercase}
 .ledgerHead span{font:8px var(--mono);color:var(--steel)}
-.ledger pre{margin:0;font:9.5px/1.55 var(--mono);white-space:pre-wrap;color:var(--graphite);min-height:120px}
-.streamGrid{display:grid;grid-template-columns:1.55fr .85fr;gap:16px}
-.timelinePanel{min-height:280px}
-.timelineBody{padding:14px}
-.timelineTop{display:flex;justify-content:space-between;gap:12px;margin-bottom:12px;font:9px var(--mono);color:var(--steel)}
-.frameBar{position:relative;height:102px;border:1px solid var(--hairline);background:var(--panel);overflow:hidden}
-.frames{position:absolute;inset:0;display:flex;align-items:flex-end;gap:1px;padding:14px 10px}
-.frames i{flex:1;background:#e6e6e6;min-width:1px;height:14px;transition:.2s}
-.frames i.obs{background:#cfcfcf;height:22px}
-.frames i.admitted{background:#777;height:40px}
-.frames i.judged{background:#222;height:62px}
-.frames i.fired{background:#000;height:74px}
-.playhead{position:absolute;top:0;bottom:0;width:1px;background:#000;left:0}
-.playhead::before{content:"";position:absolute;top:6px;left:-3px;width:7px;height:7px;background:#000;border-radius:50%}
-.annotation{position:absolute;top:8px;transform:translateX(-50%);font:8px var(--mono);letter-spacing:.08em;padding:4px 5px;background:#000;color:#fff;display:none}
-.lanes{display:grid;grid-template-columns:76px 1fr;gap:6px 8px;margin-top:13px}
-.laneName{font:9px var(--mono);color:var(--steel);display:flex;align-items:center}
-.lane{height:19px;background:#f0f0ed;position:relative;border:1px solid #ededeb}
-.lane span{position:absolute;top:4px;bottom:4px;background:#222;left:0;width:0;transition:width .25s}
-.lane:nth-of-type(4) span{background:#777}
-.eventsPanel{min-height:280px;display:grid;grid-template-rows:auto 1fr auto}
-.events{padding:11px;overflow:auto;max-height:315px;display:grid;gap:8px;align-content:start}
+.ledger pre{margin:0;font:9.5px/1.55 var(--mono);white-space:pre-wrap;color:var(--graphite);min-height:66px}
+
+/* run progression rail */
+.progressPanel{display:grid;grid-template-rows:auto 1fr}
+.progressBody{padding:14px}
+.progressRail{display:grid;gap:10px}
+.progressStep{display:grid;grid-template-columns:22px 1fr auto;gap:9px;align-items:start;padding:9px 0;border-bottom:1px solid var(--hairline)}
+.progressStep:last-child{border-bottom:0}
+.progressDot{width:18px;height:18px;border:1px solid var(--construction);border-radius:50%;display:grid;place-items:center;font:8px var(--mono);color:var(--steel)}
+.progressStep.done .progressDot{background:var(--ink);border-color:var(--ink);color:#fff}
+.progressStep.active .progressDot{border-color:var(--ink);box-shadow:0 0 0 4px #efefef;color:var(--ink)}
+.progressCopy b{display:block;font-size:11px;margin-bottom:2px}
+.progressCopy span{display:block;font:9px/1.45 var(--mono);color:var(--steel)}
+.progressState{font:8px var(--mono);letter-spacing:.08em;color:var(--steel);text-transform:uppercase;padding-top:2px}
+.progressStep.active .progressState,.progressStep.done .progressState{color:var(--ink)}
+
+/* 06 · subscriber */
+.eventsPanel{display:grid;grid-template-rows:auto minmax(220px,1fr) auto;min-height:0}
+.events{padding:11px;overflow:auto;max-height:390px;display:grid;gap:8px;align-content:start}
 .eventEmpty{border:1px dashed var(--construction);padding:22px;color:var(--steel);font-size:12px;text-align:center}
 .event{border:1px solid var(--hairline);padding:11px;background:#fff}
 .event.fire{border-color:#000}
@@ -145,6 +167,33 @@ main{padding:20px 24px 28px;display:grid;gap:16px}
 .evidenceFrame.open{display:block}
 .eventFooter{padding:11px;border-top:1px solid var(--hairline);display:flex;gap:7px}
 .eventFooter button{flex:1}
+.revLine{margin-top:5px!important;color:var(--steel)!important;font:9.5px var(--mono)!important}
+.revLine b{color:var(--ink);font-weight:600}
+
+/* 07 · filmstrip */
+.filmstrip{display:flex;gap:8px;overflow-x:auto;padding:12px;align-items:flex-start;min-height:96px}
+.filmThumb{flex:none;width:112px;cursor:pointer}
+.filmThumb img{width:112px;height:63px;object-fit:cover;background:#111;display:block;border:1px solid var(--hairline)}
+.filmThumb .cap{font:8px var(--mono);color:var(--steel);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.filmThumb.fired img{border:3px solid #000}
+.filmThumb.fired .cap{color:#000;font-weight:700}
+.filmThumb.highlight img{box-shadow:0 0 0 3px #000,0 0 0 6px #fff}
+.filmPlaceholder{width:112px;height:63px;background:#f0f0ed;border:1px dashed var(--construction);display:flex;align-items:center;justify-content:center;font:8px var(--mono);color:var(--steel);text-align:center;padding:4px}
+
+/* 08 · resolved configuration */
+.resolvedMeta{padding:10px 13px;border-bottom:1px solid var(--hairline);font:9.5px var(--mono);color:var(--steel);display:flex;flex-wrap:wrap;gap:14px}
+.resolvedMeta b{color:var(--ink)}
+.seamsLine{border-top:1px solid var(--hairline)}
+.seamFallback{color:#a11;cursor:help}
+.resolvedWrap{max-height:220px;overflow:auto}
+.resolvedTable{width:100%;border-collapse:collapse;font:9.5px/1.5 var(--mono)}
+.resolvedTable th{position:sticky;top:0;text-align:left;padding:7px 10px;border-bottom:1px solid var(--ink);color:var(--steel);font:9px var(--mono);letter-spacing:.08em;text-transform:uppercase;background:var(--panel)}
+.resolvedTable td{padding:6px 10px;border-bottom:1px solid var(--hairline);color:var(--graphite);vertical-align:top}
+.resolvedTable td.path{color:var(--ink);white-space:nowrap}
+.resolvedTable td.value{color:#000;font-weight:600;white-space:nowrap}
+.resolvedTable td.muted{color:var(--steel)}
+
+/* drawers */
 .traceDrawer{position:fixed;inset:0;background:rgba(0,0,0,.38);z-index:60;display:none;align-items:stretch;justify-content:flex-end}
 .traceDrawer.open{display:flex}
 .tracePanel{width:min(720px,94vw);background:#fff;border-left:1px solid #000;display:grid;grid-template-rows:auto 1fr auto}
@@ -153,33 +202,35 @@ main{padding:20px 24px 28px;display:grid;gap:16px}
 .traceHead button{border:0;background:transparent;font-size:20px}
 .traceContent{margin:0;padding:18px;background:#0a0a0a;color:#eee;font:10px/1.65 var(--mono);overflow:auto;white-space:pre-wrap}
 .traceActions{padding:12px;border-top:1px solid var(--ink);display:flex;justify-content:flex-end;gap:8px}
-.resolvedMeta{padding:10px 13px;border-bottom:1px solid var(--hairline);font:9.5px var(--mono);color:var(--steel);display:flex;flex-wrap:wrap;gap:14px}
-.resolvedMeta b{color:var(--ink)}
-.seamsLine{border-top:1px solid var(--hairline)}
-.seamFallback{color:#a11;cursor:help}
-.resolvedWrap{max-height:280px;overflow:auto}
-.resolvedTable{width:100%;border-collapse:collapse;font:9.5px/1.5 var(--mono)}
-.resolvedTable th{position:sticky;top:0;text-align:left;padding:7px 10px;border-bottom:1px solid var(--ink);color:var(--steel);font:9px var(--mono);letter-spacing:.08em;text-transform:uppercase;background:var(--panel)}
-.resolvedTable td{padding:6px 10px;border-bottom:1px solid var(--hairline);color:var(--graphite);vertical-align:top}
-.resolvedTable td.path{color:var(--ink);white-space:nowrap}
-.resolvedTable td.value{color:#000;font-weight:600;white-space:nowrap}
-.resolvedTable td.muted{color:var(--steel)}
-.revLine{margin-top:5px!important;color:var(--steel)!important;font:9.5px var(--mono)!important}
-.revLine b{color:var(--ink);font-weight:600}
-.filmstrip{display:flex;gap:8px;overflow-x:auto;padding:12px;align-items:flex-start}
-.filmThumb{flex:none;width:112px;cursor:pointer}
-.filmThumb img{width:112px;height:63px;object-fit:cover;background:#111;display:block;border:1px solid var(--hairline)}
-.filmThumb .cap{font:8px var(--mono);color:var(--steel);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.filmThumb.fired img{border:3px solid #000}
-.filmThumb.fired .cap{color:#000;font-weight:700}
-.filmThumb.highlight img{box-shadow:0 0 0 3px #000,0 0 0 6px #fff}
-.filmPlaceholder{width:112px;height:63px;background:#f0f0ed;border:1px dashed var(--construction);display:flex;align-items:center;justify-content:center;font:8px var(--mono);color:var(--steel);text-align:center;padding:4px}
 .frameDrawerBody{overflow:auto;display:grid;grid-template-rows:auto 1fr}
 .frameDrawerImgWrap{background:#111;display:flex;align-items:center;justify-content:center;min-height:200px}
 .frameDrawerImgWrap img{max-width:100%;max-height:360px;display:block}
 .frameDrawerBody .traceContent{max-height:none}
-@media(max-width:1050px){.heroGrid,.runtimeGrid,.streamGrid{grid-template-columns:1fr}.contextBody{grid-template-columns:1fr 1fr 1fr}}
-@media(max-width:680px){.topbar{padding:0 14px}.topmeta span:not(.status){display:none}.realbar{padding:7px 14px;flex-direction:column;align-items:flex-start;gap:3px}main{padding:12px 12px 20px}.contextBody{grid-template-columns:1fr}.heroGrid{min-height:auto}.stage{min-height:290px}.emptyState h1{font-size:24px}}
+
+/* A sticky column TALLER than the space below the header cannot scroll to its own bottom — it
+   pins at the top and its last rows stay permanently out of reach while the page moves past.
+   On short viewports (a 1440x800 laptop leaves 696px; the observation column wants 795px) stop
+   sticking and let both columns scroll normally. Predictable beats clever. */
+@media(max-height:920px){
+  .observationSide{position:static}
+}
+@media(max-height:820px){
+  .controlPanel{position:static}
+}
+@media(max-width:1150px){
+  .heroGrid,.observationLayout{grid-template-columns:1fr}
+  .controlPanel,.observationSide{position:static}
+}
+@media(max-width:760px){
+  .setupSummary{grid-template-columns:1fr}
+  .contextBody{grid-template-columns:1fr}
+}
+@media(max-width:680px){
+  .topbar{padding:0 14px}.topmeta span:not(.status){display:none}
+  .realbar{padding:7px 14px;flex-direction:column;align-items:flex-start;gap:3px}
+  main{padding:12px 12px 20px}
+  .stage{min-height:220px}.emptyState h1{font-size:24px}
+}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
 </style>
 </head>
@@ -211,9 +262,10 @@ main{padding:20px 24px 28px;display:grid;gap:16px}
 </div>
 
 <main>
+  <!-- ============ set up the run ============ -->
   <section class="heroGrid">
     <article class="panel videoPanel">
-      <div class="panelHead"><b>01 · Source</b><span id="sourceClock">00:00.0 / 00:00.0</span></div>
+      <div class="panelHead"><b>01 · Source + playback</b><span id="sourceClock">00:00.0 / 00:00.0</span></div>
       <div class="stage">
         <video id="video" playsinline controls></video>
         <div id="emptyState" class="emptyState">
@@ -227,14 +279,12 @@ main{padding:20px 24px 28px;display:grid;gap:16px}
               <g stroke="#fff" stroke-width=".8"><line x1="-100" x2="-21"/><line x1="21" x2="100"/><line y1="-100" y2="-21"/><line y1="21" y2="100"/></g>
             </svg>
             <h1>Bring a stream into view.</h1>
-            <p>Upload any MP4 and arm a watch — the runtime pulls frames, judges bounded episodes, and emits real WatchEvents. No key yet? Run the bundled fixture through the real runtime.</p>
+            <p>Upload an MP4, describe what matters, then watch Percept move from frames to evidence to judgment.</p>
             <label class="uploadBtn">Upload MP4 <input id="fileInput" type="file" accept="video/mp4,video/*"></label>
           </div>
         </div>
         <div class="overlay">
-          <div id="roi" class="roi"></div>
-          <div id="scanline" class="scanline"></div>
-          <div id="fireBox" class="fireBox"></div>
+          <div id="fireBadge" class="fireBadge">● FIRE · this run emitted an incident</div>
           <div id="frameTag" class="frameTag">awaiting source</div>
         </div>
       </div>
@@ -249,9 +299,9 @@ main{padding:20px 24px 28px;display:grid;gap:16px}
     </article>
 
     <aside class="panel controlPanel">
-      <div class="panelHead"><b>02 · Watch authoring</b><span>client → runtime</span></div>
+      <div class="panelHead"><b>02 · Goal + arm</b><span>author → compile → run</span></div>
       <div class="controlBody">
-        <label class="label" for="taskInput">Natural-language watch task</label>
+        <label class="label" for="taskInput">What should Percept watch for?</label>
         <textarea id="taskInput" class="taskInput" placeholder="Example: Fire when a package is left unattended near the front door."></textarea>
         <div class="examples">
           <button data-example="Fire when a package is left unattended near the front door.">Package left</button>
@@ -259,67 +309,63 @@ main{padding:20px 24px 28px;display:grid;gap:16px}
           <button data-example="Fire when the inspected part shows a visible surface defect.">Surface defect</button>
         </div>
         <div class="row">
-          <label>judge backend
-            <select id="backend">
-              <option value="openrouter">openrouter (qwen)</option>
-              <option value="gemini">gemini</option>
-              <option value="claude">claude</option>
-            </select>
-          </label>
-          <label>fps
-            <select id="fps"><option>1</option><option>2</option><option>4</option></select>
-          </label>
+          <label>judge backend<select id="backend">
+            <option value="openrouter">openrouter (qwen)</option>
+            <option value="gemini">gemini</option>
+            <option value="claude">claude</option>
+          </select></label>
+          <label>fps<select id="fps"><option>1</option><option>2</option><option>4</option></select></label>
         </div>
         <details class="advanced">
           <summary>Advanced settings</summary>
           <div class="advBody">
             <div class="row">
-              <label>source profile
-                <select id="advProfile">
-                  <option value="physical_scene" selected>physical_scene</option>
-                  <option value="screen_document">screen_document</option>
-                </select>
-              </label>
-              <label>execution policy
-                <select id="advExec">
-                  <option value="balanced" selected>balanced</option>
-                  <option value="burst">burst</option>
-                  <option value="low_cost">low_cost</option>
-                  <option value="privacy_edge">privacy_edge</option>
-                </select>
-              </label>
+              <label>source profile<select id="advProfile">
+                <option value="physical_scene" selected>physical_scene</option>
+                <option value="screen_document">screen_document</option>
+              </select></label>
+              <label>execution policy<select id="advExec">
+                <option value="balanced" selected>balanced</option>
+                <option value="burst">burst</option>
+                <option value="low_cost">low_cost</option>
+                <option value="privacy_edge">privacy_edge</option>
+              </select></label>
             </div>
             <div class="row">
-              <label>identity policy
-                <select id="advIdentity">
-                  <option value="none" selected>none</option>
-                  <option value="content_key">content_key</option>
-                  <option value="claim_slot">claim_slot</option>
-                </select>
-              </label>
+              <label>identity policy<select id="advIdentity">
+                <option value="none" selected>none</option>
+                <option value="content_key">content_key</option>
+                <option value="claim_slot">claim_slot</option>
+              </select></label>
               <label class="advCheck"><input id="advEpisode" type="checkbox"> episode tracking</label>
             </div>
             <div class="row">
-              <label class="advCheck"><input id="advAudio" type="checkbox" checked> audio (fused) · judge the upload's own soundtrack too</label>
+              <label>goal temporality<select id="advTemporality">
+                <option value="stative" selected>stative · one frame</option>
+                <option value="dynamic">dynamic · motion (window)</option>
+              </select></label>
+              <label>window seconds<select id="advWindowS">
+                <option value="3">3 s</option><option value="4" selected>4 s</option>
+                <option value="6">6 s</option><option value="8">8 s</option>
+              </select></label>
             </div>
+            <div class="advHint">A <b>stative</b> condition ("a person is visible") is decidable from one
+              still frame. A <b>dynamic</b> one ("turns right", "stops", "sits down") is a statement about
+              CHANGE — a still photo of a car in an intersection looks the same whether it is parked or
+              doing 40, so single-frame evidence cannot contain the answer. Pick dynamic and raise fps.</div>
+            <div class="row"><label class="advCheck"><input id="advAudio" type="checkbox" checked> audio (fused) · judge the upload's soundtrack too</label></div>
             <div class="row">
               <label>vision model <input id="advVisionModel" type="text" placeholder="auto"></label>
               <label>conductor model <input id="advConductorModel" type="text" placeholder="auto"></label>
               <label>specialist model <input id="advSpecialistModel" type="text" placeholder="auto"></label>
             </div>
-            <div class="advHint">Selections flow through Percept.configure()/apply_watch_plan() — see "08 · Resolved configuration" for proof they took effect.</div>
+            <div class="advHint">Every selection flows through Percept.configure() / apply_watch_plan() — panel 08 proves, field by field, which one actually won.</div>
           </div>
         </details>
         <div class="agentBox">
           <div class="agentRow">
             <div><div class="agentName">Watch runtime</div><div class="agentMeta">percept.watch() · local harness</div></div>
             <span class="status" id="agentStatus"><i></i><b>READY</b></span>
-          </div>
-          <div class="agentSteps">
-            <div class="agentStep" data-step="intent"><i></i><span>Author goal (verbatim, no parsing)</span><span>GOAL</span></div>
-            <div class="agentStep" data-step="run"><i></i><span>Run watch() over the source</span><span>RUN</span></div>
-            <div class="agentStep" data-step="judge"><i></i><span>Judge bounded episodes</span><span>JUDGE</span></div>
-            <div class="agentStep" data-step="emit"><i></i><span>Emit events + write .ptrace</span><span>TRACE</span></div>
           </div>
           <button id="armBtn" class="armBtn" disabled>Arm &amp; run watch</button>
           <div id="hint" class="hint">Upload an MP4 and enter a goal, or run the keyless fixture.</div>
@@ -328,85 +374,105 @@ main{padding:20px 24px 28px;display:grid;gap:16px}
     </aside>
   </section>
 
-  <section class="runtimeGrid">
-    <article class="panel stack">
-      <div class="panelHead"><b>03 · WatchPlan</b><span>authored · verbatim goal</span></div>
-      <pre id="planOut" class="code"><span class="dim"># Arm a watch to author the plan.</span></pre>
-    </article>
-    <article class="panel stack">
-      <div class="panelHead"><b>04 · Compiled WatchSpec</b><span>real · runtime knobs</span></div>
-      <pre id="specOut" class="code"><span class="dim"># Percept's compiled gate/policy config appears here.</span></pre>
-    </article>
-    <article class="panel stack">
-      <div class="panelHead"><b>05 · Context ledger</b><span id="ledgerVersion">revision · 0</span></div>
-      <div class="contextBody">
-        <section class="ledger">
-          <div class="ledgerHead"><b>Entity</b><span id="entityRev">shadow</span></div>
-          <pre id="entityLedger">subject: null
+  <!-- ============ observe the run ============ -->
+  <section class="observationLayout">
+    <div class="observationMain">
+      <article class="panel">
+        <div class="panelHead"><b>03 · Frames + runtime trace</b><span>kept beside playback for direct comparison</span></div>
+        <div class="timelineBody">
+          <div class="timelineTop"><span id="frameCount">0 frames observed</span><span id="traceState">trace idle</span></div>
+          <div id="metricsStrip" class="metricsStrip"></div>
+          <div class="frameBar">
+            <div id="frames" class="frames"></div>
+            <div id="playhead" class="playhead"></div>
+            <div id="fireAnnotation" class="annotation">FIRE</div>
+          </div>
+          <div class="barLegend">
+            <span><i style="background:#cfcfcf"></i>observed</span>
+            <span><i style="background:#777"></i>admitted by tier-0</span>
+            <span><i style="background:#222"></i>judged</span>
+            <span><i style="background:#000"></i>fired</span>
+          </div>
+          <div class="lanes">
+            <div class="laneName">FRAMES</div><div class="lane"><span id="attentionLane"></span></div>
+            <div class="laneName">EPISODE</div><div class="lane"><span id="episodeLane"></span></div>
+            <div class="laneName">JUDGE</div><div class="lane"><span id="judgeLane"></span></div>
+            <div class="laneName">EVENT</div><div class="lane"><span id="eventLane"></span></div>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel setupPanel">
+        <div class="panelHead"><b>04 · Watch plan + compiled spec</b><span>what the goal became</span></div>
+        <div class="setupSummary">
+          <div class="setupCard"><b>WatchPlan</b><pre id="planOut"><span class="dim"># Arm a watch to author the plan.</span></pre></div>
+          <div class="setupCard"><b>Compiled WatchSpec</b><pre id="specOut"><span class="dim"># Runtime knobs appear here.</span></pre></div>
+        </div>
+      </article>
+
+      <article class="panel stack">
+        <div class="panelHead"><b>05 · Context ledger</b><span id="ledgerVersion">revision · 0</span></div>
+        <div class="contextBody">
+          <section class="ledger">
+            <div class="ledgerHead"><b>Entity</b><span id="entityRev">shadow</span></div>
+            <pre id="entityLedger">subject: null
 resolution: —
 strategy: —</pre>
-        </section>
-        <section class="ledger">
-          <div class="ledgerHead"><b>Episode</b><span id="episodeRev">shadow</span></div>
-          <pre id="episodeLedger">episode: null
+          </section>
+          <section class="ledger">
+            <div class="ledgerHead"><b>Episode</b><span id="episodeRev">shadow</span></div>
+            <pre id="episodeLedger">episode: null
 match: —
 mutation: —</pre>
-        </section>
-        <section class="ledger">
-          <div class="ledgerHead"><b>Gate</b><span id="contextRev">—</span></div>
-          <pre id="contextLedger">action: —
+          </section>
+          <section class="ledger">
+            <div class="ledgerHead"><b>Gate</b><span id="contextRev">—</span></div>
+            <pre id="contextLedger">action: —
 reason: —
 confidence: —</pre>
-        </section>
-      </div>
-    </article>
+          </section>
+        </div>
+      </article>
+    </div>
+
+    <aside class="observationSide">
+      <article class="panel progressPanel">
+        <div class="panelHead"><b>Run progression</b><span id="progressSummary">waiting</span></div>
+        <div class="progressBody"><div class="progressRail">
+          <div class="progressStep" data-progress="intent"><div class="progressDot">1</div><div class="progressCopy"><b>Goal authored</b><span>Natural-language watch target is locked verbatim.</span></div><div class="progressState">WAIT</div></div>
+          <div class="progressStep" data-progress="run"><div class="progressDot">2</div><div class="progressCopy"><b>Source observed</b><span>Frames are sampled and screened by tier-0.</span></div><div class="progressState">WAIT</div></div>
+          <div class="progressStep" data-progress="judge"><div class="progressDot">3</div><div class="progressCopy"><b>Evidence judged</b><span>Only admitted evidence reaches the judge.</span></div><div class="progressState">WAIT</div></div>
+          <div class="progressStep" data-progress="emit"><div class="progressDot">4</div><div class="progressCopy"><b>Decision emitted</b><span>FIRE / ASK / SILENT is written to the trace.</span></div><div class="progressState">WAIT</div></div>
+        </div></div>
+      </article>
+
+      <article class="panel eventsPanel">
+        <div class="panelHead"><b>06 · Subscriber</b><span>real WatchEvents</span></div>
+        <div id="events" class="events"><div class="eventEmpty">No events yet. SILENT decisions remain in the trace.</div></div>
+        <div class="eventFooter">
+          <button id="viewTraceBtn" class="secondary" disabled>View full .ptrace</button>
+          <button id="clearEventsBtn" class="quiet">Clear</button>
+        </div>
+      </article>
+    </aside>
+  </section>
+
+  <!-- ============ evidence + proof ============ -->
+  <section class="panel">
+    <div class="panelHead"><b>07 · Admitted frames</b><span id="filmstripMeta">—</span></div>
+    <div id="filmstrip" class="filmstrip"><div class="eventEmpty">Arm a watch to populate the filmstrip.</div></div>
   </section>
 
   <section class="panel">
-    <div class="panelHead"><b>08 · Resolved configuration</b><span>ADR-008 · zero env-var provenance</span></div>
+    <div class="panelHead"><b>08 · Resolved configuration</b><span>advanced proof · ADR-008, zero env vars</span></div>
     <div id="resolvedMeta" class="resolvedMeta"><span>Arm a watch to resolve configuration.</span></div>
-    <div id="seamsLine" class="resolvedMeta seamsLine"><span class="muted">model seams — arm a watch to route them.</span></div>
+    <div id="seamsLine" class="resolvedMeta seamsLine"><span class="dim">model seams — arm a watch to route them.</span></div>
     <div class="resolvedWrap">
       <table class="resolvedTable">
         <thead><tr><th>path</th><th>value</th><th>owner layer</th><th>source</th><th>why</th></tr></thead>
         <tbody id="resolvedBody"><tr><td colspan="5" class="muted">—</td></tr></tbody>
       </table>
     </div>
-  </section>
-
-  <section class="streamGrid">
-    <article class="panel timelinePanel">
-      <div class="panelHead"><b>06 · Runtime trace</b><span>frames → judge → gate → event</span></div>
-      <div class="timelineBody">
-        <div class="timelineTop"><span id="frameCount">0 frames observed</span><span id="traceState">trace idle</span></div>
-        <div id="metricsStrip" class="metricsStrip"></div>
-        <div class="frameBar">
-          <div id="frames" class="frames"></div>
-          <div id="playhead" class="playhead"></div>
-          <div id="fireAnnotation" class="annotation">FIRE</div>
-        </div>
-        <div class="lanes">
-          <div class="laneName">FRAMES</div><div class="lane"><span id="attentionLane"></span></div>
-          <div class="laneName">EPISODE</div><div class="lane"><span id="episodeLane"></span></div>
-          <div class="laneName">JUDGE</div><div class="lane"><span id="judgeLane"></span></div>
-          <div class="laneName">EVENT</div><div class="lane"><span id="eventLane"></span></div>
-        </div>
-      </div>
-    </article>
-
-    <article class="panel eventsPanel">
-      <div class="panelHead"><b>07 · Subscriber</b><span>real WatchEvents</span></div>
-      <div id="events" class="events"><div class="eventEmpty">No events yet. SILENT gate decisions stay in the trace.</div></div>
-      <div class="eventFooter">
-        <button id="viewTraceBtn" class="secondary" disabled>View full .ptrace</button>
-        <button id="clearEventsBtn" class="quiet">Clear</button>
-      </div>
-    </article>
-  </section>
-
-  <section class="panel">
-    <div class="panelHead"><b>09 · Admitted frames</b><span id="filmstripMeta">—</span></div>
-    <div id="filmstrip" class="filmstrip"><div class="eventEmpty">Arm a watch to populate the filmstrip.</div></div>
   </section>
 </main>
 </div>
@@ -462,6 +528,8 @@ confidence: —</pre>
       identity_policy: $('#advIdentity').value,
       episode_tracking: $('#advEpisode').checked ? '1' : '0',
       audio_fused: $('#advAudio').checked ? '1' : '0',
+      goal_temporality: $('#advTemporality').value,
+      window_s: $('#advWindowS').value,
       vision_model: $('#advVisionModel').value.trim(),
       conductor_model: $('#advConductorModel').value.trim(),
       specialist_model: $('#advSpecialistModel').value.trim(),
@@ -479,7 +547,19 @@ confidence: —</pre>
   function fmt(t){ if(!Number.isFinite(t))return '00:00.0'; const m=Math.floor(t/60),s=(t%60).toFixed(1).padStart(4,'0'); return String(m).padStart(2,'0')+':'+s; }
   function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
   function updateArm(){ armBtn.disabled = !(sourceFile && taskInput.value.trim()); }
-  function setAgent(step){ const order=['intent','run','judge','emit']; $$('.agentStep').forEach(el=>{const i=order.indexOf(el.dataset.step),a=order.indexOf(step);el.classList.toggle('done',a>=0&&i<a);el.classList.toggle('active',i===a);});}
+
+  // The run-progression rail IS the "where are we" surface: one step per real runtime phase.
+  // `step` is a phase name, '' to reset, or 'complete' when every phase has landed.
+  const STEPS=['intent','run','judge','emit'];
+  function setAgent(step){
+    const at = step==='complete' ? STEPS.length : STEPS.indexOf(step);
+    $$('.progressStep').forEach(el=>{
+      const i=STEPS.indexOf(el.dataset.progress), done=at>=0&&i<at, active=i===at;
+      el.classList.toggle('done',done); el.classList.toggle('active',active);
+      el.querySelector('.progressState').textContent = done?'DONE':active?'ACTIVE':'WAIT';
+    });
+    $('#progressSummary').textContent = step==='complete'?'complete':(step||'waiting');
+  }
 
   function loadFile(file){
     if(!file)return;
@@ -517,8 +597,7 @@ confidence: —</pre>
     catch(e){ return fail('Runtime unreachable — is docs/demo/serve.py running?'); }
     if(data.error){ return fail(data.message||data.error); }
     setAgent('judge'); await tick(120); setAgent('emit'); await tick(120);
-    lastRun=data; render(data); setBusy(false,'DONE');
-    setAgent(''); $$('.agentStep').forEach(el=>el.classList.add('done'));
+    lastRun=data; render(data); setBusy(false,'DONE'); setAgent('complete');
     $('#hint').className='hint'; $('#hint').textContent=(data.mode==='fixture'?'Bundled fixture through the real runtime (scripted verdicts). ':'Real judge over your video. ')+(data.note||'');
   }
   function setBusy(b,label){ armBtn.disabled=b||!(sourceFile&&taskInput.value.trim()); $('#fixtureBtn').disabled=b;
@@ -544,7 +623,7 @@ confidence: —</pre>
     $('#viewTraceBtn').disabled=false;
     const fired=(summ.gate_outcomes&&summ.gate_outcomes.fire)||0;
     $('#frameTag').textContent=`${summ.observed||0} observed · ${summ.admitted||0} admitted · ${fired} fire`;
-    if(fired){$('#fireBox').style.display='block';$('#runtimeStatus').className='status fire';$('#runtimeStatus').querySelector('b').textContent='FIRE';}
+    if(fired){$('#fireBadge').classList.add('on');$('#runtimeStatus').className='status fire';$('#runtimeStatus').querySelector('b').textContent='FIRE';}
   }
   // [DEMO4 Finding 4] which frame fired vs stayed silent-but-admitted, in one chronological strip.
   // A fired frame is the one a judgment.event's evidence_seq points at on a gate.classified fire
@@ -631,10 +710,10 @@ confidence: —</pre>
       ['observed', `${s.observed??0} ${s.observed_unit||''}`],
       ['admitted', `${s.admitted??0}`],
       ['judged', `${s.judge_started??0}/${s.judge_completed??0}`],
-      ['FIRE', g.fire??0, true],['ASK', g.ask??0],['SILENT', g.silent??0],['SUPPRESSED', g.suppressed??0],
+      ['FIRE', g.fire??0],['ASK', g.ask??0],['SILENT', g.silent??0],['SUPPRESSED', g.suppressed??0],
       ['incidents', s.incidents??0],['cost', c.text||'—'],['saved', (s.savings&&s.savings.text)||'—'],
     ];
-    $('#metricsStrip').innerHTML=chips.map(([k,v,fire])=>`<span class="m${fire?' fire':''}">${k}<b>${esc(v)}</b></span>`).join('');
+    $('#metricsStrip').innerHTML=chips.map(([k,v])=>`<span class="m">${k}<b>${esc(v)}</b></span>`).join('');
   }
   // The runtime emits ONE OF two frame vocabularies: real run() uploads emit `edge.decision` (per-frame
   // tier-0 with a salience/escalate verdict); the offline fixture emits `source.frame` (pre-admitted).
@@ -753,7 +832,7 @@ confidence: —</pre>
   // hover tooltip, never silently hidden. seams is null on the fixture path (no live backend).
   function renderSeams(seams, audio){
     const box=$('#seamsLine');
-    if(!seams){ box.innerHTML='<span class="muted">model seams — fixture run, no live backend routed</span>'; return; }
+    if(!seams){ box.innerHTML='<span class="dim">model seams — fixture run, no live backend routed</span>'; return; }
     const parts=['vision','conductor','specialist'].map(name=>{
       const s=seams[name]||{};
       const fb=s.fallback_from;
@@ -773,7 +852,7 @@ confidence: —</pre>
     const body=$('#resolvedBody'), meta=$('#resolvedMeta');
     if(!re){
       body.innerHTML='<tr><td colspan="5" class="muted">No resolution on this run.</td></tr>';
-      meta.innerHTML='<span class="muted">—</span>';
+      meta.innerHTML='<span class="dim">—</span>';
       renderSeams(d.seams, d.audio);
       return;
     }
