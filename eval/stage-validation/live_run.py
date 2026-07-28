@@ -123,8 +123,24 @@ from percept.watchplan_apply import apply_watch_plan  # noqa: E402
 #: The action lane's split budget, copied verbatim from the qualification bench
 #: (``packages/percept-vision/eval/bench/track_perception_test_e2e.py:91-92``).  These are the
 #: numbers the product gate is written against; they are not re-chosen here.
-ACTION_PROVIDER_DEADLINE_S = 1.5
-ACTION_DECISION_DEADLINE_S = 1.9
+#: OVERRIDABLE so the deadline itself can be a DECLARED ARM rather than a fixed assumption.
+#: The defaults are the qualification bench's numbers, unchanged, so a run that sets neither
+#: variable reproduces every earlier result byte-for-byte.
+#:
+#: Why an arm at all: measured on this corpus, the reflex deadline sits BELOW the median call.
+#: The uncensored distribution (same corpus, same evidence shape) is p25 1.424 / p50 1.653 /
+#: p95 2.283 / p99 3.129 s, so 66.5% of calls cannot physically finish inside 1.5 s. A reflex run
+#: at 1.5 s therefore measures the timer, not the pipeline: it completed 1,058 of 7,193 calls
+#: (14.7%) and its latency "distribution" tops out at 1.4974 s -- the deadline's shadow, not a
+#: measurement. Raising the ceiling is not tuning a metric until it passes; it changes WHICH
+#: question the run answers, and the latency cost must be reported next to any recall gain.
+#:
+#: NOTE this is orthogonal to ``mode``: the pool still stamps ``_percept_latency_mode='reflex'``,
+#: so the bounded 320-token reply, the absent free-text ``evidence`` field and (on a build that has
+#: it) the 3-frame evidence bound all stay in force. A raised-deadline reflex arm is NOT the
+#: deliberate arm, which additionally relaxes the output contract to 1024 verbose tokens.
+ACTION_PROVIDER_DEADLINE_S = float(os.environ.get("PERCEPT_SV_PROVIDER_DEADLINE_S", "1.5"))
+ACTION_DECISION_DEADLINE_S = float(os.environ.get("PERCEPT_SV_DECISION_DEADLINE_S", "1.9"))
 
 #: The user-visible product gate: action onset -> Incident.
 ACTION_TO_INCIDENT_GATE_S = 2.0
@@ -160,6 +176,14 @@ ACTION_MAX_DIMENSION = int(os.environ.get("PERCEPT_SV_MAX_DIM", "0"))
 #: On the identical 3-frame payload: HIGH (the SDK default) = 3434 prompt tokens, MEDIUM = 1715,
 #: LOW = 926.  Empty string leaves the provider default in place.
 ACTION_MEDIA_RESOLUTION = os.environ.get("PERCEPT_SV_MEDIA_RESOLUTION", "").strip()
+
+#: Path to a FROZEN ``percept.conductor`` authoring artifact.  When set, each case's goal text is
+#: looked up in the pin and the authored ``Goal.state.*`` paths are merged UNDER this harness's own
+#: explicit paths, so the goal arms on the primitive the conductor selected rather than on the fixed
+#: occurrence watch.  A frozen artifact raises on a miss, so no provider call is ever made here and
+#: the selected primitives are exactly the pinned ones.  Unset = the fixed watch, unchanged.
+ACTION_CONDUCTOR_PIN = os.environ.get("PERCEPT_SV_CONDUCTOR", "").strip()
+
 _CAPTURE_HEADROOM_FPS = 8.0
 _FIXTURE_QUEUE_SIZE = 8
 _LEGACY_CAPTURE_FLOOR_FPS = 2.0
@@ -187,26 +211,59 @@ def capture_fps(cadence: dict) -> float:
     return max(_LEGACY_CAPTURE_FLOOR_FPS, min(_CAPTURE_HEADROOM_FPS, float(want)))
 
 
-def watch_plan_for(goal_id: str, condition: str) -> WatchPlan:
+@functools.lru_cache(maxsize=1)
+def _authoring_pin() -> Any:
+    """Load the FROZEN conductor artifact once.  Imported lazily so a build without
+    ``percept.conductor`` (the pre-launch baseline) never touches this path at all."""
+    from percept.conductor import AuthoringCache
+
+    return AuthoringCache.load(ACTION_CONDUCTOR_PIN, frozen=True)
+
+
+async def authored_for(goal_text: str) -> Any:
+    """The pinned :class:`~percept.conductor.AuthoredPrimitive` for one goal, or ``None``.
+
+    A frozen cache raises :class:`AuthoringCacheMiss` rather than authoring live, so a run bound to
+    the pin provably uses the recorded decisions and spends nothing.  The miss is allowed to
+    propagate: silently falling back to the fixed watch would make the conductor arm untestable.
+    """
+    if not ACTION_CONDUCTOR_PIN:
+        return None
+    from percept.conductor import PlanConductor
+
+    return await PlanConductor(cache=_authoring_pin()).author(goal_text)
+
+
+def watch_plan_for(goal_id: str, condition: str, authored: Any = None) -> WatchPlan:
     """The fixed, corpus-independent occurrence WatchPlan every case is armed with.
 
     Identical in shape to the qualification bench's action plan.  Nothing in it is derived from the
     case's annotation — no window, no duration, no positive count — so no scoring data leaks into
     runtime admission.
+
+    When ``authored`` is supplied (the conductor arm), the conductor's ``Goal.state.*`` paths form
+    the BASE and the harness's own sense/perception paths are layered on top, so the two arms differ
+    in the selected PRIMITIVE and in nothing else about the evidence shape.  The conductor is
+    structurally barred from writing outside ``Goal.state.`` , so it can never reach the
+    ``WatchProfile.salience_stat`` held constant across both arms.
     """
-    return WatchPlan(
-        id=goal_id,
-        condition=condition,
-        sense="video",
-        rearm="each_event",
-        explicit={
+    explicit: dict[str, Any] = dict(getattr(authored, "explicit", None) or {})
+    explicit.update(
+        {
             "Goal.state.sense.brief_window_s": ACTION_BRIEF_WINDOW_S,
             "Goal.state.perception.temporal": "strip",
             "Goal.state.perception.n_frames": ACTION_TEMPORAL_FRAMES,
             "Goal.state.perception.sampling": ACTION_TEMPORAL_SAMPLING,
             "Goal.state.perception.window_s": ACTION_TEMPORAL_WINDOW_S,
             "WatchProfile.salience_stat": "block_max",
-        },
+        }
+    )
+    return WatchPlan(
+        id=goal_id,
+        condition=condition,
+        sense="video",
+        rearm="each_event",
+        explicit=explicit,
     )
 
 
@@ -513,7 +570,14 @@ async def run_case(case: dict, mode: str, *, backend: str, transport: str = "ima
                 route_name,
                 temporal,
                 JudgeCapability(
-                    evidence_shapes=frozenset({"video_clip"}),
+                    # `video_clip` is the only shape a plain occurrence watch ever asks for, so the
+                    # extra two are INERT for the fixed-watch arm (verified: every baseline receipt
+                    # carries `video_clip`). They exist because an authored `transition` primitive
+                    # asks for `ordered_images`/`single_image`, and a route that cannot serve the
+                    # shape returns `no_route` — zero provider calls and zero incidents, which would
+                    # score the conductor arm as a total miss on every transition goal for a reason
+                    # that is this harness's routing table, not the runtime's behaviour.
+                    evidence_shapes=frozenset({"video_clip", "ordered_images", "single_image"}),
                     latency_slo_s=provider_deadline,
                     modes=frozenset({mode}),
                     max_inflight=1,
@@ -538,8 +602,15 @@ async def run_case(case: dict, mode: str, *, backend: str, transport: str = "ima
         discover_plugins=False,
     )
     goal_id = _goal_id(case_id)
+    # The conductor arm selects the PRIMITIVE from the goal's own words (replayed from the frozen
+    # pin, zero provider calls); the baseline arm keeps the corpus-declared fixed watch. Recorded
+    # per case either way so the report can name which goals were re-routed and to what.
+    authored = await authored_for(case["goal_text"])
+    out["authored_type"] = getattr(authored, "behavior_type", None)
+    out["authored_origin"] = getattr(authored, "origin", None)
+    out["authored_explicit"] = dict(getattr(authored, "explicit", None) or {})
     receipt = apply_watch_plan(
-        core, watch_plan_for(goal_id, case["goal_text"]), resolver=ConfigResolver(),
+        core, watch_plan_for(goal_id, case["goal_text"], authored), resolver=ConfigResolver(),
         source_profile=PHYSICAL_SCENE,
     )
     if receipt.status != "applied" or receipt.watch_ids != (goal_id,):
@@ -1506,6 +1577,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--price-source", default="")
     ap.add_argument("--out-stem", default="live_run")
     ap.add_argument("--tag", default="")
+    ap.add_argument("--expect-commit", default="",
+                    help="abort unless build_info().git_commit starts with this — the arm's own "
+                         "proof it is the build it claims to be")
+    ap.add_argument("--expect-conductor", action="store_true",
+                    help="abort unless a frozen conductor pin is configured")
     ap.add_argument("--resume", action="store_true", default=True,
                     help="reuse cases already in the checkpoint (default on)")
     ap.add_argument("--no-resume", dest="resume", action="store_false")
@@ -1514,6 +1590,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                          "(keys: transport_probe, concurrency_control). Re-render a finished run "
                          "with --resume and no new provider spend.")
     args = ap.parse_args(argv)
+
+    # ---- ARM SELF-CHECK ----------------------------------------------------------------------
+    # An arm that cannot prove it is configured correctly must ABORT, not run: a silently
+    # unconfigured arm would look identical to the other one and manufacture a null result.
+    if args.expect_commit:
+        actual = str(build_info().git_commit or "")
+        if not actual.startswith(args.expect_commit):
+            raise SystemExit(
+                f"[live_run] ARM ABORTED: expected build {args.expect_commit}..., got "
+                f"{actual or '<none>'} from {sys.executable}"
+            )
+        print(f"[live_run] build verified: {actual}", file=sys.stderr)
+    if args.expect_conductor and not ACTION_CONDUCTOR_PIN:
+        raise SystemExit("[live_run] ARM ABORTED: --expect-conductor but PERCEPT_SV_CONDUCTOR unset")
+    if ACTION_CONDUCTOR_PIN:
+        pin = _authoring_pin()
+        print(f"[live_run] conductor pin: {len(pin)} frozen decisions from {ACTION_CONDUCTOR_PIN}",
+              file=sys.stderr)
 
     if ACTION_MEDIA_RESOLUTION:
         applied = install_media_resolution_override(ACTION_MEDIA_RESOLUTION)
@@ -1664,6 +1758,10 @@ def build_payload(raw: dict[str, list[dict]], *, corpus: list[dict], selected: l
             # Declared, never inferred: a run whose evidence was shrunk must say so in its own meta.
             "max_dimension": ACTION_MAX_DIMENSION or "runtime default (768)",
             "media_resolution": ACTION_MEDIA_RESOLUTION or "provider default (HIGH)",
+            "conductor_pin": ACTION_CONDUCTOR_PIN or "none (corpus-declared fixed watch)",
+            "authored_types": dict(Counter(
+                r.get("authored_type") or "none"
+                for m in modes_run for r in (raw.get(m) or []))),
             "n_corpus": len(corpus),
             "n_selected": len(selected),
             "selection": selection,

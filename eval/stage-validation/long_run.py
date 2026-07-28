@@ -505,6 +505,13 @@ async def run_long(args: argparse.Namespace) -> dict[str, Any]:
     settings = load_settings()
     from percept.backends.gemini import GeminiVision
 
+    # Same process-local pin live_run.py uses, so both v1.0 runs can be read at the same vision-token
+    # budget. Unset = the provider default, which is what every earlier long run measured.
+    media_resolution = LR.install_media_resolution_override(LR.ACTION_MEDIA_RESOLUTION)
+    if media_resolution:
+        print(f"[long_run] media_resolution pinned to {media_resolution}", file=sys.stderr,
+              flush=True)
+
     inner = GeminiVision(settings)
     model = getattr(inner, "_model", None) or getattr(inner, "model", None)
     cap_snapshot: dict[str, Any] = {}
@@ -522,6 +529,20 @@ async def run_long(args: argparse.Namespace) -> dict[str, Any]:
         if r.route is not None and r.outcome in ("decisive", "uncertain"):
             receipt_latency.append(float(r.latency_s))
 
+    # ---- judge concurrency K ---------------------------------------------------------------
+    # K is the batch fan-out bound. It has to be declared in THREE places that all floor each
+    # other (percept/agent.py:effective_judge_concurrency): the caller's ceiling
+    # (``judge_concurrency``), the pool's own ``max_parallel``, and every route's declared
+    # ``max_inflight``. Setting only one leaves the batch pinned at the smallest of them, which is
+    # how the previous run ended up sequential at K=1 while believing otherwise.
+    #
+    # K also SETS THE BACKSTOP. ``_WorkerJudgeScheduler._batch_deadline_s`` multiplies the
+    # per-decision deadline by ``ceil(N / K)`` waves, so at K >= N the multiplier collapses to 1 and
+    # the batch backstop IS the shipped per-decision number, unscaled. Raising K is therefore the
+    # only honest way to shrink that bound -- the alternative (hand-scaling the deadline) inflates a
+    # budget to paper over a fan-out that never happened.
+    K = max(1, int(args.judge_concurrency))
+
     pool = JudgePool(
         [
             JudgeRoute(
@@ -531,13 +552,13 @@ async def run_long(args: argparse.Namespace) -> dict[str, Any]:
                     evidence_shapes=frozenset({"video_clip"}),
                     latency_slo_s=LR.ACTION_PROVIDER_DEADLINE_S,
                     modes=frozenset({"reflex"}),
-                    max_inflight=1,
+                    max_inflight=K,
                 ),
             )
         ],
         mode="reflex",
         deadline_s=LR.ACTION_PROVIDER_DEADLINE_S,
-        max_parallel=1,
+        max_parallel=K,
         on_receipt=on_receipt,
         terminal_outcomes=(),  # a measurement run COUNTS a deadline, it does not raise on one
     )
@@ -545,6 +566,7 @@ async def run_long(args: argparse.Namespace) -> dict[str, Any]:
     core = Percept.create(
         vision=pool, specialist="scripted", conductor="scripted-conductor",
         stt="fake", tts="fake", settings=settings, discover_plugins=False,
+        judge_concurrency=K,
     )
 
     # ---- arm every distinct goal on the SAME core ------------------------------------------
@@ -783,9 +805,31 @@ async def run_long(args: argparse.Namespace) -> dict[str, Any]:
     }, default=str) + "\n")
     ck.flush()
 
+    # ---- PROVE the backstop is unscaled, do not assume it ------------------------------------
+    # Ask the shipped runtime what it will actually apply to THIS batch of goal ids, rather than
+    # asserting that K >= N collapsed the wave multiplier. Reported in meta either way.
+    # ``_decision_waves`` IS the multiplier both scheduler implementations
+    # (``_LegacyJudgeScheduler._batch_deadline_s`` and ``_JudgeScheduler._batch_deadline_s``) apply
+    # to the per-decision budget, so reading it directly is class-agnostic and exact.
+    resolved_batch_deadline_s = None
+    effective_K = None
+    decision_waves = None
+    try:
+        from percept.runtime.worker import _decision_waves
+
+        effective_K = int(core.effective_judge_concurrency(
+            [core.goals.get(g) for g in goal_ids]
+        ))
+        decision_waves = int(_decision_waves(core, len(goal_ids)))
+        resolved_batch_deadline_s = decision_deadline * decision_waves
+    except Exception as exc:  # noqa: BLE001 - an instrument must never break the run
+        resolved_batch_deadline_s = f"probe failed: {type(exc).__name__}: {exc}"
+
     print(f"[long_run] source={manifest['video_path']} "
           f"{(manifest['clock']['measured_container_duration_s'] or 0) / 60:.1f} min | "
           f"goals={len(armed)} | fps={fps} | decision_deadline={decision_deadline:.1f}s | "
+          f"K={K} (effective {effective_K}) | waves={decision_waves} | "
+          f"batch_deadline={resolved_batch_deadline_s} | "
           f"cap={args.max_provider_calls} calls", file=sys.stderr, flush=True)
 
     sampler_task = asyncio.create_task(sampler())
@@ -867,6 +911,9 @@ async def run_long(args: argparse.Namespace) -> dict[str, Any]:
         health_timeline=health_timeline, receipt_outcomes=receipt_outcomes,
         receipt_latency=receipt_latency, ch=ch, dropped=dropped, fps=fps,
         decision_deadline=decision_deadline, wall=wall, model=model, error=error,
+        judge_concurrency=K, effective_K=effective_K, decision_waves=decision_waves,
+        media_resolution=media_resolution,
+        resolved_batch_deadline_s=resolved_batch_deadline_s,
         detector=detector, trace_errors=trace_errors,
     )
     return payload
@@ -1224,9 +1271,18 @@ def analyse(**k: Any) -> dict[str, Any]:
             "provider_deadline_s": LR.ACTION_PROVIDER_DEADLINE_S,
             "decision_deadline_s": k["decision_deadline"],
             "decision_deadline_note": (
-                "scaled to the armed-goal count: a judgment batch judges goals sequentially "
-                "(percept/agent.py:4090), so the shipped single-goal 1.9 s budget cancels a "
-                "73-goal batch wholesale (percept/runtime/worker.py:1120)"
+                "per-decision budget as PASSED to the scheduler. Whether the runtime scales it for "
+                "the batch is reported separately as resolved_batch_deadline_s, read back from "
+                "percept.runtime.worker._WorkerJudgeScheduler._batch_deadline_s rather than assumed."
+            ),
+            "media_resolution": k["media_resolution"] or "provider default (HIGH)",
+            "judge_concurrency_requested": k["judge_concurrency"],
+            "judge_concurrency_effective": k["effective_K"],
+            "decision_waves": k["decision_waves"],
+            "resolved_batch_deadline_s": k["resolved_batch_deadline_s"],
+            "batch_deadline_unscaled": (
+                isinstance(k["resolved_batch_deadline_s"], (int, float))
+                and abs(float(k["resolved_batch_deadline_s"]) - float(k["decision_deadline"])) < 1e-6
             ),
             "temporal_frames": LR.ACTION_TEMPORAL_FRAMES,
             "wall_s": round(k["wall"], 1),
@@ -1505,6 +1561,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--max-goals", type=int, default=0, help="0 = every distinct goal")
     ap.add_argument("--decision-deadline-s", type=float, default=0.0,
                     help="0 = scale to the armed-goal count (see the module docstring)")
+    ap.add_argument("--judge-concurrency", type=int, default=1,
+                    help="K: judge batch fan-out. Floors/is floored by the pool's max_parallel and "
+                         "every route's max_inflight, all three set together. K >= armed-goal count "
+                         "collapses the _batch_deadline_s wave multiplier to 1. Default 1 = the "
+                         "previous sequential behaviour, unchanged.")
     ap.add_argument("--max-provider-calls", type=int, default=5000)
     ap.add_argument("--max-wall-s", type=float, default=0.0)
     ap.add_argument("--sample-s", type=float, default=15.0)
