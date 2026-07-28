@@ -489,7 +489,7 @@ notification once per event.
 - **Gate time-refractory** `PERCEPT_GATE_REFRACTORY_S` — suppress duplicate notifications of the same goal;
   one fire per episode.
 - **Production trace telemetry** — opt-in per-frame trace (edge decision · verdict · gate action · reason).
-- **Docs:** `docs/how-to/integrate-into-your-app.md` (embed the runtime), `docs/how-to/authoring-goals-and-watch-plans.md`,
+- **Docs:** `docs/how-to/runtime.md` (embed the runtime), `docs/how-to/authoring-goals-and-watch-plans.md`,
   `examples/vision_assistant.py`, updated `percept-agent` Claude skill.
 
 ### Notes

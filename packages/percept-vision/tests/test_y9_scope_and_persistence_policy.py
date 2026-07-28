@@ -141,7 +141,7 @@ class TheDocIsReachable(unittest.TestCase):
 
     def test_docs_index_and_integration_guide_link_the_scope_doc(self):
         target = "reference/v1-4-scope-and-persistence.md"
-        for rel in ("docs/README.md", "docs/how-to/integrate-into-your-app.md"):
+        for rel in ("docs/README.md", "docs/how-to/runtime.md"):
             with self.subTest(doc=rel):
                 self.assertIn(target, _doc(_REPO / rel))
 

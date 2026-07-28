@@ -128,10 +128,9 @@ async def main():
 asyncio.run(main())
 ```
 
-Sinks (`on_incident` → Slack/webhook), refusals (`on_ask`), fused audio (`audio_source="mic:0"`),
-and the decision trace (`on_trace`) are all in
-**[docs/how-to/runtime.md](docs/how-to/runtime.md)**. Embedding it in your own app? →
-**[docs/how-to/integrate-into-your-app.md](docs/how-to/integrate-into-your-app.md)**.
+Embedding it in your own app — sinks (`on_incident` → Slack/webhook), refusals (`on_ask`), fused
+audio (`audio_source="mic:0"`), the decision trace (`on_trace`), egomotion, cost and
+troubleshooting — is all in **[docs/how-to/runtime.md](docs/how-to/runtime.md)**.
 
 ### See it run in a browser
 
@@ -264,7 +263,7 @@ Full index: **[docs/README.md](docs/README.md)** — generated, every page dated
 |---|---|
 | run something that works | [Quickstart](docs/tutorials/quickstart.md) |
 | pick my first path | [Choose your path](docs/tutorials/choose-your-path.md) |
-| embed it in my app | [Integrate into your app](docs/how-to/integrate-into-your-app.md) |
+| embed it in my app | [Runtime worker](docs/how-to/runtime.md) |
 | make it fire on *my* content | [Tune admission](docs/how-to/tune-admission.md) |
 | bring my own model | [Custom judge & backend](docs/how-to/custom-judge.md) |
 | see every knob | [Tunables](docs/reference/tunables.md) |

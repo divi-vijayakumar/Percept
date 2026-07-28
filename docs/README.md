@@ -42,10 +42,9 @@ The architecture diagram is **generated from the code**
 | [Judging, and creating a custom judge or specialist](how-to/custom-judge.md) | Bring your own vision model or author a specialist judge; the conformance suite. | 2026-07-23 |
 | [Derive a profile for a new environment](how-to/derive-a-profile.md) | Turn labelled fixtures + a ladder into a provenance-stamped profile. | 2026-07-23 |
 | [Evaluating Percept on your own benchmark](how-to/eval.md) | Per-concern precision/recall on your manifest, the paired A/B differential, and the CI gate. | 2026-07-23 |
-| [Percept runtime — integration guide](how-to/integrate-into-your-app.md) | The `run()` API, the event shape, and embedding recipes. | 2026-07-28 |
 | [Run an optimization](how-to/optimize.md) | `percept-optimize` — safe-tunable search into a validated `OptimizationLock`. | 2026-07-23 |
 | [Scenario: tell me when a package is on the porch](how-to/porch-package.md) | A discrete physical-event watch recipe. | 2026-07-20 |
-| [The runtime worker — `run(source) → incidents`](how-to/runtime.md) | Drive a live source with `run(source) → incidents`, and build a custom run. | 2026-07-23 |
+| [The runtime worker — `run(source) → incidents`](how-to/runtime.md) | **Start here to embed Percept.** `run(source) → incidents`: sources, sinks, tuning, egomotion, cost, troubleshooting. | 2026-07-28 |
 | [Scenario: help me by watching my screenshare](how-to/screenshare.md) | A fixed-cadence content watch. | 2026-07-16 |
 | [Trace bundles & replay](how-to/trace-bundles-and-replay.md) | Portable bug reports and deterministic replay. | 2026-07-23 |
 | [Tuning admission: from "nothing fires" to a tuned eye](how-to/tune-admission.md) | From "nothing fires" to a tuned eye. **Percept ships the harness; you tune the eye for your content.** | 2026-07-23 |

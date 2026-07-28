@@ -116,6 +116,6 @@ Do not generate surveillance demos. The full envelope is in the
 ## Related
 
 - [Quickstart](../tutorials/quickstart.md) — the 60-second offline first run.
-- [Integrate into your app](../how-to/integrate-into-your-app.md) — the `run()` API and event shape.
+- [Runtime worker](../how-to/runtime.md) — the `run()` API and event shape.
 - [Registries and adapters](../reference/registries.md) — bring your own backend or detector.
 - [`watch()` contract](../reference/watch-contract.md) — the frozen entrypoint.

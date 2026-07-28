@@ -15,7 +15,7 @@ Run it:
     python examples/vision_assistant.py --source clip.mp4      # test on a recording
 
 This is a STARTING POINT — the memory + leave-logic below is plain Python you own; Percept supplies the
-detections. See docs/how-to/integrate-into-your-app.md.
+detections. See docs/how-to/runtime.md.
 """
 from __future__ import annotations
 

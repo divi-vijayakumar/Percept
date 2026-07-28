@@ -58,7 +58,7 @@ goals=[...], vision="gemini")`.
 ## Key Docs
 
 - Architecture (generated diagram + the four tiers): `docs/explanation/architecture.md`
-- Runtime worker + custom runs: `docs/how-to/runtime.md`; embed in an app: `docs/how-to/integrate-into-your-app.md`
+- Runtime worker, embedding, sources, sinks, egomotion, cost, troubleshooting: `docs/how-to/runtime.md`
 - Configuration: `docs/reference/configuration.md`; author a profile: `docs/how-to/custom-configuration.md`
 - ALL 157 tunables (31 safe to optimize), generated from the registry: `docs/reference/tunables.md`
 - Backend seams, detectors, profile registries + how to register your own: `docs/reference/registries.md`

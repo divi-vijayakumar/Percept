@@ -97,7 +97,7 @@ asyncio.run(main())
 - `docs/reference/registries.md` — **backend seams, detectors, profile registries**, and how to register your own. Generated.
 - `docs/reference/configuration.md` — the `Settings` tree + resolver precedence; `docs/how-to/custom-configuration.md` — author a profile.
 - `docs/reference/cli.md` — all nine console scripts and their flags.
-- `docs/how-to/integrate-into-your-app.md` — the `run()` API and event shape.
+- `docs/how-to/runtime.md` — the `run()` API and event shape.
 - `docs/how-to/custom-judge.md` — bring your own vision backend or a specialist judge (with a conformance suite).
 - `docs/how-to/eval.md` · `docs/how-to/optimize.md` · `docs/benchmarks/README.md` — the offline quality rail.
 - `docs/demo/README.md` — the browser harness; simulation mode vs BYOK.

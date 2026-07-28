@@ -63,4 +63,4 @@ python examples/byo_admission_detector.py
 - 1 fps is plenty for most watches and keeps cost/latency low; raise `--fps` only for fast events.
 
 ---
-Full integration guide: [`docs/how-to/integrate-into-your-app.md`](../docs/how-to/integrate-into-your-app.md).
+Full integration guide: [`docs/how-to/runtime.md`](../docs/how-to/runtime.md).

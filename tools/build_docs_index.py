@@ -41,8 +41,7 @@ SECTIONS: list[tuple[str, str, str]] = [
 SUMMARY: dict[str, str] = {
     "tutorials/choose-your-path.md": "The narrow first path — pick one row, ignore the rest.",
     "tutorials/quickstart.md": "Install, run offline on the scripted backend, then a real one.",
-    "how-to/runtime.md": "Drive a live source with `run(source) → incidents`, and build a custom run.",
-    "how-to/integrate-into-your-app.md": "The `run()` API, the event shape, and embedding recipes.",
+    "how-to/runtime.md": "**Start here to embed Percept.** `run(source) → incidents`: sources, sinks, tuning, egomotion, cost, troubleshooting.",
     "how-to/authoring-goals-and-watch-plans.md": "Phrase goals and match the plan to the action, so quality isn't lost before the judge runs.",
     "how-to/custom-configuration.md": "Author a `SourceProfile` / `WatchProfile` for your use case.",
     "how-to/custom-judge.md": "Bring your own vision model or author a specialist judge; the conformance suite.",

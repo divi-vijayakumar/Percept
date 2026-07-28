@@ -1,61 +1,173 @@
 ---
 title: The runtime worker — `run(source) → incidents`
-updated: 2026-07-23
+updated: 2026-07-28
 applies_to: percept-vision 1.0.0
 status: stable
 ---
 # The runtime worker — `run(source) → incidents`
 
-The runtime owns the **camera → incidents** lifecycle: capture, the gate loop, judging off the display
-thread, the live feed, and rising-edge **incident** emission — so your app stops writing that glue.
+Watch a live stream for a **plain-English condition** and get a notification the moment it becomes
+true — once per event. Point it at a webcam, a video file, or an RTSP camera; give it goals in words;
+handle the notifications in your app. The runtime owns the whole **camera → incidents** lifecycle —
+capture, the gate loop, judging off the display thread, the live feed, and rising-edge emission — so
+your app stops writing that glue.
 
-```python
-from percept import Percept, Goal
-from percept.runtime import FileDeadLetterQueue, RuntimeStats, run, webhook
-
-agent = Percept.create(vision="gemini")            # [gemini] extra + GEMINI_API_KEY; code-armed watch
-                                                   # (goals via add_goal) — the default conductor stays
-                                                   # SCRIPTED (loud log, no crash). Keyless? mode="offline".
-agent.add_goal(Goal(id="zone", condition="a person is in the restricted zone", say="Alert: person in zone"))
-
-notify = webhook("https://example.com/percept/incidents")
-stats = RuntimeStats()
-health = []
-
-async for incident in run(
-    agent,
-    source="rtsp://door-cam/stream",
-    on_incident=notify,
-    on_health=health.append,
-    snippet_kind="clip",
-    stats=stats,
-):
-    ...                                            # run() owns capture + gate + judge + incident emission
+```
+your source ──▶ fovea (cheap motion/salience gate) ──▶ VLM judge ──▶ rising-edge gate ──▶ 🔔 notification
+                 spends a model call only when             "is <goal> true?"     once per episode
+                 something worth judging happens
 ```
 
-`pip install "percept-vision[runtime]"` adds the camera/video/RTSP capture path (opencv) plus the
-Python edge gate. A pre-decoded **iterable** source (`(t, gate_frame, judge_frame)` tuples) needs no
-extra — handy for tests and offline replay.
+> **Before you design around it**, read
+> [Scope and persistence](../reference/v1-4-scope-and-persistence.md). Three things adopters have read
+> too generously: coverage is **narrow** — biometric re-identification, growth prediction and robotics
+> control are explicitly excluded; **episodes are session-only** and do not survive a restart, which
+> blocks any 24/7 claim; and delivery is **provisional incident + superseding revision**, not a wide
+> settle window.
+
+## Install
+
+```bash
+pip install "percept-vision[runtime,openrouter]"
+#                            │        └ the judge (Qwen via OpenRouter — cheap, fast, hosted)
+#                            └ capture (OpenCV) for webcam / video / RTSP
+```
+
+The core (`pip install percept-vision`) is pure standard library and runs offline with scripted
+backends. `[runtime]` adds OpenCV capture plus the Python edge gate; `[openrouter]` / `[gemini]` /
+`[claude]` add a judge. A pre-decoded **iterable** source (`(t, gate_frame, judge_frame)` tuples)
+needs no extra at all — handy for tests and offline replay.
+
+Then one judge API key:
+
+```bash
+export OPENROUTER_API_KEY=sk-or-...     # Qwen (recommended: cheap + fast).  extras: [openrouter]
+# or:  export GEMINI_API_KEY=...        # then vision="gemini"               extras: [gemini]
+# or:  export ANTHROPIC_API_KEY=...     # then vision="claude"               extras: [claude]
+```
+
+## 30-second smoke test
+
+```bash
+percept-watch --source webcam:0 --goal "someone raises their hand"
+```
+
+If you see a `🔔` when you raise your hand, you're good. Now wire it into your app.
 
 ## What `run()` does, per frame
+
 1. push the frame into a rolling pre-roll buffer (for the incident clip);
 2. run the cheap **tier-0 gate** (motion + the per-goal cadence) — most frames skip here, no cloud call;
 3. on the rising edge, spend one **`vision.judge`** call (the brain — unchanged);
 4. each `fire` → an **`Incident`** (with a pre-roll snippet) → `on_incident(...)` → yielded;
 5. each `ask` → `on_ask(...)` if provided, but not an Incident.
 
-### Build the core in the call — the convenience form
-
-You can hand `run()` a pre-built `agent`/core (as above) **or** let it build one for you: pass `goals=`
-(plain-language conditions) and `vision=` and skip `Percept.create` entirely.
+## The one function you need: `run(...)`
 
 ```python
-async for incident in percept.run(
-    source="webcam:0",
-    goals=["the milk is boiling over"],   # each string becomes a Goal
-    vision="gemini",                      # backend by name (default: fake)
-):
-    print(incident.message)
+import asyncio, percept
+from percept import Goal
+
+async def main():
+    goals = [
+        Goal(id="hand",  condition="someone raises their hand", say="Hand raised!"),
+        Goal(id="phone", condition="someone is holding a phone", say="Phone spotted"),
+    ]
+    async for incident in percept.run(
+        source="webcam:0",     # or "path/to/clip.mp4" or "rtsp://user:pass@host/stream"
+        goals=goals,           # each string or Goal is armed before the first frame
+        vision="openrouter",   # "gemini" | "claude"
+        fps=1.0,               # frames pulled per second (1–2 is plenty; higher = faster + costlier)
+    ):
+        # incident fires ONCE when a goal first becomes true (rising edge)
+        print(incident.concern_id, "→", incident.message, incident.verdict.confidence)
+        # … do your thing: POST a webhook, push a notification, update UI …
+
+asyncio.run(main())
+```
+
+`run(...)` is an **async generator** — every `incident` it yields is a real notification. That is the
+whole integration surface. This is the *convenience form*: pass `goals=` and `vision=` and skip
+`Percept.create` entirely. For more control, build a core yourself — see [Custom run](#custom-run--build-your-own-core-then-drive-it).
+
+### A goal
+
+```python
+Goal(id="unique_id", condition="a plain-English thing to watch for", say="the message you want back")
+```
+
+- `id` — your handle for it (comes back as `incident.concern_id`).
+- `condition` — what the judge is asked, verbatim-ish. **Be specific and falsifiable** — see
+  [Writing goals that work](#writing-goals-that-work).
+- `say` — the human message; comes back as `incident.message`.
+
+### The notification you get — `Incident`
+
+| field | what it is |
+|---|---|
+| `incident.concern_id` | the `Goal.id` that fired |
+| `incident.message` | your `Goal.say` text (the human alert line) |
+| `incident.verdict.confidence` | 0–1 model confidence |
+| `incident.verdict.evidence` | one line of *why* — great for UI and debugging |
+| `incident.verdict.satisfied` | the judge's boolean read |
+| `incident.ts` | timestamp; which clock depends on `timebase` (below) |
+| `incident.id` | stable event id — use it to dedupe on your side if you fan out |
+| `incident.entity_id` | which SUBJECT fired, or `None` if the fire was not entity-scoped. Use it to tell two subjects on the same goal apart instead of reading their interleaved fires as out-of-order |
+| `incident.snippet` | the pre-roll (`kind="frame"` stores decoded frames; `kind="clip"` stores a portable encoded bundle suitable for webhook/storage sinks) |
+| `incident.label` | `None` until a human or the calibration loop marks it `"real"` / `"false_alarm"` |
+
+## Two ways to consume it
+
+**A — iterate (simplest):**
+
+```python
+async for incident in percept.run(source=src, goals=goals, vision="openrouter"):
+    await handle(incident)
+```
+
+**B — callback (fire-and-forget into your handler):**
+
+```python
+def on_fire(incident):
+    requests.post(SLACK_WEBHOOK, json={"text": incident.message})
+
+async for _ in percept.run(source=src, goals=goals, vision="openrouter", on_incident=on_fire):
+    pass   # still drive the loop; on_incident is called for each fire
+```
+
+**Alongside a sync app (Flask / FastAPI / a thread):**
+
+```python
+import threading, asyncio
+def watch_forever():
+    asyncio.run(main())          # main() drives percept.run(...)
+threading.Thread(target=watch_forever, daemon=True).start()
+```
+
+**Only act on high-confidence fires:**
+
+```python
+async for inc in percept.run(...):
+    if inc.verdict.confidence >= 0.8:
+        alert(inc.message)
+```
+
+## Sources
+
+| `source=` | opens |
+|---|---|
+| `"webcam:0"` / `"webcam"` | default camera (try `webcam:1` if `0` is dark) |
+| `"clip.mp4"` / any file path | a video file — great for testing without a camera |
+| `"rtsp://user:pass@host:554/stream"` | an IP camera (`source_rtsp_tcp=True` is the default) |
+| an iterable of `(t, gate_frame, judge_frame)` | pre-decoded frames; no extras needed |
+
+Flaky network camera? `run(..., source_reconnects=5, source_reconnect_backoff_s=1.0)`.
+
+Testing on a recording first costs nothing and needs no camera:
+
+```python
+async for inc in percept.run(source="my_test.mp4", goals=goals, vision="openrouter", fps=1.0):
+    print(inc.ts, inc.concern_id, inc.verdict.evidence)
 ```
 
 ## Custom run — build your own core, then drive it
@@ -76,7 +188,7 @@ Two ways to build the core:
 
 ```python
 from percept import Percept, Goal
-from percept.runtime import run
+from percept.runtime import FileDeadLetterQueue, RuntimeStats, run, webhook
 
 core = Percept.create(vision="gemini", conductor="claude")     # keyless? mode="offline"
 core.add_goal(Goal(
@@ -99,6 +211,10 @@ async for incident in run(
 
 Pass a built core **or** the coreless `goals=`/`vision=` — never both. Supplying `goals=`/`vision=`
 *together with* a core raises `ValueError` rather than silently discarding them.
+
+Note the default when you build a core yourself: goals are **code-armed** via `add_goal`, and the
+conductor stays **scripted** (a loud log, not a crash), so a spoken "tell me when…" is ignored until
+you select a real conductor.
 
 **Custom sinks.** `on_incident`, `on_ask`, `on_frame`, `on_trace` and `on_health` are plain callables,
 so any function (or async function) is a sink. The built-in `webhook(...)` sink below is just one
@@ -130,7 +246,7 @@ playback — is in [command-seam.md](../reference/command-seam.md).
 **Source & core**
 - `source` — a URI (`"webcam:0"`, `"rtsp://…"`, a file path) or a pre-decoded `(t, gate_frame, judge_frame)` iterable.
 - `goals` — plain-language conditions (convenience form); each becomes a `Goal`. **Only for the coreless form** — passing `goals=` (or `vision=`) *together with* a built core raises `ValueError` rather than silently discarding them.
-- `vision` — the vision backend by name (`"gemini"` / `"claude"` / `"fake"`) for the convenience form.
+- `vision` — the vision backend by name (`"gemini"` / `"claude"` / `"openrouter"` / `"scripted"`) for the convenience form.
 - `fps` — frame rate to pull the source at. The runtime may open at a **higher** rate (a brief-event plan's cadence, or the 8 fps headroom cap a URI source must take at open time). That is never silent: `stats.effective_config.fps` records `requested_fps`, `effective_fps` and a `reason` (`brief-window-coverage` / `source-limit` / `profile-default`), also emitted once as an `effective_config` health event and mirrored on `core.effective_config`.
 - `timebase` — which clock frame `t` (and so `incident.ts`) is stamped on. `"auto"` (default) = **media** time for recorded sources (a file — so a timestamp means something against the media) and **wall**/monotonic for live devices/streams (`webcam:0`, `rtsp://…` — those share the agent's deadline clock). `"media"`/`"wall"` force it. Both clocks are recorded either way: `stats.last_media_t` / `stats.last_wall_t`.
 - `source_queue_size`, `source_reconnects`, `source_reconnect_backoff_s`, `source_rtsp_tcp` — capture/reconnect tuning for live URIs.
@@ -182,11 +298,39 @@ playback — is in [command-seam.md](../reference/command-seam.md).
 > - **A localized event on an otherwise-still frame** (a coffee sip, a shelf grab, a terminal error on a
 >   4K screen) → `salience_stat="block_max"` — measure the frame-diff over a block grid, not the whole-frame
 >   mean, so the local event clears threshold.
-> - **A moving / wearable camera** (head-cam, drone, handheld) → `ego_compensate=True` so whole-frame
->   pan/head-turn is subtracted and the gate fires on the **residual**, not on the camera's own motion.
+> - **A moving / wearable camera** (head-cam, drone, handheld) → `ego_compensate=True` — see below.
 >
 > `salience_stat`, `ego_compensate`, and their per-stat thresholds live in
 > [reference/edge-policy.md](../reference/edge-policy.md).
+
+### Moving cameras — glasses, body-cam, phone ⚠️
+
+If your camera **moves**, a plain motion gate escalates on *every* frame — the whole scene shifts each
+time your head does. Measured on real first-person footage: `block_max` alone calls the VLM on **98%**
+of frames. The fix is **ego-motion compensation**: subtract the global camera shift before measuring
+motion.
+
+```bash
+export PERCEPT_EGO_COMPENSATE=true     # ← subtract head/camera motion
+export PERCEPT_SALIENCE_STAT=block_max
+```
+
+That drops escalation to **~30%**, and object detection still works (verified: containers, hands and
+people read correctly on head-mounted frames). The CLI has a flag:
+
+```bash
+percept-watch --egomotion --goal "my keys are visible" --goal "a person is nearby"
+```
+
+**Honest limits on moving cameras:**
+
+- Ego-compensation makes the *gate* economical, but detection is still frame-by-frame VLM — on very
+  fast or blurry head motion, frames can be too smeared to judge. Raising `--fps` helps catch a clean one.
+- **Detecting** an object ("keys visible") is solid. **Tracking a specific instance** across occlusion
+  and glances ("that's *my* keys, still the same ones") is the entity layer — weaker, and not
+  battle-tested on egomotion.
+- These thresholds were validated on the ProactiveQA EGO set, not tuned for your rig. Treat them as a
+  starting point and adjust `--refractory` / `--fps` on your own footage.
 
 ### `on_trace` — why a frame stayed silent
 
@@ -203,16 +347,8 @@ A silent frame that has a `source.frame` but no `judge.started` was **gated out 
 threshold, or off-cadence) — the whole-frame-motion trap above. A `judge.finished` with no
 `incident.created` means the VLM looked and the gate held (not satisfied, still refractory, or an `ask`).
 
-## The `Incident`
-```
-Incident { id, concern_id, verdict{satisfied, confidence, evidence}, ts, label, snippet, message, entity_id }
-```
-`message` is the goal's `say` (the human alert line); `verdict.evidence` is the VLM's reasoning;
-`snippet` is the pre-roll (`kind="frame"` stores decoded frames; `kind="clip"` stores a portable encoded
-frame bundle suitable for webhook/storage sinks);
-`label` is `None` until a human / the calibration loop marks it `"real"` / `"false_alarm"`.
-
 ## Tuning a goal — three independent knobs
+
 A goal's `state` carries three orthogonal levers (the conductor can author them from plain language):
 
 | knob | `state` key | what it controls | example |
@@ -222,8 +358,20 @@ A goal's `state` carries three orthogonal levers (the conductor can author them 
 | **how often to look** | `cadence` | motion-gated (default) vs a **fixed** cadence for low-motion content | `{"min_judge_interval": 0.5, "gate_on": "fixed"}` |
 | **how much it matters** | `miss_cost` / `false_fire_cost` | biases the gate (a severe miss → asks instead of staying silent) | `"miss_cost": "severe"` |
 
+Two env vars are worth knowing before you reach for `state`:
+
+```bash
+export PERCEPT_SALIENCE_STAT=block_max     # fixed camera + small/localized actions; "mean" misses them
+export PERCEPT_GATE_REFRACTORY_S=15        # suppress repeats of the SAME goal for N seconds (8–30 typical)
+```
+
+The full set is [Configuration](../reference/configuration.md); every knob, typed and bounded, is
+[Tunables](../reference/tunables.md).
+
 ### Cadence — `gate_on`
+
 `gate_on` picks the signal that arms a goal (`how-often`, distinct from `perception` = `how-deep`):
+
 - **`motion`** (default) — pixel-motion gate. Right for **physical** events (a person raising a hand, a
   package dropped off).
 - **`fixed`** — escalate every `min_judge_interval` seconds **regardless of motion**. Required for
@@ -231,7 +379,20 @@ A goal's `state` carries three orthogonal levers (the conductor can author them 
   silently under-sample. `cadence_s` also rate-limits a motion goal (escalate at most every N seconds).
 - **`structural` / `semantic`** — the richer Tier-0 channels (CLIP/pose); filled by `percept-edge`.
 
+## Writing goals that work
+
+Goal phrasing is the single biggest accuracy lever — bigger than any knob on this page. The essentials:
+
+- **Specific and falsifiable:** `"someone is holding a red mug"` ✓ — not `"something is happening"` ✗.
+- **Name the observable, not the intent:** `"a pot is boiling over"` ✓ — not `"cooking is going wrong"` ✗.
+- **Few and mutually distinct:** 2–4 goals that don't overlap. Ten similar goals on one scene makes the
+  judge confuse them and tanks precision.
+
+Full guidance — phrasing patterns, matching the plan to the action, and the authoring checklist — is in
+[Authoring goals and watch plans](authoring-goals-and-watch-plans.md).
+
 ## Worked scenarios
+
 - **Physical event (porch package)**: motion-gated, `temporal="strip"`. See [porch-package.md](porch-package.md).
 - **Content event (screenshare)**: `gate_on="fixed"` on a zero-motion screen. See [screenshare.md](screenshare.md).
 
@@ -308,3 +469,34 @@ sink = webhook(user_url, url_policy=UrlPolicy(
 > untrusted-input deployment you should **also restrict egress at the network layer** (no route to
 > `169.254.169.254` / internal ranges) — the real backstop for SSRF. Closing the residual in-library
 > (pinning the resolved IP through the TLS connection) is planned but not yet shipped.
+
+## Cost & latency
+
+- **Latency** — a fire trails the action by roughly one frame interval plus one judge call (~1–2 s with
+  Qwen at 1 fps).
+- **Cost** — the fovea spends a model call **only when salience clears the gate**, not every frame, so a
+  quiet scene is nearly free. Cost scales with *activity*, not with runtime.
+- **Tuning** — higher `fps` means faster detection and more cost; a longer refractory means fewer
+  duplicate alerts.
+
+## Troubleshooting
+
+| symptom | fix |
+|---|---|
+| `0 notifications`, judge shows the wrong model | provider/model mismatch — set `PERCEPT_VISION_MODEL` to a valid id for your `vision=` (OpenRouter needs `qwen/…`, not a Gemini id) |
+| misses low-motion actions | set `PERCEPT_SALIENCE_STAT=block_max` |
+| escalates on nearly every frame | moving camera — set `PERCEPT_EGO_COMPENSATE=true` |
+| a stream of duplicate alerts | raise `PERCEPT_GATE_REFRACTORY_S` |
+| nothing ever fires on a still scene | whole-frame motion never clears — use `gate_on="fixed"` + `min_judge_interval` |
+| webcam black / no frames | wrong index — try `webcam:1`; on macOS grant camera permission to your terminal |
+| `Insufficient credits` / `402` | top up OpenRouter, or switch to `--vision gemini` / `claude` |
+| `needs the 'openai' SDK` | `pip install "percept-vision[openrouter]"` |
+| loud `SCRIPTED BACKENDS` banner | harmless — it's about the unused *voice* seam; set `PERCEPT_NO_BANNER=1` |
+
+## See also
+
+- [Authoring goals and watch plans](authoring-goals-and-watch-plans.md) — the biggest accuracy lever.
+- [Tune admission](tune-admission.md) — when the gate is the thing that needs fixing.
+- [Configuration](../reference/configuration.md) · [Tunables](../reference/tunables.md) — every knob.
+- [`watch()` contract](../reference/watch-contract.md) — the frozen streaming entrypoint under `run()`.
+- [`examples/vision_assistant.py`](../../examples/vision_assistant.py) — a complete runnable integration.
