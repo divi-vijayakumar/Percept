@@ -1066,20 +1066,143 @@ LATENCY_LEGS = (
 )
 
 
-def latency_summary(lat: list[dict]) -> dict[str, Any]:
-    legs = {k: dist([r[k] for r in lat if r.get(k) is not None]) for k, _ in LATENCY_LEGS}
-    gated = [r["onset_to_incident_s"] for r in lat if r.get("onset_to_incident_s") is not None]
-    under = sum(1 for x in gated if x < ACTION_TO_INCIDENT_GATE_S)
+#: Legs anchored on the ACTION ONSET.  These answer "how soon after the action did X happen?", so
+#: their unit is one GT OCCURRENCE -- not one Incident.  A long GT interval can emit dozens of
+#: correct Incidents, and averaging over emissions weights that single occurrence dozens of times,
+#: answering "how late were all the repeated messages?" instead of "how soon did we first alert?".
+#: Measured on the n=100 v10_r1 artifact, that inflates the reported median by 4.4x-9.5x per leg.
+ONSET_ANCHORED_LEGS = ("onset_to_incident_s", "onset_to_ingest_s", "onset_to_admission_s")
+
+#: Everything else is genuinely per-emission or per-call (ingest->admission, dispatch->verdict, ...).
+#: One judge call is one sample of provider latency, so those distributions are already correct and
+#: are deliberately left weighted per emission.
+PER_EMISSION_LEGS = tuple(k for k, _ in LATENCY_LEGS if k not in ONSET_ANCHORED_LEGS)
+
+#: Schema marker so a downstream consumer can tell WHICH aggregation unit produced a number.
+LATENCY_SCHEMA = "percept.latency/2-occurrence-anchored"
+
+
+def occurrence_key(row: dict) -> tuple[str, tuple] | None:
+    """The dedup identity ``quality()`` already uses -- ``(case_id, matched_occurrence)``.
+
+    Sharing one key function is what keeps the latency denominator and the timely-recall numerator
+    describing the same population.  Identical intervals in DIFFERENT cases stay distinct because
+    ``case_id`` is part of the key.
+    """
+    occ = row.get("matched_occurrence")
+    if not occ:
+        return None
+    return (row["case_id"], tuple(occ) if isinstance(occ, (list, tuple)) else (occ,))
+
+
+def earliest_rows_per_occurrence(lat: Sequence[dict]) -> tuple[list[dict], int]:
+    """One row per matched occurrence: the emission with the SMALLEST ``onset_to_incident_s``.
+
+    Returns ``(rows, n_pre_onset_dropped)``.  Rows are never mutated -- the winners are the caller's
+    own dict objects, returned by reference.
+
+    The whole row wins, not each leg independently: ``onset_to_ingest`` and ``onset_to_admission``
+    are read off the SAME emission that produced the earliest Incident, so the legs still decompose
+    one coherent delivery.  Taking a per-leg minimum would mix emissions and produce a breakdown
+    that does not describe any delivery that actually happened.
+
+    A negative ``onset_to_incident_s`` means an Incident matched an occurrence it PRECEDES.  That is
+    not an early alert, it is a matcher artifact, and taking ``min`` would silently promote it to
+    best-case.  Such rows are dropped from the latency population and COUNTED, never silently kept.
+    """
+    best: dict[tuple, dict] = {}
+    pre_onset = 0
+    for row in lat:
+        key = occurrence_key(row)
+        if key is None:
+            continue  # unmatched Incident: precision evidence, not latency evidence
+        value = row.get("onset_to_incident_s")
+        if value is None or not math.isfinite(float(value)):
+            continue
+        if float(value) < 0.0:
+            pre_onset += 1
+            continue
+        incumbent = best.get(key)
+        if incumbent is None or float(value) < float(incumbent["onset_to_incident_s"]):
+            best[key] = row
+    return list(best.values()), pre_onset
+
+
+def latency_summary(lat: list[dict], rows: Sequence[dict] | None = None) -> dict[str, Any]:
+    """Action-onset latency, aggregated PER OCCURRENCE; per-call legs left per emission.
+
+    ``rows`` supplies the ground-truth denominator so a reader can see that this distribution is
+    CONDITIONAL ON DETECTION -- occurrences we never found contribute no latency sample at all, and
+    quoting a median without the miss count beside it overstates the product.
+
+    Percentiles use ``_pct``, this module's LINEAR-INTERPOLATION convention.  ``percept.slo`` uses
+    nearest-rank, so a figure here and a figure there are not directly comparable at the same
+    quantile.  Stated rather than reconciled: changing either convention silently would break the
+    other report's history.
+    """
+    earliest, pre_onset = earliest_rows_per_occurrence(lat)
+    matched_keys = {occurrence_key(r) for r in lat if occurrence_key(r) is not None}
+
+    gt_occurrences = None
+    if rows is not None:
+        gt_occurrences = sum(
+            r["stages"]["stage4_cognition"]["gt_occurrences"]
+            for r in rows if r.get("stages")
+        )
+    matched_occurrences = len(matched_keys)
+    missed = (gt_occurrences - matched_occurrences) if gt_occurrences is not None else None
+
+    onset = [float(r["onset_to_incident_s"]) for r in earliest]
+    timely = sum(1 for x in onset if x <= ACTION_TO_INCIDENT_GATE_S)
+
+    legs: dict[str, Any] = {}
+    for key, _ in LATENCY_LEGS:
+        source = earliest if key in ONSET_ANCHORED_LEGS else lat
+        legs[key] = dist([r[key] for r in source if r.get(key) is not None])
+
+    def by(field: str) -> dict[str, Any]:
+        return {
+            k: dist([r["onset_to_incident_s"] for r in earliest
+                     if r.get(field) == k and r.get("onset_to_incident_s") is not None])
+            for k in sorted({r.get(field) for r in earliest if r.get(field) is not None})
+        }
+
     return {
+        "schema": LATENCY_SCHEMA,
+        "aggregation_unit": {
+            leg: ("occurrence:earliest_incident" if leg in ONSET_ANCHORED_LEGS else "incident_emission")
+            for leg, _ in LATENCY_LEGS
+        },
+        "methodology": (
+            "Onset-anchored legs are aggregated per GT occurrence, taking the EARLIEST Incident that "
+            "matched it -- 'how soon did we first alert?'. Legs downstream of ingest stay per "
+            "emission because one judge call is one genuine sample. The distribution is conditional "
+            "on detection: missed_occurrences contribute no sample, so read p50 next to "
+            "timely_recall_all_gt, never alone. Percentiles are linearly interpolated (_pct)."
+        ),
         "legs": legs,
         "gate_s": ACTION_TO_INCIDENT_GATE_S,
-        "n_gated_incidents": len(gated),
-        "n_under_gate": under,
-        "fraction_under_gate": (under / len(gated)) if gated else None,
-        "by_goal_kind": {
-            k: dist([r["onset_to_incident_s"] for r in lat
-                     if r["goal_kind"] == k and r.get("onset_to_incident_s") is not None])
-            for k in sorted({r["goal_kind"] for r in lat})
+        "gt_occurrences": gt_occurrences,
+        "matched_occurrences": matched_occurrences,
+        "missed_occurrences": missed,
+        "timely_occurrences": timely,
+        "timely_recall_all_gt": (timely / gt_occurrences) if gt_occurrences else None,
+        "timely_rate_matched_only": (timely / matched_occurrences) if matched_occurrences else None,
+        "pre_onset_rows_dropped": pre_onset,
+        "n_gated_incidents": len(onset),
+        "n_under_gate": timely,
+        "fraction_under_gate": (timely / len(onset)) if onset else None,
+        "by_goal_kind": by("goal_kind"),
+        "by_dataset": by("dataset"),
+        #: AUDIT ONLY -- the per-emission distribution this report used to publish as product
+        #: latency.  It answers "how late were all repeated messages for an occurrence?", which is a
+        #: real diagnostic (delivery volume, merge-window behaviour) but is NOT the product gate.
+        "raw_incident_emissions": {
+            "aggregation_unit": "incident_emission",
+            "note": "AUDIT ONLY. Not product latency -- weights one occurrence once per Incident.",
+            "legs": {k: dist([r[k] for r in lat if r.get(k) is not None])
+                     for k in ONSET_ANCHORED_LEGS},
+            "n_matched_emissions": sum(1 for r in lat if occurrence_key(r) is not None),
         },
     }
 
@@ -1108,7 +1231,7 @@ def mode_report(rows: list[dict], prices: dict) -> dict[str, Any]:
                        [x for x in lat if x["dataset"] == k])
             for k in sorted({r["dataset"] for r in ok})
         },
-        "latency": latency_summary(lat),
+        "latency": latency_summary(lat, ok),
         "accounting": accounting(ok, prices),
         "pace_lag_p95_s": dist([r["pace_lag"]["p95"] for r in ok
                                 if r.get("pace_lag", {}).get("p95") is not None]),
