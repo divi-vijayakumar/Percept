@@ -1,6 +1,6 @@
 ---
 title: Backends
-updated: 2026-07-23
+updated: 2026-07-28
 applies_to: percept-vision 1.0.0
 status: stable
 ---
@@ -25,7 +25,11 @@ vision · specialist · conductor · stt · tts   ← the five cognition seams (
 
 ## Install + extras
 
-The **core is pure stdlib** — `pip install percept-vision` runs offline with the `fake` backends,
+> **This page is the canonical install reference.** The README and the Quickstart show only the two
+> commands most people need and link here; the complete extras matrix lives below, in one place, so
+> the three cannot drift apart.
+
+The **core is pure stdlib** — `pip install percept-vision` runs offline with the scripted backends,
 no keys, no heavy deps. Real backends are optional extras:
 
 ```bash

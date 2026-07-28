@@ -56,23 +56,16 @@ Point it at a webcam, a video file, or an RTSP camera. Get a `🔔` once per eve
 ### Install
 
 ```bash
-pip install percept-vision        # core: PURE STDLIB — runs offline, no keys, no network
+pip install percept-vision                          # core: PURE STDLIB — offline, no keys, no network
+pip install "percept-vision[runtime,openrouter]"    # + capture + a hosted judge, for a live watch
 ```
 
 **The package is `percept-vision`; the import is `import percept`.** Say it out loud once and you
-will not lose an hour to it. Heavy dependencies are opt-in extras:
+will not lose an hour to it.
 
-| extra | what it adds | key |
-|---|---|---|
-| `[runtime]` | camera / video / RTSP capture (OpenCV) | — |
-| `[gemini]` | `GeminiVision` | `GEMINI_API_KEY` |
-| `[claude]` | `AnthropicVision` | `ANTHROPIC_API_KEY` |
-| `[openrouter]` | OpenRouter (e.g. Qwen) | `OPENROUTER_API_KEY` |
-| `[deepgram]` | Deepgram STT + TTS | `DEEPGRAM_API_KEY` |
-| `[screen]` · `[mic]` | screen capture · microphone for fused audio+video | — |
-| `[edge]` | Python tier-0 gate (parity with the `percept-edge` npm package) | — |
-| `[bench]` | benchmark + scorecard tooling (from a repo checkout) | — |
-| `[all]` | everything | — |
+Those two lines cover almost everyone. Every optional extra — `[gemini]`, `[claude]`, `[deepgram]`,
+`[screen]`, `[mic]`, `[edge]`, `[bench]`, `[pose]`, `[otel]`, `[all]` — with what it pulls in and
+which key it needs, is in **[docs/reference/backends.md](docs/reference/backends.md)**.
 
 ### 60-second quickstart — no keys, fully offline
 
@@ -111,26 +104,15 @@ agent = Percept.create(vision="gemini")     # percept-vision[gemini] + GEMINI_AP
 
 ### Watch a live source
 
-You don't write a capture loop — **`percept.run` owns it**. It opens the source, runs the cheap
-tier-0 motion gate, judges, and **yields an `Incident` on each rising-edge fire**:
+For a real watch agent you don't write a capture loop — **`percept.run` owns it**: it opens the
+source, runs the cheap tier-0 gate so a still scene spends no cloud calls, judges, and yields an
+`Incident` on each rising-edge fire. One `async for` is the whole integration surface.
 
-```python
-import asyncio, percept
-
-async def main():
-    async for incident in percept.run(
-        source="webcam:0",                       # "rtsp://…" or a video file path, too
-        goals=["the milk is boiling over"],      # each string becomes a Goal
-        vision="gemini",
-    ):
-        print(f"[FIRE] {incident.message}")
-
-asyncio.run(main())
-```
-
-Embedding it in your own app — sinks (`on_incident` → Slack/webhook), refusals (`on_ask`), fused
-audio (`audio_source="mic:0"`), the decision trace (`on_trace`), egomotion, cost and
-troubleshooting — is all in **[docs/how-to/runtime.md](docs/how-to/runtime.md)**.
+- **[Quickstart](docs/tutorials/quickstart.md)** — the guided path: offline → a real backend → a live
+  source, with what each step is actually doing.
+- **[Runtime worker](docs/how-to/runtime.md)** — everything for embedding it: sources, sinks
+  (`on_incident` → Slack/webhook), refusals (`on_ask`), fused audio, the decision trace, moving
+  cameras, cost, and a troubleshooting table.
 
 ### See it run in a browser
 

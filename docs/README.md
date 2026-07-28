@@ -29,7 +29,7 @@ The architecture diagram is **generated from the code**
 | page | what it covers | updated |
 |---|---|---|
 | [Choose your path](tutorials/choose-your-path.md) | The narrow first path — pick one row, ignore the rest. | 2026-07-23 |
-| [Quickstart](tutorials/quickstart.md) | Install, run offline on the scripted backend, then a real one. | 2026-07-23 |
+| [Quickstart](tutorials/quickstart.md) | Install, run offline on the scripted backend, then a real one. | 2026-07-28 |
 
 ## How-to — do a specific task
 
@@ -57,7 +57,7 @@ The architecture diagram is **generated from the code**
 | page | what it covers | updated |
 |---|---|---|
 | [Audio modality — the acoustic-onset → judge wake path](reference/audio-modality.md) | Fused vision + audio judging. | 2026-07-23 |
-| [Backends](reference/backends.md) | The seams, backend names, extras, and custom backends. | 2026-07-23 |
+| [Backends](reference/backends.md) | The seams, backend names, extras, and custom backends. | 2026-07-28 |
 | [Command-line reference](reference/cli.md) | All nine console scripts, their flags, and install requirements. | 2026-07-23 |
 | [The command seam — `RuntimeSession`](reference/command-seam.md) | Drive a running watch — arm by voice, ask, pause/mute. | 2026-07-16 |
 | [Configuration reference — everything you can tune](reference/configuration.md) | **Everything you can tune** — the `Settings` tree, every env var, and resolver precedence. | 2026-07-28 |

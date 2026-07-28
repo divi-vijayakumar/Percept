@@ -1,6 +1,6 @@
 ---
 title: Quickstart
-updated: 2026-07-23
+updated: 2026-07-28
 applies_to: percept-vision 1.0.0
 status: stable
 ---
@@ -23,15 +23,17 @@ Home: <https://percept.percia.ai>.
 pip install percept-vision        # core is pure stdlib — no heavy deps, no keys
 ```
 
-The import is `percept`:
+The package is `percept-vision`; the import is `percept`:
 
 ```python
 import percept
 ```
 
-The **core runs offline** with deterministic `fake` backends, so you can build and test the whole
-cognition path — goals, the gate, entity memory, escalation — with no API keys. Real model backends
-are optional extras (see [backends.md](../reference/backends.md)).
+The **core runs offline** with deterministic scripted backends, so you can build and test the whole
+cognition path — goals, the gate, entity memory, escalation — with no API keys. You will add one
+extra later in this page for a real backend. The full matrix of extras, what each pulls in, and
+which key it needs is in **[backends.md](../reference/backends.md)** — the canonical install
+reference.
 
 ---
 
