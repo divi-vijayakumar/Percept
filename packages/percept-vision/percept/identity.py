@@ -7,7 +7,8 @@ sit behind the frozen ``Identity`` protocol (``match(obs, known) -> id | None``)
   single dominant object under a near-static camera (state the bound plainly — it is not general).
 * :class:`AppearanceIdentity` — continuity first, then a brute-force **appearance** match over the
   recent set so an object is recognized after it leaves and re-enters tracking, and a genuinely new
-  object is distinguished. The fleet-calibrated, high-accuracy re-id service is a paid tier.
+  object is distinguished. State the bound plainly: the match is uncalibrated and scoped to the
+  recent set, so it does not survive long absences or crowded scenes of similar objects.
 
 Both accept an optional keyword ``signature`` (the appearance embedding of the observation). The
 frozen protocol is ``match(obs, known)``; the extra keyword is optional, so these remain structural

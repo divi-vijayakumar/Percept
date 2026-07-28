@@ -286,7 +286,7 @@ class TestIncident(unittest.TestCase):
 
 
 class TestLabelRecord(unittest.TestCase):
-    """L-1: the flywheel keystone — schema, round-trip, and the media-free egress guarantee."""
+    """L-1: the label-feedback keystone — schema, round-trip, and the media-free egress guarantee."""
 
     def _rec(self, **over):
         base = dict(
