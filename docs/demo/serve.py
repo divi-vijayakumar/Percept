@@ -1272,8 +1272,7 @@ otherwise the keyless fixture runs the real runtime with scripted verdicts.</p>
 <p class=k>judge key: %s</p>
 <p class=k>Earlier harnesses stay served but unlisted — they are internal dogfood tooling, not the
 demo: <code>/demo-01-video-watch.html</code> (MP4 upload) ·
-<code>/demo-02-screen-watch.html</code> (screen-share) ·
-<code>/demo-03-judgment-timeline.html</code> (timeline viz).</p>""" % (
+<code>/demo-02-screen-watch.html</code> (screen-share).</p>""" % (
     "SET — real judge available" if _have_key() else
     "UNSET — fixture only (set OPENROUTER_API_KEY / GEMINI_API_KEY / ANTHROPIC_API_KEY)")
 

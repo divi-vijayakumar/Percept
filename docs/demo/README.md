@@ -13,9 +13,8 @@ as `percept.watch_cli --trace`.
 **[Demo 04 — live stream + replay](demo-04-stream-uploaded-video.html)** is the demo. It watches a
 live feed being judged as it happens, then replays every decision on the media timeline. Start there.
 
-Three earlier harnesses stay served but unlisted — internal dogfood tooling, not the demo:
-`demo-01-video-watch.html` (MP4 upload), `demo-02-screen-watch.html` (screen-share),
-`demo-03-judgment-timeline.html` (timeline visualization).
+Two earlier harnesses stay served but unlisted — internal dogfood tooling, not the demo:
+`demo-01-video-watch.html` (MP4 upload) and `demo-02-screen-watch.html` (screen-share).
 
 ## Run it
 

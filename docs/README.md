@@ -66,7 +66,7 @@ The architecture diagram is **generated from the code**
 | [Edge parity](reference/edge-parity.md) | JS ↔ Python edge conformance. | 2026-07-16 |
 | [Edge Wake Policy](reference/edge-policy.md) | The on-device "should we spend a VLM call?" layer. | 2026-07-23 |
 | [Eval-Hours Costing for the Operating-Point Bars](reference/eval-hours-costing.md) | Sizing a live evaluation run before you spend on it. | 2026-07-23 |
-| [The Operating-Frontier Report (§3.2)](reference/operating-frontier.md) | The recall / false-fire trade-off surface. | 2026-07-20 |
+| [The operating-frontier report](reference/operating-frontier.md) | The recall / false-fire trade-off surface. | 2026-07-20 |
 | [Registration](reference/registration.md) | Detector / concern / enricher registration in detail. | 2026-07-20 |
 | [Registries and adapters](reference/registries.md) | **Backend seams, detectors, and profile registries** — and how to add your own. Generated. | 2026-07-28 |
 | [Tunables](reference/tunables.md) | **All 157 tunables, and the 31 an optimizer may search.** Generated from the registry. | 2026-07-28 |
@@ -82,7 +82,6 @@ The architecture diagram is **generated from the code**
 |---|---|---|
 | [Benchmarks](benchmarks/README.md) | **Start here** — status, how to run one, and how to read a precision number without being misled. | 2026-07-28 |
 | [Percept Benchmark Methodology Spec](benchmarks/methodology.md) | How the benchmark is designed (no numbers). | 2026-07-28 |
-| [Publishable Benchmark Runbook](benchmarks/publishing-runbook.md) | What must be true before a number ships, plus external reference bars. | 2026-07-28 |
 | [Run benchmarks](benchmarks/running-benchmarks.md) | The scorecard, the audit gate, and the reproducible model-sweep runbook. | 2026-07-28 |
 
 ## Explanation — why it works this way

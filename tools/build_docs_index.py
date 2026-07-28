@@ -73,7 +73,6 @@ SUMMARY: dict[str, str] = {
     "benchmarks/README.md": "**Start here** — status, how to run one, and how to read a precision number without being misled.",
     "benchmarks/methodology.md": "How the benchmark is designed (no numbers).",
     "benchmarks/running-benchmarks.md": "The scorecard, the audit gate, and the reproducible model-sweep runbook.",
-    "benchmarks/publishing-runbook.md": "What must be true before a number ships, plus external reference bars.",
     "explanation/architecture.md": "The four tiers, the two-layer brain, the firing paths.",
     "explanation/concepts.md": "The cognition / perception split, the gate, rising-edge firing, memory.",
     "explanation/e2e-flow-milk-boilover.md": "A judged path, end to end.",

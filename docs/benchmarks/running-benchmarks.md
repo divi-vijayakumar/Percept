@@ -83,10 +83,10 @@ here.
 
 External reference bars (for example TML, TransRAC) appear in
 [methodology.md](methodology.md) and
-[publishing-runbook.md](publishing-runbook.md) **only** as external
+the release audit (`percept-bench audit --release`) **only** as external
 comparison points. They are never presented as Percept claims.
 
 To measure precision/recall on your own labeled manifest today, see [./eval.md](../how-to/eval.md). For the
 honest form of a quality claim (report the bound, not the point estimate) and what a release-grade
 number requires, see [methodology.md](methodology.md)
-and [publishing-runbook.md](publishing-runbook.md).
+and the release audit (`percept-bench audit --release`).

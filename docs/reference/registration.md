@@ -300,4 +300,4 @@ for removal. Use the two seams above for admission, and `Vision.judge(context=..
 | `register_concern`, `registered_concerns`, `registered_concern_ids`, `get_concern`, `unregister_concern`, `clear_concerns`, `detectors_for_concern`, `concern_to_condition`, `compile_registered_watchspec` | semver-stable; additive-only within a contract MAJOR |
 | `percept.run(..., structural_adapter=, semantic_adapter=)` (the tier-0 admission seam), `Vision.judge(context=...)` | semver-stable; additive-only within a contract MAJOR |
 | `register_enricher`, `enricher_for`, `enrich_signal`, `Enrichment`, `NullEnricher`, `FakeEnricher` | **REMOVED** in 0.7.x (zero callers — the seam did nothing); `Enricher` protocol deprecated, removed next MAJOR |
-| `Concern` and the wire DTOs (`WatchSpec`, `WatchCondition`) | live behind the frozen `percept` / contract membrane (§0) — a breaking change is a MAJOR bump, flagged not silent |
+| `Concern` and the wire DTOs (`WatchSpec`, `WatchCondition`) | live behind the frozen `percept` / contract membrane — a breaking change is a MAJOR bump, flagged not silent |

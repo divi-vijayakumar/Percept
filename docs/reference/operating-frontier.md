@@ -1,10 +1,10 @@
 ---
-title: The Operating-Frontier Report (§3.2)
+title: The operating-frontier report
 updated: 2026-07-20
 applies_to: percept-vision 1.0.0
 status: stable
 ---
-# The Operating-Frontier Report (§3.2)
+# The operating-frontier report
 
 Status: reference — the report a 1.0.0 release publishes when it makes a quality claim.
 
@@ -20,7 +20,7 @@ percept-eval --baseline base.json --candidate cand.json --fixtures ./fixtures \
              --frontier --frontier-bars frontier-bars.json [--frontier-json out.json]
 ```
 
-`--frontier` appends the §3.2 report to the paired-differential report from card D3.
+`--frontier` appends the operating-frontier report to the paired-differential report.
 `--frontier-arm` (default `candidate`) picks which arm the frontier describes. Exit code is `1`
 when a declared operating bar is not supported by the evidence, `2` on a refusal.
 
@@ -60,7 +60,7 @@ minutes. Degraded time is subtracted from **coverage**, never from a rate denomi
 
 **Per source-hour at a stated active-watch count** is the second, deployment-economics denominator.
 It is published only when the active-watch count was actually stated; a bare per-stream-hour figure
-is underspecified (costing doc §4), and this report omits it rather than printing it with an
+is underspecified (see §4 of [Eval-hours costing](eval-hours-costing.md)), and this report omits it rather than printing it with an
 implied concurrency of 1.
 
 **Assisted recall** is the same matcher with `predicted_actions={"fire","ask"}` — "the episode was
@@ -95,7 +95,7 @@ keys:
 ```
 
 `exposure.scheduled_watch_hours` is **required** — a recall or false-fire claim with an unstated
-denominator is precisely what §3.2 exists to prevent, so the loader refuses rather than assuming.
+denominator is precisely what this report exists to prevent, so the loader refuses rather than assuming.
 `active_watches` is watch-hours accumulated across the `source_hours` (so
 `active_watches / source_hours` is the mean concurrency). `degraded_hours` may be omitted when a
 `trace.json` is present: it is then read off `TraceSummary` (`watch_duration_s − source_healthy_s`),

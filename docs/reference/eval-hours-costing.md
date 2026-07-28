@@ -118,9 +118,9 @@ Pearson exact, one-sided 95% lower bound):
 Same rule: per archetype, multiply by 6 for the total labeled-positive-episode budget. `recall_min = 0.90`
 with a clean pass is `29 × 6 = 174` positive episodes; `0.95` nearly quadruples that to `59 × 6 = 354`.
 
-## 4. Denominator discipline (§3.3) — why "per stream-hour" alone is incomplete
+## 4. Denominator discipline — why "per stream-hour" alone is incomplete
 
-§3.2 requires rates reported per **scheduled watch-hour**; §3.3 additionally requires per **source-hour at a
+Rates must be reported per **scheduled watch-hour**, and additionally per **source-hour at a
 stated number of active watches**. A bare "per stream-hour" figure is not wrong, it's *underspecified*, for
 two independent reasons that both bite in production, not just in eval:
 
@@ -130,14 +130,14 @@ two independent reasons that both bite in production, not just in eval:
    an N=10 average — the two are wildly different operational realities and the stream-hour number alone
    cannot distinguish them. Reporting *scheduled watch-hours* forces the concurrency count into the
    denominator explicitly.
-2. **Coverage is invisible in a stream-hour.** §3.4 requires degraded intervals to count against coverage and
+2. **Coverage is invisible in a stream-hour.** Degraded intervals must count against coverage and
    recall rather than silently shrinking the denominator. A "stream-hour" is ambiguous about whether it means
    raw ingested video (including time the watch was degraded/failed and structurally couldn't have fired) or
    only healthy observation time. Scheduled watch-hours is the honest denominator — a watch that was
    *scheduled* to be armed for an hour but was blind for 20 minutes of it still owes that 20 minutes against
    its coverage number, not a quiet subtraction from the reporting base.
 
-Practical rule for this doc's tables and for §3.2 reporting: **always publish both** — per scheduled
+Practical rule for this doc's tables and for any published rate: **always publish both** — per scheduled
 watch-hour (the bar-eligible number) and per source-hour at a stated active-watch count (the deployment-
 economics number a founder or customer will actually reason about, e.g. "how many false alerts will one
 camera generate per day with our typical 3-watch bundle"). Neither one substitutes for the other.
@@ -177,7 +177,7 @@ Two independent capture tracks, not one:
   for 276 labeled positive episodes across six archetypes, including labeling: **3–5 days** of dedicated
   staging/labeling effort, not calendar time — it parallelizes across archetypes and people.
 
-## 6. What this means for the decision (§14.2)
+## 6. What this means in practice
 
 The actual choice is a tradeoff, not a number picked in the abstract:
 

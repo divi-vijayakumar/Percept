@@ -10,8 +10,7 @@ How Percept is measured, how to reproduce a measurement, and what it is honest t
 
 > **Status: no Percept accuracy numbers are published yet.**
 > The benchmark is designed, the harness runs, and internal measurements exist. Publication is
-> gated on the criteria in [the publishing runbook](publishing-runbook.md) — a full-mode scorecard,
-> no modeled cells, and a content-hashed release manifest. Figures appearing in the methodology
+> gated on [the publishing gate](#the-publishing-gate) below. Figures appearing in the methodology
 > pages are **external reference bars or worked examples, not Percept claims**.
 
 ## Start here
@@ -20,7 +19,6 @@ How Percept is measured, how to reproduce a measurement, and what it is honest t
 |---|---|
 | run a benchmark on your own clips | [Running benchmarks](running-benchmarks.md) |
 | understand how the benchmark is designed | [Methodology](methodology.md) |
-| know what has to be true before a number ships | [Publishing runbook](publishing-runbook.md) |
 | measure *your* goals, not ours | [Evaluate](../how-to/eval.md) — per-concern precision/recall on your manifest |
 | size a live run before spending on it | [Eval hours costing](../reference/eval-hours-costing.md) |
 
@@ -53,6 +51,21 @@ the corpus's own GT coverage.
 | sparse (the event is rare) | low | low | »1× | the detector did the work |
 
 A raw precision figure quoted without its coverage is not a result. Always publish both.
+
+## The publishing gate
+
+A number does not become a claim by being measured. Before any accuracy figure ships:
+
+| gate | why |
+|---|---|
+| `percept-bench audit --release` passes | the manifest and baseline registry are validated, not assumed |
+| full-mode scorecard, **no modeled cells** | every cell came from a real run, not an extrapolation |
+| content-hashed release manifest | the exact corpus is pinned, so the run is reproducible |
+| ground-truth coverage published alongside precision | see the section above — precision without coverage is not a result |
+| the run is reproducible from a named commit | not from someone's dirty working tree |
+
+Single-run figures are not claims either. Recall on a fixed corpus moves run-to-run with provider
+latency against the judge deadline, so a claim needs either repeated runs or a stated noise band.
 
 ## The quality rail around the benchmark
 

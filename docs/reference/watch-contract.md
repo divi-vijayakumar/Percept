@@ -7,7 +7,7 @@ status: stable
 # `watch()` — the frozen public contract
 
 `percept.watch(stream, goals, profile=None) -> AsyncIterator[WatchEvent]` is the **one stable,
-versioned entrypoint** every downstream MVP card builds on (implementation plan, epic E1, card M1):
+versioned entrypoint** every downstream MVP card builds on (, epic E1, card M1):
 WatchProfiles (E2), resilience/SLOs (E1), the SDK front door (E6). It is a thin seam over the
 existing cognition core — `Percept.create()` + `Percept.perceive_judged()` — not a new firing path.
 **No detection behavior is hardcoded in `watch()` itself.**
@@ -40,13 +40,13 @@ async def watch(
 - **`stream`** — an (async or sync) iterable of frames, oldest to newest. A frame is whatever the
   configured `vision` backend accepts.
 - **`goals`** — the `Goal`s to watch; registered on the core before the first frame.
-- **`profile`** — OPTIONAL and deliberately **opaque today**. `WatchProfile` (card P1) will bind
+- **`profile`** — OPTIONAL and deliberately **opaque today**. `WatchProfile` will bind
   `(environment, goal-type, state)` to the runtime's knobs (`salience_stat`, `plan_mode`, cadence,
-  gate config, ...) — the free variables of `Q(p | environment, goal, state)` (implementation plan
-  §2). This card only reserves the seam. **The documented default (`profile=None`) is today's
+  gate config, ...) — the free variables of `Q(p | environment, goal, state)`. The seam is
+  reserved, not yet driven. **The documented default (`profile=None`) is today's
   `Settings`-driven behavior** (`percept.load_settings()`), unchanged. A bare `Settings` instance
   is also accepted as a minimal, non-behavior-changing pass-through (see
-  `percept.watch._settings_from_profile`) — everything else resolves to the default until P1 lands.
+  `percept.watch._settings_from_profile`) — everything else resolves to the default.
 - **`percept`** — OPTIONAL, a pre-built `Percept` core to reuse (custom backends, state carried
   across calls). Omit it to get one built with `Percept.create()`.
 - **`source`** — the frame-source key; multi-camera setups pass distinct sources per `watch()` call.
