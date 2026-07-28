@@ -131,6 +131,9 @@ docs/publish-readiness-plan.md
 /handoff/
 /review/
 internal-docs/
+
+# session handoffs / execution notes — internal only, never committed
+execution-docs/
 # client-facing docs (onboarding, incident/probe responses, dogfooding feedback) — internal only,
 # never in the public OSS tree; regenerate/keep under internal-docs/client-preview/
 client-preview/
