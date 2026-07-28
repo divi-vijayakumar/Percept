@@ -39,7 +39,6 @@ SECTIONS: list[tuple[str, str, str]] = [
 
 #: Curated one-line summaries. A page missing here falls back to its first prose sentence.
 SUMMARY: dict[str, str] = {
-    "tutorials/choose-your-path.md": "The narrow first path — pick one row, ignore the rest.",
     "tutorials/quickstart.md": "Install, run offline on the scripted backend, then a real one.",
     "how-to/runtime.md": "**Start here to embed Percept.** `run(source) → incidents`: sources, sinks, tuning, egomotion, cost, troubleshooting.",
     "how-to/authoring-goals-and-watch-plans.md": "Phrase goals and match the plan to the action, so quality isn't lost before the judge runs.",
@@ -57,7 +56,7 @@ SUMMARY: dict[str, str] = {
     "reference/tunables.md": "**All 157 tunables, and the 31 an optimizer may search.** Generated from the registry.",
     "reference/registries.md": "**Backend seams, detectors, and profile registries** — and how to add your own. Generated.",
     "reference/cli.md": "All nine console scripts, their flags, and install requirements.",
-    "reference/v1-4-scope-and-persistence.md": "**Read first if you are designing around Percept** — what's covered, what's excluded, why episodes don't survive a restart.",
+    "reference/scope-and-persistence.md": "**Read first if you are designing around Percept** — what's covered, what's excluded, why episodes don't survive a restart.",
     "reference/watch-contract.md": "The frozen public entrypoint and the `WatchEvent` schema.",
     "reference/consequence-gate.md": "FIRE/ASK/SILENT, the rising edge, refractory, and the typed reason vocabulary.",
     "reference/backends.md": "The seams, backend names, extras, and custom backends.",
@@ -176,7 +175,7 @@ def render_index(pages: dict[str, dict[str, str]], version: str) -> str:
     add("**[Tunables](reference/tunables.md)** · using an agent? → **[Coding agents](agents/README.md)**")
     add("")
     add("The architecture diagram is **generated from the code**")
-    add("([`architecture.svg`](architecture.svg) · interactive [`architecture.html`](../architecture.html))")
+    add("([`architecture.svg`](architecture.svg) · interactive [`architecture.html`](architecture.html))")
     add("— it cannot drift from what ships.")
     add("")
 

@@ -19,7 +19,7 @@ New here? → **[Quickstart](tutorials/quickstart.md)** · want the whole surfac
 **[Tunables](reference/tunables.md)** · using an agent? → **[Coding agents](agents/README.md)**
 
 The architecture diagram is **generated from the code**
-([`architecture.svg`](architecture.svg) · interactive [`architecture.html`](../architecture.html))
+([`architecture.svg`](architecture.svg) · interactive [`architecture.html`](architecture.html))
 — it cannot drift from what ships.
 
 ## Tutorials — start here
@@ -28,7 +28,6 @@ The architecture diagram is **generated from the code**
 
 | page | what it covers | updated |
 |---|---|---|
-| [Choose your path](tutorials/choose-your-path.md) | The narrow first path — pick one row, ignore the rest. | 2026-07-23 |
 | [Quickstart](tutorials/quickstart.md) | Install, run offline on the scripted backend, then a real one. | 2026-07-28 |
 
 ## How-to — do a specific task
@@ -68,8 +67,8 @@ The architecture diagram is **generated from the code**
 | [The operating-frontier report](reference/operating-frontier.md) | The recall / false-fire trade-off surface. | 2026-07-20 |
 | [Registration](reference/registration.md) | Detector / concern / enricher registration in detail. | 2026-07-20 |
 | [Registries and adapters](reference/registries.md) | **Backend seams, detectors, and profile registries** — and how to add your own. Generated. | 2026-07-28 |
+| [Scope and persistence (percept 1.0.0)](reference/scope-and-persistence.md) | **Read first if you are designing around Percept** — what's covered, what's excluded, why episodes don't survive a restart. | 2026-07-23 |
 | [Tunables](reference/tunables.md) | **All 157 tunables, and the 31 an optimizer may search.** Generated from the registry. | 2026-07-28 |
-| [Scope and persistence (percept 1.0.0)](reference/v1-4-scope-and-persistence.md) | **Read first if you are designing around Percept** — what's covered, what's excluded, why episodes don't survive a restart. | 2026-07-23 |
 | [The Vision adapter interface (public extension point)](reference/vision-adapter.md) | The public extension point — bring your own model, fail-closed injection, conformance suite. | 2026-07-23 |
 | [`watch()` — the frozen public contract](reference/watch-contract.md) | The frozen public entrypoint and the `WatchEvent` schema. | 2026-07-23 |
 

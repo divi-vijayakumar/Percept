@@ -208,3 +208,16 @@ To **drive** a running watch — arm goals by voice, ask "what do you see?", pau
 - **[e2e-flow-milk-boilover.md](../explanation/e2e-flow-milk-boilover.md)** — a full trace of one request through
   the whole system, and where the perception bottleneck lives.
 - **Website:** <https://percept.percia.ai>.
+
+Percept has a lot of surface area — runtime, edge, harness, contracts, backends, benchmarks,
+process-QA, rhythm, screen, audio. **You do not need most of it to start**, and probably won't need
+these until a specific task calls for them:
+
+- **`percept.harness`** — only if you're tuning server-side edge detectors (pose, acoustic-onset, motion).
+- **`percept.contracts`** — only if you're integrating another runtime against the wire contract.
+- **`percept-bench`** — only if you're measuring quality against a manifest.
+- **process-QA / rhythm** — only if your goal is a multi-step process or repetition counting.
+- **`percept-edge` (npm)** — only if you want the gate to run on-device (browser/WASM) before any cloud call.
+
+For routing by task ("I want to…") rather than by page, see the [docs index](../README.md) or the
+table in the root [README](../../README.md#documentation).

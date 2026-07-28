@@ -101,9 +101,12 @@ Your adapter must pass the runnable conformance suite before it is trusted — s
 
 ## 2. Detectors
 
-**4 registered.** Detectors are the cheap, local, model-free measurements
-that run *before* any judge is considered. Each ships a `DetectorManifest` declaring what it
-senses and when to use it, so a plan can be compiled against capability rather than guesswork.
+**4 registered.** Detectors are the cheap, local, model-free measurements a
+plan composes by name, each declaring a `DetectorManifest` of what it senses and when to use it.
+
+**For the how-to — register / introspect / select into a `WatchSpec` / teardown, built-ins,
+and the conformance bar — see [Registration](registration.md).** Below is the generated,
+can't-drift inventory of what is registered in a stock build:
 
 | name | category | senses | output | when to use |
 |---|---|---|---|---|
@@ -113,9 +116,6 @@ senses and when to use it, so a plan can be compiled against capability rather t
 | `pose-openness` | frame | body pose over time (RTMO/COCO keypoints: ankle-spread + wrist-elevation) | one 'peak' boundary per rep (the open phase of the openness waveform) | counting FAST whole-body reps where motion-diff over-counts and the VLM aliases — jumping jacks, squats, push-ups; any rep with a clean open↔close body shape |
 
 > `_REGISTRY[name]` is a **`(factory, manifest)` tuple**, not a bare factory. Unpack it.
-
-Registering your own detector is the supported way to plug in a domain measurement — see
-[Registration](registration.md) and [Tune admission](../how-to/tune-admission.md).
 
 ---
 

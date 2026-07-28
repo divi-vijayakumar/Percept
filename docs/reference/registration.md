@@ -27,6 +27,11 @@ package.
 > extraction](#admission-is-not-extraction-what-register_detector-does-and-does-not-do) first — it states
 > exactly what that buys you and what it does not.
 
+This page is the how-to. For the generated, can't-drift inventory of what is registered in a stock
+build — including the **backend seam** map (`vision` / `specialist` / `conductor` / `stt` / `tts` /
+`transport` / `extractor`) and the config-registry map — see [Registries and
+adapters](registries.md).
+
 ---
 
 ## Detector registry — cheap edge skills

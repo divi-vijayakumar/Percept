@@ -19,7 +19,7 @@ your source ──▶ fovea (cheap motion/salience gate) ──▶ VLM judge ─
 ```
 
 > **Before you design around it**, read
-> [Scope and persistence](../reference/v1-4-scope-and-persistence.md). Three things adopters have read
+> [Scope and persistence](../reference/scope-and-persistence.md). Three things adopters have read
 > too generously: coverage is **narrow** — biometric re-identification, growth prediction and robotics
 > control are explicitly excluded; **episodes are session-only** and do not survive a restart, which
 > blocks any 24/7 claim; and delivery is **provisional incident + superseding revision**, not a wide

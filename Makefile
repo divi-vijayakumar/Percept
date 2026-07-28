@@ -175,12 +175,12 @@ check: architecture-check check-skills-sync
 	@$(PY) -m compileall -q templates && echo "templates compileall ok"
 	@cd $(SDK) && (ruff check . || echo "ruff not installed — skipping lint")
 
-architecture:  ## (re)generate architecture.html + docs/architecture.svg from code + meta
-	$(PY) tools/build_architecture.py --meta docs/architecture.meta.json --out architecture.html --svg docs/architecture.svg
+architecture:  ## (re)generate docs/architecture.html + docs/architecture.svg from code + meta
+	$(PY) tools/build_architecture.py --meta docs/architecture.meta.json --out docs/architecture.html --svg docs/architecture.svg
 
 architecture-check:  ## CI gate: fail if the committed diagram is stale vs code/meta
-	$(PY) tools/build_architecture.py --check --meta docs/architecture.meta.json --out architecture.html --svg docs/architecture.svg
-	git diff --exit-code architecture.html docs/architecture.svg
+	$(PY) tools/build_architecture.py --check --meta docs/architecture.meta.json --out docs/architecture.html --svg docs/architecture.svg
+	git diff --exit-code docs/architecture.html docs/architecture.svg
 
 docs-tunables:  ## (re)generate docs/reference/tunables.md from percept.tunables.REGISTRY
 	$(PY) tools/build_tunables_doc.py

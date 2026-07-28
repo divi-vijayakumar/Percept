@@ -29,7 +29,7 @@ from percept.episodes import EpisodeLog
 _PKG = Path(inspect.getfile(episodes_mod)).resolve().parents[1]  # packages/percept-vision
 _REPO = _PKG.parents[1]
 _ADR = _REPO / ".adr" / "ADR-006-incident-relations.md"
-_SCOPE_DOC = _REPO / "docs" / "reference" / "v1-4-scope-and-persistence.md"
+_SCOPE_DOC = _REPO / "docs" / "reference" / "scope-and-persistence.md"
 
 #: The three exclusions are scope, not backlog. Phrased as substrings so wording can breathe but the
 #: named exclusions cannot quietly disappear.
@@ -59,7 +59,7 @@ class ScopeIsStatedNarrow(unittest.TestCase):
         self._assert_scope_text(_doc(_ADR), "ADR-006")
 
     def test_client_facing_doc_states_the_narrow_scope(self):
-        self._assert_scope_text(_doc(_SCOPE_DOC), "docs/reference/v1-4-scope-and-persistence.md")
+        self._assert_scope_text(_doc(_SCOPE_DOC), "docs/reference/scope-and-persistence.md")
 
     def test_the_resolver_seam_is_still_open(self):
         """The scope is narrow BECAUSE the seam is open — a closed enum would be a different claim."""
@@ -140,7 +140,7 @@ class TheDocIsReachable(unittest.TestCase):
     """A policy nobody can find is a policy nobody reads."""
 
     def test_docs_index_and_integration_guide_link_the_scope_doc(self):
-        target = "reference/v1-4-scope-and-persistence.md"
+        target = "reference/scope-and-persistence.md"
         for rel in ("docs/README.md", "docs/how-to/runtime.md"):
             with self.subTest(doc=rel):
                 self.assertIn(target, _doc(_REPO / rel))

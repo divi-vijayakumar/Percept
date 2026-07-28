@@ -155,7 +155,7 @@ cache; cheap, deterministic, *always in the loop*) → **VLM / System 2** (`perc
 summoned behind vendor-neutral registry seams, paid per call).
 
 *Prose map: [docs/explanation/architecture.md](docs/explanation/architecture.md) · interactive:
-[architecture.html](architecture.html).*
+[architecture.html](docs/architecture.html).*
 
 ## What you can configure
 
@@ -244,7 +244,6 @@ Full index: **[docs/README.md](docs/README.md)** — generated, every page dated
 | I want to… | go to |
 |---|---|
 | run something that works | [Quickstart](docs/tutorials/quickstart.md) |
-| pick my first path | [Choose your path](docs/tutorials/choose-your-path.md) |
 | embed it in my app | [Runtime worker](docs/how-to/runtime.md) |
 | make it fire on *my* content | [Tune admission](docs/how-to/tune-admission.md) |
 | bring my own model | [Custom judge & backend](docs/how-to/custom-judge.md) |
@@ -266,7 +265,7 @@ packages/percept-vision/    the SDK (pip install percept-vision; import percept)
                             ├─ percept.harness    bundled Python tier-0 edge + detector skills
                             └─ percept.contracts  bundled frozen wire-contract (DTOs + Protocols)
 packages/percept-edge/      on-device JS/WASM edge (npm)
-docs/                       documentation + the generated architecture.svg + the demo harness
+docs/                       documentation + the generated architecture.svg/html + the demo harness
 templates/                  copyable reference applications
 examples/                   short, runnable snippets
 eval/                       golden corpus + regression gate CI template
