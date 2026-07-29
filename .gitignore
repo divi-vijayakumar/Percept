@@ -177,7 +177,9 @@ eval/viability/LADDER_LEDGER.md
 # --- internal product-strategy / viability docs (never public) ---
 docs/percept-mvp-implementation-plan.md
 docs/percept-viability-implementation-plan.md
-eval/viability/
+# (no trailing slash: eval/viability is a symlink into Product-Execution/, and a
+# trailing-slash pattern only matches real directories, not symlinks)
+eval/viability
 packages/percept-vision/eval/LABELING_PIPELINE.md
 
 # Synthetic UNIT-layer capability fixtures — GENERATED, never committed, never shipped.
