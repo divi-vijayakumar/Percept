@@ -1350,9 +1350,17 @@ class BehaviorExecutor:
                 # neither a shared key nor a TTL-evicted key can produce a duplicate incident.
                 self.metrics.incr(f"{metric}.idempotent_suppressed")
                 return None
-            if fold.should_rearm:
+            if fold.should_rearm and not self.gate.require_false_first:
                 # A genuinely new episode (or an accepted update) — re-arm its own edge so a key another
                 # subject left disarmed cannot suppress this episode's fire.
+                #
+                # NOT when the gate requires an observed false first. That flag says a key may fire only
+                # after this deployment WATCHED the condition become false, and it is enforced on a key
+                # the gate has never seen — precisely the key a first episode arrives on. Forcing that key
+                # armed would delete the start anchor and report a condition that was already true when
+                # the watch started, which is the one thing the flag exists to refuse. Arming is then the
+                # gate's business alone. With the flag off (the default) a fresh key is already armed, so
+                # this re-arm only ever undoes a disarm — byte-for-byte the behaviour above.
                 self.gate.rearm(key)
         # Pass the goal's dwell (hold_s) + the frame time. hold_s=None -> the gate ignores `now`
         # and this is byte-for-byte the rising-edge path. A never-goal's key is marked no_evict so a TTL

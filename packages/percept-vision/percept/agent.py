@@ -69,6 +69,7 @@ from .episodes import (
 from .identity_policy import (
     PER_ENTITY_IDENTITY_POLICIES,
     SCENE_IDENTITY,
+    folds_on_scene_scope,
     identity_policy_of,
     select_identity_policy,
     transition_latch_key,
@@ -2396,13 +2397,18 @@ class Percept:
         it actually governs the gate interaction (idempotent suppression + re-arm; see
         :func:`percept.behavior.episode_fold`).
 
-        A concern that resolves to a PER-ENTITY (scene-object track) resolver instead — the shipped
-        default of the physical-scene profile, i.e. every ordinary camera watch — has no content key to
-        group by, so it took the ``None`` branch and got no fold at all: alone among the source classes
-        it had no TTL-invariant idempotency, and a gate-key eviction mid-occurrence could re-report a
-        condition that never stopped holding. It now folds on a SCENE-scoped subject
+        A concern whose resolved policy groups on the scene scope instead
+        (:func:`~percept.identity_policy.folds_on_scene_scope`) has no content key to group by, so it
+        took the ``None`` branch and got no fold at all: alone among the source classes it had no
+        TTL-invariant idempotency, and a gate-key eviction mid-occurrence could re-report a condition
+        that never stopped holding. It now folds on a SCENE-scoped subject
         (:meth:`_scene_episode_fold`), NOT a per-entity one — see that method for the forfeit that
-        buys and the guards that keep it honest.
+        buys and the guards that keep it honest. Two policies route there, and the routing predicate
+        (not this call site) owns which: the PER-ENTITY track resolvers — the shipped default of the
+        physical-scene profile, i.e. every ordinary camera watch that authored nothing — and the
+        DECLARED :data:`~percept.identity_policy.SCENE_IDENTITY` scope, which every shipped
+        domain-pack Watch template names explicitly and which reaching this fold is the whole point
+        of: it is the value the scene fold's own subject key already is.
 
         Every other concern — including a claim-slot / conversational (mutation) goal — returns
         ``None`` here, so ``_fire_concern`` runs its byte-for-byte gate-only path and stays shadow-only
@@ -2435,7 +2441,7 @@ class Percept:
         if goal.state.get("rearm") == "each_event":
             return None
         resolved_policy = self._resolved_identity_policy(goal)
-        if resolved_policy in PER_ENTITY_IDENTITY_POLICIES:
+        if folds_on_scene_scope(resolved_policy):
             return self._scene_episode_fold(goal, verdict, t, truth=truth, key=key)
         if resolved_policy != "content_key":
             return None
@@ -2479,10 +2485,12 @@ class Percept:
     ) -> "EpisodeFoldResult | None":
         """SCENE MODE — the camera twin of :meth:`_document_episode_fold`'s content-key path.
 
-        A concern whose resolved identity policy is a per-entity, scene-object track resolver
-        (:data:`~percept.identity_policy.PER_ENTITY_IDENTITY_POLICIES` — what the physical-scene profile
-        declares, so what an ordinary camera watch inherits) supplies neither a content key nor a claim
-        slot, so it built no fold at all and was the one source class with NO episode-owned idempotency:
+        A concern whose resolved identity policy groups on the scene scope
+        (:func:`~percept.identity_policy.folds_on_scene_scope` — a per-entity track resolver, what the
+        physical-scene profile declares and an ordinary camera watch inherits; or the explicitly
+        DECLARED :data:`~percept.identity_policy.SCENE_IDENTITY`, what every shipped domain-pack Watch
+        template names) supplies neither a content key nor a claim slot, so it built no fold at all and
+        was the one source class with NO episode-owned idempotency:
         while a condition kept holding, a TTL/LRU eviction of its gate key re-created that key ARMED and
         re-reported an occurrence that never stopped. This method closes that hole by folding on a
         SCENE-scoped subject — one open occurrence per CONCERN (the same scope
