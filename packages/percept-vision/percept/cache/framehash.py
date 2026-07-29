@@ -171,10 +171,10 @@ class _Entry:
 class FrameHashLayer:
     """Per-goal ROI-dHash near-match cache. Implements the ``CacheLayer`` protocol.
 
-    ``key`` is a ``CacheKey`` (goal_id, frame, roi, entity_id) — or, for cascade-composition
-    compatibility, any object the caller adapts via ``key_fn``. The layer holds at most one live
-    entry per ``(goal_id, entity_id)``; a fresh ``store`` for that pair overwrites the old one
-    (the ROI moved, the verdict changed — keep the newest).
+    ``key`` is a ``CacheKey`` (goal_id, frame, roi, entity_id, condition, context_fingerprint) — or,
+    for cascade-composition compatibility, any object the caller adapts via ``key_fn``. The layer
+    holds at most one live entry per SLOT (see :func:`_slot`); a fresh ``store`` for that slot
+    overwrites the old one (the ROI moved, the verdict changed — keep the newest).
     """
 
     name = "framehash"
@@ -189,15 +189,20 @@ class FrameHashLayer:
         self._settings = settings
         self._clock = clock
         self._key_fn = key_fn or _default_key_fn
-        # (goal_id, entity_id, condition) -> _Entry. Condition is part of the slot so a goal re-armed
-        # under a new condition can't be served its stale verdict; invalidate*() still key off
-        # slot[0]/slot[1] (goal_id/entity_id), so their scoping is unchanged.
-        self._entries: dict[tuple[str, str | None, str | None], _Entry] = {}
+        # (goal_id, entity_id, condition, context_fingerprint) -> _Entry. Condition is part of the
+        # slot so a goal re-armed under a new condition can't be served its stale verdict;
+        # ``context_fingerprint`` is part of it for exactly the same reason, one level up: it is an
+        # OPAQUE hash of the answer-affecting judge-context state (see
+        # :func:`percept.episode_memory.episode_context_and_fingerprint`), which the frame hash does
+        # not cover either. This layer never interprets it — keying on it is the whole contract.
+        # invalidate*() still key off slot[0]/slot[1] (goal_id/entity_id), so their scoping is
+        # unchanged by either field.
+        self._entries: dict[tuple[str, str | None, str | None, str | None], _Entry] = {}
 
     # -- the CacheLayer protocol ------------------------------------------
     def lookup(self, key: Any) -> CacheResult:
         ck = self._key_fn(key)
-        slot = (ck.goal_id, ck.entity_id, ck.condition)
+        slot = _slot(ck)
         entry = self._entries.get(slot)
         if entry is None:
             return CacheResult.defer()
@@ -236,7 +241,7 @@ class FrameHashLayer:
         bits = dhash(ck.frame, ck.roi)
         if bits is None:
             return  # un-hashable frame: nothing to cache against -> leave the slot empty.
-        slot = (ck.goal_id, ck.entity_id, ck.condition)
+        slot = _slot(ck)
         self._entries[slot] = _Entry(
             goal_id=ck.goal_id,
             entity_id=ck.entity_id,
@@ -311,13 +316,33 @@ class CacheKey:
     ``condition`` scopes the entry to the goal's CURRENT plain-language meaning: a goal id re-armed with
     a new condition (voice re-arm) must not be served a verdict cached under its OLD condition. It is
     part of the entry slot, so a condition change is a clean miss. ``None`` (the default) keeps the
-    older keying — every existing caller that omits it shares one condition-agnostic slot, unchanged."""
+    older keying — every existing caller that omits it shares one condition-agnostic slot, unchanged.
+
+    ``context_fingerprint`` is the same idea for the judge CONTEXT the caller injected. A verdict formed
+    while the concern was continuing an established episode must never be re-served after that episode
+    changed — but a cached verdict is exactly what a long unchanged occurrence should get, so the answer
+    is to KEY on the context state, not to bypass on its presence. The value is an OPAQUE token minted
+    by the caller (:func:`percept.episode_memory.episode_context_and_fingerprint`) over the
+    answer-affecting fields only; this layer never parses or interprets it, so the cache stays a
+    contract and the projection stays the caller's policy. ``None`` (the default) means "no
+    answer-affecting context" and keeps the older keying byte-for-byte."""
 
     goal_id: str
     frame: Any
     roi: Box | None = None
     entity_id: str | None = None
     condition: str | None = None
+    context_fingerprint: str | None = None
+
+
+def _slot(ck: "CacheKey") -> tuple[str, str | None, str | None, str | None]:
+    """The entry slot a ``CacheKey`` occupies — the ONE place its shape is written.
+
+    Everything in the slot is state the ROI dHash cannot see: the goal, the entity, the goal's current
+    condition, and the opaque fingerprint of the answer-affecting judge context. ``invalidate`` and
+    ``invalidate_entity`` read ``slot[0]``/``slot[1]``, which stay first and second here by contract.
+    """
+    return (ck.goal_id, ck.entity_id, ck.condition, ck.context_fingerprint)
 
 
 def _default_key_fn(key: Any) -> CacheKey:
@@ -335,8 +360,10 @@ def _default_key_fn(key: Any) -> CacheKey:
         roi = key[2] if len(key) > 2 else None
         entity_id = key[3] if len(key) > 3 else None
         condition = key[4] if len(key) > 4 else None
+        fingerprint = key[5] if len(key) > 5 else None
         return CacheKey(
-            goal_id=str(goal_id), frame=frame, roi=roi, entity_id=entity_id, condition=condition
+            goal_id=str(goal_id), frame=frame, roi=roi, entity_id=entity_id, condition=condition,
+            context_fingerprint=fingerprint,
         )
     return CacheKey(goal_id=str(key), frame=key)
 

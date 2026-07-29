@@ -74,7 +74,7 @@ from .identity_policy import (
     transition_latch_key,
     watch_reducer_entity_id,
 )
-from .episode_memory import episode_judge_context, with_open_episode
+from .episode_memory import episode_context_and_fingerprint, with_open_episode
 from .judge_context import (
     JUDGE_OPEN_EPISODE_KEY,
     JUDGE_STATIC_CONTEXT_KEY,
@@ -1214,6 +1214,14 @@ class Percept:
     # set of ids: measured scene entity ids churn in the tens of thousands per hour (p50 track lifetime
     # 0.0s), so remembering them is the per-entity firehose ``_scene_episode_fold`` exists to refuse.
     _scene_key_turnovers: dict = field(default_factory=dict)  # goal_id -> count
+    # Was this goal's MOST RECENT verdict re-served from the perception cache, or formed by a judge
+    # call? Written at each of the (few) sites that decide it, read by the episode folds so a cache
+    # serve advances an episode's ``observations`` but not its ``judged_observations`` — the count the
+    # next prompt quotes. Without the split, a served tick would inflate "confirmed across N
+    # observations", the inflated N would strengthen the model's continuity prior, and the stronger
+    # prior would make the next confirmation likelier: a loop with no evidence anywhere in it. One
+    # entry per goal (the same bound as ``_doc_episode_hwm``) and it governs nothing else.
+    _verdict_from_cache: dict = field(default_factory=dict)  # goal_id -> bool
     # CLAIM MODE: the per-goal claim-slot twins of the document-mode fields above.
     # ``_claim_states`` holds the authoritative :class:`~percept.claims.ClaimState` (value + its own
     # revision ledger) per claim-slot goal; ``_claim_hwm`` is the same out-of-order high-water mark as
@@ -2542,6 +2550,18 @@ class Percept:
             observed = replace(observed, skip_reason=None)
         return observed.to_advisory()
 
+    def _observation_was_judged(self, goal_id: str) -> bool:
+        """Did this goal's current verdict cost a judge call, or was it re-served from the cache?
+
+        The one thing the answer changes is whether :attr:`percept.episodes.Episode.judged_observations`
+        advances when the observation is folded — never identity, continuation, the timeline or the
+        gate. A cache-served tick is a real observation of the stream and is counted as one; it just
+        does not get to claim it was confirmed by evidence nobody looked at. A goal with no recorded
+        answer (a caller that reached a fold without going through :meth:`_judge`, e.g. a DirectJudge
+        read) counts as judged: it did form a fresh answer for THIS frame.
+        """
+        return not self._verdict_from_cache.get(goal_id, False)
+
     def _document_episode_fold(
         self,
         goal: Goal,
@@ -2665,7 +2685,9 @@ class Percept:
                 ),
             )
             self.episodes[goal.id] = log
-        decision = log.observe_decision(t, verdict)
+        decision = log.observe_decision(
+            t, verdict, judged=self._observation_was_judged(goal.id)
+        )
         unknown = subject_is_unknown(verdict)
         return self.executor.fold_episode(
             decision, operation=getattr(verdict, "operation", None), unknown=unknown
@@ -2792,7 +2814,10 @@ class Percept:
         # branch is unreachable — an explicit subject_key always wins in observe_decision. Any
         # SubjectRef the judge happened to emit is deliberately not consulted: keying on it is the
         # per-entity episode this method refuses to build.
-        decision = log.observe_decision(t, verdict, subject_key=SCENE_IDENTITY)
+        decision = log.observe_decision(
+            t, verdict, subject_key=SCENE_IDENTITY,
+            judged=self._observation_was_judged(goal.id),
+        )
         self._scene_episode_id[goal.id] = decision.episode.id
         governed_key = self._scene_episode_key.get(goal.id, _NO_SCENE_KEY)
         self._scene_episode_key[goal.id] = key
@@ -2893,7 +2918,9 @@ class Percept:
         # A fixed subject_key (== goal.id): a claim slot is ONE persistent thing, not many distinct
         # documents, so there is no identity to resolve here — unlike content-key grouping, this never
         # takes the "unknown subject" branch (an explicit subject_key always wins in observe_decision).
-        decision = log.observe_decision(t, verdict, subject_key=goal.id)
+        decision = log.observe_decision(
+            t, verdict, subject_key=goal.id, judged=self._observation_was_judged(goal.id)
+        )
         self._claim_episode_id[goal.id] = decision.episode.id
         fold = self.executor.fold_episode(decision, operation=outcome.effective)
         if outcome.applied:
@@ -4181,6 +4208,10 @@ class Percept:
         if route_inputs.direct_hit:
             self.metrics.incr("direct_judge.hit")
         verdict = completion.verdict.to_verdict()
+        # Same accounting as the inline path (:meth:`_judge`): a verdict this goal was HANDED from the
+        # cache must not advance the episode's judged-observation count. Declared as judged and
+        # corrected only where a serve actually happens.
+        self._verdict_from_cache[goal.id] = False
         if route_inputs.cached_verdict is not None:
             cached = route_inputs.cached_verdict.to_verdict()
             if route_inputs.cache_audit:
@@ -4197,6 +4228,7 @@ class Percept:
                         ),
                     )
                     verdict = cached
+                    self._verdict_from_cache[goal.id] = True  # no usable fresh read
                 elif verdict.satisfied != cached.satisfied:
                     self.metrics.incr("cache.false_serve")
                     if job.reducer.cache_key is not None:
@@ -4210,6 +4242,7 @@ class Percept:
             else:
                 self.metrics.incr("cache.hit")
                 verdict = cached
+                self._verdict_from_cache[goal.id] = True
         elif completion.failure is not None:
             self.funnel.refused(concern=goal.id, camera=token.source_id)
             self._degrade_tick(
@@ -6572,6 +6605,10 @@ class Percept:
         context: dict | None = None,
         stale: "Callable[[], bool] | None" = None,
     ) -> Verdict:
+        # Every path out of this method except a cache serve spends a judge call, so declare the
+        # common case once and let the serve path below correct it. Read by the episode folds — see
+        # :meth:`_observation_was_judged`.
+        self._verdict_from_cache[goal.id] = False
         # Per-goal judge routing (fail-closed) — selected BEFORE any judge call and OUTSIDE the
         # _safe_timed_judge boundary, so a marked-but-unbound goal raises JudgeBindingInvariantError here
         # (propagates; never degraded to ASK) and NO adapter is called. No binding => (self.vision, None):
@@ -6609,11 +6646,22 @@ class Percept:
         # OPEN-EPISODE injection, at the same dispatch site and by the same rules as the static
         # context above. Without this the judge re-answers "is the bag still there?" every tick with
         # no memory of the episode it is continuing: the episode existed in ``self.episodes``, but
-        # nothing ever serialized it into the model call. ``episode_judge_context`` returns None for
-        # a goal with no episode log (every plain watch goal) and for a log with nothing open, so
-        # those calls are byte-for-byte unchanged. The text it returns is pixel-free and
-        # fixed-size — see ``percept.episode_memory``.
-        episode_context = episode_judge_context(self.episodes.get(goal.id))
+        # nothing ever serialized it into the model call. The text is None for a goal with no episode
+        # log (every plain watch goal) and for a log with nothing open, so those calls are
+        # byte-for-byte unchanged. The text it returns is pixel-free and fixed-size — see
+        # ``percept.episode_memory``.
+        #
+        # The second return is the CACHE FINGERPRINT of that same context: an opaque hash of the
+        # answer-affecting fields only. Taking both from one call is deliberate — it is what makes
+        # "the key describes the context that was actually sent" true by construction instead of by
+        # two readings of the log agreeing to stay in step. Passed straight into the cache key below;
+        # ``percept.cache`` never interprets it, so the projection stays this side of the seam.
+        episode_context, context_fingerprint = episode_context_and_fingerprint(
+            self.episodes.get(goal.id),
+            static_context=(
+                bound.static_context.decoded_text if force_context else None
+            ),
+        )
         if episode_context is not None:
             if context is not None and JUDGE_OPEN_EPISODE_KEY in context:
                 raise ReservedContextKeyError(
@@ -6636,12 +6684,29 @@ class Percept:
         # grounding the backends already implement but the watch path never supplied. Stable per goal
         # (set in goal.state), so it rides the goal's cache scope; None (the default) is byte-for-byte.
         exemplar = goal.state.get("exemplar")
-        # An injected open episode forwards ``context`` and bypasses the single-frame cache for the
-        # SAME reason the extractor's per-call facts do: the verdict now depends on episode state
-        # that the frame-hashed cache key does not cover, so a slot filled under one episode state
-        # must never be re-served under another. A goal with nothing open never sets this.
+        # An injected open episode forwards ``context`` — and, unlike every mode listed below, it does
+        # NOT bypass the cache. It used to, on the same reasoning as the extractor's per-call facts:
+        # the verdict depends on episode state the frame-hashed key does not cover, so a slot filled
+        # under one episode state must never be re-served under another. That reasoning is right and
+        # the bypass was the wrong remedy — an open episode is the case a watch spends nearly all its
+        # ticks in, so bypassing on its presence disabled the cache exactly when it was most useful
+        # (measured: 187 judge calls, zero hits, over one continuous occurrence). The dependency is now
+        # KEYED instead, via ``context_fingerprint`` in the cache key below, the same answer the
+        # codebase already reached for ``condition``. The extractor's facts genuinely cannot be keyed
+        # this way — they are recomputed per frame — so ``process_mode`` keeps its bypass.
         episode_mode = episode_context is not None
-        if frames or audio or process_mode or claim_mode or event_mode or force_context or episode_mode:
+        # The fence that makes "the key describes the context that was sent" structural rather than a
+        # claim about today's callers. The cache path below may only be taken when the ONLY context
+        # present is the one ``context_fingerprint`` covers; anything else a caller injected is, by
+        # definition, answer-affecting state outside the key, so it bypasses. Every context the shipped
+        # call sites build already sets one of the flags above, so this fence fires for nobody today —
+        # it is here so that adding a context key cannot silently widen what a slot may be served for.
+        # (``JUDGE_STATIC_CONTEXT_KEY`` needs no entry: its only writer also sets ``force_context``.)
+        unkeyed_context = bool(context) and not set(context) <= {JUDGE_OPEN_EPISODE_KEY}
+        if (
+            frames or audio or process_mode or claim_mode or event_mode or force_context
+            or unkeyed_context
+        ):
             # The strip/audio (escalation) path is rare-by-design and multi-frame; bypass the
             # single-frame cache (its key dHashes ONE frame) so a strip verdict never pollutes — nor is
             # served from — a single-frame slot. The cache stays single-frame-pure. A process-QA judge
@@ -6670,12 +6735,22 @@ class Percept:
             )
         # A structured key so the FrameHashLayer can ROI-crop + dHash the frame and scope its
         # entry to (goal, entity); the legacy stub cascade ignores the extra fields harmlessly.
+        # ``context_fingerprint`` is None for every goal with no open episode and no bound static
+        # context, so their keys are byte-for-byte the pre-existing ones.
         cache_key = CacheKey(
-            goal_id=goal.id, frame=frame, roi=roi, entity_id=entity_id, condition=goal.condition
+            goal_id=goal.id, frame=frame, roi=roi, entity_id=entity_id, condition=goal.condition,
+            context_fingerprint=context_fingerprint,
         )
+        # An open episode still forwards ``context`` on this path — the episode text has to reach the
+        # adapter whether the tick ends in a judge call or an audited serve. A goal with nothing open
+        # passes no ``context`` at all, exactly as before.
+        judge_extra = {"context": context} if episode_mode else {}
         hit = self.cache.resolve(cache_key)
         if hit.status == "HIT" and hit.verdict is not None:
             self.metrics.incr("cache.hit")
+            # Provisional: no judge call was spent on this frame. ``_audit_or_use`` corrects it to
+            # False if it goes on to re-perceive, so the episode fold counts what was actually paid for.
+            self._verdict_from_cache[goal.id] = True
             return await self._audit_or_use(
                 goal,
                 frame,
@@ -6686,13 +6761,14 @@ class Percept:
                 adapter=adapter,
                 binding=bound,
                 stale=stale,
+                judge_extra=judge_extra,
             )
         # Same fail-closed boundary for the cache-miss (single-frame) judge — the other half of
         # the live watch path. A well-formed Verdict is cached exactly as before; a degraded response
         # raises _JudgeDegraded BEFORE `cache.store` is ever reached, so a failure is never cached.
         verdict = await self._safe_timed_judge(
             goal.condition, frame, roi=roi, exemplar=exemplar, corrections=corrections or None,
-            _adapter=adapter, _binding=bound, _audio_dispatch=audio_dispatch,
+            _adapter=adapter, _binding=bound, _audio_dispatch=audio_dispatch, **judge_extra,
         )
         if stale is None or not stale():
             self.cache.store(cache_key, verdict, verdict.confidence)
@@ -6710,6 +6786,7 @@ class Percept:
         adapter: Any = None,
         binding: Any = None,
         stale: "Callable[[], bool] | None" = None,
+        judge_extra: "dict[str, Any] | None" = None,
     ) -> Verdict:
         """Trust-but-verify a cache HIT.
 
@@ -6717,10 +6794,18 @@ class Percept:
         path), re-perceive through real vision and compare to the cached verdict. A divergence in
         the ``satisfied`` bit is a **false-serve**: the fresh read wins and replaces the stale
         cache entry. Un-audited HITs are served as-is. ``audit is None`` -> never audit.
+
+        ``judge_extra`` carries whatever context the cached entry was keyed under (today: an open
+        episode) so the audit re-perceive asks the SAME question the entry was formed from —
+        auditing against a different prompt would score a false-serve that never happened.
+
+        The audited branch really does spend a judge call, so it clears the caller's provisional
+        "served from cache" mark; the un-audited branch and a degraded audit leave it set.
         """
         if self.audit is None or not self.audit(cache_key):
             return cached
         self.metrics.incr("cache.audit")
+        self._verdict_from_cache[goal.id] = False
         # The audit re-perceive is ALSO a live judge call on the watch path — guard it the same
         # way. A degraded audit response must not crash the tick (which already has a perfectly good
         # cached verdict in hand); fall back to serving `cached` unchanged, exactly as an un-audited
@@ -6729,6 +6814,7 @@ class Percept:
             fresh = await self._safe_timed_judge(
                 goal.condition, frame, roi=roi, exemplar=goal.state.get("exemplar"),
                 corrections=corrections or None, _adapter=adapter, _binding=binding,
+                **(judge_extra or {}),
             )
         except _JudgeDegraded as degraded:
             self._degrade_tick(
@@ -6738,6 +6824,7 @@ class Percept:
                 label=" (cache audit)",
                 action="discarding prior dwell support and serving the cached read",
             )
+            self._verdict_from_cache[goal.id] = True  # no usable fresh read — this IS a serve
             return cached
         if fresh.satisfied != cached.satisfied:
             self.metrics.incr("cache.false_serve")  # the cache's analog of false-fire

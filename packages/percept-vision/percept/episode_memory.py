@@ -33,6 +33,12 @@ reserved :data:`~percept.judge_context.JUDGE_OPEN_EPISODE_KEY`, and ``agent.py``
 site calls them on every judged tick. A goal with no open episode gets no key and is byte-for-byte
 unchanged, so this is inert for every concern that does not own episodes.
 
+Because that injection makes the verdict depend on state no frame hash can see, this module also
+mints the token the perception cache KEYS that dependency on —
+``episode_context_and_fingerprint`` — rather than letting the presence of a context switch the cache
+off. See the section header above :func:`episode_context_and_fingerprint` for the split it rests on
+and the measurement that forced it.
+
 The judge-MODE half above remains off by default: selecting it per (environment, goal-type, state)
 from a ``WatchProfile`` and registering it with the swappable judge seam are still follow-up work.
 ``gate.py`` is untouched either way — nothing in this module decides anything, it only tells the
@@ -41,6 +47,7 @@ judge what is already known.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -201,13 +208,29 @@ def episode_context_text(
     No ``;`` is emitted: adapters join context entries with ``"; "``, and a semicolon inside the
     value would read as the start of a different fact.
     """
-    d = episode.to_judge_dict(max_revisions=max_revisions, max_value_chars=max_value_chars)
+    return _text_from_judge_dict(
+        episode.to_judge_dict(max_revisions=max_revisions, max_value_chars=max_value_chars),
+        other_open=other_open,
+        max_chars=max_chars,
+    )
+
+
+def _text_from_judge_dict(d: dict, *, other_open: int, max_chars: int) -> str:
+    """The rendering half of :func:`episode_context_text`, off an ALREADY-TAKEN judge projection.
+
+    Split out so the text and its cache fingerprint can be derived from ONE reading of the episode
+    (see :func:`episode_context_and_fingerprint`) instead of two — two readings could straddle a
+    mutation and disagree, which is precisely the failure a fingerprint exists to prevent.
+    """
     subject = d["subject_key"] or "unidentified subject"
     parts = [
         f"you are continuing an already-established episode ({d['status']}) about {subject}",
         f"first seen at t={_fmt_t(d['started_at'])}",
         f"last seen at t={_fmt_t(d['last_seen'])}",
-        f"confirmed across {d['observations']} observations",
+        # JUDGED observations, never the raw fold count: a verdict re-served from the cache advances
+        # ``observations`` without spending any evidence, and quoting that number back to the model
+        # would let cheap serves inflate the continuity prior that makes the next serve likelier.
+        f"confirmed across {d['judged_observations']} observations",
     ]
     if d["last_confirmed"] is not None:
         parts.append(f"last confirmed at t={_fmt_t(d['last_confirmed'])}")
@@ -236,17 +259,166 @@ def episode_context_text(
     return text
 
 
+# ==================================================================================================
+# THE CACHE FINGERPRINT — keying on context state instead of bypassing on its presence
+# ==================================================================================================
+#
+# Injecting the open episode above made the judge's answer depend on state the ROI frame hash cannot
+# see, and the first remedy was to switch the verdict cache OFF whenever a context was present. That
+# is measurably the wrong trade: on 180s of real footage a single continuous occurrence produced 187
+# judge calls and zero cache hits — the better episodes worked, the more completely the cache was
+# disabled. The codebase had already solved this exact class of problem once, for ``condition``: a
+# re-armed condition is also state the frame hash does not cover, and the answer there was to put it
+# in the ENTRY SLOT, not to stop caching (``cache/framehash.py``). This does the same, one level up.
+#
+# It rests on splitting the serialized episode by ONE question: can this field change the answer?
+#
+#   answer-affecting            answer-neutral (moves every tick, says nothing new)
+#   ----------------            ------------------------------------------------------
+#   id, status                  started_at, last_seen, last_confirmed
+#   subject_key                 observations / judged_observations
+#   value, incident_id          each revision's timestamp
+#   retained (kind, value)
+#   revisions_omitted
+#   count of other open
+#
+# The split is not a guess about model behaviour, it is a property of the log: a ``confirmed``
+# heartbeat COALESCES IN PLACE. It is deliberately absent from
+# :data:`percept.episodes.STATE_CHANGING_REVISION_KINDS`, so it appends no timeline row and moves
+# only ``last_seen`` / ``last_confirmed`` / the observation counts — exactly the right-hand column. An
+# unbroken true period therefore holds the fingerprint at ONE value while the frame hash keeps doing
+# the job it is good at, and any genuine change (a reopen, an ``updated`` value, an annotation, a
+# close, another episode opening alongside) lands in the left-hand column and is a clean miss.
+#
+# What is deliberately NOT keyed on: a revision COUNT as a version. ``record_revision`` drops the
+# oldest row past ``max_revisions``, so ``len(revisions)`` saturates and is non-monotone; and
+# ``EpisodeLog.annotate`` writes ``value`` / ``incident_id`` without touching ``revisions`` at all.
+# A count would therefore both fail to change when the state changed and change when it had not.
+# The retained ``(kind, value)`` pairs plus the single-writer fields are what actually pin the state.
+
+#: Bumped if the projection below ever changes meaning, so entries minted under an older definition
+#: can never be served under a newer one. It is the first field hashed.
+_FINGERPRINT_VERSION = "ep-fp/1"
+
+#: The :meth:`percept.episodes.Episode.to_judge_dict` fields the fingerprint COVERS.
+FINGERPRINTED_EPISODE_FIELDS = frozenset(
+    {"id", "goal_id", "status", "subject_key", "value", "incident_id", "revisions",
+     "revisions_omitted"}
+)
+
+#: The ``to_judge_dict`` fields deliberately LEFT OUT — clock readings and counts that a coalescing
+#: ``confirmed`` heartbeat advances without any state change. Leaving them out is what makes a
+#: continuous occurrence cacheable; a test asserts these two sets exactly cover the projection, so a
+#: field added to it has to be classified here rather than silently escaping the key.
+ANSWER_NEUTRAL_EPISODE_FIELDS = frozenset(
+    {"started_at", "last_seen", "last_confirmed", "observations", "judged_observations"}
+)
+
+#: The same split inside one retained revision row.
+FINGERPRINTED_REVISION_FIELDS = frozenset({"kind", "value"})
+ANSWER_NEUTRAL_REVISION_FIELDS = frozenset({"t"})
+
+
+def _framed(fields: "list[str]") -> str:
+    """Concatenate ``fields`` so the result determines them UNIQUELY.
+
+    Each field is emitted length-prefixed (``"<len>:<text>"``), which makes the encoding injective:
+    the concatenation can be parsed back field-by-field, so two different field lists can never
+    produce the same string. That is what carries the fingerprint's correctness argument — equal
+    digests mean equal inputs, not merely inputs that happened to render alike under some separator a
+    caller-owned value could contain.
+    """
+    return "".join(f"{len(f)}:{f}" for f in fields)
+
+
+def _opt(value: Any) -> str:
+    """Presence-tag an optional field so absence has exactly ONE spelling.
+
+    ``None`` becomes ``"0"``; anything present becomes ``"1"`` + its text. Without the tag a missing
+    ``subject_key`` and the empty string would encode identically, and the whole point of the framing
+    above is that nothing encodes identically to anything else.
+    """
+    return "0" if value is None else "1" + (value if isinstance(value, str) else str(value))
+
+
+def _fingerprint_fields(d: dict, *, other_open: int) -> "list[str]":
+    """The answer-affecting projection of one judge-dict, as a list of fields to frame and hash.
+
+    Reads exactly :data:`FINGERPRINTED_EPISODE_FIELDS` (and, per retained row,
+    :data:`FINGERPRINTED_REVISION_FIELDS`) — nothing from the answer-neutral set.
+    """
+    fields = [
+        _opt(d["id"]),
+        _opt(d["goal_id"]),
+        _opt(d["status"]),
+        _opt(d["subject_key"]),
+        _opt(d["value"]),
+        _opt(d["incident_id"]),
+        str(int(other_open)),
+        # How many rows the timeline had to drop. Not used as a version (see the note above) — it is
+        # in here because the TEXT says "most recent 5 of 9 changes", so it is part of what the model
+        # is told. It can only move when a state-changing row is appended, never on a heartbeat.
+        str(int(d["revisions_omitted"])),
+        str(len(d["revisions"])),
+    ]
+    for r in d["revisions"]:
+        fields.append(_opt(r["kind"]))
+        fields.append(_opt(r["value"]))
+    return fields
+
+
+def episode_context_and_fingerprint(
+    log: "EpisodeLog | None",
+    *,
+    static_context: "str | None" = None,
+    **kwargs: Any,
+) -> "tuple[str | None, str | None]":
+    """``(open-episode text, cache fingerprint)`` for this log — from ONE reading of the episode.
+
+    The pairing is the correctness argument, not a convenience: both halves are derived from a single
+    :meth:`~percept.episodes.Episode.to_judge_dict` snapshot and a single ``open_episodes()`` count,
+    with nothing between them that could mutate the log. So a fingerprint can never describe a
+    different episode state than the text it accompanies, and "same key implies same answer-affecting
+    context" holds by construction rather than by two call sites agreeing to stay in step.
+
+    The text is ``None`` when nothing is open (a call site can use it directly as "is there anything
+    to inject?"). The fingerprint is ``None`` when there is no answer-affecting context AT ALL — no
+    open episode and no bound static context — which keeps the cache key byte-for-byte the one every
+    pre-existing caller builds.
+
+    ``static_context`` is the goal's bound static-context text, if it has one. It is per-goal and
+    stable, so it never churns; it is in here so the fingerprint is a COMPLETE projection of the
+    answer-affecting context rather than only of the episode. Note that the dispatch site still
+    bypasses the cache outright when a static context is bound, so today this term is what makes the
+    projection total, not what makes the key correct.
+    """
+    episode = open_episode_of(log)
+    if episode is None and static_context is None:
+        return None, None
+    fields = [_FINGERPRINT_VERSION]
+    text: "str | None" = None
+    if episode is None:
+        fields.append(_opt(None))  # no open episode — distinct from any episode's projection
+    else:
+        max_chars = kwargs.pop("max_chars", EPISODE_CONTEXT_MAX_CHARS)
+        d = episode.to_judge_dict(**kwargs)
+        other_open = max(0, len(log.open_episodes()) - 1) if log is not None else 0
+        text = _text_from_judge_dict(d, other_open=other_open, max_chars=max_chars)
+        fields.append(_opt("episode"))
+        fields.extend(_fingerprint_fields(d, other_open=other_open))
+    fields.append(_opt(static_context))
+    digest = hashlib.blake2s(_framed(fields).encode("utf-8"), digest_size=16)
+    return text, digest.hexdigest()
+
+
 def episode_judge_context(log: "EpisodeLog | None", **kwargs: Any) -> "str | None":
     """The judge-context text for whatever this log currently holds open, or ``None``.
 
     ``None`` — not an empty string — when the concern has no open episode, so a call site can use it
     directly as "is there anything to inject?" and a goal with nothing open is byte-for-byte
-    unchanged."""
-    episode = open_episode_of(log)
-    if episode is None:
-        return None
-    other_open = max(0, len(log.open_episodes()) - 1) if log is not None else 0
-    return episode_context_text(episode, other_open=other_open, **kwargs)
+    unchanged. A caller that also needs the cache fingerprint must call
+    :func:`episode_context_and_fingerprint` instead of this plus a second reading of the log."""
+    return episode_context_and_fingerprint(log, **kwargs)[0]
 
 
 def with_open_episode(context: "dict | None", text: str) -> dict:
@@ -320,12 +492,17 @@ async def judge_episode_memory(
 __all__ = [
     "JUDGE_MODE_EPISODE_MEMORY",
     "EPISODE_CONTEXT_MAX_CHARS",
+    "FINGERPRINTED_EPISODE_FIELDS",
+    "ANSWER_NEUTRAL_EPISODE_FIELDS",
+    "FINGERPRINTED_REVISION_FIELDS",
+    "ANSWER_NEUTRAL_REVISION_FIELDS",
     "episode_memory_enabled",
     "EpisodeMemoryState",
     "EpisodeMemoryStore",
     "judge_episode_memory",
     "open_episode_of",
     "episode_context_text",
+    "episode_context_and_fingerprint",
     "episode_judge_context",
     "with_open_episode",
 ]

@@ -454,6 +454,16 @@ class Episode:
     subject_key: str | None = None
     # How many observations folded into this episode (1 = just the opening one). Pure observability.
     observations: int = 1
+    # How many of those observations were backed by an actual JUDGE CALL rather than by a verdict
+    # RE-SERVED from the perception cache. This is the only observation count that may ever be
+    # serialized into a judge prompt, and the reason is a feedback loop: the prompt says "confirmed
+    # across N observations", so if a cheap serve advanced N, the run would talk itself into
+    # ever-stronger continuity — N growing on ticks that spent no evidence, and each increment
+    # strengthening the model's continuity prior, which makes the next confirmation likelier. Nothing
+    # in that circuit measures anything. Cache serves advance ``observations`` (they genuinely are
+    # observations of the stream) and leave this one alone, so what the model is told is exactly the
+    # evidence somebody paid for. Written only by ``EpisodeLog``, via its ``judged`` argument.
+    judged_observations: int = 1
     # STATE CONSISTENCY. status/t_end are kept consistent BY CONSTRUCTION through
     # ``EpisodeLog.transition`` — the single authoritative writer. No other code path may assign
     # them; a test asserts it. ``value``/``incident_id`` use None as the one and only ABSENCE
@@ -504,6 +514,7 @@ class Episode:
             "status": self.status,
             "subject_key": self.subject_key,
             "observations": self.observations,
+            "judged_observations": self.judged_observations,
             "last_confirmed": self.last_confirmed,
             "revisions": list(self.revisions),
         }
@@ -531,7 +542,16 @@ class Episode:
         The size of this dict is therefore independent of how long the episode has been open and of
         how many times it has been confirmed: a confirmation coalesces in place
         (see :meth:`EpisodeLog.record_revision`) and moves only the scalar ``observations`` /
-        ``last_confirmed`` / ``last_seen`` fields.
+        ``judged_observations`` / ``last_confirmed`` / ``last_seen`` fields.
+
+        Both observation counts are carried, and which one a PROMPT may quote is not a free choice:
+        only ``judged_observations`` may be, because a cache-served tick advances ``observations``
+        without spending any evidence (see that field on :class:`Episode`). Every field here is
+        classified as answer-affecting or answer-neutral by
+        :data:`percept.episode_memory.FINGERPRINTED_EPISODE_FIELDS` /
+        :data:`~percept.episode_memory.ANSWER_NEUTRAL_EPISODE_FIELDS`, and a test asserts the two sets
+        exactly cover this dict — so a field added here has to be classified rather than silently
+        landing outside the cache key.
         """
         max_revisions = max(0, int(max_revisions))
         kept = self.revisions[-max_revisions:] if max_revisions else []
@@ -543,6 +563,7 @@ class Episode:
             "status": self.status,
             "subject_key": self.subject_key,
             "observations": self.observations,
+            "judged_observations": self.judged_observations,
             "last_confirmed": self.last_confirmed,
             "value": _clip_text(self.value, max_value_chars),
             "incident_id": self.incident_id,
@@ -573,6 +594,9 @@ class Episode:
             status=d.get("status", OPEN),
             subject_key=d.get("subject_key"),
             observations=d.get("observations", 1),
+            # A payload written before the judged/served split existed carries only one count; read
+            # it as fully judged, which is what it was (nothing was ever served without a judge call).
+            judged_observations=d.get("judged_observations", d.get("observations", 1)),
             last_confirmed=d.get("last_confirmed"),
             revisions=list(d.get("revisions", [])),
         )
@@ -847,6 +871,7 @@ class EpisodeLog:
     def _open(
         self, t: float, exemplar: Any, subject_key: "str | None",
         reason: ContinuationReason, prior: "Episode | None", gap_s: "float | None",
+        *, judged: bool = True,
     ) -> ContinuationDecision:
         self._counter += 1
         retained = self._retain(exemplar)  # store a HANDLE, never the decoded frame
@@ -859,6 +884,8 @@ class EpisodeLog:
             representative=retained,
             status=OPEN,
             subject_key=subject_key,
+            # The opening observation counts as judged evidence only if a judge call produced it.
+            judged_observations=1 if judged else 0,
         )
         self.record_revision(episode, "opened", t=t)  # the one row a pure heartbeat produces
         self._episodes.append(episode)
@@ -871,6 +898,19 @@ class EpisodeLog:
             prior_episode_id=prior.id if prior is not None else None,
             gap_s=gap_s,
         )
+
+    @staticmethod
+    def _count_observation(episode: "Episode", *, judged: bool) -> None:
+        """Count ONE observation against an episode — the single writer of both counts.
+
+        ``observations`` counts every fold; ``judged_observations`` counts only the folds a judge call
+        actually paid for (see that field on :class:`Episode` for the feedback loop this closes).
+        Keeping the pair in one place is what stops the judged count from quietly drifting back to
+        "every tick" the next time a continuation branch is added.
+        """
+        episode.observations += 1
+        if judged:
+            episode.judged_observations += 1
 
     def _note(self, decision: ContinuationDecision) -> None:
         """A refused continuation must never be silent — it is the one event that distinguishes
@@ -925,7 +965,7 @@ class EpisodeLog:
         return None
 
     def _observe_unknown(
-        self, t: float, exemplar: Any, pol: EpisodePolicy
+        self, t: float, exemplar: Any, pol: EpisodePolicy, *, judged: bool = True
     ) -> ContinuationDecision:
         """Fold an UNKNOWN (seen-but-unidentified) observation — this module's operational semantics,
         widened with a session-local PROVISIONAL identity for whatever episode results.
@@ -955,7 +995,7 @@ class EpisodeLog:
                 gap_s = t - prior.last_seen
                 prior.last_seen = t
                 prior.representative = self._retain(exemplar)  # a HANDLE, never pixels
-                prior.observations += 1
+                self._count_observation(prior, judged=judged)
                 self.record_revision(prior, "confirmed", t=t)  # provisional attach, recorded
                 decision = ContinuationDecision(
                     episode=prior, is_new=False, reason="unknown_provisional_continuation",
@@ -969,7 +1009,7 @@ class EpisodeLog:
                 gap_s = t - prior.last_seen
                 prior.last_seen = t
                 prior.representative = self._retain(exemplar)  # a HANDLE, never pixels
-                prior.observations += 1
+                self._count_observation(prior, judged=judged)
                 self.record_revision(prior, "confirmed", t=t)  # temporal attach, recorded
                 decision = ContinuationDecision(
                     episode=prior, is_new=False, reason="unknown_temporal_continuation",
@@ -980,7 +1020,7 @@ class EpisodeLog:
         # Neither continuity mechanism applied: mint a NEW episode and give it a PROVISIONAL identity
         # keyed to itself, so it can never match anything opened before it (no silent merge)
         # yet is still a real, countable subject rather than a vanished sighting.
-        decision = self._open(t, exemplar, None, "new_subject", None, None)
+        decision = self._open(t, exemplar, None, "new_subject", None, None, judged=judged)
         decision.episode.subject_key = f"{UNKNOWN_KEY_PREFIX}{decision.episode.id}"
         self._note(decision)
         return decision
@@ -994,6 +1034,7 @@ class EpisodeLog:
         subject_key: "str | None" = None,
         mutation: "MutationCheck | None" = None,
         policy: "EpisodePolicy | None" = None,
+        judged: bool = True,
     ) -> ContinuationDecision:
         """Fold a candidate event at ``t`` into the log and return the TYPED decision.
 
@@ -1001,6 +1042,12 @@ class EpisodeLog:
         (:attr:`ContinuationDecision.subject_matched`), continuation
         (:attr:`ContinuationDecision.is_new` + :attr:`~ContinuationDecision.reason`), and mutation
         (the ``mutation`` predicate, whose refusal surfaces as ``"mutation_incompatible"``).
+
+        ``judged`` says whether the verdict being folded came from a JUDGE CALL (the default) or was
+        RE-SERVED from the perception cache. It changes exactly one thing — whether
+        :attr:`Episode.judged_observations` advances — and nothing about identity, continuation or the
+        timeline: a cache-served tick is a real observation of the stream and is counted as one. See
+        that field for why the two counts have to be separate.
         """
         pol = policy if policy is not None else self.policy
         self._prune(t)
@@ -1010,7 +1057,7 @@ class EpisodeLog:
         # TYPE; this only adds the opt-in provisional single-focus attach here. The gate
         # governance (a visible abstention must never REARM) lives in the FOLD, not in this log.
         if subject_key is None and subject_is_unknown(exemplar):
-            return self._observe_unknown(t, exemplar, pol)
+            return self._observe_unknown(t, exemplar, pol, judged=judged)
         # An explicit subject_key wins; else a bound verdict.subject.key carried by the
         # exemplar. Resolve it ONCE here so the matched/opened episode STORES the same key the next
         # sighting will match against (a locally-derived-but-unstored key would never continue).
@@ -1018,7 +1065,9 @@ class EpisodeLog:
             subject_key = _subject_key_of(exemplar)
         prior = self._subject_match(exemplar, judge, subject_key)
         if prior is None:
-            decision = self._open(t, exemplar, subject_key, "new_subject", None, None)
+            decision = self._open(
+                t, exemplar, subject_key, "new_subject", None, None, judged=judged
+            )
             self._note(decision)
             return decision
         gap_s = t - prior.last_seen
@@ -1027,7 +1076,7 @@ class EpisodeLog:
         if reason in ("continued", "reopened"):
             prior.last_seen = t              # continuation — extend, don't count again
             prior.representative = self._retain(exemplar)  # LIVE (was dead) — a HANDLE, not pixels
-            prior.observations += 1
+            self._count_observation(prior, judged=judged)
             if reason == "reopened":
                 self.transition(prior, OPEN, t=t)  # single writer: clears t_end too
                 self.record_revision(prior, "opened", t=t)  # a reopen IS a state change
@@ -1042,7 +1091,9 @@ class EpisodeLog:
             self._note(decision)
             return decision
         # Same subject, refused continuation -> a genuinely NEW occurrence of the SAME subject.
-        decision = self._open(t, exemplar, subject_key or prior.subject_key, reason, prior, gap_s)
+        decision = self._open(
+            t, exemplar, subject_key or prior.subject_key, reason, prior, gap_s, judged=judged
+        )
         self._note(decision)
         return decision
 
@@ -1055,6 +1106,7 @@ class EpisodeLog:
         subject_key: "str | None" = None,
         mutation: "MutationCheck | None" = None,
         policy: "EpisodePolicy | None" = None,
+        judged: bool = True,
     ) -> tuple[Episode, bool]:
         """Fold a candidate event at time ``t`` into the log. Returns ``(episode, is_new)``.
 
@@ -1062,7 +1114,8 @@ class EpisodeLog:
         subject/continuation split) call :meth:`observe_decision` instead.
         """
         decision = self.observe_decision(
-            t, exemplar, judge, subject_key=subject_key, mutation=mutation, policy=policy
+            t, exemplar, judge, subject_key=subject_key, mutation=mutation, policy=policy,
+            judged=judged,
         )
         return decision.episode, decision.is_new
 
