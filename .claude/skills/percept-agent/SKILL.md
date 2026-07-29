@@ -46,8 +46,8 @@ backend (no keys) for tests. The package is `percept-vision`; the import is `imp
 > ```
 > On a **fixed** camera use `block_max` + refractory. On **glasses/body-cam**, also set `ego_compensate`:
 > a moving camera otherwise escalates on nearly every frame, and ego-compensation subtracts the head
-> motion so only real scene changes reach the judge. Full guide: `docs/integration.md`. Every tunable env
-> var is listed in `docs/configuration.md`.
+> motion so only real scene changes reach the judge. Full guide: `docs/watches/creating-a-watch.md`. Every tunable env
+> var is listed in `docs/configuration/overview.md`.
 
 ## 2. The real watch agent — `percept.run` owns the capture loop
 
@@ -80,7 +80,7 @@ asyncio.run(main())
 `run` also takes `on_ask=` (low-confidence refusals), `on_frame=` (a live-feed hook), `stats=RuntimeStats()`
 (cost/escalation counters), and `audio_source="mic:0"` (fused audio+video). To **drive** a running watch —
 arm goals by voice, ask "what do you see?", pause/mute — wrap it in a `RuntimeSession` (the command seam):
-`docs/reference/command-seam.md`.
+`docs/watches/driving-a-live-watch.md`.
 
 ## 2b. Offline / test path (no keys) — `perceive_judged` + FakeVision
 
@@ -185,11 +185,11 @@ Verified output of the offline template (no keys):
 - Don't lead with surveillance demos — Percept is assistant-class (informs a consenting user who stays
   responsible), never a safety mechanism on a clock it can't guarantee. See the repo README "envelope".
 - More docs:
-  - `docs/tutorials/quickstart.md` — pip-install to a firing event, offline then real backend.
-  - `docs/explanation/concepts.md` — gate, rising edge, escalation ladder.
-  - `docs/reference/backends.md` — extras, keys, env-var backend selection.
-  - `docs/configuration.md` — every `PERCEPT_*` env var / threshold; `docs/how-to/custom-configuration.md` — author a profile.
-  - `docs/how-to/custom-judge.md` — bring your own vision backend or a specialist judge (with the conformance suite).
-  - `docs/how-to/tune-admission.md` — tune the eye for your content; `docs/how-to/optimize.md` — search safe tunables.
-  - `docs/how-to/eval.md` · `docs/how-to/benchmarks.md` — evaluate + benchmark on your data.
-  - `docs/reference/cli.md` — all nine `percept-*` commands; `docs/integration.md` — the full runtime integration guide.
+  - `docs/get-started/quickstart.md` — pip-install to a firing event, offline then real backend.
+  - `docs/resources/how-it-works.md` — gate, rising edge, escalation ladder.
+  - `docs/judges/backends.md` — extras, keys, env-var backend selection.
+  - `docs/configuration/overview.md` — every `PERCEPT_*` env var / threshold; `docs/configuration/profiles.md` — author a profile.
+  - `docs/judges/custom-specialist-judge.md` — bring your own vision backend or a specialist judge (with the conformance suite).
+  - `docs/admission/tuning-admission.md` — tune the eye for your content; `docs/configuration/optimize.md` — search safe tunables.
+  - `docs/evaluation/evaluate-your-data.md` · `docs/evaluation/running-benchmarks.md` — evaluate + benchmark on your data.
+  - `docs/resources/cli.md` — all nine `percept-*` commands; `docs/watches/creating-a-watch.md` — the full runtime integration guide.

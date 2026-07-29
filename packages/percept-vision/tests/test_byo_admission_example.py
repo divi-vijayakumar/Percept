@@ -1,6 +1,6 @@
 """D6(b) — the documented bring-your-own-admission example actually runs, and stays honest.
 
-`examples/byo_admission_detector.py` is the runnable proof behind docs/reference/registration.md's
+`examples/byo_admission_detector.py` is the runnable proof behind docs/admission/detectors.md's
 "Admission is not extraction" section: `register_detector` + the tier-0 adapters decide WHEN to look
 closely; neither carries an extracted fact (`invoice_number = "INV-2291"`) into the judge. A client went
 looking for the OCR seam once and found a dead one — this test keeps the live one from rotting.

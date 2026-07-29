@@ -58,16 +58,17 @@ edge = ["numpy>=1.24"]                                       # Python tier-0 edg
 runtime = ["opencv-python-headless>=4.8", "numpy>=1.24"]     # camera/video/RTSP runtime worker
 mic = ["sounddevice>=0.4"]                                   # mic capture for run(audio_source="mic:0") — fused/acoustic perception
 # realtime: RESERVED (empty) for future SDK-side STREAMING JUDGMENT. The voice embodiment (Pipecat +
-# serverless P2P WebRTC driving Gemini Live) moved app-side in the v0.6 diet — those deps now live in
-# templates/realtime_voice_watch_agent/pyproject.toml, NOT here. Even an optional voice extra would
-# suggest the perception package owns the voice stack; it does not. Kept as a named placeholder so the
-# extra name stays stable for when SDK-side streaming judgment actually ships (CHANGELOG note).
+# serverless P2P WebRTC driving Gemini Live) moved app-side in the v0.6 diet — those deps are now the
+# application's own concern (see docs/sources/voice-and-watchdog.md), NOT this package's. Even an
+# optional voice extra would suggest the perception package owns the voice stack; it does not. Kept as
+# a named placeholder so the extra name stays stable for when SDK-side streaming judgment actually
+# ships (CHANGELOG note).
 realtime = []
 # screen: REMOVED in 1.0. There is no built-in local screen-capture source — ``screen://`` is not a
 # capture URI (``percept.runtime.source.open_source`` raises on it). Shipping an extra that installs a
 # grabber you then cannot hand to the runtime advertises a capability that does not exist. Capture the
 # display yourself with whatever grabber you like and push frames in as an iterable ``source=`` —
-# see docs/how-to/screenshare.md. (``screen://`` remains a valid SOURCE-PROFILE inference hint.)
+# see docs/watches/scenario-screenshare.md. (``screen://`` remains a valid SOURCE-PROFILE inference hint.)
 # The benchmark fetcher materializes PT/Charades/ProactiveQA sources through HTTP range reads and
 # Hugging Face, plus RepCount through the ``lance`` module supplied by ``pylance``. These are
 # evaluation-only dependencies; the core runtime remains stdlib-only.

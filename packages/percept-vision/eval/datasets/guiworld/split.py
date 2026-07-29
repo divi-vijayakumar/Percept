@@ -118,7 +118,7 @@ def build_screen_ladder() -> Ladder:
     - ``coast_only`` (baseline) — the shipped default: ``block_max``/0.20 plus the fixed low-rate
       coast floor, with no client change signal (the eye never escalates above the coast).
     - ``client_change_signal`` (candidate) — the same eye once the client registers a page-change /
-      phash / OCR signal that escalates above the coast (docs/how-to/tune-admission.md). This is the
+      phash / OCR signal that escalates above the coast (docs/admission/tuning-admission.md). This is the
       A/B the ``screen_document`` finding says a page-scale-edit client must run on THEIR fixtures.
     """
     coast_fps = 1.0 / SCREEN_COAST_INTERVAL_S

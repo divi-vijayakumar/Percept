@@ -1,13 +1,13 @@
 """The tunables inventory (ADR-008) — every behavior-affecting knob, typed and owned.
 
-ADR-008 (``docs/adr/ADR-008-configuration-ownership-resolution-provenance.md``) names six places a
+ADR-008 (``.adr/ADR-008-configuration-ownership-resolution-provenance.md``) names six places a
 behavior-affecting value can be set today (the ``Settings`` tree, ``watch()``/``Percept.create()``
 kwargs, ``Goal.state`` keys, ``WatchProfile`` fields, ``SourceProfile`` fields, a detector's
 ``DetectorManifest``) and six OBJECTS the target configuration architecture will resolve them
 through (``SourceProfile``, ``DomainPack``, ``ExecutionPolicy``, ``DeploymentConfig``,
 ``OptimizationLock``, ``WatchPlan``). This module is the accounting: every knob from the six existing
 places, enumerated as a typed :class:`TunableSpec` and assigned an owner from the ADR's ownership
-table (docs/adr/ADR-008-configuration-ownership-resolution-provenance.md#ownership-table-per-field-class).
+table (.adr/ADR-008-configuration-ownership-resolution-provenance.md#ownership-table-per-field-class).
 
 Two owner values are not among the ADR's six declared objects, both deliberate:
 

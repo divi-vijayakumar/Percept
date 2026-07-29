@@ -24,7 +24,7 @@ What a SourceProfile MUST NOT change (architecturally load-bearing)
 **Gate semantics.** ``FIRE`` / ``ASK`` / ``SILENT``, the rising edge, ``refractory_s`` and dwell mean
 exactly the same thing on every source. There is ONE :class:`percept.gate.Gate` and ONE incident
 truth — never a conversation-Gate, a document-Gate and a camera-Gate (see
-``docs/reference/consequence-gate.md``). This is enforced structurally: this dataclass has no gate
+``docs/watches/the-gate.md``). This is enforced structurally: this dataclass has no gate
 field at all (:data:`FORBIDDEN_FIELDS`, and ``tests/test_sourceprofile.py`` asserts it), so there is
 nowhere for a source class to put a special-case firing rule.
 
@@ -92,7 +92,7 @@ if TYPE_CHECKING:
 #: ``parameters["change_signal"] == UNTUNED`` means: percept ships NO calibrated admission signal for
 #: this source class and the profile says so out loud. It is not a placeholder to be quietly filled by
 #: a guessed threshold — it is the honest state until the CLIENT registers a detector on THEIR content
-#: (docs/how-to/tune-admission.md). Doctor reports it; nothing silently "fixes" it.
+#: (docs/admission/tuning-admission.md). Doctor reports it; nothing silently "fixes" it.
 UNTUNED = "untuned"
 
 #: Stability vocabulary carried on :attr:`SourceProfile.stability`. ``experimental`` profiles are
@@ -308,7 +308,7 @@ class SourceProfile:
             f"admission signal for source profile '{self.name}' is UNTUNED — {coast_txt}. percept "
             "ships no calibrated change signal for this source class; supply one with "
             "register_detector(...) and A/B it with `percept eval` "
-            "(docs/how-to/tune-admission.md)."
+            "(docs/admission/tuning-admission.md)."
         )
 
     def with_parameters(self, **overrides: Any) -> "SourceProfile":

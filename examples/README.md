@@ -45,7 +45,7 @@ Offline, deterministic, **no keys and no model**. Shows the two supported ways t
 model (OCR, CLIP, a classifier) in front of Percept's expensive judge — `register_detector` for timed
 occurrences, `percept.run(..., semantic_adapter=...)` for admission — and states precisely what neither
 does: they decide *when to look closely*; they do not deliver extracted facts (`invoice_number = …`) to
-the judge. See [`docs/reference/registration.md`](../docs/reference/registration.md#admission-is-not-extraction--what-register_detector-does-and-does-not-do).
+the judge. See [`docs/admission/detectors.md`](../docs/admission/detectors.md#admission-is-not-extraction--what-register_detector-does-and-does-not-do).
 
 ```bash
 python examples/byo_admission_detector.py
@@ -59,8 +59,8 @@ python examples/byo_admission_detector.py
 - Test your webcam index first: if `webcam:0` is dark, try `webcam:1`.
 - Keep goals **specific and falsifiable** ("someone is holding a red mug", not "something happens") and to a
   **few, mutually-distinct** conditions — that's what keeps precision high (see
-  `docs/how-to/authoring-goals-and-watch-plans.md`).
+  `docs/watches/writing-goals.md`).
 - 1 fps is plenty for most watches and keeps cost/latency low; raise `--fps` only for fast events.
 
 ---
-Full integration guide: [`docs/integration.md`](../docs/integration.md).
+Full integration guide: [`docs/watches/creating-a-watch.md`](../docs/watches/creating-a-watch.md).

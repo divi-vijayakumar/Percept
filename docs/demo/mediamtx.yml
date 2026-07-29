@@ -1,0 +1,23 @@
+# Minimal RTSP server config for the Percept demo harness (demo 04).
+#
+#   mediamtx docs/demo/mediamtx.yml
+#
+# A bare `mediamtx` with no config file refuses paths it does not know ("path 'x' is not
+# configured"), which is what makes a restream fail with a 400 from ffmpeg. `all_others:` is the
+# catch-all that lets any path be published to and read from — the same default the
+# bluenviron/mediamtx Docker image ships with, so
+#
+#   docker run --rm -it -p 8554:8554 bluenviron/mediamtx
+#
+# works without this file.
+#
+# Localhost only: this listens on 127.0.0.1 so a demo stream is never exposed off the machine.
+logLevel: info
+rtspAddress: 127.0.0.1:8554
+rtmp: no
+hls: no
+webrtc: no
+srt: no
+
+paths:
+  all_others:

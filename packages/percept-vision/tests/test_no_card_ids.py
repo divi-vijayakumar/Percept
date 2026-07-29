@@ -43,7 +43,7 @@ _ALLOWLIST = frozenset(
         # `[A-Z0-9 ]` character class fragment matched inside a regex literal (privacy-text.js)
         "Z0",
         # documented cross-package vocabulary, reused for unrelated meanings in different modules
-        # (test-lane tier documented in README.md/docs/reference/backends.md: L1=offline fakes,
+        # (test-lane tier documented in README.md/docs/judges/backends.md: L1=offline fakes,
         # L2/L3=live backends with keys; the L1 math norm in harness/appearance.py; the cache
         # invalidation-order step names in cache/framehash.py) — not opaque work-item citations.
         "L0", "L1", "L2", "L3",

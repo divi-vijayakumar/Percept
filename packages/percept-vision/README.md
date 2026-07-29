@@ -82,7 +82,7 @@ adapter instance, or by env (`PERCEPT_VISION_BACKEND`).
 portable `WatchPlan` values and never auto-arm a runtime. Both deliberately declare empty
 qualification fixtures and quality bars: availability is not a claim about real-media accuracy,
 provider latency, or cost. See the
-[DomainPack reference](https://github.com/divi-vijayakumar/Percept/blob/main/docs/reference/domain-packs.md)
+[DomainPack reference](https://github.com/divi-vijayakumar/Percept/blob/main/docs/watches/domain-packs.md)
 for the template names and explicit identity/tracking/reacquisition boundaries.
 
 ## Watch a live source
@@ -115,8 +115,8 @@ VLM-in-a-loop collapses the two; percept keeps them apart so the common case cos
 
 Full architecture — the four tiers (Feeds → Measures → Cognition → VLM), every claim anchored to code,
 plus the **generated** architecture diagram — is in the docs:
-[Architecture](https://github.com/divi-vijayakumar/Percept/blob/main/docs/explanation/architecture.md)
-· [Concepts](https://github.com/divi-vijayakumar/Percept/blob/main/docs/explanation/concepts.md)
+[Architecture](https://github.com/divi-vijayakumar/Percept/blob/main/docs/resources/architecture.md)
+· [Concepts](https://github.com/divi-vijayakumar/Percept/blob/main/docs/resources/how-it-works.md)
 · [docs index](https://github.com/divi-vijayakumar/Percept/blob/main/docs/README.md)
 · [percept.percia.ai](https://percept.percia.ai).
 
@@ -145,8 +145,8 @@ These refusals are a feature. **Do not lead with surveillance demos.**
 
 **No Percept accuracy numbers are published yet.** The benchmark is designed but the reproducible
 model-sweep run is a separate, later phase — see the
-[methodology](https://github.com/divi-vijayakumar/Percept/blob/main/docs/reference/benchmark-methodology.md)
-and the [benchmarks how-to](https://github.com/divi-vijayakumar/Percept/blob/main/docs/how-to/benchmarks.md).
+[methodology](https://github.com/divi-vijayakumar/Percept/blob/main/docs/evaluation/methodology.md)
+and the [benchmarks how-to](https://github.com/divi-vijayakumar/Percept/blob/main/docs/evaluation/running-benchmarks.md).
 The scorecard tooling operates on a manifest you provide; the bundled golden set ships with the **source
 repo, not the wheel**, so the default-manifest commands run from a repo checkout:
 
@@ -168,7 +168,7 @@ Sustained-duration Watches are supported by the in-process Python runtime only. 
 session-scoped, remote `percept-edge` compilation fails closed, and
 `facility_observation@1/door_left_open` carries no quality claim until a matched duration evaluation
 ships. See the public
-[release contract and migration note](https://github.com/divi-vijayakumar/Percept/blob/main/docs/reference/sustained-duration-watches.md).
+[release contract and migration note](https://github.com/divi-vijayakumar/Percept/blob/main/docs/watches/sustained-duration-watches.md).
 
 ## License
 

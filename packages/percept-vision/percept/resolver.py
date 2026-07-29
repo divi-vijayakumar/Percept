@@ -1,6 +1,6 @@
 """ConfigResolver — the ADR-008 resolution boundary, step 1 of the two-step binder.
 
-``docs/adr/ADR-008-configuration-ownership-resolution-provenance.md`` names six independently
+``.adr/ADR-008-configuration-ownership-resolution-provenance.md`` names six independently
 constructible configuration objects and draws the boundary as two functions:
 
     (SourceProfile, DomainPack, ExecutionPolicy, DeploymentConfig, OptimizationLock, WatchPlan)

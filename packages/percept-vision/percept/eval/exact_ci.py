@@ -9,7 +9,7 @@ tighter than the rule of three permits). So: no Wald, no Wilson, no ``1.96 * sqr
 Pure Python, no SciPy — ``percept`` core has zero runtime dependencies. The two special functions
 are computed directly:
 
-* **Poisson upper bound** (``docs/reference/eval-hours-costing.md`` §1.1–1.2)::
+* **Poisson upper bound** (``docs/evaluation/sizing-a-run.md`` §1.1–1.2)::
 
       lambda_upper(k, T) = chi2_{0.95, 2(k+1)} / (2T) = factor(k) / T
 

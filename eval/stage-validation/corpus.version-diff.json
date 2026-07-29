@@ -1,0 +1,93 @@
+{
+  "case_membership_identical": true,
+  "from_version": "1.0",
+  "goal_kind_changed": [],
+  "goal_kind_diff_note": "goal_kind is derived from the dataset/task, never from goal_text; an empty list is the expected and required result.",
+  "goal_text_changed": 12,
+  "goal_text_changes": [
+    {
+      "action_type": "jump_jack",
+      "case_id": "repcount::stu6_15::0",
+      "goal_text_after": "a person completes a jumping jack",
+      "goal_text_before": "a person completes a jump_jack"
+    },
+    {
+      "action_type": "jump_jack",
+      "case_id": "repcount::stu9_34::0",
+      "goal_text_after": "a person completes a jumping jack",
+      "goal_text_before": "a person completes a jump_jack"
+    },
+    {
+      "action_type": "front_raise",
+      "case_id": "repcount::stu4_12::0",
+      "goal_text_after": "a person completes a front raise",
+      "goal_text_before": "a person completes a front_raise"
+    },
+    {
+      "action_type": "front_raise",
+      "case_id": "repcount::stu6_13::0",
+      "goal_text_after": "a person completes a front raise",
+      "goal_text_before": "a person completes a front_raise"
+    },
+    {
+      "action_type": "bench_pressing",
+      "case_id": "repcount::stu7_13::0",
+      "goal_text_after": "a person completes a bench press repetition",
+      "goal_text_before": "a person completes a bench_pressing"
+    },
+    {
+      "action_type": "front_raise",
+      "case_id": "repcount::stu7_17::0",
+      "goal_text_after": "a person completes a front raise",
+      "goal_text_before": "a person completes a front_raise"
+    },
+    {
+      "action_type": "pull_up",
+      "case_id": "repcount::stu9_45::0",
+      "goal_text_after": "a person completes a pull-up",
+      "goal_text_before": "a person completes a pull_up"
+    },
+    {
+      "action_type": "bench_pressing",
+      "case_id": "repcount::stu2_6::0",
+      "goal_text_after": "a person completes a bench press repetition",
+      "goal_text_before": "a person completes a bench_pressing"
+    },
+    {
+      "action_type": "push_up",
+      "case_id": "repcount::stu10_48::0",
+      "goal_text_after": "a person completes a push-up",
+      "goal_text_before": "a person completes a push_up"
+    },
+    {
+      "action_type": "pull_up",
+      "case_id": "repcount::stu2_34::0",
+      "goal_text_after": "a person completes a pull-up",
+      "goal_text_before": "a person completes a pull_up"
+    },
+    {
+      "action_type": "jump_jack",
+      "case_id": "repcount::stu5_27::0",
+      "goal_text_after": "a person completes a jumping jack",
+      "goal_text_before": "a person completes a jump_jack"
+    },
+    {
+      "action_type": "front_raise",
+      "case_id": "repcount::stu2_14::0",
+      "goal_text_after": "a person completes a front raise",
+      "goal_text_before": "a person completes a front_raise"
+    }
+  ],
+  "goal_text_changes_by_action": {
+    "bench_pressing": 2,
+    "front_raise": 4,
+    "jump_jack": 3,
+    "pull_up": 2,
+    "push_up": 1
+  },
+  "n_cases_after": 100,
+  "n_cases_before": 100,
+  "positives_identical": true,
+  "to_version": "1.1",
+  "video_sha256_identical": true
+}

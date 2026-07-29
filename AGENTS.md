@@ -79,8 +79,9 @@ asyncio.run(main())
 ## Gotchas / conventions
 - **`percept.run` owns the capture loop.** Point it at `source="webcam:0"` / an RTSP URL / a video file
   and it drives capture → gate → judge → incident for you (`async for incident in percept.run(core,
-  source=…)`; add `audio_source="mic:0"` for sound). See `templates/` for copyable applications. The
-  manual `perceive_judged`-per-frame loop is the advanced "bring-your-own-capture" path, not the default.
+  source=…)`; add `audio_source="mic:0"` for sound). See `docs/sources/voice-and-watchdog.md` for worked
+  application shapes. The manual `perceive_judged`-per-frame loop is the advanced "bring-your-own-capture"
+  path, not the default.
 - **Rising-edge, not level.** A goal fires once when its condition goes false→true, then stays quiet
   (refractory) — so the agent never nags. Don't poll for "is it true now"; react to the `FireEvent`.
 - **`ask` is a feature.** Low confidence yields `ask`, not a guess. This is the "refuse to deliver a
@@ -91,12 +92,23 @@ asyncio.run(main())
   perception logic on the perception side of the seam.
 
 ## Where to look
-- `docs/README.md` (index) · `docs/tutorials/quickstart.md` · `docs/explanation/concepts.md` · `docs/reference/backends.md` — adopter docs.
-- `docs/reference/cli.md` — all nine console scripts and their flags.
-- `docs/configuration.md` — every tunable + env var; `docs/how-to/custom-configuration.md` — author a profile.
-- `docs/how-to/custom-judge.md` — bring your own vision backend or a specialist judge (with a conformance suite).
-- `docs/how-to/eval.md` · `docs/how-to/optimize.md` · `docs/how-to/benchmarks.md` — the offline quality rail.
-- `templates/` — copyable reference applications; `templates/realtime_voice_watch_agent/` is the flagship voice+vision agent.
+- `docs/README.md` (index — generated, every page dated) · `docs/get-started/quickstart.md` · `docs/resources/how-it-works.md` — adopter docs.
+- `docs/get-started/coding-agents.md` — agent onboarding: install the skill, the three things agents get wrong.
+- `docs/configuration/tunables.md` — **all 157 tunables, 31 safe to optimize.** Generated from `percept.tunables.REGISTRY`.
+- `docs/judges/registries.md` — **backend seams, detectors, profile registries**, and how to register your own. Generated.
+- `docs/configuration/overview.md` — the `Settings` tree + resolver precedence; `docs/configuration/profiles.md` — author a profile.
+- `docs/resources/cli.md` — all nine console scripts and their flags.
+- `docs/watches/creating-a-watch.md` — the `run()` API and event shape.
+- `docs/judges/custom-specialist-judge.md` — bring your own vision backend or a specialist judge (with a conformance suite).
+- `docs/evaluation/evaluate-your-data.md` · `docs/configuration/optimize.md` · `docs/evaluation/benchmarks.md` — the offline quality rail.
+- `docs/demo/README.md` — the browser harness; simulation mode vs BYOK.
 - `.claude/skills/percept-agent/` — a Claude Code skill that scaffolds an agent from a plain-language goal (kept in sync with `.agents/skills/percept-agent/`).
 - `percept.edge` / `percept.harness` — the server-side edge (tier-0 gate + detector registry)
   for Python deployments.
+
+## Where things live (so you put new files in the right place)
+- `docs/` — **public only.** Adoption material that feeds the website. No ADRs, no internal notes.
+- `.adr/` — architecture decision records. Tracked (six drift-guard tests read them), but not adoption docs.
+- `Product-Execution/`, `codewiki/`, `.dispatch-board/` — gitignored local working areas. All
+  strategy, specs, plans, and probe results live here. Never shipped.
+- Regenerate generated docs with `make docs`; gate them with `make docs-check docs-links`.

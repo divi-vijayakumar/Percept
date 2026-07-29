@@ -22,12 +22,12 @@ standard library and runs offline with deterministic fakes. Highlights of the su
 - **Offline quality rail** — `percept-eval` (differential A/B), `percept-optimize` (locked-config
   search), `percept-derive-profile`, `percept-bench` (per-concern P/R + scorecard), and the model-free
   `percept-doctor` / `percept-replay` / trace visualizer. No Percept accuracy numbers are published yet
-  (methodology + runbook only — see `docs/how-to/benchmarks.md`).
+  (methodology + runbook only — see `docs/evaluation/running-benchmarks.md`).
 - **Removed: the `[screen]` extra.** There is no built-in local screen-capture source in 1.0 —
   `screen://` is not a capture URI and opening one raises — so an extra that installed a screen grabber
   the runtime could not use was advertising a capability that does not exist. Watching a screen is
   supported through **client-pushed frames** (grab the display yourself, yield
-  `(t, gate_frame, judge_frame)` into `source=`): see `docs/how-to/screenshare.md`. `screen://` is
+  `(t, gate_frame, judge_frame)` into `source=`): see `docs/watches/scenario-screenshare.md`. `screen://` is
   unchanged as a **source-profile inference hint**.
 - **`Development Status` is `4 - Beta`, not `5 - Production/Stable`.** The public API and the wire
   contract are stable and semver-governed from 1.0, and the deterministic mechanics are qualified; what
@@ -223,6 +223,6 @@ composed through the SDK's public seams only.
 ### Benchmark fixes
 - pt-action sensitive above-Nyquist cadence (edge recall 0→0.75); proactiveqa running-answer resolution
   (unresolved 1.0→0.29, PAUC 25→55 on gemini-3.5-flash); per-performer counting (HERO; pommel 9→33==GT);
-  timespeak zero-width-window filter. See `docs/benchmark-methodology.md`.
+  timespeak zero-width-window filter. See `docs/evaluation/methodology.md`.
 
 `percept/gate.py` (the three-state firing gate) is **byte-for-byte stable** across this release.

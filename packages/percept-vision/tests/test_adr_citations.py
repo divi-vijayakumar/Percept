@@ -26,7 +26,7 @@ import percept.gate as gate_mod
 import percept.incidents as incidents_mod
 from percept.contracts import CONTRACT_VERSION, Incident
 
-ADR_DIR = Path(__file__).resolve().parents[3] / "docs" / "adr"
+ADR_DIR = Path(__file__).resolve().parents[3] / ".adr"
 PKG = Path(inspect.getfile(gate_mod)).resolve().parent
 
 

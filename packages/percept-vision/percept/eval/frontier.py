@@ -18,7 +18,7 @@ What this module deliberately does NOT do
   object ``doctor``, ``eval`` and the visualizer read, so this report cannot disagree with them.
 * **It does not approximate its intervals.** Bounds come from :mod:`percept.eval.exact_ci` —
   Garwood/Poisson for rates, Clopper–Pearson for proportions, consistent with
-  ``docs/reference/eval-hours-costing.md``. A normal approximation at these counts is wrong, not
+  ``docs/evaluation/sizing-a-run.md``. A normal approximation at these counts is wrong, not
   merely loose.
 * **It does not invent a bar.** Bars are supplied by the caller. With no bars the report prints
   bounds and says ``NOT_ASSESSED``.

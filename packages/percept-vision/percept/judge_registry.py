@@ -1,6 +1,6 @@
 """Judge authorization — reconcile a ``WatchPlan.judge`` REQUEST against the deployment catalog.
 
-Per ADR-009 (``docs/adr/ADR-009-operational-judge-request.md``) ``WatchPlan.judge`` is an
+Per ADR-009 (``.adr/ADR-009-operational-judge-request.md``) ``WatchPlan.judge`` is an
 operational *request*: the user names the specialist judge they want, but the user does not decide
 whether it is reachable. Availability is a **deployment** concern
 (:mod:`percept.deployment_judges`). This module is the single atomic authorization step the

@@ -22,7 +22,7 @@ _HARNESS_MISSING = (
     "Run it from a repo checkout (the top-level `eval` package must be importable), e.g.:\n"
     "  git clone https://github.com/divi-vijayakumar/Percept && cd Percept\n"
     "  percept-bench <manifest.json>\n"
-    "Docs: https://github.com/divi-vijayakumar/Percept/blob/main/docs/how-to/eval.md"
+    "Docs: https://github.com/divi-vijayakumar/Percept/blob/main/docs/evaluation/evaluate-your-data.md"
 )
 
 # Public re-exports, resolved lazily from the repo-only harness so ``import percept.bench`` never
@@ -172,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
                 "Run from a repo checkout, or pass your own manifest, e.g.:\n"
                 "  percept-bench <manifest.json>                              # per-concern P/R on your clips\n"
                 "  percept-bench scorecard --manifest <path/to/MANIFEST.json>\n"
-                "Docs: https://github.com/divi-vijayakumar/Percept/blob/main/docs/how-to/eval.md",
+                "Docs: https://github.com/divi-vijayakumar/Percept/blob/main/docs/evaluation/evaluate-your-data.md",
                 file=sys.stderr,
             )
         else:

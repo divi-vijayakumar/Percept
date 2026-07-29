@@ -14,11 +14,11 @@ STT / TTS / barge-in *detection* stay OUTSIDE the core (the voice layer's job); 
 frame-scoped answer, the runtime goal ops, and a clean cancellation point.
 
 **Voice embodiment moved app-side (v0.6 diet).** Binding a speech-to-speech transport — command tools,
-grounding, fire delivery, A2V metrics, floor arbitration — is no longer the SDK's job. Copy
-``templates/realtime_voice_watch_agent`` and use its ``PerceptBridge``/``Floor`` to wire a ``VoiceEngine``
-to Percept through the public seams below. ``attach_transport``/``deliver_fire`` remain here only as
-raising stubs pointing at the template; the ``VoiceTransport`` contract stays (deprecated) in
-``percept.contracts`` for this release.
+grounding, fire delivery, A2V metrics, floor arbitration — is no longer the SDK's job. Wire a
+``VoiceEngine`` to Percept through the public seams below, using a ``PerceptBridge``/``Floor``
+arbitration pattern of your own — see ``docs/sources/voice-and-watchdog.md``. ``attach_transport``/
+``deliver_fire`` remain here only as raising stubs pointing at that doc; the ``VoiceTransport`` contract
+stays (deprecated) in ``percept.contracts`` for this release.
 """
 from __future__ import annotations
 
@@ -306,28 +306,31 @@ class RuntimeSession:
     def attach_transport(self, *args: Any, **kwargs: Any) -> Any:
         """REMOVED — binding a voice transport is now the application's job (v0.6 SDK voice diet).
 
-        Command tools, pull-grounding, fire delivery, and A2V metrics moved out of the SDK into
-        ``templates/realtime_voice_watch_agent``: copy it and use ``PerceptBridge.attach`` to wire a
-        ``VoiceEngine`` to the Floor. The ``VoiceTransport`` contract stays (deprecated) in
-        ``percept.contracts`` for this release. This stub raises so an old call fails loud, not silent."""
+        Command tools, pull-grounding, fire delivery, and A2V metrics moved out of the SDK: wire a voice
+        engine app-side using your own ``PerceptBridge``-style adapter to bind it to a ``Floor``. See
+        ``docs/sources/voice-and-watchdog.md`` for the seam. The ``VoiceTransport`` contract stays
+        (deprecated) in ``percept.contracts`` for this release. This stub raises so an old call fails
+        loud, not silent."""
         raise RuntimeError(
             "RuntimeSession.attach_transport was removed in the v0.6 SDK voice diet. The voice "
             "embodiment (transport wiring, pull-grounding, fire delivery, A2V metrics) moved app-side — "
-            "copy templates/realtime_voice_watch_agent and use PerceptBridge.attach to bind a VoiceEngine "
-            "to the Floor. The VoiceTransport contract remains (deprecated) in percept.contracts."
+            "wire a voice engine app-side using your own PerceptBridge/Floor arbitration; see "
+            "docs/sources/voice-and-watchdog.md. The VoiceTransport contract remains (deprecated) in "
+            "percept.contracts."
         )
 
     def deliver_fire(self, *args: Any, **kwargs: Any) -> Any:
         """REMOVED — fire delivery + floor arbitration are now the application's job (v0.6 voice diet).
 
         Routing a fire to speech/act (interrupt / queue / drop, TTL, verbatim) moved app-side: wire
-        ``percept.start(..., on_incident=bridge.on_incident)`` and let the template's Floor +
-        ``attention_intent_for`` policy decide. See ``templates/realtime_voice_watch_agent``. This stub
-        raises so an old call fails loud, not silent."""
+        ``percept.start(..., on_incident=bridge.on_incident)`` and let your own Floor +
+        ``attention_intent_for``-style policy decide. See ``docs/sources/voice-and-watchdog.md``. This
+        stub raises so an old call fails loud, not silent."""
         raise RuntimeError(
             "RuntimeSession.deliver_fire was removed in the v0.6 SDK voice diet. Fire delivery + floor "
             "arbitration moved app-side — wire percept.start(..., on_incident=bridge.on_incident) and let "
-            "templates/realtime_voice_watch_agent's Floor + attention_intent_for policy decide."
+            "your own Floor + attention_intent_for-style policy decide; see "
+            "docs/sources/voice-and-watchdog.md."
         )
 
     async def stop(self) -> None:
@@ -358,7 +361,7 @@ async def start(core: Any, *, source: Any, on_frame: Callable | None = None,
     no longer blocks capture — but if the app plays audio into the same room it **must** call
     :meth:`RuntimeSession.deafen` around playback (with ``playback_duration + margin``), or Percept will
     hear itself and loop. For a speakers-on, always-on deployment with AEC, wire a voice engine app-side
-    (see ``templates/realtime_voice_watch_agent``). ``store`` is the injected shared store (deferred; see
+    (see ``docs/sources/voice-and-watchdog.md``). ``store`` is the injected shared store (deferred; see
     :class:`RuntimeSession`). ``async for incident in run(...)`` remains the headless front door; this is
     the interactive layer on top."""
     # FATAL seam: guard SYNCHRONOUSLY at the start() call (not inside the drain task, where a

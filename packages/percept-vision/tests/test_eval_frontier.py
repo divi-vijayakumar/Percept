@@ -2,7 +2,7 @@
 
 Two families of test here, and they check different kinds of promise:
 
-1. **The math is the costing doc's math.** ``docs/reference/eval-hours-costing.md`` tabulates the
+1. **The math is the costing doc's math.** ``docs/evaluation/sizing-a-run.md`` tabulates the
    exact Garwood/Poisson factors and the Clopper-Pearson episode counts. Those tables ARE the
    oracle — every cell is asserted. If :mod:`percept.eval.exact_ci` ever drifts from the doc, the
    published bar and the published bound stop meaning the same thing, which is the exact failure

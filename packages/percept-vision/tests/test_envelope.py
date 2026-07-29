@@ -317,7 +317,7 @@ def test_adr007_citations_match_the_code():
     import percept.contracts as contracts_mod
     import percept.sourceprofile as sp_mod
 
-    adr = Path(inspect.getfile(sp_mod)).resolve().parents[3] / "docs" / "adr" / (
+    adr = Path(inspect.getfile(sp_mod)).resolve().parents[3] / ".adr" / (
         "ADR-007-envelope-enforcement.md"
     )
     if not adr.exists():  # docs/ live outside the installed package

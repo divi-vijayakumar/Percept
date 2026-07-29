@@ -50,12 +50,14 @@ eval/bench-staging/perception_test/raw/
 perception_test_prevalence.json
 **/perception_test_prevalence.json
 
-# local-only scratch (never commit)
-scratch/
+# local-only internal execution material (never commit)
+Product-Execution/
 handoff/
 
 # codewiki generated caches (regenerable — never commit)
-codewiki/
+# (no trailing slash: codewiki/.dispatch-board are symlinks into Product-Execution/,
+# and a trailing-slash pattern only matches real directories, not symlinks)
+codewiki
 .codewiki/
 **/codewiki/
 **/.codewiki/
@@ -131,6 +133,7 @@ docs/publish-readiness-plan.md
 /handoff/
 /review/
 internal-docs/
+
 # client-facing docs (onboarding, incident/probe responses, dogfooding feedback) — internal only,
 # never in the public OSS tree; regenerate/keep under internal-docs/client-preview/
 client-preview/
@@ -159,11 +162,9 @@ docs/benchmark-scorecard-runbook.md
 # Dispatch board activity feed (Tasks/ board)
 Tasks/.board-events.jsonl
 
-# headless diagnostic harnesses (kept local, not shipped with the template)
-templates/realtime_voice_watch_agent/scratch_*.py
-
 # dispatch-board local state (snapshotted to refs/dispatch-board/state)
-.dispatch-board/
+# (no trailing slash — see codewiki note above; .dispatch-board is now a symlink)
+.dispatch-board
 
 # local-only diagnostic (per-video pt-action breakdown)
 eval/viability/PT_ACTION_N10_DIAGNOSTIC.md
@@ -176,7 +177,9 @@ eval/viability/LADDER_LEDGER.md
 # --- local planning and viability artifacts (never public) ---
 docs/percept-mvp-implementation-plan.md
 docs/percept-viability-implementation-plan.md
-eval/viability/
+# (no trailing slash: eval/viability is a symlink into Product-Execution/, and a
+# trailing-slash pattern only matches real directories, not symlinks)
+eval/viability
 packages/percept-vision/eval/LABELING_PIPELINE.md
 
 # Synthetic UNIT-layer capability fixtures — GENERATED, never committed, never shipped.
@@ -191,3 +194,23 @@ eval/datasets/meva/_pilot_data/
 packages/percept-vision/eval/datasets/guiworld/_pilot_data/
 packages/percept-vision/eval/datasets/*/_pilot_data/
 client-preview/*.whl
+
+# stage-validation corpus artifacts (media-derived, rebuildable via build_corpus.py)
+eval/stage-validation/corpus.json
+eval/local-benchmark/
+eval/stage-validation/long_sources/
+eval/stage-validation/long_sources.json
+eval/stage-validation/results/_pilot.*
+eval/stage-validation/results/_smoke*.
+docs/demo/timeline-data.json
+
+# --- docs reorg 2026-07-28 ---
+# mediamtx auto-generated TLS certs (regenerated on demand by the demo RTSP server)
+auto.crt
+auto.key
+# stage-validation raw run artifacts — rebuildable by re-running the harness. The narrative
+# reports live in Product-Execution/4-probes/stage-validation/; only the runnable harness stays tracked.
+eval/stage-validation/results/*.checkpoint.jsonl
+eval/stage-validation/results/*.json
+eval/stage-validation/results/*.md
+eval/stage-validation/sweep/results/

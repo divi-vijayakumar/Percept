@@ -1,0 +1,1771 @@
+{
+  "suite": "SV-4 COGNITION + DISPOSITION",
+  "generated_at": "2026-07-26T15:53:14-0700",
+  "runtime": {
+    "percept_version": "1.0.0",
+    "percept_path": "/private/tmp/percept-launch/oss-final-venv-bba572a/lib/python3.12/site-packages/percept",
+    "is_installed_wheel": true,
+    "python": "3.12.8",
+    "executable": "/private/tmp/percept-launch/oss-final-venv-bba572a/bin/python",
+    "platform": "darwin"
+  },
+  "results": [
+    {
+      "id": "SV-4.1",
+      "title": "Gate decision + state (rising edge / refractory / re-arm / distinctness)",
+      "status": "PASS",
+      "error": null,
+      "checks": [
+        {
+          "name": "A/rising-edge fires exactly once per occurrence",
+          "passed": true,
+          "detail": "fired at [1.0, 3.0, 5.0, 7.0, 9.0, 11.0, 13.0]; expected one fire per false->true edge",
+          "data": {
+            "fire_ts": [
+              1.0,
+              3.0,
+              5.0,
+              7.0,
+              9.0,
+              11.0,
+              13.0
+            ]
+          }
+        },
+        {
+          "name": "A/held-true occurrence fires exactly ONCE",
+          "passed": true,
+          "detail": "1 incident(s); gate reasons ['rising_edge', 'already_fired', 'already_fired', 'already_fired', 'already_fired', 'already_fired', 'already_fired']",
+          "data": {
+            "n_incidents": 1,
+            "reasons": [
+              "rising_edge",
+              "already_fired",
+              "already_fired",
+              "already_fired",
+              "already_fired",
+              "already_fired",
+              "already_fired"
+            ]
+          }
+        },
+        {
+          "name": "A/repeated occurrences produce DISTINCT Incidents",
+          "passed": true,
+          "detail": "7 incidents; 7 distinct ids, 7 distinct judgment_event_ids, 7 distinct evidence_seqs, 7 distinct newest-evidence hashes",
+          "data": {
+            "ids": [
+              "inc-zone-1.000-733c3604",
+              "inc-zone-3.000-bb509277",
+              "inc-zone-5.000-33b54c4a",
+              "inc-zone-7.000-fbde784f",
+              "inc-zone-9.000-dfb52af3",
+              "inc-zone-11.000-cc647506",
+              "inc-zone-13.000-499cf711"
+            ],
+            "judgment_event_ids": [
+              "zone##1",
+              "zone##3",
+              "zone##5",
+              "zone##7",
+              "zone##9",
+              "zone##11",
+              "zone##13"
+            ],
+            "evidence_seqs": [
+              1,
+              3,
+              5,
+              7,
+              9,
+              11,
+              13
+            ]
+          }
+        },
+        {
+          "name": "A/no Incident is a field-for-field duplicate of another",
+          "passed": true,
+          "detail": "every delivered Incident differs in id/ts/verdict/evidence-link",
+          "data": {}
+        },
+        {
+          "name": "B/refractory suppresses re-fires inside the window",
+          "passed": true,
+          "detail": "fired at [1.0, 11.0]; expected [1.0, 11.0] under refractory_s=10.0",
+          "data": {
+            "fire_ts": [
+              1.0,
+              11.0
+            ]
+          }
+        },
+        {
+          "name": "B/every suppressed fire carries a typed 'refractory' receipt",
+          "passed": true,
+          "detail": "5 gate_suppressed events at [3.0, 5.0, 7.0, 9.0, 13.0] reasons={'refractory'}",
+          "data": {
+            "suppressed_at": [
+              3.0,
+              5.0,
+              7.0,
+              9.0,
+              13.0
+            ]
+          }
+        },
+        {
+          "name": "B/re-arm after the refractory window elapses",
+          "passed": true,
+          "detail": "a genuine later occurrence fires once refractory_s has elapsed since the last real fire",
+          "data": {}
+        },
+        {
+          "name": "gate reasons stay inside the closed GATE_REASONS vocabulary",
+          "passed": true,
+          "detail": "33 decisions, all typed",
+          "data": {
+            "observed": [
+              "already_fired",
+              "not_satisfied",
+              "refractory",
+              "rising_edge"
+            ]
+          }
+        },
+        {
+          "name": "every gate reason implies exactly its documented action",
+          "passed": true,
+          "detail": "reason -> action agreement is total",
+          "data": {}
+        }
+      ],
+      "measurements": {
+        "baseline_fire_ts": [
+          1.0,
+          3.0,
+          5.0,
+          7.0,
+          9.0,
+          11.0,
+          13.0
+        ],
+        "refractory_fire_ts": [
+          1.0,
+          11.0
+        ],
+        "refractory_suppressed_at": [
+          3.0,
+          5.0,
+          7.0,
+          9.0,
+          13.0
+        ],
+        "held_true_reasons": [
+          "rising_edge",
+          "already_fired",
+          "already_fired",
+          "already_fired",
+          "already_fired",
+          "already_fired",
+          "already_fired"
+        ],
+        "observed_gate_reasons": [
+          "already_fired",
+          "not_satisfied",
+          "refractory",
+          "rising_edge"
+        ]
+      },
+      "defects": []
+    },
+    {
+      "id": "SV-4.5",
+      "title": "Cache correctness (hit / miss / invalidation; zero stale satisfactions)",
+      "status": "FAIL",
+      "error": null,
+      "checks": [
+        {
+          "name": "A/an unchanged frame is served from cache (provider called once)",
+          "passed": true,
+          "detail": "escalations=3 provider_calls=1 cache.hit=2",
+          "data": {
+            "escalations": 3,
+            "provider_calls": 1,
+            "cache_hits": 2
+          }
+        },
+        {
+          "name": "A/structurally distinct frames MISS (one provider call each)",
+          "passed": true,
+          "detail": "escalations=5 provider_calls=5 min pairwise dHash Hamming=23 (tau_bits=6)",
+          "data": {
+            "min_pairwise_hamming": 23
+          }
+        },
+        {
+          "name": "B/goal-change invalidation drops the goal's entries",
+          "passed": true,
+          "detail": "entries before=1 after=0",
+          "data": {}
+        },
+        {
+          "name": "B/the runtime FORBIDS re-arming a goal id under a new condition",
+          "passed": true,
+          "detail": "add_goal(same id) refused=True; GoalOp(update, condition=...) refused=True \u2014 the 'stale entry under a changed condition' vector is closed at the front door, not left to the cache",
+          "data": {}
+        },
+        {
+          "name": "B/an accepted goal mutation invalidates that goal's cache",
+          "passed": true,
+          "detail": "entries before mutation=1 after=0",
+          "data": {}
+        },
+        {
+          "name": "B/TTL is a hard ceiling (past it, always a miss)",
+          "passed": true,
+          "detail": "at age 0s -> HIT; at age 6s (ttl 5s) -> DEFER",
+          "data": {}
+        },
+        {
+          "name": "B/assertion-override invalidation drops entries resting on the entity",
+          "passed": true,
+          "detail": "entries before=1 after=0",
+          "data": {}
+        },
+        {
+          "name": "C/ZERO stale satisfactions of a changed Watch config",
+          "passed": false,
+          "detail": "STALE SATISFACTIONS: ROI moved to a dHash-colliding region (different content, same gradient structure)",
+          "data": {
+            "mutations": [
+              {
+                "mutation": "condition changed",
+                "unchanged_config_status": "HIT",
+                "changed_config_status": "DEFER",
+                "stale_satisfaction": false,
+                "served_verdict_satisfied": null
+              },
+              {
+                "mutation": "goal id changed",
+                "unchanged_config_status": "HIT",
+                "changed_config_status": "DEFER",
+                "stale_satisfaction": false,
+                "served_verdict_satisfied": null
+              },
+              {
+                "mutation": "entity scope changed",
+                "unchanged_config_status": "HIT",
+                "changed_config_status": "DEFER",
+                "stale_satisfaction": false,
+                "served_verdict_satisfied": null
+              },
+              {
+                "mutation": "ROI moved to a structurally different region",
+                "unchanged_config_status": "HIT",
+                "changed_config_status": "DEFER",
+                "stale_satisfaction": false,
+                "served_verdict_satisfied": null
+              },
+              {
+                "mutation": "ROI moved to a dHash-colliding region (different content, same gradient structure)",
+                "unchanged_config_status": "HIT",
+                "changed_config_status": "HIT",
+                "stale_satisfaction": true,
+                "served_verdict_satisfied": true
+              }
+            ]
+          }
+        }
+      ],
+      "measurements": {
+        "provider_calls_repeated_frame": 1,
+        "cache_hits_repeated_frame": 2,
+        "min_pairwise_dhash_hamming_distinct_frames": 23,
+        "tau_bits": 6,
+        "config_mutations": [
+          {
+            "mutation": "condition changed",
+            "unchanged_config_status": "HIT",
+            "changed_config_status": "DEFER",
+            "stale_satisfaction": false,
+            "served_verdict_satisfied": null
+          },
+          {
+            "mutation": "goal id changed",
+            "unchanged_config_status": "HIT",
+            "changed_config_status": "DEFER",
+            "stale_satisfaction": false,
+            "served_verdict_satisfied": null
+          },
+          {
+            "mutation": "entity scope changed",
+            "unchanged_config_status": "HIT",
+            "changed_config_status": "DEFER",
+            "stale_satisfaction": false,
+            "served_verdict_satisfied": null
+          },
+          {
+            "mutation": "ROI moved to a structurally different region",
+            "unchanged_config_status": "HIT",
+            "changed_config_status": "DEFER",
+            "stale_satisfaction": false,
+            "served_verdict_satisfied": null
+          },
+          {
+            "mutation": "ROI moved to a dHash-colliding region (different content, same gradient structure)",
+            "unchanged_config_status": "HIT",
+            "changed_config_status": "HIT",
+            "stale_satisfaction": true,
+            "served_verdict_satisfied": true
+          }
+        ],
+        "stale_satisfactions": 1,
+        "roi_collision": {
+          "dhash_top": 18446744073709551615,
+          "dhash_bottom": 18446744073709551615,
+          "hamming": 0
+        }
+      },
+      "defects": [
+        {
+          "id": "SV-4.5-D1",
+          "severity": "high",
+          "where": "percept/cache/framehash.py:195 (slot = (goal_id, entity_id, condition)) and percept/cache/framehash.py:213 (roi folded into the HASH, not the KEY)",
+          "summary": "FrameHashLayer's entry slot is (goal_id, entity_id, condition). The ROI is folded into the dHash rather than the key, and dHash is brightness-invariant. Two DIFFERENT regions of the same frame with identical gradient structure hash identically, so moving a Watch's ROI (goal.state['region_hint'] -> PerceptionSpec roi) is served the OLD region's verdict: a stale entry satisfying a CHANGED Watch config.",
+          "repro": "frame = _offset_ramp()  # top half = ramp, bottom half = ramp + 120\nlayer.store(CacheKey('zone', frame, Box(0,0,1,0.5), None, 'cond A'), YES, .95)\nlayer.lookup(CacheKey('zone', frame, Box(0,0.5,1,0.5), None, 'cond A')).status\n# -> 'HIT'  (dhash(top)=18446744073709551615, dhash(bottom)=18446744073709551615, Hamming=0 <= tau_bits=6)"
+        }
+      ]
+    },
+    {
+      "id": "SV-4.6",
+      "title": "Media buffers (bounded retention, pre-admission window, no unbounded growth)",
+      "status": "PASS",
+      "error": null,
+      "checks": [
+        {
+          "name": "byte_bounded/the memory curve was actually sampled (guards against a vacuously flat result)",
+          "passed": true,
+          "detail": "60 samples, 31 in the steady-state half; mean steady-state heap 0.81 MB",
+          "data": {}
+        },
+        {
+          "name": "byte_bounded/steady-state Python heap is FLAT (< 5% drift across the second half)",
+          "passed": true,
+          "detail": "drift +0.51%; slope +5.4 bytes/frame (projected +0.02 MB over 3000 frames); mean steady-state heap 0.81 MB; peak 0.86 MB",
+          "data": {}
+        },
+        {
+          "name": "count_only/the memory curve was actually sampled (guards against a vacuously flat result)",
+          "passed": true,
+          "detail": "60 samples, 31 in the steady-state half; mean steady-state heap 1.39 MB",
+          "data": {}
+        },
+        {
+          "name": "count_only/steady-state Python heap is FLAT (< 5% drift across the second half)",
+          "passed": true,
+          "detail": "drift +0.23%; slope +4.1 bytes/frame (projected +0.01 MB over 3000 frames); mean steady-state heap 1.39 MB; peak 1.43 MB",
+          "data": {}
+        },
+        {
+          "name": "byte_bounded/the pre-roll ring is bounded by BOTH the count and the byte budget",
+          "passed": true,
+          "detail": "max held 15 frames / 245760 bytes (bounds: 48 frames, 256000 bytes + one newest frame, which is never evicted)",
+          "data": {}
+        },
+        {
+          "name": "byte_bounded/every byte-budget eviction is announced (no silent drop)",
+          "passed": true,
+          "detail": "stats.preroll_frames_dropped=2985, preroll_capped health events=2985",
+          "data": {}
+        },
+        {
+          "name": "count_only/the COUNT bound alone still caps retention",
+          "passed": true,
+          "detail": "max snippet 21 frames / 344064 bytes with the byte bound disabled (ceiling 48 x 16384 = 786432 bytes)",
+          "data": {}
+        },
+        {
+          "name": "byte_bounded/no snippet exceeds the retention policy",
+          "passed": true,
+          "detail": "max snippet 15 frames / 245760 bytes",
+          "data": {}
+        },
+        {
+          "name": "byte_bounded/the PRE-ADMISSION window is retained (every incident carries lead-up frames)",
+          "passed": true,
+          "detail": "15/15 incidents carry pre-fire frames (0 without)",
+          "data": {}
+        },
+        {
+          "name": "count_only/no snippet exceeds the retention policy",
+          "passed": true,
+          "detail": "max snippet 21 frames / 344064 bytes",
+          "data": {}
+        },
+        {
+          "name": "count_only/the PRE-ADMISSION window is retained (every incident carries lead-up frames)",
+          "passed": true,
+          "detail": "15/15 incidents carry pre-fire frames (0 without)",
+          "data": {}
+        }
+      ],
+      "measurements": {
+        "legs": {
+          "byte_bounded": {
+            "label": "byte-bounded",
+            "n_frames": 3000,
+            "frame_bytes": 16384,
+            "snippet_size": 48,
+            "snippet_max_bytes": 256000,
+            "elapsed_s": 6.2,
+            "incidents": 15,
+            "n_samples": 60,
+            "n_steady_samples": 31,
+            "mean_steady_heap_bytes": 813291.7096774194,
+            "drift_pct_second_half": 0.5086117164381763,
+            "slope_bytes_per_frame": 5.353338709677419,
+            "linfit_r2": 0.9940044720005603,
+            "projected_growth_bytes_over_run": 16060.016129032258,
+            "heap_end_bytes": 526672,
+            "heap_peak_bytes": 855947,
+            "rss_maxrss_bytes": 61784064,
+            "preroll_frames_dropped": 2985,
+            "preroll_capped_events": 2985,
+            "max_held_frames": 15,
+            "max_held_bytes": 245760,
+            "max_snippet_frames": 15,
+            "max_snippet_bytes": 245760,
+            "incidents_with_preroll": 15,
+            "incidents_without_preroll": 0,
+            "curve": [
+              {
+                "frame": 50,
+                "heap_bytes": 357695,
+                "rss_bytes": 59162624
+              },
+              {
+                "frame": 100,
+                "heap_bytes": 382135,
+                "rss_bytes": 59457536
+              },
+              {
+                "frame": 150,
+                "heap_bytes": 404850,
+                "rss_bytes": 59539456
+              },
+              {
+                "frame": 200,
+                "heap_bytes": 430812,
+                "rss_bytes": 59801600
+              },
+              {
+                "frame": 250,
+                "heap_bytes": 664962,
+                "rss_bytes": 60014592
+              },
+              {
+                "frame": 300,
+                "heap_bytes": 671932,
+                "rss_bytes": 60030976
+              },
+              {
+                "frame": 350,
+                "heap_bytes": 684358,
+                "rss_bytes": 60047360
+              },
+              {
+                "frame": 400,
+                "heap_bytes": 690304,
+                "rss_bytes": 60047360
+              },
+              {
+                "frame": 450,
+                "heap_bytes": 696681,
+                "rss_bytes": 60112896
+              },
+              {
+                "frame": 500,
+                "heap_bytes": 702691,
+                "rss_bytes": 60112896
+              },
+              {
+                "frame": 550,
+                "heap_bytes": 708637,
+                "rss_bytes": 60178432
+              },
+              {
+                "frame": 600,
+                "heap_bytes": 714583,
+                "rss_bytes": 60178432
+              },
+              {
+                "frame": 650,
+                "heap_bytes": 720917,
+                "rss_bytes": 60194816
+              },
+              {
+                "frame": 700,
+                "heap_bytes": 739839,
+                "rss_bytes": 60227584
+              },
+              {
+                "frame": 750,
+                "heap_bytes": 745785,
+                "rss_bytes": 60276736
+              },
+              {
+                "frame": 800,
+                "heap_bytes": 751731,
+                "rss_bytes": 60293120
+              },
+              {
+                "frame": 850,
+                "heap_bytes": 758153,
+                "rss_bytes": 60375040
+              },
+              {
+                "frame": 900,
+                "heap_bytes": 764163,
+                "rss_bytes": 60375040
+              },
+              {
+                "frame": 950,
+                "heap_bytes": 770109,
+                "rss_bytes": 60391424
+              },
+              {
+                "frame": 1000,
+                "heap_bytes": 776055,
+                "rss_bytes": 60391424
+              },
+              {
+                "frame": 1050,
+                "heap_bytes": 779674,
+                "rss_bytes": 60391424
+              },
+              {
+                "frame": 1100,
+                "heap_bytes": 779870,
+                "rss_bytes": 60538880
+              },
+              {
+                "frame": 1150,
+                "heap_bytes": 780105,
+                "rss_bytes": 60538880
+              },
+              {
+                "frame": 1200,
+                "heap_bytes": 780315,
+                "rss_bytes": 60538880
+              },
+              {
+                "frame": 1250,
+                "heap_bytes": 781553,
+                "rss_bytes": 60538880
+              },
+              {
+                "frame": 1300,
+                "heap_bytes": 781827,
+                "rss_bytes": 60538880
+              },
+              {
+                "frame": 1350,
+                "heap_bytes": 782037,
+                "rss_bytes": 60538880
+              },
+              {
+                "frame": 1400,
+                "heap_bytes": 808183,
+                "rss_bytes": 60538880
+              },
+              {
+                "frame": 1450,
+                "heap_bytes": 808741,
+                "rss_bytes": 60538880
+              },
+              {
+                "frame": 1500,
+                "heap_bytes": 808951,
+                "rss_bytes": 60538880
+              },
+              {
+                "frame": 1550,
+                "heap_bytes": 809161,
+                "rss_bytes": 60538880
+              },
+              {
+                "frame": 1600,
+                "heap_bytes": 809371,
+                "rss_bytes": 60538880
+              },
+              {
+                "frame": 1650,
+                "heap_bytes": 810121,
+                "rss_bytes": 60538880
+              },
+              {
+                "frame": 1700,
+                "heap_bytes": 810395,
+                "rss_bytes": 60538880
+              },
+              {
+                "frame": 1750,
+                "heap_bytes": 810605,
+                "rss_bytes": 60571648
+              },
+              {
+                "frame": 1800,
+                "heap_bytes": 810815,
+                "rss_bytes": 60571648
+              },
+              {
+                "frame": 1850,
+                "heap_bytes": 811365,
+                "rss_bytes": 60571648
+              },
+              {
+                "frame": 1900,
+                "heap_bytes": 811575,
+                "rss_bytes": 60604416
+              },
+              {
+                "frame": 1950,
+                "heap_bytes": 811785,
+                "rss_bytes": 60604416
+              },
+              {
+                "frame": 2000,
+                "heap_bytes": 811995,
+                "rss_bytes": 60604416
+              },
+              {
+                "frame": 2050,
+                "heap_bytes": 812512,
+                "rss_bytes": 60620800
+              },
+              {
+                "frame": 2100,
+                "heap_bytes": 812768,
+                "rss_bytes": 60620800
+              },
+              {
+                "frame": 2150,
+                "heap_bytes": 812928,
+                "rss_bytes": 60620800
+              },
+              {
+                "frame": 2200,
+                "heap_bytes": 813088,
+                "rss_bytes": 60620800
+              },
+              {
+                "frame": 2250,
+                "heap_bytes": 813572,
+                "rss_bytes": 60784640
+              },
+              {
+                "frame": 2300,
+                "heap_bytes": 813732,
+                "rss_bytes": 61505536
+              },
+              {
+                "frame": 2350,
+                "heap_bytes": 813892,
+                "rss_bytes": 61521920
+              },
+              {
+                "frame": 2400,
+                "heap_bytes": 814052,
+                "rss_bytes": 61521920
+              },
+              {
+                "frame": 2450,
+                "heap_bytes": 814528,
+                "rss_bytes": 61587456
+              },
+              {
+                "frame": 2500,
+                "heap_bytes": 814688,
+                "rss_bytes": 61587456
+              },
+              {
+                "frame": 2550,
+                "heap_bytes": 814848,
+                "rss_bytes": 61620224
+              },
+              {
+                "frame": 2600,
+                "heap_bytes": 815008,
+                "rss_bytes": 61620224
+              },
+              {
+                "frame": 2650,
+                "heap_bytes": 815484,
+                "rss_bytes": 61702144
+              },
+              {
+                "frame": 2700,
+                "heap_bytes": 815740,
+                "rss_bytes": 61751296
+              },
+              {
+                "frame": 2750,
+                "heap_bytes": 815900,
+                "rss_bytes": 61751296
+              },
+              {
+                "frame": 2800,
+                "heap_bytes": 816060,
+                "rss_bytes": 61767680
+              },
+              {
+                "frame": 2850,
+                "heap_bytes": 816536,
+                "rss_bytes": 61767680
+              },
+              {
+                "frame": 2900,
+                "heap_bytes": 816696,
+                "rss_bytes": 61767680
+              },
+              {
+                "frame": 2950,
+                "heap_bytes": 816856,
+                "rss_bytes": 61784064
+              },
+              {
+                "frame": 3000,
+                "heap_bytes": 817016,
+                "rss_bytes": 61784064
+              }
+            ]
+          },
+          "count_only": {
+            "label": "count-only",
+            "n_frames": 3000,
+            "frame_bytes": 16384,
+            "snippet_size": 48,
+            "snippet_max_bytes": 0,
+            "elapsed_s": 6.26,
+            "incidents": 15,
+            "n_samples": 60,
+            "n_steady_samples": 31,
+            "mean_steady_heap_bytes": 1387094.064516129,
+            "drift_pct_second_half": 0.23015896082539125,
+            "slope_bytes_per_frame": 4.143532258064516,
+            "linfit_r2": 0.9913808149526158,
+            "projected_growth_bytes_over_run": 12430.596774193547,
+            "heap_end_bytes": 408829,
+            "heap_peak_bytes": 1428858,
+            "rss_maxrss_bytes": 64520192,
+            "preroll_frames_dropped": 0,
+            "preroll_capped_events": 0,
+            "max_held_frames": 0,
+            "max_held_bytes": 0,
+            "max_snippet_frames": 21,
+            "max_snippet_bytes": 344064,
+            "incidents_with_preroll": 15,
+            "incidents_without_preroll": 0,
+            "curve": [
+              {
+                "frame": 50,
+                "heap_bytes": 898984,
+                "rss_bytes": 61833216
+              },
+              {
+                "frame": 100,
+                "heap_bytes": 906648,
+                "rss_bytes": 61849600
+              },
+              {
+                "frame": 150,
+                "heap_bytes": 912563,
+                "rss_bytes": 62291968
+              },
+              {
+                "frame": 200,
+                "heap_bytes": 921725,
+                "rss_bytes": 62291968
+              },
+              {
+                "frame": 250,
+                "heap_bytes": 1240121,
+                "rss_bytes": 62291968
+              },
+              {
+                "frame": 300,
+                "heap_bytes": 1247019,
+                "rss_bytes": 62308352
+              },
+              {
+                "frame": 350,
+                "heap_bytes": 1259445,
+                "rss_bytes": 62455808
+              },
+              {
+                "frame": 400,
+                "heap_bytes": 1265391,
+                "rss_bytes": 62455808
+              },
+              {
+                "frame": 450,
+                "heap_bytes": 1271688,
+                "rss_bytes": 62537728
+              },
+              {
+                "frame": 500,
+                "heap_bytes": 1277722,
+                "rss_bytes": 62816256
+              },
+              {
+                "frame": 550,
+                "heap_bytes": 1283668,
+                "rss_bytes": 63127552
+              },
+              {
+                "frame": 600,
+                "heap_bytes": 1289614,
+                "rss_bytes": 63389696
+              },
+              {
+                "frame": 650,
+                "heap_bytes": 1295876,
+                "rss_bytes": 63389696
+              },
+              {
+                "frame": 700,
+                "heap_bytes": 1314822,
+                "rss_bytes": 63406080
+              },
+              {
+                "frame": 750,
+                "heap_bytes": 1320768,
+                "rss_bytes": 63930368
+              },
+              {
+                "frame": 800,
+                "heap_bytes": 1326714,
+                "rss_bytes": 63946752
+              },
+              {
+                "frame": 850,
+                "heap_bytes": 1333072,
+                "rss_bytes": 64110592
+              },
+              {
+                "frame": 900,
+                "heap_bytes": 1339106,
+                "rss_bytes": 64176128
+              },
+              {
+                "frame": 950,
+                "heap_bytes": 1345052,
+                "rss_bytes": 64192512
+              },
+              {
+                "frame": 1000,
+                "heap_bytes": 1350998,
+                "rss_bytes": 64192512
+              },
+              {
+                "frame": 1050,
+                "heap_bytes": 1354593,
+                "rss_bytes": 64192512
+              },
+              {
+                "frame": 1100,
+                "heap_bytes": 1354813,
+                "rss_bytes": 64225280
+              },
+              {
+                "frame": 1150,
+                "heap_bytes": 1354984,
+                "rss_bytes": 64225280
+              },
+              {
+                "frame": 1200,
+                "heap_bytes": 1355130,
+                "rss_bytes": 64225280
+              },
+              {
+                "frame": 1250,
+                "heap_bytes": 1356600,
+                "rss_bytes": 64241664
+              },
+              {
+                "frame": 1300,
+                "heap_bytes": 1356834,
+                "rss_bytes": 64241664
+              },
+              {
+                "frame": 1350,
+                "heap_bytes": 1356980,
+                "rss_bytes": 64241664
+              },
+              {
+                "frame": 1400,
+                "heap_bytes": 1383062,
+                "rss_bytes": 64241664
+              },
+              {
+                "frame": 1450,
+                "heap_bytes": 1383524,
+                "rss_bytes": 64241664
+              },
+              {
+                "frame": 1500,
+                "heap_bytes": 1383694,
+                "rss_bytes": 64241664
+              },
+              {
+                "frame": 1550,
+                "heap_bytes": 1383840,
+                "rss_bytes": 64241664
+              },
+              {
+                "frame": 1600,
+                "heap_bytes": 1383986,
+                "rss_bytes": 64241664
+              },
+              {
+                "frame": 1650,
+                "heap_bytes": 1384640,
+                "rss_bytes": 64258048
+              },
+              {
+                "frame": 1700,
+                "heap_bytes": 1384874,
+                "rss_bytes": 64274432
+              },
+              {
+                "frame": 1750,
+                "heap_bytes": 1385020,
+                "rss_bytes": 64274432
+              },
+              {
+                "frame": 1800,
+                "heap_bytes": 1385166,
+                "rss_bytes": 64274432
+              },
+              {
+                "frame": 1850,
+                "heap_bytes": 1385628,
+                "rss_bytes": 64274432
+              },
+              {
+                "frame": 1900,
+                "heap_bytes": 1385798,
+                "rss_bytes": 64274432
+              },
+              {
+                "frame": 1950,
+                "heap_bytes": 1385944,
+                "rss_bytes": 64274432
+              },
+              {
+                "frame": 2000,
+                "heap_bytes": 1386090,
+                "rss_bytes": 64274432
+              },
+              {
+                "frame": 2050,
+                "heap_bytes": 1386527,
+                "rss_bytes": 64274432
+              },
+              {
+                "frame": 2100,
+                "heap_bytes": 1386743,
+                "rss_bytes": 64274432
+              },
+              {
+                "frame": 2150,
+                "heap_bytes": 1386839,
+                "rss_bytes": 64274432
+              },
+              {
+                "frame": 2200,
+                "heap_bytes": 1386935,
+                "rss_bytes": 64307200
+              },
+              {
+                "frame": 2250,
+                "heap_bytes": 1387347,
+                "rss_bytes": 64323584
+              },
+              {
+                "frame": 2300,
+                "heap_bytes": 1387467,
+                "rss_bytes": 64323584
+              },
+              {
+                "frame": 2350,
+                "heap_bytes": 1387563,
+                "rss_bytes": 64323584
+              },
+              {
+                "frame": 2400,
+                "heap_bytes": 1387659,
+                "rss_bytes": 64323584
+              },
+              {
+                "frame": 2450,
+                "heap_bytes": 1388071,
+                "rss_bytes": 64323584
+              },
+              {
+                "frame": 2500,
+                "heap_bytes": 1388191,
+                "rss_bytes": 64323584
+              },
+              {
+                "frame": 2550,
+                "heap_bytes": 1388287,
+                "rss_bytes": 64323584
+              },
+              {
+                "frame": 2600,
+                "heap_bytes": 1388383,
+                "rss_bytes": 64339968
+              },
+              {
+                "frame": 2650,
+                "heap_bytes": 1388795,
+                "rss_bytes": 64356352
+              },
+              {
+                "frame": 2700,
+                "heap_bytes": 1389011,
+                "rss_bytes": 64372736
+              },
+              {
+                "frame": 2750,
+                "heap_bytes": 1389107,
+                "rss_bytes": 64421888
+              },
+              {
+                "frame": 2800,
+                "heap_bytes": 1389203,
+                "rss_bytes": 64503808
+              },
+              {
+                "frame": 2850,
+                "heap_bytes": 1389615,
+                "rss_bytes": 64503808
+              },
+              {
+                "frame": 2900,
+                "heap_bytes": 1389735,
+                "rss_bytes": 64503808
+              },
+              {
+                "frame": 2950,
+                "heap_bytes": 1389831,
+                "rss_bytes": 64520192
+              },
+              {
+                "frame": 3000,
+                "heap_bytes": 1389927,
+                "rss_bytes": 64520192
+              }
+            ]
+          }
+        }
+      },
+      "defects": []
+    },
+    {
+      "id": "SV-4.7",
+      "title": "EVIDENCE INTEGRITY \u2014 zero tolerance for synthesized/substituted evidence",
+      "status": "FAIL",
+      "error": null,
+      "checks": [
+        {
+          "name": "A/every evidence frame resolves to REAL fed media (content-hash exact)",
+          "passed": true,
+          "detail": "42 evidence frames across 8 incidents; 0 unmatched",
+          "data": {
+            "evidence_frames": 42,
+            "incidents": 8
+          }
+        },
+        {
+          "name": "A/evidence is a contiguous ordered window of the fed stream, ending at/before the fire",
+          "passed": true,
+          "detail": "every snippet aligns exactly to a contiguous run of the frames actually fed \u2014 no re-ordering, interleaving, duplication or post-dating",
+          "data": {}
+        },
+        {
+          "name": "A/no Incident is delivered with empty evidence",
+          "passed": true,
+          "detail": "0 incident(s) without a snippet",
+          "data": {}
+        },
+        {
+          "name": "A/the frame the judge actually saw is the newest evidence frame",
+          "passed": true,
+          "detail": "0 incident(s) whose newest evidence frame the judge never saw",
+          "data": {
+            "offenders": []
+          }
+        },
+        {
+          "name": "A'/NEGATIVE CONTROL: the audit detects evidence absent from the fed stream",
+          "passed": true,
+          "detail": "withholding one fed frame from the ground truth produced 3 unmatched evidence frames \u2014 the detector fires",
+          "data": {}
+        },
+        {
+          "name": "B/evidence across an ADMISSION GAP is real fed media",
+          "passed": true,
+          "detail": "14 frames observed, 3 admitted (gap of 11 un-admitted ticks); 8 evidence frames, 0 unmatched",
+          "data": {
+            "frames": 14,
+            "admitted": 3
+          }
+        },
+        {
+          "name": "B/un-admitted frames are retained as pre-roll, not fabricated",
+          "passed": true,
+          "detail": "the incident's pre-roll spans more frames than were ever admitted \u2014 the retained window covers the gap with real captured media",
+          "data": {}
+        },
+        {
+          "name": "C/a cache-served FIRE was actually produced (the adversarial state was reached)",
+          "passed": true,
+          "detail": "escalations=2 provider_calls=1 cache.hit=1 incidents=2; the served frame differs in content from the judged one but has dHash Hamming distance 0 (tau_bits=6)",
+          "data": {
+            "provider_calls": 1,
+            "cache_hits": 1,
+            "near_match_hamming": 0
+          }
+        },
+        {
+          "name": "C/evidence media after a cache hit is REAL captured media (no substitution)",
+          "passed": true,
+          "detail": "6 evidence frames, 0 not in the fed stream, 0 misaligned",
+          "data": {}
+        },
+        {
+          "name": "C/a cache-served Incident's newest evidence frame IS a frame the judge saw",
+          "passed": false,
+          "detail": "1 incident(s) whose newest evidence frame the judge never saw \u2014 the cache serves on a dHash NEAR-match (Hamming <= 6), so the verdict was computed on different pixels than the ones delivered as its evidence",
+          "data": {
+            "offenders": [
+              {
+                "incident": "inc-zone-3.000-f480422c",
+                "ts": 3.0,
+                "sha256": "cc7fe40d0291d3cdce54d909a809383781247d60a8e4d856b174dbdc3f4dfd29"
+              }
+            ]
+          }
+        },
+        {
+          "name": "C/a cache-served Incident is distinguishable from a freshly-judged one",
+          "passed": false,
+          "detail": "the Incident delivered off a cache HIT carries provenance='observed' \u2014 identical to a freshly-judged fire; nothing on the wire Incident marks the verdict as re-served",
+          "data": {
+            "provenance": "observed",
+            "verdict_evidence": "scripted: condition holds"
+          }
+        },
+        {
+          "name": "D/no Incident supersedes a revision that was never delivered",
+          "passed": true,
+          "detail": "0 dangling supersession link(s); revisions seen: []",
+          "data": {
+            "dangling": []
+          }
+        },
+        {
+          "name": "D/evidence LINKS are injective within a run (one judgment record per Incident)",
+          "passed": true,
+          "detail": "baseline: 8/8 distinct over 8 incidents; admission-gap: 2/2 distinct over 2 incidents; cache-hit: 2/2 distinct over 2 incidents",
+          "data": {
+            "per_run": [
+              {
+                "run": "baseline",
+                "incidents": 8,
+                "links": 8,
+                "distinct": 8
+              },
+              {
+                "run": "admission-gap",
+                "incidents": 2,
+                "links": 2,
+                "distinct": 2
+              },
+              {
+                "run": "cache-hit",
+                "incidents": 2,
+                "links": 2,
+                "distinct": 2
+              }
+            ]
+          }
+        },
+        {
+          "name": "E/evidence resolves by content hash and tampering is detected",
+          "passed": true,
+          "detail": "round-trip hash match=True; EvidenceCorrupt raised on tamper=True",
+          "data": {}
+        },
+        {
+          "name": "F1/clip-kind evidence for a bytes frame is byte-recoverable",
+          "passed": true,
+          "detail": "4/4 clip entries recover the exact media bytes (0 as base64 'data', 4 as a Python 'repr' string \u2014 recoverable, but NOT the documented base64 media field a sink reads)",
+          "data": {
+            "bytes_frames": {
+              "incidents": 1,
+              "entries": [
+                {
+                  "keys": [
+                    "repr"
+                  ],
+                  "truncated": false,
+                  "byte_recoverable": true
+                },
+                {
+                  "keys": [
+                    "repr"
+                  ],
+                  "truncated": false,
+                  "byte_recoverable": true
+                },
+                {
+                  "keys": [
+                    "repr"
+                  ],
+                  "truncated": false,
+                  "byte_recoverable": true
+                },
+                {
+                  "keys": [
+                    "repr"
+                  ],
+                  "truncated": false,
+                  "byte_recoverable": true
+                }
+              ],
+              "base64_data": 0,
+              "repr_only": 4,
+              "byte_recoverable": 4
+            }
+          }
+        },
+        {
+          "name": "F2/clip-kind evidence for a DECODED frame is not silently truncated",
+          "passed": false,
+          "detail": "decoded ndarray frame -> keys=['repr'], TRUNCATED=True (12288 pixel bytes replaced by a 1034-char string, unrecoverable)",
+          "data": {
+            "ndarray_frame": {
+              "mime": "application/x-percept-frame-bundle+json",
+              "keys": [
+                "repr"
+              ],
+              "repr_only": 1,
+              "truncated": true,
+              "repr_len": 1034,
+              "source_bytes": 12288,
+              "media_bytes": 1152
+            }
+          }
+        }
+      ],
+      "measurements": {
+        "baseline": {
+          "label": "baseline",
+          "incidents": 8,
+          "evidence_frames": 42,
+          "frames_not_in_fed_stream": [],
+          "not_a_contiguous_window_of_the_fed_stream": [],
+          "snippets_after_fire": [],
+          "newest_frame_never_judged": [],
+          "empty_snippets": [],
+          "clean": true
+        },
+        "admission_gap": {
+          "label": "admission-gap",
+          "incidents": 2,
+          "evidence_frames": 8,
+          "frames_not_in_fed_stream": [],
+          "not_a_contiguous_window_of_the_fed_stream": [],
+          "snippets_after_fire": [],
+          "newest_frame_never_judged": [],
+          "empty_snippets": [],
+          "clean": true
+        },
+        "cache_hit": {
+          "label": "cache-hit",
+          "incidents": 2,
+          "evidence_frames": 6,
+          "frames_not_in_fed_stream": [],
+          "not_a_contiguous_window_of_the_fed_stream": [],
+          "snippets_after_fire": [],
+          "newest_frame_never_judged": [
+            {
+              "incident": "inc-zone-3.000-f480422c",
+              "ts": 3.0,
+              "sha256": "cc7fe40d0291d3cdce54d909a809383781247d60a8e4d856b174dbdc3f4dfd29"
+            }
+          ],
+          "empty_snippets": [],
+          "clean": true
+        },
+        "cache_hit_provenance": "observed",
+        "clip_bytes_frames": {
+          "incidents": 1,
+          "entries": [
+            {
+              "keys": [
+                "repr"
+              ],
+              "truncated": false,
+              "byte_recoverable": true
+            },
+            {
+              "keys": [
+                "repr"
+              ],
+              "truncated": false,
+              "byte_recoverable": true
+            },
+            {
+              "keys": [
+                "repr"
+              ],
+              "truncated": false,
+              "byte_recoverable": true
+            },
+            {
+              "keys": [
+                "repr"
+              ],
+              "truncated": false,
+              "byte_recoverable": true
+            }
+          ],
+          "base64_data": 0,
+          "repr_only": 4,
+          "byte_recoverable": 4
+        },
+        "clip_ndarray_probe": {
+          "mime": "application/x-percept-frame-bundle+json",
+          "keys": [
+            "repr"
+          ],
+          "repr_only": 1,
+          "truncated": true,
+          "repr_len": 1034,
+          "source_bytes": 12288,
+          "media_bytes": 1152
+        },
+        "evidence_store_round_trip": true,
+        "evidence_store_tamper_detected": true,
+        "judgment_link_injectivity": [
+          {
+            "run": "baseline",
+            "incidents": 8,
+            "links": 8,
+            "distinct": 8
+          },
+          {
+            "run": "admission-gap",
+            "incidents": 2,
+            "links": 2,
+            "distinct": 2
+          },
+          {
+            "run": "cache-hit",
+            "incidents": 2,
+            "links": 2,
+            "distinct": 2
+          }
+        ],
+        "cache_near_match_hamming": 0
+      },
+      "defects": [
+        {
+          "id": "SV-4.7-D1",
+          "severity": "blocker",
+          "where": "percept/incidents.py:165-179 (_encode_frame_bundle), reached from percept/incidents.py:203 (snippet_from_window kind='clip')",
+          "summary": "With snippet_kind='clip', any frame that is not a literal ``(mime, bytes)`` 2-tuple falls into the else branch and is serialized as ``{'repr': repr(frame)}``. A decoded frame from the shipped camera source is a numpy ndarray, whose repr is TRUNCATED with '...' above 1000 elements. The delivered IncidentSnippet therefore advertises media_type 'application/x-percept-frame-bundle+json' while carrying a lossy, irreversible ASCII summary in place of the pixels the judge saw. It is silent: no health event, no error, no counter. This is SUBSTITUTED evidence.",
+          "repro": "import numpy as np, json\nfrom percept.incidents import _encode_frame_bundle\na = (np.arange(64*64*3, dtype=np.uint8) % 251).reshape(64, 64, 3)  # 12288 px bytes\nmime, media = _encode_frame_bundle([a], t_start=0.0, t_end=1.0)\ne = json.loads(media)['frames'][0]\nassert list(e) == ['repr'] and '...' in e['repr']\n# repr length 1034 chars for 12288 bytes of pixels \u2014 unrecoverable.\n# End-to-end: percept.run(core, source=[(t, gate_frame, ndarray)], snippet_kind='clip')\n#             -> incident.snippet.media carries the same truncated reprs."
+        },
+        {
+          "id": "SV-4.7-D3",
+          "severity": "high",
+          "where": "percept/cache/framehash.py:218-232 (near-match serve) reached from percept/agent.py:5937 / percept/agent.py:2799",
+          "summary": "With the perception cache enabled, a FIRE can be delivered whose newest evidence frame the judge NEVER saw. The layer serves on a dHash NEAR-match (Hamming <= tau_bits, default 6) and dHash is brightness-invariant, so a frame with different content but the same gradient structure is served the earlier frame's verdict. The Incident then pairs a verdict computed on frame X with evidence media ending at frame Y != X. The media itself is real captured media (nothing is synthesized), but the verdict-to-evidence binding is broken and nothing on the wire says so. Scope: PERCEPT_CACHE_ENABLED is OFF by default; audit_rate (default 0.05) re-perceives only 5% of hits.",
+          "repro": "p_judged = bytes(((x*7) % 100) for x in range(256))\np_near   = bytes(v + 120 for v in p_judged)   # different pixels\nhamming(dhash(p_judged), dhash(p_near)) == 0  <= tau_bits=6\ncache enabled, audit_rate=0.0; judge p_judged at t=1 -> FIRE; re-arm at t=2; feed p_near at t=3 -> cache HIT -> FIRE.\n# incident.snippet.frames[-1] == p_near, which is NOT in the set of frames the judge was shown (1 such incident(s))."
+        },
+        {
+          "id": "SV-4.7-D2",
+          "severity": "medium",
+          "where": "percept/incidents.py:99 (provenance read off the fire) / percept/cache/framehash.py:226-232 (CacheResult provenance='cached')",
+          "summary": "A FIRE whose verdict was served from the perception cache is delivered as an Incident with provenance='observed' \u2014 byte-identical to a freshly-judged fire. The cache layer's own CacheResult(provenance='cached') never reaches the wire Incident. The evidence MEDIA is real, but a consumer cannot tell that the verdict was computed on an earlier (only dHash-near, not necessarily identical) frame.",
+          "repro": "cache enabled (audit_rate=0.0); judge frame pA at t=1 -> FIRE (provider call); gate re-armed via the documented Gate.rearm seam at t=2; pA again at t=3 -> cache HIT -> FIRE. incident.provenance == 'observed', incident.verdict.evidence == the t=1 verdict's text. cache.hit=1, provider_calls=1 over 2 escalations."
+        }
+      ]
+    },
+    {
+      "id": "SV-4.8",
+      "title": "Drop-rate reconciliation (units in == units accounted, every boundary)",
+      "status": "FAIL",
+      "error": null,
+      "checks": [
+        {
+          "name": "source boundary: observed == accepted + excluded",
+          "passed": true,
+          "detail": "balances in every scenario",
+          "data": {}
+        },
+        {
+          "name": "admission boundary: escalations partition into signal/fixed/coast/audio",
+          "passed": true,
+          "detail": "balances in every scenario",
+          "data": {}
+        },
+        {
+          "name": "admission boundary: funnel.seen/gated agree with RuntimeStats",
+          "passed": true,
+          "detail": "balances in every scenario",
+          "data": {}
+        },
+        {
+          "name": "judge-dispatch boundary: admitted == judge_calls + all named drops (zero unaccounted)",
+          "passed": true,
+          "detail": "balances in every scenario",
+          "data": {}
+        },
+        {
+          "name": "every dropped unit carries a health receipt",
+          "passed": true,
+          "detail": "balances in every scenario",
+          "data": {}
+        },
+        {
+          "name": "judge-execution boundary: judge_calls == provider calls + cache hits",
+          "passed": true,
+          "detail": "balances in every scenario",
+          "data": {}
+        },
+        {
+          "name": "gate boundary: judged == one typed decision receipt per unit (fire + ask + silent)",
+          "passed": true,
+          "detail": "balances in every scenario",
+          "data": {}
+        },
+        {
+          "name": "every SILENT decision carries a typed reason",
+          "passed": true,
+          "detail": "balances in every scenario",
+          "data": {}
+        },
+        {
+          "name": "delivery boundary: fires == incidents + sink errors == yielded",
+          "passed": true,
+          "detail": "balances in every scenario",
+          "data": {}
+        },
+        {
+          "name": "funnel.dropped mirrors the RuntimeStats drop counters",
+          "passed": false,
+          "detail": "overload:judge_dispatch.funnel_dropped_agrees",
+          "data": {}
+        },
+        {
+          "name": "funnel.refused mirrors the gate's ASK decisions",
+          "passed": false,
+          "detail": "clean:gate.funnel_refused_agrees",
+          "data": {}
+        },
+        {
+          "name": "funnel mirror balances: judged == funnel.fired + funnel.refused + silent",
+          "passed": false,
+          "detail": "clean:gate.funnel_mirror_balances",
+          "data": {}
+        },
+        {
+          "name": "ZERO unaccounted units at the judge-dispatch boundary",
+          "passed": true,
+          "detail": "unaccounted per scenario: {'clean': 0, 'overload': 0, 'cache': 0}",
+          "data": {
+            "unaccounted": {
+              "clean": 0,
+              "overload": 0,
+              "cache": 0
+            }
+          }
+        },
+        {
+          "name": "ZERO unaccounted units at the gate boundary",
+          "passed": true,
+          "detail": "unaccounted per scenario: {'clean': 0, 'overload': 0, 'cache': 0}",
+          "data": {
+            "unaccounted": {
+              "clean": 0,
+              "overload": 0,
+              "cache": 0
+            }
+          }
+        }
+      ],
+      "measurements": {
+        "ledgers": {
+          "clean": {
+            "source": {
+              "observed": 14,
+              "accepted": 14,
+              "excluded": 0,
+              "queue_dropped": 0,
+              "balances": true
+            },
+            "admission": {
+              "frames_in": 14,
+              "admitted": 13,
+              "not_admitted": 1,
+              "signal_admits": 13,
+              "fixed_admits": 0,
+              "coast_admits": 0,
+              "audio_wakes": 0,
+              "partition_balances": true,
+              "funnel_seen": 14,
+              "funnel_gated": 13,
+              "funnel_agrees": true
+            },
+            "judge_dispatch": {
+              "admitted": 13,
+              "judge_calls": 13,
+              "judge_superseded": 0,
+              "judge_revision_dropped": 0,
+              "judge_deadline_dropped": 0,
+              "judge_deadline_expired": 0,
+              "judge_source_discontinuity_dropped": 0,
+              "total_drops": 0,
+              "unaccounted": 0,
+              "balances": true,
+              "drop_receipts": 0,
+              "every_drop_has_a_receipt": true,
+              "funnel_dropped": 0,
+              "funnel_dropped_agrees": true
+            },
+            "judge_execution": {
+              "judge_calls": 13,
+              "provider_calls": 13,
+              "cache_hits": 0,
+              "funnel_judged": 13,
+              "balances": true
+            },
+            "gate": {
+              "judged": 13,
+              "decisions": 13,
+              "decision_fire": 6,
+              "decision_ask": 1,
+              "decision_silent": 6,
+              "silent_with_typed_reason": 6,
+              "silent_reasons": {
+                "not_satisfied": 6
+              },
+              "unaccounted": 0,
+              "balances": true,
+              "every_silent_has_a_reason": true,
+              "funnel_fired": 6,
+              "funnel_refused": 2,
+              "delivered_asks": 1,
+              "funnel_fired_agrees": true,
+              "funnel_refused_agrees": false,
+              "funnel_mirror_balances": false
+            },
+            "delivery": {
+              "fires": 6,
+              "asks": 1,
+              "incidents": 6,
+              "yielded": 6,
+              "sink_errors": 0,
+              "balances": true
+            }
+          },
+          "overload": {
+            "source": {
+              "observed": 40,
+              "accepted": 40,
+              "excluded": 0,
+              "queue_dropped": 0,
+              "balances": true
+            },
+            "admission": {
+              "frames_in": 40,
+              "admitted": 39,
+              "not_admitted": 1,
+              "signal_admits": 39,
+              "fixed_admits": 0,
+              "coast_admits": 0,
+              "audio_wakes": 0,
+              "partition_balances": true,
+              "funnel_seen": 40,
+              "funnel_gated": 39,
+              "funnel_agrees": true
+            },
+            "judge_dispatch": {
+              "admitted": 39,
+              "judge_calls": 2,
+              "judge_superseded": 37,
+              "judge_revision_dropped": 0,
+              "judge_deadline_dropped": 0,
+              "judge_deadline_expired": 0,
+              "judge_source_discontinuity_dropped": 0,
+              "total_drops": 37,
+              "unaccounted": 0,
+              "balances": true,
+              "drop_receipts": 37,
+              "every_drop_has_a_receipt": true,
+              "funnel_dropped": 0,
+              "funnel_dropped_agrees": false
+            },
+            "judge_execution": {
+              "judge_calls": 2,
+              "provider_calls": 2,
+              "cache_hits": 0,
+              "funnel_judged": 2,
+              "balances": true
+            },
+            "gate": {
+              "judged": 2,
+              "decisions": 2,
+              "decision_fire": 1,
+              "decision_ask": 0,
+              "decision_silent": 1,
+              "silent_with_typed_reason": 1,
+              "silent_reasons": {
+                "already_fired": 1
+              },
+              "unaccounted": 0,
+              "balances": true,
+              "every_silent_has_a_reason": true,
+              "funnel_fired": 1,
+              "funnel_refused": 0,
+              "delivered_asks": 0,
+              "funnel_fired_agrees": true,
+              "funnel_refused_agrees": true,
+              "funnel_mirror_balances": true
+            },
+            "delivery": {
+              "fires": 1,
+              "asks": 0,
+              "incidents": 1,
+              "yielded": 1,
+              "sink_errors": 0,
+              "balances": true
+            }
+          },
+          "cache": {
+            "source": {
+              "observed": 8,
+              "accepted": 8,
+              "excluded": 0,
+              "queue_dropped": 0,
+              "balances": true
+            },
+            "admission": {
+              "frames_in": 8,
+              "admitted": 7,
+              "not_admitted": 1,
+              "signal_admits": 7,
+              "fixed_admits": 0,
+              "coast_admits": 0,
+              "audio_wakes": 0,
+              "partition_balances": true,
+              "funnel_seen": 8,
+              "funnel_gated": 7,
+              "funnel_agrees": true
+            },
+            "judge_dispatch": {
+              "admitted": 7,
+              "judge_calls": 7,
+              "judge_superseded": 0,
+              "judge_revision_dropped": 0,
+              "judge_deadline_dropped": 0,
+              "judge_deadline_expired": 0,
+              "judge_source_discontinuity_dropped": 0,
+              "total_drops": 0,
+              "unaccounted": 0,
+              "balances": true,
+              "drop_receipts": 0,
+              "every_drop_has_a_receipt": true,
+              "funnel_dropped": 0,
+              "funnel_dropped_agrees": true
+            },
+            "judge_execution": {
+              "judge_calls": 7,
+              "provider_calls": 1,
+              "cache_hits": 6,
+              "funnel_judged": 7,
+              "balances": true
+            },
+            "gate": {
+              "judged": 7,
+              "decisions": 7,
+              "decision_fire": 0,
+              "decision_ask": 0,
+              "decision_silent": 7,
+              "silent_with_typed_reason": 7,
+              "silent_reasons": {
+                "not_satisfied": 7
+              },
+              "unaccounted": 0,
+              "balances": true,
+              "every_silent_has_a_reason": true,
+              "funnel_fired": 0,
+              "funnel_refused": 0,
+              "delivered_asks": 0,
+              "funnel_fired_agrees": true,
+              "funnel_refused_agrees": true,
+              "funnel_mirror_balances": true
+            },
+            "delivery": {
+              "fires": 0,
+              "asks": 0,
+              "incidents": 0,
+              "yielded": 0,
+              "sink_errors": 0,
+              "balances": true
+            }
+          }
+        }
+      },
+      "defects": [
+        {
+          "id": "SV-4.8-D2",
+          "severity": "high",
+          "where": "percept/agent.py:3777 and percept/agent.py:3828 (both bump Funnel.refused for the SAME judged unit)",
+          "summary": "One ASK is counted twice in funnel.refused. agent.py:3777 bumps it when ``classify`` returns 'unknown'; agent.py:3828 bumps it again when the executor emits the resulting non-FIRE event for the same unit. The funnel identity ``judged == fired + refused + silent`` therefore cannot hold on any run containing an ASK \u2014 the funnel over-reports refusals by exactly the number of delivered ASKs, which is also the refusal rate a deployment tunes fresh_min / the confidence threshold against.",
+          "repro": "One scripted low-confidence verdict (satisfied=True, confidence=0.20) in a 13-unit run:\n  gate.classified ASK decisions = 1\n  stats.asks (delivered)        = 1\n  funnel.refused                = 2   <- 2x\n  funnel.judged=13 vs funnel.fired=6 + funnel.refused=2 + silent=6 = 14"
+        },
+        {
+          "id": "SV-4.8-D1",
+          "severity": "high",
+          "where": "percept/runtime/worker.py:1417 (class _JudgeScheduler \u2014 no `funnel` reference anywhere in 1417-2239), vs percept/runtime/worker.py:793 in _LegacyJudgeScheduler",
+          "summary": "The visual judge scheduler used on the DEFAULT judge_dispatch='async' path (_ProviderScheduler = _JudgeScheduler, instantiated at percept/runtime/worker.py:3616) bumps RuntimeStats and appends a trace tuple for every drop, but never calls Funnel.dropped(). Its predecessor _LegacyJudgeScheduler does (worker.py:793, :838, :1172, :1196, :1230, :1303). Result: funnel.dropped reads 0 while the run genuinely dropped 37 admitted units. Two ledgers that must agree do not, and the one that goes quiet is the funnel \u2014 the single definition percept doctor / percept eval / the visualizer derive their numbers from.",
+          "repro": "core = Percept.create(vision=<judge with a 20 ms delay>, discover_plugins=False)\nasync for _ in percept.run(core, source=<40 frames, alternating motion>, stats=stats, fps=100.0): pass\n# stats.judge_superseded == 37\n# core.metrics.get('funnel.dropped') == 0  <- should equal the drop total\n# on_health DID receive 37 judge_superseded events, so the drop is not fully silent \u2014 only the funnel counter is."
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "SV-4.1": "PASS",
+    "SV-4.5": "FAIL",
+    "SV-4.6": "PASS",
+    "SV-4.7": "FAIL",
+    "SV-4.8": "FAIL"
+  },
+  "release_blockers": [
+    {
+      "id": "SV-4.7-D1",
+      "severity": "blocker",
+      "where": "percept/incidents.py:165-179 (_encode_frame_bundle), reached from percept/incidents.py:203 (snippet_from_window kind='clip')",
+      "summary": "With snippet_kind='clip', any frame that is not a literal ``(mime, bytes)`` 2-tuple falls into the else branch and is serialized as ``{'repr': repr(frame)}``. A decoded frame from the shipped camera source is a numpy ndarray, whose repr is TRUNCATED with '...' above 1000 elements. The delivered IncidentSnippet therefore advertises media_type 'application/x-percept-frame-bundle+json' while carrying a lossy, irreversible ASCII summary in place of the pixels the judge saw. It is silent: no health event, no error, no counter. This is SUBSTITUTED evidence.",
+      "repro": "import numpy as np, json\nfrom percept.incidents import _encode_frame_bundle\na = (np.arange(64*64*3, dtype=np.uint8) % 251).reshape(64, 64, 3)  # 12288 px bytes\nmime, media = _encode_frame_bundle([a], t_start=0.0, t_end=1.0)\ne = json.loads(media)['frames'][0]\nassert list(e) == ['repr'] and '...' in e['repr']\n# repr length 1034 chars for 12288 bytes of pixels \u2014 unrecoverable.\n# End-to-end: percept.run(core, source=[(t, gate_frame, ndarray)], snippet_kind='clip')\n#             -> incident.snippet.media carries the same truncated reprs."
+    }
+  ]
+}

@@ -50,7 +50,7 @@ already committed to elsewhere in the tree (never invented fresh to make a parti
 3. ``FOVEA_CALL_REDUCTION_FLOOR`` — the architecture's minimum bar for tier-0 gating to be worth
    its complexity/latency risk AT ALL: gating must suppress AT LEAST half the naive "judge every
    frame" VLM spend, or a dense baseline would be simpler and no more expensive. Measured production
-   tracks in ``docs/reference/benchmark-methodology.md`` range from 15.4% to 87.1% depending on
+   tracks in ``docs/evaluation/methodology.md`` range from 15.4% to 87.1% depending on
    scene density — this floor is evaluated against a REPRESENTATIVE mostly-still deployment scene
    (the primary economic claim: "a still scene is effectively free"), not the busiest observed
    track, and is a floor, not a target.

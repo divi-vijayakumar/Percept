@@ -36,7 +36,7 @@ PKG_ROOT = REPO_ROOT / "packages" / "percept-vision"
 REGISTRY_FILE = PKG_ROOT / "percept" / "registry.py"
 PYPROJECT = PKG_ROOT / "pyproject.toml"
 DEFAULT_META = REPO_ROOT / "docs" / "architecture.meta.json"
-DEFAULT_HTML = REPO_ROOT / "architecture.html"
+DEFAULT_HTML = REPO_ROOT / "docs" / "architecture.html"
 DEFAULT_SVG = REPO_ROOT / "docs" / "architecture.svg"
 
 DRIFT_TOL = 10  # ±lines OK; >this is a WARNING (never fatal)

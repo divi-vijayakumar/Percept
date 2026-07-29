@@ -1,11 +1,11 @@
 """The v0.6 SDK voice diet, pinned (the documented regression).
 
-The voice embodiment moved app-side into ``templates/realtime_voice_watch_agent``. This locks the three
-promises that make the move real:
+The voice embodiment moved app-side; there is no shipped reference template, only the docs seam at
+``docs/sources/voice-and-watchdog.md``. This locks the three promises that make the move real:
 
   * ``RuntimeSession.attach_transport`` / ``deliver_fire`` are RAISING STUBS (fail loud, point at the
-    template) — not silent no-ops, not delegating shims;
-  * ``import percept.realtime`` raises an ImportError that names the template;
+    docs) — not silent no-ops, not delegating shims;
+  * ``import percept.realtime`` raises an ImportError that names the docs page;
   * importing the SDK (``percept`` + ``percept.runtime``) drags NO voice vendor (pipecat/fastapi/uvicorn)
     into the import graph — the perception package does not own the voice stack.
 """
@@ -26,22 +26,22 @@ class _FakeCore:
 
 
 class RaisingStubTests(unittest.TestCase):
-    def test_attach_transport_raises_and_points_at_the_template(self):
+    def test_attach_transport_raises_and_points_at_the_docs(self):
         session = RuntimeSession(_FakeCore())
         with self.assertRaises(RuntimeError) as ctx:
             session.attach_transport(object())
         msg = str(ctx.exception)
         self.assertIn("attach_transport", msg)
-        self.assertIn("templates/realtime_voice_watch_agent", msg)
+        self.assertIn("docs/sources/voice-and-watchdog.md", msg)
         self.assertIn("PerceptBridge", msg)
 
-    def test_deliver_fire_raises_and_points_at_the_template(self):
+    def test_deliver_fire_raises_and_points_at_the_docs(self):
         session = RuntimeSession(_FakeCore())
         with self.assertRaises(RuntimeError) as ctx:
             session.deliver_fire(object())
         msg = str(ctx.exception)
         self.assertIn("deliver_fire", msg)
-        self.assertIn("templates/realtime_voice_watch_agent", msg)
+        self.assertIn("docs/sources/voice-and-watchdog.md", msg)
         self.assertIn("on_incident", msg)
 
 
@@ -51,7 +51,7 @@ class RealtimeModuleMovedTests(unittest.TestCase):
             import percept.realtime  # noqa: F401
         msg = str(ctx.exception)
         self.assertIn("percept.realtime", msg)
-        self.assertIn("templates/realtime_voice_watch_agent", msg)
+        self.assertIn("docs/sources/voice-and-watchdog.md", msg)
         self.assertIn("percept.contracts", msg)   # where the VoiceTransport contract still lives
 
 

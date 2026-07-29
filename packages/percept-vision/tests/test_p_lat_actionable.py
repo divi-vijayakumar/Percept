@@ -57,8 +57,6 @@ import sys
 import unittest
 from pathlib import Path
 
-import pytest
-
 # Make `eval/viability/fixtures/` importable as bare modules, same pattern as
 # `eval/viability/fixtures/test_core_archetypes.py` (eval/viability is not an installed package).
 _EVAL_VIABILITY_FIXTURES = Path(__file__).resolve().parents[3] / "eval" / "viability" / "fixtures"
@@ -73,19 +71,18 @@ sys.path.insert(0, str(_EVAL_VIABILITY))
 # must skip cleanly rather than error at collection. When the fixtures ARE present (e.g. locally,
 # with the viability harness checked out alongside the repo), the tests run for real and assert
 # exactly what they always did.
-pytest.importorskip(
-    "core_archetypes",
-    reason="eval/viability/fixtures/core_archetypes.py is git-untracked/gitignored (internal "
-    "viability harness, kept local-only) — not present on a clean checkout/CI",
-)
-pytest.importorskip(
-    "ground_truth",
-    reason="eval/viability/ground_truth.py is git-untracked/gitignored (internal viability "
-    "harness, kept local-only) — not present on a clean checkout/CI",
-)
-
-from core_archetypes import build_core_archetype_fixtures  # noqa: E402
-from ground_truth import CORE_ARCHETYPE_ELIGIBLE_AFTER_S  # noqa: E402
+# RUNNER-AGNOSTIC SKIP. `pytest.importorskip` raises pytest's own `Skipped`, which unittest's
+# loader does not recognise — under `make test` (unittest discovery) that surfaces as a COLLECTION
+# ERROR, not a skip, so the guard only ever worked under pytest. `unittest.SkipTest` raised at
+# module scope is understood by BOTH runners, so the module skips cleanly either way.
+try:
+    from core_archetypes import build_core_archetype_fixtures  # noqa: E402
+    from ground_truth import CORE_ARCHETYPE_ELIGIBLE_AFTER_S  # noqa: E402
+except ImportError as exc:  # pragma: no cover - clean-checkout/CI path
+    raise unittest.SkipTest(
+        "eval/viability/{fixtures/core_archetypes,ground_truth}.py are git-untracked (internal "
+        f"viability harness, kept local-only) — not present on a clean checkout/CI ({exc})"
+    ) from exc
 
 from percept.clock import FakeClock  # noqa: E402
 from percept.contracts import JudgmentTiming  # noqa: E402

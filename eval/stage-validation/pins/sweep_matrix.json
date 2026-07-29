@@ -1,0 +1,263 @@
+{
+  "version": 1,
+  "generated": "2026-07-26",
+  "candidate": "codex/launch-bounded-judges @ bba572a (percept 1.0.0)",
+  "status": "PROPOSED — requires sign-off before the first SV run",
+  "principle": "A pinned scalar silently asserts one configuration. Where a parameter materially moves the outcome the artifact is a swept frontier, not a number. Where measurement shows the parameter does NOT move the outcome, a single defensible value is correct and a sweep is waste.",
+  "measurement_basis": {
+    "interpreter": "/private/tmp/percept-launch/oss-final-venv-bba572a/bin/python",
+    "runtime_source_read": "/private/tmp/percept-launch/bounded-judges/packages/percept-vision/percept",
+    "corpus": "eval/stage-validation/corpus.json",
+    "subset": "25 of 100 cases, 5 per dataset, selected with random.Random(20260726) (the corpus SELECTION_SEED); the 3 perception_test camera-moving cases were force-included so both camera strata appear",
+    "frame_pipeline": "cv2 grayscale + resize to GATE_W,GATE_H = 48,36 (percept/runtime/source.py:26), decimated to SourceConfig.fps = 4.0 (percept/runtime/source.py:43)",
+    "scorer": "percept.harness.tier0.salience_stats / ego_residual_score from the launch wheel — no reimplementation",
+    "samples_scored": 9107,
+    "network_calls": 0
+  },
+  "swept": [
+    {
+      "stage": "SV-1.1",
+      "parameter": "block_grid",
+      "module": "percept/harness/tier0.py::motion_score / _block_scores / salience_stats",
+      "wire_field": "not on the wire — a call-site argument; the runtime uses the (8,6) default everywhere",
+      "values": [[4, 3], [6, 4], [8, 6], [12, 9], [16, 12], [20, 15], [24, 18]],
+      "applies_when": "salience_stat in ('block_max','p95'); NO EFFECT on 'mean'",
+      "rationale": "The grid sets the block area, and block_max is the max over blocks — so the statistic's whole value scale slides with the grid while the per-stat threshold (motion_gate_block_max) stays fixed. The threshold's percentile meaning therefore changes with the grid, and the two cannot be pinned independently. Bounded above by the runtime's own 48x36 gate frame: past ~24x18 a block is <2px and the statistic is pixel noise.",
+      "measured_effect": "MATERIAL for block_max, NONE for mean, WEAK for p95. (a) 'mean' is bit-identical across all 7 grids on all 5 datasets — blocks tile the active area exactly, so the grid is provably irrelevant to it. (b) At the SHIPPED block_max threshold 0.20, recall saturates at 1.00 from 8x6 onward but call reduction collapses: perception_test 0.73 -> 0.29 -> 0.04 at 4x3 / 8x6 / 20x15; proactiveqa 0.63 -> 0.34 -> 0.02. At 20x15 the shipped threshold admits 98% of frames on ego video, i.e. no gating at all, breaking FOVEA_CALL_REDUCTION_FLOOR = 0.50. (c) At MATCHED economy the grid moves recall by up to 31 points: pooled interval recall at call_reduction=0.85 runs 0.39 / 0.45 / 0.58 / 0.70 / 0.67 / 0.57 / 0.51 across the 7 grids (peak 12x9); at call_reduction=0.50 it runs 0.76 -> 0.89. (d) p95 at matched economy is flat: 0.39 / 0.41 / 0.39 / 0.39 / 0.41 / 0.38 / 0.42. Raw block_max p50 on perception_test rises monotonically 0.159 (4x3) -> 0.466 (24x18), which is the mechanism."
+    },
+    {
+      "stage": "SV-1.1",
+      "parameter": "salience_stat",
+      "module": "percept/config.py::EdgeSettings.salience_stat (PERCEPT_SALIENCE_STAT); resolved per goal by percept/harness/tier0.py::compile_watchspec",
+      "values": ["mean", "block_max", "p95"],
+      "rationale": "The three statistics live on different value scales and the code already gives each its own cutoff. Which one a deployment picks is a camera-mount decision (docs/admission/wake-policy.md), so a single admission-recall bar that does not name the stat is undefined.",
+      "measured_effect": "MATERIAL and the largest single lever. At the shipped defaults on the 25-case subset, pooled interval recall is mean@0.10 = 0.41, p95@0.15 = 0.80, block_max@0.20 = 0.88. The shipped default stat is 'mean', and mean@0.10 admits ZERO frames on 7 of 25 cases (2/5 charades, 2/5 perception_test, 3/5 repcount) — a structural blind spot, not a threshold miss. Reproduces the direction of the in-tree calibration already recorded at percept/config.py:190 (block_max@0.20 -> 0.85, p95@0.15 -> 0.79, mean@0.10 -> 0.06 on Perception Test action, N=80)."
+    },
+    {
+      "stage": "SV-1.1",
+      "parameter": "motion_gate_block_max",
+      "module": "percept/config.py::EdgeSettings.motion_gate_block_max (PERCEPT_MOTION_GATE_BLOCK_MAX), default 0.20",
+      "values": [0.10, 0.15, 0.20, 0.25, 0.30, 0.40],
+      "coupled_to": "block_grid",
+      "rationale": "The recall/economy operating point. Must be swept jointly with block_grid — a threshold value has no fixed meaning across grids.",
+      "measured_effect": "MATERIAL. At 8x6 pooled: 0.10 -> recall 0.99 / reduction 0.12; 0.15 -> 0.91 / 0.25; 0.20 -> 0.88 / 0.41; 0.25 -> 0.83 / 0.56; 0.30 -> 0.78 / 0.69; 0.40 -> 0.59 / 0.85. Consistent in shape with the sweep already recorded in docs/admission/wake-policy.md (0.94 @ 0.15, 0.85 @ 0.20, 0.68 @ 0.25)."
+    },
+    {
+      "stage": "SV-1.1",
+      "parameter": "motion_gate_p95",
+      "module": "percept/config.py::EdgeSettings.motion_gate_p95 (PERCEPT_MOTION_GATE_P95), default 0.15",
+      "values": [0.05, 0.10, 0.15, 0.20, 0.25],
+      "coupled_to": "block_grid (weakly — see measured_effect)",
+      "rationale": "Same operating-point role as motion_gate_block_max, on p95's own scale.",
+      "measured_effect": "MATERIAL in threshold, IMMATERIAL in grid. At 8x6 pooled: 0.05 -> 1.00 / 0.08; 0.10 -> 0.91 / 0.20; 0.15 -> 0.80 / 0.37; 0.20 -> 0.76 / 0.57; 0.25 -> 0.64 / 0.72. Because p95 is a rank statistic it re-centres as blocks shrink, so at matched economy the grid changes its recall by <= 4 points. p95 may therefore be pinned at the single shipped grid (8x6) and swept in threshold only."
+    },
+    {
+      "stage": "SV-1.1",
+      "parameter": "motion_gate",
+      "module": "percept/config.py::EdgeSettings.motion_gate (PERCEPT_MOTION_GATE), default 0.10",
+      "values": [0.02, 0.05, 0.10, 0.15, 0.20],
+      "coupled_to": null,
+      "rationale": "The 'mean' stat's cutoff. Grid-invariant (proved by measurement), so this is a one-dimensional sweep.",
+      "measured_effect": "MATERIAL. Pooled: 0.02 -> recall 0.95 / reduction 0.11; 0.05 -> 0.78 / 0.28; 0.10 -> 0.41 / 0.62; 0.15 -> 0.26 / 0.83; 0.20 -> 0.21 / 0.94. The shipped 0.10 sits on the knee of a very steep cliff — recall more than doubles for a 0.05 move."
+    },
+    {
+      "stage": "SV-1.1",
+      "parameter": "ego_compensate",
+      "module": "percept/config.py::EdgeSettings.ego_compensate (PERCEPT_EGO_COMPENSATE); percept/harness/tier0.py::ego_residual_score(k=4)",
+      "values": [false, true],
+      "stratify_by": "provenance.is_camera_moving; dataset=proactiveqa is egocentric head-mounted throughout",
+      "rationale": "Ego compensation removes global translation before diffing. Whether it helps is a property of the camera mount, so it cannot be pinned as one value across the corpus.",
+      "measured_effect": "MATERIAL, and NOT free — it trades recall for economy rather than dominating. perception_test camera-moving (n=3) at threshold 0.10: mean gives recall 0.33 / reduction 0.76, ego gives recall 0.00 / reduction 0.94. proactiveqa (EGO, n=5) at 0.10: mean 1.00/0.52, ego 0.80/0.63. On static cameras it is near-neutral (charades 0.40/0.93 vs 0.40/0.99). CAUTION: n=3 moving-camera cases is far too small to ratify a bar from; this measurement establishes that ego_compensate must be swept, not what its value should be."
+    },
+    {
+      "stage": "SV-1.1",
+      "parameter": "enter_debounce",
+      "module": "percept/interest.py::InterestIntervalConfig.enter_debounce (default 1)",
+      "values": [1, 2, 3],
+      "rationale": "Consecutive-sample admission debounce. It gates whether a single-sample salience spike becomes an admitted interval at all, so it moves interval-level recall directly.",
+      "measured_effect": "MATERIAL and archetype-dependent. At block_max@0.20, 8x6, 1 -> 2 -> 3: charades recall 1.00 / 0.60 / 0.60 (reduction 0.80 / 0.88 / 0.90); repcount 0.86 / 0.74 / 0.72; omnipro 0.83 / 0.72 / 0.67; perception_test 1.00 / 1.00 / 0.80; proactiveqa 1.00 / 1.00 / 1.00. Short, sparse positives (charades, repcount reps, omnipro instants) lose 12-40 points of recall for ~8 points of economy; long positives lose nothing."
+    },
+    {
+      "stage": "SV-1.1",
+      "parameter": "exit_debounce",
+      "module": "percept/interest.py::InterestIntervalConfig.exit_debounce (default 1)",
+      "values": [1, 2, 4],
+      "rationale": "Governs how quickly an open interval closes on a salience dip. It cannot lose a first admission, but it changes admitted-time (and therefore economy and time-recall) and is the mechanism behind SV-1.5's coast-vs-flap question.",
+      "measured_effect": null
+    },
+    {
+      "stage": "SV-1.1",
+      "parameter": "expiry_s",
+      "module": "percept/interest.py::InterestIntervalConfig.expiry_s (default None)",
+      "values": [null, 1.0, 3.0, 10.0],
+      "rationale": "Splits vs merges intervals across observed-clock silence. It changes the DENOMINATOR of interval-level recall (a merged interval is one interval, a split is two), so a recall number is not comparable across expiry settings. This is a definitional coupling, not just a performance one.",
+      "measured_effect": null
+    },
+    {
+      "stage": "SV-1.6",
+      "parameter": "utterance_threshold",
+      "module": "percept/runtime/worker.py:3147 (amplitude; squared to energy by _amplitude_threshold_to_energy at worker.py:2361) -> percept/runtime/_vad.py::EnergyVad.threshold. Default 0.01.",
+      "values": [0.003, 0.01, 0.02, 0.05],
+      "rationale": "An ABSOLUTE amplitude cutoff on content with uncontrolled recording gain. Nothing normalizes it to a noise floor, so its admitted fraction is a property of the recording, not of the speech.",
+      "measured_effect": "MATERIAL to the point of saturation, measured on real corpus audio at AudioConfig.chunk_s = 0.25 (percept/runtime/audio.py:56). At the SHIPPED 0.01 the speech-classified chunk fraction is 0.96-1.00 on all 5 omnipro clips and 0 utterances ever endpoint (the 8-frame = 2.0 s hangover is never satisfied) — zero admission economy. The same threshold gives 0.07-0.33 on perception_test and 0.03-1.00 on charades. Across 0.003 -> 0.05 the admitted fraction spans essentially the full 0..1 range on the same clip. No single value is defensible."
+    },
+    {
+      "stage": "SV-1.6",
+      "parameter": "hangover_frames",
+      "module": "percept/runtime/_vad.py::EnergyVad.hangover_frames (default 8 = 2.0 s at chunk_s 0.25); percept/runtime/worker.py:3148 utterance_hangover_frames",
+      "values": [2, 4, 8, 16],
+      "rationale": "Trailing-silence frames required to endpoint an utterance. Directly implicated by the measurement above: at the shipped 8 the endpointer never fires on continuous-audio content, so utterance-level recall is structurally 0 there regardless of threshold.",
+      "measured_effect": "PARTIAL — utterance endpoint counts at the shipped 8 measured as 0 on 4/5 omnipro clips at every threshold tried. The value sweep itself is not yet measured."
+    },
+    {
+      "stage": "SV-1.6",
+      "parameter": "min_speech_frames",
+      "module": "percept/runtime/_vad.py::EnergyVad.min_speech_frames (default 3 = 0.75 s); percept/runtime/worker.py:3149",
+      "values": [1, 2, 3, 6],
+      "rationale": "Minimum utterance length. At the 0.25 s chunk the shipped 3 discards anything under 0.75 s, which is longer than many alert-relevant vocalizations (a shout, a name, a yelp).",
+      "measured_effect": null
+    },
+    {
+      "stage": "SV-2.1",
+      "parameter": "observation_rate_fps",
+      "module": "the rate at which RhythmTracker.observe is fed (percept/rhythm.py); upstream percept/sampling.py::SensePolicy.base_fps / max_fps",
+      "values": [4.0, 6.0, 12.0, 24.0],
+      "rationale": "The counter is documented to be rate-SENSITIVE in the adverse direction ('denser-is-worse'). A rep-count accuracy bar that does not state the observation rate is undefined.",
+      "measured_effect": "NOT MEASURED BY ME. The runtime's own docstrings record the sensitivity: percept/rhythm.py:280-288 states that at fps 12 the differential sign is noise-dominated and the count COLLAPSES, that smoothing takes real-pose fps12 |err| from 4.0 to 2.5, and that the same setting REGRESSES the cached fps=6 bench (primed OBO 0.50 -> 0.38). That is an in-tree measured record of a rate x smoothing interaction; it is cited, not reproduced."
+    },
+    {
+      "stage": "SV-2.1",
+      "parameter": "smooth_s",
+      "module": "percept/rhythm.py::RhythmTracker.smooth_s / _ChannelState.smooth_s (default 0.0 = off)",
+      "values": [0.0, 0.2, 0.4],
+      "coupled_to": "observation_rate_fps",
+      "rationale": "An explicitly opt-in knob whose own docstring records that it helps at high fps and hurts at low fps. A single counting bar therefore cannot hold across both without naming this value.",
+      "measured_effect": "NOT MEASURED BY ME — cited from percept/rhythm.py:280-288 (fps12 |err| 4.0 -> 2.5; fps6 primed OBO 0.50 -> 0.38)."
+    },
+    {
+      "stage": "SV-2.1",
+      "parameter": "canonical_select",
+      "module": "percept/rhythm.py::RhythmTracker.canonical_select (default false)",
+      "values": [false, true],
+      "rationale": "Switches channel scoring from the fps-dependent medoid to the rate-invariant canonical grid. It changes WHICH channel is counted, so it changes the count.",
+      "measured_effect": "NOT MEASURED BY ME — cited from percept/rhythm.py:291-296 (real-pose cross-fps consistency 0/4 -> 2/4; fps=6 bench accuracy unchanged at 0.50/0.83)."
+    },
+    {
+      "stage": "SV-2.2",
+      "parameter": "select_margin",
+      "module": "percept/rhythm.py::RhythmTracker.select_margin (default 0.25) / percept/rhythm.py::select_channel(margin=)",
+      "values": [0.10, 0.25, 0.50],
+      "rationale": "The relative margin a challenger channel must beat the incumbent by. It is exactly the stability-vs-responsiveness knob that SV-2.2 measures, so 'correct channel >= X%' is a function of it by construction.",
+      "measured_effect": null
+    },
+    {
+      "stage": "SV-2.2",
+      "parameter": "select_dwell",
+      "module": "percept/rhythm.py::RhythmTracker.select_dwell (default 2)",
+      "values": [1, 2, 4],
+      "coupled_to": "select_margin",
+      "rationale": "Consecutive reselects a challenger must stay ahead for. Composes multiplicatively with select_margin — sweeping one alone reports a slice, not the frontier.",
+      "measured_effect": null
+    },
+    {
+      "stage": "SV-2.2",
+      "parameter": "select_band_s",
+      "module": "percept/rhythm.py::RhythmTracker.select_band_s (default (0.3, 5.0))",
+      "values": [[0.3, 5.0], [0.2, 8.0], null],
+      "rationale": "The plausible rep-period band. A distractor channel outside the band is excluded for free; a true rep outside it is unrecoverable. Whether SV-2.2 is hard depends on whether the distractors are in-band.",
+      "measured_effect": null
+    },
+    {
+      "stage": "SV-2.3",
+      "parameter": "appearance_threshold",
+      "module": "percept/config.py::IdentitySettings.appearance_threshold (PERCEPT_APPEARANCE_MATCH), default 0.8; consumed by percept/identity.py::AppearanceIdentity via percept.identity.cosine",
+      "values": [0.70, 0.80, 0.90, 0.95],
+      "rationale": "The single cosine cutoff that trades FALSE MERGE against FRAGMENT. SV-2.3 explicitly declares those two errors asymmetric ('a false merge is worse than a fragment'), which is precisely a statement that the right artifact is a frontier with the operating point chosen on it — not one number.",
+      "measured_effect": null
+    },
+    {
+      "stage": "SV-2.3",
+      "parameter": "iou_match",
+      "module": "percept/config.py::EntitySettings.iou_match (PERCEPT_IOU_MATCH), default 0.5; percept/identity.py::ContinuityIdentity(iou_match=)",
+      "values": [0.3, 0.5, 0.7],
+      "rationale": "Frame-to-frame continuity threshold. It is the first stage of the same merge/fragment trade and composes with appearance_threshold (AppearanceIdentity tries continuity first).",
+      "measured_effect": null
+    },
+    {
+      "stage": "SV-4.2",
+      "parameter": "iou_match",
+      "module": "percept/config.py::EntitySettings.iou_match (PERCEPT_IOU_MATCH), default 0.5",
+      "values": [0.3, 0.5, 0.7],
+      "rationale": "Track lifecycle across occlusion/re-entry is governed by the same continuity threshold. Switch/fragment/merge rates are three points on one curve parameterised by this value; a single-number bar pins an unstated operating point.",
+      "measured_effect": null
+    },
+    {
+      "stage": "SV-4.2",
+      "parameter": "max_entities",
+      "module": "percept/config.py::EntitySettings.max_entities (PERCEPT_MAX_ENTITIES), default 64",
+      "values": [16, 64, 256],
+      "rationale": "The eviction bound. On a crowded scene an evicted entity re-enters as a new track — an eviction-induced fragment that is indistinguishable from a matcher failure unless this is swept.",
+      "measured_effect": null
+    }
+  ],
+  "single_value": [
+    {
+      "stage": "SV-1.3",
+      "bar": "fovea_call_reduction(report) >= 0.50 on a representative mostly-still scene",
+      "rationale": "Already pinned in code with a written derivation: gating must suppress at least half the naive judge-every-frame spend or a dense baseline is simpler and no more expensive. Reused verbatim; a second number here would create two live floors that drift apart.",
+      "source": "existing code pin — percept/slo.py:243 FOVEA_CALL_REDUCTION_FLOOR, metric percept/slo.py:246 fovea_call_reduction",
+      "caveat": "The docstring's own scope caveat holds and must be honoured by the harness: this is a still-scene floor, 'not fit to any single measured track'. Measured per-track at block_max@0.20/8x6 it is missed by 3/5 proactiveqa, 4/5 perception_test, 3/5 omnipro and 3/5 repcount clips. Per-track and per-archetype reduction is REPORTED; only the still-scene aggregate is GATED."
+    },
+    {
+      "stage": "SV-1.1",
+      "bar": "block_grid = (8, 6) is the pinned DEFAULT operating grid for the p95 and mean statistics",
+      "rationale": "Measured grid-invariance: 'mean' is bit-identical across all 7 grids (blocks tile the active area exactly, which the code documents and the measurement confirms), and p95's recall at matched economy varies by <= 4 points. Sweeping a parameter that provably does not move the outcome buys nothing and multiplies the run matrix by 7.",
+      "source": "measured (this document, section 4) + percept/harness/tier0.py::_block_scores default block_grid=(8,6)"
+    },
+    {
+      "stage": "SV-2.1",
+      "bar": "OBO (off-by-one accuracy, abs(predicted_count - gt_count) <= 1) reported per (fps, smooth_s, canonical_select) cell; the GATE is OBO >= 0.354 at the best-of-frontier cell",
+      "rationale": "The metric is already defined in the tree (docs/reference/benchmark-methodology.md:537) and the number is the tree's own recorded EXTERNAL reference bar for RepCount-A off-by-one (docs/reference/publishable-benchmark.md, Thinking Machines Lab Interaction Models, 35.4). Reusing the external bar avoids inventing a fresh threshold. NOTE the shape correction: the spec's suggested '+/-1 rep over >=10-rep sequences' is the OBO criterion applied per sequence, but as a PASS BAR it must be a RATE over sequences, not a per-sequence guarantee — no counter in the literature achieves +/-1 on every sequence.",
+      "source": "existing in-tree metric definition + existing external reference bar",
+      "caveat": "The '>=10-rep' qualifier leaves only 8 of the 20 repcount corpus cases (measured distribution: 4,4,5,5,5,5,7,7,8,9,9,11,12,12,14,14,17,17,19,19). At n=8 the maximum 95% one-sided lower bound at a perfect run is 0.688 — the qualifier makes the bar unratifiable. Recommend scoring OBO over ALL 20 cases and reporting the >=10-rep subset separately."
+    },
+    {
+      "stage": "SV-2.3",
+      "bar": "false_merge_count == 0 on the unique-item fixtures, at every swept operating point that is reported as the recommended default",
+      "rationale": "Not a quality metric but a correctness one, and the spec itself states the asymmetry ('a false merge is worse than a fragment'). A false merge fuses two real identities and makes every downstream count and episode wrong; a fragment only costs recall. Zero-tolerance on the harmful side plus a reported frontier on the benign side is the shape that matches the asymmetry, and it needs no invented number.",
+      "source": "proposed — derived from the spec's own stated asymmetry, not from observed results",
+      "companion_reported": "fragment_rate and switch_rate are REPORTED across the appearance_threshold / iou_match sweep, never gated"
+    },
+    {
+      "stage": "SV-4.9",
+      "bar": "reducer p95 submit latency <= 1.0 ms, AND sustained throughput >= 15000 submits/s",
+      "rationale": "Both derived, not invented. (a) LATENCY: percept/slo.py:91 already pins REFLEX_P95_THRESHOLD_S = 0.0100 s as the tier-0 reflex budget, itself derived as 15% of the max_fps=15 frame period. The reducer sits behind that gate, so it may consume at most a small fixed fraction of it; 10% of the reflex budget = 1.0 ms, the same 'small fixed fraction of an already-committed budget' construction slo.py uses. (b) THROUGHPUT: the fastest anything upstream can feed the reducer is SensePolicy.max_fps = 15.0 (percept/sampling.py:35, the runtime's documented cost ceiling) times the concurrent Watch count; 15 fps x 1000 concurrent Watches = 15000/s, so a reducer at that rate cannot be the bottleneck by construction.",
+      "source": "existing code pins (percept/slo.py:91 REFLEX_P95_THRESHOLD_S, percept/sampling.py:35 SensePolicy.max_fps) recombined; the bar values are derived from them",
+      "measured_headroom": "Measured on the launch wheel (offline, no network): SerializedDecisionReducer + Gate + EvidenceSequencer, 1 key serial 364144 submits/s p50 2.3 us p95 3.0 us; 16 keys 332523/s p95 3.0 us; 256 keys 234180/s p95 5.5 us; 1024 keys 110309/s p95 8.4/14.1 us. Worst measured p95 is 14.1 us = 1.4% of the proposed 1.0 ms bar (71x headroom); worst throughput is 7.4x the proposed floor. The bar is deliberately set far from the observation so it is a regression tripwire, not a fit.",
+      "note": "Gate on p95, REPORT max. Measured max reached 7.1 ms under 16-way contention — event-loop/GC tail, not reducer work. A max-based bar would be a flake generator."
+    },
+    {
+      "stage": "SV-2.4",
+      "bar": "per-attribute exact-match accuracy >= 0.90 on annotated fixtures, with unknown/absent scored as a miss (never as a pass)",
+      "rationale": "Extraction fidelity is a correctness-shaped metric with no economy trade-off to sweep against — there is no knob in percept/entity.py or percept/extraction.py that trades attribute accuracy for cost, so a frontier would have one point. 0.90 is the conventional fidelity bar for an attribute the runtime then treats as fact downstream.",
+      "source": "proposed — JUDGEMENT CALL, no measurement",
+      "blocker": "NO ANNOTATED ATTRIBUTE FIXTURE EXISTS. The 100-case corpus carries goal_text, positives and provenance; it carries no per-entity attribute ground truth. This bar cannot be evaluated until such a fixture is built, and 0.90 must be re-ratified once its difficulty is known."
+    },
+    {
+      "stage": "SV-2.2",
+      "bar": "correct-channel selection rate >= 0.80 on the distractor fixtures, at the swept (select_margin, select_dwell) point reported as the default",
+      "rationale": "Anchored to the code's own default posture rather than to an observed result: select_dwell = 2 with select_margin = 0.25 means the runtime is designed to hold a wrong incumbent for at least 2 reselects, so a 1.00 bar contradicts the shipped policy. 0.80 leaves room for exactly that designed transient while still failing a selector that is coin-flipping.",
+      "source": "proposed — JUDGEMENT CALL, derived from the shipped defaults' semantics, not from a measured run"
+    }
+  ],
+  "not_a_knob": [
+    {
+      "parameter": "block_grid, for salience_stat='mean'",
+      "finding": "PROVEN IMMATERIAL by measurement: identical recall and identical call reduction to 4 decimal places across all 7 grids on all 5 datasets. _block_scores tiles the active area exactly, so summing the integer block numerators over the integer area denominator IS the whole-area mean. Do not sweep it."
+    },
+    {
+      "parameter": "block_grid, for salience_stat='p95'",
+      "finding": "WEAK: <= 4 recall points at matched economy across the full grid range. Pin at (8,6) and sweep threshold only, unless a later run contradicts this."
+    }
+  ]
+}

@@ -1,5 +1,5 @@
 """WatchPlan / ResolvedWatch / provenance DTOs (ADR-008: configuration ownership, resolution,
-provenance — ``docs/adr/ADR-008-configuration-ownership-resolution-provenance.md``).
+provenance — ``.adr/ADR-008-configuration-ownership-resolution-provenance.md``).
 
 ADR-008 names **six independently constructible configuration objects** and a two-step binder
 (``ConfigResolver.resolve`` -> ``ResolvedWatch`` -> ``RuntimeCompiler.compile`` -> runtime

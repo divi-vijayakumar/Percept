@@ -1,6 +1,6 @@
 """Evidence dereference — the opaque handle, its resolver, typed failures and a retention seam.
 
-This module implements ADR-003 (``docs/adr/ADR-003-evidence-artifacts-retention.md``). Before it,
+This module implements ADR-003 (``.adr/ADR-003-evidence-artifacts-retention.md``). Before it,
 a webhook payload was all-or-nothing: ``include_media=False`` left the consumer with **no** way to
 reach the evidence a fire was gated on, and ``include_media=True`` inlined base64 media into the POST
 (an exfiltration vector for a client watching an accounting screen). This module adds the missing

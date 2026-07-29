@@ -1,0 +1,2933 @@
+{
+  "suite": "sv0_ingest",
+  "stage": "STAGE 0",
+  "title": "Ingest + normalize",
+  "generated_at": "2026-07-26T22:45:24+00:00",
+  "runtime": {
+    "percept_version": "1.0.0",
+    "percept_path": "/private/tmp/percept-launch/oss-final-venv-bba572a/lib/python3.12/site-packages/percept/__init__.py",
+    "python": "3.12.8",
+    "executable": "/private/tmp/percept-launch/oss-final-venv-bba572a/bin/python"
+  },
+  "counts": {
+    "PASS": 6
+  },
+  "status": "PASS",
+  "tests": [
+    {
+      "id": "SV-0.1",
+      "title": "Live video continuity",
+      "status": "PASS",
+      "passed": true,
+      "measures": "Drives a synthetic stream through the real ingest path (file capture + percept.run) and checks monotonic timestamps, zero reordering, and that every injected sequence gap is accounted for by a typed discontinuity with an exact missing count.",
+      "pass_bar": "zero unaccounted gaps",
+      "measurements": {
+        "captured_frames": 60,
+        "expected_frames": 60,
+        "capture_dropped": 0,
+        "epochs": [
+          0
+        ],
+        "distinct_formats": 1,
+        "observed_time_regressions": 0,
+        "source_time_known": 60,
+        "source_time_regressions": 0,
+        "tracker_coverage_clean_capture": {
+          "observed": 60,
+          "excluded": 0,
+          "discontinuities": 0,
+          "missing_sequences": 0
+        },
+        "injected_missing_sequences": 3,
+        "reported_missing_sequences": 3,
+        "unaccounted_gap_sequences": 0,
+        "source_observed": 11,
+        "source_excluded": 0,
+        "source_discontinuities": 2,
+        "typed_discontinuity_events": [
+          "source_gap",
+          "source_reconnect"
+        ],
+        "delivered_frame_time_regressions": 0,
+        "reorder_probe": {
+          "delivered": 8,
+          "observed": 5,
+          "excluded": 3,
+          "missing_sequences": 0,
+          "events": [
+            "source_duplicate",
+            "source_reorder"
+          ],
+          "frame_times": [
+            0.0,
+            0.25,
+            0.5,
+            0.75,
+            1.25
+          ]
+        }
+      },
+      "failures": [],
+      "notes": [
+        "SourceTracker keeps only the LAST accepted (epoch, sequence) per stream, so only an exact redelivery of that sequence is typed source_duplicate; an earlier sequence arriving late is typed source_reorder (percept/runtime/envelope.py:459-462). Both are excluded without advancing state and neither is booked as a missing sequence, so the accounting is exact \u2014 but a consumer that wants a true duplicate/late split cannot get it from the event name."
+      ],
+      "error": null
+    },
+    {
+      "id": "SV-0.2",
+      "title": "Backpressure policy",
+      "status": "PASS",
+      "passed": true,
+      "measures": "Stalls the consumer and checks both source queue policies: 'latest' must evict the OLDEST and count every eviction while memory stays bounded; 'block' on a finite fixture must backpressure losslessly.",
+      "pass_bar": "fixture ('block') path drops exactly zero; live ('latest') path bounded with every drop counted",
+      "measurements": {
+        "latest": {
+          "produced": 40,
+          "queue_maxsize": 4,
+          "dropped_counter": 36,
+          "delivered": 4,
+          "delivered_sequences": [
+            36,
+            37,
+            38,
+            39
+          ],
+          "dropped_plus_delivered": 40,
+          "peak_queue_size": 4,
+          "saturated_wall_s": 3.751,
+          "ms_per_eviction": 104.2,
+          "effective_capture_fps_under_saturation": 10.7
+        },
+        "fixture_differential": {
+          "decoded_frames": 20,
+          "queue_maxsize": 1,
+          "consumer_stall_s": 0.15,
+          "latest": {
+            "delivered": 11,
+            "dropped_counter": 9,
+            "sequences": [
+              0,
+              2,
+              4,
+              6,
+              8,
+              10,
+              12,
+              14,
+              16,
+              18,
+              19
+            ],
+            "accounted": 20
+          },
+          "block": {
+            "delivered": 20,
+            "dropped_counter": 0,
+            "contiguous": true
+          }
+        },
+        "latest_inert_below_put_timeout": {
+          "decoded_frames": 20,
+          "queue_maxsize": 2,
+          "consumer_stall_s": 0.05,
+          "put_timeout_s": 0.1,
+          "delivered": 20,
+          "dropped_counter": 0,
+          "contiguous_backlog": true,
+          "wall_s": 1.03
+        },
+        "unknown_policy_rejected": {
+          "'drop'": "unknown source queue policy: 'drop'",
+          "''": "unknown source queue policy: ''",
+          "None": "unknown source queue policy: None"
+        },
+        "public_run_exposes_queue_policy": false
+      },
+      "failures": [],
+      "notes": [
+        "MEASURED: under a saturated consumer the 'latest' policy cost 104 ms of CAPTURE-THREAD stall per eviction (40 frames took 3.75 s -> 10.7 effective fps). percept/runtime/source.py:77 puts with timeout=0.1 and only evicts on the resulting queue.Full, so the drop trigger is 'full for 100 ms', not 'full'. Memory stays bounded and every queue-level drop IS counted, so the SV-0.2 bar holds \u2014 but on a live 30 fps camera this throttles cap.read() to ~10 Hz under backpressure, and frames the driver discards while the capture thread is parked are invisible to the `dropped` counter.",
+        "MEASURED (corollary): with a 50 ms/frame consumer \u2014 slower than the producer but faster than the 100 ms put timeout \u2014 queue_policy='latest' evicted NOTHING and delivered the entire 20-frame backlog in arrival order over 1.03 s. Below the timeout the freshness policy is inert: the consumer receives the oldest queued frame, which is the opposite of the documented 'live streams prefer fresh evidence over stale backlog' (percept/runtime/source.py:51).",
+        "percept.run()/_run_worker exposes source_queue_size but NOT queue_policy, so the lossless 'block' mode is unreachable from the public front door \u2014 a finite-file replay through percept.run() always uses drop-oldest 'latest'. (percept/runtime/worker.py:4301 builds source_kwargs without queue_policy; percept/runtime/source.py:302 defaults it to 'latest'.) Drops are still counted in RuntimeStats.frames_dropped, so this is lossy-but-honest, not silent."
+      ],
+      "error": null
+    },
+    {
+      "id": "SV-0.3",
+      "title": "Audio unit ordering",
+      "status": "PASS",
+      "passed": true,
+      "measures": "Streams a synthetic wav through the real audio capture adapter, then normalizes and pushes every unit into a real AudioWindow. Checks contiguity, ordering, stamping, byte-exact PCM normalization, and total sample conservation.",
+      "pass_bar": "zero reordering, zero unaccounted sample loss",
+      "measurements": {
+        "source_samples": 32123,
+        "units": 9,
+        "sequences_contiguous": true,
+        "interval_reorderings": 0,
+        "interval_discontinuities": [],
+        "stamp_errors": [],
+        "intervals_match_sample_positions": true,
+        "delivered_samples": 32123,
+        "unaccounted_samples": 0,
+        "pcm_byte_identical": true,
+        "declared_format": [
+          "(16000, 1, 's16le')"
+        ],
+        "energy_range": [
+          0.06704846557229757,
+          0.0683564960774852
+        ],
+        "canonicalization_mismatches": 0,
+        "window_pushes": 9,
+        "window_rejected": 0,
+        "window_discontinuous": 0,
+        "reorder_control": {
+          "late": {
+            "accepted": true,
+            "duplicate": false,
+            "reordered": true,
+            "missing": 0,
+            "gap_s": 0.0,
+            "overlap_s": 0.0,
+            "format_changed": false,
+            "expired": 0,
+            "expired_bytes": 0,
+            "evicted": 0,
+            "evicted_bytes": 0
+          },
+          "duplicate": {
+            "accepted": false,
+            "duplicate": true,
+            "reordered": false,
+            "missing": 0,
+            "gap_s": 0.0,
+            "overlap_s": 0.0,
+            "format_changed": false,
+            "expired": 0,
+            "expired_bytes": 0,
+            "evicted": 0,
+            "evicted_bytes": 0
+          }
+        }
+      },
+      "failures": [],
+      "notes": [],
+      "error": null
+    },
+    {
+      "id": "SV-0.4",
+      "title": "Fused A/V skew",
+      "status": "PASS",
+      "passed": true,
+      "measures": "Injects +/-50, 100, 250 and 500 ms of relative A/V skew plus a mid-stream discontinuity, and compares the synchronizer's reported actual_skew_s and typed coverage uncertainty against an independently computed oracle.",
+      "pass_bar": "skew always classified; no silent pairing beyond declared tolerance",
+      "measurements": {
+        "policy": {
+          "window_s": 1.0,
+          "max_skew_s_tested": [
+            0.1,
+            0.25
+          ],
+          "injected_skews_s": [
+            -0.5,
+            -0.25,
+            -0.1,
+            -0.05,
+            0.0,
+            0.05,
+            0.1,
+            0.25,
+            0.5
+          ],
+          "cadence_s": 0.25
+        },
+        "per_skew": {
+          "tol=0.25 skew=+0.00": {
+            "max_skew_s": 0.25,
+            "skew_s": 0.0,
+            "bundles": 8,
+            "audio_rejected": 0,
+            "classified": 8,
+            "typed_uncertainty": [],
+            "max_reported_skew_s": 0.0,
+            "max_oracle_skew_s": 0.0,
+            "rows": [
+              {
+                "anchor_t": 0.0,
+                "video_interval": [
+                  0.0,
+                  0.0
+                ],
+                "audio_interval": [
+                  0.0,
+                  0.25
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.25,
+                "video_interval": [
+                  0.0,
+                  0.25
+                ],
+                "audio_interval": [
+                  0.0,
+                  0.5
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.5,
+                "video_interval": [
+                  0.0,
+                  0.5
+                ],
+                "audio_interval": [
+                  0.0,
+                  0.75
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.75,
+                "video_interval": [
+                  0.0,
+                  0.75
+                ],
+                "audio_interval": [
+                  0.0,
+                  1.0
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.0,
+                "video_interval": [
+                  0.0,
+                  1.0
+                ],
+                "audio_interval": [
+                  0.0,
+                  1.25
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.25,
+                "video_interval": [
+                  0.25,
+                  1.25
+                ],
+                "audio_interval": [
+                  0.25,
+                  1.5
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.5,
+                "video_interval": [
+                  0.5,
+                  1.5
+                ],
+                "audio_interval": [
+                  0.5,
+                  1.75
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.75,
+                "video_interval": [
+                  0.75,
+                  1.75
+                ],
+                "audio_interval": [
+                  0.75,
+                  2.0
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              }
+            ]
+          },
+          "tol=0.25 skew=+0.05": {
+            "max_skew_s": 0.25,
+            "skew_s": 0.05,
+            "bundles": 8,
+            "audio_rejected": 0,
+            "classified": 8,
+            "typed_uncertainty": [],
+            "max_reported_skew_s": 0.0,
+            "max_oracle_skew_s": 0.0,
+            "rows": [
+              {
+                "anchor_t": 0.0,
+                "video_interval": [
+                  0.0,
+                  0.0
+                ],
+                "audio_interval": [
+                  -0.05,
+                  0.25
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.25,
+                "video_interval": [
+                  0.0,
+                  0.25
+                ],
+                "audio_interval": [
+                  -0.05,
+                  0.5
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.5,
+                "video_interval": [
+                  0.0,
+                  0.5
+                ],
+                "audio_interval": [
+                  -0.05,
+                  0.75
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.75,
+                "video_interval": [
+                  0.0,
+                  0.75
+                ],
+                "audio_interval": [
+                  -0.05,
+                  1.0
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.0,
+                "video_interval": [
+                  0.0,
+                  1.0
+                ],
+                "audio_interval": [
+                  0.0,
+                  1.25
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.25,
+                "video_interval": [
+                  0.25,
+                  1.25
+                ],
+                "audio_interval": [
+                  0.25,
+                  1.5
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.5,
+                "video_interval": [
+                  0.5,
+                  1.5
+                ],
+                "audio_interval": [
+                  0.5,
+                  1.75
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.75,
+                "video_interval": [
+                  0.75,
+                  1.75
+                ],
+                "audio_interval": [
+                  0.75,
+                  1.95
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              }
+            ]
+          },
+          "tol=0.25 skew=-0.05": {
+            "max_skew_s": 0.25,
+            "skew_s": -0.05,
+            "bundles": 8,
+            "audio_rejected": 0,
+            "classified": 8,
+            "typed_uncertainty": [
+              "missing_audio"
+            ],
+            "max_reported_skew_s": 0.05,
+            "max_oracle_skew_s": 0.05,
+            "rows": [
+              {
+                "anchor_t": 0.0,
+                "video_interval": [
+                  0.0,
+                  0.0
+                ],
+                "audio_interval": [
+                  0.05,
+                  0.25
+                ],
+                "reported_skew_s": 0.05,
+                "oracle_skew_s": 0.05,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 0.25,
+                "video_interval": [
+                  0.0,
+                  0.25
+                ],
+                "audio_interval": [
+                  0.05,
+                  0.5
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 0.5,
+                "video_interval": [
+                  0.0,
+                  0.5
+                ],
+                "audio_interval": [
+                  0.05,
+                  0.75
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 0.75,
+                "video_interval": [
+                  0.0,
+                  0.75
+                ],
+                "audio_interval": [
+                  0.05,
+                  1.0
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 1.0,
+                "video_interval": [
+                  0.0,
+                  1.0
+                ],
+                "audio_interval": [
+                  0.05,
+                  1.25
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 1.25,
+                "video_interval": [
+                  0.25,
+                  1.25
+                ],
+                "audio_interval": [
+                  0.25,
+                  1.5
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.5,
+                "video_interval": [
+                  0.5,
+                  1.5
+                ],
+                "audio_interval": [
+                  0.5,
+                  1.75
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.75,
+                "video_interval": [
+                  0.75,
+                  1.75
+                ],
+                "audio_interval": [
+                  0.75,
+                  2.0
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              }
+            ]
+          },
+          "tol=0.25 skew=+0.10": {
+            "max_skew_s": 0.25,
+            "skew_s": 0.1,
+            "bundles": 8,
+            "audio_rejected": 0,
+            "classified": 8,
+            "typed_uncertainty": [],
+            "max_reported_skew_s": 0.0,
+            "max_oracle_skew_s": 0.0,
+            "rows": [
+              {
+                "anchor_t": 0.0,
+                "video_interval": [
+                  0.0,
+                  0.0
+                ],
+                "audio_interval": [
+                  -0.1,
+                  0.25
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.25,
+                "video_interval": [
+                  0.0,
+                  0.25
+                ],
+                "audio_interval": [
+                  -0.1,
+                  0.5
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.5,
+                "video_interval": [
+                  0.0,
+                  0.5
+                ],
+                "audio_interval": [
+                  -0.1,
+                  0.75
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.75,
+                "video_interval": [
+                  0.0,
+                  0.75
+                ],
+                "audio_interval": [
+                  -0.1,
+                  1.0
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.0,
+                "video_interval": [
+                  0.0,
+                  1.0
+                ],
+                "audio_interval": [
+                  0.0,
+                  1.25
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.25,
+                "video_interval": [
+                  0.25,
+                  1.25
+                ],
+                "audio_interval": [
+                  0.25,
+                  1.5
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.5,
+                "video_interval": [
+                  0.5,
+                  1.5
+                ],
+                "audio_interval": [
+                  0.5,
+                  1.75
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.75,
+                "video_interval": [
+                  0.75,
+                  1.75
+                ],
+                "audio_interval": [
+                  0.75,
+                  1.9
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              }
+            ]
+          },
+          "tol=0.25 skew=-0.10": {
+            "max_skew_s": 0.25,
+            "skew_s": -0.1,
+            "bundles": 8,
+            "audio_rejected": 0,
+            "classified": 8,
+            "typed_uncertainty": [
+              "missing_audio"
+            ],
+            "max_reported_skew_s": 0.1,
+            "max_oracle_skew_s": 0.1,
+            "rows": [
+              {
+                "anchor_t": 0.0,
+                "video_interval": [
+                  0.0,
+                  0.0
+                ],
+                "audio_interval": [
+                  0.1,
+                  0.25
+                ],
+                "reported_skew_s": 0.1,
+                "oracle_skew_s": 0.1,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 0.25,
+                "video_interval": [
+                  0.0,
+                  0.25
+                ],
+                "audio_interval": [
+                  0.1,
+                  0.5
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 0.5,
+                "video_interval": [
+                  0.0,
+                  0.5
+                ],
+                "audio_interval": [
+                  0.1,
+                  0.75
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 0.75,
+                "video_interval": [
+                  0.0,
+                  0.75
+                ],
+                "audio_interval": [
+                  0.1,
+                  1.0
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 1.0,
+                "video_interval": [
+                  0.0,
+                  1.0
+                ],
+                "audio_interval": [
+                  0.1,
+                  1.25
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 1.25,
+                "video_interval": [
+                  0.25,
+                  1.25
+                ],
+                "audio_interval": [
+                  0.25,
+                  1.5
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.5,
+                "video_interval": [
+                  0.5,
+                  1.5
+                ],
+                "audio_interval": [
+                  0.5,
+                  1.75
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.75,
+                "video_interval": [
+                  0.75,
+                  1.75
+                ],
+                "audio_interval": [
+                  0.75,
+                  2.0
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              }
+            ]
+          },
+          "tol=0.25 skew=+0.25": {
+            "max_skew_s": 0.25,
+            "skew_s": 0.25,
+            "bundles": 8,
+            "audio_rejected": 0,
+            "classified": 8,
+            "typed_uncertainty": [],
+            "max_reported_skew_s": 0.0,
+            "max_oracle_skew_s": 0.0,
+            "rows": [
+              {
+                "anchor_t": 0.0,
+                "video_interval": [
+                  0.0,
+                  0.0
+                ],
+                "audio_interval": [
+                  -0.25,
+                  0.25
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.25,
+                "video_interval": [
+                  0.0,
+                  0.25
+                ],
+                "audio_interval": [
+                  -0.25,
+                  0.5
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.5,
+                "video_interval": [
+                  0.0,
+                  0.5
+                ],
+                "audio_interval": [
+                  -0.25,
+                  0.75
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.75,
+                "video_interval": [
+                  0.0,
+                  0.75
+                ],
+                "audio_interval": [
+                  -0.25,
+                  1.0
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.0,
+                "video_interval": [
+                  0.0,
+                  1.0
+                ],
+                "audio_interval": [
+                  0.0,
+                  1.25
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.25,
+                "video_interval": [
+                  0.25,
+                  1.25
+                ],
+                "audio_interval": [
+                  0.25,
+                  1.5
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.5,
+                "video_interval": [
+                  0.5,
+                  1.5
+                ],
+                "audio_interval": [
+                  0.5,
+                  1.75
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.75,
+                "video_interval": [
+                  0.75,
+                  1.75
+                ],
+                "audio_interval": [
+                  0.75,
+                  1.75
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              }
+            ]
+          },
+          "tol=0.25 skew=-0.25": {
+            "max_skew_s": 0.25,
+            "skew_s": -0.25,
+            "bundles": 8,
+            "audio_rejected": 0,
+            "classified": 8,
+            "typed_uncertainty": [
+              "missing_audio"
+            ],
+            "max_reported_skew_s": 0.25,
+            "max_oracle_skew_s": 0.25,
+            "rows": [
+              {
+                "anchor_t": 0.0,
+                "video_interval": [
+                  0.0,
+                  0.0
+                ],
+                "audio_interval": null,
+                "reported_skew_s": 0.25,
+                "oracle_skew_s": 0.25,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 0.25,
+                "video_interval": [
+                  0.0,
+                  0.25
+                ],
+                "audio_interval": [
+                  0.25,
+                  0.5
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 0.5,
+                "video_interval": [
+                  0.0,
+                  0.5
+                ],
+                "audio_interval": [
+                  0.25,
+                  0.75
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 0.75,
+                "video_interval": [
+                  0.0,
+                  0.75
+                ],
+                "audio_interval": [
+                  0.25,
+                  1.0
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 1.0,
+                "video_interval": [
+                  0.0,
+                  1.0
+                ],
+                "audio_interval": [
+                  0.25,
+                  1.25
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 1.25,
+                "video_interval": [
+                  0.25,
+                  1.25
+                ],
+                "audio_interval": [
+                  0.25,
+                  1.5
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.5,
+                "video_interval": [
+                  0.5,
+                  1.5
+                ],
+                "audio_interval": [
+                  0.5,
+                  1.75
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.75,
+                "video_interval": [
+                  0.75,
+                  1.75
+                ],
+                "audio_interval": [
+                  0.75,
+                  2.0
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              }
+            ]
+          },
+          "tol=0.25 skew=+0.50": {
+            "max_skew_s": 0.25,
+            "skew_s": 0.5,
+            "bundles": 8,
+            "audio_rejected": 0,
+            "classified": 8,
+            "typed_uncertainty": [],
+            "max_reported_skew_s": 0.25,
+            "max_oracle_skew_s": 0.25,
+            "rows": [
+              {
+                "anchor_t": 0.0,
+                "video_interval": [
+                  0.0,
+                  0.0
+                ],
+                "audio_interval": [
+                  -0.5,
+                  0.25
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.25,
+                "video_interval": [
+                  0.0,
+                  0.25
+                ],
+                "audio_interval": [
+                  -0.5,
+                  0.5
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.5,
+                "video_interval": [
+                  0.0,
+                  0.5
+                ],
+                "audio_interval": [
+                  -0.5,
+                  0.75
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.75,
+                "video_interval": [
+                  0.0,
+                  0.75
+                ],
+                "audio_interval": [
+                  -0.25,
+                  1.0
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.0,
+                "video_interval": [
+                  0.0,
+                  1.0
+                ],
+                "audio_interval": [
+                  0.0,
+                  1.25
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.25,
+                "video_interval": [
+                  0.25,
+                  1.25
+                ],
+                "audio_interval": [
+                  0.25,
+                  1.5
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.5,
+                "video_interval": [
+                  0.5,
+                  1.5
+                ],
+                "audio_interval": [
+                  0.5,
+                  1.5
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.75,
+                "video_interval": [
+                  0.75,
+                  1.75
+                ],
+                "audio_interval": [
+                  0.75,
+                  1.5
+                ],
+                "reported_skew_s": 0.25,
+                "oracle_skew_s": 0.25,
+                "coverage_reasons": [],
+                "complete": true
+              }
+            ]
+          },
+          "tol=0.25 skew=-0.50": {
+            "max_skew_s": 0.25,
+            "skew_s": -0.5,
+            "bundles": 8,
+            "audio_rejected": 0,
+            "classified": 8,
+            "typed_uncertainty": [
+              "missing_audio",
+              "skew_exceeded"
+            ],
+            "max_reported_skew_s": 0.5,
+            "max_oracle_skew_s": 0.5,
+            "rows": [
+              {
+                "anchor_t": 0.0,
+                "video_interval": [
+                  0.0,
+                  0.0
+                ],
+                "audio_interval": null,
+                "reported_skew_s": 0.5,
+                "oracle_skew_s": 0.5,
+                "coverage_reasons": [
+                  "missing_audio",
+                  "skew_exceeded"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 0.25,
+                "video_interval": [
+                  0.0,
+                  0.25
+                ],
+                "audio_interval": null,
+                "reported_skew_s": 0.25,
+                "oracle_skew_s": 0.25,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 0.5,
+                "video_interval": [
+                  0.0,
+                  0.5
+                ],
+                "audio_interval": [
+                  0.5,
+                  0.75
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 0.75,
+                "video_interval": [
+                  0.0,
+                  0.75
+                ],
+                "audio_interval": [
+                  0.5,
+                  1.0
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 1.0,
+                "video_interval": [
+                  0.0,
+                  1.0
+                ],
+                "audio_interval": [
+                  0.5,
+                  1.25
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 1.25,
+                "video_interval": [
+                  0.25,
+                  1.25
+                ],
+                "audio_interval": [
+                  0.5,
+                  1.5
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 1.5,
+                "video_interval": [
+                  0.5,
+                  1.5
+                ],
+                "audio_interval": [
+                  0.5,
+                  1.75
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.75,
+                "video_interval": [
+                  0.75,
+                  1.75
+                ],
+                "audio_interval": [
+                  0.75,
+                  2.0
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              }
+            ]
+          },
+          "tol=0.10 skew=+0.00": {
+            "max_skew_s": 0.1,
+            "skew_s": 0.0,
+            "bundles": 8,
+            "audio_rejected": 0,
+            "classified": 8,
+            "typed_uncertainty": [],
+            "max_reported_skew_s": 0.0,
+            "max_oracle_skew_s": 0.0,
+            "rows": [
+              {
+                "anchor_t": 0.0,
+                "video_interval": [
+                  0.0,
+                  0.0
+                ],
+                "audio_interval": [
+                  0.0,
+                  0.1
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.25,
+                "video_interval": [
+                  0.0,
+                  0.25
+                ],
+                "audio_interval": [
+                  0.0,
+                  0.35
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.5,
+                "video_interval": [
+                  0.0,
+                  0.5
+                ],
+                "audio_interval": [
+                  0.0,
+                  0.6
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.75,
+                "video_interval": [
+                  0.0,
+                  0.75
+                ],
+                "audio_interval": [
+                  0.0,
+                  0.85
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.0,
+                "video_interval": [
+                  0.0,
+                  1.0
+                ],
+                "audio_interval": [
+                  0.0,
+                  1.1
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.25,
+                "video_interval": [
+                  0.25,
+                  1.25
+                ],
+                "audio_interval": [
+                  0.25,
+                  1.35
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.5,
+                "video_interval": [
+                  0.5,
+                  1.5
+                ],
+                "audio_interval": [
+                  0.5,
+                  1.6
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.75,
+                "video_interval": [
+                  0.75,
+                  1.75
+                ],
+                "audio_interval": [
+                  0.75,
+                  1.85
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              }
+            ]
+          },
+          "tol=0.10 skew=+0.05": {
+            "max_skew_s": 0.1,
+            "skew_s": 0.05,
+            "bundles": 8,
+            "audio_rejected": 0,
+            "classified": 8,
+            "typed_uncertainty": [],
+            "max_reported_skew_s": 0.0,
+            "max_oracle_skew_s": 0.0,
+            "rows": [
+              {
+                "anchor_t": 0.0,
+                "video_interval": [
+                  0.0,
+                  0.0
+                ],
+                "audio_interval": [
+                  -0.05,
+                  0.09999999999999999
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.25,
+                "video_interval": [
+                  0.0,
+                  0.25
+                ],
+                "audio_interval": [
+                  -0.05,
+                  0.35
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.5,
+                "video_interval": [
+                  0.0,
+                  0.5
+                ],
+                "audio_interval": [
+                  -0.05,
+                  0.6
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.75,
+                "video_interval": [
+                  0.0,
+                  0.75
+                ],
+                "audio_interval": [
+                  -0.05,
+                  0.85
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.0,
+                "video_interval": [
+                  0.0,
+                  1.0
+                ],
+                "audio_interval": [
+                  0.0,
+                  1.0999999999999999
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.25,
+                "video_interval": [
+                  0.25,
+                  1.25
+                ],
+                "audio_interval": [
+                  0.25,
+                  1.3499999999999999
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.5,
+                "video_interval": [
+                  0.5,
+                  1.5
+                ],
+                "audio_interval": [
+                  0.5,
+                  1.5999999999999999
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.75,
+                "video_interval": [
+                  0.75,
+                  1.75
+                ],
+                "audio_interval": [
+                  0.75,
+                  1.8499999999999999
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              }
+            ]
+          },
+          "tol=0.10 skew=-0.05": {
+            "max_skew_s": 0.1,
+            "skew_s": -0.05,
+            "bundles": 8,
+            "audio_rejected": 0,
+            "classified": 8,
+            "typed_uncertainty": [
+              "missing_audio"
+            ],
+            "max_reported_skew_s": 0.05,
+            "max_oracle_skew_s": 0.05,
+            "rows": [
+              {
+                "anchor_t": 0.0,
+                "video_interval": [
+                  0.0,
+                  0.0
+                ],
+                "audio_interval": [
+                  0.05,
+                  0.1
+                ],
+                "reported_skew_s": 0.05,
+                "oracle_skew_s": 0.05,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 0.25,
+                "video_interval": [
+                  0.0,
+                  0.25
+                ],
+                "audio_interval": [
+                  0.05,
+                  0.35
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 0.5,
+                "video_interval": [
+                  0.0,
+                  0.5
+                ],
+                "audio_interval": [
+                  0.05,
+                  0.6000000000000001
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 0.75,
+                "video_interval": [
+                  0.0,
+                  0.75
+                ],
+                "audio_interval": [
+                  0.05,
+                  0.8500000000000001
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 1.0,
+                "video_interval": [
+                  0.0,
+                  1.0
+                ],
+                "audio_interval": [
+                  0.05,
+                  1.1
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 1.25,
+                "video_interval": [
+                  0.25,
+                  1.25
+                ],
+                "audio_interval": [
+                  0.25,
+                  1.35
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.5,
+                "video_interval": [
+                  0.5,
+                  1.5
+                ],
+                "audio_interval": [
+                  0.5,
+                  1.6
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.75,
+                "video_interval": [
+                  0.75,
+                  1.75
+                ],
+                "audio_interval": [
+                  0.75,
+                  1.85
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              }
+            ]
+          },
+          "tol=0.10 skew=+0.10": {
+            "max_skew_s": 0.1,
+            "skew_s": 0.1,
+            "bundles": 8,
+            "audio_rejected": 0,
+            "classified": 8,
+            "typed_uncertainty": [],
+            "max_reported_skew_s": 0.0,
+            "max_oracle_skew_s": 0.0,
+            "rows": [
+              {
+                "anchor_t": 0.0,
+                "video_interval": [
+                  0.0,
+                  0.0
+                ],
+                "audio_interval": [
+                  -0.1,
+                  0.1
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.25,
+                "video_interval": [
+                  0.0,
+                  0.25
+                ],
+                "audio_interval": [
+                  -0.1,
+                  0.35
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.5,
+                "video_interval": [
+                  0.0,
+                  0.5
+                ],
+                "audio_interval": [
+                  -0.1,
+                  0.6000000000000001
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.75,
+                "video_interval": [
+                  0.0,
+                  0.75
+                ],
+                "audio_interval": [
+                  -0.1,
+                  0.8500000000000001
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.0,
+                "video_interval": [
+                  0.0,
+                  1.0
+                ],
+                "audio_interval": [
+                  0.0,
+                  1.1
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.25,
+                "video_interval": [
+                  0.25,
+                  1.25
+                ],
+                "audio_interval": [
+                  0.25,
+                  1.3499999999999999
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.5,
+                "video_interval": [
+                  0.5,
+                  1.5
+                ],
+                "audio_interval": [
+                  0.5,
+                  1.5999999999999999
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.75,
+                "video_interval": [
+                  0.75,
+                  1.75
+                ],
+                "audio_interval": [
+                  0.75,
+                  1.8499999999999999
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              }
+            ]
+          },
+          "tol=0.10 skew=-0.10": {
+            "max_skew_s": 0.1,
+            "skew_s": -0.1,
+            "bundles": 8,
+            "audio_rejected": 0,
+            "classified": 8,
+            "typed_uncertainty": [
+              "missing_audio"
+            ],
+            "max_reported_skew_s": 0.1,
+            "max_oracle_skew_s": 0.1,
+            "rows": [
+              {
+                "anchor_t": 0.0,
+                "video_interval": [
+                  0.0,
+                  0.0
+                ],
+                "audio_interval": null,
+                "reported_skew_s": 0.1,
+                "oracle_skew_s": 0.1,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 0.25,
+                "video_interval": [
+                  0.0,
+                  0.25
+                ],
+                "audio_interval": [
+                  0.1,
+                  0.35
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 0.5,
+                "video_interval": [
+                  0.0,
+                  0.5
+                ],
+                "audio_interval": [
+                  0.1,
+                  0.6
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 0.75,
+                "video_interval": [
+                  0.0,
+                  0.75
+                ],
+                "audio_interval": [
+                  0.1,
+                  0.85
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 1.0,
+                "video_interval": [
+                  0.0,
+                  1.0
+                ],
+                "audio_interval": [
+                  0.1,
+                  1.1
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 1.25,
+                "video_interval": [
+                  0.25,
+                  1.25
+                ],
+                "audio_interval": [
+                  0.25,
+                  1.35
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.5,
+                "video_interval": [
+                  0.5,
+                  1.5
+                ],
+                "audio_interval": [
+                  0.5,
+                  1.6
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.75,
+                "video_interval": [
+                  0.75,
+                  1.75
+                ],
+                "audio_interval": [
+                  0.75,
+                  1.85
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              }
+            ]
+          },
+          "tol=0.10 skew=+0.25": {
+            "max_skew_s": 0.1,
+            "skew_s": 0.25,
+            "bundles": 8,
+            "audio_rejected": 0,
+            "classified": 8,
+            "typed_uncertainty": [],
+            "max_reported_skew_s": 0.0,
+            "max_oracle_skew_s": 0.0,
+            "rows": [
+              {
+                "anchor_t": 0.0,
+                "video_interval": [
+                  0.0,
+                  0.0
+                ],
+                "audio_interval": [
+                  -0.25,
+                  0.1
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.25,
+                "video_interval": [
+                  0.0,
+                  0.25
+                ],
+                "audio_interval": [
+                  -0.25,
+                  0.35
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.5,
+                "video_interval": [
+                  0.0,
+                  0.5
+                ],
+                "audio_interval": [
+                  -0.25,
+                  0.6
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.75,
+                "video_interval": [
+                  0.0,
+                  0.75
+                ],
+                "audio_interval": [
+                  -0.25,
+                  0.85
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.0,
+                "video_interval": [
+                  0.0,
+                  1.0
+                ],
+                "audio_interval": [
+                  0.0,
+                  1.1
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.25,
+                "video_interval": [
+                  0.25,
+                  1.25
+                ],
+                "audio_interval": [
+                  0.25,
+                  1.35
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.5,
+                "video_interval": [
+                  0.5,
+                  1.5
+                ],
+                "audio_interval": [
+                  0.5,
+                  1.6
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.75,
+                "video_interval": [
+                  0.75,
+                  1.75
+                ],
+                "audio_interval": [
+                  0.75,
+                  1.75
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              }
+            ]
+          },
+          "tol=0.10 skew=-0.25": {
+            "max_skew_s": 0.1,
+            "skew_s": -0.25,
+            "bundles": 8,
+            "audio_rejected": 0,
+            "classified": 8,
+            "typed_uncertainty": [
+              "missing_audio",
+              "skew_exceeded"
+            ],
+            "max_reported_skew_s": 0.25,
+            "max_oracle_skew_s": 0.25,
+            "rows": [
+              {
+                "anchor_t": 0.0,
+                "video_interval": [
+                  0.0,
+                  0.0
+                ],
+                "audio_interval": null,
+                "reported_skew_s": 0.25,
+                "oracle_skew_s": 0.25,
+                "coverage_reasons": [
+                  "missing_audio",
+                  "skew_exceeded"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 0.25,
+                "video_interval": [
+                  0.0,
+                  0.25
+                ],
+                "audio_interval": [
+                  0.25,
+                  0.35
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 0.5,
+                "video_interval": [
+                  0.0,
+                  0.5
+                ],
+                "audio_interval": [
+                  0.25,
+                  0.6
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 0.75,
+                "video_interval": [
+                  0.0,
+                  0.75
+                ],
+                "audio_interval": [
+                  0.25,
+                  0.85
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 1.0,
+                "video_interval": [
+                  0.0,
+                  1.0
+                ],
+                "audio_interval": [
+                  0.25,
+                  1.1
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 1.25,
+                "video_interval": [
+                  0.25,
+                  1.25
+                ],
+                "audio_interval": [
+                  0.25,
+                  1.35
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.5,
+                "video_interval": [
+                  0.5,
+                  1.5
+                ],
+                "audio_interval": [
+                  0.5,
+                  1.6
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.75,
+                "video_interval": [
+                  0.75,
+                  1.75
+                ],
+                "audio_interval": [
+                  0.75,
+                  1.85
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              }
+            ]
+          },
+          "tol=0.10 skew=+0.50": {
+            "max_skew_s": 0.1,
+            "skew_s": 0.5,
+            "bundles": 8,
+            "audio_rejected": 0,
+            "classified": 8,
+            "typed_uncertainty": [
+              "eos_incomplete",
+              "missing_audio",
+              "skew_exceeded"
+            ],
+            "max_reported_skew_s": 0.25,
+            "max_oracle_skew_s": 0.25,
+            "rows": [
+              {
+                "anchor_t": 0.0,
+                "video_interval": [
+                  0.0,
+                  0.0
+                ],
+                "audio_interval": [
+                  -0.5,
+                  0.1
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.25,
+                "video_interval": [
+                  0.0,
+                  0.25
+                ],
+                "audio_interval": [
+                  -0.5,
+                  0.35
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.5,
+                "video_interval": [
+                  0.0,
+                  0.5
+                ],
+                "audio_interval": [
+                  -0.5,
+                  0.6
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 0.75,
+                "video_interval": [
+                  0.0,
+                  0.75
+                ],
+                "audio_interval": [
+                  -0.25,
+                  0.85
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.0,
+                "video_interval": [
+                  0.0,
+                  1.0
+                ],
+                "audio_interval": [
+                  0.0,
+                  1.1
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.25,
+                "video_interval": [
+                  0.25,
+                  1.25
+                ],
+                "audio_interval": [
+                  0.25,
+                  1.35
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.5,
+                "video_interval": [
+                  0.5,
+                  1.5
+                ],
+                "audio_interval": [
+                  0.5,
+                  1.5
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.75,
+                "video_interval": [
+                  0.75,
+                  1.75
+                ],
+                "audio_interval": [
+                  0.75,
+                  1.5
+                ],
+                "reported_skew_s": 0.25,
+                "oracle_skew_s": 0.25,
+                "coverage_reasons": [
+                  "missing_audio",
+                  "skew_exceeded",
+                  "eos_incomplete"
+                ],
+                "complete": false
+              }
+            ]
+          },
+          "tol=0.10 skew=-0.50": {
+            "max_skew_s": 0.1,
+            "skew_s": -0.5,
+            "bundles": 8,
+            "audio_rejected": 0,
+            "classified": 8,
+            "typed_uncertainty": [
+              "missing_audio",
+              "skew_exceeded"
+            ],
+            "max_reported_skew_s": 0.5,
+            "max_oracle_skew_s": 0.5,
+            "rows": [
+              {
+                "anchor_t": 0.0,
+                "video_interval": [
+                  0.0,
+                  0.0
+                ],
+                "audio_interval": null,
+                "reported_skew_s": 0.5,
+                "oracle_skew_s": 0.5,
+                "coverage_reasons": [
+                  "missing_audio",
+                  "skew_exceeded"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 0.25,
+                "video_interval": [
+                  0.0,
+                  0.25
+                ],
+                "audio_interval": null,
+                "reported_skew_s": 0.25,
+                "oracle_skew_s": 0.25,
+                "coverage_reasons": [
+                  "missing_audio",
+                  "skew_exceeded"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 0.5,
+                "video_interval": [
+                  0.0,
+                  0.5
+                ],
+                "audio_interval": [
+                  0.5,
+                  0.6
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 0.75,
+                "video_interval": [
+                  0.0,
+                  0.75
+                ],
+                "audio_interval": [
+                  0.5,
+                  0.85
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 1.0,
+                "video_interval": [
+                  0.0,
+                  1.0
+                ],
+                "audio_interval": [
+                  0.5,
+                  1.1
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 1.25,
+                "video_interval": [
+                  0.25,
+                  1.25
+                ],
+                "audio_interval": [
+                  0.5,
+                  1.35
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [
+                  "missing_audio"
+                ],
+                "complete": false
+              },
+              {
+                "anchor_t": 1.5,
+                "video_interval": [
+                  0.5,
+                  1.5
+                ],
+                "audio_interval": [
+                  0.5,
+                  1.6
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              },
+              {
+                "anchor_t": 1.75,
+                "video_interval": [
+                  0.75,
+                  1.75
+                ],
+                "audio_interval": [
+                  0.75,
+                  1.85
+                ],
+                "reported_skew_s": 0.0,
+                "oracle_skew_s": 0.0,
+                "coverage_reasons": [],
+                "complete": true
+              }
+            ]
+          }
+        },
+        "sweep_totals": {
+          "bundles": 144,
+          "over_tolerance_pairings": 5,
+          "within_tolerance_pairings": 139,
+          "typed_skew_exceeded": 5,
+          "complete_bundles": 101,
+          "unclassified_bundles": 0
+        },
+        "discontinuity": {
+          "generation_before": 0,
+          "generation_after": 1,
+          "stale_generation_unit_accepted": false,
+          "generation_start_event_time": 5.0,
+          "post_bundles": 4,
+          "pre_boundary_media_leaked": [],
+          "post_reasons": []
+        }
+      },
+      "failures": [],
+      "notes": [
+        "actual_skew_s is the distance from the video anchor to the NEAREST audio unit, not a systematic lip-sync offset: a uniformly shifted but still-overlapping audio lane reports 0.0 by design (percept/fused_sync.py:611 _skew). Coverage, not offset, is what the synchronizer polices \u2014 audio that fails to cover [anchor-window, anchor-max_skew] is typed MISSING_AUDIO (percept/fused_sync.py:788)."
+      ],
+      "error": null
+    },
+    {
+      "id": "SV-0.5",
+      "title": "Delivered-fps honesty",
+      "status": "PASS",
+      "passed": true,
+      "measures": "Runs the real capture loop against a source that REPORTS 30 fps while delivering 15, and measures whether/when the rolling-window heuristic emits fps_misreported.",
+      "pass_bar": "a 30-reported / 15-delivered source is flagged within the 2.0 s window",
+      "measurements": {
+        "heuristic": {
+          "window_s": 2.0,
+          "min_eval_s": 1.0,
+          "relative_tolerance": 0.25
+        },
+        "half_rate_source": {
+          "reported_fps": 30.0,
+          "delivered_fps": 15.0,
+          "events": [
+            [
+              "fps_misreported",
+              {
+                "reported": 30.0,
+                "measured": 15.0
+              }
+            ]
+          ],
+          "fired_at_elapsed_s": 1.0666666666666667
+        },
+        "honest_source": {
+          "reported_fps": 30.0,
+          "delivered_fps": 30.0,
+          "events": [],
+          "fired_at_elapsed_s": null
+        },
+        "within_tolerance_source": {
+          "reported_fps": 30.0,
+          "delivered_fps": 29.0,
+          "events": [],
+          "fired_at_elapsed_s": null
+        },
+        "quarter_rate_source": {
+          "reported_fps": 30.0,
+          "delivered_fps": 7.0,
+          "events": [
+            [
+              "fps_misreported",
+              {
+                "reported": 30.0,
+                "measured": 7.0
+              }
+            ]
+          ],
+          "fired_at_elapsed_s": 1.1428571428571428
+        },
+        "instant_fixture": {
+          "events": []
+        },
+        "surfaced_through_on_health": true
+      },
+      "failures": [],
+      "notes": [],
+      "error": null
+    },
+    {
+      "id": "SV-0.6",
+      "title": "Clock authority",
+      "status": "PASS",
+      "passed": true,
+      "measures": "Checks that every envelope carries observation time independently of media time, that exactly one clock is authoritative for the selected timebase, and that decoder source time appears ONLY when the decoder truly provides it.",
+      "pass_bar": "exactly one authoritative clock per envelope; source_time never manufactured",
+      "measurements": {
+        "file_advancing_pos_msec": {
+          "source_time": [
+            0.0,
+            0.03333333333333333,
+            0.06666666666666667,
+            0.1,
+            0.13333333333333333,
+            0.16666666666666669
+          ],
+          "observed_time": [
+            0.033333,
+            0.066667,
+            0.1,
+            0.133333,
+            0.166667,
+            0.2
+          ],
+          "legacy_timebase": [
+            "source"
+          ]
+        },
+        "timebase_selection": {
+          "media": {
+            "legacy_timebase": "source",
+            "event_time": 0.0,
+            "source_time": 0.0,
+            "observed_time": 0.03333333333333333
+          },
+          "wall": {
+            "legacy_timebase": "observed",
+            "event_time": 0.03333333333333333,
+            "source_time": 0.0,
+            "observed_time": 0.03333333333333333
+          }
+        },
+        "source_time_by_case": {
+          "file_pos_msec_stuck_at_zero": [
+            0.0,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "file_pos_msec_non_finite": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "rtsp_stream": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "rtsps_stream": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "udp_stream": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ],
+          "webcam_device": [
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ]
+        },
+        "cadence_derived_timestamps": [],
+        "event_time_fails_closed": "source time is unknown",
+        "tracker_unknown_clock": {
+          "lenient": {
+            "accepted": true,
+            "events": [
+              "source_time_unknown"
+            ]
+          },
+          "strict": {
+            "accepted": false,
+            "events": [
+              "source_time_unknown"
+            ],
+            "coverage": "excluded"
+          }
+        },
+        "audio_source_time_is_sample_position": {
+          "units": 5,
+          "errors": [],
+          "observed_time_present": true,
+          "observed_differs_from_source": true
+        },
+        "legacy_tuple": {
+          "observed_timebase": {
+            "source_time": null,
+            "observed_time": 3.0
+          },
+          "source_timebase": {
+            "source_time": 3.0,
+            "observed_time": 99.0
+          }
+        }
+      },
+      "failures": [],
+      "notes": [],
+      "error": null
+    }
+  ]
+}

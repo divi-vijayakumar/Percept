@@ -1,6 +1,6 @@
 """DomainPack (ADR-008) — a named, versioned bundle of domain vocabulary/templates/recommendations.
 
-``docs/adr/ADR-008-configuration-ownership-resolution-provenance.md`` names :class:`DomainPack` as
+``.adr/ADR-008-configuration-ownership-resolution-provenance.md`` names :class:`DomainPack` as
 "domain vocabulary, phrase templates, per-domain recommended WatchProfile/SourceProfile pairings...
 new — not yet in code" and assigns it a precedence slot between ``SourceProfile`` and
 ``ExecutionPolicy``. This module ships the real, typed object: :mod:`percept.resolver` previously

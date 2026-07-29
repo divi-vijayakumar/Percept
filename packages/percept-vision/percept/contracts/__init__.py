@@ -1802,7 +1802,7 @@ class Enricher(Protocol):
       :meth:`Vision.judge` accepts it directly. That parameter is live and wired; it simply never had a
       registry behind it.
 
-    See ``docs/reference/registration.md`` ("Admission is not extraction")."""
+    See ``docs/admission/detectors.md`` ("Admission is not extraction")."""
 
     def enrich(self, signal: Any, frame: Any = None) -> dict:
         """Run the specialist on a triggering ``signal`` (+ optional ``frame``); return structured facts.
@@ -1841,9 +1841,9 @@ class UtteranceEvent:
 
     .. deprecated:: 0.6
         Part of the :class:`VoiceTransport` seam, which moved app-side in the SDK voice diet — no SDK-core
-        behavior consumes it after the diet. It stays FUNCTIONAL this release as a migration aid; the
-        template owns its own ``SpeechRequest``/``VoiceEngine`` types (``engine_adapter.py``). Slated for
-        removal at v0.7/v1.0 unless an SDK-level consumer appears. See ``templates/realtime_voice_watch_agent``.
+        behavior consumes it after the diet. It stays FUNCTIONAL this release as a migration aid; an
+        app-side voice adapter owns its own ``SpeechRequest``/``VoiceEngine`` types instead. Slated for
+        removal at v0.7/v1.0 unless an SDK-level consumer appears. See ``docs/sources/voice-and-watchdog.md``.
 
     ``text`` is the transcript when the transport did its own STT (Pipecat/LiveKit, or a speech-to-speech
     model); ``audio`` carries raw PCM when the transport ships audio for the brain to transcribe. At least
@@ -1862,8 +1862,9 @@ class Reply:
 
     .. deprecated:: 0.6
         Part of the :class:`VoiceTransport` seam, which moved app-side in the SDK voice diet. FUNCTIONAL
-        this release as a migration aid; the template uses its own ``SpeechRequest`` instead. Slated for
-        removal at v0.7/v1.0 unless an SDK-level consumer appears. See ``templates/realtime_voice_watch_agent``."""
+        this release as a migration aid; an app-side voice adapter uses its own ``SpeechRequest`` instead.
+        Slated for removal at v0.7/v1.0 unless an SDK-level consumer appears. See
+        ``docs/sources/voice-and-watchdog.md``."""
 
     text: str | None = None
     audio: "AudioFrame | None" = None
@@ -1879,15 +1880,15 @@ class VoiceTransport(Protocol):
     .. deprecated:: 0.6
         The voice embodiment moved app-side in the SDK voice diet: ``RuntimeSession.attach_transport`` is
         now a raising stub, and no SDK-core behavior consumes this Protocol. It stays DEFINED (functional)
-        this release as a migration seam. The one shipped voice application,
-        ``templates/realtime_voice_watch_agent``, owns its own ``VoiceEngine(Protocol)``/``SpeechRequest``
-        (``engine_adapter.py``) — the component that actually needs engine portability. Slated for removal
-        from core contracts at v0.7/v1.0 unless an SDK-level consumer appears.
+        this release as a migration seam. A voice application is expected to own its own
+        ``VoiceEngine(Protocol)``/``SpeechRequest`` types — the component that actually needs engine
+        portability — see ``docs/sources/voice-and-watchdog.md``. Slated for removal from core contracts
+        at v0.7/v1.0 unless an SDK-level consumer appears.
 
     Percept never hand-rolls this (no AEC in Python). Historically a client implemented this Protocol and
     handed it to ``RuntimeSession.attach_transport``, which wired it to cognition (endpointed utterance ->
-    frame-grounded turn -> streamed reply; barge-in -> interrupt). That wiring now lives in the template's
-    ``PerceptBridge`` against its own ``VoiceEngine`` seam, not here.
+    frame-grounded turn -> streamed reply; barge-in -> interrupt). That wiring now lives app-side, in a
+    ``PerceptBridge``-style adapter against its own ``VoiceEngine`` seam, not here.
 
     Two archetypes, one interface:
       * component (Pipecat/LiveKit + STT/TTS): delivers ``text``; :meth:`say` synthesizes the reply.

@@ -7,11 +7,10 @@ EDGE      := packages/percept-edge
 PY        := python3
 # absolute path to the zero-dep contract pkg (vision runs from inside $(SDK), so it needs this)
 
-.PHONY: help test test-harness test-js test-all test-templates test-capability-gate viability-frontier-contract parity eval-live eval-benchmark e2e bench audit-benchmark scorecard benchmark-prepare benchmark-fetch benchmark-fetch-charades benchmark-fetch-proactiveqa benchmark-index-proactiveqa benchmark-manifest benchmark-run benchmark-collect wheel-smoke check lint lint-all check-skills-sync reproduce clean architecture architecture-check
+.PHONY: help test test-harness test-js test-all test-capability-gate viability-frontier-contract parity eval-live eval-benchmark e2e bench audit-benchmark scorecard benchmark-prepare benchmark-fetch benchmark-fetch-charades benchmark-fetch-proactiveqa benchmark-index-proactiveqa benchmark-manifest benchmark-run benchmark-collect wheel-smoke check lint lint-all check-skills-sync reproduce clean architecture architecture-check docs docs-tunables docs-registries docs-index docs-check docs-links
 
 help:
-	@echo "test       L1 unit — percept-vision (incl. percept.harness + percept.contracts; fakes, no keys, fast) + template lane"
-	@echo "test-templates  L1 unit — templates/ reference apps (keyless; pipecat-dependent tests skip cleanly)"
+	@echo "test       L1 unit — percept-vision (incl. percept.harness + percept.contracts; fakes, no keys, fast)"
 	@echo "test-capability-gate  L1 capability gate — Y16 task-level suite (CAPABILITY asserts, no keys, no stat bars)"
 	@echo "viability-frontier-contract  validate matched frontier mechanics on synthetic data (never launch-qualifying)"
 	@echo "test-js    L1 unit — percept-edge (vitest; needs npm install)"
@@ -40,12 +39,6 @@ help:
 # for the same test file. Pytest also collects the function-style tests that unittest omits.
 test:
 	cd $(SDK) && PYTHONPATH=. PERCEPT_MODE=offline $(PY) -m pytest --import-mode=importlib -q
-	$(MAKE) test-templates
-
-# templates/ = copyable reference applications; each ships its own tests. Keyless: pipecat-dependent
-# tests skipUnless the template's deps are installed; everything else runs on the bare SDK checkout.
-test-templates:
-	cd templates/realtime_voice_watch_agent && PYTHONPATH=.:$(abspath $(SDK)) PERCEPT_MODE=offline PERCEPT_NO_BANNER=1 $(PY) -m unittest discover -s tests -t .
 
 test-js:
 	CI=true pnpm --dir $(EDGE) install --frozen-lockfile
@@ -195,7 +188,6 @@ check-skills-sync:  ## Verify skill directories are byte-identical
 
 check: architecture-check check-skills-sync lint
 	@cd $(SDK) && PYTHONPATH=. $(PY) -m compileall -q percept tests && echo "compileall ok"
-	@$(PY) -m compileall -q templates && echo "templates compileall ok"
 
 lint:
 	@cd $(SDK) && if $(PY) -m ruff --version >/dev/null 2>&1; then \
@@ -207,12 +199,31 @@ lint:
 lint-all:
 	cd $(SDK) && $(PY) -m ruff check .
 
-architecture:  ## (re)generate architecture.html + docs/architecture.svg from code + meta
-	$(PY) tools/build_architecture.py --meta docs/architecture.meta.json --out architecture.html --svg docs/architecture.svg
+architecture:  ## (re)generate docs/architecture.html + docs/architecture.svg from code + meta
+	$(PY) tools/build_architecture.py --meta docs/architecture.meta.json --out docs/architecture.html --svg docs/architecture.svg
 
 architecture-check:  ## CI gate: fail if the committed diagram is stale vs code/meta
-	$(PY) tools/build_architecture.py --check --meta docs/architecture.meta.json --out architecture.html --svg docs/architecture.svg
-	git diff --exit-code architecture.html docs/architecture.svg
+	$(PY) tools/build_architecture.py --check --meta docs/architecture.meta.json --out docs/architecture.html --svg docs/architecture.svg
+	git diff --exit-code docs/architecture.html docs/architecture.svg
+
+docs-tunables:  ## (re)generate docs/configuration/tunables.md from percept.tunables.REGISTRY
+	$(PY) tools/build_tunables_doc.py
+
+docs-registries:  ## (re)generate docs/judges/registries.md from the live registries
+	$(PY) tools/build_registries_doc.py
+
+docs-index:  ## stamp frontmatter on docs/**.md and (re)generate docs/README.md
+	$(PY) tools/build_docs_index.py
+
+docs: docs-tunables docs-registries docs-index  ## regenerate every generated docs page
+
+docs-check:  ## CI gate: fail if any generated docs page is stale vs the code
+	$(PY) tools/build_tunables_doc.py --check
+	$(PY) tools/build_registries_doc.py --check
+	$(PY) tools/build_docs_index.py --check
+
+docs-links:  ## CI gate: fail on a broken relative link in any tracked .md
+	@$(PY) tools/check_doc_links.py
 
 reproduce:
 	PYTHONPATH=$(SDK) $(PY) -m percept.bench reproduce --manifest eval/golden-v1/MANIFEST.json --baselines packages/percept-vision/eval/baselines.json --out scorecard.txt
