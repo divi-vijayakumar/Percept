@@ -72,13 +72,22 @@ def duration_goal(
     hold_s=30.0,
     cadence=FIXED,
     extra=None,
+    identity_policy="scene",
 ):
+    """The shipped ``door_left_open`` shape: sustained hold + a fixed cadence, scene-scoped.
+
+    ``identity_policy=None`` arms the same Watch with NO declared subject scope. That is not a
+    stylistic choice: a scene-scoped concern maintains an open occurrence, and an open occurrence is
+    injected into the next judge call as context, which by design bypasses the single-frame verdict
+    cache. A test about the CACHE therefore has to arm a concern that holds no occurrence open.
+    """
     state = {
         "type": "watch",
         "count": 0,
         "hold_s": hold_s,
-        "identity_policy": "scene",
     }
+    if identity_policy is not None:
+        state["identity_policy"] = identity_policy
     if cadence is not None:
         state["cadence"] = dict(cadence)
     if extra:
@@ -377,7 +386,9 @@ def test_audited_cache_hit_degradation_breaks_prior_dwell():
         audit=lambda _key: True,
         discover_plugins=False,
     )
-    core.add_goal(duration_goal(cadence=None, hold_s=10.0))
+    # No declared subject scope: this test is about an AUDITED CACHE HIT, and a concern holding an
+    # occurrence open sends that occurrence as judge context, which never reads the frame cache.
+    core.add_goal(duration_goal(cadence=None, hold_s=10.0, identity_policy=None))
     frame = tuple(tuple(0 for _ in range(9)) for _ in range(8))
     assert asyncio.run(core.perceive_judged(frame, t=0)) == []
     assert asyncio.run(core.perceive_judged(frame, t=5)) == []

@@ -14,8 +14,10 @@ import pytest
 from percept.contracts import Goal
 from percept.envelope import EnvelopeViolation, SubjectResolverRegistry
 from percept.identity_policy import (
+    PER_ENTITY_IDENTITY_POLICIES,
     SCENE_IDENTITY,
     STATE_KEY,
+    folds_on_scene_scope,
     identity_policy_of,
     select_identity_policy,
     watch_reducer_entity_id,
@@ -114,6 +116,27 @@ def test_ordinary_watch_reducer_only_scene_declaration_opts_out_of_focus(
 ):
     state = {} if declared is None else {STATE_KEY: declared}
     assert watch_reducer_entity_id(_goal(**state), "e1") == expected
+
+
+@pytest.mark.parametrize(
+    ("policy", "expected"),
+    [
+        (SCENE_IDENTITY, True),  # the scope IS the fold's own subject key
+        ("track_iou_label", True),  # a subject, but no key stable enough to group by
+        ("appearance_recent_set", True),
+        ("content_key", False),  # carries its own grouping key
+        ("claim_slot", False),
+        ("my_phash_key", False),  # a client resolver keeps whatever grouping it already had
+        (None, False),  # nothing declared, no profile resolved
+    ],
+)
+def test_scene_scope_grouping_covers_declared_scene_and_per_entity_only(policy, expected):
+    # The occurrence-grouping question, which is what the episode-fold dispatch asks. ``"scene"`` must
+    # answer True on its OWN terms: it is deliberately not a member of PER_ENTITY_IDENTITY_POLICIES and
+    # must never become one, because that set means "this policy isolates ONE entity" -- the exact
+    # opposite -- and its other readers act on that meaning.
+    assert folds_on_scene_scope(policy) is expected
+    assert SCENE_IDENTITY not in PER_ENTITY_IDENTITY_POLICIES
 
 
 def test_selection_allows_a_client_registered_custom_resolver_name():

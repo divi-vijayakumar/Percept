@@ -35,12 +35,14 @@ from percept._safe_json import (
     load_json_file,
 )
 from percept.adapters import Verdict
-from percept.behavior import INCIDENT_MERGE_WINDOW_S
+from percept.behavior import INCIDENT_MERGE_WINDOW_S, episode_fold
 from percept.config import Settings
 from percept.contracts.watchplan import WatchPlan
 from percept.domain_pack import DomainPack, get_domain_pack, watch_template
+from percept.episodes import EpisodeLog, EpisodePolicy
 from percept.gate import Gate, classify
 from percept.harness.tier0 import gray_frame
+from percept.identity_policy import SCENE_IDENTITY, folds_on_scene_scope
 from percept.packs_default import FACILITY_OBSERVATION_V1
 from percept.resolver import ConfigResolver
 from percept.runtime.envelope import SourceEnvelope
@@ -3809,6 +3811,41 @@ def _validate_v2_arm_reconstruction(
             for item in arm.traces
             if item["stage"] == "shadow.fold"
         }
+        # The gate is not the only thing that can silence an ordinary Watch tick. A concern whose
+        # resolved identity policy groups occurrences on the SCENE scope carries an episode-owned
+        # idempotency fold that is applied BEFORE the gate, and a re-statement inside an occurrence
+        # that already delivered an incident never reaches the gate at all — so its recorded row
+        # carries no ``gate_reason``. Reconstructing that with a hand-rolled rule would be a second
+        # implementation to drift; this drives the SAME EpisodeLog + the SAME pure ``episode_fold``
+        # the runtime uses, off the oracle. The log's bounds come from the ``Settings()`` the runner
+        # built, and its continuation policy from the preregistered profile's own declaration — the
+        # same two inputs ``Percept`` reads. Nothing here is a threshold or a default of its own.
+        episode_log: EpisodeLog | None = None
+        resolved_identity = plan["explicit"].get(
+            "Goal.state.identity_policy"
+        ) or arm.source_profile["identity_strategy"]
+        if (
+            folds_on_scene_scope(str(resolved_identity))
+            and plan["explicit"].get("Goal.state.rearm", "on_false") == "on_false"
+        ):
+            runner_settings = Settings()
+            profile_parameters = _thaw(arm.source_profile["parameters"])
+            continuity_gap = profile_parameters.get("unknown_continuity_gap_s")
+            episode_log = EpisodeLog(
+                goal_id,
+                window_s=runner_settings.episodes.window_s,
+                max_episodes=runner_settings.episodes.max_episodes,
+                policy=EpisodePolicy(
+                    unknown_continuity_gap_s=(
+                        None if continuity_gap is None else float(continuity_gap)
+                    ),
+                    unknown_attaches_to_active_bound=bool(
+                        profile_parameters.get("unknown_attaches_to_active_bound", False)
+                    ),
+                ),
+            )
+        episode_emissions: dict[str, int] = {}
+        open_episode_id: str | None = None
         for candidate in dispatched:
             coordinate = {
                 "trace_id": f"{source_id}@{candidate.t}",
@@ -3876,41 +3913,92 @@ def _validate_v2_arm_reconstruction(
                 float(call.confidence),
                 str(call.evidence),
             )
-            outcome = gate.decide(
-                (goal_id, None),
-                verdict,
-                freshness=1.0,
-                hold_s=hold_s,
-                now=candidate.t,
-            )
             truth = classify(
                 verdict,
                 1.0,
                 gate.threshold,
                 gate.fresh_min,
             )
-            trace_reason = (
-                "verdict_not_satisfied" if outcome.reason == "not_satisfied" else outcome.reason
-            )
+            # The episode fold, in the order the runtime applies it: an abstention is not an
+            # occurrence boundary and changes nothing; a confident-false CLOSES the occurrence and
+            # leaves the tick to the gate; a confident-true observes the scene occurrence.
+            fold = None
+            if episode_log is not None and truth != "unknown":
+                if truth == "no":
+                    if open_episode_id is not None:
+                        episode_log.close(open_episode_id, t=candidate.t)
+                        open_episode_id = None
+                else:
+                    decision = episode_log.observe_decision(
+                        candidate.t, verdict, subject_key=SCENE_IDENTITY
+                    )
+                    open_episode_id = decision.episode.id
+                    fold = episode_fold(
+                        decision,
+                        emitted=episode_emissions.get(decision.episode.id, 0),
+                    )
+            if fold is not None and not fold.should_evaluate_gate:
+                # The occurrence already delivered its incident: the gate is not consulted at all, so
+                # the row carries no typed gate reason and falls back to the truth/action wording
+                # (percept.agent._trace_reason with gate_reason=None). A ``fold`` exists here only for a
+                # confident-true, so that wording is the already-reported one.
+                expected_gate_data = {
+                    "truth": truth,
+                    "action": "silent",
+                    "reason": "silent: already_fired_or_not_rising",
+                    "gate_reason": None,
+                    "entity_id": None,
+                    "satisfied": call.satisfied,
+                    "confidence": call.confidence,
+                    "freshness": 1.0,
+                    "hold_s": hold_s,
+                }
+            else:
+                if (
+                    fold is not None
+                    and fold.should_rearm
+                    and not gate.require_false_first
+                ):
+                    # Mirrors ``BehaviorExecutor.fire_judged``: a new episode re-arms its own edge, but
+                    # never over a gate that requires an observed false first — arming is that gate's
+                    # business alone.
+                    gate.rearm((goal_id, None))
+                outcome = gate.decide(
+                    (goal_id, None),
+                    verdict,
+                    freshness=1.0,
+                    hold_s=hold_s,
+                    now=candidate.t,
+                )
+                trace_reason = (
+                    "verdict_not_satisfied"
+                    if outcome.reason == "not_satisfied"
+                    else outcome.reason
+                )
+                expected_gate_data = {
+                    "truth": truth,
+                    "action": outcome.action,
+                    "reason": f"{outcome.action}: {trace_reason}",
+                    "gate_reason": outcome.reason,
+                    "entity_id": None,
+                    "satisfied": call.satisfied,
+                    "confidence": call.confidence,
+                    "freshness": 1.0,
+                    "hold_s": hold_s,
+                }
+                if fold is not None and fold.episode_id is not None and outcome.action == "fire":
+                    # The emission the delivered incident records — what makes the NEXT re-statement
+                    # inside this occurrence idempotent.
+                    episode_emissions[fold.episode_id] = (
+                        episode_emissions.get(fold.episode_id, 0) + 1
+                    )
             trace = _thaw(gate_by_t[candidate.t])
             _require(
                 trace
                 == {
-                    "trace_id": f"{source_id}@{candidate.t}",
+                    **coordinate,
                     "stage": "gate.classified",
-                    "t": candidate.t,
-                    "goal_id": goal_id,
-                    "data": {
-                        "truth": truth,
-                        "action": outcome.action,
-                        "reason": f"{outcome.action}: {trace_reason}",
-                        "gate_reason": outcome.reason,
-                        "entity_id": None,
-                        "satisfied": call.satisfied,
-                        "confidence": call.confidence,
-                        "freshness": 1.0,
-                        "hold_s": hold_s,
-                    },
+                    "data": expected_gate_data,
                 },
                 f"{arm.arm} ordinary gate trace does not reconstruct from oracle/state",
             )

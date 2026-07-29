@@ -24,7 +24,13 @@ What the suite pins:
 4. the scope fences — every non-default re-arm mode, every non-watch route, and the content-key /
    claim-slot paths stay on their byte-for-byte gate-only behaviour (``TestScopeFences``);
 5. the refusals — no fabricated per-entity key, no out-of-order corruption, no abstention side effects
-   (``TestRefusals``).
+   (``TestRefusals``);
+6. the forfeit and the line it stops at (``TestSceneSingletonCannotCountSubjects``);
+7. REACHABILITY from a real shipped template (``TestShippedTemplateReachesTheSceneFold``). The
+   dispatch used to route ONLY a per-entity policy here, so a concern that DECLARED the scene scope
+   — which is what every shipped domain-pack Watch template does, and which is the very value this
+   fold keys its subject by — fell through to no fold at all. Arming the template through the public
+   apply path is the case that proves it, because a unit test on the dispatch cannot.
 """
 
 from __future__ import annotations
@@ -37,8 +43,15 @@ from percept.agent import Percept
 from percept.backends.fake import FakeVision
 from percept.config import GateSettings, Settings
 from percept.contracts import SubjectRef
-from percept.identity_policy import SCENE_IDENTITY
+from percept.domain_pack import watch_template
+from percept.identity_policy import SCENE_IDENTITY, folds_on_scene_scope
+from percept.packs_default import (
+    EGO_MOTION_STARTER_V1,
+    FACILITY_OBSERVATION_V1,
+    PHYSICAL_SCENE_STARTER_V1,
+)
 from percept.source_profiles_default import PHYSICAL_SCENE, SCREEN_DOCUMENT
+from percept.watchplan_apply import apply_watch_plan
 
 _YES = Verdict(True, 0.95, "a person is at the door")
 _NO = Verdict(False, 0.95, "the doorway is empty")
@@ -348,3 +361,207 @@ class TestSceneSingletonCannotCountSubjects(unittest.TestCase):
             self.assertIsNotNone(fired, f"entity {entity} must keep its own rising edge")
             self.assertEqual(fired.action, "fire")
             self.assertEqual(fired.entity_id, entity)
+
+
+# --------------------------------------------------------------------------------------------------
+# 7 — REACHABILITY. Everything above drives a concern that INHERITS a per-entity policy from its
+# profile. The dispatch routed only that case, so a concern that DECLARED ``identity_policy='scene'``
+# — the recognized name of the very scope this fold keys its subject by, and what every shipped
+# domain-pack Watch template names — matched neither the per-entity set nor ``content_key`` and got no
+# fold at all. Every one of those templates therefore ran with no occurrence identity and no
+# idempotent suppression. These tests drive a REAL template through the public apply path, because a
+# unit test on the dispatch cannot show that the shipped template works.
+# --------------------------------------------------------------------------------------------------
+
+_ZONE_YES = Verdict(True, 0.95, "a person is in the restricted zone")
+_ZONE_NO = Verdict(False, 0.95, "the restricted zone is empty")
+
+#: Every shipped pack, paired with the templates it publishes.
+_SHIPPED_PACKS = (
+    FACILITY_OBSERVATION_V1,
+    PHYSICAL_SCENE_STARTER_V1,
+    EGO_MOTION_STARTER_V1,
+)
+
+
+def _arm_template(ref: str, pack) -> "tuple[Percept, str]":
+    """Arm a REAL shipped template the way a client does — plan + apply, nothing hand-authored."""
+    settings = Settings(gate=GateSettings(threshold=0.7, validity_window_s=1000.0))
+    a = Percept.create(
+        vision=FakeVision(), settings=settings, discover_plugins=False,
+        source_profile=PHYSICAL_SCENE,
+    )
+    receipt = apply_watch_plan(a, watch_template(ref), domain_pack=pack)
+    assert receipt.status == "applied", receipt.status
+    return a, receipt.watch_ids[0]
+
+
+class TestShippedTemplateReachesTheSceneFold(unittest.TestCase):
+    def test_the_shipped_templates_declare_the_scene_scope_and_it_routes(self):
+        # The premise, read off the packs themselves rather than restated: the templates declare the
+        # scene scope, and the routing predicate accepts it.
+        declaring = {
+            (pack.id, name)
+            for pack in _SHIPPED_PACKS
+            for name, template in pack.templates.items()
+            if template.identity_policy == SCENE_IDENTITY
+        }
+        self.assertTrue(declaring, "the shipped packs must still declare the scene scope somewhere")
+        for pack_id, name in sorted(declaring):
+            with self.subTest(pack=pack_id, template=name):
+                self.assertTrue(folds_on_scene_scope(SCENE_IDENTITY))
+
+    def test_arming_zone_occupied_opens_a_scene_keyed_episode(self):
+        # THE DEFECT, end to end. Before the routing fix this template judged, gated and fired while
+        # ``core.episodes`` stayed empty for it: no occurrence identity, so nothing to be idempotent
+        # about.
+        a, goal_id = _arm_template(
+            "physical_scene_starter@1/zone_occupied", PHYSICAL_SCENE_STARTER_V1
+        )
+        goal = a.goals.get(goal_id)
+        self.assertEqual(goal.state["identity_policy"], SCENE_IDENTITY)
+        self.assertEqual(a._resolved_identity_policy(goal), SCENE_IDENTITY)
+
+        a.vision = FakeVision(script={"occupied": _ZONE_YES})
+        events = asyncio.run(a.perceive_judged("occupied", t=0.0))
+
+        self.assertEqual([e.action for e in events], ["fire"])
+        log = a.episodes.get(goal_id)
+        self.assertIsNotNone(log, "an armed shipped template must not be left without an episode log")
+        self.assertEqual(
+            [(e.subject_key, e.status) for e in log._episodes],
+            [(SCENE_IDENTITY, "open")],
+        )
+
+    def test_a_declared_scene_concern_is_indistinguishable_from_the_inherited_one(self):
+        # The correctness bar: DECLARING the scene scope must behave exactly like inheriting a
+        # per-entity policy that falls back to it — same subject key, same open/close semantics, same
+        # outward actions over the same stream.
+        stream = [(0.0, _ZONE_YES), (1.0, _ZONE_YES), (2.0, _ZONE_NO), (3.0, _ZONE_YES)]
+
+        declared, goal_id = _arm_template(
+            "physical_scene_starter@1/zone_occupied", PHYSICAL_SCENE_STARTER_V1
+        )
+        declared_actions = _drive(declared, stream)
+        inherited = _build()
+        inherited_actions = _drive(inherited, stream)
+
+        self.assertEqual(declared_actions, [["fire"], [], [], ["fire"]])
+        self.assertEqual(declared_actions, inherited_actions)
+        shape = [(e.subject_key, e.status) for e in declared.episodes[goal_id]._episodes]
+        self.assertEqual(shape, [(SCENE_IDENTITY, "closed"), (SCENE_IDENTITY, "open")])
+        self.assertEqual(
+            shape, [(e.subject_key, e.status) for e in inherited.episodes["g1"]._episodes]
+        )
+        for metric in ("episode.scene.closed", "gate.idempotent_suppressed"):
+            with self.subTest(metric=metric):
+                self.assertEqual(declared.metrics.get(metric), 1)
+                self.assertEqual(
+                    declared.metrics.get(metric), inherited.metrics.get(metric)
+                )
+
+    def test_a_ttl_sweep_mid_occurrence_no_longer_duplicates_the_template_incident(self):
+        # The invariant the fold exists for, now actually reaching a shipped template: while the zone
+        # never stopped being occupied, an eviction of its (idle) gate key used to re-create that key
+        # ARMED and report the same occupancy twice.
+        a, goal_id = _arm_template(
+            "physical_scene_starter@1/zone_occupied", PHYSICAL_SCENE_STARTER_V1
+        )
+        a.gate.key_ttl_s = 60.0  # a bound the gate already supports; no gate mechanics change
+        actions = _drive(
+            a, [(0.0, _ZONE_YES), (61.0, _ZONE_YES), (120.0, _ZONE_YES)], sweep_at={1: 61.0}
+        )
+        self.assertEqual(actions, [["fire"], [], []])
+        self.assertEqual(len(a.episodes[goal_id]._episodes), 1, "one unbroken occupancy")
+
+    def test_the_forfeit_holds_for_the_template_too(self):
+        # THE PRICE, restated where a client actually meets it. Within one gate key, a second person
+        # arriving inside an already-reported occupancy is ONE incident. zone_occupied's own notes say
+        # it does not count people; this is that sentence made executable.
+        a, goal_id = _arm_template(
+            "physical_scene_starter@1/zone_occupied", PHYSICAL_SCENE_STARTER_V1
+        )
+        goal, key = a.goals.get(goal_id), (goal_id, None)
+        opened = a._document_episode_fold(
+            goal, Verdict(True, 0.95, "one person", subject=_track("trk-1")), 0.0,
+            truth="yes", key=key,
+        )
+        self.assertEqual(opened.match, "new")
+        a.executor._incidents.record(opened.episode_id)  # the occupancy was reported
+        arrival = a._document_episode_fold(
+            goal, Verdict(True, 0.95, "a second person", subject=_track("trk-2")), 1.0,
+            truth="yes", key=key,
+        )
+        self.assertEqual(arrival.match, "continuation")
+        self.assertFalse(
+            arrival.should_evaluate_gate,
+            "one gate key, one open occurrence, one incident -- reported once, not twice",
+        )
+        self.assertEqual(len(a.episodes[goal_id]._episodes), 1)
+
+    def test_the_gate_key_stability_handback_is_not_weakened_by_the_new_route(self):
+        # The guard that keeps "a second entity is a second key, and a second key fires" true must
+        # apply to a DECLARED scene concern exactly as it does to an inherited one.
+        a, goal_id = _arm_template(
+            "physical_scene_starter@1/zone_occupied", PHYSICAL_SCENE_STARTER_V1
+        )
+        goal = a.goals.get(goal_id)
+        opened = a._document_episode_fold(
+            goal, _ZONE_YES, 0.0, truth="yes", key=(goal_id, "e1")
+        )
+        a.executor._incidents.record(opened.episode_id)
+        self.assertIsNone(
+            a._document_episode_fold(goal, _ZONE_YES, 1.0, truth="yes", key=(goal_id, "e2")),
+            "a second entity's edge belongs to the gate, not to the scene episode",
+        )
+        self.assertEqual(a.metrics.get("episode.scene.entity_turnover_skipped"), 1)
+
+    def test_the_fold_never_manufactures_a_rising_edge_over_the_start_anchor(self):
+        # ``require_false_first`` says a key fires only after THIS deployment watched the condition
+        # become false, and the gate enforces it on a key it has never seen -- which is the key a first
+        # episode arrives on. A new episode's re-arm used to force that key armed and report a condition
+        # that was already true when the watch started. Asserted for BOTH ways a concern reaches this
+        # fold, because the declared and inherited routes must be indistinguishable.
+        settings = Settings(
+            gate=GateSettings(
+                threshold=0.7, validity_window_s=1000.0, require_false_first=True
+            )
+        )
+        stream = [(0.0, _YES), (1.0, _NO), (2.0, _YES)]
+        for label, state in (("inherited", None), ("declared", {"identity_policy": "scene"})):
+            with self.subTest(route=label):
+                a = Percept.create(
+                    vision=FakeVision(), settings=settings, discover_plugins=False,
+                    source_profile=PHYSICAL_SCENE,
+                )
+                a.add_goal(
+                    Goal(
+                        id="g1",
+                        condition="a person is at the door",
+                        say="someone is at the door",
+                        state={"type": "watch", "count": 0, **(state or {})},
+                    )
+                )
+                self.assertEqual(
+                    _drive(a, stream),
+                    [[], [], ["fire"]],
+                    "the already-true start must stay silent until an observed false arms the key",
+                )
+
+    def test_a_scene_declaring_transition_template_still_gets_no_fold(self):
+        # The route fence, on the templates that would most easily be swept up by the new route: three
+        # shipped templates declare the scene scope AND author a transition. The transition runtime owns
+        # their edge, so they must keep the gate-only path and write nothing into ``episodes``.
+        for ref in (
+            "ego_motion_starter@1/scene_transition",
+            "ego_motion_starter@1/object_focus_gained",
+            "ego_motion_starter@1/task_step_reached",
+        ):
+            with self.subTest(template=ref):
+                a, goal_id = _arm_template(ref, EGO_MOTION_STARTER_V1)
+                goal = a.goals.get(goal_id)
+                self.assertEqual(a._resolved_identity_policy(goal), SCENE_IDENTITY)
+                self.assertIsNone(
+                    a._document_episode_fold(goal, _ZONE_YES, 0.0, truth="yes")
+                )
+                self.assertNotIn(goal_id, a.episodes)

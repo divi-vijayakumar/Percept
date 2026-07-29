@@ -71,6 +71,37 @@ PER_ENTITY_IDENTITY_POLICIES: frozenset[str] = frozenset(
 )
 
 
+def folds_on_scene_scope(resolved_policy: str | None) -> bool:
+    """Does a concern running under ``resolved_policy`` group its occurrences on the scene scope?
+
+    The occurrence-grouping question, asked of a policy NAME. ``True`` for exactly two kinds of
+    policy, which arrive at the same answer from opposite directions:
+
+    * :data:`SCENE_IDENTITY` — the recognized no-subject scope. The scene *is* its grouping key, so
+      the answer is a tautology; a concern that DECLARES it is asking for precisely one occurrence
+      per concern.
+    * a per-entity policy (:data:`PER_ENTITY_IDENTITY_POLICIES`) — it has a subject but no key
+      stable enough to group by (scene track handles churn), so its occurrences fall back to the
+      scene scope. The measured grounds for that fallback are in
+      :meth:`percept.agent.Percept._scene_episode_fold`.
+
+    ``False`` for a policy that carries its OWN grouping key (``content_key``, ``claim_slot``), for
+    an unknown/custom name, and for ``None`` (nothing declared and no profile resolved) — each of
+    those keeps whatever grouping it already had.
+
+    Deliberately NOT expressed by widening :data:`PER_ENTITY_IDENTITY_POLICIES`. That set answers a
+    DIFFERENT question — "does this policy isolate one entity?" — and scene is its exact opposite
+    (one occurrence per concern, never one per entity). Its other readers act on that meaning: a
+    transition goal under a per-entity policy with nothing in focus spends no judges and touches no
+    latch, so admitting ``"scene"`` there would silence every scene-scoped transition concern on
+    every tick with no focus.
+    """
+    return (
+        resolved_policy == SCENE_IDENTITY
+        or resolved_policy in PER_ENTITY_IDENTITY_POLICIES
+    )
+
+
 def transition_latch_key(
     declared_policy: str | None, focus_id: Hashable
 ) -> tuple[Hashable, str]:
@@ -187,6 +218,7 @@ __all__ = [
     "STATE_KEY",
     "SCENE_IDENTITY",
     "PER_ENTITY_IDENTITY_POLICIES",
+    "folds_on_scene_scope",
     "transition_latch_key",
     "identity_policy_of",
     "watch_reducer_entity_id",
