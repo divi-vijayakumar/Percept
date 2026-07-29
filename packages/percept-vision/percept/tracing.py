@@ -47,11 +47,22 @@ per call" is dimensionally broken. The only defensible form needs an EXPLICIT de
 (:class:`BaselineAssumption`, carried in the manifest and echoed in the summary)::
 
     estimated_baseline_calls = declared_baseline_opportunities
+    actual_judge_calls       = judge_completed - judge_direct_hits
     estimated_saved_calls    = max(0, estimated_baseline_calls - actual_judge_calls)
     estimated_saved_tokens   = estimated_saved_calls * mean_input_tokens_per_actual_call
 
 With zero judge calls there is no measured mean, so ``estimated_saved_tokens`` is ``None`` — the
 renderer shows ``—``. It is never back-filled from a guess.
+
+``judge.started``/``judge.finished`` fire on EVERY tick that reaches the judge funnel, including a
+CONFIDENT :class:`~percept.direct_judge.DirectJudge` hit — it spends zero vision calls (the gate
+still classifies its substituted verdict, so the tick is real), but it is not an ACTUAL judge call.
+Counting it as one over-counts ``actual_judge_calls`` and, through the identity above, silently
+UNDER-reports ``estimated_saved_calls`` — a real saving reported as smaller than it is, not fabricated
+but pessimistic. ``judge_direct_hits`` (folded from ``judge.finished``'s ``data["direct"]`` — see
+:data:`STAGE_JUDGE_FINISHED`) is subtracted back out so the identity stays honest. No emitter sets
+that flag today, so ``judge_direct_hits`` is ``0`` and every existing trace is byte-for-byte
+unchanged; the moment one does, the savings identity is already correct for it.
 """
 
 from __future__ import annotations
@@ -77,7 +88,11 @@ STAGE_EDGE_DECISION = "edge.decision"      # EVERY frame: tier-0 motion/structur
 STAGE_SOURCE_FRAME = "source.frame"        # a frame ADMITTED into perceive_judged
 STAGE_SOURCE_AUDIO = "source.audio"        # exact retained AudioUnit tuple admitted to the judge
 STAGE_JUDGE_STARTED = "judge.started"
-STAGE_JUDGE_FINISHED = "judge.finished"
+STAGE_JUDGE_FINISHED = "judge.finished"           # ``data["direct"]=True`` marks a CONFIDENT
+#: DirectJudge hit (percept.direct_judge): the gate still ran, so the tick belongs in the funnel,
+#: but zero vision calls were spent — it must not count as an ACTUAL judge call (see
+#: :class:`TraceSummary` rule 4 and :attr:`TraceSummary.judge_direct_hits`). Absent/false is the
+#: default and byte-for-byte matches every emitter that doesn't know about direct routing yet.
 STAGE_JUDGE_DEGRADED = "judge.degraded"
 STAGE_GATE_CLASSIFIED = "gate.classified"  # truth/action/reason
 STAGE_INCIDENT_CREATED = "incident.created"
@@ -879,8 +894,12 @@ class TraceSummary:
     ``observed`` -> ``admitted`` -> ``judge_started`` -> ``judge_completed`` -> gate outcomes ->
     ``incidents``, plus cost and (only with a declared baseline) savings.
 
-    Two definitions worth stating out loud:
+    Three definitions worth stating out loud:
 
+    - ``judge_completed`` counts every tick that reached a verdict — a real vision call OR a
+      confident :class:`~percept.direct_judge.DirectJudge` hit that substituted for one.
+      ``judge_direct_hits`` is the subset that spent ZERO vision calls; ``estimated_saved_calls``
+      subtracts it back out (see module rule 4) so a direct hit is never counted as spend.
     - ``admitted`` carries BOTH a count and ``admitted_evidence_union_s`` — the union of the
       evidence windows those admissions covered. The count times a nominal interval is *not* a
       duration and is not reported here.
@@ -906,6 +925,7 @@ class TraceSummary:
     admitted_evidence_union_s: float = 0.0
     judge_started: int = 0
     judge_completed: int = 0
+    judge_direct_hits: int = 0
     judge_degraded: int = 0
     judge_dropped: int = 0
     judge_superseded: int = 0
@@ -960,12 +980,17 @@ class TraceSummary:
         if observed == 0:  # a direct perceive_judged() driver never emits edge.decision
             observed = admitted
         judge_completed = int(c.get("judge_completed", 0))
+        # A confident DirectJudge hit fires judge.started/judge.finished too (the tick is real, the
+        # gate still classifies it) but spends ZERO vision calls — counting it as an ACTUAL judge
+        # call over-counts spend and, through the savings identity below, silently UNDER-reports
+        # estimated_saved_calls. Subtract it back out so a direct hit is never mistaken for spend.
+        judge_direct_hits = int(c.get("judge_direct_hits", 0))
 
         if watch_duration_s is None:
             watch_duration_s = 0.0
         healthy = max(0.0, float(watch_duration_s) - float(unhealthy_s))
 
-        actual_calls = judge_completed or int(c.get("judge_started", 0))
+        actual_calls = max(0, (judge_completed or int(c.get("judge_started", 0))) - judge_direct_hits)
         usage_calls = int(usage.get("calls", 0))
         priced_calls = int(usage.get("priced_calls", 0))
         # NO FALSE ZEROS — but a PROVEN zero is still a number. Exactly one case licenses 0.0: the
@@ -1009,6 +1034,7 @@ class TraceSummary:
             admitted_evidence_union_s=union_seconds(evidence_windows),
             judge_started=int(c.get("judge_started", 0)),
             judge_completed=judge_completed,
+            judge_direct_hits=judge_direct_hits,
             judge_degraded=int(c.get("judge_degraded", 0)),
             judge_dropped=int(c.get("judge_dropped", 0)),
             judge_superseded=int(c.get("judge_superseded", 0)),
@@ -1082,6 +1108,7 @@ class TraceSummary:
             "admitted_evidence_union_s": self.admitted_evidence_union_s,
             "judge_started": self.judge_started,
             "judge_completed": self.judge_completed,
+            "judge_direct_hits": self.judge_direct_hits,
             "judge_degraded": self.judge_degraded,
             "judge_dropped": self.judge_dropped,
             "judge_superseded": self.judge_superseded,
@@ -1191,6 +1218,8 @@ class _Aggregate:
             self.counters["judge_started"] += 1
         elif stage == STAGE_JUDGE_FINISHED:
             self.counters["judge_completed"] += 1
+            if r.data.get("direct"):  # a confident DirectJudge hit — zero vision calls spent
+                self.counters["judge_direct_hits"] += 1
         elif stage == STAGE_JUDGE_DEGRADED:
             self.counters["judge_degraded"] += 1
         elif stage == STAGE_JUDGE_DROPPED:
@@ -1720,6 +1749,7 @@ def load_trace(payload: Mapping[str, Any] | str) -> tuple[RunTraceManifest, list
             admitted_evidence_union_s=float(s.get("admitted_evidence_union_s", 0.0)),
             judge_started=int(s.get("judge_started", 0)),
             judge_completed=int(s.get("judge_completed", 0)),
+            judge_direct_hits=int(s.get("judge_direct_hits", 0)),
             judge_degraded=int(s.get("judge_degraded", 0)),
             judge_dropped=int(s.get("judge_dropped", 0)),
             judge_superseded=int(s.get("judge_superseded", 0)),

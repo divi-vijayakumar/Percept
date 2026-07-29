@@ -20,7 +20,6 @@ from percept import behavior as behavior_mod
 from percept import catalog
 from percept.agent import Percept
 from percept.contracts.watchplan import WatchPlan
-from percept.direct_judge import DirectRouting
 from percept.domain_pack import (
     ComponentRecommendation,
     DEFAULT_DOMAIN_PACK_REGISTRY,
@@ -271,14 +270,6 @@ class TestDomainPackConstruction(unittest.TestCase):
             id="p1", policy_clamps={"false_negative_cost_min": "mild", "retention_max_days": 7}
         )
         self.assertEqual(pack.policy_clamps["false_negative_cost_min"], "mild")
-
-    def test_non_direct_routing_raises(self) -> None:
-        with self.assertRaises(DomainPackError):
-            DomainPack(id="p1", direct_judge_routes=(object(),))  # type: ignore[arg-type]
-
-    def test_direct_routing_accepted(self) -> None:
-        pack = DomainPack(id="p1", direct_judge_routes=(DirectRouting(condition_namespace="x."),))
-        self.assertEqual(len(pack.direct_judge_routes), 1)
 
     def test_template_lookup(self) -> None:
         t = GoalTemplate(name="a", condition="x")
@@ -892,12 +883,6 @@ class TestZeroCoreEditsProof(unittest.TestCase):
 
         plan = FACILITY_OBSERVATION_V1.template("door_left_open").render()
         self.assertIs(type(plan), RealWatchPlan)
-
-    def test_direct_routing_type_is_the_real_direct_judge_type(self) -> None:
-        from percept.direct_judge import DirectRouting as RealDirectRouting
-
-        for route in FACILITY_OBSERVATION_V1.direct_judge_routes:
-            self.assertIsInstance(route, RealDirectRouting)
 
     def test_senses_compile_via_the_unmodified_program_of(self) -> None:
         """The four templates' rendered Goal.state, run through percept.behavior.program_of

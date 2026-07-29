@@ -21,7 +21,6 @@ conversation outruns the watch). This pack makes NO live-conversation claim.
 
 from __future__ import annotations
 
-from percept.direct_judge import DirectRouting
 from percept.domain_pack import (
     ComponentRecommendation,
     DomainPack,
@@ -108,10 +107,6 @@ _COMPONENTS = (
     ),
 )
 
-# Reserved namespace, no rule implementation ships here (same forward-declared seam facility uses):
-# conditions authored under this prefix could later be served by a DirectJudge rule.
-_DIRECT_JUDGE_ROUTES = (DirectRouting(condition_namespace="meeting_observation."),)
-
 # Fixture names the AMI transform produces one tree per (eval/datasets/ami/testdata/fixtures). Plain
 # data — not required to resolve to packaged clips (this pack is qualified against the AMI transform's
 # output, never shipped clips).
@@ -133,7 +128,6 @@ MEETING_OBSERVATION_V1 = DomainPack(
     templates=_TEMPLATES,
     components=_COMPONENTS,
     policy_clamps={"false_negative_cost_min": "trivial", "retention_max_days": 30.0},
-    direct_judge_routes=_DIRECT_JUDGE_ROUTES,
     fixtures=_FIXTURES,
     quality_bars=_QUALITY_BARS,
     notes=(

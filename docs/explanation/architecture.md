@@ -42,14 +42,15 @@ and an expensive, stateless **System 2** it calls only when it must.
 
 ## The per-decision lifecycle
 
-Every frame (or utterance) flows through the same cost-avoiding, refuse-to-guess pipeline. The model is
-called only when the cheaper tiers cannot resolve the goal first.
+Every frame (or utterance) flows through the same cost-avoiding, refuse-to-guess pipeline **in every
+shipped configuration** — the four stages below, not five. The model is called only when the cheaper
+tiers cannot resolve the goal first.
 
 ```
-sample ──► route ──► cache ──► judge ──► gate ──► deliver
- fovea    regex     frame-    authorize   FIRE     incident
- density  fast-path  hash     → bind →    ASK      to sink
-                     lookup   dispatch    SILENT
+sample ──► route ──► judge ──► gate ──► deliver
+ fovea    regex     authorize   FIRE     incident
+ density  fast-path  → bind →   ASK      to sink
+                     dispatch   SILENT
 ```
 
 - **sample** — the fovea sampler ([`sampling.py`](../../packages/percept-vision/percept/sampling.py))
@@ -58,9 +59,6 @@ sample ──► route ──► cache ──► judge ──► gate ──► 
 - **route** — the local fast-path ([`routing/`](../../packages/percept-vision/percept/routing)) resolves
   a confident spoken turn with a regex lexicon and defers anything ambiguous or goal-authoring to the
   model. Higher threshold = quieter router.
-- **cache** — the frame-hash cascade ([`cache/`](../../packages/percept-vision/percept/cache)) reuses a
-  prior judgment when a near-identical ROI recurs within a bounded time window, at a decayed confidence.
-  An empty or disabled cache always defers — the safe default.
 - **judge** — a judge is never taken on trust. A `WatchPlan.judge` value is a *request*; the runtime
   **authorizes** it against a deployment-owned catalog, **binds** an immutable static context verified
   byte-for-byte against a pinned SHA-256, and only then **dispatches**. Every step is fail-closed: any
@@ -73,6 +71,15 @@ sample ──► route ──► cache ──► judge ──► gate ──► 
   [../reference/consequence-gate.md](../reference/consequence-gate.md).
 - **deliver** — a FIRE or ASK becomes an `Incident` delivered to a sink; evidence is retained behind an
   opaque handle, the episode is updated, and a trace is recorded.
+
+**Cache is shipped code, not a shipped stage.** The frame-hash cascade
+([`cache/`](../../packages/percept-vision/percept/cache)) can splice a fifth stage in between **route**
+and **judge** — reusing a prior judgment when a near-identical ROI recurs within a bounded time window, at
+a decayed confidence — but `CacheSettings.enabled` defaults to `False`
+([`config.py`](../../packages/percept-vision/percept/config.py)), and no shipped profile flips it on. An
+unenabled cache is constructed empty and its lookup always defers, so it is a real, tested, opt-in
+component with zero shipped consumers today — it is not part of the lifecycle above until a deployment
+explicitly turns it on.
 
 The wire contract crossing every seam is versioned: `CONTRACT_VERSION = "1.10.0"`, with `watch()` at
 `WATCH_VERSION = "1.1.0"` and conformance at `CONFORMANCE_VERSION = "1.1.0"`.
@@ -116,6 +123,27 @@ OSS snapshots persist plain-goal cognition only. A core with an applied compiled
 artifact that cannot reconstruct its runtime, source-profile, judge, and episode state. Compiled Watch
 restart recovery is therefore unsupported in the OSS 1.0 runtime; durable recovery belongs to the
 hosted runtime contract.
+
+## Known limitation: bounded cost means bounded throughput, not a dollar ceiling
+
+"Bounded cost" throughout this page and the rest of Percept's docs describes a **rate** bound, not a
+**spend** bound, and the two are easy to conflate. What is actually enforced, everywhere in the runtime:
+
+- **`SensePolicy.max_fps`** (default `15.0`, [`sampling.py`](../../packages/percept-vision/percept/sampling.py))
+  is the one real ceiling the loop obeys: the densest the fovea will ever ask a judge to run, per
+  concern. This is what "bounded cost" cashes out to in code — a call-rate ceiling.
+- **`percept.slo.DOLLARS_PER_STREAM_HOUR_CEILING_USD`** (`5.0`) is a pre-registered **measurement**
+  threshold a benchmark or CI run is checked against after the fact (`percept eval`, `TraceSummary.
+  dollars_per_stream_hour`) — it grades a completed run, it does not gate a live one.
+
+There is no `max_usd_per_hour` (or equivalent) setting anywhere in `percept.config.Settings` or in the
+runtime worker. Nothing in a live stream reads a dollar figure and refuses to place another judge call
+once crossed — the runtime will keep calling the vision model at whatever the rate ceiling and the
+active goal count allow, for as long as the stream runs, regardless of accumulated spend. A deployment's
+real dollar exposure is `(call-rate ceiling) x (price per call) x (hours run)`, and bounding it in
+dollars — not just in calls — is the operator's responsibility today: watch `TraceSummary.cost_usd` /
+`dollars_per_stream_hour` from a running trace and stop the stream yourself, or enforce a cap at the
+provider/billing layer. This is a stated boundary of the OSS 1.0 runtime, not a bug to route around.
 
 ## See also
 

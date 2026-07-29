@@ -105,7 +105,6 @@ class TestOfficialPackSurface(unittest.TestCase):
                 self.assertEqual(dict(pack.quality_bars), {})
                 self.assertIn("Availability is not qualification", pack.notes)
                 self.assertIn("no accuracy, latency, or cost claim", pack.notes)
-                self.assertEqual(pack.direct_judge_routes, ())
 
     def test_official_physical_components_make_no_unqualified_cost_or_recall_claim(self) -> None:
         official_text = " ".join(

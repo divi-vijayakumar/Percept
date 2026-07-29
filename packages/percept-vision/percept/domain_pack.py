@@ -9,7 +9,7 @@ testable now; their full contracts are deliberately outside this module") — th
 module now OWNS that class (mirroring :class:`percept.execution_policy.ExecutionPolicy`'s own
 graduation out of the same placeholder set); :mod:`percept.resolver` imports it from here.
 
-A :class:`DomainPack` carries SEVEN things, kept strictly separate because they enforce differently:
+A :class:`DomainPack` carries SIX things, kept strictly separate because they enforce differently:
 
 - **``values``** — the SAME tunables-registry-path-keyed mapping the placeholder always had, gated
   exactly as before by :func:`percept.resolver._check_ownership` at resolve time (no tunable is
@@ -35,16 +35,19 @@ A :class:`DomainPack` carries SEVEN things, kept strictly separate because they 
 - **``consequence_defaults``** is deliberately NOT a separate field: a template's own ``consequence``
   IS the domain's default for that goal shape (see :class:`GoalTemplate`), composed the same way any
   :class:`~percept.contracts.WatchPlan.consequence` is — no second mechanism duplicating it.
-- **``direct_judge_routes``** — real :class:`percept.direct_judge.DirectRouting` DECLARATIONS (data
-  only): which condition-namespace prefixes this pack's templates could, in principle, be served by
-  a :class:`~percept.direct_judge.DirectJudge` rule. No rule implementation ships here — routing a
-  namespace to an actual cheap answer belongs to runtime binding; this only reserves the vocabulary
-  using the REAL public type, never a reinvented shape.
 - **``fixtures`` / ``quality_bars`` / ``search_space``** — plain data declarations. ``fixtures`` names
   the evaluation clips/traces this pack expects to be qualified against; ``quality_bars`` is a
   ``{"<template_name>.<metric>": floor}`` mapping; ``search_space`` is a
   ``{tunables-path: {"min": ..., "max": ...}}``-shaped declaration an optimizer consumes later
   (never executed here — this module performs no search, no I/O).
+
+**Retired: ``direct_judge_routes``.** An earlier build carried a ``direct_judge_routes`` field —
+:class:`percept.direct_judge.DirectRouting` DECLARATIONS reserving which condition-namespace
+prefixes a pack's templates might, in principle, be served by a
+:class:`~percept.direct_judge.DirectJudge` rule. It was declared, validated and serialised but never
+read on the routing path — no runtime binding ever consumed it — so it was a promise this SDK's public
+surface was not keeping. Removed rather than left declared-but-dark; the real routing seam is
+:class:`~percept.direct_judge.DirectJudge` itself, wired in by the caller that owns a rule.
 
 **Templates never auto-arm** (ADR-008 Invariants): :func:`watch_template` / :meth:`GoalTemplate.render`
 only ever return a portable :class:`~percept.contracts.WatchPlan`. Arming it — registering a live goal
@@ -69,7 +72,6 @@ from typing import Any, Iterator, Literal, Mapping
 
 from .behavior import coerce_authored_behavior, coerce_authored_episode
 from .contracts.watchplan import WatchPlan
-from .direct_judge import DirectRouting
 from .duration_routes import duration_route_issues
 
 
@@ -483,7 +485,6 @@ class DomainPack:
     - ``components`` — advisory :class:`ComponentRecommendation` entries.
     - ``policy_clamps`` — closed two-key vocabulary, enforced at resolve time (see module docstring
       and :meth:`percept.resolver.ConfigResolver.resolve`).
-    - ``direct_judge_routes`` — real :class:`~percept.direct_judge.DirectRouting` declarations.
     - ``fixtures`` / ``quality_bars`` / ``search_space`` — plain data declarations for evaluation.
     """
 
@@ -493,7 +494,6 @@ class DomainPack:
     templates: Mapping[str, GoalTemplate] = field(default_factory=dict)
     components: tuple[ComponentRecommendation, ...] = ()
     policy_clamps: Mapping[str, Any] = field(default_factory=dict)
-    direct_judge_routes: tuple[DirectRouting, ...] = ()
     fixtures: tuple[str, ...] = ()
     quality_bars: Mapping[str, float] = field(default_factory=dict)
     search_space: Mapping[str, Any] = field(default_factory=dict)
@@ -546,14 +546,6 @@ class DomainPack:
                 )
         object.__setattr__(self, "policy_clamps", MappingProxyType(clamps))
 
-        routes = tuple(self.direct_judge_routes)
-        for r in routes:
-            if not isinstance(r, DirectRouting):
-                raise DomainPackError(
-                    "DomainPack.direct_judge_routes must contain only percept.direct_judge.DirectRouting entries"
-                )
-        object.__setattr__(self, "direct_judge_routes", routes)
-
         object.__setattr__(self, "fixtures", tuple(self.fixtures))
         object.__setattr__(self, "quality_bars", MappingProxyType(dict(self.quality_bars)))
         if not isinstance(self.search_space, Mapping):
@@ -585,10 +577,6 @@ class DomainPack:
             "templates": {name: t.to_dict() for name, t in self.templates.items()},
             "components": [c.to_dict() for c in self.components],
             "policy_clamps": dict(self.policy_clamps),
-            "direct_judge_routes": [
-                {"condition_namespace": r.condition_namespace, "role": r.role}
-                for r in self.direct_judge_routes
-            ],
             "fixtures": list(self.fixtures),
             "quality_bars": dict(self.quality_bars),
             "search_space": dict(self.search_space),

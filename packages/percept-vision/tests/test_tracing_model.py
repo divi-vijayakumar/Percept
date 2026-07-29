@@ -315,6 +315,42 @@ class TestFunnelDerivation(unittest.TestCase):
         self.assertAlmostEqual(s.cost_usd, 0.04)
         self.assertIn("Baseline", s.savings_text())            # the assumption is CARRIED, always
 
+    def test_direct_judge_hits_are_not_counted_as_actual_calls_spent(self):
+        """A confident DirectJudge hit (percept.direct_judge) still fires judge.started/judge.finished
+        — the gate genuinely classifies its substituted verdict — but it spends ZERO vision calls.
+        Counting it as an actual judge call over-counts spend and silently UNDER-reports
+        estimated_saved_calls (a real saving reported smaller than it is). The honest measure
+        excludes it: judge_completed(7) - judge_direct_hits(3) = 4 actual calls, so a baseline of 10
+        saves 6 — not the pessimistic 3 you'd get by treating all 7 ticks as spend."""
+        rec = recorder(policy=TracePolicy(level="full"),
+                       baseline=BaselineAssumption.every_observation(10))
+        for i in range(4):  # REAL judge calls — a vision call was actually spent
+            tid = f"real@{i}"
+            rec.record(OBSERVATION_STAGE, trace_id=tid, source_ts=float(i), escalate=True)
+            rec.record(ADMISSION_STAGE, trace_id=tid, source_ts=float(i))
+            rec.record(STAGE_JUDGE_STARTED, trace_id=tid, source_ts=float(i), goal_id="g1")
+            rec.record(STAGE_JUDGE_FINISHED, trace_id=tid, source_ts=float(i), goal_id="g1")
+        for i in range(3):  # confident DirectJudge hits — zero vision calls spent
+            tid = f"direct@{i}"
+            t = float(10 + i)
+            rec.record(OBSERVATION_STAGE, trace_id=tid, source_ts=t, escalate=True)
+            rec.record(ADMISSION_STAGE, trace_id=tid, source_ts=t)
+            rec.record(STAGE_JUDGE_STARTED, trace_id=tid, source_ts=t, goal_id="g1")
+            rec.record(STAGE_JUDGE_FINISHED, trace_id=tid, source_ts=t, goal_id="g1", direct=True)
+        s = rec.summary()
+        self.assertEqual(s.judge_completed, 7)      # every tick that reached a verdict
+        self.assertEqual(s.judge_direct_hits, 3)    # the free subset, isolated
+        self.assertEqual(s.estimated_baseline_calls, 10)
+        self.assertEqual(s.estimated_saved_calls, 6)  # 10 - (7 - 3) = 6, NOT the pessimistic 10 - 7 = 3
+
+        # Round-trips through the persisted artifact and the records-only recount path too.
+        s2 = TraceSummary.derive(rec.manifest, rec.records)
+        self.assertEqual(s2.judge_direct_hits, 3)
+        self.assertEqual(s2.estimated_saved_calls, 6)
+        loaded_manifest, _, loaded_summary = load_trace(rec.to_dict())
+        self.assertEqual(loaded_summary.judge_direct_hits, 3)
+        self.assertEqual(loaded_summary.estimated_saved_calls, 6)
+
     def test_no_declared_baseline_means_no_savings_at_all(self):
         s = self._run(usage={"input_tokens": 1000.0}).summary()
         self.assertFalse(s.baseline.declared)

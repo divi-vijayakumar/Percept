@@ -47,7 +47,6 @@ latency, or cost claim.
 
 from __future__ import annotations
 
-from .direct_judge import DirectRouting
 from .domain_pack import ComponentRecommendation, DomainPack, GoalTemplate, register_domain_pack
 from .identity_policy import SCENE_IDENTITY
 
@@ -293,16 +292,6 @@ _EGO_COMPONENTS = (
 )
 
 # ---------------------------------------------------------------------------
-# DirectJudge routes — a RESERVED namespace, no rule implementation ships here (see module
-# docstring and percept.direct_judge). None of the four templates' rendered conditions are
-# authored under this namespace prefix today, so DirectJudge falls through to the normal judge
-# path for all of them until a real rule is registered under it — an honest, forward-declared seam,
-# not a claim of present cost savings.
-# ---------------------------------------------------------------------------
-
-_DIRECT_JUDGE_ROUTES = (DirectRouting(condition_namespace="facility_observation."),)
-
-# ---------------------------------------------------------------------------
 # Fixtures + quality bars. The legacy facility pack preserves its original candidate declarations
 # for data-contract compatibility; they are not achieved qualification results. The two official
 # starters are deliberately empty. Mechanics fixtures live in tests and must never be presented as
@@ -341,7 +330,6 @@ FACILITY_OBSERVATION_V1 = DomainPack(
     templates=_TEMPLATES,
     components=_LEGACY_COMPONENTS,
     policy_clamps={"false_negative_cost_min": "mild", "retention_max_days": 30.0},
-    direct_judge_routes=_DIRECT_JUDGE_ROUTES,
     fixtures=_LEGACY_FIXTURES,
     quality_bars=_LEGACY_QUALITY_BARS,
     search_space=_SEARCH_SPACE,

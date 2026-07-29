@@ -24,7 +24,6 @@ never geometry; ``plan_mode`` is an ordered frame window, never a sprite montage
 
 from __future__ import annotations
 
-from percept.direct_judge import DirectRouting
 from percept.domain_pack import ComponentRecommendation, DomainPack, GoalTemplate
 
 # ---------------------------------------------------------------------------
@@ -111,12 +110,6 @@ _COMPONENTS = (
 )
 
 # ---------------------------------------------------------------------------
-# DirectJudge routes — a RESERVED namespace only; no rule implementation ships here.
-# ---------------------------------------------------------------------------
-
-_DIRECT_JUDGE_ROUTES = (DirectRouting(condition_namespace="screen_observation."),)
-
-# ---------------------------------------------------------------------------
 # Fixtures, quality bars, and search space are plain declarations consumed by later stages.
 # The fixture names resolve to eval/datasets/guiworld/testdata/fixtures/ (dev tooling).
 # ---------------------------------------------------------------------------
@@ -147,7 +140,6 @@ SCREEN_OBSERVATION_V1 = DomainPack(
     templates=_TEMPLATES,
     components=_COMPONENTS,
     policy_clamps={"false_negative_cost_min": "mild", "retention_max_days": 30.0},
-    direct_judge_routes=_DIRECT_JUDGE_ROUTES,
     fixtures=_FIXTURES,
     quality_bars=_QUALITY_BARS,
     search_space=_SEARCH_SPACE,
