@@ -10,9 +10,11 @@ import unittest
 from types import SimpleNamespace
 
 from percept.adapters import Goal, Verdict
+from percept.agent import Percept
 from percept.behavior import BehaviorExecutor, program_of
 from percept.entity import EntityGraph
 from percept.gate import FIRE, SILENT, Gate
+from percept.identity_policy import SCENE_IDENTITY
 from percept.adapters import Box, Observation
 from percept.runtime.session import RuntimeSession
 
@@ -93,6 +95,106 @@ class TestEntityDeathEviction(unittest.TestCase):
         self.assertNotIn(("g", "e1"), gate._armed)
         self.assertIn(("g", "e2"), gate._armed)
         self.assertIn(("g", "__resolved__"), gate._armed)
+
+
+# ---- The transition sense keeps TWO halves of per-entity state; eviction must take BOTH ---------
+class TestTransitionWitnessEviction(unittest.TestCase):
+    """The transition sense splits its per-entity latch across two owners:
+
+    * the GATE HALF — the armed/spent edge, keyed ``(goal_id, latch_key)``, swept by
+      :meth:`Gate.reset_entity`;
+    * the WITNESS HALF — the ordering witness ``seen_from`` ("state A has been observed under this
+      latch key"), which lives in the executor's isolated per-concern context because the gate has no
+      vocabulary for it.
+
+    Entity death used to sweep only the gate half. The witness half is written on EVERY tick that
+    reaches the transition path (a ``setdefault`` before any truth test), so one entry accrued per
+    entity id that was ever judged and was never reclaimed — unbounded for the life of the process
+    on a source whose track ids churn. Both halves must be evicted together.
+    """
+
+    @staticmethod
+    def _transition_goal() -> Goal:
+        g = Goal(id="t", condition="A becomes B", say="changed")
+        g.state.update({"type": "transition", "from": "A", "to": "B", "count": 0})
+        return g
+
+    @staticmethod
+    def _agent():
+        return Percept.create(mode="offline", discover_plugins=False)
+
+    def test_churned_entities_do_not_accumulate_transition_witnesses(self):
+        """The growth bound: ingest+evict far more entities than the graph holds, driving the
+        per-entity transition path for each, and the witness dict must stay bounded by the LIVE
+        entity count — not by the number of ids ever minted."""
+        agent = self._agent()
+        goal = self._transition_goal()
+        ctx = agent.executor.ctx(goal.id)
+        cap = agent.graph._max
+
+        minted = []
+        for i in range(2_000):
+            ents = agent.graph.ingest(
+                [Observation(label=f"thing{i}", box=Box(0.1, 0.1, 0.2, 0.2), confidence=0.9)]
+            )
+            eid = ents[0].id
+            minted.append(eid)
+            # a confident 'from' with a confident-no 'to' — the arming tick, which is what writes
+            # the ordering witness for this entity's own latch key
+            agent.executor.transition_decide(goal, YES, NO, focus_id=eid, now=float(i))
+
+        self.assertEqual(len(minted), len(set(minted)), "the probe must mint a fresh id every step")
+        self.assertLessEqual(len(agent.graph), cap)
+        self.assertLessEqual(len(agent.gate._armed), cap)  # the gate half was already swept
+        self.assertLessEqual(
+            len(ctx.transitions), cap,
+            f"the witness half leaked {len(ctx.transitions)} entries for dead entities",
+        )
+
+    def test_eviction_drops_the_dead_entity_and_spares_the_living(self):
+        agent = self._agent()
+        goal = self._transition_goal()
+        ctx = agent.executor.ctx(goal.id)
+        for eid in ("e1", "e2"):
+            agent.executor.transition_decide(goal, YES, NO, focus_id=eid, now=0.0)
+        self.assertEqual(set(ctx.transitions), {"e1", "e2"})
+
+        agent._on_entity_evicted("e1")
+        self.assertNotIn("e1", ctx.transitions, "the dead entity kept its ordering witness")
+        self.assertIn("e2", ctx.transitions, "a live entity lost its ordering witness")
+
+    def test_eviction_spares_the_scene_latch(self):
+        """A scene-scoped subject is a per-goal singleton and is TTL/LRU-exempt in this path — one
+        key per goal, which entity churn cannot multiply. An entity dying must never take it."""
+        agent = self._agent()
+        goal = self._transition_goal()
+        ctx = agent.executor.ctx(goal.id)
+        agent.executor.transition_decide(goal, YES, NO, focus_id=SCENE_IDENTITY, now=0.0)
+        agent.executor.transition_decide(goal, YES, NO, focus_id="e1", now=0.0)
+
+        agent._on_entity_evicted("e1")
+        self.assertIn(SCENE_IDENTITY, ctx.transitions, "the scene latch is exempt and must survive")
+        self.assertTrue(ctx.transitions[SCENE_IDENTITY]["seen_from"])
+        self.assertNotIn("e1", ctx.transitions)
+
+    def test_the_witness_survives_a_re_arm(self):
+        """The witness is NOT redundant with the gate bit and must outlive a re-arm. A transition is
+        a point event with no observable end, so this path deliberately keeps its anchor across
+        re-arms; only genuine entity death may reclaim the witness."""
+        agent = self._agent()
+        goal = self._transition_goal()
+        ctx = agent.executor.ctx(goal.id)
+
+        agent.executor.transition_decide(goal, YES, NO, focus_id="e1", now=0.0)  # arm
+        agent.executor.transition_decide(goal, NO, YES, focus_id="e1", now=1.0)  # fire
+        agent.executor.transition_decide(goal, YES, NO, focus_id="e1", now=2.0)  # A re-established
+        self.assertIn("e1", ctx.transitions)
+        self.assertTrue(ctx.transitions["e1"]["seen_from"])
+
+        agent.gate.rearm(("t", "e1"))          # an explicit re-arm is not a death
+        agent.gate.reset_goal("t")             # nor is the correction path's goal reset
+        self.assertIn("e1", ctx.transitions, "a gate reset that is not an eviction pruned the witness")
+        self.assertTrue(ctx.transitions["e1"]["seen_from"])
 
 
 # ---- Acceptance 4 + 5: TTL evicts ordinary keys (re-arm) but EXEMPTS never-goals ----------------
