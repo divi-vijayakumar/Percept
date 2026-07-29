@@ -68,6 +68,7 @@ from .episodes import (
 )
 from .identity_policy import (
     PER_ENTITY_IDENTITY_POLICIES,
+    SCENE_IDENTITY,
     identity_policy_of,
     select_identity_policy,
     transition_latch_key,
@@ -995,6 +996,10 @@ _DEFAULT_JUDGE_CONCURRENCY = 8
 #: before it can observe this value; the identity check there is a belt, not the mechanism.
 _BATCH_STALE = object()
 
+#: "no gate key has governed this scene occurrence yet" — distinct from ``None``, which is itself a
+#: real gate key (the non-entity scope a concern gets when nothing is in focus).
+_NO_SCENE_KEY = object()
+
 
 def _scripted_seams(core: Any) -> list[str]:
     """The seams whose CONSTRUCTED backend is a scripted double, in a stable order."""
@@ -1075,12 +1080,21 @@ class Percept:
     router: RouteEngine | None = None  # local fast-path; None -> always defer (built in create)
     on_trace: "Callable[[Any], None] | None" = None  # opt-in per-frame decision tracer; None -> no-op
     episodes: dict = field(default_factory=dict)  # goal_id -> EpisodeLog (counting goals; also
-    # reused by _document_episode_fold for a content-key watch goal — a goal is never both types,
-    # so the map is shared safely)
+    # reused by _document_episode_fold for a content-key watch goal, and for the scene-scoped
+    # occurrence of a per-entity-identity (camera) watch goal — a goal is never more than one of
+    # these types, so the map is shared safely)
     # The per-goal high-water mark of the last ``t`` GOVERNED into a content-key concern's episode
     # log (see ``_document_episode_fold``). Session-only, deliberately absent from
     # snapshot()/restore() like ``episodes`` itself.
     _doc_episode_hwm: dict = field(default_factory=dict)  # goal_id -> highest t governed so far
+    # The OPEN scene occurrence of a per-entity-identity (camera) watch goal, so a confident-false —
+    # the same proven occurrence boundary that re-arms the gate — can close it and let the next
+    # occurrence open a fresh episode. Absent from the map = no occurrence is currently open.
+    _scene_episode_id: dict = field(default_factory=dict)  # goal_id -> open episode id
+    # The gate key that scene occurrence is currently being GOVERNED under. One key per goal, never a
+    # per-entity map: it exists so the fold can tell "the same key re-entering" (which the episode
+    # owns) from "a different entity's key" (which the gate's per-entity edge owns, unchanged).
+    _scene_episode_key: dict = field(default_factory=dict)  # goal_id -> gate key
     # CLAIM MODE: the per-goal claim-slot twins of the document-mode fields above.
     # ``_claim_states`` holds the authoritative :class:`~percept.claims.ClaimState` (value + its own
     # revision ledger) per claim-slot goal; ``_claim_hwm`` is the same out-of-order high-water mark as
@@ -2359,10 +2373,16 @@ class Percept:
         }
 
     def _document_episode_fold(
-        self, goal: Goal, verdict: Verdict, t: float
+        self,
+        goal: Goal,
+        verdict: Verdict,
+        t: float,
+        *,
+        truth: "str | None" = None,
+        key: "tuple | None" = None,
     ) -> "EpisodeFoldResult | None":
         """Episode grouping + :class:`~percept.behavior.EpisodeFoldResult`-owned idempotency, GOVERNING,
-        scoped to content-key concerns ONLY.
+        scoped to content-key concerns and to the SCENE occurrence of a per-entity-identity concern.
 
         The shadow-mode advisory (``_shadow_observe``) always folds ``decision=None`` — an ``unbound``
         shadow that changes nothing, for every concern. This method is the narrow exception: when a
@@ -2375,10 +2395,24 @@ class Percept:
         it actually governs the gate interaction (idempotent suppression + re-arm; see
         :func:`percept.behavior.episode_fold`).
 
+        A concern that resolves to a PER-ENTITY (scene-object track) resolver instead — the shipped
+        default of the physical-scene profile, i.e. every ordinary camera watch — has no content key to
+        group by, so it took the ``None`` branch and got no fold at all: alone among the source classes
+        it had no TTL-invariant idempotency, and a gate-key eviction mid-occurrence could re-report a
+        condition that never stopped holding. It now folds on a SCENE-scoped subject
+        (:meth:`_scene_episode_fold`), NOT a per-entity one — see that method for the forfeit that
+        buys and the guards that keep it honest.
+
         Every other concern — including a claim-slot / conversational (mutation) goal — returns
         ``None`` here, so ``_fire_concern`` runs its byte-for-byte gate-only path and stays shadow-only
         via the UNTOUCHED ``_shadow_observe``/``STAGE_SHADOW_FOLD`` trace. This method never changes
         gate mechanics itself — it only decides whether a fold is built at all.
+
+        ``truth`` (the caller's already-computed :func:`~percept.gate.classify` result) and ``key`` (the
+        gate key this observation will be evaluated under) are read ONLY by the scene branch — the
+        content-key path below is byte-for-byte unchanged. It needs ``truth`` to tell an occurrence that
+        ENDED from one that is merely unproven, and ``key`` to leave the gate's per-entity edge alone.
+        ``truth=None`` (a direct caller that took no freshness reading) is re-derived as-if fresh.
 
         Two things this method refuses to do:
 
@@ -2399,7 +2433,10 @@ class Percept:
         # Explicit content_key + each_event is rejected at arm time in add_goal().
         if goal.state.get("rearm") == "each_event":
             return None
-        if self._resolved_identity_policy(goal) != "content_key":
+        resolved_policy = self._resolved_identity_policy(goal)
+        if resolved_policy in PER_ENTITY_IDENTITY_POLICIES:
+            return self._scene_episode_fold(goal, verdict, t, truth=truth, key=key)
+        if resolved_policy != "content_key":
             return None
         subject = getattr(verdict, "subject", None)
         if subject is None:
@@ -2429,6 +2466,124 @@ class Percept:
         return self.executor.fold_episode(
             decision, operation=getattr(verdict, "operation", None), unknown=unknown
         )
+
+    def _scene_episode_fold(
+        self,
+        goal: Goal,
+        verdict: Verdict,
+        t: float,
+        *,
+        truth: "str | None" = None,
+        key: "tuple | None" = None,
+    ) -> "EpisodeFoldResult | None":
+        """SCENE MODE — the camera twin of :meth:`_document_episode_fold`'s content-key path.
+
+        A concern whose resolved identity policy is a per-entity, scene-object track resolver
+        (:data:`~percept.identity_policy.PER_ENTITY_IDENTITY_POLICIES` — what the physical-scene profile
+        declares, so what an ordinary camera watch inherits) supplies neither a content key nor a claim
+        slot, so it built no fold at all and was the one source class with NO episode-owned idempotency:
+        while a condition kept holding, a TTL/LRU eviction of its gate key re-created that key ARMED and
+        re-reported an occurrence that never stopped. This method closes that hole by folding on a
+        SCENE-scoped subject — one open occurrence per CONCERN (the same scope
+        :attr:`Percept.episodes` is keyed by), named by the recognized
+        :data:`~percept.identity_policy.SCENE_IDENTITY` scope — through the SAME
+        :class:`~percept.episodes.EpisodeLog` and the SAME pure
+        :meth:`~percept.behavior.BehaviorExecutor.fold_episode` the document and claim paths use. The
+        continuation policy comes from the resolved source profile
+        (:attr:`~percept.sourceprofile.SourceProfile.default_episode_policy`, via
+        :meth:`_episode_default`), never from a constant invented here.
+
+        **What scene keying forfeits, deliberately.** A scene singleton CANNOT COUNT SUBJECTS. Within one
+        gate key, an occurrence that has already been reported is reported once: two people arriving
+        inside the same unbroken occurrence are one incident, not two. Counting subjects is what the
+        gate's PER-ENTITY key exists for, and that key is left entirely alone here — hence the
+        ``key`` guard below. Per-entity EPISODES are refused on measured grounds: scene entity ids churn
+        (58,101 ids in 82 minutes, p50 track lifetime 0.0s), so a per-entity episode key would mint a
+        brand-new never-emitted episode almost every tick — which is a brand-new gate key defaulting to
+        ARMED — and would turn the never-silent drop/deny/evict tracing into a log-line-per-tick
+        firehose.
+
+        The five guards that keep this honest:
+
+        * **only the default rising-edge re-arm.** A scene occurrence is the mirror image of the gate's
+          own on_false edge, so it governs only concerns that run that edge. ``never`` (fire-once-ever),
+          ``interval`` (a cadence owns the re-arm), ``deadline`` (absence) and ``each_event`` (the
+          occurrence chain already owns identity) each carry their own re-arm rule; a fold suppressing
+          the gate ahead of them would silently delete their firing, so they keep the gate-only path.
+        * **only a judged frame-watch route.** Counting/rhythm/event goals own
+          :attr:`Percept.episodes` for their own subjects; a scene subject must never be written into
+          those logs.
+        * **it governs ONE gate key at a time — the gate's per-entity edge is untouched.** The scene
+          episode grants idempotency for re-entries of the key it is being governed under; when the
+          observation arrives on a DIFFERENT key (focus turned over to another entity) the fold declines
+          to govern that tick and hands the decision back to the gate, byte-for-byte the behavior from
+          before this method existed. That is what keeps "a second person is a second key, and a second
+          key fires" true, while still making a TTL/LRU eviction of a STABLE key a non-event — the
+          episode remembers the emission that the evicted key forgot. One key is remembered per concern,
+          never a per-entity map, so the refused entity firehose stays refused.
+        * **an occurrence ENDS on the same proven boundary the gate re-arms on.** A confident-false
+          closes the open episode (counted, ``episode.scene.closed``) and degrades this tick to
+          gate-only, so the NEXT time the condition holds it is a genuinely new episode that re-arms and
+          fires. Without that boundary a scene singleton — whose subject key never changes — would fold
+          as one endless continuation and the watch would fire exactly once, ever.
+        * **an abstention changes nothing.** An ``unknown`` (low-confidence or stale) read neither opens,
+          continues, nor closes the occurrence, and returns ``None`` — byte-for-byte the ASK path.
+
+        The out-of-order high-water mark is the same one the content-key path keeps (a goal is only ever
+        one of the two), counted separately as ``episode.scene.out_of_order_skipped``.
+        """
+        if goal.state.get("rearm", "on_false") != "on_false":
+            return None
+        if goal_behavior_route(goal) is not BehaviorRoute.FRAME_WATCH:
+            return None
+        if truth is None:
+            # A direct caller that took no freshness reading: read the verdict as-if fresh, exactly
+            # what the fused-evidence call site passes (freshness=1.0). Never a second gate call —
+            # ``classify`` is the pure pre-edge mapping, not gate state.
+            truth = classify(verdict, 1.0, self.gate.threshold, self.gate.fresh_min)
+        if truth == "unknown":
+            return None  # a refusal to guess is not an occurrence boundary and not an observation
+        hwm = self._doc_episode_hwm.get(goal.id)
+        if hwm is not None and t < hwm:
+            self.metrics.incr("episode.scene.out_of_order_skipped")
+            return None
+        self._doc_episode_hwm[goal.id] = t
+        log = self.episodes.get(goal.id)
+        if log is None:
+            goal_settings = self._settings_for_goal(goal)
+            log = EpisodeLog(
+                goal.id,
+                window_s=goal_settings.episodes.window_s,
+                max_episodes=goal_settings.episodes.max_episodes,
+                # No hardcoded fallback: with no resolved profile this is the documented default
+                # EpisodePolicy(), and authored ``goal.state['episode']`` still wins over both.
+                policy=episode_policy_of(goal, default=self._episode_default(goal, None)),
+            )
+            self.episodes[goal.id] = log
+        if truth == "no":
+            episode_id = self._scene_episode_id.pop(goal.id, None)
+            self._scene_episode_key.pop(goal.id, None)
+            if episode_id is not None:
+                log.close(episode_id, t=t)
+                self.metrics.incr("episode.scene.closed")
+            return None
+        # A fixed subject_key (the scene scope): like a claim slot, this is ONE persistent thing rather
+        # than many distinct subjects, so there is no identity to resolve and the "unknown subject"
+        # branch is unreachable — an explicit subject_key always wins in observe_decision. Any
+        # SubjectRef the judge happened to emit is deliberately not consulted: keying on it is the
+        # per-entity episode this method refuses to build.
+        decision = log.observe_decision(t, verdict, subject_key=SCENE_IDENTITY)
+        self._scene_episode_id[goal.id] = decision.episode.id
+        governed_key = self._scene_episode_key.get(goal.id, _NO_SCENE_KEY)
+        self._scene_episode_key[goal.id] = key
+        if governed_key is not _NO_SCENE_KEY and governed_key != key:
+            # Focus turned over: this observation belongs to a gate key the scene occurrence has not
+            # been speaking for. Whether a different entity's edge fires is the GATE's question and the
+            # answer must not change, so hand it back untouched. The occurrence itself was still
+            # advanced above — declining to govern a tick is not pretending it was unobserved.
+            self.metrics.incr("episode.scene.entity_turnover_skipped")
+            return None
+        return self.executor.fold_episode(decision)
 
     def _claim_episode_fold(
         self, goal: Goal, verdict: Verdict, t: float
@@ -3907,7 +4062,9 @@ class Percept:
                 ctx,
                 verdict.confidence,
             )
-        doc_fold = self._document_episode_fold(goal, verdict, job.source_t)
+        doc_fold = self._document_episode_fold(
+            goal, verdict, job.source_t, truth=truth, key=base_key
+        )
         claim_fold = self._claim_episode_fold(goal, verdict, job.source_t)
         gate_outcomes: list[GateOutcome] = []
         if clip_events_present:
@@ -4529,10 +4686,13 @@ class Percept:
                 if truth == "yes" or clip_events_present:
                     self.last_satisfied[goal.id] = now  # deadline: the expected event happened
                 # base_key computed earlier (before the judge call) — reused here unchanged.
-                # GOVERNING for content-key AND claim-slot concerns only; every other concern gets
-                # fold=None (byte-for-byte, unchanged). A goal is never both types (identity_policy
-                # selects exactly one), so at most one of these returns non-None.
-                doc_fold = self._document_episode_fold(goal, verdict, now)
+                # GOVERNING for content-key, per-entity-identity (its SCENE occurrence) and claim-slot
+                # concerns; every other concern gets fold=None (byte-for-byte, unchanged). A goal is
+                # never more than one of those types (identity_policy selects exactly one), so at most
+                # one of these returns non-None.
+                doc_fold = self._document_episode_fold(
+                    goal, verdict, now, truth=truth, key=base_key
+                )
                 claim_fold = self._claim_episode_fold(goal, verdict, now)
                 gate_outcomes: list[GateOutcome] = []
                 if clip_events_present:
@@ -5277,7 +5437,7 @@ class Percept:
         if truth == "yes":
             self.last_satisfied[goal.id] = job.source_t
         doc_fold = self._document_episode_fold(
-            goal, verdict, job.source_t
+            goal, verdict, job.source_t, truth=truth, key=base_key
         )
         claim_fold = self._claim_episode_fold(
             goal, verdict, job.source_t
